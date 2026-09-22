@@ -509,6 +509,7 @@ public class AuthService : IAuthService
     {
         var tenantSlug = RequireWorkspace(request.TenantSlug);
         var tokenHash = _tokenService.HashToken(request.ResetToken);
+        // Routing only. Every authority decision is re-established under row locks below.
         var tokenReferences = await _db.PasswordResetTokens
             .AsNoTracking()
             .Where(x => x.TokenHash == tokenHash
@@ -517,42 +518,179 @@ public class AuthService : IAuthService
                 && x.User.IsActive
                 && x.User.Tenant != null
                 && x.User.Tenant.IsActive)
-            .Select(x => new { x.Id, x.UserId, TenantSlug = x.User!.Tenant!.Slug })
+            .Select(x => new { x.Id, x.UserId, x.User!.TenantId, TenantSlug = x.User!.Tenant!.Slug })
             .Where(x => x.TenantSlug == tenantSlug)
             .Take(2)
             .ToListAsync(cancellationToken);
         if (tokenReferences.Count != 1)
             throw new UnauthorizedAccessException("Reset token is invalid or expired.");
-        var tokenReference = tokenReferences[0];
+        var reference = tokenReferences[0];
+        var auditId = Guid.NewGuid();
+        var auditContext = context with { UserId = reference.UserId, TenantId = reference.TenantId };
+        // PBKDF2 uses a random salt: hash once so an execution-strategy replay writes one credential.
+        var passwordHash = _passwordHasher.Hash(request.NewPassword);
 
-        var user = await LoadUserGraph(tokenReference.UserId, cancellationToken);
-        if (user?.Tenant is null
-            || !user.IsActive
-            || user.IsDeleted
-            || !user.Tenant.IsActive
-            || !string.Equals(user.Tenant.Slug, tenantSlug, StringComparison.Ordinal))
-            throw new UnauthorizedAccessException("Reset token is invalid or expired.");
-
-        var resetToken = await _db.PasswordResetTokens.FirstOrDefaultAsync(
-            x => x.Id == tokenReference.Id && x.UserId == user.Id && x.TokenHash == tokenHash,
-            cancellationToken);
-        if (resetToken is null || !resetToken.IsActive) throw new UnauthorizedAccessException("Reset token is invalid or expired.");
-
-        user.PasswordHash = _passwordHasher.Hash(request.NewPassword);
-        user.UpdatedAtUtc = DateTime.UtcNow;
-        resetToken.UsedAtUtc = DateTime.UtcNow;
-        await _db.RefreshTokens.Where(x => x.UserId == user.Id && x.RevokedAtUtc == null).ExecuteUpdateAsync(x => x.SetProperty(t => t.RevokedAtUtc, DateTime.UtcNow), cancellationToken);
-        _db.LoginActivities.Add(new LoginActivity
+        async Task ResetOnceAsync(CancellationToken ct)
         {
-            TenantId      = user.TenantId,
-            UserId        = user.Id,
-            EmailAttempted = user.Email,
-            EventType     = LoginEventTypes.PasswordResetCompleted,
-            IpAddress     = context.IpAddress,
-            UserAgent     = context.UserAgent,
-        });
-        await _db.SaveChangesAsync(cancellationToken);
-        await _auditService.WriteAsync("auth.password_reset", "User", user.Id.ToString(), context with { UserId = user.Id, TenantId = user.TenantId }, null, cancellationToken);
+            _db.ChangeTracker.Clear();
+            var resetAtUtc = DateTime.UtcNow;
+
+            var tenant = await _db.Tenants
+                .TagWith(RowLockingInterceptor.ForShareTag)
+                .SingleOrDefaultAsync(x => x.Id == reference.TenantId && x.Slug == tenantSlug, ct);
+            var userAnchor = await _db.Users
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == reference.UserId && x.TenantId == reference.TenantId, ct);
+            if (tenant?.IsActive != true || userAnchor is null || userAnchor.IsDeleted || !userAnchor.IsActive)
+                throw new UnauthorizedAccessException("Reset token is invalid or expired.");
+
+            // Every live reset credential for this user is locked before the presented one is judged,
+            // so two concurrent resets serialize here and the loser re-reads the consumed state.
+            var liveResetTokens = await _db.PasswordResetTokens
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.UserId == userAnchor.Id && x.UsedAtUtc == null)
+                .OrderBy(x => x.Id)
+                .ToListAsync(ct);
+            var presented = liveResetTokens.SingleOrDefault(x => x.Id == reference.Id);
+            if (presented is null
+                || !string.Equals(presented.TokenHash, tokenHash, StringComparison.Ordinal)
+                || presented.UsedAtUtc is not null
+                || presented.ExpiresAtUtc <= resetAtUtc)
+                throw new UnauthorizedAccessException("Reset token is invalid or expired.");
+
+            var user = await LoadUserGraph(userAnchor.Id, ct);
+            if (user?.Tenant is null
+                || user.TenantId != reference.TenantId
+                || !string.Equals(user.Tenant.Slug, tenantSlug, StringComparison.Ordinal))
+                throw new UnauthorizedAccessException("Reset token is invalid or expired.");
+
+            var passwordPolicy = await _db.SecuritySettings
+                .TagWith(RowLockingInterceptor.ForShareTag)
+                .AsNoTracking()
+                .SingleOrDefaultAsync(x => x.TenantId == reference.TenantId, ct);
+            ValidatePasswordAgainstPolicy(request.NewPassword, passwordPolicy);
+
+            // Conditional consume: exactly one caller can move this row from unused to used.
+            if (_db.Database.IsRelational())
+            {
+                var consumed = await _db.PasswordResetTokens
+                    .Where(x => x.Id == presented.Id
+                        && x.TokenHash == tokenHash
+                        && x.UsedAtUtc == null
+                        && x.ExpiresAtUtc > resetAtUtc)
+                    .ExecuteUpdateAsync(s => s.SetProperty(x => x.UsedAtUtc, resetAtUtc), ct);
+                if (consumed != 1)
+                    throw new UnauthorizedAccessException("Reset token is invalid or expired.");
+            }
+            else
+            {
+                presented.UsedAtUtc = resetAtUtc;
+            }
+
+            await InvalidateUserCredentialsAsync(user.Id, resetAtUtc, context.IpAddress, ct);
+
+            user.PasswordHash = passwordHash;
+            user.MustChangePassword = false;
+            user.LastPasswordChangedAt = resetAtUtc;
+            TenantSessionSecurity.RotateStamp(user, resetAtUtc);
+
+            _db.LoginActivities.Add(new LoginActivity
+            {
+                TenantId       = user.TenantId,
+                UserId         = user.Id,
+                EmailAttempted = user.Email,
+                EventType      = LoginEventTypes.PasswordResetCompleted,
+                IpAddress      = context.IpAddress,
+                UserAgent      = context.UserAgent,
+            });
+            _db.AuditLogs.Add(AuthAuditEntry.Create(
+                auditId,
+                resetAtUtc,
+                "auth.password_reset",
+                "User",
+                user.Id.ToString(),
+                auditContext,
+                "{\"sessionsRevoked\":true}"));
+            await _db.SaveChangesAsync(ct);
+        }
+
+        await RunCredentialTransactionAsync(ResetOnceAsync, auditId, cancellationToken);
+    }
+
+    /// <summary>
+    /// Kills every outstanding credential that was minted under the previous password: unused
+    /// reset links, pending MFA login challenges and every live refresh token (all families).
+    /// Callers must already hold the user row FOR UPDATE; rows are locked in id order.
+    /// </summary>
+    private async Task InvalidateUserCredentialsAsync(Guid userId, DateTime atUtc, string? ipAddress, CancellationToken ct)
+    {
+        if (_db.Database.IsRelational())
+        {
+            await _db.PasswordResetTokens
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.UserId == userId && x.UsedAtUtc == null)
+                .OrderBy(x => x.Id).Select(x => x.Id).ToListAsync(ct);
+            await _db.MfaChallengeTokens
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.UserId == userId && x.UsedAtUtc == null)
+                .OrderBy(x => x.Id).Select(x => x.Id).ToListAsync(ct);
+            await _db.RefreshTokens
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.UserId == userId && x.RevokedAtUtc == null)
+                .OrderBy(x => x.Id).Select(x => x.Id).ToListAsync(ct);
+
+            await _db.PasswordResetTokens
+                .Where(x => x.UserId == userId && x.UsedAtUtc == null)
+                .ExecuteUpdateAsync(s => s.SetProperty(x => x.UsedAtUtc, atUtc), ct);
+            await _db.MfaChallengeTokens
+                .Where(x => x.UserId == userId && x.UsedAtUtc == null)
+                .ExecuteUpdateAsync(s => s.SetProperty(x => x.UsedAtUtc, atUtc), ct);
+            await _db.RefreshTokens
+                .Where(x => x.UserId == userId && x.RevokedAtUtc == null)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(x => x.RevokedAtUtc, atUtc)
+                    .SetProperty(x => x.RevokedByIp, ipAddress), ct);
+            return;
+        }
+
+        foreach (var token in await _db.PasswordResetTokens
+            .Where(x => x.UserId == userId && x.UsedAtUtc == null).ToListAsync(ct))
+            token.UsedAtUtc = atUtc;
+        foreach (var challenge in await _db.MfaChallengeTokens
+            .Where(x => x.UserId == userId && x.UsedAtUtc == null).ToListAsync(ct))
+            challenge.UsedAtUtc = atUtc;
+        foreach (var refresh in await _db.RefreshTokens
+            .Where(x => x.UserId == userId && x.RevokedAtUtc == null).ToListAsync(ct))
+        {
+            refresh.RevokedAtUtc = atUtc;
+            refresh.RevokedByIp = ipAddress;
+        }
+    }
+
+    /// <summary>
+    /// Runs one credential mutation inside a single READ COMMITTED transaction owned by the
+    /// execution strategy. The audit row (saved last, same transaction) is the commit marker used
+    /// to detect an already-committed attempt when the strategy replays after a lost ack.
+    /// </summary>
+    private async Task RunCredentialTransactionAsync(Func<CancellationToken, Task> operation, Guid auditId, CancellationToken cancellationToken)
+    {
+        if (!_db.Database.IsRelational())
+        {
+            await operation(cancellationToken);
+            return;
+        }
+
+        var strategy = _db.Database.CreateExecutionStrategy();
+        await strategy.ExecuteInTransactionAsync(
+            async ct =>
+            {
+                await operation(ct);
+                return true;
+            },
+            async ct => await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
+                .AnyAsync(x => x.Id == auditId, ct),
+            IsolationLevel.ReadCommitted,
+            cancellationToken);
     }
 
     public async Task AcceptInvitationAsync(AcceptInvitationRequest request, RequestContext context, CancellationToken cancellationToken)
@@ -1280,16 +1418,62 @@ public class AuthService : IAuthService
 
     public async Task ChangePasswordAsync(Guid userId, ChangePasswordRequest request, RequestContext context, CancellationToken cancellationToken)
     {
-        var user = await _db.Users.FirstOrDefaultAsync(x => x.Id == userId && !x.IsDeleted, cancellationToken)
+        // Routing and the (slow) current-password proof run before any lock is taken. The locked
+        // section below re-checks that the verified hash is still the stored one, so a concurrent
+        // change cannot be overwritten by a caller who only knew the superseded password.
+        var route = await _db.Users.AsNoTracking()
+            .Where(x => x.Id == userId && !x.IsDeleted)
+            .Select(x => new { x.Id, x.TenantId, x.PasswordHash })
+            .SingleOrDefaultAsync(cancellationToken)
             ?? throw new UnauthorizedAccessException("User not found.");
-        if (!_passwordHasher.Verify(request.CurrentPassword, user.PasswordHash))
+        if (!_passwordHasher.Verify(request.CurrentPassword, route.PasswordHash))
             throw new InvalidOperationException("Current password is incorrect.");
-        user.PasswordHash = _passwordHasher.Hash(request.NewPassword);
-        user.MustChangePassword = false;
-        user.LastPasswordChangedAt = DateTime.UtcNow;
-        user.UpdatedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(cancellationToken);
-        await _auditService.WriteAsync("auth.password_changed", "User", user.Id.ToString(), context, null, cancellationToken);
+
+        var auditId = Guid.NewGuid();
+        var auditContext = context with { UserId = route.Id, TenantId = route.TenantId };
+        var passwordHash = _passwordHasher.Hash(request.NewPassword);
+
+        async Task ChangeOnceAsync(CancellationToken ct)
+        {
+            _db.ChangeTracker.Clear();
+            var changedAtUtc = DateTime.UtcNow;
+
+            var tenant = await _db.Tenants
+                .TagWith(RowLockingInterceptor.ForShareTag)
+                .SingleOrDefaultAsync(x => x.Id == route.TenantId, ct);
+            var user = await _db.Users
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == route.Id && x.TenantId == route.TenantId, ct);
+            if (tenant?.IsActive != true || user is null || user.IsDeleted || !user.IsActive)
+                throw new UnauthorizedAccessException("User not found.");
+            if (!string.Equals(user.PasswordHash, route.PasswordHash, StringComparison.Ordinal))
+                throw new InvalidOperationException("Current password is incorrect.");
+
+            var passwordPolicy = await _db.SecuritySettings
+                .TagWith(RowLockingInterceptor.ForShareTag)
+                .AsNoTracking()
+                .SingleOrDefaultAsync(x => x.TenantId == route.TenantId, ct);
+            ValidatePasswordAgainstPolicy(request.NewPassword, passwordPolicy);
+
+            await InvalidateUserCredentialsAsync(user.Id, changedAtUtc, context.IpAddress, ct);
+
+            user.PasswordHash = passwordHash;
+            user.MustChangePassword = false;
+            user.LastPasswordChangedAt = changedAtUtc;
+            TenantSessionSecurity.RotateStamp(user, changedAtUtc);
+
+            _db.AuditLogs.Add(AuthAuditEntry.Create(
+                auditId,
+                changedAtUtc,
+                "auth.password_changed",
+                "User",
+                user.Id.ToString(),
+                auditContext,
+                "{\"sessionsRevoked\":true}"));
+            await _db.SaveChangesAsync(ct);
+        }
+
+        await RunCredentialTransactionAsync(ChangeOnceAsync, auditId, cancellationToken);
     }
 
     private async Task<User?> LoadUserGraph(string email, string tenantSlug, CancellationToken cancellationToken)
