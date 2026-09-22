@@ -23,8 +23,8 @@ import {
 } from '@playwright/test';
 import { platformSetupToken, tenantSetupSession } from '../helpers';
 import {
-  ALMARAI_COMPANY_CODES, ALMARAI_SLUG, GROUP_PASSWORD, MISSING_WORLD,
-  TATA_COMPANY_CODES, TATA_SLUG,
+  ALMARAI_COMPANY_CODES, ALMARAI_SLUG, GROUP_PASSWORD, INTELLIFLOW_ADMIN, INTELLIFLOW_SLUG,
+  MISSING_WORLD, TATA_COMPANY_CODES, TATA_SLUG,
 } from '../world';
 
 // ── Base URL / stack constants ────────────────────────────────────────────────
@@ -58,9 +58,11 @@ export const ALMARAI_SIBLING_CODES = ['ALM-BAKERY-KSA', 'ALM-DIST-KSA', 'ALM-UAE
 // The full E2E setup already authenticates this production-shaped, single-company tenant. Using
 // it as the default keeps the regression deterministic and avoids an extra login outside the
 // production 10/minute budget. Deployments may still override all three values.
-export const DEFAULT_TENANT_SLUG = process.env.E2E_DEFAULT_TENANT_SLUG ?? 'intelliflow';
-export const DEFAULT_ADMIN_EMAIL = process.env.E2E_DEFAULT_ADMIN_EMAIL ?? 'admin@intelliflow.com';
-export const DEFAULT_ADMIN_PASSWORD = process.env.E2E_DEFAULT_ADMIN_PASSWORD ?? 'IntelliFlow@2026!';
+export const DEFAULT_TENANT_SLUG = process.env.E2E_DEFAULT_TENANT_SLUG ?? INTELLIFLOW_SLUG;
+export const DEFAULT_ADMIN_EMAIL = process.env.E2E_DEFAULT_ADMIN_EMAIL ?? INTELLIFLOW_ADMIN.email;
+// Falls back to the WORLD's password, not a literal. The literal here and the literal in
+// e2e/helpers.ts were the same string by coincidence, and CI passed a third copy in ci.yml.
+export const DEFAULT_ADMIN_PASSWORD = process.env.E2E_DEFAULT_ADMIN_PASSWORD ?? INTELLIFLOW_ADMIN.password;
 
 // ── Platform admin ───────────────────────────────────────────────────────────
 // From e2e/world.ts. This file used to default to `platform@kynexone.com` while

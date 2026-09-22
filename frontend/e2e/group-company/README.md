@@ -131,11 +131,11 @@ npx playwright test e2e/group-company --list    # parse check, no run
 | `E2E_DEFAULT_ADMIN_EMAIL` | `admin@zayra.local` | single-company regression admin |
 | `E2E_DEFAULT_ADMIN_PASSWORD` | `ChangeMe123!` | single-company regression admin |
 | `PLATFORM_ADMIN_EMAIL` | `admin@platform.local` | platform-admin spec |
-| `PLATFORM_ADMIN_PASSWORD` | `YourPassword123!` | platform-admin spec |
+| `PLATFORM_ADMIN_PASSWORD` | `YourPassword123!` outside CI; generated per run in CI | the platform owner, and the bootstrap |
 
 ## Provisioned test data (frontend/e2e/bootstrap, declared in frontend/e2e/world.ts)
 
-Password for **all** users below: `GroupDemo123!x`. Tenant slug doubles as the
+Password for **all** users below: `E2E_GROUP_PASSWORD` (`GroupDemo123!x` locally). Tenant slug doubles as the
 login "Workspace" field. Employee codes follow `<COMPANY-CODE>-E<number>`.
 
 ### Tenants (AccountType = Group)
@@ -165,7 +165,7 @@ login "Workspace" field. Employee codes follow `<COMPANY-CODE>-E<number>`.
 | User | Email / password | Purpose |
 |---|---|---|
 | Default tenant admin | `admin@zayra.local` / `ChangeMe123!` (tenant `zayra`) | single-company regression |
-| Platform admin | `admin@platform.local` / `YourPassword123!` | platform-admin spec |
+| Platform admin | `admin@platform.local` / `PLATFORM_ADMIN_PASSWORD` | platform-admin spec |
 
 ## Spec map
 

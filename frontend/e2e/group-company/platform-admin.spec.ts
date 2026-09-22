@@ -8,7 +8,7 @@
  *     multiple_active_companies) while it has 5 active companies
  *
  * Credentials: PLATFORM_ADMIN_EMAIL / PLATFORM_ADMIN_PASSWORD envs
- * (defaults admin@platform.local / YourPassword123!, matching e2e/helpers.ts).
+ * (the operator declared in e2e/world.ts; its password comes from PLATFORM_ADMIN_PASSWORD).
  */
 import { test, expect } from '@playwright/test';
 import {
