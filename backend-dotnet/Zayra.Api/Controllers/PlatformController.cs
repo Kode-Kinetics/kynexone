@@ -1161,6 +1161,18 @@ public class PlatformController : ControllerBase
         _db.Tenants.Add(tenant);
         await _db.SaveChangesAsync(ct);
 
+        // Every tenant is born with its first company, inside this transaction. This used to be
+        // left to CompanyScopeBackfill at the next boot, which created data outside the platform
+        // admin (docs/DATA_ENTRY_PATHS.md); the backfill now only repairs, never creates.
+        _db.Companies.Add(new Company
+        {
+            TenantId = tenant.Id,
+            LegalNameEn = name,
+            TradeName = name,
+            IsActive = true,
+        });
+        await _db.SaveChangesAsync(ct);
+
         // Full standard RBAC set (Admin → Employee), same as the seeded tenant
         var adminRole = await _authSeeder.EnsureTenantRolesAsync(tenant.Id, ct);
         // Phase 2: eager-seed the GL defaults (chart of accounts, tenant-default mappings, the 17

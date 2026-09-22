@@ -22,7 +22,7 @@ public class StatutoryRateStoreTests
 
     /// <summary>
     /// <c>GosiContributionRule.Rate</c> is a PERCENT: <c>GosiCalculationService</c> computes
-    /// <c>wage × Rate / 100</c>. <c>KsaDemoTenantSeeder</c> wrote FRACTIONS (0.10m for "10%"), which
+    /// <c>wage × Rate / 100</c>. A since-deleted demo tenant seeder wrote FRACTIONS (0.10m for "10%"), which
     /// resolved to 0.10% — roughly ninety times under — on TENANT rows, which beat the platform
     /// defaults. Nothing in the suite noticed, because the store was consistent with itself.
     /// </summary>
@@ -58,42 +58,6 @@ public class StatutoryRateStoreTests
             "and GosiRuleSeeder writes 9.00m / 0.75m / 2.00m. A row written as a FRACTION (0.09m for 9%) " +
             "silently contributes ~1% of what is owed, and because these are tenant rows they beat the " +
             "platform defaults for every tenant the seeder touches. Offenders: " + string.Join(", ", offenders));
-    }
-
-    [Fact]
-    public void KsaTenantSeeder_AndPlatformDefaults_AgreeOnTheSaudiSchedule()
-    {
-        var seedDir = ResolveSeedDirectory();
-        if (seedDir is null) return;
-        var source = File.ReadAllText(Path.Combine(seedDir, "KsaDemoTenantSeeder.cs"));
-
-        // 9% / 9% annuities, 0.75% / 0.75% SANED, 2% occupational hazard — the same schedule
-        // GosiRuleSeeder ships as the platform default. The old rows were 0.10 / 0.12 / 0.01 / 0.02.
-        Assert.Contains("Branch = GosiBranches.Annuities, Payer = GosiPayers.Employee, Rate = 9.00m", source);
-        Assert.Contains("Branch = GosiBranches.Annuities, Payer = GosiPayers.Employer, Rate = 9.00m", source);
-        Assert.Contains("Branch = GosiBranches.SANED,      Payer = GosiPayers.Employee, Rate = 0.75m", source);
-        Assert.Contains("Branch = GosiBranches.SANED,      Payer = GosiPayers.Employer, Rate = 0.75m", source);
-        Assert.DoesNotContain("Rate = 0.10m", source);
-        Assert.DoesNotContain("Rate = 0.12m", source);
-    }
-
-    /// <summary>
-    /// The tenant seeder also wrote a THIRD store — StatutoryRule rows whose keys never matched the
-    /// keys the country pack reads, so they carried the same invented figures and influenced nothing.
-    /// Dead rows with wrong values are a trap: the next person to read them believes them.
-    /// </summary>
-    [Fact]
-    public void KsaTenantSeeder_StatutoryRules_UseTheKeysThePackActuallyReads()
-    {
-        var seedDir = ResolveSeedDirectory();
-        if (seedDir is null) return;
-        var source = File.ReadAllText(Path.Combine(seedDir, "KsaDemoTenantSeeder.cs"));
-
-        Assert.Contains("\"gosi.saudi_employee_rate\"", source);
-        Assert.Contains("\"gosi.saudi_employer_rate\"", source);
-        Assert.Contains("\"gosi.saned_rate\"", source);
-        Assert.DoesNotContain("\"gosi.employee_rate_saudi\"", source);   // the dead key
-        Assert.DoesNotContain("\"gosi.saned_employee_rate\"", source);   // the dead key
     }
 
     // ── A2(b) — the two engines must agree on the contributory wage ─────────────────────────────

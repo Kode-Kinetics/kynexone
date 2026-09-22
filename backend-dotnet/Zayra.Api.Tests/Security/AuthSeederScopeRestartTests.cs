@@ -1,6 +1,5 @@
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Options;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
@@ -15,7 +14,7 @@ namespace Zayra.Api.Tests.Security;
 ///
 /// <para>AuthSeeder ran, tenant-wide on every boot, a raw-SQL
 /// <c>UPDATE users SET is_group_scope = TRUE</c> over every Admin-role user with no active entity
-/// grant, plus an unconditional re-promotion of the bootstrap admin. "Admin role, no active grant"
+/// grant, plus an unconditional re-promotion of the (since removed) bootstrap admin. "Admin role, no active grant"
 /// is also the exact shape of a DELIBERATELY de-scoped administrator, so every restart silently
 /// reversed an operator's recorded security decision. On Render that is every deploy, and this
 /// service also OOM-restarted three times in four days.</para>
@@ -41,20 +40,18 @@ public class AuthSeederScopeRestartTests
 
     /// <summary>
     /// AccessController.SetGroupScope(false) — audited as "GroupScopeRevoked", refresh tokens
-    /// revoked — narrows the bootstrap admin itself. A restart must not undo it.
+    /// revoked — narrows a group-scoped admin. A restart must not undo it.
     /// </summary>
     [Fact]
-    public async Task BootstrapAdmin_DeliberatelyNarrowedScope_SurvivesRestart()
+    public async Task GroupScopedAdmin_DeliberatelyNarrowedScope_SurvivesRestart()
     {
-        var options = NewSeedOptions();
-
+        // The tenant and its first admin are created the way the platform admin creates them —
+        // directly, never by the seeder (which no longer creates tenants or users at all).
+        var (tenantId, adminId) = await CreateTenantWithGroupScopedAdminAsync();
         await using (var db = _pg.CreateDb())
-            await NewSeeder(db, options).SeedAsync();
+            await NewSeeder(db).SeedAsync();
 
-        // Provisioning the bootstrap admin AT group scope is the legitimate half of this seeder:
-        // it is creating an account that did not exist. That must keep working.
-        var adminId = await BootstrapAdminIdAsync(options);
-        (await GroupScopeAsync(adminId)).Should().BeTrue("the bootstrap admin is created group-scoped");
+        (await GroupScopeAsync(adminId)).Should().BeTrue("a restart does not narrow a group-scoped admin either");
 
         // An administrator deliberately narrows it, exactly as AccessController.SetGroupScope does.
         await using (var db = _pg.CreateDb())
@@ -68,9 +65,9 @@ public class AuthSeederScopeRestartTests
         // Restart. Twice: idempotence is part of the contract, because under
         // NpgsqlRetryingExecutionStrategy a retry re-runs the entire seeder body.
         await using (var db = _pg.CreateDb())
-            await NewSeeder(db, options).SeedAsync();
+            await NewSeeder(db).SeedAsync();
         await using (var db = _pg.CreateDb())
-            await NewSeeder(db, options).SeedAsync();
+            await NewSeeder(db).SeedAsync();
 
         (await GroupScopeAsync(adminId)).Should().BeFalse(
             "a scope reduction an administrator made deliberately must survive a restart");
@@ -85,12 +82,7 @@ public class AuthSeederScopeRestartTests
     [Fact]
     public async Task TenantAdmin_WhoseLastGrantWasRevoked_IsNotPromotedToGroupScopeByRestart()
     {
-        var options = NewSeedOptions();
-
-        await using (var db = _pg.CreateDb())
-            await NewSeeder(db, options).SeedAsync();
-
-        var tenantId = await SeededTenantIdAsync(options);
+        var (tenantId, _) = await CreateTenantWithGroupScopedAdminAsync();
         var adminRoleId = await AdminRoleIdAsync(tenantId);
 
         // A second tenant administrator, narrowed to a single company.
@@ -143,7 +135,7 @@ public class AuthSeederScopeRestartTests
         }
 
         await using (var db = _pg.CreateDb())
-            await NewSeeder(db, options).SeedAsync();
+            await NewSeeder(db).SeedAsync();
 
         (await GroupScopeAsync(narrowedId)).Should().BeFalse(
             "revoking an administrator's last company grant must not widen them to the whole group");
@@ -151,30 +143,68 @@ public class AuthSeederScopeRestartTests
 
     // ── helpers ───────────────────────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// The seeder is a boot path: it must never create a tenant, company or user. Every tenant and
+    /// user enters through the platform admin (docs/DATA_ENTRY_PATHS.md).
+    /// </summary>
+    [Fact]
+    public async Task Seeder_CreatesNoTenantCompanyOrUser()
+    {
+        int tenants, companies, users;
+        await using (var db = _pg.CreateDb())
+        {
+            tenants = await db.Tenants.IgnoreQueryFilters().CountAsync();
+            companies = await db.Companies.IgnoreQueryFilters().CountAsync();
+            users = await db.Users.IgnoreQueryFilters().CountAsync();
+        }
+
+        await using (var db = _pg.CreateDb())
+            await NewSeeder(db).SeedAsync();
+        await using (var db = _pg.CreateDb())
+            await NewSeeder(db).SeedAsync();
+
+        await using (var db = _pg.CreateDb())
+        {
+            (await db.Tenants.IgnoreQueryFilters().CountAsync()).Should().Be(tenants);
+            (await db.Companies.IgnoreQueryFilters().CountAsync()).Should().Be(companies);
+            (await db.Users.IgnoreQueryFilters().CountAsync()).Should().Be(users);
+            (await db.Permissions.AnyAsync()).Should().BeTrue("the permission catalogue is reference data");
+        }
+    }
+
+    // ── helpers ───────────────────────────────────────────────────────────────────────────────
+
     /// <summary>Unique per test: every class in the Integration collection shares one database.</summary>
-    private static SeedAdminOptions NewSeedOptions()
+    private async Task<(Guid TenantId, Guid AdminId)> CreateTenantWithGroupScopedAdminAsync()
     {
         var suffix = Guid.NewGuid().ToString("N")[..12];
-        return new SeedAdminOptions
-        {
-            TenantSlug = $"seedscope{suffix}",
-            TenantName = $"Seed Scope {suffix}",
-            Email = $"admin-{suffix}@example.com",
-            FullName = "Bootstrap Admin",
-            Password = "A-strong-bootstrap-password-1!",
-            SeedDemoData = false,
-        };
-    }
-
-    private static AuthSeeder NewSeeder(ZayraDbContext db, SeedAdminOptions options) =>
-        new(db, new Pbkdf2PasswordHasher(), Options.Create(options));
-
-    private async Task<Guid> SeededTenantIdAsync(SeedAdminOptions options)
-    {
-        var slug = options.TenantSlug.ToLowerInvariant();
+        var tenant = new Tenant { Name = $"Seed Scope {suffix}", Slug = $"seedscope{suffix}" };
         await using var db = _pg.CreateDb();
-        return await db.Tenants.Where(t => t.Slug == slug).Select(t => t.Id).SingleAsync();
+        db.Tenants.Add(tenant);
+        await db.SaveChangesAsync();
+
+        var adminRole = await NewSeeder(db).EnsureTenantRolesAsync(tenant.Id);
+        var email = $"admin-{suffix}@example.com";
+        var admin = new User
+        {
+            TenantId = tenant.Id,
+            Email = email,
+            NormalizedEmail = AuthService.Normalize(email),
+            FullName = "First Admin",
+            PasswordHash = "not-a-login-path-in-this-test",
+            AccessMode = "FullPortal",
+            Status = "Active",
+            IsActive = true,
+            IsEmailConfirmed = true,
+            IsGroupScope = true,
+        };
+        admin.UserRoles.Add(new UserRole { User = admin, Role = adminRole });
+        db.Users.Add(admin);
+        await db.SaveChangesAsync();
+        return (tenant.Id, admin.Id);
     }
+
+    private static AuthSeeder NewSeeder(ZayraDbContext db) => new(db);
 
     private async Task<Guid> AdminRoleIdAsync(Guid tenantId)
     {
@@ -183,13 +213,6 @@ public class AuthSeederScopeRestartTests
             .Where(r => r.TenantId == tenantId && r.NormalizedName == "ADMIN")
             .Select(r => r.Id)
             .SingleAsync();
-    }
-
-    private async Task<Guid> BootstrapAdminIdAsync(SeedAdminOptions options)
-    {
-        var normalized = AuthService.Normalize(options.Email);
-        await using var db = _pg.CreateDb();
-        return await db.Users.Where(u => u.NormalizedEmail == normalized).Select(u => u.Id).SingleAsync();
     }
 
     /// <summary>
