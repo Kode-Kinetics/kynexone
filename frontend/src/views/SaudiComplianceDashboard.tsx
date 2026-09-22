@@ -361,8 +361,19 @@ function QiwaCard({ qiwa }: { qiwa: QiwaSection }) {
               <ProgressBar percent={qiwa.readinessPercent} />
             </div>
 
+            {/* A scrollable region has to be reachable from the keyboard (WCAG 2.1.1 — axe's
+                scrollable-region-focusable): a keyboard-only user could not read past the first
+                two blocked employees, because nothing inside this box takes focus. tabIndex puts
+                the box itself in the tab order so arrow keys scroll it, and role="region" + a
+                name is what tells a screen-reader user what they landed in — a focusable box with
+                no accessible name would trade one violation for another. */}
             {qiwa.blockedEmployees.length > 0 && (
-              <div className="max-h-40 overflow-auto rounded-lg border border-slate-100 dark:border-white/[0.07]">
+              <div
+                tabIndex={0}
+                role="region"
+                aria-label="Employees blocked from Qiwa sync"
+                className="max-h-40 overflow-auto rounded-lg border border-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 dark:border-white/[0.07]"
+              >
                 <table className="w-full text-start text-xs">
                   <thead className="sticky top-0 bg-slate-50 text-slate-500 dark:bg-slate-800">
                     <tr>
@@ -504,8 +515,14 @@ function GosiCard({ gosi }: { gosi: GosiSection }) {
           )}
         </dl>
 
+        {/* Same scrollable-region rule as the Qiwa table above. */}
         {gosi.blockedEmployees.length > 0 && (
-          <div className="max-h-36 overflow-auto rounded-lg border border-slate-100 dark:border-white/[0.07]">
+          <div
+            tabIndex={0}
+            role="region"
+            aria-label="Employees blocked from GOSI reconciliation"
+            className="max-h-36 overflow-auto rounded-lg border border-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 dark:border-white/[0.07]"
+          >
             <table className="w-full text-start text-xs">
               <thead className="sticky top-0 bg-slate-50 text-slate-500 dark:bg-slate-800">
                 <tr>
