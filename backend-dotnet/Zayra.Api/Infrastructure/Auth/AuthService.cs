@@ -183,12 +183,12 @@ public class AuthService : IAuthService
         // TokenHash is unique, so the split graph load is deterministic; it runs in a snapshot.
         var route = await AuthGraphSnapshot.ReadAsync(_db, async ct =>
         {
-            var routed = await RefreshTokensWithUserGraph()
+            // Routing does not gate on graph integrity: a replayed (consumed) token must still
+            // reach the locked replay branch below and kill its lineage even when the user's graph
+            // is corrupt. Integrity is enforced under locks before any issuance.
+            return await RefreshTokensWithUserGraph()
                 .AsNoTracking()
                 .FirstOrDefaultAsync(x => x.TokenHash == tokenHash, ct);
-            return routed?.User is not null && await AuthTenantGraphIntegrity.IsValidAsync(routed.User, _db, ct)
-                ? routed
-                : null;
         }, cancellationToken);
 
         // Routing only. All issuance authority is re-established under locks below.
@@ -237,12 +237,12 @@ public class AuthService : IAuthService
                 || token?.User?.Tenant is null
                 || token.UserId != presentedUserId
                 || token.User.TenantId != presentedTenantId
-                || !string.Equals(token.TokenHash, tokenHash, StringComparison.Ordinal)
-                || !await AuthTenantGraphIntegrity.IsValidAsync(token.User, _db, ct))
+                || !string.Equals(token.TokenHash, tokenHash, StringComparison.Ordinal))
                 throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
 
-            // A consumed credential is a replay even after the account becomes ineligible. Kill
-            // its live lineage and persist one stable audit marker in the same transaction.
+            // A consumed credential is a replay even after the account becomes ineligible, or its
+            // tenant graph becomes corrupt. Kill its live lineage and persist one stable audit
+            // marker in the same transaction; nothing is issued on this branch.
             if (token.RevokedAtUtc is not null
                 && !string.IsNullOrWhiteSpace(token.ReplacedByTokenHash))
             {
@@ -284,6 +284,9 @@ public class AuthService : IAuthService
                 reuseDetected = true;
                 return true;
             }
+
+            if (!await AuthTenantGraphIntegrity.IsValidAsync(token.User, _db, ct))
+                throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
 
             if (token.RevokedAtUtc is not null || token.ExpiresAtUtc <= decidedAtUtc)
                 throw new UnauthorizedAccessException("Refresh token is invalid or expired.");

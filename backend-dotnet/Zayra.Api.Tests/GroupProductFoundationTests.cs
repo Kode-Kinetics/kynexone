@@ -119,7 +119,7 @@ public class GroupProductFoundationTests : Platform.PlatformTestBase
     // ── Company lifecycle: creation modes + approval + suspend guard ───────────
 
     [Fact]
-    public async Task CreationModes_PlatformControlledBlocks_DraftModeCreatesDraft_ApproveActivates()
+    public async Task CreationModes_PlatformControlledBlocks_DraftModeCreatesDraft_ApprovalFailsClosed()
     {
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
@@ -140,16 +140,20 @@ public class GroupProductFoundationTests : Platform.PlatformTestBase
         dto.ApprovalStatus.Should().Be(CompanyApprovalStatuses.Draft);
         dto.IsActive.Should().BeFalse("drafts await platform approval");
 
+        // Platform approval (draft -> active) is deliberately fail-closed pending atomic
+        // authorization invalidation: 409 with a stable code and the draft left untouched.
         var platform = CreateController(db);
-        (await platform.ApproveCompany(tenantId, dto.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        var approval = await platform.ApproveCompany(tenantId, dto.Id, CancellationToken.None);
+        System.Text.Json.JsonSerializer.Serialize(approval.Should().BeOfType<ConflictObjectResult>().Subject.Value)
+            .Should().Contain("company_activation_disabled");
         db.ChangeTracker.Clear();
-        var approved = await db.Companies.IgnoreQueryFilters().AsNoTracking().SingleAsync(c => c.Id == dto.Id);
-        approved.ApprovalStatus.Should().Be(CompanyApprovalStatuses.Active);
-        approved.IsActive.Should().BeTrue();
+        var stillDraft = await db.Companies.IgnoreQueryFilters().AsNoTracking().SingleAsync(c => c.Id == dto.Id);
+        stillDraft.ApprovalStatus.Should().Be(CompanyApprovalStatuses.Draft);
+        stillDraft.IsActive.Should().BeFalse();
     }
 
     [Fact]
-    public async Task SuspendLastActiveCompany_IsBlocked_OthersToggleWithAudit()
+    public async Task CompanyStatusChange_FailsClosed_WithZeroMutation()
     {
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
@@ -161,11 +165,17 @@ public class GroupProductFoundationTests : Platform.PlatformTestBase
         var conflict = await controller.SetStatus(only.Id, new CompanyStatusRequest(false), CancellationToken.None);
         conflict.Should().BeOfType<ConflictObjectResult>("a tenant must always retain one operational company");
 
+        // Company suspend/reactivate is deliberately fail-closed pending atomic authorization
+        // invalidation, even when another active company exists: 409, no mutation, no audit row.
         var second = new Company { TenantId = tenantId, LegalNameEn = "SECOND", RegistrationNumber = $"R-{Guid.NewGuid():N}", IsActive = true };
         db.Companies.Add(second);
         await db.SaveChangesAsync();
-        (await controller.SetStatus(only.Id, new CompanyStatusRequest(false), CancellationToken.None)).Should().BeOfType<OkObjectResult>();
-        (await db.AdminAuditLogs.IgnoreQueryFilters().AnyAsync(a => a.TenantId == tenantId && a.Action == "CompanySuspended")).Should().BeTrue();
+        var disabled = await controller.SetStatus(only.Id, new CompanyStatusRequest(false), CancellationToken.None);
+        System.Text.Json.JsonSerializer.Serialize(disabled.Should().BeOfType<ConflictObjectResult>().Subject.Value)
+            .Should().Contain("company_status_change_disabled");
+        db.ChangeTracker.Clear();
+        (await db.Companies.IgnoreQueryFilters().AsNoTracking().SingleAsync(c => c.Id == only.Id)).IsActive.Should().BeTrue();
+        (await db.AdminAuditLogs.IgnoreQueryFilters().AnyAsync(a => a.TenantId == tenantId && a.Action == "CompanySuspended")).Should().BeFalse();
     }
 
     // ── Readiness math ──────────────────────────────────────────────────────────
