@@ -232,7 +232,12 @@ function companyBody(company: FixtureCompany, fixture: FixtureTenant) {
     registrationNumber: `CR-${company.code}`,
     taxNumber: `VAT-${company.code}`,
     defaultCurrency: company.currency,
-    emailDomain: `${fixture.slug}.local`,
+    // The company's own domain, taken from the tenant administrator's address rather than invented.
+    // It is load-bearing: EmployeeManagementService DERIVES every work email into this domain, so a
+    // company on `<slug>.local` rewrites a supplied `employee1@intelliflow.com` to
+    // `employee1@intelliflow.local` — and DataScopeService then cannot match the employee to the
+    // login of the same name, leaving every self-service surface with no person behind it.
+    emailDomain: fixture.admin.email.split('@')[1],
     isActive: true,
   };
 }
@@ -279,7 +284,11 @@ async function ensureUsers(
     existing.map((u: any) => [String(u.email ?? u.Email).toLowerCase(), u.id ?? u.Id]),
   );
 
+  const portal = new Set((fixture.employeePortalLogins ?? []).map((e) => e.toLowerCase()));
   for (const user of fixture.users) {
+    // Portal logins are created by the INVITATION flow instead — see ensureEmployeePortalLogins.
+    // Creating them here would take the email and leave them with no employee link at all.
+    if (portal.has(user.email.toLowerCase())) continue;
     if (byEmail.has(user.email.toLowerCase())) continue;
     const created = await call('POST', `/api/platform/tenants/${tenantId}/users`, {
       token: platformToken,
@@ -319,7 +328,10 @@ async function ensureEntityGrants(
   ).body);
   const held = new Set(current.map((g: any) => `${g.userId ?? g.UserId}|${g.companyId ?? g.CompanyId ?? 'all'}`));
 
+  const portal = new Set((fixture.employeePortalLogins ?? []).map((e) => e.toLowerCase()));
   for (const user of fixture.users) {
+    // The invitation flow issues its own entity grant for these.
+    if (portal.has(user.email.toLowerCase())) continue;
     const userId = userIds.get(user.email.toLowerCase());
     if (!userId) throw new Error(`[bootstrap] No user id for '${user.email}' — cannot scope it.`);
     const codes = user.companyCodes ?? (user.companyCode ? [user.companyCode] : null);
@@ -547,6 +559,75 @@ async function activateEmployees(adminToken: string, slug: string, floor: number
     console.log(`[bootstrap] ${slug}: ${active} active, ${blocked.length} left in Draft by the activation guard (expected).`);
   }
   return active;
+}
+
+// ── Employee portal logins ────────────────────────────────────────────────────────────────────
+
+/**
+ * Turn the declared employee accounts into REAL employee logins, linked to a person.
+ *
+ * Two different links exist in this product and only one of them is an email match:
+ *   • `DataScopeService` falls back to matching the token's email against the employee's work or
+ *     personal email — that is what makes ESS document requests work.
+ *   • `EssTimesheetsController` (and My Benefits) require `Employee.UserAccountId == userId`, a hard
+ *     foreign key that ONLY the invitation flow writes. An email match is not enough for them, and
+ *     the failure is a polite 409 "ask HR to link it" that reads like a product bug.
+ *
+ * So these accounts are not created by `POST /api/platform/tenants/{id}/users` at all. They are
+ * created the way a real employee login is created: HR invites the employee, and the employee
+ * accepts the invitation and sets a password. `POST /api/access/users/{id}/admin-reset-password` is
+ * deliberately disabled in this product ("temporary_password_flow_disabled"), so accepting the
+ * invitation with the token the invite returns is the only path — and it is the honest one.
+ */
+async function ensureEmployeePortalLogins(
+  adminToken: string, fixture: FixtureTenant,
+  companies: Array<{ code: string; id: string; countryCode: string }>,
+): Promise<number> {
+  const logins = fixture.employeePortalLogins ?? [];
+  if (logins.length === 0) return 0;
+
+  const employees = items((await call(
+    'GET', '/api/employees?page=1&pageSize=200', { token: adminToken, companyId: companies[0].id },
+  )).body);
+
+  let linked = 0;
+  for (const [index, email] of logins.entries()) {
+    const declared = fixture.users.find((u) => u.email.toLowerCase() === email.toLowerCase());
+    if (!declared) throw new Error(`[bootstrap] '${email}' is declared as a portal login but is not a fixture user.`);
+    // Already usable from an earlier run — the invitation is single-use, so do not re-issue it.
+    if (await tenantLogin(declared.email, declared.password, fixture.slug)) { linked++; continue; }
+
+    // Matched by employee CODE, not by work email: the employee LIST dto does not carry a work
+    // email (only the detail one does), so matching on it silently found nothing. The codes are
+    // deterministic and assigned in the same order as `employeePortalLogins`, starting at the
+    // company's second employee — the first is everyone's manager.
+    const wanted = `${companies[0].code}-E${index + 2}`;
+    const employee = employees.find((e: any) => String(e.employeeCode ?? e.EmployeeCode) === wanted);
+    if (!employee) {
+      throw new Error(
+        `[bootstrap] Employee '${wanted}' does not exist, so the portal login '${email}' cannot be `
+        + 'linked to a person. employeesPerCompany must exceed the number of declared portal logins.',
+      );
+    }
+
+    const invite = await call('POST', '/api/access/employee-logins/invite', {
+      token: adminToken, companyId: companies[0].id,
+      body: { employeeId: employee.id ?? employee.Id, email, accessMode: 'FullPortal', roles: [declared.role] },
+    });
+    expectOk(invite, `invite an employee login for '${email}'`, [200, 201]);
+
+    const accepted = await call('POST', '/api/auth/accept-invitation', {
+      body: {
+        invitationToken: invite.body.invitationToken,
+        newPassword: declared.password,
+        tenantSlug: fixture.slug,
+      },
+    });
+    expectOk(accepted, `accept the invitation for '${email}'`, [200, 204]);
+    await requireTenantLogin(declared, fixture.slug);
+    linked++;
+  }
+  return linked;
 }
 
 // ── Tenant defaults the product installs on request ───────────────────────────────────────────
@@ -945,6 +1026,7 @@ export async function provisionWorld(baseUrl: string): Promise<ProvisionResult> 
     const gradeId = fixture.slug === 'intelliflow' ? await ensureGrade(adminToken) : null;
     manifest.employeesCreated += await ensureEmployees(adminToken, fixture, companies, gradeId);
     const active = await activateEmployees(adminToken, fixture.slug, fixture.minActiveEmployees);
+    const portalLogins = await ensureEmployeePortalLogins(adminToken, fixture, companies);
     const salaries = await ensureSalaries(adminToken, companies);
     const hrData = await ensureLeaveAndAttendance(adminToken, fixture, companies);
     const defaults = await ensureTenantDefaults(adminToken, fixture.slug);
@@ -953,7 +1035,8 @@ export async function provisionWorld(baseUrl: string): Promise<ProvisionResult> 
     manifest.tenants.push({ slug: fixture.slug, tenantId, companies });
     console.log(
       `[bootstrap] ${fixture.slug}: ${companies.length} compan${companies.length === 1 ? 'y' : 'ies'}, `
-      + `${fixture.users.length + 1} users, ${active} active employees, `
+      + `${fixture.users.length + 1} users (${portalLogins} employee portal login(s)), `
+      + `${active} active employees, `
       + `${salaries} salary assignment(s), ${defaults}, ${profiles} compliance profile(s), `
       + `${hrData}, ${payroll}.`,
     );
