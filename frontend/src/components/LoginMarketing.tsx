@@ -269,6 +269,53 @@ const ROWS: Row[] = [
     items: ['Expiry tracking'],
     itemsAr: ['متابعة تواريخ الانتهاء'],
   },
+  /* ── THE OTHER THREE GCC STATES. Placed LAST so that, on the turning ring,
+     they arrive immediately before Saudi Arabia wraps back round and all six
+     Gulf jurisdictions pass as one group.
+
+     READ THIS BEFORE QUOTING THEM. As of 2026-09-22 these three have NO
+     statutory pack: Infrastructure/CountryPack/ holds Ksa/, Uae/ and Qatar/
+     only, and Kuwait, Bahrain and Oman resolve to DefaultPack (zero
+     social-insurance deductions, an empty wage-protection file, and an
+     end-of-service calculation that refuses to run). The only country-specific
+     code for them is the ID-number validation in IdentityDocumentFormats.cs.
+     They are on this page because the product owner decided to show them
+     ahead of the packs, which are planned to follow. So:
+       · they carry NO headcount — there is no payroll run to count, and a
+         figure here would also break 612 + 431 + 205 = 1,248;
+       · they are drum-only (`extra`), so the flat register and the still
+         frame still show exactly the three jurisdictions that have packs;
+       · the institutions named are the real ones, current as of 2026: Oman's
+         PASI was merged into the Social Protection Fund in 2023.
+     When a pack lands, give the row a headcount only if TOTAL is updated to
+     match on every surface that shows it. ─────────────────────────────── */
+  {
+    code: 'KWT',
+    kind: 'pack',
+    extra: true,
+    name: 'Kuwait',
+    nameAr: 'الكويت',
+    items: ['PIFSS', 'PAM', 'Kuwaitisation'],
+    itemsAr: ['التأمينات الاجتماعية', 'القوى العاملة', 'التكويت'],
+  },
+  {
+    code: 'BHR',
+    kind: 'pack',
+    extra: true,
+    name: 'Bahrain',
+    nameAr: 'البحرين',
+    items: ['SIO', 'LMRA', 'Bahrainisation'],
+    itemsAr: ['التأمين الاجتماعي', 'هيئة سوق العمل', 'البحرنة'],
+  },
+  {
+    code: 'OMN',
+    kind: 'pack',
+    extra: true,
+    name: 'Oman',
+    nameAr: 'عُمان',
+    items: ['Social Protection Fund', 'Ministry of Labour', 'Omanisation'],
+    itemsAr: ['صندوق الحماية الاجتماعية', 'وزارة العمل', 'التعمين'],
+  },
 ];
 
 /** Sums 'pack' rows only — a capability face cannot reach this. */
@@ -323,7 +370,9 @@ const EN: Copy = {
     + 'capabilities turn past on the drum: wage-protection files for all three '
     + 'jurisdictions, end-of-service calculated at exit, maker-checker approvals '
     + 'on payroll, geofenced attendance, employee self-service on web and mobile, '
-    + 'and visa and iqama expiry tracking.',
+    + 'and visa and iqama expiry tracking. Kuwait, Bahrain and Oman also turn '
+    + 'past, with their social-insurance and labour authorities named and no '
+    + 'headcount.',
   /* Shown while the panel is in English, so it is written in Arabic: it is the
      destination, not a description. */
   switchTo: 'العربية',
@@ -343,7 +392,7 @@ const AR: Copy = {
   colHeads: 'الموظفون',
   totalKey: 'الإجمالي',
   approved: 'معتمد',
-  tableCaption: 'بيانات تجريبية. مسير رواتب توضيحي عبر الدول الثلاث التي لها أنظمة مطبقة: السعودية ٦١٢ موظفاً، الإمارات ٤٣١، قطر ٢٠٥، وإجمالي المجموعة ١٢٤٨ معتمد. الأعداد افتراضية وليست بيانات عملاء. الصفوف الثلاثة الأخيرة ليست دولاً ولا تحمل أعداداً: وهي إمكانات متاحة في كل أسواق الخليج — واجهة عربية بتخطيط معكوس لا مجرد ترجمة، والتقويم الهجري إلى جانب الميلادي، وعملة لكل شركة ضمن مجموعة واحدة. وتدور على الأسطوانة ست إمكانات أخرى: ملفات حماية الأجور للدول الثلاث، واحتساب نهاية الخدمة عند المغادرة، والإعداد والمراجعة لمسير الرواتب، والحضور الجغرافي، والخدمة الذاتية عبر الويب والجوال، ومتابعة انتهاء التأشيرات والإقامات.',
+  tableCaption: 'بيانات تجريبية. مسير رواتب توضيحي عبر الدول الثلاث التي لها أنظمة مطبقة: السعودية ٦١٢ موظفاً، الإمارات ٤٣١، قطر ٢٠٥، وإجمالي المجموعة ١٢٤٨ معتمد. الأعداد افتراضية وليست بيانات عملاء. الصفوف الثلاثة الأخيرة ليست دولاً ولا تحمل أعداداً: وهي إمكانات متاحة في كل أسواق الخليج — واجهة عربية بتخطيط معكوس لا مجرد ترجمة، والتقويم الهجري إلى جانب الميلادي، وعملة لكل شركة ضمن مجموعة واحدة. وتدور على الأسطوانة ست إمكانات أخرى: ملفات حماية الأجور للدول الثلاث، واحتساب نهاية الخدمة عند المغادرة، والإعداد والمراجعة لمسير الرواتب، والحضور الجغرافي، والخدمة الذاتية عبر الويب والجوال، ومتابعة انتهاء التأشيرات والإقامات. وتمر كذلك الكويت والبحرين وعُمان مع جهات التأمينات والعمل فيها، دون أعداد موظفين.',
   switchTo: 'English',
   switchLabel: 'Show this panel in English',
   pause: 'إيقاف',
@@ -498,14 +547,14 @@ const num = (n: number, ar: boolean) =>
    whole band turning. That back half is what lets the drum carry MORE faces
    than it shows: VISIBLE (six) are on the arc at any instant and the rest of
    ROWS wait behind it, so adding a capability costs no width. One full
-   revolution is N·PITCH / TURN_DPS = 240 / 5 = 48s for twelve faces:
+   revolution is N·PITCH / TURN_DPS = 300 / 5 = 60s for fifteen faces:
    clearly moving, still slower than a reader's eye crosses a face.
 
    THE SUM. 1,248 sits flat under the band where no rotation reaches it, and
    the still frame — server render, reduced motion, a touch screen — is the
    three packs and the three regional capabilities, exactly as designed. On
    the turning drum the three addends are on screen together for half of
-   every revolution rather than all of it; that is the price of twelve faces,
+   every revolution rather than all of it; that is the price of fifteen faces,
    paid knowingly. Whenever the turn is suspended (hover, focus, Pause) it
    coasts to the next WHOLE SLOT before it stops, so a paused drum never
    leaves a face half-faded. The faces keep their DOM order throughout, so
