@@ -8,7 +8,7 @@
 import { test, expect } from '@playwright/test';
 import {
   assertStackReachable,
-  groupSeedMissingReason,
+  assertFixtureWorld,
   newApi,
   apiLogin,
   fetchMe,
@@ -32,16 +32,11 @@ const OWNER = groupUser('owner'); // owner@almarai-test.local
 const DAIRY = 'ALM-DAIRY-KSA';
 const BAKERY = 'ALM-BAKERY-KSA';
 
-let skipReason: string | null = null;
 
 test.describe('Group→Company: group admin (owner, almarai-test)', () => {
   test.beforeAll(async () => {
     await assertStackReachable();   // hard-fails when the stack is down; never skips
-    skipReason = (await groupSeedMissingReason(OWNER));
-  });
-
-  test.beforeEach(() => {
-    test.skip(skipReason !== null, skipReason ?? '');
+    await assertFixtureWorld(OWNER);
   });
 
   test('API: /api/auth/me exposes accountType=Group, isGroupScope and 5 companies', async () => {

@@ -269,3 +269,40 @@ export interface WorldManifest {
   provisionedAtUtc: string;
   tenants: Array<{ slug: string; tenantId: string; companies: Array<{ code: string; id: string }> }>;
 }
+
+/**
+ * The one message every lane prints when the fixture world is absent.
+ *
+ * It exists because "missing fixture data" and "the product is broken" produce identical symptoms —
+ * empty lists, failed logins, 404s — and the suites used to answer that ambiguity by SKIPPING. A
+ * skipped group-company suite reported green against a database that had never been provisioned.
+ * Now every such path throws, and it throws this, so the next person reads the fix instead of
+ * debugging the UI.
+ */
+export const MISSING_WORLD =
+  'THE E2E FIXTURE WORLD IS NOT PROVISIONED.\n'
+  + 'Databases start EMPTY — every demo/fixture seeder was deleted (docs/DATA_ENTRY_PATHS.md), so\n'
+  + 'there is no tenant, user or employee until the bootstrap creates them through the platform-admin\n'
+  + 'API. Run it once, after migrations and before any spec lane:\n'
+  + '    cd frontend && npx playwright test -c e2e/bootstrap/playwright.bootstrap.config.ts\n'
+  + 'The backend must have been started with PLATFORM_ADMIN_EMAIL/PLATFORM_ADMIN_PASSWORD set so the\n'
+  + 'platform owner exists, and the fixture passwords the bootstrap used must still be exported.\n'
+  + 'This is a FAILURE, not a skip: an unprovisioned stack must never produce a green run.';
+
+/**
+ * Hard gate for any spec that needs the fixture world. Reads the manifest the bootstrap wrote and
+ * throws MISSING_WORLD when it is not there, so "nobody provisioned the database" can never be
+ * mistaken for "this assertion happens to fail".
+ */
+export async function requireWorld(): Promise<WorldManifest> {
+  const { readFile } = await import('node:fs/promises');
+  let raw: string;
+  try {
+    raw = await readFile(WORLD_MANIFEST, 'utf8');
+  } catch {
+    throw new Error(`${WORLD_MANIFEST} does not exist.\n${MISSING_WORLD}`);
+  }
+  const manifest = JSON.parse(raw) as WorldManifest;
+  if (!manifest.tenants?.length) throw new Error(`${WORLD_MANIFEST} lists no tenants.\n${MISSING_WORLD}`);
+  return manifest;
+}

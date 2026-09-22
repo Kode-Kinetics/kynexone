@@ -11,9 +11,9 @@
  *   a surface is not present yet — callers skip with a clear message.
  * • Where the DOM is uncertain we prefer API assertions via APIRequestContext.
  *
- * Test data: seeded by EnterpriseGroupSeeder when the backend runs with
- * SEED_ENTERPRISE_TEST_DATA=true. Password for ALL enterprise-group users
- * is GroupDemo123!x. See README.md in this directory.
+ * Test data: provisioned by e2e/bootstrap/provision.ts through the platform-admin API. There is no
+ * seeder any more — see docs/DATA_ENTRY_PATHS.md and e2e/world.ts, which declares every identity
+ * this file names. Run the bootstrap before this suite or it fails, loudly.
  */
 import {
   request as pwRequest,
@@ -22,6 +22,10 @@ import {
   Locator,
 } from '@playwright/test';
 import { platformSetupToken, tenantSetupSession } from '../helpers';
+import {
+  ALMARAI_COMPANY_CODES, ALMARAI_SLUG, GROUP_PASSWORD, MISSING_WORLD,
+  TATA_COMPANY_CODES, TATA_SLUG,
+} from '../world';
 
 // ── Base URL / stack constants ────────────────────────────────────────────────
 
@@ -29,20 +33,10 @@ export const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? process.env.E2E_BASE_
 
 // ── Enterprise group seed data (EnterpriseGroupSeeder) ───────────────────────
 
-export const GROUP_PASSWORD = process.env.E2E_GROUP_PASSWORD ?? 'GroupDemo123!x';
+export { GROUP_PASSWORD } from '../world';
 
-export const ALMARAI = {
-  slug: 'almarai-test',
-  companies: ['ALM-DAIRY-KSA', 'ALM-POULTRY-KSA', 'ALM-BAKERY-KSA', 'ALM-DIST-KSA', 'ALM-UAE-TRD'],
-};
-export const TATA = {
-  slug: 'tata-test',
-  companies: ['TATA-TCS-IN', 'TATA-MOTORS-IN', 'TATA-STEEL-IN', 'TATA-HOTELS-IN', 'TATA-JLR-UK'],
-};
-export const EMAAR = {
-  slug: 'emaar-test',
-  companies: ['EMAAR-PROP-UAE', 'EMAAR-MALLS-UAE', 'EMAAR-HOSP-UAE', 'EMAAR-LEISURE-UAE', 'EMAAR-KSA-PROP'],
-};
+export const ALMARAI = { slug: ALMARAI_SLUG, companies: ALMARAI_COMPANY_CODES };
+export const TATA = { slug: TATA_SLUG, companies: TATA_COMPANY_CODES };
 
 /** Group-scope users: owner@ / admin@ / hr@ / finance@ / compliance@ / auditor@ <slug>.local */
 export const groupUser = (role: string, slug: string = ALMARAI.slug): string =>
@@ -68,10 +62,12 @@ export const DEFAULT_TENANT_SLUG = process.env.E2E_DEFAULT_TENANT_SLUG ?? 'intel
 export const DEFAULT_ADMIN_EMAIL = process.env.E2E_DEFAULT_ADMIN_EMAIL ?? 'admin@intelliflow.com';
 export const DEFAULT_ADMIN_PASSWORD = process.env.E2E_DEFAULT_ADMIN_PASSWORD ?? 'IntelliFlow@2026!';
 
-// ── Platform admin (same envs the legacy e2e/helpers.ts uses) ────────────────
+// ── Platform admin ───────────────────────────────────────────────────────────
+// From e2e/world.ts. This file used to default to `platform@kynexone.com` while
+// e2e/security-gate/roles.ts defaulted to `admin@platform.local`, so the two lanes authenticated as
+// different operators and neither could have been provisioned by one bootstrap.
 
-export const PLATFORM_EMAIL = process.env.PLATFORM_ADMIN_EMAIL ?? 'platform@kynexone.com';
-export const PLATFORM_PASSWORD = process.env.PLATFORM_ADMIN_PASSWORD ?? 'PlatformAdmin123!';
+export { PLATFORM_EMAIL, PLATFORM_PASSWORD } from '../world';
 
 // ── Stack probing / suite skipping ────────────────────────────────────────────
 
@@ -145,22 +141,31 @@ export async function tryApiLogin(
 }
 
 /**
- * Returns null when the enterprise-group seed data is present (probe user can
- * log in), otherwise a skip reason instructing how to seed it.
+ * Hard gate: the fixture world must exist. THROWS — it never returns a skip reason.
+ *
+ * ── Why this changed ─────────────────────────────────────────────────────────
+ * This was `groupSeedMissingReason()`, and every suite in this directory fed its result to
+ * `test.skip(reason !== null, reason)`. The justification was that the group seed was env-gated, so
+ * its absence was "a configuration statement, not a broken system". That justification is now void
+ * on both counts: there is no seeder and no env gate — the world is provisioned by a bootstrap that
+ * CI runs unconditionally — and the skip was hiding the one failure mode that matters. Seven spec
+ * files reported green against a database with no `almarai-test` tenant in it, which is
+ * indistinguishable, in the CI summary, from seven suites of verified company-isolation boundaries.
  */
-export async function groupSeedMissingReason(
+export async function assertFixtureWorld(
   probeEmail: string = groupUser('owner'),
   slug: string = ALMARAI.slug,
-): Promise<string | null> {
+): Promise<void> {
   const api = await newApi();
   try {
     const login = await tryApiLogin(api, probeEmail, slug);
-    if (login) return null;
-    return `Enterprise group test data not seeded (login failed for ${probeEmail} / tenant ${slug}). ` +
-      `Run the backend with SEED_ENTERPRISE_TEST_DATA=true. See e2e/group-company/README.md.`;
+    if (login) return;
   } finally {
     await api.dispose().catch(() => {});
   }
+  throw new Error(
+    `Cannot authenticate ${probeEmail} against tenant '${slug}'.\n${MISSING_WORLD}`,
+  );
 }
 
 /** Platform admin API login; returns null (with reason) when unavailable. */

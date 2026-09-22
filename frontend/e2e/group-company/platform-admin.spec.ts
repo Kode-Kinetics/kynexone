@@ -25,8 +25,8 @@ import {
   PLATFORM_EMAIL,
   PLATFORM_PASSWORD,
 } from './helpers';
+import { MISSING_WORLD } from '../world';
 
-let skipReason: string | null = null;
 let platformToken: string | null = null;
 
 const platformHeaders = () => ({ Authorization: `Bearer ${platformToken}` });
@@ -52,19 +52,14 @@ test.describe('Group→Company: platform admin', () => {
     try {
       const login = await tryPlatformApiLogin(api);
       if (!login) {
-        skipReason =
-          `Platform admin login failed for ${PLATFORM_EMAIL}. Set PLATFORM_ADMIN_EMAIL / ` +
-          `PLATFORM_ADMIN_PASSWORD to match your platform seed. See e2e/group-company/README.md.`;
-        return;
+        throw new Error(
+          `Platform admin login failed for ${PLATFORM_EMAIL}.\n${MISSING_WORLD}`,
+        );
       }
       platformToken = login.token;
     } finally {
       await api.dispose().catch(() => {});
     }
-  });
-
-  test.beforeEach(() => {
-    test.skip(skipReason !== null, skipReason ?? '');
   });
 
   test('API: platform admin can create a Group tenant (accountType=Group)', async () => {
@@ -151,7 +146,7 @@ test.describe('Group→Company: platform admin', () => {
 
   test('UI: existing group tenant (almarai-test) detail page opens', async ({ page }) => {
     const almarai = await findTenantBySlug(ALMARAI.slug);
-    test.skip(!almarai, `tenant ${ALMARAI.slug} not found — enterprise group seed missing (SEED_ENTERPRISE_TEST_DATA=true)`);
+    expect(almarai, `Tenant '${ALMARAI.slug}' is not in /api/platform/tenants.\n${MISSING_WORLD}`).toBeTruthy();
     const id = almarai.id ?? almarai.Id;
 
     await page.goto(`/platform/tenants/${id}`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
@@ -164,7 +159,7 @@ test.describe('Group→Company: platform admin', () => {
 
   test('API: account-type downgrade on almarai-test is blocked (multiple active companies)', async () => {
     const almarai = await findTenantBySlug(ALMARAI.slug);
-    test.skip(!almarai, `tenant ${ALMARAI.slug} not found — enterprise group seed missing (SEED_ENTERPRISE_TEST_DATA=true)`);
+    expect(almarai, `Tenant '${ALMARAI.slug}' is not in /api/platform/tenants.\n${MISSING_WORLD}`).toBeTruthy();
     const id = almarai.id ?? almarai.Id;
 
     // Safety: only attempt the downgrade when the tenant really has >1 active
@@ -172,10 +167,17 @@ test.describe('Group→Company: platform admin', () => {
     const api = await newApi();
     try {
       const owner = await tryApiLogin(api, groupUser('owner'), ALMARAI.slug);
-      test.skip(!owner, 'group owner login unavailable — cannot verify active company count before downgrade attempt');
+      expect(owner, `The group owner cannot log in, so the pre-downgrade company count is unknowable.\n${MISSING_WORLD}`).toBeTruthy();
       const companies = await fetchCompanies(api, owner!.token).catch(() => []);
       const active = companies.filter((c) => (c.isActive ?? c.IsActive) !== false);
-      test.skip(active.length <= 1, `almarai-test has ${active.length} active companies — downgrade would not be blocked; seed incomplete`);
+      // The refusal under test only triggers on a MULTI-company tenant. Skipping when there is one
+      // company turned "the guard was never exercised" into a green tick; the bootstrap provisions
+      // five, so fewer than two is a broken fixture world and must be said out loud.
+      expect(
+        active.length,
+        `${ALMARAI.slug} has ${active.length} active companies, so the account-type downgrade would `
+        + `not be blocked and this test would prove nothing.\n${MISSING_WORLD}`,
+      ).toBeGreaterThan(1);
 
       const resp = await api.put(`/api/platform/tenants/${id}/account-type`, {
         headers: platformHeaders(),

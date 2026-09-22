@@ -171,7 +171,7 @@ async function ensureTenant(platformToken: string, fixture: FixtureTenant): Prom
  */
 async function ensureCompanies(
   platformToken: string, tenantId: string, adminToken: string, fixture: FixtureTenant,
-): Promise<Array<{ code: string; id: string }>> {
+): Promise<Array<{ code: string; id: string; countryCode: string }>> {
   const existing = items(expectOk(
     await call('GET', '/api/companies?page=1&pageSize=100', { token: adminToken }), 'list companies',
   ).body);
@@ -204,7 +204,7 @@ async function ensureCompanies(
     byCode.set(company.code, created.body.companyId as string);
   }
 
-  return fixture.companies.map((c) => ({ code: c.code, id: byCode.get(c.code)! }));
+  return fixture.companies.map((c) => ({ code: c.code, id: byCode.get(c.code)!, countryCode: c.countryCode }));
 }
 
 function companyBody(company: FixtureCompany, fixture: FixtureTenant) {
@@ -253,7 +253,7 @@ async function ensureUsers(
  */
 async function ensureEntityGrants(
   adminToken: string, fixture: FixtureTenant, userIds: Map<string, string>,
-  companies: Array<{ code: string; id: string }>,
+  companies: Array<{ code: string; id: string; countryCode: string }>,
 ): Promise<void> {
   const scoped = fixture.users.filter((u) => u.companyCode || u.companyCodes);
   if (scoped.length === 0) return;
@@ -310,7 +310,8 @@ async function ensureGrade(adminToken: string): Promise<string | null> {
  * `group-company/compliance.spec.ts` counts as the "Missing" column for IqamaNumber.
  */
 async function ensureEmployees(
-  adminToken: string, fixture: FixtureTenant, companies: Array<{ code: string; id: string }>,
+  adminToken: string, fixture: FixtureTenant,
+  companies: Array<{ code: string; id: string; countryCode: string }>,
   gradeId: string | null,
 ): Promise<number> {
   let created = 0;
