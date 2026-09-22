@@ -55,9 +55,12 @@ const pendingRefreshes = new RefreshQueue();
 const RETRYABLE_GATEWAY_STATUSES = new Set([502, 503, 504]);
 const GET_RETRY_DELAY_MS = 1500;
 
-function isRetryableGetFailure(err: { config?: any; response?: { status?: number } }): boolean {
+function isRetryableGetFailure(err: { code?: string; config?: any; response?: { status?: number } }): boolean {
   const original = err.config;
   if (!original || original._getRetried) return false;
+  // A caller-aborted request (unmount, query cancellation) also has no response; replaying it
+  // would resurrect work the caller deliberately discarded.
+  if (err.code === 'ERR_CANCELED') return false;
   const method = (original.method ?? 'get').toLowerCase();
   if (method !== 'get') return false;
   if (!err.response) return true; // network error / timeout — no response at all
