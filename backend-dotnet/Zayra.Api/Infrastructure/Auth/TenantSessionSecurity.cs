@@ -35,7 +35,12 @@ public static class TenantSessionSecurity
         if (!Guid.TryParse(subject, out var userId) || !Guid.TryParse(tenantClaim, out var tenantId) || string.IsNullOrWhiteSpace(stamp))
             return false;
 
-        var user = await db.Users.AsNoTracking()
+        // Runs on EVERY authenticated request (JWT OnTokenValidated). Five collection includes in one
+        // query return roles×permissions×overrides×accounts×grants rows, and AsNoTracking materialises
+        // each duplicate — that burst OOM-killed the 512 MB Render instance after logins (2026-09-21).
+        // Split queries make the cost the SUM of the collections instead of their PRODUCT. Safe here
+        // because the filter is on the primary key, so every split query selects the same user.
+        var user = await db.Users.AsNoTracking().AsSplitQuery()
             .Include(x => x.Tenant)
             .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
             .Include(x => x.PermissionOverrides)

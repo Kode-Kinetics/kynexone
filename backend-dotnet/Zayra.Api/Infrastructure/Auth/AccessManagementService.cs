@@ -891,7 +891,8 @@ public class AccessManagementService : IAccessManagementService
     }
 
     private async Task<User?> LoadAccessUser(Guid tenantId, Guid userId, EntityScopeContext entityScope, CancellationToken cancellationToken) =>
-        await _db.Users
+        // Split: keyed on (tenant, primary key), so each split query selects the same user.
+        await _db.Users.AsSplitQuery()
             .Include(x => x.Tenant)
             .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
             .Include(x => x.EmployeeUserAccounts)
