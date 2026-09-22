@@ -662,7 +662,18 @@ public sealed class AuthCredentialConcurrencyPostgresTests
             rawInvitation,
             $"G2NewPassword-{Guid.NewGuid():N}!aA1",
             user.PasswordHash,
-            user.UpdatedAtUtc);
+            // The STORED stamp, not the tracked entity's. PostgreSQL holds microseconds while a
+            // DateTime carries 100ns ticks, so on a Linux clock a "nothing was touched" assertion
+            // fails by a fraction of a microsecond; a macOS clock, microsecond-granular, never
+            // shows it. The rollback assertion still fails for real if the row is written.
+            await StoredUpdatedAtUtcAsync(user.Id));
+    }
+
+    private async Task<DateTime?> StoredUpdatedAtUtcAsync(Guid userId)
+    {
+        await using var read = _fixture.CreateRetryingDb();
+        return await read.Users.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.Id == userId).Select(x => x.UpdatedAtUtc).SingleAsync();
     }
 
     private async Task<TenantMfaSeed> SeedTenantMfaAsync(int cycle, bool enrollment)
