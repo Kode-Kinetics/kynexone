@@ -19,8 +19,8 @@ public static class KynexDomains
         new("chk_approval_actions_action", "approval_actions", "action", false, chk_approval_actions_action.All),
         new("chk_approval_requests_status", "approval_requests", "status", false, chk_approval_requests_status.All),
         new("chk_attendance_days_status", "attendance_days", "status", false, chk_attendance_days_status.All),
-        new("chk_auth_subject_kind_auth_sessions", "auth_sessions", "subject_kind", false, chk_auth_subject_kind_auth_sessions.All),
-        new("chk_auth_subject_kind_auth_tokens", "auth_tokens", "subject_kind", false, chk_auth_subject_kind_auth_tokens.All),
+        new("chk_auth_sessions_subject_kind", "auth_sessions", "subject_kind", false, chk_auth_sessions_subject_kind.All),
+        new("chk_auth_tokens_subject_kind", "auth_tokens", "subject_kind", false, chk_auth_tokens_subject_kind.All),
         new("chk_auth_tokens_purpose", "auth_tokens", "purpose", false, chk_auth_tokens_purpose.All),
         new("chk_background_job_items_status", "background_job_items", "status", false, chk_background_job_items_status.All),
         new("chk_background_jobs_status", "background_jobs", "status", false, chk_background_jobs_status.All),
@@ -89,21 +89,18 @@ public static class KynexDomains
         new("ck_statutory_rules__cohort", "statutory_rules", "cohort", false, ck_statutory_rules__cohort.All),
         new("ck_statutory_rules__family", "statutory_rules", "family", false, ck_statutory_rules__family.All),
         new("ck_statutory_rules__nationality_class", "statutory_rules", "nationality_class", false, ck_statutory_rules__nationality_class.All),
-    };
-
-    /// <summary>
-    /// TARGET_SCHEMA.md revision 7 SS9 rows 37 and 38, which the baseline DDL has not declared.
-    /// The columns exist (statutory_rules.gosi_branch / .payer, payroll_slip_lines.gosi_branch /
-    /// .gosi_payer) and are unconstrained varchar today. These four are kept here, out of
-    /// <see cref="All"/>, so the gap is a named fact rather than a missing file; KynexDomainsTests
-    /// asserts each one either is absent from pg_constraint or matches it exactly, so declaring
-    /// the constraint in 020/021 needs no change here beyond moving the row up.
-    /// </summary>
-    public static readonly IReadOnlyList<Domain> DesignedButNotYetConstrained = new Domain[]
-    {
         new("ck_statutory_rules__gosi_branch", "statutory_rules", "gosi_branch", true, ck_statutory_rules__gosi_branch.All),
         new("ck_payroll_slip_lines__gosi_branch", "payroll_slip_lines", "gosi_branch", true, ck_payroll_slip_lines__gosi_branch.All),
         new("ck_statutory_rules__payer", "statutory_rules", "payer", true, ck_statutory_rules__payer.All),
         new("ck_payroll_slip_lines__gosi_payer", "payroll_slip_lines", "gosi_payer", true, ck_payroll_slip_lines__gosi_payer.All),
     };
+
+    /// <summary>
+    /// Empty by design, and kept so the concept has a home: a domain the design has ruled on but the
+    /// DDL has not yet declared. Rows 37 and 38 (the GOSI branch and payer vocabulary) lived here
+    /// until the four CHECKs were added to 020, which is exactly the move this list exists to make
+    /// visible. KynexDomainsTests asserts every entry is either absent from pg_constraint or matches
+    /// it exactly, so a row can sit here honestly and graduate without a code change.
+    /// </summary>
+    public static readonly IReadOnlyList<Domain> DesignedButNotYetConstrained = Array.Empty<Domain>();
 }

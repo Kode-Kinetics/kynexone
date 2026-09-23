@@ -142,42 +142,41 @@ public sealed class KynexDomainsTests
     }
 
     /// <summary>
-    /// §9 rows 37 and 38 — the GOSI branch and payer freeze, which §9 calls the sharpest of the
-    /// eight because trg_gosi_filing_totals pivots the filing on exactly those two columns and
-    /// §11.2 makes the variance a WARNING, so an ungoverned value is a silent short filing.
+    /// §9 rows 37 and 38 — the GOSI branch and payer vocabulary, which §9 calls the sharpest of the
+    /// eight: trg_gosi_filing_totals pivots the seven filing totals on exactly these two columns and
+    /// §11.2 makes its variance a WARNING, so a value outside the set routes to no total and the
+    /// filing is silently short rather than loudly wrong.
     ///
-    /// The baseline DDL has not declared these four CHECKs. The constants exist and are registered
-    /// in <see cref="KynexDomains.DesignedButNotYetConstrained"/>, so this test is satisfied either
-    /// way: while the constraint is absent it asserts the column is at least present and of the
-    /// declared type, and the moment 020/021 declares it, it asserts the values agree. It never
-    /// passes silently on a mismatch.
+    /// They were declared in 020 on 2026-09-23. This asserts the constraint exists on BOTH tables
+    /// that carry the vocabulary, that NULL stays legal (the rule families with no branch or payer),
+    /// and that the database and the constants agree value for value.
     /// </summary>
     [Fact]
-    public async Task Rows37And38_AgreeWithTheDatabaseWhetherOrNotItConstrainsThemYet()
+    public async Task Rows37And38_AreConstrainedOnBothTables_AndAgreeWithTheConstants()
     {
         var inDatabase = await ReadDomainsAsync();
-        var columns = await _fx.QueryAsync(
-            """
-            SELECT c.relname || '.' || a.attname
-            FROM pg_attribute a
-            JOIN pg_class c ON c.oid = a.attrelid
-            JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE n.nspname = 'public' AND a.attnum > 0 AND NOT a.attisdropped
-            """,
-            r => r.GetString(0));
+        string[] expected =
+        [
+            "ck_statutory_rules__gosi_branch", "ck_payroll_slip_lines__gosi_branch",
+            "ck_statutory_rules__payer",       "ck_payroll_slip_lines__gosi_payer",
+        ];
 
-        Assert.Equal(4, KynexDomains.DesignedButNotYetConstrained.Count);
-
-        foreach (var domain in KynexDomains.DesignedButNotYetConstrained)
+        foreach (var name in expected)
         {
-            Assert.Contains($"{domain.Table}.{domain.Column}", columns);
-
-            if (inDatabase.TryGetValue(domain.ConstraintName, out var actual))
-            {
-                Assert.Equal(actual.Values, domain.Values);
-                Assert.Equal(actual.Table, domain.Table);
-            }
+            Assert.True(inDatabase.ContainsKey(name), $"{name} is not declared in the database");
+            var domain = KynexDomains.All.Single(d => d.ConstraintName == name);
+            Assert.Equal(inDatabase[name].Values, domain.Values);
+            Assert.Equal(inDatabase[name].Table, domain.Table);
+            Assert.True(domain.NullAllowed, $"{name} must permit NULL — the families with no branch or payer leave it empty");
         }
+
+        Assert.Equal(["Annuities", "SANED", "OccupationalHazards"],
+                     KynexDomains.All.Single(d => d.ConstraintName == "ck_statutory_rules__gosi_branch").Values);
+        Assert.Equal(["Employee", "Employer"],
+                     KynexDomains.All.Single(d => d.ConstraintName == "ck_statutory_rules__payer").Values);
+
+        // The list they graduated from stays, empty, as the home for the next such gap.
+        Assert.Empty(KynexDomains.DesignedButNotYetConstrained);
     }
 
     /// <summary>Parses the two shapes PostgreSQL prints for a closed-set CHECK.</summary>

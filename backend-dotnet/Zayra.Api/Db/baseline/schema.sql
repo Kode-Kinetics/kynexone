@@ -2993,7 +2993,7 @@ CREATE TABLE public.auth_sessions (
     created_by uuid,
     updated_at timestamp with time zone,
     updated_by uuid,
-    CONSTRAINT chk_auth_subject_kind_auth_sessions CHECK (((subject_kind)::text = ANY ((ARRAY['Tenant'::character varying, 'Platform'::character varying])::text[]))),
+    CONSTRAINT chk_auth_sessions_subject_kind CHECK (((subject_kind)::text = ANY ((ARRAY['Tenant'::character varying, 'Platform'::character varying])::text[]))),
     CONSTRAINT ck_auth_sessions__subject_xor CHECK (((((subject_kind)::text = 'Tenant'::text) AND (user_id IS NOT NULL) AND (platform_user_id IS NULL) AND (tenant_id IS NOT NULL)) OR (((subject_kind)::text = 'Platform'::text) AND (user_id IS NULL) AND (platform_user_id IS NOT NULL) AND (tenant_id IS NULL))))
 );
 
@@ -3032,8 +3032,8 @@ CREATE TABLE public.auth_tokens (
     created_by uuid,
     updated_at timestamp with time zone,
     updated_by uuid,
-    CONSTRAINT chk_auth_subject_kind_auth_tokens CHECK (((subject_kind)::text = ANY ((ARRAY['Tenant'::character varying, 'Platform'::character varying])::text[]))),
     CONSTRAINT chk_auth_tokens_purpose CHECK (((purpose)::text = ANY ((ARRAY['PasswordReset'::character varying, 'MfaChallenge'::character varying, 'Invitation'::character varying, 'EmailConfirm'::character varying])::text[]))),
+    CONSTRAINT chk_auth_tokens_subject_kind CHECK (((subject_kind)::text = ANY ((ARRAY['Tenant'::character varying, 'Platform'::character varying])::text[]))),
     CONSTRAINT ck_auth_tokens__attempts_nonnegative CHECK ((attempts >= 0)),
     CONSTRAINT ck_auth_tokens__subject_xor CHECK (((((subject_kind)::text = 'Tenant'::text) AND (user_id IS NOT NULL) AND (platform_user_id IS NULL) AND (tenant_id IS NOT NULL)) OR (((subject_kind)::text = 'Platform'::text) AND (user_id IS NULL) AND (platform_user_id IS NOT NULL) AND (tenant_id IS NULL))))
 );
@@ -4963,7 +4963,9 @@ CREATE TABLE public.payroll_slip_lines (
     source_record_id text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     created_by uuid,
-    CONSTRAINT chk_payroll_slip_lines_kind CHECK (((kind)::text = ANY ((ARRAY['Earning'::character varying, 'Deduction'::character varying, 'EmployerContribution'::character varying, 'Info'::character varying])::text[])))
+    CONSTRAINT chk_payroll_slip_lines_kind CHECK (((kind)::text = ANY ((ARRAY['Earning'::character varying, 'Deduction'::character varying, 'EmployerContribution'::character varying, 'Info'::character varying])::text[]))),
+    CONSTRAINT ck_payroll_slip_lines__gosi_branch CHECK (((gosi_branch IS NULL) OR ((gosi_branch)::text = ANY ((ARRAY['Annuities'::character varying, 'SANED'::character varying, 'OccupationalHazards'::character varying])::text[])))),
+    CONSTRAINT ck_payroll_slip_lines__gosi_payer CHECK (((gosi_payer IS NULL) OR ((gosi_payer)::text = ANY ((ARRAY['Employee'::character varying, 'Employer'::character varying])::text[]))))
 );
 
 ALTER TABLE ONLY public.payroll_slip_lines FORCE ROW LEVEL SECURITY;
@@ -5434,7 +5436,9 @@ CREATE TABLE public.statutory_rules (
     CONSTRAINT ck_statutory_rules__country_code_format CHECK ((country_code ~ '^[A-Z]{2}$'::text)),
     CONSTRAINT ck_statutory_rules__effective_range CHECK (((effective_to IS NULL) OR (effective_to >= effective_from))),
     CONSTRAINT ck_statutory_rules__family CHECK (((family)::text = ANY ((ARRAY['GOSI'::character varying, 'EOS'::character varying, 'Overtime'::character varying, 'Leave'::character varying, 'Nitaqat'::character varying, 'WPS'::character varying])::text[]))),
-    CONSTRAINT ck_statutory_rules__nationality_class CHECK (((nationality_class)::text = ANY ((ARRAY['Saudi'::character varying, 'GCC'::character varying, 'NonSaudi'::character varying, 'Any'::character varying])::text[])))
+    CONSTRAINT ck_statutory_rules__gosi_branch CHECK (((gosi_branch IS NULL) OR ((gosi_branch)::text = ANY ((ARRAY['Annuities'::character varying, 'SANED'::character varying, 'OccupationalHazards'::character varying])::text[])))),
+    CONSTRAINT ck_statutory_rules__nationality_class CHECK (((nationality_class)::text = ANY ((ARRAY['Saudi'::character varying, 'GCC'::character varying, 'NonSaudi'::character varying, 'Any'::character varying])::text[]))),
+    CONSTRAINT ck_statutory_rules__payer CHECK (((payer IS NULL) OR ((payer)::text = ANY ((ARRAY['Employee'::character varying, 'Employer'::character varying])::text[]))))
 );
 
 ALTER TABLE ONLY public.statutory_rules FORCE ROW LEVEL SECURITY;
@@ -5452,12 +5456,12 @@ COMMENT ON COLUMN public.statutory_rules.cohort IS '''Legacy'' (Saudis first ins
 
 -- Name: COLUMN statutory_rules.gosi_branch; Type: COMMENT; Schema: public; Owner: -
 
-COMMENT ON COLUMN public.statutory_rules.gosi_branch IS 'Closed set with no enumerated domain anywhere in revision 6 — left unconstrained pending a §9 entry. See the note above.';
+COMMENT ON COLUMN public.statutory_rules.gosi_branch IS 'Closed set, §9 row 37. NULL on the families that have no branch. trg_gosi_filing_totals pivots the filing on this value and only WARNs, so an unroutable branch is a silently short filing — hence the CHECK.';
 
 
 -- Name: COLUMN statutory_rules.payer; Type: COMMENT; Schema: public; Owner: -
 
-COMMENT ON COLUMN public.statutory_rules.payer IS 'Closed set with no enumerated domain anywhere in revision 6 — left unconstrained pending a §9 entry.';
+COMMENT ON COLUMN public.statutory_rules.payer IS 'Closed set, §9 row 38: Employee | Employer. NULL on the families that have no payer.';
 
 
 -- Name: COLUMN statutory_rules.rate; Type: COMMENT; Schema: public; Owner: -

@@ -56,16 +56,10 @@ COMMENT ON COLUMN statutory_rules.rate IS
   'numeric(9,6): the Entrant2024 annuities ladder steps by 0.5 percentage points, so two decimals on a percentage has no headroom (CONVENTIONS.md §4). Stored as 0.090000, not 9.';
 COMMENT ON COLUMN statutory_rules.rules_version IS
   'e.g. SA-GOSI-2025.07. Frozen onto every payroll_slip_line so a slip can be recomputed years later.';
--- [DESIGN GAP — reported] §7 requires every closed set to be `text + named CHECK + a
--- C# constants class + a row in §9`. `statutory_rules.gosi_branch` and
--- `statutory_rules.payer` (mirrored on payroll_slip_lines) are closed sets by every
--- reading of §2.E and §2.F, but neither §9's 36 numbered rows nor its trailing
--- "remaining closed sets" paragraph enumerates their values. They are therefore left
--- as bounded text with NO CHECK; the values must be ruled on before 070_seed_reference.
 COMMENT ON COLUMN statutory_rules.gosi_branch IS
-  'Closed set with no enumerated domain anywhere in revision 6 — left unconstrained pending a §9 entry. See the note above.';
+  'Closed set, §9 row 37. NULL on the families that have no branch. trg_gosi_filing_totals pivots the filing on this value and only WARNs, so an unroutable branch is a silently short filing — hence the CHECK.';
 COMMENT ON COLUMN statutory_rules.payer IS
-  'Closed set with no enumerated domain anywhere in revision 6 — left unconstrained pending a §9 entry.';
+  'Closed set, §9 row 38: Employee | Employer. NULL on the families that have no payer.';
 
 -- -----------------------------------------------------------------------------
 -- statutory_rule_bands — tier R. Band-shaped rules a single rate cannot express.

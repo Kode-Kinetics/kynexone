@@ -312,12 +312,13 @@ ALTER TABLE users ADD CONSTRAINT chk_users_status
 -- §9 row 3
 ALTER TABLE platform_users ADD CONSTRAINT chk_platform_users_status
     CHECK (status IN ('Active', 'Suspended', 'Disabled'));
--- §9 row 3b. §9 gives ONE name, chk_auth_subject_kind, for a constraint on TWO tables;
+-- §9 rows 3b and 3c. Revision 7 split the one name over two tables, because a constraint name
+-- belongs to one relation and a shared one cannot say which table raised;
 -- PostgreSQL scopes constraint names per table, so each gets the name suffixed by its
 -- table. The mirrored C# class is still one. [Reported: §9 names it once for two tables.]
-ALTER TABLE auth_sessions ADD CONSTRAINT chk_auth_subject_kind_auth_sessions
+ALTER TABLE auth_sessions ADD CONSTRAINT chk_auth_sessions_subject_kind
     CHECK (subject_kind IN ('Tenant', 'Platform'));
-ALTER TABLE auth_tokens ADD CONSTRAINT chk_auth_subject_kind_auth_tokens
+ALTER TABLE auth_tokens ADD CONSTRAINT chk_auth_tokens_subject_kind
     CHECK (subject_kind IN ('Tenant', 'Platform'));
 -- §9 row 4
 ALTER TABLE auth_tokens ADD CONSTRAINT chk_auth_tokens_purpose
@@ -557,6 +558,22 @@ ALTER TABLE payroll_runs ADD CONSTRAINT ck_payroll_runs__parent_not_self
     CHECK (parent_run_id IS NULL OR parent_run_id <> id);
 ALTER TABLE employee_assignments ADD CONSTRAINT ck_employee_assignments__manager_not_self
     CHECK (manager_employee_id IS NULL OR manager_employee_id <> employee_id);
+
+
+-- §9 rows 37 and 38 — the GOSI vocabulary, on both tables that carry it.
+-- These are the sharpest of the eight enumerations revision 7 added: trg_gosi_filing_totals
+-- pivots the seven filing totals on exactly these two columns, and §11.2 makes its variance a
+-- WARNING rather than a block. So a value outside the set does not fail loudly — it routes to
+-- no total, and the filing is silently short by that employee's contribution. NULL stays legal:
+-- the rule families that have no branch or payer leave both columns empty.
+ALTER TABLE statutory_rules ADD CONSTRAINT ck_statutory_rules__gosi_branch
+    CHECK (gosi_branch IS NULL OR gosi_branch IN ('Annuities', 'SANED', 'OccupationalHazards'));
+ALTER TABLE statutory_rules ADD CONSTRAINT ck_statutory_rules__payer
+    CHECK (payer IS NULL OR payer IN ('Employee', 'Employer'));
+ALTER TABLE payroll_slip_lines ADD CONSTRAINT ck_payroll_slip_lines__gosi_branch
+    CHECK (gosi_branch IS NULL OR gosi_branch IN ('Annuities', 'SANED', 'OccupationalHazards'));
+ALTER TABLE payroll_slip_lines ADD CONSTRAINT ck_payroll_slip_lines__gosi_payer
+    CHECK (gosi_payer IS NULL OR gosi_payer IN ('Employee', 'Employer'));
 
 
 -- =============================================================================

@@ -5,14 +5,14 @@ namespace Zayra.Api.Data.V2.Domains;
 
 /// <summary>
 /// Closed set behind <c>auth_sessions.subject_kind</c>, enforced by the database CHECK constraint
-/// <c>chk_auth_subject_kind_auth_sessions</c>. The class name is that constraint name verbatim — KynexDomainsTests
+/// <c>chk_auth_sessions_subject_kind</c>. The class name is that constraint name verbatim — KynexDomainsTests
 /// asserts the two are identical, so renaming this type breaks the build, not production.
 /// </summary>
-public static class chk_auth_subject_kind_auth_sessions
+public static class chk_auth_sessions_subject_kind
 {
     public const string Table = "auth_sessions";
     public const string Column = "subject_kind";
-    public const string ConstraintName = "chk_auth_subject_kind_auth_sessions";
+    public const string ConstraintName = "chk_auth_sessions_subject_kind";
     public const bool NullAllowed = false;
 
     public const string Tenant = "Tenant";
