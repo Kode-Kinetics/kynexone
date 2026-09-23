@@ -199,11 +199,43 @@ public class OrphanEntityRatchetTests
     private static readonly Regex DbSetDeclaration =
         new(@"public\s+(?:virtual\s+)?DbSet<\s*([A-Za-z0-9_.]+)\s*>", RegexOptions.Compiled);
 
+    /// <summary>
+    /// <c>Data/V2</c> — the EF model of the rebuilt baseline schema (<c>KynexDbContext</c>) — is
+    /// outside this ratchet, and it is the only exclusion the ratchet has.
+    ///
+    /// <para>The defect this guard catches is a DbSet that is the write half of a feature whose
+    /// read half was never written. V2 is not a feature and its DbSets are not a half-built one:
+    /// it is a reverse-engineered image of <c>Db/baseline/*.sql</c>, generated from the database
+    /// that SQL builds, and it exists so the ~100 services on <c>ZayraDbContext</c> can be ported
+    /// onto it one at a time. Every one of its 78 entities is unreferenced on the day it lands, by
+    /// design; the ratchet would read a correct and complete model as 78 new defects, and could
+    /// only be satisfied by not writing the model until the last service is ported — the opposite
+    /// of the order the port needs.</para>
+    ///
+    /// <para><b>It is not ungated.</b> V2 is held to a stricter rule from the other direction:
+    /// <c>KynexModelMatchesBaselineTests</c> builds a real postgres:16 from the baseline SQL and
+    /// fails if one table, column, store type, nullability, key or foreign key differs in either
+    /// direction. This ratchet asks "does anything read it"; that one asks "is it exactly the
+    /// schema", which is the question that matters for a model nothing reads yet.</para>
+    ///
+    /// <para><b>When the port finishes</b> and <c>ZayraDbContext</c> is deleted, delete this
+    /// exclusion with it: at that point V2 is the only model, every entity has a consumer or is
+    /// debt, and the ratchet is asking the right question again.</para>
+    /// </summary>
+    private const string TargetModelDirectory = "V2";
+
     private static IReadOnlyCollection<string> DeclaredEntities(string apiRoot)
     {
+        var sep = Path.DirectorySeparatorChar;
+        var excluded = $"{sep}Data{sep}{TargetModelDirectory}{sep}";
         var names = new HashSet<string>(StringComparer.Ordinal);
         foreach (var file in Directory.EnumerateFiles(Path.Combine(apiRoot, "Data"), "*.cs", SearchOption.AllDirectories))
         {
+            if ($"{sep}{Path.GetRelativePath(apiRoot, file)}".Contains(excluded, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
             foreach (Match m in DbSetDeclaration.Matches(File.ReadAllText(file)))
             {
                 // A namespace-qualified declaration names the same entity; keep the simple name so
