@@ -228,5 +228,32 @@ for t,k in keys.items():
 PY
 echo "   five parents + monthly + DEFAULT children  ok"
 
+if [[ -f "$BASE/015_payroll.sql" && -f "$BASE/020_constraints_a_f.sql" ]]; then
+  echo "== whole baseline (A-R) =="
+  # The domain A-F files exist, so prove the two halves actually fit: every
+  # composite (tenant_id, x_id) key this scope writes into domains A-F has to
+  # resolve against a real UNIQUE (tenant_id, id) over there.
+  docker exec "$CONTAINER" psql -U postgres -qc "CREATE DATABASE whole" >/dev/null
+  for f in 001_extensions 010_platform 011_identity 012_org 013_employees 014_statutory \
+           015_payroll 016_wps_gl 017_leave_attendance 018_workflow_audit \
+           020_constraints_a_f 021_constraints_g_r; do
+    docker exec -i "$CONTAINER" psql -U postgres -d whole -v ON_ERROR_STOP=1 -q < "$BASE/$f.sql"
+  done
+  docker exec -i "$CONTAINER" psql -U postgres -d whole -v ON_ERROR_STOP=1 -qtA <<'SQL'
+DO $$
+DECLARE n int; missing text;
+BEGIN
+  SELECT count(*) INTO n FROM pg_class c JOIN pg_namespace s ON s.oid=c.relnamespace
+   WHERE s.nspname='public' AND c.relkind='r';
+  IF n <> 76 THEN RAISE EXCEPTION 'expected the 76-table baseline, found %', n; END IF;
+  SELECT string_agg(c.relname,', ') INTO missing
+    FROM pg_class c JOIN pg_namespace s ON s.oid=c.relnamespace
+   WHERE s.nspname='public' AND c.relkind='r' AND obj_description(c.oid,'pg_class') IS NULL;
+  IF missing IS NOT NULL THEN RAISE EXCEPTION 'tables without a COMMENT: %', missing; END IF;
+  RAISE NOTICE '   76 tables, all commented      ok';
+END $$;
+SQL
+fi
+
 echo
 echo "PASS"
