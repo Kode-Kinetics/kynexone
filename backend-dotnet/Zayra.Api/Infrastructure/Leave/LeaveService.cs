@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Attendance;
+using Zayra.Api.Application.Common;
 using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Application.Leave;
 using Zayra.Api.Application.WorkWeek;
@@ -661,7 +662,17 @@ public class LeaveService : ILeaveService
             if (effectivePolicy.MaximumDaysPerRequest > 0 && workingDays > effectivePolicy.MaximumDaysPerRequest)
                 throw new InvalidOperationException($"This policy allows at most {effectivePolicy.MaximumDaysPerRequest} day(s) per request.");
             var noticeDays = request.StartDate.DayNumber - DateOnly.FromDateTime(DateTime.UtcNow).DayNumber;
-            if (!request.IsEmergency && effectivePolicy.NoticeRequiredDays > noticeDays)
+            // A policy that requires NO notice must not refuse a backdated request. The guard used
+            // to read `NoticeRequiredDays > noticeDays` alone, and for a request that started
+            // yesterday noticeDays is negative — so 0 > -1 held and the refusal read "This policy
+            // requires 0 day(s) advance notice.", a rule the tenant never configured. It only
+            // stayed invisible while tenants had no policy for most leave types; it bites the
+            // instant one exists, and it bites SICK LEAVE hardest, which is reported after the
+            // fact by definition ("whether such leaves are continuous or intermittent" — Art. 117
+            // does not contemplate notice). A tenant that genuinely wants notice sets a positive
+            // number, and that case is unchanged.
+            if (!request.IsEmergency && effectivePolicy.NoticeRequiredDays > 0
+                && effectivePolicy.NoticeRequiredDays > noticeDays)
                 throw new InvalidOperationException($"This policy requires {effectivePolicy.NoticeRequiredDays} day(s) advance notice.");
             if (!effectivePolicy.AppliesOnProbation && employee.ProbationEndDate.HasValue
                 && request.StartDate <= employee.ProbationEndDate.Value)
@@ -1749,7 +1760,7 @@ public class LeaveService : ILeaveService
         string? contractType,
         string? gender)
     {
-        if (!string.IsNullOrWhiteSpace(policy.CountryCode) && !string.Equals(policy.CountryCode, countryCode, StringComparison.OrdinalIgnoreCase)) return false;
+        if (!CountryMatches(policy.CountryCode, countryCode)) return false;
         if (policy.CompanyId.HasValue && policy.CompanyId != companyId) return false;
         if (policy.BranchId.HasValue && policy.BranchId != branchId) return false;
         if (!string.IsNullOrWhiteSpace(policy.DepartmentName) && !string.Equals(policy.DepartmentName, departmentName, StringComparison.OrdinalIgnoreCase)) return false;
@@ -1761,7 +1772,7 @@ public class LeaveService : ILeaveService
         var scopedRows = rows.Where(r => r.LeavePolicyId == policy.Id).ToList();
         if (scopedRows.Count == 0) return true;
         return scopedRows.Any(r =>
-            (string.IsNullOrWhiteSpace(r.CountryCode) || string.Equals(r.CountryCode, countryCode, StringComparison.OrdinalIgnoreCase)) &&
+            CountryMatches(r.CountryCode, countryCode) &&
             (!r.CompanyId.HasValue || r.CompanyId == companyId) &&
             (!r.BranchId.HasValue || r.BranchId == branchId) &&
             (!r.DepartmentId.HasValue || r.DepartmentId == departmentId) &&
@@ -1770,9 +1781,40 @@ public class LeaveService : ILeaveService
             (string.IsNullOrWhiteSpace(r.ContractType) || string.Equals(r.ContractType, contractType, StringComparison.OrdinalIgnoreCase)));
     }
 
+    /// <summary>
+    /// Does a policy's (or eligibility row's) country restriction admit this employee's country?
+    /// An unset restriction admits everyone — that is the country-neutral default.
+    ///
+    /// <para>Both sides are normalised to canonical ISO-2 before comparing. The canonical stored
+    /// format is ISO-2 (<see cref="CountryCodeStandard"/>), but <c>Company.CountryCode</c> carries
+    /// ISO-3 on older and imported rows ("SAU", "ARE"), and the raw string comparison this replaces
+    /// silently answered "not eligible" for every one of them — so a KSA company saved as "SAU"
+    /// resolved NO country-scoped leave policy at all and fell through to whatever the day-count
+    /// fallback happened to be. Same normalisation <c>EmployeeReadinessPolicyResolver</c> already
+    /// applies for the same reason. Unrecognised values fall back to a case-insensitive comparison
+    /// of the raw strings, so nothing that matched before stops matching.</para>
+    /// </summary>
+    internal static bool CountryMatches(string? policyCountry, string? employeeCountry)
+    {
+        if (string.IsNullOrWhiteSpace(policyCountry)) return true;
+        var left = CountryCodeStandard.NormalizeToIso2(policyCountry);
+        var right = CountryCodeStandard.NormalizeToIso2(employeeCountry);
+        if (left is not null && right is not null)
+            return string.Equals(left, right, StringComparison.Ordinal);
+        return string.Equals(policyCountry.Trim(), (employeeCountry ?? string.Empty).Trim(),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
     private static int PolicySpecificity(LeavePolicy policy, IReadOnlyCollection<LeavePolicyEligibility> rows, Guid? departmentId, Guid? gradeId)
     {
         var score = 0;
+        // A policy that NAMES a country is more specific than one that does not — it has already
+        // been filtered to this employee's country by IsPolicyEligible, so scoring it puts the
+        // KSA row ahead of the country-neutral fallback for a KSA employee. Without this the two
+        // tied at zero and the winner was decided by UpdatedAtUtc, i.e. by whichever row happened
+        // to be written last. Ranked below CompanyId/BranchId: a company-specific policy is a
+        // deliberate override of the country default and must still win.
+        if (!string.IsNullOrWhiteSpace(policy.CountryCode)) score += 5;
         if (policy.CompanyId.HasValue) score += 8;
         if (policy.BranchId.HasValue) score += 6;
         if (!string.IsNullOrWhiteSpace(policy.DepartmentName)) score += 4;
