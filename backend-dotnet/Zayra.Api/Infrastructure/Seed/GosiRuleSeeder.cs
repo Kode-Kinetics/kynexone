@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Data;
-using Zayra.Api.Infrastructure.Payroll;
+using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Seed;
@@ -53,6 +54,20 @@ public static class GosiRuleSeeder
             logger.LogInformation("GOSI: seeded {Count} default contribution rules.", rules.Count);
         }
 
+        // ── TWO STORES, ONE FACT ──────────────────────────────────────────────
+        // gosi_contribution_rules (this seeder, read by the GOSI preview and the readiness report)
+        // and statutory_rules (StatutoryRuleSeeder, read by the payslip and the GOSI filing) both
+        // hold the KSA GOSI rates. They now use one unit — a fraction — but they are still two
+        // rows, and nothing stops one being edited without the other. Compare them on every boot
+        // and say so loudly; the value at stake is what a customer remits to GOSI.
+        foreach (var problem in VerifyStoresAgree())
+            logger.LogCritical(
+                "[GOSI-RATE-STORES-DISAGREE] The two GOSI rate stores hold different values for one "
+                + "statutory fact: {Problem} The GOSI preview and the readiness report read "
+                + "gosi_contribution_rules; the payslip and the GOSI filing read statutory_rules. "
+                + "Until they are collapsed into one table, both seeders must be changed together.",
+                problem);
+
         // ── GOSI-RATE-AUDIT ───────────────────────────────────────────────────
         // Regardless of whether rules were just seeded, check how old the most recent
         // system-default GOSI rule effective date is. Emit a startup WARNING if stale.
@@ -86,6 +101,81 @@ public static class GosiRuleSeeder
                     effectiveDateStr);
             }
         }
+    }
+
+    /// <summary>
+    /// THE bridge between the product's two GOSI rate stores. Each <c>(Branch, Payer)</c> of
+    /// <c>gosi_contribution_rules</c> names the <c>StatutoryRule</c> key that holds the SAME
+    /// statutory fact for the payslip and the GOSI filing (<c>StatutoryRuleSeeder</c>, read by
+    /// <c>KsaDeductionCalculator</c> through <c>RuleKeys</c>).
+    ///
+    /// <para>Two stores for one fact is the defect; until they are collapsed this map is what makes
+    /// their disagreement detectable. <see cref="VerifyStoresAgree"/> walks it at boot and
+    /// <c>StatutoryRateUnitTests.BothStores_AgreeOnEverySeededKsaGosiRate</c> walks it in the
+    /// suite, so a rate changed in one seeder and not the other fails loudly instead of producing
+    /// two different remittances from two screens.</para>
+    /// </summary>
+    public static readonly IReadOnlyDictionary<(string Branch, string Payer), string> StatutoryRuleKeyFor =
+        new Dictionary<(string, string), string>
+        {
+            [(GosiBranches.Annuities, GosiPayers.Employee)]           = RuleKeys.GosiSaudiEmployeeRate,
+            [(GosiBranches.Annuities, GosiPayers.Employer)]           = RuleKeys.GosiSaudiEmployerRate,
+            [(GosiBranches.SANED, GosiPayers.Employee)]               = RuleKeys.GosiSanedRate,
+            [(GosiBranches.SANED, GosiPayers.Employer)]               = RuleKeys.GosiSanedRate,
+            [(GosiBranches.OccupationalHazards, GosiPayers.Employer)] = RuleKeys.GosiExpOhRate,
+        };
+
+    /// <summary>
+    /// Compares the Saudi platform defaults of THIS store against the KSA GOSI rows
+    /// <see cref="StatutoryRuleSeeder"/> seeds, rate for rate, in the one unit both now use.
+    /// Returns a human-readable disagreement per mismatched branch, or an empty list.
+    ///
+    /// <para>Both sides are compiled constants, so this is pure in-memory arithmetic: no query, no
+    /// cost, and it cannot be skipped by a tenant whose rows have not been seeded yet.</para>
+    /// </summary>
+    public static IReadOnlyList<string> VerifyStoresAgree()
+    {
+        var statutory = StatutoryRuleSeeder.BuildRules()
+            .Where(r => r.CountryCode == CountryCodes.Saudi && r.Jurisdiction == Jurisdictions.KsaMainland)
+            .GroupBy(r => r.RuleKey)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(r => r.EffectiveFrom).First().RuleValue);
+
+        var problems = new List<string>();
+
+        foreach (var rule in BuildDefaultRules()
+                     .Where(r => r.Classification == GosiClassifications.Saudi))
+        {
+            if (!StatutoryRuleKeyFor.TryGetValue((rule.Branch, rule.Payer), out var key))
+            {
+                problems.Add($"{rule.Branch}/{rule.Payer} has no StatutoryRule key in "
+                           + "GosiRuleSeeder.StatutoryRuleKeyFor, so the two GOSI rate stores cannot "
+                           + "be compared for it.");
+                continue;
+            }
+
+            if (!statutory.TryGetValue(key, out var raw))
+            {
+                problems.Add($"{rule.Branch}/{rule.Payer} maps to StatutoryRule key '{key}', which "
+                           + "StatutoryRuleSeeder does not seed for KSA mainland.");
+                continue;
+            }
+
+            if (!decimal.TryParse(raw, System.Globalization.NumberStyles.Any,
+                    System.Globalization.CultureInfo.InvariantCulture, out var other))
+            {
+                problems.Add($"StatutoryRule '{key}' holds '{raw}', which is not a decimal.");
+                continue;
+            }
+
+            if (other != rule.Rate)
+                problems.Add($"{rule.Branch}/{rule.Payer}: gosi_contribution_rules seeds "
+                           + $"{rule.Rate.ToString(System.Globalization.CultureInfo.InvariantCulture)} "
+                           + $"but StatutoryRule '{key}' seeds "
+                           + $"{other.ToString(System.Globalization.CultureInfo.InvariantCulture)}. "
+                           + "Both are fractions of the contributory wage; one of the two seeders is stale.");
+        }
+
+        return problems;
     }
 
     private static List<GosiContributionRule> BuildDefaultRules()
