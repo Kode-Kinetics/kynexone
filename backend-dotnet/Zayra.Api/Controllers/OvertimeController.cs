@@ -185,7 +185,7 @@ public class OvertimeController : ControllerBase
     /// </summary>
     [HttpPost("detect-from-attendance")]
     [Authorize(Roles = "Admin,HR Manager,Payroll Officer")]
-    [AllowEntityReturn("Flat entity — no navigation properties. Fields: EmployeeId, EmployeeName, WorkDate, start/end times, requested/approved minutes, Reason, Status. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
+    [AllowEntityReturn("Flat entity pair — no navigation properties on either. OvertimeRequest: EmployeeId, EmployeeName, WorkDate, start/end times, requested/approved minutes, Reason, Status. AttendanceException: EmployeeId, WorkDate, ExceptionType, Severity, Details — the overtime this tenant's policy will not pay, which the operator running detection has to see. Neither carries salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public async Task<ActionResult<DetectOvertimeResult>> DetectFromAttendance(DetectOvertimeRequest req, CancellationToken ct)
     {
         var tenantId = RequireTenant();
