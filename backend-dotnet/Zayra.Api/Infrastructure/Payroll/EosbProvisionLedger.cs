@@ -1,3 +1,4 @@
+using Zayra.Api.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
@@ -166,8 +167,16 @@ public static class EosbProvisionLedger
         // post the matching credit against; inventing an opening-equity journal would put a figure in
         // the GL that no source document supports. See the caveat on GL presentation in the summary
         // above ProvisionDriverKey.
-        var openingRows = await db.EmployeeEosbOpeningBalances.IgnoreQueryFilters().AsNoTracking()
-            .Where(x => x.TenantId == tenantId && employeeIds.Contains(x.EmployeeId) && x.AccruedAmount > 0m)
+        //
+        // Through ScopedBypass rather than a raw IgnoreQueryFilters: the provision balance is a SYSTEM
+        // integrity read that must see every company's carried rows AND unattributed (CompanyId == null)
+        // ones regardless of the caller's own company claims. TenantWide drops exactly the company
+        // filter and re-applies the tenant itself, so the bypass cannot be widened by forgetting a WHERE.
+        var openingRows = await ScopedBypass.TenantWide(db.EmployeeEosbOpeningBalances, tenantId,
+                "EOSB provision integrity: the carried opening balance must be seen across every company "
+                + "and for unattributed rows, or the provision is understated and the expense books twice.")
+            .AsNoTracking()
+            .Where(x => employeeIds.Contains(x.EmployeeId) && x.AccruedAmount > 0m)
             .Select(x => new { x.EmployeeId, x.CompanyId, x.AsAtDate, x.AccruedAmount, x.Currency })
             .ToListAsync(ct);
 

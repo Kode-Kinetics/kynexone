@@ -42,9 +42,14 @@ public sealed partial class MigrationImportController
         // Cutovers declared in this very package. A malformed row here is NOT thrown from: the
         // companyCutover section validates and reports its own rows, and throwing out of context
         // construction would fail the whole package with an error attributed to the wrong section.
-        if (request.Sections.TryGetValue("companyCutover", out var csv))
+        // A SHIFTED cutover file is the same case: Csv.Parse refuses the whole file, the companyCutover
+        // section reports that refusal by row number, and context construction simply finds no declared
+        // cutovers — rather than aborting the package with the error attributed to whichever section
+        // happened to be first.
+        if (request.Sections.TryGetValue("companyCutover", out var csv)
+            && TryParseSection("companyCutover", csv, out var cutoverRows, out _))
         {
-            foreach (var row in Csv.Parse(csv))
+            foreach (var row in cutoverRows)
             {
                 try
                 {
