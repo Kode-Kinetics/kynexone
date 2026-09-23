@@ -426,7 +426,7 @@ jobs:
         run: |
           set -euo pipefail
           # No CREATE DATABASE needed: 'ef database update' creates it when absent.
-          dotnet tool run dotnet-ef database update --no-build
+          dotnet tool run dotnet-ef database update --no-build --context ZayraDbContext
 
       # `has-pending-model-changes` only compares the model with the snapshot. It cannot detect
       # properties that leaked into an old snapshot/Designer without ever appearing in an Up()
@@ -471,12 +471,12 @@ jobs:
             exit 0
           fi
           echo "Previous accepted release migration: $prev"
-          dotnet tool run dotnet-ef database update "$prev" --no-build
+          dotnet tool run dotnet-ef database update "$prev" --no-build --context ZayraDbContext
           PGPASSWORD=ci psql -h localhost -U postgres -d zayra_upgrade -v ON_ERROR_STOP=1 -c "
             INSERT INTO tenants (id,name,slug,is_active,created_at_utc,account_type,company_creation_mode)
             VALUES (gen_random_uuid(),'Upgrade Gate','upgrade-gate',true,now(),'Group','Multi');"
           before=$(PGPASSWORD=ci psql -h localhost -U postgres -d zayra_upgrade -t -A -c 'SELECT count(*) FROM tenants;')
-          dotnet tool run dotnet-ef database update --no-build
+          dotnet tool run dotnet-ef database update --no-build --context ZayraDbContext
           after=$(PGPASSWORD=ci psql -h localhost -U postgres -d zayra_upgrade -t -A -c 'SELECT count(*) FROM tenants;')
           if [ "$before" != "$after" ]; then
             echo "::error::Upgrade destroyed data — tenants went from $before to $after."
@@ -892,7 +892,7 @@ jobs:
             exit 1
           fi
           echo "Applying EF Core migrations to the production database…"
-          dotnet ef database update --project backend-dotnet/Zayra.Api/Zayra.Api.csproj
+          dotnet ef database update --project backend-dotnet/Zayra.Api/Zayra.Api.csproj --context ZayraDbContext
         env:
           ConnectionStrings__Default: ${{ secrets.PROD_DATABASE_URL }}
 
