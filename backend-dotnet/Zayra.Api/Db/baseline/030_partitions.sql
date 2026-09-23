@@ -89,12 +89,17 @@ BEGIN
     LOOP
         v_stage := r.tbl || '__preconvert';
 
+        -- Once-only, like 010-021 and unlike 001/002. Re-running would leave
+        -- the file half-applied (parents skipped, keys re-added), so it refuses
+        -- instead. The baseline ships as one EF migration and applies once; a
+        -- re-apply means the database is not the one this file expects.
         IF EXISTS (SELECT 1 FROM pg_class c
                     JOIN pg_namespace n ON n.oid = c.relnamespace
                    WHERE n.nspname = 'public' AND c.relname = r.tbl
                      AND c.relkind = 'p') THEN
-            RAISE NOTICE '030: % is already partitioned, skipping', r.tbl;
-            CONTINUE;
+            RAISE EXCEPTION
+              '030_partitions.sql has already been applied (% is partitioned). This file is once-only.',
+              r.tbl;
         END IF;
 
         v_note := obj_description(format('public.%I', r.tbl)::regclass, 'pg_class');
