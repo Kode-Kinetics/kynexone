@@ -6706,6 +6706,9 @@ public class PayrollController : ControllerBase
             .FirstOrDefaultAsync(cancellationToken);
 
         var wageBasis = await ResolveEosbWageBasisAsync(tenantId, company.Id, salary, employee, cancellationToken);
+        // M1 — the CARRIED service start wins when it is earlier than this product's joining date. See
+        // ResolveEosbServiceStartAsync for why it is the earlier of the two and never the sum.
+        var (serviceStart, carriedStart) = await ResolveEosbServiceStartAsync(tenantId, employee, cancellationToken);
         var joiningDate = employee.JoiningDate;
 
         // Resolve the separation reason once, consistently with /final-settlement:
@@ -6718,10 +6721,10 @@ public class PayrollController : ControllerBase
         // forfeiture, the Art.80 dismissal forfeiture, and the non-KSA ≥1yr eligibility floors
         // are all owned by the country packs (the single source of truth).
         var unpaidLeaveDays = await ResolveUnpaidLeaveDaysAsync(
-            tenantId, employee.Id, DateOnly.FromDateTime(joiningDate), DateOnly.FromDateTime(calcDate), cancellationToken);
+            tenantId, employee.Id, serviceStart, DateOnly.FromDateTime(calcDate), cancellationToken);
         var (eosbResult, totalYears) = await ComputeEndOfServiceAsync(
             company.CountryCode, company.Jurisdiction, company.Id, wageBasis,
-            joiningDate, calcDate, terminationReason, employee, unpaidLeaveDays, gcc, cancellationToken);
+            serviceStart, calcDate, terminationReason, employee, unpaidLeaveDays, gcc, cancellationToken);
         var eosbAmount  = Math.Round(eosbResult.TotalGratuity, 2);
         var eosbFormula = eosbResult.ApplicableRule;
         // S1/A1 — the wage the PACK awarded on, not the controller's pre-narrowed scalar. When a pack
@@ -6756,6 +6759,10 @@ public class PayrollController : ControllerBase
             employeeId = req.EmployeeId,
             employeeName = employee.FullName,
             joiningDate,
+            // M1 — the date the award was actually measured from, beside the joining date it may differ
+            // from, so "ten years of gratuity for a four-month employee" is explained on its face.
+            serviceStartDate = serviceStart,
+            carriedServiceStartDate = carriedStart,
             asOfDate = calcDate,
             totalYears = Math.Round(totalYears, 2),
             eligibleSalary,
@@ -6765,9 +6772,7 @@ public class PayrollController : ControllerBase
             wageBasis = wageBasis.IncludedComponents,
             // S1/A1 — the pack's statutory notices and the compatibility-fallback reason are part of the
             // ANSWER, not a snapshot footnote. A caller that cannot see them cannot sign off on the award.
-            statutoryNotices = wageBasis.FallbackReason is null
-                ? eosbResult.Notices
-                : eosbResult.Notices.Prepend(wageBasis.FallbackReason).ToList(),
+            statutoryNotices = EosbCalculateNotices(eosbResult, wageBasis, serviceStart, joiningDate),
             unpaidLeaveDays,
             countryCode = company.CountryCode,
             jurisdiction = company.Jurisdiction,
@@ -6900,9 +6905,73 @@ public class PayrollController : ControllerBase
         return (int)Math.Round(days, MidpointRounding.AwayFromZero);
     }
 
+    /// <summary>
+    /// M1 — the service start the gratuity is actually measured from, and why.
+    ///
+    /// <para><see cref="EmployeeEosbOpeningBalance.PriorServiceStartDate"/> is the service start the
+    /// PREVIOUS employer or system recognised: a TUPE-style transfer, an acquired book, or simply the
+    /// real joining date of an employee whose KynexOne record starts at the migration cutover. The
+    /// migration importer has validated and persisted it since the cutover stream shipped
+    /// (<c>MigrationImportController.OpeningBalances.cs:642,669</c>) and, until this change, NOTHING in
+    /// the solution read it back. Both EOSB entry points measured service from
+    /// <c>Employee.JoiningDate</c> alone, so a customer who migrated a ten-year employee settled them
+    /// as a new joiner and the gratuity was short by the carried years.</para>
+    ///
+    /// <para><b>WHICH DATE WINS.</b> The EARLIER of the two, never a sum. The carried date is a claim
+    /// about the SAME continuous service the joining date describes, not a separate period tacked on
+    /// the front — a KynexOne joining date of 2026-09-01 with a prior service start of 2016-03-01 is one
+    /// employee with ten years of service, not ten years plus five months. Adding the two would be the
+    /// double count. A prior date LATER than the joining date is ignored rather than honoured: it can
+    /// only mean a stale or mis-keyed carried row, and shortening a statutory entitlement on that
+    /// evidence is the direction that gets litigated.</para>
+    ///
+    /// <para><b>WHAT IS DELIBERATELY NOT USED HERE.</b> <c>AccruedMonths</c> and <c>AccruedAmount</c> on
+    /// the same row are the PROVISION the outgoing system had already booked — an accounting fact about
+    /// the balance sheet, consumed by <see cref="EosbProvisionLedger"/> so the expense is not booked
+    /// twice. They are NOT a second input to service length. Feeding both the carried months and the
+    /// carried start date into the calculator would count the pre-cutover service twice over, which is
+    /// exactly the error this method exists to avoid; the entity's own doc comment says so, and it is
+    /// repeated here because the two live in one imported row and look interchangeable.</para>
+    ///
+    /// <para>Several carried rows can exist for one employee (a re-migration restates the provision at a
+    /// later AsAtDate). The most recently struck row wins, and among rows struck on the same date, the
+    /// earliest prior-service claim — the one most favourable to the employee, and the one an employer
+    /// cannot quietly walk back by re-importing.</para>
+    /// </summary>
+    private async Task<(DateOnly Start, DateOnly? Carried)> ResolveEosbServiceStartAsync(
+        Guid tenantId, Employee employee, CancellationToken ct)
+    {
+        var joining = DateOnly.FromDateTime(employee.JoiningDate);
+        var carried = await _db.EmployeeEosbOpeningBalances.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.PriorServiceStartDate != null)
+            .OrderByDescending(x => x.AsAtDate)
+            .ThenBy(x => x.PriorServiceStartDate)
+            .Select(x => x.PriorServiceStartDate)
+            .FirstOrDefaultAsync(ct);
+        return carried is DateOnly prior && prior < joining ? (prior, prior) : (joining, carried);
+    }
+
+    private static List<string> EosbCalculateNotices(
+        EndOfServiceResult result, EosbWageBasis wageBasis, DateOnly serviceStart, DateTime joiningDate)
+    {
+        var notices = result.Notices.ToList();
+        if (wageBasis.FallbackReason is not null) notices.Insert(0, wageBasis.FallbackReason);
+        var joining = DateOnly.FromDateTime(joiningDate);
+        if (serviceStart < joining) notices.Insert(0, CarriedServiceNotice(serviceStart, joining));
+        return notices;
+    }
+
+    /// <summary>M1 — the settlement-facing notice for a gratuity measured on carried service.</summary>
+    private static string CarriedServiceNotice(DateOnly carried, DateOnly joining) =>
+        $"[MIGRATION] Gratuity is measured from the CARRIED service start {carried:yyyy-MM-dd}, not this "
+      + $"product's joining date {joining:yyyy-MM-dd}. The earlier date was carried in by the opening-balance "
+      + "import as the service the previous employer or system recognised, and it is the whole service "
+      + "period for end-of-service purposes. If it is wrong, correct the carried end-of-service opening "
+      + "balance before approving — not the joining date, which payroll and tenure both depend on.";
+
     private async Task<(EndOfServiceResult Result, double ServiceYearsDisplay)> ComputeEndOfServiceAsync(
         string countryCode, string jurisdiction, Guid companyId, EosbWageBasis wageBasis,
-        DateTime joiningDate, DateTime asOfDate, string terminationReason, Employee employee,
+        DateOnly serviceStartDate, DateTime asOfDate, string terminationReason, Employee employee,
         int unpaidLeaveDays, GCCComplianceSetting? gcc, CancellationToken ct)
     {
         var calc = _packResolver.ResolveEndOfServiceCalculator(countryCode, jurisdiction);
@@ -6911,7 +6980,7 @@ public class PayrollController : ControllerBase
             EmployeeId:        employee.PublicId,
             CompanyId:         companyId,
             Salary:            wageBasis.Package,
-            ServiceStartDate:  DateOnly.FromDateTime(joiningDate),
+            ServiceStartDate:  serviceStartDate,
             ServiceEndDate:    DateOnly.FromDateTime(asOfDate),
             TerminationReason: terminationReason,
             ContractType:      employee.ContractType ?? "Indefinite",
@@ -6926,7 +6995,9 @@ public class PayrollController : ControllerBase
         };
 
         var result = await calc.CalculateAsync(input, ct);
-        var serviceYearsDisplay = (asOfDate - joiningDate).Days / 365.0;
+        // M1 — the displayed years are measured on the SAME start the pack awarded on, so the settlement
+        // screen cannot show four years next to a ten-year award.
+        var serviceYearsDisplay = (asOfDate.Date - serviceStartDate.ToDateTime(TimeOnly.MinValue)).Days / 365.0;
         return (result, serviceYearsDisplay);
     }
 
@@ -8944,11 +9015,14 @@ public class PayrollController : ControllerBase
         // ── POD-A2's ONE authoritative engine. The Breakdown is kept IN FULL — /eosb/calculate discards
         //    it and keeps only the rule string, so the Art.84 tier split and the Art.85/80 adjustment line
         //    were unrecoverable from anything the product persisted.
+        // M1 — the carried service start wins when it is earlier than this product's joining date, so a
+        // migrated leaver is settled on their whole service and not on their KynexOne tenure alone.
+        var (serviceStart, _carriedStart) = await ResolveEosbServiceStartAsync(tenantId, employee, ct);
         var unpaidLeaveDays = await ResolveUnpaidLeaveDaysAsync(
-            tenantId, employee.Id, DateOnly.FromDateTime(employee.JoiningDate), lastDay, ct);
+            tenantId, employee.Id, serviceStart, lastDay, ct);
         var (eosbResult, serviceYears) = await ComputeEndOfServiceAsync(
             countryCode, jurisdiction, companyId ?? Guid.Empty, wageBasis,
-            employee.JoiningDate, calcDate, terminationReason, employee, unpaidLeaveDays, gcc, ct);
+            serviceStart, calcDate, terminationReason, employee, unpaidLeaveDays, gcc, ct);
         var gratuity = Math.Round(eosbResult.TotalGratuity, 2);
         var appliedWageBase = eosbResult.AppliedWageBase > 0m ? eosbResult.AppliedWageBase : wageBasis.ConfiguredWage;
 
@@ -8956,6 +9030,8 @@ public class PayrollController : ControllerBase
         // A [COUNSEL] default that changes the award (transport in / other out) and a DIFC trustee
         // position that means "do not pay this" are decisions the approver has to make consciously.
         warnings.AddRange(eosbResult.Notices);
+        if (serviceStart < DateOnly.FromDateTime(employee.JoiningDate))
+            warnings.Add(CarriedServiceNotice(serviceStart, DateOnly.FromDateTime(employee.JoiningDate)));
         if (wageBasis.FallbackReason is not null && gratuity > 0m)
             warnings.Add("[FLAG-COMPLIANCE] " + wageBasis.FallbackReason);
 
@@ -8971,7 +9047,7 @@ public class PayrollController : ControllerBase
             var fullBasis = wageBasis with { ConfiguredWage = monthlyGross };
             var (fullResult, _) = await ComputeEndOfServiceAsync(
                 countryCode, jurisdiction, companyId ?? Guid.Empty, fullBasis,
-                employee.JoiningDate, calcDate, terminationReason, employee, unpaidLeaveDays, gcc, ct);
+                serviceStart, calcDate, terminationReason, employee, unpaidLeaveDays, gcc, ct);
             wageBaseDelta = Math.Max(0m, Math.Round(fullResult.TotalGratuity - gratuity, 2));
             if (wageBaseDelta > 0m)
                 warnings.Add($"[FLAG-COMPLIANCE] Gratuity is computed on the wage base the country pack applied " +
@@ -9156,7 +9232,10 @@ public class PayrollController : ControllerBase
 
         return new FinalSettlementPlan(
             employee.EmployeeCode, employee.FullName, companyId,
-            lastDay, DateOnly.FromDateTime(employee.JoiningDate), dueDate,
+            // M1 — the settlement records the service period it was AWARDED on. That is also what the
+            // B4 no-overlapping-service-window guard compares, so a carried period cannot be settled
+            // twice by re-settling on the KynexOne joining date.
+            lastDay, serviceStart, dueDate,
             terminationReason, (decimal)Math.Round(serviceYears, 4), currency,
             basicWage, monthlyGross,
             JsonSerializer.Serialize(new
@@ -9178,7 +9257,11 @@ public class PayrollController : ControllerBase
                 packageOther = wageBasis.Package.OtherAllowances,
                 unpaidLeaveDays,
                 eosbIncludedComponents = wageBasis.IncludedComponents, currency,
-                serviceStart = DateOnly.FromDateTime(employee.JoiningDate),
+                // M1 — the start the pack measured on, plus the joining date it may differ from, so the
+                // snapshot alone explains a migrated leaver's award years later.
+                serviceStart,
+                joiningDate = DateOnly.FromDateTime(employee.JoiningDate),
+                carriedServiceStart = _carriedStart,
                 serviceEnd = lastDay,
                 terminationReason,
                 countryCode,

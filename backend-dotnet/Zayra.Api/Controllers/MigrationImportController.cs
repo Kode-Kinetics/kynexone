@@ -322,9 +322,28 @@ public sealed partial class MigrationImportController : ControllerBase
         return totals;
     }
 
+    /// <summary>
+    /// Parses a section, or turns a shifted-column refusal into a NAMED section error instead of an
+    /// unhandled 500. <see cref="Csv.Parse"/> refuses the whole file when any row's cell count differs
+    /// from the header's — the file cannot be partially trusted, because a shifted row's values land in
+    /// the wrong fields and may still parse. Preview must report that the way it reports every other
+    /// rejection: by section, by row, in words a consultant can act on.
+    /// </summary>
+    private static bool TryParseSection(string section, string csv, out List<Dictionary<string, string>> rows, out string? error)
+    {
+        try { rows = Csv.Parse(csv); error = null; return true; }
+        catch (CsvShapeException ex)
+        {
+            rows = new List<Dictionary<string, string>>();
+            error = $"{section} row {ex.RowNumber}: {ex.Message}";
+            return false;
+        }
+    }
+
     private async Task<SectionResult> ValidateSectionAsync(string section, string csv, Guid tenantId, CutoverContext cutover, CancellationToken ct)
     {
-        var rows = Csv.Parse(csv);
+        if (!TryParseSection(section, csv, out var rows, out var parseError))
+            return new SectionResult { Received = 0, WouldSkip = 0, Errors = { parseError! } };
         var result = new SectionResult { Received = rows.Count, AmountTotal = SectionControlTotal(section, rows) };
         var seenKeys = new HashSet<string>(StringComparer.Ordinal);
         foreach (var (row, index) in rows.Select((r, i) => (r, i + 2)))
@@ -343,7 +362,8 @@ public sealed partial class MigrationImportController : ControllerBase
 
     private async Task<SectionResult> ApplySectionAsync(string section, string csv, Guid tenantId, bool dryRun, CutoverContext cutover, CancellationToken ct)
     {
-        var parsedRows = Csv.Parse(csv);
+        if (!TryParseSection(section, csv, out var parsedRows, out var parseError))
+            return new SectionResult { Received = 0, Skipped = 0, Errors = { parseError! } };
         var result = new SectionResult { Received = parsedRows.Count, AmountTotal = SectionControlTotal(section, parsedRows) };
         if (dryRun) return (await ValidateSectionAsync(section, csv, tenantId, cutover, ct)).ToApplyResult();
         var seenKeys = new HashSet<string>(StringComparer.Ordinal);
@@ -441,6 +461,7 @@ public sealed partial class MigrationImportController : ControllerBase
                 var balanceType = RequireBalanceType(row);
                 var componentCode = Require(row, "ComponentCode").Trim();
                 _ = DecRequired(row, "Amount");
+                await GuardPayslipAggregateAgainstStoredAsync(tenantId, payrollEmployee, payrollYear, balanceType, componentCode, ct);
                 return await _db.PayrollOpeningBalances.AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == payrollEmployee.Id
                     && x.Year == payrollYear && x.BalanceType == balanceType && x.ComponentCode == componentCode, ct)
                     ? "updated" : "created";
@@ -587,6 +608,10 @@ public sealed partial class MigrationImportController : ControllerBase
         var balanceType = RequireBalanceType(row);
         var componentCode = Require(row, "ComponentCode").Trim();
         var amount = DecRequired(row, "Amount");
+        // MI1 — refuse a payslip-aggregate bucket that is already stored under a DIFFERENT component
+        // code. The upsert key below includes ComponentCode while SumOpeningBalance ignores it, so the
+        // pair would be summed into every payslip's YTD twice over.
+        await GuardPayslipAggregateAgainstStoredAsync(tenantId, employee, year, balanceType, componentCode, ct);
         // Currency defaults from the employee's own legal entity, never from a literal. The old
         // `Val(row, "Currency", "AED")` handed a KSA customer AED whenever the column was omitted, while
         // the shipped template said SAR.
