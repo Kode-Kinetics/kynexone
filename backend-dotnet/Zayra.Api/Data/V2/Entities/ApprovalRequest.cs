@@ -51,26 +51,4 @@ public partial class ApprovalRequest
     public Guid? UpdatedBy { get; set; }
 
     public virtual ICollection<ApprovalAction> ApprovalActions { get; set; } = new List<ApprovalAction>();
-
-    public virtual ApprovalWorkflow ApprovalWorkflow { get; set; } = null!;
-
-    public virtual Employee? Employee { get; set; }
-
-    public virtual ICollection<EmployeeAssignment> EmployeeAssignments { get; set; } = new List<EmployeeAssignment>();
-
-    public virtual ICollection<EmployeeSalary> EmployeeSalaries { get; set; } = new List<EmployeeSalary>();
-
-    public virtual ICollection<FinalSettlement> FinalSettlements { get; set; } = new List<FinalSettlement>();
-
-    public virtual ICollection<LeaveRequest> LeaveRequests { get; set; } = new List<LeaveRequest>();
-
-    public virtual ICollection<Loan> Loans { get; set; } = new List<Loan>();
-
-    public virtual ICollection<OvertimeRequest> OvertimeRequests { get; set; } = new List<OvertimeRequest>();
-
-    public virtual ICollection<PayrollRun> PayrollRuns { get; set; } = new List<PayrollRun>();
-
-    public virtual ICollection<Timesheet> Timesheets { get; set; } = new List<Timesheet>();
-
-    public virtual User User { get; set; } = null!;
 }

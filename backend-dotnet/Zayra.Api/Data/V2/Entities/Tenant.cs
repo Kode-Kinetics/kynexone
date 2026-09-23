@@ -43,34 +43,4 @@ public partial class Tenant
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual ICollection<BackgroundJob> BackgroundJobs { get; set; } = new List<BackgroundJob>();
-
-    public virtual ICollection<Company> Companies { get; set; } = new List<Company>();
-
-    public virtual ICollection<Designation> Designations { get; set; } = new List<Designation>();
-
-    public virtual ICollection<Employee> Employees { get; set; } = new List<Employee>();
-
-    public virtual ICollection<File> Files { get; set; } = new List<File>();
-
-    public virtual ICollection<Grade> Grades { get; set; } = new List<Grade>();
-
-    public virtual ICollection<LeaveType> LeaveTypes { get; set; } = new List<LeaveType>();
-
-    public virtual ICollection<NumberSequence> NumberSequences { get; set; } = new List<NumberSequence>();
-
-    public virtual ICollection<PayComponent> PayComponents { get; set; } = new List<PayComponent>();
-
-    public virtual ICollection<PublicHoliday> PublicHolidays { get; set; } = new List<PublicHoliday>();
-
-    public virtual ICollection<RetentionPolicy> RetentionPolicies { get; set; } = new List<RetentionPolicy>();
-
-    public virtual ICollection<Role> Roles { get; set; } = new List<Role>();
-
-    public virtual ICollection<Shift> Shifts { get; set; } = new List<Shift>();
-
-    public virtual TenantSetting? TenantSetting { get; set; }
-
-    public virtual ICollection<User> Users { get; set; } = new List<User>();
 }

@@ -49,8 +49,4 @@ public partial class EosCalculation
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual Employee Employee { get; set; } = null!;
-
-    public virtual FinalSettlement? FinalSettlement { get; set; }
 }

@@ -50,17 +50,5 @@ public partial class WpsBatch
 
     public Guid? UpdatedBy { get; set; }
 
-    public virtual Company Company { get; set; } = null!;
-
-    public virtual File? File { get; set; }
-
-    public virtual ICollection<WpsBatch> InverseWpsBatchNavigation { get; set; } = new List<WpsBatch>();
-
-    public virtual PayrollRun PayrollRun { get; set; } = null!;
-
-    public virtual User? User { get; set; }
-
-    public virtual WpsBatch? WpsBatchNavigation { get; set; }
-
     public virtual ICollection<WpsLine> WpsLines { get; set; } = new List<WpsLine>();
 }

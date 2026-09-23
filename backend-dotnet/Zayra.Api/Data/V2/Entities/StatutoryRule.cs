@@ -61,9 +61,5 @@ public partial class StatutoryRule
 
     public DateTime CreatedAt { get; set; }
 
-    public virtual ICollection<OvertimeRequest> OvertimeRequests { get; set; } = new List<OvertimeRequest>();
-
-    public virtual ICollection<PayrollSlipLine> PayrollSlipLines { get; set; } = new List<PayrollSlipLine>();
-
     public virtual ICollection<StatutoryRuleBand> StatutoryRuleBands { get; set; } = new List<StatutoryRuleBand>();
 }

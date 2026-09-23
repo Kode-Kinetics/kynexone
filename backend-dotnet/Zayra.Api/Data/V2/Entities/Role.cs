@@ -25,10 +25,4 @@ public partial class Role
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual ICollection<RolePermission> RolePermissions { get; set; } = new List<RolePermission>();
-
-    public virtual Tenant Tenant { get; set; } = null!;
-
-    public virtual ICollection<UserRole> UserRoles { get; set; } = new List<UserRole>();
 }

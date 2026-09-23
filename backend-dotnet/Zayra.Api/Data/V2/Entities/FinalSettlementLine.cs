@@ -31,8 +31,4 @@ public partial class FinalSettlementLine
     public DateTime CreatedAt { get; set; }
 
     public Guid? CreatedBy { get; set; }
-
-    public virtual FinalSettlement FinalSettlement { get; set; } = null!;
-
-    public virtual LoanInstallment? LoanInstallment { get; set; }
 }

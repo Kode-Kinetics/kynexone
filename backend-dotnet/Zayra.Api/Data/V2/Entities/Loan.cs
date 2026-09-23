@@ -48,9 +48,5 @@ public partial class Loan
 
     public Guid? UpdatedBy { get; set; }
 
-    public virtual ApprovalRequest? ApprovalRequest { get; set; }
-
-    public virtual Employee Employee { get; set; } = null!;
-
     public virtual ICollection<LoanInstallment> LoanInstallments { get; set; } = new List<LoanInstallment>();
 }

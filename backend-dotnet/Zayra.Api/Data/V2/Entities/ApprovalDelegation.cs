@@ -35,8 +35,4 @@ public partial class ApprovalDelegation
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual User User { get; set; } = null!;
-
-    public virtual User UserNavigation { get; set; } = null!;
 }

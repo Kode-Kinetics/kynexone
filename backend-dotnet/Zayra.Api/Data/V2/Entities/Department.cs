@@ -27,16 +27,4 @@ public partial class Department
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual Company Company { get; set; } = null!;
-
-    public virtual CostCenter? CostCenter { get; set; }
-
-    public virtual Department? DepartmentNavigation { get; set; }
-
-    public virtual ICollection<EmployeeAssignment> EmployeeAssignments { get; set; } = new List<EmployeeAssignment>();
-
-    public virtual ICollection<Department> InverseDepartmentNavigation { get; set; } = new List<Department>();
-
-    public virtual ICollection<UserRole> UserRoles { get; set; } = new List<UserRole>();
 }

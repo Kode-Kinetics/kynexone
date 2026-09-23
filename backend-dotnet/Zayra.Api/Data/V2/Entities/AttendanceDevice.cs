@@ -37,6 +37,4 @@ public partial class AttendanceDevice
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual Branch Branch { get; set; } = null!;
 }

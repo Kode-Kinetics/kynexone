@@ -33,8 +33,4 @@ public partial class NumberSequence
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual Company? Company { get; set; }
-
-    public virtual Tenant Tenant { get; set; } = null!;
 }

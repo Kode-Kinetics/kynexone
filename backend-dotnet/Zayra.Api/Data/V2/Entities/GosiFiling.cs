@@ -65,12 +65,4 @@ public partial class GosiFiling
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual Company Company { get; set; } = null!;
-
-    public virtual Company CompanyNavigation { get; set; } = null!;
-
-    public virtual File? File { get; set; }
-
-    public virtual User? User { get; set; }
 }

@@ -80,48 +80,4 @@ public partial class Employee
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual ICollection<ApprovalRequest> ApprovalRequests { get; set; } = new List<ApprovalRequest>();
-
-    public virtual ICollection<EmployeeAssignment> EmployeeAssignmentEmployeeNavigations { get; set; } = new List<EmployeeAssignment>();
-
-    public virtual ICollection<EmployeeAssignment> EmployeeAssignmentEmployees { get; set; } = new List<EmployeeAssignment>();
-
-    public virtual ICollection<EmployeeBankAccount> EmployeeBankAccounts { get; set; } = new List<EmployeeBankAccount>();
-
-    public virtual ICollection<EmployeeContract> EmployeeContracts { get; set; } = new List<EmployeeContract>();
-
-    public virtual ICollection<EmployeeDocument> EmployeeDocuments { get; set; } = new List<EmployeeDocument>();
-
-    public virtual ICollection<EmployeeGosiRegistration> EmployeeGosiRegistrations { get; set; } = new List<EmployeeGosiRegistration>();
-
-    public virtual ICollection<EmployeeSalary> EmployeeSalaries { get; set; } = new List<EmployeeSalary>();
-
-    public virtual ICollection<EosCalculation> EosCalculations { get; set; } = new List<EosCalculation>();
-
-    public virtual ICollection<FinalSettlement> FinalSettlements { get; set; } = new List<FinalSettlement>();
-
-    public virtual ICollection<LeaveLedger> LeaveLedgers { get; set; } = new List<LeaveLedger>();
-
-    public virtual ICollection<LeaveRequest> LeaveRequests { get; set; } = new List<LeaveRequest>();
-
-    public virtual ICollection<Loan> Loans { get; set; } = new List<Loan>();
-
-    public virtual ICollection<OvertimeRequest> OvertimeRequests { get; set; } = new List<OvertimeRequest>();
-
-    public virtual ICollection<PayrollInput> PayrollInputs { get; set; } = new List<PayrollInput>();
-
-    public virtual ICollection<PayrollIssue> PayrollIssues { get; set; } = new List<PayrollIssue>();
-
-    public virtual ICollection<PayrollSlip> PayrollSlips { get; set; } = new List<PayrollSlip>();
-
-    public virtual ICollection<ShiftAssignment> ShiftAssignments { get; set; } = new List<ShiftAssignment>();
-
-    public virtual Tenant Tenant { get; set; } = null!;
-
-    public virtual ICollection<Timesheet> Timesheets { get; set; } = new List<Timesheet>();
-
-    public virtual User? User { get; set; }
-
-    public virtual ICollection<WpsLine> WpsLines { get; set; } = new List<WpsLine>();
 }

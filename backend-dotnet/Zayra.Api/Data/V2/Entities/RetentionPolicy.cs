@@ -45,6 +45,4 @@ public partial class RetentionPolicy
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual Tenant? Tenant { get; set; }
 }

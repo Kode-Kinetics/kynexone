@@ -65,18 +65,4 @@ public partial class PayrollSlipLine
     public DateTime CreatedAt { get; set; }
 
     public Guid? CreatedBy { get; set; }
-
-    public virtual CostCenter? CostCenter { get; set; }
-
-    public virtual LoanInstallment? LoanInstallment { get; set; }
-
-    public virtual PayComponent PayComponent { get; set; } = null!;
-
-    public virtual PayrollInput? PayrollInput { get; set; }
-
-    public virtual PayrollSlip PayrollSlip { get; set; } = null!;
-
-    public virtual StatutoryRule? StatutoryRule { get; set; }
-
-    public virtual StatutoryRuleBand? StatutoryRuleBand { get; set; }
 }

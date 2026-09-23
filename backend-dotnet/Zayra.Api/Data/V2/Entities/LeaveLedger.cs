@@ -33,8 +33,4 @@ public partial class LeaveLedger
     public DateTime CreatedAt { get; set; }
 
     public Guid? CreatedBy { get; set; }
-
-    public virtual Employee Employee { get; set; } = null!;
-
-    public virtual LeaveType LeaveType { get; set; } = null!;
 }

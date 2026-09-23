@@ -53,12 +53,4 @@ public partial class WpsLine
     public DateTime CreatedAt { get; set; }
 
     public Guid? CreatedBy { get; set; }
-
-    public virtual BackgroundJob? ConfirmationJob { get; set; }
-
-    public virtual Employee Employee { get; set; } = null!;
-
-    public virtual PayrollSlip PayrollSlip { get; set; } = null!;
-
-    public virtual WpsBatch WpsBatch { get; set; } = null!;
 }

@@ -37,8 +37,4 @@ public partial class Shift
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual ICollection<ShiftAssignment> ShiftAssignments { get; set; } = new List<ShiftAssignment>();
-
-    public virtual Tenant Tenant { get; set; } = null!;
 }

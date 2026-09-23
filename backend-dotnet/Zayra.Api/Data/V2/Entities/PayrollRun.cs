@@ -78,28 +78,4 @@ public partial class PayrollRun
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual ApprovalRequest? ApprovalRequest { get; set; }
-
-    public virtual BackgroundJob? BackgroundJob { get; set; }
-
-    public virtual Company Company { get; set; } = null!;
-
-    public virtual ICollection<FinalSettlement> FinalSettlements { get; set; } = new List<FinalSettlement>();
-
-    public virtual ICollection<PayrollRun> InversePayrollRunNavigation { get; set; } = new List<PayrollRun>();
-
-    public virtual ICollection<PayrollInput> PayrollInputPayrollRunNavigations { get; set; } = new List<PayrollInput>();
-
-    public virtual ICollection<PayrollInput> PayrollInputPayrollRuns { get; set; } = new List<PayrollInput>();
-
-    public virtual ICollection<PayrollIssue> PayrollIssues { get; set; } = new List<PayrollIssue>();
-
-    public virtual PayrollRun? PayrollRunNavigation { get; set; }
-
-    public virtual ICollection<PayrollSlip> PayrollSlips { get; set; } = new List<PayrollSlip>();
-
-    public virtual ICollection<Timesheet> Timesheets { get; set; } = new List<Timesheet>();
-
-    public virtual ICollection<WpsBatch> WpsBatches { get; set; } = new List<WpsBatch>();
 }

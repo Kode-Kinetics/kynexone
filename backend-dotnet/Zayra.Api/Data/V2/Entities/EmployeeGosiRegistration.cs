@@ -41,10 +41,4 @@ public partial class EmployeeGosiRegistration
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual Company Company { get; set; } = null!;
-
-    public virtual Company CompanyNavigation { get; set; } = null!;
-
-    public virtual Employee Employee { get; set; } = null!;
 }

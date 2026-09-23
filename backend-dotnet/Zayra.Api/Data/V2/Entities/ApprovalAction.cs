@@ -33,10 +33,4 @@ public partial class ApprovalAction
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual ApprovalRequest ApprovalRequest { get; set; } = null!;
-
-    public virtual User User { get; set; } = null!;
-
-    public virtual User? UserNavigation { get; set; }
 }

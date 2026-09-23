@@ -23,8 +23,4 @@ public partial class RolePermission
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual Permission PermissionCodeNavigation { get; set; } = null!;
-
-    public virtual Role Role { get; set; } = null!;
 }

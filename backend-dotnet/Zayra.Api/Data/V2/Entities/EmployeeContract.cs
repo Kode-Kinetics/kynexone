@@ -47,8 +47,4 @@ public partial class EmployeeContract
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual Employee Employee { get; set; } = null!;
-
-    public virtual EmployeeDocument? EmployeeDocument { get; set; }
 }

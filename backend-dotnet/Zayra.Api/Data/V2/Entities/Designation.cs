@@ -27,8 +27,4 @@ public partial class Designation
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual ICollection<EmployeeAssignment> EmployeeAssignments { get; set; } = new List<EmployeeAssignment>();
-
-    public virtual Tenant Tenant { get; set; } = null!;
 }

@@ -37,8 +37,4 @@ public partial class Notification
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual ICollection<NotificationDelivery> NotificationDeliveries { get; set; } = new List<NotificationDelivery>();
-
-    public virtual User User { get; set; } = null!;
 }

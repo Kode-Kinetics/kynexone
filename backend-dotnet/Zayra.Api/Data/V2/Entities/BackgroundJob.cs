@@ -56,11 +56,5 @@ public partial class BackgroundJob
 
     public Guid? UpdatedBy { get; set; }
 
-    public virtual ICollection<PayrollRun> PayrollRuns { get; set; } = new List<PayrollRun>();
-
-    public virtual File? SourceFile { get; set; }
-
-    public virtual Tenant? Tenant { get; set; }
-
-    public virtual ICollection<WpsLine> WpsLines { get; set; } = new List<WpsLine>();
+    public virtual ICollection<BackgroundJobItem> BackgroundJobItems { get; set; } = new List<BackgroundJobItem>();
 }

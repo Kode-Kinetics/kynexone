@@ -17,6 +17,4 @@ public partial class Permission
     public string? Description { get; set; }
 
     public DateTime CreatedAt { get; set; }
-
-    public virtual ICollection<RolePermission> RolePermissions { get; set; } = new List<RolePermission>();
 }

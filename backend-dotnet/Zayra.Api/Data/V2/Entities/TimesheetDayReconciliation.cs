@@ -39,6 +39,4 @@ public partial class TimesheetDayReconciliation
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual Timesheet Timesheet { get; set; } = null!;
 }

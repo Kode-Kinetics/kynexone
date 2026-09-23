@@ -46,13 +46,5 @@ public partial class GlJournal
 
     public Guid? UpdatedBy { get; set; }
 
-    public virtual Company Company { get; set; } = null!;
-
-    public virtual File? File { get; set; }
-
     public virtual ICollection<GlJournalLine> GlJournalLines { get; set; } = new List<GlJournalLine>();
-
-    public virtual GlJournal? GlJournalNavigation { get; set; }
-
-    public virtual ICollection<GlJournal> InverseGlJournalNavigation { get; set; } = new List<GlJournal>();
 }

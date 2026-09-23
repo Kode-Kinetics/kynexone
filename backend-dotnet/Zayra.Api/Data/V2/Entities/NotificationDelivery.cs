@@ -41,6 +41,4 @@ public partial class NotificationDelivery
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual Notification Notification { get; set; } = null!;
 }

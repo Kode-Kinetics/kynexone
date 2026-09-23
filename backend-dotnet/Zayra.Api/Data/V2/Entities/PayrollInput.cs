@@ -73,18 +73,4 @@ public partial class PayrollInput
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual Company Company { get; set; } = null!;
-
-    public virtual CostCenter? CostCenter { get; set; }
-
-    public virtual Employee Employee { get; set; } = null!;
-
-    public virtual PayComponent PayComponent { get; set; } = null!;
-
-    public virtual PayrollRun? PayrollRun { get; set; }
-
-    public virtual PayrollRun? PayrollRunNavigation { get; set; }
-
-    public virtual ICollection<PayrollSlipLine> PayrollSlipLines { get; set; } = new List<PayrollSlipLine>();
 }

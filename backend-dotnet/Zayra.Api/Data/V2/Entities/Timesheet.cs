@@ -42,13 +42,5 @@ public partial class Timesheet
 
     public Guid? UpdatedBy { get; set; }
 
-    public virtual ApprovalRequest? ApprovalRequest { get; set; }
-
-    public virtual Company Company { get; set; } = null!;
-
-    public virtual Employee Employee { get; set; } = null!;
-
-    public virtual PayrollRun? PayrollRun { get; set; }
-
-    public virtual ICollection<TimesheetDayReconciliation> TimesheetDayReconciliations { get; set; } = new List<TimesheetDayReconciliation>();
+    public virtual ICollection<TimesheetEntry> TimesheetEntries { get; set; } = new List<TimesheetEntry>();
 }

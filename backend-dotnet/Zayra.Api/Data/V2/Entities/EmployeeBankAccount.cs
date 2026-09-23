@@ -36,6 +36,4 @@ public partial class EmployeeBankAccount
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual Employee Employee { get; set; } = null!;
 }

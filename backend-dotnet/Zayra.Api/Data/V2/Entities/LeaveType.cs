@@ -35,10 +35,4 @@ public partial class LeaveType
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual ICollection<LeaveLedger> LeaveLedgers { get; set; } = new List<LeaveLedger>();
-
-    public virtual ICollection<LeaveRequest> LeaveRequests { get; set; } = new List<LeaveRequest>();
-
-    public virtual Tenant Tenant { get; set; } = null!;
 }

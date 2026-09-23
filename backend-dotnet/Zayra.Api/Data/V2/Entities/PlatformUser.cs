@@ -47,8 +47,4 @@ public partial class PlatformUser
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual ICollection<AuthSession> AuthSessions { get; set; } = new List<AuthSession>();
-
-    public virtual ICollection<AuthToken> AuthTokens { get; set; } = new List<AuthToken>();
 }

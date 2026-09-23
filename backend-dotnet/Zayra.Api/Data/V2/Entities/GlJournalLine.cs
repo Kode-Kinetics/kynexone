@@ -31,8 +31,4 @@ public partial class GlJournalLine
     public DateTime CreatedAt { get; set; }
 
     public Guid? CreatedBy { get; set; }
-
-    public virtual CostCenter? CostCenter { get; set; }
-
-    public virtual GlJournal GlJournal { get; set; } = null!;
 }

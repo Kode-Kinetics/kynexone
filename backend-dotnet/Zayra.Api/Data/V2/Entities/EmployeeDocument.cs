@@ -58,18 +58,4 @@ public partial class EmployeeDocument
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual DocumentTemplate? DocumentTemplate { get; set; }
-
-    public virtual Employee Employee { get; set; } = null!;
-
-    public virtual ICollection<EmployeeContract> EmployeeContracts { get; set; } = new List<EmployeeContract>();
-
-    public virtual EmployeeDocument? EmployeeDocumentNavigation { get; set; }
-
-    public virtual File? File { get; set; }
-
-    public virtual ICollection<EmployeeDocument> InverseEmployeeDocumentNavigation { get; set; } = new List<EmployeeDocument>();
-
-    public virtual LeaveRequest? LeaveRequest { get; set; }
 }

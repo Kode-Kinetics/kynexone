@@ -49,10 +49,4 @@ public partial class PayrollIssue
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual Employee? Employee { get; set; }
-
-    public virtual PayrollRun? PayrollRun { get; set; }
-
-    public virtual User? User { get; set; }
 }

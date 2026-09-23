@@ -125,15 +125,5 @@ public partial class PayrollSlip
 
     public Guid? UpdatedBy { get; set; }
 
-    public virtual DocumentTemplate? DocumentTemplate { get; set; }
-
-    public virtual Employee Employee { get; set; } = null!;
-
-    public virtual File? File { get; set; }
-
-    public virtual PayrollRun PayrollRun { get; set; } = null!;
-
     public virtual ICollection<PayrollSlipLine> PayrollSlipLines { get; set; } = new List<PayrollSlipLine>();
-
-    public virtual ICollection<WpsLine> WpsLines { get; set; } = new List<WpsLine>();
 }

@@ -31,8 +31,4 @@ public partial class GlMapping
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual Company? Company { get; set; }
-
-    public virtual CostCenter? CostCenter { get; set; }
 }

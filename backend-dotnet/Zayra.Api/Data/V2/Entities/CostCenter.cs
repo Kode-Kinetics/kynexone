@@ -31,22 +31,4 @@ public partial class CostCenter
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual Company Company { get; set; } = null!;
-
-    public virtual CostCenter? CostCenterNavigation { get; set; }
-
-    public virtual ICollection<Department> Departments { get; set; } = new List<Department>();
-
-    public virtual ICollection<EmployeeAssignment> EmployeeAssignments { get; set; } = new List<EmployeeAssignment>();
-
-    public virtual ICollection<GlJournalLine> GlJournalLines { get; set; } = new List<GlJournalLine>();
-
-    public virtual ICollection<GlMapping> GlMappings { get; set; } = new List<GlMapping>();
-
-    public virtual ICollection<CostCenter> InverseCostCenterNavigation { get; set; } = new List<CostCenter>();
-
-    public virtual ICollection<PayrollInput> PayrollInputs { get; set; } = new List<PayrollInput>();
-
-    public virtual ICollection<PayrollSlipLine> PayrollSlipLines { get; set; } = new List<PayrollSlipLine>();
 }

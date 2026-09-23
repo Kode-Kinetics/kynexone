@@ -49,12 +49,4 @@ public partial class LeaveRequest
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual ApprovalRequest? ApprovalRequest { get; set; }
-
-    public virtual Employee Employee { get; set; } = null!;
-
-    public virtual ICollection<EmployeeDocument> EmployeeDocuments { get; set; } = new List<EmployeeDocument>();
-
-    public virtual LeaveType LeaveType { get; set; } = null!;
 }

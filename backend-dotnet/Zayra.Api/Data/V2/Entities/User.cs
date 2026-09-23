@@ -49,46 +49,4 @@ public partial class User
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual ICollection<ApprovalAction> ApprovalActionUserNavigations { get; set; } = new List<ApprovalAction>();
-
-    public virtual ICollection<ApprovalAction> ApprovalActionUsers { get; set; } = new List<ApprovalAction>();
-
-    public virtual ICollection<ApprovalDelegation> ApprovalDelegationUserNavigations { get; set; } = new List<ApprovalDelegation>();
-
-    public virtual ICollection<ApprovalDelegation> ApprovalDelegationUsers { get; set; } = new List<ApprovalDelegation>();
-
-    public virtual ICollection<ApprovalRequest> ApprovalRequests { get; set; } = new List<ApprovalRequest>();
-
-    public virtual ICollection<AuthSession> AuthSessions { get; set; } = new List<AuthSession>();
-
-    public virtual ICollection<AuthToken> AuthTokens { get; set; } = new List<AuthToken>();
-
-    public virtual Employee? Employee { get; set; }
-
-    public virtual ICollection<File> Files { get; set; } = new List<File>();
-
-    public virtual ICollection<GlPeriodClose> GlPeriodCloseUserNavigations { get; set; } = new List<GlPeriodClose>();
-
-    public virtual ICollection<GlPeriodClose> GlPeriodCloseUsers { get; set; } = new List<GlPeriodClose>();
-
-    public virtual ICollection<GosiFiling> GosiFilings { get; set; } = new List<GosiFiling>();
-
-    public virtual ICollection<Notification> Notifications { get; set; } = new List<Notification>();
-
-    public virtual ICollection<PayrollIssue> PayrollIssues { get; set; } = new List<PayrollIssue>();
-
-    public virtual ICollection<PermissionGrantorRecord> PermissionGrantorRecordUser1s { get; set; } = new List<PermissionGrantorRecord>();
-
-    public virtual ICollection<PermissionGrantorRecord> PermissionGrantorRecordUserNavigations { get; set; } = new List<PermissionGrantorRecord>();
-
-    public virtual ICollection<PermissionGrantorRecord> PermissionGrantorRecordUsers { get; set; } = new List<PermissionGrantorRecord>();
-
-    public virtual Tenant Tenant { get; set; } = null!;
-
-    public virtual ICollection<UserRole> UserRoleUserNavigations { get; set; } = new List<UserRole>();
-
-    public virtual ICollection<UserRole> UserRoleUsers { get; set; } = new List<UserRole>();
-
-    public virtual ICollection<WpsBatch> WpsBatches { get; set; } = new List<WpsBatch>();
 }

@@ -42,12 +42,4 @@ public partial class PayComponent
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual ICollection<CompanyPayPolicy> CompanyPayPolicies { get; set; } = new List<CompanyPayPolicy>();
-
-    public virtual ICollection<PayrollInput> PayrollInputs { get; set; } = new List<PayrollInput>();
-
-    public virtual ICollection<PayrollSlipLine> PayrollSlipLines { get; set; } = new List<PayrollSlipLine>();
-
-    public virtual Tenant Tenant { get; set; } = null!;
 }

@@ -29,8 +29,4 @@ public partial class ApprovalWorkflow
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual ICollection<ApprovalRequest> ApprovalRequests { get; set; } = new List<ApprovalRequest>();
-
-    public virtual Company? Company { get; set; }
 }

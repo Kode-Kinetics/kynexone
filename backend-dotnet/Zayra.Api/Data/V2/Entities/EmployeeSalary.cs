@@ -45,8 +45,4 @@ public partial class EmployeeSalary
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual ApprovalRequest? ApprovalRequest { get; set; }
-
-    public virtual Employee Employee { get; set; } = null!;
 }

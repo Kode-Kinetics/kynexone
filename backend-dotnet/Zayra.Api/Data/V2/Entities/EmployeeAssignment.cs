@@ -53,22 +53,4 @@ public partial class EmployeeAssignment
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual ApprovalRequest? ApprovalRequest { get; set; }
-
-    public virtual Branch Branch { get; set; } = null!;
-
-    public virtual Company Company { get; set; } = null!;
-
-    public virtual CostCenter? CostCenter { get; set; }
-
-    public virtual Department Department { get; set; } = null!;
-
-    public virtual Designation Designation { get; set; } = null!;
-
-    public virtual Employee Employee { get; set; } = null!;
-
-    public virtual Employee? EmployeeNavigation { get; set; }
-
-    public virtual Grade? Grade { get; set; }
 }

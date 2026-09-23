@@ -35,8 +35,4 @@ public partial class StatutoryRuleBand
     public string? ValueJson { get; set; }
 
     public DateTime CreatedAt { get; set; }
-
-    public virtual ICollection<PayrollSlipLine> PayrollSlipLines { get; set; } = new List<PayrollSlipLine>();
-
-    public virtual StatutoryRule StatutoryRule { get; set; } = null!;
 }

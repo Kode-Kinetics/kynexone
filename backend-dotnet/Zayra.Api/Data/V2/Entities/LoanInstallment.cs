@@ -35,10 +35,4 @@ public partial class LoanInstallment
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual ICollection<FinalSettlementLine> FinalSettlementLines { get; set; } = new List<FinalSettlementLine>();
-
-    public virtual Loan Loan { get; set; } = null!;
-
-    public virtual ICollection<PayrollSlipLine> PayrollSlipLines { get; set; } = new List<PayrollSlipLine>();
 }

@@ -1,4 +1,56 @@
-﻿using System;
+﻿// -----------------------------------------------------------------------------------------------
+// KynexDbContext — the EF Core model of the KynexOne baseline schema (TARGET_SCHEMA.md revision 7).
+//
+// PROVENANCE. This file and Entities/ were produced by `dotnet ef dbcontext scaffold` against a
+// postgres:16 container with backend-dotnet/Zayra.Api/Db/baseline/001..060 applied, then tuned.
+// The SQL is the source of truth; this is its image in C#. If the two ever disagree, the SQL wins
+// and KynexModelMatchesBaselineTests fails — it rebuilds the database from the baseline and
+// compares every table, column, store type, nullability, key and foreign key against this model.
+//
+// THIS MODEL LIVES ALONGSIDE Data/ZayraDbContext.cs, WHICH IT DOES NOT REPLACE YET. Roughly a
+// hundred services still depend on the old model; they are ported onto this one table by table.
+// Nothing here may take a dependency on Models/ or on ZayraDbContext.
+//
+// WHAT THE TUNING CHANGED, and why each is not a scaffolder bug to be fixed upstream:
+//
+//  1. NAVIGATION PROPERTIES ARE GONE, except nine parent-to-its-own-lines collections
+//     (payroll_slips, wps_batches, gl_journals, final_settlements, loans, statutory_rules,
+//     approval_requests, background_jobs, timesheets). The scaffolder emits both ends of all 160
+//     foreign keys, which is how a single entity ends up with five collections and an innocent
+//     Include chain becomes a cartesian product — the shape behind the production OOM. Every
+//     relationship is still fully modelled (HasOne<T>().WithMany(), with its real foreign key,
+//     principal key, delete behaviour and constraint name); only the C# property is absent, so a
+//     traversal has to be written as an explicit join. Adding one navigation back later is a line;
+//     removing one after a hundred services traverse it is not.
+//
+//  2. NO GLOBAL QUERY FILTERS. Isolation is RLS. See KynexDbContext.Conventions.cs.
+//
+//  3. xmin IS THE CONCURRENCY TOKEN, not updated_at. See KynexDbContext.Conventions.cs.
+//
+//  4. timestamptz <-> DateTime(Kind=Utc), date <-> DateOnly, time <-> TimeOnly, money <-> decimal
+//     with the column's own precision. See KynexDbContext.Conventions.cs.
+//
+//  5. PARTITIONED TABLES: EF SEES ONLY THE PARENT. attendance_days, attendance_punches,
+//     audit_logs, background_job_items and timesheet_entries are RANGE-partitioned by month
+//     (§19.3). The 464 children are not entities and must never be; reads and writes go through
+//     the parent, which is where the grants and the p_tenant policy live — a child named directly
+//     is an unfiltered copy of millions of rows. Their primary keys are composite because a
+//     partitioned table's key must contain the partition key: (id, work_date), (id, occurred_at),
+//     (id, created_at). Npgsql 8's reverse-engineer skips relkind='p' entirely, so these five were
+//     scaffolded from a de-partitioned copy of Db/baseline/schema.sql and then verified against
+//     the real, partitioned database by the test.
+//
+//  6. ONE CLASS IS RENAMED: the `files` table is StoredFile, not File. With ImplicitUsings on,
+//     a type called File in a namespace this project imports shadows System.IO.File at every
+//     call site that touches both. The table name is unchanged and the DbSet is still Files.
+//
+//  7. WHAT EF CANNOT EXPRESS AT ALL, and therefore does not: the 45 row-level-security policies,
+//     the row-stamp / state-machine / frozen-row / append-only / deferred-total triggers, the 14
+//     gist EXCLUDE no-overlap constraints, the partial and expression indexes, the two
+//     security_invoker views' definitions, and the CHECK constraints — which are mirrored instead
+//     as the constants classes in Data/V2/Domains, one per constraint, named for it exactly.
+// -----------------------------------------------------------------------------------------------
+using System;
 using System.Collections.Generic;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data.V2.Entities;
@@ -20,13 +72,21 @@ public partial class KynexDbContext : DbContext
 
     public virtual DbSet<ApprovalWorkflow> ApprovalWorkflows { get; set; }
 
+    public virtual DbSet<AttendanceDay> AttendanceDays { get; set; }
+
     public virtual DbSet<AttendanceDevice> AttendanceDevices { get; set; }
+
+    public virtual DbSet<AttendancePunch> AttendancePunches { get; set; }
+
+    public virtual DbSet<AuditLog> AuditLogs { get; set; }
 
     public virtual DbSet<AuthSession> AuthSessions { get; set; }
 
     public virtual DbSet<AuthToken> AuthTokens { get; set; }
 
     public virtual DbSet<BackgroundJob> BackgroundJobs { get; set; }
+
+    public virtual DbSet<BackgroundJobItem> BackgroundJobItems { get; set; }
 
     public virtual DbSet<Branch> Branches { get; set; }
 
@@ -60,7 +120,7 @@ public partial class KynexDbContext : DbContext
 
     public virtual DbSet<EosCalculation> EosCalculations { get; set; }
 
-    public virtual DbSet<File> Files { get; set; }
+    public virtual DbSet<StoredFile> Files { get; set; }
 
     public virtual DbSet<FinalSettlement> FinalSettlements { get; set; }
 
@@ -146,6 +206,8 @@ public partial class KynexDbContext : DbContext
 
     public virtual DbSet<TimesheetDayReconciliation> TimesheetDayReconciliations { get; set; }
 
+    public virtual DbSet<TimesheetEntry> TimesheetEntries { get; set; }
+
     public virtual DbSet<User> Users { get; set; }
 
     public virtual DbSet<UserRole> UserRoles { get; set; }
@@ -202,19 +264,19 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.User).WithMany(p => p.ApprovalActionUsers)
+            entity.HasOne<User>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.ActorUserId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_approval_actions__actor_user_id");
 
-            entity.HasOne(d => d.UserNavigation).WithMany(p => p.ApprovalActionUserNavigations)
+            entity.HasOne<User>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.OnBehalfOfUserId })
                 .OnDelete(DeleteBehavior.SetNull)
                 .HasConstraintName("fk_approval_actions__on_behalf_of_user_id");
 
-            entity.HasOne(d => d.ApprovalRequest).WithMany(p => p.ApprovalActions)
+            entity.HasOne<ApprovalRequest>().WithMany(p => p.ApprovalActions)
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.RequestId })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -256,12 +318,12 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.User).WithMany(p => p.ApprovalDelegationUsers)
+            entity.HasOne<User>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.DelegateUserId })
                 .HasConstraintName("fk_approval_delegations__delegate_user_id");
 
-            entity.HasOne(d => d.UserNavigation).WithMany(p => p.ApprovalDelegationUserNavigations)
+            entity.HasOne<User>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.DelegatorUserId })
                 .HasConstraintName("fk_approval_delegations__delegator_user_id");
@@ -330,19 +392,19 @@ public partial class KynexDbContext : DbContext
                 .HasColumnType("jsonb")
                 .HasColumnName("workflow_snapshot");
 
-            entity.HasOne(d => d.Employee).WithMany(p => p.ApprovalRequests)
+            entity.HasOne<Employee>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.EmployeeId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_approval_requests__employee_id");
 
-            entity.HasOne(d => d.User).WithMany(p => p.ApprovalRequests)
+            entity.HasOne<User>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.RequesterUserId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_approval_requests__requester_user_id");
 
-            entity.HasOne(d => d.ApprovalWorkflow).WithMany(p => p.ApprovalRequests)
+            entity.HasOne<ApprovalWorkflow>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.WorkflowId })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -382,11 +444,90 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.Company).WithMany(p => p.ApprovalWorkflows)
+            entity.HasOne<Company>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.CompanyId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_approval_workflows__company_id");
+        });
+
+        modelBuilder.Entity<AttendanceDay>(entity =>
+        {
+            entity.HasKey(e => new { e.Id, e.WorkDate }).HasName("pk_attendance_days");
+
+            entity.ToTable("attendance_days", tb => tb.HasComment("Holds the computed attendance result for one employee on one local working day in whole minutes, with its exceptions and the payroll run that locked it. @tier:T @owner:HR @retention:24m-purge"));
+
+            entity.HasIndex(e => new { e.TenantId, e.LockedRunId }, "ix_attendance_days__locked_run_id");
+
+            entity.HasIndex(e => new { e.TenantId, e.ShiftId }, "ix_attendance_days__shift_id");
+
+            entity.HasIndex(e => new { e.TenantId, e.WorkDate, e.Status }, "ix_attendance_days__tenant_work_date_status");
+
+            entity.HasIndex(e => new { e.TenantId, e.EmployeeId, e.WorkDate }, "uq_attendance_days__employee_work_date").IsUnique();
+
+            entity.HasIndex(e => new { e.TenantId, e.Id, e.WorkDate }, "uq_attendance_days__tenant_id").IsUnique();
+
+            entity.Property(e => e.Id).HasColumnName("id");
+            entity.Property(e => e.WorkDate).HasColumnName("work_date");
+            entity.Property(e => e.AbsentMinutes)
+                .HasDefaultValue(0)
+                .HasColumnName("absent_minutes");
+            entity.Property(e => e.BreakMinutes)
+                .HasDefaultValue(0)
+                .HasColumnName("break_minutes");
+            entity.Property(e => e.ComputedAt).HasColumnName("computed_at");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.CreatedBy).HasColumnName("created_by");
+            entity.Property(e => e.EarlyOutMinutes)
+                .HasDefaultValue(0)
+                .HasColumnName("early_out_minutes");
+            entity.Property(e => e.EmployeeId).HasColumnName("employee_id");
+            entity.Property(e => e.Exceptions)
+                .HasDefaultValueSql("'[]'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("exceptions");
+            entity.Property(e => e.FirstIn).HasColumnName("first_in");
+            entity.Property(e => e.LastOut).HasColumnName("last_out");
+            entity.Property(e => e.LateMinutes)
+                .HasDefaultValue(0)
+                .HasColumnName("late_minutes");
+            entity.Property(e => e.LockedRunId).HasColumnName("locked_run_id");
+            entity.Property(e => e.OvertimeMinutes)
+                .HasDefaultValue(0)
+                .HasColumnName("overtime_minutes");
+            entity.Property(e => e.ScheduledMinutes)
+                .HasDefaultValue(0)
+                .HasColumnName("scheduled_minutes");
+            entity.Property(e => e.ShiftId).HasColumnName("shift_id");
+            entity.Property(e => e.Status)
+                .HasMaxLength(40)
+                .HasColumnName("status");
+            entity.Property(e => e.TenantId).HasColumnName("tenant_id");
+            entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+            entity.Property(e => e.WorkedMinutes)
+                .HasDefaultValue(0)
+                .HasColumnName("worked_minutes");
+
+            entity.HasOne<Employee>().WithMany()
+                .HasPrincipalKey(p => new { p.TenantId, p.Id })
+                .HasForeignKey(d => new { d.TenantId, d.EmployeeId })
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("fk_attendance_days__employee_id");
+
+            entity.HasOne<PayrollRun>().WithMany()
+                .HasPrincipalKey(p => new { p.TenantId, p.Id })
+                .HasForeignKey(d => new { d.TenantId, d.LockedRunId })
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("fk_attendance_days__locked_run_id");
+
+            entity.HasOne<Shift>().WithMany()
+                .HasPrincipalKey(p => new { p.TenantId, p.Id })
+                .HasForeignKey(d => new { d.TenantId, d.ShiftId })
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("fk_attendance_days__shift_id");
         });
 
         modelBuilder.Entity<AttendanceDevice>(entity =>
@@ -430,11 +571,141 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.Branch).WithMany(p => p.AttendanceDevices)
+            entity.HasOne<Branch>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.BranchId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_attendance_devices__branch_id");
+        });
+
+        modelBuilder.Entity<AttendancePunch>(entity =>
+        {
+            entity.HasKey(e => new { e.Id, e.OccurredAt }).HasName("pk_attendance_punches");
+
+            entity.ToTable("attendance_punches", tb => tb.HasComment("Stores every raw clock event exactly as received from a device, mobile app, import or correction, written once and never edited. @tier:T @owner:HR @retention:24m-purge"));
+
+            entity.HasIndex(e => new { e.TenantId, e.ApprovalRequestId }, "ix_attendance_punches__approval_request_id");
+
+            entity.HasIndex(e => new { e.TenantId, e.EmployeeId }, "ix_attendance_punches__employee_id");
+
+            entity.HasIndex(e => new { e.TenantId, e.EmployeeId, e.OccurredAt }, "ix_attendance_punches__employee_occurred_at");
+
+            entity.HasIndex(e => new { e.TenantId, e.DeviceId, e.ExternalId, e.OccurredAt }, "uq_attendance_punches__device_external_id").IsUnique();
+
+            entity.HasIndex(e => new { e.TenantId, e.IdempotencyKey, e.OccurredAt }, "uq_attendance_punches__idempotency_key").IsUnique();
+
+            entity.HasIndex(e => new { e.TenantId, e.Id, e.OccurredAt }, "uq_attendance_punches__tenant_id").IsUnique();
+
+            entity.Property(e => e.Id).HasColumnName("id");
+            entity.Property(e => e.OccurredAt).HasColumnName("occurred_at");
+            entity.Property(e => e.ApprovalRequestId).HasColumnName("approval_request_id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.CreatedBy).HasColumnName("created_by");
+            entity.Property(e => e.DeviceId).HasColumnName("device_id");
+            entity.Property(e => e.Direction)
+                .HasMaxLength(40)
+                .HasColumnName("direction");
+            entity.Property(e => e.EmployeeId).HasColumnName("employee_id");
+            entity.Property(e => e.ExternalId)
+                .HasMaxLength(64)
+                .HasColumnName("external_id");
+            entity.Property(e => e.IdempotencyKey).HasColumnName("idempotency_key");
+            entity.Property(e => e.Latitude)
+                .HasPrecision(9, 6)
+                .HasColumnName("latitude");
+            entity.Property(e => e.Longitude)
+                .HasPrecision(9, 6)
+                .HasColumnName("longitude");
+            entity.Property(e => e.Source)
+                .HasMaxLength(40)
+                .HasColumnName("source");
+            entity.Property(e => e.TenantId).HasColumnName("tenant_id");
+
+            entity.HasOne<ApprovalRequest>().WithMany()
+                .HasPrincipalKey(p => new { p.TenantId, p.Id })
+                .HasForeignKey(d => new { d.TenantId, d.ApprovalRequestId })
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("fk_attendance_punches__approval_request_id");
+
+            entity.HasOne<AttendanceDevice>().WithMany()
+                .HasPrincipalKey(p => new { p.TenantId, p.Id })
+                .HasForeignKey(d => new { d.TenantId, d.DeviceId })
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("fk_attendance_punches__device_id");
+
+            entity.HasOne<Employee>().WithMany()
+                .HasPrincipalKey(p => new { p.TenantId, p.Id })
+                .HasForeignKey(d => new { d.TenantId, d.EmployeeId })
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("fk_attendance_punches__employee_id");
+        });
+
+        modelBuilder.Entity<AuditLog>(entity =>
+        {
+            entity.HasKey(e => new { e.Id, e.CreatedAt }).HasName("pk_audit_logs");
+
+            entity.ToTable("audit_logs", tb => tb.HasComment("Is the single append-only log of every audited event outside payroll money movement, made tamper-evident by periodic Merkle checkpoint rows and verifiable after a PDPL erasure because each row keeps the digests of the payload it no longer holds. @tier:T/P @owner:Compliance @retention:indefinite-keep"));
+
+            entity.HasIndex(e => new { e.TenantId, e.CorrelationId }, "ix_audit_logs__correlation_id");
+
+            entity.HasIndex(e => new { e.ChainKey, e.Seq, e.CreatedAt }, "uq_audit_logs__chain_seq").IsUnique();
+
+            entity.HasIndex(e => new { e.TenantId, e.Id, e.CreatedAt }, "uq_audit_logs__tenant_id").IsUnique();
+
+            entity.Property(e => e.Id).HasColumnName("id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.Action)
+                .HasMaxLength(64)
+                .HasColumnName("action");
+            entity.Property(e => e.ActorUserId).HasColumnName("actor_user_id");
+            entity.Property(e => e.After)
+                .HasColumnType("jsonb")
+                .HasColumnName("after");
+            entity.Property(e => e.AfterHash).HasColumnName("after_hash");
+            entity.Property(e => e.Before)
+                .HasColumnType("jsonb")
+                .HasColumnName("before");
+            entity.Property(e => e.BeforeHash).HasColumnName("before_hash");
+            entity.Property(e => e.Category)
+                .HasMaxLength(40)
+                .HasColumnName("category");
+            entity.Property(e => e.ChainKey)
+                .HasMaxLength(64)
+                .HasColumnName("chain_key");
+            entity.Property(e => e.CompanyId).HasColumnName("company_id");
+            entity.Property(e => e.CorrelationId).HasColumnName("correlation_id");
+            entity.Property(e => e.CoversCreatedFrom).HasColumnName("covers_created_from");
+            entity.Property(e => e.CoversCreatedTo).HasColumnName("covers_created_to");
+            entity.Property(e => e.CoversSeqFrom).HasColumnName("covers_seq_from");
+            entity.Property(e => e.CoversSeqTo).HasColumnName("covers_seq_to");
+            entity.Property(e => e.Entity)
+                .HasMaxLength(64)
+                .HasColumnName("entity");
+            entity.Property(e => e.EntityId).HasColumnName("entity_id");
+            entity.Property(e => e.EnvelopeHash).HasColumnName("envelope_hash");
+            entity.Property(e => e.HashAlgorithm)
+                .HasMaxLength(40)
+                .HasDefaultValueSql("'sha256'::character varying")
+                .HasColumnName("hash_algorithm");
+            entity.Property(e => e.ObservedGaps).HasColumnName("observed_gaps");
+            entity.Property(e => e.OnBehalfOfUserId).HasColumnName("on_behalf_of_user_id");
+            entity.Property(e => e.PersonalData)
+                .HasColumnType("jsonb")
+                .HasColumnName("personal_data");
+            entity.Property(e => e.PersonalDataErasedAt).HasColumnName("personal_data_erased_at");
+            entity.Property(e => e.PersonalDataHash).HasColumnName("personal_data_hash");
+            entity.Property(e => e.PrevCheckpointHash).HasColumnName("prev_checkpoint_hash");
+            entity.Property(e => e.RecordKind)
+                .HasMaxLength(40)
+                .HasDefaultValueSql("'Event'::character varying")
+                .HasColumnName("record_kind");
+            entity.Property(e => e.RootHash).HasColumnName("root_hash");
+            entity.Property(e => e.Seq).HasColumnName("seq");
+            entity.Property(e => e.TenantId).HasColumnName("tenant_id");
         });
 
         modelBuilder.Entity<AuthSession>(entity =>
@@ -483,12 +754,12 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UserAgent).HasColumnName("user_agent");
             entity.Property(e => e.UserId).HasColumnName("user_id");
 
-            entity.HasOne(d => d.PlatformUser).WithMany(p => p.AuthSessions)
+            entity.HasOne<PlatformUser>().WithMany()
                 .HasForeignKey(d => d.PlatformUserId)
                 .OnDelete(DeleteBehavior.Cascade)
                 .HasConstraintName("fk_auth_sessions__platform_user_id");
 
-            entity.HasOne(d => d.User).WithMany(p => p.AuthSessions)
+            entity.HasOne<User>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.UserId })
                 .OnDelete(DeleteBehavior.Cascade)
@@ -536,12 +807,12 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
             entity.Property(e => e.UserId).HasColumnName("user_id");
 
-            entity.HasOne(d => d.PlatformUser).WithMany(p => p.AuthTokens)
+            entity.HasOne<PlatformUser>().WithMany()
                 .HasForeignKey(d => d.PlatformUserId)
                 .OnDelete(DeleteBehavior.Cascade)
                 .HasConstraintName("fk_auth_tokens__platform_user_id");
 
-            entity.HasOne(d => d.User).WithMany(p => p.AuthTokens)
+            entity.HasOne<User>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.UserId })
                 .OnDelete(DeleteBehavior.Cascade)
@@ -554,7 +825,7 @@ public partial class KynexDbContext : DbContext
 
             entity.ToTable("background_jobs", tb => tb.HasComment("Is one asynchronous, resumable and idempotent unit of work with its payload, lease, heartbeat, attempt count and result, covering every import, export, sync and retention run in the product. @tier:T/P @owner:Platform @retention:6m-purge"));
 
-            entity.HasIndex(e => new { e.Status, e.ScheduledAt }, "ix_background_jobs__queue").HasFilter("((status)::text = ANY ((ARRAY['Queued'::character varying, 'Leased'::character varying, 'Running'::character varying])::text[]))");
+            entity.HasIndex(e => new { e.Status, e.ScheduledAt }, "ix_background_jobs__queue").HasFilter("((status)::text = ANY (ARRAY[('Queued'::character varying)::text, ('Leased'::character varying)::text, ('Running'::character varying)::text]))");
 
             entity.HasIndex(e => e.SourceFileId, "ix_background_jobs__source_file_id");
 
@@ -608,15 +879,49 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.SourceFile).WithMany(p => p.BackgroundJobs)
+            entity.HasOne<StoredFile>().WithMany()
                 .HasForeignKey(d => d.SourceFileId)
                 .OnDelete(DeleteBehavior.SetNull)
                 .HasConstraintName("fk_background_jobs__source_file_id");
 
-            entity.HasOne(d => d.Tenant).WithMany(p => p.BackgroundJobs)
+            entity.HasOne<Tenant>().WithMany()
                 .HasForeignKey(d => d.TenantId)
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_background_jobs__tenant_id");
+        });
+
+        modelBuilder.Entity<BackgroundJobItem>(entity =>
+        {
+            entity.HasKey(e => new { e.Id, e.CreatedAt }).HasName("pk_background_job_items");
+
+            entity.ToTable("background_job_items", tb => tb.HasComment("Records the per-row outcome of a background job so a partially failed import names the rows that failed and why, rather than failing as a whole. @tier:T/P @owner:Platform @retention:6m-purge"));
+
+            entity.HasIndex(e => e.JobId, "ix_background_job_items__job_id");
+
+            entity.HasIndex(e => new { e.TenantId, e.Id, e.CreatedAt }, "uq_background_job_items__tenant_id").IsUnique();
+
+            entity.Property(e => e.Id).HasColumnName("id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.CorrelationId).HasColumnName("correlation_id");
+            entity.Property(e => e.EntityId).HasColumnName("entity_id");
+            entity.Property(e => e.ErrorCode)
+                .HasMaxLength(64)
+                .HasColumnName("error_code");
+            entity.Property(e => e.ErrorMessage).HasColumnName("error_message");
+            entity.Property(e => e.JobId).HasColumnName("job_id");
+            entity.Property(e => e.ProcessedAt).HasColumnName("processed_at");
+            entity.Property(e => e.RowRef).HasColumnName("row_ref");
+            entity.Property(e => e.Status)
+                .HasMaxLength(40)
+                .HasDefaultValueSql("'Pending'::character varying")
+                .HasColumnName("status");
+            entity.Property(e => e.TenantId).HasColumnName("tenant_id");
+
+            entity.HasOne<BackgroundJob>().WithMany(p => p.BackgroundJobItems)
+                .HasForeignKey(d => d.JobId)
+                .HasConstraintName("fk_background_job_items__job_id");
         });
 
         modelBuilder.Entity<Branch>(entity =>
@@ -654,7 +959,7 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.Company).WithMany(p => p.Branches)
+            entity.HasOne<Company>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.CompanyId })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -722,7 +1027,7 @@ public partial class KynexDbContext : DbContext
                 .HasMaxLength(20)
                 .HasColumnName("wps_mol_id");
 
-            entity.HasOne(d => d.Tenant).WithMany(p => p.Companies)
+            entity.HasOne<Tenant>().WithMany()
                 .HasForeignKey(d => d.TenantId)
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_companies__tenant_id");
@@ -772,13 +1077,13 @@ public partial class KynexDbContext : DbContext
                 .HasColumnType("jsonb")
                 .HasColumnName("value_json");
 
-            entity.HasOne(d => d.Company).WithMany(p => p.CompanyPayPolicies)
+            entity.HasOne<Company>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.CompanyId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_company_pay_policies__company_id");
 
-            entity.HasOne(d => d.PayComponent).WithMany(p => p.CompanyPayPolicies)
+            entity.HasOne<PayComponent>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Code })
                 .HasForeignKey(d => new { d.TenantId, d.PayComponentCode })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -818,13 +1123,13 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.Company).WithMany(p => p.CostCenters)
+            entity.HasOne<Company>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.CompanyId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_cost_centers__company_id");
 
-            entity.HasOne(d => d.CostCenterNavigation).WithMany(p => p.InverseCostCenterNavigation)
+            entity.HasOne<CostCenter>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.ParentId })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -879,19 +1184,19 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.Company).WithMany(p => p.Departments)
+            entity.HasOne<Company>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.CompanyId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_departments__company_id");
 
-            entity.HasOne(d => d.CostCenter).WithMany(p => p.Departments)
+            entity.HasOne<CostCenter>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.CostCenterId })
                 .OnDelete(DeleteBehavior.SetNull)
                 .HasConstraintName("fk_departments__cost_center_id");
 
-            entity.HasOne(d => d.DepartmentNavigation).WithMany(p => p.InverseDepartmentNavigation)
+            entity.HasOne<Department>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.ParentId })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -925,7 +1230,7 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.Tenant).WithMany(p => p.Designations)
+            entity.HasOne<Tenant>().WithMany()
                 .HasForeignKey(d => d.TenantId)
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_designations__tenant_id");
@@ -968,7 +1273,7 @@ public partial class KynexDbContext : DbContext
                 .HasComment("Immutable once a document or slip references it; a change is a NEW row with the next version (§6).")
                 .HasColumnName("version");
 
-            entity.HasOne(d => d.Company).WithMany(p => p.DocumentTemplates)
+            entity.HasOne<Company>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.CompanyId })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -1054,7 +1359,7 @@ public partial class KynexDbContext : DbContext
                 .HasDefaultValue(true)
                 .HasColumnName("wps_eligible");
 
-            entity.HasOne(d => d.Tenant).WithMany(p => p.Employees)
+            entity.HasOne<Tenant>().WithMany()
                 .HasForeignKey(d => d.TenantId)
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_employees__tenant_id");
@@ -1119,55 +1424,55 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.ApprovalRequest).WithMany(p => p.EmployeeAssignments)
+            entity.HasOne<ApprovalRequest>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.ApprovalRequestId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_employee_assignments__approval_request_id");
 
-            entity.HasOne(d => d.Branch).WithMany(p => p.EmployeeAssignments)
+            entity.HasOne<Branch>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.BranchId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_employee_assignments__branch_id");
 
-            entity.HasOne(d => d.Company).WithMany(p => p.EmployeeAssignments)
+            entity.HasOne<Company>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.CompanyId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_employee_assignments__company_id");
 
-            entity.HasOne(d => d.CostCenter).WithMany(p => p.EmployeeAssignments)
+            entity.HasOne<CostCenter>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.CostCenterId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_employee_assignments__cost_center_id");
 
-            entity.HasOne(d => d.Department).WithMany(p => p.EmployeeAssignments)
+            entity.HasOne<Department>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.DepartmentId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_employee_assignments__department_id");
 
-            entity.HasOne(d => d.Designation).WithMany(p => p.EmployeeAssignments)
+            entity.HasOne<Designation>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.DesignationId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_employee_assignments__designation_id");
 
-            entity.HasOne(d => d.Employee).WithMany(p => p.EmployeeAssignmentEmployees)
+            entity.HasOne<Employee>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.EmployeeId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_employee_assignments__employee_id");
 
-            entity.HasOne(d => d.Grade).WithMany(p => p.EmployeeAssignments)
+            entity.HasOne<Grade>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.GradeId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_employee_assignments__grade_id");
 
-            entity.HasOne(d => d.EmployeeNavigation).WithMany(p => p.EmployeeAssignmentEmployeeNavigations)
+            entity.HasOne<Employee>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.ManagerEmployeeId })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -1207,7 +1512,7 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.Employee).WithMany(p => p.EmployeeBankAccounts)
+            entity.HasOne<Employee>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.EmployeeId })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -1254,13 +1559,13 @@ public partial class KynexDbContext : DbContext
                 .HasPrecision(6, 2)
                 .HasColumnName("weekly_hours");
 
-            entity.HasOne(d => d.EmployeeDocument).WithMany(p => p.EmployeeContracts)
+            entity.HasOne<EmployeeDocument>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.DocumentId })
                 .OnDelete(DeleteBehavior.SetNull)
                 .HasConstraintName("fk_employee_contracts__document_id");
 
-            entity.HasOne(d => d.Employee).WithMany(p => p.EmployeeContracts)
+            entity.HasOne<Employee>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.EmployeeId })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -1339,30 +1644,30 @@ public partial class KynexDbContext : DbContext
                 .HasDefaultValue(1)
                 .HasColumnName("version");
 
-            entity.HasOne(d => d.Employee).WithMany(p => p.EmployeeDocuments)
+            entity.HasOne<Employee>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.EmployeeId })
                 .HasConstraintName("fk_employee_documents__employee_id");
 
-            entity.HasOne(d => d.File).WithMany(p => p.EmployeeDocuments)
+            entity.HasOne<StoredFile>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.FileId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_employee_documents__file_id");
 
-            entity.HasOne(d => d.LeaveRequest).WithMany(p => p.EmployeeDocuments)
+            entity.HasOne<LeaveRequest>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.LeaveRequestId })
                 .OnDelete(DeleteBehavior.SetNull)
                 .HasConstraintName("fk_employee_documents__leave_request_id");
 
-            entity.HasOne(d => d.EmployeeDocumentNavigation).WithMany(p => p.InverseEmployeeDocumentNavigation)
+            entity.HasOne<EmployeeDocument>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.SupersedesId })
                 .OnDelete(DeleteBehavior.SetNull)
                 .HasConstraintName("fk_employee_documents__supersedes_id");
 
-            entity.HasOne(d => d.DocumentTemplate).WithMany(p => p.EmployeeDocuments)
+            entity.HasOne<DocumentTemplate>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.TemplateId })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -1414,19 +1719,19 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.Company).WithMany(p => p.EmployeeGosiRegistrationCompanies)
+            entity.HasOne<Company>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.CompanyId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_employee_gosi_registrations__company_id");
 
-            entity.HasOne(d => d.Employee).WithMany(p => p.EmployeeGosiRegistrations)
+            entity.HasOne<Employee>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.EmployeeId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_employee_gosi_registrations__employee_id");
 
-            entity.HasOne(d => d.CompanyNavigation).WithMany(p => p.EmployeeGosiRegistrationCompanyNavigations)
+            entity.HasOne<Company>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.GosiRegistrationNo })
                 .HasForeignKey(d => new { d.TenantId, d.GosiRegistrationNo })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -1478,13 +1783,13 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.ApprovalRequest).WithMany(p => p.EmployeeSalaries)
+            entity.HasOne<ApprovalRequest>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.ApprovalRequestId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_employee_salaries__approval_request_id");
 
-            entity.HasOne(d => d.Employee).WithMany(p => p.EmployeeSalaries)
+            entity.HasOne<Employee>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.EmployeeId })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -1549,20 +1854,20 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.Employee).WithMany(p => p.EosCalculations)
+            entity.HasOne<Employee>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.EmployeeId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_eos_calculations__employee_id");
 
-            entity.HasOne(d => d.FinalSettlement).WithMany(p => p.EosCalculations)
+            entity.HasOne<FinalSettlement>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.SettlementId })
                 .OnDelete(DeleteBehavior.SetNull)
                 .HasConstraintName("fk_eos_calculations__settlement_id");
         });
 
-        modelBuilder.Entity<File>(entity =>
+        modelBuilder.Entity<StoredFile>(entity =>
         {
             entity.HasKey(e => e.Id).HasName("pk_files");
 
@@ -1608,12 +1913,12 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
             entity.Property(e => e.UploadedBy).HasColumnName("uploaded_by");
 
-            entity.HasOne(d => d.Tenant).WithMany(p => p.Files)
+            entity.HasOne<Tenant>().WithMany()
                 .HasForeignKey(d => d.TenantId)
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_files__tenant_id");
 
-            entity.HasOne(d => d.User).WithMany(p => p.Files)
+            entity.HasOne<User>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.UploadedBy })
                 .OnDelete(DeleteBehavior.SetNull)
@@ -1682,25 +1987,25 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.ApprovalRequest).WithMany(p => p.FinalSettlements)
+            entity.HasOne<ApprovalRequest>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.ApprovalRequestId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_final_settlements__approval_request_id");
 
-            entity.HasOne(d => d.Company).WithMany(p => p.FinalSettlements)
+            entity.HasOne<Company>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.CompanyId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_final_settlements__company_id");
 
-            entity.HasOne(d => d.Employee).WithMany(p => p.FinalSettlements)
+            entity.HasOne<Employee>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.EmployeeId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_final_settlements__employee_id");
 
-            entity.HasOne(d => d.PayrollRun).WithMany(p => p.FinalSettlements)
+            entity.HasOne<PayrollRun>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.PaidViaRunId })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -1744,13 +2049,13 @@ public partial class KynexDbContext : DbContext
                 .HasColumnName("source_type");
             entity.Property(e => e.TenantId).HasColumnName("tenant_id");
 
-            entity.HasOne(d => d.LoanInstallment).WithMany(p => p.FinalSettlementLines)
+            entity.HasOne<LoanInstallment>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.LoanInstallmentId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_final_settlement_lines__loan_installment_id");
 
-            entity.HasOne(d => d.FinalSettlement).WithMany(p => p.FinalSettlementLines)
+            entity.HasOne<FinalSettlement>().WithMany(p => p.FinalSettlementLines)
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.SettlementId })
                 .HasConstraintName("fk_final_settlement_lines__settlement_id");
@@ -1803,19 +2108,19 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
             entity.Property(e => e.Year).HasColumnName("year");
 
-            entity.HasOne(d => d.Company).WithMany(p => p.GlJournals)
+            entity.HasOne<Company>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.CompanyId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_gl_journals__company_id");
 
-            entity.HasOne(d => d.File).WithMany(p => p.GlJournals)
+            entity.HasOne<StoredFile>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.FileId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_gl_journals__file_id");
 
-            entity.HasOne(d => d.GlJournalNavigation).WithMany(p => p.InverseGlJournalNavigation)
+            entity.HasOne<GlJournal>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.ReversalOfId })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -1861,13 +2166,13 @@ public partial class KynexDbContext : DbContext
                 .HasColumnName("project_code");
             entity.Property(e => e.TenantId).HasColumnName("tenant_id");
 
-            entity.HasOne(d => d.CostCenter).WithMany(p => p.GlJournalLines)
+            entity.HasOne<CostCenter>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.CostCenterId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_gl_journal_lines__cost_center_id");
 
-            entity.HasOne(d => d.GlJournal).WithMany(p => p.GlJournalLines)
+            entity.HasOne<GlJournal>().WithMany(p => p.GlJournalLines)
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.JournalId })
                 .HasConstraintName("fk_gl_journal_lines__journal_id");
@@ -1910,13 +2215,13 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.Company).WithMany(p => p.GlMappings)
+            entity.HasOne<Company>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.CompanyId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_gl_mappings__company_id");
 
-            entity.HasOne(d => d.CostCenter).WithMany(p => p.GlMappings)
+            entity.HasOne<CostCenter>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.CostCenterId })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -1956,19 +2261,19 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
             entity.Property(e => e.Year).HasColumnName("year");
 
-            entity.HasOne(d => d.User).WithMany(p => p.GlPeriodCloseUsers)
+            entity.HasOne<User>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.ClosedBy })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_gl_period_closes__closed_by");
 
-            entity.HasOne(d => d.Company).WithMany(p => p.GlPeriodCloses)
+            entity.HasOne<Company>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.CompanyId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_gl_period_closes__company_id");
 
-            entity.HasOne(d => d.UserNavigation).WithMany(p => p.GlPeriodCloseUserNavigations)
+            entity.HasOne<User>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.ReopenedBy })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -2054,25 +2359,25 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.VarianceReason).HasColumnName("variance_reason");
             entity.Property(e => e.Year).HasColumnName("year");
 
-            entity.HasOne(d => d.Company).WithMany(p => p.GosiFilingCompanies)
+            entity.HasOne<Company>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.CompanyId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_gosi_filings__company_id");
 
-            entity.HasOne(d => d.File).WithMany(p => p.GosiFilings)
+            entity.HasOne<StoredFile>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.FileId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_gosi_filings__file_id");
 
-            entity.HasOne(d => d.User).WithMany(p => p.GosiFilings)
+            entity.HasOne<User>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.FiledBy })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_gosi_filings__filed_by");
 
-            entity.HasOne(d => d.CompanyNavigation).WithMany(p => p.GosiFilingCompanyNavigations)
+            entity.HasOne<Company>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.GosiRegistrationNo })
                 .HasForeignKey(d => new { d.TenantId, d.GosiRegistrationNo })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -2116,7 +2421,7 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.Tenant).WithMany(p => p.Grades)
+            entity.HasOne<Tenant>().WithMany()
                 .HasForeignKey(d => d.TenantId)
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_grades__tenant_id");
@@ -2162,13 +2467,13 @@ public partial class KynexDbContext : DbContext
                 .HasColumnName("source_type");
             entity.Property(e => e.TenantId).HasColumnName("tenant_id");
 
-            entity.HasOne(d => d.Employee).WithMany(p => p.LeaveLedgers)
+            entity.HasOne<Employee>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.EmployeeId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_leave_ledger__employee_id");
 
-            entity.HasOne(d => d.LeaveType).WithMany(p => p.LeaveLedgers)
+            entity.HasOne<LeaveType>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.LeaveTypeId })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -2228,19 +2533,19 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.ApprovalRequest).WithMany(p => p.LeaveRequests)
+            entity.HasOne<ApprovalRequest>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.ApprovalRequestId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_leave_requests__approval_request_id");
 
-            entity.HasOne(d => d.Employee).WithMany(p => p.LeaveRequests)
+            entity.HasOne<Employee>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.EmployeeId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_leave_requests__employee_id");
 
-            entity.HasOne(d => d.LeaveType).WithMany(p => p.LeaveRequests)
+            entity.HasOne<LeaveType>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.LeaveTypeId })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -2289,7 +2594,7 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.Tenant).WithMany(p => p.LeaveTypes)
+            entity.HasOne<Tenant>().WithMany()
                 .HasForeignKey(d => d.TenantId)
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_leave_types__tenant_id");
@@ -2347,13 +2652,13 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.ApprovalRequest).WithMany(p => p.Loans)
+            entity.HasOne<ApprovalRequest>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.ApprovalRequestId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_loans__approval_request_id");
 
-            entity.HasOne(d => d.Employee).WithMany(p => p.Loans)
+            entity.HasOne<Employee>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.EmployeeId })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -2397,7 +2702,7 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.Loan).WithMany(p => p.LoanInstallments)
+            entity.HasOne<Loan>().WithMany(p => p.LoanInstallments)
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.LoanId })
                 .HasConstraintName("fk_loan_installments__loan_id");
@@ -2496,7 +2801,7 @@ public partial class KynexDbContext : DbContext
                 .HasPrecision(18, 2)
                 .HasColumnName("total_weighted");
 
-            entity.HasOne(d => d.Company).WithMany(p => p.NitaqatSnapshots)
+            entity.HasOne<Company>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.CompanyId })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -2543,7 +2848,7 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
             entity.Property(e => e.UserId).HasColumnName("user_id");
 
-            entity.HasOne(d => d.User).WithMany(p => p.Notifications)
+            entity.HasOne<User>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.UserId })
                 .HasConstraintName("fk_notifications__user_id");
@@ -2557,7 +2862,7 @@ public partial class KynexDbContext : DbContext
 
             entity.HasIndex(e => new { e.TenantId, e.NotificationId }, "ix_notification_deliveries__notification_id");
 
-            entity.HasIndex(e => new { e.Status, e.NextAttemptAt }, "ix_notification_deliveries__retry").HasFilter("((status)::text = ANY ((ARRAY['Queued'::character varying, 'Failed'::character varying])::text[]))");
+            entity.HasIndex(e => new { e.Status, e.NextAttemptAt }, "ix_notification_deliveries__retry").HasFilter("((status)::text = ANY (ARRAY[('Queued'::character varying)::text, ('Failed'::character varying)::text]))");
 
             entity.HasIndex(e => new { e.TenantId, e.Id }, "uq_notification_deliveries__tenant_id").IsUnique();
 
@@ -2590,7 +2895,7 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.Notification).WithMany(p => p.NotificationDeliveries)
+            entity.HasOne<Notification>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.NotificationId })
                 .HasConstraintName("fk_notification_deliveries__notification_id");
@@ -2637,11 +2942,11 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.Tenant).WithMany(p => p.NumberSequences)
+            entity.HasOne<Tenant>().WithMany()
                 .HasForeignKey(d => d.TenantId)
                 .HasConstraintName("fk_number_sequences__tenant_id");
 
-            entity.HasOne(d => d.Company).WithMany(p => p.NumberSequences)
+            entity.HasOne<Company>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.CompanyId })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -2703,18 +3008,18 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
             entity.Property(e => e.WorkDate).HasColumnName("work_date");
 
-            entity.HasOne(d => d.StatutoryRule).WithMany(p => p.OvertimeRequests)
+            entity.HasOne<StatutoryRule>().WithMany()
                 .HasForeignKey(d => d.StatutoryRuleId)
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_overtime_requests__statutory_rule_id");
 
-            entity.HasOne(d => d.ApprovalRequest).WithMany(p => p.OvertimeRequests)
+            entity.HasOne<ApprovalRequest>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.ApprovalRequestId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_overtime_requests__approval_request_id");
 
-            entity.HasOne(d => d.Employee).WithMany(p => p.OvertimeRequests)
+            entity.HasOne<Employee>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.EmployeeId })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -2769,7 +3074,7 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.Tenant).WithMany(p => p.PayComponents)
+            entity.HasOne<Tenant>().WithMany()
                 .HasForeignKey(d => d.TenantId)
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_pay_components__tenant_id");
@@ -2904,37 +3209,37 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.PayrollRun).WithMany(p => p.PayrollInputPayrollRuns)
+            entity.HasOne<PayrollRun>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.ClaimedByRunId })
                 .OnDelete(DeleteBehavior.SetNull)
                 .HasConstraintName("fk_payroll_inputs__claimed_by_run_id");
 
-            entity.HasOne(d => d.Company).WithMany(p => p.PayrollInputs)
+            entity.HasOne<Company>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.CompanyId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_payroll_inputs__company_id");
 
-            entity.HasOne(d => d.PayrollRunNavigation).WithMany(p => p.PayrollInputPayrollRunNavigations)
+            entity.HasOne<PayrollRun>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.ConsumedRunId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_payroll_inputs__consumed_run_id");
 
-            entity.HasOne(d => d.CostCenter).WithMany(p => p.PayrollInputs)
+            entity.HasOne<CostCenter>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.CostCenterId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_payroll_inputs__cost_center_id");
 
-            entity.HasOne(d => d.Employee).WithMany(p => p.PayrollInputs)
+            entity.HasOne<Employee>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.EmployeeId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_payroll_inputs__employee_id");
 
-            entity.HasOne(d => d.PayComponent).WithMany(p => p.PayrollInputs)
+            entity.HasOne<PayComponent>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Code })
                 .HasForeignKey(d => new { d.TenantId, d.PayComponentCode })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -2993,19 +3298,19 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.Employee).WithMany(p => p.PayrollIssues)
+            entity.HasOne<Employee>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.EmployeeId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_payroll_issues__employee_id");
 
-            entity.HasOne(d => d.User).WithMany(p => p.PayrollIssues)
+            entity.HasOne<User>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.OverrideBy })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_payroll_issues__override_by");
 
-            entity.HasOne(d => d.PayrollRun).WithMany(p => p.PayrollIssues)
+            entity.HasOne<PayrollRun>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.RunId })
                 .OnDelete(DeleteBehavior.Cascade)
@@ -3030,7 +3335,7 @@ public partial class KynexDbContext : DbContext
 
             entity.HasIndex(e => new { e.TenantId, e.CompanyId, e.Year, e.Month, e.RunType }, "uq_payroll_runs__period_regular_opening")
                 .IsUnique()
-                .HasFilter("(((run_type)::text = ANY ((ARRAY['Regular'::character varying, 'Opening'::character varying])::text[])) AND ((status)::text <> 'Voided'::text))");
+                .HasFilter("(((run_type)::text = ANY (ARRAY[('Regular'::character varying)::text, ('Opening'::character varying)::text])) AND ((status)::text <> 'Voided'::text))");
 
             entity.HasIndex(e => new { e.TenantId, e.Id }, "uq_payroll_runs__tenant_id_id").IsUnique();
 
@@ -3097,25 +3402,25 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.VoidReason).HasColumnName("void_reason");
             entity.Property(e => e.Year).HasColumnName("year");
 
-            entity.HasOne(d => d.ApprovalRequest).WithMany(p => p.PayrollRuns)
+            entity.HasOne<ApprovalRequest>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.ApprovalRequestId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_payroll_runs__approval_request_id");
 
-            entity.HasOne(d => d.Company).WithMany(p => p.PayrollRuns)
+            entity.HasOne<Company>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.CompanyId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_payroll_runs__company_id");
 
-            entity.HasOne(d => d.PayrollRunNavigation).WithMany(p => p.InversePayrollRunNavigation)
+            entity.HasOne<PayrollRun>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.ParentRunId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_payroll_runs__parent_run_id");
 
-            entity.HasOne(d => d.BackgroundJob).WithMany(p => p.PayrollRuns)
+            entity.HasOne<BackgroundJob>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.SourceImportJobId })
                 .OnDelete(DeleteBehavior.SetNull)
@@ -3265,24 +3570,24 @@ public partial class KynexDbContext : DbContext
                 .HasPrecision(18, 2)
                 .HasColumnName("ytd_net");
 
-            entity.HasOne(d => d.Employee).WithMany(p => p.PayrollSlips)
+            entity.HasOne<Employee>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.EmployeeId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_payroll_slips__employee_id");
 
-            entity.HasOne(d => d.File).WithMany(p => p.PayrollSlips)
+            entity.HasOne<StoredFile>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.PayslipFileId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_payroll_slips__payslip_file_id");
 
-            entity.HasOne(d => d.PayrollRun).WithMany(p => p.PayrollSlips)
+            entity.HasOne<PayrollRun>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.RunId })
                 .HasConstraintName("fk_payroll_slips__run_id");
 
-            entity.HasOne(d => d.DocumentTemplate).WithMany(p => p.PayrollSlips)
+            entity.HasOne<DocumentTemplate>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.TemplateId })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -3366,41 +3671,41 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.StatutoryRuleId).HasColumnName("statutory_rule_id");
             entity.Property(e => e.TenantId).HasColumnName("tenant_id");
 
-            entity.HasOne(d => d.StatutoryRuleBand).WithMany(p => p.PayrollSlipLines)
+            entity.HasOne<StatutoryRuleBand>().WithMany()
                 .HasForeignKey(d => d.StatutoryRuleBandId)
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_payroll_slip_lines__statutory_rule_band_id");
 
-            entity.HasOne(d => d.StatutoryRule).WithMany(p => p.PayrollSlipLines)
+            entity.HasOne<StatutoryRule>().WithMany()
                 .HasForeignKey(d => d.StatutoryRuleId)
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_payroll_slip_lines__statutory_rule_id");
 
-            entity.HasOne(d => d.CostCenter).WithMany(p => p.PayrollSlipLines)
+            entity.HasOne<CostCenter>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.CostCenterId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_payroll_slip_lines__cost_center_id");
 
-            entity.HasOne(d => d.LoanInstallment).WithMany(p => p.PayrollSlipLines)
+            entity.HasOne<LoanInstallment>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.LoanInstallmentId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_payroll_slip_lines__loan_installment_id");
 
-            entity.HasOne(d => d.PayComponent).WithMany(p => p.PayrollSlipLines)
+            entity.HasOne<PayComponent>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Code })
                 .HasForeignKey(d => new { d.TenantId, d.PayComponentCode })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_payroll_slip_lines__pay_component_code");
 
-            entity.HasOne(d => d.PayrollInput).WithMany(p => p.PayrollSlipLines)
+            entity.HasOne<PayrollInput>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.PayrollInputId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_payroll_slip_lines__payroll_input_id");
 
-            entity.HasOne(d => d.PayrollSlip).WithMany(p => p.PayrollSlipLines)
+            entity.HasOne<PayrollSlip>().WithMany(p => p.PayrollSlipLines)
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.SlipId })
                 .HasConstraintName("fk_payroll_slip_lines__slip_id");
@@ -3467,18 +3772,18 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.User).WithMany(p => p.PermissionGrantorRecordUsers)
+            entity.HasOne<User>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.GrantedByUserId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_permission_grantor_records__granted_by_user_id");
 
-            entity.HasOne(d => d.UserNavigation).WithMany(p => p.PermissionGrantorRecordUserNavigations)
+            entity.HasOne<User>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.GrantorUserId })
                 .HasConstraintName("fk_permission_grantor_records__grantor_user_id");
 
-            entity.HasOne(d => d.User1).WithMany(p => p.PermissionGrantorRecordUser1s)
+            entity.HasOne<User>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.RevokedBy })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -3564,7 +3869,7 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.Tenant).WithMany(p => p.PublicHolidays)
+            entity.HasOne<Tenant>().WithMany()
                 .HasForeignKey(d => d.TenantId)
                 .OnDelete(DeleteBehavior.Cascade)
                 .HasConstraintName("fk_public_holidays__tenant_id");
@@ -3612,7 +3917,7 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.Tenant).WithMany(p => p.RetentionPolicies)
+            entity.HasOne<Tenant>().WithMany()
                 .HasForeignKey(d => d.TenantId)
                 .OnDelete(DeleteBehavior.Cascade)
                 .HasConstraintName("fk_retention_policies__tenant_id");
@@ -3686,7 +3991,7 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.Tenant).WithMany(p => p.Roles)
+            entity.HasOne<Tenant>().WithMany()
                 .HasForeignKey(d => d.TenantId)
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_roles__tenant_id");
@@ -3717,13 +4022,13 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.PermissionCodeNavigation).WithMany(p => p.RolePermissions)
+            entity.HasOne<Permission>().WithMany()
                 .HasPrincipalKey(p => p.Code)
                 .HasForeignKey(d => d.PermissionCode)
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_role_permissions__permission_code");
 
-            entity.HasOne(d => d.Role).WithMany(p => p.RolePermissions)
+            entity.HasOne<Role>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.RoleId })
                 .HasConstraintName("fk_role_permissions__role_id");
@@ -3772,7 +4077,7 @@ public partial class KynexDbContext : DbContext
                 .HasDefaultValueSql("'{}'::text[]")
                 .HasColumnName("weekly_off_days");
 
-            entity.HasOne(d => d.Tenant).WithMany(p => p.Shifts)
+            entity.HasOne<Tenant>().WithMany()
                 .HasForeignKey(d => d.TenantId)
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_shifts__tenant_id");
@@ -3803,13 +4108,13 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.Employee).WithMany(p => p.ShiftAssignments)
+            entity.HasOne<Employee>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.EmployeeId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_shift_assignments__employee_id");
 
-            entity.HasOne(d => d.Shift).WithMany(p => p.ShiftAssignments)
+            entity.HasOne<Shift>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.ShiftId })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -3920,7 +4225,7 @@ public partial class KynexDbContext : DbContext
                 .HasColumnType("jsonb")
                 .HasColumnName("value_json");
 
-            entity.HasOne(d => d.StatutoryRule).WithMany(p => p.StatutoryRuleBands)
+            entity.HasOne<StatutoryRule>().WithMany(p => p.StatutoryRuleBands)
                 .HasForeignKey(d => d.StatutoryRuleId)
                 .HasConstraintName("fk_statutory_rule_bands__statutory_rule_id");
         });
@@ -4001,7 +4306,7 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.Tenant).WithOne(p => p.TenantSetting)
+            entity.HasOne<Tenant>().WithOne()
                 .HasForeignKey<TenantSetting>(d => d.TenantId)
                 .HasConstraintName("fk_tenant_settings__tenant_id");
         });
@@ -4053,25 +4358,25 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.ApprovalRequest).WithMany(p => p.Timesheets)
+            entity.HasOne<ApprovalRequest>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.ApprovalRequestId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_timesheets__approval_request_id");
 
-            entity.HasOne(d => d.Company).WithMany(p => p.Timesheets)
+            entity.HasOne<Company>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.CompanyId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_timesheets__company_id");
 
-            entity.HasOne(d => d.Employee).WithMany(p => p.Timesheets)
+            entity.HasOne<Employee>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.EmployeeId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_timesheets__employee_id");
 
-            entity.HasOne(d => d.PayrollRun).WithMany(p => p.Timesheets)
+            entity.HasOne<PayrollRun>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.LockedRunId })
                 .OnDelete(DeleteBehavior.SetNull)
@@ -4120,10 +4425,64 @@ public partial class KynexDbContext : DbContext
                 .HasColumnName("variance_minutes");
             entity.Property(e => e.WorkDate).HasColumnName("work_date");
 
-            entity.HasOne(d => d.Timesheet).WithMany(p => p.TimesheetDayReconciliations)
+            entity.HasOne<Timesheet>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.TimesheetId })
                 .HasConstraintName("fk_timesheet_day_reconciliations__timesheet_id");
+
+            entity.HasOne<AttendanceDay>().WithMany()
+                .HasPrincipalKey(p => new { p.TenantId, p.Id, p.WorkDate })
+                .HasForeignKey(d => new { d.TenantId, d.AttendanceDayId, d.WorkDate })
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("fk_timesheet_day_reconciliations__attendance_day_id");
+        });
+
+        modelBuilder.Entity<TimesheetEntry>(entity =>
+        {
+            entity.HasKey(e => new { e.Id, e.WorkDate }).HasName("pk_timesheet_entries");
+
+            entity.ToTable("timesheet_entries", tb => tb.HasComment("Logs minutes worked on one local day against a cost centre, project and task, and is the only place the project and client dimension of time is captured. @tier:C @owner:HR @retention:24m-purge"));
+
+            entity.HasIndex(e => new { e.TenantId, e.CostCenterId }, "ix_timesheet_entries__cost_center_id");
+
+            entity.HasIndex(e => new { e.TenantId, e.TimesheetId }, "ix_timesheet_entries__timesheet_id");
+
+            entity.HasIndex(e => new { e.TenantId, e.Id, e.WorkDate }, "uq_timesheet_entries__tenant_id").IsUnique();
+
+            entity.Property(e => e.Id).HasColumnName("id");
+            entity.Property(e => e.WorkDate).HasColumnName("work_date");
+            entity.Property(e => e.Billable)
+                .HasDefaultValue(false)
+                .HasColumnName("billable");
+            entity.Property(e => e.CostCenterId).HasColumnName("cost_center_id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.CreatedBy).HasColumnName("created_by");
+            entity.Property(e => e.Minutes).HasColumnName("minutes");
+            entity.Property(e => e.Notes).HasColumnName("notes");
+            entity.Property(e => e.ProjectCode)
+                .HasMaxLength(64)
+                .HasColumnName("project_code");
+            entity.Property(e => e.RateSource)
+                .HasMaxLength(40)
+                .HasColumnName("rate_source");
+            entity.Property(e => e.Task).HasColumnName("task");
+            entity.Property(e => e.TenantId).HasColumnName("tenant_id");
+            entity.Property(e => e.TimesheetId).HasColumnName("timesheet_id");
+            entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+
+            entity.HasOne<CostCenter>().WithMany()
+                .HasPrincipalKey(p => new { p.TenantId, p.Id })
+                .HasForeignKey(d => new { d.TenantId, d.CostCenterId })
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("fk_timesheet_entries__cost_center_id");
+
+            entity.HasOne<Timesheet>().WithMany(p => p.TimesheetEntries)
+                .HasPrincipalKey(p => new { p.TenantId, p.Id })
+                .HasForeignKey(d => new { d.TenantId, d.TimesheetId })
+                .HasConstraintName("fk_timesheet_entries__timesheet_id");
         });
 
         modelBuilder.Entity<User>(entity =>
@@ -4177,12 +4536,12 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.Tenant).WithMany(p => p.Users)
+            entity.HasOne<Tenant>().WithMany()
                 .HasForeignKey(d => d.TenantId)
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_users__tenant_id");
 
-            entity.HasOne(d => d.Employee).WithOne(p => p.User)
+            entity.HasOne<Employee>().WithOne()
                 .HasPrincipalKey<Employee>(p => new { p.TenantId, p.Id })
                 .HasForeignKey<User>(d => new { d.TenantId, d.EmployeeId })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -4232,37 +4591,37 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
             entity.Property(e => e.UserId).HasColumnName("user_id");
 
-            entity.HasOne(d => d.User).WithMany(p => p.UserRoleUsers)
+            entity.HasOne<User>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.GrantedBy })
                 .OnDelete(DeleteBehavior.SetNull)
                 .HasConstraintName("fk_user_roles__granted_by");
 
-            entity.HasOne(d => d.Role).WithMany(p => p.UserRoles)
+            entity.HasOne<Role>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.RoleId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_user_roles__role_id");
 
-            entity.HasOne(d => d.Branch).WithMany(p => p.UserRoles)
+            entity.HasOne<Branch>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.ScopeBranchId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_user_roles__scope_branch_id");
 
-            entity.HasOne(d => d.Company).WithMany(p => p.UserRoles)
+            entity.HasOne<Company>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.ScopeCompanyId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_user_roles__scope_company_id");
 
-            entity.HasOne(d => d.Department).WithMany(p => p.UserRoles)
+            entity.HasOne<Department>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.ScopeDepartmentId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_user_roles__scope_department_id");
 
-            entity.HasOne(d => d.UserNavigation).WithMany(p => p.UserRoleUserNavigations)
+            entity.HasOne<User>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.UserId })
                 .HasConstraintName("fk_user_roles__user_id");
@@ -4403,31 +4762,31 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
-            entity.HasOne(d => d.Company).WithMany(p => p.WpsBatches)
+            entity.HasOne<Company>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.CompanyId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_wps_batches__company_id");
 
-            entity.HasOne(d => d.File).WithMany(p => p.WpsBatches)
+            entity.HasOne<StoredFile>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.FileId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_wps_batches__file_id");
 
-            entity.HasOne(d => d.User).WithMany(p => p.WpsBatches)
+            entity.HasOne<User>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.GeneratedBy })
                 .OnDelete(DeleteBehavior.SetNull)
                 .HasConstraintName("fk_wps_batches__generated_by");
 
-            entity.HasOne(d => d.WpsBatchNavigation).WithMany(p => p.InverseWpsBatchNavigation)
+            entity.HasOne<WpsBatch>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.ResubmissionOfId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_wps_batches__resubmission_of_id");
 
-            entity.HasOne(d => d.PayrollRun).WithMany(p => p.WpsBatches)
+            entity.HasOne<PayrollRun>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.RunId })
                 .OnDelete(DeleteBehavior.Restrict)
@@ -4507,23 +4866,23 @@ public partial class KynexDbContext : DbContext
             entity.Property(e => e.TenantId).HasColumnName("tenant_id");
             entity.Property(e => e.ValueDate).HasColumnName("value_date");
 
-            entity.HasOne(d => d.ConfirmationJob).WithMany(p => p.WpsLines)
+            entity.HasOne<BackgroundJob>().WithMany()
                 .HasForeignKey(d => d.ConfirmationJobId)
                 .OnDelete(DeleteBehavior.SetNull)
                 .HasConstraintName("fk_wps_lines__confirmation_job_id");
 
-            entity.HasOne(d => d.WpsBatch).WithMany(p => p.WpsLines)
+            entity.HasOne<WpsBatch>().WithMany(p => p.WpsLines)
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.BatchId })
                 .HasConstraintName("fk_wps_lines__batch_id");
 
-            entity.HasOne(d => d.Employee).WithMany(p => p.WpsLines)
+            entity.HasOne<Employee>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.EmployeeId })
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_wps_lines__employee_id");
 
-            entity.HasOne(d => d.PayrollSlip).WithMany(p => p.WpsLines)
+            entity.HasOne<PayrollSlip>().WithMany()
                 .HasPrincipalKey(p => new { p.TenantId, p.Id })
                 .HasForeignKey(d => new { d.TenantId, d.SlipId })
                 .OnDelete(DeleteBehavior.Restrict)

@@ -40,10 +40,4 @@ public partial class PermissionGrantorRecord
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual User? User { get; set; }
-
-    public virtual User? User1 { get; set; }
-
-    public virtual User UserNavigation { get; set; } = null!;
 }

@@ -54,15 +54,5 @@ public partial class FinalSettlement
 
     public Guid? UpdatedBy { get; set; }
 
-    public virtual ApprovalRequest? ApprovalRequest { get; set; }
-
-    public virtual Company Company { get; set; } = null!;
-
-    public virtual Employee Employee { get; set; } = null!;
-
-    public virtual ICollection<EosCalculation> EosCalculations { get; set; } = new List<EosCalculation>();
-
     public virtual ICollection<FinalSettlementLine> FinalSettlementLines { get; set; } = new List<FinalSettlementLine>();
-
-    public virtual PayrollRun? PayrollRun { get; set; }
 }

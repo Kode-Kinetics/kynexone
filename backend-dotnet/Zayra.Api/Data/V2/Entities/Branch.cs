@@ -35,12 +35,4 @@ public partial class Branch
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual ICollection<AttendanceDevice> AttendanceDevices { get; set; } = new List<AttendanceDevice>();
-
-    public virtual Company Company { get; set; } = null!;
-
-    public virtual ICollection<EmployeeAssignment> EmployeeAssignments { get; set; } = new List<EmployeeAssignment>();
-
-    public virtual ICollection<UserRole> UserRoles { get; set; } = new List<UserRole>();
 }

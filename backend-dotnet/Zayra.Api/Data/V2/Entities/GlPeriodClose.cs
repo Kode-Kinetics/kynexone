@@ -37,10 +37,4 @@ public partial class GlPeriodClose
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual Company Company { get; set; } = null!;
-
-    public virtual User? User { get; set; }
-
-    public virtual User? UserNavigation { get; set; }
 }

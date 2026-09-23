@@ -51,8 +51,4 @@ public partial class AuthSession
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual PlatformUser? PlatformUser { get; set; }
-
-    public virtual User? User { get; set; }
 }

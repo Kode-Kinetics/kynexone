@@ -38,16 +38,4 @@ public partial class UserRole
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual Branch? Branch { get; set; }
-
-    public virtual Company? Company { get; set; }
-
-    public virtual Department? Department { get; set; }
-
-    public virtual Role Role { get; set; } = null!;
-
-    public virtual User? User { get; set; }
-
-    public virtual User UserNavigation { get; set; } = null!;
 }

@@ -36,10 +36,4 @@ public partial class DocumentTemplate
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual Company? Company { get; set; }
-
-    public virtual ICollection<EmployeeDocument> EmployeeDocuments { get; set; } = new List<EmployeeDocument>();
-
-    public virtual ICollection<PayrollSlip> PayrollSlips { get; set; } = new List<PayrollSlip>();
 }

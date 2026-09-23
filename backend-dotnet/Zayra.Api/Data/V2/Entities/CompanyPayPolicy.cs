@@ -45,8 +45,4 @@ public partial class CompanyPayPolicy
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual Company Company { get; set; } = null!;
-
-    public virtual PayComponent? PayComponent { get; set; }
 }

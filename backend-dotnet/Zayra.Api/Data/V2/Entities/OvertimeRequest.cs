@@ -47,10 +47,4 @@ public partial class OvertimeRequest
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
-
-    public virtual ApprovalRequest? ApprovalRequest { get; set; }
-
-    public virtual Employee Employee { get; set; } = null!;
-
-    public virtual StatutoryRule? StatutoryRule { get; set; }
 }

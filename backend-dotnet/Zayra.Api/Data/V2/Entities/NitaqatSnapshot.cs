@@ -39,6 +39,4 @@ public partial class NitaqatSnapshot
     public DateTime CreatedAt { get; set; }
 
     public Guid? CreatedBy { get; set; }
-
-    public virtual Company Company { get; set; } = null!;
 }
