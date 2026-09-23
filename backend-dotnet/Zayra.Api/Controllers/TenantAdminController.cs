@@ -5,6 +5,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Models;
+using Zayra.Api.Infrastructure.Payroll;
 
 namespace Zayra.Api.Controllers;
 
@@ -254,6 +255,15 @@ public class TenantAdminController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+
+        // UNIT GATE. This store takes an arbitrary rule key, so nothing stops an admin writing
+        // "gosi.saudi_employee_rate = 9" here in the belief that it changes payroll. It does not —
+        // only `weekend_days` is read anywhere (WorkWeekService) — but a rate-shaped value written
+        // in the wrong unit should not be allowed to accumulate against the day someone wires this
+        // table up. Same registry, same refusal as every other statutory write path.
+        // See Infrastructure/Payroll/StatutoryValueUnits.cs.
+        if (StatutoryValueUnits.Validate(req.RuleKey, req.DataType, req.RuleValue) is { } unitError)
+            return BadRequest(new { message = unitError });
 
         var rule = new CountryPayrollRule
         {
