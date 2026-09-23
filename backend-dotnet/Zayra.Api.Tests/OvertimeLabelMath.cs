@@ -24,6 +24,35 @@ public static partial class OvertimeLabelMath
     {
         /// <summary>The amount the label's own arithmetic produces.</summary>
         public decimal Amount => Math.Round(Hours * (BaseHourly + UpliftHourly * UpliftFactor), 2);
+
+        /// <summary>
+        /// The largest gap the label may legitimately have from the amount beside it, given that a
+        /// payslip prints rates to 2 dp and hours to 4.
+        ///
+        /// <para>It is a few halalas at most — on the canonical KSA hour it is under 0.02, against
+        /// the <b>25.00</b> the old "rate × multiplier" label was out by. This is a tolerance for
+        /// display rounding, not for a different formula.</para>
+        /// </summary>
+        public decimal MaxDisplayRoundingError =>
+              0.01m                                                           // the two final 2-dp roundings
+            + Math.Abs(Hours) * 0.005m * (1m + Math.Abs(UpliftFactor))        // the two 2-dp rates
+            + 0.00005m * (BaseHourly + UpliftHourly * Math.Abs(UpliftFactor)); // the 4-dp hours
+    }
+
+    /// <summary>
+    /// Asserts that a rendered overtime line can reproduce its own amount — the assertion the suite
+    /// did not have when the line read 187.50 and paid 162.50.
+    /// </summary>
+    public static Parsed ShouldReconcileWith(this Parsed stated, decimal amount, string because = "")
+    {
+        var gap = Math.Abs(stated.Amount - amount);
+        if (gap > stated.MaxDisplayRoundingError)
+            throw new Xunit.Sdk.XunitException(
+                $"The overtime payslip line states arithmetic worth {stated.Amount} beside an amount of "
+                + $"{amount} (out by {gap}, which is more than the {stated.MaxDisplayRoundingError} that "
+                + $"display rounding can account for). An employee checking this line by hand does not "
+                + $"arrive at what they were paid. {because}".TrimEnd());
+        return stated;
     }
 
     // "Overtime (1.00 h × (125.00 + 75.00 × 0.50)/h)"
