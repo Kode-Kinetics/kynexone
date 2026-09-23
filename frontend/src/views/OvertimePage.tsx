@@ -33,6 +33,14 @@ function fmtMins(m: number) {
   return h > 0 ? `${h}h ${min > 0 ? `${min}m` : ''}`.trim() : `${min}m`;
 }
 
+// Overtime is stored in whole minutes and the API derives hours from them, so 50 approved minutes
+// arrive as 0.8333333333333333 rather than a pre-rounded 0.83. Show up to four decimals — enough
+// that the hours on screen still reconcile with the amount beside them — and trim, so a whole hour
+// still reads "1h" exactly as it did before.
+function fmtHours(h: number) {
+  return String(Math.round(h * 10000) / 10000);
+}
+
 function fmtAmt(n: number, currency = 'USD') {
   return `${currency} ${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
@@ -137,7 +145,7 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <KpiCard label="Total Requests" value={summary?.totalRequests ?? '—'} icon={FileClock} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
         <KpiCard label="Pending Approval" value={summary?.pendingRequests ?? '—'} icon={Clock3} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
-        <KpiCard label="Approved Hours" value={summary?.approvedHours != null ? `${summary.approvedHours}h` : '—'} icon={CheckCircle2} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
+        <KpiCard label="Approved Hours" value={summary?.approvedHours != null ? `${fmtHours(summary.approvedHours)}h` : '—'} icon={CheckCircle2} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
         <KpiCard label="Payroll Amount" value={summary?.payrollAmount != null ? fmtAmt(summary.payrollAmount, currencyCode) : '—'} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
       </div>
 
@@ -773,7 +781,7 @@ function CalcPreviewTab() {
               {calculations.map(c => (
                 <tr key={c.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                   <td className="px-3 py-2 text-slate-700 dark:text-slate-300">Emp #{c.employeeId}</td>
-                  <td className="px-3 py-2 font-medium text-slate-900 dark:text-white">{c.approvedHours}h</td>
+                  <td className="px-3 py-2 font-medium text-slate-900 dark:text-white">{fmtHours(c.approvedHours)}h</td>
                   <td className="px-3 py-2 text-slate-500">{c.hourlyRate.toFixed(2)}</td>
                   <td className="px-3 py-2 text-slate-500">×{c.multiplier}</td>
                   <td className="px-3 py-2 font-bold text-emerald-600 dark:text-emerald-400">{c.amount.toFixed(2)}</td>
@@ -846,7 +854,7 @@ function PayrollReviewTab() {
               {impacts.map(i => (
                 <tr key={i.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                   <td className="px-4 py-2 font-medium text-slate-900 dark:text-white">Emp #{i.employeeId}</td>
-                  <td className="px-4 py-2 text-slate-500">{i.hours}h</td>
+                  <td className="px-4 py-2 text-slate-500">{fmtHours(i.hours)}h</td>
                   <td className="px-4 py-2 font-semibold text-emerald-600 dark:text-emerald-400">{i.amount.toFixed(2)}</td>
                   <td className="px-4 py-2"><StatusBadge status={i.status} /></td>
                   <td className="px-4 py-2 text-xs text-slate-400">{fmtDate(i.createdAtUtc)}</td>
@@ -913,7 +921,7 @@ function ReportsTab() {
           <KpiCard label="Total Requests" value={summary.totalRequests} icon={FileClock} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
           <KpiCard label="Approved" value={summary.approvedRequests} icon={CheckCircle2} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
           <KpiCard label="Pending" value={summary.pendingRequests} icon={Clock3} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
-          <KpiCard label="Approved Hours" value={`${summary.approvedHours}h`} icon={TrendingUp} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
+          <KpiCard label="Approved Hours" value={`${fmtHours(summary.approvedHours)}h`} icon={TrendingUp} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
         </div>
       )}
 
