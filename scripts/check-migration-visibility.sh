@@ -65,10 +65,24 @@ fi
 # --no-connect: this is a static parity check, it must not need a database.
 # Never --no-build: `dotnet ef --no-build` reads a stale compiled assembly and reports
 # migrations that the current source does not have (and vice versa).
-if ! dotnet tool run dotnet-ef migrations list --no-connect --project "$PROJECT" \
+#
+# --context is REQUIRED, not optional. The assembly now declares two DbContexts —
+# ZayraDbContext (the live schema, EF-migrated) and KynexDbContext (the V2 rebuild, whose
+# schema is the hand-written baseline SQL and which therefore has NO EF migrations at all).
+# Without --context, dotnet-ef refuses to guess:
+#     "More than one DbContext was found. Specify which one to use."
+# and exits non-zero with that message on STDOUT, so the error file this script prints is
+# EMPTY and the failure reads as inscrutable. That is exactly how it presented on PR #86.
+#
+# ZayraDbContext is the right answer here on purpose: this gate compares Migrations/*.cs
+# against what EF can see, and every one of those files belongs to ZayraDbContext.
+if ! dotnet tool run dotnet-ef migrations list --no-connect \
+     --project "$PROJECT" --context ZayraDbContext \
      > "$workdir/ef-raw.txt" 2> "$workdir/ef-err.txt"; then
   echo "::error::check-migration-visibility: 'dotnet ef migrations list' failed. Output:" >&2
+  # dotnet-ef writes its own diagnostics to stdout, not stderr — print both or lose the reason.
   cat "$workdir/ef-err.txt" >&2
+  cat "$workdir/ef-raw.txt" >&2
   exit 2
 fi
 
