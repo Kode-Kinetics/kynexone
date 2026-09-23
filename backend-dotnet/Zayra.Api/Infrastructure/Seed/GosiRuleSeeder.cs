@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Seed;
@@ -12,6 +13,15 @@ namespace Zayra.Api.Infrastructure.Seed;
 ///   Saudi Annuities:           Employee 9%,    Employer 9%
 ///   Saudi SANED:               Employee 0.75%, Employer 0.75%
 ///   Occupational Hazards:      Employer 2%     (applies to all classifications)
+///
+/// UNIT — READ THIS BEFORE EDITING A RATE. Every <c>Rate</c> below is a decimal FRACTION of the
+/// contributory wage: 9% is <c>0.09m</c>, 0.75% is <c>0.0075m</c>. It is NOT a percentage. This
+/// matches <see cref="StatutoryRuleSeeder"/>, which seeds the same three rates as
+/// <c>gosi.saudi_employee_rate = "0.09"</c>, <c>gosi.saudi_employer_rate = "0.09"</c> and
+/// <c>gosi.saned_rate = "0.0075"</c> for the payslip and the GOSI filing to read.
+/// <c>StatutoryRateUnitTests.BothStores_AgreeOnEverySeededKsaGosiRate</c> fails if the two ever
+/// disagree. Until 2026-09 this store held PERCENTS (<c>9.00m</c>) and multiplied by
+/// <c>Rate / 100</c>; see migration <c>GosiContributionRuleRateToFraction</c>.
 ///
 /// GCC rates mirror the Saudi baseline but are marked as pending legal confirmation.
 /// NonSaudi nationals: Occupational Hazards employer 2% only.
@@ -83,38 +93,38 @@ public static class GosiRuleSeeder
         var rules = new List<GosiContributionRule>();
 
         // ── Saudi nationals ────────────────────────────────────────────────────
-        rules.Add(Rule(GosiClassifications.Saudi, GosiBranches.Annuities, GosiPayers.Employee, 9.00m,
+        rules.Add(Rule(GosiClassifications.Saudi, GosiBranches.Annuities, GosiPayers.Employee, 0.09m,
             "GOSI Regulation 2016 — Saudi Annuities employee contribution"));
-        rules.Add(Rule(GosiClassifications.Saudi, GosiBranches.Annuities, GosiPayers.Employer, 9.00m,
+        rules.Add(Rule(GosiClassifications.Saudi, GosiBranches.Annuities, GosiPayers.Employer, 0.09m,
             "GOSI Regulation 2016 — Saudi Annuities employer contribution"));
 
-        rules.Add(Rule(GosiClassifications.Saudi, GosiBranches.SANED, GosiPayers.Employee, 0.75m,
+        rules.Add(Rule(GosiClassifications.Saudi, GosiBranches.SANED, GosiPayers.Employee, 0.0075m,
             "GOSI Regulation 2016 — SANED employee contribution"));
-        rules.Add(Rule(GosiClassifications.Saudi, GosiBranches.SANED, GosiPayers.Employer, 0.75m,
+        rules.Add(Rule(GosiClassifications.Saudi, GosiBranches.SANED, GosiPayers.Employer, 0.0075m,
             "GOSI Regulation 2016 — SANED employer contribution"));
 
-        rules.Add(Rule(GosiClassifications.Saudi, GosiBranches.OccupationalHazards, GosiPayers.Employer, 2.00m,
+        rules.Add(Rule(GosiClassifications.Saudi, GosiBranches.OccupationalHazards, GosiPayers.Employer, 0.02m,
             "GOSI Regulation 2016 — Occupational Hazards employer contribution"));
 
         // ── GCC nationals (pending bilateral treaty confirmation) ──────────────
         var gccNote = "GCC bilateral treaty baseline — PENDING LEGAL CONFIRMATION per applicable bilateral agreement. " +
                       "Rates mirror Saudi baseline until legally confirmed.";
 
-        rules.Add(Rule(GosiClassifications.GCC, GosiBranches.Annuities, GosiPayers.Employee, 9.00m,
+        rules.Add(Rule(GosiClassifications.GCC, GosiBranches.Annuities, GosiPayers.Employee, 0.09m,
             gccNote, notes: "Pending legal confirmation"));
-        rules.Add(Rule(GosiClassifications.GCC, GosiBranches.Annuities, GosiPayers.Employer, 9.00m,
-            gccNote, notes: "Pending legal confirmation"));
-
-        rules.Add(Rule(GosiClassifications.GCC, GosiBranches.SANED, GosiPayers.Employee, 0.75m,
-            gccNote, notes: "Pending legal confirmation"));
-        rules.Add(Rule(GosiClassifications.GCC, GosiBranches.SANED, GosiPayers.Employer, 0.75m,
+        rules.Add(Rule(GosiClassifications.GCC, GosiBranches.Annuities, GosiPayers.Employer, 0.09m,
             gccNote, notes: "Pending legal confirmation"));
 
-        rules.Add(Rule(GosiClassifications.GCC, GosiBranches.OccupationalHazards, GosiPayers.Employer, 2.00m,
+        rules.Add(Rule(GosiClassifications.GCC, GosiBranches.SANED, GosiPayers.Employee, 0.0075m,
+            gccNote, notes: "Pending legal confirmation"));
+        rules.Add(Rule(GosiClassifications.GCC, GosiBranches.SANED, GosiPayers.Employer, 0.0075m,
+            gccNote, notes: "Pending legal confirmation"));
+
+        rules.Add(Rule(GosiClassifications.GCC, GosiBranches.OccupationalHazards, GosiPayers.Employer, 0.02m,
             gccNote, notes: "Pending legal confirmation"));
 
         // ── Non-Saudi nationals (Occupational Hazards employer only) ──────────
-        rules.Add(Rule(GosiClassifications.NonSaudi, GosiBranches.OccupationalHazards, GosiPayers.Employer, 2.00m,
+        rules.Add(Rule(GosiClassifications.NonSaudi, GosiBranches.OccupationalHazards, GosiPayers.Employer, 0.02m,
             "GOSI Regulation 2016 — Occupational Hazards employer contribution (all employees including expats)"));
 
         return rules;

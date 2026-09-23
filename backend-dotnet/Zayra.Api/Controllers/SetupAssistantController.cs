@@ -8,6 +8,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Setup;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -348,6 +349,11 @@ public class SetupAssistantController : ControllerBase
             foreach (var r in d.StatutoryRules)
             {
                 if (!existingRules.Add(r.RuleKey.ToUpper())) continue;
+                // UNIT GATE — the wizard writes statutory rates too, so it is held to the same
+                // rule as the admin surfaces: a rate is a decimal FRACTION (0.09 = 9%).
+                // See Infrastructure/Payroll/StatutoryValueUnits.cs.
+                if (StatutoryValueUnits.Validate(r.RuleKey, r.DataType, r.RuleValue) is { } unitError)
+                    return BadRequest(new { message = unitError });
                 _db.StatutoryRules.Add(new StatutoryRule
                 {
                     TenantId = tenantId, CountryCode = country, Jurisdiction = $"{country}-default",
