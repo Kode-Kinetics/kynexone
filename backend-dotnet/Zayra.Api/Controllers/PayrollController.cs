@@ -2315,6 +2315,17 @@ public class PayrollController : ControllerBase
                       otBaseHourly, otWageHourly, hourlyRate, OtEffectiveMultiplier(x)).BaseHourly) / otHours
                 : otBaseHourly;
 
+            // The SECOND term of the hour, weighted identically: what the × (multiplier − 1) uplift is
+            // measured on. Art. 107's "50% of his BASIC wage" is a separate base from the first term,
+            // and without it on the line the payslip could only state a rate × multiplier shape that
+            // the money was never computed with. Collapses to `hourlyRate` (basic hourly) wherever no
+            // configured base applies, which is every statutory run.
+            var otEffectiveUpliftHourly = otHours > 0m
+                ? empOtImpacts.Sum(x => x.Hours * OvertimeStatutoryCalculator.ResolveHourRate(
+                      otPolicyBasis, otPolicyFixedHourlyRate,
+                      otBaseHourly, otWageHourly, hourlyRate, OtEffectiveMultiplier(x)).UpliftBasisHourly) / otHours
+                : hourlyRate;
+
             decimal OtEffectiveMultiplier(OvertimePayrollImpact impact)
             {
                 var floor = otMultiplier;
@@ -2738,16 +2749,13 @@ public class PayrollController : ControllerBase
             if (transport > 0) AddEarning(tenantId, id, e.Id, "TRANSPORT", "Transport allowance", transport, "Salary");
             if (otherAllowances > 0) AddEarning(tenantId, id, e.Id, "OTHER_ALLOWANCES", "Other allowances", otherAllowances, "Salary");
             if (overtimePay > 0)
-            {
-                var otRateDisplay = Math.Round(hourlyRate * otMultiplier, 2);
+                // ONE definition, shared with PayComponentEngine and sitting beside the HourPay
+                // expression it describes — `otRateDisplay` (hourlyRate × otMultiplier), computed here
+                // and read by nothing, was the last trace of the shape that did not add up.
                 AddEarning(tenantId, id, e.Id, "OVERTIME",
-                    // "0.00##", not "N2": overtime is stored in minutes and 50 minutes is 0.8333 h.
-                    // Printing "0.83 h" beside an amount computed from 0.8333 h puts a number on the
-                    // payslip that does not reconcile with the line it labels. A whole hour still
-                    // renders "1.00", so an unaffected run's label is byte-identical.
-                    $"Overtime ({otHours:0.00##} h × {Math.Round(otEffectiveBaseHourly, 2):N2}/h × {otEffectiveMultiplier:N2})",
+                    OvertimeStatutoryCalculator.PayslipLabel(
+                        otHours, otEffectiveBaseHourly, otEffectiveUpliftHourly, otEffectiveMultiplier),
                     overtimePay, "Overtime");
-            }
             if (fixedDeduction > 0) AddDeduction(tenantId, company.Id, id, e.Id, "FIXED_DEDUCTION",
                 WithProrationNote("Fixed deduction", policy.Prorates(ProratedComponentCodes.FixedDeduction) ? prorationNote : string.Empty),
                 fixedDeduction, "Salary");
@@ -2783,7 +2791,8 @@ public class PayrollController : ControllerBase
                 {
                     Basic = basic, Housing = housing, Transport = transport,
                     OtherAllowances = otherAllowances, FixedDeduction = fixedDeduction, Gross = gross,
-                    OvertimePay = overtimePay, OtHours = otHours, HourlyRate = otEffectiveBaseHourly, OtMultiplier = otEffectiveMultiplier,
+                    OvertimePay = overtimePay, OtHours = otHours, HourlyRate = otEffectiveBaseHourly,
+                    OtUpliftHourly = otEffectiveUpliftHourly, OtMultiplier = otEffectiveMultiplier,
                     TaxDeduction = taxDeduction, IncomeTaxRate = incomeTaxRate,
                     AttendanceDeduction = attendanceDeduction,
                     LopDeduction = lopDeduction, LopDays = lopDays, LopDayRate = lopDayRate,

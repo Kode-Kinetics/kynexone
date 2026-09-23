@@ -132,20 +132,22 @@ public class OvertimeController : ControllerBase
         if (policy is null) return BadRequest(new { message = "An active overtime policy is required." });
         if (req.OvertimeTypeId.HasValue && !await _db.OvertimeTypes.AnyAsync(x => x.TenantId == tenantId && x.Id == req.OvertimeTypeId && x.IsActive, ct))
             return BadRequest(new { message = "Overtime type not found or inactive." });
-        var minutes = (int)Math.Round((req.EndTimeUtc - req.StartTimeUtc).TotalMinutes);
-        minutes = ApplyRounding(minutes, policy.RoundingRule);
-        if (minutes < policy.MinimumMinutes) return BadRequest(new { message = $"Minimum overtime is {policy.MinimumMinutes} minutes." });
-        if (minutes > policy.MaximumMinutesPerDay) return BadRequest(new { message = $"Maximum overtime is {policy.MaximumMinutesPerDay} minutes per day." });
+        var rawMinutes = (int)Math.Round((req.EndTimeUtc - req.StartTimeUtc).TotalMinutes);
+        // The policy's rounding rule and all three quantity limits, from the SHARED resolver the
+        // attendance door now calls too. Both doors used to spell this out separately and only one
+        // of them actually did it — see OvertimePolicyLimits for what that cost.
+        var monthToDate = await MonthToDateMinutesAsync(tenantId, req.EmployeeId, req.WorkDate, ct);
+        var limits = OvertimePolicyLimits.Apply(rawMinutes, policy, monthToDate);
+        // Refusal order is the policy's own order, and the overlap conflict sits where it always did
+        // (after the daily maximum, before the monthly cap) so no existing client sees a new message.
+        if (limits.Limit is OvertimeLimitKind.BelowMinimum or OvertimeLimitKind.AboveDailyMaximum)
+            return BadRequest(new { message = OvertimePolicyLimits.RefusalMessage(limits.Limit, policy) });
         if (await _db.OvertimeRequests.AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == req.EmployeeId
                 && x.Status != "Rejected" && req.StartTimeUtc < x.EndTimeUtc && req.EndTimeUtc > x.StartTimeUtc, ct))
             return Conflict(new { message = "This overtime request overlaps an existing request." });
-        var monthStart = new DateOnly(req.WorkDate.Year, req.WorkDate.Month, 1);
-        var monthEnd = monthStart.AddMonths(1).AddDays(-1);
-        var monthMinutes = await _db.OvertimeRequests.Where(x => x.TenantId == tenantId && x.EmployeeId == req.EmployeeId
-                && x.Status != "Rejected" && x.WorkDate >= monthStart && x.WorkDate <= monthEnd)
-            .SumAsync(x => (int?)x.RequestedMinutes, ct) ?? 0;
-        if (monthMinutes + minutes > policy.MonthlyCapMinutes)
-            return BadRequest(new { message = $"Monthly overtime cap of {policy.MonthlyCapMinutes} minutes would be exceeded." });
+        if (limits.Limit == OvertimeLimitKind.AboveMonthlyCap)
+            return BadRequest(new { message = OvertimePolicyLimits.RefusalMessage(limits.Limit, policy) });
+        var minutes = limits.PayableMinutes;
         var request = new OvertimeRequest
         {
             TenantId = tenantId,
@@ -168,37 +170,88 @@ public class OvertimeController : ControllerBase
         return Created($"/api/overtime/requests/{request.Id}", request);
     }
 
+    /// <summary>
+    /// Raises overtime requests from processed attendance days — the OTHER door into overtime pay.
+    ///
+    /// <para>It used to write <c>RequestedMinutes = record.OvertimeMinutes</c> raw: no rounding rule,
+    /// no minimum, no daily maximum, no monthly cap, and no policy lookup at all (the caller's policy
+    /// id was stamped on the request unvalidated, including one belonging to another tenant). The
+    /// same hours keyed by hand were capped; keyed by the attendance device they were paid in full,
+    /// without limit. Both doors now go through <see cref="OvertimePolicyLimits"/>.</para>
+    ///
+    /// <para>What the policy will not pay is NOT truncated away: each affected day raises an
+    /// <see cref="AttendanceException"/> against the attendance record it came from, and the response
+    /// carries the same rows so the operator who pressed the button sees them immediately.</para>
+    /// </summary>
     [HttpPost("detect-from-attendance")]
     [Authorize(Roles = "Admin,HR Manager,Payroll Officer")]
-    [AllowEntityReturn("Flat entity — no navigation properties. Fields: EmployeeId, EmployeeName, WorkDate, start/end times, requested/approved minutes, Reason, Status. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
-    public async Task<ActionResult<IReadOnlyCollection<OvertimeRequest>>> DetectFromAttendance(DetectOvertimeRequest req, CancellationToken ct)
+    [AllowEntityReturn("Flat entity pair — no navigation properties on either. OvertimeRequest: EmployeeId, EmployeeName, WorkDate, start/end times, requested/approved minutes, Reason, Status. AttendanceException: EmployeeId, WorkDate, ExceptionType, Severity, Details — the overtime this tenant's policy will not pay, which the operator running detection has to see. Neither carries salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
+    public async Task<ActionResult<DetectOvertimeResult>> DetectFromAttendance(DetectOvertimeRequest req, CancellationToken ct)
     {
         var tenantId = RequireTenant();
         if (req.FromDate > req.ToDate || req.ToDate.DayNumber - req.FromDate.DayNumber > 366)
             return BadRequest(new { message = "Attendance detection range must be between 1 and 367 days." });
+        // The policy is RESOLVED, exactly as the manual door resolves it: by id within this tenant,
+        // active and not deleted, else the tenant's active default. Without this the limits below
+        // would have nothing to apply, and the id on the request was never checked at all.
+        var policy = req.OvertimePolicyId.HasValue
+            ? await _db.OvertimePolicies.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == req.OvertimePolicyId && x.IsActive && !x.IsDeleted, ct)
+            : await _db.OvertimePolicies.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted, ct);
+        if (policy is null) return BadRequest(new { message = "An active overtime policy is required." });
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         var dailyQuery = _db.AttendanceDailyRecords.AsNoTracking()
             .Where(x => x.TenantId == tenantId && !x.IsDeleted && x.WorkDate >= req.FromDate && x.WorkDate <= req.ToDate && x.OvertimeMinutes > 0);
         if (!scope.IsUnrestricted) dailyQuery = dailyQuery.Where(x => scope.AllowedEmployeeIds!.Contains(x.EmployeeId));
         var daily = await dailyQuery
+            // Deterministic order: the monthly cap is consumed in date order, so an earlier day is
+            // never displaced by a later one depending on how the database felt about returning rows.
+            .OrderBy(x => x.EmployeeId).ThenBy(x => x.WorkDate)
             .ToListAsync(ct);
         var created = new List<OvertimeRequest>();
+        var exceptions = new List<AttendanceException>();
+        // Minutes already committed against each employee's monthly cap, including the requests this
+        // very batch is adding — otherwise a month's worth of days each see an empty cap and the
+        // batch walks straight past it one day at a time.
+        var monthToDate = new Dictionary<(int EmployeeId, int Year, int Month), int>();
         foreach (var record in daily)
         {
             var exists = await _db.OvertimeRequests.AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == record.EmployeeId && x.WorkDate == record.WorkDate && x.Source == "Attendance", ct);
             if (exists) continue;
+
+            var monthKey = (record.EmployeeId, record.WorkDate.Year, record.WorkDate.Month);
+            if (!monthToDate.TryGetValue(monthKey, out var consumed))
+            {
+                consumed = await MonthToDateMinutesAsync(tenantId, record.EmployeeId, record.WorkDate, ct);
+                monthToDate[monthKey] = consumed;
+            }
+
+            var limits = OvertimePolicyLimits.Apply(record.OvertimeMinutes, policy, consumed);
+
+            if (limits.HasExcess)
+            {
+                var raised = await RaiseOvertimeLimitExceptionAsync(tenantId, record, policy, limits, ct);
+                if (raised is not null) exceptions.Add(raised);
+            }
+            if (!limits.IsPayable) continue;
+
+            monthToDate[monthKey] = consumed + limits.PayableMinutes;
             var request = new OvertimeRequest
             {
                 TenantId = tenantId,
                 EmployeeId = record.EmployeeId,
                 EmployeeName = record.EmployeeName,
-                OvertimePolicyId = req.OvertimePolicyId,
+                OvertimePolicyId = policy.Id,
                 WorkDate = record.WorkDate,
-                StartTimeUtc = record.LastOutUtc?.AddMinutes(-record.OvertimeMinutes) ?? DateTime.UtcNow,
+                // The window is the PAYABLE minutes ending at the last punch out, not the measured
+                // ones: a request whose times span more than it claims to pay is its own defect.
+                StartTimeUtc = record.LastOutUtc?.AddMinutes(-limits.PayableMinutes) ?? DateTime.UtcNow,
                 EndTimeUtc = record.LastOutUtc ?? DateTime.UtcNow,
-                RequestedMinutes = record.OvertimeMinutes,
+                RequestedMinutes = limits.PayableMinutes,
                 Source = "Attendance",
-                Reason = "Auto-detected from processed attendance",
+                Reason = limits.HasExcess
+                    ? $"Auto-detected from processed attendance; capped by policy '{policy.Name}' "
+                      + $"({limits.RoundedMinutes} min detected, {limits.ExcessMinutes} min not payable)"
+                    : "Auto-detected from processed attendance",
                 Status = "PendingManager",
                 AttendanceDailyRecordId = record.Id,
                 CreatedBy = GetUserId()
@@ -207,7 +260,55 @@ public class OvertimeController : ControllerBase
             created.Add(request);
         }
         await _db.SaveChangesAsync(ct);
-        return Ok(created);
+        return Ok(new DetectOvertimeResult(created, exceptions));
+    }
+
+    /// <summary>
+    /// Minutes already requested for this employee in the work date's calendar month, excluding
+    /// rejected requests. The monthly cap basis for BOTH doors.
+    /// </summary>
+    private async Task<int> MonthToDateMinutesAsync(Guid tenantId, int employeeId, DateOnly workDate, CancellationToken ct)
+    {
+        var monthStart = new DateOnly(workDate.Year, workDate.Month, 1);
+        var monthEnd = monthStart.AddMonths(1).AddDays(-1);
+        return await _db.OvertimeRequests.Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId
+                && x.Status != "Rejected" && x.WorkDate >= monthStart && x.WorkDate <= monthEnd)
+            .SumAsync(x => (int?)x.RequestedMinutes, ct) ?? 0;
+    }
+
+    /// <summary>
+    /// Records, against the attendance day itself, the overtime the configured policy will not pay.
+    /// This is the difference between capping and silently truncating: the excess minutes stay on a
+    /// row a human resolves, beside the missing-punch and late-arrival exceptions the attendance
+    /// processor already raises. Idempotent — re-running detection over the same range does not
+    /// stack duplicate unresolved rows.
+    /// </summary>
+    private async Task<AttendanceException?> RaiseOvertimeLimitExceptionAsync(
+        Guid tenantId, AttendanceDailyRecord record, OvertimePolicy policy,
+        OvertimeLimitOutcome limits, CancellationToken ct)
+    {
+        var type = limits.Limit == OvertimeLimitKind.BelowMinimum
+            ? OvertimePolicyLimits.OvertimeBelowMinimumExceptionType
+            : OvertimePolicyLimits.OvertimeAbovePolicyExceptionType;
+        if (await _db.AttendanceExceptions.AnyAsync(x => x.TenantId == tenantId
+                && x.EmployeeId == record.EmployeeId && x.WorkDate == record.WorkDate
+                && x.ExceptionType == type && !x.IsResolved, ct))
+            return null;
+        var exception = new AttendanceException
+        {
+            TenantId = tenantId,
+            EmployeeId = record.EmployeeId,
+            DailyRecordId = record.Id,
+            WorkDate = record.WorkDate,
+            ExceptionType = type,
+            // Unpaid time an employee actually worked is not an informational notice. Below-minimum
+            // is the policy working as configured, so it is logged rather than escalated.
+            Severity = limits.Limit == OvertimeLimitKind.BelowMinimum ? "Low" : "High",
+            Details = OvertimePolicyLimits.ExplainForHuman(limits, policy),
+        };
+        _db.AttendanceExceptions.Add(exception);
+        await SaveAudit("overtime.detect.capped_by_policy", "AttendanceDailyRecord", record.Id.ToString(), ct);
+        return exception;
     }
 
     [HttpPost("requests/{id:guid}/approve")]
@@ -577,15 +678,6 @@ public class OvertimeController : ControllerBase
             ? 1.5m
             : 1.25m;
 
-    private static int ApplyRounding(int minutes, string? rule) => (rule ?? string.Empty) switch
-    {
-        "Nearest15" => (int)(Math.Round(minutes / 15m, MidpointRounding.AwayFromZero) * 15),
-        "Up15" => (int)(Math.Ceiling(minutes / 15m) * 15),
-        "Down15" => (int)(Math.Floor(minutes / 15m) * 15),
-        "Nearest30" => (int)(Math.Round(minutes / 30m, MidpointRounding.AwayFromZero) * 30),
-        _ => minutes
-    };
-
     private async Task SaveAudit(string action, string entity, string entityId, CancellationToken ct)
     {
         _db.OvertimeAuditLogs.Add(new OvertimeAuditLog { TenantId = RequireTenant(), Action = action, EntityName = entity, EntityId = entityId, UserId = GetUserId() });
@@ -646,4 +738,12 @@ public record OvertimeTypeRequest(string Code, string Name, string? Category);
 public record OvertimeRequestCreate(int EmployeeId, Guid? OvertimePolicyId, Guid? OvertimeTypeId, DateOnly WorkDate, DateTime StartTimeUtc, DateTime EndTimeUtc, string? Source, string? Reason);
 public record OvertimeDecisionRequest(int ApprovedMinutes, string? Notes);
 public record DetectOvertimeRequest(DateOnly FromDate, DateOnly ToDate, Guid? OvertimePolicyId);
+/// <summary>
+/// What a detection run did. <paramref name="Capped"/> is not decoration: it is the overtime the
+/// tenant's policy will not pay, and it is the only reason capping the attendance door is a fix
+/// rather than a quieter version of the same bug.
+/// </summary>
+public record DetectOvertimeResult(
+    IReadOnlyCollection<OvertimeRequest> Created,
+    IReadOnlyCollection<AttendanceException> Capped);
 public record CompOffConversionRequest(Guid OvertimeRequestId, decimal CompOffDays);

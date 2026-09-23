@@ -15,6 +15,7 @@ import {
   overtimeApi,
   type OvertimePolicy, type OvertimeRequest, type OvertimeSummary,
   type OvertimeCalculation, type OvertimePayrollImpact, type OvertimeCompOffConversion,
+  type OvertimeCapException,
 } from '../api/overtime';
 
 // ── Shared helpers ──────────────────────────────────────────────────────────────
@@ -403,6 +404,22 @@ function TeamOTTab() {
   const [requests, setRequests] = useState<OvertimeRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
+  // Attendance-derived overtime is now capped by the same policy a hand-keyed request obeys. What
+  // the policy will not pay is worked time, so it is shown to the person who ran the detection
+  // rather than dropped — the whole point of capping instead of truncating.
+  const [capped, setCapped] = useState<OvertimeCapException[]>([]);
+  const [detectError, setDetectError] = useState('');
+
+  const detect = async () => {
+    setDetectError('');
+    try {
+      const result = await overtimeApi.detectFromAttendance(today, today);
+      setCapped(result.capped);
+      load();
+    } catch {
+      setDetectError('Detection failed. An active overtime policy is required before attendance can raise overtime.');
+    }
+  };
 
   const load = () => {
     setLoading(true);
@@ -428,11 +445,36 @@ function TeamOTTab() {
           <option value="">All Statuses</option>
           {['PendingManager', 'PendingHR', 'Approved', 'Rejected'].map(s => <option key={s} value={s}>{s.replace(/([A-Z])/g, ' $1').trim()}</option>)}
         </select>
-        <button type="button" className={btn.ghost} onClick={() => overtimeApi.detectFromAttendance(today, today).then(load).catch(() => {})}>
+        <button type="button" className={btn.ghost} onClick={detect}>
           <RefreshCw className="h-4 w-4" /> Detect from Attendance
         </button>
         <p className="ms-auto text-sm text-slate-400">{requests.length} request{requests.length !== 1 ? 's' : ''}</p>
       </div>
+      {detectError && (
+        <div className="surface border-s-4 border-s-rose-500 p-4 text-sm text-rose-600 dark:text-rose-400">{detectError}</div>
+      )}
+      {capped.length > 0 && (
+        <div className="surface border-s-4 border-s-amber-500 p-4">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+            <div className="space-y-2">
+              <p className="text-sm font-semibold text-slate-900 dark:text-white">
+                {capped.length} attendance day{capped.length !== 1 ? 's were' : ' was'} not paid in full by the overtime policy
+              </p>
+              <ul className="space-y-1 text-sm text-slate-600 dark:text-slate-300">
+                {capped.map(c => (
+                  <li key={c.id}>
+                    <span className="font-medium">Emp #{c.employeeId} · {fmtDate(c.workDate)}</span> — {c.details}
+                  </li>
+                ))}
+              </ul>
+              <p className="text-xs text-slate-400">
+                These are saved as attendance exceptions so they can be resolved rather than lost.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="surface overflow-hidden">
         {loading ? <p className="p-8 text-center text-sm text-slate-400">Loading…</p> : <OTRequestsTable requests={requests} onApprove={approve} onReject={reject} showActions />}
       </div>
@@ -796,12 +838,26 @@ function CalcPreviewTab() {
 
       <div className="surface p-4">
         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Formula Reference</p>
+        {/*
+          Audit O12. This block used to read "OT Pay = Approved Hours × Hourly Rate × Multiplier",
+          which is not what is paid and never was: the engine applies
+          base hourly + basic hourly × (multiplier − 1) — KSA Art. 107's "hourly wage plus 50% of
+          his basic wage". On the canonical 60/40 package the old shape produced 187.50 for an hour
+          actually paid at 162.50. It is the same wrong arithmetic the payslip line used to print, so
+          it changes with it. The multipliers are described as the configured/statutory floor rather
+          than restated as hard-coded numbers, which is what made them drift in the first place.
+        */}
         <div className="rounded-lg bg-slate-50 p-4 font-mono text-sm text-slate-700 dark:bg-white/5 dark:text-slate-300">
-          OT Pay = Approved Hours × Hourly Rate × Multiplier
+          OT Pay = Approved Hours × (Base Hourly + Basic Hourly × (Multiplier − 1))
           <br /><br />
           <span className="text-xs text-slate-400">
-            Hourly Rate = (Basic Salary or Gross) ÷ Standard Monthly Hours<br />
-            Multiplier: Regular Day = 1.25× · Weekend = 1.5× · Public Holiday = 2.0×
+            Base Hourly = the rate the hour starts from — the full wage where the country pack sets one
+            (Saudi Arabia), otherwise basic. Basic Hourly = Basic Salary ÷ Standard Monthly Hours,
+            the base the uplift is measured on.<br />
+            Multiplier = the rate configured for the day worked (regular day, weekend, public holiday),
+            never below the statutory floor for that day.<br />
+            Example (basic 18,000 + allowances 12,000 over 240 h, regular day at 1.5×):
+            1 h × (125.00 + 75.00 × 0.50) = 162.50.
           </span>
         </div>
       </div>
