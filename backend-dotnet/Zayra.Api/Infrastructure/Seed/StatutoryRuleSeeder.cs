@@ -79,6 +79,13 @@ public static class StatutoryRuleSeeder
         // Current rate values: Saudi Annuities Employee 9%, Employer 9%, SANED 0.75%/0.75%
         // These have NOT been independently confirmed against any GOSI circular after 2016-06-01.
         // Source: GOSI Regulation 2016 (Royal Decree M/33).  Annuity + SANED.
+        //
+        // UNIT — every rate here is a decimal FRACTION of the covered wage (0.09 = 9%), written as
+        // text and parsed by StatutoryRuleReader. THE OTHER STORE holding these same three facts is
+        // gosi_contribution_rules (Infrastructure/Seed/GosiRuleSeeder.cs), read by the GOSI preview
+        // and the readiness report. It held PERCENTS until 2026-09; both stores now hold fractions,
+        // GosiRuleSeeder.StatutoryRuleKeyFor maps between them and GosiRuleSeeder.VerifyStoresAgree
+        // fails the boot log and the suite if the two seeders drift apart. Change them together.
         list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
             "gosi.saudi_employee_rate", "0.09", "decimal", eff16,
             "VERIFY: GOSI Annuities employee 9% — Royal Decree M/33 2016"));

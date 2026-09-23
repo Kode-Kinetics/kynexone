@@ -34,7 +34,11 @@ public class PayComponentEngineTests
         {
             Basic = 10_000m, Housing = 3_000m, Transport = 1_000m, OtherAllowances = 900m,
             FixedDeduction = 250m, Gross = 14_900m,
-            OvertimePay = 750m, OtHours = 10m, HourlyRate = 41.6667m, OtMultiplier = 1.5m,
+            // 10 h × (41.6667 + 41.6667 × 0.50) = 625.00. OvertimePay stays 750 because this test
+            // pins line SELECTION/ORDER/LABELS, not the overtime arithmetic — the amount is handed
+            // to the engine, which performs none of it.
+            OvertimePay = 750m, OtHours = 10m, HourlyRate = 41.6667m,
+            OtUpliftHourly = 41.6667m, OtMultiplier = 1.5m,
             TaxDeduction = 500m, IncomeTaxRate = 5m,
             AttendanceDeduction = 75m, LopDeduction = 300m, LopDays = 1m, LopDayRate = 300m,
             LeaveDeduction = 150m, LoanEmi = 1_000m, AdvEmi = 400m,
@@ -61,7 +65,10 @@ public class PayComponentEngineTests
         result.Deductions.Where(l => l.IsEmployerContribution).Select(l => l.Code)
             .Should().Equal("GOSI-ANN-ER", "GOSI-OH-ER");
         // Dynamic labels are byte-identical to the current engine.
-        result.Earnings.Single(l => l.Code == "OVERTIME").Name.Should().Be("Overtime (10.00 h × 41.67/h × 1.50)");
+        // The label states the expression the money was computed with — base hourly plus the uplift
+        // measured on basic hourly — not "rate × multiplier", which produced a different number
+        // from the amount printed beside it.
+        result.Earnings.Single(l => l.Code == "OVERTIME").Name.Should().Be("Overtime (10.00 h × (41.67 + 41.67 × 0.50)/h)");
         result.Deductions.Single(l => l.Code == "INCOME_TAX").Name.Should().Be("Income tax (5%)");
         result.Deductions.Single(l => l.Code == "LOP_DEDUCTION").Name.Should().Be("Loss of Pay (1.00 d × 300.00/d)");
     }

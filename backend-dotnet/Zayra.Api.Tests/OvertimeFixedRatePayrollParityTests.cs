@@ -298,11 +298,11 @@ public class OvertimeFixedRatePayrollParityTests
                                     && e.ComponentCode == "OVERTIME");
         otLine.Should().NotBeNull("the run must have produced an overtime earning line to compare");
         // The payslip LABEL is the tenant-visible description of the arithmetic, so it is read back
-        // and parsed rather than trusted: "Overtime (1.00 h \u00d7 <rate>/h \u00d7 1.50)".
+        // and parsed rather than trusted. Its shape is now
+        // "Overtime (1.00 h \u00d7 (<base> + <uplift base> \u00d7 <m-1>)/h)" \u2014 the expression that
+        // actually produces the money, rather than the "<rate>/h \u00d7 <m>" that did not.
         var label = otLine!.ComponentName;
-        var displayedRate = decimal.Parse(
-            label.Split('\u00d7')[1].Replace("/h", string.Empty).Replace(",", string.Empty).Trim(),
-            System.Globalization.CultureInfo.InvariantCulture);
+        var displayedRate = OvertimeLabelMath.Parse(label).BaseHourly;
         label.Should().StartWith("Overtime (1.00 h", "one hour was approved");
 
         return new OvertimeMoney(impact.Amount, otLine.Amount, displayedRate);

@@ -94,7 +94,12 @@ public class ImportExportEngineTests
     public async Task CompanyImport_PersistsStatutoryAndComplianceIdentifiers()
     {
         var db = CreateDb();
-        var tenantId = Guid.NewGuid();
+        // A real tenant row, because the company importer now passes the same governance gates the
+        // form does, and those gates read the tenant's account type and company-creation mode.
+        var tenant = new Tenant { Name = "Import Engine", Slug = $"import-engine-{Guid.NewGuid():N}" };
+        db.Tenants.Add(tenant);
+        await db.SaveChangesAsync();
+        var tenantId = tenant.Id;
         var svc = new Zayra.Api.Infrastructure.Organization.OrganizationSetupService(db, new Zayra.Api.Infrastructure.Audit.AuditService(db));
         var ctrl = new CompaniesController(svc, db);
         ctrl.ControllerContext = MakeContext(tenantId);

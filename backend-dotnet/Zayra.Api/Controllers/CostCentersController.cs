@@ -100,93 +100,104 @@ public class CostCentersController : ControllerBase
         File(Encoding.UTF8.GetBytes(Csv.Template(CsvHeaders, CsvExampleRow)), "text/csv", "cost_centers_import_template.csv");
 
     [HttpPost("import-preview")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> ImportPreview([FromBody] CostCenterImportRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        return Ok(await RunPreviewAsync(tenantId.Value, req.Csv, ct));
+        return await RunImportAsync(tenantId.Value, req.Csv, commit: false, ct);
     }
 
     [HttpPost("import")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> Import([FromBody] CostCenterImportRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        return Ok(await RunCommitAsync(tenantId.Value, req.Csv, ct));
+        return await RunImportAsync(tenantId.Value, req.Csv, commit: true, ct);
     }
 
-    private async Task<ImportPreviewResult> RunPreviewAsync(Guid tenantId, string csv, CancellationToken ct)
+    /// <summary>
+    /// Preview and commit walk the SAME loop; <paramref name="commit"/> decides only whether the
+    /// service is called. Every validation and refusal above it is shared.
+    /// </summary>
+    private async Task<IActionResult> RunImportAsync(Guid tenantId, string csv, bool commit, CancellationToken ct)
     {
-        var rows = Csv.Parse(csv);
-        var existingByCode = await _db.CostCenters.AsNoTracking().Where(c => c.TenantId == tenantId && !c.IsDeleted).ToDictionaryAsync(c => c.Code.ToUpperInvariant(), ct);
-        var deptByCode = await _db.Departments.AsNoTracking().Where(d => d.TenantId == tenantId && !d.IsDeleted).ToDictionaryAsync(d => d.Code.ToUpperInvariant(), d => d.Id, ct);
-        var rowResults = new List<ImportRowResult>();
-        var seenCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        int wouldCreate = 0, wouldUpdate = 0, wouldSkip = 0;
+        var costCenters = await _db.CostCenters.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && !c.IsDeleted).ToListAsync(ct);
+        if (!OrgCodes.TryBuildLookup(costCenters, c => c.Code, out var existingByCode, out var codeClash))
+            return Conflict(OrgCodeCollision.Payload("cost centre", "Code", codeClash));
 
-        for (int i = 0; i < rows.Count; i++)
-        {
-            var row = rows[i]; var rowNum = i + 2;
-            var code = row.GetValueOrDefault("Code", string.Empty).Trim();
-            var name = row.GetValueOrDefault("Name", string.Empty).Trim();
-            var errors = new List<string>(); var warnings = new List<string>();
-            if (string.IsNullOrWhiteSpace(code)) errors.Add("Code is required");
-            if (string.IsNullOrWhiteSpace(name)) errors.Add("Name is required");
-            if (!string.IsNullOrWhiteSpace(code) && seenCodes.Contains(code)) errors.Add($"Duplicate Code '{code}' within this batch");
-            var deptCode = row.GetValueOrDefault("DepartmentCode", string.Empty).Trim();
-            if (!string.IsNullOrWhiteSpace(deptCode) && !deptByCode.ContainsKey(deptCode.ToUpperInvariant()))
-                warnings.Add($"DepartmentCode '{deptCode}' not found — will be ignored");
-            if (errors.Count > 0) { wouldSkip++; rowResults.Add(new ImportRowResult(rowNum, code, name, ImportRowStatus.Error, errors, warnings)); continue; }
-            bool exists = !string.IsNullOrWhiteSpace(code) && existingByCode.ContainsKey(code.ToUpperInvariant());
-            if (exists) wouldUpdate++; else wouldCreate++;
-            if (!string.IsNullOrWhiteSpace(code)) seenCodes.Add(code);
-            rowResults.Add(new ImportRowResult(rowNum, code, name, warnings.Count > 0 ? ImportRowStatus.Warning : ImportRowStatus.Ok, errors, warnings));
-        }
-        return new ImportPreviewResult(rows.Count, wouldCreate, wouldUpdate, wouldSkip, rowResults);
-    }
+        var departments = await _db.Departments.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && !d.IsDeleted).ToListAsync(ct);
+        if (!OrgCodes.TryBuildLookup(departments, d => d.Code, out var deptByCode, out var deptClash))
+            return Conflict(OrgCodeCollision.Payload("department", "Code", deptClash));
 
-    private async Task<ImportCommitResult> RunCommitAsync(Guid tenantId, string csv, CancellationToken ct)
-    {
         var rows = Csv.Parse(csv);
-        var existingByCode = await _db.CostCenters.Where(c => c.TenantId == tenantId && !c.IsDeleted).ToDictionaryAsync(c => c.Code.ToUpperInvariant(), ct);
-        var deptByCode = await _db.Departments.AsNoTracking().Where(d => d.TenantId == tenantId && !d.IsDeleted).ToDictionaryAsync(d => d.Code.ToUpperInvariant(), d => d.Id, ct);
+        var context = Context();
         var rowResults = new List<ImportRowResult>();
         var seenCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         int created = 0, updated = 0, skipped = 0;
 
         for (int i = 0; i < rows.Count; i++)
         {
-            var row = rows[i]; var rowNum = i + 2;
+            var row = rows[i];
+            var rowNum = i + 2;
             var code = row.GetValueOrDefault("Code", string.Empty).Trim();
             var name = row.GetValueOrDefault("Name", string.Empty).Trim();
-            var errors = new List<string>(); var warnings = new List<string>();
+            var errors = new List<string>();
+            var warnings = new List<string>();
+
             if (string.IsNullOrWhiteSpace(code)) errors.Add("Code is required");
             if (string.IsNullOrWhiteSpace(name)) errors.Add("Name is required");
-            if (!string.IsNullOrWhiteSpace(code) && seenCodes.Contains(code)) errors.Add($"Duplicate Code '{code}' within this batch");
-            if (errors.Count > 0) { skipped++; rowResults.Add(new ImportRowResult(rowNum, code, name, ImportRowStatus.Error, errors, warnings)); continue; }
+            if (!string.IsNullOrWhiteSpace(code) && !seenCodes.Add(code)) errors.Add($"Duplicate Code '{code}' within this batch");
+
+            // DepartmentCode is a column of the template that corresponds to no column on the
+            // entity. It is a warning rather than an error precisely because nothing is destroyed
+            // by ignoring it — there is no relationship here to lose. The template itself is the
+            // defect, and it is out of this change's scope.
             var deptCode = row.GetValueOrDefault("DepartmentCode", string.Empty).Trim();
-            Guid? deptId = null;
-            if (!string.IsNullOrWhiteSpace(deptCode))
+            if (!string.IsNullOrWhiteSpace(deptCode) && !deptByCode.ContainsKey(OrgCodes.Normalize(deptCode)))
+                warnings.Add($"DepartmentCode '{deptCode}' not found — will be ignored");
+
+            existingByCode.TryGetValue(OrgCodes.Normalize(code), out var existing);
+
+            if (errors.Count == 0)
             {
-                if (deptByCode.TryGetValue(deptCode.ToUpperInvariant(), out var did)) deptId = did;
-                else warnings.Add($"DepartmentCode '{deptCode}' not found — ignored");
+                var request = new CostCenterRequest(
+                    // Not in the template. Carried over so an import cannot orphan a cost centre
+                    // that the form had assigned to a company.
+                    CompanyId: existing?.CompanyId,
+                    Code: code,
+                    Name: name,
+                    IsActive: !row.TryGetValue("IsActive", out var av) || !string.Equals(av.Trim(), "false", StringComparison.OrdinalIgnoreCase));
+
+                try
+                {
+                    if (existing is not null)
+                    {
+                        if (commit) await _organization.UpdateCostCenterAsync(tenantId, existing.Id, request, context, ct);
+                        updated++;
+                    }
+                    else
+                    {
+                        if (commit) await _organization.CreateCostCenterAsync(tenantId, request, context, ct);
+                        created++;
+                    }
+                }
+                catch (InvalidOperationException ex) { errors.Add(ex.Message); }
             }
-            bool isActive = !row.TryGetValue("IsActive", out var av) || !string.Equals(av, "false", StringComparison.OrdinalIgnoreCase);
-            seenCodes.Add(code);
-            if (existingByCode.TryGetValue(code.ToUpperInvariant(), out var existing))
-            {
-                existing.Name = name; existing.IsActive = isActive; existing.UpdatedAtUtc = DateTime.UtcNow; updated++;
-            }
-            else
-            {
-                _db.CostCenters.Add(new CostCenter { TenantId = tenantId, Code = code, Name = name, IsActive = isActive }); created++;
-            }
-            rowResults.Add(new ImportRowResult(rowNum, code, name, warnings.Count > 0 ? ImportRowStatus.Warning : ImportRowStatus.Ok, errors, warnings));
+
+            if (errors.Count > 0) skipped++;
+            rowResults.Add(new ImportRowResult(
+                rowNum, code, name,
+                errors.Count > 0 ? ImportRowStatus.Error : warnings.Count > 0 ? ImportRowStatus.Warning : ImportRowStatus.Ok,
+                errors, warnings));
         }
-        await _db.SaveChangesAsync(ct);
-        return new ImportCommitResult(rows.Count, created, updated, skipped, rowResults, Array.Empty<string>());
+
+        return commit
+            ? Ok(new ImportCommitResult(rows.Count, created, updated, skipped, rowResults, Array.Empty<string>()))
+            : Ok(new ImportPreviewResult(rows.Count, created, updated, skipped, rowResults));
     }
 
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), this.GetUserId(), this.GetTenantId());

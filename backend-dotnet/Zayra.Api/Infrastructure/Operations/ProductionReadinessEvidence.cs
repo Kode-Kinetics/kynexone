@@ -334,9 +334,20 @@ public sealed record WorkerFleetReadiness(
     int MissingCount,
     IReadOnlyList<WorkerReadiness> Workers)
 {
+    /// <summary>
+    /// The fleet was NOT MEASURED, because an earlier term — the database probe or migration parity —
+    /// already decided the answer (see BuildReadinessAsync). Every count is zero and every worker reads
+    /// <c>not_evaluated</c>, because no heartbeat row was read.
+    ///
+    /// <para>This used to report <c>MissingCount = 6</c> with all six workers <c>"unavailable"</c>.
+    /// That is a FABRICATION, and it is indistinguishable from a genuinely dead worker fleet. On
+    /// 2026-09-23 three production deploys were investigated as a worker outage on the strength of it,
+    /// while the real cause — two migrations absent from the connected database — sat one field away in
+    /// the same payload. A readiness probe must never report a measurement it did not take.</para>
+    /// </summary>
     public static readonly WorkerFleetReadiness Unavailable = new(
-        false, 0, 0, 0, 0, ProductionWorkerNames.All.Count,
-        ProductionWorkerNames.All.Select(x => new WorkerReadiness(x, "unavailable", null, null)).ToList());
+        false, 0, 0, 0, 0, 0,
+        ProductionWorkerNames.All.Select(x => new WorkerReadiness(x, "not_evaluated", null, null)).ToList());
 }
 
 public sealed record WorkerReadiness(string Name, string Status, DateTime? LastSucceededAtUtc, DateTime? UpdatedAtUtc);

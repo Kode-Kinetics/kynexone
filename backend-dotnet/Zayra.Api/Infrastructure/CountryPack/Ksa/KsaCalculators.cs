@@ -91,6 +91,13 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
 
         if (isSaudi)
         {
+            // UNIT — every rate below is a decimal FRACTION of the covered wage (0.09 = 9%), which
+            // is why they are multiplied in directly. THE OTHER STORE holding these same three
+            // statutory facts is gosi_contribution_rules (Infrastructure/Seed/GosiRuleSeeder.cs),
+            // read by the GOSI preview and the readiness report through GosiCalculationService.
+            // It held PERCENTS until 2026-09 and now holds fractions too; GosiRuleSeeder.
+            // StatutoryRuleKeyFor maps one store's (branch, payer) to the other's rule key, and
+            // GosiRuleSeeder.VerifyStoresAgree fails the boot log and the suite if they diverge.
             decimal empAnnuity = await _rules.GetDecimalAsync(
                 CountryCodes.Saudi, Jurisdictions.KsaMainland,
                 RuleKeys.GosiSaudiEmployeeRate, eff, null, ct) ?? 0.09m;    // VERIFY: 9%

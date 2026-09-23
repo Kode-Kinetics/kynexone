@@ -42,9 +42,14 @@ public sealed partial class MigrationImportController
         // Cutovers declared in this very package. A malformed row here is NOT thrown from: the
         // companyCutover section validates and reports its own rows, and throwing out of context
         // construction would fail the whole package with an error attributed to the wrong section.
-        if (request.Sections.TryGetValue("companyCutover", out var csv))
+        // A SHIFTED cutover file is the same case: Csv.Parse refuses the whole file, the companyCutover
+        // section reports that refusal by row number, and context construction simply finds no declared
+        // cutovers — rather than aborting the package with the error attributed to whichever section
+        // happened to be first.
+        if (request.Sections.TryGetValue("companyCutover", out var csv)
+            && TryParseSection("companyCutover", csv, out var cutoverRows, out _))
         {
-            foreach (var row in Csv.Parse(csv))
+            foreach (var row in cutoverRows)
             {
                 try
                 {
@@ -144,11 +149,92 @@ public sealed partial class MigrationImportController
 
     private static void GuardDuplicate(string section, Dictionary<string, string> row, HashSet<string> seen)
     {
+        GuardPayslipAggregateInFile(section, row, seen);
         var key = DuplicateGuardKey(section, row);
         if (key is null) return;
         if (!seen.Add(key))
             throw new InvalidOperationException(
                 $"This row repeats a key already used earlier in the same file ({key}). Remove the duplicate — importing it twice would create the balance twice.");
+    }
+
+    // ── MI1: the payslip-aggregate double-count guard ───────────────────────────────────────────────
+    //
+    // OpeningBalanceTypes.PayslipAggregates has always carried the sentence "the importer rejects the
+    // combination loudly" and the importer never did — the symbol had exactly one occurrence in the
+    // solution, its own declaration. The hole is precise: the upsert key is
+    // (TenantId, EmployeeId, Year, BalanceType, ComponentCode), so a YTD_GROSS/TOTAL row and a
+    // YTD_GROSS/BASIC row are two different rows; PayrollController.SumOpeningBalance then matches on
+    // BALANCE TYPE ALONE and adds BOTH to the payslip. Every payslip for the rest of the year reports
+    // the year-to-date at roughly double, and the same applies to YTD_DEDUCTIONS and YTD_NET.
+    //
+    // The rule enforced here is therefore: for the three buckets the payslip consumes, ONE row per
+    // (employee, year, bucket), whatever the ComponentCode says. The statutory/tax/covered-wage buckets
+    // are untouched — they are carried detail, nothing sums them into a payslip, and per-component
+    // splits there are exactly what the annual GOSI reconciliation needs.
+    //
+    // Per-component YTD detail is not lost by this: import it under a non-aggregate bucket, or carry the
+    // aggregate and keep the component split in the source system. What is refused is the one
+    // combination that silently doubles a number printed on an employee's payslip.
+
+    private const string PayslipAggregateComponentAdvice =
+        "The payslip's year-to-date block sums EVERY row of this balance type for the employee and year "
+      + "and ignores ComponentCode entirely, so carrying a total row AND per-component detail rows under "
+      + "the same bucket reports roughly double the year-to-date on every payslip for the rest of the "
+      + "year. Carry ONE row per employee, year and bucket — normally ComponentCode=TOTAL. Per-component "
+      + "detail belongs under the non-payslip buckets (YTD_STATUTORY_EE, YTD_STATUTORY_ER, YTD_TAX, "
+      + "YTD_COVERED_WAGE), which are carried for reconciliation and are never summed into a payslip.";
+
+    private static string? PayslipAggregateKey(string section, Dictionary<string, string> row, out string componentCode)
+    {
+        componentCode = string.Empty;
+        if (section != "payrollOpeningBalances") return null;
+        var raw = Val(row, "BalanceType").Trim();
+        var canonical = OpeningBalanceTypes.PayslipAggregates
+            .FirstOrDefault(x => string.Equals(x, raw, StringComparison.OrdinalIgnoreCase));
+        if (canonical is null) return null;
+        componentCode = Val(row, "ComponentCode").Trim();
+        var employeeCode = Val(row, "EmployeeCode").Trim().ToUpperInvariant();
+        var year = Val(row, "Year").Trim();
+        return $"ytd-aggregate:{employeeCode}|{year}|{canonical}";
+    }
+
+    /// <summary>MI1 — two rows in ONE file under the same payslip aggregate, differing only by component.</summary>
+    private static void GuardPayslipAggregateInFile(string section, Dictionary<string, string> row, HashSet<string> seen)
+    {
+        var key = PayslipAggregateKey(section, row, out var componentCode);
+        if (key is null) return;
+        var marker = $"{key}=";
+        var prior = seen.FirstOrDefault(s => s.StartsWith(marker, StringComparison.Ordinal));
+        if (prior is not null)
+        {
+            var priorComponent = prior[marker.Length..];
+            if (string.Equals(priorComponent, componentCode, StringComparison.OrdinalIgnoreCase)) return; // exact dup → DuplicateGuardKey's message
+            throw new InvalidOperationException(
+                $"This file already carries {key[("ytd-aggregate:".Length)..].Replace("|", " / ")} under ComponentCode "
+              + $"'{priorComponent}', and this row adds '{componentCode}' to the same bucket. "
+              + PayslipAggregateComponentAdvice);
+        }
+        seen.Add($"{marker}{componentCode}");
+    }
+
+    /// <summary>MI1 — a row that would join a payslip aggregate ALREADY STORED under a different component.</summary>
+    private async Task GuardPayslipAggregateAgainstStoredAsync(
+        Guid tenantId, Employee employee, int year, string balanceType, string componentCode, CancellationToken ct)
+    {
+        if (!OpeningBalanceTypes.PayslipAggregates.Contains(balanceType, StringComparer.OrdinalIgnoreCase)) return;
+        var existing = await _db.PayrollOpeningBalances.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employee.Id
+                     && x.Year == year && x.BalanceType == balanceType
+                     && x.ComponentCode != componentCode)
+            .Select(x => x.ComponentCode)
+            .Take(3)
+            .ToListAsync(ct);
+        if (existing.Count == 0) return;
+        throw new InvalidOperationException(
+            $"{employee.EmployeeCode} already has {balanceType} for {year} stored under ComponentCode "
+          + $"'{string.Join("', '", existing)}', and this row would add '{componentCode}' to the same bucket. "
+          + PayslipAggregateComponentAdvice
+          + " Correct the stored row or this one; they cannot both stand.");
     }
 
     private static string RequireBalanceType(Dictionary<string, string> row)

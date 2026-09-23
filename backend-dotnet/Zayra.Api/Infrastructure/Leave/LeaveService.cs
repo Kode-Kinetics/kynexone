@@ -9,6 +9,7 @@ using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Infrastructure.CountryPack;
 using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Infrastructure.Data;
+using Zayra.Api.Infrastructure.Localization;
 using Zayra.Api.Infrastructure.WorkWeek;
 using Zayra.Api.Models;
 
@@ -20,6 +21,12 @@ public class LeaveService : ILeaveService
     private readonly IApprovalRouter _router;
     private readonly IWorkWeekService _workWeek;
     private readonly IStatutoryRuleReader _rules;
+    /// <summary>
+    /// The SAME Art. 98 working-hours resolver <c>AttendanceService</c> uses to decide what a
+    /// working day is worth. Hourly leave has to agree with attendance about the length of a day,
+    /// or the two modules disagree about what one day of an employee's time is.
+    /// </summary>
+    private readonly KsaWorkingHoursBaselineService _workingHours;
 
     public LeaveService(ZayraDbContext db, IApprovalRouter router, IWorkWeekService? workWeek = null)
     {
@@ -31,6 +38,30 @@ public class LeaveService : ILeaveService
         // several call sites and tests, and widening the ctor would break all of them.
         // StatutoryRuleReader memoizes per instance, which is what we want for an accrual sweep.
         _rules = new StatutoryRuleReader(db);
+        _workingHours = new KsaWorkingHoursBaselineService(_rules, new HijriDateService());
+    }
+
+    /// <summary>
+    /// How many minutes this employee's working day is on <paramref name="on"/>: the tenant's
+    /// configured <c>AttendancePolicy.StandardWorkMinutes</c>, reduced to the KSA Art. 98 Ramadan
+    /// baseline where the employing company is a KSA entity and the date falls in Ramadan on the
+    /// Um al-Qura calendar.
+    ///
+    /// <para>This is the attendance module's own answer, from the attendance module's own resolver
+    /// — deliberately not a second implementation. Hourly leave used to divide by a hardcoded 8
+    /// while attendance measured the very same day against 540, or against 360 in Ramadan.</para>
+    /// </summary>
+    private async Task<int> ResolveWorkingDayMinutesAsync(Guid tenantId, Employee employee, DateOnly on, CancellationToken ct)
+    {
+        var standardMinutes = await _db.AttendancePolicies.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.IsActive)
+            .Select(x => (int?)x.StandardWorkMinutes)
+            .FirstOrDefaultAsync(ct) ?? new AttendancePolicy().StandardWorkMinutes;
+
+        var countryCode = await ResolveEmployeeCountryAsync(tenantId, employee.Id, ct);
+        var baseline = await _workingHours.ResolveDailyAsync(countryCode, on, standardMinutes, ct);
+        // A misconfigured zero would otherwise divide by zero and charge the whole balance.
+        return Math.Max(1, baseline.DailyMinutes);
     }
 
     // ── KSA statutory leave (Royal Decree M/51 Art. 109 and Art. 117) ────────────────────────────
@@ -568,15 +599,37 @@ public class LeaveService : ILeaveService
             workingDays = await CalculateWorkingDaysAsync(tenantId, request.StartDate, request.EndDate, effectivePolicy.Id, ct);
         }
 
+        var isHourly = request.DayType.Equals("Hourly", StringComparison.OrdinalIgnoreCase);
+        // The tenant's real working day, resolved once and used both to convert the hours into days
+        // and to bound the request. Zero for every non-hourly request — nothing else consults it.
+        var hourlyDayMinutes = isHourly
+            ? await ResolveWorkingDayMinutesAsync(tenantId, employee, request.StartDate, ct)
+            : 0;
+
         if (request.DayType.StartsWith("Half", StringComparison.OrdinalIgnoreCase))
         {
             if (request.StartDate != request.EndDate)
                 throw new InvalidOperationException("Half-day leave must be for a single date.");
             workingDays = 0.5m;
         }
-        else if (request.DayType.Equals("Hourly", StringComparison.OrdinalIgnoreCase))
+        else if (isHourly)
         {
-            workingDays = Math.Round(request.HoursRequested / 8m, 4);
+            // Two defects lived on the line this replaces —
+            //   workingDays = Math.Round(request.HoursRequested / 8m, 4);
+            //
+            // 1. The 8 was hardcoded, so a tenant configured on a 9-hour day deducted a WHOLE day
+            //    for 8 hours of leave (1.00 instead of 0.89), and a KSA employee's Ramadan day of
+            //    hourly leave deducted 0.75 days instead of 1.00 — even though the attendance
+            //    processor already resolved the Art. 98 baseline correctly, from the same service
+            //    this now calls.
+            // 2. It rounded to 4 dp into a numeric(6,2) column. One hour of an 8-hour day is 0.125
+            //    days: the create response returned 0.125, Postgres silently stored 0.13, and every
+            //    later read said 0.13 — the record disagreed with the response that created it.
+            //
+            // Rounding to the column's own precision, AwayFromZero because that is how Postgres
+            // rounds numeric on write, makes the value returned and the value stored one number.
+            workingDays = Math.Round(
+                request.HoursRequested * 60m / hourlyDayMinutes, 2, MidpointRounding.AwayFromZero);
         }
         request.TotalDays = workingDays;
 
@@ -591,11 +644,15 @@ public class LeaveService : ILeaveService
 
         if (request.DayType.StartsWith("Half", StringComparison.OrdinalIgnoreCase) && !leaveType.IsHalfDayAllowed)
             throw new InvalidOperationException("Half-day leave is not allowed for this leave type.");
-        if (request.DayType.Equals("Hourly", StringComparison.OrdinalIgnoreCase))
+        if (isHourly)
         {
             if (!leaveType.IsHourlyAllowed) throw new InvalidOperationException("Hourly leave is not allowed for this leave type.");
-            if (request.StartDate != request.EndDate || request.HoursRequested <= 0 || request.HoursRequested > 8)
-                throw new InvalidOperationException("Hourly leave must be for one day and between 0 and 8 hours.");
+            // The upper bound was the same hardcoded 8, so a tenant on a six-hour day could book
+            // eight hours — 1.33 days — as a single "hourly" request.
+            var dayHours = hourlyDayMinutes / 60m;
+            if (request.StartDate != request.EndDate || request.HoursRequested <= 0 || request.HoursRequested > dayHours)
+                throw new InvalidOperationException(
+                    $"Hourly leave must be for one day and between 0 and {dayHours:0.##} hours.");
         }
         if (effectivePolicy is not null)
         {

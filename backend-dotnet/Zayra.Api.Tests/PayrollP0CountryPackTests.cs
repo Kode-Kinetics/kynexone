@@ -231,22 +231,25 @@ public class PayrollP0CountryPackTests
             });
 
     // Mirror the GosiTests DefaultRules factory — verified against GosiRuleSeeder.
+    // UNIT: rates are decimal FRACTIONS of the contributory wage (0.09 = 9%), the same unit the
+    // StubRuleReader rows above use for gosi.saudi_employee_rate. That the two engines agree on
+    // 975m is only meaningful because they now agree on the unit too.
     private static List<Zayra.Api.Models.GosiContributionRule> GosiTests_DefaultRules()
     {
         var effective = new DateOnly(2016, 6, 1);
         return new List<Zayra.Api.Models.GosiContributionRule>
         {
-            GRule("Saudi",    "Annuities",           "Employee", 9.00m,  effective),
-            GRule("Saudi",    "Annuities",           "Employer", 9.00m,  effective),
-            GRule("Saudi",    "SANED",               "Employee", 0.75m,  effective),
-            GRule("Saudi",    "SANED",               "Employer", 0.75m,  effective),
-            GRule("Saudi",    "OccupationalHazards", "Employer", 2.00m,  effective),
-            GRule("GCC",      "Annuities",           "Employee", 9.00m,  effective),
-            GRule("GCC",      "Annuities",           "Employer", 9.00m,  effective),
-            GRule("GCC",      "SANED",               "Employee", 0.75m,  effective),
-            GRule("GCC",      "SANED",               "Employer", 0.75m,  effective),
-            GRule("GCC",      "OccupationalHazards", "Employer", 2.00m,  effective),
-            GRule("NonSaudi", "OccupationalHazards", "Employer", 2.00m,  effective),
+            GRule("Saudi",    "Annuities",           "Employee", 0.09m,  effective),
+            GRule("Saudi",    "Annuities",           "Employer", 0.09m,  effective),
+            GRule("Saudi",    "SANED",               "Employee", 0.0075m,  effective),
+            GRule("Saudi",    "SANED",               "Employer", 0.0075m,  effective),
+            GRule("Saudi",    "OccupationalHazards", "Employer", 0.02m,  effective),
+            GRule("GCC",      "Annuities",           "Employee", 0.09m,  effective),
+            GRule("GCC",      "Annuities",           "Employer", 0.09m,  effective),
+            GRule("GCC",      "SANED",               "Employee", 0.0075m,  effective),
+            GRule("GCC",      "SANED",               "Employer", 0.0075m,  effective),
+            GRule("GCC",      "OccupationalHazards", "Employer", 0.02m,  effective),
+            GRule("NonSaudi", "OccupationalHazards", "Employer", 0.02m,  effective),
         };
     }
 

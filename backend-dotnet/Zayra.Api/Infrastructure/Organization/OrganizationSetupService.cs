@@ -468,7 +468,7 @@ public class OrganizationSetupService : IOrganizationSetupService
     private static void Apply(Branch branch, BranchRequest request)
     {
         branch.CompanyId = request.CompanyId;
-        branch.Code = Clean(request.Code).ToUpperInvariant();
+        branch.Code = OrgCodes.Normalize(request.Code);
         branch.NameEn = Clean(request.NameEn);
         branch.NameAr = Clean(request.NameAr);
         branch.CountryCode = Clean(request.CountryCode).ToUpperInvariant();
@@ -486,7 +486,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         department.BranchId = request.BranchId;
         department.ParentDepartmentId = request.ParentDepartmentId;
         department.CostCenterId = request.CostCenterId;
-        department.Code = Clean(request.Code).ToUpperInvariant();
+        department.Code = OrgCodes.Normalize(request.Code);
         department.NameEn = Clean(request.NameEn);
         department.NameAr = Clean(request.NameAr);
         department.ManagerEmployeeId = request.ManagerEmployeeId;
@@ -496,7 +496,7 @@ public class OrganizationSetupService : IOrganizationSetupService
     private static void Apply(Designation designation, DesignationRequest request)
     {
         designation.DepartmentId = request.DepartmentId;
-        designation.Code = Clean(request.Code).ToUpperInvariant();
+        designation.Code = OrgCodes.Normalize(request.Code);
         designation.TitleEn = Clean(request.TitleEn);
         designation.TitleAr = Clean(request.TitleAr);
         designation.JobGrade = Clean(request.JobGrade);
@@ -509,7 +509,7 @@ public class OrganizationSetupService : IOrganizationSetupService
 
     private static void Apply(Grade grade, GradeRequest request)
     {
-        grade.Code = Clean(request.Code).ToUpperInvariant();
+        grade.Code = OrgCodes.Normalize(request.Code);
         grade.Name = Clean(request.Name);
         grade.Band = Clean(request.Band);
         grade.Level = request.Level;
@@ -530,7 +530,7 @@ public class OrganizationSetupService : IOrganizationSetupService
     private static void Apply(CostCenter costCenter, CostCenterRequest request)
     {
         costCenter.CompanyId = request.CompanyId;
-        costCenter.Code = Clean(request.Code).ToUpperInvariant();
+        costCenter.Code = OrgCodes.Normalize(request.Code);
         costCenter.Name = Clean(request.Name);
         costCenter.IsActive = request.IsActive;
     }
@@ -658,36 +658,51 @@ public class OrganizationSetupService : IOrganizationSetupService
 
     private async Task EnsureBranchCodeUnique(Guid tenantId, string code, Guid? excludedId, CancellationToken cancellationToken)
     {
-        var clean = Clean(code).ToUpperInvariant();
-        var exists = await _db.Branches.AnyAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.Code == clean && x.Id != excludedId, cancellationToken);
+        var clean = OrgCodes.Normalize(code);
+        // Compared case-INSENSITIVELY on purpose. The column is normalised on write now, but a
+        // tenant onboarded before that still holds rows the old importer stored verbatim; an exact
+        // match would let "OPS" be created beside a legacy "ops" and re-open the collision.
+        var exists = await _db.Branches.AnyAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.Code.ToUpper() == clean && x.Id != excludedId, cancellationToken);
         if (exists) throw new InvalidOperationException("Branch code already exists in this tenant.");
     }
 
     private async Task EnsureDepartmentCodeUnique(Guid tenantId, string code, Guid? excludedId, CancellationToken cancellationToken)
     {
-        var clean = Clean(code).ToUpperInvariant();
-        var exists = await _db.Departments.AnyAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.Code == clean && x.Id != excludedId, cancellationToken);
+        var clean = OrgCodes.Normalize(code);
+        // Compared case-INSENSITIVELY on purpose. The column is normalised on write now, but a
+        // tenant onboarded before that still holds rows the old importer stored verbatim; an exact
+        // match would let "OPS" be created beside a legacy "ops" and re-open the collision.
+        var exists = await _db.Departments.AnyAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.Code.ToUpper() == clean && x.Id != excludedId, cancellationToken);
         if (exists) throw new InvalidOperationException("Department code already exists in this tenant.");
     }
 
     private async Task EnsureDesignationCodeUnique(Guid tenantId, string code, Guid? excludedId, CancellationToken cancellationToken)
     {
-        var clean = Clean(code).ToUpperInvariant();
-        var exists = await _db.Designations.AnyAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.Code == clean && x.Id != excludedId, cancellationToken);
+        var clean = OrgCodes.Normalize(code);
+        // Compared case-INSENSITIVELY on purpose. The column is normalised on write now, but a
+        // tenant onboarded before that still holds rows the old importer stored verbatim; an exact
+        // match would let "OPS" be created beside a legacy "ops" and re-open the collision.
+        var exists = await _db.Designations.AnyAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.Code.ToUpper() == clean && x.Id != excludedId, cancellationToken);
         if (exists) throw new InvalidOperationException("Designation code already exists in this tenant.");
     }
 
     private async Task EnsureGradeCodeUnique(Guid tenantId, string code, Guid? excludedId, CancellationToken cancellationToken)
     {
-        var clean = Clean(code).ToUpperInvariant();
-        var exists = await _db.Grades.AnyAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.Code == clean && x.Id != excludedId, cancellationToken);
+        var clean = OrgCodes.Normalize(code);
+        // Compared case-INSENSITIVELY on purpose. The column is normalised on write now, but a
+        // tenant onboarded before that still holds rows the old importer stored verbatim; an exact
+        // match would let "OPS" be created beside a legacy "ops" and re-open the collision.
+        var exists = await _db.Grades.AnyAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.Code.ToUpper() == clean && x.Id != excludedId, cancellationToken);
         if (exists) throw new InvalidOperationException("Grade code already exists in this tenant.");
     }
 
     private async Task EnsureCostCenterCodeUnique(Guid tenantId, string code, Guid? excludedId, CancellationToken cancellationToken)
     {
-        var clean = Clean(code).ToUpperInvariant();
-        var exists = await _db.CostCenters.AnyAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.Code == clean && x.Id != excludedId, cancellationToken);
+        var clean = OrgCodes.Normalize(code);
+        // Compared case-INSENSITIVELY on purpose. The column is normalised on write now, but a
+        // tenant onboarded before that still holds rows the old importer stored verbatim; an exact
+        // match would let "OPS" be created beside a legacy "ops" and re-open the collision.
+        var exists = await _db.CostCenters.AnyAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.Code.ToUpper() == clean && x.Id != excludedId, cancellationToken);
         if (exists) throw new InvalidOperationException("Cost center code already exists in this tenant.");
     }
 

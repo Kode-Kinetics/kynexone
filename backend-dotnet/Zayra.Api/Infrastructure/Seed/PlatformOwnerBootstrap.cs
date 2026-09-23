@@ -17,6 +17,21 @@ namespace Zayra.Api.Infrastructure.Seed;
 /// </summary>
 public static class PlatformOwnerBootstrap
 {
+    /// <summary>
+    /// The bar a bootstrap password must clear on a production or dedicated deployment: 16+ characters
+    /// and none of the defaults that ship in docker-compose, CI and the docs. It lives here rather than
+    /// inline in Program.cs so it can be tested, and so the caller decides what failing it means.
+    /// Failing it SKIPS the seed; it must never stop the service.
+    /// </summary>
+    public static bool IsWeakBootstrapPassword(string? password)
+    {
+        var pw = password ?? string.Empty;
+        return pw.Length < 16
+               || pw.Contains("ChangeMe", StringComparison.OrdinalIgnoreCase)
+               || pw.Contains("YourPassword", StringComparison.OrdinalIgnoreCase)
+               || pw.Contains("PlatformAdmin123", StringComparison.OrdinalIgnoreCase);
+    }
+
     public static async Task RunAsync(
         ZayraDbContext db,
         IPasswordHasher hasher,
