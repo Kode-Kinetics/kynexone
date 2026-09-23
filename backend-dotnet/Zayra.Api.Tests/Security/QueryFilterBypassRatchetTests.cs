@@ -98,7 +98,9 @@ public class QueryFilterBypassRatchetTests
         ["Infrastructure/Seed/GosiRuleSeeder.cs"] = 2,
         ["Infrastructure/Seed/PayComponentSeeder.cs"] = 1,
         ["Infrastructure/Seed/StatutoryRuleSeeder.cs"] = 1,
-        ["Infrastructure/Seed/TenantProvisioningBundle.cs"] = 11,
+        // 11 -> 10: the default-leave-policy installer reads through ScopedBypass.TenantWide, which
+        // re-applies the tenant predicate it names, so the raw site it replaced is gone for good.
+        ["Infrastructure/Seed/TenantProvisioningBundle.cs"] = 10,
         ["Infrastructure/WorkWeek/WorkWeekService.cs"] = 3,
         // Auth-recovery candidate (new file, provisional): see register §6.
         ["Controllers/OffboardingController.cs"] = 7,
