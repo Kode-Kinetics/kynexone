@@ -481,8 +481,14 @@ public class EmployeesController : ControllerBase
                     patternHint = hint,
                     complianceFieldKey = d.ComplianceFieldKey,
                     // Value/expiry edit-keys the modal binds a statutory field to (FE EmployeeComplianceField).
-                    entityKey = d.ComplianceFieldKey is null ? null : CamelKey(d.Key),
-                    expiryEntityKey = d.ExpiryKey is null ? null : CamelKey(d.ExpiryKey),
+                    // These become PATCH keys for ApplyChanges, so they must name the STORAGE TARGET — which
+                    // is what `Binding` records, NOT the registry key. The two diverge for every GCC card
+                    // expiry: registry keys `IqamaExpiry`/`EmiratesIdExpiry`/`QidExpiry`/`CivilIdExpiry` (the
+                    // readiness keys and CSV headers) bind to columns `emp.IqamaExpiryDate`/… . Deriving from
+                    // `d.Key` emitted `iqamaExpiry`, for which ApplyChanges has no case, so the edit would
+                    // have been accepted with 200 and dropped. EmployeeFieldWiringTests is the CI guard.
+                    entityKey = d.ComplianceFieldKey is null ? null : EmployeeEditKey(d),
+                    expiryEntityKey = ExpiryEditKeyFor(d),
                 };
             })
             .ToList();
@@ -495,6 +501,31 @@ public class EmployeesController : ControllerBase
             disclaimer = policy.Disclaimer,
             fields = descriptors,
         });
+    }
+
+    /// <summary>
+    /// The edit-modal PATCH key for a catalog descriptor: the camelCased <c>Employee</c> column named by
+    /// the descriptor's <c>Binding</c> (<c>"emp.X"</c> → <c>"x"</c>). Returns null for a field that does not
+    /// live on the <c>Employee</c> entity (payroll profile, salary structure, org lookup), which the edit
+    /// modal cannot patch through <see cref="ApplyChanges"/> anyway — emitting a key for one would render an
+    /// input whose value goes nowhere. Public so the contract test can enumerate the same surface.
+    /// </summary>
+    internal static string? EmployeeEditKey(Zayra.Api.Infrastructure.Employees.EmployeeFieldRegistry.EmployeeFieldDescriptor d)
+    {
+        const string prefix = "emp.";
+        if (d.Binding is null || !d.Binding.StartsWith(prefix, StringComparison.Ordinal)) return null;
+        var column = d.Binding[prefix.Length..];
+        return column.Length > 0 ? char.ToLowerInvariant(column[0]) + column[1..] : null;
+    }
+
+    /// <summary>The edit-modal PATCH key for a descriptor's PAIRED expiry, resolved through the paired
+    /// descriptor's own <c>Binding</c> (never through its key — see <see cref="FieldCatalog"/>).</summary>
+    internal static string? ExpiryEditKeyFor(Zayra.Api.Infrastructure.Employees.EmployeeFieldRegistry.EmployeeFieldDescriptor d)
+    {
+        if (d.ExpiryKey is null) return null;
+        var paired = Zayra.Api.Infrastructure.Employees.EmployeeFieldRegistry.Catalog
+            .FirstOrDefault(x => string.Equals(x.Key, d.ExpiryKey, StringComparison.Ordinal));
+        return paired is null ? null : EmployeeEditKey(paired);
     }
 
     [HttpPost("import")]
@@ -2576,6 +2607,18 @@ public class EmployeesController : ControllerBase
         if (employee is null) return NotFound();
         var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
         if (!scope.CanAccessEmployee(employee.Id)) return Forbid();
+        // FAIL LOUD ON AN UNKNOWN KEY — before a single column is touched, so a rejected patch is never
+        // half-applied. ApplyChanges had no default arm, so a key it did not recognise was accepted with 200
+        // and discarded; the user saw a successful save and the value was gone. Ordinal match, because the
+        // switch is ordinal: "BankIban" is NOT "bankIban" and must be rejected rather than dropped.
+        var unknownFields = request.Changes.Keys.Where(k => !EditableEmployeeFields.Contains(k)).ToList();
+        if (unknownFields.Count > 0)
+            return BadRequest(new
+            {
+                message = $"Unrecognised employee field(s): {string.Join(", ", unknownFields)}. "
+                          + "No change was applied. Field keys are case-sensitive.",
+                unknownFields,
+            });
         var sensitive = request.Changes.Keys.Where(SensitiveFields.Contains).ToList();
         // Establishment integrity: the free-text department/designation/branch cases in
         // ApplyChanges are resolved to IDs (shared resolver — unresolvable name ⇒ 422) and any
@@ -3459,7 +3502,14 @@ public class EmployeesController : ControllerBase
         var priorDesigId = employee.DesignationId;
         try
         {
-            ApplyChanges(employee, changes);
+            // The payload was validated against EditableEmployeeFields when the change was REQUESTED, so an
+            // unknown key here is a stored patch from an older build. Refusing would strand an approved
+            // change with no operator remedy, so it is logged loudly instead of dropped in silence.
+            var unknownApproved = ApplyChanges(employee, changes);
+            if (unknownApproved.Count > 0)
+                _logger?.LogWarning(
+                    "Approved employee change {ChangeId} for employee {EmployeeId} carried unrecognised field(s) {UnknownFields}; those values were NOT applied.",
+                    change.Id, employee.Id, string.Join(", ", unknownApproved));
             await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, changes.Keys, cancellationToken);
             // Keep the payroll profile's bank columns in step with the employee scalar so an IBAN fixed
             // via the checklist actually reaches the WPS/payroll run (Δ13 / P1-1).
@@ -4130,8 +4180,43 @@ public class EmployeesController : ControllerBase
         return emails.Select(AuthService.Normalize).ToHashSet(StringComparer.Ordinal);
     }
 
-    private void ApplyChanges(Employee employee, Dictionary<string, JsonElement> changes)
+    /// <summary>
+    /// Every PATCH key <see cref="ApplyChanges"/> understands. ORDINAL, because a C# string switch is
+    /// ordinal — a case-insensitive set here would admit "BankIban", which the switch would then drop.
+    ///
+    /// This is the allow-list <see cref="UpdateEmployee"/> validates against BEFORE mutating anything, so an
+    /// unrecognised key is a 400 naming it rather than a 200 that threw the value away.
+    /// `EmployeeFieldWiringTests.EditableEmployeeFields_AreAllHandledByApplyChanges` proves every key here
+    /// reaches a real case, and `EveryCatalogEditKey_IsApplyable` proves the field catalogue never offers the
+    /// modal an input this set does not contain.
+    /// </summary>
+    internal static readonly IReadOnlySet<string> EditableEmployeeFields = new HashSet<string>(StringComparer.Ordinal)
     {
+        "englishName", "arabicName", "preferredName", "gender", "nationality", "personalEmail", "workEmail",
+        "phone", "jobTitle", "employmentType", "joiningDate", "department", "designation", "branch",
+        "workLocation", "managerEmployeeId", "dateOfBirth", "maritalStatus", "emergencyContactName",
+        "emergencyContactPhone", "contractType", "grade", "costCenter", "salary", "bankName", "bankIban",
+        "wpsBankDetails", "passportNumber", "passportIssueDate", "passportExpiryDate", "visaNumber",
+        "visaIssueDate", "visaExpiryDate", "iqamaNumber", "iqamaExpiryDate", "muqeemNumber", "gosiReference",
+        "emiratesId", "emiratesIdExpiryDate", "laborCardNumber", "visaFileNumber", "qid", "qidExpiryDate",
+        "workPermitNumber", "workPermitIssueDate", "civilId", "civilIdExpiryDate", "residencyNumber",
+        "residencyIssueDate", "idNumber", "qiwaContractNumber", "sponsorName", "terminationReason",
+    };
+
+    /// <summary>
+    /// Applies an edit-modal patch and RETURNS the keys it did not recognise. The switch used to have no
+    /// <c>default</c> arm, so an unknown key was dropped in silence: `emiratesIdExpiryDate`,
+    /// `qidExpiryDate` and `civilIdExpiryDate` are fail-closed PAY gates, so an AE/QA/KW/OM/BH employee
+    /// could be payroll-blocked on a wrong expiry with no way to correct it — the save returned 200 and
+    /// changed nothing. `idNumber` (activate gate) and `qiwaContractNumber` behaved the same, the latter
+    /// only AFTER an approver had approved it, since it routes through <see cref="SensitiveFields"/>.
+    /// Callers MUST act on the returned list: <see cref="UpdateEmployee"/> rejects up front,
+    /// <see cref="ApproveChange"/> logs (its payload was already validated when it was requested, so
+    /// refusing there would strand an in-flight approval).
+    /// </summary>
+    private IReadOnlyList<string> ApplyChanges(Employee employee, Dictionary<string, JsonElement> changes)
+    {
+        var unknown = new List<string>();
         foreach (var (field, value) in changes)
         {
             switch (field)
@@ -4193,9 +4278,22 @@ public class EmployeesController : ControllerBase
                 case "civilId": employee.CivilId = value.GetString() ?? employee.CivilId; break;
                 case "residencyNumber": employee.ResidencyNumber = value.GetString() ?? employee.ResidencyNumber; break;
                 case "residencyIssueDate": employee.ResidencyIssueDate = ReadDateOnly(value); break;
-                case "terminationReason": employee.TerminationReason = value.GetString() ?? employee.TerminationReason; break;
+                // The five (six with sponsorName) keys the modal emitted into a switch that had no case for
+                // them. All mirror `iqamaExpiryDate` above, which already did the right thing for Saudi
+                // Arabia only; the identical hole was left open for the other five GCC states.
+                case "emiratesIdExpiryDate": employee.EmiratesIdExpiryDate = ReadDateOnly(value); break;   // AE pay gate
+                case "qidExpiryDate": employee.QidExpiryDate = ReadDateOnly(value); break;                 // QA pay gate
+                case "civilIdExpiryDate": employee.CivilIdExpiryDate = ReadDateOnly(value); break;         // KW/OM/BH pay gate
+                case "idNumber": employee.IdNumber = value.GetString() ?? employee.IdNumber; break;        // SA national Hawiyya, activate gate
+                case "qiwaContractNumber": employee.QiwaContractNumber = value.GetString() ?? employee.QiwaContractNumber; break;
+                // Emitted by the server catalogue for every expat (registry `SponsorName`, compliance key
+                // `sponsor`); unreachable while the catalogue was dead, reachable the moment it was fixed.
+                case "sponsorName": employee.SponsorName = value.GetString() ?? employee.SponsorName; break;
+                // NEVER add a silent fall-through here. An unrecognised key is reported, not dropped.
+                default: unknown.Add(field); break;
             }
         }
+        return unknown;
     }
 
     private static DateOnly? ReadDateOnly(JsonElement value)
