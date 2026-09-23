@@ -118,6 +118,13 @@ public partial class KynexDbContext
     };
 
     /// <summary>
+    /// Whether <paramref name="table"/> is one of the §19.5 exemptions from the xmin concurrency
+    /// token. Public so the verification test asserts against this list rather than a second copy
+    /// of it.
+    /// </summary>
+    public static bool IsXminExempt(string table) => XminExempt.Contains(table);
+
+    /// <summary>
     /// Applied by the generated <see cref="OnModelCreating"/> after every table has been
     /// configured. Split out so re-deriving the generated half from the baseline SQL cannot
     /// silently drop it.

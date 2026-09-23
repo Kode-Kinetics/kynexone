@@ -80,11 +80,24 @@ COMMENT ON FUNCTION app.resolve_login(public.citext, public.citext) IS 'The logi
 
 CREATE TABLE public.widget (
     id uuid NOT NULL,
+    tenant_id uuid NOT NULL,
+    valid_range daterange,
     "set" text
 );
 
 -- a comment with content must survive
 ALTER TABLE ONLY public.widget ADD CONSTRAINT pk_widget PRIMARY KEY (id);
+ALTER TABLE ONLY public.widget ADD CONSTRAINT ex_widget__no_overlap EXCLUDE USING gist (tenant_id WITH =, valid_range WITH &&);
+CREATE VIEW public.v_widget WITH (security_invoker='true') AS SELECT w.id FROM public.widget w;
+CREATE TABLE public.widget_2026_01 PARTITION OF public.widget_p FOR VALUES FROM ('2026-01-01 00:00:00+00') TO ('2026-02-01 00:00:00+00');
+ALTER TABLE public.widget ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.widget FORCE ROW LEVEL SECURITY;
+CREATE POLICY p_tenant ON public.widget USING ((tenant_id = app.current_tenant()));
+CREATE TRIGGER trg_row_stamp BEFORE INSERT OR UPDATE ON public.widget FOR EACH ROW EXECUTE FUNCTION app.row_stamp();
+COMMENT ON TABLE public.widget IS 'A table. @tier:T @owner:Platform @retention:24m-purge';
+COMMENT ON INDEX public.ix_widget__tenant IS 'Serves: the widget list for one tenant.';
+GRANT SELECT,INSERT,UPDATE,DELETE ON TABLE public.widget TO kynex_app;
+REVOKE ALL ON TABLE public.widget FROM PUBLIC;
 \unrestrict 7Hq2kLpZzX9aQwErTyUiOpAsDfGhJkLz
 FIX
 )
@@ -114,6 +127,28 @@ FIX
   grep -q 'CREATE TABLE public.widget' <<<"$got" || fail 'a CREATE TABLE was eaten'
   grep -q 'PRIMARY KEY (id)'           <<<"$got" || fail 'a constraint line was eaten'
   grep -q 'app.current_tenant()'       <<<"$got" || fail 'a function body was eaten'
+
+  # (b2) one line per class of object §19.1 says EF cannot see, which is the whole reason
+  # the byte-diff gate exists. Whatever the normaliser deletes, the gate is blind to — so a
+  # widening that swallowed any of these would silently retire the gate's purpose while
+  # every other check above still passed.
+  for probe in \
+    'EXCLUDE USING gist'                       \
+    "WITH (security_invoker='true')"           \
+    'PARTITION OF'                             \
+    "FOR VALUES FROM ('2026-01-01 00:00:00+00')" \
+    'FORCE ROW LEVEL SECURITY'                 \
+    'CREATE POLICY p_tenant'                   \
+    'CREATE TRIGGER trg_row_stamp'             \
+    '@owner:Platform @retention:24m-purge'     \
+    'COMMENT ON INDEX'                         \
+    'GRANT SELECT,INSERT,UPDATE,DELETE'        \
+    'REVOKE ALL ON TABLE'                      ; do
+    grep -qF -- "$probe" <<<"$got" \
+      || fail "the normaliser ate a line containing: $probe
+       That object class is exactly what the byte-diff gate exists to catch and EF cannot see.
+       Do not widen this script to make a red diff go green (assertion 18)."
+  done
 
   # (c) every line that WAS removed matches one of the four declared patterns. This is the
   #     assertion that stops the normaliser from being widened by accident: a new sed rule

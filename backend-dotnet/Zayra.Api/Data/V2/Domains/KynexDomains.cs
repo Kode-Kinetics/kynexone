@@ -89,4 +89,20 @@ public static class KynexDomains
         new("ck_statutory_rules__family", "statutory_rules", "family", false, ck_statutory_rules__family.All),
         new("ck_statutory_rules__nationality_class", "statutory_rules", "nationality_class", false, ck_statutory_rules__nationality_class.All),
     };
+
+    /// <summary>
+    /// TARGET_SCHEMA.md revision 7 SS9 rows 37 and 38, which the baseline DDL has not declared.
+    /// The columns exist (statutory_rules.gosi_branch / .payer, payroll_slip_lines.gosi_branch /
+    /// .gosi_payer) and are unconstrained varchar today. These four are kept here, out of
+    /// <see cref="All"/>, so the gap is a named fact rather than a missing file; KynexDomainsTests
+    /// asserts each one either is absent from pg_constraint or matches it exactly, so declaring
+    /// the constraint in 020/021 needs no change here beyond moving the row up.
+    /// </summary>
+    public static readonly IReadOnlyList<Domain> DesignedButNotYetConstrained = new Domain[]
+    {
+        new("ck_statutory_rules__gosi_branch", "statutory_rules", "gosi_branch", true, ck_statutory_rules__gosi_branch.All),
+        new("ck_payroll_slip_lines__gosi_branch", "payroll_slip_lines", "gosi_branch", true, ck_payroll_slip_lines__gosi_branch.All),
+        new("ck_statutory_rules__payer", "statutory_rules", "payer", true, ck_statutory_rules__payer.All),
+        new("ck_payroll_slip_lines__gosi_payer", "payroll_slip_lines", "gosi_payer", true, ck_payroll_slip_lines__gosi_payer.All),
+    };
 }
