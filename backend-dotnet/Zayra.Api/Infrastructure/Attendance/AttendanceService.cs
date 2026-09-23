@@ -1106,36 +1106,20 @@ public class AttendanceService : IAttendanceService
     /// (an employee with no company, or a tenant with no company dimension yet) and passes through
     /// unchanged — this method must not invent a company it was not given.
     /// </param>
-    private async Task UpsertLegacyRecord(Guid tenantId, Guid? employeeCompanyId, AttendanceDailyRecord daily, CancellationToken ct)
-    {
-        var record = await _db.AttendanceRecords.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId && x.WorkDate == daily.WorkDate, ct);
-        if (record is null)
-        {
-            record = new AttendanceRecord { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate };
-            _db.AttendanceRecords.Add(record);
-        }
-        // ??= not =: an existing row's company is never reassigned here. EnforceCompanyScopeOnWritesAsync
-        // throws company_reassignment_blocked on exactly that, and repairing a null is the only
-        // transition this path is allowed to make.
-        record.CompanyId ??= employeeCompanyId;
-        record.TimeIn = daily.FirstInUtc is null ? null : TimeOnly.FromDateTime(daily.FirstInUtc.Value);
-        record.TimeOut = daily.LastOutUtc is null ? null : TimeOnly.FromDateTime(daily.LastOutUtc.Value);
-        record.OvertimeHours = Math.Round(daily.OvertimeMinutes / 60m, 2);
-        record.Status = daily.Status;
-        record.Notes = daily.MissingPunch ? "Missing punch" : "";
-    }
+    /// <remarks>
+    /// The body lives in <see cref="AttendanceDerivedArtifacts"/> so that the migration importer —
+    /// which cannot take an <see cref="AttendanceService"/> dependency — writes the SAME rows from
+    /// the SAME code. Before that extraction the importer wrote none of them.
+    /// </remarks>
+    private Task UpsertLegacyRecord(Guid tenantId, Guid? employeeCompanyId, AttendanceDailyRecord daily, CancellationToken ct)
+        => AttendanceDerivedArtifacts.UpsertLegacyRecordAsync(_db, tenantId, employeeCompanyId, daily, ct);
 
     /// <param name="absenceMinutes">What one absent day costs in minutes: 480 on an ordinary day, or the
     /// reduced KSA Art. 98 Ramadan baseline (360) on a Ramadan day. Deducting a full 480 for a 6-hour
     /// Ramadan day over-deducts by a third. See the call site for why the ordinary-day literal stays.</param>
     private Task UpsertImpacts(Guid tenantId, AttendanceDailyRecord daily, int absenceMinutes, CancellationToken ct)
     {
-        var existing = _db.AttendancePayrollImpacts.Where(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId && x.WorkDate == daily.WorkDate);
-        _db.AttendancePayrollImpacts.RemoveRange(existing);
-        if (daily.LateMinutes > 0) _db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate, ImpactType = "Late deduction", Minutes = daily.LateMinutes, DailyRecordId = daily.Id });
-        if (daily.EarlyExitMinutes > 0) _db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate, ImpactType = "Early exit deduction", Minutes = daily.EarlyExitMinutes, DailyRecordId = daily.Id });
-        if (daily.Status == "Absent") _db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate, ImpactType = "Absence deduction", Minutes = absenceMinutes > 0 ? absenceMinutes : 480, DailyRecordId = daily.Id });
-        if (daily.OvertimeMinutes > 0) _db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate, ImpactType = "Overtime payable", Minutes = daily.OvertimeMinutes, DailyRecordId = daily.Id });
+        AttendanceDerivedArtifacts.UpsertImpacts(_db, tenantId, daily, absenceMinutes);
         return Task.CompletedTask;
     }
 
