@@ -140,7 +140,7 @@ public class DepartmentsController : ControllerBase
     // ── Import Preview ────────────────────────────────────────────────────────
 
     [HttpPost("import-preview")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> ImportPreview([FromBody] DeptImportRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -153,7 +153,7 @@ public class DepartmentsController : ControllerBase
     // ── Import Commit ─────────────────────────────────────────────────────────
 
     [HttpPost("import")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> Import([FromBody] DeptImportRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();

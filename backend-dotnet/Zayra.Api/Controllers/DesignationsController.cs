@@ -119,7 +119,7 @@ public class DesignationsController : ControllerBase
         File(Encoding.UTF8.GetBytes(Csv.Template(CsvHeaders, CsvExampleRow)), "text/csv", "designations_import_template.csv");
 
     [HttpPost("import-preview")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> ImportPreview([FromBody] DesigImportRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -128,7 +128,7 @@ public class DesignationsController : ControllerBase
     }
 
     [HttpPost("import")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> Import([FromBody] DesigImportRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();

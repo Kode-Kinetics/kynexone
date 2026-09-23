@@ -11,6 +11,7 @@ using Zayra.Api.Controllers;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Audit;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Organization;
 using Zayra.Api.Models;
 
@@ -69,6 +70,27 @@ public sealed class ImportFrontDoorTests
                         "A bulk door must never be a wider door than the single-record door beside it.");
             }
         }
+    }
+
+    /// <summary>
+    /// The role attribute is only half the gate. <see cref="LegacyRolePermissionResolver"/> maps every
+    /// role-gated endpoint to an effective permission, and
+    /// <c>PermissionAwareAuthorizationResultHandler</c> forbids the request when the caller lacks it —
+    /// so the permission is what actually decides. The form and the importer must resolve to the SAME
+    /// permission, or aligning the role strings would be cosmetic.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(ImportControllers))]
+    public void ImportDoor_ResolvesToTheSamePermissionAsTheFormDoor(string module)
+    {
+        var controller = module;
+        var create = LegacyRolePermissionResolver.Resolve(controller, "Create", new[] { "POST" });
+        var import = LegacyRolePermissionResolver.Resolve(controller, "Import", new[] { "POST" });
+        var preview = LegacyRolePermissionResolver.Resolve(controller, "ImportPreview", new[] { "POST" });
+
+        Assert.Equal("organization.write", create);
+        Assert.Equal(create, import);
+        Assert.Equal(create, preview);
     }
 
     /// <summary>The specific live hole: an HR Officer could import companies it could not create.</summary>

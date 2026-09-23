@@ -100,7 +100,7 @@ public class CostCentersController : ControllerBase
         File(Encoding.UTF8.GetBytes(Csv.Template(CsvHeaders, CsvExampleRow)), "text/csv", "cost_centers_import_template.csv");
 
     [HttpPost("import-preview")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> ImportPreview([FromBody] CostCenterImportRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -109,7 +109,7 @@ public class CostCentersController : ControllerBase
     }
 
     [HttpPost("import")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> Import([FromBody] CostCenterImportRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();

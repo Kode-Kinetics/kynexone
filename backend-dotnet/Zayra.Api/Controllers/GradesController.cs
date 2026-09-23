@@ -99,7 +99,7 @@ public class GradesController : ControllerBase
         File(Encoding.UTF8.GetBytes(Csv.Template(CsvHeaders, CsvExampleRow)), "text/csv", "grades_import_template.csv");
 
     [HttpPost("import-preview")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> ImportPreview([FromBody] GradeImportRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -108,7 +108,7 @@ public class GradesController : ControllerBase
     }
 
     [HttpPost("import")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> Import([FromBody] GradeImportRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();

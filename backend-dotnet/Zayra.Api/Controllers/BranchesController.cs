@@ -131,7 +131,7 @@ public class BranchesController : ControllerBase
     // ── Import Preview ────────────────────────────────────────────────────────
 
     [HttpPost("import-preview")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> ImportPreview([FromBody] BranchImportRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -142,7 +142,7 @@ public class BranchesController : ControllerBase
     // ── Import Commit ─────────────────────────────────────────────────────────
 
     [HttpPost("import")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> Import([FromBody] BranchImportRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
