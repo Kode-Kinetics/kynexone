@@ -258,7 +258,13 @@ public sealed class PasswordCredentialLifecyclePostgresTests
             ExpiresAtUtc = DateTime.UtcNow.AddMinutes(5)
         });
         await db.SaveChangesAsync();
-        return new UserSeed(tenant.Id, tenant.Slug, user.Id, email, rawReset, rawSibling, user.PasswordHash, user.UpdatedAtUtc);
+        // The STORED stamp, not the tracked entity's: PostgreSQL holds microseconds, a DateTime
+        // holds 100ns ticks, and on a Linux clock the difference fails a rollback assertion that
+        // a macOS clock never shows.
+        await using var read = _fixture.CreateRetryingDb();
+        var storedUpdatedAtUtc = await read.Users.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.Id == user.Id).Select(x => x.UpdatedAtUtc).SingleAsync();
+        return new UserSeed(tenant.Id, tenant.Slug, user.Id, email, rawReset, rawSibling, user.PasswordHash, storedUpdatedAtUtc);
     }
 
     private async Task<AuthResponse> LoginAsync(UserSeed seed, string password)
