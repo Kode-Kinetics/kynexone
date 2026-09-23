@@ -901,21 +901,28 @@ using (var scope = app.Services.CreateScope())
 
     // The password is the only thing standing between an env var and a cross-tenant superuser, so it is
     // held to a real bar, while docker-compose and CI both ship well-known defaults.
+    //
+    // A weak password SKIPS the bootstrap; it does not stop the service. The distinction cost an
+    // outage on 2026-09-23: this check threw, so setting PLATFORM_ADMIN_BOOTSTRAP with a short
+    // password took production down — including on a deployment whose platform owner already existed
+    // and for which the bootstrap would have been a no-op anyway. The security property is unchanged:
+    // no owner is ever created with a weak password. What changes is the blast radius of getting the
+    // password wrong: one refused seed, loudly logged, instead of a dead API.
+    var platformBootstrapWeakPassword = false;
     if (platformBootstrapRequested && platformBootstrapPermitted && dedicatedDeployment)
     {
-        var pw = Environment.GetEnvironmentVariable("PLATFORM_ADMIN_PASSWORD") ?? string.Empty;
-        var weak = pw.Length < 16
-                   || pw.Contains("ChangeMe", StringComparison.OrdinalIgnoreCase)
-                   || pw.Contains("YourPassword", StringComparison.OrdinalIgnoreCase)
-                   || pw.Contains("PlatformAdmin123", StringComparison.OrdinalIgnoreCase);
-        if (weak)
-            throw new InvalidOperationException(
-                "PLATFORM_ADMIN_BOOTSTRAP is enabled on a production/dedicated deployment but "
-                + "PLATFORM_ADMIN_PASSWORD is weak or a known default. Refusing to seed a platform owner: "
-                + "this account has cross-tenant reach over every customer's payroll data.");
+        platformBootstrapWeakPassword = PlatformOwnerBootstrap.IsWeakBootstrapPassword(
+            Environment.GetEnvironmentVariable("PLATFORM_ADMIN_PASSWORD"));
+        if (platformBootstrapWeakPassword)
+            logger.LogError(
+                "Platform owner bootstrap REFUSED — PLATFORM_ADMIN_PASSWORD is weak or a known default "
+                + "(needs 16+ characters and must not contain ChangeMe/YourPassword/PlatformAdmin123). "
+                + "No platform operator was created; this account would have cross-tenant reach over "
+                + "every customer's payroll data. The service is running: set a strong password and "
+                + "redeploy to create the first operator.");
     }
 
-    if (platformBootstrapRequested && platformBootstrapPermitted)
+    if (platformBootstrapRequested && platformBootstrapPermitted && !platformBootstrapWeakPassword)
         await TrySeedAsync("PlatformOwnerBootstrap", () => PlatformOwnerBootstrap.RunAsync(
             dbContext, scope.ServiceProvider.GetRequiredService<IPasswordHasher>(), logger), logger);
     else if (platformBootstrapRequested)
