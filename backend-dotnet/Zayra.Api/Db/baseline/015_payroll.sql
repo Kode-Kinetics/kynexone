@@ -98,6 +98,8 @@ CREATE TABLE payroll_runs (
 CREATE UNIQUE INDEX uq_payroll_runs__period_regular_opening
     ON payroll_runs (tenant_id, company_id, year, month, run_type)
     WHERE run_type IN ('Regular', 'Opening') AND status <> 'Voided';
+COMMENT ON INDEX uq_payroll_runs__period_regular_opening IS
+  'Enforces §2.F: at most one live Regular run and one live Opening run per company and period. Partial on status <> ''Voided'' so a voided run can be re-run for the same month. Also serves the payroll dashboard''s lookup of the current run for a company and period.';
 COMMENT ON TABLE payroll_runs IS
   'One payroll execution for a company and period — regular, off-cycle, correction, final settlement or the mid-year Opening import — carrying its selection, its cached totals, the rules version it applied and the attendance range it locked. @tier:C @owner:Finance @retention:Keep';
 COMMENT ON COLUMN payroll_runs.attendance_locked_range IS

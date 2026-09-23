@@ -11464,9 +11464,19 @@ CREATE INDEX timesheet_entries_y2026m12_tenant_id_timesheet_id_idx ON public.tim
 CREATE UNIQUE INDEX uq_auth_sessions__subject_device ON public.auth_sessions USING btree (subject_kind, COALESCE(user_id, platform_user_id), device_id);
 
 
+-- Name: INDEX uq_auth_sessions__subject_device; Type: COMMENT; Schema: public; Owner: -
+
+COMMENT ON INDEX public.uq_auth_sessions__subject_device IS 'Enforces §2.B: one live session row per (subject kind, subject, device), so a re-login replaces a device''s session rather than accumulating one per sign-in. COALESCE, not a bare column pair, because a NULL operand would exempt the row from the constraint entirely. Also serves the refresh path''s lookup by device.';
+
+
 -- Name: uq_payroll_runs__period_regular_opening; Type: INDEX; Schema: public; Owner: -
 
 CREATE UNIQUE INDEX uq_payroll_runs__period_regular_opening ON public.payroll_runs USING btree (tenant_id, company_id, year, month, run_type) WHERE (((run_type)::text = ANY ((ARRAY['Regular'::character varying, 'Opening'::character varying])::text[])) AND ((status)::text <> 'Voided'::text));
+
+
+-- Name: INDEX uq_payroll_runs__period_regular_opening; Type: COMMENT; Schema: public; Owner: -
+
+COMMENT ON INDEX public.uq_payroll_runs__period_regular_opening IS 'Enforces §2.F: at most one live Regular run and one live Opening run per company and period. Partial on status <> ''Voided'' so a voided run can be re-run for the same month. Also serves the payroll dashboard''s lookup of the current run for a company and period.';
 
 
 -- Name: attendance_days_default_pkey; Type: INDEX ATTACH; Schema: public; Owner: -

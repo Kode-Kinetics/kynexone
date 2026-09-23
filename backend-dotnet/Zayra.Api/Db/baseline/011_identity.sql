@@ -198,6 +198,8 @@ CREATE TABLE auth_sessions (
 -- than in the 040 index pass.
 CREATE UNIQUE INDEX uq_auth_sessions__subject_device
     ON auth_sessions (subject_kind, COALESCE(user_id, platform_user_id), device_id);
+COMMENT ON INDEX uq_auth_sessions__subject_device IS
+  'Enforces §2.B: one live session row per (subject kind, subject, device), so a re-login replaces a device''s session rather than accumulating one per sign-in. COALESCE, not a bare column pair, because a NULL operand would exempt the row from the constraint entirely. Also serves the refresh path''s lookup by device.';
 COMMENT ON TABLE auth_sessions IS
   'One row per signed-in device for either subject kind, carrying the rotated refresh token, the previous hash for reuse detection and the push registration, so re-login never loses a device. @tier:T/P @owner:Platform @retention:1-month-after-Expiry-then-Purge';
 COMMENT ON COLUMN auth_sessions.tenant_id IS
