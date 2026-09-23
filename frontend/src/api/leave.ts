@@ -438,10 +438,17 @@ export const delegationApi = {
     client.post<LeaveDelegation>(`/api/leave/delegation/${id}/cancel`).then(r => r.data),
 };
 
+// `year` + `month` (1-12) NAME the month being shown, and are what the grid sends.
+//
+// A month used to travel as two ISO strings derived from local-midnight Date objects through
+// toISOString(). For every UTC-positive tenant — AST +3, GST +4, i.e. all of GCC — that rolled both
+// ends back a day, so the last day of the month was never fetched and the previous month's last day
+// leaked in, while the grid keyed its cells off LOCAL components. Naming the month makes the
+// browser's zone irrelevant to which days are asked for. from/to stays for arbitrary ranges.
 export const leaveCalendarApi = {
-  entries: (params: { fromDate: string; toDate: string; departmentName?: string; employeeId?: number; companyId?: string; branchId?: string } = { fromDate: '', toDate: '' }) =>
+  entries: (params: { year?: number; month?: number; fromDate?: string; toDate?: string; departmentName?: string; employeeId?: number; companyId?: string; branchId?: string } = {}) =>
     client.get<LeaveCalendarEntry[]>('/api/leave/calendar', { params }).then(r => r.data),
-  team: (params: { fromDate: string; toDate: string } = { fromDate: '', toDate: '' }) =>
+  team: (params: { year?: number; month?: number; fromDate?: string; toDate?: string } = {}) =>
     client.get<Record<string, LeaveCalendarEntry[]>>('/api/leave/calendar/team', { params }).then(r => r.data),
   today: () =>
     client.get('/api/leave/calendar/today').then(r => {
