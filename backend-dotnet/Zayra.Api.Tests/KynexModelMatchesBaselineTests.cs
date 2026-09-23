@@ -457,6 +457,56 @@ public sealed class KynexModelMatchesBaselineTests
         }
     }
 
+    /// <summary>
+    /// Structural equality is necessary and not sufficient: a model can agree with pg_catalog on
+    /// every name and type and still fail to produce runnable SQL — a reserved word unquoted, a
+    /// store type Npgsql will not read back, a shadow property over a system column that cannot be
+    /// selected from a partitioned parent. So every entity is actually queried, once, against the
+    /// real database. The tables are empty, which is the point: an empty SELECT still has to be
+    /// planned by PostgreSQL and materialised by Npgsql, column by column, or it throws.
+    /// </summary>
+    [Fact]
+    public async Task EveryEntity_CanBeQueried_AgainstTheRealDatabase()
+    {
+        using var db = CreateContext();
+        var failures = new List<string>();
+
+        // Anti-vacuous guard: an empty model would make the loop below pass without running a
+        // single query. 76 tables + the two views.
+        Assert.Equal(78, db.Model.GetEntityTypes().Count());
+
+        foreach (var entity in db.Model.GetEntityTypes().OrderBy(e => e.ClrType.Name, StringComparer.Ordinal))
+        {
+            try
+            {
+                var set = typeof(DbContext).GetMethods()
+                    .Single(m => m.Name == nameof(DbContext.Set) && m.IsGenericMethod && m.GetParameters().Length == 0)
+                    .MakeGenericMethod(entity.ClrType)
+                    .Invoke(db, null)!;
+
+                var take = typeof(Queryable).GetMethods()
+                    .Single(m => m.Name == nameof(Queryable.Take) && m.GetParameters().Length == 2
+                                 && m.GetParameters()[1].ParameterType == typeof(int))
+                    .MakeGenericMethod(entity.ClrType)
+                    .Invoke(null, new[] { set, (object)1 })!;
+
+                var toList = typeof(EntityFrameworkQueryableExtensions).GetMethods()
+                    .Single(m => m.Name == nameof(EntityFrameworkQueryableExtensions.ToListAsync))
+                    .MakeGenericMethod(entity.ClrType)
+                    .Invoke(null, new[] { take, CancellationToken.None })!;
+
+                await (Task)toList;
+            }
+            catch (Exception ex)
+            {
+                failures.Add($"{entity.ClrType.Name} ({entity.GetTableName() ?? entity.GetViewName()}): " +
+                             (ex.InnerException ?? ex).Message);
+            }
+        }
+
+        Assert.True(failures.Count == 0, "entities that do not produce runnable SQL:\n" + string.Join("\n", failures));
+    }
+
     // ───────────────────────── what EF cannot express, asserted as absent ────────────────────────
 
     /// <summary>
