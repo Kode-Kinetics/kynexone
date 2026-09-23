@@ -346,7 +346,7 @@ public class PayrollProrationArrearsTests
         db.OvertimePayrollImpacts.Add(new OvertimePayrollImpact
         {
             TenantId = tenantId, OvertimeRequestId = otReq.Id, EmployeeId = a.Id,
-            Hours = 10m, Amount = 0m, ApprovedMultiplier = 1.5m, Status = "Pending",
+            Minutes = 600, Amount = 0m, ApprovedMultiplier = 1.5m, Status = "Pending",
         });
         await db.SaveChangesAsync();
 

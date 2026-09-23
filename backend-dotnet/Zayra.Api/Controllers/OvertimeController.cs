@@ -246,7 +246,9 @@ public class OvertimeController : ControllerBase
                 TenantId = tenantId,
                 OvertimeRequestId = request.Id,
                 EmployeeId = request.EmployeeId,
-                Hours = calc.ApprovedHours,
+                // Minutes, not hours: the payroll run multiplies this quantity by the hourly rate,
+                // so it must reach it unrounded. See OvertimePayrollImpact.Minutes.
+                Minutes = calc.ApprovedMinutes,
                 Amount = calc.Amount,
                 // Persist the multiplier used at approval time so payroll can apply
                 // the correct rate (e.g. 2× for holiday/rest-day) without re-resolving the policy.
@@ -473,12 +475,14 @@ public class OvertimeController : ControllerBase
             wageHourly, basicHourly, multiplier);
         var baseHourly = hourRate.BaseHourly;
 
-        var approvedHours = Math.Round(request.ApprovedMinutes / 60m, 2);
-        // Rounded once at the end, from the unrounded hourly rates — the same shape as the payroll
-        // run, which rounds only the summed overtime line. Rounding the hourly rate first (as this
-        // method used to) put the controller a cent away from payroll on any salary that does not
-        // divide evenly by the monthly hours.
-        var amount = Math.Round(approvedHours * hourRate.HourPay, 2);
+        // Rounded once at the end, from the unrounded hourly rates AND the unrounded quantity — the
+        // same shape as the payroll run, which rounds only the summed overtime line. Rounding the
+        // hourly rate first (as this method used to) put the controller a cent away from payroll on
+        // any salary that does not divide evenly by the monthly hours; rounding the QUANTITY first
+        // (Math.Round(ApprovedMinutes / 60m, 2), which this line used to do) quantised every
+        // overtime request to 0.6-minute steps and underpaid 50 approved minutes as 0.83 h.
+        // Minutes are the input; the division by 60 happens once, here, inside the money expression.
+        var amount = Math.Round(request.ApprovedMinutes / 60m * hourRate.HourPay, 2);
         var currency = !string.IsNullOrWhiteSpace(salary?.Currency) ? salary.Currency : await _db.ResolveTenantCurrencyAsync(tenantId, ct);
         var calculationJson =
             $"{{\"dayCategory\":\"{dayCategory}\",\"basis\":\"{policy.HourlyRateBasis}\"," +
@@ -497,7 +501,7 @@ public class OvertimeController : ControllerBase
             TenantId = tenantId,
             OvertimeRequestId = request.Id,
             EmployeeId = request.EmployeeId,
-            ApprovedHours = approvedHours,
+            ApprovedMinutes = request.ApprovedMinutes,
             // The Art. 107 base hourly rate — the first term of the hour's pay. The full
             // arithmetic (including the basic-hourly uplift base) is in CalculationJson, because
             // hours × HourlyRate × Multiplier is not the shape of an Art. 107 overtime hour.

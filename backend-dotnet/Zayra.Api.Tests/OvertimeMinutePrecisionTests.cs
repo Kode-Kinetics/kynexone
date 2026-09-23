@@ -248,7 +248,7 @@ public class OvertimeMinutePrecisionTests
         otLine.Should().NotBeNull("the run must have produced an overtime earning line to compare");
 
         return new OvertimeMoney(
-            impact.Amount, otLine!.Amount, 0, impact.Hours, otLine.ComponentName);
+            impact.Amount, otLine!.Amount, impact.Minutes, impact.Hours, otLine.ComponentName);
     }
 
     private static StubRuleReader KsaRules() => new StubRuleReader()

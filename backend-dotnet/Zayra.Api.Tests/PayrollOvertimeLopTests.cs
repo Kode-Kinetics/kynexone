@@ -389,7 +389,7 @@ public class PayrollOvertimeLopTests
             TenantId         = tenantId,
             OvertimeRequestId = request.Id,
             EmployeeId       = empId,
-            Hours            = hours,
+            Minutes          = (int)Math.Round(hours * 60m),
             Amount           = 0m, // amount is recomputed from hours × rate × multiplier; stored 0 here
             Status           = "PendingPayroll",
         });

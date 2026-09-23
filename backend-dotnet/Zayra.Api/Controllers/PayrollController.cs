@@ -2253,10 +2253,14 @@ public class PayrollController : ControllerBase
                 .Where(x => x.EmployeeId == e.Id && x.ImpactType.Contains("Deduction", StringComparison.OrdinalIgnoreCase))
                 .Sum(x => leaveImpactScale.TryGetValue(x.Id, out var sc) ? Math.Round(x.Amount * sc, 2) : x.Amount);
 
-            // ── Overtime pay: approved hours × hourly rate × statutory multiplier ──
-            // Recomputed from OvertimePayrollImpacts.Hours (not .Amount) so the statutory
-            // multiplier from StatutoryRule drives the rate, not the policy-level multiplier
-            // stored at approval time.
+            // ── Overtime pay: approved MINUTES × hourly rate × statutory multiplier ──
+            // Recomputed from OvertimePayrollImpacts (not .Amount) so the statutory multiplier
+            // from StatutoryRule drives the rate, not the policy-level multiplier stored at
+            // approval time.
+            // `.Hours` is now DERIVED from the impact's int minutes (Minutes / 60m, no rounding),
+            // so the quantity reaches this expression intact and the only rounding is the
+            // Math.Round on the summed line below. It was a numeric(8,2) column written as
+            // Math.Round(ApprovedMinutes / 60m, 2): 50 approved minutes were paid as 0.83 h.
             // [FLAG-COMPLIANCE-KSA: OT is excluded from GOSI covered wage in this implementation.
             //  Art.107 sets 1.5× for regular OT; weekend/holiday rates may require separate rules.
             //  Whether OT pay is included in the GOSI covered wage requires sign-off before filing.]
@@ -2737,7 +2741,11 @@ public class PayrollController : ControllerBase
             {
                 var otRateDisplay = Math.Round(hourlyRate * otMultiplier, 2);
                 AddEarning(tenantId, id, e.Id, "OVERTIME",
-                    $"Overtime ({otHours:N2} h × {Math.Round(otEffectiveBaseHourly, 2):N2}/h × {otEffectiveMultiplier:N2})",
+                    // "0.00##", not "N2": overtime is stored in minutes and 50 minutes is 0.8333 h.
+                    // Printing "0.83 h" beside an amount computed from 0.8333 h puts a number on the
+                    // payslip that does not reconcile with the line it labels. A whole hour still
+                    // renders "1.00", so an unaffected run's label is byte-identical.
+                    $"Overtime ({otHours:0.00##} h × {Math.Round(otEffectiveBaseHourly, 2):N2}/h × {otEffectiveMultiplier:N2})",
                     overtimePay, "Overtime");
             }
             if (fixedDeduction > 0) AddDeduction(tenantId, company.Id, id, e.Id, "FIXED_DEDUCTION",

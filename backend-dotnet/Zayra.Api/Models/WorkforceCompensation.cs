@@ -156,7 +156,20 @@ public class OvertimeCalculation : ITenantOwned
     public Guid TenantId { get; set; }
     public Guid OvertimeRequestId { get; set; }
     public int EmployeeId { get; set; }
-    public decimal ApprovedHours { get; set; }
+    /// <summary>
+    /// The approved overtime in WHOLE MINUTES — the same unit the request, the attendance record
+    /// and <see cref="AttendancePayrollImpact.Minutes"/> are held in, and the authoritative
+    /// quantity for this calculation.
+    /// </summary>
+    public int ApprovedMinutes { get; set; }
+    /// <summary>
+    /// DERIVED, not a column. This was <c>approved_hours numeric(8,2)</c>, written as
+    /// <c>Math.Round(ApprovedMinutes / 60m, 2)</c>, which quantised the quantity to 0.6-minute
+    /// steps before any rate was applied. Deriving it keeps the JSON contract
+    /// (<c>approvedHours</c>) and the module's display while removing the second, lossy unit for
+    /// one number. Mirrors <see cref="AttendancePayrollImpact.Hours"/>.
+    /// </summary>
+    public decimal ApprovedHours => ApprovedMinutes / 60m;
     public decimal HourlyRate { get; set; }
     public decimal Multiplier { get; set; }
     public decimal Amount { get; set; }
@@ -172,7 +185,25 @@ public class OvertimePayrollImpact : ITenantOwned
     public Guid OvertimeRequestId { get; set; }
     public int EmployeeId { get; set; }
     public Guid? PayrollRunId { get; set; }
-    public decimal Hours { get; set; }
+    /// <summary>
+    /// The payable overtime in WHOLE MINUTES. This is the quantity the payroll run multiplies by
+    /// the hourly rate, and the ONLY stored representation of it.
+    ///
+    /// <para>It replaces <c>hours numeric(8,2)</c>, which the approval wrote as
+    /// <c>Math.Round(ApprovedMinutes / 60m, 2)</c> and which <c>PayrollController</c> then
+    /// multiplied by the hourly rate. 50 approved minutes were stored as 0.83 h and paid as such:
+    /// on the canonical KSA package that is SAR 134.88 for an hour worth SAR 135.42 — every
+    /// overtime line, every month, always in the employer's favour. Minutes now travel to the
+    /// money expression intact and the division by 60 happens once, inside it.</para>
+    /// </summary>
+    public int Minutes { get; set; }
+    /// <summary>
+    /// DERIVED, not a column — see <see cref="Minutes"/>. Kept so the API contract
+    /// (<c>hours</c>) and the Payroll Review screen are unchanged, and so callers that legitimately
+    /// want hours get them at full decimal precision rather than pre-rounded.
+    /// Mirrors <see cref="AttendancePayrollImpact.Hours"/>.
+    /// </summary>
+    public decimal Hours => Minutes / 60m;
     public decimal Amount { get; set; }
     public string Status { get; set; } = "PendingPayroll";
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
