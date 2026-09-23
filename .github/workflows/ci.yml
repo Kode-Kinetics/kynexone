@@ -439,7 +439,7 @@ jobs:
         run: |
           set -euo pipefail
           PGPASSWORD=ci createdb -h localhost -U postgres zayra_model
-          dotnet tool run dotnet-ef dbcontext script --no-build --no-color \
+          dotnet tool run dotnet-ef dbcontext script --no-build --no-color --context ZayraDbContext \
             | sed '/^\[/d' \
             | PGPASSWORD=ci psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d zayra_model >/dev/null
           q="SELECT table_name||'.'||column_name||':'||data_type||':'||is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name <> '__EFMigrationsHistory' ORDER BY 1;"
