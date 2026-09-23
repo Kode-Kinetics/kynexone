@@ -401,7 +401,13 @@ jobs:
           # Capture the exit code separately. An earlier version used `|| true`, which swallowed a
           # genuine tooling failure and reported "no drift" — a gate that cannot fail is not a gate.
           set +e
-          out=$(dotnet tool run dotnet-ef migrations has-pending-model-changes --no-build 2>&1); rc=$?
+          # --context is REQUIRED: the assembly declares two DbContexts (ZayraDbContext, the
+          # EF-migrated live schema, and KynexDbContext, the V2 rebuild whose schema is the
+          # hand-written baseline SQL and which has no EF migrations by design). Without it
+          # dotnet-ef exits non-zero with "More than one DbContext was found", which this step
+          # correctly reports as a gate failure — but for a tooling reason, not real drift.
+          # ZayraDbContext is the one this gate is about: it owns every file in Migrations/.
+          out=$(dotnet tool run dotnet-ef migrations has-pending-model-changes --no-build --context ZayraDbContext 2>&1); rc=$?
           set -e
           echo "$out"
           if echo "$out" | grep -q "Changes have been made to the model"; then
