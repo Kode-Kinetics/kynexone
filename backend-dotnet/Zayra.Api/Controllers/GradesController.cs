@@ -104,7 +104,7 @@ public class GradesController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        return Ok(await RunPreviewAsync(tenantId.Value, req.Csv, ct));
+        return await RunImportAsync(tenantId.Value, req.Csv, commit: false, ct);
     }
 
     [HttpPost("import")]
@@ -113,9 +113,16 @@ public class GradesController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        return Ok(await RunCommitAsync(tenantId.Value, req.Csv, ct));
+        return await RunImportAsync(tenantId.Value, req.Csv, commit: true, ct);
     }
 
+    /// <remarks>
+    /// The numeric cells are parsed with the host's AMBIENT culture, which is a deployment
+    /// accident rather than a decision. It is left exactly as it was on purpose: the export writes
+    /// these same values through <c>object.ToString()</c>, i.e. with the same ambient culture, so
+    /// changing only the reader would break the export → re-import round trip on any host that is
+    /// not invariant. Both sides have to move together, and that is a separate change.
+    /// </remarks>
     private static (List<string> errors, int? level, decimal? minSal, decimal? maxSal) ValidateGradeRow(Dictionary<string, string> row, string code, string name)
     {
         var errors = new List<string>();
@@ -149,67 +156,78 @@ public class GradesController : ControllerBase
         return (errors, level, minSal, maxSal);
     }
 
-    private async Task<ImportPreviewResult> RunPreviewAsync(Guid tenantId, string csv, CancellationToken ct)
+    /// <summary>
+    /// Preview and commit walk the SAME loop; <paramref name="commit"/> decides only whether the
+    /// service is called. They used to apply different rules — the Min &gt; Max check ran on commit
+    /// only, so a preview could report a clean file that the commit then rejected row by row.
+    /// </summary>
+    private async Task<IActionResult> RunImportAsync(Guid tenantId, string csv, bool commit, CancellationToken ct)
     {
-        var rows = Csv.Parse(csv);
-        var existingByCode = await _db.Grades.AsNoTracking().Where(g => g.TenantId == tenantId && !g.IsDeleted).ToDictionaryAsync(g => g.Code.ToUpperInvariant(), ct);
-        var rowResults = new List<ImportRowResult>();
-        var seenCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        int wouldCreate = 0, wouldUpdate = 0, wouldSkip = 0;
+        var grades = await _db.Grades.AsNoTracking()
+            .Where(g => g.TenantId == tenantId && !g.IsDeleted).ToListAsync(ct);
+        if (!OrgCodes.TryBuildLookup(grades, g => g.Code, out var existingByCode, out var codeClash))
+            return Conflict(OrgCodeCollision.Payload("grade", "Code", codeClash));
 
-        for (int i = 0; i < rows.Count; i++)
-        {
-            var row = rows[i]; var rowNum = i + 2;
-            var code = row.GetValueOrDefault("Code", string.Empty).Trim();
-            var name = row.GetValueOrDefault("Name", string.Empty).Trim();
-            var (errors, _, _, _) = ValidateGradeRow(row, code, name);
-            var warnings = new List<string>();
-            if (!string.IsNullOrWhiteSpace(code) && seenCodes.Contains(code)) errors.Add($"Duplicate Code '{code}' within this batch");
-            if (errors.Count > 0) { wouldSkip++; rowResults.Add(new ImportRowResult(rowNum, code, name, ImportRowStatus.Error, errors, warnings)); continue; }
-            bool exists = !string.IsNullOrWhiteSpace(code) && existingByCode.ContainsKey(code.ToUpperInvariant());
-            if (exists) wouldUpdate++; else wouldCreate++;
-            if (!string.IsNullOrWhiteSpace(code)) seenCodes.Add(code);
-            rowResults.Add(new ImportRowResult(rowNum, code, name, ImportRowStatus.Ok, errors, warnings));
-        }
-        return new ImportPreviewResult(rows.Count, wouldCreate, wouldUpdate, wouldSkip, rowResults);
-    }
-
-    private async Task<ImportCommitResult> RunCommitAsync(Guid tenantId, string csv, CancellationToken ct)
-    {
         var rows = Csv.Parse(csv);
-        var existingByCode = await _db.Grades.Where(g => g.TenantId == tenantId && !g.IsDeleted).ToDictionaryAsync(g => g.Code.ToUpperInvariant(), ct);
+        var context = Context();
         var rowResults = new List<ImportRowResult>();
         var seenCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         int created = 0, updated = 0, skipped = 0;
 
         for (int i = 0; i < rows.Count; i++)
         {
-            var row = rows[i]; var rowNum = i + 2;
+            var row = rows[i];
+            var rowNum = i + 2;
             var code = row.GetValueOrDefault("Code", string.Empty).Trim();
             var name = row.GetValueOrDefault("Name", string.Empty).Trim();
             var (errors, level, minSal, maxSal) = ValidateGradeRow(row, code, name);
-            var warnings = new List<string>();
-            if (!string.IsNullOrWhiteSpace(code) && seenCodes.Contains(code)) errors.Add($"Duplicate Code '{code}' within this batch");
+
+            if (!string.IsNullOrWhiteSpace(code) && !seenCodes.Add(code)) errors.Add($"Duplicate Code '{code}' within this batch");
             if (minSal.HasValue && maxSal.HasValue && minSal > maxSal) errors.Add("MinSalary cannot exceed MaxSalary");
-            if (errors.Count > 0) { skipped++; rowResults.Add(new ImportRowResult(rowNum, code, name, ImportRowStatus.Error, errors, warnings)); continue; }
-            bool isActive = !row.TryGetValue("IsActive", out var av) || !string.Equals(av, "false", StringComparison.OrdinalIgnoreCase);
-            seenCodes.Add(code);
-            if (existingByCode.TryGetValue(code.ToUpperInvariant(), out var existing))
+
+            existingByCode.TryGetValue(OrgCodes.Normalize(code), out var existing);
+
+            if (errors.Count == 0)
             {
-                existing.Name = name; existing.Level = level ?? existing.Level;
-                if (minSal.HasValue) existing.MinSalary = minSal.Value;
-                if (maxSal.HasValue) existing.MaxSalary = maxSal.Value;
-                existing.IsActive = isActive; existing.UpdatedAtUtc = DateTime.UtcNow; updated++;
+                var request = new GradeRequest(
+                    Code: code,
+                    Name: name,
+                    // Band, MidSalary and Currency are not in the template. Carried over so an
+                    // import cannot blank a pay band the form set.
+                    Band: existing?.Band ?? string.Empty,
+                    Level: level ?? existing?.Level ?? 0,
+                    MinSalary: minSal ?? existing?.MinSalary ?? 0,
+                    MidSalary: existing?.MidSalary ?? 0,
+                    MaxSalary: maxSal ?? existing?.MaxSalary ?? 0,
+                    Currency: existing?.Currency ?? "SAR",
+                    IsActive: !row.TryGetValue("IsActive", out var av) || !string.Equals(av.Trim(), "false", StringComparison.OrdinalIgnoreCase));
+
+                try
+                {
+                    if (existing is not null)
+                    {
+                        if (commit) await _organization.UpdateGradeAsync(tenantId, existing.Id, request, context, ct);
+                        updated++;
+                    }
+                    else
+                    {
+                        if (commit) await _organization.CreateGradeAsync(tenantId, request, context, ct);
+                        created++;
+                    }
+                }
+                catch (InvalidOperationException ex) { errors.Add(ex.Message); }
             }
-            else
-            {
-                _db.Grades.Add(new Grade { TenantId = tenantId, Code = code, Name = name, Level = level ?? 0,
-                    MinSalary = minSal ?? 0, MaxSalary = maxSal ?? 0, IsActive = isActive }); created++;
-            }
-            rowResults.Add(new ImportRowResult(rowNum, code, name, ImportRowStatus.Ok, errors, warnings));
+
+            if (errors.Count > 0) skipped++;
+            rowResults.Add(new ImportRowResult(
+                rowNum, code, name,
+                errors.Count > 0 ? ImportRowStatus.Error : ImportRowStatus.Ok,
+                errors, Array.Empty<string>()));
         }
-        await _db.SaveChangesAsync(ct);
-        return new ImportCommitResult(rows.Count, created, updated, skipped, rowResults, Array.Empty<string>());
+
+        return commit
+            ? Ok(new ImportCommitResult(rows.Count, created, updated, skipped, rowResults, Array.Empty<string>()))
+            : Ok(new ImportPreviewResult(rows.Count, created, updated, skipped, rowResults));
     }
 
     // ── Pay-scale components (benefit breakdown per grade) ───────────────────

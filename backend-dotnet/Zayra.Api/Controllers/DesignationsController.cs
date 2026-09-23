@@ -124,7 +124,7 @@ public class DesignationsController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        return Ok(await RunPreviewAsync(tenantId.Value, req.Csv, ct));
+        return await RunImportAsync(tenantId.Value, req.Csv, commit: false, ct);
     }
 
     [HttpPost("import")]
@@ -133,82 +133,107 @@ public class DesignationsController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        return Ok(await RunCommitAsync(tenantId.Value, req.Csv, ct));
+        return await RunImportAsync(tenantId.Value, req.Csv, commit: true, ct);
     }
 
-    private async Task<ImportPreviewResult> RunPreviewAsync(Guid tenantId, string csv, CancellationToken ct)
+    /// <summary>
+    /// Preview and commit walk the SAME loop; <paramref name="commit"/> decides only whether the
+    /// service is called. Every validation and refusal above it is shared.
+    /// </summary>
+    private async Task<IActionResult> RunImportAsync(Guid tenantId, string csv, bool commit, CancellationToken ct)
     {
-        var rows = Csv.Parse(csv);
-        var existingByCode = await _db.Designations.AsNoTracking().Where(d => d.TenantId == tenantId && !d.IsDeleted).ToDictionaryAsync(d => d.Code.ToUpperInvariant(), ct);
-        var deptByCode = await _db.Departments.AsNoTracking().Where(d => d.TenantId == tenantId && !d.IsDeleted).ToDictionaryAsync(d => d.Code.ToUpperInvariant(), d => d.Id, ct);
-        var rowResults = new List<ImportRowResult>();
-        var seenCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        int wouldCreate = 0, wouldUpdate = 0, wouldSkip = 0;
+        var designations = await _db.Designations.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && !d.IsDeleted).ToListAsync(ct);
+        if (!OrgCodes.TryBuildLookup(designations, d => d.Code, out var existingByCode, out var codeClash))
+            return Conflict(OrgCodeCollision.Payload("designation", "Code", codeClash));
 
-        for (int i = 0; i < rows.Count; i++)
-        {
-            var row = rows[i]; var rowNum = i + 2;
-            var code = row.GetValueOrDefault("Code", string.Empty).Trim();
-            var titleEn = row.GetValueOrDefault("TitleEn", string.Empty).Trim();
-            var errors = new List<string>(); var warnings = new List<string>();
-            if (string.IsNullOrWhiteSpace(code)) errors.Add("Code is required");
-            if (string.IsNullOrWhiteSpace(titleEn)) errors.Add("TitleEn is required");
-            if (!string.IsNullOrWhiteSpace(code) && seenCodes.Contains(code)) errors.Add($"Duplicate Code '{code}' within this batch");
-            var deptCode = row.GetValueOrDefault("DepartmentCode", string.Empty).Trim();
-            if (!string.IsNullOrWhiteSpace(deptCode) && !deptByCode.ContainsKey(deptCode.ToUpperInvariant()))
-                warnings.Add($"DepartmentCode '{deptCode}' not found — will be ignored");
-            if (errors.Count > 0) { wouldSkip++; rowResults.Add(new ImportRowResult(rowNum, code, titleEn, ImportRowStatus.Error, errors, warnings)); continue; }
-            bool exists = !string.IsNullOrWhiteSpace(code) && existingByCode.ContainsKey(code.ToUpperInvariant());
-            if (exists) wouldUpdate++; else wouldCreate++;
-            if (!string.IsNullOrWhiteSpace(code)) seenCodes.Add(code);
-            rowResults.Add(new ImportRowResult(rowNum, code, titleEn, warnings.Count > 0 ? ImportRowStatus.Warning : ImportRowStatus.Ok, errors, warnings));
-        }
-        return new ImportPreviewResult(rows.Count, wouldCreate, wouldUpdate, wouldSkip, rowResults);
-    }
+        var departments = await _db.Departments.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && !d.IsDeleted).ToListAsync(ct);
+        if (!OrgCodes.TryBuildLookup(departments, d => d.Code, out var deptByCode, out var deptClash))
+            return Conflict(OrgCodeCollision.Payload("department", "Code", deptClash));
 
-    private async Task<ImportCommitResult> RunCommitAsync(Guid tenantId, string csv, CancellationToken ct)
-    {
         var rows = Csv.Parse(csv);
-        var existingByCode = await _db.Designations.Where(d => d.TenantId == tenantId && !d.IsDeleted).ToDictionaryAsync(d => d.Code.ToUpperInvariant(), ct);
-        var deptByCode = await _db.Departments.AsNoTracking().Where(d => d.TenantId == tenantId && !d.IsDeleted).ToDictionaryAsync(d => d.Code.ToUpperInvariant(), d => d.Id, ct);
+        var context = Context();
         var rowResults = new List<ImportRowResult>();
         var seenCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         int created = 0, updated = 0, skipped = 0;
 
         for (int i = 0; i < rows.Count; i++)
         {
-            var row = rows[i]; var rowNum = i + 2;
+            var row = rows[i];
+            var rowNum = i + 2;
             var code = row.GetValueOrDefault("Code", string.Empty).Trim();
             var titleEn = row.GetValueOrDefault("TitleEn", string.Empty).Trim();
-            var errors = new List<string>(); var warnings = new List<string>();
+            var deptCode = row.GetValueOrDefault("DepartmentCode", string.Empty).Trim();
+            var errors = new List<string>();
+
             if (string.IsNullOrWhiteSpace(code)) errors.Add("Code is required");
             if (string.IsNullOrWhiteSpace(titleEn)) errors.Add("TitleEn is required");
-            if (!string.IsNullOrWhiteSpace(code) && seenCodes.Contains(code)) errors.Add($"Duplicate Code '{code}' within this batch");
-            if (errors.Count > 0) { skipped++; rowResults.Add(new ImportRowResult(rowNum, code, titleEn, ImportRowStatus.Error, errors, warnings)); continue; }
-            var deptCode = row.GetValueOrDefault("DepartmentCode", string.Empty).Trim();
-            Guid? deptId = null;
+            if (!string.IsNullOrWhiteSpace(code) && !seenCodes.Add(code)) errors.Add($"Duplicate Code '{code}' within this batch");
+
+            existingByCode.TryGetValue(OrgCodes.Normalize(code), out var existing);
+
+            // A DepartmentCode that resolves to nothing used to be an IGNORABLE WARNING — and the
+            // row was then written with DepartmentId = null, so a typo in one cell silently detached
+            // a live designation from its department and the import reported success. An import must
+            // never destroy a relationship it could not resolve: the row is refused and says why.
+            Guid? deptId = existing?.DepartmentId;
             if (!string.IsNullOrWhiteSpace(deptCode))
             {
-                if (deptByCode.TryGetValue(deptCode.ToUpperInvariant(), out var did)) deptId = did;
-                else warnings.Add($"DepartmentCode '{deptCode}' not found — ignored");
-            }
-            bool isActive = !row.TryGetValue("IsActive", out var av) || !string.Equals(av, "false", StringComparison.OrdinalIgnoreCase);
-            seenCodes.Add(code);
-            if (existingByCode.TryGetValue(code.ToUpperInvariant(), out var existing))
-            {
-                existing.TitleEn = titleEn; existing.TitleAr = row.GetValueOrDefault("TitleAr", string.Empty).Trim();
-                existing.DepartmentId = deptId; existing.JobGrade = row.GetValueOrDefault("JobGrade", string.Empty).Trim();
-                existing.IsActive = isActive; existing.UpdatedAtUtc = DateTime.UtcNow; updated++;
+                if (deptByCode.TryGetValue(OrgCodes.Normalize(deptCode), out var department)) deptId = department.Id;
+                else errors.Add(
+                    $"DepartmentCode '{deptCode}' not found in this tenant. Import the department first, " +
+                    $"or correct the code — this row was not applied, so designation '{code}' keeps the " +
+                    $"department it already had.");
             }
             else
             {
-                _db.Designations.Add(new Designation { TenantId = tenantId, Code = code, TitleEn = titleEn, TitleAr = row.GetValueOrDefault("TitleAr", string.Empty).Trim(), DepartmentId = deptId, JobGrade = row.GetValueOrDefault("JobGrade", string.Empty).Trim(), IsActive = isActive });
-                created++;
+                // An explicitly EMPTY cell is an instruction to detach, not a failure to resolve.
+                deptId = null;
             }
-            rowResults.Add(new ImportRowResult(rowNum, code, titleEn, warnings.Count > 0 ? ImportRowStatus.Warning : ImportRowStatus.Ok, errors, warnings));
+
+            if (errors.Count == 0)
+            {
+                var request = new DesignationRequest(
+                    DepartmentId: deptId,
+                    Code: code,
+                    TitleEn: titleEn,
+                    TitleAr: row.GetValueOrDefault("TitleAr", existing?.TitleAr ?? string.Empty).Trim(),
+                    JobGrade: row.GetValueOrDefault("JobGrade", existing?.JobGrade ?? string.Empty).Trim(),
+                    // Not in the template. Carried over so an import cannot blank the fields only the
+                    // form can set.
+                    GradeId: existing?.GradeId,
+                    JobLevel: existing?.JobLevel ?? string.Empty,
+                    JobDescription: existing?.JobDescription ?? string.Empty,
+                    IsManagerRole: existing?.IsManagerRole ?? false,
+                    IsActive: !row.TryGetValue("IsActive", out var av) || !string.Equals(av.Trim(), "false", StringComparison.OrdinalIgnoreCase));
+
+                try
+                {
+                    if (existing is not null)
+                    {
+                        if (commit) await _organization.UpdateDesignationAsync(tenantId, existing.Id, request, context, ct);
+                        updated++;
+                    }
+                    else
+                    {
+                        if (commit) await _organization.CreateDesignationAsync(tenantId, request, context, ct);
+                        created++;
+                    }
+                }
+                catch (InvalidOperationException ex) { errors.Add(ex.Message); }
+            }
+
+            if (errors.Count > 0) skipped++;
+            rowResults.Add(new ImportRowResult(
+                rowNum, code, titleEn,
+                errors.Count > 0 ? ImportRowStatus.Error : ImportRowStatus.Ok,
+                errors, Array.Empty<string>()));
         }
-        await _db.SaveChangesAsync(ct);
-        return new ImportCommitResult(rows.Count, created, updated, skipped, rowResults, Array.Empty<string>());
+
+        return commit
+            ? Ok(new ImportCommitResult(rows.Count, created, updated, skipped, rowResults, Array.Empty<string>()))
+            : Ok(new ImportPreviewResult(rows.Count, created, updated, skipped, rowResults));
     }
 
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), this.GetUserId(), this.GetTenantId());
