@@ -159,7 +159,7 @@ BEGIN
     IF v_count < 70 THEN
         RAISE EXCEPTION 'PROOF 1 INCONCLUSIVE — only % tables checked', v_count;
     END IF;
-    RAISE NOTICE '   % ok', rpad(format('%s tenant tables, all zero rows', v_count), 58);
+    RAISE NOTICE '   % ok', rpad(format('%s tenant tables, all zero rows', v_count), greatest(58, length(format('%s tenant tables, all zero rows', v_count))));
 END
 $$;
 
@@ -176,7 +176,7 @@ BEGIN
     END;
     EXECUTE 'RESET ROLE';
     IF NOT ok THEN RAISE EXCEPTION 'PROOF 1 FAILED — INSERT succeeded with no tenant GUC'; END IF;
-    RAISE NOTICE '   % ok', rpad('INSERT with no tenant GUC raises 42501', 58);
+    RAISE NOTICE '   % ok', rpad('INSERT with no tenant GUC raises 42501', greatest(58, length('INSERT with no tenant GUC raises 42501')));
 END
 $$;
 
@@ -191,7 +191,7 @@ BEGIN
     END;
     EXECUTE 'RESET ROLE';
     IF NOT ok THEN RAISE EXCEPTION 'PROOF 1 FAILED — kynex_app can read platform_users'; END IF;
-    RAISE NOTICE '   % ok', rpad('platform_users ungranted to kynex_app (42501)', 58);
+    RAISE NOTICE '   % ok', rpad('platform_users ungranted to kynex_app (42501)', greatest(58, length('platform_users ungranted to kynex_app (42501)')));
 END
 $$;
 
@@ -252,7 +252,7 @@ BEGIN
     IF NOT ok THEN RAISE EXCEPTION 'PROOF 2e FAILED — moved a row into tenant B'; END IF;
 
     EXECUTE 'RESET ROLE';
-    RAISE NOTICE '   % ok', rpad('select / update / delete / insert / re-tenant', 58);
+    RAISE NOTICE '   % ok', rpad('select / update / delete / insert / re-tenant', greatest(58, length('select / update / delete / insert / re-tenant')));
 END
 $$;
 
@@ -284,8 +284,8 @@ BEGIN
     IF n <> 0 THEN RAISE EXCEPTION 'PROOF 2f FAILED — v_employee_current shows another tenant'; END IF;
 
     EXECUTE 'RESET ROLE';
-    RAISE NOTICE '   % ok', rpad('v_leave_balances sums one tenant only (21.00, not 51.00)', 58);
-    RAISE NOTICE '   % ok', rpad('v_employee_current shows one tenant only', 58);
+    RAISE NOTICE '   % ok', rpad('v_leave_balances sums one tenant only (21.00, not 51.00)', greatest(58, length('v_leave_balances sums one tenant only (21.00, not 51.00)')));
+    RAISE NOTICE '   % ok', rpad('v_employee_current shows one tenant only', greatest(58, length('v_employee_current shows one tenant only')));
 END
 $$;
 
@@ -315,7 +315,7 @@ BEGIN
     IF NOT ok THEN
         RAISE EXCEPTION 'PROOF 2g FAILED — % is directly readable by kynex_app', v_child;
     END IF;
-    RAISE NOTICE '   % ok', rpad(format('parent filters; %s ungranted (42501)', v_child), 58);
+    RAISE NOTICE '   % ok', rpad(format('parent filters; %s ungranted (42501)', v_child), greatest(58, length(format('parent filters; %s ungranted (42501)', v_child))));
 END
 $$;
 
@@ -349,7 +349,7 @@ BEGIN
           'PROOF 2g FAILED — with a GRANT, % returned % rows; forced RLS on the child did not hold',
           v_child, n;
     END IF;
-    RAISE NOTICE '   % ok', rpad('child WITH a grant still returns 0 (RLS forced, no policy)', 58);
+    RAISE NOTICE '   % ok', rpad('child WITH a grant still returns 0 (RLS forced, no policy)', greatest(58, length('child WITH a grant still returns 0 (RLS forced, no policy)')));
 END
 $$;
 
@@ -380,7 +380,7 @@ BEGIN
     IF NOT ok THEN
         RAISE EXCEPTION 'PROOF 2h FAILED — a tenant-bound session read tenant B''s credential through a SECURITY DEFINER function';
     END IF;
-    RAISE NOTICE '   % ok', rpad('resolve_login: own tenant answered, other tenant 42501', 58);
+    RAISE NOTICE '   % ok', rpad('resolve_login: own tenant answered, other tenant 42501', greatest(58, length('resolve_login: own tenant answered, other tenant 42501')));
 END
 $$;
 
@@ -415,7 +415,7 @@ BEGIN
     IF v_bad <> '' THEN
         RAISE EXCEPTION 'PROOF 2h FAILED — SECURITY DEFINER defects:%', v_bad;
     END IF;
-    RAISE NOTICE '   % ok', rpad('every SECURITY DEFINER fn: search_path set, not PUBLIC, not ro', 58);
+    RAISE NOTICE '   % ok', rpad('every SECURITY DEFINER fn: search_path set, not PUBLIC, not ro', greatest(58, length('every SECURITY DEFINER fn: search_path set, not PUBLIC, not ro')));
 END
 $$;
 
@@ -456,7 +456,7 @@ BEGIN
     END IF;
 
     EXECUTE 'RESET ROLE';
-    RAISE NOTICE '   % ok', rpad('GUC set, is_platform() still false, platform rows unseen', 58);
+    RAISE NOTICE '   % ok', rpad('GUC set, is_platform() still false, platform rows unseen', greatest(58, length('GUC set, is_platform() still false, platform rows unseen')));
 END
 $$;
 
@@ -488,7 +488,7 @@ BEGIN
     END IF;
 
     EXECUTE 'RESET ROLE';
-    RAISE NOTICE '   % ok', rpad('kynex_platform + GUC on = platform; GUC off = not', 58);
+    RAISE NOTICE '   % ok', rpad('kynex_platform + GUC on = platform; GUC off = not', greatest(58, length('kynex_platform + GUC on = platform; GUC off = not')));
 END
 $$;
 
@@ -579,8 +579,8 @@ BEGIN
     IF NOT ok THEN RAISE EXCEPTION 'PROOF 4g FAILED — kynex_ro wrote to employees'; END IF;
 
     EXECUTE 'RESET ROLE';
-    RAISE NOTICE '   % ok', rpad('password_hash, token_hash, api_key_hash, xml, refresh hash', 58);
-    RAISE NOTICE '   % ok', rpad('resolve_login and resolve_platform_login both 42501', 58);
+    RAISE NOTICE '   % ok', rpad('password_hash, token_hash, api_key_hash, xml, refresh hash', greatest(58, length('password_hash, token_hash, api_key_hash, xml, refresh hash')));
+    RAISE NOTICE '   % ok', rpad('resolve_login and resolve_platform_login both 42501', greatest(58, length('resolve_login and resolve_platform_login both 42501')));
 END
 $$;
 
@@ -599,7 +599,7 @@ BEGIN
     END;
     EXECUTE 'RESET ROLE';
     IF NOT ok THEN RAISE EXCEPTION 'PROOF 4 FAILED — kynex_app wrote to a reference table'; END IF;
-    RAISE NOTICE '   % ok', rpad('kynex_app holds no write grant on reference tables', 58);
+    RAISE NOTICE '   % ok', rpad('kynex_app holds no write grant on reference tables', greatest(58, length('kynex_app holds no write grant on reference tables')));
 END
 $$;
 
@@ -617,7 +617,7 @@ BEGIN
     IF v_bad IS NOT NULL THEN
         RAISE EXCEPTION 'PROOF 4 FAILED — kynex_app holds forbidden grants: %', v_bad;
     END IF;
-    RAISE NOTICE '   % ok', rpad('role_table_grants: no write on reference, none on platform_users', 58);
+    RAISE NOTICE '   % ok', rpad('role_table_grants: no write on reference, none on platform_users', greatest(58, length('role_table_grants: no write on reference, none on platform_users')));
 END
 $$;
 
@@ -680,7 +680,7 @@ BEGIN
         RAISE EXCEPTION 'PROOF 5 INCONCLUSIVE — the walk did not even find kynex_migrator → kynex_owner';
     END IF;
 
-    RAISE NOTICE '   % ok', rpad('transitive closure clean; migrator''s own path found', 58);
+    RAISE NOTICE '   % ok', rpad('transitive closure clean; migrator''s own path found', greatest(58, length('transitive closure clean; migrator''s own path found')));
 END
 $$;
 
@@ -695,7 +695,7 @@ BEGIN
                   AND (rolbypassrls OR rolsuper OR rolcreatedb OR rolcreaterole)) THEN
         RAISE EXCEPTION 'PROOF 5 FAILED — an application role holds an elevated attribute';
     END IF;
-    RAISE NOTICE '   % ok', rpad('kynex_owner NOLOGIN; app roles hold no attribute', 58);
+    RAISE NOTICE '   % ok', rpad('kynex_owner NOLOGIN; app roles hold no attribute', greatest(58, length('kynex_owner NOLOGIN; app roles hold no attribute')));
 END
 $$;
 
@@ -732,7 +732,7 @@ BEGIN
      WHERE ns.nspname = 'public' AND c.relkind IN ('r','p')
        AND c.relrowsecurity AND c.relforcerowsecurity;
     IF n < 76 THEN RAISE EXCEPTION 'PROOF 6a INCONCLUSIVE — only % relations checked', n; END IF;
-    RAISE NOTICE '   % ok', rpad(format('%s relations, all ENABLE + FORCE', n), 58);
+    RAISE NOTICE '   % ok', rpad(format('%s relations, all ENABLE + FORCE', n), greatest(58, length(format('%s relations, all ENABLE + FORCE', n))));
 
     -- 6b. every partition child: forced, and ZERO direct grants to any login role
     SELECT string_agg(DISTINCT c.relname, ', ')
@@ -761,7 +761,7 @@ BEGIN
       FROM pg_class c JOIN pg_namespace ns ON ns.oid = c.relnamespace
      WHERE ns.nspname = 'public' AND c.relkind IN ('r','p') AND c.relispartition;
     IF n < 80 THEN RAISE EXCEPTION 'PROOF 6b INCONCLUSIVE — only % children found', n; END IF;
-    RAISE NOTICE '   % ok', rpad(format('%s partition children: forced, zero grants', n), 58);
+    RAISE NOTICE '   % ok', rpad(format('%s partition children: forced, zero grants', n), greatest(58, length(format('%s partition children: forced, zero grants', n))));
 
     -- 6c. and no child carries a policy either, which is what makes "forced"
     -- mean "deny" rather than "whatever the parent says"
@@ -792,7 +792,7 @@ BEGIN
      WHERE ns.nspname = 'public' AND c.relkind = 'v'
        AND array_to_string(c.reloptions, ',') LIKE '%security_invoker=true%';
     IF n <> 2 THEN RAISE EXCEPTION 'PROOF 6d INCONCLUSIVE — % security_invoker views (expected 2)', n; END IF;
-    RAISE NOTICE '   % ok', rpad('both views carry security_invoker = true', 58);
+    RAISE NOTICE '   % ok', rpad('both views carry security_invoker = true', greatest(58, length('both views carry security_invoker = true')));
 
     -- 6e. every relation has a manifest entry and vice versa (§19.2 ratchet)
     SELECT string_agg(c.relname, ', ' ORDER BY c.relname) INTO v_bad
@@ -805,7 +805,7 @@ BEGIN
     IF v_bad IS NOT NULL THEN
         RAISE EXCEPTION 'PROOF 6e FAILED — relation with no manifest entry: %', v_bad;
     END IF;
-    RAISE NOTICE '   % ok', rpad('manifest covers every table, parent, child and view', 58);
+    RAISE NOTICE '   % ok', rpad('manifest covers every table, parent, child and view', greatest(58, length('manifest covers every table, parent, child and view')));
 END
 $$;
 
@@ -834,7 +834,7 @@ BEGIN
           'PROOF 6f INCONCLUSIVE — the no-invoker view returned % rows, expected 2 (both tenants). The leak this file guards against may have changed shape.',
           n;
     END IF;
-    RAISE NOTICE '   % ok', rpad('counter-proof: without security_invoker the view leaks BOTH tenants', 58);
+    RAISE NOTICE '   % ok', rpad('counter-proof: without security_invoker the view leaks BOTH tenants', greatest(58, length('counter-proof: without security_invoker the view leaks BOTH tenants')));
 END
 $$;
 ROLLBACK;
@@ -847,7 +847,7 @@ BEGIN
      WHERE ns.nspname = 'public' AND c.relname = 'v_leave_balances'
        AND array_to_string(c.reloptions, ',') LIKE '%security_invoker=true%';
     IF n <> 1 THEN RAISE EXCEPTION 'PROOF 6f FAILED — the security_invoker view was not restored'; END IF;
-    RAISE NOTICE '   % ok', rpad('security_invoker view restored after the counter-proof', 58);
+    RAISE NOTICE '   % ok', rpad('security_invoker view restored after the counter-proof', greatest(58, length('security_invoker view restored after the counter-proof')));
 END
 $$;
 

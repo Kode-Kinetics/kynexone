@@ -48,7 +48,10 @@ MIGRATED=(
   "$BASE/018_workflow_audit.sql"
   "$BASE/020_constraints_a_f.sql"
   "$BASE/021_constraints_g_r.sql"
+  "$BASE/022_constraints_cross.sql"
   "$BASE/030_partitions.sql"
+  "$BASE/040_indexes.sql"
+  "$BASE/050_triggers.sql"
   "$BASE/060_policies.sql"
 )
 
