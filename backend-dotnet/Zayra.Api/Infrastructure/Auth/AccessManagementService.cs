@@ -1137,6 +1137,96 @@ public class AccessManagementService : IAccessManagementService
         await _auditService.WriteAsync("access.admin_password_reset", "User", user.Id.ToString(), context, null, cancellationToken);
     }
 
+    /// <summary>How long an administrator-issued reset link stays redeemable. Matches the
+    /// self-service forgot-password link (AuthService.ForgotPasswordAsync) exactly — an
+    /// admin-initiated reset must not be the longer-lived door.</summary>
+    internal const int AdminResetLinkLifetimeHours = 1;
+
+    /// <inheritdoc />
+    public async Task<AdminPasswordResetLinkDto> IssuePasswordResetLinkAsync(
+        Guid tenantId,
+        Guid userId,
+        EntityScopeContext entityScope,
+        RequestContext context,
+        CancellationToken cancellationToken)
+    {
+        var tenant = await _db.Tenants.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.Id == tenantId && x.IsActive, cancellationToken)
+            ?? throw new InvalidOperationException("Workspace not found.");
+
+        var user = await _db.Users
+            .ApplyEntityScope(_db, tenantId, entityScope)
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, cancellationToken)
+            ?? throw new InvalidOperationException("User not found.");
+
+        // These three are exactly the conditions AuthService.ResetPasswordAsync re-checks when the
+        // link is redeemed. Refusing here means an administrator is never handed a link that is
+        // guaranteed to fail in the user's hands — the alternative is a silent dead end, which is
+        // the class of defect this endpoint exists to remove.
+        if (string.Equals(user.AccessMode, AccessModes.NoLogin, StringComparison.Ordinal))
+            throw new InvalidOperationException(
+                "This person has no portal login, so there is no password to reset. Invite them to the portal first.");
+        if (!user.IsActive)
+            throw new InvalidOperationException(
+                "This account is not active, so a reset link could not be redeemed. Reactivate the account, or re-issue the invitation if it was never accepted.");
+        if (user.Status is "Deactivated" or "Suspended")
+            throw new InvalidOperationException(
+                $"This account is {user.Status.ToLowerInvariant()}. Restore access first, then send a reset link.");
+
+        var issuedAtUtc = DateTime.UtcNow;
+        var expiresAtUtc = issuedAtUtc.AddHours(AdminResetLinkLifetimeHours);
+        var resetToken = _tokenService.CreateSecureToken();
+
+        // Supersede every still-live link for this user. Issuing a second link must not leave the
+        // first one redeemable: an administrator who re-issues because the first went astray has to
+        // be able to assume the first one is dead.
+        var superseded = await _db.PasswordResetTokens
+            .Where(x => x.UserId == user.Id && x.UsedAtUtc == null && x.ExpiresAtUtc > issuedAtUtc)
+            .ToListAsync(cancellationToken);
+        foreach (var stale in superseded) stale.ExpiresAtUtc = issuedAtUtc;
+
+        // Only the hash is persisted; the raw token leaves in the return value and is unrecoverable.
+        _db.PasswordResetTokens.Add(new PasswordResetToken
+        {
+            UserId = user.Id,
+            TokenHash = _tokenService.HashToken(resetToken),
+            ExpiresAtUtc = expiresAtUtc,
+            CreatedAtUtc = issuedAtUtc,
+            CreatedByIp = context.IpAddress
+        });
+        _db.LoginActivities.Add(new LoginActivity
+        {
+            TenantId = user.TenantId,
+            UserId = user.Id,
+            EmailAttempted = user.Email,
+            EventType = LoginEventTypes.PasswordResetRequested,
+            IpAddress = context.IpAddress,
+            UserAgent = context.UserAgent,
+        });
+        await _db.SaveChangesAsync(cancellationToken);
+
+        await _auditService.WriteAsync(
+            "access.password_reset_link_issued",
+            "User",
+            user.Id.ToString(),
+            context,
+            System.Text.Json.JsonSerializer.Serialize(new
+            {
+                initiatedBy = "tenant_admin",
+                supersededLinks = superseded.Count,
+                expiresAtUtc
+            }),
+            cancellationToken);
+
+        return new AdminPasswordResetLinkDto(
+            user.Id,
+            user.Email,
+            user.FullName,
+            resetToken,
+            AuthLinkBuilder.ResetPassword(_appUrl, tenant.Slug, resetToken),
+            expiresAtUtc);
+    }
+
     public async Task<bool> DeleteUserAsync(Guid tenantId, Guid userId, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken)
     {
         var changedAtUtc = DateTime.UtcNow;

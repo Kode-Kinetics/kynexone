@@ -2037,10 +2037,9 @@ public class PlatformController : ControllerBase
     // ── Password Reset (platform-initiated) ───────────────────────────────────
 
     /// <summary>
-    /// TODO: Implement email delivery.
-    /// Currently generates a reset token stored on the user. The actual email send
-    /// requires an IEmailService (SMTP/SendGrid) not yet wired to the platform portal.
-    /// When email service is available: call IAuthService.ForgotPasswordAsync with the user's email.
+    /// Issues a single-use, one-hour password-reset link for a tenant user and emails it when a
+    /// mail transport is configured. When none is (the production default today), the response says
+    /// so and returns the link itself to Owner/Admin so the reset can still be completed by hand.
     /// </summary>
     [HttpPost("users/{userId:guid}/send-password-reset")]
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin, PlatformRoles.Support)]
@@ -2114,6 +2113,31 @@ public class PlatformController : ControllerBase
             _log.LogInformation("SMTP not configured — reset token saved for {Email}, no email sent.", user.Email);
         }
 
+        // The old message told the operator to "share the reset link directly" while showing no
+        // link — advice that could not be followed. The link is now actually returned when nothing
+        // was emailed, but only to Owner/Admin: Support may trigger a reset into the user's own
+        // inbox without ever holding a live credential link for someone else's workspace.
+        var platformRole = User.FindFirst("platform_role")?.Value;
+        var maySeeLink = string.Equals(platformRole, PlatformRoles.Owner, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(platformRole, PlatformRoles.Admin, StringComparison.OrdinalIgnoreCase);
+        var discloseLink = !emailSent && maySeeLink;
+
+        if (discloseLink)
+        {
+            _db.AdminAuditLogs.Add(new AdminAuditLog
+            {
+                TenantId = user.TenantId,
+                EntityType = "User",
+                EntityId = userId.ToString(),
+                Action = "PasswordResetLinkDisclosedToPlatformAdmin",
+                OldValuesJson = "{}",
+                NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { smtpConfigured, platformRole }),
+                PerformedByName = "platform_admin",
+                IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
+            });
+            await _db.SaveChangesAsync(ct);
+        }
+
         return Ok(new
         {
             userId,
@@ -2123,8 +2147,11 @@ public class PlatformController : ControllerBase
             message = emailSent
                 ? $"Password reset email sent to {user.Email}. Link expires in 1 hour."
                 : smtpConfigured
-                    ? "SMTP is configured but email delivery failed — check server logs."
-                    : "Reset token saved and logged. SMTP is not configured — share the reset link directly or configure SMTP in Setup → Email Settings.",
+                    ? "SMTP is configured but the email could not be delivered — check server logs."
+                    : maySeeLink
+                        ? "SMTP is not configured for this platform, so no email was sent. Copy the reset link below and give it to the user directly — it can be used once and expires in 1 hour."
+                        : "SMTP is not configured for this platform, so no email was sent. Ask a platform Owner or Admin to issue the reset link.",
+            resetUrl = discloseLink ? resetUrl : null,
             emailDeliveryAvailable = smtpConfigured,
             resetTokenExpiresAt = expiresAt
         });

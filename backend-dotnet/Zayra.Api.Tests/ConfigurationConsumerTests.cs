@@ -274,7 +274,7 @@ public class ConfigurationConsumerTests
     [Fact]
     public void ApprovalDelegationWrite_Refuses_501WithACodeAndAPointer()
     {
-        var controller = new AccessController(null!, null!);
+        var controller = new AccessController(null!, null!, null!);
         var result = controller.CreateApprovalDelegation(
             new Zayra.Api.Application.Auth.ApprovalDelegationRequest(
                 1, 2, "All", new DateOnly(2026, 10, 1), new DateOnly(2026, 10, 14), "Annual leave"));
@@ -285,7 +285,7 @@ public class ConfigurationConsumerTests
     [Fact]
     public void ApprovalAuthorityWrites_Refuse_501WithACodeAndAPointer()
     {
-        var controller = new AccessController(null!, null!);
+        var controller = new AccessController(null!, null!, null!);
         var request = new Zayra.Api.Application.Auth.ApprovalAuthorityRequest(1, "Payroll", "Manager", 50000m, "SAR", true);
 
         AssertRefusal(controller.CreateApprovalAuthority(request),

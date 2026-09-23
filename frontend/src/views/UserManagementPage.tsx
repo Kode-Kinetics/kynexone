@@ -20,7 +20,7 @@ import client from '../api/client';
 import type {
   UserListItem, RoleItem, PermissionItem, ApprovalDelegation,
   ApprovalAuthority, SecuritySetting, AuditLogItem, PermissionGrantorRecord,
-  UserAccess, PermissionMatrix, EntityGrant,
+  UserAccess, PermissionMatrix, EntityGrant, PasswordResetLinkResult,
 } from '../api/identity';
 import type { CompanyDto } from '../api/organization';
 
@@ -117,7 +117,10 @@ function UsersTab() {
   const [showCreate, setShowCreate] = useState(false);
   const [showAction, setShowAction] = useState<{ type: string; userId: string } | null>(null);
   const [actionReason, setActionReason] = useState('');
-  const [newPassword, setNewPassword] = useState('');
+  // The issued reset link, held only until the dialog closes. Nothing refetches it: the server
+  // stores a hash, so once this is dropped the link is gone and a new one must be issued.
+  const [resetResult, setResetResult] = useState<PasswordResetLinkResult | null>(null);
+  const [resetLinkCopied, setResetLinkCopied] = useState(false);
   const [actionErr, setActionErr] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
   const [editUser, setEditUser] = useState<UserListItem | null>(null);
@@ -166,6 +169,10 @@ function UsersTab() {
     rolesApi.permissions().then(setAllPermissions).catch(() => {});
   }, []);
 
+  // Opening any action dialog starts from a clean slate: a link issued for one user must never be
+  // left on screen over another user's dialog.
+  useEffect(() => { setResetResult(null); setResetLinkCopied(false); }, [showAction]);
+
   const doAction = async () => {
     if (!showAction) return;
     setActionLoading(true); setActionErr('');
@@ -177,10 +184,16 @@ function UsersTab() {
       else if (type === 'unlock') await usersApi.unlock(userId);
       else if (type === 'delete') await usersApi.delete(userId);
       else if (type === 'reset-password') {
-        if (newPassword.length < 10) { setActionErr('Password must be at least 10 characters.'); setActionLoading(false); return; }
-        await usersApi.adminResetPassword(userId, newPassword, true);
+        // Stay on the dialog: when no mail went out, the link it returns is the only copy and the
+        // administrator has to be able to read it before anything closes.
+        const result = await usersApi.issuePasswordResetLink(userId);
+        setResetResult(result);
+        setResetLinkCopied(false);
+        setActionLoading(false);
+        load();
+        return;
       }
-      setShowAction(null); setActionReason(''); setNewPassword('');
+      setShowAction(null); setActionReason('');
       load();
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
@@ -361,21 +374,56 @@ function UsersTab() {
                 <input className={inp()} value={actionReason} onChange={e => setActionReason(e.target.value)} placeholder="Optional reason…" />
               </FormField>
             )}
-            {showAction.type === 'reset-password' && (
-              <FormField label="New Password (min 10 chars)">
-                <input type="password" className={inp()} value={newPassword} onChange={e => setNewPassword(e.target.value)} />
-              </FormField>
+            {showAction.type === 'reset-password' && !resetResult && (
+              <p className="mb-4 text-sm text-slate-600 dark:text-slate-400">
+                This sends the user a link to choose their own new password. You will not see or set
+                their password. The link works once and expires in 1 hour.
+              </p>
+            )}
+            {showAction.type === 'reset-password' && resetResult && (
+              <div className="mb-4 space-y-3">
+                <p className={`text-sm ${resetResult.emailSent ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-400'}`}>
+                  {resetResult.message}
+                </p>
+                {resetResult.resetUrl && (
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">
+                      One-time reset link — copy it now, it is not shown again
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        readOnly
+                        value={resetResult.resetUrl}
+                        onFocus={e => e.currentTarget.select()}
+                        className={inp('font-mono text-xs')}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard?.writeText(resetResult.resetUrl!)
+                            .then(() => setResetLinkCopied(true))
+                            .catch(() => setResetLinkCopied(false));
+                        }}
+                        className="shrink-0 rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-700">
+                        {resetLinkCopied ? 'Copied' : 'Copy'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
             {actionErr && <ErrMsg msg={actionErr} />}
             <div className="mt-4 flex justify-end gap-2">
-              <button onClick={() => { setShowAction(null); setActionErr(''); setActionReason(''); setNewPassword(''); }}
+              <button onClick={() => { setShowAction(null); setActionErr(''); setActionReason(''); setResetResult(null); setResetLinkCopied(false); }}
                 className="rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-700">
-                Cancel
+                {resetResult ? 'Done' : 'Cancel'}
               </button>
-              <button onClick={doAction} disabled={actionLoading}
-                className={`rounded-lg px-4 py-2 text-sm font-medium text-white disabled:opacity-60 ${showAction.type === 'delete' ? 'bg-red-600 hover:bg-red-700' : 'bg-violet-600 hover:bg-violet-700'}`}>
-                {actionLoading ? 'Processing…' : showAction.type === 'delete' ? 'Delete' : 'Confirm'}
-              </button>
+              {!resetResult && (
+                <button onClick={doAction} disabled={actionLoading}
+                  className={`rounded-lg px-4 py-2 text-sm font-medium text-white disabled:opacity-60 ${showAction.type === 'delete' ? 'bg-red-600 hover:bg-red-700' : 'bg-violet-600 hover:bg-violet-700'}`}>
+                  {actionLoading ? 'Processing…' : showAction.type === 'delete' ? 'Delete' : showAction.type === 'reset-password' ? 'Send reset link' : 'Confirm'}
+                </button>
+              )}
             </div>
           </div>
         </div>
