@@ -372,10 +372,43 @@ export interface PlatformSettings {
     fromEmail: string;
     fromName: string;
     useSsl: boolean;
+    /** Key from the email-provider catalog, e.g. 'godaddy'. */
+    provider: string;
+    providerLabel: string | null;
+    password: string;
+    hasPassword: boolean;
     isConfigured: boolean;
+    /** Where the saved values came from — 'database', 'environment' or 'none'. */
+    source: 'database' | 'environment' | 'none';
   };
-  trial: { durationDays: number };
-  branding: { platformName: string; supportEmail: string };
+  /** Matches the API shape — the previous `trial`/`branding` fields were never returned. */
+  ai: { model: string };
+  platform: { trialDurationDays: number; environment: string };
+}
+
+/** One entry in the SMTP auto-configuration catalog. */
+export interface EmailProviderPreset {
+  key: string;
+  label: string;
+  host: string;
+  port: number;
+  useSsl: boolean;
+  usernamePattern: string;
+  guidance: string;
+  alternatePorts: number[];
+  docsUrl: string | null;
+  category: string;
+}
+
+export interface SmtpTestResult {
+  sent: boolean;
+  message: string;
+  to?: string;
+  host?: string;
+  port?: number;
+  provider?: string;
+  error?: string;
+  sentAtUtc?: string;
 }
 
 export interface BillingSummary {
@@ -704,11 +737,15 @@ export const platformApi = {
   getSettings: () =>
     platform.get<PlatformSettings>('/api/platform/settings').then(r => r.data),
 
-  updateSmtpSettings: (body: { host: string; port: number; username: string; password?: string; fromEmail: string; fromName?: string; useSsl: boolean }) =>
+  getEmailProviders: () =>
+    platform.get<EmailProviderPreset[]>('/api/platform/settings/email-providers').then(r => r.data),
+
+  updateSmtpSettings: (body: { host: string; port: number; username: string; password?: string; fromEmail: string; fromName?: string; useSsl: boolean; provider?: string }) =>
     platform.put('/api/platform/settings/smtp', body).then(r => r.data),
 
-  testSmtp: () =>
-    platform.post<{ sent: boolean; message: string }>('/api/platform/settings/smtp/test').then(r => r.data),
+  /** `to` is the inbox the test should land in; omitted, the API sends to the signed-in admin. */
+  testSmtp: (to?: string) =>
+    platform.post<SmtpTestResult>('/api/platform/settings/smtp/test', { to: to ?? null }).then(r => r.data),
 
   getVersion: () =>
     platform.get<{ version: string; environment: string; deployedAt?: string; migrations?: number }>('/api/platform/settings/version').then(r => r.data),
