@@ -36,6 +36,31 @@ public static class OvertimeStatutoryCalculator
     public static decimal HourPay(decimal baseHourly, decimal basicHourly, decimal multiplier)
         => baseHourly + basicHourly * (multiplier - 1m);
 
+    /// <summary>
+    /// THE payslip description of an overtime line — the single definition both renderers call.
+    ///
+    /// <para><b>The defect this closes.</b> The line read
+    /// <c>Overtime (1.00 h × 125.00/h × 1.50)</c> beside an amount of <b>162.50</b>. Its own
+    /// arithmetic gives <b>187.50</b>. The expression actually applied is <see cref="HourPay"/> —
+    /// <c>baseHourly + basicHourly × (multiplier − 1)</c>, i.e. Art. 107's "hourly wage plus 50% of
+    /// his basic wage" — which is not <c>rate × multiplier</c> and never was. An employee checking
+    /// their own payslip by hand arrived at 15% more than they were paid, on every KSA overtime line
+    /// of every run. The label now states the expression that produced the money:
+    /// <c>Overtime (1.00 h × (125.00 + 75.00 × 0.50)/h)</c> → 162.50, which multiplies out to the
+    /// amount printed beside it.</para>
+    ///
+    /// <para>Hours use <c>0.00##</c>, not <c>N2</c>: overtime is stored in minutes and 50 minutes is
+    /// 0.8333 h, so a 2-dp hours figure would not reproduce its own line either. A whole hour still
+    /// renders "1.00".</para>
+    /// </summary>
+    /// <param name="hours">The quantity paid, at full precision.</param>
+    /// <param name="baseHourly"><c>OvertimeHourRate.BaseHourly</c> — the first term.</param>
+    /// <param name="upliftHourly"><c>OvertimeHourRate.UpliftBasisHourly</c> — what the uplift is measured on.</param>
+    /// <param name="multiplier">The effective day multiplier actually applied.</param>
+    public static string PayslipLabel(
+        decimal hours, decimal baseHourly, decimal upliftHourly, decimal multiplier)
+        => $"Overtime ({hours:0.00##} h × ({Math.Round(baseHourly, 2):N2} + {Math.Round(upliftHourly, 2):N2} × {multiplier - 1m:N2})/h)";
+
     // ── Policy hourly-rate bases (OvertimePolicy.HourlyRateBasis) ────────────────────────────────
     public const string BasisBasicSalary     = "BasicSalary";
     public const string BasisGrossSalary     = "GrossSalary";
