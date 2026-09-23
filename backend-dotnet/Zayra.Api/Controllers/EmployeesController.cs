@@ -533,6 +533,9 @@ public class EmployeesController : ControllerBase
     public async Task<IActionResult> Import([FromBody] ImportEmployeesRequest req, CancellationToken ct)
     {
         var tenantId = RequireTenant();
+        // HEADERS FIRST — before a single row is read, let alone written. An unrecognised column used to
+        // import "cleanly" and lose its data (see EmployeeCsvHeaderValidator).
+        if (HeaderRejection(req.CsvContent) is IActionResult headerRejection) return headerRejection;
         var rows = Csv.Parse(req.CsvContent ?? string.Empty);
 
         // Enforce employee limit before processing any rows.
@@ -1307,6 +1310,27 @@ public class EmployeesController : ControllerBase
 
     public record ImportEmployeesRequest(string CsvContent);
 
+    /// <summary>
+    /// 400 listing every unrecognised or duplicated CSV column, or null when the header row is safe to read.
+    /// Shared by <see cref="Import"/> and <see cref="ImportPreview"/> so the dry run and the commit reject
+    /// exactly the same files. The response names each offending column and the nearest valid one, and says
+    /// plainly that nothing was written — the previous behaviour was to accept the file and lose the column.
+    /// </summary>
+    private IActionResult? HeaderRejection(string? csvContent)
+    {
+        var problems = Zayra.Api.Infrastructure.Employees.EmployeeCsvHeaderValidator.Validate(csvContent);
+        if (problems.Count == 0) return null;
+        return BadRequest(new
+        {
+            message = problems.Count == 1
+                ? $"The file's header row has 1 unusable column. Nothing was imported. {problems[0].Message}"
+                : $"The file's header row has {problems.Count} unusable columns. Nothing was imported.",
+            headerErrors = problems.Select(p => new { column = p.Column, suggestion = p.Suggestion, message = p.Message }).ToList(),
+            // The accepted column names, so the operator can fix the file without re-downloading the template.
+            validHeaders = Zayra.Api.Infrastructure.Employees.EmployeeFieldRegistry.CsvHeaders,
+        });
+    }
+
     private static decimal GrossSalaryFromRow(Dictionary<string, string> row)
     {
         static decimal Amount(Dictionary<string, string> source, string key) =>
@@ -1443,9 +1467,18 @@ public class EmployeesController : ControllerBase
             .ToList();
 
     /// <summary>Country-aware, per-row CSV warnings (§4): a populated cell for a column that is not
-    /// applicable to the row's (country, nationality) → warning (never persisted to the wrong typed column);
-    /// a populated identity value that fails the country pack FORMAT regex → warning with the hint. Blank
-    /// irrelevant columns produce nothing. Warnings only — the file is never rejected on these.</summary>
+    /// applicable to the row's (country, nationality) → warning; a populated identity value that fails the
+    /// country pack FORMAT regex → warning with the hint. Blank irrelevant columns produce nothing. Warnings
+    /// only — the file is never rejected on these.
+    ///
+    /// The non-applicable warning used to read "it will be ignored, not imported". That was the opposite of
+    /// what happens: <see cref="Import"/> writes every identity column unconditionally
+    /// (<c>IqamaNumber = row.GetValueOrDefault("IqamaNumber").Trim()</c> and the forty like it), with no
+    /// applicability check anywhere on the commit path. The dry run was telling the operator a value would be
+    /// discarded when it was about to be persisted — and the dry run is the only safety mechanism a bulk
+    /// write has. The wording now matches the commit. Keeping the value is the deliberate choice: this
+    /// importer's law is accept-never-block (a row is dropped only for a missing name or a duplicate code),
+    /// so a surprising value is surfaced for review rather than silently thrown away.</summary>
     private static List<string> CountryAwareRowWarnings(
         Dictionary<string, string> row, string iso2, string? nationality,
         Zayra.Api.Application.CountryPack.IIdentityDocumentFormat fmt)
@@ -1464,7 +1497,8 @@ public class EmployeesController : ControllerBase
             if (val.Length == 0) continue;                       // blank irrelevant column is fine
             if (!visible.Contains(d.CsvHeader!))
             {
-                warnings.Add($"{d.CsvHeader} '{val}' is not applicable to {natLabel} in {iso2} — it will be ignored, not imported.");
+                warnings.Add($"{d.CsvHeader} '{val}' is not applicable to {natLabel} in {iso2} — it WILL still be "
+                             + $"imported into the {d.CsvHeader} column. Clear the cell if that is not what you meant.");
                 continue;
             }
             var (pattern, hint) = fmt.GetFormat(d.Key);          // format check only for the applicable/visible columns
@@ -1481,6 +1515,9 @@ public class EmployeesController : ControllerBase
         [FromServices] Zayra.Api.Application.CountryPack.ICountryPackResolver? countryPacks = null)
     {
         var tenantId = RequireTenant();
+        // The preview is the safety mechanism for a bulk write, so it must fail on exactly what the commit
+        // fails on — a dry run that accepts a file the commit rejects is worse than no dry run.
+        if (HeaderRejection(req.CsvContent) is IActionResult headerRejection) return headerRejection;
         var rows = Csv.Parse(req.CsvContent ?? string.Empty);
 
         var sub = await _db.TenantSubscriptions.AsNoTracking()
@@ -4289,6 +4326,7 @@ public class EmployeesController : ControllerBase
                 // Emitted by the server catalogue for every expat (registry `SponsorName`, compliance key
                 // `sponsor`); unreachable while the catalogue was dead, reachable the moment it was fixed.
                 case "sponsorName": employee.SponsorName = value.GetString() ?? employee.SponsorName; break;
+                case "terminationReason": employee.TerminationReason = value.GetString() ?? employee.TerminationReason; break;
                 // NEVER add a silent fall-through here. An unrecognised key is reported, not dropped.
                 default: unknown.Add(field); break;
             }

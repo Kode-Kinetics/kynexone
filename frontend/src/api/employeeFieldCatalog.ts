@@ -348,8 +348,9 @@ export const employeeFieldCatalogApi = {
  * The endpoint's response envelope. `GET /api/employees/field-catalog` returns an OBJECT carrying the
  * resolved axes plus the descriptor list under `fields` — never a bare array.
  *
- * This client used to do `Array.isArray(r.data) ? r.data : null`, which is `null` for every object,
- * so `resolveFieldCatalog(null)` returned `LOCAL_FIELD_CATALOG` 100% of the time: the entire
+ * This client used to array-check the raw response body and discard anything that was not an array —
+ * which is every object the endpoint has ever returned — so it always resolved to `null` and
+ * `resolveFieldCatalog(null)` returned `LOCAL_FIELD_CATALOG` 100% of the time: the entire
  * server-side country x nationality resolver, the per-country labels, the format regexes and the
  * nationality hiding never reached a screen, and the hard-coded fallback (with the issue-date expiry
  * bug above) was what every user got. `EmployeeFieldWiringTests.FieldCatalog_Envelope_*` pins the
