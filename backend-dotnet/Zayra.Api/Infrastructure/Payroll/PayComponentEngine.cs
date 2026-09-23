@@ -236,7 +236,9 @@ public static class PayComponentEngine
 
     // ── Dynamic labels — MUST stay byte-identical to PayrollController.Process ────
     private static string OvertimeLabel(PayComponentContext ctx)
-        => $"Overtime ({ctx.OtHours:N2} h × {Math.Round(ctx.HourlyRate, 2):N2}/h × {ctx.OtMultiplier:N2})";
+        // "0.00##", not "N2": overtime is stored in minutes, and 50 minutes is 0.8333 h — see the
+        // matching format in PayrollController.Process. A whole hour still renders "1.00".
+        => $"Overtime ({ctx.OtHours:0.00##} h × {Math.Round(ctx.HourlyRate, 2):N2}/h × {ctx.OtMultiplier:N2})";
 
     private static string TaxLabel(PayComponentContext ctx)
         => $"Income tax ({ctx.IncomeTaxRate}%)";

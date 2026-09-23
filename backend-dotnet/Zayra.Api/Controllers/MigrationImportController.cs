@@ -10,6 +10,11 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Attendance;
+using Zayra.Api.Infrastructure.CountryPack;
+using Zayra.Api.Infrastructure.CountryPack.Ksa;
+using Zayra.Api.Infrastructure.Data;
+using Zayra.Api.Infrastructure.Localization;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -548,13 +553,71 @@ public sealed partial class MigrationImportController : ControllerBase
         return created ? "created" : "updated";
     }
 
+    /// <summary>
+    /// An imported attendance day must land in the SAME state a processed one does.
+    ///
+    /// <para>This wrote only <c>attendance_daily_records</c>. One attendance day is read from three
+    /// tables: the grid reads that one, the executive dashboard sums <c>attendance_records</c>, and
+    /// payroll pays exclusively from <c>attendance_payroll_impacts</c>. So an imported month showed
+    /// its overtime on the grid, read ZERO on the dashboard, and was never paid — and imported
+    /// lateness, early exits and absences were never deducted either. Three surfaces, three answers,
+    /// for one imported day.</para>
+    ///
+    /// <para>It now calls <see cref="AttendanceDerivedArtifacts"/>, the same writer
+    /// <c>AttendanceService.ProcessEmployeeDay</c> calls, rather than payroll being taught to read
+    /// the other copy — which would have spread the duplication instead of removing it. The absence
+    /// baseline is resolved through the same <see cref="KsaWorkingHoursBaselineService"/> the
+    /// processor uses, so an imported Ramadan absence costs the Art. 98 six-hour day, not eight.</para>
+    /// </summary>
     private async Task<string> UpsertAttendanceAsync(Dictionary<string, string> row, Guid tenantId, CancellationToken ct)
     {
         var employee = await Employee(row, tenantId, ct); var date = DateReq(row, "WorkDate");
         var item = await _db.AttendanceDailyRecords.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.WorkDate == date, ct);
         var created = item is null; item ??= new AttendanceDailyRecord { TenantId = tenantId, EmployeeId = employee.Id, EmployeeName = employee.FullName };
         item.WorkDate = date; item.FirstInUtc = DateTimeNullable(row, "FirstInUtc"); item.LastOutUtc = DateTimeNullable(row, "LastOutUtc"); item.TotalWorkedMinutes = Int(row, "TotalWorkedMinutes"); item.BreakMinutes = Int(row, "BreakMinutes"); item.LateMinutes = Int(row, "LateMinutes"); item.EarlyExitMinutes = Int(row, "EarlyExitMinutes"); item.OvertimeMinutes = Int(row, "OvertimeMinutes"); item.UndertimeMinutes = Int(row, "UndertimeMinutes"); item.MissingPunch = Bool(row, "MissingPunch", false); item.Status = Val(row, "Status", "Absent"); item.WorkMode = Val(row, "WorkMode", "Work from site"); item.UpdatedAtUtc = DateTime.UtcNow;
-        if (created) _db.AttendanceDailyRecords.Add(item); return created ? "created" : "updated";
+        // The processor sets both from the resolved Employee; imported rows used to show blank
+        // Department and Branch beside processed rows for the same person, in the same grid.
+        item.Department = employee.Department; item.Branch = employee.Branch;
+        if (created) _db.AttendanceDailyRecords.Add(item);
+        await AttendanceDerivedArtifacts.SyncAsync(
+            _db, tenantId, employee.CompanyId, item,
+            await ResolveAbsenceMinutesAsync(tenantId, employee, date, ct), ct);
+        return created ? "created" : "updated";
+    }
+
+    /// <summary>
+    /// What one absent day costs this employee, resolved exactly as
+    /// <c>AttendanceService.ProcessEmployeeDay</c> resolves it: the ordinary 480 minutes, or the
+    /// reduced KSA Art. 98 Ramadan baseline where the EMPLOYING COMPANY is a KSA entity and the
+    /// date falls in Ramadan on the Um al-Qura calendar.
+    /// </summary>
+    private async Task<int> ResolveAbsenceMinutesAsync(Guid tenantId, Employee employee, DateOnly date, CancellationToken ct)
+    {
+        var policy = await _db.AttendancePolicies.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.IsActive, ct);
+        var standardMinutes = policy?.StandardWorkMinutes ?? AttendanceDerivedArtifacts.OrdinaryAbsenceMinutes;
+
+        var countryCode = employee.CompanyId is Guid companyId
+            ? await ScopedBypass.TenantWide(_db.Companies, tenantId,
+                    "Resolving an employee's legal entity in order to decide whether KSA Art. 98 Ramadan "
+                    + "reduced working hours apply is a SYSTEM/config read, for the same reason "
+                    + "AttendanceService.ResolveCompanyCountryAsync is: the article binds on the EMPLOYER's "
+                    + "jurisdiction, not on the importing user's company claims. Only the country code is "
+                    + "projected; no company data crosses the boundary.")
+                .AsNoTracking()
+                .Where(c => c.Id == companyId)
+                .Select(c => c.CountryCode)
+                .FirstOrDefaultAsync(ct) ?? string.Empty
+            : string.Empty;
+
+        var baseline = await new KsaWorkingHoursBaselineService(new StatutoryRuleReader(_db), new HijriDateService())
+            .ResolveDailyAsync(countryCode, date, standardMinutes, ct);
+        // The ordinary-day literal is retained deliberately, exactly as in the processor: making the
+        // absence deduction follow the policy generally would move money for every tenant configured
+        // above eight hours, and that is not this change's remit. Only Ramadan reduces it.
+        return baseline.IsRamadan
+            ? Math.Min(baseline.DailyMinutes, AttendanceDerivedArtifacts.OrdinaryAbsenceMinutes)
+            : AttendanceDerivedArtifacts.OrdinaryAbsenceMinutes;
     }
 
     private async Task<string> UpsertEmployeeHistoryAsync(Dictionary<string, string> row, Guid tenantId, CancellationToken ct)
