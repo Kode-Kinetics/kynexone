@@ -145,9 +145,7 @@ public class DepartmentsController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-
-        var result = await RunPreviewAsync(tenantId.Value, req.Csv, ct);
-        return Ok(result);
+        return await RunPreviewAsync(tenantId.Value, req.Csv, ct);
     }
 
     // ── Import Commit ─────────────────────────────────────────────────────────
@@ -158,115 +156,155 @@ public class DepartmentsController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-
-        var result = await RunCommitAsync(tenantId.Value, req.Csv, ct);
-        return Ok(result);
+        return await RunCommitAsync(tenantId.Value, req.Csv, ct);
     }
 
     // ── Shared logic ──────────────────────────────────────────────────────────
 
-    private async Task<ImportPreviewResult> RunPreviewAsync(Guid tenantId, string csv, CancellationToken ct)
+    /// <summary>
+    /// The three lookups both paths need, or the conflict that says why they cannot be built.
+    /// A tenant onboarded before codes were normalised may hold two rows differing only in case;
+    /// keying a dictionary on the upper-cased code used to throw there, turning every import and
+    /// preview for that tenant into a 500 with no way back through the product.
+    /// </summary>
+    private async Task<(IActionResult? Refusal,
+                        Dictionary<string, Department> Existing,
+                        Dictionary<string, Guid> CostCenters,
+                        Dictionary<string, int> Employees)>
+        LoadLookupsAsync(Guid tenantId, bool tracked, CancellationToken ct)
     {
+        var departmentQuery = _db.Departments.Where(d => d.TenantId == tenantId && !d.IsDeleted);
+        var departments = await (tracked ? departmentQuery : departmentQuery.AsNoTracking()).ToListAsync(ct);
+        if (!OrgCodes.TryBuildLookup(departments, d => d.Code, out var existing, out var clash))
+            return (Conflict(OrgCodeCollision.Payload("department", "Code", clash)), new(), new(), new());
+
+        var costCenters = await _db.CostCenters.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && !c.IsDeleted).ToListAsync(ct);
+        if (!OrgCodes.TryBuildLookup(costCenters, c => c.Code, out var costCenterRows, out var ccClash))
+            return (Conflict(OrgCodeCollision.Payload("cost centre", "Code", ccClash)), new(), new(), new());
+
+        var employees = await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && !e.IsDeleted).ToListAsync(ct);
+        if (!OrgCodes.TryBuildLookup(employees, e => e.EmployeeCode, out var employeeRows, out var empClash))
+            return (Conflict(OrgCodeCollision.Payload("employee", "EmployeeCode", empClash)), new(), new(), new());
+
+        return (null, existing,
+            costCenterRows.ToDictionary(x => x.Key, x => x.Value.Id, StringComparer.Ordinal),
+            employeeRows.ToDictionary(x => x.Key, x => x.Value.Id, StringComparer.Ordinal));
+    }
+
+    private async Task<IActionResult> RunPreviewAsync(Guid tenantId, string csv, CancellationToken ct)
+    {
+        var (refusal, existingByCode, costCentersByCode, empByCode) = await LoadLookupsAsync(tenantId, tracked: false, ct);
+        if (refusal is not null) return refusal;
+
         var rows = Csv.Parse(csv);
-
-        var existingByCode = await _db.Departments
-            .AsNoTracking()
-            .Where(d => d.TenantId == tenantId && !d.IsDeleted)
-            .ToDictionaryAsync(d => d.Code.ToUpperInvariant(), ct);
-
-        var costCentersByCode = await _db.CostCenters
-            .AsNoTracking()
-            .Where(c => c.TenantId == tenantId && !c.IsDeleted)
-            .ToDictionaryAsync(c => c.Code.ToUpperInvariant(), c => c.Id, ct);
-
-        var empByCode = await _db.Employees
-            .AsNoTracking()
-            .Where(e => e.TenantId == tenantId && !e.IsDeleted)
-            .ToDictionaryAsync(e => e.EmployeeCode.ToUpperInvariant(), e => e.Id, ct);
-
         var importRows = ValidateRows(rows, existingByCode, costCentersByCode, empByCode);
         int wouldCreate = 0, wouldUpdate = 0, wouldSkip = 0;
 
         foreach (var row in importRows)
         {
-            if (row.Errors.Count > 0)
-            {
-                wouldSkip++;
-            }
-            else
-            {
-                bool exists = existingByCode.ContainsKey(NormalizeCode(row.Code));
-                if (exists) wouldUpdate++;
-                else wouldCreate++;
-            }
+            if (row.Errors.Count > 0) wouldSkip++;
+            else if (existingByCode.ContainsKey(OrgCodes.Normalize(row.Code))) wouldUpdate++;
+            else wouldCreate++;
         }
 
-        return new ImportPreviewResult(rows.Count, wouldCreate, wouldUpdate, wouldSkip, ToRowResults(importRows));
+        return Ok(new ImportPreviewResult(rows.Count, wouldCreate, wouldUpdate, wouldSkip, ToRowResults(importRows)));
     }
 
-    private async Task<ImportCommitResult> RunCommitAsync(Guid tenantId, string csv, CancellationToken ct)
+    private async Task<IActionResult> RunCommitAsync(Guid tenantId, string csv, CancellationToken ct)
     {
+        var (refusal, existingByCode, costCentersByCode, empByCode) = await LoadLookupsAsync(tenantId, tracked: false, ct);
+        if (refusal is not null) return refusal;
+
         var rows = Csv.Parse(csv);
-
-        var existingByCode = await _db.Departments
-            .Where(d => d.TenantId == tenantId && !d.IsDeleted)
-            .ToDictionaryAsync(d => d.Code.ToUpperInvariant(), ct);
-
-        var costCentersByCode = await _db.CostCenters
-            .AsNoTracking()
-            .Where(c => c.TenantId == tenantId && !c.IsDeleted)
-            .ToDictionaryAsync(c => c.Code.ToUpperInvariant(), c => c.Id, ct);
-
-        var empByCode = await _db.Employees
-            .AsNoTracking()
-            .Where(e => e.TenantId == tenantId && !e.IsDeleted)
-            .ToDictionaryAsync(e => e.EmployeeCode.ToUpperInvariant(), e => e.Id, ct);
-
         var importRows = ValidateRows(rows, existingByCode, costCentersByCode, empByCode);
-        var finalByCode = new Dictionary<string, Department>(existingByCode, StringComparer.OrdinalIgnoreCase);
+        var context = Context();
+
+        // Code → id for everything that exists, growing as the batch writes. Parent resolution is
+        // still two-pass: a row may name a parent that a LATER row in the same file creates.
+        var idByCode = existingByCode.ToDictionary(x => x.Key, x => x.Value.Id, StringComparer.Ordinal);
+        var deferredParents = new List<DeptImportRow>();
         int created = 0, updated = 0, skipped = 0;
 
         foreach (var row in importRows)
         {
-            if (row.Errors.Count > 0)
+            if (row.Errors.Count > 0) { skipped++; continue; }
+
+            var key = OrgCodes.Normalize(row.Code);
+            existingByCode.TryGetValue(key, out var existing);
+
+            Guid? parentId = null;
+            if (!string.IsNullOrWhiteSpace(row.ParentCode))
             {
+                if (idByCode.TryGetValue(OrgCodes.Normalize(row.ParentCode), out var known)) parentId = known;
+                else deferredParents.Add(row);   // created later in this same file
+            }
+
+            try
+            {
+                if (existing is not null)
+                {
+                    await _organization.UpdateDepartmentAsync(tenantId, existing.Id, BuildRequest(row, existing, parentId, costCentersByCode, empByCode), context, ct);
+                    idByCode[key] = existing.Id;
+                    updated++;
+                }
+                else
+                {
+                    var dto = await _organization.CreateDepartmentAsync(tenantId, BuildRequest(row, null, parentId, costCentersByCode, empByCode), context, ct);
+                    idByCode[key] = dto.Id;
+                    created++;
+                }
+            }
+            catch (InvalidOperationException ex)
+            {
+                row.Errors.Add(ex.Message);
+                deferredParents.Remove(row);
                 skipped++;
+            }
+        }
+
+        // Second pass — now every code in the file has an id.
+        foreach (var row in deferredParents)
+        {
+            var key = OrgCodes.Normalize(row.Code);
+            if (!idByCode.TryGetValue(key, out var id)) continue;
+            if (!idByCode.TryGetValue(OrgCodes.Normalize(row.ParentCode), out var parentId))
+            {
+                row.Errors.Add($"ParentDepartmentCode '{row.ParentCode}' could not be resolved");
                 continue;
             }
-
-            if (existingByCode.TryGetValue(NormalizeCode(row.Code), out var existing))
+            existingByCode.TryGetValue(key, out var existing);
+            try
             {
-                ApplyRow(existing, row, costCentersByCode, empByCode);
-                existing.UpdatedAtUtc = DateTime.UtcNow;
-                updated++;
-                finalByCode[NormalizeCode(row.Code)] = existing;
+                await _organization.UpdateDepartmentAsync(tenantId, id, BuildRequest(row, existing, parentId, costCentersByCode, empByCode), context, ct);
             }
-            else
-            {
-                var dept = new Department
-                {
-                    TenantId = tenantId,
-                    Code = row.Code
-                };
-                ApplyRow(dept, row, costCentersByCode, empByCode);
-                _db.Departments.Add(dept);
-                created++;
-                finalByCode[NormalizeCode(row.Code)] = dept;
-            }
+            catch (InvalidOperationException ex) { row.Errors.Add(ex.Message); }
         }
 
-        foreach (var row in importRows.Where(r => r.Errors.Count == 0))
-        {
-            var department = finalByCode[NormalizeCode(row.Code)];
-            department.ParentDepartmentId = string.IsNullOrWhiteSpace(row.ParentCode)
-                ? null
-                : finalByCode[NormalizeCode(row.ParentCode)].Id;
-        }
-
-        await _db.SaveChangesAsync(ct);
-
-        return new ImportCommitResult(rows.Count, created, updated, skipped, ToRowResults(importRows), Array.Empty<string>());
+        return Ok(new ImportCommitResult(rows.Count, created, updated, skipped, ToRowResults(importRows), Array.Empty<string>()));
     }
+
+    /// <summary>
+    /// Map a CSV row onto the same DTO the form posts. BranchId is NOT in the template and is read
+    /// back off the existing row: a department's branch assignment must not be erased by a file
+    /// that has no column for it. SortOrder, ApprovedHeadcount and MonthlyBudgetAmount are absent
+    /// from the DTO entirely, so the service never touches them either.
+    /// </summary>
+    private static DepartmentRequest BuildRequest(
+        DeptImportRow row,
+        Department? existing,
+        Guid? parentId,
+        IReadOnlyDictionary<string, Guid> costCentersByCode,
+        IReadOnlyDictionary<string, int> empByCode) =>
+        new(BranchId: existing?.BranchId,
+            ParentDepartmentId: parentId,
+            CostCenterId: string.IsNullOrWhiteSpace(row.CostCenterCode) ? null : costCentersByCode[OrgCodes.Normalize(row.CostCenterCode)],
+            Code: row.Code,
+            NameEn: row.NameEn,
+            NameAr: row.NameAr,
+            ManagerEmployeeId: string.IsNullOrWhiteSpace(row.ManagerCode) ? null : empByCode[OrgCodes.Normalize(row.ManagerCode)],
+            IsActive: row.IsActive);
 
     private static List<DeptImportRow> ValidateRows(
         IReadOnlyList<Dictionary<string, string>> rows,
@@ -370,20 +408,6 @@ public class DepartmentsController : ControllerBase
         }
     }
 
-    private static void ApplyRow(
-        Department department,
-        DeptImportRow row,
-        IReadOnlyDictionary<string, Guid> costCentersByCode,
-        IReadOnlyDictionary<string, int> empByCode)
-    {
-        department.Code = row.Code;
-        department.NameEn = row.NameEn;
-        department.NameAr = row.NameAr;
-        department.ManagerEmployeeId = string.IsNullOrWhiteSpace(row.ManagerCode) ? null : empByCode[NormalizeCode(row.ManagerCode)];
-        department.CostCenterId = string.IsNullOrWhiteSpace(row.CostCenterCode) ? null : costCentersByCode[NormalizeCode(row.CostCenterCode)];
-        department.IsActive = row.IsActive;
-    }
-
     private static IReadOnlyList<ImportRowResult> ToRowResults(IEnumerable<DeptImportRow> rows) =>
         rows.Select(row => new ImportRowResult(
             row.RowNumber,
@@ -393,7 +417,7 @@ public class DepartmentsController : ControllerBase
             row.Errors,
             row.Warnings)).ToList();
 
-    private static string NormalizeCode(string code) => code.Trim().ToUpperInvariant();
+    private static string NormalizeCode(string code) => OrgCodes.Normalize(code);
 
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), this.GetUserId(), this.GetTenantId());
 
