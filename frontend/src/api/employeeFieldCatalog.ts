@@ -414,6 +414,19 @@ function toComplianceField(d: RemoteFieldDescriptor): EmployeeComplianceField {
  *    back in. Countries the response does not resolve keep the local fallback (they are not the
  *    active jurisdiction and the modal never reads them).
  */
+/**
+ * The registry's `InputType` vocabulary is wider than the modal's: it includes `lookup`, which names a
+ * picker the edit modal does not render. The modal does `<input type={f.type ?? 'text'} />`, so an
+ * unfiltered overlay would put `type="lookup"` on the Department, Designation and Grade inputs — an
+ * invalid HTML input type. Browsers do fall back to a text box, so it is not a data defect, but it is
+ * invalid markup that only appeared once the catalogue started reaching the UI at all. Anything the modal
+ * cannot render keeps the local type.
+ */
+function renderableInputType(inputType?: string | null): FieldInputType | undefined {
+  const renderable: FieldInputType[] = ['text', 'email', 'date', 'number', 'select', 'toggle'];
+  return renderable.includes(inputType as FieldInputType) ? (inputType as FieldInputType) : undefined;
+}
+
 export function resolveFieldCatalog(remote: RemoteFieldDescriptor[] | null | undefined): ResolvedFieldCatalog {
   if (!remote || remote.length === 0) return LOCAL_FIELD_CATALOG;
 
@@ -424,7 +437,7 @@ export function resolveFieldCatalog(remote: RemoteFieldDescriptor[] | null | und
     return {
       ...field,
       label: r.label ?? field.label,
-      type: r.inputType ?? field.type,
+      type: renderableInputType(r.inputType) ?? field.type,
       options: r.options ?? field.options,
       sensitive: r.sensitive ?? field.sensitive,
     };
