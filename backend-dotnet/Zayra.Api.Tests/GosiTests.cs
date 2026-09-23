@@ -39,21 +39,23 @@ public class GosiTests
 
     private static List<GosiContributionRule> DefaultRules()
     {
-        // Mirrors GosiRuleSeeder.BuildDefaultRules (public surface for tests)
+        // Mirrors GosiRuleSeeder.BuildDefaultRules (public surface for tests).
+        // UNIT: every Rate is a decimal FRACTION of the contributory wage — 0.09 is 9%, 0.0075 is
+        // 0.75%. Never a percentage. See StatutoryValueUnits and GosiCalculationService.
         var effective = new DateOnly(2016, 6, 1);
         return new List<GosiContributionRule>
         {
-            Rule(GosiClassifications.Saudi,    GosiBranches.Annuities,           GosiPayers.Employee, 9.00m,  effective),
-            Rule(GosiClassifications.Saudi,    GosiBranches.Annuities,           GosiPayers.Employer, 9.00m,  effective),
-            Rule(GosiClassifications.Saudi,    GosiBranches.SANED,               GosiPayers.Employee, 0.75m, effective),
-            Rule(GosiClassifications.Saudi,    GosiBranches.SANED,               GosiPayers.Employer, 0.75m, effective),
-            Rule(GosiClassifications.Saudi,    GosiBranches.OccupationalHazards, GosiPayers.Employer, 2.00m,  effective),
-            Rule(GosiClassifications.GCC,      GosiBranches.Annuities,           GosiPayers.Employee, 9.00m,  effective),
-            Rule(GosiClassifications.GCC,      GosiBranches.Annuities,           GosiPayers.Employer, 9.00m,  effective),
-            Rule(GosiClassifications.GCC,      GosiBranches.SANED,               GosiPayers.Employee, 0.75m, effective),
-            Rule(GosiClassifications.GCC,      GosiBranches.SANED,               GosiPayers.Employer, 0.75m, effective),
-            Rule(GosiClassifications.GCC,      GosiBranches.OccupationalHazards, GosiPayers.Employer, 2.00m,  effective),
-            Rule(GosiClassifications.NonSaudi, GosiBranches.OccupationalHazards, GosiPayers.Employer, 2.00m,  effective),
+            Rule(GosiClassifications.Saudi,    GosiBranches.Annuities,           GosiPayers.Employee, 0.09m,  effective),
+            Rule(GosiClassifications.Saudi,    GosiBranches.Annuities,           GosiPayers.Employer, 0.09m,  effective),
+            Rule(GosiClassifications.Saudi,    GosiBranches.SANED,               GosiPayers.Employee, 0.0075m, effective),
+            Rule(GosiClassifications.Saudi,    GosiBranches.SANED,               GosiPayers.Employer, 0.0075m, effective),
+            Rule(GosiClassifications.Saudi,    GosiBranches.OccupationalHazards, GosiPayers.Employer, 0.02m,  effective),
+            Rule(GosiClassifications.GCC,      GosiBranches.Annuities,           GosiPayers.Employee, 0.09m,  effective),
+            Rule(GosiClassifications.GCC,      GosiBranches.Annuities,           GosiPayers.Employer, 0.09m,  effective),
+            Rule(GosiClassifications.GCC,      GosiBranches.SANED,               GosiPayers.Employee, 0.0075m, effective),
+            Rule(GosiClassifications.GCC,      GosiBranches.SANED,               GosiPayers.Employer, 0.0075m, effective),
+            Rule(GosiClassifications.GCC,      GosiBranches.OccupationalHazards, GosiPayers.Employer, 0.02m,  effective),
+            Rule(GosiClassifications.NonSaudi, GosiBranches.OccupationalHazards, GosiPayers.Employer, 0.02m,  effective),
         };
     }
 
@@ -119,9 +121,9 @@ public class GosiTests
     {
         var rules = new List<GosiContributionRule>
         {
-            Rule(GosiClassifications.Saudi, GosiBranches.Annuities, GosiPayers.Employee, 9.0m,
+            Rule(GosiClassifications.Saudi, GosiBranches.Annuities, GosiPayers.Employee, 0.09m,
                 new DateOnly(2016, 1, 1), new DateOnly(2023, 12, 31)), // expired
-            Rule(GosiClassifications.Saudi, GosiBranches.Annuities, GosiPayers.Employee, 9.5m,
+            Rule(GosiClassifications.Saudi, GosiBranches.Annuities, GosiPayers.Employee, 0.095m,
                 new DateOnly(2024, 1, 1)), // current
         };
 
@@ -129,7 +131,7 @@ public class GosiTests
             GosiClassifications.Saudi, rules, new DateOnly(2026, 1, 1), Guid.Empty);
 
         var annuityEmp = active.Single(r => r.Branch == GosiBranches.Annuities && r.Payer == GosiPayers.Employee);
-        Assert.Equal(9.5m, annuityEmp.Rate);
+        Assert.Equal(0.095m, annuityEmp.Rate);
     }
 
     [Fact]
@@ -138,9 +140,9 @@ public class GosiTests
         var tenant = Guid.NewGuid();
         var rules = new List<GosiContributionRule>
         {
-            Rule(GosiClassifications.Saudi, GosiBranches.Annuities, GosiPayers.Employee, 9.0m,
+            Rule(GosiClassifications.Saudi, GosiBranches.Annuities, GosiPayers.Employee, 0.09m,
                 new DateOnly(2016, 1, 1), tenantId: Guid.Empty),
-            Rule(GosiClassifications.Saudi, GosiBranches.Annuities, GosiPayers.Employee, 8.5m,
+            Rule(GosiClassifications.Saudi, GosiBranches.Annuities, GosiPayers.Employee, 0.085m,
                 new DateOnly(2025, 1, 1), tenantId: tenant), // tenant override with lower rate
         };
 
@@ -148,7 +150,7 @@ public class GosiTests
             GosiClassifications.Saudi, rules, Period, tenant);
 
         var rule = active.Single(r => r.Branch == GosiBranches.Annuities && r.Payer == GosiPayers.Employee);
-        Assert.Equal(8.5m, rule.Rate); // tenant override wins
+        Assert.Equal(0.085m, rule.Rate); // tenant override wins
     }
 
     [Fact]
@@ -227,7 +229,7 @@ public class GosiTests
     [Fact]
     public void Calculate_WageCap_Applied()
     {
-        var rule  = Rule(GosiClassifications.Saudi, GosiBranches.Annuities, GosiPayers.Employee, 9.0m,
+        var rule  = Rule(GosiClassifications.Saudi, GosiBranches.Annuities, GosiPayers.Employee, 0.09m,
             new DateOnly(2016, 1, 1));
         var rules = new List<GosiContributionRule> { rule };
 
@@ -235,7 +237,7 @@ public class GosiTests
         var result = GosiCalculationService.Calculate("SA", 60_000m, rules, Period, Guid.Empty, StatutoryBounds);
         var line   = result.Lines.Single();
         Assert.Equal(45_000m, line.ContributoryWage);
-        Assert.Equal(Math.Round(45_000m * 9m / 100m, 2), line.Amount);
+        Assert.Equal(Math.Round(45_000m * 0.09m, 2), line.Amount);
     }
 
     /// <summary>
@@ -251,7 +253,7 @@ public class GosiTests
     [Fact]
     public void Calculate_PlatformDefaultRuleWithNoCapColumns_StillCapsAtTheStatutoryCeiling()
     {
-        var platformDefault = Rule(GosiClassifications.Saudi, GosiBranches.Annuities, GosiPayers.Employee, 9.0m,
+        var platformDefault = Rule(GosiClassifications.Saudi, GosiBranches.Annuities, GosiPayers.Employee, 0.09m,
             new DateOnly(2016, 1, 1));
         platformDefault.TenantId = Guid.Empty;
 
@@ -291,7 +293,7 @@ public class GosiTests
     [Fact]
     public void Calculate_PerRuleCapColumns_AreNotRead()
     {
-        var withOwnCap = Rule(GosiClassifications.Saudi, GosiBranches.Annuities, GosiPayers.Employee, 9.0m,
+        var withOwnCap = Rule(GosiClassifications.Saudi, GosiBranches.Annuities, GosiPayers.Employee, 0.09m,
             new DateOnly(2016, 1, 1));
         withOwnCap.MaxContributoryWage = 10_000m;
         withOwnCap.MinContributoryWage = 9_000m;
@@ -318,7 +320,7 @@ public class GosiTests
     [Fact]
     public void ToComponentName_ContainsRateAndPayer()
     {
-        var name = GosiCalculationService.ToComponentName(GosiBranches.Annuities, GosiPayers.Employee, 9.00m);
+        var name = GosiCalculationService.ToComponentName(GosiBranches.Annuities, GosiPayers.Employee, 0.09m);
         Assert.Contains("9", name);
         Assert.Contains("employee", name, StringComparison.OrdinalIgnoreCase);
     }
@@ -464,11 +466,15 @@ public class GosiTests
             .Where(r => r.TenantId == Guid.Empty && r.Classification == GosiClassifications.Saudi)
             .ToListAsync();
 
-        Assert.Equal(9.00m, rules.Single(r => r.Branch == GosiBranches.Annuities && r.Payer == GosiPayers.Employee).Rate);
-        Assert.Equal(9.00m, rules.Single(r => r.Branch == GosiBranches.Annuities && r.Payer == GosiPayers.Employer).Rate);
-        Assert.Equal(0.75m, rules.Single(r => r.Branch == GosiBranches.SANED     && r.Payer == GosiPayers.Employee).Rate);
-        Assert.Equal(0.75m, rules.Single(r => r.Branch == GosiBranches.SANED     && r.Payer == GosiPayers.Employer).Rate);
-        Assert.Equal(2.00m, rules.Single(r => r.Branch == GosiBranches.OccupationalHazards && r.Payer == GosiPayers.Employer).Rate);
+        // FRACTIONS, not percents: 0.09 is 9% annuities, 0.0075 is 0.75% SANED, 0.02 is 2%
+        // occupational hazard. These are the same values StatutoryRuleSeeder writes for
+        // gosi.saudi_employee_rate / gosi.saned_rate / gosi.expat_occupational_hazard_rate;
+        // StatutoryRateUnitTests.BothStores_AgreeOnEverySeededKsaGosiRate compares the two.
+        Assert.Equal(0.09m,   rules.Single(r => r.Branch == GosiBranches.Annuities && r.Payer == GosiPayers.Employee).Rate);
+        Assert.Equal(0.09m,   rules.Single(r => r.Branch == GosiBranches.Annuities && r.Payer == GosiPayers.Employer).Rate);
+        Assert.Equal(0.0075m, rules.Single(r => r.Branch == GosiBranches.SANED     && r.Payer == GosiPayers.Employee).Rate);
+        Assert.Equal(0.0075m, rules.Single(r => r.Branch == GosiBranches.SANED     && r.Payer == GosiPayers.Employer).Rate);
+        Assert.Equal(0.02m,   rules.Single(r => r.Branch == GosiBranches.OccupationalHazards && r.Payer == GosiPayers.Employer).Rate);
     }
 
     // ── Tenant isolation ──────────────────────────────────────────────────────
@@ -481,9 +487,9 @@ public class GosiTests
 
         var rules = new List<GosiContributionRule>
         {
-            Rule(GosiClassifications.Saudi, GosiBranches.Annuities, GosiPayers.Employee, 9.0m,
+            Rule(GosiClassifications.Saudi, GosiBranches.Annuities, GosiPayers.Employee, 0.09m,
                 new DateOnly(2016, 1, 1), tenantId: Guid.Empty),
-            Rule(GosiClassifications.Saudi, GosiBranches.Annuities, GosiPayers.Employee, 7.5m,
+            Rule(GosiClassifications.Saudi, GosiBranches.Annuities, GosiPayers.Employee, 0.075m,
                 new DateOnly(2025, 1, 1), tenantId: tenantB), // tenantB override
         };
 
@@ -491,7 +497,7 @@ public class GosiTests
             GosiClassifications.Saudi, rules, Period, tenantA); // querying for tenantA
 
         var annuity = selected.Single(r => r.Branch == GosiBranches.Annuities && r.Payer == GosiPayers.Employee);
-        Assert.Equal(9.0m, annuity.Rate); // tenantB override not visible to tenantA
+        Assert.Equal(0.09m, annuity.Rate); // tenantB override not visible to tenantA
     }
 
     // ── Rounding ─────────────────────────────────────────────────────────────
@@ -503,7 +509,7 @@ public class GosiTests
         var result = GosiCalculationService.Calculate("SA", 8_333m, DefaultRules(), Period, Guid.Empty, StatutoryBounds);
 
         foreach (var line in result.Lines)
-            Assert.Equal(Math.Round(line.ContributoryWage * line.Rate / 100m, 2), line.Amount);
+            Assert.Equal(Math.Round(line.ContributoryWage * line.Rate, 2), line.Amount);
     }
 
     [Fact]
