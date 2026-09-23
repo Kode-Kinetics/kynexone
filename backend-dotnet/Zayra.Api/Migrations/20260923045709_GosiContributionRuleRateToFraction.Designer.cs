@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Zayra.Api.Data;
@@ -11,9 +12,11 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Migrations
 {
     [DbContext(typeof(ZayraDbContext))]
-    partial class ZayraDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260923045709_GosiContributionRuleRateToFraction")]
+    partial class GosiContributionRuleRateToFraction
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -17666,9 +17669,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("numeric(14,2)")
                         .HasColumnName("amount");
 
-                    b.Property<int>("ApprovedMinutes")
-                        .HasColumnType("integer")
-                        .HasColumnName("approved_minutes");
+                    b.Property<decimal>("ApprovedHours")
+                        .HasPrecision(8, 2)
+                        .HasColumnType("numeric(8,2)")
+                        .HasColumnName("approved_hours");
 
                     b.Property<string>("CalculationJson")
                         .IsRequired()
@@ -17827,9 +17831,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
-                    b.Property<int>("Minutes")
-                        .HasColumnType("integer")
-                        .HasColumnName("minutes");
+                    b.Property<decimal>("Hours")
+                        .HasPrecision(8, 2)
+                        .HasColumnType("numeric(8,2)")
+                        .HasColumnName("hours");
 
                     b.Property<Guid>("OvertimeRequestId")
                         .HasColumnType("uuid")

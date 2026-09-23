@@ -1220,7 +1220,12 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         {
             entity.ToTable("gosi_contribution_rules");
             entity.HasKey(x => x.Id);
-            entity.Property(x => x.Rate).HasPrecision(7, 4);
+            // UNIT: Rate is a decimal FRACTION of the contributory wage (0.09 = 9%), never a
+            // percentage. numeric(9,6) is the rate type TARGET_SCHEMA §2.E specifies and the same
+            // unit StatutoryRule.RuleValue carries for gosi.saudi_employee_rate, so the two stores
+            // can no longer disagree about what a rate means. The column was numeric(7,4) holding
+            // PERCENTS until migration GosiContributionRuleRateToFraction (2026-09-23).
+            entity.Property(x => x.Rate).HasPrecision(9, 6);
             entity.Property(x => x.MinContributoryWage).HasPrecision(12, 2);
             entity.Property(x => x.MaxContributoryWage).HasPrecision(12, 2);
             entity.Property(x => x.Classification).HasMaxLength(20);

@@ -165,7 +165,16 @@ public static class GosiCalculationService
             // GosiCeilingSingleSourceTests pins that those two columns stay unread.
             var wage = bounds.Clamp(contributoryWage);
 
-            var amount = Math.Round(wage * rule.Rate / 100m, 2);
+            // UNIT — rule.Rate is a decimal FRACTION of the contributory wage (0.09 = 9%), the same
+            // unit StatutoryRule holds for gosi.saudi_employee_rate and the same unit the payroll
+            // run's country pack multiplies by (`coveredWage * empAnnuity`,
+            // Infrastructure/CountryPack/Ksa/KsaCalculators.cs:~100). This line used to read
+            // `wage * rule.Rate / 100m` against a PERCENT column, so the two stores held one
+            // statutory fact in opposite units and a rate entered against the wrong store was a
+            // 100× remittance error that neither store's own tests could see. See
+            // StatutoryValueUnits for the single unit registry and the write-path refusals, and
+            // migration GosiContributionRuleRateToFraction for the conversion of existing rows.
+            var amount = Math.Round(wage * rule.Rate, 2);
             if (amount <= 0m) continue;
 
             lines.Add(new GosiContributionLine(
@@ -205,16 +214,19 @@ public static class GosiCalculationService
 
     /// <summary>
     /// Returns a human-readable component name for a GOSI contribution line.
+    /// <paramref name="rate"/> is a FRACTION (0.09), as everywhere else; percent exists only here,
+    /// as a presentation format, and is produced at this one boundary.
     /// </summary>
     public static string ToComponentName(string branch, string payer, decimal rate)
     {
         var payerLabel = payer == GosiPayers.Employee ? "employee" : "employer";
+        var pct = (rate * 100m).ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
         return branch switch
         {
-            GosiBranches.Annuities           => $"GOSI Annuities ({payerLabel} {rate}%)",
-            GosiBranches.SANED               => $"GOSI SANED ({payerLabel} {rate}%)",
-            GosiBranches.OccupationalHazards => $"GOSI Occupational Hazards ({payerLabel} {rate}%)",
-            _                                => $"GOSI {branch} ({payerLabel} {rate}%)",
+            GosiBranches.Annuities           => $"GOSI Annuities ({payerLabel} {pct}%)",
+            GosiBranches.SANED               => $"GOSI SANED ({payerLabel} {pct}%)",
+            GosiBranches.OccupationalHazards => $"GOSI Occupational Hazards ({payerLabel} {pct}%)",
+            _                                => $"GOSI {branch} ({payerLabel} {pct}%)",
         };
     }
 }
