@@ -427,6 +427,31 @@ function renderableInputType(inputType?: string | null): FieldInputType | undefi
   return renderable.includes(inputType as FieldInputType) ? (inputType as FieldInputType) : undefined;
 }
 
+/**
+ * The overlaid input type, refusing an OPTIONLESS SELECT.
+ *
+ * `EmployeeFieldRegistry` declares `Nationality`, `CountryCode`, `Status`, `Currency`, `PaymentMethod`,
+ * `SaudiOrNonSaudi` and `IdType` as `"select"`, but `EmployeeFieldDescriptor` carries no option list and
+ * the endpoint therefore sends none — the local `BASE_EDIT_FIELDS` entry is the only source of options
+ * there has ever been. Overlaying the remote type blindly turned `nationality` (a local TEXT field with
+ * no options) into a `<select>` whose option list was `undefined`, and the modal's `f.options.map(...)`
+ * threw during EmployeesPage's render. Because modal children are built eagerly by the parent, that took
+ * the ENTIRE People page down behind the error boundary — for every role, not just inside the modal.
+ * The Chrome security gate caught it; nothing else did.
+ *
+ * It was invisible until the envelope fix above let the catalogue reach a screen for the first time. A
+ * select whose options nobody can supply is not renderable, so the local type wins.
+ */
+function optionsAwareType(
+  remoteInputType: string | null | undefined,
+  localType: FieldInputType | undefined,
+  options: string[] | undefined,
+): FieldInputType | undefined {
+  const remote = renderableInputType(remoteInputType);
+  if (remote === 'select' && !(options && options.length > 0)) return localType;
+  return remote ?? localType;
+}
+
 export function resolveFieldCatalog(remote: RemoteFieldDescriptor[] | null | undefined): ResolvedFieldCatalog {
   if (!remote || remote.length === 0) return LOCAL_FIELD_CATALOG;
 
@@ -434,11 +459,12 @@ export function resolveFieldCatalog(remote: RemoteFieldDescriptor[] | null | und
   const editFields = LOCAL_FIELD_CATALOG.editFields.map((field) => {
     const r = byEditKey.get(field.key);
     if (!r) return field;
+    const options = r.options ?? field.options;
     return {
       ...field,
       label: r.label ?? field.label,
-      type: renderableInputType(r.inputType) ?? field.type,
-      options: r.options ?? field.options,
+      type: optionsAwareType(r.inputType, field.type, options),
+      options,
       sensitive: r.sensitive ?? field.sensitive,
     };
   });

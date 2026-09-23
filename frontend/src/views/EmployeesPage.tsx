@@ -1745,13 +1745,19 @@ export function EmployeesPage() {
                       {f.sensitive && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-700 dark:bg-amber-500/15 dark:text-amber-400">approval</span>}
                       {editForm[f.key] !== editOriginal[f.key] && <span className="h-1.5 w-1.5 rounded-full bg-sapphire" title="Modified" />}
                     </span>
-                    {f.type === 'select' ? (
+                    {/* A select needs an option list. A non-null assertion here claimed one was always
+                        there; when the field catalogue began reaching this modal, a remote descriptor typed
+                        `select` with no options (the endpoint sends none) made it throw — and because these children are
+                        built during EmployeesPage's own render, the error boundary replaced the WHOLE People
+                        page. An optionless field falls back to a free-text input, which is what it was
+                        before the overlay. employeeFieldCatalog.optionsAwareType stops it upstream too. */}
+                    {f.type === 'select' && f.options && f.options.length > 0 ? (
                       <select id={`edit-field-${f.key}`} value={editForm[f.key] ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, [f.key]: e.target.value }))} className="select mt-1.5 w-full">
                         <option value="">Select</option>
-                        {f.options!.map((o) => <option key={o} value={o}>{o}</option>)}
+                        {f.options.map((o) => <option key={o} value={o}>{o}</option>)}
                       </select>
                     ) : (
-                      <input id={`edit-field-${f.key}`} type={f.type ?? 'text'} value={editForm[f.key] ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, [f.key]: e.target.value }))} className="input mt-1.5 w-full" />
+                      <input id={`edit-field-${f.key}`} type={f.type && f.type !== 'select' ? f.type : 'text'} value={editForm[f.key] ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, [f.key]: e.target.value }))} className="input mt-1.5 w-full" />
                     )}
                   </label>
                   );

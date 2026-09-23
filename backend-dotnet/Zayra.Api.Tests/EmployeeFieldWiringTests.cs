@@ -261,6 +261,62 @@ public class EmployeeFieldWiringTests
         src.Should().Contain("unwrapFieldCatalog(r.data)");
     }
 
+    /// <summary>
+    /// THE PREMISE behind the optionless-select defect, asserted against the real response rather than
+    /// assumed: the endpoint sends fields typed <c>"select"</c> and sends NO option list for any of them,
+    /// because <c>EmployeeFieldDescriptor</c> has no such member. The client's local `BASE_EDIT_FIELDS`
+    /// entry is therefore the only source of options that has ever existed.
+    ///
+    /// <para>Overlaying the remote type without that in mind turned `nationality` — a local TEXT field
+    /// with no options — into a <c>&lt;select&gt;</c> with an undefined option list, and the edit modal's
+    /// `f.options!.map(...)` threw during EmployeesPage's render, replacing the whole People page with the
+    /// error boundary for every role. It surfaced the moment the envelope fix above let the catalogue
+    /// reach a screen at all. If a future change starts sending options, this test is the place to say so
+    /// — and `optionsAwareType` can then trust them.</para>
+    /// </summary>
+    [Fact]
+    public async Task FieldCatalog_SendsSelectFields_ButNeverSendsTheirOptions()
+    {
+        await using var db = CreateDb();
+        var (tenantId, _) = await SeedEmployee(db, "SA", "Indian");
+
+        var res = (OkObjectResult)await Controller(db, tenantId)
+            .FieldCatalog(null, "SA", "Indian", CancellationToken.None);
+        var fields = JsonSerializer.SerializeToElement(res.Value)
+            .GetProperty(FrontendSource.FieldCatalogEnvelopeKey()).EnumerateArray().ToList();
+
+        var selects = fields
+            .Where(f => f.GetProperty("inputType").GetString() == "select")
+            .Select(f => f.GetProperty("key").GetString()!)
+            .ToList();
+        selects.Should().NotBeEmpty("the registry declares several select fields — Nationality among them");
+        selects.Should().Contain("nationality", "this is the field that took the People page down");
+
+        foreach (var f in fields)
+            f.TryGetProperty("options", out _).Should().BeFalse(
+                "the descriptor carries no option list, so a remote 'select' is unrenderable on its own");
+    }
+
+    /// <summary>
+    /// The two places that defect could return from. The client must not promote a remote <c>select</c>
+    /// over a field it has no options for, and the modal must not assert an option list it has not checked.
+    /// Both strings ARE the defect as it shipped.
+    /// </summary>
+    [Fact]
+    public void FrontendModal_NeverRendersASelectWithoutOptions()
+    {
+        var client = FrontendSource.FieldCatalogClient();
+        client.Should().NotContain("type: renderableInputType(r.inputType) ?? field.type",
+            "that promotes a remote 'select' onto a field with no options — see optionsAwareType");
+        client.Should().Contain("optionsAwareType(");
+
+        var page = FrontendSource.EmployeesPage();
+        page.Should().NotContain("f.options!",
+            "the non-null assertion is what threw and replaced the entire People page with the error boundary");
+        page.Should().Contain("f.options && f.options.length > 0",
+            "the modal must check the option list before rendering a <select> from it");
+    }
+
     /// <summary>The offline fallback must not invent an expiry binding the server does not send. These two
     /// strings ARE defect 1 as it shipped.</summary>
     [Fact]
@@ -461,17 +517,22 @@ public class EmployeeFieldWiringTests
     {
         private const string RelativePath = "frontend/src/api/employeeFieldCatalog.ts";
 
-        public static string FieldCatalogClient()
+        public static string FieldCatalogClient() => Read(RelativePath);
+
+        /// <summary>The screen that consumes the resolved catalogue — the edit modal lives here.</summary>
+        public static string EmployeesPage() => Read("frontend/src/views/EmployeesPage.tsx");
+
+        private static string Read(string relativePath)
         {
             var dir = new DirectoryInfo(AppContext.BaseDirectory);
             while (dir is not null)
             {
-                var candidate = Path.Combine(dir.FullName, RelativePath);
+                var candidate = Path.Combine(dir.FullName, relativePath);
                 if (File.Exists(candidate)) return File.ReadAllText(candidate);
                 dir = dir.Parent;
             }
             throw new FileNotFoundException(
-                $"Could not locate {RelativePath} from {AppContext.BaseDirectory}. This contract test must be "
+                $"Could not locate {relativePath} from {AppContext.BaseDirectory}. This contract test must be "
                 + "run from inside the repository.");
         }
 
