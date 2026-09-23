@@ -196,8 +196,11 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
                         .Where(property => property.IsModified)
                         .All(property => property.Metadata.Name is
                             nameof(User.FailedLoginCount) or
+                            nameof(User.MfaFailedCount) or
                             nameof(User.LastLoginAtUtc));
-                if (!platformLoginTelemetryOnly && !tenantLoginTelemetryOnly)
+                if (entry.Entity is User && !tenantLoginTelemetryOnly)
+                    StampUserSecurityStampMonotonically(entry, now);
+                else if (!platformLoginTelemetryOnly && !tenantLoginTelemetryOnly)
                     TryStamp(entry, "UpdatedAtUtc", now);
                 if (_actorId.HasValue) TryStamp(entry, "UpdatedBy", _actorId.Value);
             }
@@ -703,6 +706,33 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             if (dt.Kind == DateTimeKind.Unspecified) prop.CurrentValue = DateTime.SpecifyKind(dt, DateTimeKind.Utc);
             else if (dt.Kind == DateTimeKind.Local) prop.CurrentValue = dt.ToUniversalTime();
         }
+    }
+
+    /// <summary>
+    /// User.UpdatedAtUtc is the tenant access-token security stamp (TenantSessionSecurity), compared
+    /// at microsecond precision. A plain "= now" could equal or precede the stored stamp (same
+    /// microsecond, clock skew between instances, or a stamp already advanced by RotateStamp), which
+    /// would leave tokens minted under the old state valid. The written stamp is therefore never
+    /// lower than a caller's RotateStamp value and always strictly after the stored one.
+    /// </summary>
+    private static void StampUserSecurityStampMonotonically(
+        Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry entry, DateTime now)
+    {
+        var property = entry.Property(nameof(User.UpdatedAtUtc));
+        static DateTime Micro(DateTime value)
+        {
+            var utc = value.Kind == DateTimeKind.Local ? value.ToUniversalTime() : DateTime.SpecifyKind(value, DateTimeKind.Utc);
+            return new DateTime(utc.Ticks - utc.Ticks % 10, DateTimeKind.Utc);
+        }
+
+        var stamp = Micro(now);
+        if (property.CurrentValue is DateTime requested && Micro(requested) > stamp)
+            stamp = Micro(requested);
+        var stored = property.OriginalValue as DateTime?
+            ?? entry.Property(nameof(User.CreatedAtUtc)).OriginalValue as DateTime?;
+        if (stored is { } previous && stamp <= Micro(previous))
+            stamp = Micro(previous).AddTicks(10);
+        property.CurrentValue = stamp;
     }
 
     private static void TryStamp(Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry entry, string prop, object value, bool skipIfSet = false)

@@ -1,4 +1,5 @@
-import client from './client';
+import client, { publicAuthClient } from './client';
+import { normalizeEmail, requireWorkspace } from '../lib/publicAuth';
 
 export interface CompanyAccess {
   id: string;
@@ -36,8 +37,6 @@ export interface AuthResponse {
 
 export interface ForgotPasswordResponse {
   message: string;
-  resetToken?: string;
-  resetTokenExpiresAtUtc?: string;
 }
 
 // Returned by /api/auth/login when the user has TOTP enabled.
@@ -65,11 +64,15 @@ export function isMfaEnrollment(r: LoginResponse): r is MfaEnrollmentResponse {
 }
 
 export const authApi = {
-  login: (email: string, password: string, tenantSlug = '') =>
-    client.post<LoginResponse>('/api/auth/login', { email, password, tenantSlug }).then((r) => r.data),
+  login: (email: string, password: string, tenantSlug: string) =>
+    publicAuthClient.post<LoginResponse>('/api/auth/login', {
+      email: normalizeEmail(email),
+      password,
+      tenantSlug: requireWorkspace(tenantSlug),
+    }).then((r) => r.data),
 
   mfaVerifyChallenge: (challengeToken: string, totpCode: string) =>
-    client.post<AuthResponse>('/api/auth/mfa/challenge/verify', { challengeToken, totpCode }).then((r) => r.data),
+    publicAuthClient.post<AuthResponse>('/api/auth/mfa/challenge/verify', { challengeToken, totpCode }).then((r) => r.data),
 
   mfaSetup: () =>
     client.post<{ provisioningUri: string }>('/api/auth/mfa/setup').then((r) => r.data),
@@ -78,10 +81,10 @@ export const authApi = {
     client.post('/api/auth/mfa/verify-setup', { tempSecret, totpCode }),
 
   mfaEnrollmentSetup: (enrollmentToken: string) =>
-    client.post<{ provisioningUri: string }>('/api/auth/mfa/enrollment/setup', { enrollmentToken }).then((r) => r.data),
+    publicAuthClient.post<{ provisioningUri: string }>('/api/auth/mfa/enrollment/setup', { enrollmentToken }).then((r) => r.data),
 
   mfaEnrollmentVerifySetup: (enrollmentToken: string, tempSecret: string, totpCode: string) =>
-    client.post('/api/auth/mfa/enrollment/verify-setup', { enrollmentToken, tempSecret, totpCode }),
+    publicAuthClient.post('/api/auth/mfa/enrollment/verify-setup', { enrollmentToken, tempSecret, totpCode }),
 
   mfaDisable: (totpCode: string) =>
     client.post('/api/auth/mfa/disable', { totpCode }),
@@ -91,9 +94,23 @@ export const authApi = {
 
   me: () => client.get<AuthUser>('/api/auth/me').then((r) => r.data),
 
-  forgotPassword: (email: string, tenantSlug?: string) =>
-    client.post<ForgotPasswordResponse>('/api/auth/forgot-password', { email, tenantSlug }).then((r) => r.data),
+  forgotPassword: (email: string, tenantSlug: string) =>
+    publicAuthClient.post<ForgotPasswordResponse>('/api/auth/forgot-password', {
+      email: normalizeEmail(email),
+      tenantSlug: requireWorkspace(tenantSlug),
+    }).then((r) => r.data),
 
-  resetPassword: (email: string, resetToken: string, newPassword: string, tenantSlug?: string) =>
-    client.post('/api/auth/reset-password', { email, resetToken, newPassword, tenantSlug }),
+  resetPassword: (resetToken: string, newPassword: string, tenantSlug: string) =>
+    publicAuthClient.post('/api/auth/reset-password', {
+      resetToken,
+      newPassword,
+      tenantSlug: requireWorkspace(tenantSlug),
+    }, { timeout: 15_000 }),
+
+  acceptInvitation: (invitationToken: string, newPassword: string, tenantSlug: string) =>
+    publicAuthClient.post('/api/auth/accept-invitation', {
+      invitationToken,
+      newPassword,
+      tenantSlug: requireWorkspace(tenantSlug),
+    }, { timeout: 15_000 }).then(() => undefined),
 };

@@ -217,6 +217,15 @@ public class ProbationController : ControllerBase
                             Request.Headers.UserAgent.ToString(), userId, tenantId),
                         ct);
                     if (result is null) return NotFound();
+
+                    // TerminateAsync owns its unit of work and clears the change tracker, which
+                    // detaches the review and employee loaded above. Re-load them tracked so the
+                    // decision below is persisted (the review closes and cannot be decided twice)
+                    // and the response reports the post-termination employee state.
+                    r = await _db.ProbationReviews
+                        .FirstAsync(p => p.Id == id && p.TenantId == tenantId, ct);
+                    employee = await _db.Employees.AsNoTracking()
+                        .FirstAsync(e => e.Id == r.EmployeeId && e.TenantId == tenantId, ct);
                 }
                 // The readiness gate (EmployeeActivationBlockedException) only fires on a transition INTO
                 // an occupying status, so it cannot reach this branch and is deliberately not caught here.

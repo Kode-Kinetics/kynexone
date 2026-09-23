@@ -14,8 +14,8 @@ import { test, expect, type Locator, type Page } from '@playwright/test';
  *    off. `organization` on the workspace field is the only thing that stops a manager filling the
  *    tenant slug with a username.
  *  - `.tenant-login-shell` is referenced outside this component.
- *  - The five auth states (login, forgot, reset, mfa, mfa-enroll) are one component; a rebuild that
- *    only re-skins `login` silently strands the other four. This file guards the login↔forgot hop,
+ *  - The four inline auth states (login, forgot, mfa, mfa-enroll) share one component; reset and
+ *    invitation are isolated public routes. This file guards the login↔forgot hop,
  *    which is the one a customer hits on day one.
  *
  * ── What this file deliberately does NOT assert ─────────────────────────────────────────────

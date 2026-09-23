@@ -300,6 +300,9 @@ public class OrganizationStructureImportController : ControllerBase
             var active = Bool(row, "IsActive", true);
             if (companies.TryGetValue(name.ToUpperInvariant(), out var company))
             {
+                if (HasValue(row, "IsActive") && active != company.IsActive)
+                    throw new InvalidOperationException(
+                        "Organization-structure import cannot change an existing company's activation state. Use the controlled company lifecycle workflow.");
                 company.LegalNameAr = Val(row, "LegalNameAr");
                 company.TradeName = Val(row, "TradeName");
                 company.CountryCode = Val(row, "CountryCode");
@@ -310,7 +313,6 @@ public class OrganizationStructureImportController : ControllerBase
                 company.GosiEmployerId = Val(row, "GosiEmployerId");
                 company.QiwaEstablishmentId = Val(row, "QiwaEstablishmentId");
                 company.DefaultCurrency = Val(row, "DefaultCurrency", "SAR");
-                company.IsActive = active;
                 company.UpdatedAtUtc = DateTime.UtcNow;
             }
             else
@@ -550,10 +552,11 @@ public class OrganizationStructureImportController : ControllerBase
         var rows = new List<ImportRowResult>();
         var existingCompanies = await _db.Companies.AsNoTracking()
             .Where(x => x.TenantId == tenantId && !x.IsDeleted)
-            .Select(x => new { x.Id, x.LegalNameEn })
+            .Select(x => new { x.Id, x.LegalNameEn, x.IsActive })
             .ToListAsync(ct);
         var companyNames = existingCompanies.Select(x => x.LegalNameEn).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var companyIdsByName = existingCompanies.ToDictionary(x => x.LegalNameEn, x => x.Id, StringComparer.OrdinalIgnoreCase);
+        var companyLifecycleByName = existingCompanies.ToDictionary(x => x.LegalNameEn, x => x.IsActive, StringComparer.OrdinalIgnoreCase);
         var branchRows = await _db.Branches.AsNoTracking()
             .Where(x => x.TenantId == tenantId && !x.IsDeleted)
             .Select(x => new { x.Code, x.CompanyId })
@@ -578,6 +581,23 @@ public class OrganizationStructureImportController : ControllerBase
         AddScopeRows(parsed, scope, companyNames, companyIdsByName, branchCompanyByCode, costCenterCompanyByCode, rows);
 
         AddRows("companies", parsed.Companies, "LegalNameEn", "LegalNameEn", required: ["LegalNameEn", "CountryCode", "DefaultCurrency"], known: companyNames, rows);
+        for (var i = 0; i < parsed.Companies.Count; i++)
+        {
+            var row = parsed.Companies[i];
+            var name = Val(row, "LegalNameEn");
+            if (companyLifecycleByName.TryGetValue(name, out var current)
+                && HasValue(row, "IsActive")
+                && Bool(row, "IsActive", true) != current)
+            {
+                rows.Add(new ImportRowResult(
+                    i + 2,
+                    $"companies:{name}",
+                    name,
+                    ImportRowStatus.Error,
+                    ["Existing company activation cannot be changed by organization import. Use the controlled company lifecycle workflow."],
+                    []));
+            }
+        }
         Merge(companyNames, parsed.Companies.Select(x => Val(x, "LegalNameEn")));
         AddRows("branches", parsed.Branches, "Code", "NameEn", required: ["CompanyLegalName", "Code", "NameEn"], known: branchCodes, rows,
             refs: [("CompanyLegalName", companyNames, "Company")]);
@@ -843,6 +863,8 @@ public class OrganizationStructureImportController : ControllerBase
         Csv.Parse(req.PositionsCsv ?? string.Empty));
 
     private static string Val(Dictionary<string, string> row, string key, string fallback = "") => row.GetValueOrDefault(key, fallback).Trim();
+    private static bool HasValue(Dictionary<string, string> row, string key) =>
+        row.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value);
     private static bool Bool(Dictionary<string, string> row, string key, bool fallback) => !row.TryGetValue(key, out var v) ? fallback : !string.Equals(v.Trim(), "false", StringComparison.OrdinalIgnoreCase);
     private static int Int(Dictionary<string, string> row, string key, int fallback = 0) => int.TryParse(Val(row, key), out var v) ? v : fallback;
     private static decimal Dec(Dictionary<string, string> row, string key) => decimal.TryParse(Val(row, key), out var v) ? v : 0m;

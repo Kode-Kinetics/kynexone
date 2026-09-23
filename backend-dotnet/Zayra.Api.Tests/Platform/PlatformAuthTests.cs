@@ -15,24 +15,49 @@ public class PlatformAuthTests : PlatformTestBase
 {
     // ── Login ──────────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Request-time environment-fallback login is disabled: a platform principal must be
+    /// pre-provisioned. Tests that need a session seed one with the same credentials.
+    /// </summary>
+    private static async Task<PlatformUser> SeedProvisionedAdmin(Zayra.Api.Data.ZayraDbContext db)
+    {
+        var user = new PlatformUser
+        {
+            Email        = AdminEmail,
+            FullName     = "Provisioned Owner",
+            PasswordHash = new Pbkdf2PasswordHasher().Hash(AdminPassword),
+            Role         = PlatformRoles.Owner,
+            IsActive     = true,
+            CreatedAtUtc = DateTime.UtcNow
+        };
+        db.PlatformUsers.Add(user);
+        await db.SaveChangesAsync();
+        return user;
+    }
+
     [Fact]
-    public async Task Login_WithValidEnvVarCredentials_Returns200WithToken()
+    public async Task Login_WithEnvVarCredentials_AndNoProvisionedPrincipal_Returns503WithoutTokenOrPrincipal()
     {
         await using var db         = CreateDb();
-        var controller             = CreateController(db);
+        var controller             = CreateController(db); // sets PLATFORM_ADMIN_EMAIL/PASSWORD
         var req                    = new PlatformLoginRequest(AdminEmail, AdminPassword);
 
         var result = await controller.Login(req, CancellationToken.None);
 
-        var ok = result.Should().BeOfType<OkObjectResult>().Subject;
-        var body = ok.Value!.ToString()!;
-        body.Should().Contain("token");
+        var obj = result.Should().BeOfType<ObjectResult>().Subject;
+        obj.StatusCode.Should().Be(StatusCodes.Status503ServiceUnavailable);
+        var body = JsonSerializer.Serialize(obj.Value);
+        body.Should().Contain("platform_principal_not_provisioned");
+        body.Should().NotContain("token");
+        (await db.PlatformUsers.CountAsync()).Should().Be(0, "a public login must never materialize a privileged principal");
+        (await db.LoginActivities.CountAsync(a => a.EventType == LoginEventTypes.PlatformLoginSuccess)).Should().Be(0);
     }
 
     [Fact]
-    public async Task BootstrapLogin_MaterializesRevocablePlatformUserAndStampedToken()
+    public async Task ProvisionedLogin_IssuesRevocableStampedToken()
     {
         await using var db = CreateDb();
+        await SeedProvisionedAdmin(db);
         var controller = CreateController(db);
 
         var result = await controller.Login(
@@ -52,6 +77,7 @@ public class PlatformAuthTests : PlatformTestBase
     public async Task PlatformLogout_RevokesPreviouslyIssuedTokenServerSide()
     {
         await using var db = CreateDb();
+        await SeedProvisionedAdmin(db);
         var controller = CreateController(db);
         var login = (OkObjectResult)await controller.Login(
             new PlatformLoginRequest(AdminEmail, AdminPassword), CancellationToken.None);
@@ -72,6 +98,7 @@ public class PlatformAuthTests : PlatformTestBase
     public async Task FailedLogin_DoesNotRevokeAnExistingPlatformSession()
     {
         await using var db = CreateDb();
+        await SeedProvisionedAdmin(db);
         var controller = CreateController(db);
         var login = (OkObjectResult)await controller.Login(
             new PlatformLoginRequest(AdminEmail, AdminPassword), CancellationToken.None);
@@ -93,6 +120,7 @@ public class PlatformAuthTests : PlatformTestBase
     public async Task PlatformToken_IsRejectedAfterDeactivationOrRoleChange(bool active, string currentRole)
     {
         await using var db = CreateDb();
+        await SeedProvisionedAdmin(db);
         var controller = CreateController(db);
         var login = (OkObjectResult)await controller.Login(
             new PlatformLoginRequest(AdminEmail, AdminPassword), CancellationToken.None);
@@ -117,6 +145,7 @@ public class PlatformAuthTests : PlatformTestBase
     public async Task Login_WithWrongPassword_Returns401()
     {
         await using var db  = CreateDb();
+        await SeedProvisionedAdmin(db);
         var controller      = CreateController(db);
         var req             = new PlatformLoginRequest(AdminEmail, "WRONG_PASSWORD");
 
@@ -129,6 +158,7 @@ public class PlatformAuthTests : PlatformTestBase
     public async Task Login_WithWrongEmail_Returns401()
     {
         await using var db  = CreateDb();
+        await SeedProvisionedAdmin(db);
         var controller      = CreateController(db);
         var req             = new PlatformLoginRequest("nobody@example.com", AdminPassword);
 

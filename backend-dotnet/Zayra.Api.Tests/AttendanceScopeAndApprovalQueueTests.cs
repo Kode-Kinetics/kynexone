@@ -307,10 +307,7 @@ public class AttendanceScopeAndApprovalQueueTests
             Slug = $"approval-{Guid.NewGuid():N}"[..20]
         });
         await db.SaveChangesAsync();
-        var seeder = new Zayra.Api.Infrastructure.Seed.AuthSeeder(
-            db,
-            new Zayra.Api.Infrastructure.Auth.Pbkdf2PasswordHasher(),
-            Microsoft.Extensions.Options.Options.Create(new SeedAdminOptions()));
+        var seeder = new Zayra.Api.Infrastructure.Seed.AuthSeeder(db);
 
         await seeder.EnsureTenantRolesAsync(tenantId, CancellationToken.None);
 

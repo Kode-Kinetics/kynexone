@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
-  ArrowLeft, Search, RefreshCw, UserCog, Key, X, Shield,
+  ArrowLeft, Search, RefreshCw, Key, X, Shield,
   LogOut, Unlock, ShieldOff, Edit2, Mail, Check, AlertTriangle,
   ChevronDown, Eye, EyeOff, UserPlus, Trash2,
 } from 'lucide-react';
@@ -225,14 +225,6 @@ export default function TenantUsersPage() {
     } catch { notify('Failed to revoke sessions.', false); }
   }
 
-  async function impersonate(u: TenantUser) {
-    try {
-      const { token } = await platformApi.impersonate(id, u.id);
-      window.open(`${window.location.origin}/login?impersonate=${token}`, '_blank');
-      notify(`Impersonating ${u.email} — new tab opened.`);
-    } catch { notify('Impersonation failed.', false); }
-  }
-
   // ── render ───────────────────────────────────────────────────────────────────
 
   return (
@@ -338,11 +330,6 @@ export default function TenantUsersPage() {
                           className="flex items-center gap-1 text-[11px] text-sapphire border border-sapphire/20 hover:border-sapphire/50 px-2 py-1 rounded transition-colors">
                           <Edit2 className="h-3 w-3" />
                           Manage
-                        </button>
-                        <button type="button" onClick={() => impersonate(u)}
-                          className="flex items-center gap-1 text-[11px] text-blue-400 border border-blue-500/20 hover:border-blue-500/40 px-2 py-1 rounded transition-colors">
-                          <UserCog className="h-3 w-3" />
-                          Login As
                         </button>
                       </div>
                     </td>
@@ -495,10 +482,6 @@ export default function TenantUsersPage() {
                 <ActionButton icon={LogOut} label="Revoke All Sessions" desc="Force logout from all devices immediately"
                   color="text-rose-400 border-rose-500/20 hover:border-rose-500/40"
                   onClick={() => { revokeSessions(selected); closePanel(); }} />
-
-                <ActionButton icon={UserCog} label="Login As User" desc="Impersonate in a new tab (support access)"
-                  color="text-blue-400 border-blue-500/20 hover:border-blue-500/40"
-                  onClick={() => { impersonate(selected); closePanel(); }} />
 
                 <ActionButton icon={Shield} label="View Audit Logs" desc="See all actions for this user"
                   color="text-slate-400 border-slate-500/20 hover:border-slate-500/40"

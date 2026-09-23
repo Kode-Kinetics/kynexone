@@ -1,3 +1,4 @@
+using System.Data;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
@@ -7,6 +8,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
@@ -17,6 +19,7 @@ using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Filters;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Auth;
+using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Infrastructure.Email;
 using Zayra.Api.Infrastructure.Documents.Invoices;
 using Zayra.Api.Infrastructure.Subscriptions;
@@ -40,8 +43,10 @@ public class PlatformController : ControllerBase
     private readonly IEmailService _emailService;
     private readonly IConfiguration _config;
     private readonly IMfaService _mfa;
+    private readonly IAccessManagementService _accessManagement;
     private readonly ILogger<PlatformController> _log;
     private readonly IMemoryCache _cache;
+    private readonly string _appUrl;
 
     /// <summary>
     /// Key read (never written) by the <c>/platform/health</c> distributed-cache probe. Carries the
@@ -59,6 +64,7 @@ public class PlatformController : ControllerBase
         IEmailService emailService,
         IConfiguration config,
         IMfaService mfa,
+        IAccessManagementService accessManagement,
         ILogger<PlatformController> log,
         IMemoryCache cache)
     {
@@ -70,8 +76,11 @@ public class PlatformController : ControllerBase
         _emailService = emailService;
         _config = config;
         _mfa = mfa;
+        _accessManagement = accessManagement;
         _log = log;
         _cache = cache;
+        _appUrl = AuthLinkBuilder.ResolvePublicAppUrl(
+            _config["APP_URL"] ?? Environment.GetEnvironmentVariable("APP_URL"));
     }
 
     private string PlatformAdminEmail =>
@@ -96,7 +105,7 @@ public class PlatformController : ControllerBase
 
         if (dbUser is not null)
         {
-            if (!dbUser.IsActive)
+            if (!dbUser.IsActive || !PlatformRoles.All.Contains(dbUser.Role))
                 return Unauthorized(new { message = "Invalid platform admin credentials." });
 
             // Brute-force lockout (see PlatformUser.FailedLoginCount): reject while a lockout is active.
@@ -155,48 +164,18 @@ public class PlatformController : ControllerBase
         }
         else
         {
-            // 2. Fall back to env-var credentials
-            var expectedEmail = Environment.GetEnvironmentVariable("PLATFORM_ADMIN_EMAIL");
-            var expectedPassword = Environment.GetEnvironmentVariable("PLATFORM_ADMIN_PASSWORD");
-
-            if (string.IsNullOrWhiteSpace(expectedEmail) || string.IsNullOrWhiteSpace(expectedPassword))
-                return StatusCode(503, new { message = "Platform admin credentials are not configured." });
-
-            // Constant-time password comparison (avoid a timing side-channel on the bootstrap secret).
-            var emailMatches = string.Equals(req.Email, expectedEmail, StringComparison.OrdinalIgnoreCase);
-            var passwordMatches = System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
-                System.Text.Encoding.UTF8.GetBytes(req.Password ?? string.Empty),
-                System.Text.Encoding.UTF8.GetBytes(expectedPassword));
-            if (!emailMatches || !passwordMatches)
-            {
-                _db.LoginActivities.Add(new LoginActivity
-                {
-                    EmailAttempted = req.Email,
-                    EventType     = LoginEventTypes.PlatformLoginFailed,
-                    FailureReason = "invalid_credentials",
-                    IpAddress     = HttpContext.Connection.RemoteIpAddress?.ToString(),
-                    UserAgent     = HttpContext.Request.Headers.UserAgent.ToString(),
-                });
-                await _db.SaveChangesAsync(ct);
+            // Environment credentials are maintenance bootstrap inputs only. A public login
+            // request must never materialize a privileged principal or mint its first session.
+            // Once any platform principal exists, an unknown email is indistinguishable from a
+            // wrong password (401), so this endpoint is not an account-enumeration oracle.
+            if (await _db.PlatformUsers.AnyAsync(ct))
                 return Unauthorized(new { message = "Invalid platform admin credentials." });
-            }
 
-            // The environment credential is bootstrap-only. Materialize it as a DB user on
-            // first successful login so every issued token has server-side active/role/stamp
-            // state and can be revoked just like an ordinary platform team member.
-            authenticatedUser = new PlatformUser
+            return StatusCode(503, new
             {
-                Email = expectedEmail.Trim().ToLowerInvariant(),
-                FullName = "Platform Owner",
-                PasswordHash = _passwordHasher.Hash(expectedPassword),
-                Role = PlatformRoles.Owner,
-                IsActive = true,
-                LastLoginAtUtc = DateTime.UtcNow,
-                LastLoginIp = HttpContext.Connection.RemoteIpAddress?.ToString(),
-                CreatedAtUtc = DateTime.UtcNow,
-            };
-            PlatformSessionSecurity.RotateStamp(authenticatedUser);
-            _db.PlatformUsers.Add(authenticatedUser);
+                error = "platform_principal_not_provisioned",
+                message = "The platform operator must be provisioned through the maintenance workflow before sign-in."
+            });
         }
 
         // Record successful platform login
@@ -221,8 +200,15 @@ public class PlatformController : ControllerBase
     {
         var platformUserId = GetPlatformUserId();
         if (platformUserId is null) return Unauthorized();
-        var dto = await _mfa.InitiatePlatformSetupAsync(platformUserId.Value, ct);
-        return Ok(new MfaSetupInitResponse(dto.ProvisioningUri));
+        try
+        {
+            var dto = await _mfa.InitiatePlatformSetupAsync(platformUserId.Value, ct);
+            return Ok(new MfaSetupInitResponse(dto.ProvisioningUri));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Conflict(new { message = ex.Message });
+        }
     }
 
     [HttpPost("auth/mfa/verify-setup")]
@@ -237,17 +223,19 @@ public class PlatformController : ControllerBase
 
     [HttpPost("auth/mfa/challenge/verify")]
     [AllowAnonymous]
-    [EnableRateLimiting("platform_login")]
+    [EnableRateLimiting("platform_mfa_verify")]
     public async Task<IActionResult> PlatformMfaChallengeVerify([FromBody] MfaChallengeVerifyRequest request, CancellationToken ct)
     {
-        var pu = await _mfa.VerifyPlatformChallengeAsync(request.ChallengeToken, request.TotpCode, ct);
+        var pu = await _mfa.CompletePlatformChallengeAsync(
+            request.ChallengeToken,
+            request.TotpCode,
+            new RequestContext(
+                HttpContext.Connection.RemoteIpAddress?.ToString(),
+                HttpContext.Request.Headers.UserAgent.ToString(),
+                null,
+                null),
+            ct);
         if (pu is null) return Unauthorized(new { message = "Invalid or expired MFA challenge." });
-
-        pu.LastLoginAtUtc = DateTime.UtcNow;
-        pu.LastLoginIp = HttpContext.Connection.RemoteIpAddress?.ToString();
-        if (!pu.UpdatedAtUtc.HasValue)
-            PlatformSessionSecurity.RotateStamp(pu);
-        await _db.SaveChangesAsync(ct);
         return Ok(CreatePlatformToken(pu));
     }
 
@@ -312,6 +300,18 @@ public class PlatformController : ControllerBase
         var v = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub");
         return Guid.TryParse(v, out var id) && id != Guid.Empty ? id : null;
     }
+
+    /// <summary>
+    /// Platform operators are not tenant users. In particular, the platform principal id must
+    /// never be copied into RequestContext.UserId because audit/user foreign keys point at the
+    /// tenant Users table. Actor identity remains available through the authenticated platform
+    /// principal and request telemetry, while the tenant is explicitly bound to the target row.
+    /// </summary>
+    private RequestContext PlatformTenantMutationContext(Guid tenantId) => new(
+        HttpContext.Connection.RemoteIpAddress?.ToString(),
+        HttpContext.Request.Headers.UserAgent.ToString(),
+        UserId: null,
+        TenantId: tenantId);
 
     // ── Health ────────────────────────────────────────────────────────────────
 
@@ -812,54 +812,15 @@ public class PlatformController : ControllerBase
     [RequirePlatformRole(PlatformRoles.Owner)]
     public async Task<IActionResult> DeleteTenant(Guid tenantId, [FromQuery] string? confirm, CancellationToken ct)
     {
-        if (confirm != "DELETE") return BadRequest(new { message = "Pass ?confirm=DELETE to confirm permanent deletion." });
-
-        var tenant = await _db.Tenants.FirstOrDefaultAsync(t => t.Id == tenantId, ct);
-        if (tenant is null) return NotFound();
-
-        var originalSlug = tenant.Slug;
-        tenant.IsActive = false;
-        // Free the slug so it can be reused — the unique DB index covers all rows
-        // including inactive ones, so we rename it to avoid blocking future tenant creation.
-        tenant.Slug = $"{originalSlug}__deleted_{tenantId.ToString("N")[..8]}";
-
-        // Deactivate all users in this tenant
-        await _db.Users
-            .Where(u => u.TenantId == tenantId && !u.IsDeleted)
-            .ExecuteUpdateAsync(s => s
-                .SetProperty(u => u.IsActive, false)
-                .SetProperty(u => u.Status, "Deactivated")
-                .SetProperty(u => u.UpdatedAtUtc, DateTime.UtcNow), ct);
-
-        // Revoke all refresh tokens for this tenant's users
-        var tenantUserIds = await _db.Users
-            .Where(u => u.TenantId == tenantId)
-            .Select(u => u.Id)
-            .ToListAsync(ct);
-        if (tenantUserIds.Count > 0)
+        _ = tenantId;
+        _ = confirm;
+        _ = ct;
+        await Task.CompletedTask;
+        return Conflict(new
         {
-            await _db.RefreshTokens
-                .Where(t => t.RevokedAtUtc == null && tenantUserIds.Contains(t.UserId))
-                .ExecuteUpdateAsync(s => s.SetProperty(t => t.RevokedAtUtc, DateTime.UtcNow), ct);
-        }
-
-        var sub = await _db.TenantSubscriptions.FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
-        if (sub is not null) sub.Status = "Cancelled";
-
-        _db.AdminAuditLogs.Add(new AdminAuditLog
-        {
-            TenantId = tenantId,
-            EntityType = "Tenant",
-            EntityId = tenantId.ToString(),
-            Action = "TenantDeleted",
-            OldValuesJson = System.Text.Json.JsonSerializer.Serialize(new { tenantName = tenant.Name, slug = originalSlug }),
-            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { initiatedBy = "platform_admin", status = "Deactivated", slugFreed = originalSlug }),
-            PerformedByName = "platform_admin",
-            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
+            error = "tenant_delete_disabled",
+            message = "Tenant deletion is temporarily disabled pending an atomic credential-revocation and recovery workflow."
         });
-
-        await _db.SaveChangesAsync(ct);
-        return Ok(new { tenantId, deleted = true, message = $"Tenant '{tenant.Name}' has been deactivated and all sessions revoked." });
     }
 
     // ── Soft-delete lifecycle: restore + permanent purge ──────────────────────
@@ -870,61 +831,28 @@ public class PlatformController : ControllerBase
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
     public async Task<IActionResult> RestoreTenant(Guid tenantId, CancellationToken ct)
     {
-        var tenant = await _db.Tenants.FirstOrDefaultAsync(t => t.Id == tenantId, ct);
-        if (tenant is null) return NotFound(new { message = "Tenant not found." });
-
-        var deletedSlug = tenant.Slug;
-        var idx = deletedSlug.IndexOf("__deleted_", StringComparison.Ordinal);
-        if (tenant.IsActive || idx < 0)
-            return BadRequest(new { message = "Tenant is not deleted." });
-
-        var originalSlug = deletedSlug[..idx];
-        // If the original slug was re-used by a new active tenant, keep a suffixed restore slug.
-        if (await _db.Tenants.AnyAsync(t => t.Slug == originalSlug && t.Id != tenantId, ct))
-            originalSlug = $"{originalSlug}-restored-{tenantId.ToString("N")[..6]}";
-
-        tenant.IsActive = true;
-        tenant.Slug = originalSlug;
-
-        var sub = await _db.TenantSubscriptions.FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
-        if (sub is not null) { sub.Status = "Active"; sub.UpdatedAtUtc = DateTime.UtcNow; }
-
-        AuditTenant(tenantId, "TenantRestored",
-            new { slug = deletedSlug },
-            new { slug = originalSlug, status = "Active" });
-
-        await _db.SaveChangesAsync(ct);
-        return Ok(new { tenantId, restored = true, slug = originalSlug });
+        _ = tenantId;
+        _ = ct;
+        await Task.CompletedTask;
+        return Conflict(new
+        {
+            error = "tenant_restore_disabled",
+            message = "Deleted-tenant restoration is temporarily disabled pending credential re-provisioning controls."
+        });
     }
 
     [HttpPost("tenants/bulk/restore")]
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
     public async Task<IActionResult> BulkRestoreTenants([FromBody] BulkTenantActionRequest req, CancellationToken ct)
     {
-        var ids = NormalizeTenantIds(req.TenantIds);
-        if (ids.Count == 0) return BadRequest(new { message = "No tenants selected." });
-
-        var results = new List<BulkOpItem>();
-        foreach (var id in ids)
+        _ = req;
+        _ = ct;
+        await Task.CompletedTask;
+        return Conflict(new
         {
-            var tenant = await _db.Tenants.FirstOrDefaultAsync(t => t.Id == id, ct);
-            if (tenant is null) { results.Add(BulkOpItem.Skip(id, "Tenant not found.")); continue; }
-            var idx = tenant.Slug.IndexOf("__deleted_", StringComparison.Ordinal);
-            if (tenant.IsActive || idx < 0) { results.Add(BulkOpItem.Skip(id, "Not deleted.")); continue; }
-
-            var original = tenant.Slug[..idx];
-            if (await _db.Tenants.AnyAsync(t => t.Slug == original && t.Id != id, ct))
-                original = $"{original}-restored-{id.ToString("N")[..6]}";
-            tenant.IsActive = true;
-            tenant.Slug = original;
-            var sub = await _db.TenantSubscriptions.FirstOrDefaultAsync(s => s.TenantId == id, ct);
-            if (sub is not null) { sub.Status = "Active"; sub.UpdatedAtUtc = DateTime.UtcNow; }
-            AuditTenant(id, "TenantRestored", new { slug = tenant.Slug }, new { slug = original, status = "Active" });
-            results.Add(BulkOpItem.Ok(id, tenant.Name));
-        }
-
-        await _db.SaveChangesAsync(ct);
-        return Ok(BulkSummary("restore", results));
+            error = "bulk_tenant_restore_disabled",
+            message = "Bulk deleted-tenant restoration is temporarily disabled pending credential re-provisioning controls."
+        });
     }
 
     /// <summary>GDPR "right to erasure": PERMANENTLY deletes a soft-deleted tenant and all its
@@ -1069,22 +997,15 @@ public class PlatformController : ControllerBase
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
     public async Task<IActionResult> ApproveCompany(Guid tenantId, Guid companyId, CancellationToken ct)
     {
-        // SYSTEM CONTEXT: tenant scope intentionally bypassed — platform admins operate
-        // across tenants; explicit TenantId predicate scopes the read.
-        var company = await _db.Companies.IgnoreQueryFilters()
-            .FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Id == companyId && !c.IsDeleted, ct);
-        if (company is null) return NotFound(new { message = "Company not found in specified tenant." });
-        if (company.ApprovalStatus == CompanyApprovalStatuses.Active && company.IsActive)
-            return Ok(new { companyId, approvalStatus = company.ApprovalStatus, message = "Company is already active." });
-
-        var previous = new { company.ApprovalStatus, company.IsActive };
-        company.ApprovalStatus = CompanyApprovalStatuses.Active;
-        company.IsActive = true;
-        company.UpdatedAtUtc = DateTime.UtcNow;
-        AuditTenant(tenantId, "CompanyApproved",
-            previous, new { company.ApprovalStatus, company.IsActive, companyId });
-        await _db.SaveChangesAsync(ct);
-        return Ok(new { companyId, approvalStatus = company.ApprovalStatus, isActive = company.IsActive });
+        _ = tenantId;
+        _ = companyId;
+        _ = ct;
+        await Task.CompletedTask;
+        return Conflict(new
+        {
+            error = "company_activation_disabled",
+            message = "Company activation is temporarily disabled pending atomic authorization invalidation."
+        });
     }
 
     /// <summary>
@@ -1159,71 +1080,15 @@ public class PlatformController : ControllerBase
 
     [HttpPost("tenants/{tenantId:guid}/impersonate")]
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin, PlatformRoles.Support)]
-    public async Task<IActionResult> Impersonate(Guid tenantId, [FromBody] ImpersonateRequest req, CancellationToken ct)
+    public IActionResult Impersonate(Guid tenantId, [FromBody] ImpersonateRequest req, CancellationToken ct)
     {
-        var tenant = await _db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == tenantId, ct);
-        if (tenant is null) return NotFound(new { message = "Tenant not found." });
-
-        var user = await _db.Users
-            .AsNoTracking()
-            .Include(u => u.UserRoles)
-                .ThenInclude(ur => ur.Role)
-                    .ThenInclude(r => r!.RolePermissions)
-                        .ThenInclude(rp => rp.Permission)
-            .Include(u => u.PermissionOverrides)
-            .Include(u => u.EntityAccesses)
-            .Include(u => u.EmployeeUserAccounts)
-            .FirstOrDefaultAsync(u => u.Id == req.UserId && u.TenantId == tenantId && !u.IsDeleted, ct);
-
-        if (user is null) return NotFound(new { message = "User not found in specified tenant." });
-
-        var roles = user.UserRoles.Where(ur => ur.Role is not null).Select(ur => ur.Role!.Name).ToList();
-        var expiresAt = DateTime.UtcNow.AddHours(1);
-
-        var claims = new List<Claim>
+        _ = tenantId;
+        _ = req;
+        _ = ct;
+        return StatusCode(StatusCodes.Status403Forbidden, new
         {
-            new(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
-            new(JwtRegisteredClaimNames.Email, user.Email),
-            new(JwtRegisteredClaimNames.Name, user.FullName),
-            new("tenant_id", tenant.Id.ToString()),
-            new("tenant", tenant.Slug),
-            new("impersonated_by", "platform_admin")
-        };
-        claims.AddRange(roles.Select(r => new Claim(ClaimTypes.Role, r)));
-        // Mirror a real login token exactly (permissions + the same claim-v2 scope
-        // decision the user's own login would produce) so an impersonated session can
-        // never be broader OR narrower than the user it represents.
-        claims.AddRange(AuthService.GetPermissions(user).Select(p => new Claim("permission", p)));
-        claims.AddRange(await BuildEntityScopeClaimsAsync(user, tenantId, ct));
-        // Fail closed on claim absence/malformation regardless of the global StrictMode:
-        // a minted session must carry an EXPLICIT scope decision or see nothing.
-        claims.Add(new Claim(EntityScopeContext.StrictScopeClaim, "true"));
-
-        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwt.SigningKey));
-        var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-        // Impersonation tokens grant access to tenant-scoped endpoints, so they use TenantAudience.
-        var jti = Guid.NewGuid().ToString();
-        claims.Add(new Claim(JwtRegisteredClaimNames.Jti, jti));
-        // Bind the acting platform admin into the token so tenant-side audit can attribute actions to
-        // the impersonator, not just the impersonated user.
-        claims.Add(new Claim("act_sub", GetPlatformUserId()?.ToString() ?? "platform-admin"));
-        claims.Add(new Claim("act_email", PlatformActorEmail()));
-        var token = new JwtSecurityToken(_jwt.Issuer, _jwt.TenantAudience, claims, expires: expiresAt, signingCredentials: credentials);
-        var tokenString = new JwtSecurityTokenHandler().WriteToken(token);
-
-        // SOC2: privileged impersonation MUST be audited and attributable (who, whom, when, jti).
-        AuditPlatformAction(tenant.Id, "Impersonate", "User", user.Id.ToString(),
-            new { targetUserId = user.Id, targetEmail = user.Email, jti, expiresAt });
-        await _db.SaveChangesAsync(ct);
-
-        return Ok(new
-        {
-            token = tokenString,
-            expiresAt,
-            userId = user.Id,
-            userEmail = user.Email,
-            tenantId = tenant.Id,
-            tenantSlug = tenant.Slug
+            error = "privileged_tenant_access_disabled",
+            message = "Tenant impersonation is temporarily disabled pending server-side revocation controls."
         });
     }
 
@@ -1294,6 +1159,18 @@ public class PlatformController : ControllerBase
             CompanyCreationMode = req.CompanyCreationMode ?? CompanyCreationModes.GroupSelfServiceWithinLimit,
         };
         _db.Tenants.Add(tenant);
+        await _db.SaveChangesAsync(ct);
+
+        // Every tenant is born with its first company, inside this transaction. This used to be
+        // left to CompanyScopeBackfill at the next boot, which created data outside the platform
+        // admin (docs/DATA_ENTRY_PATHS.md); the backfill now only repairs, never creates.
+        _db.Companies.Add(new Company
+        {
+            TenantId = tenant.Id,
+            LegalNameEn = name,
+            TradeName = name,
+            IsActive = true,
+        });
         await _db.SaveChangesAsync(ct);
 
         // Full standard RBAC set (Admin → Employee), same as the seeded tenant
@@ -1463,10 +1340,115 @@ public class PlatformController : ControllerBase
 
     // ── Create Tenant User (any role) ─────────────────────────────────────────
 
+    /// <summary>The legal-entity scope a platform-created account will be born with, plus whether
+    /// the operator asked for it or it came from the role default.</summary>
+    private readonly record struct CreatedUserScope(string Mode, IReadOnlyList<Guid> CompanyIds, bool WasExplicit);
+
+    /// <summary>
+    /// Resolves <c>entityScope</c> (+ <c>companyIds</c>) onto a real <see cref="EntityGrantModes"/>
+    /// decision, or returns the refusal that explains why the account would have been blind.
+    ///
+    /// <para>Accepted values, in the operator's vocabulary: <c>group</c> (every company, now and in
+    /// future — what a tenant Admin gets), <c>allCurrentCompanies</c> (the companies that exist
+    /// today), and <c>companies</c> with an explicit <c>companyIds</c> list.</para>
+    ///
+    /// <para>Default when the caller says nothing: <c>group</c> for the tenant Admin role, which is
+    /// what this endpoint has always done and what an Admin means; <c>allCurrentCompanies</c> for
+    /// every other role, because a tenant-level role such as HR Manager or a payroll approver is
+    /// hired to work across the tenant's entities, and the previous default — nothing at all — is
+    /// not a safer answer, it is a broken account. RBAC still decides what they may DO; this decides
+    /// only which legal entities they can SEE.</para>
+    ///
+    /// <para>FAIL CLOSED: any non-group resolution that would reach zero companies is refused, so
+    /// the failure surfaces to the operator creating the account instead of to the user as a 404.</para>
+    /// </summary>
+    private async Task<(CreatedUserScope Scope, IActionResult? Error)> ResolveCreatedUserScopeAsync(
+        Guid tenantId, string normalizedRoleName, CreateTenantUserRequest req, CancellationToken ct)
+    {
+        var requested = req.EntityScope?.Trim();
+        var explicitScope = !string.IsNullOrWhiteSpace(requested);
+        var requestedIds = (req.CompanyIds ?? Array.Empty<Guid>()).Distinct().ToList();
+
+        string mode;
+        if (!explicitScope)
+        {
+            mode = normalizedRoleName == "ADMIN"
+                ? EntityGrantModes.AllCurrentAndFutureCompanies
+                : EntityGrantModes.AllCurrentCompanies;
+        }
+        else if (string.Equals(requested, "group", StringComparison.OrdinalIgnoreCase))
+            mode = EntityGrantModes.AllCurrentAndFutureCompanies;
+        else if (string.Equals(requested, "allCurrentCompanies", StringComparison.OrdinalIgnoreCase))
+            mode = EntityGrantModes.AllCurrentCompanies;
+        else if (string.Equals(requested, "companies", StringComparison.OrdinalIgnoreCase))
+            mode = EntityGrantModes.SelectedCompanies;
+        else
+            return (default, BadRequest(new
+            {
+                error = "invalid_entity_scope",
+                message = $"entityScope '{requested}' is not recognised. Use 'group' (all companies, now and in future), "
+                        + "'allCurrentCompanies', or 'companies' together with companyIds.",
+            }));
+
+        if (mode != EntityGrantModes.SelectedCompanies && requestedIds.Count > 0)
+            return (default, BadRequest(new
+            {
+                error = "company_ids_not_applicable",
+                message = "companyIds may only be supplied with entityScope 'companies'.",
+            }));
+
+        // The companies this tenant actually has. A platform operator carries no tenant claim and no
+        // entity scope of its own, so the company filter has to come off — through the sanctioned
+        // ScopedBypass.TenantWide, which re-applies the tenant predicate itself.
+        var activeCompanyIds = await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide<Company>(_db.Companies, tenantId,
+                "Platform operator provisioning a tenant user: it holds no entity scope of its own, so the "
+                + "legal entities available to grant must be read across the tenant. Tenant is re-applied by the helper.")
+            .AsNoTracking()
+            .Where(c => c.IsActive && !c.IsDeleted)
+            .Select(c => c.Id)
+            .ToListAsync(ct);
+
+        if (mode == EntityGrantModes.SelectedCompanies)
+        {
+            if (requestedIds.Count == 0)
+                return (default, BadRequest(new
+                {
+                    error = "company_ids_required",
+                    message = "entityScope 'companies' needs at least one company id — a user granted no company sees nothing.",
+                }));
+            var unknown = requestedIds.Where(id => !activeCompanyIds.Contains(id)).ToList();
+            if (unknown.Count > 0)
+                return (default, BadRequest(new
+                {
+                    error = "unknown_company",
+                    message = "Every companyId must be an active legal entity of this tenant.",
+                    unknownCompanyIds = unknown,
+                }));
+            return (new CreatedUserScope(mode, requestedIds, explicitScope), null);
+        }
+
+        if (mode == EntityGrantModes.AllCurrentCompanies && activeCompanyIds.Count == 0)
+            return (default, Conflict(new
+            {
+                error = "tenant_has_no_companies",
+                message = "This tenant has no active legal entity, so a company-scoped account would be able to see "
+                        + "nothing at all. Create the legal entity first, or create this user with entityScope 'group' "
+                        + "so it follows the tenant as entities are added.",
+            }));
+
+        return (new CreatedUserScope(mode, Array.Empty<Guid>(), explicitScope), null);
+    }
+
     [HttpPost("tenants/{tenantId:guid}/users")]
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
     public async Task<IActionResult> CreateTenantUser(Guid tenantId, [FromBody] CreateTenantUserRequest req, CancellationToken ct)
     {
+        if (req.MustChangePassword == true)
+            return Conflict(new
+            {
+                error = "forced_password_change_flow_disabled",
+                message = "Creating a temporary-password account is disabled. Use controlled invitation onboarding."
+            });
         var tenant = await _db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == tenantId, ct);
         if (tenant is null) return NotFound(new { message = "Tenant not found." });
 
@@ -1487,14 +1469,27 @@ public class PlatformController : ControllerBase
             if (role is null) return BadRequest(new { message = $"Role '{roleName}' not found for this tenant." });
         }
 
+        // ── ENTITY (legal-entity) SCOPE ──────────────────────────────────────────────────────────
+        // A user with no scope is invisible to itself: every company-owned row is filtered out of
+        // its queries, so a payroll approver got a flat 404 from /runs/{id}/approve for a run that
+        // plainly existed. This endpoint used to set IsGroupScope for the Admin role and nothing at
+        // all for any other, and had no scope parameter — so the operator could not have got it
+        // right even if they had known. The scope is now an explicit, audited part of the request,
+        // and a request that would resolve to zero accessible companies is REFUSED rather than
+        // creating an account that cannot see the tenant it belongs to.
+        var scopeResolution = await ResolveCreatedUserScopeAsync(tenantId, role.NormalizedName, req, ct);
+        if (scopeResolution.Error is { } scopeError) return scopeError;
+        var scope = scopeResolution.Scope;
+
         // There is a UNIQUE index on (TenantId, NormalizedEmail) that ignores IsDeleted,
         // so a previously soft-deleted user with this email still occupies the slot.
         // Match including soft-deleted rows: block live duplicates, but resurrect a removed one.
-        var existing = await _db.Users
+        // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
+        var existing = await _db.Users.IgnoreQueryFilters()
             .Include(u => u.UserRoles)
             .FirstOrDefaultAsync(u => u.TenantId == tenantId && u.NormalizedEmail == normalizedEmail, ct);
 
-        if (existing is not null && !existing.IsDeleted)
+        if (existing is not null)
             return Conflict(new { message = "A user with this email already exists in the tenant." });
 
         var fullName = string.IsNullOrWhiteSpace(req.FullName) ? req.Email.Trim() : req.FullName.Trim();
@@ -1521,7 +1516,7 @@ public class PlatformController : ControllerBase
             user.LockoutEnd = null;
             user.FailedLoginCount = 0;
             user.MustChangePassword = req.MustChangePassword ?? false;
-            if (role.NormalizedName == "ADMIN") user.IsGroupScope = true;
+            user.IsGroupScope = scope.Mode == EntityGrantModes.AllCurrentAndFutureCompanies;
             user.UpdatedAtUtc = DateTime.UtcNow;
             _db.UserRoles.RemoveRange(user.UserRoles);
             _db.UserRoles.Add(new UserRole { UserId = user.Id, RoleId = role.Id });
@@ -1539,11 +1534,35 @@ public class PlatformController : ControllerBase
                 Status = "Active",
                 IsActive = true,
                 IsEmailConfirmed = true,
-                IsGroupScope = role.NormalizedName == "ADMIN",
+                IsGroupScope = scope.Mode == EntityGrantModes.AllCurrentAndFutureCompanies,
                 MustChangePassword = req.MustChangePassword ?? false
             };
             user.UserRoles.Add(new UserRole { User = user, Role = role });
             _db.Users.Add(user);
+        }
+
+        // The grants that make the account able to see its own tenant. Group scope needs none —
+        // EntityScopeClaims.Resolve short-circuits on User.IsGroupScope — so writing one would be a
+        // second, divergent source of truth for the same decision.
+        if (scope.Mode != EntityGrantModes.AllCurrentAndFutureCompanies)
+        {
+            _db.UserEntityAccesses.RemoveRange(
+                await _db.UserEntityAccesses.Where(g => g.TenantId == tenantId && g.UserId == user.Id).ToListAsync(ct));
+            foreach (var companyId in scope.Mode == EntityGrantModes.SelectedCompanies
+                         ? scope.CompanyIds.Select(id => (Guid?)id)
+                         : new Guid?[] { null })
+            {
+                _db.UserEntityAccesses.Add(new UserEntityAccess
+                {
+                    TenantId = tenantId,
+                    UserId = user.Id,
+                    CompanyId = companyId,
+                    GrantMode = scope.Mode,
+                    Role = roleName,
+                    IsActive = true,
+                    GrantedAt = DateTime.UtcNow,
+                });
+            }
         }
 
         _db.AdminAuditLogs.Add(new AdminAuditLog
@@ -1552,14 +1571,27 @@ public class PlatformController : ControllerBase
             EntityType = "User",
             EntityId = user.Id.ToString(),
             Action = restored ? "UserRestored" : "UserCreated",
-            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { email = user.Email, fullName = user.FullName, role = roleName, restored }),
+            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                email = user.Email, fullName = user.FullName, role = roleName, restored,
+                entityScope = scope.Mode,
+                companyIds = scope.CompanyIds,
+                entityScopeSource = scope.WasExplicit ? "request" : "role-default",
+            }),
             PerformedByName = "platform_admin",
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
 
         await _db.SaveChangesAsync(ct);
 
-        return Ok(new { user.Id, user.Email, user.FullName, role = roleName, restored, tenantSlug = tenant.Slug });
+        return Ok(new
+        {
+            user.Id, user.Email, user.FullName, role = roleName, restored, tenantSlug = tenant.Slug,
+            // Echoed so the operator can see what the account can actually reach, rather than
+            // discovering it as a 404 on the user's first working day.
+            entityScope = scope.Mode,
+            companyIds = scope.CompanyIds,
+        });
     }
 
     // ── Tenant Suspend / Reactivate ───────────────────────────────────────────
@@ -1568,30 +1600,10 @@ public class PlatformController : ControllerBase
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
     public async Task<IActionResult> SuspendTenant(Guid tenantId, [FromBody] TenantActionRequest req, CancellationToken ct)
     {
-        var tenant = await _db.Tenants.FirstOrDefaultAsync(t => t.Id == tenantId, ct);
-        if (tenant is null) return NotFound(new { message = "Tenant not found." });
-
-        var sub = await _db.TenantSubscriptions.FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
-        if (sub is null) return BadRequest(new { message = "Tenant has no subscription record." });
-
-        var oldStatus = sub.Status;
-        sub.Status = "Suspended";
-        sub.UpdatedAtUtc = DateTime.UtcNow;
-        tenant.IsActive = false;
-
-        _db.AdminAuditLogs.Add(new AdminAuditLog
-        {
-            TenantId = tenantId,
-            EntityType = "Tenant",
-            EntityId = tenantId.ToString(),
-            Action = "Suspended",
-            OldValuesJson = System.Text.Json.JsonSerializer.Serialize(new { status = oldStatus }),
-            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { status = "Suspended", reason = req.Reason }),
-            PerformedByName = "platform_admin",
-            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
-        });
-
-        await _db.SaveChangesAsync(ct);
+        var outcome = await ApplyTenantLifecycleAsync(tenantId, false, req.Reason, ct);
+        if (!outcome.TenantFound) return NotFound(new { message = "Tenant not found." });
+        if (!outcome.Allowed) return Conflict(new { error = "deleted_tenant_lifecycle_blocked", message = outcome.BlockReason });
+        if (!outcome.SubscriptionFound) return BadRequest(new { message = "Tenant has no subscription record." });
         return Ok(new { tenantId, status = "Suspended" });
     }
 
@@ -1599,30 +1611,10 @@ public class PlatformController : ControllerBase
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
     public async Task<IActionResult> ReactivateTenant(Guid tenantId, [FromBody] TenantActionRequest req, CancellationToken ct)
     {
-        var tenant = await _db.Tenants.FirstOrDefaultAsync(t => t.Id == tenantId, ct);
-        if (tenant is null) return NotFound(new { message = "Tenant not found." });
-
-        var sub = await _db.TenantSubscriptions.FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
-        if (sub is null) return BadRequest(new { message = "Tenant has no subscription record." });
-
-        var oldStatus = sub.Status;
-        sub.Status = "Active";
-        sub.UpdatedAtUtc = DateTime.UtcNow;
-        tenant.IsActive = true;
-
-        _db.AdminAuditLogs.Add(new AdminAuditLog
-        {
-            TenantId = tenantId,
-            EntityType = "Tenant",
-            EntityId = tenantId.ToString(),
-            Action = "Reactivated",
-            OldValuesJson = System.Text.Json.JsonSerializer.Serialize(new { status = oldStatus }),
-            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { status = "Active", reason = req.Reason }),
-            PerformedByName = "platform_admin",
-            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
-        });
-
-        await _db.SaveChangesAsync(ct);
+        var outcome = await ApplyTenantLifecycleAsync(tenantId, true, req.Reason, ct);
+        if (!outcome.TenantFound) return NotFound(new { message = "Tenant not found." });
+        if (!outcome.Allowed) return Conflict(new { error = "deleted_tenant_lifecycle_blocked", message = outcome.BlockReason });
+        if (!outcome.SubscriptionFound) return BadRequest(new { message = "Tenant has no subscription record." });
         return Ok(new { tenantId, status = "Active" });
     }
 
@@ -1641,21 +1633,13 @@ public class PlatformController : ControllerBase
         var results = new List<BulkOpItem>();
         foreach (var id in ids)
         {
-            var tenant = await _db.Tenants.FirstOrDefaultAsync(t => t.Id == id, ct);
-            if (tenant is null) { results.Add(BulkOpItem.Skip(id, "Tenant not found.")); continue; }
-            var sub = await _db.TenantSubscriptions.FirstOrDefaultAsync(s => s.TenantId == id, ct);
-            if (sub is null) { results.Add(BulkOpItem.Skip(id, "No subscription record.")); continue; }
-            if (sub.Status == "Suspended") { results.Add(BulkOpItem.Skip(id, "Already suspended.")); continue; }
-
-            var oldStatus = sub.Status;
-            sub.Status = "Suspended";
-            sub.UpdatedAtUtc = DateTime.UtcNow;
-            tenant.IsActive = false;
-            AuditTenant(id, "Suspended", new { status = oldStatus }, new { status = "Suspended", reason = req.Reason });
-            results.Add(BulkOpItem.Ok(id, tenant.Name));
+            var outcome = await ApplyTenantLifecycleAsync(id, false, req.Reason, ct, skipIfAlreadyInTargetState: true);
+            if (!outcome.TenantFound) { results.Add(BulkOpItem.Skip(id, "Tenant not found.")); continue; }
+            if (!outcome.Allowed) { results.Add(BulkOpItem.Skip(id, outcome.BlockReason ?? "Deleted tenant lifecycle is blocked.")); continue; }
+            if (!outcome.SubscriptionFound) { results.Add(BulkOpItem.Skip(id, "No subscription record.")); continue; }
+            if (outcome.AlreadyInTargetState) { results.Add(BulkOpItem.Skip(id, "Already suspended.")); continue; }
+            results.Add(BulkOpItem.Ok(id, outcome.TenantName));
         }
-
-        await _db.SaveChangesAsync(ct);
         return Ok(BulkSummary("suspend", results));
     }
 
@@ -1669,20 +1653,12 @@ public class PlatformController : ControllerBase
         var results = new List<BulkOpItem>();
         foreach (var id in ids)
         {
-            var tenant = await _db.Tenants.FirstOrDefaultAsync(t => t.Id == id, ct);
-            if (tenant is null) { results.Add(BulkOpItem.Skip(id, "Tenant not found.")); continue; }
-            var sub = await _db.TenantSubscriptions.FirstOrDefaultAsync(s => s.TenantId == id, ct);
-            if (sub is null) { results.Add(BulkOpItem.Skip(id, "No subscription record.")); continue; }
-
-            var oldStatus = sub.Status;
-            sub.Status = "Active";
-            sub.UpdatedAtUtc = DateTime.UtcNow;
-            tenant.IsActive = true;
-            AuditTenant(id, "Reactivated", new { status = oldStatus }, new { status = "Active", reason = req.Reason });
-            results.Add(BulkOpItem.Ok(id, tenant.Name));
+            var outcome = await ApplyTenantLifecycleAsync(id, true, req.Reason, ct);
+            if (!outcome.TenantFound) { results.Add(BulkOpItem.Skip(id, "Tenant not found.")); continue; }
+            if (!outcome.Allowed) { results.Add(BulkOpItem.Skip(id, outcome.BlockReason ?? "Deleted tenant lifecycle is blocked.")); continue; }
+            if (!outcome.SubscriptionFound) { results.Add(BulkOpItem.Skip(id, "No subscription record.")); continue; }
+            results.Add(BulkOpItem.Ok(id, outcome.TenantName));
         }
-
-        await _db.SaveChangesAsync(ct);
         return Ok(BulkSummary("reactivate", results));
     }
 
@@ -1690,52 +1666,14 @@ public class PlatformController : ControllerBase
     [RequirePlatformRole(PlatformRoles.Owner)]
     public async Task<IActionResult> BulkDeleteTenants([FromBody] BulkDeleteTenantsRequest req, CancellationToken ct)
     {
-        if (req.Confirm != "DELETE")
-            return BadRequest(new { message = "Pass confirm=DELETE to confirm permanent deletion." });
-
-        var ids = NormalizeTenantIds(req.TenantIds);
-        if (ids.Count == 0) return BadRequest(new { message = "No tenants selected." });
-
-        var results = new List<BulkOpItem>();
-        foreach (var id in ids)
+        _ = req;
+        _ = ct;
+        await Task.CompletedTask;
+        return Conflict(new
         {
-            var tenant = await _db.Tenants.FirstOrDefaultAsync(t => t.Id == id, ct);
-            if (tenant is null) { results.Add(BulkOpItem.Skip(id, "Tenant not found.")); continue; }
-            if (!tenant.IsActive && tenant.Slug.Contains("__deleted_")) { results.Add(BulkOpItem.Skip(id, "Already deleted.")); continue; }
-
-            var originalSlug = tenant.Slug;
-            tenant.IsActive = false;
-            // Free the slug (unique index covers inactive rows too) so it can be reused.
-            tenant.Slug = $"{originalSlug}__deleted_{id.ToString("N")[..8]}";
-
-            // Deactivate all users + revoke their sessions (tracked updates so this is
-            // provider-agnostic and unit-testable, unlike the single-tenant ExecuteUpdate path).
-            var users = await _db.Users.Where(u => u.TenantId == id && !u.IsDeleted).ToListAsync(ct);
-            foreach (var u in users)
-            {
-                u.IsActive = false;
-                u.Status = "Deactivated";
-                u.UpdatedAtUtc = DateTime.UtcNow;
-            }
-            var userIds = users.Select(u => u.Id).ToHashSet();
-            if (userIds.Count > 0)
-            {
-                var tokens = await _db.RefreshTokens
-                    .Where(t => t.RevokedAtUtc == null && userIds.Contains(t.UserId)).ToListAsync(ct);
-                foreach (var tk in tokens) tk.RevokedAtUtc = DateTime.UtcNow;
-            }
-
-            var sub = await _db.TenantSubscriptions.FirstOrDefaultAsync(s => s.TenantId == id, ct);
-            if (sub is not null) sub.Status = "Cancelled";
-
-            AuditTenant(id, "TenantDeleted",
-                new { tenantName = tenant.Name, slug = originalSlug },
-                new { status = "Deactivated", slugFreed = originalSlug, usersDeactivated = users.Count });
-            results.Add(BulkOpItem.Ok(id, tenant.Name));
-        }
-
-        await _db.SaveChangesAsync(ct);
-        return Ok(BulkSummary("delete", results));
+            error = "bulk_tenant_delete_disabled",
+            message = "Bulk tenant deletion is temporarily disabled. Use the reviewed single-tenant lifecycle workflow."
+        });
     }
 
     /// <summary>Enable/disable a single feature across many tenants at once, or platform-wide.
@@ -1789,6 +1727,173 @@ public class PlatformController : ControllerBase
     }
 
     // ── Bulk helpers ──────────────────────────────────────────────────────────
+
+    private sealed record TenantLifecycleOutcome(
+        bool TenantFound,
+        bool SubscriptionFound,
+        string TenantName,
+        int UsersInvalidated,
+        int SessionsRevoked,
+        bool Allowed,
+        string? BlockReason,
+        bool AlreadyInTargetState = false);
+
+    private async Task<TenantLifecycleOutcome> ApplyTenantLifecycleAsync(
+        Guid tenantId,
+        bool activate,
+        string? reason,
+        CancellationToken ct,
+        bool skipIfAlreadyInTargetState = false)
+    {
+        var changedAtUtc = DateTime.UtcNow;
+        var auditId = Guid.NewGuid();
+        var action = activate ? "Reactivated" : "Suspended";
+        var targetStatus = activate ? "Active" : "Suspended";
+        var actor = PlatformActorEmail();
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty;
+        TenantLifecycleOutcome outcome = new(false, false, string.Empty, 0, 0, false, null);
+
+        async Task<bool> ApplyOnceAsync(CancellationToken cancellationToken)
+        {
+            _db.ChangeTracker.Clear();
+            var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == tenantId, cancellationToken);
+            if (tenant is null)
+            {
+                outcome = new(false, false, string.Empty, 0, 0, false, null);
+                return true;
+            }
+
+            if (tenant.PurgedAtUtc.HasValue
+                || tenant.SoftDeletedAtUtc.HasValue
+                || tenant.Slug.Contains("__deleted_", StringComparison.Ordinal))
+            {
+                outcome = new(
+                    true,
+                    true,
+                    tenant.Name,
+                    0,
+                    0,
+                    false,
+                    "Deleted or purged tenants cannot use the subscription suspend/reactivate workflow.");
+                return true;
+            }
+
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
+            var subscription = await _db.TenantSubscriptions.IgnoreQueryFilters()
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.TenantId == tenantId, cancellationToken);
+            if (subscription is null)
+            {
+                outcome = new(true, false, tenant.Name, 0, 0, true, null);
+                return true;
+            }
+
+            // Bulk operations are idempotent: a tenant already in the target state is skipped
+            // with no mutation, no audit row and no session revocation.
+            if (skipIfAlreadyInTargetState && subscription.Status == targetStatus)
+            {
+                outcome = new(true, true, tenant.Name, 0, 0, true, null, AlreadyInTargetState: true);
+                return true;
+            }
+
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
+            var users = await _db.Users.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.TenantId == tenantId)
+                .OrderBy(x => x.Id)
+                .ToListAsync(cancellationToken);
+            var userIds = users.Select(x => x.Id).ToList();
+
+            await _db.MfaChallengeTokens.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
+                .OrderBy(x => x.Id)
+                .Select(x => x.Id)
+                .ToListAsync(cancellationToken);
+            await _db.RefreshTokens.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => userIds.Contains(x.UserId) && x.RevokedAtUtc == null)
+                .OrderBy(x => x.Id)
+                .Select(x => x.Id)
+                .ToListAsync(cancellationToken);
+
+            foreach (var user in users)
+                TenantSessionSecurity.RotateStamp(user, changedAtUtc);
+
+            var revoked = 0;
+            if (_db.Database.IsRelational())
+            {
+                // IgnoreQueryFilters is intentional: challenge rows are pinned to user ids taken from the tenant-locked graph above (register §6).
+                await _db.MfaChallengeTokens.IgnoreQueryFilters()
+                    .Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
+                    .ExecuteUpdateAsync(s => s.SetProperty(x => x.UsedAtUtc, changedAtUtc), cancellationToken);
+                revoked = await _db.RefreshTokens
+                    .Where(x => userIds.Contains(x.UserId) && x.RevokedAtUtc == null)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(x => x.RevokedAtUtc, changedAtUtc)
+                        .SetProperty(x => x.RevokedByIp, ip), cancellationToken);
+            }
+            else
+            {
+                // IgnoreQueryFilters is intentional: challenge rows are pinned to user ids taken from the tenant-locked graph above (register §6).
+                foreach (var challenge in await _db.MfaChallengeTokens.IgnoreQueryFilters()
+                    .Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
+                    .ToListAsync(cancellationToken))
+                    challenge.UsedAtUtc = changedAtUtc;
+                foreach (var token in await _db.RefreshTokens
+                    .Where(x => userIds.Contains(x.UserId) && x.RevokedAtUtc == null)
+                    .ToListAsync(cancellationToken))
+                {
+                    token.RevokedAtUtc = changedAtUtc;
+                    token.RevokedByIp = ip;
+                    revoked++;
+                }
+            }
+
+            var previousStatus = subscription.Status;
+            tenant.IsActive = activate;
+            subscription.Status = targetStatus;
+            subscription.UpdatedAtUtc = changedAtUtc;
+            _db.AdminAuditLogs.Add(new AdminAuditLog
+            {
+                Id = auditId,
+                TenantId = tenantId,
+                EntityType = "Tenant",
+                EntityId = tenantId.ToString(),
+                Action = action,
+                OldValuesJson = JsonSerializer.Serialize(new { status = previousStatus }),
+                NewValuesJson = JsonSerializer.Serialize(new
+                {
+                    status = targetStatus,
+                    reason,
+                    usersInvalidated = users.Count,
+                    sessionsRevoked = revoked
+                }),
+                PerformedByName = actor,
+                IpAddress = ip,
+                CreatedAtUtc = changedAtUtc
+            });
+            outcome = new(true, true, tenant.Name, users.Count, revoked, true, null);
+            await _db.SaveChangesAsync(cancellationToken);
+            return true;
+        }
+
+        if (_db.Database.IsRelational())
+        {
+            var strategy = _db.Database.CreateExecutionStrategy();
+            await strategy.ExecuteInTransactionAsync(
+                ApplyOnceAsync,
+                // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
+                async cancellationToken => await _db.AdminAuditLogs.IgnoreQueryFilters().AsNoTracking()
+                    .AnyAsync(x => x.Id == auditId && x.Action == action, cancellationToken),
+                IsolationLevel.ReadCommitted,
+                ct);
+        }
+        else
+        {
+            await ApplyOnceAsync(ct);
+        }
+
+        return outcome;
+    }
 
     private static List<Guid> NormalizeTenantIds(IEnumerable<Guid>? ids)
         => ids is null ? new() : ids.Where(g => g != Guid.Empty).Distinct().ToList();
@@ -1941,8 +2046,12 @@ public class PlatformController : ControllerBase
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin, PlatformRoles.Support)]
     public async Task<IActionResult> SendPasswordReset(Guid userId, CancellationToken ct)
     {
-        var user = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId && !u.IsDeleted, ct);
+        var user = await _db.Users.AsNoTracking().FirstOrDefaultAsync(
+            u => u.Id == userId && !u.IsDeleted && u.IsActive,
+            ct);
         if (user is null) return NotFound(new { message = "User not found." });
+        var tenant = await _db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == user.TenantId && t.IsActive, ct);
+        if (tenant is null) return Conflict(new { message = "The user's workspace is unavailable." });
 
         // Safety: block reset attempts targeting the platform admin credential (env-var based, not in DB)
         if (user.Email.Equals(PlatformAdminEmail, StringComparison.OrdinalIgnoreCase))
@@ -1973,12 +2082,8 @@ public class PlatformController : ControllerBase
         await _db.SaveChangesAsync(ct);
 
         // Build reset link and send email (falls back gracefully if SMTP not configured)
-        var tenant = await _db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == user.TenantId, ct);
-        var appUrl = (Environment.GetEnvironmentVariable("APP_URL") ?? string.Empty).TrimEnd('/');
-        var encodedToken = Uri.EscapeDataString(resetToken);
-        var encodedEmail = Uri.EscapeDataString(user.Email);
-        var tenantPart = tenant is not null ? $"&tenant={Uri.EscapeDataString(tenant.Slug)}" : string.Empty;
-        var resetUrl = $"{appUrl}/reset-password?token={encodedToken}&email={encodedEmail}{tenantPart}";
+        var resetUrl = AuthLinkBuilder.ResetPassword(
+            _appUrl, tenant.Slug, resetToken);
 
         var html = $"""
             <p>Hi {System.Web.HttpUtility.HtmlEncode(user.FullName)},</p>
@@ -2029,46 +2134,31 @@ public class PlatformController : ControllerBase
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
     public async Task<IActionResult> ForcePasswordReset(Guid userId, [FromBody] ForcePasswordResetRequest req, CancellationToken ct)
     {
-        var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == userId && !u.IsDeleted, ct);
-        if (user is null) return NotFound(new { message = "User not found." });
-
-        if (user.Email.Equals(PlatformAdminEmail, StringComparison.OrdinalIgnoreCase))
-            return Forbid();
-
-        if (string.IsNullOrWhiteSpace(req.TempPassword) || req.TempPassword.Length < 10)
-            return BadRequest(new { message = "Temporary password must be at least 10 characters." });
-
-        user.PasswordHash = _passwordHasher.Hash(req.TempPassword);
-        user.MustChangePassword = true;
-        user.UpdatedAtUtc = DateTime.UtcNow;
-
-        // Revoke all active refresh tokens so existing sessions are terminated
-        await _db.RefreshTokens
-            .Where(t => t.UserId == userId && t.RevokedAtUtc == null)
-            .ExecuteUpdateAsync(s => s.SetProperty(t => t.RevokedAtUtc, DateTime.UtcNow), ct);
-
-        _db.AdminAuditLogs.Add(new AdminAuditLog
+        await Task.CompletedTask;
+        return Conflict(new
         {
-            TenantId = user.TenantId,
-            EntityType = "User",
-            EntityId = userId.ToString(),
-            Action = "ForcePasswordReset",
-            OldValuesJson = "{}",
-            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { userEmail = user.Email, initiatedBy = "platform_admin", mustChangePassword = true, sessionsRevoked = true }),
-            PerformedByName = "platform_admin",
-            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
+            error = "temporary_password_flow_disabled",
+            message = "Direct temporary-password resets are disabled. Send the controlled password-reset link."
         });
-
-        await _db.SaveChangesAsync(ct);
-        return Ok(new { userId, userEmail = user.Email, mustChangePassword = true, sessionsRevoked = true });
     }
 
     [HttpPatch("users/{userId:guid}")]
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
     public async Task<IActionResult> EditUser(Guid userId, [FromBody] EditUserRequest req, CancellationToken ct)
     {
+        // Eligibility and authorization mutations need the locked, session-invalidating access
+        // workflows. This generic editor cannot safely reactivate an identity or replace roles,
+        // so fail the whole request before loading or changing any tracked row.
+        if (req.Status is not null || req.IsActive.HasValue || req.RoleName is not null)
+        {
+            return Conflict(new
+            {
+                error = "controlled_identity_workflow_required",
+                message = "Status, activation, and role changes are disabled in this editor. Use the approved access-management workflow."
+            });
+        }
+
         var user = await _db.Users
-            .Include(u => u.UserRoles).ThenInclude(ur => ur.Role)
             .FirstOrDefaultAsync(u => u.Id == userId && !u.IsDeleted, ct);
         if (user is null) return NotFound(new { message = "User not found." });
         if (user.Email.Equals(PlatformAdminEmail, StringComparison.OrdinalIgnoreCase))
@@ -2085,39 +2175,20 @@ public class PlatformController : ControllerBase
         if (!string.IsNullOrWhiteSpace(req.Email) && !req.Email.Equals(user.Email, StringComparison.OrdinalIgnoreCase))
         {
             var normalizedNewEmail = Infrastructure.Auth.AuthService.Normalize(req.Email);
-            var emailTaken = await _db.Users.AnyAsync(u => u.NormalizedEmail == normalizedNewEmail && u.Id != userId && !u.IsDeleted, ct);
+            var emailTaken = await _db.Users.AnyAsync(
+                u => u.TenantId == user.TenantId
+                    && u.NormalizedEmail == normalizedNewEmail
+                    && u.Id != userId
+                    && !u.IsDeleted,
+                ct);
             if (emailTaken) return BadRequest(new { message = "Email address is already in use by another user." });
             changes["email"] = new System.Text.Json.Nodes.JsonArray(user.Email, req.Email.Trim());
             user.Email = req.Email.Trim();
             user.NormalizedEmail = normalizedNewEmail;
         }
 
-        if (!string.IsNullOrWhiteSpace(req.Status) && req.Status != user.Status)
-        {
-            var allowed = new HashSet<string> { "Active", "Suspended", "Deactivated", "Invited", "PendingPasswordSetup" };
-            if (!allowed.Contains(req.Status)) return BadRequest(new { message = $"Invalid status '{req.Status}'." });
-            changes["status"] = new System.Text.Json.Nodes.JsonArray(user.Status, req.Status);
-            user.Status = req.Status;
-            user.IsActive = req.Status == "Active";
-        }
-
-        if (req.IsActive.HasValue && req.IsActive.Value != user.IsActive)
-        {
-            changes["isActive"] = new System.Text.Json.Nodes.JsonArray(user.IsActive, req.IsActive.Value);
-            user.IsActive = req.IsActive.Value;
-            if (!req.IsActive.Value && user.Status == "Active") user.Status = "Suspended";
-            if (req.IsActive.Value && user.Status == "Suspended") user.Status = "Active";
-        }
-
-        if (!string.IsNullOrWhiteSpace(req.RoleName))
-        {
-            var role = await _db.Roles.FirstOrDefaultAsync(r => r.TenantId == user.TenantId && r.Name == req.RoleName && !r.IsDeleted, ct);
-            if (role is null) return BadRequest(new { message = $"Role '{req.RoleName}' not found for this tenant." });
-            var existing = user.UserRoles.Select(ur => ur.Role?.Name).ToList();
-            _db.UserRoles.RemoveRange(user.UserRoles);
-            _db.UserRoles.Add(new UserRole { UserId = userId, RoleId = role.Id });
-            changes["role"] = new System.Text.Json.Nodes.JsonArray(string.Join(",", existing), req.RoleName);
-        }
+        if (changes.Count == 0)
+            return Ok(new { userId, email = user.Email, fullName = user.FullName, status = user.Status, isActive = user.IsActive });
 
         user.UpdatedAtUtc = DateTime.UtcNow;
 
@@ -2142,6 +2213,7 @@ public class PlatformController : ControllerBase
     public async Task<IActionResult> DeleteTenantUser(Guid userId, CancellationToken ct)
     {
         var user = await _db.Users
+            .AsNoTracking()
             .Include(u => u.UserRoles).ThenInclude(ur => ur.Role)
             .FirstOrDefaultAsync(u => u.Id == userId && !u.IsDeleted, ct);
         if (user is null) return NotFound(new { message = "User not found." });
@@ -2160,30 +2232,21 @@ public class PlatformController : ControllerBase
                 return BadRequest(new { message = "Cannot remove the last administrator. Add another admin first." });
         }
 
-        user.IsDeleted = true;
-        user.DeletedAtUtc = DateTime.UtcNow;
-        user.IsActive = false;
-        user.Status = "Deactivated";
-        user.UpdatedAtUtc = DateTime.UtcNow;
-
-        // Terminate any active sessions for the removed user.
-        await _db.RefreshTokens
-            .Where(t => t.UserId == userId && t.RevokedAtUtc == null)
-            .ExecuteUpdateAsync(s => s.SetProperty(t => t.RevokedAtUtc, DateTime.UtcNow), ct);
-
-        _db.AdminAuditLogs.Add(new AdminAuditLog
+        try
         {
-            TenantId = user.TenantId,
-            EntityType = "User",
-            EntityId = userId.ToString(),
-            Action = "UserDeleted",
-            OldValuesJson = System.Text.Json.JsonSerializer.Serialize(new { userEmail = user.Email, fullName = user.FullName }),
-            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { isDeleted = true, initiatedBy = "platform_admin" }),
-            PerformedByName = "platform_admin",
-            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
-        });
+            var deleted = await _accessManagement.DeleteUserAsync(
+                user.TenantId,
+                userId,
+                EntityScopeContext.GroupLevel,
+                PlatformTenantMutationContext(user.TenantId),
+                ct);
+            if (!deleted) return NotFound(new { message = "User not found." });
+        }
+        catch (InvalidOperationException ex) when (ex.Message == "User not found.")
+        {
+            return NotFound(new { message = "User not found." });
+        }
 
-        await _db.SaveChangesAsync(ct);
         return Ok(new { userId, userEmail = user.Email, deleted = true });
     }
 
@@ -2191,66 +2254,57 @@ public class PlatformController : ControllerBase
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin, PlatformRoles.Support)]
     public async Task<IActionResult> UnlockUser(Guid userId, CancellationToken ct)
     {
-        var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == userId && !u.IsDeleted, ct);
+        var user = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId && !u.IsDeleted, ct);
         if (user is null) return NotFound(new { message = "User not found." });
         if (user.Email.Equals(PlatformAdminEmail, StringComparison.OrdinalIgnoreCase)) return Forbid();
 
-        user.IsLocked = false;
-        user.LockoutEnd = null;
-        user.FailedLoginCount = 0;
-        if (user.Status == "Locked") user.Status = "Active";
-        user.IsActive = true;
-        user.UpdatedAtUtc = DateTime.UtcNow;
-
-        _db.AdminAuditLogs.Add(new AdminAuditLog
+        try
         {
-            TenantId = user.TenantId,
-            EntityType = "User",
-            EntityId = userId.ToString(),
-            Action = "UserUnlocked",
-            OldValuesJson = "{}",
-            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { userEmail = user.Email, initiatedBy = "platform_admin" }),
-            PerformedByName = "platform_admin",
-            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
+            await _accessManagement.UnlockUserAsync(
+                user.TenantId,
+                userId,
+                EntityScopeContext.GroupLevel,
+                PlatformTenantMutationContext(user.TenantId),
+                ct);
+        }
+        catch (InvalidOperationException ex) when (ex.Message == "User not found.")
+        {
+            return NotFound(new { message = "User not found." });
+        }
+
+        var current = await _db.Users.AsNoTracking().SingleAsync(u => u.Id == userId, ct);
+        return Ok(new
+        {
+            userId,
+            userEmail = current.Email,
+            unlocked = !current.IsLocked,
+            isActive = current.IsActive,
+            status = current.Status
         });
-        await _db.SaveChangesAsync(ct);
-        return Ok(new { userId, userEmail = user.Email, unlocked = true });
     }
 
     [HttpPost("users/{userId:guid}/disable-mfa")]
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
     public async Task<IActionResult> DisableMfa(Guid userId, CancellationToken ct)
     {
-        var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == userId && !u.IsDeleted, ct);
+        var user = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId && !u.IsDeleted, ct);
         if (user is null) return NotFound(new { message = "User not found." });
         if (user.Email.Equals(PlatformAdminEmail, StringComparison.OrdinalIgnoreCase)) return Forbid();
 
-        user.MFAEnabled = false;
-        user.MfaSecretEncrypted = null;
-        user.MfaConfiguredAtUtc = null;
-        user.UpdatedAtUtc = DateTime.UtcNow;
+        var disabled = await _mfa.AdminDisableAsync(
+            userId,
+            user.TenantId,
+            PlatformTenantMutationContext(user.TenantId),
+            ct);
+        if (!disabled)
+        {
+            return Conflict(new
+            {
+                error = "mfa_disable_not_applied",
+                message = "MFA recovery was not applied. The tenant, user, or enrolled factor is not currently eligible."
+            });
+        }
 
-        _db.LoginActivities.Add(new LoginActivity
-        {
-            TenantId  = user.TenantId,
-            UserId    = user.Id,
-            EmailAttempted = user.Email,
-            EventType = LoginEventTypes.MfaReset,
-            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
-            UserAgent = HttpContext.Request.Headers.UserAgent.ToString(),
-        });
-        _db.AdminAuditLogs.Add(new AdminAuditLog
-        {
-            TenantId = user.TenantId,
-            EntityType = "User",
-            EntityId = userId.ToString(),
-            Action = "MfaDisabled",
-            OldValuesJson = "{}",
-            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { userEmail = user.Email, initiatedBy = "platform_admin" }),
-            PerformedByName = "platform_admin",
-            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
-        });
-        await _db.SaveChangesAsync(ct);
         return Ok(new { userId, userEmail = user.Email, mfaDisabled = true });
     }
 
@@ -2258,36 +2312,137 @@ public class PlatformController : ControllerBase
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin, PlatformRoles.Support)]
     public async Task<IActionResult> RevokeSessions(Guid userId, CancellationToken ct)
     {
-        var user = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId && !u.IsDeleted, ct);
-        if (user is null) return NotFound(new { message = "User not found." });
-        if (user.Email.Equals(PlatformAdminEmail, StringComparison.OrdinalIgnoreCase)) return Forbid();
+        var changedAtUtc = DateTime.UtcNow;
+        var auditId = Guid.NewGuid();
+        var activityId = Guid.NewGuid();
+        var actor = PlatformActorEmail();
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
+        var userAgent = HttpContext.Request.Headers.UserAgent.ToString();
+        string? userEmail = null;
+        var revoked = 0;
+        var found = false;
+        var forbidden = false;
 
-        var revoked = await _db.RefreshTokens
-            .Where(t => t.UserId == userId && t.RevokedAtUtc == null)
-            .ExecuteUpdateAsync(s => s.SetProperty(t => t.RevokedAtUtc, DateTime.UtcNow), ct);
+        async Task<bool> RevokeOnceAsync(CancellationToken cancellationToken)
+        {
+            _db.ChangeTracker.Clear();
+            // IgnoreQueryFilters is intentional: pinned to a unique key or an id set resolved from the tenant-scoped/locked graph above (register §6).
+            var identity = await _db.Users.IgnoreQueryFilters().AsNoTracking()
+                .Where(x => x.Id == userId && !x.IsDeleted)
+                .Select(x => new { x.TenantId, x.Email })
+                .SingleOrDefaultAsync(cancellationToken);
+            if (identity is null) return true;
 
-        _db.LoginActivities.Add(new LoginActivity
+            var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == identity.TenantId, cancellationToken);
+            if (tenant is null) return true;
+            var user = await _db.Users.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.TenantId == tenant.Id && x.Id == userId && !x.IsDeleted, cancellationToken);
+            if (user is null) return true;
+            found = true;
+            userEmail = user.Email;
+            if (user.Email.Equals(PlatformAdminEmail, StringComparison.OrdinalIgnoreCase))
+            {
+                forbidden = true;
+                return true;
+            }
+
+            // IgnoreQueryFilters is intentional: challenge rows are pinned to user ids taken from the tenant-locked graph above (register §6).
+            await _db.MfaChallengeTokens.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.UserId == userId && x.UsedAtUtc == null)
+                .OrderBy(x => x.Id)
+                .Select(x => x.Id)
+                .ToListAsync(cancellationToken);
+            await _db.RefreshTokens.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.UserId == userId && x.RevokedAtUtc == null)
+                .OrderBy(x => x.Id)
+                .Select(x => x.Id)
+                .ToListAsync(cancellationToken);
+
+            TenantSessionSecurity.RotateStamp(user, changedAtUtc);
+            if (_db.Database.IsRelational())
+            {
+                // IgnoreQueryFilters is intentional: challenge rows are pinned to user ids taken from the tenant-locked graph above (register §6).
+                await _db.MfaChallengeTokens.IgnoreQueryFilters()
+                    .Where(x => x.UserId == userId && x.UsedAtUtc == null)
+                    .ExecuteUpdateAsync(s => s.SetProperty(x => x.UsedAtUtc, changedAtUtc), cancellationToken);
+                revoked = await _db.RefreshTokens
+                    .Where(x => x.UserId == userId && x.RevokedAtUtc == null)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(x => x.RevokedAtUtc, changedAtUtc)
+                        .SetProperty(x => x.RevokedByIp, ip), cancellationToken);
+            }
+            else
+            {
+                // IgnoreQueryFilters is intentional: challenge rows are pinned to user ids taken from the tenant-locked graph above (register §6).
+                foreach (var challenge in await _db.MfaChallengeTokens.IgnoreQueryFilters()
+                    .Where(x => x.UserId == userId && x.UsedAtUtc == null)
+                    .ToListAsync(cancellationToken))
+                    challenge.UsedAtUtc = changedAtUtc;
+                foreach (var token in await _db.RefreshTokens
+                    .Where(x => x.UserId == userId && x.RevokedAtUtc == null)
+                    .ToListAsync(cancellationToken))
+                {
+                    token.RevokedAtUtc = changedAtUtc;
+                    token.RevokedByIp = ip;
+                    revoked++;
+                }
+            }
+
+            _db.LoginActivities.Add(new LoginActivity
+            {
+                Id = activityId,
+                TenantId = user.TenantId,
+                UserId = user.Id,
+                EmailAttempted = user.Email,
+                EventType = LoginEventTypes.SessionRevoked,
+                IpAddress = ip,
+                UserAgent = userAgent,
+                OccurredAtUtc = changedAtUtc
+            });
+            _db.AdminAuditLogs.Add(new AdminAuditLog
+            {
+                Id = auditId,
+                TenantId = user.TenantId,
+                EntityType = "User",
+                EntityId = userId.ToString(),
+                Action = "SessionsRevoked",
+                OldValuesJson = "{}",
+                NewValuesJson = JsonSerializer.Serialize(new
+                {
+                    userEmail = user.Email,
+                    initiatedBy = actor,
+                    sessionsRevoked = revoked,
+                    challengesInvalidated = true,
+                    sessionStampRotated = true
+                }),
+                PerformedByName = actor,
+                IpAddress = ip ?? string.Empty,
+                CreatedAtUtc = changedAtUtc
+            });
+            await _db.SaveChangesAsync(cancellationToken);
+            return true;
+        }
+
+        if (_db.Database.IsRelational())
         {
-            TenantId  = user.TenantId,
-            UserId    = user.Id,
-            EmailAttempted = user.Email,
-            EventType = LoginEventTypes.SessionRevoked,
-            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
-            UserAgent = HttpContext.Request.Headers.UserAgent.ToString(),
-        });
-        _db.AdminAuditLogs.Add(new AdminAuditLog
+            var strategy = _db.Database.CreateExecutionStrategy();
+            await strategy.ExecuteInTransactionAsync(
+                RevokeOnceAsync,
+                // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
+                async cancellationToken => await _db.AdminAuditLogs.IgnoreQueryFilters().AsNoTracking()
+                    .AnyAsync(x => x.Id == auditId && x.Action == "SessionsRevoked", cancellationToken),
+                IsolationLevel.ReadCommitted,
+                ct);
+        }
+        else
         {
-            TenantId = user.TenantId,
-            EntityType = "User",
-            EntityId = userId.ToString(),
-            Action = "SessionsRevoked",
-            OldValuesJson = "{}",
-            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { userEmail = user.Email, initiatedBy = "platform_admin", sessionsRevoked = revoked }),
-            PerformedByName = "platform_admin",
-            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
-        });
-        await _db.SaveChangesAsync(ct);
-        return Ok(new { userId, userEmail = user.Email, sessionsRevoked = revoked });
+            await RevokeOnceAsync(ct);
+        }
+
+        if (!found) return NotFound(new { message = "User not found." });
+        if (forbidden) return Forbid();
+        return Ok(new { userId, userEmail, sessionsRevoked = revoked });
     }
 
     // ── Platform Audit Logs ───────────────────────────────────────────────────
@@ -2416,105 +2571,14 @@ public class PlatformController : ControllerBase
 
     [HttpPost("support-access/start")]
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin, PlatformRoles.Support)]
-    public async Task<IActionResult> StartSupportAccess([FromBody] StartSupportAccessRequest req, CancellationToken ct)
+    public IActionResult StartSupportAccess([FromBody] StartSupportAccessRequest req, CancellationToken ct)
     {
-        if (!Guid.TryParse(req.TenantId, out var tenantId))
-            return BadRequest(new { message = "Invalid tenantId." });
-        if (!Guid.TryParse(req.UserId, out var userId))
-            return BadRequest(new { message = "Invalid userId." });
-        if (string.IsNullOrWhiteSpace(req.Reason))
-            return BadRequest(new { message = "Reason is required for support access." });
-
-        var tenant = await _db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == tenantId, ct);
-        if (tenant is null) return NotFound(new { message = "Tenant not found." });
-
-        var user = await _db.Users
-            .AsNoTracking()
-            .Include(u => u.UserRoles)
-                .ThenInclude(ur => ur.Role)
-                    .ThenInclude(r => r!.RolePermissions)
-                        .ThenInclude(rp => rp.Permission)
-            .Include(u => u.PermissionOverrides)
-            .Include(u => u.EntityAccesses)
-            .Include(u => u.EmployeeUserAccounts)
-            .FirstOrDefaultAsync(u => u.Id == userId && u.TenantId == tenantId && !u.IsDeleted, ct);
-        if (user is null) return NotFound(new { message = "User not found in specified tenant." });
-
-        var roles = user.UserRoles.Where(ur => ur.Role is not null).Select(ur => ur.Role!.Name).ToList();
-        var expiresAt = DateTime.UtcNow.AddHours(1);
-
-        var claims = new List<Claim>
+        _ = req;
+        _ = ct;
+        return StatusCode(StatusCodes.Status403Forbidden, new
         {
-            new(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
-            new(JwtRegisteredClaimNames.Email, user.Email),
-            new(JwtRegisteredClaimNames.Name, user.FullName),
-            new("tenant_id", tenant.Id.ToString()),
-            new("tenant", tenant.Slug),
-            new("impersonated_by", "platform_admin"),
-            new("support_reason", req.Reason.Trim()),
-            new("act_sub", GetPlatformUserId()?.ToString() ?? "platform-admin"),
-            new("act_email", PlatformActorEmail()),
-            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
-        };
-        claims.AddRange(roles.Select(r => new Claim(ClaimTypes.Role, r)));
-        // Same rules as Impersonate: mirror a real login token (permissions + the same
-        // claim-v2 scope decision), and fail closed on claim absence — a break-glass
-        // session must never widen to tenant-wide company access via missing claims.
-        claims.AddRange(AuthService.GetPermissions(user).Select(p => new Claim("permission", p)));
-        claims.AddRange(await BuildEntityScopeClaimsAsync(user, tenantId, ct));
-        claims.Add(new Claim(EntityScopeContext.StrictScopeClaim, "true"));
-
-        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwt.SigningKey));
-        var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-        // Support session tokens grant access to tenant-scoped endpoints, so they use TenantAudience.
-        var jwtToken = new JwtSecurityToken(_jwt.Issuer, _jwt.TenantAudience, claims, expires: expiresAt, signingCredentials: credentials);
-        var tokenString = new JwtSecurityTokenHandler().WriteToken(jwtToken);
-
-        // Hash the token so we can identify this session when ending it
-        var tokenHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(tokenString)));
-
-        var session = new PlatformSupportSession
-        {
-            TenantId = tenantId,
-            TargetUserId = userId,
-            TargetUserEmail = user.Email,
-            Reason = req.Reason.Trim(),
-            StartedByEmail = PlatformActorEmail(),
-            StartedByIp = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
-            ExpiresAtUtc = expiresAt,
-            TokenHash = tokenHash
-        };
-        _db.PlatformSupportSessions.Add(session);
-
-        _db.AdminAuditLogs.Add(new AdminAuditLog
-        {
-            TenantId = tenantId,
-            EntityType = "SupportSession",
-            EntityId = session.Id.ToString(),
-            Action = "SupportAccessStarted",
-            OldValuesJson = "{}",
-            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new
-            {
-                targetUserEmail = user.Email,
-                tenantSlug = tenant.Slug,
-                reason = req.Reason.Trim(),
-                actingAdminId = GetPlatformUserId(),
-                expiresAt
-            }),
-            PerformedByName = PlatformActorEmail(),
-            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
-        });
-
-        await _db.SaveChangesAsync(ct);
-
-        return Ok(new
-        {
-            sessionId = session.Id,
-            token = tokenString,
-            expiresAt,
-            targetUserEmail = user.Email,
-            tenantSlug = tenant.Slug,
-            reason = session.Reason
+            error = "privileged_tenant_access_disabled",
+            message = "Support-session issuance is temporarily disabled pending server-side revocation controls."
         });
     }
 
@@ -2525,33 +2589,88 @@ public class PlatformController : ControllerBase
         if (!Guid.TryParse(req.SessionId, out var sessionId))
             return BadRequest(new { message = "Invalid sessionId." });
 
-        var session = await _db.PlatformSupportSessions.FirstOrDefaultAsync(s => s.Id == sessionId, ct);
-        if (session is null) return NotFound(new { message = "Support session not found." });
-        if (session.EndedAtUtc is not null)
-            return BadRequest(new { message = "Session already ended." });
-
-        session.EndedAtUtc = DateTime.UtcNow;
-
-        _db.AdminAuditLogs.Add(new AdminAuditLog
+        // Production uses a conditional UPDATE inside one transaction. Under PostgreSQL, a
+        // concurrent replay waits on the row lock and then re-checks EndedAtUtc, so exactly one
+        // caller changes the row and writes the audit. The other caller returns the committed
+        // result without a second side effect. The non-relational branch exists only for focused
+        // in-memory unit tests; the real HTTP harness exercises the relational branch.
+        if (_db.Database.IsRelational())
         {
-            TenantId = session.TenantId,
-            EntityType = "SupportSession",
-            EntityId = session.Id.ToString(),
-            Action = "SupportAccessEnded",
-            OldValuesJson = "{}",
-            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new
+            var strategy = _db.Database.CreateExecutionStrategy();
+            var attempt = 0;
+            return await strategy.ExecuteAsync(async () =>
             {
-                targetUserEmail = session.TargetUserEmail,
-                reason = session.Reason,
-                durationMinutes = (int)(DateTime.UtcNow - session.StartedAtUtc).TotalMinutes
-            }),
-            PerformedByName = "platform_admin",
-            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
-        });
+                // A transient failure can leave an Added audit entry in the scoped context even
+                // though the transaction was rolled back. Discard attempt-local tracked state
+                // before reloading the authoritative row, otherwise the retry could persist both
+                // the abandoned audit and the new one.
+                if (attempt++ > 0) _db.ChangeTracker.Clear();
 
+                await using var transaction = await _db.Database.BeginTransactionAsync(ct);
+                var session = await _db.PlatformSupportSessions
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(s => s.Id == sessionId, ct);
+                if (session is null)
+                {
+                    await transaction.RollbackAsync(ct);
+                    return (IActionResult)NotFound(new { message = "Support session not found." });
+                }
+
+                if (session.EndedAtUtc is not null)
+                {
+                    await transaction.CommitAsync(ct);
+                    return (IActionResult)Ok(new { sessionId, endedAt = session.EndedAtUtc });
+                }
+
+                var endedAt = DateTime.UtcNow;
+                var changed = await _db.PlatformSupportSessions
+                    .Where(s => s.Id == sessionId && s.EndedAtUtc == null)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(s => s.EndedAtUtc, endedAt), ct);
+
+                if (changed == 0)
+                {
+                    var replayed = await _db.PlatformSupportSessions
+                        .AsNoTracking()
+                        .SingleAsync(s => s.Id == sessionId, ct);
+                    await transaction.CommitAsync(ct);
+                    return (IActionResult)Ok(new { sessionId, endedAt = replayed.EndedAtUtc });
+                }
+
+                _db.AdminAuditLogs.Add(BuildSupportAccessEndedAudit(session, endedAt));
+                await _db.SaveChangesAsync(ct);
+                await transaction.CommitAsync(ct);
+                return (IActionResult)Ok(new { sessionId, endedAt });
+            });
+        }
+
+        var tracked = await _db.PlatformSupportSessions.FirstOrDefaultAsync(s => s.Id == sessionId, ct);
+        if (tracked is null) return NotFound(new { message = "Support session not found." });
+        if (tracked.EndedAtUtc is not null)
+            return Ok(new { sessionId, endedAt = tracked.EndedAtUtc });
+
+        tracked.EndedAtUtc = DateTime.UtcNow;
+        _db.AdminAuditLogs.Add(BuildSupportAccessEndedAudit(tracked, tracked.EndedAtUtc.Value));
         await _db.SaveChangesAsync(ct);
-        return Ok(new { sessionId, endedAt = session.EndedAtUtc });
+        return Ok(new { sessionId, endedAt = tracked.EndedAtUtc });
     }
+
+    private AdminAuditLog BuildSupportAccessEndedAudit(PlatformSupportSession session, DateTime endedAt) => new()
+    {
+        TenantId = session.TenantId,
+        EntityType = "SupportSession",
+        EntityId = session.Id.ToString(),
+        Action = "SupportAccessEnded",
+        OldValuesJson = "{}",
+        NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            targetUserEmail = session.TargetUserEmail,
+            reason = session.Reason,
+            durationMinutes = (int)(endedAt - session.StartedAtUtc).TotalMinutes
+        }),
+        PerformedByName = "platform_admin",
+        IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
+    };
 
     [HttpGet("support-access")]
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin, PlatformRoles.Support, PlatformRoles.Auditor)]
@@ -4494,7 +4613,17 @@ public record SetAccountTypeRequest(string AccountType);
 public record SetCompanyCreationModeRequest(string Mode);
 
 public record AddTenantAdminRequest(string Email, string? FullName, string Password);
-public record CreateTenantUserRequest(string Email, string? FullName, string Password, string? RoleName, bool? MustChangePassword);
+/// <param name="EntityScope">
+/// Which legal entities the new account may see: "group" (every company, now and in future),
+/// "allCurrentCompanies", or "companies" with <paramref name="CompanyIds"/>. Omitted, it defaults to
+/// "group" for the tenant Admin role and "allCurrentCompanies" for every other role. It is NOT
+/// optional in effect — an account with no scope resolves to zero companies and every
+/// company-owned row disappears from its queries — which is why the endpoint now refuses a request
+/// that would land there rather than creating an account that cannot see its own tenant.
+/// </param>
+public record CreateTenantUserRequest(
+    string Email, string? FullName, string Password, string? RoleName, bool? MustChangePassword,
+    string? EntityScope = null, IReadOnlyCollection<Guid>? CompanyIds = null);
 public record TenantActionRequest(string? Reason);
 
 // ── Bulk tenant operation DTOs ──────────────────────────────────────────────

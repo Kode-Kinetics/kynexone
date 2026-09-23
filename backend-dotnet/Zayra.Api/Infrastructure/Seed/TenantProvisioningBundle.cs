@@ -114,7 +114,10 @@ public static class TenantProvisioningBundle
     // insert-if-absent by (tenant, CompanyId==null, country). The CODE floor (GccReadinessFloor) remains
     // the GUARANTEE regardless of whether this seed ran, so a fresh/mis-provisioned tenant still gates.
     // Keys are jurisdiction readiness vocabulary (EmployeeFieldRegistry), not tenant business data.
-    private static readonly (string Country, string RequiredFieldsJson)[] ComplianceSeeds =
+    /// <summary>Exposed to tests (InternalsVisibleTo) so the readiness-resolver jurisdiction guard can
+    /// assert against the REAL seeded set — six tenant-default rows, one per GCC state — rather than a
+    /// copy that could drift away from what provisioning actually writes.</summary>
+    internal static readonly (string Country, string RequiredFieldsJson)[] ComplianceSeeds =
     {
         ("SA", """[{"key":"GosiReference","category":"identity","failClosed":true},{"key":"IqamaNumber","category":"identity","failClosed":true,"appliesWhen":{"nationalityNot":"SA"}},{"key":"doc:Contract","category":"contract","failClosed":false}]"""),
         ("AE", """[{"key":"EmiratesId","category":"identity","failClosed":true},{"key":"WorkPermitNumber","category":"identity","failClosed":true,"appliesWhen":{"nationalityNot":"AE"}},{"key":"doc:Contract","category":"contract","failClosed":false}]"""),

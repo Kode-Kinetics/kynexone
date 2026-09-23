@@ -8,11 +8,18 @@
 // FeatureUnavailableError and the screen hides/disables the control
 // (see src/config/features.ts).
 
-import { apiDelete, apiGet, apiPost, apiPut, createApiClient, getApiClient, unwrapApiData } from './client';
+import { apiDelete, apiGet, apiPost, apiPut, createPublicAuthClient, getApiClient, unwrapApiData } from './client';
 import { tokenStorage, userStorage, appStorage } from '@/storage';
 import { APP_CONFIG } from '@/config';
 import { FEATURES, FeatureUnavailableError } from '@/config/features';
 import { normalizeAccessMode } from '@/auth/accessPolicy';
+import {
+  normalizeEmail,
+  publicInvitationInput,
+  publicLoginInput,
+  publicResetInput,
+  requireWorkspace,
+} from '@/auth/publicAuthInput';
 import { mapEmployeeProfile } from './profileMapper';
 import { riyadhBusinessDate, riyadhBusinessMonth } from '@/utils/businessDate';
 import type {
@@ -499,29 +506,29 @@ function secretFromProvisioningUri(provisioningUri: string): string {
 // ---- Auth ----
 export const authApi = {
   async login(username: string, password: string, tenantId: string): Promise<LoginOutcome> {
-    const tempClient = createApiClient(tenantId);
-    const res = await tempClient.post('/auth/login', {
-      email: username,
-      password,
-      tenantSlug: tenantId,
-    });
+    const input = publicLoginInput(username, password, tenantId);
+    const res = await createPublicAuthClient().post('/auth/login', input);
     const data = unwrapApiData<any>(res.data);
     if (data?.mfaRequired) {
+      const challengeToken = String(data.challengeToken ?? '');
+      if (!challengeToken) throw new Error('The server returned an invalid MFA challenge.');
       return {
         kind: 'mfaChallenge',
-        challengeToken: String(data.challengeToken ?? ''),
+        challengeToken,
         expiresInSeconds: Number(data.expiresInSeconds ?? 300),
-        tenantId,
-        email: username,
+        tenantId: input.tenantSlug,
+        email: input.email,
       };
     }
     if (data?.mfaEnrollmentRequired) {
+      const enrollmentToken = String(data.enrollmentToken ?? '');
+      if (!enrollmentToken) throw new Error('The server returned an invalid MFA enrollment challenge.');
       return {
         kind: 'mfaEnrollment',
-        enrollmentToken: String(data.enrollmentToken ?? ''),
+        enrollmentToken,
         expiresInSeconds: Number(data.expiresInSeconds ?? 600),
-        tenantId,
-        email: username,
+        tenantId: input.tenantSlug,
+        email: input.email,
         message: data.message,
       };
     }
@@ -533,7 +540,8 @@ export const authApi = {
     totpCode: string,
     tenantId: string
   ): Promise<AuthenticatedSession> {
-    const response = await createApiClient(tenantId).post('/auth/mfa/challenge/verify', {
+    requireWorkspace(tenantId);
+    const response = await createPublicAuthClient().post('/auth/mfa/challenge/verify', {
       challengeToken,
       totpCode,
     });
@@ -544,7 +552,8 @@ export const authApi = {
     enrollmentToken: string,
     tenantId: string
   ): Promise<{ provisioningUri: string; tempSecret: string }> {
-    const response = await createApiClient(tenantId).post('/auth/mfa/enrollment/setup', {
+    requireWorkspace(tenantId);
+    const response = await createPublicAuthClient().post('/auth/mfa/enrollment/setup', {
       enrollmentToken,
     });
     const data = unwrapApiData<any>(response.data);
@@ -562,7 +571,8 @@ export const authApi = {
     totpCode: string,
     tenantId: string
   ): Promise<void> {
-    await createApiClient(tenantId).post('/auth/mfa/enrollment/verify-setup', {
+    requireWorkspace(tenantId);
+    await createPublicAuthClient().post('/auth/mfa/enrollment/verify-setup', {
       enrollmentToken,
       tempSecret,
       totpCode,
@@ -582,36 +592,32 @@ export const authApi = {
     await apiPost('/auth/change-password', { currentPassword: oldPassword, newPassword });
   },
 
-  /** Unauthenticated: uses a throwaway client so it works from the login screen. */
-  async forgotPassword(email: string, tenantSlug?: string): Promise<void> {
-    await createApiClient(tenantSlug ?? '').post('/auth/forgot-password', {
-      email,
-      tenantSlug: tenantSlug || undefined,
+  async forgotPassword(email: string, tenantSlug: string): Promise<void> {
+    const normalizedEmail = normalizeEmail(email);
+    if (!normalizedEmail) throw new Error('Work email is required.');
+    await createPublicAuthClient().post('/auth/forgot-password', {
+      email: normalizedEmail,
+      tenantSlug: requireWorkspace(tenantSlug),
     });
   },
 
-  async resetPassword(email: string, resetToken: string, newPassword: string, tenantSlug?: string): Promise<void> {
-    await createApiClient(tenantSlug ?? '').post('/auth/reset-password', {
-      email,
-      resetToken,
-      newPassword,
-      tenantSlug: tenantSlug || undefined,
-    });
+  async resetPassword(resetToken: string, newPassword: string, tenantSlug: string): Promise<void> {
+    await createPublicAuthClient().post(
+      '/auth/reset-password',
+      publicResetInput(resetToken, newPassword, tenantSlug),
+    );
   },
 
   /** First-time password setup from an invitation (backend: /auth/accept-invitation). */
-  async setupFirstPassword(
-    email: string,
+  async acceptInvitation(
     invitationToken: string,
     newPassword: string,
-    tenantSlug?: string
+    tenantSlug: string,
   ): Promise<void> {
-    await createApiClient(tenantSlug ?? '').post('/auth/accept-invitation', {
-      email,
-      invitationToken,
-      newPassword,
-      tenantSlug: tenantSlug || undefined,
-    });
+    await createPublicAuthClient().post(
+      '/auth/accept-invitation',
+      publicInvitationInput(invitationToken, newPassword, tenantSlug),
+    );
   },
 };
 

@@ -145,39 +145,15 @@ public class CompaniesController : ControllerBase
     [Authorize(Roles = "Admin")]
     public async Task<IActionResult> SetStatus(Guid id, [FromBody] CompanyStatusRequest request, CancellationToken cancellationToken)
     {
-        var tenantId = this.GetTenantId();
-        if (tenantId is null) return Unauthorized();
-
-        var company = await _db.Companies.FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Id == id && !c.IsDeleted, cancellationToken);
-        if (company is null) return NotFound();
-
-        if (!request.IsActive)
+        _ = id;
+        _ = request;
+        _ = cancellationToken;
+        await Task.CompletedTask;
+        return Conflict(new
         {
-            var otherActive = await _db.Companies.CountAsync(
-                c => c.TenantId == tenantId && c.Id != id && c.IsActive && !c.IsDeleted, cancellationToken);
-            if (otherActive == 0)
-                return Conflict(new
-                {
-                    error = "last_active_company",
-                    message = "Cannot deactivate the only active company. Activate another company first.",
-                });
-        }
-
-        var previous = company.IsActive;
-        company.IsActive = request.IsActive;
-        company.UpdatedAtUtc = DateTime.UtcNow;
-        _db.AdminAuditLogs.Add(new AdminAuditLog
-        {
-            TenantId = tenantId.Value,
-            CompanyId = company.Id,
-            EntityType = nameof(Company),
-            EntityId = company.Id.ToString(),
-            Action = request.IsActive ? "CompanyReactivated" : "CompanySuspended",
-            OldValuesJson = System.Text.Json.JsonSerializer.Serialize(new { isActive = previous }),
-            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { isActive = company.IsActive }),
+            error = "company_status_change_disabled",
+            message = "Company suspension and reactivation are temporarily disabled pending atomic authorization invalidation."
         });
-        await _db.SaveChangesAsync(cancellationToken);
-        return Ok(company.ToDto());
     }
 
     [HttpPut("{id:guid}")]

@@ -264,14 +264,12 @@ public class AccessController : ControllerBase
     [HttpPost("users/{userId:guid}/admin-reset-password")]
     public async Task<IActionResult> AdminResetPassword(Guid userId, AdminResetPasswordRequest request, CancellationToken cancellationToken)
     {
-        try
+        await Task.CompletedTask;
+        return Conflict(new
         {
-            var tenantId = GetTenantId();
-            if (tenantId is null) return Unauthorized();
-            await _accessManagement.AdminResetPasswordAsync(tenantId.Value, userId, request, this.GetEntityScope(), GetContext(), cancellationToken);
-            return NoContent();
-        }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+            error = "temporary_password_flow_disabled",
+            message = "Direct temporary-password resets are disabled. Use the controlled password-reset link."
+        });
     }
 
     [HttpDelete("users/{userId:guid}")]
@@ -324,7 +322,12 @@ public class AccessController : ControllerBase
                     });
             }
 
-            var invite = await _accessManagement.InviteEmployeeLoginAsync(tenantId.Value, request, GetContext(), cancellationToken);
+            var invite = await _accessManagement.InviteEmployeeLoginAsync(
+                tenantId.Value,
+                request,
+                this.GetEntityScope(),
+                GetContext(),
+                cancellationToken);
             return Created($"/api/access/users/{invite.UserId}", invite);
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }

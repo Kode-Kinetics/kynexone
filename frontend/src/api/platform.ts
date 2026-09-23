@@ -325,15 +325,6 @@ export interface SupportSession {
   isActive: boolean;
 }
 
-export interface StartSupportAccessResult {
-  sessionId: string;
-  token: string;
-  expiresAt: string;
-  targetUserEmail: string;
-  tenantSlug: string;
-  reason: string;
-}
-
 // ── Platform API ──────────────────────────────────────────────────────────────
 
 export interface PlatformAnnouncement {
@@ -542,9 +533,6 @@ export const platformApi = {
   setFeature: (tenantId: string, featureKey: string, isEnabled: boolean) =>
     platform.put(`/api/platform/tenants/${tenantId}/features/${featureKey}`, { isEnabled }).then(r => r.data),
 
-  impersonate: (tenantId: string, userId: string) =>
-    platform.post<{ token: string }>(`/api/platform/tenants/${tenantId}/impersonate`, { userId }).then(r => r.data),
-
   createTenant: (body: CreateTenantBody) =>
     platform.post<CreateTenantResult>('/api/platform/tenants', body).then(r => r.data),
 
@@ -557,7 +545,14 @@ export const platformApi = {
   listTenantUsers: (tenantId: string, search?: string) =>
     platform.get<TenantUser[]>(`/api/platform/tenants/${tenantId}/users`, { params: search ? { search } : {} }).then(r => r.data),
 
-  createTenantUser: (tenantId: string, body: { email: string; fullName?: string; password: string; roleName?: string; mustChangePassword?: boolean }) =>
+  // entityScope decides which legal entities the new account can SEE. Omitted, the server defaults
+  // to 'group' for the Admin role and 'allCurrentCompanies' for every other role, and refuses
+  // outright when that would reach zero companies — an account that cannot see its own tenant reads
+  // as a 404 on the user's first working day, not as a missing grant.
+  createTenantUser: (tenantId: string, body: {
+    email: string; fullName?: string; password: string; roleName?: string; mustChangePassword?: boolean;
+    entityScope?: 'group' | 'allCurrentCompanies' | 'companies'; companyIds?: string[];
+  }) =>
     platform.post(`/api/platform/tenants/${tenantId}/users`, body).then(r => r.data),
 
   deleteTenantUser: (userId: string) =>
@@ -654,9 +649,6 @@ export const platformApi = {
 
   sendInvoiceEmail: (tenantId: string, invoiceId: string) =>
     platform.post<{ sent: boolean; billingEmail: string; invoiceNumber: string; pdfAttached?: boolean; smtpRequired?: boolean; message?: string }>(`/api/platform/tenants/${tenantId}/invoices/${invoiceId}/send`).then(r => r.data),
-
-  startSupportAccess: (tenantId: string, userId: string, reason: string) =>
-    platform.post<StartSupportAccessResult>('/api/platform/support-access/start', { tenantId, userId, reason }).then(r => r.data),
 
   endSupportAccess: (sessionId: string) =>
     platform.post('/api/platform/support-access/end', { sessionId }).then(r => r.data),
