@@ -1,4 +1,5 @@
 // <manually written: TARGET_SCHEMA.md revision 7 SS9 row 38. NOT yet in Db/baseline. />
+#nullable enable // the file's first line marks it generated, which turns the project's nullable context off
 #pragma warning disable IDE1006 // the type name IS the constraint name
 namespace Zayra.Api.Data.V2.Domains;
 
