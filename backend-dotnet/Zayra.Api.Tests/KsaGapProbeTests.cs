@@ -112,6 +112,23 @@ public class KsaGapProbeTests
         db.LeaveTypes.Add(sick);
         await db.SaveChangesAsync();
 
+        // Art. 117 counts sick leave in CALENDAR days — "during a single year, whether such leaves
+        // are continuous or intermittent" — so the sick-leave policy includes weekends and public
+        // holidays. This used to be implicit: the fixture seeded no policy at all and the day-count
+        // fell back to raw calendar days for want of one. That fallback now resolves the tenant's
+        // configured working week (a Fri–Sat rest week here), which is right for annual leave and
+        // wrong for Art. 117 — so the statute is stated on the policy, where it belongs, instead of
+        // being inherited from a missing one.
+        db.LeavePolicies.Add(new LeavePolicy
+        {
+            TenantId = tenantId, CompanyId = company.Id, CountryCode = "SA", LeaveTypeId = sick.Id,
+            Name = "KSA Sick Leave (Art. 117)", Status = "Active",
+            WeekendsIncluded = true, PublicHolidaysIncluded = true,
+        });
+        // The sick-leave requests below are backdated certified illness, which is what sick leave
+        // is: they carry IsEmergency so the policy's notice period — a rule for PLANNED absence —
+        // does not reject them. With no policy at all there was no notice period to satisfy.
+
         db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
         {
             TenantId = tenantId, EmployeeId = emp.Id, SalaryStructureId = Guid.NewGuid(),
@@ -130,7 +147,7 @@ public class KsaGapProbeTests
         var submitted = await svc.SubmitRequestAsync(tenantId, new LeaveRequest
         {
             TenantId = tenantId, CompanyId = emp.CompanyId, EmployeeId = emp.Id, EmployeeName = emp.FullName,
-            LeaveTypeId = sick.Id, StartDate = start, EndDate = start.AddDays(119), DayType = "Full",
+            LeaveTypeId = sick.Id, StartDate = start, EndDate = start.AddDays(119), DayType = "Full", IsEmergency = true,
             Reason = "Certified illness",
         }, CancellationToken.None);
         await svc.ApproveRequestAsync(tenantId, submitted.Id, Guid.NewGuid(), "Manager", null, CancellationToken.None);
