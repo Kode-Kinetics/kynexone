@@ -3,6 +3,32 @@ using System.Text;
 namespace Zayra.Api.Application.Common;
 
 /// <summary>
+/// A data row whose cell count does not match the header's — the silent column shift, refused.
+///
+/// <para>It is an <see cref="InvalidOperationException"/> so that every import endpoint's existing
+/// "a bad file is a 422 naming the problem, not a 500" handling catches it unchanged.</para>
+/// </summary>
+public sealed class CsvShapeException : InvalidOperationException
+{
+    public CsvShapeException(int rowNumber, int cellCount, int headerCount)
+        : base($"CSV row {rowNumber} has {cellCount} cell(s) but the header declares {headerCount} column(s). "
+             + "CSV rows are POSITIONAL, so a row of the wrong width shifts every value after the break into "
+             + "the wrong column and the file is imported as nonsense rather than refused. The usual cause is "
+             + "an unquoted thousands separator — write 25000 or \"25,000\", never 25,000 — or a stray comma "
+             + "inside an unquoted name or note. Nothing in this file has been imported.")
+    {
+        RowNumber = rowNumber;
+        CellCount = cellCount;
+        HeaderCount = headerCount;
+    }
+
+    /// <summary>1-based line number in the file, counting the header as line 1.</summary>
+    public int RowNumber { get; }
+    public int CellCount { get; }
+    public int HeaderCount { get; }
+}
+
+/// <summary>
 /// Minimal, dependency-free CSV writer/reader used for the configurable
 /// export / import / shareable-template features across data sections.
 /// </summary>
@@ -45,7 +71,24 @@ public static class Csv
         return Build(headers, new[] { (IReadOnlyList<object?>)exampleRow });
     }
 
-    /// <summary>Parse CSV text into a list of column maps keyed by header name.</summary>
+    /// <summary>
+    /// Parse CSV text into a list of column maps keyed by header name.
+    ///
+    /// <para>A data row whose cell count differs from the header's is REFUSED by row number and by both
+    /// counts, before any row is returned — so nothing downstream is written from a shifted file. CSV
+    /// rows are positional: one unquoted thousands separator (<c>25,000</c>) splits one cell into two
+    /// and every later value in that row lands in the WRONG FIELD. Surplus cells used to be discarded
+    /// and missing ones silently filled with the empty string, which is how an amount is read as a date
+    /// and a date as a currency, on any sheet in the product. The write side has refused a mismatched
+    /// example row ever since the two-argument <see cref="Template(IReadOnlyList{string},
+    /// IReadOnlyList{string})"/> overload shipped (<c>:39-44</c>); this is that same rule, applied to
+    /// the read side, where the customer's own file arrives.</para>
+    ///
+    /// <para>Blank lines are still skipped — a trailing newline is not a row. A row with genuinely empty
+    /// trailing columns must still spell them with commas, which is what every CSV writer emits,
+    /// <see cref="Build"/> included.</para>
+    /// </summary>
+    /// <exception cref="CsvShapeException">A data row's cell count differs from the header's.</exception>
     public static List<Dictionary<string, string>> Parse(string content)
     {
         var rows = new List<Dictionary<string, string>>();
@@ -56,6 +99,8 @@ public static class Csv
         {
             if (string.IsNullOrWhiteSpace(lines[i])) continue;
             var cells = ParseLine(lines[i]);
+            if (cells.Count != headers.Count)
+                throw new CsvShapeException(i + 1, cells.Count, headers.Count);
             var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             for (var c = 0; c < headers.Count; c++)
                 map[headers[c]] = c < cells.Count ? cells[c] : string.Empty;
