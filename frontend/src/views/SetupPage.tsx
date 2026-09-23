@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { notifyApiError } from '../api/client';
-import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, Sparkles } from 'lucide-react';
+import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, Sparkles, Eye, EyeOff } from 'lucide-react';
 import { AiSetupAssistant } from '../components/AiSetupAssistant';
 import { EstablishmentPanel } from '../components/EstablishmentPanel';
 import { GlSetupPanel } from '../components/gl/GlSetupPanel';
@@ -1927,6 +1927,7 @@ function EmailConfigTab() {
     'Smtp.Host': '', 'Smtp.Port': '587', 'Smtp.Username': '', 'Smtp.Password': '',
     'Smtp.FromAddress': '', 'Smtp.FromName': '', 'Smtp.UseTls': 'true',
   });
+  const [showSmtpPassword, setShowSmtpPassword] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -1997,7 +1998,31 @@ function EmailConfigTab() {
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Password</label>
-            <input type="password" className="input w-full" placeholder="••••••••" value={cfg['Smtp.Password']} onChange={e => setCfg(c => ({ ...c, 'Smtp.Password': e.target.value }))} />
+            {/* Reveal toggle. An SMTP password is pasted from a mail provider's console and is
+                wrong far more often than it is read over the operator's shoulder — and a wrong
+                one fails as a 20-second timeout that names no cause. Seeing what was pasted is
+                what makes that diagnosable. */}
+            <div className="relative">
+              <input
+                type={showSmtpPassword ? 'text' : 'password'}
+                className="input w-full pe-10"
+                placeholder="••••••••"
+                autoComplete="off"
+                spellCheck={false}
+                value={cfg['Smtp.Password']}
+                onChange={e => setCfg(c => ({ ...c, 'Smtp.Password': e.target.value }))}
+              />
+              <button
+                type="button"
+                onClick={() => setShowSmtpPassword(v => !v)}
+                aria-label={showSmtpPassword ? 'Hide the SMTP password' : 'Show the SMTP password'}
+                aria-pressed={showSmtpPassword}
+                title={showSmtpPassword ? 'Hide password' : 'Show password'}
+                className="absolute inset-y-0 end-0 flex items-center px-3 text-slate-400 transition-colors hover:text-slate-600 dark:hover:text-slate-200"
+              >
+                {showSmtpPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
           </div>
         </div>
         <div className="grid grid-cols-2 gap-4">
