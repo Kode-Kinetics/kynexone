@@ -545,7 +545,14 @@ export const platformApi = {
   listTenantUsers: (tenantId: string, search?: string) =>
     platform.get<TenantUser[]>(`/api/platform/tenants/${tenantId}/users`, { params: search ? { search } : {} }).then(r => r.data),
 
-  createTenantUser: (tenantId: string, body: { email: string; fullName?: string; password: string; roleName?: string; mustChangePassword?: boolean }) =>
+  // entityScope decides which legal entities the new account can SEE. Omitted, the server defaults
+  // to 'group' for the Admin role and 'allCurrentCompanies' for every other role, and refuses
+  // outright when that would reach zero companies — an account that cannot see its own tenant reads
+  // as a 404 on the user's first working day, not as a missing grant.
+  createTenantUser: (tenantId: string, body: {
+    email: string; fullName?: string; password: string; roleName?: string; mustChangePassword?: boolean;
+    entityScope?: 'group' | 'allCurrentCompanies' | 'companies'; companyIds?: string[];
+  }) =>
     platform.post(`/api/platform/tenants/${tenantId}/users`, body).then(r => r.data),
 
   deleteTenantUser: (userId: string) =>

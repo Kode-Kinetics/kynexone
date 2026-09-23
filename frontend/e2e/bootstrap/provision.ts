@@ -281,6 +281,7 @@ async function ensureFeatures(
 
 async function ensureUsers(
   platformToken: string, tenantId: string, fixture: FixtureTenant,
+  companies: Array<{ code: string; id: string; countryCode: string }>,
 ): Promise<Map<string, string>> {
   const existing = items(expectOk(
     await call('GET', `/api/platform/tenants/${tenantId}/users`, { token: platformToken }), 'list tenant users',
@@ -295,9 +296,25 @@ async function ensureUsers(
     // Creating them here would take the email and leave them with no employee link at all.
     if (portal.has(user.email.toLowerCase())) continue;
     if (byEmail.has(user.email.toLowerCase())) continue;
+    // SAY THE SCOPE OUT LOUD. `POST /api/platform/tenants/{id}/users` now takes the legal-entity
+    // scope as part of the request, because an account created without one used to resolve to zero
+    // companies and be invisible to itself. Group identities follow the tenant; company identities
+    // are confined to the companies they are entitled to, which is what makes the "bakery data is
+    // not visible to the dairy user" assertions mean anything.
+    const codes = user.companyCodes ?? (user.companyCode ? [user.companyCode] : null);
+    const scope = codes === null
+      ? { entityScope: 'group' }
+      : {
+          entityScope: 'companies',
+          companyIds: codes.map((code) => {
+            const company = companies.find((c) => c.code === code);
+            if (!company) throw new Error(`[bootstrap] '${user.email}' is scoped to unknown company '${code}'.`);
+            return company.id;
+          }),
+        };
     const created = await call('POST', `/api/platform/tenants/${tenantId}/users`, {
       token: platformToken,
-      body: { email: user.email, password: user.password, fullName: user.fullName, roleName: user.role },
+      body: { email: user.email, password: user.password, fullName: user.fullName, roleName: user.role, ...scope },
     });
     expectOk(created, `create user '${user.email}' in '${fixture.slug}'`);
     byEmail.set(user.email.toLowerCase(), created.body.Id ?? created.body.id);
@@ -306,19 +323,20 @@ async function ensureUsers(
 }
 
 /**
- * Give every provisioned user its entity scope. Two failure modes make this mandatory, not optional:
+ * The entity-scope BACKSTOP. `ensureUsers` now states each account's scope at creation, so for a
+ * fresh bootstrap this pass finds every grant already in place and does nothing. It still runs, for
+ * two reasons:
  *
- *  • WITHOUT A GRANT, A NON-ADMIN USER SEES NOTHING. `POST /api/platform/tenants/{id}/users` sets
- *    `IsGroupScope` only for the Admin role, and it has no scope parameter at all, so an HR Manager
- *    or Finance Approver it creates resolves to ZERO accessible companies. Every company-owned row
- *    is then filtered out of their queries — the payroll maker/checker got a flat 404 from
- *    `/api/payroll/runs/{id}/approve` for a run that plainly existed. A 404 reads as "no such run",
- *    not as "this account has no company access", which is what cost the diagnosis.
+ *  • USERS THAT ALREADY EXISTED. A tenant provisioned before the scope parameter shipped, or a user
+ *    created by hand, has no grant. Without one it resolves to ZERO accessible companies, every
+ *    company-owned row is filtered out of its queries, and the payroll maker/checker gets a flat 404
+ *    from `/api/payroll/runs/{id}/approve` for a run that plainly exists. A 404 reads as "no such
+ *    run", not as "this account has no company access", which is what cost the diagnosis.
  *  • WITHOUT A *CONFINED* GRANT, THE SECURITY GATE PROVES NOTHING. If the company-scoped identities
  *    were group-scope instead, every "bakery data is not visible to the dairy user" assertion would
  *    pass because there is nothing to confine.
  *
- * So group identities get `AllCurrentAndFutureCompanies` and company identities get one
+ * Group identities get `AllCurrentAndFutureCompanies` and company identities get one
  * `SelectedCompanies` grant per company they are entitled to — both real product grant modes,
  * created through the product's own endpoint.
  */
@@ -1082,7 +1100,7 @@ export async function provisionWorld(baseUrl: string): Promise<ProvisionResult> 
     await ensureLocalization(platformToken, tenantId, fixture);
     await ensureFeatures(platformToken, tenantId, fixture);
     const companies = await ensureCompanies(platformToken, tenantId, adminToken, fixture);
-    const userIds = await ensureUsers(platformToken, tenantId, fixture);
+    const userIds = await ensureUsers(platformToken, tenantId, fixture, companies);
     await ensureEntityGrants(adminToken, fixture, userIds, companies);
     const gradeId = fixture.slug === 'intelliflow' ? await ensureGrade(adminToken) : null;
     manifest.employeesCreated += await ensureEmployees(adminToken, fixture, companies, gradeId);
