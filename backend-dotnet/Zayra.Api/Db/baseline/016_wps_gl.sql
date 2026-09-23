@@ -132,8 +132,8 @@ CREATE TABLE gl_journals (
     source_id               uuid,
     status                  varchar(40)    NOT NULL DEFAULT 'Draft',
     -- the accounting period, as two columns rather than a named concept (§C)
-    period_year             smallint       NOT NULL,
-    period_month            smallint       NOT NULL,
+    year             smallint       NOT NULL,
+    month            smallint       NOT NULL,
     reversal_of_id          uuid,
     erp_reference           text,
     file_id                 uuid,
@@ -182,8 +182,8 @@ CREATE TABLE gl_period_closes (
     tenant_id               uuid           NOT NULL,
     company_id              uuid           NOT NULL,
     status                  varchar(40)    NOT NULL DEFAULT 'Open',
-    period_year             smallint       NOT NULL,
-    period_month            smallint       NOT NULL,
+    year             smallint       NOT NULL,
+    month            smallint       NOT NULL,
     reopen_reason           text,
     closed_at               timestamptz,
     closed_by               uuid,
@@ -196,7 +196,7 @@ CREATE TABLE gl_period_closes (
     CONSTRAINT pk_gl_period_closes            PRIMARY KEY (id),
     CONSTRAINT uq_gl_period_closes__tenant_id UNIQUE (tenant_id, id),
     CONSTRAINT uq_gl_period_closes__period
-        UNIQUE (tenant_id, company_id, period_year, period_month)
+        UNIQUE (tenant_id, company_id, year, month)
 );
 
 COMMENT ON TABLE gl_period_closes IS
@@ -215,8 +215,8 @@ CREATE TABLE loans (
     type_code               varchar(40),
     status                  varchar(40)    NOT NULL DEFAULT 'PendingApproval',
     -- the first recovery period, as two columns (§C)
-    start_period_year       smallint       NOT NULL,
-    start_period_month      smallint       NOT NULL,
+    start_year       smallint       NOT NULL,
+    start_month      smallint       NOT NULL,
     installment_count       integer        NOT NULL,
     reason                  text,
     principal               numeric(18,2)  NOT NULL,
@@ -243,8 +243,8 @@ CREATE TABLE loan_installments (
     kind                    varchar(40)    NOT NULL DEFAULT 'Scheduled',
     status                  varchar(40)    NOT NULL DEFAULT 'Due',
     -- the period this installment falls due in, as two columns (§C)
-    due_period_year         smallint       NOT NULL,
-    due_period_month        smallint       NOT NULL,
+    due_year         smallint       NOT NULL,
+    due_month        smallint       NOT NULL,
     amount                  numeric(18,2)  NOT NULL,
     recovered_at            timestamptz,
     created_at              timestamptz    NOT NULL DEFAULT now(),

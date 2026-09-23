@@ -636,15 +636,15 @@ ALTER TABLE gl_journal_lines
 -- Accounting and payroll periods are a year plus a month, as two columns (§C).
 ALTER TABLE gl_journals
     ADD CONSTRAINT ck_gl_journals__period
-        CHECK (period_month BETWEEN 1 AND 12 AND period_year BETWEEN 2000 AND 2200);
+        CHECK (month BETWEEN 1 AND 12 AND year BETWEEN 2000 AND 2200);
 
 ALTER TABLE gl_period_closes
     ADD CONSTRAINT ck_gl_period_closes__period
-        CHECK (period_month BETWEEN 1 AND 12 AND period_year BETWEEN 2000 AND 2200);
+        CHECK (month BETWEEN 1 AND 12 AND year BETWEEN 2000 AND 2200);
 
 ALTER TABLE loans
     ADD CONSTRAINT ck_loans__start_period
-        CHECK (start_period_month BETWEEN 1 AND 12 AND start_period_year BETWEEN 2000 AND 2200),
+        CHECK (start_month BETWEEN 1 AND 12 AND start_year BETWEEN 2000 AND 2200),
     ADD CONSTRAINT ck_loans__amounts
         CHECK (principal >= 0 AND opening_outstanding >= 0 AND outstanding >= 0),
     ADD CONSTRAINT ck_loans__installment_count
@@ -652,7 +652,7 @@ ALTER TABLE loans
 
 ALTER TABLE loan_installments
     ADD CONSTRAINT ck_loan_installments__due_period
-        CHECK (due_period_month BETWEEN 1 AND 12 AND due_period_year BETWEEN 2000 AND 2200),
+        CHECK (due_month BETWEEN 1 AND 12 AND due_year BETWEEN 2000 AND 2200),
     ADD CONSTRAINT ck_loan_installments__installment_number
         CHECK (installment_number >= 1);
 

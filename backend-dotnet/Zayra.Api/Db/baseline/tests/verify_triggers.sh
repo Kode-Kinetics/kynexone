@@ -221,7 +221,7 @@ VALUES ('b0000000-0000-0000-0000-000000000001', '11111111-0000-0000-0000-0000000
 DELETE FROM wps_batches WHERE id='b0000000-0000-0000-0000-000000000001';
 SQL
 no_sql "an Active loan cannot be deleted" <<'SQL'
-INSERT INTO loans (id, tenant_id, employee_id, kind, status, start_period_year, start_period_month,
+INSERT INTO loans (id, tenant_id, employee_id, kind, status, start_year, start_month,
                    installment_count, principal, outstanding)
 VALUES ('10a00000-0000-0000-0000-000000000001', '11111111-0000-0000-0000-000000000001',
         'e0000000-0000-0000-0000-000000000001', 'Loan', 'Active', 2026, 1, 2, 1000, 1000);
@@ -268,7 +268,7 @@ SQL
 no_sql "loans.outstanding must equal principal - recovered" <<'SQL'
 BEGIN;
 INSERT INTO loan_installments (id, tenant_id, loan_id, installment_number, kind, status,
-                               due_period_year, due_period_month, amount)
+                               due_year, due_month, amount)
 VALUES (gen_random_uuid(), '11111111-0000-0000-0000-000000000001',
         '10a00000-0000-0000-0000-000000000001', 1, 'Scheduled', 'Recovered', 2026, 1, 500);
 COMMIT;
@@ -276,7 +276,7 @@ SQL
 ok_sql "loans.outstanding follows the recovery in the same transaction" <<'SQL'
 BEGIN;
 INSERT INTO loan_installments (id, tenant_id, loan_id, installment_number, kind, status,
-                               due_period_year, due_period_month, amount)
+                               due_year, due_month, amount)
 VALUES (gen_random_uuid(), '11111111-0000-0000-0000-000000000001',
         '10a00000-0000-0000-0000-000000000001', 1, 'Scheduled', 'Recovered', 2026, 1, 500);
 UPDATE loans SET outstanding = 500 WHERE id='10a00000-0000-0000-0000-000000000001';
@@ -284,7 +284,7 @@ COMMIT;
 SQL
 no_sql "a GL journal must balance" <<'SQL'
 BEGIN;
-INSERT INTO gl_journals (id, tenant_id, company_id, source_type, period_year, period_month, status)
+INSERT INTO gl_journals (id, tenant_id, company_id, source_type, year, month, status)
 VALUES ('91000000-0000-0000-0000-000000000001', '11111111-0000-0000-0000-000000000001',
         'c0000000-0000-0000-0000-000000000001', 'PayrollRun', 2026, 1, 'Exported');
 INSERT INTO gl_journal_lines (id, tenant_id, journal_id, line_order, account, debit, credit) VALUES
@@ -294,7 +294,7 @@ COMMIT;
 SQL
 ok_sql "a balanced GL journal commits" <<'SQL'
 BEGIN;
-INSERT INTO gl_journals (id, tenant_id, company_id, source_type, period_year, period_month, status)
+INSERT INTO gl_journals (id, tenant_id, company_id, source_type, year, month, status)
 VALUES ('91000000-0000-0000-0000-000000000002', '11111111-0000-0000-0000-000000000001',
         'c0000000-0000-0000-0000-000000000001', 'PayrollRun', 2026, 2, 'Exported');
 INSERT INTO gl_journal_lines (id, tenant_id, journal_id, line_order, account, debit, credit) VALUES
