@@ -83,13 +83,15 @@ public abstract class PlatformTestBase
     protected static PlatformController CreateController(
         ZayraDbContext db,
         string platformRole = PlatformRoles.Owner,
-        IAuthSeeder? authSeeder = null)
+        IAuthSeeder? authSeeder = null,
+        IEmailService? emailService = null,
+        IConfiguration? configuration = null)
     {
         var jwt    = Options.Create(GetJwtOptions());
         var hasher = new Pbkdf2PasswordHasher();
         var tokenSvc = new JwtTokenService(jwt);
-        var config = new ConfigurationBuilder().Build();
-        var email  = new FakePlatformEmailService();
+        var config = configuration ?? new ConfigurationBuilder().Build();
+        var email  = emailService ?? new FakePlatformEmailService();
         var seeder = authSeeder ?? new FakeAuthSeeder(db, hasher);
 
         var controller = new PlatformController(
