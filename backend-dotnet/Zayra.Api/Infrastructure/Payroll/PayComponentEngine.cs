@@ -42,7 +42,15 @@ public sealed record PayComponentContext
     // ── Subsystem-produced amounts + their dynamic-label inputs ──────────────────
     public decimal OvertimePay { get; init; }
     public decimal OtHours { get; init; }
+    /// <summary>The FIRST term of an overtime hour — <c>OvertimeHourRate.BaseHourly</c>.</summary>
     public decimal HourlyRate { get; init; }
+    /// <summary>
+    /// The base the <c>× (multiplier − 1)</c> uplift is measured on —
+    /// <c>OvertimeHourRate.UpliftBasisHourly</c>, i.e. Art. 107's "50% of his basic wage". Without it
+    /// the payslip label cannot state the arithmetic that produced the amount beside it; see
+    /// <see cref="PayComponentEngine"/>'s overtime label.
+    /// </summary>
+    public decimal OtUpliftHourly { get; init; }
     public decimal OtMultiplier { get; init; }
 
     public decimal TaxDeduction { get; init; }
@@ -235,8 +243,13 @@ public static class PayComponentEngine
             : new[] { new PayComponentLine(code, name, amount, source, false) };
 
     // ── Dynamic labels — MUST stay byte-identical to PayrollController.Process ────
+    // The overtime label is no longer spelled out here at all: both renderers call the ONE
+    // definition in OvertimeStatutoryCalculator, beside the HourPay expression it describes. Two
+    // copies of a format string held byte-identical "by convention" is how the line came to state an
+    // arithmetic that did not produce its own amount.
     private static string OvertimeLabel(PayComponentContext ctx)
-        => $"Overtime ({ctx.OtHours:N2} h × {Math.Round(ctx.HourlyRate, 2):N2}/h × {ctx.OtMultiplier:N2})";
+        => OvertimeStatutoryCalculator.PayslipLabel(
+            ctx.OtHours, ctx.HourlyRate, ctx.OtUpliftHourly, ctx.OtMultiplier);
 
     private static string TaxLabel(PayComponentContext ctx)
         => $"Income tax ({ctx.IncomeTaxRate}%)";

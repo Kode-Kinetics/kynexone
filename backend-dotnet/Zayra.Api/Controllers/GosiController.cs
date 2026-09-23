@@ -86,6 +86,14 @@ public class GosiController : ControllerBase
         if (string.IsNullOrWhiteSpace(req.SourceReference) && string.IsNullOrWhiteSpace(req.Notes))
             return BadRequest(new { error = "A reason (SourceReference or Notes) is required to override a GOSI contribution rate." });
 
+        // UNIT GATE. Rate is a decimal FRACTION of the contributory wage (0.09 = 9%) — the same
+        // unit StatutoryRule.RuleValue holds for gosi.saudi_employee_rate, which is what the
+        // payslip and the GOSI filing read. An operator who types "9" here means 9% and would
+        // otherwise have nine times the wage deducted, so the write is refused with the form
+        // named rather than interpreted. See Infrastructure/Payroll/StatutoryValueUnits.cs.
+        if (StatutoryValueUnits.ValidateGosiBranchRate(req.Rate, req.Branch, req.Payer) is { } rateError)
+            return BadRequest(new { error = rateError });
+
         var tenantId = GetTenantId();
         var rule = new GosiContributionRule
         {

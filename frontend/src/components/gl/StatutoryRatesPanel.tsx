@@ -30,6 +30,29 @@ interface OverrideDraft {
   reason: string;
 }
 
+// The server is the authority on a statutory value's unit — StatutoryValueUnits.cs refuses a rate
+// written as a percentage and says so. This mirrors the rate families so the operator sees the
+// expected form BEFORE typing, rather than after a refusal. A key this does not recognise stays a
+// plain text field, because inventing bounds for it would be worse than having none.
+function unitHintFor(ruleKey: string): { hint: string; min?: number; max?: number; step?: string } | null {
+  const k = ruleKey.toLowerCase();
+  if (k.startsWith('nitaqat.curve.')) return null;
+  if (k.endsWith('_rate') || k.endsWith('_ratio')) {
+    const contribution = ['gosi.', 'saned.', 'gpssa.', 'grsia.', 'dews.'].some((f) => k.startsWith(f));
+    return {
+      hint: contribution
+        ? 'A decimal FRACTION of the contributory wage, not a percentage: 9% is 0.09, 9.75% is 0.0975, 0.75% is 0.0075. Values above 0.3 are refused.'
+        : 'A decimal FRACTION, not a percentage: 35% is 0.35, 100% is 1.0.',
+      min: 0,
+      max: contribution ? 0.3 : 1,
+      step: '0.0001',
+    };
+  }
+  if (k.endsWith('_sar')) return { hint: 'A money amount in major units, e.g. 45000 for SAR 45,000.', min: 0, step: '0.01' };
+  if (k.endsWith('_multiplier')) return { hint: 'A multiplier, e.g. 1.5 for time-and-a-half.', min: 0, max: 10, step: '0.01' };
+  return null;
+}
+
 export function StatutoryRatesPanel({ scope, scopeLabel, countryCode, jurisdiction, canOverride, canApprove }: Props) {
   const [rows, setRows] = useState<StatutoryRateRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -314,8 +337,22 @@ export function StatutoryRatesPanel({ scope, scopeLabel, countryCode, jurisdicti
               <Field label="Platform default">
                 <input value={baseRow?.platformDefault ?? '—'} disabled className="input w-full opacity-60" />
               </Field>
-              <Field label="Override value" required>
-                <input value={draft.overrideValue} onChange={(e) => setDraft({ ...draft, overrideValue: e.target.value })} className="input w-full" placeholder="0.00" />
+              <Field
+                label="Override value"
+                required
+                hint={unitHintFor(draft.ruleKey)?.hint ?? 'Entered in the same form as the platform default shown beside it.'}
+              >
+                <input
+                  type={unitHintFor(draft.ruleKey) ? 'number' : 'text'}
+                  inputMode="decimal"
+                  min={unitHintFor(draft.ruleKey)?.min}
+                  max={unitHintFor(draft.ruleKey)?.max}
+                  step={unitHintFor(draft.ruleKey)?.step}
+                  value={draft.overrideValue}
+                  onChange={(e) => setDraft({ ...draft, overrideValue: e.target.value })}
+                  className="input w-full"
+                  placeholder={baseRow?.platformDefault != null ? String(baseRow.platformDefault) : '0.0'}
+                />
               </Field>
             </div>
             <div className="grid grid-cols-2 gap-3">

@@ -52,6 +52,30 @@ export interface OvertimeRequest {
   decidedAtUtc: string | null;
 }
 
+/** An attendance day the overtime policy would not pay in full. */
+export interface OvertimeCapException {
+  id: string;
+  employeeId: number;
+  dailyRecordId: string | null;
+  workDate: string;
+  exceptionType: string;
+  severity: string;
+  details: string;
+  isResolved: boolean;
+  createdAtUtc: string;
+}
+
+/**
+ * What a detection run did. `capped` is the overtime the tenant's configured policy will not pay:
+ * attendance-derived overtime used to bypass the rounding rule, the minimum, the daily maximum and
+ * the monthly cap entirely, so the same hours were paid in full by one door and capped by the other.
+ * Capping without showing the excess would only make that quieter, so it comes back here.
+ */
+export interface DetectOvertimeResult {
+  created: OvertimeRequest[];
+  capped: OvertimeCapException[];
+}
+
 export interface OvertimeCalculation {
   id: string;
   overtimeRequestId: string;
@@ -139,7 +163,7 @@ export const overtimeApi = {
     client.post<OvertimeRequest>(`/api/overtime/requests/${id}/reject`, { approvedMinutes: 0, notes }).then((r) => r.data),
 
   detectFromAttendance: (fromDate: string, toDate: string, overtimePolicyId?: string) =>
-    client.post<OvertimeRequest[]>('/api/overtime/detect-from-attendance', { fromDate, toDate, overtimePolicyId }).then((r) => r.data),
+    client.post<DetectOvertimeResult>('/api/overtime/detect-from-attendance', { fromDate, toDate, overtimePolicyId }).then((r) => r.data),
 
   calculations: (employeeId?: number) =>
     client.get<OvertimeCalculation[]>('/api/overtime/calculations', { params: employeeId ? { employeeId } : undefined }).then((r) => r.data),

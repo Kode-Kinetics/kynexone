@@ -21,13 +21,25 @@ public class StatutoryRateStoreTests
     // ── A2(a) — the tenant rate rows, and the unit confusion under them ─────────────────────────
 
     /// <summary>
-    /// <c>GosiContributionRule.Rate</c> is a PERCENT: <c>GosiCalculationService</c> computes
-    /// <c>wage × Rate / 100</c>. A since-deleted demo tenant seeder wrote FRACTIONS (0.10m for "10%"), which
-    /// resolved to 0.10% — roughly ninety times under — on TENANT rows, which beat the platform
-    /// defaults. Nothing in the suite noticed, because the store was consistent with itself.
+    /// <c>GosiContributionRule.Rate</c> is a decimal FRACTION of the contributory wage: 9% is
+    /// <c>0.09m</c>, 0.75% is <c>0.0075m</c>. <c>GosiCalculationService</c> computes
+    /// <c>wage × Rate</c> with no division.
+    ///
+    /// <para>This assertion used to run the other way round — the column was a PERCENT and this
+    /// lint refused any seeded value below 0.1 as "a fraction someone meant as a percentage".
+    /// Two stores held one statutory fact in opposite units; the fix was to pick one, and the unit
+    /// picked was the fraction that <c>statutory_rules</c> (and TARGET_SCHEMA §2.E) already used.
+    /// The lint now enforces the surviving convention rather than the retired one.</para>
+    ///
+    /// <para>NOTE — this regex only matches an inline <c>new GosiContributionRule { … Rate = …m }</c>
+    /// initializer. <c>GosiRuleSeeder</c> builds its rows through a <c>Rule(…)</c> helper, so it is
+    /// NOT covered here and never was. What covers the seeder is
+    /// <c>StatutoryRateUnitTests.BothStores_ExpressTheirRatesInTheSameUnit</c>, which validates every
+    /// seeded rate through <c>StatutoryValueUnits</c>. This file keeps the source lint for the
+    /// inline form, which is how a demo seeder wrote the original offending rows.</para>
     /// </summary>
     [Fact]
-    public void EverySeededGosiRate_IsExpressedInPercentNotAsAFraction()
+    public void EverySeededGosiRate_IsExpressedAsAFractionNotAPercent()
     {
         var seedDir = ResolveSeedDirectory();
         if (seedDir is null) return;
@@ -43,9 +55,7 @@ public class StatutoryRateStoreTests
             foreach (Match m in rx.Matches(source))
             {
                 var rate = decimal.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
-                // A genuine GCC social-insurance branch rate in percent is never below 0.1% and never
-                // above 30%. A value under 0.1 is a fraction that someone meant as a percentage.
-                if (rate > 0m && rate < 0.1m)
+                if (StatutoryValueUnits.ValidateGosiBranchRate(rate) is not null)
                 {
                     var line = source.Take(m.Index).Count(c => c == '\n') + 1;
                     offenders.Add($"{Path.GetFileName(file)}:{line} (Rate = {rate}m)");
@@ -54,10 +64,11 @@ public class StatutoryRateStoreTests
         }
 
         Assert.True(offenders.Count == 0,
-            "GosiContributionRule.Rate is a PERCENT — GosiCalculationService computes wage × Rate / 100 " +
-            "and GosiRuleSeeder writes 9.00m / 0.75m / 2.00m. A row written as a FRACTION (0.09m for 9%) " +
-            "silently contributes ~1% of what is owed, and because these are tenant rows they beat the " +
-            "platform defaults for every tenant the seeder touches. Offenders: " + string.Join(", ", offenders));
+            "GosiContributionRule.Rate is a decimal FRACTION of the contributory wage — "
+            + "GosiCalculationService computes wage × Rate and GosiRuleSeeder writes 0.09m / 0.0075m / "
+            + "0.02m. A row written as a PERCENT (9.00m for 9%) deducts a hundred times what is owed, "
+            + "and because these are tenant rows they beat the platform defaults for every tenant the "
+            + "seeder touches. Offenders: " + string.Join(", ", offenders));
     }
 
     // ── A2(b) — the two engines must agree on the contributory wage ─────────────────────────────
@@ -75,7 +86,7 @@ public class StatutoryRateStoreTests
         var rules = new List<GosiContributionRule>
         {
             new() { TenantId = Guid.Empty, Classification = GosiClassifications.Saudi,
-                    Branch = GosiBranches.Annuities, Payer = GosiPayers.Employee, Rate = 9.00m,
+                    Branch = GosiBranches.Annuities, Payer = GosiPayers.Employee, Rate = 0.09m,
                     EffectiveFrom = new DateOnly(2016, 6, 1), IsActive = true },
         };
 
