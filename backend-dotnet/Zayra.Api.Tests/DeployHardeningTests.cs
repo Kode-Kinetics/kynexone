@@ -159,6 +159,33 @@ public class DeployHardeningTests
         Assert.Equal("ready", ProductionReadinessEvidence.ResolveStatus(dbHealthy: true, pendingMigrations: 0));
     }
 
+    /// <summary>
+    /// The unmeasured worker fleet must not IMPERSONATE a measured one.
+    ///
+    /// <para>BuildReadinessAsync only evaluates workers when the database is healthy AND migrations
+    /// are in parity; otherwise it substitutes <c>Unavailable</c>. That placeholder used to report
+    /// <c>MissingCount = 6</c> with every worker <c>"unavailable"</c> — indistinguishable from a
+    /// genuinely dead fleet, and read as exactly that during the 2026-09-23 incident, while the real
+    /// cause sat one field away in the same payload. Counts must stay zero and the status must say
+    /// plainly that nothing was measured.</para>
+    /// </summary>
+    [Fact]
+    public void UnmeasuredWorkerFleet_ReportsNoCounts_AndSaysItWasNotEvaluated()
+    {
+        var fleet = WorkerFleetReadiness.Unavailable;
+
+        Assert.False(fleet.Healthy, "an unmeasured fleet must not satisfy readiness");
+        Assert.Equal(0, fleet.MissingCount);
+        Assert.Equal(0, fleet.HealthyCount);
+        Assert.Equal(0, fleet.StartingCount);
+        Assert.Equal(0, fleet.StaleCount);
+        Assert.Equal(0, fleet.FailedCount);
+
+        Assert.All(fleet.Workers, w => Assert.Equal("not_evaluated", w.Status));
+        Assert.DoesNotContain(fleet.Workers, w => w.Status is "missing" or "unavailable");
+        Assert.All(fleet.Workers, w => Assert.Null(w.UpdatedAtUtc));
+    }
+
     /// <summary>The assembly's own migrations win when present; that is the un-stripped build.</summary>
     [Fact]
     public void ExpectedMigrations_PrefersTheAssemblyList()

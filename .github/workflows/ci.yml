@@ -71,6 +71,12 @@ jobs:
       - name: Self-test the required-env-var gate
         run: ./scripts/check_render_env.py --self-test
 
+      # The migration-target gate proves CI migrates the database the SERVICE connects to. Its
+      # self-test replays the 2026-09-23 incident (CI on neondb, app on kynexone_clean) and asserts
+      # the gate REFUSES it — so the gate is known to FAIL, not merely known to pass.
+      - name: Self-test the migration-target gate
+        run: ./scripts/check_migration_target.py --self-test
+
   # ── Frontend: typecheck ───────────────────────────────────────────────────────
   frontend-typecheck:
     name: Frontend Typecheck
@@ -706,6 +712,27 @@ jobs:
 
       - name: Restore local tools (dotnet-ef)
         run: dotnet tool restore   # manifest (dotnet-tools.json) is at the repo root
+
+      # Prove we are about to migrate the database the SERVICE connects to — BEFORE writing to it.
+      #
+      # PROD_DATABASE_URL (a repository secret) and the service's ConnectionStrings__Default (set
+      # only in the Render dashboard, `sync: false`) are two separately-maintained copies of the same
+      # fact, and until this step nothing compared them. check_render_env.py verifies that key
+      # EXISTS; it never reads the value.
+      #
+      # On 2026-09-23 that gap cost three deploys and ~47 minutes of 502: production had just been
+      # cut over to `kynexone_clean` with `neondb` kept as the rollback, CI migrated one and printed
+      # "Done.", the service connected to the other, and /health/ready returned 503 until Render
+      # timed out and reverted — with every CI signal green. A migration that succeeds against the
+      # wrong database is worse than one that fails: it leaves no evidence anywhere.
+      #
+      # Compares host + database only, normalising Neon's -pooler suffix (pooled and direct address
+      # the same database; migrations need the direct one). Never logs a user or password.
+      - name: Gate — CI migrates the database the service actually uses
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+        run: ./scripts/check_migration_target.py --service-id srv-d8slkb77f7vs73d2k92g
 
       - name: Apply EF Core migrations (fail-closed)
         run: |

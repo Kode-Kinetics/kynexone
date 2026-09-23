@@ -741,12 +741,48 @@ app.MapGet("/health/live", () => Results.Ok(new
     commit = Environment.GetEnvironmentVariable("RENDER_GIT_COMMIT") ?? "local"
 })).AllowAnonymous();
 
-app.MapGet("/health/ready", async (ZayraDbContext db, IConfiguration config, CancellationToken ct) =>
+app.MapGet("/health/ready", async (ZayraDbContext db, IConfiguration config, ILoggerFactory lf, CancellationToken ct) =>
 {
     var evidence = await ProductionReadinessEvidence.BuildReadinessAsync(db, config, ct);
-    return evidence.Status == "ready"
-        ? Results.Ok(evidence)
-        : Results.Json(evidence, statusCode: StatusCodes.Status503ServiceUnavailable);
+    if (evidence.Status == "ready") return Results.Ok(evidence);
+
+    // SAY WHY. This gate refused three consecutive production deploys on 2026-09-23 and no log line
+    // anywhere named the term that failed: Render's health check reads the 503 status and discards the
+    // body, the body is the ONLY place the evidence existed, and a failed deploy's instance cannot be
+    // reached from outside to ask it. Fifteen minutes of "503" in the log told us nothing except that
+    // it was unhappy. A gate that can refuse a release must be able to state its reason where an
+    // operator will find it.
+    var failing = new List<string>();
+    if (!evidence.Dependencies.Database.Healthy) failing.Add("database unreachable");
+    if (evidence.PendingMigrations != 0)
+        failing.Add(evidence.PendingMigrations < 0
+            ? "migration parity UNKNOWN (-1): neither compiled migrations nor Migrations.manifest were readable in this image"
+            : $"{evidence.PendingMigrations} migration(s) in this build are not applied to this database");
+    // The worker term is only MEASURED when the database is healthy and migrations are in parity;
+    // otherwise BuildReadinessAsync substitutes WorkerFleetReadiness.Unavailable, which hardcodes
+    // "all six missing" without reading a single heartbeat row. Reporting that as a worker outage
+    // cost hours on 2026-09-23: three deploys were investigated as a dead worker fleet when the
+    // fleet had never been looked at. Only name workers when the number is real.
+    var workersWereMeasured = evidence.Dependencies.Database.Healthy && evidence.PendingMigrations == 0;
+    if (!workersWereMeasured)
+        failing.Add("workers NOT EVALUATED (short-circuited by the terms above — the worker counts "
+                    + "in this response are placeholders, not measurements)");
+    else if (!evidence.Dependencies.Workers.Healthy)
+        failing.Add("workers: " + string.Join(", ", evidence.Dependencies.Workers.Workers
+            .Where(w => w.Status is not ("healthy" or "starting"))
+            .Select(w => $"{w.Name}={w.Status}")));
+
+    lf.CreateLogger("Readiness").LogWarning(
+        "[READINESS-NOT-READY] /health/ready is refusing traffic because: {Failing}. "
+        + "db={DbHealthy} pendingMigrations={Pending} workers(healthy/starting/stale/failed/missing)="
+        + "{H}/{S}/{St}/{F}/{M}",
+        failing.Count > 0 ? string.Join(" | ", failing) : "no individual term failed — the status rule changed",
+        evidence.Dependencies.Database.Healthy, evidence.PendingMigrations,
+        evidence.Dependencies.Workers.HealthyCount, evidence.Dependencies.Workers.StartingCount,
+        evidence.Dependencies.Workers.StaleCount, evidence.Dependencies.Workers.FailedCount,
+        evidence.Dependencies.Workers.MissingCount);
+
+    return Results.Json(evidence, statusCode: StatusCodes.Status503ServiceUnavailable);
 }).AllowAnonymous();
 
 app.MapGet("/health/telemetry", async (ZayraDbContext db, IConfiguration config, ILoggerFactory loggerFactory, CancellationToken ct) =>
