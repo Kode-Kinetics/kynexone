@@ -33,6 +33,8 @@ public partial class Employee
     /// </summary>
     public string? WorkEmail { get; set; }
 
+    public string? DriftProbe { get; set; }
+
     public string? Gender { get; set; }
 
     public DateOnly? Dob { get; set; }

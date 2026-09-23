@@ -19,7 +19,7 @@ public partial class Company
     /// <summary>
     /// The single writable copy of the GOSI establishment number (§11.5). A typo can exist in exactly one place and cannot propagate into a filing.
     /// </summary>
-    public string GosiRegistrationNo { get; set; } = null!;
+    public string? GosiRegistrationNo { get; set; }
 
     public string NameEn { get; set; } = null!;
 

@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Npgsql;
 using Zayra.Api.Data.V2;
@@ -37,14 +38,18 @@ public sealed class KynexModelMatchesBaselineTests
     /// <summary>
     /// EF requires every column of a principal key to be non-nullable. Both of these reference a
     /// unique index over a nullable column, which is legal in PostgreSQL and meant:
-    ///   * companies.gosi_registration_no is NULL until the establishment is registered;
+    ///   * companies.gosi_registration_no is NULL until the establishment is registered (two of
+    ///     the three: employee_gosi_registrations and gosi_filings both point at it);
     ///   * background_jobs.tenant_id is NULL for a platform-tier job.
+    /// The scaffolder's answer was to mark the PRINCIPAL column non-nullable, which is a lie about
+    /// the database and would have made EF reject the NULL the schema is designed around.
     /// The database enforces both; the model carries the columns and not the relationship, and a
     /// service that needs the parent joins on it explicitly.
     /// </summary>
     private static readonly HashSet<string> UnmodellableForeignKeys = new(StringComparer.Ordinal)
     {
         "fk_employee_gosi_registrations__gosi_registration_no",
+        "fk_gosi_filings__gosi_registration_no",
         "fk_payroll_runs__source_import_job_id",
     };
 
@@ -259,6 +264,10 @@ public sealed class KynexModelMatchesBaselineTests
             JOIN pg_class frel ON frel.oid = con.confrelid
             JOIN pg_namespace n ON n.oid = rel.relnamespace
             WHERE n.nspname = 'public' AND con.contype = 'f' AND NOT rel.relispartition
+              -- A foreign key that TARGETS a partitioned table is stored once per partition, as a
+              -- child constraint with conparentid set, plus the real one. Only the real one is a
+              -- relationship; the other 16 are how PostgreSQL implements it.
+              AND con.conparentid = 0 AND NOT frel.relispartition
             """,
             r => (Table: r.GetString(0), Name: r.GetString(1), Target: r.GetString(2),
                   From: r.GetString(3), To: r.GetString(4)));
@@ -483,9 +492,12 @@ public sealed class KynexModelMatchesBaselineTests
         Assert.True(by["checks"] > 0, "the CHECK constraints vanished");
         Assert.Equal(5, by["partitioned"]);
 
-        // And none of them reaches the model, because EF has no way to say them.
+        // And none of them reaches the model, because EF has no way to say them. Read from the
+        // design-time model: the runtime model drops configuration it can never need at run time,
+        // and check constraints are the first thing it drops.
         using var db = CreateContext();
-        Assert.Empty(db.Model.GetEntityTypes().SelectMany(e => e.GetCheckConstraints()));
+        var designTime = db.GetService<IDesignTimeModel>().Model;
+        Assert.Empty(designTime.GetEntityTypes().SelectMany(e => e.GetCheckConstraints()));
     }
 
     // ───────────────────────────────────────── helpers ──────────────────────────────────────────

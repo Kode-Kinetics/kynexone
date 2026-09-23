@@ -873,9 +873,9 @@ public partial class KynexDbContext : DbContext
                 .HasMaxLength(40)
                 .HasDefaultValueSql("'Queued'::character varying")
                 .HasColumnName("status");
-            entity.Property(e => e.TenantId)
-                .IsRequired()
-                .HasColumnName("tenant_id");
+            // NOT IsRequired: a platform-tier job has no tenant. The scaffolder marked it required
+            // only to keep payroll_runs.source_import_job_id's foreign key, which is removed above.
+            entity.Property(e => e.TenantId).HasColumnName("tenant_id");
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
 
@@ -1731,11 +1731,14 @@ public partial class KynexDbContext : DbContext
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_employee_gosi_registrations__employee_id");
 
-            entity.HasOne<Company>().WithMany()
-                .HasPrincipalKey(p => new { p.TenantId, p.GosiRegistrationNo })
-                .HasForeignKey(d => new { d.TenantId, d.GosiRegistrationNo })
-                .OnDelete(DeleteBehavior.Restrict)
-                .HasConstraintName("fk_employee_gosi_registrations__gosi_registration_no");
+            // TARGET_SCHEMA.md §11.5: companies.gosi_registration_no is NULL until the establishment is registered.
+            // PostgreSQL enforces this foreign key; EF Core cannot model it at all, because its
+            // principal key contains a nullable column and EF requires every principal-key property
+            // to be non-nullable. The scaffolder's answer was to mark the PRINCIPAL column required,
+            // which is a lie about the database and would have made EF reject the legitimate NULL.
+            // The relationship is therefore absent from the model on purpose, the columns are
+            // present and correctly nullable, and a service that needs the parent joins explicitly.
+            // KynexModelMatchesBaselineTests.UnmodellableForeignKeys names it and asserts it exists.
         });
 
         modelBuilder.Entity<EmployeeSalary>(entity =>
@@ -2377,11 +2380,9 @@ public partial class KynexDbContext : DbContext
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_gosi_filings__filed_by");
 
-            entity.HasOne<Company>().WithMany()
-                .HasPrincipalKey(p => new { p.TenantId, p.GosiRegistrationNo })
-                .HasForeignKey(d => new { d.TenantId, d.GosiRegistrationNo })
-                .OnDelete(DeleteBehavior.Restrict)
-                .HasConstraintName("fk_gosi_filings__gosi_registration_no");
+            // TARGET_SCHEMA.md §11.5: companies.gosi_registration_no is NULL until the establishment
+            // is registered, so this is the second foreign key EF Core cannot model — a principal
+            // key may not contain a nullable column. See fk_employee_gosi_registrations__gosi_registration_no.
         });
 
         modelBuilder.Entity<Grade>(entity =>
@@ -3420,11 +3421,14 @@ public partial class KynexDbContext : DbContext
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("fk_payroll_runs__parent_run_id");
 
-            entity.HasOne<BackgroundJob>().WithMany()
-                .HasPrincipalKey(p => new { p.TenantId, p.Id })
-                .HasForeignKey(d => new { d.TenantId, d.SourceImportJobId })
-                .OnDelete(DeleteBehavior.SetNull)
-                .HasConstraintName("fk_payroll_runs__source_import_job_id");
+            // TARGET_SCHEMA.md §19.2: background_jobs.tenant_id is NULL for a platform-tier job.
+            // PostgreSQL enforces this foreign key; EF Core cannot model it at all, because its
+            // principal key contains a nullable column and EF requires every principal-key property
+            // to be non-nullable. The scaffolder's answer was to mark the PRINCIPAL column required,
+            // which is a lie about the database and would have made EF reject the legitimate NULL.
+            // The relationship is therefore absent from the model on purpose, the columns are
+            // present and correctly nullable, and a service that needs the parent joins explicitly.
+            // KynexModelMatchesBaselineTests.UnmodellableForeignKeys names it and asserts it exists.
         });
 
         modelBuilder.Entity<PayrollSlip>(entity =>
