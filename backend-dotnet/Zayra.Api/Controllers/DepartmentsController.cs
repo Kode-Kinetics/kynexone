@@ -171,10 +171,10 @@ public class DepartmentsController : ControllerBase
                         Dictionary<string, Department> Existing,
                         Dictionary<string, Guid> CostCenters,
                         Dictionary<string, int> Employees)>
-        LoadLookupsAsync(Guid tenantId, bool tracked, CancellationToken ct)
+        LoadLookupsAsync(Guid tenantId, CancellationToken ct)
     {
-        var departmentQuery = _db.Departments.Where(d => d.TenantId == tenantId && !d.IsDeleted);
-        var departments = await (tracked ? departmentQuery : departmentQuery.AsNoTracking()).ToListAsync(ct);
+        var departments = await _db.Departments.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && !d.IsDeleted).ToListAsync(ct);
         if (!OrgCodes.TryBuildLookup(departments, d => d.Code, out var existing, out var clash))
             return (Conflict(OrgCodeCollision.Payload("department", "Code", clash)), new(), new(), new());
 
@@ -195,7 +195,7 @@ public class DepartmentsController : ControllerBase
 
     private async Task<IActionResult> RunPreviewAsync(Guid tenantId, string csv, CancellationToken ct)
     {
-        var (refusal, existingByCode, costCentersByCode, empByCode) = await LoadLookupsAsync(tenantId, tracked: false, ct);
+        var (refusal, existingByCode, costCentersByCode, empByCode) = await LoadLookupsAsync(tenantId, ct);
         if (refusal is not null) return refusal;
 
         var rows = Csv.Parse(csv);
@@ -214,7 +214,7 @@ public class DepartmentsController : ControllerBase
 
     private async Task<IActionResult> RunCommitAsync(Guid tenantId, string csv, CancellationToken ct)
     {
-        var (refusal, existingByCode, costCentersByCode, empByCode) = await LoadLookupsAsync(tenantId, tracked: false, ct);
+        var (refusal, existingByCode, costCentersByCode, empByCode) = await LoadLookupsAsync(tenantId, ct);
         if (refusal is not null) return refusal;
 
         var rows = Csv.Parse(csv);
@@ -271,7 +271,11 @@ public class DepartmentsController : ControllerBase
             if (!idByCode.TryGetValue(key, out var id)) continue;
             if (!idByCode.TryGetValue(OrgCodes.Normalize(row.ParentCode), out var parentId))
             {
-                row.Errors.Add($"ParentDepartmentCode '{row.ParentCode}' could not be resolved");
+                // The row itself was written; only the parent link could not be made. Say so
+                // rather than leaving a department quietly sitting at the top of the tree.
+                row.Errors.Add(
+                    $"'{row.Code}' was saved, but ParentDepartmentCode '{row.ParentCode}' could not be " +
+                    "resolved, so it has no parent. Set its parent from the department screen.");
                 continue;
             }
             existingByCode.TryGetValue(key, out var existing);
