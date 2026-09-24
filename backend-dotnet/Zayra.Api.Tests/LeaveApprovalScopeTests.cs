@@ -206,7 +206,14 @@ public class LeaveApprovalScopeTests
         managerThenHr.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, WorkflowId = managerThenHr.Id, StepOrder = 1, StepName = "Manager", ApproverType = "Manager" });
         managerThenHr.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, WorkflowId = managerThenHr.Id, StepOrder = 2, StepName = "HR", ApproverType = "HR", IsFinalStep = true });
         db.ApprovalWorkflows.Add(managerThenHr);
+        // TWO WORKING DAYS, stated rather than assumed. This test asserts a 2-day request reserves
+        // 2 days; weekends are now excluded from the count (the Thu-Sun-charged-4-days fix), so a
+        // raw "+7 days" span silently became a 1-day request whenever it straddled the Fri-Sat
+        // weekend. Roll to a start whose next day is also a working day.
         var start = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(7));
+        while (WorkWeekConfig.GccDefault.IsWeekend(start.DayOfWeek)
+               || WorkWeekConfig.GccDefault.IsWeekend(start.AddDays(1).DayOfWeek))
+            start = start.AddDays(1);
         db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
         {
             TenantId = tenantId, EmployeeId = employee.Id, EmployeeName = employee.FullName,
