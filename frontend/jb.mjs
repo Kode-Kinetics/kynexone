@@ -1,0 +1,30 @@
+import { chromium } from '@playwright/test';
+const SHOT='/private/tmp/claude-501/-Users-zackkhan-Downloads-KynexOne/074df5aa-77b3-476e-892a-2f51f2c41b55/scratchpad/journey';
+const b=await chromium.launch();
+const ctx=await b.newContext({baseURL:'https://kynexone.vercel.app',viewport:{width:1440,height:900},storageState:`${SHOT}/state.json`});
+const p=await ctx.newPage();
+await p.goto('/people',{waitUntil:'networkidle'}); await p.waitForTimeout(2500);
+await p.locator('button:has-text("Add Employee")').first().click(); await p.waitForTimeout(2800);
+const byLabel=async(rx,val)=>{const el=p.locator('label').filter({hasText:rx}).locator('input,select').first();
+  if(!await el.count())return; const tag=await el.evaluate(e=>e.tagName);
+  if(tag==='SELECT'){const o=await el.locator('option').count(); if(o>1)await el.selectOption({index:1});}
+  else await el.fill(val);};
+await byLabel(/English full name/i,'Aisha Al-Rashid');
+await byLabel(/Personal email/i,'aisha.test@example.com');
+await byLabel(/Work email/i,'aisha.alrashid@kodekinetics.com');
+await byLabel(/Mobile number/i,'+966500000123');
+for(const f of [/^Company/i,/^Branch/i,/^Department/i,/^Designation/i,/^Grade/i,/Employment type/i,/Contract type/i,/Salary currency/i,/Payment method/i,/^Gender/i,/Marital status/i]) await byLabel(f,'');
+await byLabel(/Date of birth/i,'1995-04-12');
+await byLabel(/Joining date/i,'2026-09-01');
+await byLabel(/Basic salary/i,'8000');
+await byLabel(/Job title/i,'Software Engineer');
+await byLabel(/Nationality/i,'Saudi');
+await p.locator('button').filter({hasText:/Create Employee/i}).last().click().catch(()=>{});
+await p.waitForTimeout(5000);
+const t=((await p.locator('body').innerText().catch(()=>''))||'');
+console.log('created?', t.includes('Aisha')?'✅ YES':'❌ NO');
+// print every validation-looking line
+const lines=t.split('\n').map(x=>x.trim()).filter(x=>/required|invalid|must|cannot|failed|error/i.test(x)&&x.length<160);
+console.log('messages:'); for(const l of [...new Set(lines)].slice(0,8)) console.log('  -',l);
+await p.screenshot({path:`${SHOT}/90-employee-validation.png`,fullPage:true});
+await b.close();

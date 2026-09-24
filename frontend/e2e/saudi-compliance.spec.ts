@@ -114,18 +114,25 @@ test.describe('Saudi compliance — API authorization', () => {
       'a stored false on a statutory module must be ignored, not obeyed',
     ).toBe(true);
 
-    // Unknown country resolves fail-closed to "the obligation applies". The fixture tenant is
-    // created through POST /api/platform/tenants, which writes no localisation row, so this is the
-    // UNKNOWN-country path rather than the "country is SA" path — and the unknown path is the one
-    // worth pinning, because it is the one that protects a tenant whose localisation was never
-    // filled in. If this ever fails because the fixture gained a country, the lock above may well
-    // still hold via the SA branch — but the unknown-country branch would then have NO coverage
-    // anywhere, so re-establish it deliberately rather than relaxing this line.
+    // THE FIXTURE NOW HAS A COUNTRY, and this line was updated deliberately rather than relaxed.
+    //
+    // It used to assert the tenant had NO country, because POST /api/platform/tenants wrote no
+    // localisation row — so the lock above was exercising the fail-closed UNKNOWN-country branch.
+    // Platform admins now state a home jurisdiction at tenant creation (it sets the statutory
+    // jurisdiction, the first company's country and the tenant's timezone), so the fixture is SA
+    // and the lock is proven through the SA branch instead.
+    //
+    // The comment this replaces asked that the unknown-country branch not be left uncovered. It is
+    // not: `TenantModuleBehaviourTests.Saudization_UnknownCountry_IsLockedClosed` calls
+    // ModuleCatalog.CanDisable with a null country and asserts it stays locked, and a sibling
+    // pins the same for an unrecognised code ("ZZZ"). Both were already there; that branch is now
+    // unreachable through the API by construction, which is the stronger outcome.
     expect(
       listing.countryCode ?? null,
-      'the fixture tenant is expected to have no country, so that this test exercises the ' +
-      'fail-closed unknown-country branch of ModuleCatalog.CanDisable',
-    ).toBeNull();
+      'the fixture tenant states SA at creation, so the statutory lock above is proven through ' +
+      'the SA branch; the unknown-country branch is pinned by ' +
+      'TenantModuleBehaviourTests.Saudization_UnknownCountry_IsLockedClosed',
+    ).toBe('SA');
 
     // The tenant-facing switch refuses outright rather than storing a value it would then ignore.
     const attempt = await request.put('/api/tenant-modules/qiwa_integration', {

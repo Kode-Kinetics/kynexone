@@ -174,6 +174,11 @@ async function ensureTenant(platformToken: string, fixture: FixtureTenant): Prom
       billingCycle: 'Monthly',
       monthlyAmount: 0,
       currencyCode: 'SAR',
+      // The tenant's HOME JURISDICTION, required since platform admins began stating it at
+      // creation. It is what the first company inherits and what the statutory seeders key off,
+      // so the fixture world must name it rather than let the API guess. SA matches the KSA
+      // statutory expectations these suites already assert (GOSI, Iqama, Art. 117).
+      homeCountryCode: fixture.homeCountryCode ?? 'SA',
     },
   });
   expectOk(created, `create tenant '${fixture.slug}'`, [201]);

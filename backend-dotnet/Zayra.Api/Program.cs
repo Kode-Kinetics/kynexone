@@ -993,6 +993,17 @@ using (var scope = app.Services.CreateScope())
             () => TenantDefaultsBackfill.RunAsync(dbContext, logger), logger);
     }
 
+    // Read-only: names every tenant and legal entity that still has NO country, and where to set it.
+    // A tenant created before the home jurisdiction was required (testclaude, evostel) holds
+    // CountryCode = "", which resolves an EMPTY statutory/identity requirement set and blocks employee
+    // creation. Nothing is guessed and nothing is written — a country inferred from a currency or a
+    // slug would seed the wrong labour law in silence. Kill switch: MissingCountryAudit:Enabled=false.
+    if (!string.Equals(app.Configuration["MissingCountryAudit:Enabled"], "false", StringComparison.OrdinalIgnoreCase))
+    {
+        await TrySeedAsync("MissingCountryAudit",
+            () => MissingCountryAudit.RunAsync(dbContext, logger), logger);
+    }
+
 }
 
 app.Run();

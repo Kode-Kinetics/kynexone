@@ -57,7 +57,13 @@ public record EmployeeLoginInvitationDto(
     string Status,
     string InvitationToken,
     DateTime? InvitationExpiresAtUtc,
-    string InvitationUrl);
+    string InvitationUrl,
+    // Delivery truth. The invitation link is minted whether or not a mail transport exists; these
+    // three say whether anything was actually posted to the invitee, so no caller can render
+    // "invited — tell them to check their inbox" over a workspace with no SMTP configured.
+    bool EmailDeliveryConfigured = false,
+    bool EmailSent = false,
+    string DeliveryMessage = "");
 
 public record AccessModeRequest([Required] string AccessMode, string? Reason);
 
@@ -207,6 +213,19 @@ public record ChangePasswordRequest(
 public record AdminResetPasswordRequest(
     [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.MinLength(10)] string NewPassword,
     bool MustChangePassword = true);
+
+/// <summary>
+/// The controlled password-reset link an administrator issues on a user's behalf. The raw
+/// <see cref="ResetToken"/> exists only in this object and in the link built from it — the database
+/// stores nothing but its hash — so it can be shown once and never recovered afterwards.
+/// </summary>
+public record AdminPasswordResetLinkDto(
+    Guid UserId,
+    string Email,
+    string FullName,
+    string ResetToken,
+    string ResetUrl,
+    DateTime ExpiresAtUtc);
 
 public record UserListQuery(string? Search, string? Status, string? Role, int Page = 1, int PageSize = 30);
 

@@ -349,7 +349,44 @@ public class LeaveService : ILeaveService
         await _db.SaveChangesAsync(ct);
     }
 
-    public async Task<decimal> CalculateWorkingDaysAsync(Guid tenantId, DateOnly start, DateOnly end, Guid? policyId, CancellationToken ct = default)
+    public Task<decimal> CalculateWorkingDaysAsync(Guid tenantId, DateOnly start, DateOnly end, Guid? policyId, CancellationToken ct = default)
+        => CalculateWorkingDaysAsync(tenantId, start, end, policyId, null, ct);
+
+    /// <summary>
+    /// Working (deductible) days in the inclusive range, with the employee's company supplied so the
+    /// rest-day set can still be resolved when NO policy applies.
+    ///
+    /// <para><b>The defect this replaces.</b> The body used to read:
+    /// <code>
+    /// var workingDays = (decimal)totalDays;
+    /// if (policy is null) { return workingDays; }
+    /// </code>
+    /// <c>PolicyId</c> is optional on the create DTO and the browser never sends it, so the policy
+    /// comes from <c>ResolveLeavePolicyAsync</c>, which returns null whenever no policy row matches
+    /// the employee's company/branch/grade/gender/contract predicate. When it did, weekend and
+    /// public-holiday exclusion were both skipped and the request was charged RAW CALENDAR DAYS.
+    /// For a Fri–Sat tenant a Thursday-to-Sunday request cost <b>4 days with no policy and 2 days
+    /// with one</b> — same dates, same employee, same screen. A silent over-deduction whose size
+    /// depended on whether an invisible predicate happened to match, and which then fed the KSA
+    /// sick-leave banding and the LOP amount.</para>
+    ///
+    /// <para><b>What it does instead.</b> A missing policy is treated as the CONFIGURED DEFAULT, not
+    /// as "count everything": rest days come from <see cref="IWorkWeekService"/> exactly as they do
+    /// for a matched policy (company <c>GCCComplianceSetting</c> → tenant default →
+    /// <c>CountryPayrollRule.weekend_days</c> seeded by <c>TenantProvisioningBundle</c> → the single
+    /// Fri/Sat GCC fallback), scoped to the employee's own company so a group tenant's UAE entity
+    /// (Sat–Sun) and KSA entity (Fri–Sat) still get different answers. Public holidays are excluded
+    /// too, matching <see cref="LeavePolicy.WeekendsIncluded"/> / <see cref="LeavePolicy.PublicHolidaysIncluded"/>
+    /// both defaulting to <c>false</c> — i.e. the fallback is what an unconfigured policy would say,
+    /// never more generous to the employer than the tenant's own configuration.</para>
+    /// </summary>
+    /// <param name="companyId">
+    /// The employee's employing company, used ONLY when no policy resolved (a matched policy carries
+    /// its own company/branch/country scope and keeps winning). Null falls through to the tenant
+    /// default, which is the same chain one step wider.
+    /// </param>
+    public async Task<decimal> CalculateWorkingDaysAsync(
+        Guid tenantId, DateOnly start, DateOnly end, Guid? policyId, Guid? companyId, CancellationToken ct = default)
     {
         if (end < start) return 0;
 
@@ -362,21 +399,28 @@ public class LeaveService : ILeaveService
         var totalDays = end.DayNumber - start.DayNumber + 1;
         var workingDays = (decimal)totalDays;
 
-        if (policy is null)
-        {
-            return workingDays;
-        }
+        // No policy → the entity's own defaults (both false) rather than an early return.
+        var weekendsIncluded = policy?.WeekendsIncluded ?? false;
+        var publicHolidaysIncluded = policy?.PublicHolidaysIncluded ?? false;
+        // A matched policy scopes itself; an unmatched one borrows the employee's company.
+        var scopeCompanyId = policy is not null ? policy.CompanyId : companyId;
+        var scopeBranchId = policy?.BranchId;
+        // Null (not "") when there is no policy, so WorkWeekService derives the country from the
+        // company rather than being handed an empty string that matches nothing.
+        var scopeCountryCode = policy is not null && !string.IsNullOrWhiteSpace(policy.CountryCode)
+            ? policy.CountryCode
+            : null;
 
-        if (!policy.WeekendsIncluded)
+        if (!weekendsIncluded)
         {
             // Weekend (rest) days come from configuration via WorkWeekService — company override
             // → tenant default → country pack → GCC default. Hard-coding Sat/Sun here was the
             // legally-wrong leave deduction for GCC tenants (over-deducts Fri, under-deducts Sun).
-            var workWeek = await _workWeek.ResolveAsync(tenantId, policy.CompanyId, policy.CountryCode, ct);
+            var workWeek = await _workWeek.ResolveAsync(tenantId, scopeCompanyId, scopeCountryCode, ct);
             workingDays -= workWeek.CountWeekendDays(start, end);
         }
 
-        if (!policy.PublicHolidaysIncluded)
+        if (!publicHolidaysIncluded)
         {
             var calendars = _db.PublicHolidayCalendars
                 .Where(c => c.TenantId == tenantId && c.IsActive && c.CalendarYear == start.Year);
@@ -385,12 +429,12 @@ public class LeaveService : ILeaveService
                 calendars = _db.PublicHolidayCalendars
                     .Where(c => c.TenantId == tenantId && c.IsActive && c.CalendarYear >= start.Year && c.CalendarYear <= end.Year);
             }
-            if (!string.IsNullOrWhiteSpace(policy.CountryCode))
-                calendars = calendars.Where(c => c.CountryCode == policy.CountryCode);
-            if (policy.CompanyId.HasValue)
-                calendars = calendars.Where(c => c.CompanyId == policy.CompanyId || c.CompanyId == null);
-            if (policy.BranchId.HasValue)
-                calendars = calendars.Where(c => c.BranchId == policy.BranchId || c.BranchId == null);
+            if (!string.IsNullOrWhiteSpace(scopeCountryCode))
+                calendars = calendars.Where(c => c.CountryCode == scopeCountryCode);
+            if (scopeCompanyId.HasValue)
+                calendars = calendars.Where(c => c.CompanyId == scopeCompanyId || c.CompanyId == null);
+            if (scopeBranchId.HasValue)
+                calendars = calendars.Where(c => c.BranchId == scopeBranchId || c.BranchId == null);
 
             var publicHolidayCount = await _db.PublicHolidays
                 .Where(h => h.TenantId == tenantId && h.Date >= start && h.Date <= end && !h.IsOptional)
@@ -563,9 +607,6 @@ public class LeaveService : ILeaveService
         if (hasOverlap)
             throw new InvalidOperationException("Employee already has an approved or pending leave for the requested dates.");
 
-        var workingDays = await CalculateWorkingDaysAsync(tenantId, request.StartDate, request.EndDate, request.PolicyId, ct);
-        request.TotalDays = workingDays;
-
         var leaveType = await _db.LeaveTypes.FirstOrDefaultAsync(t => t.Id == request.LeaveTypeId && t.TenantId == tenantId, ct);
         if (leaveType is null)
             throw new InvalidOperationException("Invalid leave type.");
@@ -597,8 +638,16 @@ public class LeaveService : ILeaveService
         if (effectivePolicy is not null)
         {
             request.PayrollImpact = effectivePolicy.PayrollImpact;
-            workingDays = await CalculateWorkingDaysAsync(tenantId, request.StartDate, request.EndDate, effectivePolicy.Id, ct);
         }
+
+        // Counted ONCE, here, after the employee and the effective policy are both known. It used to
+        // be counted twice: a first pass above against the caller-supplied PolicyId (which the browser
+        // never sends, so it was null and charged raw calendar days) and a second pass that only ran
+        // when a policy resolved. The employee's company is what lets the no-policy case still resolve
+        // the tenant's configured rest days instead of falling back to every calendar day.
+        var workingDays = await CalculateWorkingDaysAsync(
+            tenantId, request.StartDate, request.EndDate, effectivePolicy?.Id, employee.CompanyId, ct);
+        request.TotalDays = workingDays;
 
         var isHourly = request.DayType.Equals("Hourly", StringComparison.OrdinalIgnoreCase);
         // The tenant's real working day, resolved once and used both to convert the hours into days
@@ -1390,14 +1439,14 @@ public class LeaveService : ILeaveService
     }
 
     private async Task<List<LeaveYearSegment>> CalculateYearSegmentsAsync(
-        Guid tenantId, DateOnly start, DateOnly end, Guid? policyId, CancellationToken ct)
+        Guid tenantId, DateOnly start, DateOnly end, Guid? policyId, Guid? companyId, CancellationToken ct)
     {
         var segments = new List<LeaveYearSegment>();
         for (var year = start.Year; year <= end.Year; year++)
         {
             var segmentStart = year == start.Year ? start : new DateOnly(year, 1, 1);
             var segmentEnd = year == end.Year ? end : new DateOnly(year, 12, 31);
-            var days = await CalculateWorkingDaysAsync(tenantId, segmentStart, segmentEnd, policyId, ct);
+            var days = await CalculateWorkingDaysAsync(tenantId, segmentStart, segmentEnd, policyId, companyId, ct);
             if (days > 0) segments.Add(new LeaveYearSegment(year, days));
         }
         return segments;
@@ -1406,7 +1455,10 @@ public class LeaveService : ILeaveService
     private async Task<List<LeaveYearSegment>> CalculateRequestYearSegmentsAsync(
         Guid tenantId, LeaveRequest request, Guid? policyId, CancellationToken ct)
     {
-        var segments = await CalculateYearSegmentsAsync(tenantId, request.StartDate, request.EndDate, policyId, ct);
+        // The request carries the employing company (stamped at submission), so a per-year split of
+        // a no-policy request excludes the same rest days the whole-range count did.
+        var segments = await CalculateYearSegmentsAsync(
+            tenantId, request.StartDate, request.EndDate, policyId, request.CompanyId, ct);
         if (segments.Count == 1 && (request.DayType.StartsWith("Half", StringComparison.OrdinalIgnoreCase)
             || request.DayType.Equals("Hourly", StringComparison.OrdinalIgnoreCase)))
             segments[0] = segments[0] with { Days = request.TotalDays };

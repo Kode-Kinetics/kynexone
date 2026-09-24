@@ -64,6 +64,13 @@ export interface FixtureCompany {
 export interface FixtureTenant {
   slug: string;
   name: string;
+  /**
+   * The tenant's HOME JURISDICTION (ISO-2), stated by the platform admin at creation and inherited
+   * by the first company. The statutory seeders key off it, so leaving it out means the fixture
+   * world has no jurisdiction and the API refuses to create the tenant. Defaults to SA in
+   * `provision.ts`, which matches the KSA expectations these suites already assert.
+   */
+  homeCountryCode?: string;
   accountType: 'SingleCompany' | 'Group';
   plan: string;
   maxUsers: number;
