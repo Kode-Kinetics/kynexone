@@ -86,13 +86,15 @@ public abstract class PlatformTestBase
         string platformRole = PlatformRoles.Owner,
         IAuthSeeder? authSeeder = null,
         IMfaService? mfaService = null,
-        IAccessManagementService? accessManagement = null)
+        IAccessManagementService? accessManagement = null,
+        IEmailService? emailService = null,
+        IConfiguration? configuration = null)
     {
         var jwt    = Options.Create(GetJwtOptions());
         var hasher = new Pbkdf2PasswordHasher();
         var tokenSvc = new JwtTokenService(jwt);
-        var config = new ConfigurationBuilder().Build();
-        var email  = new FakePlatformEmailService();
+        var config = configuration ?? new ConfigurationBuilder().Build();
+        var email  = emailService ?? new FakePlatformEmailService();
         var seeder = authSeeder ?? new FakeAuthSeeder(db, hasher);
         var access = accessManagement
             ?? new AccessManagementService(db, hasher, new AuditService(db), tokenSvc, config);

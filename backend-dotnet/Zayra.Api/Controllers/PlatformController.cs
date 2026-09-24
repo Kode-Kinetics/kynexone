@@ -322,7 +322,9 @@ public class PlatformController : ControllerBase
         var dbOk = false;
         try { await _db.Database.CanConnectAsync(ct); dbOk = true; } catch { }
 
-        var smtpConfigured = !string.IsNullOrEmpty(_config["Smtp:Host"]);
+        // Reads the saved relay, not just Smtp:Host from the environment — System Health reported
+        // "not_configured" for every deployment that configured SMTP through Platform Settings.
+        var smtpConfigured = await _emailService.IsPlatformConfiguredAsync(ct);
 
         // Distributed-cache health check — optional dependency.
         //
@@ -2145,14 +2147,17 @@ public class PlatformController : ControllerBase
             <p style="font-size:12px;color:#666">This action was initiated by the platform super-admin · KynexOne Workforce</p>
             """;
 
-        bool smtpConfigured = await _emailService.IsConfiguredAsync(ct);
+        // TENANT-EXPLICIT: the recipient is a tenant user, so their own tenant's relay is the right
+        // sender. Under the old ambient call this request (a platform admin, no tenant_id claim)
+        // bypassed the query filter and matched every tenant's Email settings at once.
+        bool smtpConfigured = await _emailService.IsConfiguredAsync(user.TenantId, ct);
         bool emailSent = false;
 
         if (smtpConfigured)
         {
             try
             {
-                await _emailService.SendAsync(user.Email, user.FullName, "Your KynexOne password reset (admin-initiated)", html, cancellationToken: ct);
+                await _emailService.SendAsync(user.TenantId, user.Email, user.FullName, "Your KynexOne password reset (admin-initiated)", html, cancellationToken: ct);
                 emailSent = true;
             }
             catch (Exception ex)
@@ -2985,7 +2990,9 @@ public class PlatformController : ControllerBase
         if (string.IsNullOrWhiteSpace(toEmail))
             return BadRequest(new { message = "No recipient email on this invoice and no billing email on the tenant subscription. Set an email on the invoice or update the tenant's billing email." });
 
-        var isConfigured = await _emailService.IsConfiguredAsync(ct);
+        // PLATFORM-EXPLICIT: a subscription invoice is the platform billing the tenant, so it must
+        // go out from the platform relay — never from the customer's own mail server.
+        var isConfigured = await _emailService.IsPlatformConfiguredAsync(ct);
         if (!isConfigured)
             return BadRequest(new
             {
@@ -3046,7 +3053,7 @@ public class PlatformController : ControllerBase
             """;
 
         var attachment = new EmailAttachment(fileName, pdfBytes, "application/pdf");
-        await _emailService.SendAsync(
+        await _emailService.SendPlatformAsync(
             toEmail,
             tenant?.Name ?? toEmail,
             $"Invoice {invoice.InvoiceNumber} — {amountFmt} due {dueDateFmt}",
@@ -3691,39 +3698,34 @@ public class PlatformController : ControllerBase
 
     [HttpGet("settings")]
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
-    public async Task<IActionResult> GetSettings(CancellationToken ct)
+    public async Task<IActionResult> GetSettings(
+        [FromServices] Microsoft.AspNetCore.DataProtection.IDataProtectionProvider protection,
+        CancellationToken ct)
     {
-        // Load all SMTP config entries in one query
-        var smtpKeys = new[] { "smtp_host", "smtp_port", "smtp_user", "smtp_from_address", "smtp_from_name", "smtp_use_tls", "smtp_password" };
-        var configMap = await _db.PlatformConfigEntries
-            .AsNoTracking()
-            .Where(e => smtpKeys.Contains(e.Key))
-            .ToDictionaryAsync(e => e.Key, e => e.Value, ct);
-
-        string CfgOrFallback(string key, string fallbackConfigKey, string defaultValue = "")
-            => configMap.TryGetValue(key, out var v) && !string.IsNullOrEmpty(v) ? v
-               : _config[fallbackConfigKey] ?? defaultValue;
-
-        var smtpHost      = CfgOrFallback("smtp_host",         "Smtp:Host");
-        var smtpPort      = CfgOrFallback("smtp_port",         "Smtp:Port", "587");
-        var smtpUser      = CfgOrFallback("smtp_user",         "Smtp:Username");
-        var smtpFromAddr  = CfgOrFallback("smtp_from_address", "Smtp:FromEmail");
-        var smtpFromName  = CfgOrFallback("smtp_from_name",    "Smtp:FromName");
-        var smtpUseTls    = CfgOrFallback("smtp_use_tls",      "Smtp:UseSsl", "true");
-        var smtpPwdStored = configMap.TryGetValue("smtp_password", out var p) && !string.IsNullOrEmpty(p);
+        var smtp = await PlatformSmtpConfig.LoadAsync(_db, protection, _config, _log, ct);
+        var preset = EmailProviderPresets.ByKey(smtp.ProviderKey);
 
         return Ok(new
         {
             smtp = new
             {
-                host      = smtpHost,
-                port      = smtpPort,
-                username  = smtpUser,
-                useSsl    = smtpUseTls,
-                fromEmail = smtpFromAddr,
-                fromName  = smtpFromName,
-                // Never return the actual password — return a masked sentinel if one is stored
-                password  = smtpPwdStored ? "***" : ""
+                host      = smtp.Host,
+                port      = smtp.Port,
+                username  = smtp.Username,
+                useSsl    = smtp.UseTls,
+                fromEmail = smtp.FromAddress,
+                fromName  = smtp.FromName,
+                provider  = smtp.ProviderKey,
+                // Never return the actual password — only whether one is stored.
+                password  = string.IsNullOrEmpty(smtp.Password) ? "" : "***",
+                hasPassword = !string.IsNullOrEmpty(smtp.Password),
+                // The banner used to read settings.smtp.isConfigured, which this endpoint never
+                // returned — so it was always undefined and the amber "SMTP not configured" warning
+                // showed even on a fully configured relay. It is a real value now.
+                isConfigured = smtp.IsUsable,
+                // Where each value came from, so the admin can tell saved config from an env fallback.
+                source = smtp.Source,
+                providerLabel = preset?.Label,
             },
             ai = new
             {
@@ -3737,65 +3739,221 @@ public class PlatformController : ControllerBase
         });
     }
 
+    /// <summary>
+    /// Auto-configuration catalog for the SMTP form: picking a provider fills in host, port and TLS
+    /// so an admin never has to look up "what is GoDaddy's SMTP server" mid-setup. The credentials
+    /// are still theirs to supply, and nothing is trusted until the test email lands.
+    /// </summary>
+    [HttpGet("settings/email-providers")]
+    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    public IActionResult GetEmailProviders() =>
+        Ok(EmailProviderPresets.All.Select(p => new
+        {
+            key            = p.Key,
+            label          = p.Label,
+            host           = p.Host,
+            port           = p.Port,
+            useSsl         = p.UseTls,
+            usernamePattern = p.UsernamePattern,
+            guidance       = p.Guidance,
+            alternatePorts = p.AlternatePorts,
+            docsUrl        = p.DocsUrl,
+            category       = p.Category,
+        }));
+
     [HttpPut("settings/smtp")]
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
-    public async Task<IActionResult> UpdateSmtp([FromBody] UpdateSmtpRequest req, CancellationToken ct)
+    public async Task<IActionResult> UpdateSmtp(
+        [FromBody] UpdateSmtpRequest req,
+        [FromServices] Microsoft.AspNetCore.DataProtection.IDataProtectionProvider protection,
+        CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(req.Host))
-            return BadRequest(new { message = "Host is required." });
+            return BadRequest(new { message = "SMTP host is required." });
+        if (req.Port is < 1 or > 65535)
+            return BadRequest(new { message = "Port must be between 1 and 65535." });
 
-        await UpsertConfigAsync("smtp_host",         req.Host.Trim(), ct);
-        await UpsertConfigAsync("smtp_port",         req.Port.ToString(), ct);
-        await UpsertConfigAsync("smtp_user",         req.Username?.Trim() ?? "", ct);
-        await UpsertConfigAsync("smtp_from_address", req.FromEmail?.Trim() ?? "", ct);
-        await UpsertConfigAsync("smtp_from_name",    req.FromName?.Trim() ?? "", ct);
-        await UpsertConfigAsync("smtp_use_tls",      req.UseSsl ? "true" : "false", ct);
+        // A blank From address is not a partial save — MimeKit throws on it, so the relay would
+        // accept the config and then fail on every send. Rejected here instead.
+        if (string.IsNullOrWhiteSpace(req.FromEmail) || !IsValidEmail(req.FromEmail))
+            return BadRequest(new { message = "A valid From Email is required — it is the address recipients will see." });
 
-        // Password: only update if a new one was supplied
-        if (!string.IsNullOrEmpty(req.Password))
+        var providerKey = EmailProviderPresets.ByKey(req.Provider)?.Key
+                          ?? EmailProviderPresets.DetectByHost(req.Host)?.Key
+                          ?? EmailProviderPresets.CustomKey;
+
+        // Read the outgoing values before the upserts overwrite them, so the audit entry can say
+        // what the relay was changed FROM, not just what it is now.
+        var before = await PlatformSmtpConfig.LoadAsync(_db, protection, _config, _log, ct);
+
+        await UpsertConfigAsync(PlatformSmtpConfig.KeyHost,        req.Host.Trim(), ct);
+        await UpsertConfigAsync(PlatformSmtpConfig.KeyPort,        req.Port.ToString(System.Globalization.CultureInfo.InvariantCulture), ct);
+        await UpsertConfigAsync(PlatformSmtpConfig.KeyUsername,    req.Username?.Trim() ?? "", ct);
+        await UpsertConfigAsync(PlatformSmtpConfig.KeyFromAddress, req.FromEmail.Trim(), ct);
+        await UpsertConfigAsync(PlatformSmtpConfig.KeyFromName,    req.FromName?.Trim() ?? "", ct);
+        await UpsertConfigAsync(PlatformSmtpConfig.KeyUseTls,      req.UseSsl ? "true" : "false", ct);
+        await UpsertConfigAsync(PlatformSmtpConfig.KeyProvider,    providerKey, ct);
+
+        // Password: only update if a new one was supplied. A blank field means "keep the current
+        // one", which is what the form's placeholder promises.
+        var passwordChanged = !string.IsNullOrEmpty(req.Password) && req.Password != "***";
+        if (passwordChanged)
         {
-            // WARNING: This is Base64 obfuscation, NOT real encryption.
-            // Proper vault integration (Azure Key Vault / AWS Secrets Manager) is required for production.
-            var obfuscated = Convert.ToBase64String(Encoding.UTF8.GetBytes(req.Password));
-            await UpsertConfigAsync("smtp_password", obfuscated, ct);
+            // Was Base64 — which the old code itself flagged as obfuscation, not encryption.
+            // Now IDataProtection, the same mechanism the notification-provider secrets use.
+            await UpsertConfigAsync(PlatformSmtpConfig.KeyPassword,
+                PlatformSmtpConfig.ProtectPassword(protection, req.Password), ct);
         }
+
+        // Changing the relay redirects EVERY outbound platform email — invoices, password resets,
+        // notifications — to a different server, under a different From address. Maintenance mode
+        // is audited and this was not, though it is the more consequential of the two. The password
+        // itself is never recorded; whether it changed is.
+        _db.AdminAuditLogs.Add(new AdminAuditLog
+        {
+            TenantId        = Guid.Empty,
+            EntityType      = "PlatformConfig",
+            EntityId        = PlatformSmtpConfig.KeyHost,
+            Action          = "SmtpConfigUpdated",
+            OldValuesJson   = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                host     = before.Host,
+                port     = before.Port,
+                username = before.Username,
+                from     = before.FromAddress,
+                provider = before.ProviderKey,
+                useTls   = before.UseTls,
+            }),
+            NewValuesJson   = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                host     = req.Host.Trim(),
+                port     = req.Port,
+                username = req.Username?.Trim() ?? "",
+                from     = req.FromEmail.Trim(),
+                provider = providerKey,
+                useTls   = req.UseSsl,
+                passwordChanged,
+            }),
+            PerformedByName = "platform_admin",
+            IpAddress       = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
+        });
 
         await _db.SaveChangesAsync(ct);
 
-        _log.LogInformation("SMTP config persisted to PlatformConfigEntries: host={Host} port={Port}", req.Host, req.Port);
+        // providerKey comes from the fixed preset catalog (or the literal "custom"), so it is not
+        // attacker-controlled text; req.Host is, and is therefore left out. The host is in the
+        // audit entry above, which is the right place for it anyway.
+        _log.LogInformation("Platform SMTP saved: provider={Provider} port={Port} tls={Tls}",
+            providerKey, req.Port, req.UseSsl);
 
-        return Ok(new { message = "SMTP configuration saved.", host = req.Host, port = req.Port, useSsl = req.UseSsl });
+        return Ok(new
+        {
+            message = "SMTP configuration saved.",
+            host = req.Host, port = req.Port, useSsl = req.UseSsl, provider = providerKey,
+        });
     }
 
+    /// <summary>
+    /// Sends a real message through the saved relay. The recipient is chosen by the admin so the
+    /// test can be delivered to an inbox they can actually open — a test that only ever goes to the
+    /// signed-in account cannot prove deliverability to a customer domain.
+    /// </summary>
     [HttpPost("settings/smtp/test")]
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
-    public async Task<IActionResult> TestSmtp(CancellationToken ct)
+    public async Task<IActionResult> TestSmtp(
+        [FromBody] TestSmtpRequest? req,
+        [FromServices] Microsoft.AspNetCore.DataProtection.IDataProtectionProvider protection,
+        CancellationToken ct)
     {
-        var isConfigured = await _emailService.IsConfiguredAsync(ct);
-        if (!isConfigured)
-            return BadRequest(new { message = "SMTP is not configured. Update Smtp:Host, Smtp:Port, etc. first." });
+        var smtp = await PlatformSmtpConfig.LoadAsync(_db, protection, _config, _log, ct);
+        if (!smtp.IsUsable)
+            return BadRequest(new
+            {
+                sent = false,
+                message = "SMTP is not configured yet. Fill in the host and From Email above, save, then test.",
+            });
 
-        var adminEmail = HttpContext.User.FindFirst(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Email)?.Value
-            ?? HttpContext.User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value;
-        if (string.IsNullOrWhiteSpace(adminEmail))
-            return BadRequest(new { message = "Cannot determine your email address from the JWT." });
+        // Default to the signed-in admin; the form pre-fills this, so an explicit value is the norm.
+        var to = req?.To?.Trim();
+        if (string.IsNullOrWhiteSpace(to))
+            to = HttpContext.User.FindFirst(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Email)?.Value
+                 ?? HttpContext.User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value;
+
+        if (string.IsNullOrWhiteSpace(to))
+            return BadRequest(new { sent = false, message = "Enter the email address the test should be delivered to." });
+        if (!IsValidEmail(to))
+            return BadRequest(new { sent = false, message = $"\"{to}\" is not a valid email address." });
+
+        var sentAtUtc = DateTime.UtcNow;
+        var providerLabel = EmailProviderPresets.ByKey(smtp.ProviderKey)?.Label ?? smtp.ProviderKey;
 
         try
         {
-            await _emailService.SendAsync(
-                adminEmail,
-                "Platform Admin",
-                "KynexOne SMTP Test",
-                "<p>Your SMTP configuration is working correctly.</p>",
+            await _emailService.SendPlatformAsync(
+                to,
+                "KynexOne Platform Admin",
+                "KynexOne — SMTP test message",
+                $"""
+                 <p>This is a test message from <strong>KynexOne Platform Settings</strong>.</p>
+                 <p>If you are reading it, outbound email is working: invoices, password resets and
+                 notifications will reach their recipients.</p>
+                 <table cellpadding="4" style="font-family:system-ui,sans-serif;font-size:13px;border-collapse:collapse">
+                   <tr><td><strong>Provider</strong></td><td>{System.Net.WebUtility.HtmlEncode(providerLabel)}</td></tr>
+                   <tr><td><strong>Relay</strong></td><td>{System.Net.WebUtility.HtmlEncode(smtp.Host)}:{smtp.Port}</td></tr>
+                   <tr><td><strong>Encryption</strong></td><td>{(smtp.Port == 465 ? "Implicit TLS" : smtp.UseTls ? "STARTTLS" : "None")}</td></tr>
+                   <tr><td><strong>From</strong></td><td>{System.Net.WebUtility.HtmlEncode(smtp.FromAddress)}</td></tr>
+                   <tr><td><strong>Sent at (UTC)</strong></td><td>{sentAtUtc:yyyy-MM-dd HH:mm:ss}</td></tr>
+                 </table>
+                 <p style="color:#64748b;font-size:12px">If this landed in spam, add an SPF record for
+                 {System.Net.WebUtility.HtmlEncode(smtp.Host)} and a DKIM record from your provider.</p>
+                 """,
                 cancellationToken: ct);
-            return Ok(new { sent = true, to = adminEmail });
+
+            _log.LogInformation("Platform SMTP test sent on port {Port}.", smtp.Port);
+
+            return Ok(new
+            {
+                sent = true,
+                to,
+                host = smtp.Host,
+                port = smtp.Port,
+                provider = smtp.ProviderKey,
+                sentAtUtc,
+                message = $"Test email accepted by {smtp.Host} for {to}. Open that inbox to confirm it arrived — check spam if it is not there within a minute.",
+            });
         }
         catch (Exception ex)
         {
-            _log.LogWarning(ex, "SMTP test email failed for {Email}", adminEmail);
-            return Ok(new { sent = false, to = adminEmail, error = ex.Message });
+            // The relay's own words are the single most useful thing here ("535 authentication
+            // failed", "relay access denied"), so they are surfaced rather than swallowed.
+            // The exception carries the relay's own message; the host is not re-logged as text.
+            _log.LogWarning(ex, "Platform SMTP test failed on port {Port}.", smtp.Port);
+            return Ok(new
+            {
+                sent = false,
+                to,
+                host = smtp.Host,
+                port = smtp.Port,
+                provider = smtp.ProviderKey,
+                error = ex.Message,
+                message = $"Could not send through {smtp.Host}:{smtp.Port} — {ex.Message}",
+            });
         }
     }
+
+    /// <summary>Strict enough to catch typos, lenient enough not to reject valid unusual addresses.</summary>
+    private static bool IsValidEmail(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        if (value.Contains(' ') || value.Contains(',') || value.Contains(';')) return false;
+        try
+        {
+            var parsed = new System.Net.Mail.MailAddress(value.Trim());
+            return parsed.Address == value.Trim() && parsed.Host.Contains('.');
+        }
+        catch (FormatException) { return false; }
+    }
+
 
     [HttpGet("settings/version")]
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin, PlatformRoles.Auditor)]
@@ -4823,7 +4981,12 @@ public record UpdateSmtpRequest(
     string? Password,
     bool UseSsl,
     string? FromEmail = null,
-    string? FromName = null);
+    string? FromName = null,
+    /// <summary>Key from <see cref="EmailProviderPresets"/>; blank is inferred from the host.</summary>
+    string? Provider = null);
+
+/// <summary>Body of the SMTP test. <c>To</c> is optional — it defaults to the signed-in admin.</summary>
+public record TestSmtpRequest(string? To);
 
 public record ConvertLeadRequest(
     string TenantName,
