@@ -3802,8 +3802,12 @@ public class PlatformController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
 
+        // Provider key and host come straight off the request body. Structured logging does not
+        // save us here: the sink flattens template + args into one line, so a host containing CRLF
+        // writes forged entries into the platform operator's own log. Port and UseSsl are int/bool
+        // and cannot carry a newline, so they are logged as-is.
         _log.LogInformation("Platform SMTP saved: provider={Provider} host={Host} port={Port} tls={Tls}",
-            providerKey, req.Host, req.Port, req.UseSsl);
+            LogSafe.Text(providerKey), LogSafe.Text(req.Host), req.Port, req.UseSsl);
 
         return Ok(new
         {
