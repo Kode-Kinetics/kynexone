@@ -103,7 +103,7 @@ public class RequisitionApprovalConvergenceTests
         db.Tenants.Add(new Zayra.Api.Domain.Entities.Tenant { Id = tenantId, Name = "Acme", Slug = $"acme-{Guid.NewGuid():N}" });
         await db.SaveChangesAsync();
 
-        await Zayra.Api.Infrastructure.Seed.TenantProvisioningBundle.ProvisionAsync(db, tenantId, CancellationToken.None);
+        await Zayra.Api.Infrastructure.Seed.TenantProvisioningBundle.ProvisionAsync(db, tenantId, "SA", CancellationToken.None);
 
         // Before the default existed this resolved to null and Submit recorded no approval at all.
         var route = await new ApprovalRouter(db).TryResolveAsync(
