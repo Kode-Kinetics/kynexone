@@ -34,7 +34,11 @@ public class SetupAssistantController : ControllerBase
     {
         if (string.IsNullOrWhiteSpace(profile.CountryCode))
             return BadRequest(new { message = "Country is required." });
-        var result = await _assistant.GenerateAsync(profile, ct);
+        // Preview calls a model, and a model call with no tenant behind it cannot be recorded
+        // against anyone. Refuse rather than spend tokens on an unattributable request.
+        if (!Guid.TryParse(User.FindFirstValue("tenant_id"), out var tenantId))
+            return Unauthorized(new { message = "Tenant context is missing." });
+        var result = await _assistant.GenerateAsync(new SetupRequester(tenantId, GetUserId(), CallerRole()), profile, ct);
         return Ok(result);
     }
 
@@ -380,6 +384,9 @@ public class SetupAssistantController : ControllerBase
     private Guid? GetUserId() => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var id)
         ? id
         : Guid.TryParse(User.FindFirstValue("sub"), out id) ? id : null;
+    /// <summary>The caller's roles as one string, matching how AiAdvisoryService records them.</summary>
+    private string CallerRole() =>
+        string.Join(",", User.Claims.Where(c => c.Type == ClaimTypes.Role).Select(c => c.Value));
     private bool HasPermission(string permission) =>
         User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
     private RequestContext Context(Guid tenantId) => new(
