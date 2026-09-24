@@ -215,7 +215,22 @@ test.describe('RTL logical-property ratchet', () => {
     expect(layout).toContain('suppressHydrationWarning');
     // Inter has no Arabic coverage; without a fallback the Arabic UI renders in whatever
     // the OS happens to supply.
-    expect(layout).toContain('IBM+Plex+Sans+Arabic');
+    //
+    // This used to assert the string 'IBM+Plex+Sans+Arabic' — the `+`-encoded family name from
+    // a fonts.googleapis.com URL. That coupled the ratchet to the DELIVERY MECHANISM rather than
+    // the contract: when the families were vendored via next/font/local the <link> went away, the
+    // Arabic face was still applied, and this test failed anyway. Assert the property that
+    // actually matters — an Arabic-capable face is applied to <html> — and assert the files are
+    // really there, so it cannot pass vacuously if the face is ever declared but never shipped.
+    expect(layout).toContain('plexArabicFallback.variable');
+
+    const arabicFaces = fs
+      .readdirSync(path.join(FRONTEND_ROOT, 'app/fonts'))
+      .filter(f => /arabic/i.test(f) && f.endsWith('.woff2'));
+    expect(
+      arabicFaces.length,
+      'app/fonts holds no Arabic .woff2 — the Arabic UI would fall back to whatever the OS supplies',
+    ).toBeGreaterThan(0);
 
     const css = fs.readFileSync(path.join(FRONTEND_ROOT, 'src/styles/index.css'), 'utf8');
     expect(css).toContain("[dir='rtl'] .lucide-chevron-right");
