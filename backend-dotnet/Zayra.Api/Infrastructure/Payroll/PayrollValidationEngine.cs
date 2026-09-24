@@ -60,13 +60,12 @@ public static class PayrollValidationEngine
         // edge cases where the run was created before the guard was added.
         if (ctx.Company is null)
             Err("COMPANY_NOT_RESOLVED",
-                "No active company is linked to this payroll run. " +
-                "The statutory deduction pack cannot be resolved without a company. " +
-                "Reprocess the run after linking an active company with a CountryCode.");
+                "No active company is linked to this payroll run, so statutory deductions cannot be worked out. " +
+                "Link an active company with a country set in Setup → Companies, then reprocess the run.");
         else if (string.IsNullOrWhiteSpace(ctx.Company.CountryCode))
             Err("COUNTRY_CODE_MISSING",
-                $"Company '{ctx.Company.LegalNameEn}' (id: {ctx.Company.Id}) has no CountryCode. " +
-                "Set the company country in Setup → Companies then reprocess.");
+                $"{ctx.Company.LegalNameEn} has no country set, so statutory deductions cannot be worked out. " +
+                "Set it in Setup → Companies, then reprocess the run.");
 
         // Accept both ISO 3166-1 alpha-2 ("SA") and alpha-3 ("SAU") for KSA — data may use either.
         var isKsa = string.Equals(ctx.Company?.CountryCode, "SAU", StringComparison.OrdinalIgnoreCase)

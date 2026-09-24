@@ -501,9 +501,12 @@ test.describe('Payroll — run to WPS file', () => {
         expect(new Set(employees).size, 'each payslip must belong to a distinct employee').toBe(
           employeeCount,
         );
+        // A payslip row must NAME the employee. It used to assert the opposite — that every cell matched
+        // the placeholder `Emp #<id>` — which pinned the defect in place: the PDF printed "Aisha Al-Harbi"
+        // while the list the operator reads printed "Emp #4".
         expect(
-          employees.filter((e) => !/^Emp #\d+$/.test(e)),
-          'every payslip row must name the employee it belongs to',
+          employees.filter((e) => e.length === 0 || /^Emp #\d+$/.test(e)),
+          'every payslip row must name the employee it belongs to, not a placeholder code',
         ).toEqual([]);
 
         // The run is Locked, so generation must also publish to ESS — otherwise the employee has

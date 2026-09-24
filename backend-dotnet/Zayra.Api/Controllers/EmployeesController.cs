@@ -2006,6 +2006,20 @@ public class EmployeesController : ControllerBase
             return CreatedAtAction(nameof(Get), new { id = employee.Id }, employee);
         }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
+        // HOME JURISDICTION: the employing company has no country, so nothing can be required and nothing
+        // saved. The Add Employee modal disables its submit button on the same condition — this is the
+        // authoritative refusal behind that affordance, and it names the company and where the fix lives
+        // (the modal renders `message` verbatim).
+        catch (CompanyCountryMissingException ex)
+        {
+            return BadRequest(new
+            {
+                error       = HomeJurisdiction.MissingCompanyCountryError,
+                companyId   = ex.CompanyId,
+                fixLocation = HomeJurisdiction.CompanyFixLocation,
+                message     = ex.Message,
+            });
+        }
         // Authoritative never-silent-dup backstop: a STRONG identity match with no explicit acknowledgement.
         // Advisory 409 (never a hard block) — the modal re-surfaces the SAME masked match set the pre-check
         // shows and the operator resolves (View existing / Merge / Create anyway → acknowledgeDuplicate).

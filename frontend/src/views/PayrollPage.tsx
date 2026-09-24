@@ -2097,7 +2097,12 @@ function PayslipsTab() {
             <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
               {payslips.map(p => (
                 <tr key={p.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
-                  <td className="px-4 py-2 font-medium text-slate-900 dark:text-white">Emp #{p.employeeId}</td>
+                  <td className="px-4 py-2 font-medium text-slate-900 dark:text-white">
+                    {/* The name and code come from the payslip record itself (denormalised at run time),
+                        so this row reads exactly like the PDF the employee receives. */}
+                    {p.employeeName}
+                    {p.employeeCode && <span className="ms-2 font-mono text-[11px] font-normal text-slate-400">{p.employeeCode}</span>}
+                  </td>
                   <td className="px-4 py-2 font-mono text-xs text-slate-500">{p.payslipNumber}</td>
                   <td className="px-4 py-2 text-slate-500">{p.language.toUpperCase()}</td>
                   <td className="px-4 py-2">

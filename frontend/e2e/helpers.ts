@@ -253,19 +253,42 @@ const EMPTY_STATE = /no (records|results|data|requests|approvals|entries)|nothin
  *
  * Fails loudly on an empty state rather than treating it as "the page loaded fine", because an
  * empty Attendance / Leave / Approvals screen IS the demo failure mode this suite exists to catch.
+ *
+ * <b>It WAITS for the rows.</b> This used to take a single snapshot the instant the caller asked,
+ * which made it a race rather than an assertion: every one of these screens fetches its rows over
+ * XHR after the route's shell has painted, and the caller's own `expect.poll(mainContentLength)`
+ * is satisfied by the shell alone (the Leave tab strip is ~200 characters on its own). So the
+ * verdict came down to whether the API answered inside the few milliseconds between those two
+ * lines. It did on a warm machine and did not on a cold CI runner — the pilot lane reported
+ * "/leave rendered 0 data row(s)" on main and on every integration branch alike, then retried
+ * green, which is the signature of a racing test and not of a blank module.
+ *
+ * Polling closes that. A screen that genuinely has no rows still fails, one second later, with the
+ * same message; a screen whose rows are merely still in flight now passes for the reason it always
+ * should have. Deliberately NOT short-circuited on {@link EMPTY_STATE}: these modules render their
+ * empty copy while the request is still outstanding, so treating that text as a verdict would
+ * reinstate the same race with extra steps.
  */
-export async function expectNonEmptyList(page: Page, route: string, minRows = 1): Promise<number> {
-  const rows = await renderedRowCount(page);
-  const text = await mainText(page);
-  if (rows < minRows) {
-    const emptyState = EMPTY_STATE.test(text) ? ' The screen is showing its EMPTY STATE.' : '';
-    throw new Error(
-      `${route} rendered ${rows} data row(s); at least ${minRows} was required.${emptyState}\n` +
-      `This is the blank-module failure the pilot feared. Main-region text (first 400 chars):\n` +
-      text.slice(0, 400),
-    );
+export async function expectNonEmptyList(
+  page: Page, route: string, minRows = 1, timeoutMs = 15_000,
+): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  let rows = 0;
+  for (;;) {
+    rows = await renderedRowCount(page);
+    if (rows >= minRows) return rows;
+    if (Date.now() >= deadline) break;
+    await page.waitForTimeout(200);
   }
-  return rows;
+
+  const text = await mainText(page);
+  const emptyState = EMPTY_STATE.test(text) ? ' The screen is showing its EMPTY STATE.' : '';
+  throw new Error(
+    `${route} rendered ${rows} data row(s); at least ${minRows} was required ` +
+    `(waited ${timeoutMs}ms).${emptyState}\n` +
+    `This is the blank-module failure the pilot feared. Main-region text (first 400 chars):\n` +
+    text.slice(0, 400),
+  );
 }
 
 /**
