@@ -70,6 +70,9 @@ public sealed class LlmClient : ILlmClient
         var inputTokens = usage.ValueKind == JsonValueKind.Object && usage.TryGetProperty("input_tokens", out var input) ? input.GetInt32() : 0;
         var outputTokens = usage.ValueKind == JsonValueKind.Object && usage.TryGetProperty("output_tokens", out var output) ? output.GetInt32() : 0;
         var responseId = root.TryGetProperty("id", out var id) ? id.GetString() : null;
+        if (string.IsNullOrWhiteSpace(text))
+            return new LlmResponse(false, "anthropic", request.Model, string.Empty, inputTokens, outputTokens, responseId,
+                Error: "model returned no text content");
         return new LlmResponse(true, "anthropic", request.Model, text, inputTokens, outputTokens, responseId);
     }
 
@@ -92,7 +95,7 @@ public sealed class LlmClient : ILlmClient
                 new { role = "user", content = request.UserPrompt }
             },
             max_output_tokens = Math.Max(256, request.MaxOutputTokens),
-            text = new { format = new { type = "text" } }
+            text = new { format = new { type = request.RequireJson ? "json_object" : "text" } }
         }, JsonOptions), Encoding.UTF8, "application/json");
 
         using var response = await _httpClient.SendAsync(message, cancellationToken);
@@ -109,6 +112,9 @@ public sealed class LlmClient : ILlmClient
         var inputTokens = usage.ValueKind == JsonValueKind.Object && usage.TryGetProperty("input_tokens", out var input) ? input.GetInt32() : 0;
         var outputTokens = usage.ValueKind == JsonValueKind.Object && usage.TryGetProperty("output_tokens", out var output) ? output.GetInt32() : 0;
         var responseId = root.TryGetProperty("id", out var id) ? id.GetString() : null;
+        if (string.IsNullOrWhiteSpace(text))
+            return new LlmResponse(false, "openai", request.Model, string.Empty, inputTokens, outputTokens, responseId,
+                Error: "model returned no text content");
         return new LlmResponse(true, "openai", request.Model, text, inputTokens, outputTokens, responseId);
     }
 
@@ -130,6 +136,11 @@ public sealed class LlmClient : ILlmClient
         {
             model = request.Model,
             stream = false,
+            // Ollama's structured-output switch. Null is omitted (WhenWritingNull), so chat
+            // requests serialise byte-identically to before -- only JSON callers change.
+            // Without this a reasoning model may wrap the object in prose or a ```json fence,
+            // which defeats the caller's first-brace/last-brace extraction.
+            format = request.RequireJson ? "json" : null,
             messages = new[]
             {
                 new { role = "system", content = request.SystemPrompt },
@@ -151,14 +162,36 @@ public sealed class LlmClient : ILlmClient
         using var doc = JsonDocument.Parse(payload);
         var root = doc.RootElement;
         var text = string.Empty;
+        var thinking = string.Empty;
 
-        if (root.TryGetProperty("message", out var messageEl) && messageEl.ValueKind == JsonValueKind.Object && messageEl.TryGetProperty("content", out var content))
+        if (root.TryGetProperty("message", out var messageEl) && messageEl.ValueKind == JsonValueKind.Object)
         {
-            text = content.GetString() ?? string.Empty;
+            if (messageEl.TryGetProperty("content", out var content))
+                text = content.GetString() ?? string.Empty;
+            // Reasoning models (deepseek-v4-pro, gpt-oss, ...) put chain-of-thought HERE and
+            // leave `content` empty when num_predict is exhausted before the answer starts.
+            // Captured for diagnosis only -- it is never returned as the answer.
+            if (messageEl.TryGetProperty("thinking", out var thinkingEl))
+                thinking = thinkingEl.GetString() ?? string.Empty;
         }
 
         var inputTokens = root.TryGetProperty("prompt_eval_count", out var promptEval) ? promptEval.GetInt32() : 0;
         var outputTokens = root.TryGetProperty("eval_count", out var evalCount) ? evalCount.GetInt32() : 0;
+        var doneReason = root.TryGetProperty("done_reason", out var doneEl) ? doneEl.GetString() : null;
+
+        // An empty completion is a FAILURE, not a success that happens to carry no text.
+        // Returning Success:true here forced every caller to invent its own empty check, and
+        // the one that forgot reported "AI provider unavailable" for a provider that had
+        // answered -- with nothing. Fail here, with a reason that names the real cause.
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            var budget = Math.Max(256, request.MaxOutputTokens);
+            var why = doneReason == "length"
+                ? $"model produced no content: the {budget}-token budget was consumed before the answer began ({thinking.Length} chars of reasoning emitted)"
+                : $"model produced empty content (done_reason={doneReason ?? "none"}, reasoning={thinking.Length} chars)";
+            return new LlmResponse(false, "ollama", request.Model, string.Empty, inputTokens, outputTokens, Error: why);
+        }
+
         return new LlmResponse(true, "ollama", request.Model, text, inputTokens, outputTokens);
     }
 

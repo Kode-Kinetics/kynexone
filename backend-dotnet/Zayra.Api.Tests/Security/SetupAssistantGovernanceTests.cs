@@ -67,7 +67,7 @@ public class SetupAssistantGovernanceTests
 
     private sealed class FakeSetupAssistantService : ISetupAssistantService
     {
-        public Task<SetupPreviewResult> GenerateAsync(CompanyProfile profile, CancellationToken ct) =>
+        public Task<SetupPreviewResult> GenerateAsync(SetupRequester requester, CompanyProfile profile, CancellationToken ct) =>
             Task.FromResult(new SetupPreviewResult(SetupDraft.Empty(), [], "test"));
     }
 }

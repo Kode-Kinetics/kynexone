@@ -2,6 +2,16 @@ namespace Zayra.Api.Application.Setup;
 
 // ── Input ───────────────────────────────────────────────────────────────────
 
+/// <summary>
+/// On whose behalf a draft is generated.
+///
+/// The assistant calls a model, and every model call has to produce a tenant-scoped usage/cost
+/// record, so it cannot run without knowing who asked. This is deliberately a separate parameter
+/// rather than fields on <see cref="CompanyProfile"/>: the profile is the request body and the
+/// client controls it, while these three values come from the caller's verified claims.
+/// </summary>
+public sealed record SetupRequester(Guid TenantId, Guid? UserId, string UserRole);
+
 public sealed record SetupSections(bool Org, bool Leave, bool Shifts, bool Payroll, bool Entity, bool Governance);
 
 public sealed record CompanyProfile(
@@ -60,6 +70,10 @@ public interface ISetupAssistantService
 {
     /// <summary>Generates a proposed (un-persisted) starter configuration for a company profile.
     /// Uses the configured LLM for the descriptive parts and deterministic templates for the
-    /// risk-sensitive statutory parts. Never throws on LLM failure.</summary>
-    Task<SetupPreviewResult> GenerateAsync(CompanyProfile profile, CancellationToken ct);
+    /// risk-sensitive statutory parts. Never throws on LLM failure.
+    ///
+    /// <para><paramref name="requester"/> is not optional. Every attempt is recorded against that
+    /// tenant and user — including the attempts that never reach a provider, which are precisely
+    /// the ones that went unnoticed while this feature silently served a built-in template.</para></summary>
+    Task<SetupPreviewResult> GenerateAsync(SetupRequester requester, CompanyProfile profile, CancellationToken ct);
 }

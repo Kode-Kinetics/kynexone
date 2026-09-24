@@ -386,6 +386,9 @@ builder.Services.AddScoped<AiTokenBudgetService>();
 builder.Services.AddScoped<IAiGovernanceService, AiGovernanceService>();
 builder.Services.AddScoped<IAiPromptBuilder, AiPromptBuilder>();
 builder.Services.AddScoped<IAiAuditService, AiAuditService>();
+// One recorder for every model call. See AiCallRecorder's header: four of the five call sites
+// used to record nothing, which is how a permanently-degraded setup assistant stayed invisible.
+builder.Services.AddScoped<IAiCallRecorder, AiCallRecorder>();
 builder.Services.AddScoped<IAiResponseCacheService, AiResponseCacheService>();
 builder.Services.AddScoped<IAiAdvisoryService, AiAdvisoryService>();
 builder.Services.AddScoped<Zayra.Api.Application.Shifts.IRosterPlannerService, Zayra.Api.Infrastructure.Shifts.RosterPlannerService>();
@@ -473,7 +476,10 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Za
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Zayra.Api.Infrastructure.Retention.Rules.SoftDeletedTenantRule>();
 builder.Services.AddHostedService<Zayra.Api.Infrastructure.Retention.DataRetentionScheduler>();
 
-builder.Services.AddHttpClient<ILlmClient, LlmClient>();
+// HttpClient's default timeout is 100s. Left unset, a slow or wedged model call blocked a
+// user-facing request for a minute and a half before anything degraded. Callers that can fall
+// back (setup assistant, advisory) impose their own, tighter budget on top of this ceiling.
+builder.Services.AddHttpClient<ILlmClient, LlmClient>(c => c.Timeout = TimeSpan.FromSeconds(120));
 builder.Services.AddHttpContextAccessor();
 
 // Country pack framework — scoped per request (strategies depend on scoped IStatutoryRuleReader).
