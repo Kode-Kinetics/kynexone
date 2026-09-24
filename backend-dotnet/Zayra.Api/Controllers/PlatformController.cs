@@ -1192,10 +1192,17 @@ public class PlatformController : ControllerBase
         // The tenant's home jurisdiction lives on the existing tenant settings row
         // (TenantLocalizationSetting.CountryCode — already what TenantModuleService and
         // OvertimeController read as "the tenant's country"), so no new table or column is needed.
+        // The TIMEZONE must be set here too, and this is not optional tidiness. The entity defaults
+        // to America/New_York; before this row existed the timezone resolved to null and fell back
+        // to UTC. Writing the row therefore MOVED every new tenant's "today" to New York — wrong by
+        // 7-11 hours for a GCC customer. It surfaced immediately: an approved leave request starting
+        // today was not live on the day it started, because the tenant's day had not begun yet.
+        // Unknown country resolves to UTC rather than a guess (HomeJurisdiction.TimeZoneFor).
         _db.TenantLocalizationSettings.Add(new TenantLocalizationSetting
         {
             TenantId = tenant.Id,
             CountryCode = homeCountry,
+            DefaultTimezone = HomeJurisdiction.TimeZoneFor(homeCountry),
         });
 
         // Every tenant is born with its first company, inside this transaction. This used to be

@@ -43,6 +43,36 @@ public static class HomeJurisdiction
     public static bool IsMissing(string? countryCode) => Normalize(countryCode) is null;
 
     /// <summary>
+    /// The IANA timezone a tenant in this jurisdiction should start with.
+    ///
+    /// <para>This exists because writing a <c>TenantLocalizationSetting</c> row at tenant creation
+    /// is not neutral: the entity defaults to <c>America/New_York</c>, and before that row existed
+    /// the timezone resolved to null and fell back to UTC. Adding the row therefore MOVED every
+    /// tenant's "today" to New York — which for a GCC product is wrong by 7-11 hours, and showed
+    /// up immediately as an approved leave request not being live on the day it started.</para>
+    ///
+    /// <para>Unknown country → UTC, deliberately. UTC is wrong by a known, uniform amount; a
+    /// guessed zone is wrong by an amount nobody can predict. The tenant can set the real zone in
+    /// Setup, and Attendance and Leave both read it from there.</para>
+    /// </summary>
+    public static string TimeZoneFor(string? countryCode) => Normalize(countryCode) switch
+    {
+        "SA" => "Asia/Riyadh",
+        "AE" => "Asia/Dubai",
+        "QA" => "Asia/Qatar",
+        "KW" => "Asia/Kuwait",
+        "BH" => "Asia/Bahrain",
+        "OM" => "Asia/Muscat",
+        "EG" => "Africa/Cairo",
+        "JO" => "Asia/Amman",
+        "PK" => "Asia/Karachi",
+        "IN" => "Asia/Kolkata",
+        "GB" => "Europe/London",
+        "US" => "America/New_York",
+        _    => "UTC",
+    };
+
+    /// <summary>
     /// Canonical ISO-2 or a loud failure. Used where a country is a precondition rather than a
     /// preference — tenant provisioning above all, which seeds statutory defaults.
     /// </summary>
