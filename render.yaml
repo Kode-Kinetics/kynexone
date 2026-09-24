@@ -11,6 +11,54 @@ services:
     dockerContext: .
     plan: starter
     branch: main
+    # ── DECLARED BECAUSE THE LIVE SERVICE ALREADY HAS THEM (read 2026-09-23) ────────
+    # Everything in this block is a VERBATIM copy of what srv-d8slkb77f7vs73d2k92g reports
+    # today. Nothing here changes the service. They are declared because a Render blueprint
+    # sync reconciles the service toward this file, and a property this file does not mention
+    # is a property no reviewer can see and no diff can protect. `plan` and `healthCheckPath`
+    # were already declared for exactly that reason; these three were the remaining gaps.
+    #
+    # region: FIXED AT SERVICE CREATION. Render will not move a service between regions, so
+    # this line cannot relocate anything — it exists so that the jurisdiction the service
+    # actually runs in is visible in the repository. It is `oregon` (US), which does NOT
+    # satisfy the GCC/KSA residency the Storage__Region comment below demands for personal
+    # data. That contradiction is real and unresolved; see docs/DEPLOY_HARDENING.md.
+    region: oregon
+    # numInstances: one. Declared so that a blueprint sync cannot silently scale the service,
+    # and so that any future change to it arrives as a reviewable diff rather than a dashboard
+    # click. Note that with the disk below attached, Render cannot run two instances of this
+    # service at all — see the disk comment.
+    numInstances: 1
+    # ── THE 10 GB DISK ──────────────────────────────────────────────────────────────
+    # Declared to match the live service EXACTLY (id dsk-damq6otg1s2s73duicf0, name "disk",
+    # mountPath /var/data, sizeGB 10). Until now this file did not mention the disk at all,
+    # which means a blueprint sync could have detached it — and detaching a Render disk
+    # DESTROYS it and everything on it, with no undo.
+    #
+    # READ THIS BEFORE "TIDYING" IT AWAY. Nothing in this repository writes to /var/data:
+    # `grep -rn "var/data"` finds no application code. Documents go to S3
+    # (Storage__Provider: s3, fail-closed — see DocumentStorageRegistration) and
+    # DataProtection keys are persisted to Postgres. So the disk looks unused, and removing
+    # it looks free. It is not free in either direction:
+    #   * COST OF KEEPING IT — a service with a mounted disk cannot have two instances alive
+    #     at once, so Render stops the old instance BEFORE starting the new one. Every single
+    #     deploy therefore has a hard 502 window: ~38s on a healthy deploy, ~16 minutes when
+    #     the new instance never becomes healthy. Zero-downtime deploys are impossible while
+    #     this block exists.
+    #   * COST OF REMOVING IT — "no code path writes there" is not the same as "nothing is
+    #     there". A human must SSH to the instance and run `ls -la /var/data` first; anything
+    #     found has no other copy anywhere. Removing this block on a blueprint sync deletes
+    #     the disk immediately.
+    # The removal procedure, the evidence to capture, and the roll-forward check are written
+    # up in docs/DEPLOY_HARDENING.md, "Detaching the 10 GB disk". Do not shortcut it.
+    disk:
+      name: disk
+      mountPath: /var/data
+      sizeGB: 10
+    # NOT DECLARED, deliberately: ipAllowList. The live service allows 0.0.0.0/0, which is
+    # correct for a public API behind Render's load balancer — but writing that CIDR into the
+    # blueprint would read as an endorsement of an open allow list rather than as the absence
+    # of one. If the API ever moves behind a fixed egress, declare it here instead.
     # P0-4/P2-18: single deploy trigger. autoDeploy is OFF so the ONLY path to production is the
     # CI-gated Render deploy hook (.github/workflows/ci.yml → deploy-backend), which fires only
     # AFTER tests + security gates + the DB-migration step succeed. Two triggers (autoDeploy + hook)

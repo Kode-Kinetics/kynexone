@@ -77,6 +77,51 @@ jobs:
       - name: Self-test the migration-target gate
         run: ./scripts/check_migration_target.py --self-test
 
+      # The secret-scope gate below runs in a job of its own (it must have no `environment:`),
+      # but its self-test belongs here with the others: it proves the gate reports the 2026-09-23
+      # configuration as a failure, and that it never prints a value.
+      - name: Self-test the secret-scope gate
+        run: ./scripts/check_secret_scope.py --self-test
+
+  # ── Secret scope: production credentials must need an approval to be read ─────
+  # THIS JOB DELIBERATELY HAS NO `environment:`. That is the whole measurement. It asks GitHub
+  # for the three production credentials from a completely unprotected job; if GitHub hands any
+  # of them over, that secret is repository-scoped and the `production` approval on
+  # migrate-backend / deploy-backend protects the job but not the credential.
+  #
+  # ci.yml runs `on: pull_request`, the repository is PUBLIC with forking enabled, and the main
+  # ruleset requires 0 approving reviews — so a same-repo branch that edits this very workflow
+  # runs its edited version WITH those secrets and with nobody's approval. That is not a
+  # hypothetical attack path; it is the current configuration, and this job makes it visible.
+  #
+  # IT FAILS TODAY, ON PURPOSE. Moving the secrets is a GitHub-settings action only a repository
+  # admin can take (docs/DEPLOY_HARDENING.md has the click-path and the order that matters).
+  # Until then this job is red.
+  #
+  # IT IS NOT IN ANY `needs:` LIST, ALSO ON PURPOSE. Blocking the deploy on it would mean
+  # production cannot ship at all until an admin finds time for a settings change — trading a
+  # credential-scope problem for a total release freeze. The moment the secrets are moved and
+  # this job goes green, add `secret-scope-gate` to the `needs:` of migrate-backend so that it
+  # cannot regress silently. That one-line follow-up is step 6 of the runbook.
+  #
+  # The gate never prints, hashes or measures a secret value; it prints names only.
+  secret-scope-gate:
+    name: Secret Scope (production credentials need approval)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe for production credentials from an unprotected job
+        env:
+          # `push` and a same-repo PR can both observe secrets, so both are authoritative.
+          # A FORK PR cannot: GitHub withholds every secret from fork runs, so the gate would
+          # read empty no matter how the secrets are scoped. It is told which case it is in and
+          # refuses to call a fork run a pass.
+          SCOPE_CONTEXT: ${{ github.event_name == 'push' && 'push' || (github.event.pull_request.head.repo.full_name != github.repository) && 'fork-pr' || 'same-repo-pr' }}
+          PROBE_PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+          PROBE_RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+          PROBE_RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+        run: ./scripts/check_secret_scope.py
+
   # ── Frontend: typecheck ───────────────────────────────────────────────────────
   frontend-typecheck:
     name: Frontend Typecheck
@@ -838,11 +883,16 @@ jobs:
     # WAVE 1 A4 — this job writes to the PRODUCTION DATABASE. It now runs only inside the protected
     # `production` GitHub environment, which requires a named reviewer's approval and is restricted to
     # protected branches. Before this, a merge to main migrated production with no human in the loop.
-    # NOTE: environment approval gates the JOB, not the SECRET. PROD_DATABASE_URL and
-    # RENDER_DEPLOY_HOOK_URL are currently REPOSITORY secrets (verified: the Production environment
-    # holds zero secrets), so any job in any workflow on any branch can reference them without
-    # approval. Move them to this environment to make the boundary real; until then this comment
-    # describes an intent, not a control.
+    # NOTE: environment approval gates the JOB, not the SECRET. PROD_DATABASE_URL,
+    # RENDER_DEPLOY_HOOK_URL and RENDER_API_KEY are currently REPOSITORY secrets (verified: the
+    # production environment holds zero secrets), so any job in any workflow on any branch can
+    # reference them without approval. Move them to this environment to make the boundary real;
+    # until then this comment describes an intent, not a control.
+    #
+    # That claim is no longer left to a comment. The `secret-scope-gate` job above measures it
+    # from a job with no `environment:` and fails while any of the three is readable there. It is
+    # red today. See docs/DEPLOY_HARDENING.md for the click-path, and add secret-scope-gate to
+    # this job's `needs:` once it is green.
     environment: production
     steps:
       - uses: actions/checkout@v4
@@ -876,7 +926,13 @@ jobs:
       # with read access to srv-d8slkb77f7vs73d2k92g). Putting it on the environment rather than
       # the repository means the approval gate protects the credential too — which is NOT true of
       # PROD_DATABASE_URL or RENDER_DEPLOY_HOOK_URL today; both are repository-wide.
-      - name: Gate — required env vars are set on the Render service
+      # SINCE 2026-09-23 THIS RUNS IN BOTH DIRECTIONS. The other direction — a key set on the
+      # service that render.yaml has never named — was wide open, and production is in it:
+      # PLATFORM_ADMIN_EMAIL and PLATFORM_ADMIN_PASSWORD (which PlatformOwnerBootstrap reads to
+      # mint the platform OWNER) plus a dead Storage__AllowEphemeral are set on the service and
+      # written down nowhere. Undeclared configuration is configuration no review has seen and
+      # that rebuilding from the blueprint would silently drop.
+      - name: Gate — render.yaml and the Render service declare the same env keys
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: ./scripts/check_render_env.py --service-id srv-d8slkb77f7vs73d2k92g

@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""GATE: every `sync: false` key in render.yaml must actually exist on the Render service.
+"""GATE: render.yaml and the live Render service must agree about which env keys exist.
+
+The comparison runs in BOTH directions, because each direction hides a different failure:
+
+    render.yaml -> service   a key the blueprint marks `sync: false` that nobody ever set.
+                             That is the 2026-09-21 outage described below.
+
+    service -> render.yaml   a key that exists on production and is written down NOWHERE.
+                             Nobody reviews it, no diff shows it change, and rebuilding the
+                             service from this blueprint silently produces a DIFFERENT service.
+
+Neither direction reads, logs, compares or returns a secret VALUE. Key NAMES only, throughout.
 
 WHY THIS EXISTS
 ---------------
@@ -18,6 +29,20 @@ single dashboard field, and the blueprint had said it was required all along.
 `Proxy__KnownNetworks` was not special. It was one of fourteen keys with exactly the same
 non-guarantee behind them. This gate turns the comment into a check.
 
+AND THE OTHER DIRECTION
+-----------------------
+Checking only blueprint -> service left the opposite hole wide open, and production is sitting in
+it right now. Three keys are set on srv-d8slkb77f7vs73d2k92g that render.yaml has never
+mentioned: PLATFORM_ADMIN_EMAIL and PLATFORM_ADMIN_PASSWORD -- which PlatformOwnerBootstrap reads
+to mint the platform OWNER, the most privileged principal in the system -- and
+Storage__AllowEphemeral, which no production code path reads at all (only a test fixture names
+it), i.e. a dead escape-hatch flag left switched on in production.
+
+The privileged pair is the part that matters. A credential that governs the platform owner
+existed on production for months while every review of "what configuration does production have?"
+consulted a file that did not know about it. This direction of the gate is what makes that
+visible, and what keeps it visible once corrected.
+
 USAGE
     scripts/check_render_env.py --self-test
         Runs the unit tests below, including the exact historical input. No network, no secrets.
@@ -30,8 +55,8 @@ USAGE
         checklist mode).
 
 EXIT CODES
-    0  every required key is present
-    1  one or more required keys are missing (they are named)
+    0  the two sides agree: nothing required is missing, nothing live is undeclared
+    1  a required key is missing, OR a live key is undeclared (the names are printed)
     2  the gate could not run (bad args, no credential, API error) -- never a silent pass
 """
 
@@ -106,9 +131,48 @@ def parse_required_keys(render_yaml: str) -> list[str]:
     return required
 
 
+def parse_declared_keys(render_yaml: str) -> list[str]:
+    """Return EVERY env key the blueprint names, in file order -- `value:` and `sync: false` alike.
+
+    parse_required_keys() answers "what must a human have set in the dashboard?". This answers
+    "what does the blueprint know about at all?", which is the set the reverse direction needs:
+    a live key that appears in neither form is undeclared.
+    """
+    declared: list[str] = []
+    for raw in render_yaml.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        # Same inline-comment strip as parse_required_keys; see the note there.
+        line = re.sub(r"\s+#.*$", "", line).strip()
+        m = re.match(r"^-\s*key:\s*(\S+)\s*$", line) or re.match(r"^key:\s*(\S+)\s*$", line)
+        if m:
+            key = m.group(1).strip("\"'")
+            if key not in declared:
+                declared.append(key)
+    return declared
+
+
+# Keys allowed to exist on the service without appearing in render.yaml. Each entry must carry a
+# reason, and "we have not got round to it" is not one -- a key with no reason belongs in the
+# blueprint, not here.
+#
+# EMPTY ON PURPOSE. Render's platform variables (RENDER_SERVICE_ID, RENDER_EXTERNAL_URL, ...) are
+# injected at runtime and are NOT returned by GET /services/{id}/env-vars, so they never reach
+# this comparison and need no exemption. If that ever changes, add them here with that sentence
+# as the reason -- do not widen the allowlist to silence a key somebody set by hand.
+UNDECLARED_ALLOWLIST: dict[str, str] = {}
+
+
 def find_missing(required: list[str], present: set[str]) -> list[str]:
     """Required keys absent from the service. Order follows render.yaml so the message is stable."""
     return [k for k in required if k not in present]
+
+
+def find_undeclared(declared: list[str], present: set[str]) -> list[str]:
+    """Live keys the blueprint never names. Sorted, so the message is stable across API paging."""
+    known = set(declared) | set(UNDECLARED_ALLOWLIST)
+    return sorted(k for k in present if k not in known)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -143,10 +207,21 @@ def fetch_present_keys(service_id: str, api_key: str) -> set[str]:
 # ──────────────────────────────────────────────────────────────────────────────
 # Reporting
 # ──────────────────────────────────────────────────────────────────────────────
-def report(required: list[str], present: set[str], source: str) -> int:
+def report(required: list[str], present: set[str], source: str,
+           declared: list[str] | None = None) -> int:
+    """Both directions. Returns 0 only when neither direction has anything to say.
+
+    `declared` is every key render.yaml names. It is optional so that the parse-failure guard
+    below still fires for a caller that supplies only the required list.
+    """
     missing = find_missing(required, present)
+    undeclared = find_undeclared(declared or required, present)
+
     print(f"Required by render.yaml (sync: false) : {len(required)}")
-    print(f"Present on {source:<26}: {len(required) - len(missing)} of {len(required)}")
+    print(f"Declared by render.yaml (all keys)    : {len(declared or required)}")
+    print(f"Present on {source:<26}: {len(present)} key(s)")
+    print(f"  of the required keys                : {len(required) - len(missing)} of {len(required)}")
+    print(f"  named nowhere in render.yaml        : {len(undeclared)}")
 
     if not required:
         print("::error::check_render_env: render.yaml declares ZERO `sync: false` keys. "
@@ -154,9 +229,39 @@ def report(required: list[str], present: set[str], source: str) -> int:
               "Refusing to pass vacuously.", file=sys.stderr)
         return 2
 
-    if not missing:
-        print("PASS - every key render.yaml marks `sync: false` is set on the service.")
+    if declared is not None and not declared:
+        # Same fail-closed reasoning as above: an empty declared list means the scanner broke,
+        # and a broken scanner reports "nothing undeclared" for every service on earth.
+        print("::error::check_render_env: render.yaml declares ZERO env keys of any kind. "
+              "That is a parse failure. Refusing to pass vacuously.", file=sys.stderr)
+        return 2
+
+    if not missing and not undeclared:
+        print("PASS - render.yaml and the service name exactly the same keys.")
         return 0
+
+    if undeclared:
+        print("", file=sys.stderr)
+        print(f"::error::check_render_env: {len(undeclared)} environment variable(s) are set on "
+              f"the service but appear NOWHERE in render.yaml. Deploy blocked.", file=sys.stderr)
+        print("", file=sys.stderr)
+        for key in undeclared:
+            print(f"    UNDECLARED: {key}", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("  An undeclared key is production configuration that no code review has ever seen,", file=sys.stderr)
+        print("  that no diff shows changing, and that rebuilding the service from this blueprint", file=sys.stderr)
+        print("  would silently drop. PLATFORM_ADMIN_EMAIL/PLATFORM_ADMIN_PASSWORD sat there for", file=sys.stderr)
+        print("  months -- and PlatformOwnerBootstrap reads them to mint the platform OWNER.", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("  Fix it in ONE of two ways, and say which in the commit message:", file=sys.stderr)
+        print("    * the key is real  -> declare it in render.yaml (`sync: false` if it is a", file=sys.stderr)
+        print("                          secret, `value:` if it is not), or", file=sys.stderr)
+        print("    * the key is dead  -> delete it from the service in the Render dashboard.", file=sys.stderr)
+        print("  UNDECLARED_ALLOWLIST in this file is for keys the PLATFORM injects, not for", file=sys.stderr)
+        print("  silencing a key somebody set by hand.", file=sys.stderr)
+
+    if not missing:
+        return 1
 
     print("", file=sys.stderr)
     print(f"::error::check_render_env: {len(missing)} required environment "
@@ -246,6 +351,62 @@ def self_test() -> int:
     check("empty blueprint yields no required keys (caller treats as error)",
           parse_required_keys("services: []"), [])
 
+    # ── THE REVERSE DIRECTION ────────────────────────────────────────────────────
+    # 5. Mechanism, on wholly synthetic input, so this assertion cannot be disturbed by a
+    #    later edit to the real render.yaml. A gate whose only failing case depends on a file
+    #    that is expected to change is a gate that will be deleted the first time it is
+    #    inconvenient.
+    check("parses EVERY declared key, value: and sync:false alike",
+          parse_declared_keys(SAMPLE_BLUEPRINT),
+          ["ASPNETCORE_ENVIRONMENT", "Proxy__KnownNetworks", "Jwt__SigningKey",
+           "Storage__Endpoint"])
+
+    synthetic_present = set(parse_declared_keys(SAMPLE_BLUEPRINT)) | {"SNUCK_IN_BY_HAND"}
+    check("CATCHES AN UNDECLARED KEY: a live key absent from the blueprint is named",
+          find_undeclared(parse_declared_keys(SAMPLE_BLUEPRINT), synthetic_present),
+          ["SNUCK_IN_BY_HAND"])
+
+    check("and says nothing once that key is declared or deleted",
+          find_undeclared(parse_declared_keys(SAMPLE_BLUEPRINT) + ["SNUCK_IN_BY_HAND"],
+                          synthetic_present),
+          [])
+
+    # 6. The allowlist exempts, and only what it names.
+    try:
+        UNDECLARED_ALLOWLIST["EXEMPT_FOR_THE_TEST"] = "self-test fixture"
+        check("an allowlisted key is not reported",
+              find_undeclared(["A"], {"A", "EXEMPT_FOR_THE_TEST"}), [])
+        check("a key NOT on the allowlist still is",
+              find_undeclared(["A"], {"A", "EXEMPT_FOR_THE_TEST", "NOT_EXEMPT"}), ["NOT_EXEMPT"])
+    finally:
+        UNDECLARED_ALLOWLIST.pop("EXEMPT_FOR_THE_TEST", None)
+
+    # 7. THE LIVE STATE, as of 2026-09-23. The real render.yaml against the real service key
+    #    list: three keys are set on production that the blueprint has never named. Two of them
+    #    govern the platform OWNER account; the third is read by nothing outside a test fixture.
+    #
+    #    WHEN THIS TEST FAILS, READ WHY BEFORE CHANGING IT. If a name has stopped being
+    #    reported, somebody declared it in render.yaml or deleted it from the service -- that is
+    #    the fix, and the right response is to remove that one name from the list below. Do not
+    #    replace the assertion with something weaker.
+    real_declared = parse_declared_keys(open(os.path.join(here, "render.yaml"),
+                                             encoding="utf-8").read())
+    check("CATCHES THE LIVE STATE: the three undeclared production keys are named",
+          find_undeclared(real_declared, HISTORICAL_PRESENT_KEYS),
+          ["PLATFORM_ADMIN_EMAIL", "PLATFORM_ADMIN_PASSWORD", "Storage__AllowEphemeral"])
+
+    # 8. Fail-closed: a blueprint that parses to nothing must not read as "nothing undeclared".
+    #    find_undeclared() would happily report every live key, but report() is what decides,
+    #    and it must return 2 (cannot run), not 1 (found problems) -- the difference between
+    #    "the blueprint is wrong" and "the scanner is broken".
+    print("  (the next two checks call report() directly, so its own output follows)")
+    check("empty declared list is a parse failure, not a verdict",
+          report(["Jwt__SigningKey"], {"Jwt__SigningKey"}, "a fixture", declared=[]), 2)
+
+    check("agreeing sides pass",
+          report(["Jwt__SigningKey"], {"Jwt__SigningKey"}, "a fixture",
+                 declared=["Jwt__SigningKey"]), 0)
+
     print("")
     if failures:
         for f in failures:
@@ -278,7 +439,9 @@ def main() -> int:
         return 2
 
     with open(path, encoding="utf-8") as fh:
-        required = parse_required_keys(fh.read())
+        blueprint = fh.read()
+    required = parse_required_keys(blueprint)
+    declared = parse_declared_keys(blueprint)
 
     if args.present_from:
         if not os.path.isfile(args.present_from):
@@ -287,7 +450,7 @@ def main() -> int:
             return 2
         with open(args.present_from, encoding="utf-8") as fh:
             present = {ln.strip() for ln in fh if ln.strip() and not ln.startswith("#")}
-        return report(required, present, "the supplied key list")
+        return report(required, present, "the supplied key list", declared=declared)
 
     if not args.service_id:
         print("::error::check_render_env: no --service-id (or RENDER_SERVICE_ID). "
@@ -320,7 +483,7 @@ def main() -> int:
               file=sys.stderr)
         return 2
 
-    return report(required, present, f"service {args.service_id}")
+    return report(required, present, f"service {args.service_id}", declared=declared)
 
 
 if __name__ == "__main__":

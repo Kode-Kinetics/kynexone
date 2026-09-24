@@ -482,7 +482,86 @@ public class DeployHardeningTests
         Assert.DoesNotContain("the builder-time seed-admin/JWT fail-fast guards", text, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// G. THE PROPERTIES THE BLUEPRINT DID NOT MENTION. render.yaml declared the plan, the
+    /// health-check path and the deploy trigger, so a reviewer could reasonably read it as "this
+    /// is the service". It was not. The live service also had a 10 GB disk mounted at /var/data,
+    /// one instance, and a region — none of them in the file, so none of them in any diff.
+    ///
+    /// <para>The disk is the dangerous one in both directions. A blueprint sync reconciles the
+    /// service toward this file, and a disk absent from the file could be DETACHED, which
+    /// destroys it and everything on it with no undo. Meanwhile keeping it forces every deploy to
+    /// stop the old instance before starting the new one — Render will not overlap instances that
+    /// share a disk — so each release has a hard 502 window.</para>
+    ///
+    /// <para>These values are a copy of the live service, not a proposal. If one legitimately
+    /// changes, change it here and in the dashboard together.</para>
+    /// </summary>
+    [Fact]
+    public void RenderYaml_DeclaresTheInfrastructureTheLiveServiceActuallyHas()
+    {
+        var renderYaml = ResolveRepoFile("render.yaml");
+        Assert.True(renderYaml is not null, "Could not locate render.yaml.");
+        var text = File.ReadAllText(renderYaml!);
+
+        Assert.True(Regex.IsMatch(text, @"(?m)^\s*region:\s*oregon\s*$"),
+            "render.yaml must declare `region: oregon` — the region the service actually runs in, "
+            + "fixed at creation and NOT a GCC/KSA jurisdiction. Undeclared, nothing in the "
+            + "repository states where personal data is processed.");
+
+        Assert.True(Regex.IsMatch(text, @"(?m)^\s*numInstances:\s*1\s*$"),
+            "render.yaml must declare `numInstances: 1` so a blueprint sync cannot silently "
+            + "rescale the service.");
+
+        Assert.True(Regex.IsMatch(text, @"(?m)^\s*disk:\s*$"),
+            "render.yaml must declare the disk. The live service mounts one; a blueprint that "
+            + "does not mention it can detach it, and detaching a Render disk destroys it.");
+        Assert.True(Regex.IsMatch(text, @"(?m)^\s*mountPath:\s*/var/data\s*$"),
+            "The declared disk must keep the live mountPath /var/data.");
+        Assert.True(Regex.IsMatch(text, @"(?m)^\s*sizeGB:\s*10\s*$"),
+            "The declared disk must keep the live size of 10 GB. Render can grow a disk but "
+            + "cannot shrink one, so a smaller number here is a sync that fails, not a resize.");
+    }
+
+    /// <summary>
+    /// H. THE GATE THAT MUST STAY UNPROTECTED IN ORDER TO WORK. secret-scope-gate asks GitHub for
+    /// the production credentials from a job with no <c>environment:</c>; if GitHub hands one
+    /// over, that secret is readable without any approval. Adding <c>environment: production</c>
+    /// to this job — which looks like an obvious hardening — would make every probe come back
+    /// empty and turn the gate into a permanent, meaningless pass.
+    /// </summary>
+    [Fact]
+    public void Ci_SecretScopeGateRunsWithoutAnEnvironment()
+    {
+        var ci = ResolveRepoFile(Path.Combine(".github", "workflows", "ci.yml"));
+        Assert.True(ci is not null, "Could not locate .github/workflows/ci.yml.");
+        var text = File.ReadAllText(ci!);
+
+        Assert.Contains("check_secret_scope.py", text, StringComparison.Ordinal);
+
+        var job = ExtractJobBlock(text, "secret-scope-gate");
+        Assert.True(job is not null, "ci.yml no longer defines a `secret-scope-gate` job.");
+        Assert.False(Regex.IsMatch(job!, @"(?m)^\s{4}environment:"),
+            "secret-scope-gate must NOT declare `environment:`. Its entire measurement is what an "
+            + "UNPROTECTED job can read; protecting it would hide the answer and pass forever.");
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────────
+
+    /// <summary>Text of one top-level job in a workflow file, or null. Jobs are indented 2 spaces.</summary>
+    private static string? ExtractJobBlock(string workflow, string jobName)
+    {
+        var lines = workflow.Split('\n');
+        var start = Array.FindIndex(lines, l => l.StartsWith("  " + jobName + ":", StringComparison.Ordinal));
+        if (start < 0) return null;
+
+        var end = lines.Length;
+        for (var i = start + 1; i < lines.Length; i++)
+        {
+            if (Regex.IsMatch(lines[i], @"^  [A-Za-z0-9_-]+:")) { end = i; break; }
+        }
+        return string.Join('\n', lines[start..end]);
+    }
 
     /// <summary>Mirrors scripts/check_render_env.py's parse_required_keys, incl. inline comments.</summary>
     private static List<string> ParseSyncFalseKeys(string yaml)
