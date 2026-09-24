@@ -47,7 +47,14 @@ function useTenantClock() {
     const id = setInterval(() => setNow(new Date()), 30_000);
     return () => clearInterval(id);
   }, []);
-  const tz = defaultTimezone || undefined;
+  // The TENANT's stated zone, or — when it has not stated one — `undefined`, which makes Intl use
+  // the VIEWER's own browser zone. Never a hard-coded zone: this header read 'America/New_York' for
+  // every tenant whose localization row was missing, so a Riyadh customer opened the product's
+  // FIRST screen on yesterday's date while the compliance panel beside it showed today's.
+  // The blank comes from the API (TenantAdminController.UnstatedLocalizationAsync) and from
+  // TenantSettingsContext's own defaults, so both the "not stated" and "not loaded yet" cases land
+  // on the viewer's zone rather than on a foreign one.
+  const tz = defaultTimezone.trim() || undefined;
   const fmt = (opts: Intl.DateTimeFormatOptions, cal?: string) => {
     try { return new Intl.DateTimeFormat(cal ? `en-GB-u-ca-${cal}` : 'en-GB', { ...opts, timeZone: tz }).format(now); }
     catch { return null; }
