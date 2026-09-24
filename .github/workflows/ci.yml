@@ -343,7 +343,25 @@ jobs:
           NEXT_PUBLIC_API_BASE_URL: 'http://localhost:5117'
         run: |
           set -euo pipefail
-          npx next build
+          # Third build path for the same frontend, and the one that blocked main on 2026-09-23:
+          # `next/font/google` fetches at BUILD time, so an unreachable CDN fails this gate and
+          # SKIPS the migrate + deploy jobs behind it — run 35948583089 died here on
+          # "TypeError: Cannot read properties of null (reading '1')" and shipped nothing.
+          # Same 3-attempt retry as frontend/Dockerfile and the Frontend Production Build step.
+          # All three become no-ops once the families are vendored via next/font/local and the
+          # build stops needing the network at all.
+          built=0
+          for attempt in 1 2 3; do
+            echo "::group::next build (attempt $attempt/3)"
+            if npx next build; then echo "::endgroup::"; built=1; break; fi
+            echo "::endgroup::"
+            echo "::warning::next build failed on attempt $attempt — retrying in 15s (usually the Google Fonts fetch)."
+            sleep 15
+          done
+          if [ "$built" -ne 1 ]; then
+            echo "::error::next build failed three times. If the log shows 'An error occurred in next/font', it is the Google Fonts fetch, not your code."
+            exit 1
+          fi
           nohup npx next start -p 5173 > /tmp/fe.log 2>&1 &
           for i in $(seq 1 60); do
             if curl -sf -m 5 -o /dev/null http://localhost:5173/; then echo "frontend up"; exit 0; fi
