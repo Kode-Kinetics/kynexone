@@ -97,7 +97,11 @@ test.describe('browserless UI truthfulness contracts', () => {
     expect(privacy).toContain('does not automatically delete or anonymise personal data');
     expect(privacy).toContain('None of the platform&apos;s data is stored in the Kingdom of Saudi Arabia');
     expect(privacy).toContain('Backblaze B2 in a United States region');
-    expect(privacy).toContain('gpt-oss:120b');
+    /* This pin is a tripwire, not trivia: the page names the model that receives employee data,
+       so it must track Render's AI_MODEL. It fired on 2026-09-23 when AI_MODEL was confirmed as
+       deepseek-v4-pro:cloud while the page still said gpt-oss:120b -- the page had been wrong
+       since the model was last switched. Update BOTH, or the disclosure goes stale again. */
+    expect(privacy).toContain('deepseek-v4-pro:cloud');
     expect(privacy).toContain('does not remove or disguise personal data before sending it to the model');
 
     expect(security).not.toContain('Every table that holds tenant-owned data');
