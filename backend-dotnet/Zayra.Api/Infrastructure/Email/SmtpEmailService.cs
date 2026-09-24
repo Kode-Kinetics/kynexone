@@ -115,8 +115,12 @@ public class SmtpEmailService : IEmailService
         // D5: MASKED recipient, and the SUBJECT is dropped entirely. A template subject routinely
         // carries the employee name or the payroll period ("Payslip for Ahmed — July 2026"), so it
         // is PII in its own right; the template code identifies the message without disclosing it.
-        _log.LogInformation("Email sent to {To} via {Host}:{Port}.",
-            NotificationBodyPolicy.MaskEmail(toAddress), cfg.Host, cfg.Port);
+        // The relay HOST is deliberately absent. It is admin-supplied text, and CRLF in it would
+        // forge log lines in a plain-text sink (CodeQL cs/log-forging). Which relay was used is
+        // already recorded durably by the SmtpConfigUpdated audit entry; the port is an int and
+        // cannot carry a line break.
+        _log.LogInformation("Email sent to {To} on port {Port}.",
+            NotificationBodyPolicy.MaskEmail(toAddress), cfg.Port);
     }
 
     /// <summary>

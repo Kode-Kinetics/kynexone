@@ -3840,8 +3840,11 @@ public class PlatformController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
 
-        _log.LogInformation("Platform SMTP saved: provider={Provider} host={Host} port={Port} tls={Tls}",
-            providerKey, req.Host, req.Port, req.UseSsl);
+        // providerKey comes from the fixed preset catalog (or the literal "custom"), so it is not
+        // attacker-controlled text; req.Host is, and is therefore left out. The host is in the
+        // audit entry above, which is the right place for it anyway.
+        _log.LogInformation("Platform SMTP saved: provider={Provider} port={Port} tls={Tls}",
+            providerKey, req.Port, req.UseSsl);
 
         return Ok(new
         {
@@ -3906,7 +3909,7 @@ public class PlatformController : ControllerBase
                  """,
                 cancellationToken: ct);
 
-            _log.LogInformation("Platform SMTP test sent via {Host}:{Port}.", smtp.Host, smtp.Port);
+            _log.LogInformation("Platform SMTP test sent on port {Port}.", smtp.Port);
 
             return Ok(new
             {
@@ -3923,7 +3926,8 @@ public class PlatformController : ControllerBase
         {
             // The relay's own words are the single most useful thing here ("535 authentication
             // failed", "relay access denied"), so they are surfaced rather than swallowed.
-            _log.LogWarning(ex, "Platform SMTP test failed via {Host}:{Port}.", smtp.Host, smtp.Port);
+            // The exception carries the relay's own message; the host is not re-logged as text.
+            _log.LogWarning(ex, "Platform SMTP test failed on port {Port}.", smtp.Port);
             return Ok(new
             {
                 sent = false,
