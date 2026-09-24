@@ -231,7 +231,7 @@ export default function PrivacyPolicyPage() {
           <Section id="ai">
             <Notice>
               The AI features send employee data to a model run by a third party. On the date of this page that
-              model is <strong>gpt-oss:120b</strong>, running on Ollama&apos;s hosted service (Ollama Cloud,
+              model is <strong>deepseek-v4-pro:cloud</strong>, running on Ollama&apos;s hosted service (Ollama Cloud,
               ollama.com). These requests leave our infrastructure.
             </Notice>
             <p className="mb-3 mt-4">What each feature sends to the model:</p>
