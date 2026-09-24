@@ -55,7 +55,8 @@ public class PolicyDocumentController : ControllerBase
         var tid = GetTenantId();
         if (tid is null) return Unauthorized();
         if (!CanAskPolicyAi()) return Forbid();
-        var response = await _svc.AskAsync(tid.Value, request.Question, ct);
+        // Identity is threaded so the AI usage record names who asked, not "System".
+        var response = await _svc.AskAsync(tid.Value, GetUserId(), GetUserRole(), request.Question, ct);
         return Ok(response);
     }
 
@@ -75,6 +76,11 @@ public class PolicyDocumentController : ControllerBase
         var v = User.FindFirstValue("tenant_id");
         return Guid.TryParse(v, out var id) ? id : null;
     }
+    // Comma-joined, matching AiAdvisoryService's AiAuditEntry.UserRole so one audit query reads
+    // the same across AI modules.
+    private string GetUserRole() =>
+        string.Join(",", User.Claims.Where(c => c.Type == ClaimTypes.Role).Select(c => c.Value).Distinct());
+
     private Guid? GetUserId()
     {
         var v = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub");

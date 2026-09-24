@@ -368,7 +368,11 @@ public class ShiftsController : ControllerBase
                 (policyDto.WeekendDemand ?? new()).Select(d => new DemandTarget(d.ShiftCode, d.Headcount)).ToList(),
                 (policyDto.HolidayDemand ?? new()).Select(d => new DemandTarget(d.ShiftCode, d.Headcount)).ToList(),
                 policyDto.MinRestHours, policyDto.MaxConsecutiveDays),
-            holidays, weekendDays);
+            holidays, weekendDays,
+            // Threaded through so the planner's model call produces a tenant- and user-scoped usage
+            // record. Without it the row would be unattributable, and an AI feature that had been
+            // degrading for weeks would look exactly like one that was working.
+            new RosterPlanCaller(tenantId, this.GetUserId(), CallerRole()));
 
         var result = await _planner.PlanAsync(input, ct);
         return Ok(result);
@@ -438,6 +442,10 @@ public class ShiftsController : ControllerBase
     }
 
     private Guid GetTenantId() => Guid.Parse(User.FindFirstValue("tenant_id")!);
+
+    /// <summary>The caller's role, for the AI usage record. The endpoint is Admin/HR Manager only,
+    /// so the first role claim is the meaningful one.</summary>
+    private string CallerRole() => User.FindFirstValue(ClaimTypes.Role) ?? "Unknown";
 
     private async Task<string?> ValidateAssignmentAsync(Guid tenantId, int employeeId, DateOnly date, ShiftDefinition shift, CancellationToken ct)
     {
