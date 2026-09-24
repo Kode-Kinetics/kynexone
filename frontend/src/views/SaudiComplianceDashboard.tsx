@@ -4,9 +4,14 @@ import { useEffect, useState } from 'react';
 import {
   ShieldCheck, AlertTriangle, CheckCircle, XCircle, RefreshCw, Banknote,
   FileWarning, Settings, Users, Wifi, TrendingUp, ExternalLink, Info,
-  AlertCircle, Clock,
+  AlertCircle, Clock, MinusCircle, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import client from '../api/client';
+import { useLocale } from '../contexts/LocaleContext';
+import { pluralize } from '../lib/plural';
+import {
+  READINESS_UNKNOWN_LABEL, formatReadinessPercent, readinessCaption, readinessToneClass,
+} from '../lib/complianceDisplay';
 import { SaudiComplianceConfig } from './SaudiComplianceConfig';
 import { NitaqatPanel } from './NitaqatPanel';
 
@@ -26,11 +31,22 @@ interface GosiBlockedEmployee {
   blockingIssueCodes: string[];
 }
 
+interface ScoreComponent {
+  module: string;
+  weightPercent: number;
+  score: number;
+  pointsContributed: number;
+  /** false when the tenant has no records to assess yet — the sub-score is not evidence of anything. */
+  measurable: boolean;
+  basis: string;
+}
+
 interface OverallSection {
   complianceScore: number;
   urgentActionCount: number;
   lastEvaluatedAt: string;
   enabledModules: string[];
+  scoreBreakdown: ScoreComponent[];
 }
 
 interface QiwaSection {
@@ -41,7 +57,8 @@ interface QiwaSection {
   totalEmployees: number;
   readyForSync: number;
   blockedFromSync: number;
-  readinessPercent: number;
+  /** null when there are no active employees: readiness is undefined, not 0% and not 100%. */
+  readinessPercent: number | null;
   failedSyncCount: number;
   lastSuccessfulSync: string | null;
   blockedEmployees: BlockedEmployee[];
@@ -61,10 +78,13 @@ interface WpsSection {
 interface GosiSection {
   employeesMissingGosiRef: number;
   employeesMissingGosiEmployerId: number;
+  /** The company's own GOSI employer ID. Not derivable from the affected-employee count above. */
+  gosiEmployerIdConfigured: boolean;
   readyCount: number;
   blockedCount: number;
   warningCount: number;
-  readinessPercent: number;
+  /** null when there are no active employees: readiness is undefined, not 0% and not 100%. */
+  readinessPercent: number | null;
   gccEmployeeCount: number;
   varianceCount: number;
   warnings: string[];
@@ -132,10 +152,27 @@ function SeverityPill({ severity }: { severity: string }) {
   return <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold uppercase ${cls}`}>{severity}</span>;
 }
 
-function ProgressBar({ percent }: { percent: number }) {
+function ProgressBar({ percent, label }: { percent: number | null; label: string }) {
+  // An undefined readiness has no bar to fill. A full green track would claim "all done" and an
+  // empty red one would claim "all failing"; both are assertions the data does not support, so an
+  // empty dashed track is drawn instead and the caption beside it says why.
+  if (percent == null) {
+    return (
+      <div
+        role="img"
+        aria-label={`${label}: not configured — nothing to measure yet`}
+        data-testid="readiness-bar-unavailable"
+        className="h-2 w-full rounded-full border border-dashed border-slate-300 dark:border-slate-600"
+      />
+    );
+  }
   const colour = percent >= 90 ? 'bg-emerald-500' : percent >= 60 ? 'bg-amber-500' : 'bg-rose-500';
   return (
-    <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
+    <div
+      role="img"
+      aria-label={`${label}: ${percent}%`}
+      className="h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700"
+    >
       <div className={`h-full transition-all ${colour}`} style={{ width: `${Math.min(100, Math.max(0, percent))}%` }} />
     </div>
   );
@@ -152,9 +189,23 @@ function ScoreRing({ score }: { score: number }) {
   );
 }
 
-function ModuleStatusChip({ label, enabled, score }: { label: string; enabled: boolean; score?: number }) {
-  const ok = enabled && (score === undefined || score >= 90);
-  const warn = enabled && score !== undefined && score < 90 && score >= 60;
+function ModuleStatusChip({ label, enabled, score }: { label: string; enabled: boolean; score?: number | null }) {
+  // null score = there is nothing to measure yet. A green tick here is the same lie as a 100% bar.
+  if (enabled && score === null) {
+    return (
+      <span
+        title={`${label} readiness cannot be measured until there are employees to assess.`}
+        className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-500 dark:border-slate-700 dark:bg-white/[0.04] dark:text-slate-400"
+      >
+        <MinusCircle className="h-3 w-3" /> {label} · not measured
+      </span>
+    );
+  }
+  // Past the guard above, a null score only reaches here for a module that is switched off — which
+  // already renders as "not enabled", so it is treated the same as "no score supplied".
+  const value = score ?? undefined;
+  const ok = enabled && (value === undefined || value >= 90);
+  const warn = enabled && value !== undefined && value < 90 && value >= 60;
   const cls = ok    ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-400 dark:border-emerald-800' :
               warn  ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/20 dark:text-amber-400 dark:border-amber-800' :
                       'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-900/20 dark:text-rose-400 dark:border-rose-800';
@@ -187,9 +238,48 @@ function SectionCard({ icon: Icon, title, badge, children }: {
 
 // ── Executive score card ──────────────────────────────────────────────────────
 
+/**
+ * The working behind the headline score. AGENTS.md is explicit that no KPI may appear without its
+ * definition and evidence: "Compliance Score 70 / 100 — Needs Attention" on a tenant with nothing
+ * set up told the customer nothing about where 70 came from or what would move it.
+ */
+function ScoreBreakdown({ components, total }: { components: ScoreComponent[]; total: number }) {
+  return (
+    <div
+      data-testid="compliance-score-breakdown"
+      className="mt-3 rounded-lg border border-slate-100 bg-slate-50/70 p-3 dark:border-white/[0.07] dark:bg-white/[0.03]"
+    >
+      <p className="text-xs text-slate-500 dark:text-slate-400">
+        The score is a weighted average of three checks. Each line shows what it scored and why.
+      </p>
+      <ul className="mt-2">
+        {components.map(c => (
+          <li key={c.module} className="border-t border-slate-200/70 py-2 first:border-t-0 dark:border-white/[0.06]">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-3">
+              <span className="text-xs font-bold text-slate-700 dark:text-slate-200">{c.module}</span>
+              <span className="text-xs text-slate-500 dark:text-slate-400">
+                {c.measurable ? `${c.score} / 100` : 'nothing to measure yet'} · {c.weightPercent}% of the score ·{' '}
+                <strong className="font-semibold text-slate-700 dark:text-slate-200">
+                  {c.pointsContributed} {c.pointsContributed === 1 ? 'point' : 'points'}
+                </strong>
+              </span>
+            </div>
+            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{c.basis}</p>
+          </li>
+        ))}
+      </ul>
+      <p className="border-t border-slate-200/70 pt-2 text-xs font-semibold text-slate-600 dark:border-white/[0.06] dark:text-slate-300">
+        Total {total} of 100, rounded to the nearest whole point.
+      </p>
+    </div>
+  );
+}
+
 function OverallScoreCard({ overall, qiwa, wps, gosi }: {
   overall: OverallSection; qiwa: QiwaSection; wps: WpsSection; gosi: GosiSection;
 }) {
+  const { locale } = useLocale();
+  const [showWorking, setShowWorking] = useState(false);
   const label = overall.complianceScore >= 90 ? 'Excellent' :
                 overall.complianceScore >= 75 ? 'Good' :
                 overall.complianceScore >= 60 ? 'Needs Attention' : 'At Risk';
@@ -211,11 +301,26 @@ function OverallScoreCard({ overall, qiwa, wps, gosi }: {
             Evaluated {fmtDateTime(overall.lastEvaluatedAt)}
           </p>
           {overall.urgentActionCount > 0 && (
-            <p className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-rose-600 dark:text-rose-400">
+            <p
+              data-testid="urgent-action-count"
+              className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-rose-600 dark:text-rose-400"
+            >
               <AlertCircle className="h-3.5 w-3.5" />
-              {overall.urgentActionCount} urgent action{overall.urgentActionCount !== 1 ? 's' : ''} require attention
+              {pluralize(overall.urgentActionCount, {
+                one:   '{count} urgent action needs attention',
+                other: '{count} urgent actions need attention',
+              }, locale)}
             </p>
           )}
+          <button
+            type="button"
+            onClick={() => setShowWorking(v => !v)}
+            aria-expanded={showWorking}
+            className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-sapphire hover:underline dark:text-cyanAccent"
+          >
+            {showWorking ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+            {showWorking ? 'Hide how this is calculated' : 'How is this calculated?'}
+          </button>
         </div>
         <div className="flex flex-wrap gap-2">
           <ModuleStatusChip
@@ -235,6 +340,7 @@ function OverallScoreCard({ overall, qiwa, wps, gosi }: {
           />
         </div>
       </div>
+      {showWorking && <ScoreBreakdown components={overall.scoreBreakdown} total={overall.complianceScore} />}
     </div>
   );
 }
@@ -354,11 +460,19 @@ function QiwaCard({ qiwa }: { qiwa: QiwaSection }) {
             </dl>
 
             <div className="space-y-1">
-              <div className="flex justify-between text-xs text-slate-500">
+              <div className="flex justify-between gap-2 text-xs text-slate-500">
                 <span>Readiness</span>
-                <span>{qiwa.readinessPercent}% ({qiwa.readyForSync}/{qiwa.totalEmployees})</span>
+                <span data-testid="qiwa-readiness-figure">
+                  {readinessCaption(
+                    qiwa.readinessPercent,
+                    `${qiwa.readinessPercent}% (${qiwa.readyForSync}/${qiwa.totalEmployees})`,
+                  )}
+                </span>
               </div>
-              <ProgressBar percent={qiwa.readinessPercent} />
+              <ProgressBar percent={qiwa.readinessPercent} label="QIWA readiness" />
+              {qiwa.readinessPercent == null && (
+                <p className="text-xs text-slate-400">No active employees yet, so there is nothing to check.</p>
+              )}
             </div>
 
             {/* A scrollable region has to be reachable from the keyboard (WCAG 2.1.1 — axe's
@@ -466,26 +580,34 @@ function WpsCard({ wps }: { wps: WpsSection }) {
 // ── GOSI module card ──────────────────────────────────────────────────────────
 
 function GosiCard({ gosi }: { gosi: GosiSection }) {
-  const readinessColor = gosi.readinessPercent >= 90 ? 'text-emerald-600 dark:text-emerald-400' :
-                         gosi.readinessPercent >= 60 ? 'text-amber-600 dark:text-amber-400' :
-                                                       'text-rose-600 dark:text-rose-400';
   return (
     <SectionCard
       icon={Users}
       title="GOSI"
       badge={
-        <span className={`text-sm font-black ${readinessColor}`}>
-          {gosi.readinessPercent}%
+        <span
+          data-testid="gosi-readiness-badge"
+          title={gosi.readinessPercent == null ? 'Readiness cannot be measured until there are employees to assess.' : undefined}
+          className={`text-sm font-black ${readinessToneClass(gosi.readinessPercent)}`}
+        >
+          {formatReadinessPercent(gosi.readinessPercent)}
         </span>
       }
     >
       <div className="space-y-4">
         <div className="space-y-1">
-          <div className="flex justify-between text-xs text-slate-500">
+          <div className="flex justify-between gap-2 text-xs text-slate-500">
             <span>Readiness</span>
-            <span>{gosi.readyCount} ready / {gosi.blockedCount} blocked</span>
+            <span data-testid="gosi-readiness-figure">
+              {readinessCaption(gosi.readinessPercent, `${gosi.readyCount} ready / ${gosi.blockedCount} blocked`)}
+            </span>
           </div>
-          <ProgressBar percent={gosi.readinessPercent} />
+          <ProgressBar percent={gosi.readinessPercent} label="GOSI readiness" />
+          {gosi.readinessPercent == null && (
+            <p className="text-xs text-slate-400">
+              No active employees yet, so there is nothing to check. Add employees to see GOSI readiness.
+            </p>
+          )}
         </div>
 
         <dl className="grid grid-cols-2 gap-2 text-xs">
@@ -496,9 +618,12 @@ function GosiCard({ gosi }: { gosi: GosiSection }) {
             </dd>
           </div>
           <div>
-            <dt className="text-slate-400">Missing employer ID</dt>
-            <dd className={`font-semibold ${gosi.employeesMissingGosiEmployerId > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-200'}`}>
-              {gosi.employeesMissingGosiEmployerId > 0 ? 'Not set' : 'Set'}
+            {/* Driven by the company's own employer ID, not by how many employees it affects: a
+                tenant with no employees affects nobody, which used to print a reassuring "Set"
+                directly above the warning saying it was not set. */}
+            <dt className="text-slate-400">Company employer ID</dt>
+            <dd className={`font-semibold ${gosi.gosiEmployerIdConfigured ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+              {gosi.gosiEmployerIdConfigured ? 'Set' : 'Not set'}
             </dd>
           </div>
           {gosi.gccEmployeeCount > 0 && (
