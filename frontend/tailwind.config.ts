@@ -23,11 +23,12 @@ export default {
         'kpi': '0 2px 8px rgba(15, 23, 42, 0.06)',
       },
       fontFamily: {
-        // 'IBM Plex Sans Arabic' sits after Geist so Latin text is unchanged and only the
-        // codepoints Geist cannot draw — i.e. Arabic — fall through to it. This is a font
-        // *stack*, not a locale switch: mixed Arabic/Latin strings render correctly in both
-        // directions without needing a separate `font-ar` class anywhere.
-        sans: ['var(--font-geist)', 'IBM Plex Sans Arabic', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        // --font-plex-arabic (IBM Plex Sans Arabic, vendored in app/fonts and set on <html> by
+        // the root layout) sits after Geist so Latin text is unchanged and only the codepoints
+        // Geist cannot draw — i.e. Arabic — fall through to it. This is a font *stack*, not a
+        // locale switch: mixed Arabic/Latin strings render correctly in both directions
+        // without needing a separate `font-ar` class anywhere.
+        sans: ['var(--font-geist)', 'var(--font-plex-arabic)', 'ui-sans-serif', 'system-ui', 'sans-serif'],
         mono: ['var(--font-geist-mono)', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
       },
       borderRadius: {

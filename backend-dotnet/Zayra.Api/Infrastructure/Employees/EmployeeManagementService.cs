@@ -99,6 +99,18 @@ public class EmployeeManagementService : IEmployeeManagementService
 
     public async Task<EmployeeDetailDto> CreateAsync(Guid tenantId, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken)
     {
+        // ── HOME JURISDICTION PRECONDITION (server-authoritative) ───────────────────────────────────
+        // The EMPLOYING company's country keys every statutory requirement (identity documents, leave
+        // entitlements, activation gates). A blank one resolves an EMPTY requirement set, so the create
+        // can only fail — see HomeJurisdiction. The Add Employee modal disables its submit button in this
+        // state, but a disabled button is a UX affordance, not authorization: this is the refusal a direct
+        // API call, a stale tab or an integration also hits. Reuses HomeJurisdiction.IsMissing /
+        // CompanyMessage so the API and the modal can never disagree about the condition or the wording.
+        //
+        // Runs FIRST — before duplicate detection and GenerateEmployeeCode (which persists an
+        // EmployeeIdRule sequence bump) — so a refusal never burns a code number (M1).
+        await EnsureCompanyHasCountryAsync(tenantId, request.CompanyId, cancellationToken);
+
         // ── AUTHORITATIVE DUPLICATE BACKSTOP (never-silent-dup) ─────────────────────────────────────
         // Runs FIRST — before GenerateEmployeeCode (which persists an EmployeeIdRule sequence bump), so a
         // refusal never burns a code number or leaves an orphan rule write (M1). Identity values come from
@@ -1658,6 +1670,32 @@ public class EmployeeManagementService : IEmployeeManagementService
     /// stamping in ZayraDbContext enforces explicit company context instead of a silent
     /// oldest-company guess.
     /// </summary>
+    /// <summary>
+    /// Refuses a create whose employing company has no stated country. The company is the one the
+    /// request names, or — when it names none — the tenant's single company, which is exactly what
+    /// <see cref="ResolveDefaultCompanyId"/> assigns the employee moments later. When no single company
+    /// resolves there is nothing to check and nothing to state, so the existing behaviour stands.
+    /// </summary>
+    private async Task EnsureCompanyHasCountryAsync(Guid tenantId, Guid? requestedCompanyId, CancellationToken cancellationToken)
+    {
+        var companyId = requestedCompanyId ?? await ResolveDefaultCompanyId(tenantId, cancellationToken);
+        if (companyId is not Guid employingCompanyId) return;
+
+        var company = await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.Id == employingCompanyId && !c.IsDeleted)
+            .Select(c => new { c.CountryCode, c.LegalNameEn, c.TradeName })
+            .FirstOrDefaultAsync(cancellationToken);
+        if (company is null) return;   // a bad company id is the existing paths' business, not this guard's
+
+        if (!HomeJurisdiction.IsMissing(company.CountryCode)) return;
+
+        // Same label the boot-time MissingCountryAudit reports, so one company is named one way everywhere.
+        var label = string.IsNullOrWhiteSpace(company.LegalNameEn)
+            ? (string.IsNullOrWhiteSpace(company.TradeName) ? null : company.TradeName)
+            : company.LegalNameEn;
+        throw new CompanyCountryMissingException(employingCompanyId, label);
+    }
+
     private async Task<Guid?> ResolveDefaultCompanyId(Guid tenantId, CancellationToken cancellationToken)
     {
         var ids = await _db.Companies

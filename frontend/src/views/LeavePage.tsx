@@ -252,20 +252,35 @@ function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab)
   const [dash, setDash] = useState<LeaveDashboard | null>(null);
   const [onLeave, setOnLeave] = useState<LeaveCalendarEntry[]>([]);
   const [pending, setPending] = useState<LeaveRequest[]>([]);
+  // Whether each list has ANSWERED yet — not whether it came back empty. Both start `[]`, so
+  // without this the screen said "No employees on leave today." and showed a hard 0 while the
+  // requests were still outstanding: a stated fact the product did not yet have, and the exact
+  // reading — a blank Leave module — that the pilot gate exists to catch. `—` and "Loading…" say
+  // "not known yet", which is the truth until the request lands.
+  const [onLeaveLoaded, setOnLeaveLoaded] = useState(false);
+  const [pendingLoaded, setPendingLoaded] = useState(false);
 
   useEffect(() => {
+    setOnLeaveLoaded(false);
+    setPendingLoaded(false);
     leaveReportsApi.dashboard(groupFilter).then(setDash).catch(() => {});
-    leaveCalendarApi.today().then(data => setOnLeave(Array.isArray(data) ? data : [])).catch(() => {});
+    leaveCalendarApi.today()
+      .then(data => setOnLeave(Array.isArray(data) ? data : []))
+      .catch(() => {})
+      // `finally`, not `then`: a failed call has also stopped loading. It degrades to the empty
+      // statement rather than spinning forever, which is what the KPI fallback already assumed.
+      .finally(() => setOnLeaveLoaded(true));
     leaveRequestsApi.list({ status: 'PendingManagerApproval', ...groupFilter })
       .then(r => setPending(Array.isArray(r?.items) ? r.items.slice(0, 6) : []))
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setPendingLoaded(true));
   }, [groupFilter.companyId, groupFilter.branchId]);
 
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <KpiCard label="On Leave Today" value={dash?.onLeaveToday ?? onLeave.length} icon={Users} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
-        <KpiCard label="Pending Approvals" value={dash?.pendingApprovals ?? pending.length} icon={Clock} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
+        <KpiCard label="On Leave Today" value={dash?.onLeaveToday ?? (onLeaveLoaded ? onLeave.length : '—')} icon={Users} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
+        <KpiCard label="Pending Approvals" value={dash?.pendingApprovals ?? (pendingLoaded ? pending.length : '—')} icon={Clock} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
         <KpiCard label="Unauthorized Absences" value={dash?.unauthorizedAbsences ?? '—'} icon={AlertTriangle} color="bg-rose-100 text-rose-600 dark:bg-rose-500/20 dark:text-rose-400" />
         <KpiCard label="Pending Encashments" value={dash?.pendingEncashments ?? '—'} icon={TrendingUp} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
       </div>
@@ -276,7 +291,9 @@ function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab)
             <h3 className="text-sm font-semibold text-slate-800 dark:text-white">On Leave Today</h3>
             <button type="button" onClick={() => onNavigate('calendar')} className="text-xs text-sapphire hover:underline dark:text-cyanAccent">Calendar</button>
           </div>
-          {onLeave.length === 0 ? (
+          {!onLeaveLoaded ? (
+            <p className="text-sm text-slate-400">Loading…</p>
+          ) : onLeave.length === 0 ? (
             <p className="text-sm text-slate-400">No employees on leave today.</p>
           ) : (
             // A real list of employee records, so marked up as one. Every other module renders its
@@ -302,7 +319,9 @@ function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab)
             <h3 className="text-sm font-semibold text-slate-800 dark:text-white">Pending Approvals</h3>
             <button type="button" onClick={() => onNavigate('approvals')} className="text-xs text-sapphire hover:underline dark:text-cyanAccent">View all</button>
           </div>
-          {pending.length === 0 ? (
+          {!pendingLoaded ? (
+            <p className="text-sm text-slate-400">Loading…</p>
+          ) : pending.length === 0 ? (
             <p className="text-sm text-slate-400">No pending approvals.</p>
           ) : (
             <ul className="space-y-3">

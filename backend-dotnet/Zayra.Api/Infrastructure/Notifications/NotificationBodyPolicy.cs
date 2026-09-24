@@ -114,16 +114,35 @@ public static partial class NotificationBodyPolicy
 
     // ── Masking ───────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Masks an address to first-initial + TLD. The result is written to LOGS, so it must also be
+    /// safe to occupy one log line — and it was not. Structured logging is no defence: the sink
+    /// flattens the message template and its arguments onto a single line, so caller-controlled
+    /// bytes reaching this output can forge what reads as a genuine log entry.
+    /// </summary>
     public static string MaskEmail(string? email)
     {
         if (string.IsNullOrWhiteSpace(email)) return string.Empty;
-        var at = email.IndexOf('@');
+        // Scrub FIRST, then mask. Scrubbing the fragments afterwards would let an empty or
+        // all-control local part surface LogSafe's "(none)" placeholder inside a mask.
+        var safe = Application.Common.LogSafe.Text(email);
+        var at = safe.IndexOf('@');
         if (at <= 0) return "•••";
-        var local = email[..at];
-        var domain = email[(at + 1)..];
+        var local = safe[..at];
+        var domain = safe[(at + 1)..];
         var head = local.Length <= 1 ? local : local[..1];
         var dot = domain.LastIndexOf('.');
-        var maskedDomain = dot > 0 ? $"•••{domain[dot..]}" : "•••";
+        // Keep ONLY the leading letter-run after the final dot. Taking the whole tail
+        // (`domain[dot..]`) copied arbitrary caller bytes into a string destined for a log line,
+        // so `a@x.com\nFORGED` masked to `a•••@•••.com FORGED` — the newline was gone but the
+        // payload was not, and the "mask" was disclosing exactly what it exists to hide.
+        // A real TLD is letters only.
+        var maskedDomain = "•••";
+        if (dot > 0 && dot + 1 < domain.Length)
+        {
+            var tld = new string(domain[(dot + 1)..].TakeWhile(char.IsLetter).Take(24).ToArray());
+            if (tld.Length > 0) maskedDomain = $"•••.{tld}";
+        }
         return $"{head}•••@{maskedDomain}";
     }
 

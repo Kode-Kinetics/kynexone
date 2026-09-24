@@ -892,6 +892,29 @@ async function ensureLeaveAndAttendance(
 
   // Attendance: two punches a day for the last five days, then the processor turns the raw events
   // into the daily rows the /attendance screen actually lists.
+  //
+  // HISTORY and TODAY are imported and guarded SEPARATELY, on purpose. They answer different
+  // questions and they expire differently: the five-day history is permanent once written, but
+  // "today" becomes "yesterday" at midnight, and a world provisioned on Monday shows an empty
+  // attendance tile when it is demonstrated on Tuesday. A single `if (no attendance rows at all)`
+  // guard — which is what this was — can never top that up, because the history it wrote is
+  // exactly what makes the guard skip. Two guards mean re-running the bootstrap on a later day
+  // adds the missing day and duplicates nothing.
+  const csvHeader = 'employeeCode,punchTimestamp,punchDirection';
+  const importPunches = async (fileName: string, rows: string[]) =>
+    expectOk(await call('POST', '/api/attendance/events/import', {
+      token: adminToken, companyId: company.id,
+      body: { fileName, csvContent: [csvHeader, ...rows].join('\n') },
+    }), `import attendance punches (${fileName})`, [200, 201]);
+  // No X-Company-Id here, deliberately. AttendanceController.Process refuses a tenant-wide
+  // reprocess from a caller whose scope is not unrestricted, and pinning a company IS a narrowing —
+  // so passing the header the other calls use turns the group admin into a 403.
+  const processRange = async (fromDate: string, toDate: string) =>
+    expectOk(await call('POST', '/api/attendance/process', {
+      token: adminToken,
+      body: { fromDate, toDate, employeeId: null },
+    }), `process attendance punches (${fromDate}..${toDate})`, [200, 201]);
+
   const from = new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10);
   const to = new Date(Date.now() - 1 * 86_400_000).toISOString().slice(0, 10);
   const existingAttendance = (await call(
@@ -899,7 +922,7 @@ async function ensureLeaveAndAttendance(
   )).body;
   let punches = 0;
   if (items(existingAttendance).length === 0) {
-    const rows = ['employeeCode,punchTimestamp,punchDirection'];
+    const rows: string[] = [];
     for (let day = 5; day >= 1; day--) {
       const date = new Date(Date.now() - day * 86_400_000).toISOString().slice(0, 10);
       for (const employee of active) {
@@ -908,19 +931,153 @@ async function ensureLeaveAndAttendance(
         punches += 2;
       }
     }
-    expectOk(await call('POST', '/api/attendance/events/import', {
-      token: adminToken, companyId: company.id,
-      body: { fileName: 'e2e-fixture-world.csv', csvContent: rows.join('\n') },
-    }), 'import attendance punches', [200, 201]);
-    // No X-Company-Id here, deliberately. AttendanceController.Process refuses a tenant-wide
-    // reprocess from a caller whose scope is not unrestricted, and pinning a company IS a narrowing —
-    // so passing the header the other calls use turns the group admin into a 403.
-    expectOk(await call('POST', '/api/attendance/process', {
-      token: adminToken,
-      body: { fromDate: from, toDate: to, employeeId: null },
-    }), 'process attendance punches', [200, 201]);
+    await importPunches('e2e-fixture-world.csv', rows);
+    await processRange(from, to);
   }
-  return `${leaveCreated} leave request(s)${approved ? ' (one approved and live today)' : ''}, ${punches} punch(es)`;
+
+  // TODAY. Without it every "today" surface reads zero on a fully-populated world: the dashboard's
+  // attendance ring, and `PRESENT TODAY` on Reports, both count AttendanceDailyRecords for the
+  // TENANT-LOCAL date, and the history above deliberately stops at yesterday.
+  //
+  // A full 08:00–17:00 KSA day (05:00Z–14:00Z), not an in-punch alone. AttendanceService gives a
+  // day with FirstIn and no LastOut the status "Present" too, so either would light the tile — but
+  // it also sets MissingPunch, which raises a High-severity AttendanceException for every single
+  // employee. A world whose every person is a missing-punch exception is a worse lie than an empty
+  // tile. With both punches: Present, MissingPunch false, no exception.
+  //
+  // These timestamps are ahead of the wall clock when the bootstrap runs early in the UTC day.
+  // Nothing rejects that — neither the import nor ValidateProcessRangeAsync looks at UtcNow — and
+  // the WorkDate a punch is filed under is its tenant-local date either way.
+  //
+  // Everyone EXCEPT whoever is on approved leave today. Punching in the one person the /leave
+  // module is simultaneously showing as "On Leave Today" is a self-contradiction a customer can
+  // see in two clicks — and it also makes the dashboard's attendance ring read 14 present, 0 on
+  // leave, which silently deletes the leave story the fixture just built.
+  const onLeaveToday = new Set<string>(
+    approved && employees[0] ? [String(employees[0].employeeCode ?? '')] : [],
+  );
+  const todayUtc = new Date().toISOString().slice(0, 10);
+  const existingToday = (await call(
+    'GET', `/api/attendance/daily?from=${todayUtc}&to=${todayUtc}&page=1&pageSize=5`, { token: adminToken },
+  )).body;
+  let todayPunches = 0;
+  if (items(existingToday).length === 0) {
+    const rows: string[] = [];
+    for (const employee of active) {
+      if (onLeaveToday.has(String(employee.employeeCode ?? ''))) continue;
+      rows.push(`${employee.employeeCode},${todayUtc}T05:00:00Z,In`);
+      rows.push(`${employee.employeeCode},${todayUtc}T14:00:00Z,Out`);
+      todayPunches += 2;
+    }
+    await importPunches('e2e-fixture-world-today.csv', rows);
+    await processRange(todayUtc, todayUtc);
+  }
+
+  return `${leaveCreated} leave request(s)${approved ? ' (one approved and live today)' : ''}, `
+    + `${punches} historic + ${todayPunches} today punch(es)`;
+}
+
+// ── Required documents ────────────────────────────────────────────────────────────────────────
+
+/**
+ * The four documents DashboardController calls required — `QiwaRequiredDocs` — uploaded for most
+ * active employees, through the product's real multipart upload.
+ *
+ * Without them the dashboard opens on a red CRITICAL banner reading "14 employees missing required
+ * documents" and a 0/14 coverage ring, because the coverage check counts an employee as missing
+ * unless they hold DISTINCT rows for all four types. That is the compliance engine working
+ * correctly on a world that never gave it anything to find, and it makes the product look broken
+ * when it is the fixture that is empty.
+ *
+ * NOT everybody, deliberately. The last active employee gets nothing and the one before them gets
+ * three of the four, so "needs attention" is a real, drillable number rather than a suspiciously
+ * perfect zero — this product's whole review model is exception-first, and a screen with no
+ * exceptions on it demonstrates nothing.
+ *
+ * Expiry dates are set far out (≈ 15 months) on purpose: near-dated ones would light the
+ * "Document expiries, next 90 days" panel as well, and that panel is a separate story.
+ */
+const REQUIRED_DOCS = ['Iqama', 'Work Permit', 'National ID', 'Passport'] as const;
+
+/**
+ * The smallest structurally valid PDF. The upload endpoint stores the bytes and serves them back.
+ * Returned as a string rather than a Uint8Array so it is a `BlobPart` under every lib target the
+ * repo's tsconfig can resolve; the content is pure ASCII, so the encoding is identical either way.
+ */
+function stubPdf(label: string): string {
+  return `%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n`
+    + `2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n`
+    + `3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\n`
+    + `% ${label} - e2e fixture world\ntrailer<</Root 1 0 R>>\n%%EOF\n`;
+}
+
+async function ensureEmployeeDocuments(
+  adminToken: string, companies: Array<{ code: string; id: string }>,
+): Promise<string> {
+  const company = companies[0];
+  const active = items((await call(
+    'GET', '/api/employees?page=1&pageSize=200', { token: adminToken, companyId: company.id },
+  )).body).filter((e: any) => String(e.status ?? e.Status) === 'Active');
+  if (active.length === 0) return 'no active employees to document';
+
+  // Stable order, so which two people carry the gap does not move between runs and the demo script
+  // can name them. `/api/employees` does not promise an ordering.
+  active.sort((a: any, b: any) =>
+    String(a.employeeCode ?? '').localeCompare(String(b.employeeCode ?? ''), 'en', { numeric: true }));
+
+  const expiry = new Date(Date.now() + 450 * 86_400_000).toISOString().slice(0, 10);
+  let uploaded = 0;
+  let complete = 0;
+
+  // Only carve out the gap where there is a headcount to carve it from. On a four-person tenant,
+  // "leave the last two short" is not an exception worth reviewing — it is half the company, and
+  // the coverage ring reads 50%, which looks like the product failing rather than two people
+  // needing chasing. Below the threshold everybody is documented.
+  const gapEmployees = active.length >= 8 ? 2 : 0;
+
+  for (const [index, employee] of active.entries()) {
+    const id = employee.id ?? employee.Id;
+    const fromEnd = active.length - 1 - index;
+    // The last employee: nothing at all. The second-to-last: everything but a passport.
+    const wanted = fromEnd >= gapEmployees ? REQUIRED_DOCS
+      : fromEnd === 0 ? [] : REQUIRED_DOCS.slice(0, 3);
+    if (wanted.length === 0) continue;
+
+    const held = new Set(items((await call(
+      'GET', `/api/employees/${id}/documents`, { token: adminToken, companyId: company.id },
+    )).body).map((d: any) => String(d.documentType ?? d.DocumentType)));
+
+    for (const docType of wanted) {
+      if (held.has(docType)) continue;
+      const form = new FormData();
+      form.append('DocumentType', docType);
+      form.append('DocumentCategory', 'Identity');
+      form.append('IsRequired', 'true');
+      form.append('ApprovalStatus', 'Approved');
+      form.append('ExpiryDate', expiry);
+      form.append('Notes', 'e2e fixture world');
+      form.append('File', new Blob([stubPdf(docType)], { type: 'application/pdf' }),
+        `${docType.replace(/\s+/g, '-').toLowerCase()}.pdf`);
+
+      // Deliberately NOT through `call`: this endpoint is multipart/form-data, and setting
+      // Content-Type by hand would strip the boundary fetch generates.
+      const response = await fetch(`${API_BASE}/api/employees/${id}/documents`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${adminToken}`, 'X-Company-Id': company.id },
+        body: form,
+      });
+      if (response.status !== 200 && response.status !== 201) {
+        throw new Error(
+          `[bootstrap] upload '${docType}' for ${employee.employeeCode} failed: `
+          + `HTTP ${response.status}\n${(await response.text()).slice(0, 400)}`,
+        );
+      }
+      uploaded++;
+    }
+    if (wanted.length === REQUIRED_DOCS.length) complete++;
+  }
+
+  return `${uploaded} document(s), ${complete}/${active.length} employees fully documented`;
 }
 
 // ── Salaries ──────────────────────────────────────────────────────────────────────────────────
@@ -1112,6 +1269,7 @@ export async function provisionWorld(baseUrl: string): Promise<ProvisionResult> 
     const active = await activateEmployees(adminToken, fixture.slug, fixture.minActiveEmployees);
     const portalLogins = await ensureEmployeePortalLogins(adminToken, fixture, companies);
     const salaries = await ensureSalaries(adminToken, companies);
+    const documents = await ensureEmployeeDocuments(adminToken, companies);
     const hrData = await ensureLeaveAndAttendance(adminToken, fixture, companies);
     const defaults = await ensureTenantDefaults(adminToken, fixture.slug);
     const profiles = await ensureComplianceProfiles(adminToken, companies);
@@ -1122,7 +1280,7 @@ export async function provisionWorld(baseUrl: string): Promise<ProvisionResult> 
       + `${fixture.users.length + 1} users (${portalLogins} employee portal login(s)), `
       + `${active} active employees, `
       + `${salaries} salary assignment(s), ${defaults}, ${profiles} compliance profile(s), `
-      + `${hrData}, ${payroll}.`,
+      + `${documents}, ${hrData}, ${payroll}.`,
     );
   }
 
