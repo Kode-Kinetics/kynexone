@@ -11,9 +11,62 @@ const COUNTRIES = [
   { code: 'EG', label: 'Egypt' }, { code: 'IN', label: 'India' }, { code: 'GB', label: 'United Kingdom' }, { code: 'US', label: 'United States' },
 ];
 const SIZES = ['1-50', '51-200', '201-500', '500+'];
+
+// Every option below writes to a column the product already reads. The label is what a business
+// would say about itself; the value is what the entity stores.
+const WORK_PATTERNS: [string, string][] = [
+  ['SingleDayShift', 'One day shift'],
+  ['TwoShifts', 'Two shifts (day + evening)'],
+  ['ContinuousThreeShifts', 'Round the clock (three shifts)'],
+  ['FieldRoster', 'Field crews on a roster'],
+];
+// The REST days, because that is how people describe their week. The working week is the complement.
+const WEEKEND_PATTERNS: [string, string][] = [
+  ['CountryDefault', 'Use the country default'],
+  ['Fri-Sat', 'Friday & Saturday'],
+  ['Sat-Sun', 'Saturday & Sunday'],
+  ['Fri', 'Friday only'],
+  ['Sun', 'Sunday only'],
+];
+const LEAVE_YEAR_BASES: [string, string][] = [
+  ['Calendar', 'Calendar year (1 January)'],
+  ['JoiningDate', "Each employee's joining date"],
+  ['Fiscal', 'Our fiscal year'],
+];
+const WORKFORCE_MIX: [string, string][] = [
+  ['MostlyNational', 'Mostly nationals'],
+  ['Mixed', 'Mixed nationals and expatriates'],
+  ['MostlyExpat', 'Mostly expatriates'],
+];
+const OVERTIME_HANDLING: [string, string][] = [
+  ['PaidOvertime', 'Paid overtime'],
+  ['CompensatoryOff', 'Time off in lieu'],
+  ['NotApplicable', 'We do not pay overtime'],
+];
+const ATTENDANCE_CAPTURE: [string, string][] = [
+  ['BiometricDevice', 'Biometric device'],
+  ['MobileGeofence', 'Mobile app with location'],
+  ['WebCheckIn', 'Web check-in'],
+  ['Manual', 'Entered by hand'],
+];
+const PAY_CYCLES: [string, string][] = [
+  ['Monthly', 'Monthly'],
+  ['SemiMonthly', 'Twice a month'],
+  ['Biweekly', 'Every two weeks'],
+  ['Weekly', 'Weekly'],
+];
+const LANGUAGES: [string, string][] = [
+  ['en', 'English'],
+  ['ar', 'Arabic'],
+  ['bilingual', 'Both (English first, Arabic available)'],
+];
+const TIMEZONES = [
+  '', 'Asia/Riyadh', 'Asia/Dubai', 'Asia/Qatar', 'Asia/Kuwait', 'Asia/Bahrain', 'Asia/Muscat',
+  'Africa/Cairo', 'Asia/Kolkata', 'Europe/London', 'America/New_York', 'UTC',
+];
 const CURRENCIES = ['SAR', 'AED', 'QAR', 'KWD', 'BHD', 'OMR', 'USD', 'EUR', 'GBP', 'INR', 'EGP'];
 
-type SectionKey = 'entity' | 'org' | 'leave' | 'shifts' | 'payroll' | 'governance';
+type SectionKey = 'entity' | 'org' | 'leave' | 'leavePolicies' | 'shifts' | 'attendance' | 'payroll' | 'holidays' | 'governance' | 'localization';
 
 export function AiSetupAssistant() {
   const [country, setCountry] = useState('SA');
@@ -29,7 +82,23 @@ export function AiSetupAssistant() {
   const [requireCostCenterForPayroll, setRequireCostCenterForPayroll] = useState(true);
   const [requireGradeForApprovalPolicy, setRequireGradeForApprovalPolicy] = useState(true);
   const [notes, setNotes] = useState('');
-  const [sections, setSections] = useState<Record<SectionKey, boolean>>({ entity: true, org: true, leave: true, shifts: true, payroll: true, governance: true });
+  // Operating choices. Each default is the most common answer, never a silent assumption the
+  // draft hides: whatever is selected here is what the generated configuration says.
+  const [workPattern, setWorkPattern] = useState('SingleDayShift');
+  const [weekendPattern, setWeekendPattern] = useState('CountryDefault');
+  const [leaveYearBasis, setLeaveYearBasis] = useState('Calendar');
+  const [probationMonths, setProbationMonths] = useState(3);
+  const [noticePeriodDays, setNoticePeriodDays] = useState(30);
+  const [workforceMix, setWorkforceMix] = useState('Mixed');
+  const [overtimeHandling, setOvertimeHandling] = useState('PaidOvertime');
+  const [attendanceCapture, setAttendanceCapture] = useState('WebCheckIn');
+  const [payCycle, setPayCycle] = useState('Monthly');
+  const [timeZone, setTimeZone] = useState('');
+  const [defaultLanguage, setDefaultLanguage] = useState('en');
+  const [sections, setSections] = useState<Record<SectionKey, boolean>>({
+    entity: true, org: true, leave: true, leavePolicies: true, shifts: true,
+    attendance: true, payroll: true, holidays: true, governance: true, localization: true,
+  });
 
   const [loading, setLoading] = useState(false);
   const [applying, setApplying] = useState(false);
@@ -44,7 +113,11 @@ export function AiSetupAssistant() {
   // Full Record<SectionKey, boolean> literal — an Object.fromEntries shortcut would widen
   // to { [k: string]: boolean } and fail the strict Record<SectionKey, boolean> assignment.
   const setAllSections = (value: boolean) =>
-    setSections({ entity: value, org: value, leave: value, shifts: value, payroll: value, governance: value });
+    setSections({
+      entity: value, org: value, leave: value, leavePolicies: value, shifts: value,
+      attendance: value, payroll: value, holidays: value, governance: value, localization: value,
+    });
+  const sectionCount = 10;
 
   const generate = async () => {
     if (!industry.trim()) { setError('Tell me your industry so the suggestions fit.'); return; }
@@ -62,6 +135,17 @@ export function AiSetupAssistant() {
         requireGradeForApprovalPolicy,
         notes: notes.trim() || undefined,
         sections,
+        workPattern,
+        weekendPattern,
+        leaveYearBasis,
+        probationMonths,
+        noticePeriodDays,
+        workforceMix,
+        overtimeHandling,
+        attendanceCapture,
+        payCycle,
+        timeZone: timeZone || undefined,
+        defaultLanguage,
       };
       const r = await setupAssistantApi.preview(profile);
       setDraft(r.draft); setEngine(r.engine); setGenNotes(r.notes);
@@ -109,7 +193,13 @@ export function AiSetupAssistant() {
       draft.branches.length + draft.costCenters.length + draft.gradePayComponents.length +
       draft.leaveTypes.length + draft.shifts.length + draft.payComponents.length +
       draft.statutoryRules.length + (draft.workingWeek ? 1 : 0) +
-      (draft.employeeIdRule ? 1 : 0) + (draft.hrConfig ? 1 : 0)
+      (draft.employeeIdRule ? 1 : 0) + (draft.hrConfig ? 1 : 0) +
+      draft.leavePolicies.length + (draft.holidayCalendar?.holidays.length ?? 0) +
+      (draft.attendancePolicy ? 1 : 0) +
+      // The multipliers are rows of their own once applied, so they count as items here too —
+      // otherwise the button promises fewer than the apply writes.
+      (draft.overtimePolicy ? 1 + draft.overtimePolicy.multipliers.length : 0) +
+      (draft.localization ? 1 : 0)
     : 0;
 
   if (done) {
@@ -205,6 +295,77 @@ export function AiSetupAssistant() {
             </label>
           ))}
         </div>
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">How do people work?</span>
+          <select className="select w-full" value={workPattern} onChange={e => { setWorkPattern(e.target.value); setDraft(null); }}>
+            {WORK_PATTERNS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+          <span className="mt-1 block text-[11px] text-slate-400">Sets the shifts and the standard working day.</span>
+        </label>
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Weekend (days off)</span>
+          <select className="select w-full" value={weekendPattern} onChange={e => { setWeekendPattern(e.target.value); setDraft(null); }}>
+            {WEEKEND_PATTERNS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+          <span className="mt-1 block text-[11px] text-slate-400">Every leave day and overtime hour is counted against this.</span>
+        </label>
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">How is time recorded?</span>
+          <select className="select w-full" value={attendanceCapture} onChange={e => { setAttendanceCapture(e.target.value); setDraft(null); }}>
+            {ATTENDANCE_CAPTURE.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+          <span className="mt-1 block text-[11px] text-slate-400">Decides the lateness grace the policy can honestly claim.</span>
+        </label>
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Overtime</span>
+          <select className="select w-full" value={overtimeHandling} onChange={e => { setOvertimeHandling(e.target.value); setDraft(null); }}>
+            {OVERTIME_HANDLING.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </label>
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Pay cycle</span>
+          <select className="select w-full" value={payCycle} onChange={e => { setPayCycle(e.target.value); setDraft(null); }}>
+            {PAY_CYCLES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </label>
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Workforce</span>
+          <select className="select w-full" value={workforceMix} onChange={e => { setWorkforceMix(e.target.value); setDraft(null); }}>
+            {WORKFORCE_MIX.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+          <span className="mt-1 block text-[11px] text-slate-400">Expatriate staff carry allowances nationals do not.</span>
+        </label>
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Leave year runs from</span>
+          <select className="select w-full" value={leaveYearBasis} onChange={e => { setLeaveYearBasis(e.target.value); setDraft(null); }}>
+            {LEAVE_YEAR_BASES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </label>
+        <div className="grid grid-cols-2 gap-3">
+          <label className="block">
+            <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Probation (months)</span>
+            <input type="number" min={0} max={24} className="input w-full" value={probationMonths}
+              onChange={e => { setProbationMonths(Math.max(0, Math.min(24, Number(e.target.value) || 0))); setDraft(null); }} />
+          </label>
+          <label className="block">
+            <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Notice (days)</span>
+            <input type="number" min={0} max={365} className="input w-full" value={noticePeriodDays}
+              onChange={e => { setNoticePeriodDays(Math.max(0, Math.min(365, Number(e.target.value) || 0))); setDraft(null); }} />
+          </label>
+        </div>
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Working language</span>
+          <select className="select w-full" value={defaultLanguage} onChange={e => { setDefaultLanguage(e.target.value); setDraft(null); }}>
+            {LANGUAGES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </label>
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Time zone</span>
+          <select className="select w-full" value={timeZone} onChange={e => { setTimeZone(e.target.value); setDraft(null); }}>
+            {TIMEZONES.map(tz => <option key={tz || 'auto'} value={tz}>{tz || 'Match the country'}</option>)}
+          </select>
+          <span className="mt-1 block text-[11px] text-slate-400">Every timestamp in the product is shown in this zone.</span>
+        </label>
         <label className="block sm:col-span-2">
           <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Anything specific? (optional)</span>
           <input className="input w-full" value={notes} onChange={e => setNotes(e.target.value)} placeholder="e.g. we run 24/7 operations with field crews" />
@@ -213,14 +374,20 @@ export function AiSetupAssistant() {
           <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
             <span className="text-xs font-medium text-slate-700 dark:text-slate-300">Sections to include in the draft</span>
             <div className="flex items-center gap-3">
-              <span className="text-xs text-slate-400">{selectedCount} of 6 selected</span>
+              <span className="text-xs text-slate-400">{selectedCount} of {sectionCount} selected</span>
               <button type="button" className="text-[11px] text-sapphire hover:underline dark:text-cyanAccent" onClick={() => setAllSections(true)}>Select all</button>
               <button type="button" className="text-[11px] text-sapphire hover:underline dark:text-cyanAccent" onClick={() => setAllSections(false)}>Clear all</button>
             </div>
           </div>
           <p className="mb-2 text-xs text-slate-400">Pick which parts of the starter configuration the assistant proposes. These are selections, not actions — nothing is generated until you choose Generate draft below.</p>
           <div className="flex flex-wrap gap-2">
-            {([['entity', 'Entity & cost centers'], ['org', 'Org structure'], ['leave', 'Leave types'], ['shifts', 'Shifts & working week'], ['payroll', 'Payroll & statutory'], ['governance', 'Governance & IDs']] as [SectionKey, string][]).map(([k, label]) => (
+            {([
+              ['entity', 'Entity & cost centers'], ['org', 'Org structure'],
+              ['leave', 'Leave types'], ['leavePolicies', 'Leave entitlement'],
+              ['shifts', 'Shifts & working week'], ['attendance', 'Attendance & overtime'],
+              ['payroll', 'Payroll & statutory'], ['holidays', 'Public holidays'],
+              ['governance', 'Governance & IDs'], ['localization', 'Language & time zone'],
+            ] as [SectionKey, string][]).map(([k, label]) => (
               <label key={k}
                 className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-1.5 text-xs transition ${
                   sections[k]
@@ -305,6 +472,18 @@ export function AiSetupAssistant() {
           <DraftSection title="Grades" rows={draft.grades.map(x => [x.code, `${x.name} (L${x.level}) · ${x.currency} ${x.minSalary}-${x.maxSalary}`])} onRemove={i => removeAt('grades', i)} />
           <DraftSection title="Grade Pay Components" rows={draft.gradePayComponents.map(x => [x.componentCode, `${x.gradeCode} · ${x.componentName} · ${x.calculationType === 'PercentOfBasic' ? `${x.percentage}%` : x.amount}`])} onRemove={i => removeAt('gradePayComponents', i)} />
           <DraftSection title="Leave Types" rows={draft.leaveTypes.map(x => [x.code, `${x.nameEn} · ${x.isPaid ? 'Paid' : 'Unpaid'} · max ${x.maxConsecutiveDays}d`])} onRemove={i => removeAt('leaveTypes', i)} />
+          <DraftSection
+            title="Leave Entitlement"
+            rows={draft.leavePolicies.map(x => [
+              x.leaveTypeCode,
+              // The days are the point of this section, so they lead. A 0 is shown as 0, not
+              // hidden: it is the difference between a leave type that works and one that does not.
+              `${x.annualEntitlementDays} day(s)/year · ${x.accrualMethod === 'Monthly' ? 'accrues monthly' : 'granted yearly'}` +
+              ` · ${x.payrollImpact === 'Unpaid' ? 'unpaid' : 'full pay'}` +
+              `${x.noticeRequiredDays > 0 ? ` · ${x.noticeRequiredDays}d notice` : ''}` +
+              `${x.appliesOnProbation ? ' · available on probation' : ''}`,
+            ])}
+            onRemove={i => removeAt('leavePolicies', i)} />
           <DraftSection title="Shifts" rows={draft.shifts.map(x => [x.code, `${x.name} · ${x.start}–${x.end}`])} onRemove={i => removeAt('shifts', i)} />
           {draft.workingWeek && (
             <DraftSection title="Working Week" rows={[['WEEK', `${draft.workingWeek.workWeek} · starts ${draft.workingWeek.weekStartDay}`]]} onRemove={() => setDraft(d => d ? { ...d, workingWeek: null } : d)} />
@@ -312,6 +491,56 @@ export function AiSetupAssistant() {
           <DraftSection title="Payroll Components" rows={draft.payComponents.map(x => [x.code, `${x.name} · ${x.componentType} · ${x.calculationType === 'Percentage' ? `${x.percentage}%` : x.amount}`])} onRemove={i => removeAt('payComponents', i)} />
           <DraftSection title="Statutory Rules" rows={draft.statutoryRules.map(x => [x.ruleKey, `${x.ruleValue} — ${x.description}`])} onRemove={i => removeAt('statutoryRules', i)} />
           {draft.employeeIdRule && <DraftSection title="Employee ID Rule" rows={[['ID', `${draft.employeeIdRule.companyPrefix} · pad ${draft.employeeIdRule.paddingLength} · next ${draft.employeeIdRule.nextSequence}`]]} onRemove={() => setDraft(d => d ? { ...d, employeeIdRule: null } : d)} />}
+          {draft.attendancePolicy && (
+            <DraftSection
+              title="Attendance Policy"
+              rows={[[draft.attendancePolicy.code,
+                `${draft.attendancePolicy.graceMinutes}min grace · late after ${draft.attendancePolicy.lateThresholdMinutes}min` +
+                ` · ${Math.round(draft.attendancePolicy.standardWorkMinutes / 60 * 10) / 10}h day` +
+                ` · ${draft.attendancePolicy.breakMinutes}min break` +
+                ` · rounded to the ${draft.attendancePolicy.roundingRule === 'NearestMinute' ? 'minute' : 'quarter-hour'}`]]}
+              onRemove={() => setDraft(d => d ? { ...d, attendancePolicy: null } : d)} />
+          )}
+          {draft.overtimePolicy && (
+            <DraftSection
+              title="Overtime Policy"
+              rows={[
+                [draft.overtimePolicy.code,
+                 `${draft.overtimePolicy.standardMonthlyHours}h/month basis · min ${draft.overtimePolicy.minimumMinutes}min` +
+                 ` · max ${Math.round(draft.overtimePolicy.maximumMinutesPerDay / 60)}h/day` +
+                 `${draft.overtimePolicy.allowCompOffConversion ? ' · time off in lieu allowed' : ''}`],
+                // Each rate on its own row, because a missing one is the thing worth noticing:
+                // no multiplier means that day's overtime is not costed.
+                ...draft.overtimePolicy.multipliers.map(m =>
+                  [m.dayCategory, `×${m.multiplier} of the hourly rate`] as [string, string]),
+              ]}
+              // Row 0 is the policy itself; the rest are its rates. Removing a rate must remove
+              // that rate — dropping the whole policy because someone clicked the bin next to
+              // "Weekend ×2" is not what the row says it does.
+              onRemove={i => setDraft(d => {
+                if (!d?.overtimePolicy) return d;
+                if (i === 0) return { ...d, overtimePolicy: null };
+                return { ...d, overtimePolicy: { ...d.overtimePolicy, multipliers: d.overtimePolicy.multipliers.filter((_, n) => n !== i - 1) } };
+              })} />
+          )}
+          {draft.holidayCalendar && (
+            <DraftSection
+              title={`Public Holidays ${draft.holidayCalendar.calendarYear}`}
+              rows={draft.holidayCalendar.holidays.map(h => [h.date, `${h.nameEn}${h.nameAr ? ` · ${h.nameAr}` : ''}${h.isOptional ? ' · optional' : ''}`])}
+              onRemove={i => setDraft(d => d && d.holidayCalendar
+                ? { ...d, holidayCalendar: { ...d.holidayCalendar, holidays: d.holidayCalendar.holidays.filter((_, n) => n !== i) } }
+                : d)} />
+          )}
+          {draft.localization && (
+            <DraftSection
+              title="Language & Time Zone"
+              rows={[['LOCALE',
+                `${draft.localization.defaultLanguage === 'ar' ? 'Arabic' : 'English'} · ${draft.localization.defaultTimezone}` +
+                ` · ${draft.localization.dateFormat}` +
+                `${draft.localization.rtlEnabled ? ' · right-to-left supported' : ''}` +
+                `${draft.localization.hijriDatesEnabled ? ' · Hijri dates shown' : ''}`]]}
+              onRemove={() => setDraft(d => d ? { ...d, localization: null } : d)} />
+          )}
           {draft.hrConfig && <DraftSection title="HR Governance" rows={[['GOV', `${draft.hrConfig.requireImportPreviewBeforeCommit ? 'Preview required' : 'Direct import'} · ${draft.hrConfig.requireCostCenterForPayroll ? 'Cost center required' : 'Cost center optional'} · ${draft.hrConfig.requireGradeForApprovalPolicy ? 'Grade approval rules' : 'General approval rules'}`]]} onRemove={() => setDraft(d => d ? { ...d, hrConfig: null } : d)} />}
         </div>
       )}

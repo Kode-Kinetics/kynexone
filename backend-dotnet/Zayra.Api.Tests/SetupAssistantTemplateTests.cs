@@ -32,8 +32,33 @@ public class SetupAssistantTemplateTests
     private static AiOptions Options(string provider = "ollama", string baseUrl = "https://ollama.com")
         => new(provider, "test-model", string.Empty, string.Empty, baseUrl, "key", 4096, true, false);
 
-    private static SetupAssistantService Service(ILlmClient llm, AiOptions? options = null, IAiCallRecorder? recorder = null)
-        => new(llm, options ?? Options(), recorder ?? new NoOpRecorder(), NullLogger<SetupAssistantService>.Instance);
+    private static SetupAssistantService Service(ILlmClient llm, AiOptions? options = null,
+        IAiCallRecorder? recorder = null, ISetupStatutoryDefaults? statutory = null)
+        => new(llm, options ?? Options(), recorder ?? new NoOpRecorder(),
+               statutory ?? new StubStatutory(), NullLogger<SetupAssistantService>.Instance);
+
+    /// <summary>
+    /// The platform statutory rules the assistant reads for entitlements and overtime rates. The
+    /// default is EMPTY on purpose: most tests here are about the template's own tailoring, and an
+    /// empty rule set is also the real behaviour for every country the seeder does not cover.
+    /// </summary>
+    private sealed class StubStatutory : ISetupStatutoryDefaults
+    {
+        private readonly Dictionary<string, string> _rules;
+        public StubStatutory(params (string Key, string Value)[] rules)
+            => _rules = rules.ToDictionary(r => r.Key, r => r.Value, StringComparer.OrdinalIgnoreCase);
+        public Task<IReadOnlyDictionary<string, string>> LoadAsync(string iso3, Guid tenantId, CancellationToken ct)
+            => Task.FromResult<IReadOnlyDictionary<string, string>>(_rules);
+    }
+
+    /// <summary>The KSA subset this assistant actually reads, with the seeder's own values.</summary>
+    private static StubStatutory KsaRules() => new(
+        ("leave.annual_base_days", "21"),
+        ("leave.sick_band1_days", "30"),
+        ("ot.standard_multiplier", "1.5"),
+        ("ot.restday_multiplier", "2.0"),
+        ("ot.holiday_multiplier", "2.0"),
+        ("ot.standard_monthly_hours", "240"));
 
     /// <summary>An LLM that always fails, so every test below exercises the deterministic template.</summary>
     private static StubLlm FailingLlm()
@@ -78,13 +103,26 @@ public class SetupAssistantTemplateTests
 
     private static CompanyProfile Profile(
         string country = "SA", string industry = "General", string size = "51-200",
-        string currency = "SAR", string? notes = null)
+        string currency = "SAR", string? notes = null, SetupSections? sections = null,
+        string? workPattern = null, string? weekendPattern = null, string? leaveYearBasis = null,
+        int probationMonths = 0, int noticePeriodDays = 0, string? workforceMix = null,
+        string? overtimeHandling = null, string? attendanceCapture = null, string? payCycle = null,
+        string? timeZone = null, string? defaultLanguage = null)
         => new(country, industry, size, currency, notes, "Evostel", null,
                "Functional", "GradeBased", "HRFinal", true, true, true,
-               new SetupSections(Org: true, Leave: true, Shifts: true, Payroll: true, Entity: true, Governance: true));
+               sections ?? new SetupSections(Org: true, Leave: true, Shifts: true, Payroll: true, Entity: true, Governance: true),
+               workPattern, weekendPattern, leaveYearBasis, probationMonths, noticePeriodDays,
+               workforceMix, overtimeHandling, attendanceCapture, payCycle, timeZone, defaultLanguage);
 
-    private static Task<SetupPreviewResult> Generate(CompanyProfile p, ILlmClient? llm = null)
-        => Service(llm ?? FailingLlm()).GenerateAsync(Caller, p, CancellationToken.None);
+    private static SetupSections AllSections(
+        bool org = true, bool leave = true, bool shifts = true, bool payroll = true, bool entity = true,
+        bool governance = true, bool leavePolicies = true, bool holidays = true, bool attendance = true,
+        bool localization = true)
+        => new(org, leave, shifts, payroll, entity, governance, leavePolicies, holidays, attendance, localization);
+
+    private static Task<SetupPreviewResult> Generate(
+        CompanyProfile p, ILlmClient? llm = null, ISetupStatutoryDefaults? statutory = null)
+        => Service(llm ?? FailingLlm(), statutory: statutory).GenerateAsync(Caller, p, CancellationToken.None);
 
     // ── Industry tailoring ──────────────────────────────────────────────────
 
@@ -501,4 +539,315 @@ public class SetupAssistantTemplateTests
         public Task RecordAsync(AiCallRecord record, CancellationToken ct)
             => throw new InvalidOperationException("audit table unavailable");
     }
+
+    // ── Operating choices → configuration ───────────────────────────────────
+    //
+    // The form used to collect thirteen values and the draft used to fill a fixed set of columns
+    // that overlapped them only partly. These pin the new ones to the columns they land in.
+
+    [Theory]
+    [InlineData("SingleDayShift", 1)]
+    [InlineData("TwoShifts", 2)]
+    [InlineData("ContinuousThreeShifts", 3)]
+    [InlineData("FieldRoster", 2)]
+    public async Task WorkPattern_DecidesTheShiftSet(string pattern, int expected)
+    {
+        var result = await Generate(Profile(workPattern: pattern));
+        result.Draft.Shifts.Should().HaveCount(expected);
+    }
+
+    [Fact]
+    public async Task WorkPattern_OverridesTheIndustryGuess()
+    {
+        // Healthcare is a continuous-operations pack, so it used to get three shifts whatever the
+        // company said. A clinic that closes at night is not a hospital that does not.
+        var inferred = await Generate(Profile(industry: "Healthcare"));
+        var stated = await Generate(Profile(industry: "Healthcare", workPattern: "SingleDayShift"));
+
+        inferred.Draft.Shifts.Should().HaveCount(3);
+        stated.Draft.Shifts.Should().ContainSingle().Which.Code.Should().Be("DAY");
+    }
+
+    [Theory]
+    [InlineData("Fri-Sat", "Sun-Thu", "Sunday")]
+    [InlineData("Sat-Sun", "Mon-Fri", "Monday")]
+    [InlineData("Fri", "Sat-Thu", "Saturday")]
+    [InlineData("Sun", "Mon-Sat", "Monday")]
+    public async Task WeekendPattern_BecomesTheWorkingWeek(string weekend, string workWeek, string startDay)
+    {
+        var result = await Generate(Profile(weekendPattern: weekend));
+        result.Draft.WorkingWeek!.WorkWeek.Should().Be(workWeek);
+        result.Draft.WorkingWeek.WeekStartDay.Should().Be(startDay);
+    }
+
+    [Fact]
+    public async Task WeekendPattern_Unset_FallsBackToTheCountry()
+    {
+        var saudi = await Generate(Profile(country: "SA"));
+        var uae = await Generate(Profile(country: "AE", currency: "AED"));
+
+        saudi.Draft.WorkingWeek!.WorkWeek.Should().Be("Sun-Thu");
+        uae.Draft.WorkingWeek!.WorkWeek.Should().Be("Mon-Fri");
+    }
+
+    // ── Localization ────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Localization_UsesTheCountry_NotTheEntityDefaults()
+    {
+        // TenantLocalizationSetting is constructed America/New_York + MM/DD/YYYY, and the setup
+        // wrote only the work week and currency over it. Every Gulf tenant kept a New York clock.
+        var result = await Generate(Profile(country: "SA"));
+
+        var loc = result.Draft.Localization!;
+        loc.DefaultTimezone.Should().Be("Asia/Riyadh");
+        loc.DateFormat.Should().Be("DD/MM/YYYY");
+        loc.HijriDatesEnabled.Should().BeTrue();
+        loc.RtlEnabled.Should().BeTrue();
+        loc.CalendarSystem.Should().Be("Gregorian");
+    }
+
+    [Fact]
+    public async Task Localization_HonoursAnExplicitTimezoneAndLanguage()
+    {
+        var result = await Generate(Profile(country: "AE", currency: "AED", timeZone: "Asia/Dubai", defaultLanguage: "ar"));
+        result.Draft.Localization!.DefaultTimezone.Should().Be("Asia/Dubai");
+        result.Draft.Localization.DefaultLanguage.Should().Be("ar");
+    }
+
+    // ── Leave entitlement ───────────────────────────────────────────────────
+
+    [Fact]
+    public async Task LeavePolicies_TakeTheirDaysFromThePlatformStatutoryRules()
+    {
+        var result = await Generate(Profile(country: "SA"), statutory: KsaRules());
+
+        var annual = result.Draft.LeavePolicies.Single(x => x.LeaveTypeCode == "ANNUAL");
+        annual.AnnualEntitlementDays.Should().Be(21m);   // leave.annual_base_days
+        annual.AccrualMethod.Should().Be("Monthly");
+        annual.PayrollImpact.Should().Be("Full");
+
+        result.Draft.LeavePolicies.Single(x => x.LeaveTypeCode == "SICK")
+            .AnnualEntitlementDays.Should().Be(30m);      // leave.sick_band1_days, the full-pay band
+    }
+
+    [Fact]
+    public async Task LeavePolicies_CoverEveryDraftedLeaveType()
+    {
+        // A leave type with no policy grants nobody anything, which is what applying this draft
+        // used to produce for all of them.
+        var result = await Generate(Profile(country: "SA"), statutory: KsaRules());
+
+        result.Draft.LeavePolicies.Select(x => x.LeaveTypeCode)
+            .Should().BeEquivalentTo(result.Draft.LeaveTypes.Select(x => x.Code));
+    }
+
+    [Fact]
+    public async Task LeavePolicies_WithNoStatutoryFigure_AreZeroAndSaySo()
+    {
+        // The unpegged-currency treatment, applied to entitlements: no invented number.
+        var result = await Generate(Profile(country: "GB", currency: "GBP"));
+
+        result.Draft.LeavePolicies.Single(x => x.LeaveTypeCode == "ANNUAL")
+            .AnnualEntitlementDays.Should().Be(0m);
+        result.Notes.Should().Contain(n => n.Contains("0 days") && n.Contains("Annual Leave"));
+    }
+
+    [Fact]
+    public async Task LeavePolicies_NeverCarryUnpaidLeaveAsPaid()
+    {
+        var result = await Generate(Profile(country: "SA"), statutory: KsaRules());
+
+        var unpaid = result.Draft.LeavePolicies.Single(x => x.LeaveTypeCode == "UNPAID");
+        unpaid.PayrollImpact.Should().Be("Unpaid");
+        unpaid.AnnualEntitlementDays.Should().Be(0m);
+    }
+
+    [Fact]
+    public async Task LeavePolicies_AreSkippedWhenLeaveTypesAre()
+    {
+        var result = await Generate(Profile(sections: AllSections(leave: false)));
+
+        result.Draft.LeaveTypes.Should().BeEmpty();
+        result.Draft.LeavePolicies.Should().BeEmpty();
+        result.Notes.Should().Contain(n => n.Contains("Leave entitlements were skipped"));
+    }
+
+    // ── Overtime ────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Overtime_MultipliersComeFromTheStatutoryRules()
+    {
+        var result = await Generate(Profile(country: "SA"), statutory: KsaRules());
+
+        var policy = result.Draft.OvertimePolicy!;
+        policy.Multipliers.Should().BeEquivalentTo(new[]
+        {
+            new DraftOvertimeMultiplier("RegularDay", 1.5m),
+            new DraftOvertimeMultiplier("Weekend", 2.0m),
+            new DraftOvertimeMultiplier("PublicHoliday", 2.0m),
+        });
+        policy.StandardMonthlyHours.Should().Be(240);
+    }
+
+    [Fact]
+    public async Task Overtime_WithNoStatutoryRate_DraftsNoMultiplierAndSaysWhy()
+    {
+        // A drafted 1.5 for a jurisdiction nobody has checked would be approved and then paid.
+        var result = await Generate(Profile(country: "GB", currency: "GBP"));
+
+        result.Draft.OvertimePolicy!.Multipliers.Should().BeEmpty();
+        result.Notes.Should().Contain(n => n.Contains("Overtime multipliers were left empty"));
+    }
+
+    [Fact]
+    public async Task Overtime_NotApplicable_DraftsNoPolicyAtAll()
+    {
+        var result = await Generate(Profile(overtimeHandling: "NotApplicable"), statutory: KsaRules());
+
+        result.Draft.OvertimePolicy.Should().BeNull();
+        result.Notes.Should().Contain(n => n.Contains("No overtime policy was drafted"));
+        result.Draft.AttendancePolicy!.RequiresOvertimeApproval.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Overtime_CompensatoryOff_TurnsOnCompOffConversion()
+    {
+        var result = await Generate(Profile(overtimeHandling: "CompensatoryOff"), statutory: KsaRules());
+        result.Draft.OvertimePolicy!.AllowCompOffConversion.Should().BeTrue();
+    }
+
+    // ── Attendance ──────────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("BiometricDevice", 5, "NearestMinute")]
+    [InlineData("MobileGeofence", 10, "Nearest15")]
+    [InlineData("WebCheckIn", 15, "Nearest15")]
+    [InlineData("Manual", 30, "Nearest15")]
+    public async Task AttendanceCapture_SetsGraceAndRoundingItCanHonour(string capture, int grace, string rounding)
+    {
+        var result = await Generate(Profile(attendanceCapture: capture));
+
+        var policy = result.Draft.AttendancePolicy!;
+        policy.GraceMinutes.Should().Be(grace);
+        policy.RoundingRule.Should().Be(rounding);
+    }
+
+    [Fact]
+    public async Task AttendanceRounding_IsOnlyEverOneOfTheTwoTheEngineEvaluates()
+    {
+        // A third value would be stored, displayed on the policy screen, and ignored at run time.
+        foreach (var capture in new[] { "BiometricDevice", "MobileGeofence", "WebCheckIn", "Manual", "nonsense" })
+        {
+            var result = await Generate(Profile(attendanceCapture: capture));
+            result.Draft.AttendancePolicy!.RoundingRule.Should().BeOneOf("NearestMinute", "Nearest15");
+        }
+    }
+
+    [Fact]
+    public async Task FieldRoster_GetsALongerDayAndLongerBreak()
+    {
+        var result = await Generate(Profile(workPattern: "FieldRoster"));
+
+        result.Draft.AttendancePolicy!.StandardWorkMinutes.Should().Be(540);
+        result.Draft.AttendancePolicy.BreakMinutes.Should().Be(90);
+    }
+
+    // ── Public holidays ─────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Holidays_DraftOnlyTheFixedDatesAndNameTheOnesTheyCannot()
+    {
+        var result = await Generate(Profile(country: "SA"));
+
+        var names = result.Draft.HolidayCalendar!.Holidays.Select(x => x.NameEn).ToList();
+        names.Should().Contain("Founding Day").And.Contain("Saudi National Day");
+        // Wrong by one day is enough to misprice every overtime hour worked over the holiday.
+        names.Should().NotContain(n => n.Contains("Eid"));
+        result.Notes.Should().Contain(n => n.Contains("Eid al-Fitr") && n.Contains("lunar"));
+    }
+
+    [Fact]
+    public async Task Holidays_EveryDraftedDateIsRealAndInTheCalendarYear()
+    {
+        foreach (var country in new[] { "SA", "AE", "QA", "KW", "BH", "OM" })
+        {
+            var result = await Generate(Profile(country: country, currency: "USD"));
+            var calendar = result.Draft.HolidayCalendar!;
+            foreach (var h in calendar.Holidays)
+            {
+                DateOnly.TryParseExact(h.Date, "yyyy-MM-dd", out var date).Should().BeTrue($"{country} {h.NameEn}");
+                date.Year.Should().Be(calendar.CalendarYear);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Holidays_ForACountryWithNoList_AreOmittedNotInvented()
+    {
+        var result = await Generate(Profile(country: "GB", currency: "GBP"));
+
+        result.Draft.HolidayCalendar.Should().BeNull();
+        result.Notes.Should().Contain(n => n.Contains("No public holiday calendar was drafted"));
+    }
+
+    // ── Pay cycle & workforce mix ───────────────────────────────────────────
+
+    [Fact]
+    public async Task PayCycle_TravelsWithEveryPayComponent()
+    {
+        // The ladder is monthly; paying a month's salary weekly is the failure this prevents.
+        var monthly = await Generate(Profile(payCycle: "Monthly"));
+        var weekly = await Generate(Profile(payCycle: "Weekly"));
+
+        weekly.Draft.GradePayComponents.Should().OnlyContain(x => x.Frequency == "Weekly");
+        var monthlyBasic = monthly.Draft.GradePayComponents.First(x => x.ComponentCode == "BASIC").Amount;
+        var weeklyBasic = weekly.Draft.GradePayComponents.First(x => x.ComponentCode == "BASIC").Amount;
+        weeklyBasic.Should().BeLessThan(monthlyBasic);
+        weekly.Notes.Should().Contain(n => n.Contains("per-run amount"));
+    }
+
+    [Theory]
+    [InlineData("MostlyExpat", true)]
+    [InlineData("Mixed", true)]
+    [InlineData("MostlyNational", false)]
+    public async Task WorkforceMix_DecidesTheExpatriateComponents(string mix, bool expectTicket)
+    {
+        var result = await Generate(Profile(workforceMix: mix));
+        result.Draft.PayComponents.Any(x => x.Code == "AIR_TICKET").Should().Be(expectTicket);
+    }
+
+    // ── Employment terms → tenant rules ─────────────────────────────────────
+
+    [Fact]
+    public async Task ProbationAndNotice_BecomeRulesOnlyWhenChosen()
+    {
+        var chosen = await Generate(Profile(probationMonths: 3, noticePeriodDays: 30, leaveYearBasis: "JoiningDate"));
+        var untouched = await Generate(Profile());
+
+        chosen.Draft.StatutoryRules.Should().Contain(r => r.RuleKey == "employment.probation_months" && r.RuleValue == "3");
+        chosen.Draft.StatutoryRules.Should().Contain(r => r.RuleKey == "employment.notice_period_days" && r.RuleValue == "30");
+        chosen.Draft.StatutoryRules.Should().Contain(r => r.RuleKey == "leave.year_basis" && r.RuleValue == "JoiningDate");
+
+        // An untouched field must not become a rule that says "0 days' notice".
+        untouched.Draft.StatutoryRules.Should().NotContain(r => r.RuleKey.StartsWith("employment."));
+    }
+
+    // ── Section toggles ─────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task TurningOffTheNewSections_LeavesThemEmpty()
+    {
+        var result = await Generate(Profile(
+            sections: AllSections(leavePolicies: false, holidays: false, attendance: false, localization: false)));
+
+        result.Draft.LeavePolicies.Should().BeEmpty();
+        result.Draft.HolidayCalendar.Should().BeNull();
+        result.Draft.AttendancePolicy.Should().BeNull();
+        result.Draft.OvertimePolicy.Should().BeNull();
+        result.Draft.Localization.Should().BeNull();
+        // ...and the rest of the draft is unaffected.
+        result.Draft.Departments.Should().NotBeEmpty();
+    }
+
 }
