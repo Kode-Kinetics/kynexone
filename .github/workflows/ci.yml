@@ -680,32 +680,14 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
         working-directory: frontend
-      # RETRY, because this build reaches the public internet. `next/font/google` fetches
-      # Manrope, Geist, IBM Plex and Instrument Serif from fonts.googleapis.com AT BUILD TIME,
-      # and when that fetch fails the loader throws `TypeError: Cannot read properties of null
-      # (reading '1')` and the whole build fails. That blocked three separate releases on
-      # 2026-09-23 alone, each time on a green codebase.
-      #
-      # Retry is the proportionate fix for a transient CDN fetch, not a mask for a flaky test:
-      # nothing about the app is nondeterministic here, only the network. The DURABLE fix is to
-      # vendor the six families via `next/font/local` so the release path does not depend on
-      # Google being reachable — worth doing, but it is a larger change than a retry.
-      - name: Build (retries — next/font fetches Google Fonts at build time)
+      # No retry loop: this build no longer reaches the public internet. Manrope, Geist,
+      # Geist Mono, IBM Plex Mono, IBM Plex Sans Arabic and Instrument Serif are vendored as
+      # .woff2 in frontend/app/fonts and loaded with `next/font/local`, so there is no
+      # fonts.googleapis.com fetch left to fail. One attempt, one verdict — three attempts
+      # would only hide the next genuine build failure behind two silent retries.
+      - name: Build
         working-directory: frontend
-        run: |
-          set -uo pipefail
-          for attempt in 1 2 3; do
-            echo "::group::next build (attempt $attempt/3)"
-            if npx next build; then
-              echo "::endgroup::"
-              exit 0
-            fi
-            echo "::endgroup::"
-            echo "::warning::next build failed on attempt $attempt — retrying in 15s (usually the Google Fonts fetch)."
-            sleep 15
-          done
-          echo "::error::next build failed three times. If the log shows 'An error occurred in next/font', it is the Google Fonts fetch, not your code — but three failures in a row means it is worth vendoring the fonts."
-          exit 1
+        run: npx next build
 
   # ── Browser: real tenant journey against the production-shaped Compose topology ──
   # This is intentionally independent of the platform-admin setup project. A missing platform
