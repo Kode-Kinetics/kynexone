@@ -157,16 +157,16 @@ public sealed class GosiReconciliationService
         string packJur = company?.Jurisdiction ?? string.Empty;
         string? packNote = null;
         if (company is null)
-            packNote = "Run company could not be resolved; expected GOSI cannot be recomputed. Actual and GL figures are still reported.";
+            packNote = "The legal entity behind this payroll run could not be identified, so the expected GOSI amount cannot be calculated. The amounts actually deducted, and the ledger figures, are still shown below.";
         else if (string.IsNullOrWhiteSpace(packCc))
-            packNote = $"Company '{company.LegalNameEn}' has no CountryCode; expected GOSI cannot be recomputed.";
+            packNote = $"{company.LegalNameEn} has no country set. Set it in Setup → Companies to calculate the expected GOSI amount.";
         else
         {
             calc = _packResolver.ResolveDeductionCalculator(packCc, packJur);
             if (calc is DefaultStatutoryDeductionCalculator)
             {
                 calc = null;
-                packNote = $"No statutory pack registered for '{packCc}'/'{packJur}'; expected GOSI cannot be recomputed.";
+                packNote = $"KynexOne does not yet hold the statutory rules for {DescribeJurisdiction(packCc, packJur)}, so the expected GOSI amount cannot be calculated.";
             }
         }
         var packResolved = calc is not null;
@@ -426,13 +426,13 @@ public sealed class GosiReconciliationService
         IStatutoryDeductionCalculator? calc = null;
         string? packNote = null;
         if (company is null)
-            packNote = "No legal entity could be resolved for this period; expected GOSI cannot be recomputed. Actual and GL figures are still reported.";
+            packNote = "No legal entity could be identified for this period, so the expected GOSI amount cannot be calculated. The amounts actually deducted, and the ledger figures, are still shown below.";
         else if (string.IsNullOrWhiteSpace(company.CountryCode))
-            packNote = $"Company '{company.LegalNameEn}' has no CountryCode; expected GOSI cannot be recomputed.";
+            packNote = $"{company.LegalNameEn} has no country set. Set it in Setup → Companies to calculate the expected GOSI amount.";
         else
         {
             calc = _packResolver.ResolveDeductionCalculator(company.CountryCode, company.Jurisdiction ?? string.Empty);
-            if (calc is DefaultStatutoryDeductionCalculator) { calc = null; packNote = $"No statutory pack registered for '{company.CountryCode}'/'{company.Jurisdiction}'."; }
+            if (calc is DefaultStatutoryDeductionCalculator) { calc = null; packNote = $"KynexOne does not yet hold the statutory rules for {DescribeJurisdiction(company.CountryCode, company.Jurisdiction ?? string.Empty)}, so the expected GOSI amount cannot be calculated."; }
         }
 
         var empIds = slips.Select(s => s.EmployeeId).Distinct().ToList();
@@ -509,6 +509,18 @@ public sealed class GosiReconciliationService
                                         r.Id, r.RunType, r.Status, r.IncludesRecurringPay,
                                         Math.Round(runReconciliations[i].ActualEmployeeTotal, 2),
                                         Math.Round(runReconciliations[i].ActualEmployerTotal, 2))).ToList());
+    }
+
+    /// <summary>
+    /// Names a place in a note a customer will read. Never emits a bare internal field name or an
+    /// empty pair of quotes — "registered in ''" is how "has no CountryCode" reads to a customer.
+    /// </summary>
+    private static string DescribeJurisdiction(string countryCode, string jurisdiction)
+    {
+        var cc  = (countryCode ?? string.Empty).Trim();
+        var jur = (jurisdiction ?? string.Empty).Trim();
+        if (cc.Length == 0) return "this company's country";
+        return jur.Length == 0 ? cc : $"{cc} ({jur})";
     }
 }
 

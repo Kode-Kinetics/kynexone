@@ -230,9 +230,12 @@ public sealed class NitaqatCalculationService
         // Nitaqat is Saudi law. Do not compute a Saudi band for a Dubai entity.
         if (!IsSaudi(company.CountryCode))
             return Refuse(NitaqatRefusalReasons.NotKsa,
-                $"{company.TradeName} is registered in '{company.CountryCode}', not Saudi Arabia. " +
-                "Nitaqat applies only to establishments registered with MHRSD in the Kingdom.",
-                "Set the company's country to SA / SAU if this is a Saudi establishment.");
+                string.IsNullOrWhiteSpace(company.CountryCode)
+                    ? $"{company.TradeName} has no country set, so its Nitaqat band cannot be worked out. " +
+                      "Nitaqat applies only to establishments registered with MHRSD in the Kingdom."
+                    : $"{company.TradeName} is registered in {company.CountryCode}, not Saudi Arabia. " +
+                      "Nitaqat applies only to establishments registered with MHRSD in the Kingdom.",
+                "Set the company's country to Saudi Arabia in Setup → Companies if this is a Saudi establishment.");
 
         // ── FAIL LOUD ON AN UNCONFIGURED SECTOR ──────────────────────────────
         // A wrong Nitaqat band is worse than no band. A customer acts on a band:

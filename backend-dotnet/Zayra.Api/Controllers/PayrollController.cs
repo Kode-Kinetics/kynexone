@@ -1423,15 +1423,15 @@ public class PayrollController : ControllerBase
             return UnprocessableEntity(new
             {
                 error   = "company_not_resolved",
-                message = "No active company found for this tenant. Cannot resolve a country pack for statutory deductions. " +
-                          "Create and activate a company with a CountryCode before processing payroll.",
+                message = "No active company was found for this account, so statutory deductions cannot be worked out. " +
+                          "Create and activate a company with a country set in Setup → Companies before running payroll.",
             });
         if (string.IsNullOrWhiteSpace(company.CountryCode))
             return UnprocessableEntity(new
             {
                 error       = "country_code_missing",
-                message     = $"Company '{company.LegalNameEn}' (id: {company.Id}) has no CountryCode set. " +
-                              "Set the company country in Setup → Companies and retry.",
+                message     = $"{company.LegalNameEn} has no country set, so statutory deductions cannot be worked out. " +
+                              "Set it in Setup → Companies, then try again.",
                 companyId   = company.Id,
                 companyName = company.LegalNameEn,
             });
