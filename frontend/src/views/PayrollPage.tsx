@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import {
   AlertTriangle, BarChart2, ShieldCheck, BookOpen, Building2, Calculator,
   CheckCircle2, ChevronDown, ChevronRight, Download, FileText, Landmark, Layers3,
@@ -238,19 +239,29 @@ function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOver
                   {c.tradeName && c.tradeName !== c.companyName && <p className="text-slate-400">{c.tradeName}</p>}
                 </td>
                 <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{c.activeEmployees.toLocaleString()}</td>
+                {/* Coverage is "how many of this company's employees have a salary on file". With nobody
+                    on file the server returns 0.0 (PayrollController.cs:9459 — the divide-by-zero guard),
+                    which is not a 0% failure, it is a company nobody has joined yet. Rendering the red bar
+                    for it made a brand-new tenant read as a broken one. */}
                 <td className="px-4 py-3">
-                  <div className="flex items-center gap-2">
-                    <div className="h-1.5 w-16 overflow-hidden rounded-full bg-slate-200 dark:bg-white/10">
-                      <div
-                        className={`h-full rounded-full transition-all [width:var(--cov-w)] ${c.salaryCoveragePercent >= 90 ? 'bg-emerald-500' : c.salaryCoveragePercent >= 70 ? 'bg-amber-500' : 'bg-rose-500'}`}
-                        style={{ '--cov-w': `${c.salaryCoveragePercent}%` } as React.CSSProperties}
-                      />
-                    </div>
-                    <span className={c.salaryCoveragePercent < 70 ? 'font-semibold text-rose-600 dark:text-rose-400' : 'text-slate-600 dark:text-slate-300'}>
-                      {c.salaryCoveragePercent.toFixed(0)}%
-                    </span>
-                  </div>
-                  {c.employeesMissingSalary > 0 && <p className="mt-0.5 text-rose-500">{c.employeesMissingSalary} missing</p>}
+                  {c.activeEmployees === 0 ? (
+                    <span className="text-slate-400 dark:text-slate-500">No employees yet</span>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-2">
+                        <div className="h-1.5 w-16 overflow-hidden rounded-full bg-slate-200 dark:bg-white/10">
+                          <div
+                            className={`h-full rounded-full transition-all [width:var(--cov-w)] ${c.salaryCoveragePercent >= 90 ? 'bg-emerald-500' : c.salaryCoveragePercent >= 70 ? 'bg-amber-500' : 'bg-rose-500'}`}
+                            style={{ '--cov-w': `${c.salaryCoveragePercent}%` } as React.CSSProperties}
+                          />
+                        </div>
+                        <span className={c.salaryCoveragePercent < 70 ? 'font-semibold text-rose-600 dark:text-rose-400' : 'text-slate-600 dark:text-slate-300'}>
+                          {c.salaryCoveragePercent.toFixed(0)}%
+                        </span>
+                      </div>
+                      {c.employeesMissingSalary > 0 && <p className="mt-0.5 text-rose-500">{c.employeesMissingSalary} missing</p>}
+                    </>
+                  )}
                 </td>
                 <td className="px-4 py-3 font-mono text-slate-700 dark:text-slate-300">{c.hasPayrollRun ? fmtAmt(c.grossPayroll, c.currency) : '—'}</td>
                 <td className="px-4 py-3 font-mono font-semibold text-slate-800 dark:text-white">{c.hasPayrollRun ? fmtAmt(c.netPayroll, c.currency) : '—'}</td>
@@ -276,15 +287,33 @@ function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOver
           </tbody>
         </table>
       </div>
-      <div className="border-t border-slate-100 bg-slate-50 px-5 py-3 dark:border-white/5 dark:bg-white/3">
-        <div className="flex items-center gap-8 text-xs">
-          <span className="text-slate-500 dark:text-slate-400">Group totals:</span>
-          <span className="font-semibold text-slate-800 dark:text-white">Gross: {fmtAmt(overview.totalGrossPayroll, currencyCode)}</span>
-          <span className="font-semibold text-emerald-600 dark:text-emerald-400">Net: {fmtAmt(overview.totalNetPayroll, currencyCode)}</span>
-          {overview.totalValidationErrors > 0 && <span className="font-semibold text-rose-600 dark:text-rose-400">{overview.totalValidationErrors} errors</span>}
-          {overview.totalPendingApprovals > 0 && <span className="font-semibold text-amber-600 dark:text-amber-400">{overview.totalPendingApprovals} pending approvals</span>}
+      {/* Same shape as the dashboard's "No payroll run yet" hero: say what is true, say what appears here
+          once it is not, and give the one next action. Never a row of zeroes dressed as a result. */}
+      {overview.totalActiveEmployees === 0 ? (
+        <div role="status" className="border-t border-slate-100 bg-slate-50 px-5 py-5 dark:border-white/5 dark:bg-white/3">
+          <p className="text-sm font-semibold text-slate-900 dark:text-white">No employees yet</p>
+          <p className="mt-1 max-w-prose text-xs text-slate-600 dark:text-slate-400">
+            Salary coverage and payroll totals fill in per company once the first employees are on record.
+            Nothing has failed here — there is simply nobody to pay yet.
+          </p>
+          <Link
+            href="/people"
+            className="mt-3 inline-flex w-fit items-center gap-1.5 rounded-lg bg-sapphire px-3.5 py-2 text-xs font-semibold text-white hover:bg-sapphire/90 dark:bg-cyanAccent dark:text-slate-900 dark:hover:bg-cyanAccent/90"
+          >
+            Add employees <ChevronRight className="h-3.5 w-3.5" />
+          </Link>
         </div>
-      </div>
+      ) : (
+        <div className="border-t border-slate-100 bg-slate-50 px-5 py-3 dark:border-white/5 dark:bg-white/3">
+          <div className="flex items-center gap-8 text-xs">
+            <span className="text-slate-500 dark:text-slate-400">Group totals:</span>
+            <span className="font-semibold text-slate-800 dark:text-white">Gross: {fmtAmt(overview.totalGrossPayroll, currencyCode)}</span>
+            <span className="font-semibold text-emerald-600 dark:text-emerald-400">Net: {fmtAmt(overview.totalNetPayroll, currencyCode)}</span>
+            {overview.totalValidationErrors > 0 && <span className="font-semibold text-rose-600 dark:text-rose-400">{overview.totalValidationErrors} errors</span>}
+            {overview.totalPendingApprovals > 0 && <span className="font-semibold text-amber-600 dark:text-amber-400">{overview.totalPendingApprovals} pending approvals</span>}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1174,7 +1203,10 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
                   <table className="w-full min-w-[560px] text-sm">
                     <thead>
                       <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                        {['Employee', 'Dept', 'Basic', 'Gross', 'Loans', 'Deductions', 'Net', 'YTD Gross', 'YTD Net'].map(h => (
+                        {/* Loans sits AFTER Deductions and says "of which", because the EMI is already
+                            inside the Deductions total (PayrollController.cs:2635). Side by side, both
+                            bracketed, the two columns read as two separate subtractions. */}
+                        {['Employee', 'Dept', 'Basic', 'Gross', 'Deductions', 'of which: Loans', 'Net', 'YTD Gross', 'YTD Net'].map(h => (
                           <th key={h} className="px-3 py-3 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
                         ))}
                       </tr>
@@ -1206,13 +1238,14 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
                               </p>
                             )}
                           </td>
-                          <td className="px-3 py-2.5 text-end text-amber-600 dark:text-amber-400">{s.loanDeductions > 0 ? `(${fmt(s.loanDeductions)})` : '—'}</td>
                           <td className="px-3 py-2.5 text-end text-rose-500">
                             ({fmt(s.deductions)})
                             {s.employeeStatutoryTotal > 0 && (
-                              <p className="text-[10px] text-rose-400 leading-tight">GOSI {fmt(s.employeeStatutoryTotal)}</p>
+                              <p className="text-[10px] leading-tight text-rose-400">of which GOSI {fmt(s.employeeStatutoryTotal)}</p>
                             )}
                           </td>
+                          {/* Unbracketed: a slice of the cell to its left, not a further subtraction. */}
+                          <td className="px-3 py-2.5 text-end text-amber-600 dark:text-amber-400">{s.loanDeductions > 0 ? fmt(s.loanDeductions) : '—'}</td>
                           <td className="px-3 py-2.5 text-end font-bold text-emerald-600 dark:text-emerald-400">{fmt(s.netSalary)}</td>
                           <td className="px-3 py-2.5 text-end text-xs text-slate-500">{fmt(s.ytdGross)}</td>
                           <td className="px-3 py-2.5 text-end text-xs font-semibold text-slate-700 dark:text-slate-300">{fmt(s.ytdNet)}</td>
@@ -2488,7 +2521,17 @@ function ReportsTab() {
               <table className="w-full min-w-[640px] text-sm">
                 <thead>
                   <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                    {['Code', 'Employee', 'Department', 'Basic', 'Housing', 'Transport', 'Other', 'Gross', 'Loans', 'Deductions', 'Net', 'YTD Gross', 'YTD Net'].map(h => (
+                    {/* COLUMN COMPOSITION — read off PayrollController.Process, not off the old headers:
+                        · slip.OtherAllowances = otherAllowances + overtime + bonuses + adjustments +
+                          arrears + settlement earnings + configured earnings (PayrollController.cs:2693).
+                          It is NOT "other allowances", so it is headed "Other earnings".
+                        · slip.GrossSalary = Basic + Housing + Transport + OtherAllowances (:2211-2212, :2694)
+                          — the four earning columns are disjoint and sum exactly to Gross.
+                        · slip.Deductions = everything withheld INCLUDING loan/advance EMIs and the employee
+                          GOSI share (:2542-2543, :2635). Loans and GOSI are therefore subsets, headed "of which", and
+                          printed unbracketed so nobody subtracts them a second time.
+                        · Net = Gross − Deductions. */}
+                    {['Code', 'Employee', 'Department', 'Basic', 'Housing', 'Transport', 'Other earnings', 'Gross', 'Deductions', 'of which: Loans', 'Net', 'YTD Gross', 'YTD Net'].map(h => (
                       <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
                     ))}
                   </tr>
@@ -2504,13 +2547,15 @@ function ReportsTab() {
                       <td className="px-3 py-2 text-end text-slate-700 dark:text-slate-300">{fmt(s.transportAllowance)}</td>
                       <td className="px-3 py-2 text-end text-slate-700 dark:text-slate-300">{fmt(s.otherAllowances)}</td>
                       <td className="px-3 py-2 text-end font-semibold text-slate-900 dark:text-white">{fmt(s.grossSalary)}</td>
-                      <td className="px-3 py-2 text-end text-amber-600 dark:text-amber-400">{s.loanDeductions > 0 ? `(${fmt(s.loanDeductions)})` : '—'}</td>
                       <td className="px-3 py-2 text-end text-rose-500">
                         ({fmt(s.deductions)})
                         {s.employeeStatutoryTotal > 0 && (
-                          <p className="text-[10px] text-rose-400 leading-tight">GOSI {fmt(s.employeeStatutoryTotal)}</p>
+                          <p className="text-[10px] leading-tight text-rose-400">of which GOSI {fmt(s.employeeStatutoryTotal)}</p>
                         )}
                       </td>
+                      {/* Unbracketed on purpose: this is a slice of the Deductions cell to its left, not a
+                          further subtraction. Bracketing it invited exactly the double-count P5 found. */}
+                      <td className="px-3 py-2 text-end text-amber-600 dark:text-amber-400">{s.loanDeductions > 0 ? fmt(s.loanDeductions) : '—'}</td>
                       <td className="px-3 py-2 text-end font-bold text-emerald-600 dark:text-emerald-400">{fmt(s.netSalary)}</td>
                       <td className="px-3 py-2 text-end text-xs text-slate-500">{fmt(s.ytdGross)}</td>
                       <td className="px-3 py-2 text-end text-xs font-semibold text-slate-700 dark:text-slate-300">{fmt(s.ytdNet)}</td>
@@ -2518,6 +2563,11 @@ function ReportsTab() {
                   ))}
                 </tbody>
               </table>
+            </div>
+            <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-relaxed text-slate-600 dark:border-white/10 dark:bg-white/5 dark:text-slate-400">
+              <p><span className="font-semibold text-slate-700 dark:text-slate-300">How a row adds up:</span> Basic + Housing + Transport + Other earnings = Gross. Gross − Deductions = Net.</p>
+              <p className="mt-1"><span className="font-semibold text-slate-700 dark:text-slate-300">Other earnings</span> is everything paid this period that is not basic, housing or transport — other allowances, overtime, bonuses, arrears, adjustments and final-settlement earnings.</p>
+              <p className="mt-1"><span className="font-semibold text-slate-700 dark:text-slate-300">Loans and GOSI are already inside Deductions.</span> They are shown so you can see what Deductions is made of — do not subtract them again.</p>
             </div>
           </>
         )}

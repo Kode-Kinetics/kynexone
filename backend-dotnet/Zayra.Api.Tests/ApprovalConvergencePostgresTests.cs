@@ -1,3 +1,4 @@
+using Zayra.Api.Application.WorkWeek;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Approvals;
@@ -47,7 +48,13 @@ public sealed class ApprovalConvergencePostgresTests
         var managerUserId = Guid.NewGuid();
         var hrUserId = Guid.NewGuid();
         var suffix = Guid.NewGuid().ToString("N")[..8];
+        // TWO WORKING DAYS, stated rather than assumed. These tests assert a 2-day request reserves
+        // 2 days; weekends are now excluded from the count (the Thu-Sun-charged-4-days fix), so a
+        // raw "+21 days" span silently became a 1-day request whenever it straddled Fri-Sat.
         var start = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(21));
+        while (WorkWeekConfig.GccDefault.IsWeekend(start.DayOfWeek)
+               || WorkWeekConfig.GccDefault.IsWeekend(start.AddDays(1).DayOfWeek))
+            start = start.AddDays(1);
 
         var leaveType = new LeaveType
         {

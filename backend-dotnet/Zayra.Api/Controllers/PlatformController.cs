@@ -1096,6 +1096,17 @@ public class PlatformController : ControllerBase
 
     // ── Client Provisioning ───────────────────────────────────────────────────
 
+    /// <summary>
+    /// The country list the tenant-provisioning form picks a home jurisdiction from. Serves the SAME
+    /// <see cref="IsoReference.Countries"/> rows as <c>GET /api/reference/countries</c> — the platform
+    /// console carries a platform token and cannot call the tenant-authorized endpoint, and a second
+    /// hard-coded list of countries in the admin UI is exactly what this endpoint exists to prevent.
+    /// </summary>
+    [HttpGet("countries")]
+    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin, PlatformRoles.Support)]
+    public IActionResult Countries() =>
+        Ok(IsoReference.Countries.Select(c => new { c.Code, c.Name, c.Currency }));
+
     /// <summary>Provision a new client: tenant + full role set + tenant admin ("sub admin") + subscription.</summary>
     [HttpPost("tenants")]
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
@@ -1119,6 +1130,21 @@ public class PlatformController : ControllerBase
         if (req.CompanyCreationMode is not null && !CompanyCreationModes.IsValid(req.CompanyCreationMode))
             return BadRequest(new { message = "CompanyCreationMode must be PlatformControlled, GroupSelfServiceWithinLimit or GroupDraftPlatformApproval." });
 
+        // HOME JURISDICTION — required, and never inferred. Provisioning below seeds country payroll
+        // rules, leave entitlements and readiness profiles, and the first company inherits this value;
+        // a tenant created without it produced a company with CountryCode = "" whose employees could
+        // not be added at all, with no message naming the cause.
+        var homeCountry = HomeJurisdiction.Normalize(req.HomeCountryCode);
+        if (homeCountry is null)
+            return BadRequest(new
+            {
+                error = HomeJurisdiction.MissingTenantCountryError,
+                message = string.IsNullOrWhiteSpace(req.HomeCountryCode)
+                    ? "A home country is required. It sets the tenant's statutory jurisdiction and the "
+                      + "first company's country — use an ISO 3166-1 code (e.g. SA, AE, QA)."
+                    : $"Unrecognized home country '{req.HomeCountryCode}'. Use an ISO 3166-1 code (e.g. SA, AE, QA).",
+            });
+
         if (_db.Database.IsRelational())
         {
             // The provisioning bundle performs several SaveChanges calls. Execute all of them
@@ -1131,7 +1157,7 @@ public class PlatformController : ControllerBase
                 await using var transaction = await _db.Database.BeginTransactionAsync(ct);
                 try
                 {
-                    var result = await CreateTenantCore(req, name, slug, ct);
+                    var result = await CreateTenantCore(req, name, slug, homeCountry, ct);
                     await transaction.CommitAsync(ct);
                     return result;
                 }
@@ -1143,13 +1169,15 @@ public class PlatformController : ControllerBase
             });
         }
 
-        return await CreateTenantCore(req, name, slug, ct);
+        return await CreateTenantCore(req, name, slug, homeCountry, ct);
     }
 
+    /// <param name="homeCountry">Canonical ISO-2, already validated by <see cref="CreateTenant"/>.</param>
     private async Task<IActionResult> CreateTenantCore(
         CreateTenantRequest req,
         string name,
         string slug,
+        string homeCountry,
         CancellationToken ct)
     {
 
@@ -1163,14 +1191,35 @@ public class PlatformController : ControllerBase
         _db.Tenants.Add(tenant);
         await _db.SaveChangesAsync(ct);
 
+        // The tenant's home jurisdiction lives on the existing tenant settings row
+        // (TenantLocalizationSetting.CountryCode — already what TenantModuleService and
+        // OvertimeController read as "the tenant's country"), so no new table or column is needed.
+        // The TIMEZONE must be set here too, and this is not optional tidiness. The entity defaults
+        // to America/New_York; before this row existed the timezone resolved to null and fell back
+        // to UTC. Writing the row therefore MOVED every new tenant's "today" to New York — wrong by
+        // 7-11 hours for a GCC customer. It surfaced immediately: an approved leave request starting
+        // today was not live on the day it started, because the tenant's day had not begun yet.
+        // Unknown country resolves to UTC rather than a guess (HomeJurisdiction.TimeZoneFor).
+        _db.TenantLocalizationSettings.Add(new TenantLocalizationSetting
+        {
+            TenantId = tenant.Id,
+            CountryCode = homeCountry,
+            DefaultTimezone = HomeJurisdiction.TimeZoneFor(homeCountry),
+        });
+
         // Every tenant is born with its first company, inside this transaction. This used to be
         // left to CompanyScopeBackfill at the next boot, which created data outside the platform
         // admin (docs/DATA_ENTRY_PATHS.md); the backfill now only repairs, never creates.
+        // It INHERITS the stated home jurisdiction: it used to be created with CountryCode = "",
+        // which left statutory/identity resolution with nothing to key on for every employee the
+        // customer then tried to add. A group can still give each further legal entity its own
+        // country — only the FIRST one inherits, and any of them can be edited afterwards.
         _db.Companies.Add(new Company
         {
             TenantId = tenant.Id,
             LegalNameEn = name,
             TradeName = name,
+            CountryCode = homeCountry,
             IsActive = true,
         });
         await _db.SaveChangesAsync(ct);
@@ -1187,7 +1236,7 @@ public class PlatformController : ControllerBase
         // FIX 1 (C1): the idempotent per-tenant provisioning bundle — country rules, MasterData,
         // HR categories, default attendance/leave/approval policies, and bilingual notification
         // templates. Ensures no tenant is born without its statutory/reference/config foundation.
-        await Zayra.Api.Infrastructure.Seed.TenantProvisioningBundle.ProvisionAsync(_db, tenant.Id, ct);
+        await Zayra.Api.Infrastructure.Seed.TenantProvisioningBundle.ProvisionAsync(_db, tenant.Id, homeCountry, ct);
         await _db.SaveChangesAsync(ct);
 
         var admin = new User
@@ -1238,6 +1287,9 @@ public class PlatformController : ControllerBase
                 slug = tenant.Slug,
                 plan,
                 adminEmail = admin.Email,
+                // The stated home jurisdiction is part of the tenant's creation record: it decided
+                // which statutory defaults were seeded, so it has to be auditable alongside them.
+                homeCountryCode = homeCountry,
                 maxUsers = req.MaxUsers ?? SubscriptionTiers.GetDefaults(plan).MaxUsers,
                 maxEmployees = req.MaxEmployees ?? SubscriptionTiers.GetDefaults(plan).MaxEmployees
             }),
@@ -2039,10 +2091,9 @@ public class PlatformController : ControllerBase
     // ── Password Reset (platform-initiated) ───────────────────────────────────
 
     /// <summary>
-    /// TODO: Implement email delivery.
-    /// Currently generates a reset token stored on the user. The actual email send
-    /// requires an IEmailService (SMTP/SendGrid) not yet wired to the platform portal.
-    /// When email service is available: call IAuthService.ForgotPasswordAsync with the user's email.
+    /// Issues a single-use, one-hour password-reset link for a tenant user and emails it when a
+    /// mail transport is configured. When none is (the production default today), the response says
+    /// so and returns the link itself to Owner/Admin so the reset can still be completed by hand.
     /// </summary>
     [HttpPost("users/{userId:guid}/send-password-reset")]
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin, PlatformRoles.Support)]
@@ -2119,6 +2170,31 @@ public class PlatformController : ControllerBase
             _log.LogInformation("SMTP not configured — reset token saved for {Email}, no email sent.", user.Email);
         }
 
+        // The old message told the operator to "share the reset link directly" while showing no
+        // link — advice that could not be followed. The link is now actually returned when nothing
+        // was emailed, but only to Owner/Admin: Support may trigger a reset into the user's own
+        // inbox without ever holding a live credential link for someone else's workspace.
+        var platformRole = User.FindFirst("platform_role")?.Value;
+        var maySeeLink = string.Equals(platformRole, PlatformRoles.Owner, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(platformRole, PlatformRoles.Admin, StringComparison.OrdinalIgnoreCase);
+        var discloseLink = !emailSent && maySeeLink;
+
+        if (discloseLink)
+        {
+            _db.AdminAuditLogs.Add(new AdminAuditLog
+            {
+                TenantId = user.TenantId,
+                EntityType = "User",
+                EntityId = userId.ToString(),
+                Action = "PasswordResetLinkDisclosedToPlatformAdmin",
+                OldValuesJson = "{}",
+                NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { smtpConfigured, platformRole }),
+                PerformedByName = "platform_admin",
+                IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
+            });
+            await _db.SaveChangesAsync(ct);
+        }
+
         return Ok(new
         {
             userId,
@@ -2128,8 +2204,11 @@ public class PlatformController : ControllerBase
             message = emailSent
                 ? $"Password reset email sent to {user.Email}. Link expires in 1 hour."
                 : smtpConfigured
-                    ? "SMTP is configured but email delivery failed — check server logs."
-                    : "Reset token saved and logged. SMTP is not configured — share the reset link directly or configure SMTP in Setup → Email Settings.",
+                    ? "SMTP is configured but the email could not be delivered — check server logs."
+                    : maySeeLink
+                        ? "SMTP is not configured for this platform, so no email was sent. Copy the reset link below and give it to the user directly — it can be used once and expires in 1 hour."
+                        : "SMTP is not configured for this platform, so no email was sent. Ask a platform Owner or Admin to issue the reset link.",
+            resetUrl = discloseLink ? resetUrl : null,
             emailDeliveryAvailable = smtpConfigured,
             resetTokenExpiresAt = expiresAt
         });
@@ -3510,9 +3589,27 @@ public class PlatformController : ControllerBase
         if (await _db.Tenants.AsNoTracking().AnyAsync(t => t.Slug == slug && t.IsActive, ct))
             return Conflict(new { message = $"A tenant with slug '{slug}' already exists." });
 
+        // Same required home jurisdiction as CreateTenant — this path provisions the same statutory
+        // defaults, so it cannot be the back door that recreates blank-country tenants.
+        var homeCountry = HomeJurisdiction.Normalize(req.HomeCountryCode);
+        if (homeCountry is null)
+            return BadRequest(new
+            {
+                error = HomeJurisdiction.MissingTenantCountryError,
+                message = string.IsNullOrWhiteSpace(req.HomeCountryCode)
+                    ? "A home country is required to convert a lead. Use an ISO 3166-1 code (e.g. SA, AE, QA)."
+                    : $"Unrecognized home country '{req.HomeCountryCode}'. Use an ISO 3166-1 code (e.g. SA, AE, QA).",
+            });
+
         var tenant = new Tenant { Name = name, Slug = slug };
         _db.Tenants.Add(tenant);
         await _db.SaveChangesAsync(ct);
+
+        _db.TenantLocalizationSettings.Add(new TenantLocalizationSetting
+        {
+            TenantId = tenant.Id,
+            CountryCode = homeCountry,
+        });
 
         var adminRole = await _authSeeder.EnsureTenantRolesAsync(tenant.Id, ct);
         // Phase 2: eager-seed the GL defaults (chart of accounts, tenant-default mappings, the 17
@@ -3525,7 +3622,7 @@ public class PlatformController : ControllerBase
         // FIX 1 (C1): the idempotent per-tenant provisioning bundle — country rules, MasterData,
         // HR categories, default attendance/leave/approval policies, and bilingual notification
         // templates. Ensures no tenant is born without its statutory/reference/config foundation.
-        await Zayra.Api.Infrastructure.Seed.TenantProvisioningBundle.ProvisionAsync(_db, tenant.Id, ct);
+        await Zayra.Api.Infrastructure.Seed.TenantProvisioningBundle.ProvisionAsync(_db, tenant.Id, homeCountry, ct);
         await _db.SaveChangesAsync(ct);
         var plan = string.IsNullOrWhiteSpace(req.Plan) ? "Trial" : req.Plan;
         var (defaultMaxUsers, defaultMaxEmployees) = SubscriptionTiers.GetDefaults(plan);
@@ -4408,7 +4505,10 @@ public class PlatformController : ControllerBase
             CurrencyCode: "USD",
             ExpiresAtUtc: req.ExpiresAtUtc,
             MaxCompanies: req.MaxCompanies,
-            MaxAdminUsers: req.MaxAdminUsers);
+            MaxAdminUsers: req.MaxAdminUsers,
+            // Passed through, never derived from the quote: a pricing quote records NumCountries but
+            // not WHICH country, and CreateTenant refuses a request that does not state one.
+            HomeCountryCode: req.HomeCountryCode);
 
         var createResult = await CreateTenant(createReq, ct);
 
@@ -4723,7 +4823,12 @@ public record CreateTenantRequest(
     // SingleCompany (default) | Group — product behavior, distinct from MaxCompanies.
     string? AccountType = null,
     // PlatformControlled | GroupSelfServiceWithinLimit (default) | GroupDraftPlatformApproval
-    string? CompanyCreationMode = null);
+    string? CompanyCreationMode = null,
+    // The tenant's HOME JURISDICTION as an ISO 3166-1 code (ISO-2 canonical, ISO-3 accepted and
+    // mapped). REQUIRED: it drives statutory seeding and is inherited by the tenant's first company.
+    // Optional in the C# signature only because a positional record cannot place a required parameter
+    // after optional ones — CreateTenant REFUSES a request whose value is missing or unrecognized.
+    string? HomeCountryCode = null);
 
 public record SetAccountTypeRequest(string AccountType);
 public record SetCompanyCreationModeRequest(string Mode);
@@ -4847,7 +4952,10 @@ public record ConvertLeadRequest(
     string AdminEmail,
     string AdminPassword,
     string? Plan,
-    string? BillingEmail);
+    string? BillingEmail,
+    // Required, same rule as CreateTenantRequest.HomeCountryCode. A lead records no jurisdiction, and
+    // this path provisions statutory defaults exactly as CreateTenant does.
+    string? HomeCountryCode = null);
 
 public record UpdateSecurityPolicyRequest(
     int? PasswordMinLength,
@@ -4928,4 +5036,7 @@ public record ConvertQuoteRequest(
     int? MaxCompanies,
     int? MaxAdminUsers,
     string? BillingCycle,
-    DateTime? ExpiresAtUtc);
+    DateTime? ExpiresAtUtc,
+    // Required, same rule as CreateTenantRequest.HomeCountryCode — the quote carries no country, and
+    // a tenant's home jurisdiction is never inferred from its billing currency.
+    string? HomeCountryCode = null);

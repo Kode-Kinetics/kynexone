@@ -35,11 +35,36 @@ public class SmtpEmailService : IEmailService
     private const int SmtpTimeoutMs = 20_000;
 
     /// <summary>
+
     /// The submission port whose TLS is implicit (the connection is encrypted from the first byte)
     /// rather than negotiated with STARTTLS. Several presets in <see cref="EmailProviderPresets"/>
     /// offer it, and handing MailKit StartTls on 465 fails the handshake rather than falling back.
     /// </summary>
     private const int ImplicitTlsPort = 465;
+
+/// THE PORT DECIDES HOW TLS STARTS, not the checkbox alone.
+    ///
+    /// <para>Port 465 is implicit TLS (SMTPS): the server expects a TLS handshake the instant the
+    /// socket opens. Port 587 is submission with STARTTLS: connect in plaintext, then upgrade.
+    /// They are not interchangeable — asking for STARTTLS on 465 leaves the client waiting for a
+    /// plaintext greeting that never arrives, and it fails as a bare 20-second TIMEOUT that names
+    /// no cause.</para>
+    ///
+    /// <para>This used to read <c>cfg.UseTls ? StartTls : Auto</c>, so ticking a box labelled
+    /// "Use STARTTLS (recommended)" forced STARTTLS on every port and made a perfectly valid
+    /// 465 + SSL configuration impossible to express. On 2026-09-23 an operator configured
+    /// GoDaddy's <c>smtpout.secureserver.net:465</c> with that box ticked and got exactly that
+    /// timeout. The label led them into the one combination the code could not honour.</para>
+    ///
+    /// <para>Now the port is respected: 465 connects with SSL on connect, everything else honours
+    /// the checkbox. <c>Auto</c> stays the answer when TLS is not requested, so an internal relay
+    /// on 25 still works.</para>
+    /// </summary>
+    internal static SecureSocketOptions ResolveSecureOption(bool useTls, int port) => port switch
+    {
+        ImplicitTlsPort => SecureSocketOptions.SslOnConnect,
+        _ => useTls ? SecureSocketOptions.StartTls : SecureSocketOptions.Auto,
+    };
 
     public Task SendAsync(string toAddress, string toName, string subject, string htmlBody,
         IReadOnlyList<EmailAttachment>? attachments = null, CancellationToken cancellationToken = default)
@@ -89,7 +114,7 @@ public class SmtpEmailService : IEmailService
         message.Body = builder.ToMessageBody();
 
         using var client = new SmtpClient { Timeout = SmtpTimeoutMs };
-        await client.ConnectAsync(cfg.Host, cfg.Port, SecureOptionFor(cfg.Port, cfg.UseTls), cancellationToken);
+        await client.ConnectAsync(cfg.Host, cfg.Port, ResolveSecureOption(cfg.UseTls, cfg.Port), cancellationToken);
         if (!string.IsNullOrWhiteSpace(cfg.Username))
             await client.AuthenticateAsync(cfg.Username, cfg.Password, cancellationToken);
         await client.SendAsync(message, cancellationToken);
@@ -105,10 +130,14 @@ public class SmtpEmailService : IEmailService
     /// 465 is implicit TLS; 587/25/2525 negotiate with STARTTLS. Auto is only correct when the
     /// admin explicitly turned encryption off, and even then MailKit upgrades opportunistically.
     /// </summary>
+    /// <summary>
+    /// Argument-order alias for <see cref="ResolveSecureOption"/>. Both branches of this merge
+    /// discovered the same 465/STARTTLS defect independently and wrote the same rule under two
+    /// names; keeping one implementation and one alias means there is a single place to be wrong,
+    /// and both sets of tests keep exercising it.
+    /// </summary>
     internal static SecureSocketOptions SecureOptionFor(int port, bool useTls)
-        => port == ImplicitTlsPort ? SecureSocketOptions.SslOnConnect
-         : useTls                  ? SecureSocketOptions.StartTls
-         :                           SecureSocketOptions.Auto;
+        => ResolveSecureOption(useTls, port);
 
     /// <summary>
     /// POD-D5 CROSS-TENANT FIX. This method had NO explicit TenantId predicate and relied entirely

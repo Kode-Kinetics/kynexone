@@ -137,7 +137,7 @@ public class DefaultLeavePolicyTests
         await using var db = _fx.CreateDb();
         var tenant = await NewTenantAsync(db, "ksa-basis");
 
-        await TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, CancellationToken.None);
+        await TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, "SA", CancellationToken.None);
 
         var sick = await PolicyAsync(db, tenant.Id, "SICK", "SA");
         sick.WeekendsIncluded.Should().BeTrue(
@@ -175,7 +175,7 @@ public class DefaultLeavePolicyTests
     {
         await using var db = _fx.CreateDb();
         var tenant = await NewTenantAsync(db, "ksa-submit");
-        await TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, CancellationToken.None);
+        await TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, "SA", CancellationToken.None);
         var (employee, sickTypeId) = await SeedKsaEmployeeAsync(db, tenant.Id, "SAU");
 
         var service = new LeaveService(db, new ApprovalRouter(db));
@@ -207,7 +207,7 @@ public class DefaultLeavePolicyTests
     {
         await using var db = _fx.CreateDb();
         var tenant = await NewTenantAsync(db, "notice");
-        await TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, CancellationToken.None);
+        await TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, "SA", CancellationToken.None);
         var (employee, sickTypeId) = await SeedKsaEmployeeAsync(db, tenant.Id, "SAU");
 
         var service = new LeaveService(db, new ApprovalRouter(db));
@@ -252,12 +252,12 @@ public class DefaultLeavePolicyTests
         await using var db = _fx.CreateDb();
         var tenant = await NewTenantAsync(db, "idem-leave");
 
-        var first = await TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, CancellationToken.None);
+        var first = await TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, "SA", CancellationToken.None);
         first.LeavePolicies.Should().Be(
             (TenantProvisioningBundle.DefaultLeavePolicyCountries.Length + 1) * 2,
             "one country-neutral row plus one per GCC state, for each of the two seeded leave types");
 
-        var second = await TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, CancellationToken.None);
+        var second = await TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, "SA", CancellationToken.None);
         second.LeavePolicies.Should().Be(0);
         second.LeaveTypes.Should().Be(0);
 
@@ -320,7 +320,7 @@ public class DefaultLeavePolicyTests
     {
         await using var db = _fx.CreateDb();
         var tenant = await NewTenantAsync(db, "noclobber-leave");
-        await TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, CancellationToken.None);
+        await TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, "SA", CancellationToken.None);
 
         var annualId = (await PolicyAsync(db, tenant.Id, "ANNUAL", "SA")).Id;
         var annual = await db.LeavePolicies.IgnoreQueryFilters().SingleAsync(p => p.Id == annualId);
@@ -336,7 +336,7 @@ public class DefaultLeavePolicyTests
         await db.SaveChangesAsync();
         db.ChangeTracker.Clear();
 
-        var reprovision = await TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, CancellationToken.None);
+        var reprovision = await TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, "SA", CancellationToken.None);
         var backfill = await TenantDefaultsBackfill.RunAsync(db, NullLogger.Instance, CancellationToken.None);
         reprovision.LeavePolicies.Should().Be(0);
         backfill.LeavePoliciesAdded.Should().Be(0);

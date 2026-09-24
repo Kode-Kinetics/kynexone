@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Common;
 using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
@@ -38,15 +39,26 @@ public static class TenantProvisioningBundle
         int AttendancePolicies, int LeaveTypes, int LeavePolicies, int ApprovalWorkflows, int NotificationTemplates,
         int ComplianceProfiles = 0, int PayComponents = 0, int LetterTemplates = 0);
 
-    public static async Task<ProvisionResult> ProvisionAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)
+    /// <param name="homeCountryCode">
+    /// The tenant's HOME JURISDICTION, stated by the platform administrator at tenant creation.
+    /// REQUIRED — statutory seeding runs inside this method, and a country that is blank, guessed
+    /// from a currency or inferred from a slug seeds the wrong labour law in silence. An unstated or
+    /// unrecognized value throws (<see cref="HomeJurisdiction.Require"/>) rather than defaulting, so
+    /// no tenant can be born without a country again.
+    /// </param>
+    public static async Task<ProvisionResult> ProvisionAsync(
+        ZayraDbContext db, Guid tenantId, string homeCountryCode, CancellationToken ct)
     {
+        // Validate BEFORE the tenantId short-circuit: a caller that passes no country is wrong
+        // whichever tenant it names, and the failure must be loud at the call site.
+        var home = HomeJurisdiction.Require(homeCountryCode, "tenant home country");
         if (tenantId == Guid.Empty) return default;
 
         var countryRules  = await InstallCountryPayrollRulesAsync(db, tenantId, ct);
         var (mdTypes, mdValues) = await InstallMasterDataAsync(db, tenantId, ct);
         var hrCategories  = await InstallHrRequestCategoriesAsync(db, tenantId, ct);
         var attnPolicies  = await InstallDefaultAttendancePolicyAsync(db, tenantId, ct);
-        var (leaveTypes, leavePolicies) = await InstallDefaultLeaveAsync(db, tenantId, ct);
+        var (leaveTypes, leavePolicies) = await InstallDefaultLeaveAsync(db, tenantId, ct, home);
         var apPolicies    = await InstallDefaultApprovalWorkflowsAsync(db, tenantId, ct);
         var notifs        = await InstallNotificationTemplatesAsync(db, tenantId, ct);
         var compliance    = await InstallComplianceProfilesAsync(db, tenantId, ct);
@@ -447,8 +459,16 @@ public static class TenantProvisioningBundle
     /// default policies on tenants that already existed. Sharing this installer rather than copying
     /// it keeps <see cref="LeavePolicyBases"/> and <see cref="Packs"/> the single source of both
     /// the day-count basis and the entitlement.
+    ///
+    /// <para><paramref name="homeCountryCode"/> is the tenant's stated home jurisdiction. It is
+    /// optional HERE and only here, because the backfill runs over tenants that pre-date the field and
+    /// must not invent one for them; the new-tenant path always supplies it. When supplied and outside
+    /// <see cref="DefaultLeavePolicyCountries"/>, the tenant's own country gets a default policy set
+    /// too — otherwise a customer in, say, Egypt would be provisioned six GCC policy sets and none
+    /// for the country it actually operates in.</para>
     /// </summary>
-    internal static async Task<(int types, int policies)> InstallDefaultLeaveAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)
+    internal static async Task<(int types, int policies)> InstallDefaultLeaveAsync(
+        ZayraDbContext db, Guid tenantId, CancellationToken ct, string? homeCountryCode = null)
     {
         // IgnoreQueryFilters is intentional: seeder read scoped by explicit tenantId; insert-if-absent, never touches another tenant.
         var existingTypes = await db.LeaveTypes.IgnoreQueryFilters().AsNoTracking()
@@ -472,7 +492,7 @@ public static class TenantProvisioningBundle
             typesAdded++;
         }
 
-        var policiesAdded = await InstallDefaultLeavePoliciesAsync(db, tenantId, typeByCode, ct);
+        var policiesAdded = await InstallDefaultLeavePoliciesAsync(db, tenantId, typeByCode, ct, homeCountryCode);
         return (typesAdded, policiesAdded);
     }
 
@@ -489,7 +509,8 @@ public static class TenantProvisioningBundle
     /// row, so an edited entitlement, basis, notice period or approval pin survives untouched.</para>
     /// </summary>
     private static async Task<int> InstallDefaultLeavePoliciesAsync(
-        ZayraDbContext db, Guid tenantId, IReadOnlyDictionary<string, Guid> typeByCode, CancellationToken ct)
+        ZayraDbContext db, Guid tenantId, IReadOnlyDictionary<string, Guid> typeByCode, CancellationToken ct,
+        string? homeCountryCode = null)
     {
         const string why =
             "Seeding/backfill runs with no HTTP principal, so the company read filter resolves to an "
@@ -507,7 +528,15 @@ public static class TenantProvisioningBundle
 
         // The country-neutral row first (empty CountryCode = applies to any employee), then one per
         // GCC state. Order matters only for readability in Setup, which sorts by name.
-        var countries = new[] { string.Empty }.Concat(DefaultLeavePolicyCountries).ToArray();
+        // The tenant's own home jurisdiction is appended when it is not already one of them, so the
+        // country the customer actually operates in is never the one country without a policy set.
+        var home = HomeJurisdiction.Normalize(homeCountryCode);
+        var countries = new[] { string.Empty }
+            .Concat(DefaultLeavePolicyCountries)
+            .Concat(home is not null && !DefaultLeavePolicyCountries.Contains(home, StringComparer.OrdinalIgnoreCase)
+                ? new[] { home }
+                : Array.Empty<string>())
+            .ToArray();
 
         var added = 0;
         foreach (var basis in LeavePolicyBases)
