@@ -77,7 +77,11 @@ public sealed record LlmRequest(
     string Model,
     string SystemPrompt,
     string UserPrompt,
-    int MaxOutputTokens);
+    int MaxOutputTokens,
+    // Ask the provider to constrain output to a single JSON object. Callers that parse the
+    // response (rather than showing it to a human) MUST set this: without it a reasoning model
+    // is free to wrap the object in prose or a markdown fence, which defeats brace-span parsing.
+    bool RequireJson = false);
 
 public sealed record LlmResponse(
     bool Success,

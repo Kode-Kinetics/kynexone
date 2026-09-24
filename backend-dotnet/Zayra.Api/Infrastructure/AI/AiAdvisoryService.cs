@@ -240,9 +240,13 @@ public sealed class AiAdvisoryService : IAiAdvisoryService
         // to http://localhost:11434, which on a hosted deployment is nothing — the request
         // hangs for HttpClient's 100s default instead of degrading to the rules-based path.
         if (configured == "ollama" && !string.IsNullOrWhiteSpace(_options.OllamaBaseUrl)) return "ollama";
-        if (!string.IsNullOrWhiteSpace(_options.AnthropicApiKey)) return "anthropic";
-        if (!string.IsNullOrWhiteSpace(_options.OpenAIApiKey)) return "openai";
-        if (!string.IsNullOrWhiteSpace(_options.OllamaBaseUrl)) return "ollama";
+        // NO CROSS-PROVIDER FALLBACK. If the configured provider is not usable, degrade to the
+        // deterministic path — never quietly send this tenant's data to a different vendor.
+        // This tail used to read "any key will do": AI_PROVIDER=ollama with an unset
+        // OLLAMA_BASE_URL and a stray ANTHROPIC_API_KEY in the environment routed HR data to
+        // Anthropic. No operator chose that, nothing recorded it, and the published privacy
+        // policy names Ollama specifically — so it would also have made that page false.
+        // AGENTS.md: "External AI is an exception, not the default"; no silent cloud fallback.
         return "fallback";
     }
 
