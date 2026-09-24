@@ -30,7 +30,7 @@ public class AuthServiceTests
         return new ZayraDbContext(options);
     }
 
-    private static AuthService BuildService(ZayraDbContext db)
+    private static AuthService BuildService(ZayraDbContext db, IEmailService? email = null)
     {
         var jwt = Options.Create(new JwtOptions
         {
@@ -46,7 +46,7 @@ public class AuthServiceTests
             new Pbkdf2PasswordHasher(),
             new JwtTokenService(jwt),
             new AuditService(db),
-            new FakeEmailService(),
+            email ?? new FakeEmailService(),
             jwt,
             new NullMfaService(),
             new TotpService(DataProtectionProvider.Create("ZayraTests")),
@@ -184,6 +184,37 @@ public class AuthServiceTests
         var token = Assert.Single(await db.PasswordResetTokens.AsNoTracking().ToListAsync());
         Assert.Equal(userA.Id, token.UserId);
         Assert.DoesNotContain(await db.PasswordResetTokens.AsNoTracking().ToListAsync(), x => x.UserId == userB.Id);
+    }
+
+    [Fact]
+    public async Task ForgotPassword_SendsThroughTheUsersOwnTenantRelay_NotAnAmbientOne()
+    {
+        await using var db = CreateDb();
+        var hasher = new Pbkdf2PasswordHasher();
+        var tenant = new Tenant { Id = Guid.NewGuid(), Name = "Relay Tenant", Slug = "relay-tenant" };
+        var user = new User
+        {
+            Id = Guid.NewGuid(), TenantId = tenant.Id, Tenant = tenant,
+            Email = "reset@example.test", NormalizedEmail = "RESET@EXAMPLE.TEST",
+            FullName = "Reset User", PasswordHash = hasher.Hash("Password A1!")
+        };
+        db.AddRange(tenant, user);
+        await db.SaveChangesAsync();
+
+        var email = new FakeEmailService();
+        await BuildService(db, email).ForgotPasswordAsync(
+            new ForgotPasswordRequest("reset@example.test", "relay-tenant"),
+            TestCtx,
+            CancellationToken.None);
+
+        // Forgot-password is anonymous, so there is no principal and the SystemSettings tenant
+        // filter is bypassed. The ambient overload therefore matched Category == "Email" across
+        // EVERY tenant, and its guard only trips when MORE THAN ONE tenant has SMTP configured —
+        // so in the ordinary case of exactly one, that tenant's relay, credentials and From
+        // address were used to send another tenant's reset mail.
+        Assert.False(email.UsedAmbientOverload);
+        Assert.All(email.TenantScopedCalls, id => Assert.Equal(tenant.Id, id));
+        Assert.NotEmpty(email.TenantScopedCalls);
     }
 
     [Fact]
@@ -1351,10 +1382,34 @@ file sealed class NullMfaService : IMfaService
 
 file sealed class FakeEmailService : IEmailService
 {
+    /// <summary>Tenant ids passed to the TENANT-EXPLICIT overloads, in call order.</summary>
+    public List<Guid> TenantScopedCalls { get; } = [];
+    /// <summary>True if any AMBIENT (no-tenant) overload was used — the cross-tenant hazard.</summary>
+    public bool UsedAmbientOverload { get; private set; }
+
     public Task SendAsync(string toAddress, string toName, string subject, string htmlBody,
         IReadOnlyList<EmailAttachment>? attachments = null, CancellationToken cancellationToken = default)
-        => Task.CompletedTask;
+    {
+        UsedAmbientOverload = true;
+        return Task.CompletedTask;
+    }
+
+    public Task SendAsync(Guid tenantId, string toAddress, string toName, string subject, string htmlBody,
+        IReadOnlyList<EmailAttachment>? attachments = null, CancellationToken cancellationToken = default)
+    {
+        TenantScopedCalls.Add(tenantId);
+        return Task.CompletedTask;
+    }
 
     public Task<bool> IsConfiguredAsync(CancellationToken cancellationToken = default)
-        => Task.FromResult(false);
+    {
+        UsedAmbientOverload = true;
+        return Task.FromResult(true);
+    }
+
+    public Task<bool> IsConfiguredAsync(Guid tenantId, CancellationToken cancellationToken = default)
+    {
+        TenantScopedCalls.Add(tenantId);
+        return Task.FromResult(true);
+    }
 }
