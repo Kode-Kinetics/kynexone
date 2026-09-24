@@ -496,18 +496,24 @@
   background: rgba(4, 9, 20, 0.80);
   border: 1px solid var(--lx-edge);
   border-radius: 999px;
-  transition: color .18s ease, border-color .18s ease, background .18s ease;
+  transition: color .18s ease, border-color .18s ease, background .18s ease,
+              transform .14s ease;
   white-space: nowrap;
 }
 .lx-lang-b[lang='ar'] {
   font-family: var(--lx-ar), 'Noto Sans Arabic', system-ui, sans-serif;
   font-weight: 500;
 }
-.lx-lang-b:hover {
-  color: var(--lx-ink);
-  border-color: rgba(94, 235, 255, 0.60);
-  background: rgba(8, 26, 38, 0.86);
+@media (hover: hover) and (pointer: fine) {
+  .lx-lang-b:hover {
+    color: var(--lx-ink);
+    border-color: rgba(94, 235, 255, 0.60);
+    background: rgba(8, 26, 38, 0.86);
+  }
 }
+/* This one swaps the whole brief panel's language. The press needs to land
+   before the copy changes under it, or the swap reads as a glitch. */
+.lx-lang-b:active { transform: scale(0.97); }
 
 /* ── the hairline. Lit from the left, like everything else on this page. ── */
 .lx-hair {
@@ -597,9 +603,10 @@
   color: var(--lx-label);
   background: none; border: 0; border-radius: 3px;
   cursor: pointer;
-  transition: color .18s ease, opacity .18s ease;
+  transition: color .18s ease, opacity .18s ease, transform .14s ease;
 }
 .lx-drift:hover { color: var(--lx-ink); }
+.lx-drift:active { transform: scale(0.96); }
 .lx-drift:focus-visible {
   outline: 2px solid var(--lx-cyan);
   outline-offset: 3px;
@@ -858,8 +865,15 @@
   display: inline-flex; align-items: center; gap: 6px;
   margin: 0 0 10px; padding: 0; border: 0; background: none; cursor: pointer;
   font: inherit; font-size: var(--lx-f1); color: var(--lx-cyan);
+  position: relative;
+  transition: color .14s ease, transform .14s ease;
+}
+.lx-back::after {
+  content: ''; position: absolute;
+  inset-block: -6px; inset-inline: -6px;
 }
 .lx-back:hover { color: var(--lx-cyan-soft); }
+.lx-back:active { transform: scale(0.97); }
 /* "Back" has to point against the reading direction, so the glyph — and only
    the glyph — mirrors. A logical rule, so it follows the document's dir
    rather than a hard-coded locale list. */
@@ -883,8 +897,25 @@
   font-family: var(--lx-mono), ui-monospace, SFMono-Regular, monospace;
   font-size: var(--lx-f1); letter-spacing: 0.085em; text-transform: uppercase; color: var(--lx-label);
 }
-.lx-link { border: 0; background: none; padding: 0; cursor: pointer; font: inherit; font-size: var(--lx-f1); color: var(--lx-cyan); }
+/* WCAG 2.2 SC 2.5.8. The vendor nav already keeps a 24px floor (see
+   .lx-vendor-nav a); this control did not, and at f1 with no padding it
+   measured an 18.8px target sitting beside a 48px input — the hardest thing on
+   the card to hit on a phone. The target is grown with a pseudo-element rather
+   than min-height because .lx-legend aligns on the baseline and a taller
+   control would push every input down ~8px, which the <=859px laptop
+   breakpoint cannot spend. Logical insets, so it mirrors under RTL. */
+.lx-link {
+  position: relative;
+  border: 0; background: none; padding: 0; cursor: pointer;
+  font: inherit; font-size: var(--lx-f1); color: var(--lx-cyan);
+  transition: color .14s ease, transform .14s ease;
+}
+.lx-link::after {
+  content: ''; position: absolute;
+  inset-block: -6px; inset-inline: -6px;
+}
 .lx-link:hover { color: var(--lx-cyan-soft); text-decoration: underline; }
+.lx-link:active { transform: scale(0.96); }
 
 .lx-tag {
   display: inline-flex; align-items: center; gap: 4px;
@@ -920,8 +951,15 @@
   position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
   width: 36px; height: 36px; display: grid; place-items: center;
   border: 0; border-radius: 9px; background: transparent; cursor: pointer; color: var(--lx-muted);
+  transition: color .14s ease, background .14s ease, transform .14s ease;
 }
-.lx-reveal:hover { color: var(--lx-cyan); background: rgba(94, 235, 255, 0.10); }
+/* hover is gated: on a touch device :hover sticks after the tap, and this
+   control stays on screen afterwards, so the fill would sit there lit. */
+@media (hover: hover) and (pointer: fine) {
+  .lx-reveal:hover { color: var(--lx-cyan); background: rgba(94, 235, 255, 0.10); }
+}
+/* the -50% is what CENTRES it; the press has to compose with it, not replace it */
+.lx-reveal:active { transform: translateY(-50%) scale(0.92); }
 .lx-reveal svg { width: 18px; height: 18px; stroke-width: 1.6; }
 
 .lx-hint { margin: 6px 0 0; font-size: var(--lx-f1); color: var(--lx-muted); }
@@ -950,9 +988,13 @@
 .lx-spin {
   width: 18px; height: 18px; border-radius: 50%;
   border: 2px solid rgba(3, 16, 24, 0.30); border-top-color: #031018;
-  animation: lx-spin 0.7s linear infinite;
+  flex: 0 0 auto;
+  animation: lx-spin 0.7s linear infinite, lx-spin-in .18s ease both;
 }
 @keyframes lx-spin { to { transform: rotate(360deg); } }
+/* opacity only: lx-spin owns `transform`, so anything else that touches it
+   would cancel the rotation outright. */
+@keyframes lx-spin-in { from { opacity: 0; } }
 
 .lx-fault, .lx-ok {
   display: flex; align-items: flex-start; gap: 8px;
@@ -974,8 +1016,10 @@
 .lx-secondary {
   font-size: var(--lx-f1); color: var(--lx-cyan); text-decoration: none;
   display: inline-flex; align-items: center; min-height: 24px;
+  transition: color .14s ease, transform .14s ease;
 }
 .lx-secondary:hover { color: var(--lx-cyan-soft); text-decoration: underline; }
+.lx-secondary:active { transform: scale(0.98); }
 
 /* ══════════════════════════════════════════════════════════════════════
    BAND 3 / LEVEL 4 — the quiet tertiary group. No motion of its own.
@@ -997,6 +1041,7 @@
 .lx-vendor-nav a {
   font-size: var(--lx-f1); font-weight: 500; color: var(--lx-label); text-decoration: none;
   display: inline-flex; align-items: center; min-height: 24px; padding: 2px 2px;
+  transition: color .14s ease;
 }
 .lx-vendor-nav a:hover { color: var(--lx-cyan); }
 .lx-vendor-copy { margin: 0; font-size: var(--lx-f1); color: var(--lx-trust); white-space: nowrap; }
@@ -1117,9 +1162,18 @@
    advancing, and every chart is painted in its FINAL state.
    ══════════════════════════════════════════════════════════════════════ */
 @media (prefers-reduced-motion: reduce) {
-  .lx-in, .lx-submit, .lx-reveal, .lx-back, .lx-link { transition: none; }
+  .lx-in, .lx-submit, .lx-reveal, .lx-back, .lx-link,
+  .lx-secondary, .lx-drift, .lx-vendor-nav a { transition: none; }
+  .lx-link:active, .lx-back:active, .lx-secondary:active,
+  .lx-lang-b:active, .lx-drift:active { transform: none; }
+  /* the reveal's transform is what CENTRES it — neutralise the press, keep the
+     centring, or the control jumps to the top of the input. */
+  .lx-reveal:active { transform: translateY(-50%); }
   .lx-submit:active:not(:disabled) { transform: none; }
-  .lx-spin { animation: none; border-top-color: rgba(3, 16, 24, 0.55); }
+  /* A frozen ring communicates nothing — it just looks like a broken glyph.
+     The busy LABEL is the non-motion alternative (Submit swaps "Sign in" for
+     "Signing in…"), so the ring is withdrawn entirely rather than parked. */
+  .lx-spin { display: none; }
   /* The entrance and the language cross-fade are simply absent: every
      element is already in its final position at its final opacity. */
   .lx-rise { animation: none; opacity: 1; transform: none; }
