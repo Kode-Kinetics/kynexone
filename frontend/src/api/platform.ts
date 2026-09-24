@@ -110,7 +110,8 @@ export interface TenantUser {
   isActive: boolean;
   isLocked: boolean;
   lockoutEnd: string | null;
-  mFAEnabled: boolean;
+  /** Serialised from MFAEnabled by the camelCase policy; was read as `mFAEnabled`. */
+  mfaEnabled: boolean;
   mustChangePassword: boolean;
   status: string;
   createdAtUtc: string;
@@ -415,7 +416,8 @@ export interface SmtpTestResult {
 export interface BillingSummary {
   totalMrr: number;
   totalArr: number;
-  overdueTotalAmount: number;
+  /** Matches the API field name; was `overdueTotalAmount`, which the API never returns. */
+  overdueTotal: number;
   overdueCount: number;
   totalInvoices: number;
   paidThisMonth: number;
@@ -826,8 +828,15 @@ export const platformApi = {
   deleteInvoice: (tenantId: string, invoiceId: string) =>
     platform.delete(`/api/platform/tenants/${tenantId}/invoices/${invoiceId}`).then(r => r.data),
 
+  /**
+   * `yearMonth` is the UI's "YYYY-MM"; the API binds an int in yyyyMM form. Sending the dashed
+   * string failed model binding, so every request 400'd and the AI Usage page showed "—" for
+   * every tenant in every month. Converted here so no caller has to remember.
+   */
   getTenantAiUsage: (tenantId: string, yearMonth?: string) =>
-    platform.get<TenantAiUsage>(`/api/platform/tenants/${tenantId}/ai-usage`, { params: yearMonth ? { yearMonth } : {} }).then(r => r.data),
+    platform.get<TenantAiUsage>(`/api/platform/tenants/${tenantId}/ai-usage`, {
+      params: yearMonth ? { yearMonth: Number(yearMonth.replace('-', '')) } : {},
+    }).then(r => r.data),
 
   // ── Invoice Lines ──────────────────────────────────────────────────────────
 
