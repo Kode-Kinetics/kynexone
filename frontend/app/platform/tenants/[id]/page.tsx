@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { Building2,
   ArrowLeft, RefreshCw, Edit3, Check, X, AlertTriangle,
   Zap, Users, CreditCard, FileText, Shield, ExternalLink,
-  UserCog, PlayCircle, StopCircle, Palette, Globe, Trash2,
+  PlayCircle, StopCircle, Palette, Globe, Trash2,
 } from 'lucide-react';
 import { GovernanceTab } from './GovernanceTab';
 import {
@@ -349,7 +349,7 @@ function OverviewTab({ tenant, onRefresh, onDelete }: { tenant: PlatformTenantDe
             Suspend Tenant
           </button>
         )}
-        <a href={typeof window !== 'undefined' ? `${window.location.origin}/login?tenant=${tenant.slug}` : ''}
+        <a href={`/login?workspace=${encodeURIComponent(tenant.slug)}`}
           target="_blank" rel="noopener noreferrer"
           className="flex items-center gap-1.5 text-sm text-slate-400 border border-white/10 hover:border-white/20 px-4 py-2 rounded-lg transition-colors">
           <ExternalLink className="h-3.5 w-3.5" />
@@ -470,8 +470,6 @@ function FeaturesTab({ tenant, onRefresh, featureFlags }: {
 function UsersTab({ tenantId }: { tenantId: string }) {
   const [users, setUsers] = useState<import('@/src/api/platform').TenantUser[]>([]);
   const [loading, setLoading] = useState(true);
-  const [impersonating, setImpersonating] = useState<string | null>(null);
-  const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
 
   useEffect(() => { load(); }, [tenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -481,25 +479,8 @@ function UsersTab({ tenantId }: { tenantId: string }) {
     finally { setLoading(false); }
   }
 
-  async function impersonate(userId: string, email: string) {
-    setImpersonating(userId);
-    try {
-      const { token } = await platformApi.impersonate(tenantId, userId);
-      window.open(`${window.location.origin}/login?impersonate=${token}`, '_blank');
-      setMsg({ text: `Impersonating ${email} — new tab opened.`, ok: true });
-    } catch {
-      setMsg({ text: 'Impersonation failed.', ok: false });
-    } finally { setImpersonating(null); }
-  }
-
   return (
     <div className="space-y-4">
-      {msg && (
-        <div className={`flex items-center justify-between px-4 py-2.5 rounded-lg border text-sm ${msg.ok ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-rose-500/10 border-rose-500/20 text-rose-400'}`}>
-          {msg.text}
-          <button type="button" title="Dismiss" onClick={() => setMsg(null)}><X className="h-3.5 w-3.5" /></button>
-        </div>
-      )}
       <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden">
         <div className="px-5 py-3 border-b border-white/[0.06] flex items-center justify-between">
           <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest">All Users ({users.length})</p>
@@ -527,14 +508,6 @@ function UsersTab({ tenantId }: { tenantId: string }) {
               <span className={`text-[10px] px-1.5 py-0.5 rounded border ${u.isActive ? 'text-emerald-400 border-emerald-500/20 bg-emerald-500/5' : 'text-slate-500 border-white/10'}`}>
                 {u.isActive ? 'Active' : 'Inactive'}
               </span>
-              <button type="button"
-                onClick={() => impersonate(u.id, u.email)}
-                disabled={impersonating === u.id || !u.isActive}
-                title="Impersonate"
-                className="flex items-center gap-1 text-[11px] text-blue-400 border border-blue-500/20 hover:border-blue-500/40 px-2 py-1 rounded transition-colors disabled:opacity-30">
-                <UserCog className="h-3 w-3" />
-                {impersonating === u.id ? '…' : 'Login as'}
-              </button>
             </div>
           ))
         )}

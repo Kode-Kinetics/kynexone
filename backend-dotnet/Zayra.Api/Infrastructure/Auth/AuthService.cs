@@ -1,3 +1,8 @@
+using Zayra.Api.Infrastructure.Data;
+using System.Buffers;
+using System.Data;
+using System.Globalization;
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Options;
@@ -6,6 +11,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Email;
+using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Auth;
@@ -19,9 +25,11 @@ public class AuthService : IAuthService
     private readonly IEmailService _emailService;
     private readonly JwtOptions _jwtOptions;
     private readonly IMfaService _mfaService;
+    private readonly TotpService _totp;
     private readonly ILogger<AuthService> _log;
+    private readonly string _appUrl;
 
-    public AuthService(ZayraDbContext db, IPasswordHasher passwordHasher, ITokenService tokenService, IAuditService auditService, IEmailService emailService, IOptions<JwtOptions> jwtOptions, IMfaService mfaService, ILogger<AuthService> log)
+    public AuthService(ZayraDbContext db, IPasswordHasher passwordHasher, ITokenService tokenService, IAuditService auditService, IEmailService emailService, IOptions<JwtOptions> jwtOptions, IMfaService mfaService, TotpService totp, ILogger<AuthService> log, IConfiguration? configuration = null)
     {
         _db = db;
         _passwordHasher = passwordHasher;
@@ -30,22 +38,24 @@ public class AuthService : IAuthService
         _emailService = emailService;
         _jwtOptions = jwtOptions.Value;
         _mfaService = mfaService;
+        _totp = totp;
         _log = log;
+        _appUrl = AuthLinkBuilder.ResolvePublicAppUrl(
+            configuration?["APP_URL"] ?? Environment.GetEnvironmentVariable("APP_URL"));
     }
 
     public async Task<AuthLoginResult> LoginAsync(LoginRequest request, RequestContext context, CancellationToken cancellationToken)
     {
-        var user = await LoadUserGraph(request.Email, request.TenantSlug, cancellationToken);
+        var tenantSlug = RequireWorkspace(request.TenantSlug);
+        var user = await LoadUserGraph(request.Email, tenantSlug, cancellationToken);
 
-        // Phase 1 — structural checks that do NOT count toward lockout (user genuinely not usable)
-        string? failReason = null;
-        if (user is null)                    failReason = "user_not_found";
-        else if (user.Tenant is null)        failReason = "tenant_not_loaded";
-        else if (!user.IsActive)             failReason = "user_inactive";
-	        else if (!user.Tenant.IsActive)      failReason = "tenant_inactive";
-	        else if (IsNoLogin(user))            failReason = "access_mode_no_login";
-	        else if (RequiresPasswordSetup(user)) failReason = "requires_password_setup";
-	        else if (await IsSsoOnlyUserAsync(user, cancellationToken)) failReason = "sso_required";
+        // Phase 1 — one fail-closed eligibility definition is shared with MFA, refresh and
+        // request middleware. These structural failures do not count toward password lockout.
+        var ssoOnly = user is not null && await IsSsoOnlyUserAsync(user, cancellationToken);
+        var entryEligibility = AuthCurrentEligibility.ForPasswordEntry(user, ssoOnly, DateTime.UtcNow);
+        var failReason = entryEligibility.Allowed || entryEligibility.Reason == "account_locked"
+            ? null
+            : entryEligibility.Reason;
 
         if (failReason is not null)
         {
@@ -73,7 +83,8 @@ public class AuthService : IAuthService
         int lockoutMinutes = sec?.LockoutDurationMinutes  ?? 15;
 
         // Phase 3 — check existing lockout before attempting password verification
-        if (user!.LockoutEnd.HasValue && user.LockoutEnd > DateTime.UtcNow)
+        if ((user!.IsLocked && (!user.LockoutEnd.HasValue || user.LockoutEnd > DateTime.UtcNow))
+            || (user.LockoutEnd.HasValue && user.LockoutEnd > DateTime.UtcNow))
         {
             _log.LogWarning("Login blocked — lockout active until {LockoutEnd} for {Email}", user.LockoutEnd, request.Email);
             _db.LoginActivities.Add(new LoginActivity
@@ -151,210 +162,283 @@ public class AuthService : IAuthService
             return new AuthLoginResult(null, null, RequiresMfaEnrollment: true, EnrollmentChallenge: new MfaChallengeDto(enrollmentToken, 300));
         }
 
-        // Phase 5 — successful login: clear all lockout state and issue tokens
-        user.FailedLoginCount = 0;
-        user.IsLocked         = false;
-        user.LockoutEnd       = null;
-        user.LastLoginAtUtc   = DateTime.UtcNow;
-        var refreshToken = await AddRefreshTokenAsync(user, context, sec, cancellationToken);
-        _db.LoginActivities.Add(new LoginActivity
-        {
-            TenantId      = user.TenantId,
-            UserId        = user.Id,
-            EmailAttempted = user.Email,
-            EventType     = LoginEventTypes.LoginSuccess,
-            IpAddress     = context.IpAddress,
-            UserAgent     = context.UserAgent,
-        });
-        await _db.SaveChangesAsync(cancellationToken);
-        await _auditService.WriteAsync("auth.login", "User", user.Id.ToString(),
-            context with { UserId = user.Id, TenantId = user.TenantId }, null, cancellationToken);
-        return new AuthLoginResult(BuildAuthResponse(user, refreshToken), null);
+        // Phase 5 — successful password-only issuance is re-authorized under the same tenant/user
+        // serialization anchors used by MFA completion and refresh. The refresh row, activity and
+        // central audit commit together; the pre-lock read above is never issuance authority.
+        return new AuthLoginResult(
+            await CompletePasswordOnlyLoginAsync(
+                user.Id,
+                tenantSlug,
+                request.Password,
+                context,
+                cancellationToken),
+            null);
     }
 
-    public async Task<AuthResponse> RefreshAsync(RefreshTokenRequest request, RequestContext context, CancellationToken cancellationToken)
+    public async Task<AuthResponse> RefreshAsync(
+        RefreshTokenRequest request,
+        RequestContext context,
+        CancellationToken cancellationToken)
     {
         var tokenHash = _tokenService.HashToken(request.RefreshToken);
-        var storedToken = await RefreshTokensWithUserGraph()
-            .FirstOrDefaultAsync(x => x.TokenHash == tokenHash, cancellationToken);
-
-        // A revoked token with a replacement is not merely stale: it is a consumed credential
-        // being presented again. Treat it as theft/replay and terminate the entire lineage. This
-        // check deliberately precedes account/policy validation so a disabled account cannot leave
-        // a previously compromised descendant alive.
-        if (storedToken?.User is not null
-            && storedToken.User.Tenant is not null
-            && storedToken.RevokedAtUtc is not null
-            && !string.IsNullOrWhiteSpace(storedToken.ReplacedByTokenHash))
+        // TokenHash is unique, so the split graph load is deterministic; it runs in a snapshot.
+        var route = await AuthGraphSnapshot.ReadAsync(_db, async ct =>
         {
-            await RevokeRefreshTokenFamilyForReuseAsync(storedToken, context, cancellationToken);
-            throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
-        }
+            // Routing does not gate on graph integrity: a replayed (consumed) token must still
+            // reach the locked replay branch below and kill its lineage even when the user's graph
+            // is corrupt. Integrity is enforced under locks before any issuance.
+            return await RefreshTokensWithUserGraph()
+                .AsNoTracking()
+                .FirstOrDefaultAsync(x => x.TokenHash == tokenHash, ct);
+        }, cancellationToken);
 
-        if (storedToken?.User is null || storedToken.User.Tenant is null || !storedToken.IsActive || !storedToken.User.IsActive || !storedToken.User.Tenant.IsActive || IsNoLogin(storedToken.User))
-        {
+        // Routing only. All issuance authority is re-established under locks below.
+        if (route?.User?.Tenant is null)
             throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
-        }
 
-        var policy = await LoadSecuritySettingAsync(storedToken.User.TenantId, cancellationToken);
-        if (policy?.MfaRequired == true && !storedToken.User.MFAEnabled)
-        {
-            storedToken.RevokedAtUtc = DateTime.UtcNow;
-            storedToken.RevokedByIp = context.IpAddress;
-            await _db.SaveChangesAsync(cancellationToken);
-            throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
-        }
-
-        var sessionTimeoutMinutes = Math.Clamp(policy?.SessionTimeoutMinutes ?? 480, 15, 1440);
-        if (storedToken.CreatedAtUtc.AddMinutes(sessionTimeoutMinutes) <= DateTime.UtcNow)
-        {
-            storedToken.RevokedAtUtc = DateTime.UtcNow;
-            storedToken.RevokedByIp = context.IpAddress;
-            await _db.SaveChangesAsync(cancellationToken);
-            throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
-        }
-
-        var rotatedAtUtc = DateTime.UtcNow;
-        var newRefreshToken = _tokenService.CreateSecureToken();
-        var replacementHash = _tokenService.HashToken(newRefreshToken);
-        var storedTokenId = storedToken.Id;
+        var presentedTokenId = route.Id;
+        var presentedUserId = route.UserId;
+        var presentedTenantId = route.User.TenantId;
+        var presentedFamilyId = route.FamilyId;
+        var decidedAtUtc = DateTime.UtcNow;
+        var replacementRaw = _tokenService.CreateSecureToken();
+        var replacementHash = _tokenService.HashToken(replacementRaw);
+        var replacementId = Guid.NewGuid();
+        var reuseAuditId = Guid.NewGuid();
         var reuseDetected = false;
-        AuthResponse? response = null;
+        var deniedAndRevoked = false;
+        var rotationCompleted = false;
+        AuthResponse? preparedResponse = null;
 
-        // The rotation itself, unchanged. It runs either directly (non-relational providers have
-        // no transactions) or inside the execution-strategy delegate below, and must therefore be
-        // safe to run more than once against freshly loaded state.
-        async Task RotateAsync(RefreshToken token, IDbContextTransaction? transaction)
+        async Task<bool> ApplyOnceAsync(CancellationToken ct)
         {
-            if (_db.Database.IsRelational())
-            {
-                var rotated = await _db.RefreshTokens
-                    .Where(x => x.Id == token.Id
-                        && x.RevokedAtUtc == null
-                        && x.ExpiresAtUtc > rotatedAtUtc)
-                    .ExecuteUpdateAsync(setters => setters
-                        .SetProperty(x => x.RevokedAtUtc, rotatedAtUtc)
-                        .SetProperty(x => x.RevokedByIp, context.IpAddress)
-                        .SetProperty(x => x.ReplacedByTokenHash, replacementHash), cancellationToken);
-                if (rotated != 1)
-                {
-                    // A second context can load the token while it is still active, then lose the
-                    // conditional update after the winner commits. Re-read persisted state inside
-                    // this transaction; if the winner installed a replacement, this attempt is a
-                    // replay and must revoke the family atomically with its security audit.
-                    reuseDetected = await _db.RefreshTokens.AsNoTracking().AnyAsync(x =>
-                        x.Id == token.Id
-                        && x.RevokedAtUtc != null
-                        && x.ReplacedByTokenHash != null
-                        && x.ReplacedByTokenHash != string.Empty, cancellationToken);
-                    if (!reuseDetected)
-                        throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
+            // Retrying execution strategies must never reuse state from a rolled-back attempt.
+            _db.ChangeTracker.Clear();
+            reuseDetected = false;
+            deniedAndRevoked = false;
+            rotationCompleted = false;
+            preparedResponse = null;
 
-                    await RevokeRefreshTokenFamilyAndAuditAsync(token, context, cancellationToken);
-                    if (transaction is not null) await transaction.CommitAsync(cancellationToken);
+            var tenant = await _db.Tenants
+                .TagWith(RowLockingInterceptor.ForShareTag)
+                .SingleOrDefaultAsync(x => x.Id == presentedTenantId, ct);
+            var userAnchor = await _db.Users
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == presentedUserId && x.TenantId == presentedTenantId, ct);
+            await _db.RefreshTokens
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.Id == presentedTokenId)
+                .Select(x => x.Id)
+                .SingleOrDefaultAsync(ct);
+            var token = await RefreshTokensWithUserGraph()
+                .SingleOrDefaultAsync(x => x.Id == presentedTokenId, ct);
+
+            if (tenant?.IsActive != true
+                || userAnchor is null
+                || token?.User?.Tenant is null
+                || token.UserId != presentedUserId
+                || token.User.TenantId != presentedTenantId
+                || !string.Equals(token.TokenHash, tokenHash, StringComparison.Ordinal))
+                throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
+
+            // A consumed credential is a replay even after the account becomes ineligible, or its
+            // tenant graph becomes corrupt. Kill its live lineage and persist one stable audit
+            // marker in the same transaction; nothing is issued on this branch.
+            if (token.RevokedAtUtc is not null
+                && !string.IsNullOrWhiteSpace(token.ReplacedByTokenHash))
+            {
+                int revokedCount;
+                if (_db.Database.IsRelational())
+                {
+                    revokedCount = await _db.RefreshTokens
+                        .Where(x => x.FamilyId == token.FamilyId
+                            && x.UserId == token.UserId
+                            && x.RevokedAtUtc == null)
+                        .ExecuteUpdateAsync(setters => setters
+                            .SetProperty(x => x.RevokedAtUtc, decidedAtUtc)
+                            .SetProperty(x => x.RevokedByIp, context.IpAddress), ct);
                 }
-            }
-
-            if (!reuseDetected)
-            {
-                token.RevokedAtUtc = rotatedAtUtc;
-                token.RevokedByIp = context.IpAddress;
-                token.ReplacedByTokenHash = replacementHash;
-
-                if (policy?.AllowMultipleSessions == false)
+                else
                 {
-                    var otherActiveTokens = await _db.RefreshTokens
-                        .Where(x => x.UserId == token.UserId && x.Id != token.Id && x.RevokedAtUtc == null)
-                        .ToListAsync(cancellationToken);
-                    foreach (var other in otherActiveTokens)
+                    var activeFamily = await _db.RefreshTokens
+                        .Where(x => x.FamilyId == token.FamilyId
+                            && x.UserId == token.UserId
+                            && x.RevokedAtUtc == null)
+                        .ToListAsync(ct);
+                    foreach (var active in activeFamily)
                     {
-                        other.RevokedAtUtc = rotatedAtUtc;
-                        other.RevokedByIp = context.IpAddress;
+                        active.RevokedAtUtc = decidedAtUtc;
+                        active.RevokedByIp = context.IpAddress;
                     }
+                    revokedCount = activeFamily.Count;
                 }
 
-                _db.RefreshTokens.Add(new RefreshToken
-                {
-                    FamilyId = token.FamilyId,
-                    UserId = token.UserId,
-                    TokenHash = replacementHash,
-                    // Every descendant inherits the family's original absolute expiry.
-                    // Rotation changes the bearer secret, never the maximum session lifetime.
-                    ExpiresAtUtc = token.ExpiresAtUtc,
-                    CreatedByIp = context.IpAddress
-                });
-                await _db.SaveChangesAsync(cancellationToken);
-                await _auditService.WriteAsync("auth.refresh", "RefreshToken", token.Id.ToString(), context with { UserId = token.UserId, TenantId = token.User!.TenantId }, null, cancellationToken);
-                response = BuildAuthResponse(token.User!, newRefreshToken);
-                if (transaction is not null) await transaction.CommitAsync(cancellationToken);
+                _db.AuditLogs.Add(AuthAuditEntry.Create(
+                    reuseAuditId,
+                    decidedAtUtc,
+                    "auth.refresh_reuse_detected",
+                    "RefreshToken",
+                    token.Id.ToString(),
+                    context with { UserId = token.UserId, TenantId = token.User.TenantId },
+                    $"{{\"familyId\":\"{token.FamilyId:D}\",\"revokedCount\":{revokedCount}}}"));
+                await _db.SaveChangesAsync(ct);
+                reuseDetected = true;
+                return true;
             }
+
+            if (!await AuthTenantGraphIntegrity.IsValidAsync(token.User, _db, ct))
+                throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
+
+            if (token.RevokedAtUtc is not null || token.ExpiresAtUtc <= decidedAtUtc)
+                throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
+
+            var policy = await LoadSecuritySettingAsync(presentedTenantId, ct);
+            var identity = await _db.TenantIdentityProviderSettings.AsNoTracking()
+                .FirstOrDefaultAsync(x => x.TenantId == presentedTenantId, ct);
+            var eligibility = AuthCurrentEligibility.ForSession(
+                token.User,
+                AuthCurrentEligibility.IsSsoOnly(token.User, identity),
+                policy,
+                decidedAtUtc);
+            var sessionTimeoutMinutes = Math.Clamp(policy?.SessionTimeoutMinutes ?? 480, 15, 1440);
+            if (!eligibility.Allowed
+                || token.CreatedAtUtc.AddMinutes(sessionTimeoutMinutes) <= decidedAtUtc)
+            {
+                token.RevokedAtUtc = decidedAtUtc;
+                token.RevokedByIp = context.IpAddress;
+                await _db.SaveChangesAsync(ct);
+                deniedAndRevoked = true;
+                return true;
+            }
+
+            token.RevokedAtUtc = decidedAtUtc;
+            token.RevokedByIp = context.IpAddress;
+            token.ReplacedByTokenHash = replacementHash;
+
+            if (policy?.AllowMultipleSessions == false)
+            {
+                var otherActiveTokens = await _db.RefreshTokens
+                    .TagWith(RowLockingInterceptor.ForUpdateTag)
+                    .Where(x => x.UserId == token.UserId
+                        && x.Id != token.Id
+                        && x.RevokedAtUtc == null)
+                    .OrderBy(x => x.Id)
+                    .ToListAsync(ct);
+                foreach (var other in otherActiveTokens)
+                {
+                    other.RevokedAtUtc = decidedAtUtc;
+                    other.RevokedByIp = context.IpAddress;
+                }
+            }
+
+            _db.RefreshTokens.Add(new RefreshToken
+            {
+                Id = replacementId,
+                FamilyId = token.FamilyId,
+                UserId = token.UserId,
+                TokenHash = replacementHash,
+                ExpiresAtUtc = token.ExpiresAtUtc,
+                CreatedAtUtc = decidedAtUtc,
+                CreatedByIp = context.IpAddress
+            });
+
+            // Preserve the injected audit failure seam. Its SaveChanges participates in the
+            // surrounding transaction, so audit failure rolls back consume + insert together.
+            await _auditService.WriteAsync(
+                "auth.refresh",
+                "RefreshToken",
+                token.Id.ToString(),
+                context with { UserId = token.UserId, TenantId = token.User.TenantId },
+                $"{{\"refreshId\":\"{replacementId:D}\"}}",
+                ct);
+            preparedResponse = BuildAuthResponse(token.User, replacementRaw);
+            rotationCompleted = true;
+            return true;
         }
 
-        if (!_db.Database.IsRelational())
+        if (_db.Database.IsRelational())
         {
-            // In-memory providers have neither transactions nor an execution strategy to satisfy.
-            await RotateAsync(storedToken, null);
+            var strategy = _db.Database.CreateExecutionStrategy();
+            await strategy.ExecuteInTransactionAsync(
+                ApplyOnceAsync,
+                async ct =>
+                    await _db.RefreshTokens.AsNoTracking().AnyAsync(x =>
+                            x.Id == replacementId
+                            && x.UserId == presentedUserId
+                            && x.TokenHash == replacementHash
+                            && x.FamilyId == presentedFamilyId, ct)
+                    // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
+                    || await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking().AnyAsync(x =>
+                            x.Id == reuseAuditId
+                            && x.Action == "auth.refresh_reuse_detected"
+                            && x.EntityId == presentedTokenId.ToString(), ct)
+                    || await _db.RefreshTokens.AsNoTracking().AnyAsync(x =>
+                            x.Id == presentedTokenId
+                            && x.RevokedAtUtc != null
+                            && x.ReplacedByTokenHash == null, ct),
+                IsolationLevel.ReadCommitted,
+                cancellationToken);
         }
         else
         {
-            // Program.cs registers Npgsql with EnableRetryOnFailure, and
-            // NpgsqlRetryingExecutionStrategy refuses a user-initiated BeginTransaction unless the
-            // whole unit is a retriable one. A bare BeginTransaction here made every
-            // POST /api/auth/refresh fail with HTTP 400, logging out every web and mobile session
-            // the moment its access token expired.
-            var strategy = _db.Database.CreateExecutionStrategy();
-            var attempt = 0;
-            await strategy.ExecuteAsync(async () =>
-            {
-                // ExecuteAsync may run this delegate more than once. A retry must not inherit the
-                // change tracker a failed attempt left behind: the replacement RefreshToken it
-                // added is still pending (it would be inserted twice), and entities a SaveChanges
-                // marked Unchanged before its COMMIT was lost would never be written again. The
-                // first attempt uses the graph already loaded above, so the success path is
-                // unchanged; any retry restarts from persisted state.
-                var token = storedToken;
-                if (attempt++ > 0)
-                {
-                    _db.ChangeTracker.Clear();
-                    token = await RefreshTokensWithUserGraph()
-                        .FirstOrDefaultAsync(x => x.Id == storedTokenId, cancellationToken);
-                    if (token?.User is null || token.User.Tenant is null)
-                        throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
-                }
-                reuseDetected = false;
-                response = null;
-
-                var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
-                try
-                {
-                    await RotateAsync(token, transaction);
-                }
-                catch
-                {
-                    // Never let a failing rollback mask the original error: the strategy has to see
-                    // the real exception to decide whether it is transient. Dispose still releases.
-                    try { await transaction.RollbackAsync(cancellationToken); } catch { /* connection already gone */ }
-                    throw;
-                }
-                finally
-                {
-                    await transaction.DisposeAsync();
-                }
-            });
+            await ApplyOnceAsync(cancellationToken);
         }
 
-        if (reuseDetected)
+        if (reuseDetected || deniedAndRevoked)
             throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
-        return response!;
+        if (rotationCompleted && preparedResponse is not null)
+            return preparedResponse;
+
+        // A lost COMMIT acknowledgement is recovered only from this call's exact durable edge.
+        _db.ChangeTracker.Clear();
+        // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
+        if (await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking().AnyAsync(x =>
+                x.Id == reuseAuditId
+                && x.Action == "auth.refresh_reuse_detected"
+                && x.EntityId == presentedTokenId.ToString(), cancellationToken))
+            throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
+
+        var committedReplacement = await _db.RefreshTokens.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == replacementId
+                && x.UserId == presentedUserId
+                && x.TokenHash == replacementHash
+                && x.FamilyId == presentedFamilyId, cancellationToken);
+        var committedParent = await _db.RefreshTokens.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == presentedTokenId, cancellationToken);
+        if (committedReplacement is null
+            || committedReplacement.RevokedAtUtc is not null
+            || committedReplacement.ExpiresAtUtc <= DateTime.UtcNow
+            || committedParent?.RevokedAtUtc is null
+            || !string.Equals(committedParent.ReplacedByTokenHash, replacementHash, StringComparison.Ordinal))
+            throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
+
+        var committedUser = await LoadUserGraph(presentedUserId, cancellationToken);
+        if (committedUser?.Tenant is null)
+            throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
+        var committedPolicy = await LoadSecuritySettingAsync(presentedTenantId, cancellationToken);
+        var committedIdentity = await _db.TenantIdentityProviderSettings.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == presentedTenantId, cancellationToken);
+        if (!AuthCurrentEligibility.ForSession(
+                committedUser,
+                AuthCurrentEligibility.IsSsoOnly(committedUser, committedIdentity),
+                committedPolicy,
+                DateTime.UtcNow).Allowed)
+            throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
+        return BuildAuthResponse(committedUser, replacementRaw);
     }
 
     /// <summary>The exact refresh-token + user graph token issuance needs. Shared by the initial
     /// lookup and by the execution-strategy retry reload so the two can never drift (a narrower
     /// reload would silently issue an access token with fewer permissions).</summary>
+    /// Split (see AuthGraphSnapshot): both callers filter on a unique key (TokenHash / Id) and run
+    /// inside an explicit transaction — the routing snapshot or the anchored rotation transaction.
     private IQueryable<RefreshToken> RefreshTokensWithUserGraph() =>
         _db.RefreshTokens
+            .AsSplitQuery()
             .Include(x => x.User).ThenInclude(x => x!.Tenant)
             .Include(x => x.User).ThenInclude(x => x!.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
+            .Include(x => x.User).ThenInclude(x => x!.EmployeeUserAccounts)
+            .Include(x => x.User).ThenInclude(x => x!.PermissionOverrides)
             .Include(x => x.User).ThenInclude(x => x!.EntityAccesses);
 
     public async Task LogoutAsync(LogoutRequest request, RequestContext context, CancellationToken cancellationToken)
@@ -372,11 +456,13 @@ public class AuthService : IAuthService
 
     public async Task<ForgotPasswordResponse> ForgotPasswordAsync(ForgotPasswordRequest request, RequestContext context, CancellationToken cancellationToken)
     {
+        var tenantSlug = RequireWorkspace(request.TenantSlug);
+
         // Always respond with the same message to prevent user enumeration
         const string safeMessage = "If an account with that email exists, a password reset link has been sent.";
 
-        var user = await LoadUserGraph(request.Email, request.TenantSlug, cancellationToken);
-        if (user is null || !user.IsActive)
+        var user = await LoadUserGraph(request.Email, tenantSlug, cancellationToken);
+        if (user?.Tenant is null || !user.IsActive || !user.Tenant.IsActive)
             return new ForgotPasswordResponse(safeMessage, null, null);
 
         var resetToken = _tokenService.CreateSecureToken();
@@ -401,11 +487,7 @@ public class AuthService : IAuthService
         await _auditService.WriteAsync("auth.password_reset_requested", "User", user.Id.ToString(), context with { UserId = user.Id, TenantId = user.TenantId }, null, cancellationToken);
 
         // Build reset URL — falls back to a relative path fragment if APP_URL is not set.
-        var appUrl = Environment.GetEnvironmentVariable("APP_URL")?.TrimEnd('/') ?? string.Empty;
-        var encodedToken = Uri.EscapeDataString(resetToken);
-        var encodedEmail = Uri.EscapeDataString(user.Email);
-        var tenantPart = string.IsNullOrWhiteSpace(request.TenantSlug) ? string.Empty : $"&tenant={Uri.EscapeDataString(request.TenantSlug)}";
-        var resetUrl = $"{appUrl}/reset-password?token={encodedToken}&email={encodedEmail}{tenantPart}";
+        var resetUrl = AuthLinkBuilder.ResetPassword(_appUrl, user.Tenant.Slug, resetToken);
 
         var html = $"""
             <p>Hi {System.Web.HttpUtility.HtmlEncode(user.FullName)},</p>
@@ -413,7 +495,7 @@ public class AuthService : IAuthService
             <p><a href="{resetUrl}" style="background:#2563EB;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;display:inline-block">Reset Password</a></p>
             <p>If you did not request this, you can safely ignore this email.</p>
             <hr/>
-            <p style="font-size:12px;color:#666">KynexOne Workforce · {(string.IsNullOrWhiteSpace(appUrl) ? "your workspace" : appUrl)}</p>
+            <p style="font-size:12px;color:#666">KynexOne Workforce · {_appUrl}</p>
             """;
 
         if (await _emailService.IsConfiguredAsync(cancellationToken))
@@ -431,141 +513,393 @@ public class AuthService : IAuthService
 
     public async Task ResetPasswordAsync(ResetPasswordRequest request, RequestContext context, CancellationToken cancellationToken)
     {
-        var user = await LoadUserGraph(request.Email, request.TenantSlug, cancellationToken) ?? throw new UnauthorizedAccessException("Reset token is invalid or expired.");
+        var tenantSlug = RequireWorkspace(request.TenantSlug);
         var tokenHash = _tokenService.HashToken(request.ResetToken);
-        var resetToken = await _db.PasswordResetTokens.FirstOrDefaultAsync(x => x.UserId == user.Id && x.TokenHash == tokenHash, cancellationToken);
-        if (resetToken is null || !resetToken.IsActive) throw new UnauthorizedAccessException("Reset token is invalid or expired.");
+        // Routing only. Every authority decision is re-established under row locks below.
+        var tokenReferences = await _db.PasswordResetTokens
+            .AsNoTracking()
+            .Where(x => x.TokenHash == tokenHash
+                && x.User != null
+                && !x.User.IsDeleted
+                && x.User.IsActive
+                && x.User.Tenant != null
+                && x.User.Tenant.IsActive)
+            .Select(x => new { x.Id, x.UserId, x.User!.TenantId, TenantSlug = x.User!.Tenant!.Slug })
+            .Where(x => x.TenantSlug == tenantSlug)
+            .Take(2)
+            .ToListAsync(cancellationToken);
+        if (tokenReferences.Count != 1)
+            throw new UnauthorizedAccessException("Reset token is invalid or expired.");
+        var reference = tokenReferences[0];
+        var auditId = Guid.NewGuid();
+        var auditContext = context with { UserId = reference.UserId, TenantId = reference.TenantId };
+        // PBKDF2 uses a random salt: hash once so an execution-strategy replay writes one credential.
+        var passwordHash = _passwordHasher.Hash(request.NewPassword);
 
-        user.PasswordHash = _passwordHasher.Hash(request.NewPassword);
-        user.UpdatedAtUtc = DateTime.UtcNow;
-        resetToken.UsedAtUtc = DateTime.UtcNow;
-        await _db.RefreshTokens.Where(x => x.UserId == user.Id && x.RevokedAtUtc == null).ExecuteUpdateAsync(x => x.SetProperty(t => t.RevokedAtUtc, DateTime.UtcNow), cancellationToken);
-        _db.LoginActivities.Add(new LoginActivity
+        async Task ResetOnceAsync(CancellationToken ct)
         {
-            TenantId      = user.TenantId,
-            UserId        = user.Id,
-            EmailAttempted = user.Email,
-            EventType     = LoginEventTypes.PasswordResetCompleted,
-            IpAddress     = context.IpAddress,
-            UserAgent     = context.UserAgent,
-        });
-        await _db.SaveChangesAsync(cancellationToken);
-        await _auditService.WriteAsync("auth.password_reset", "User", user.Id.ToString(), context with { UserId = user.Id, TenantId = user.TenantId }, null, cancellationToken);
+            _db.ChangeTracker.Clear();
+            var resetAtUtc = DateTime.UtcNow;
+
+            var tenant = await _db.Tenants
+                .TagWith(RowLockingInterceptor.ForShareTag)
+                .SingleOrDefaultAsync(x => x.Id == reference.TenantId && x.Slug == tenantSlug, ct);
+            var userAnchor = await _db.Users
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == reference.UserId && x.TenantId == reference.TenantId, ct);
+            if (tenant?.IsActive != true || userAnchor is null || userAnchor.IsDeleted || !userAnchor.IsActive)
+                throw new UnauthorizedAccessException("Reset token is invalid or expired.");
+
+            // Every live reset credential for this user is locked before the presented one is judged,
+            // so two concurrent resets serialize here and the loser re-reads the consumed state.
+            var liveResetTokens = await _db.PasswordResetTokens
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.UserId == userAnchor.Id && x.UsedAtUtc == null)
+                .OrderBy(x => x.Id)
+                .ToListAsync(ct);
+            var presented = liveResetTokens.SingleOrDefault(x => x.Id == reference.Id);
+            if (presented is null
+                || !string.Equals(presented.TokenHash, tokenHash, StringComparison.Ordinal)
+                || presented.UsedAtUtc is not null
+                || presented.ExpiresAtUtc <= resetAtUtc)
+                throw new UnauthorizedAccessException("Reset token is invalid or expired.");
+
+            var user = await LoadUserGraph(userAnchor.Id, ct);
+            if (user?.Tenant is null
+                || user.TenantId != reference.TenantId
+                || !string.Equals(user.Tenant.Slug, tenantSlug, StringComparison.Ordinal))
+                throw new UnauthorizedAccessException("Reset token is invalid or expired.");
+
+            var passwordPolicy = await _db.SecuritySettings
+                .TagWith(RowLockingInterceptor.ForShareTag)
+                .AsNoTracking()
+                .SingleOrDefaultAsync(x => x.TenantId == reference.TenantId, ct);
+            ValidatePasswordAgainstPolicy(request.NewPassword, passwordPolicy);
+
+            // Conditional consume: exactly one caller can move this row from unused to used.
+            if (_db.Database.IsRelational())
+            {
+                var consumed = await _db.PasswordResetTokens
+                    .Where(x => x.Id == presented.Id
+                        && x.TokenHash == tokenHash
+                        && x.UsedAtUtc == null
+                        && x.ExpiresAtUtc > resetAtUtc)
+                    .ExecuteUpdateAsync(s => s.SetProperty(x => x.UsedAtUtc, resetAtUtc), ct);
+                if (consumed != 1)
+                    throw new UnauthorizedAccessException("Reset token is invalid or expired.");
+            }
+            else
+            {
+                presented.UsedAtUtc = resetAtUtc;
+            }
+
+            await InvalidateUserCredentialsAsync(user.Id, resetAtUtc, context.IpAddress, ct);
+
+            user.PasswordHash = passwordHash;
+            user.MustChangePassword = false;
+            user.LastPasswordChangedAt = resetAtUtc;
+            TenantSessionSecurity.RotateStamp(user, resetAtUtc);
+
+            _db.LoginActivities.Add(new LoginActivity
+            {
+                TenantId       = user.TenantId,
+                UserId         = user.Id,
+                EmailAttempted = user.Email,
+                EventType      = LoginEventTypes.PasswordResetCompleted,
+                IpAddress      = context.IpAddress,
+                UserAgent      = context.UserAgent,
+            });
+            _db.AuditLogs.Add(AuthAuditEntry.Create(
+                auditId,
+                resetAtUtc,
+                "auth.password_reset",
+                "User",
+                user.Id.ToString(),
+                auditContext,
+                "{\"sessionsRevoked\":true}"));
+            await _db.SaveChangesAsync(ct);
+        }
+
+        await RunCredentialTransactionAsync(ResetOnceAsync, reference.TenantId, auditId, cancellationToken);
     }
 
-    public async Task<AuthResponse> AcceptInvitationAsync(AcceptInvitationRequest request, RequestContext context, CancellationToken cancellationToken)
+    /// <summary>
+    /// Kills every outstanding credential that was minted under the previous password: unused
+    /// reset links, pending MFA login challenges and every live refresh token (all families).
+    /// Callers must already hold the user row FOR UPDATE; rows are locked in id order.
+    /// </summary>
+    private async Task InvalidateUserCredentialsAsync(Guid userId, DateTime atUtc, string? ipAddress, CancellationToken ct)
     {
+        if (_db.Database.IsRelational())
+        {
+            await _db.PasswordResetTokens
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.UserId == userId && x.UsedAtUtc == null)
+                .OrderBy(x => x.Id).Select(x => x.Id).ToListAsync(ct);
+            await _db.MfaChallengeTokens
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.UserId == userId && x.UsedAtUtc == null)
+                .OrderBy(x => x.Id).Select(x => x.Id).ToListAsync(ct);
+            await _db.RefreshTokens
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.UserId == userId && x.RevokedAtUtc == null)
+                .OrderBy(x => x.Id).Select(x => x.Id).ToListAsync(ct);
+
+            await _db.PasswordResetTokens
+                .Where(x => x.UserId == userId && x.UsedAtUtc == null)
+                .ExecuteUpdateAsync(s => s.SetProperty(x => x.UsedAtUtc, atUtc), ct);
+            await _db.MfaChallengeTokens
+                .Where(x => x.UserId == userId && x.UsedAtUtc == null)
+                .ExecuteUpdateAsync(s => s.SetProperty(x => x.UsedAtUtc, atUtc), ct);
+            await _db.RefreshTokens
+                .Where(x => x.UserId == userId && x.RevokedAtUtc == null)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(x => x.RevokedAtUtc, atUtc)
+                    .SetProperty(x => x.RevokedByIp, ipAddress), ct);
+            return;
+        }
+
+        foreach (var token in await _db.PasswordResetTokens
+            .Where(x => x.UserId == userId && x.UsedAtUtc == null).ToListAsync(ct))
+            token.UsedAtUtc = atUtc;
+        foreach (var challenge in await _db.MfaChallengeTokens
+            .Where(x => x.UserId == userId && x.UsedAtUtc == null).ToListAsync(ct))
+            challenge.UsedAtUtc = atUtc;
+        foreach (var refresh in await _db.RefreshTokens
+            .Where(x => x.UserId == userId && x.RevokedAtUtc == null).ToListAsync(ct))
+        {
+            refresh.RevokedAtUtc = atUtc;
+            refresh.RevokedByIp = ipAddress;
+        }
+    }
+
+    /// <summary>
+    /// Runs one credential mutation inside a single READ COMMITTED transaction owned by the
+    /// execution strategy. The audit row (saved last, same transaction) is the commit marker used
+    /// to detect an already-committed attempt when the strategy replays after a lost ack.
+    /// </summary>
+    private async Task RunCredentialTransactionAsync(Func<CancellationToken, Task> operation, Guid tenantId, Guid auditId, CancellationToken cancellationToken)
+    {
+        if (!_db.Database.IsRelational())
+        {
+            await operation(cancellationToken);
+            return;
+        }
+
+        var strategy = _db.Database.CreateExecutionStrategy();
+        await strategy.ExecuteInTransactionAsync(
+            async ct =>
+            {
+                await operation(ct);
+                return true;
+            },
+            async ct => await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId,
+                    "Commit-marker check: the company filter is dropped so the exact audit row this unit wrote is found; tenant stays pinned.")
+                .AsNoTracking()
+                .AnyAsync(x => x.Id == auditId, ct),
+            IsolationLevel.ReadCommitted,
+            cancellationToken);
+    }
+
+    public async Task AcceptInvitationAsync(AcceptInvitationRequest request, RequestContext context, CancellationToken cancellationToken)
+    {
+        var tenantSlug = RequireWorkspace(request.TenantSlug);
         var tokenHash = _tokenService.HashToken(request.InvitationToken);
         var acceptedAtUtc = DateTime.UtcNow;
+        var auditId = Guid.NewGuid();
 
-        // Loading and validating are one step so an execution-strategy retry can redo them from
-        // persisted state rather than reuse a failed attempt's entities.
-        async Task<(User User, EmployeeUserAccount Link)> LoadAndValidateAsync()
+        var references = await _db.EmployeeUserAccounts.AsNoTracking()
+            .Where(x => x.InvitationTokenHash == tokenHash
+                && !x.IsDeleted
+                && x.UserId != null
+                && x.User != null
+                && !x.User.IsDeleted
+                && x.User.Tenant != null
+                && x.User.Tenant.IsActive
+                && x.TenantId == x.User.TenantId
+                && x.User.Tenant.Slug == tenantSlug)
+            .Select(x => new { LinkId = x.Id, UserId = x.UserId!.Value, x.EmployeeId, x.TenantId })
+            .Take(2)
+            .ToListAsync(cancellationToken);
+        if (references.Count != 1)
+            throw new UnauthorizedAccessException("Invitation token is invalid or expired.");
+
+        var reference = references[0];
+        var auditContext = context with { UserId = reference.UserId, TenantId = reference.TenantId };
+        // PBKDF2 uses a random salt. Generate the opaque hash once so an execution-strategy
+        // replay cannot produce a different credential write for the same command.
+        var passwordHash = _passwordHasher.Hash(request.NewPassword);
+
+        async Task AcceptOnceAsync(CancellationToken ct)
         {
-            var loaded = await LoadUserGraph(request.Email, request.TenantSlug, cancellationToken) ?? throw new UnauthorizedAccessException("Invitation token is invalid or expired.");
-            var invitation = loaded.EmployeeUserAccounts.FirstOrDefault(x => x.InvitationTokenHash == tokenHash && !x.IsDeleted);
-            if (invitation is null
+            _db.ChangeTracker.Clear();
+
+            var tenant = await _db.Tenants
+                .TagWith(RowLockingInterceptor.ForShareTag)
+                .SingleOrDefaultAsync(x => x.Id == reference.TenantId && x.Slug == tenantSlug, ct);
+            // Invitation acceptance is anonymous by design. The request therefore has no
+            // company-scope claims, and the normal company query filter correctly fails closed.
+            // Resolve the already token-bound employee outside that ambient filter, while keeping
+            // the tenant and employee identifiers explicit and re-validating lifecycle state below.
+            var employee = await _db.Employees
+                // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
+                .IgnoreQueryFilters()
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == reference.EmployeeId && x.TenantId == reference.TenantId, ct);
+            var userAnchor = await _db.Users
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == reference.UserId && x.TenantId == reference.TenantId, ct);
+            // Lock the complete live identity-link set, not only the token-bearing row. A
+            // duplicate employee link or a second employee attached to the same user must not
+            // race credential establishment and become authoritative after this check.
+            var liveIdentityLinks = await _db.EmployeeUserAccounts
+                // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
+                .IgnoreQueryFilters()
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => !x.IsDeleted
+                    && ((x.TenantId == reference.TenantId && x.EmployeeId == reference.EmployeeId)
+                        || x.UserId == reference.UserId))
+                .OrderBy(x => x.TenantId)
+                .ThenBy(x => x.Id)
+                .ToListAsync(ct);
+            var invitation = liveIdentityLinks.Count == 1
+                && liveIdentityLinks[0].Id == reference.LinkId
+                ? liveIdentityLinks[0]
+                : null;
+
+            if (tenant?.IsActive != true
+                || employee is null
+                || employee.IsDeleted
+                || !AuthCurrentEligibility.IsEmployeeLifecycleEligible(employee.Status)
+                || userAnchor is null
+                || userAnchor.IsDeleted
+                || invitation is null
+                || invitation.TenantId != reference.TenantId
+                || invitation.EmployeeId != employee.Id
+                || invitation.UserId != userAnchor.Id
+                || employee.UserAccountId != userAnchor.Id
+                || !string.Equals(userAnchor.IdentityProvider, "Local", StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(userAnchor.ProvisioningSource, "Local", StringComparison.OrdinalIgnoreCase)
+                || !string.IsNullOrEmpty(userAnchor.ExternalId)
+                || userAnchor.LastProvisionedAtUtc is not null
+                || !string.Equals(invitation.InvitationTokenHash, tokenHash, StringComparison.Ordinal)
                 || invitation.InvitationExpiresAtUtc is null
                 || invitation.InvitationExpiresAtUtc < acceptedAtUtc
                 || invitation.AccessMode == AccessModes.NoLogin
                 || !invitation.RequiresPasswordSetup
                 || invitation.InvitationAcceptedAtUtc is not null
-                || !string.Equals(invitation.Status, "Invited", StringComparison.Ordinal))
+                || !string.Equals(invitation.Status, "Invited", StringComparison.Ordinal)
+                || userAnchor.IsActive
+                || userAnchor.IsLocked
+                || (userAnchor.LockoutEnd.HasValue && userAnchor.LockoutEnd > acceptedAtUtc)
+                || !string.Equals(userAnchor.AccessMode, AccessModes.NoLogin, StringComparison.Ordinal)
+                || userAnchor.Status is not ("Invited" or "PendingPasswordSetup"))
                 throw new UnauthorizedAccessException("Invitation token is invalid or expired.");
-            return (loaded, invitation);
-        }
 
-        var (user, link) = await LoadAndValidateAsync();
-        AuthResponse? response = null;
+            var acceptingUser = await LoadUserGraph(userAnchor.Id, ct);
+            if (acceptingUser?.Tenant is null
+                || acceptingUser.TenantId != reference.TenantId
+                || !string.Equals(acceptingUser.Tenant.Slug, tenantSlug, StringComparison.Ordinal)
+                || !await AuthTenantGraphIntegrity.IsValidAsync(acceptingUser, _db, ct))
+                throw new UnauthorizedAccessException("Invitation token is invalid or expired.");
 
-        // Consume the invitation, activate the user, revoke any pre-existing sessions, create the
-        // first session, and append the audit record atomically on relational databases. Clearing
-        // the hash makes the credential one-time; the conditional update ensures two concurrent
-        // accept requests cannot both win after reading the same still-valid token.
-        async Task AcceptAsync(User acceptingUser, EmployeeUserAccount invitation, IDbContextTransaction? transaction)
-        {
+            var passwordPolicy = await _db.SecuritySettings
+                .TagWith(RowLockingInterceptor.ForShareTag)
+                .AsNoTracking()
+                .SingleOrDefaultAsync(x => x.TenantId == reference.TenantId, ct);
+            ValidatePasswordAgainstPolicy(request.NewPassword, passwordPolicy);
+
             if (_db.Database.IsRelational())
             {
-                var consumed = await _db.EmployeeUserAccounts
-                    .Where(x => x.Id == invitation.Id
-                        && x.InvitationTokenHash == tokenHash
-                        && x.RequiresPasswordSetup
-                        && x.InvitationAcceptedAtUtc == null
-                        && x.Status == "Invited"
-                        && !x.IsDeleted
-                        && x.InvitationExpiresAtUtc != null
-                        && x.InvitationExpiresAtUtc >= acceptedAtUtc)
-                    .ExecuteUpdateAsync(setters => setters
-                        .SetProperty(x => x.InvitationTokenHash, string.Empty)
-                        .SetProperty(x => x.InvitationExpiresAtUtc, (DateTime?)null)
-                        .SetProperty(x => x.RequiresPasswordSetup, false)
-                        .SetProperty(x => x.Status, "Active")
-                        .SetProperty(x => x.InvitationAcceptedAtUtc, acceptedAtUtc)
-                        .SetProperty(x => x.UpdatedAtUtc, acceptedAtUtc), cancellationToken);
-                if (consumed != 1)
-                    throw new UnauthorizedAccessException("Invitation token is invalid or expired.");
+                await _db.PasswordResetTokens
+                    .TagWith(RowLockingInterceptor.ForUpdateTag)
+                    .Where(x => x.UserId == acceptingUser.Id && x.UsedAtUtc == null)
+                    .OrderBy(x => x.Id).Select(x => x.Id).ToListAsync(ct);
+                await _db.MfaChallengeTokens
+                    .TagWith(RowLockingInterceptor.ForUpdateTag)
+                    .Where(x => x.UserId == acceptingUser.Id && x.UsedAtUtc == null)
+                    .OrderBy(x => x.Id).Select(x => x.Id).ToListAsync(ct);
+                await _db.RefreshTokens
+                    .TagWith(RowLockingInterceptor.ForUpdateTag)
+                    .Where(x => x.UserId == acceptingUser.Id && x.RevokedAtUtc == null)
+                    .OrderBy(x => x.Id).Select(x => x.Id).ToListAsync(ct);
+
+                await _db.PasswordResetTokens
+                    .Where(x => x.UserId == acceptingUser.Id && x.UsedAtUtc == null)
+                    .ExecuteUpdateAsync(s => s.SetProperty(x => x.UsedAtUtc, acceptedAtUtc), ct);
+                await _db.MfaChallengeTokens
+                    .Where(x => x.UserId == acceptingUser.Id && x.UsedAtUtc == null)
+                    .ExecuteUpdateAsync(s => s.SetProperty(x => x.UsedAtUtc, acceptedAtUtc), ct);
+                await _db.RefreshTokens
+                    .Where(x => x.UserId == acceptingUser.Id && x.RevokedAtUtc == null)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(x => x.RevokedAtUtc, acceptedAtUtc)
+                        .SetProperty(x => x.RevokedByIp, context.IpAddress), ct);
+            }
+            else
+            {
+                foreach (var token in await _db.PasswordResetTokens
+                    .Where(x => x.UserId == acceptingUser.Id && x.UsedAtUtc == null).ToListAsync(ct))
+                    token.UsedAtUtc = acceptedAtUtc;
+                foreach (var challenge in await _db.MfaChallengeTokens
+                    .Where(x => x.UserId == acceptingUser.Id && x.UsedAtUtc == null).ToListAsync(ct))
+                    challenge.UsedAtUtc = acceptedAtUtc;
+                foreach (var refresh in await _db.RefreshTokens
+                    .Where(x => x.UserId == acceptingUser.Id && x.RevokedAtUtc == null).ToListAsync(ct))
+                {
+                    refresh.RevokedAtUtc = acceptedAtUtc;
+                    refresh.RevokedByIp = context.IpAddress;
+                }
             }
 
-            acceptingUser.PasswordHash = _passwordHasher.Hash(request.NewPassword);
+            acceptingUser.PasswordHash = passwordHash;
+            acceptingUser.Status = "Active";
+            acceptingUser.AccessMode = invitation.AccessMode;
             acceptingUser.IsActive = true;
             acceptingUser.IsEmailConfirmed = true;
-            acceptingUser.UpdatedAtUtc = acceptedAtUtc;
+            acceptingUser.MustChangePassword = false;
+            acceptingUser.LastPasswordChangedAt = acceptedAtUtc;
+            acceptingUser.FailedLoginCount = 0;
+            acceptingUser.IsLocked = false;
+            acceptingUser.LockoutEnd = null;
+            TenantSessionSecurity.RotateStamp(acceptingUser, acceptedAtUtc);
+
             invitation.InvitationTokenHash = string.Empty;
             invitation.InvitationExpiresAtUtc = null;
             invitation.RequiresPasswordSetup = false;
             invitation.Status = "Active";
             invitation.InvitationAcceptedAtUtc = acceptedAtUtc;
             invitation.UpdatedAtUtc = acceptedAtUtc;
-            await RevokeActiveRefreshTokensAsync(acceptingUser.Id, context.IpAddress, cancellationToken);
-            var refreshToken = await AddRefreshTokenAsync(acceptingUser, context, null, cancellationToken);
-            await _db.SaveChangesAsync(cancellationToken);
-            await _auditService.WriteAsync("auth.invitation_accepted", "User", acceptingUser.Id.ToString(), context with { UserId = acceptingUser.Id, TenantId = acceptingUser.TenantId }, $"{{\"employeeId\":{invitation.EmployeeId}}}", cancellationToken);
-            if (transaction is not null) await transaction.CommitAsync(cancellationToken);
-            response = BuildAuthResponse(acceptingUser, refreshToken);
+
+            _db.AuditLogs.Add(AuthAuditEntry.Create(
+                auditId,
+                acceptedAtUtc,
+                "auth.invitation_accepted",
+                "User",
+                acceptingUser.Id.ToString(),
+                auditContext,
+                $"{{\"employeeId\":{invitation.EmployeeId},\"mode\":\"credential_establishment\"}}"));
+            await _db.SaveChangesAsync(ct);
         }
 
         if (!_db.Database.IsRelational())
         {
-            await AcceptAsync(user, link, null);
+            await AcceptOnceAsync(cancellationToken);
+            return;
         }
-        else
-        {
-            // EnableRetryOnFailure forbids a bare BeginTransaction; without this every
-            // POST /api/auth/accept-invitation returned HTTP 400 and no invited employee could
-            // ever set their password.
-            var strategy = _db.Database.CreateExecutionStrategy();
-            var attempt = 0;
-            await strategy.ExecuteAsync(async () =>
+
+        var strategy = _db.Database.CreateExecutionStrategy();
+        await strategy.ExecuteInTransactionAsync(
+            async ct =>
             {
-                var acceptingUser = user;
-                var invitation = link;
-                if (attempt++ > 0)
-                {
-                    // Discard the failed attempt's pending inserts (a second refresh token) and
-                    // its already-"saved" but rolled-back rows, then revalidate persisted state.
-                    _db.ChangeTracker.Clear();
-                    (acceptingUser, invitation) = await LoadAndValidateAsync();
-                }
-                response = null;
-
-                var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
-                try
-                {
-                    await AcceptAsync(acceptingUser, invitation, transaction);
-                }
-                catch
-                {
-                    try { await transaction.RollbackAsync(cancellationToken); } catch { /* connection already gone */ }
-                    throw;
-                }
-                finally
-                {
-                    await transaction.DisposeAsync();
-                }
-            });
-        }
-
-        return response!;
+                await AcceptOnceAsync(ct);
+                return true;
+            },
+            // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
+            async ct => await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
+                .AnyAsync(x => x.Id == auditId, ct),
+            IsolationLevel.ReadCommitted,
+            cancellationToken);
     }
 
     public async Task<AuthUserDto?> GetCurrentUserAsync(Guid userId, CancellationToken cancellationToken)
@@ -574,58 +908,627 @@ public class AuthService : IAuthService
         return user?.Tenant is null ? null : ToUserDto(user);
     }
 
-    public async Task<AuthResponse> CompleteMfaLoginAsync(Guid userId, RequestContext context, CancellationToken cancellationToken)
+    public async Task<AuthResponse> CompleteMfaLoginAsync(
+        string challengeToken,
+        string totpCode,
+        RequestContext context,
+        CancellationToken cancellationToken)
     {
-        var user = await LoadUserGraph(userId, cancellationToken)
-            ?? throw new UnauthorizedAccessException("User not found.");
-        user.FailedLoginCount = 0;
-        user.IsLocked         = false;
-        user.LockoutEnd       = null;
-        user.LastLoginAtUtc   = DateTime.UtcNow;
-        var refreshToken = await AddRefreshTokenAsync(user, context, null, cancellationToken);
-        await _db.SaveChangesAsync(cancellationToken);
-        await _auditService.WriteAsync("auth.login", "User", user.Id.ToString(),
-            context with { UserId = user.Id, TenantId = user.TenantId }, null, cancellationToken);
-        return BuildAuthResponse(user, refreshToken);
+        if (!AuthChallengeTokenCodec.TryParse(
+                challengeToken,
+                AuthChallengeTokenCodec.TenantLoginPurpose,
+                out var envelope)
+            || envelope.TenantId is null)
+            throw new UnauthorizedAccessException("Invalid or expired MFA challenge.");
+
+        var challengeHash = _tokenService.HashToken(challengeToken);
+        var completedAtUtc = DateTime.UtcNow;
+        var refreshRaw = _tokenService.CreateSecureToken();
+        var refreshHash = _tokenService.HashToken(refreshRaw);
+        var refreshId = Guid.NewGuid();
+        var refreshFamilyId = Guid.NewGuid();
+        var activityId = Guid.NewGuid();
+        var auditId = Guid.NewGuid();
+        var expectedSessionStamp = envelope.SessionStamp;
+        var loginAuditMetadata =
+            $"{{\"via\":\"mfa\",\"challengeId\":\"{envelope.ChallengeId:D}\",\"refreshId\":\"{refreshId:D}\",\"familyId\":\"{refreshFamilyId:D}\",\"sessionStamp\":\"{expectedSessionStamp}\"}}";
+        AuthResponse? preparedResponse = null;
+        var succeeded = false;
+
+        async Task<bool> CompleteOnceAsync(CancellationToken ct)
+        {
+            _db.ChangeTracker.Clear();
+            preparedResponse = null;
+            succeeded = false;
+
+            var tenant = await _db.Tenants
+                .TagWith(RowLockingInterceptor.ForShareTag)
+                .SingleOrDefaultAsync(x => x.Id == envelope.TenantId.Value, ct);
+            var userAnchor = await _db.Users
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == envelope.PrincipalId && x.TenantId == envelope.TenantId.Value, ct);
+            var challenge = await _db.MfaChallengeTokens
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == envelope.ChallengeId, ct);
+
+            if (tenant?.IsActive != true
+                || userAnchor is null
+                || challenge is null
+                || challenge.UserId != userAnchor.Id
+                || challenge.PlatformUserId is not null
+                || challenge.TenantId != userAnchor.TenantId
+                || !string.Equals(challenge.TokenHash, challengeHash, StringComparison.Ordinal)
+                || challenge.UsedAtUtc is not null
+                || challenge.ExpiresAtUtc <= completedAtUtc
+                || challenge.FailedAttempts >= MfaChallengeToken.MaxAttempts
+                || !string.Equals(envelope.SessionStamp, TenantSessionSecurity.StampValue(userAnchor), StringComparison.Ordinal))
+                throw new UnauthorizedAccessException("Invalid or expired MFA challenge.");
+
+            var user = await LoadUserGraph(userAnchor.Id, ct);
+            if (user?.Tenant is null || !await AuthTenantGraphIntegrity.IsValidAsync(user, _db, ct))
+                throw new UnauthorizedAccessException("Invalid or expired MFA challenge.");
+
+            var policy = await _db.SecuritySettings.AsNoTracking()
+                .SingleOrDefaultAsync(x => x.TenantId == user.TenantId, ct);
+            var identity = await _db.TenantIdentityProviderSettings.AsNoTracking()
+                .SingleOrDefaultAsync(x => x.TenantId == user.TenantId, ct);
+            var eligibility = AuthCurrentEligibility.ForSession(
+                user,
+                AuthCurrentEligibility.IsSsoOnly(user, identity),
+                policy,
+                completedAtUtc);
+            if (!eligibility.Allowed
+                || !user.MFAEnabled
+                || string.IsNullOrWhiteSpace(user.MfaSecretEncrypted))
+            {
+                challenge.UsedAtUtc = completedAtUtc;
+                _db.LoginActivities.Add(new LoginActivity
+                {
+                    Id = activityId,
+                    TenantId = user.TenantId,
+                    UserId = user.Id,
+                    EmailAttempted = user.Email,
+                    EventType = LoginEventTypes.LoginFailed,
+                    FailureReason = eligibility.Allowed ? "mfa_state_invalid" : eligibility.Reason,
+                    IpAddress = context.IpAddress,
+                    UserAgent = context.UserAgent,
+                    OccurredAtUtc = completedAtUtc
+                });
+                _db.AuditLogs.Add(AuthAuditEntry.Create(
+                    auditId,
+                    completedAtUtc,
+                    "auth.mfa_rejected_state",
+                    "MfaChallengeToken",
+                    challenge.Id.ToString(),
+                    context with { UserId = user.Id, TenantId = user.TenantId },
+                    $"{{\"reason\":\"{(eligibility.Allowed ? "mfa_state_invalid" : eligibility.Reason)}\"}}"));
+                await _db.SaveChangesAsync(ct);
+                return false;
+            }
+
+            string plainSecret;
+            try { plainSecret = _totp.DecryptSecret(user.MfaSecretEncrypted); }
+            catch
+            {
+                challenge.UsedAtUtc = completedAtUtc;
+                _db.LoginActivities.Add(new LoginActivity
+                {
+                    Id = activityId,
+                    TenantId = user.TenantId,
+                    UserId = user.Id,
+                    EmailAttempted = user.Email,
+                    EventType = LoginEventTypes.LoginFailed,
+                    FailureReason = "mfa_secret_unavailable",
+                    IpAddress = context.IpAddress,
+                    UserAgent = context.UserAgent,
+                    OccurredAtUtc = completedAtUtc
+                });
+                _db.AuditLogs.Add(AuthAuditEntry.Create(
+                    auditId,
+                    completedAtUtc,
+                    "auth.mfa_rejected_state",
+                    "MfaChallengeToken",
+                    challenge.Id.ToString(),
+                    context with { UserId = user.Id, TenantId = user.TenantId },
+                    "{\"reason\":\"mfa_secret_unavailable\"}"));
+                await _db.SaveChangesAsync(ct);
+                return false;
+            }
+
+            var auditContext = context with { UserId = user.Id, TenantId = user.TenantId };
+            if (!_totp.Verify(plainSecret, totpCode))
+            {
+                challenge.FailedAttempts++;
+                user.MfaFailedCount++;
+                if (challenge.FailedAttempts >= MfaChallengeToken.MaxAttempts)
+                    challenge.UsedAtUtc = completedAtUtc;
+                _db.LoginActivities.Add(new LoginActivity
+                {
+                    Id = activityId,
+                    TenantId = user.TenantId,
+                    UserId = user.Id,
+                    EmailAttempted = user.Email,
+                    EventType = LoginEventTypes.LoginFailed,
+                    FailureReason = "mfa_code_mismatch",
+                    IpAddress = context.IpAddress,
+                    UserAgent = context.UserAgent,
+                    OccurredAtUtc = completedAtUtc
+                });
+                _db.AuditLogs.Add(AuthAuditEntry.Create(
+                    auditId,
+                    completedAtUtc,
+                    "auth.mfa_failed",
+                    "MfaChallengeToken",
+                    challenge.Id.ToString(),
+                    auditContext,
+                    $"{{\"failedAttempts\":{challenge.FailedAttempts}}}"));
+                await _db.SaveChangesAsync(ct);
+                return false;
+            }
+
+            await _db.RefreshTokens
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.UserId == user.Id && x.RevokedAtUtc == null)
+                .OrderBy(x => x.Id).Select(x => x.Id).ToListAsync(ct);
+            if (policy?.AllowMultipleSessions == false)
+            {
+                if (_db.Database.IsRelational())
+                {
+                    await _db.RefreshTokens
+                        .Where(x => x.UserId == user.Id && x.RevokedAtUtc == null)
+                        .ExecuteUpdateAsync(s => s
+                            .SetProperty(x => x.RevokedAtUtc, completedAtUtc)
+                            .SetProperty(x => x.RevokedByIp, context.IpAddress), ct);
+                }
+                else
+                {
+                    foreach (var active in await _db.RefreshTokens
+                        .Where(x => x.UserId == user.Id && x.RevokedAtUtc == null).ToListAsync(ct))
+                    {
+                        active.RevokedAtUtc = completedAtUtc;
+                        active.RevokedByIp = context.IpAddress;
+                    }
+                }
+            }
+
+            challenge.UsedAtUtc = completedAtUtc;
+            user.MfaLastVerifiedAtUtc = completedAtUtc;
+            user.MfaFailedCount = 0;
+            user.FailedLoginCount = 0;
+            user.LastLoginAtUtc = completedAtUtc;
+            var refreshDays = Math.Clamp(policy?.RefreshTokenExpiryDays ?? _jwtOptions.RefreshTokenDays, 1, 90);
+            _db.RefreshTokens.Add(new RefreshToken
+            {
+                Id = refreshId,
+                FamilyId = refreshFamilyId,
+                UserId = user.Id,
+                TokenHash = refreshHash,
+                ExpiresAtUtc = completedAtUtc.AddDays(refreshDays),
+                CreatedAtUtc = completedAtUtc,
+                CreatedByIp = context.IpAddress
+            });
+            _db.LoginActivities.Add(new LoginActivity
+            {
+                Id = activityId,
+                TenantId = user.TenantId,
+                UserId = user.Id,
+                EmailAttempted = user.Email,
+                EventType = LoginEventTypes.LoginSuccess,
+                IpAddress = context.IpAddress,
+                UserAgent = context.UserAgent,
+                OccurredAtUtc = completedAtUtc
+            });
+            _db.AuditLogs.Add(AuthAuditEntry.Create(
+                auditId,
+                completedAtUtc,
+                "auth.login",
+                "User",
+                user.Id.ToString(),
+                auditContext,
+                loginAuditMetadata));
+            await _db.SaveChangesAsync(ct);
+            preparedResponse = BuildAuthResponse(user, refreshRaw);
+            succeeded = true;
+            return true;
+        }
+
+        if (_db.Database.IsRelational())
+        {
+            var strategy = _db.Database.CreateExecutionStrategy();
+            succeeded = await strategy.ExecuteInTransactionAsync(
+                CompleteOnceAsync,
+                // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
+                async ct => await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
+                        .AnyAsync(x => x.Id == auditId
+                            && x.Action == "auth.login"
+                            && x.EntityName == "User"
+                            && x.EntityId == envelope.PrincipalId.ToString()
+                            && x.TenantId == envelope.TenantId.Value
+                            && x.UserId == envelope.PrincipalId, ct)
+                    && await _db.RefreshTokens.AsNoTracking()
+                        .AnyAsync(x => x.Id == refreshId
+                            && x.UserId == envelope.PrincipalId
+                            && x.FamilyId == refreshFamilyId
+                            && x.TokenHash == refreshHash, ct),
+                IsolationLevel.ReadCommitted,
+                cancellationToken);
+        }
+        else
+        {
+            succeeded = await CompleteOnceAsync(cancellationToken);
+        }
+
+        // ExecuteInTransactionAsync returns default(TResult) when COMMIT succeeded but its
+        // acknowledgement was lost and verifySucceeded found the durable marker. For a bool
+        // TResult that default is false, so never interpret the return value alone as denial.
+        if (!succeeded && _db.Database.IsRelational())
+        {
+            _db.ChangeTracker.Clear();
+            // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
+            succeeded = await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
+                    .AnyAsync(x => x.Id == auditId
+                        && x.Action == "auth.login"
+                        && x.EntityName == "User"
+                        && x.EntityId == envelope.PrincipalId.ToString()
+                        && x.TenantId == envelope.TenantId.Value
+                        && x.UserId == envelope.PrincipalId, cancellationToken)
+                && await _db.RefreshTokens.AsNoTracking()
+                    .AnyAsync(x => x.Id == refreshId
+                        && x.UserId == envelope.PrincipalId
+                        && x.FamilyId == refreshFamilyId
+                        && x.TokenHash == refreshHash, cancellationToken);
+        }
+
+        if (!succeeded)
+            throw new UnauthorizedAccessException("Invalid or expired MFA challenge.");
+        if (preparedResponse is not null)
+            return preparedResponse;
+
+        // A commit acknowledgement can be lost after the durable refresh/audit rows were written.
+        // The durable pair proves only that this attempt committed; it does not authorize revival.
+        // Recovery returns tokens only while that exact session is still active and the user's
+        // security stamp remains the one authorized under the transaction lock.
+        // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
+        var committedAudit = await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
+            .AnyAsync(x => x.Id == auditId
+                && x.Action == "auth.login"
+                && x.EntityName == "User"
+                && x.EntityId == envelope.PrincipalId.ToString()
+                && x.TenantId == envelope.TenantId.Value
+                && x.UserId == envelope.PrincipalId, cancellationToken);
+        var committedRefresh = await _db.RefreshTokens.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == refreshId
+                && x.UserId == envelope.PrincipalId
+                && x.FamilyId == refreshFamilyId
+                && x.TokenHash == refreshHash, cancellationToken);
+        var committedUser = await LoadUserGraph(envelope.PrincipalId, cancellationToken);
+        if (!committedAudit
+            || committedRefresh is null
+            || committedRefresh.RevokedAtUtc is not null
+            || committedRefresh.ReplacedByTokenHash is not null
+            || committedRefresh.ExpiresAtUtc <= DateTime.UtcNow
+            || committedUser?.Tenant is null
+            || committedUser.TenantId != envelope.TenantId.Value
+            || !string.Equals(
+                TenantSessionSecurity.StampValue(committedUser),
+                expectedSessionStamp,
+                StringComparison.Ordinal))
+            throw new UnauthorizedAccessException("Invalid or expired MFA challenge.");
+        var committedPolicy = await LoadSecuritySettingAsync(committedUser.TenantId, cancellationToken);
+        var committedIdentity = await _db.TenantIdentityProviderSettings.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.TenantId == committedUser.TenantId, cancellationToken);
+        if (!AuthCurrentEligibility.ForSession(
+                committedUser,
+                AuthCurrentEligibility.IsSsoOnly(committedUser, committedIdentity),
+                committedPolicy,
+                DateTime.UtcNow).Allowed
+            || !committedUser.MFAEnabled
+            || string.IsNullOrWhiteSpace(committedUser.MfaSecretEncrypted))
+            throw new UnauthorizedAccessException("Invalid or expired MFA challenge.");
+        return BuildAuthResponse(committedUser, refreshRaw);
+    }
+
+    private async Task<AuthResponse> CompletePasswordOnlyLoginAsync(
+        Guid userId,
+        string tenantSlug,
+        string presentedPassword,
+        RequestContext context,
+        CancellationToken cancellationToken)
+    {
+        var issuedAtUtc = DateTime.UtcNow;
+        var refreshRaw = _tokenService.CreateSecureToken();
+        var refreshHash = _tokenService.HashToken(refreshRaw);
+        var refreshId = Guid.NewGuid();
+        var refreshFamilyId = Guid.NewGuid();
+        var activityId = Guid.NewGuid();
+        var auditId = Guid.NewGuid();
+        Guid? issuedTenantId = null;
+        string? issuedSessionStamp = null;
+        string? loginAuditMetadata = null;
+        AuthResponse? prepared = null;
+
+        async Task<bool> IssueOnceAsync(CancellationToken ct)
+        {
+            _db.ChangeTracker.Clear();
+            prepared = null;
+            issuedTenantId = null;
+            issuedSessionStamp = null;
+            loginAuditMetadata = null;
+
+            var tenant = await _db.Tenants
+                .TagWith(RowLockingInterceptor.ForShareTag)
+                .SingleOrDefaultAsync(x => x.Slug == tenantSlug, ct);
+            if (tenant is null)
+                throw new UnauthorizedAccessException("Invalid email, password, or tenant.");
+
+            var anchor = await _db.Users
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == userId && x.TenantId == tenant.Id, ct);
+            var user = anchor is null ? null : await LoadUserGraph(anchor.Id, ct);
+            if (user?.Tenant is null || !tenant.IsActive)
+                throw new UnauthorizedAccessException("Invalid email, password, or tenant.");
+
+            var policy = await _db.SecuritySettings.AsNoTracking()
+                .SingleOrDefaultAsync(x => x.TenantId == user.TenantId, ct);
+            var identity = await _db.TenantIdentityProviderSettings.AsNoTracking()
+                .SingleOrDefaultAsync(x => x.TenantId == user.TenantId, ct);
+            var eligibility = AuthCurrentEligibility.ForSession(
+                user,
+                AuthCurrentEligibility.IsSsoOnly(user, identity),
+                policy,
+                issuedAtUtc);
+            if (!eligibility.Allowed
+                || user.MFAEnabled
+                || policy?.MfaRequired == true
+                || !_passwordHasher.Verify(presentedPassword, user.PasswordHash))
+                throw new UnauthorizedAccessException("Invalid email, password, or tenant.");
+
+            issuedTenantId = user.TenantId;
+            issuedSessionStamp = TenantSessionSecurity.StampValue(user);
+            loginAuditMetadata =
+                $"{{\"via\":\"password\",\"refreshId\":\"{refreshId:D}\",\"familyId\":\"{refreshFamilyId:D}\",\"tenantId\":\"{issuedTenantId:D}\",\"sessionStamp\":\"{issuedSessionStamp}\"}}";
+
+            await _db.RefreshTokens
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.UserId == user.Id && x.RevokedAtUtc == null)
+                .OrderBy(x => x.Id)
+                .Select(x => x.Id)
+                .ToListAsync(ct);
+            if (policy?.AllowMultipleSessions == false)
+            {
+                if (_db.Database.IsRelational())
+                {
+                    await _db.RefreshTokens
+                        .Where(x => x.UserId == user.Id && x.RevokedAtUtc == null)
+                        .ExecuteUpdateAsync(s => s
+                            .SetProperty(x => x.RevokedAtUtc, issuedAtUtc)
+                            .SetProperty(x => x.RevokedByIp, context.IpAddress), ct);
+                }
+                else
+                {
+                    foreach (var active in await _db.RefreshTokens
+                        .Where(x => x.UserId == user.Id && x.RevokedAtUtc == null)
+                        .ToListAsync(ct))
+                    {
+                        active.RevokedAtUtc = issuedAtUtc;
+                        active.RevokedByIp = context.IpAddress;
+                    }
+                }
+            }
+
+            user.FailedLoginCount = 0;
+            user.IsLocked = false;
+            user.LockoutEnd = null;
+            user.LastLoginAtUtc = issuedAtUtc;
+            var refreshDays = Math.Clamp(policy?.RefreshTokenExpiryDays ?? _jwtOptions.RefreshTokenDays, 1, 90);
+            _db.RefreshTokens.Add(new RefreshToken
+            {
+                Id = refreshId,
+                FamilyId = refreshFamilyId,
+                UserId = user.Id,
+                TokenHash = refreshHash,
+                ExpiresAtUtc = issuedAtUtc.AddDays(refreshDays),
+                CreatedAtUtc = issuedAtUtc,
+                CreatedByIp = context.IpAddress
+            });
+            _db.LoginActivities.Add(new LoginActivity
+            {
+                Id = activityId,
+                TenantId = user.TenantId,
+                UserId = user.Id,
+                EmailAttempted = user.Email,
+                EventType = LoginEventTypes.LoginSuccess,
+                IpAddress = context.IpAddress,
+                UserAgent = context.UserAgent,
+                OccurredAtUtc = issuedAtUtc
+            });
+            _db.AuditLogs.Add(AuthAuditEntry.Create(
+                auditId,
+                issuedAtUtc,
+                "auth.login",
+                "User",
+                user.Id.ToString(),
+                context with { UserId = user.Id, TenantId = user.TenantId },
+                loginAuditMetadata));
+            await _db.SaveChangesAsync(ct);
+            prepared = BuildAuthResponse(user, refreshRaw);
+            return true;
+        }
+
+        if (_db.Database.IsRelational())
+        {
+            var strategy = _db.Database.CreateExecutionStrategy();
+            await strategy.ExecuteInTransactionAsync(
+                IssueOnceAsync,
+                async ct => issuedTenantId is not null
+                    && issuedSessionStamp is not null
+                    && loginAuditMetadata is not null
+                    // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
+                    && await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
+                        .AnyAsync(x => x.Id == auditId
+                            && x.Action == "auth.login"
+                            && x.EntityName == "User"
+                            && x.EntityId == userId.ToString()
+                            && x.TenantId == issuedTenantId
+                            && x.UserId == userId, ct)
+                    && await _db.RefreshTokens.AsNoTracking()
+                        .AnyAsync(x => x.Id == refreshId
+                            && x.UserId == userId
+                            && x.FamilyId == refreshFamilyId
+                            && x.TokenHash == refreshHash, ct),
+                IsolationLevel.ReadCommitted,
+                cancellationToken);
+        }
+        else
+        {
+            await IssueOnceAsync(cancellationToken);
+        }
+
+        if (prepared is not null) return prepared;
+
+        // Lost COMMIT acknowledgement: reconstruct only from this request's exact durable pair.
+        _db.ChangeTracker.Clear();
+        var committedRefresh = await _db.RefreshTokens.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == refreshId
+                && x.UserId == userId
+                && x.FamilyId == refreshFamilyId
+                && x.TokenHash == refreshHash, cancellationToken);
+        // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
+        var committedAudit = await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
+            .AnyAsync(x => x.Id == auditId
+                && x.Action == "auth.login"
+                && x.EntityName == "User"
+                && x.EntityId == userId.ToString()
+                && x.TenantId == issuedTenantId
+                && x.UserId == userId, cancellationToken);
+        var committedUser = await LoadUserGraph(userId, cancellationToken);
+        if (issuedTenantId is null
+            || issuedSessionStamp is null
+            || loginAuditMetadata is null
+            || committedRefresh is null
+            || committedRefresh.RevokedAtUtc is not null
+            || committedRefresh.ReplacedByTokenHash is not null
+            || committedRefresh.ExpiresAtUtc <= DateTime.UtcNow
+            || !committedAudit
+            || committedUser?.Tenant is null
+            || committedUser.TenantId != issuedTenantId.Value
+            || !string.Equals(committedUser.Tenant.Slug, tenantSlug, StringComparison.Ordinal)
+            || !string.Equals(
+                TenantSessionSecurity.StampValue(committedUser),
+                issuedSessionStamp,
+                StringComparison.Ordinal))
+            throw new UnauthorizedAccessException("Invalid email, password, or tenant.");
+        var committedPolicy = await LoadSecuritySettingAsync(committedUser.TenantId, cancellationToken);
+        var committedIdentity = await _db.TenantIdentityProviderSettings.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.TenantId == committedUser.TenantId, cancellationToken);
+        if (!AuthCurrentEligibility.ForSession(
+                committedUser,
+                AuthCurrentEligibility.IsSsoOnly(committedUser, committedIdentity),
+                committedPolicy,
+                DateTime.UtcNow).Allowed
+            || committedUser.MFAEnabled
+            || committedPolicy?.MfaRequired == true)
+            throw new UnauthorizedAccessException("Invalid email, password, or tenant.");
+        return BuildAuthResponse(committedUser, refreshRaw);
     }
 
     public async Task ChangePasswordAsync(Guid userId, ChangePasswordRequest request, RequestContext context, CancellationToken cancellationToken)
     {
-        var user = await _db.Users.FirstOrDefaultAsync(x => x.Id == userId && !x.IsDeleted, cancellationToken)
+        // Routing and the (slow) current-password proof run before any lock is taken. The locked
+        // section below re-checks that the verified hash is still the stored one, so a concurrent
+        // change cannot be overwritten by a caller who only knew the superseded password.
+        var route = await _db.Users.AsNoTracking()
+            .Where(x => x.Id == userId && !x.IsDeleted)
+            .Select(x => new { x.Id, x.TenantId, x.PasswordHash })
+            .SingleOrDefaultAsync(cancellationToken)
             ?? throw new UnauthorizedAccessException("User not found.");
-        if (!_passwordHasher.Verify(request.CurrentPassword, user.PasswordHash))
+        if (!_passwordHasher.Verify(request.CurrentPassword, route.PasswordHash))
             throw new InvalidOperationException("Current password is incorrect.");
-        user.PasswordHash = _passwordHasher.Hash(request.NewPassword);
-        user.MustChangePassword = false;
-        user.LastPasswordChangedAt = DateTime.UtcNow;
-        user.UpdatedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(cancellationToken);
-        await _auditService.WriteAsync("auth.password_changed", "User", user.Id.ToString(), context, null, cancellationToken);
+
+        var auditId = Guid.NewGuid();
+        var auditContext = context with { UserId = route.Id, TenantId = route.TenantId };
+        var passwordHash = _passwordHasher.Hash(request.NewPassword);
+
+        async Task ChangeOnceAsync(CancellationToken ct)
+        {
+            _db.ChangeTracker.Clear();
+            var changedAtUtc = DateTime.UtcNow;
+
+            var tenant = await _db.Tenants
+                .TagWith(RowLockingInterceptor.ForShareTag)
+                .SingleOrDefaultAsync(x => x.Id == route.TenantId, ct);
+            var user = await _db.Users
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == route.Id && x.TenantId == route.TenantId, ct);
+            if (tenant?.IsActive != true || user is null || user.IsDeleted || !user.IsActive)
+                throw new UnauthorizedAccessException("User not found.");
+            if (!string.Equals(user.PasswordHash, route.PasswordHash, StringComparison.Ordinal))
+                throw new InvalidOperationException("Current password is incorrect.");
+
+            var passwordPolicy = await _db.SecuritySettings
+                .TagWith(RowLockingInterceptor.ForShareTag)
+                .AsNoTracking()
+                .SingleOrDefaultAsync(x => x.TenantId == route.TenantId, ct);
+            ValidatePasswordAgainstPolicy(request.NewPassword, passwordPolicy);
+
+            await InvalidateUserCredentialsAsync(user.Id, changedAtUtc, context.IpAddress, ct);
+
+            user.PasswordHash = passwordHash;
+            user.MustChangePassword = false;
+            user.LastPasswordChangedAt = changedAtUtc;
+            TenantSessionSecurity.RotateStamp(user, changedAtUtc);
+
+            _db.AuditLogs.Add(AuthAuditEntry.Create(
+                auditId,
+                changedAtUtc,
+                "auth.password_changed",
+                "User",
+                user.Id.ToString(),
+                auditContext,
+                "{\"sessionsRevoked\":true}"));
+            await _db.SaveChangesAsync(ct);
+        }
+
+        await RunCredentialTransactionAsync(ChangeOnceAsync, route.TenantId, auditId, cancellationToken);
     }
 
-    private async Task<User?> LoadUserGraph(string email, string? tenantSlug, CancellationToken cancellationToken)
+    private async Task<User?> LoadUserGraph(string email, string tenantSlug, CancellationToken cancellationToken)
     {
         var normalizedEmail = Normalize(email);
-        var query = _db.Users
-            .Include(x => x.Tenant)
-            .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
-            .Include(x => x.EmployeeUserAccounts)
-            .Include(x => x.PermissionOverrides)
-            .Include(x => x.EntityAccesses)
-            .Where(x => x.NormalizedEmail == normalizedEmail && !x.IsDeleted);
-        if (!string.IsNullOrWhiteSpace(tenantSlug)) query = query.Where(x => x.Tenant!.Slug == tenantSlug.Trim().ToLowerInvariant());
-        return await query.FirstOrDefaultAsync(cancellationToken);
+        // Split is deterministic here: Tenant.Slug is unique and (TenantId, NormalizedEmail) is
+        // unique, so the filter matches at most one user. Runs in a snapshot (AuthGraphSnapshot).
+        return await AuthGraphSnapshot.ReadAsync(_db, async ct =>
+        {
+            var user = await _db.Users.AsSplitQuery()
+                .Include(x => x.Tenant)
+                .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
+                .Include(x => x.EmployeeUserAccounts)
+                .Include(x => x.PermissionOverrides)
+                .Include(x => x.EntityAccesses)
+                .FirstOrDefaultAsync(
+                    x => x.NormalizedEmail == normalizedEmail
+                        && !x.IsDeleted
+                        && x.Tenant!.Slug == tenantSlug,
+                    ct);
+            return await AuthTenantGraphIntegrity.IsValidAsync(user, _db, ct) ? user : null;
+        }, cancellationToken);
     }
 
     private async Task<User?> LoadUserGraph(Guid userId, CancellationToken cancellationToken)
     {
-        return await _db.Users
-            .Include(x => x.Tenant)
-            .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
-            .Include(x => x.EmployeeUserAccounts)
-            .Include(x => x.PermissionOverrides)
-            .Include(x => x.EntityAccesses)
-            .FirstOrDefaultAsync(x => x.Id == userId, cancellationToken);
+        // Split on the primary key, inside the caller's anchored transaction when there is one,
+        // otherwise inside a snapshot (AuthGraphSnapshot). The single-query form is the OOM shape.
+        return await AuthGraphSnapshot.ReadAsync(_db, async ct =>
+        {
+            var user = await _db.Users.AsSplitQuery()
+                .Include(x => x.Tenant)
+                .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
+                .Include(x => x.EmployeeUserAccounts)
+                .Include(x => x.PermissionOverrides)
+                .Include(x => x.EntityAccesses)
+                .FirstOrDefaultAsync(x => x.Id == userId && !x.IsDeleted, ct);
+            return await AuthTenantGraphIntegrity.IsValidAsync(user, _db, ct) ? user : null;
+        }, cancellationToken);
     }
 
     private async Task<string> AddRefreshTokenAsync(User user, RequestContext context, SecuritySetting? policy, CancellationToken cancellationToken)
@@ -647,93 +1550,56 @@ public class AuthService : IAuthService
         return refreshToken;
     }
 
-    private async Task RevokeRefreshTokenFamilyForReuseAsync(
-        RefreshToken presentedToken,
-        RequestContext context,
-        CancellationToken cancellationToken)
-    {
-        if (!_db.Database.IsRelational())
-        {
-            await RevokeRefreshTokenFamilyAndAuditAsync(presentedToken, context, cancellationToken);
-            return;
-        }
-
-        // Same EnableRetryOnFailure constraint as RefreshAsync: a bare BeginTransaction here made
-        // the replay path throw the execution-strategy error instead of revoking the stolen
-        // lineage, so a presented-again token was neither killed nor audited.
-        var strategy = _db.Database.CreateExecutionStrategy();
-        var attempt = 0;
-        await strategy.ExecuteAsync(async () =>
-        {
-            // A retry must start from persisted state: the audit row the previous attempt wrote is
-            // tracked as saved but was rolled back, so it would never be re-inserted.
-            if (attempt++ > 0) _db.ChangeTracker.Clear();
-
-            var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
-            try
-            {
-                await RevokeRefreshTokenFamilyAndAuditAsync(presentedToken, context, cancellationToken);
-                await transaction.CommitAsync(cancellationToken);
-            }
-            catch
-            {
-                try { await transaction.RollbackAsync(cancellationToken); } catch { /* connection already gone */ }
-                throw;
-            }
-            finally
-            {
-                await transaction.DisposeAsync();
-            }
-        });
-    }
-
-    private async Task RevokeRefreshTokenFamilyAndAuditAsync(
-        RefreshToken presentedToken,
-        RequestContext context,
-        CancellationToken cancellationToken)
-    {
-        var detectedAtUtc = DateTime.UtcNow;
-        int revokedCount;
-        if (_db.Database.IsRelational())
-        {
-            revokedCount = await _db.RefreshTokens
-                .Where(x => x.FamilyId == presentedToken.FamilyId
-                    && x.UserId == presentedToken.UserId
-                    && x.RevokedAtUtc == null)
-                .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(x => x.RevokedAtUtc, detectedAtUtc)
-                    .SetProperty(x => x.RevokedByIp, context.IpAddress), cancellationToken);
-        }
-        else
-        {
-            var activeFamily = await _db.RefreshTokens
-                .Where(x => x.FamilyId == presentedToken.FamilyId
-                    && x.UserId == presentedToken.UserId
-                    && x.RevokedAtUtc == null)
-                .ToListAsync(cancellationToken);
-            foreach (var token in activeFamily)
-            {
-                token.RevokedAtUtc = detectedAtUtc;
-                token.RevokedByIp = context.IpAddress;
-            }
-            revokedCount = activeFamily.Count;
-        }
-
-        await _auditService.WriteAsync(
-            "auth.refresh_reuse_detected",
-            "RefreshToken",
-            presentedToken.Id.ToString(),
-            context with
-            {
-                UserId = presentedToken.UserId,
-                TenantId = presentedToken.User?.TenantId
-            },
-            $"{{\"familyId\":\"{presentedToken.FamilyId:D}\",\"revokedCount\":{revokedCount}}}",
-            cancellationToken);
-    }
-
     private Task<SecuritySetting?> LoadSecuritySettingAsync(Guid tenantId, CancellationToken cancellationToken) =>
         _db.SecuritySettings.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId, cancellationToken);
+
+    private static void ValidatePasswordAgainstPolicy(string password, SecuritySetting? policy)
+    {
+        var minimumLength = Math.Max(10, policy?.PasswordMinLength ?? 10);
+        var scalarCount = 0;
+        var hasUppercase = false;
+        var hasLowercase = false;
+        var hasDigit = false;
+        var hasSpecial = false;
+
+        for (var offset = 0; offset < password.Length;)
+        {
+            var status = Rune.DecodeFromUtf16(password.AsSpan(offset), out var rune, out var consumed);
+            if (status != OperationStatus.Done)
+                throw new InvalidOperationException("Password does not meet the workspace security policy.");
+
+            var category = Rune.GetUnicodeCategory(rune);
+            if (category is UnicodeCategory.Control or UnicodeCategory.Format)
+                throw new InvalidOperationException("Password does not meet the workspace security policy.");
+
+            scalarCount++;
+            hasUppercase |= Rune.IsUpper(rune);
+            hasLowercase |= Rune.IsLower(rune);
+            hasDigit |= Rune.IsDigit(rune);
+            hasSpecial |= category is
+                UnicodeCategory.ConnectorPunctuation or
+                UnicodeCategory.DashPunctuation or
+                UnicodeCategory.OpenPunctuation or
+                UnicodeCategory.ClosePunctuation or
+                UnicodeCategory.InitialQuotePunctuation or
+                UnicodeCategory.FinalQuotePunctuation or
+                UnicodeCategory.OtherPunctuation or
+                UnicodeCategory.MathSymbol or
+                UnicodeCategory.CurrencySymbol or
+                UnicodeCategory.ModifierSymbol or
+                UnicodeCategory.OtherSymbol;
+
+            offset += consumed;
+        }
+
+        var valid = scalarCount >= minimumLength
+            && (!(policy?.PasswordRequireUppercase ?? true) || hasUppercase)
+            && (!(policy?.PasswordRequireLowercase ?? true) || hasLowercase)
+            && (!(policy?.PasswordRequireDigit ?? true) || hasDigit)
+            && (!(policy?.PasswordRequireSpecial ?? true) || hasSpecial);
+        if (!valid)
+            throw new InvalidOperationException("Password does not meet the workspace security policy.");
+    }
 
     private async Task<bool> IsSsoOnlyUserAsync(User user, CancellationToken cancellationToken)
     {
@@ -842,7 +1708,13 @@ public class AuthService : IAuthService
 
     private static IReadOnlyCollection<string> GetRoles(User user)
     {
-        return user.UserRoles.Select(x => x.Role?.Name).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x!).Distinct().OrderBy(x => x).ToList();
+        return user.UserRoles
+            .Where(x => x.Role is { IsActive: true, IsDeleted: false })
+            .Select(x => x.Role!.Name)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct()
+            .OrderBy(x => x)
+            .ToList();
     }
 
     // Public: reused by platform-admin impersonation so minted tokens carry the exact
@@ -850,7 +1722,8 @@ public class AuthService : IAuthService
     public static IReadOnlyCollection<string> GetPermissions(User user)
     {
         var permissions = user.UserRoles
-            .SelectMany(x => x.Role?.RolePermissions ?? Array.Empty<RolePermission>())
+            .Where(x => x.Role is { IsActive: true, IsDeleted: false })
+            .SelectMany(x => x.Role!.RolePermissions)
             .Select(x => x.Permission?.Key)
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .Select(x => x!)
@@ -883,4 +1756,11 @@ public class AuthService : IAuthService
     };
 
     public static string Normalize(string value) => value.Trim().ToUpperInvariant();
+
+    public static string RequireWorkspace(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            throw new InvalidOperationException("Workspace is required.");
+        return value.Trim().ToLowerInvariant();
+    }
 }

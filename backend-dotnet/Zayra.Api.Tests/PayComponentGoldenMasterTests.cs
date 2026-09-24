@@ -600,7 +600,7 @@ internal sealed class GmTenantSeed
         Db.OvertimePayrollImpacts.Add(new OvertimePayrollImpact
         {
             TenantId = TenantId, OvertimeRequestId = req.Id, EmployeeId = empId,
-            Hours = hours, Amount = 0m, ApprovedMultiplier = approvedMultiplier, Status = "PendingPayroll",
+            Minutes = (int)Math.Round(hours * 60m), Amount = 0m, ApprovedMultiplier = approvedMultiplier, Status = "PendingPayroll",
         });
     }
 

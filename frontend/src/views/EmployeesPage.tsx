@@ -305,6 +305,15 @@ export function EmployeesPage() {
     [companies, defaultCompany, form.companyId],
   );
   const formCountryCode = normalizeCountryCode(selectedFormCompany?.countryCode);
+  // The employing company IS chosen and still resolves no country. Every identity document, leave
+  // entitlement and statutory requirement is keyed on that country, so the requirement set comes back
+  // EMPTY and the employee cannot be saved — the exact state a tenant whose first company was created
+  // with CountryCode = "" lands in. Kept separate from "no company chosen yet" so the form can name
+  // the cause instead of repeating the generic hint, which never mentioned the country at all.
+  const formCompanyMissingCountry = Boolean(selectedFormCompany) && formCountryCode.length === 0;
+  const formCompanyName = selectedFormCompany?.tradeName?.trim()
+    || selectedFormCompany?.legalNameEn?.trim()
+    || 'This company';
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1745,13 +1754,19 @@ export function EmployeesPage() {
                       {f.sensitive && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-700 dark:bg-amber-500/15 dark:text-amber-400">approval</span>}
                       {editForm[f.key] !== editOriginal[f.key] && <span className="h-1.5 w-1.5 rounded-full bg-sapphire" title="Modified" />}
                     </span>
-                    {f.type === 'select' ? (
+                    {/* A select needs an option list. A non-null assertion here claimed one was always
+                        there; when the field catalogue began reaching this modal, a remote descriptor typed
+                        `select` with no options (the endpoint sends none) made it throw — and because these children are
+                        built during EmployeesPage's own render, the error boundary replaced the WHOLE People
+                        page. An optionless field falls back to a free-text input, which is what it was
+                        before the overlay. employeeFieldCatalog.optionsAwareType stops it upstream too. */}
+                    {f.type === 'select' && f.options && f.options.length > 0 ? (
                       <select id={`edit-field-${f.key}`} value={editForm[f.key] ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, [f.key]: e.target.value }))} className="select mt-1.5 w-full">
                         <option value="">Select</option>
-                        {f.options!.map((o) => <option key={o} value={o}>{o}</option>)}
+                        {f.options.map((o) => <option key={o} value={o}>{o}</option>)}
                       </select>
                     ) : (
-                      <input id={`edit-field-${f.key}`} type={f.type ?? 'text'} value={editForm[f.key] ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, [f.key]: e.target.value }))} className="input mt-1.5 w-full" />
+                      <input id={`edit-field-${f.key}`} type={f.type && f.type !== 'select' ? f.type : 'text'} value={editForm[f.key] ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, [f.key]: e.target.value }))} className="input mt-1.5 w-full" />
                     )}
                   </label>
                   );
@@ -1942,7 +1957,17 @@ export function EmployeesPage() {
 
           <Section title="Identity & GCC Compliance">
             {(form.complianceRecords ?? []).length === 0 && (
-              <p className="text-xs text-slate-400">Select the employing company and nationality to see the required identity documents.</p>
+              formCompanyMissingCountry ? (
+                <div role="status" className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-400/30 dark:bg-amber-500/[0.08] dark:text-amber-200">
+                  <p className="font-semibold">{formCompanyName} has no country set — set it in Setup → Companies before adding employees.</p>
+                  <p className="mt-1">
+                    Identity documents, leave entitlements and statutory rules are all resolved from the employing
+                    company’s country. Until it is set there is nothing to require and nothing to save here.
+                  </p>
+                </div>
+              ) : (
+                <p className="text-xs text-slate-400">Select the employing company and nationality to see the required identity documents.</p>
+              )
             )}
             {(form.complianceRecords ?? []).map((record, index) => {
               const field = formComplianceFields.find((f) => f.fieldKey === record.fieldKey);

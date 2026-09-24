@@ -21,7 +21,6 @@ const MATRIX: { category: string; actions: { label: string; roles: string[] }[] 
       { label: 'Edit tenant name', roles: ['Owner', 'Admin'] },
       { label: 'Suspend / reactivate', roles: ['Owner', 'Admin'] },
       { label: 'Toggle feature flags', roles: ['Owner', 'Admin'] },
-      { label: 'Impersonate user', roles: ['Owner', 'Admin', 'Support'] },
     ],
   },
   {
@@ -57,7 +56,6 @@ const MATRIX: { category: string; actions: { label: string; roles: string[] }[] 
       { label: 'Unlock locked account', roles: ['Owner', 'Admin', 'Support'] },
       { label: 'Disable MFA for user', roles: ['Owner', 'Admin'] },
       { label: 'Revoke all sessions for user', roles: ['Owner', 'Admin', 'Support'] },
-      { label: 'Start support session', roles: ['Owner', 'Admin', 'Support'] },
       { label: 'End support session', roles: ['Owner', 'Admin', 'Support'] },
       { label: 'View support sessions', roles: ['Owner', 'Admin', 'Support', 'Auditor'] },
     ],

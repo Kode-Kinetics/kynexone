@@ -1,7 +1,9 @@
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
@@ -47,6 +49,7 @@ public class AuthServiceTests
             new FakeEmailService(),
             jwt,
             new NullMfaService(),
+            new TotpService(DataProtectionProvider.Create("ZayraTests")),
             NullLogger<AuthService>.Instance);
     }
 
@@ -100,6 +103,152 @@ public class AuthServiceTests
 
         Assert.True(hasher.Verify("CorrectHorse123!", hash));
         Assert.False(hasher.Verify("wrong-password", hash));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void RequiredWorkspace_RejectsMissingOrBlankValues(string? workspace)
+    {
+        var tenantSlug = typeof(ForgotPasswordRequest)
+            .GetConstructors()
+            .Single()
+            .GetParameters()
+            .Single(parameter => parameter.Name == nameof(ForgotPasswordRequest.TenantSlug));
+        var validator = Assert.Single(
+            tenantSlug.GetCustomAttributes(typeof(RequiredWorkspaceAttribute), inherit: false)
+                .Cast<RequiredWorkspaceAttribute>());
+
+        Assert.False(validator.IsValid(workspace));
+        Assert.Equal(
+            "Workspace is required.",
+            validator.FormatErrorMessage(nameof(ForgotPasswordRequest.TenantSlug)));
+        Assert.Throws<InvalidOperationException>(() => AuthService.RequireWorkspace(workspace));
+    }
+
+    [Fact]
+    public void RequireWorkspace_TrimsAndLowercases()
+    {
+        Assert.Equal("acme-workspace", AuthService.RequireWorkspace("  ACME-Workspace  "));
+    }
+
+    [Fact]
+    public void AuthLinkBuilder_EmitsCanonicalFragmentOnlyLinks()
+    {
+        const string token = "A+B/C=&secret#tail";
+        Assert.Equal(
+            "https://app.example.test/reset-password?workspace=acme%2Fhq#token=A%2BB%2FC%3D%26secret%23tail",
+            AuthLinkBuilder.ResetPassword("https://app.example.test///", " ACME/HQ ", token));
+        Assert.Equal(
+            "http://localhost:3000/accept-invitation?workspace=acme%2Fhq#token=A%2BB%2FC%3D%26secret%23tail",
+            AuthLinkBuilder.AcceptInvitation(null, " ACME/HQ ", token));
+        Assert.Throws<InvalidOperationException>(() =>
+            AuthLinkBuilder.RequireHttpsPublicAppUrl("http://app.example.test"));
+        Assert.Throws<InvalidOperationException>(() =>
+            AuthLinkBuilder.RequireHttpsPublicAppUrl("https://localhost:3000"));
+        Assert.Throws<InvalidOperationException>(() =>
+            AuthLinkBuilder.ResolvePublicAppUrl("https://app.example.test/base"));
+        Assert.Equal(
+            "https://app.example.test",
+            AuthLinkBuilder.RequireHttpsPublicAppUrl(" https://app.example.test/ "));
+    }
+
+    [Fact]
+    public async Task ForgotPassword_DuplicateEmailAcrossTenants_MutatesOnlyNamedWorkspace()
+    {
+        await using var db = CreateDb();
+        var hasher = new Pbkdf2PasswordHasher();
+        var tenantA = new Tenant { Id = Guid.NewGuid(), Name = "Tenant A", Slug = "tenant-a" };
+        var tenantB = new Tenant { Id = Guid.NewGuid(), Name = "Tenant B", Slug = "tenant-b" };
+        var userA = new User
+        {
+            Id = Guid.NewGuid(), TenantId = tenantA.Id, Tenant = tenantA,
+            Email = "same@example.test", NormalizedEmail = "SAME@EXAMPLE.TEST",
+            FullName = "Tenant A User", PasswordHash = hasher.Hash("Password A1!")
+        };
+        var userB = new User
+        {
+            Id = Guid.NewGuid(), TenantId = tenantB.Id, Tenant = tenantB,
+            Email = "same@example.test", NormalizedEmail = "SAME@EXAMPLE.TEST",
+            FullName = "Tenant B User", PasswordHash = hasher.Hash("Password B1!")
+        };
+        db.AddRange(tenantA, tenantB, userA, userB);
+        await db.SaveChangesAsync();
+
+        await BuildService(db).ForgotPasswordAsync(
+            new ForgotPasswordRequest("  SAME@example.test ", "  TENANT-A "),
+            TestCtx,
+            CancellationToken.None);
+
+        var token = Assert.Single(await db.PasswordResetTokens.AsNoTracking().ToListAsync());
+        Assert.Equal(userA.Id, token.UserId);
+        Assert.DoesNotContain(await db.PasswordResetTokens.AsNoTracking().ToListAsync(), x => x.UserId == userB.Id);
+    }
+
+    [Fact]
+    public async Task ResetPassword_WrongWorkspace_PerformsNoMutation()
+    {
+        var (db, user, _) = await SeedUserAsync();
+        const string rawToken = "workspace-bound-reset-token";
+        var originalHash = user.PasswordHash;
+        var token = new PasswordResetToken
+        {
+            UserId = user.Id,
+            TokenHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(rawToken))),
+            ExpiresAtUtc = DateTime.UtcNow.AddHours(1)
+        };
+        db.PasswordResetTokens.Add(token);
+        await db.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => BuildService(db).ResetPasswordAsync(
+            new ResetPasswordRequest(rawToken, "DifferentPassword1!", "other-tenant"),
+            TestCtx,
+            CancellationToken.None));
+
+        Assert.Equal(originalHash, user.PasswordHash);
+        Assert.Null(token.UsedAtUtc);
+        Assert.Empty(await db.LoginActivities.AsNoTracking().ToListAsync());
+    }
+
+    [Fact]
+    public async Task AcceptInvitation_WrongWorkspace_PerformsNoMutation()
+    {
+        var (db, user, _) = await SeedUserAsync();
+        const string rawToken = "workspace-bound-invitation-token";
+        var originalHash = user.PasswordHash;
+        db.Employees.Add(new Employee
+        {
+            Id = 8001,
+            TenantId = user.TenantId,
+            EmployeeCode = "AUTH-8001",
+            FullName = "Invitation User",
+            Status = "Active",
+            JoiningDate = DateTime.UtcNow.AddYears(-1)
+        });
+        var link = new EmployeeUserAccount
+        {
+            TenantId = user.TenantId,
+            EmployeeId = 8001,
+            UserId = user.Id,
+            AccessMode = AccessModes.EssOnly,
+            Status = "Invited",
+            RequiresPasswordSetup = true,
+            InvitationTokenHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(rawToken))),
+            InvitationExpiresAtUtc = DateTime.UtcNow.AddHours(1)
+        };
+        db.EmployeeUserAccounts.Add(link);
+        await db.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => BuildService(db).AcceptInvitationAsync(
+            new AcceptInvitationRequest(rawToken, "DifferentPassword1!", "other-tenant"),
+            TestCtx,
+            CancellationToken.None));
+
+        Assert.Equal(originalHash, user.PasswordHash);
+        Assert.Equal("Invited", link.Status);
+        Assert.Null(link.InvitationAcceptedAtUtc);
+        Assert.Empty(await db.RefreshTokens.AsNoTracking().ToListAsync());
     }
 
     // ── Successful login / token rotation ────────────────────────────────────
@@ -248,6 +397,7 @@ public class AuthServiceTests
         Assert.True(await db.AuditLogs.AnyAsync(x => x.Action == "auth.refresh_reuse_detected"));
     }
 
+
     [Fact]
     public async Task Login_UsesTenantRefreshTokenExpiryPolicy()
     {
@@ -326,7 +476,22 @@ public class AuthServiceTests
         await using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>().UseSqlite(connection).Options);
         await db.Database.EnsureCreatedAsync();
         var (_, user, _) = await SeedUserAsync(db);
+        user.Status = "PendingPasswordSetup";
+        user.AccessMode = AccessModes.NoLogin;
+        user.IsActive = false;
+        user.IsEmailConfirmed = false;
         const string invitationToken = "one-time-invitation-token";
+        db.Employees.Add(new Employee
+        {
+            Id = 42,
+            TenantId = user.TenantId,
+            EmployeeCode = "AUTH-42",
+            FullName = "Invitation User",
+            Status = "Active",
+            JoiningDate = DateTime.UtcNow.AddYears(-1),
+            // Invitation issuance writes the bidirectional identity link; acceptance requires it.
+            UserAccountId = user.Id
+        });
         db.EmployeeUserAccounts.Add(new EmployeeUserAccount
         {
             TenantId = user.TenantId,
@@ -341,10 +506,9 @@ public class AuthServiceTests
         await db.SaveChangesAsync();
 
         var auth = BuildService(db);
-        var request = new AcceptInvitationRequest(user.Email, invitationToken, "NewPassword1!", "zayra");
-        var accepted = await auth.AcceptInvitationAsync(request, TestCtx, CancellationToken.None);
+        var request = new AcceptInvitationRequest(invitationToken, "NewPassword1!", "zayra");
+        await auth.AcceptInvitationAsync(request, TestCtx, CancellationToken.None);
 
-        Assert.False(string.IsNullOrWhiteSpace(accepted.AccessToken));
         var link = await db.EmployeeUserAccounts.SingleAsync();
         Assert.Equal(string.Empty, link.InvitationTokenHash);
         Assert.Null(link.InvitationExpiresAtUtc);
@@ -354,7 +518,7 @@ public class AuthServiceTests
 
         await Assert.ThrowsAsync<UnauthorizedAccessException>(
             () => auth.AcceptInvitationAsync(request, TestCtx, CancellationToken.None));
-        Assert.Single(await db.RefreshTokens.ToListAsync());
+        Assert.Empty(await db.RefreshTokens.ToListAsync());
     }
 
     // ── Tenant-mandated MFA enforcement ───────────────────────────────────────
@@ -529,29 +693,43 @@ public class AuthServiceTests
         Assert.Equal(exUnknown.Message, exWrongPwd.Message);
     }
 
-    // ── Demo seeder gate ─────────────────────────────────────────────────────
-
+    // Regression for the 2026-09-20/21 OOM kills (12 on the 512 MB Render instance). The per-request
+    // session check and the /me by-id load pulled roles×permissions×overrides×accounts×grants as ONE
+    // cartesian query. On a relational provider (InMemory ignores query splitting) this pins: the
+    // checks stay correct on a production-sized graph, no statement joins the sibling collections,
+    // and every split statement runs inside a transaction (the split-query security contract).
     [Fact]
-    public void DemoSeeder_ShouldNotRunInProduction_WhenEnvVarNotSet()
+    public async Task SessionCheck_ProductionSizedAdmin_IsCorrectAndUsesSplitQueries()
     {
-        // Guard: if SEED_DEMO_DATA is not set, the demo seeder must not be invoked.
-        // This test verifies the flag-reading logic in isolation.
-        var envValue     = Environment.GetEnvironmentVariable("SEED_DEMO_DATA");
-        var configValue  = "false"; // simulating appsettings SeedAdmin:SeedDemoData=false (default)
+        var recorder = new Zayra.Api.Tests.Security.ReaderCommandRecorder();
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseSqlite(connection).AddInterceptors(recorder).Options);
+        await db.Database.EnsureCreatedAsync();
+        var seeded = await Zayra.Api.Tests.Security.ProductionSizedAdminSeed.SeedAsync(db);
+        var principal = await Zayra.Api.Tests.Security.ProductionSizedAdminSeed.PrincipalAsync(db, seeded);
 
-        var shouldSeed =
-            string.Equals(envValue,    "true", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(configValue, "true", StringComparison.OrdinalIgnoreCase);
+        recorder.Reset();
+        Assert.True(await TenantSessionSecurity.IsCurrentAsync(principal, db, CancellationToken.None));
+        AssertSplitInsideTransaction(recorder, "session check");
 
-        Assert.False(shouldSeed, "Demo seeder must NOT run when SEED_DEMO_DATA is absent/false");
+        recorder.Reset();
+        db.ChangeTracker.Clear();
+        var me = await BuildService(db).GetCurrentUserAsync(seeded.UserId, CancellationToken.None);
+        Assert.NotNull(me);
+        AssertSplitInsideTransaction(recorder, "/me by-id load");
     }
 
-    [Fact]
-    public void DemoSeeder_ShouldRun_WhenEnvVarIsTrue()
+    private static void AssertSplitInsideTransaction(Zayra.Api.Tests.Security.ReaderCommandRecorder recorder, string path)
     {
-        const string simulatedEnvValue = "true";
-        var shouldSeed = string.Equals(simulatedEnvValue, "true", StringComparison.OrdinalIgnoreCase);
-        Assert.True(shouldSeed, "Demo seeder must run when SEED_DEMO_DATA=true");
+        Assert.False(recorder.AnyCartesianUserGraphCommand,
+            $"{path}: a single statement joined role permissions with overrides/entity grants (cartesian).");
+        // Root + role graph + overrides + employee accounts + entity grants.
+        Assert.True(recorder.UserGraphCommands.Count >= 5,
+            $"{path}: expected split user-graph statements, saw {recorder.UserGraphCommands.Count}.");
+        Assert.All(recorder.Commands, c => Assert.True(c.InTransaction,
+            $"{path}: statement ran outside a transaction: {c.Sql[..Math.Min(120, c.Sql.Length)]}"));
     }
 }
 
@@ -784,6 +962,7 @@ public sealed class AuthRefreshTokenSecurityTests
             new FakeEmailService(),
             jwt,
             new NullMfaService(),
+            new TotpService(DataProtectionProvider.Create("ZayraTests")),
             NullLogger<AuthService>.Instance);
     }
 
@@ -953,7 +1132,7 @@ public sealed class AuthRetryingExecutionStrategyTests
     }
 
     [Fact]
-    public async Task AcceptInvitationAsync_UnderRetryingStrategy_ConsumesInvitationAndIssuesSession()
+    public async Task AcceptInvitationAsync_UnderRetryingStrategy_ConsumesInvitationWithoutSession()
     {
         // The third bare-transaction site. Under the retrying strategy every
         // POST /api/auth/accept-invitation returned HTTP 400, so no invited employee could ever
@@ -963,10 +1142,27 @@ public sealed class AuthRetryingExecutionStrategyTests
 
         await using (var seedDb = _fixture.CreateDb())
         {
+            var stagedUser = await seedDb.Users.SingleAsync(x => x.Id == seeded.UserId);
+            stagedUser.Status = "PendingPasswordSetup";
+            stagedUser.AccessMode = AccessModes.NoLogin;
+            stagedUser.IsActive = false;
+            stagedUser.IsEmailConfirmed = false;
+            var employee = new Employee
+            {
+                TenantId = seeded.TenantId,
+                EmployeeCode = $"AUTH-{Guid.NewGuid():N}",
+                FullName = "Invitation User",
+                Status = "Active",
+                JoiningDate = DateTime.UtcNow.AddYears(-1),
+                // Invitation issuance writes the bidirectional identity link; acceptance requires it.
+                UserAccountId = seeded.UserId
+            };
+            seedDb.Employees.Add(employee);
+            await seedDb.SaveChangesAsync();
             seedDb.EmployeeUserAccounts.Add(new EmployeeUserAccount
             {
                 TenantId = seeded.TenantId,
-                EmployeeId = 4242,
+                EmployeeId = employee.Id,
                 UserId = seeded.UserId,
                 AccessMode = AccessModes.EssOnly,
                 Status = "Invited",
@@ -977,17 +1173,13 @@ public sealed class AuthRetryingExecutionStrategyTests
             await seedDb.SaveChangesAsync();
         }
 
-        AuthResponse accepted;
         await using (var acceptDb = CreateRetryingDb())
         {
-            accepted = await NoStrategyConflict(() => BuildService(acceptDb).AcceptInvitationAsync(
-                new AcceptInvitationRequest(seeded.Email, invitationToken, "NewPassword1!", seeded.TenantSlug),
+            await NoStrategyConflict(() => BuildService(acceptDb).AcceptInvitationAsync(
+                new AcceptInvitationRequest(invitationToken, "NewPassword1!", seeded.TenantSlug),
                 Context,
                 CancellationToken.None));
         }
-
-        Assert.False(string.IsNullOrWhiteSpace(accepted.AccessToken));
-        Assert.False(string.IsNullOrWhiteSpace(accepted.RefreshToken));
 
         await using var verify = _fixture.CreateDb();
         var link = await verify.EmployeeUserAccounts.AsNoTracking()
@@ -997,10 +1189,8 @@ public sealed class AuthRetryingExecutionStrategyTests
         Assert.NotNull(link.InvitationAcceptedAtUtc);
         Assert.False(link.RequiresPasswordSetup);
         Assert.Equal("Active", link.Status);
-        // The session created inside the same unit committed with it.
-        var issued = await verify.RefreshTokens.AsNoTracking()
-            .SingleAsync(x => x.UserId == seeded.UserId && x.TokenHash == HashToken(accepted.RefreshToken));
-        Assert.Null(issued.RevokedAtUtc);
+        Assert.Empty(await verify.RefreshTokens.AsNoTracking()
+            .Where(x => x.UserId == seeded.UserId && x.RevokedAtUtc == null).ToListAsync());
         Assert.True(await verify.AuditLogs.AnyAsync(x =>
             x.TenantId == seeded.TenantId && x.Action == "auth.invitation_accepted"));
     }
@@ -1024,6 +1214,20 @@ public sealed class AuthRetryingExecutionStrategyTests
                 "strategy. Every /api/auth/refresh call will return HTTP 400 and log users out. " +
                 $"Wrap the unit in Database.CreateExecutionStrategy().ExecuteAsync(...). Original: {ex.Message}");
             throw;
+        }
+    }
+
+    private static async Task NoStrategyConflict(Func<Task> operation)
+    {
+        try
+        {
+            await operation();
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains(ConflictFragment))
+        {
+            Assert.Fail(
+                "REGRESSION: a bare BeginTransactionAsync is back under the retrying execution " +
+                "strategy. Original: " + ex.Message);
         }
     }
 
@@ -1099,6 +1303,7 @@ public sealed class AuthRetryingExecutionStrategyTests
             new FakeEmailService(),
             jwt,
             new NullMfaService(),
+            new TotpService(DataProtectionProvider.Create("ZayraTests")),
             NullLogger<AuthService>.Instance);
     }
 
@@ -1135,10 +1340,12 @@ file sealed class NullMfaService : IMfaService
     public Task<string> CreateChallengeAsync(Guid userId, Guid tenantId, string ip, CancellationToken ct) => throw new NotImplementedException();
     public Task<Zayra.Api.Domain.Entities.User?> VerifyChallengeAsync(string token, string code, CancellationToken ct) => throw new NotImplementedException();
     public Task<bool> DisableAsync(Guid userId, Guid tenantId, string code, CancellationToken ct) => throw new NotImplementedException();
+    public Task<bool> AdminDisableAsync(Guid userId, Guid tenantId, RequestContext context, CancellationToken ct) => throw new NotImplementedException();
     public Task<MfaSetupInitDto> InitiatePlatformSetupAsync(Guid id, CancellationToken ct) => throw new NotImplementedException();
     public Task<bool> VerifyPlatformSetupAsync(Guid id, MfaVerifySetupRequest req, CancellationToken ct) => throw new NotImplementedException();
     public Task<string> CreatePlatformChallengeAsync(Guid id, string ip, CancellationToken ct) => throw new NotImplementedException();
     public Task<Zayra.Api.Models.PlatformUser?> VerifyPlatformChallengeAsync(string token, string code, CancellationToken ct) => throw new NotImplementedException();
+    public Task<Zayra.Api.Models.PlatformUser?> CompletePlatformChallengeAsync(string token, string code, RequestContext context, CancellationToken ct) => throw new NotImplementedException();
     public Task<bool> DisablePlatformAsync(Guid id, string code, CancellationToken ct) => throw new NotImplementedException();
 }
 

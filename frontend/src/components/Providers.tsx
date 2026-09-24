@@ -24,12 +24,19 @@ import { ChunkErrorReloader } from '@/src/components/ChunkErrorReloader';
 export function Providers({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const isPlatform = pathname?.startsWith('/platform') ?? false;
+  const isLogin = pathname === '/login';
+  const isPublicCredentialRoute = pathname === '/reset-password' || pathname === '/accept-invitation';
 
   return (
     <AppToastProvider>
       <ChunkErrorReloader />
-      {isPlatform ? (
+      {isPlatform || isPublicCredentialRoute ? (
         children
+      ) : isLogin ? (
+        // Login needs AuthProvider for its local sign-in/MFA state, but must not
+        // mount feature/help providers that issue protected bootstrap requests
+        // from an old session and can refresh, clear storage, or redirect.
+        <AuthProvider>{children}</AuthProvider>
       ) : (
         <AuthProvider>
           <FeatureFlagProvider>

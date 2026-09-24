@@ -1,6 +1,13 @@
 import { expect, test, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
+// Which layout the page renders, from the real viewport (the app's own breakpoints), so the
+// suite is right under any project: the fixture matrix here, or the Desktop Chrome CI lane.
+function formOf(page: Page): 'desktop' | 'tablet' | 'phone' {
+  const w = page.viewportSize()?.width ?? 1280;
+  return w >= 1024 ? 'desktop' : w < 640 ? 'phone' : 'tablet';
+}
+
 /**
  * HR Command Center, fixture lane (e2e/playwright.fixture.config.ts).
  *
@@ -135,7 +142,7 @@ test.describe('HR Command Center: data trust', () => {
 
   test('approvals reconcile: badge, rows and ages', async ({ page }, info) => {
     await open(page);
-    if (info.project.name !== 'desktop') await page.getByRole('tab', { name: /To do/ }).click();
+    if (formOf(page) !== 'desktop') await page.getByRole('tab', { name: /To do/ }).click();
     const card = page.locator('section[aria-labelledby="approvals-heading"]');
     await expect(card.locator('#approvals-heading')).toContainText('3');
     await expect(card.getByText('Raj Krishnamurthy', { exact: true })).toBeVisible();
@@ -144,7 +151,7 @@ test.describe('HR Command Center: data trust', () => {
 
   test('older API without analytics degrades to statements, not invented charts', async ({ page }, info) => {
     await open(page);
-    if (info.project.name !== 'desktop') await page.getByRole('tab', { name: /Insights/ }).click();
+    if (formOf(page) !== 'desktop') await page.getByRole('tab', { name: /Insights/ }).click();
     // No analytics block: the heatmap is left out rather than shown empty, and leave falls back
     // to the requests waiting; nothing mentions services or infrastructure.
     await expect(page.locator('#heat-heading')).toHaveCount(0);
@@ -156,7 +163,7 @@ test.describe('HR Command Center: data trust', () => {
 
 test.describe('HR Command Center: layout and interaction', () => {
   test('desktop: hero and decisions lead; keyboard reaches the actions', async ({ page }, info) => {
-    test.skip(info.project.name !== 'desktop', 'desktop only');
+    test.skip(formOf(page) !== 'desktop', 'desktop only');
     await open(page);
     await expect(page.locator('#attention-heading')).toBeInViewport();
     await expect(page.locator('#hero-heading')).toBeInViewport();
@@ -167,7 +174,7 @@ test.describe('HR Command Center: layout and interaction', () => {
   });
 
   test('rich data: trend, heatmap, 3D composition, timeline all render with text equivalents', async ({ page }, info) => {
-    test.skip(info.project.name !== 'desktop', 'desktop only');
+    test.skip(formOf(page) !== 'desktop', 'desktop only');
     await open(page, { rich: true });
     await expect(page.getByRole('img', { name: /^Net payroll by month, SAR: Oct 1\.52M/ })).toBeVisible();
     await expect(page.getByRole('img', { name: /^Operations, .*: \d+%, \d+ of 38/ }).first()).toBeVisible();
@@ -184,7 +191,7 @@ test.describe('HR Command Center: layout and interaction', () => {
   });
 
   test('compact: tabs move between views; choice survives reload', async ({ page }, info) => {
-    test.skip(info.project.name === 'desktop', 'compact only');
+    test.skip(formOf(page) === 'desktop', 'compact only');
     await open(page, { rich: true });
     await evidence(page, `${info.project.name}-today`);
     const tabs = page.getByRole('tablist', { name: 'Dashboard views' });
@@ -200,7 +207,7 @@ test.describe('HR Command Center: layout and interaction', () => {
   });
 
   test('sidebar entries explain themselves on hover and keyboard focus', async ({ page }, info) => {
-    test.skip(info.project.name !== 'desktop', 'desktop rail only');
+    test.skip(formOf(page) !== 'desktop', 'desktop rail only');
     await open(page);
     const nav = page.getByRole('navigation', { name: 'Primary navigation' });
     await nav.getByRole('button', { name: 'Payroll', exact: true }).hover();
@@ -217,7 +224,7 @@ test.describe('HR Command Center: layout and interaction', () => {
   });
 
   test('phone: KPI tiles are a swipe rail and critical items stay in the plain list', async ({ page }, info) => {
-    test.skip(info.project.name !== 'phone', 'phone only');
+    test.skip(formOf(page) !== 'phone', 'phone only');
     await open(page);
     const rail = page.getByRole('region', { name: 'Key metrics' });
     const before = await rail.evaluate((el) => el.scrollLeft);
@@ -239,7 +246,7 @@ test.describe('HR Command Center: layout and interaction', () => {
   });
 
   test('reduced motion: no keyframe animations run', async ({ page }, info) => {
-    test.skip(info.project.name !== 'desktop', 'desktop only');
+    test.skip(formOf(page) !== 'desktop', 'desktop only');
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await open(page, { rich: true });
     const running = await page.evaluate(() => document.getAnimations()
@@ -264,7 +271,7 @@ test.describe('HR Command Center: accessibility', () => {
   }
 
   test('200% zoom keeps the page usable (no sideways scroll)', async ({ page }, info) => {
-    test.skip(info.project.name !== 'desktop', 'desktop only');
+    test.skip(formOf(page) !== 'desktop', 'desktop only');
     await page.setViewportSize({ width: 720, height: 450 });
     await open(page, { rich: true });
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
