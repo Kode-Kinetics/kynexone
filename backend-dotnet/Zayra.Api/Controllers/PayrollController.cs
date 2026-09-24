@@ -4990,7 +4990,15 @@ public class PayrollController : ControllerBase
         await PayrollAudit("payroll.payslips.generated", "PayrollRun", id.ToString(),
             new { generated = slips.Count - refreshed, refreshed, publishedToEss = published }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
-        return Ok(await _db.Payslips.AsNoTracking().Where(x => x.TenantId == tenantId && x.PayrollRunId == id).ToListAsync(cancellationToken));
+        // Same header-only projection as ListPayslips — carrying the employee name so the caller never has
+        // to fall back to a placeholder code.
+        var generated = await _db.Payslips.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.PayrollRunId == id)
+            .OrderBy(x => x.EmployeeId).ToListAsync(cancellationToken);
+        var generatedNames = await ResolvePayslipEmployeeNamesAsync(tenantId, id, generated, cancellationToken);
+        return Ok(generated
+            .Select(x => PayslipListItemDto.Project(x, generatedNames[x.EmployeeId].Code, generatedNames[x.EmployeeId].Name))
+            .ToList());
     }
 
     /// <summary>
@@ -6612,8 +6620,69 @@ public class PayrollController : ControllerBase
             query = query.Where(x => scope.AllowedEmployeeIds!.Contains(x.EmployeeId));
         var total = await query.CountAsync(cancellationToken);
         var items = await query.OrderBy(x => x.EmployeeId).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(cancellationToken);
-        // SAFE-SERIALIZATION: Payslip is a header-only record (Id, EmployeeId, PayslipNumber, IsPublishedToEss) — no salary amounts.
-        return Ok(new PagedResult<Payslip>(items, total, page, pageSize));
+        var names = await ResolvePayslipEmployeeNamesAsync(tenantId, id, items, cancellationToken);
+        // SAFE-SERIALIZATION: PayslipListItemDto is a header-only record (Id, EmployeeId, employee name/code,
+        // PayslipNumber, IsPublishedToEss) — no salary amounts. The name comes from the same PayrollSlip row
+        // the payslip PDF prints from, so the list and the document always agree.
+        // Order stays EmployeeId (the paged DB order) — re-sorting by name inside the page would make
+        // page boundaries and display order disagree once a run exceeds one page.
+        var dtos = items
+            .Select(x => PayslipListItemDto.Project(x, names[x.EmployeeId].Code, names[x.EmployeeId].Name))
+            .ToList();
+        return Ok(new PagedResult<PayslipListItemDto>(dtos, total, page, pageSize));
+    }
+
+    /// <summary>
+    /// Resolves the employee name + code for a set of payslip headers.
+    ///
+    /// The <see cref="Payslip"/> row is header-only and stores neither, so the name is read from the
+    /// PayrollSlip row for the same run + employee — the SAME denormalised value
+    /// <see cref="DownloadSlipPdf"/> prints on the PDF, captured when the run was processed. Reading it
+    /// from anywhere else (e.g. the live Employees row) would let a renamed or transferred employee's
+    /// list entry drift away from their issued payslip document.
+    ///
+    /// Employees whose PayrollSlip row is gone (a reopened run mid-reprocess wipes slips but keeps
+    /// payslips) fall back to the live Employee record, and only then — never silently — to the
+    /// employee code. A payslip header with no resolvable identity at all is still listed, labelled by
+    /// its numeric id, rather than being dropped from the page.
+    /// </summary>
+    private async Task<Dictionary<int, (string Code, string Name)>> ResolvePayslipEmployeeNamesAsync(
+        Guid tenantId, Guid runId, IReadOnlyCollection<Payslip> payslips, CancellationToken ct)
+    {
+        var resolved = new Dictionary<int, (string Code, string Name)>();
+        if (payslips.Count == 0) return resolved;
+
+        var employeeIds = payslips.Select(p => p.EmployeeId).Distinct().ToList();
+
+        foreach (var s in await _db.PayrollSlips.AsNoTracking()
+                     .Where(s => s.TenantId == tenantId && s.RunId == runId && employeeIds.Contains(s.EmployeeId))
+                     .Select(s => new { s.EmployeeId, s.EmployeeCode, s.EmployeeName })
+                     .ToListAsync(ct))
+        {
+            if (!string.IsNullOrWhiteSpace(s.EmployeeName))
+                resolved[s.EmployeeId] = (s.EmployeeCode, s.EmployeeName);
+        }
+
+        var missing = employeeIds.Where(eid => !resolved.ContainsKey(eid)).ToList();
+        if (missing.Count > 0)
+        {
+            foreach (var e in await _db.Employees.AsNoTracking()
+                         .Where(e => e.TenantId == tenantId && missing.Contains(e.Id))
+                         .Select(e => new { e.Id, e.EmployeeCode, e.FullName })
+                         .ToListAsync(ct))
+            {
+                if (!string.IsNullOrWhiteSpace(e.FullName))
+                    resolved[e.Id] = (e.EmployeeCode, e.FullName);
+                else if (!string.IsNullOrWhiteSpace(e.EmployeeCode))
+                    resolved[e.Id] = (e.EmployeeCode, e.EmployeeCode);
+            }
+        }
+
+        foreach (var eid in employeeIds)
+        {
+            if (!resolved.ContainsKey(eid)) resolved[eid] = (string.Empty, $"Employee {eid}");
+        }
+        return resolved;
     }
 
     [HttpGet("runs/{id:guid}/approvals")]
