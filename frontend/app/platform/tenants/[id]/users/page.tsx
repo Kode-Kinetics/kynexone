@@ -313,7 +313,7 @@ export default function TenantUsersPage() {
                     </td>
                     <td className="px-3 py-3">
                       <div className="flex items-center gap-1">
-                        {u.mFAEnabled && (
+                        {u.mfaEnabled && (
                           <span title="MFA enabled" className="text-[10px] bg-blue-500/10 text-blue-400 border border-blue-500/20 px-1.5 py-0.5 rounded">MFA</span>
                         )}
                         {u.mustChangePassword && (
@@ -473,7 +473,7 @@ export default function TenantUsersPage() {
                     onClick={() => { unlock(selected); closePanel(); }} />
                 )}
 
-                {selected.mFAEnabled && (
+                {selected.mfaEnabled && (
                   <ActionButton icon={ShieldOff} label="Disable MFA" desc="Remove MFA requirement from this user"
                     color="text-amber-400 border-amber-500/20 hover:border-amber-500/40"
                     onClick={() => { disableMfa(selected); closePanel(); }} />

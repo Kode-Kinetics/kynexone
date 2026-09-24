@@ -498,9 +498,16 @@ public class AuthService : IAuthService
             <p style="font-size:12px;color:#666">KynexOne Workforce · {_appUrl}</p>
             """;
 
-        if (await _emailService.IsConfiguredAsync(cancellationToken))
+        // TENANT-EXPLICIT. Forgot-password is anonymous, so there is no principal and
+        // ZayraDbContext._isSystemScope is TRUE — the SystemSettings tenant filter is bypassed.
+        // The ambient overload then matched `Category == "Email"` across EVERY tenant; its
+        // multi-tenant guard only trips when more than one tenant has SMTP configured, so in the
+        // ordinary case where exactly one has, that tenant's host, credentials and From address
+        // were used to send some OTHER tenant's reset email. user.TenantId is known here — it is
+        // already on the audit record above — so it is passed explicitly.
+        if (await _emailService.IsConfiguredAsync(user.TenantId, cancellationToken))
         {
-            try { await _emailService.SendAsync(user.Email, user.FullName, "Reset your KynexOne password", html, cancellationToken: cancellationToken); }
+            try { await _emailService.SendAsync(user.TenantId, user.Email, user.FullName, "Reset your KynexOne password", html, cancellationToken: cancellationToken); }
             catch (Exception ex) { _log.LogWarning(ex, "Password reset email failed for {Email}. Token saved.", user.Email); }
         }
         else
