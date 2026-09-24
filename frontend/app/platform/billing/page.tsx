@@ -134,7 +134,7 @@ export default function PlatformBillingPage() {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <MetricCard label="Total MRR" value={summary ? `$${(summary.totalMrr ?? 0).toLocaleString()}` : '—'} sub="Monthly recurring" accent="green" icon={TrendingUp} />
           <MetricCard label="Total ARR" value={summary ? `$${(summary.totalArr ?? 0).toLocaleString()}` : '—'} sub="Annual run rate" accent="green" icon={TrendingUp} />
-          <MetricCard label="Overdue" value={summary ? `$${(summary.overdueTotalAmount ?? 0).toLocaleString()}` : '—'} sub={summary ? `${summary.overdueCount ?? 0} invoices` : undefined} accent={summary && (summary.overdueCount ?? 0) > 0 ? 'rose' : 'default'} icon={AlertTriangle} />
+          <MetricCard label="Overdue" value={summary ? `$${(summary.overdueTotal ?? 0).toLocaleString()}` : '—'} sub={summary ? `${summary.overdueCount ?? 0} invoices` : undefined} accent={summary && (summary.overdueCount ?? 0) > 0 ? 'rose' : 'default'} icon={AlertTriangle} />
           <MetricCard label="Paid This Month" value={summary ? `$${(summary.paidThisMonth ?? 0).toLocaleString()}` : '—'} sub={summary ? `${summary.sentThisMonth ?? 0} sent` : undefined} accent="default" icon={CreditCard} />
         </div>
       )}
