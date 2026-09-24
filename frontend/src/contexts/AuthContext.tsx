@@ -23,7 +23,7 @@ interface AuthContextValue {
   mfaPending: MfaPendingState | null;
   mfaEnrollmentPending: MfaEnrollmentPendingState | null;
   /** Normal credential login. Returns mfaPending state when TOTP is required. */
-  login: (email: string, password: string, tenantSlug?: string) => Promise<LoginOutcome>;
+  login: (email: string, password: string, tenantSlug: string) => Promise<LoginOutcome>;
   /** Complete login after TOTP entry during challenge flow. */
   verifyMfaChallenge: (totpCode: string) => Promise<void>;
   logout: () => Promise<void>;
@@ -40,6 +40,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [mfaEnrollmentPending, setMfaEnrollmentPending] = useState<MfaEnrollmentPendingState | null>(null);
 
   useEffect(() => {
+    if (['/login', '/reset-password', '/accept-invitation'].includes(window.location.pathname)) {
+      setIsLoading(false);
+      return;
+    }
     const token = localStorage.getItem('zayra_access_token');
     if (!token) {
       setIsLoading(false);
@@ -55,7 +59,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       .finally(() => setIsLoading(false));
   }, []);
 
-  const login = useCallback(async (email: string, password: string, tenantSlug = '') => {
+  const login = useCallback(async (email: string, password: string, tenantSlug: string) => {
     const res = await authApi.login(email, password, tenantSlug);
     if (isMfaChallenge(res)) {
       // Credentials verified; TOTP step required before tokens are issued.

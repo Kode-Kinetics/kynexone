@@ -270,6 +270,9 @@ public class TenantProvisioningTests
 
         var company = MakeCompany(tenantId, "TP-BlockDelete");
         db.Companies.Add(company);
+        // A second active company, so the separate "only active company" guard is not what blocks
+        // this delete: the active-employee guard must fire on its own.
+        db.Companies.Add(MakeCompany(tenantId, "TP-BlockDelete-Other"));
         db.Employees.Add(MakeEmployee(tenantId, "TP-BD-E1", company.Id));
         await db.SaveChangesAsync();
 

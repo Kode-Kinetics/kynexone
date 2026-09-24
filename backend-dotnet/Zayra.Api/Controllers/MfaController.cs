@@ -32,9 +32,16 @@ public class MfaController : ControllerBase
         var tenantId = GetTenantId();
         if (userId is null || tenantId is null) return Unauthorized();
 
-        var dto = await _mfa.InitiateSetupAsync(userId.Value, tenantId.Value, ct);
-        // Return provisioning URI (contains secret). Caller renders QR; secret not stored to DB yet.
-        return Ok(new MfaSetupInitResponse(dto.ProvisioningUri));
+        try
+        {
+            var dto = await _mfa.InitiateSetupAsync(userId.Value, tenantId.Value, ct);
+            // Return provisioning URI (contains secret). Caller renders QR; secret not stored to DB yet.
+            return Ok(new MfaSetupInitResponse(dto.ProvisioningUri));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Conflict(new { message = ex.Message });
+        }
     }
 
     /// <summary>Confirms TOTP setup by verifying the first code from the authenticator app.
@@ -87,12 +94,13 @@ public class MfaController : ControllerBase
     [EnableRateLimiting("auth_login")]
     public async Task<IActionResult> VerifyChallenge([FromBody] MfaChallengeVerifyRequest request, CancellationToken ct)
     {
-        var user = await _mfa.VerifyChallengeAsync(request.ChallengeToken, request.TotpCode, ct);
-        if (user is null) return Unauthorized(new { message = "Invalid or expired MFA challenge." });
-
         try
         {
-            var response = await _authService.CompleteMfaLoginAsync(user.Id, GetContext(), ct);
+            var response = await _authService.CompleteMfaLoginAsync(
+                request.ChallengeToken,
+                request.TotpCode,
+                GetContext(),
+                ct);
             return Ok(response);
         }
         catch (UnauthorizedAccessException ex)

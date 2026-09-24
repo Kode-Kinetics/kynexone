@@ -114,7 +114,10 @@ public static class TenantProvisioningBundle
     // insert-if-absent by (tenant, CompanyId==null, country). The CODE floor (GccReadinessFloor) remains
     // the GUARANTEE regardless of whether this seed ran, so a fresh/mis-provisioned tenant still gates.
     // Keys are jurisdiction readiness vocabulary (EmployeeFieldRegistry), not tenant business data.
-    private static readonly (string Country, string RequiredFieldsJson)[] ComplianceSeeds =
+    /// <summary>Exposed to tests (InternalsVisibleTo) so the readiness-resolver jurisdiction guard can
+    /// assert against the REAL seeded set — six tenant-default rows, one per GCC state — rather than a
+    /// copy that could drift away from what provisioning actually writes.</summary>
+    internal static readonly (string Country, string RequiredFieldsJson)[] ComplianceSeeds =
     {
         ("SA", """[{"key":"GosiReference","category":"identity","failClosed":true},{"key":"IqamaNumber","category":"identity","failClosed":true,"appliesWhen":{"nationalityNot":"SA"}},{"key":"doc:Contract","category":"contract","failClosed":false}]"""),
         ("AE", """[{"key":"EmiratesId","category":"identity","failClosed":true},{"key":"WorkPermitNumber","category":"identity","failClosed":true,"appliesWhen":{"nationalityNot":"AE"}},{"key":"doc:Contract","category":"contract","failClosed":false}]"""),
@@ -338,7 +341,31 @@ public static class TenantProvisioningBundle
         return 1;
     }
 
-    // ── 5. Default leave types + a default annual leave policy (Program row 72/73) ──
+    // ── 5. Default leave types + a statutory-default leave POLICY per type, per country ──
+    //
+    // WHY A POLICY ROW IS NOT OPTIONAL. LeaveService.CalculateWorkingDaysAsync reads the day-count
+    // basis — weekends in or out, public holidays in or out — from the resolved LeavePolicy, and
+    // there is exactly one correct answer per LEAVE TYPE, not per tenant:
+    //
+    //   • Annual leave is counted in WORKING days. A rest day inside an annual-leave span is not a
+    //     day of leave, so counting it would charge the employee for a day the employer never owed.
+    //   • KSA sick leave is counted in CALENDAR days. Art. 117 grants the entitlement "during a
+    //     single year, whether such leaves are continuous or intermittent" — the Friday in the
+    //     middle of a sick spell is a sick day, and the 120-day entitlement is 120 calendar days.
+    //
+    // A tenant with NO policy row therefore cannot be served correctly by any fallback: whichever
+    // basis the fallback picks is wrong for the other type. Counting every calendar day
+    // over-deducts annual leave; counting only working days bands a 120-day statutory sick
+    // entitlement as roughly 86. The policy row is the only thing that distinguishes them, so
+    // every tenant is born with one per seeded type.
+    //
+    // Everything seeded here is an ORDINARY, EDITABLE policy row — the same shape
+    // POST /api/leave/policies writes — reachable in Setup, editable, and archivable. Nothing in
+    // the product branches on "was this seeded"; the "Default …" name prefix is a label for the
+    // administrator, not a behaviour switch. The installer is strictly insert-if-absent on
+    // (leave type, tenant-wide scope, country), so an edited row is never rewritten and an
+    // ARCHIVED row is never resurrected (DELETE on a leave policy sets Status = "Archived" and
+    // leaves the row in place, which is what makes the deletion stick across deploys).
 
     private static readonly (string Code, string En, string Ar, string Category, bool Paid)[] LeaveTypeSeeds =
     {
@@ -346,7 +373,82 @@ public static class TenantProvisioningBundle
         ("SICK", "Sick Leave", "إجازة مرضية", "Sick", true),
     };
 
-    private static async Task<(int types, int policies)> InstallDefaultLeaveAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)
+    /// <summary>
+    /// The day-count basis and accrual shape for each seeded leave type. The ENTITLEMENT is not
+    /// here — it is read per country from <see cref="Packs"/>, which is already the single source
+    /// the tenant's own <c>CountryPayrollRule.annual_leave_days</c> / <c>sick_leave_days</c> rows
+    /// are seeded from, so a legal figure is never written down twice.
+    /// </summary>
+    private static readonly (string TypeCode, string Label, bool WeekendsIncluded, bool PublicHolidaysIncluded, string AccrualMethod)[] LeavePolicyBases =
+    {
+        // ANNUAL — working days: weekends and public holidays are NOT leave days.
+        // KSA Art. 109(1): "a prepaid annual leave of not less than 21 days, to be increased to a
+        // period of not less than 30 days if the worker spends five consecutive years in the
+        // service of the employer." The 21 → 30 tier is applied on top of this row by
+        // KsaAnnualLeaveScale (LeaveService.ResolveKsaAnnualEntitlementAsync) as a statutory FLOOR,
+        // so the row carries the base figure and the tier is never a second copy of the rule.
+        // Monthly accrual, matching the tier engine, which only visits AccrualMethod == "Monthly".
+        ("ANNUAL", "Annual Leave", false, false, "Monthly"),
+
+        // SICK — CALENDAR days. KSA Art. 117: "a worker whose illness has been proven shall be
+        // entitled to a sick leave … for the first thirty days with full pay, for the following
+        // sixty days with three quarters of the wage, and for the following thirty days without
+        // pay … during a single year, whether such leaves are continuous or intermittent" — 120
+        // days, counted on the calendar. UAE Federal Decree-Law 33/2021 Art. 31 is the same shape:
+        // 90 days after probation, 15 full / 30 half / 45 unpaid, expressed in calendar days.
+        // WeekendsIncluded AND PublicHolidaysIncluded are both true for exactly that reason.
+        //
+        // AccrualMethod "Yearly" (front-loaded) deliberately keeps sick leave OUT of the monthly
+        // accrual sweep: a sick entitlement is a per-illness-year cap, not something an employee
+        // earns at 120/12 days a month, and the Art. 117 pay banding is applied at approval by
+        // LeaveService.ApplyKsaSickLeaveScaleAsync from the same KsaLeaveHoursDefaults constants.
+        ("SICK", "Sick Leave", true, true, "Yearly"),
+    };
+
+    /// <summary>
+    /// The countries a default policy set is planted for. The same six GCC states
+    /// <see cref="ComplianceSeeds"/> already seeds a readiness profile for — the jurisdictions this
+    /// product actually operates in — rather than all nineteen <see cref="Packs"/> entries, which
+    /// would bury a single-country tenant's Setup screen in 38 rows it will never use. A tenant
+    /// that opens an entity elsewhere adds its own policy, or edits the country-neutral one.
+    /// </summary>
+    internal static readonly string[] DefaultLeavePolicyCountries = { "SA", "AE", "QA", "KW", "OM", "BH" };
+
+    /// <summary>
+    /// The country whose figures the COUNTRY-NEUTRAL default carries. That row exists because
+    /// <c>LeaveService.IsPolicyEligible</c> rejects a country-scoped policy for an employee whose
+    /// company has no country code yet — a brand-new tenant and, historically, the pilot tenant.
+    /// Without it such a tenant would have no resolvable policy and would be back in the
+    /// wrong-basis fallback this whole section exists to remove. KSA is the product's home
+    /// jurisdiction and the one certified pack; the moment the company carries a country code the
+    /// country row outranks this one.
+    /// </summary>
+    internal const string NeutralLeavePolicyCountry = "SA";
+
+    /// <summary>
+    /// The statutory entitlement for a seeded default, read from <see cref="Packs"/> — the same
+    /// table the tenant's <c>CountryPayrollRule</c> leave-day rules are seeded from. KSA's figures
+    /// there (21 annual, 120 sick) are asserted against <c>KsaLeaveHoursDefaults</c> by
+    /// <c>DefaultLeavePolicyTests</c>, so the two can never drift into two different legal answers.
+    /// </summary>
+    internal static decimal DefaultLeaveEntitlementDays(string typeCode, string countryCode)
+    {
+        var cc = string.IsNullOrWhiteSpace(countryCode) ? NeutralLeavePolicyCountry : countryCode;
+        var pack = Packs.FirstOrDefault(p => string.Equals(p.Country, cc, StringComparison.OrdinalIgnoreCase));
+        if (pack.Country is null)
+            pack = Packs.First(p => p.Country == NeutralLeavePolicyCountry);
+        return string.Equals(typeCode, "SICK", StringComparison.OrdinalIgnoreCase)
+            ? pack.Sick
+            : pack.Annual;
+    }
+
+    /// <summary>
+    /// internal, not private: <c>TenantDefaultsBackfill</c> installs the same leave types and
+    /// default policies on tenants that already existed. Sharing this installer rather than copying
+    /// it keeps <see cref="LeavePolicyBases"/> and <see cref="Packs"/> the single source of both
+    /// the day-count basis and the entitlement.
+    /// </summary>
+    internal static async Task<(int types, int policies)> InstallDefaultLeaveAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)
     {
         // IgnoreQueryFilters is intentional: seeder read scoped by explicit tenantId; insert-if-absent, never touches another tenant.
         var existingTypes = await db.LeaveTypes.IgnoreQueryFilters().AsNoTracking()
@@ -370,27 +472,76 @@ public static class TenantProvisioningBundle
             typesAdded++;
         }
 
-        // One default annual leave policy (configurable default; WeekendsIncluded=false so the
-        // WorkWeekService drives the day-count). Insert-if-absent by name+leave type.
-        var policiesAdded = 0;
-        if (typeByCode.TryGetValue("ANNUAL", out var annualId))
+        var policiesAdded = await InstallDefaultLeavePoliciesAsync(db, tenantId, typeByCode, ct);
+        return (typesAdded, policiesAdded);
+    }
+
+    /// <summary>
+    /// Plants one tenant-wide default policy per seeded leave type, per country, for every
+    /// (type, country) pair the tenant has no tenant-wide policy for yet.
+    ///
+    /// <para><b>Natural key: (LeaveTypeId, CompanyId == null, CountryCode).</b> Coarser than the
+    /// old "does this type have ANY tenant-wide policy" check, which would have let a tenant's
+    /// pre-existing country-neutral annual policy suppress the country set for ever; finer than
+    /// the row id, so re-running adds nothing. Deliberately NOT filtered on Status: a policy an
+    /// administrator archived (DELETE sets Status = "Archived") must stay archived through every
+    /// later deploy, exactly as a removed letter template does. Nothing here updates an existing
+    /// row, so an edited entitlement, basis, notice period or approval pin survives untouched.</para>
+    /// </summary>
+    private static async Task<int> InstallDefaultLeavePoliciesAsync(
+        ZayraDbContext db, Guid tenantId, IReadOnlyDictionary<string, Guid> typeByCode, CancellationToken ct)
+    {
+        const string why =
+            "Seeding/backfill runs with no HTTP principal, so the company read filter resolves to an "
+            + "EMPTY company scope and would hide every leave policy the tenant already has. The gap "
+            + "check would then re-insert rows the tenant already owns — including ones it has edited "
+            + "or archived. The tenant filter is re-applied by the helper; no other tenant is observable.";
+
+        var existing = (await ScopedBypass.TenantWide(db.LeavePolicies, tenantId, why)
+                .AsNoTracking()
+                .Where(p => p.CompanyId == null)
+                .Select(p => new { p.LeaveTypeId, p.CountryCode })
+                .ToListAsync(ct))
+            .Select(x => (x.LeaveTypeId, Country: (x.CountryCode ?? string.Empty).Trim().ToUpperInvariant()))
+            .ToHashSet();
+
+        // The country-neutral row first (empty CountryCode = applies to any employee), then one per
+        // GCC state. Order matters only for readability in Setup, which sorts by name.
+        var countries = new[] { string.Empty }.Concat(DefaultLeavePolicyCountries).ToArray();
+
+        var added = 0;
+        foreach (var basis in LeavePolicyBases)
         {
-            // IgnoreQueryFilters is intentional: seeder read scoped by explicit tenantId; insert-if-absent, never touches another tenant.
-            var hasDefaultPolicy = await db.LeavePolicies.IgnoreQueryFilters().AsNoTracking()
-                .AnyAsync(p => p.TenantId == tenantId && p.LeaveTypeId == annualId && p.CompanyId == null, ct);
-            if (!hasDefaultPolicy)
+            if (!typeByCode.TryGetValue(basis.TypeCode, out var leaveTypeId)) continue;
+            foreach (var country in countries)
             {
+                if (!existing.Add((leaveTypeId, country))) continue;
                 db.LeavePolicies.Add(new LeavePolicy
                 {
-                    TenantId = tenantId, Name = "Default Annual Leave", LeaveTypeId = annualId,
-                    AnnualEntitlementDays = 21, AccrualMethod = "Monthly",
-                    WeekendsIncluded = false, PublicHolidaysIncluded = false,
-                    MinimumDaysPerRequest = 1, PayrollImpact = "Full", Status = "Active",
+                    TenantId = tenantId,
+                    Name = country.Length == 0 ? $"Default {basis.Label}" : $"Default {basis.Label} — {country}",
+                    LeaveTypeId = leaveTypeId,
+                    CountryCode = country,
+                    CompanyId = null,
+                    AnnualEntitlementDays = DefaultLeaveEntitlementDays(basis.TypeCode, country),
+                    AccrualMethod = basis.AccrualMethod,
+                    WeekendsIncluded = basis.WeekendsIncluded,
+                    PublicHolidaysIncluded = basis.PublicHolidaysIncluded,
+                    MinimumDaysPerRequest = 1,
+                    // A seeded default must never be the reason a statutory entitlement is refused.
+                    // AppliesOnProbation defaults to false, and LeaveService REFUSES a request when
+                    // the resolved policy does not apply during probation — so shipping these rows
+                    // with the default would have turned "your tenant now has a sick-leave policy"
+                    // into "a probationer may not take sick leave", which neither Art. 117 nor UAE
+                    // Art. 31 permits. An employer that wants a probation restriction unticks it.
+                    AppliesOnProbation = true,
+                    PayrollImpact = "Full",
+                    Status = "Active",
                 });
-                policiesAdded++;
+                added++;
             }
         }
-        return (typesAdded, policiesAdded);
+        return added;
     }
 
     // ── 6. Default approval workflows per core entity (Program A4 — seeded defaults) ──

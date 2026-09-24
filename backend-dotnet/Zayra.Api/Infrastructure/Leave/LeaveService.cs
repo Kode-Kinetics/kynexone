@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Attendance;
+using Zayra.Api.Application.Common;
 using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Application.Leave;
 using Zayra.Api.Application.WorkWeek;
@@ -9,6 +10,7 @@ using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Infrastructure.CountryPack;
 using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Infrastructure.Data;
+using Zayra.Api.Infrastructure.Localization;
 using Zayra.Api.Infrastructure.WorkWeek;
 using Zayra.Api.Models;
 
@@ -20,6 +22,12 @@ public class LeaveService : ILeaveService
     private readonly IApprovalRouter _router;
     private readonly IWorkWeekService _workWeek;
     private readonly IStatutoryRuleReader _rules;
+    /// <summary>
+    /// The SAME Art. 98 working-hours resolver <c>AttendanceService</c> uses to decide what a
+    /// working day is worth. Hourly leave has to agree with attendance about the length of a day,
+    /// or the two modules disagree about what one day of an employee's time is.
+    /// </summary>
+    private readonly KsaWorkingHoursBaselineService _workingHours;
 
     public LeaveService(ZayraDbContext db, IApprovalRouter router, IWorkWeekService? workWeek = null)
     {
@@ -31,6 +39,30 @@ public class LeaveService : ILeaveService
         // several call sites and tests, and widening the ctor would break all of them.
         // StatutoryRuleReader memoizes per instance, which is what we want for an accrual sweep.
         _rules = new StatutoryRuleReader(db);
+        _workingHours = new KsaWorkingHoursBaselineService(_rules, new HijriDateService());
+    }
+
+    /// <summary>
+    /// How many minutes this employee's working day is on <paramref name="on"/>: the tenant's
+    /// configured <c>AttendancePolicy.StandardWorkMinutes</c>, reduced to the KSA Art. 98 Ramadan
+    /// baseline where the employing company is a KSA entity and the date falls in Ramadan on the
+    /// Um al-Qura calendar.
+    ///
+    /// <para>This is the attendance module's own answer, from the attendance module's own resolver
+    /// — deliberately not a second implementation. Hourly leave used to divide by a hardcoded 8
+    /// while attendance measured the very same day against 540, or against 360 in Ramadan.</para>
+    /// </summary>
+    private async Task<int> ResolveWorkingDayMinutesAsync(Guid tenantId, Employee employee, DateOnly on, CancellationToken ct)
+    {
+        var standardMinutes = await _db.AttendancePolicies.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.IsActive)
+            .Select(x => (int?)x.StandardWorkMinutes)
+            .FirstOrDefaultAsync(ct) ?? new AttendancePolicy().StandardWorkMinutes;
+
+        var countryCode = await ResolveEmployeeCountryAsync(tenantId, employee.Id, ct);
+        var baseline = await _workingHours.ResolveDailyAsync(countryCode, on, standardMinutes, ct);
+        // A misconfigured zero would otherwise divide by zero and charge the whole balance.
+        return Math.Max(1, baseline.DailyMinutes);
     }
 
     // ── KSA statutory leave (Royal Decree M/51 Art. 109 and Art. 117) ────────────────────────────
@@ -568,15 +600,37 @@ public class LeaveService : ILeaveService
             workingDays = await CalculateWorkingDaysAsync(tenantId, request.StartDate, request.EndDate, effectivePolicy.Id, ct);
         }
 
+        var isHourly = request.DayType.Equals("Hourly", StringComparison.OrdinalIgnoreCase);
+        // The tenant's real working day, resolved once and used both to convert the hours into days
+        // and to bound the request. Zero for every non-hourly request — nothing else consults it.
+        var hourlyDayMinutes = isHourly
+            ? await ResolveWorkingDayMinutesAsync(tenantId, employee, request.StartDate, ct)
+            : 0;
+
         if (request.DayType.StartsWith("Half", StringComparison.OrdinalIgnoreCase))
         {
             if (request.StartDate != request.EndDate)
                 throw new InvalidOperationException("Half-day leave must be for a single date.");
             workingDays = 0.5m;
         }
-        else if (request.DayType.Equals("Hourly", StringComparison.OrdinalIgnoreCase))
+        else if (isHourly)
         {
-            workingDays = Math.Round(request.HoursRequested / 8m, 4);
+            // Two defects lived on the line this replaces —
+            //   workingDays = Math.Round(request.HoursRequested / 8m, 4);
+            //
+            // 1. The 8 was hardcoded, so a tenant configured on a 9-hour day deducted a WHOLE day
+            //    for 8 hours of leave (1.00 instead of 0.89), and a KSA employee's Ramadan day of
+            //    hourly leave deducted 0.75 days instead of 1.00 — even though the attendance
+            //    processor already resolved the Art. 98 baseline correctly, from the same service
+            //    this now calls.
+            // 2. It rounded to 4 dp into a numeric(6,2) column. One hour of an 8-hour day is 0.125
+            //    days: the create response returned 0.125, Postgres silently stored 0.13, and every
+            //    later read said 0.13 — the record disagreed with the response that created it.
+            //
+            // Rounding to the column's own precision, AwayFromZero because that is how Postgres
+            // rounds numeric on write, makes the value returned and the value stored one number.
+            workingDays = Math.Round(
+                request.HoursRequested * 60m / hourlyDayMinutes, 2, MidpointRounding.AwayFromZero);
         }
         request.TotalDays = workingDays;
 
@@ -591,11 +645,15 @@ public class LeaveService : ILeaveService
 
         if (request.DayType.StartsWith("Half", StringComparison.OrdinalIgnoreCase) && !leaveType.IsHalfDayAllowed)
             throw new InvalidOperationException("Half-day leave is not allowed for this leave type.");
-        if (request.DayType.Equals("Hourly", StringComparison.OrdinalIgnoreCase))
+        if (isHourly)
         {
             if (!leaveType.IsHourlyAllowed) throw new InvalidOperationException("Hourly leave is not allowed for this leave type.");
-            if (request.StartDate != request.EndDate || request.HoursRequested <= 0 || request.HoursRequested > 8)
-                throw new InvalidOperationException("Hourly leave must be for one day and between 0 and 8 hours.");
+            // The upper bound was the same hardcoded 8, so a tenant on a six-hour day could book
+            // eight hours — 1.33 days — as a single "hourly" request.
+            var dayHours = hourlyDayMinutes / 60m;
+            if (request.StartDate != request.EndDate || request.HoursRequested <= 0 || request.HoursRequested > dayHours)
+                throw new InvalidOperationException(
+                    $"Hourly leave must be for one day and between 0 and {dayHours:0.##} hours.");
         }
         if (effectivePolicy is not null)
         {
@@ -604,7 +662,17 @@ public class LeaveService : ILeaveService
             if (effectivePolicy.MaximumDaysPerRequest > 0 && workingDays > effectivePolicy.MaximumDaysPerRequest)
                 throw new InvalidOperationException($"This policy allows at most {effectivePolicy.MaximumDaysPerRequest} day(s) per request.");
             var noticeDays = request.StartDate.DayNumber - DateOnly.FromDateTime(DateTime.UtcNow).DayNumber;
-            if (!request.IsEmergency && effectivePolicy.NoticeRequiredDays > noticeDays)
+            // A policy that requires NO notice must not refuse a backdated request. The guard used
+            // to read `NoticeRequiredDays > noticeDays` alone, and for a request that started
+            // yesterday noticeDays is negative — so 0 > -1 held and the refusal read "This policy
+            // requires 0 day(s) advance notice.", a rule the tenant never configured. It only
+            // stayed invisible while tenants had no policy for most leave types; it bites the
+            // instant one exists, and it bites SICK LEAVE hardest, which is reported after the
+            // fact by definition ("whether such leaves are continuous or intermittent" — Art. 117
+            // does not contemplate notice). A tenant that genuinely wants notice sets a positive
+            // number, and that case is unchanged.
+            if (!request.IsEmergency && effectivePolicy.NoticeRequiredDays > 0
+                && effectivePolicy.NoticeRequiredDays > noticeDays)
                 throw new InvalidOperationException($"This policy requires {effectivePolicy.NoticeRequiredDays} day(s) advance notice.");
             if (!effectivePolicy.AppliesOnProbation && employee.ProbationEndDate.HasValue
                 && request.StartDate <= employee.ProbationEndDate.Value)
@@ -1692,7 +1760,7 @@ public class LeaveService : ILeaveService
         string? contractType,
         string? gender)
     {
-        if (!string.IsNullOrWhiteSpace(policy.CountryCode) && !string.Equals(policy.CountryCode, countryCode, StringComparison.OrdinalIgnoreCase)) return false;
+        if (!CountryMatches(policy.CountryCode, countryCode)) return false;
         if (policy.CompanyId.HasValue && policy.CompanyId != companyId) return false;
         if (policy.BranchId.HasValue && policy.BranchId != branchId) return false;
         if (!string.IsNullOrWhiteSpace(policy.DepartmentName) && !string.Equals(policy.DepartmentName, departmentName, StringComparison.OrdinalIgnoreCase)) return false;
@@ -1704,7 +1772,7 @@ public class LeaveService : ILeaveService
         var scopedRows = rows.Where(r => r.LeavePolicyId == policy.Id).ToList();
         if (scopedRows.Count == 0) return true;
         return scopedRows.Any(r =>
-            (string.IsNullOrWhiteSpace(r.CountryCode) || string.Equals(r.CountryCode, countryCode, StringComparison.OrdinalIgnoreCase)) &&
+            CountryMatches(r.CountryCode, countryCode) &&
             (!r.CompanyId.HasValue || r.CompanyId == companyId) &&
             (!r.BranchId.HasValue || r.BranchId == branchId) &&
             (!r.DepartmentId.HasValue || r.DepartmentId == departmentId) &&
@@ -1713,9 +1781,40 @@ public class LeaveService : ILeaveService
             (string.IsNullOrWhiteSpace(r.ContractType) || string.Equals(r.ContractType, contractType, StringComparison.OrdinalIgnoreCase)));
     }
 
+    /// <summary>
+    /// Does a policy's (or eligibility row's) country restriction admit this employee's country?
+    /// An unset restriction admits everyone — that is the country-neutral default.
+    ///
+    /// <para>Both sides are normalised to canonical ISO-2 before comparing. The canonical stored
+    /// format is ISO-2 (<see cref="CountryCodeStandard"/>), but <c>Company.CountryCode</c> carries
+    /// ISO-3 on older and imported rows ("SAU", "ARE"), and the raw string comparison this replaces
+    /// silently answered "not eligible" for every one of them — so a KSA company saved as "SAU"
+    /// resolved NO country-scoped leave policy at all and fell through to whatever the day-count
+    /// fallback happened to be. Same normalisation <c>EmployeeReadinessPolicyResolver</c> already
+    /// applies for the same reason. Unrecognised values fall back to a case-insensitive comparison
+    /// of the raw strings, so nothing that matched before stops matching.</para>
+    /// </summary>
+    internal static bool CountryMatches(string? policyCountry, string? employeeCountry)
+    {
+        if (string.IsNullOrWhiteSpace(policyCountry)) return true;
+        var left = CountryCodeStandard.NormalizeToIso2(policyCountry);
+        var right = CountryCodeStandard.NormalizeToIso2(employeeCountry);
+        if (left is not null && right is not null)
+            return string.Equals(left, right, StringComparison.Ordinal);
+        return string.Equals(policyCountry.Trim(), (employeeCountry ?? string.Empty).Trim(),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
     private static int PolicySpecificity(LeavePolicy policy, IReadOnlyCollection<LeavePolicyEligibility> rows, Guid? departmentId, Guid? gradeId)
     {
         var score = 0;
+        // A policy that NAMES a country is more specific than one that does not — it has already
+        // been filtered to this employee's country by IsPolicyEligible, so scoring it puts the
+        // KSA row ahead of the country-neutral fallback for a KSA employee. Without this the two
+        // tied at zero and the winner was decided by UpdatedAtUtc, i.e. by whichever row happened
+        // to be written last. Ranked below CompanyId/BranchId: a company-specific policy is a
+        // deliberate override of the country default and must still win.
+        if (!string.IsNullOrWhiteSpace(policy.CountryCode)) score += 5;
         if (policy.CompanyId.HasValue) score += 8;
         if (policy.BranchId.HasValue) score += 6;
         if (!string.IsNullOrWhiteSpace(policy.DepartmentName)) score += 4;

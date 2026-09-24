@@ -12607,8 +12607,8 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("payer");
 
                     b.Property<decimal>("Rate")
-                        .HasPrecision(7, 4)
-                        .HasColumnType("numeric(7,4)")
+                        .HasPrecision(9, 6)
+                        .HasColumnType("numeric(9,6)")
                         .HasColumnName("rate");
 
                     b.Property<string>("SourceReference")
@@ -17666,10 +17666,9 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("numeric(14,2)")
                         .HasColumnName("amount");
 
-                    b.Property<decimal>("ApprovedHours")
-                        .HasPrecision(8, 2)
-                        .HasColumnType("numeric(8,2)")
-                        .HasColumnName("approved_hours");
+                    b.Property<int>("ApprovedMinutes")
+                        .HasColumnType("integer")
+                        .HasColumnName("approved_minutes");
 
                     b.Property<string>("CalculationJson")
                         .IsRequired()
@@ -17828,10 +17827,9 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
-                    b.Property<decimal>("Hours")
-                        .HasPrecision(8, 2)
-                        .HasColumnType("numeric(8,2)")
-                        .HasColumnName("hours");
+                    b.Property<int>("Minutes")
+                        .HasColumnType("integer")
+                        .HasColumnName("minutes");
 
                     b.Property<Guid>("OvertimeRequestId")
                         .HasColumnType("uuid")

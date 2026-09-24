@@ -1,9 +1,12 @@
 import { expect, test } from '@playwright/test';
 import { mainContentLength, mainText, crashIndicators, expectNonEmptyList } from './helpers';
+import { INTELLIFLOW_ADMIN, INTELLIFLOW_SLUG } from './world';
 
-const TENANT_SLUG = process.env.E2E_DEFAULT_TENANT_SLUG ?? 'intelliflow';
-const ADMIN_EMAIL = process.env.E2E_DEFAULT_ADMIN_EMAIL ?? 'admin@intelliflow.com';
-const ADMIN_PASSWORD = process.env.E2E_DEFAULT_ADMIN_PASSWORD ?? 'IntelliFlow@2026!';
+// Defaults come from e2e/world.ts — the declaration e2e/bootstrap/provision.ts builds the tenant
+// from — rather than literals, so this lane cannot be pointed at an account nothing created.
+const TENANT_SLUG = process.env.E2E_DEFAULT_TENANT_SLUG ?? INTELLIFLOW_SLUG;
+const ADMIN_EMAIL = process.env.E2E_DEFAULT_ADMIN_EMAIL ?? INTELLIFLOW_ADMIN.email;
+const ADMIN_PASSWORD = process.env.E2E_DEFAULT_ADMIN_PASSWORD ?? INTELLIFLOW_ADMIN.password;
 const EXPECTED_MIN_EMPLOYEES = Number(process.env.E2E_MIN_EMPLOYEES ?? '1');
 
 /**

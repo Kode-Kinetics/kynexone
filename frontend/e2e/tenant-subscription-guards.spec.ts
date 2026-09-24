@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { apiLogin, apiPlatformLogin, INTELLIFLOW_SLUG, INTELLIFLOW_ADMIN, EVOSTEL_SLUG, EVOSTEL_ADMIN } from './helpers';
+import { MISSING_WORLD } from './world';
 
 /**
  * Subscription guard tests (API-level).
@@ -52,10 +53,18 @@ test.describe('Subscription guard enforcement', () => {
     expect(tenantsResp.ok()).toBe(true);
     const tenants = await tenantsResp.json();
     const evostel = (tenants as Array<{ slug: string; id: string }>).find(t => t.slug === EVOSTEL_SLUG);
-    if (!evostel) {
-      test.skip(true, 'Evostel tenant not found — seed may not have run');
-      return;
-    }
+    // FAIL, never skip. Evostel is NOT seed data and never was: e2e/limited-tenant-fixture.ts
+    // provisions it in the setup project of this very lane. Its absence therefore means the setup
+    // project did not do its job — and skipping turned a broken setup into a green subscription-guard
+    // run, which is the one result this spec must never produce.
+    expect(
+      evostel,
+      `No tenant with slug '${EVOSTEL_SLUG}' exists. It is provisioned per run by `
+      + 'e2e/limited-tenant-fixture.ts in the `setup` project; if it is missing, that step failed or '
+      + `this lane was run without its dependencies.\n${MISSING_WORLD}`,
+    ).toBeTruthy();
+    // Narrowing only — the assertion above is what reports the failure.
+    if (!evostel) throw new Error('unreachable');
 
     const subscription = (status: 'Suspended' | 'PastDue') => ({
       plan: 'Starter',

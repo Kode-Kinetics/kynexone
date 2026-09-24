@@ -8,6 +8,7 @@ import {
 import client from '../api/client';
 import { companiesApi } from '../api/organization';
 import { gccSettingsApi } from '../api/setup';
+import { financeRatesApi, type StatutoryRateRow } from '../api/financeRates';
 import type { CompanyDto, CompanyRequest } from '../api/organization';
 import type { GCCComplianceSetting } from '../api/setup';
 
@@ -367,15 +368,74 @@ function QiwaPanel() {
 
 // ── GOSI Config Panel ─────────────────────────────────────────────────────────
 
+// The GOSI rates this screen shows are the ones payroll will actually apply. They are read from
+// the effective-dated statutory rules engine — the same rows, through the same resolver, that
+// KsaDeductionCalculator multiplies into the covered wage on the payslip.
+//
+// This panel used to print "Saudi Employee: 10% / Saudi Employer: 12%" as literals. Nothing in
+// the product held those numbers: the seeded rules are 9% annuities + 0.75% SANED each side, and
+// 2% occupational hazard. A third answer on a third screen is how a customer's finance team ends
+// up reconciling to a figure no payslip ever used.
+const GOSI_RATE_ROWS: { ruleKey: string; label: string; note: string }[] = [
+  { ruleKey: 'gosi.saudi_employee_rate', label: 'Saudi employee — Annuities', note: 'Deducted from the employee' },
+  { ruleKey: 'gosi.saudi_employer_rate', label: 'Saudi employer — Annuities', note: 'Paid by the company' },
+  { ruleKey: 'gosi.saned_rate', label: 'Saudi SANED — each side', note: 'Charged to employee and employer alike' },
+  { ruleKey: 'gosi.expat_occupational_hazard_rate', label: 'Occupational hazard — employer', note: 'Applies to every employee, Saudi and non-Saudi' },
+];
+
+const GOSI_CEILING_KEY = 'gosi.covered_wage_ceiling_sar';
+
+// Rates are stored, and calculated with, as decimal FRACTIONS of the contributory wage
+// (0.09 = 9%). Percent exists only here, for reading. See StatutoryValueUnits.cs.
+function asPercent(fraction: number | null | undefined): string {
+  if (fraction === null || fraction === undefined) return 'Not configured';
+  return `${(fraction * 100).toLocaleString(undefined, { maximumFractionDigits: 4 })}%`;
+}
+
 function GosiPanel({ company, onCompanyUpdate }: { company: CompanyDto | null; onCompanyUpdate: (c: CompanyDto) => void }) {
   const [form, setForm] = useState({ gosiEmployerId: '' });
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
   const [isErr, setIsErr] = useState(false);
+  const [rates, setRates] = useState<StatutoryRateRow[] | null>(null);
+  const [ratesError, setRatesError] = useState('');
 
   useEffect(() => {
     if (company) setForm({ gosiEmployerId: company.gosiEmployerId ?? '' });
   }, [company]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!company) { setRates(null); return; }
+    setRatesError('');
+    financeRatesApi
+      .listStatutory(company.id, 'SAU', 'KSA-mainland')
+      .then(rows => { if (!cancelled) setRates(rows); })
+      .catch(() => {
+        if (cancelled) return;
+        setRates([]);
+        // No invented fallback. If the configured rates cannot be read, this screen says so
+        // rather than showing a number payroll would not use.
+        setRatesError('The configured GOSI rates could not be read. They are managed under Finance → Rates (statutory), and viewing them needs the payroll rates permission.');
+      });
+    return () => { cancelled = true; };
+  }, [company]);
+
+  const rateFor = (ruleKey: string) => rates?.find(r => r.ruleKey === ruleKey) ?? null;
+  const ceiling = rateFor(GOSI_CEILING_KEY);
+  const employeeTotal = (() => {
+    const ann = rateFor('gosi.saudi_employee_rate')?.resolvedValue;
+    const saned = rateFor('gosi.saned_rate')?.resolvedValue;
+    return ann !== null && ann !== undefined && saned !== null && saned !== undefined ? ann + saned : null;
+  })();
+  const employerTotal = (() => {
+    const ann = rateFor('gosi.saudi_employer_rate')?.resolvedValue;
+    const saned = rateFor('gosi.saned_rate')?.resolvedValue;
+    const oh = rateFor('gosi.expat_occupational_hazard_rate')?.resolvedValue;
+    return [ann, saned, oh].every(v => v !== null && v !== undefined)
+      ? (ann as number) + (saned as number) + (oh as number)
+      : null;
+  })();
 
   const save = async () => {
     if (!company) return;
@@ -393,13 +453,50 @@ function GosiPanel({ company, onCompanyUpdate }: { company: CompanyDto | null; o
     <Section title="GOSI (General Organisation for Social Insurance)" icon={Users}>
       <div className="space-y-4">
         <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-xs text-blue-700 dark:border-blue-900/30 dark:bg-blue-900/10 dark:text-blue-300">
-          <p className="font-semibold mb-1">Saudi GOSI Contribution Rates (Illustrative)</p>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-0.5 mt-1">
-            <span>Saudi Employee: 10% of salary (employee share)</span>
-            <span>Saudi Employer: 12% of salary (employer share)</span>
-            <span>Non-Saudi Employee: 0%</span>
-            <span>Non-Saudi Employer: 2% (occupational hazard)</span>
-          </div>
+          <p className="font-semibold mb-1">GOSI contribution rates payroll will apply</p>
+          <p className="mb-2 text-blue-500 dark:text-blue-400">
+            Read from the effective-dated statutory rules — the same values the payslip and the GOSI filing use.
+            Change them under <strong>Finance → Rates → Statutory</strong>; this screen never holds its own copy.
+          </p>
+
+          {ratesError ? (
+            <p className="text-amber-700 dark:text-amber-400">{ratesError}</p>
+          ) : rates === null ? (
+            <p className="text-blue-500 dark:text-blue-400">Loading configured rates…</p>
+          ) : (
+            <>
+              <table className="w-full text-xs">
+                <tbody>
+                  {GOSI_RATE_ROWS.map(({ ruleKey, label, note }) => {
+                    const row = rateFor(ruleKey);
+                    return (
+                      <tr key={ruleKey} className="align-top">
+                        <td className="py-0.5 pe-3">
+                          <span className="font-medium">{label}</span>
+                          <span className="ms-2 font-mono text-[10px] text-blue-400 dark:text-blue-500">{ruleKey}</span>
+                        </td>
+                        <td className="py-0.5 pe-3 text-end tabular-nums font-semibold">
+                          {asPercent(row?.resolvedValue)}
+                        </td>
+                        <td className="py-0.5 text-blue-500 dark:text-blue-400">
+                          {row?.isOverride ? 'Overridden for this company' : note}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <p className="mt-2 border-t border-blue-100 pt-1.5 dark:border-blue-900/30">
+                Saudi employee total <strong className="tabular-nums">{asPercent(employeeTotal)}</strong>
+                {' · '}Saudi employer total <strong className="tabular-nums">{asPercent(employerTotal)}</strong>
+                {' · '}Non-Saudi employee 0%
+                {ceiling?.resolvedValue != null && (
+                  <> {' · '}Contributory wage capped at <strong className="tabular-nums">SAR {ceiling.resolvedValue.toLocaleString()}</strong></>
+                )}
+              </p>
+            </>
+          )}
+
           <p className="mt-1.5 text-blue-500 dark:text-blue-400">Always verify current rates at portal.gosi.gov.sa before payroll processing.</p>
         </div>
 

@@ -8,7 +8,7 @@ import {
 //
 // NOTHING in this file is a hard-coded seed figure, deliberately. An earlier draft asserted
 // "10,603.13 / 14,403.13 / August 2026 / 12 employees" literally and was already wrong twice over:
-//   * the seeded period is `now - 1 month` (IntelliFlowDemoSeeder), so every literal month goes red
+//   * the provisioned period is `now - 1 month` (e2e/bootstrap), so every literal month goes red
 //     on the 1st of a month, for no product reason;
 //   * a long-lived demo tenant can hold MORE than one locked run, and the period endpoint unions
 //     runs and applies the statutory ceiling ONCE — so the period total is deliberately not the sum

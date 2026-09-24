@@ -17,7 +17,7 @@ using Zayra.Api.Models;
 namespace Zayra.Api.Tests;
 
 /// <summary>
-/// Final product batch: enterprise seeder, X-Company-Id switcher narrowing, company
+/// Final product batch: X-Company-Id switcher narrowing, company
 /// lifecycle (creation modes, draft approval, suspend guard), and readiness math —
 /// against real Postgres.
 /// </summary>
@@ -27,59 +27,6 @@ public class GroupProductFoundationTests : Platform.PlatformTestBase
 {
     private readonly PostgresFixture _fx;
     public GroupProductFoundationTests(PostgresFixture fx) => _fx = fx;
-
-    // ── Enterprise seeder: full graph + idempotence ────────────────────────────
-
-    [Fact]
-    public async Task EnterpriseSeeder_SeedsThreeGroups_Idempotently_WithoutRealPii()
-    {
-        await using var db = _fx.CreateDb();
-        var seeder = new EnterpriseGroupSeeder(db, new Pbkdf2PasswordHasher(), new SeederAuthSeederAdapter(db), new WorkWeekService(db), NullLogger<EnterpriseGroupSeeder>.Instance);
-
-        await seeder.SeedAsync();
-        db.ChangeTracker.Clear();
-
-        var almarai = await db.Tenants.AsNoTracking().SingleAsync(t => t.Slug == "almarai-test");
-        almarai.AccountType.Should().Be(TenantAccountTypes.Group);
-
-        var companies = await db.Companies.IgnoreQueryFilters().AsNoTracking()
-            .Where(c => c.TenantId == almarai.Id).Select(c => c.LegalNameEn).ToListAsync();
-        companies.Should().BeEquivalentTo(new[] { "ALM-DAIRY-KSA", "ALM-POULTRY-KSA", "ALM-BAKERY-KSA", "ALM-DIST-KSA", "ALM-UAE-TRD" });
-
-        (await db.Tenants.CountAsync(t => t.Slug == "tata-test" || t.Slug == "emaar-test")).Should().Be(2);
-
-        // Users: 6 group-scope + 1 scoped + (2 per company × 5) + 2 payroll = 19
-        var users = await db.Users.IgnoreQueryFilters().AsNoTracking().Where(u => u.TenantId == almarai.Id).ToListAsync();
-        users.Should().HaveCount(19);
-        users.Count(u => u.IsGroupScope).Should().Be(6);
-
-        // Scoped admin: exactly two SelectedCompanies grants (first two companies).
-        var scoped = users.Single(u => u.Email == "scoped.admin@almarai-test.local");
-        var grants = await db.UserEntityAccesses.IgnoreQueryFilters().AsNoTracking()
-            .Where(g => g.UserId == scoped.Id).ToListAsync();
-        grants.Should().HaveCount(2);
-        grants.Should().OnlyContain(g => g.GrantMode == EntityGrantModes.SelectedCompanies && g.CompanyId != null);
-
-        // Workforce + operational data per company.
-        var dairy = await db.Companies.IgnoreQueryFilters().AsNoTracking().SingleAsync(c => c.TenantId == almarai.Id && c.LegalNameEn == "ALM-DAIRY-KSA");
-        var employees = await db.Employees.IgnoreQueryFilters().AsNoTracking().Where(e => e.CompanyId == dairy.Id).ToListAsync();
-        employees.Should().HaveCount(3);
-        employees.Should().OnlyContain(e => e.BankIban == "" && e.PassportNumber == "" && e.IqamaNumber == "",
-            "seed data must contain NO identifier PII — missing fields drive honest readiness gaps");
-        (await db.Branches.IgnoreQueryFilters().CountAsync(b => b.CompanyId == dairy.Id)).Should().Be(2);
-        (await db.AttendanceRecords.IgnoreQueryFilters().CountAsync(a => a.CompanyId == dairy.Id)).Should().Be(15);
-        (await db.LeaveRequests.IgnoreQueryFilters().CountAsync(l => l.CompanyId == dairy.Id)).Should().Be(2);
-        (await db.PayrollRuns.IgnoreQueryFilters().CountAsync(r => r.CompanyId == dairy.Id)).Should().Be(1);
-        (await db.PayrollRuns.IgnoreQueryFilters().CountAsync(r => r.TenantId == almarai.Id)).Should().Be(5,
-            "every legal entity needs a real payroll artifact for cross-company authorization coverage");
-        (await db.CompanyComplianceProfiles.IgnoreQueryFilters().CountAsync(p => p.CompanyId == dairy.Id)).Should().Be(1);
-        (await db.CompanyTaxPolicies.IgnoreQueryFilters().CountAsync(p => p.CompanyId == dairy.Id)).Should().Be(1);
-
-        // Idempotent: second run changes nothing.
-        await seeder.SeedAsync();
-        (await db.Users.IgnoreQueryFilters().CountAsync(u => u.TenantId == almarai.Id)).Should().Be(19);
-        (await db.Companies.IgnoreQueryFilters().CountAsync(c => c.TenantId == almarai.Id)).Should().Be(5);
-    }
 
     // ── X-Company-Id switcher narrowing ─────────────────────────────────────────
 
@@ -119,7 +66,7 @@ public class GroupProductFoundationTests : Platform.PlatformTestBase
     // ── Company lifecycle: creation modes + approval + suspend guard ───────────
 
     [Fact]
-    public async Task CreationModes_PlatformControlledBlocks_DraftModeCreatesDraft_ApproveActivates()
+    public async Task CreationModes_PlatformControlledBlocks_DraftModeCreatesDraft_ApprovalFailsClosed()
     {
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
@@ -140,16 +87,20 @@ public class GroupProductFoundationTests : Platform.PlatformTestBase
         dto.ApprovalStatus.Should().Be(CompanyApprovalStatuses.Draft);
         dto.IsActive.Should().BeFalse("drafts await platform approval");
 
+        // Platform approval (draft -> active) is deliberately fail-closed pending atomic
+        // authorization invalidation: 409 with a stable code and the draft left untouched.
         var platform = CreateController(db);
-        (await platform.ApproveCompany(tenantId, dto.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        var approval = await platform.ApproveCompany(tenantId, dto.Id, CancellationToken.None);
+        System.Text.Json.JsonSerializer.Serialize(approval.Should().BeOfType<ConflictObjectResult>().Subject.Value)
+            .Should().Contain("company_activation_disabled");
         db.ChangeTracker.Clear();
-        var approved = await db.Companies.IgnoreQueryFilters().AsNoTracking().SingleAsync(c => c.Id == dto.Id);
-        approved.ApprovalStatus.Should().Be(CompanyApprovalStatuses.Active);
-        approved.IsActive.Should().BeTrue();
+        var stillDraft = await db.Companies.IgnoreQueryFilters().AsNoTracking().SingleAsync(c => c.Id == dto.Id);
+        stillDraft.ApprovalStatus.Should().Be(CompanyApprovalStatuses.Draft);
+        stillDraft.IsActive.Should().BeFalse();
     }
 
     [Fact]
-    public async Task SuspendLastActiveCompany_IsBlocked_OthersToggleWithAudit()
+    public async Task CompanyStatusChange_FailsClosed_WithZeroMutation()
     {
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
@@ -161,11 +112,17 @@ public class GroupProductFoundationTests : Platform.PlatformTestBase
         var conflict = await controller.SetStatus(only.Id, new CompanyStatusRequest(false), CancellationToken.None);
         conflict.Should().BeOfType<ConflictObjectResult>("a tenant must always retain one operational company");
 
+        // Company suspend/reactivate is deliberately fail-closed pending atomic authorization
+        // invalidation, even when another active company exists: 409, no mutation, no audit row.
         var second = new Company { TenantId = tenantId, LegalNameEn = "SECOND", RegistrationNumber = $"R-{Guid.NewGuid():N}", IsActive = true };
         db.Companies.Add(second);
         await db.SaveChangesAsync();
-        (await controller.SetStatus(only.Id, new CompanyStatusRequest(false), CancellationToken.None)).Should().BeOfType<OkObjectResult>();
-        (await db.AdminAuditLogs.IgnoreQueryFilters().AnyAsync(a => a.TenantId == tenantId && a.Action == "CompanySuspended")).Should().BeTrue();
+        var disabled = await controller.SetStatus(only.Id, new CompanyStatusRequest(false), CancellationToken.None);
+        System.Text.Json.JsonSerializer.Serialize(disabled.Should().BeOfType<ConflictObjectResult>().Subject.Value)
+            .Should().Contain("company_status_change_disabled");
+        db.ChangeTracker.Clear();
+        (await db.Companies.IgnoreQueryFilters().AsNoTracking().SingleAsync(c => c.Id == only.Id)).IsActive.Should().BeTrue();
+        (await db.AdminAuditLogs.IgnoreQueryFilters().AnyAsync(a => a.TenantId == tenantId && a.Action == "CompanySuspended")).Should().BeFalse();
     }
 
     // ── Readiness math ──────────────────────────────────────────────────────────
@@ -248,16 +205,5 @@ public class GroupProductFoundationTests : Platform.PlatformTestBase
     {
         public Task WriteAsync(string action, string entityName, string? entityId, Zayra.Api.Application.Auth.RequestContext context, string? metadata, CancellationToken cancellationToken)
             => Task.CompletedTask;
-    }
-
-    /// <summary>Real AuthSeeder role provisioning for the enterprise seeder test.</summary>
-    private sealed class SeederAuthSeederAdapter : Zayra.Api.Application.Auth.IAuthSeeder
-    {
-        private readonly AuthSeeder _inner;
-        public SeederAuthSeederAdapter(ZayraDbContext db) =>
-            _inner = new AuthSeeder(db, new Pbkdf2PasswordHasher(),
-                Microsoft.Extensions.Options.Options.Create(new Zayra.Api.Application.Auth.SeedAdminOptions()));
-        public Task SeedAsync(CancellationToken cancellationToken = default) => _inner.SeedAsync(cancellationToken);
-        public Task<Role> EnsureTenantRolesAsync(Guid tenantId, CancellationToken cancellationToken = default) => _inner.EnsureTenantRolesAsync(tenantId, cancellationToken);
     }
 }

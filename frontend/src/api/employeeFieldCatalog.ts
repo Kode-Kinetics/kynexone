@@ -129,6 +129,16 @@ const COMMON_COMPLIANCE_FIELDS: EmployeeComplianceField[] = [
  * rows carry `expiryEntityKey` so the *Expiry scalar columns are capturable even in fallback mode.
  * The correct nationality-aware hiding is done server-side and REPLACES this for the active country
  * whenever the endpoint responds.
+ *
+ * INVARIANT — `expiryEntityKey` must name a real `*ExpiryDate` scalar and must equal the registry's
+ * `ExpiryKey` (camelCased) for the same statutory row. It previously named `workPermitIssueDate` in
+ * all six profiles and `residencyIssueDate` in KW/OM: ISSUE-date columns.
+ * `complianceEditFieldsForCountry` below labels that second input `"<field> expiry"` and
+ * `ApplyChanges` stores whatever key it is handed, so a permit expiring 2027-03-01 was persisted as
+ * *issued* 2027-03-01, the expiry column stayed empty, and no renewal alert could ever fire.
+ * `EmployeeFieldRegistry` declares no `ExpiryKey` for `WorkPermitNumber`/`ResidencyNumber` (no such
+ * column exists on `Employee`), so the server already sent `expiryEntityKey: null` for both — the
+ * fallback invented the binding. Guarded by `EmployeeFieldWiringTests`.
  */
 const COUNTRY_COMPLIANCE_PROFILES: Record<string, EmployeeComplianceField[]> = {
   SA: [
@@ -138,12 +148,12 @@ const COUNTRY_COMPLIANCE_PROFILES: Record<string, EmployeeComplianceField[]> = {
     { fieldKey: 'muqeem_reference', fieldLabel: 'Muqeem Reference', entityKey: 'muqeemNumber' },
     { fieldKey: 'gosi_reference', fieldLabel: 'GOSI Reference', entityKey: 'gosiReference' },
     { fieldKey: 'qiwa_contract_reference', fieldLabel: 'Qiwa Contract Number', entityKey: 'qiwaContractNumber' },
-    { fieldKey: 'work_permit', fieldLabel: 'Work Permit Number', entityKey: 'workPermitNumber', expiryEntityKey: 'workPermitIssueDate' },
+    { fieldKey: 'work_permit', fieldLabel: 'Work Permit Number', entityKey: 'workPermitNumber' },
   ],
   AE: [
     ...COMMON_COMPLIANCE_FIELDS,
     { fieldKey: 'emirates_id', fieldLabel: 'Emirates ID', entityKey: 'emiratesId', expiryEntityKey: 'emiratesIdExpiryDate', required: true },
-    { fieldKey: 'work_permit', fieldLabel: 'MOHRE work permit / labour card no.', entityKey: 'workPermitNumber', expiryEntityKey: 'workPermitIssueDate' },
+    { fieldKey: 'work_permit', fieldLabel: 'MOHRE work permit / labour card no.', entityKey: 'workPermitNumber' },
     { fieldKey: 'visa_number', fieldLabel: 'Residence visa number', entityKey: 'visaNumber', expiryEntityKey: 'visaExpiryDate' },
     { fieldKey: 'visa_file_number', fieldLabel: 'Visa File Number', entityKey: 'visaFileNumber' },
     { fieldKey: 'labor_card_number', fieldLabel: 'Labour Card Number', entityKey: 'laborCardNumber' },
@@ -152,24 +162,24 @@ const COUNTRY_COMPLIANCE_PROFILES: Record<string, EmployeeComplianceField[]> = {
     ...COMMON_COMPLIANCE_FIELDS,
     { fieldKey: 'qid', fieldLabel: 'Qatar ID (QID)', entityKey: 'qid', expiryEntityKey: 'qidExpiryDate', required: true },
     { fieldKey: 'visa_number', fieldLabel: 'Residence permit number', entityKey: 'visaNumber', expiryEntityKey: 'visaExpiryDate' },
-    { fieldKey: 'work_permit', fieldLabel: 'Work Permit Number', entityKey: 'workPermitNumber', expiryEntityKey: 'workPermitIssueDate' },
+    { fieldKey: 'work_permit', fieldLabel: 'Work Permit Number', entityKey: 'workPermitNumber' },
   ],
   KW: [
     ...COMMON_COMPLIANCE_FIELDS,
     { fieldKey: 'civil_id', fieldLabel: 'Kuwait Civil ID', entityKey: 'civilId', expiryEntityKey: 'civilIdExpiryDate', required: true },
-    { fieldKey: 'residency_number', fieldLabel: 'Residency (Article) number', entityKey: 'residencyNumber', expiryEntityKey: 'residencyIssueDate' },
-    { fieldKey: 'work_permit', fieldLabel: 'Work Permit Number', entityKey: 'workPermitNumber', expiryEntityKey: 'workPermitIssueDate' },
+    { fieldKey: 'residency_number', fieldLabel: 'Residency (Article) number', entityKey: 'residencyNumber' },
+    { fieldKey: 'work_permit', fieldLabel: 'Work Permit Number', entityKey: 'workPermitNumber' },
   ],
   OM: [
     ...COMMON_COMPLIANCE_FIELDS,
     { fieldKey: 'civil_id', fieldLabel: 'Oman Resident Card / Civil ID', entityKey: 'civilId', expiryEntityKey: 'civilIdExpiryDate', required: true },
-    { fieldKey: 'residency_number', fieldLabel: 'Residency Number', entityKey: 'residencyNumber', expiryEntityKey: 'residencyIssueDate' },
-    { fieldKey: 'work_permit', fieldLabel: 'Work Permit Number', entityKey: 'workPermitNumber', expiryEntityKey: 'workPermitIssueDate' },
+    { fieldKey: 'residency_number', fieldLabel: 'Residency Number', entityKey: 'residencyNumber' },
+    { fieldKey: 'work_permit', fieldLabel: 'Work Permit Number', entityKey: 'workPermitNumber' },
   ],
   BH: [
     ...COMMON_COMPLIANCE_FIELDS,
     { fieldKey: 'civil_id', fieldLabel: 'Bahrain CPR (Personal no.)', entityKey: 'civilId', expiryEntityKey: 'civilIdExpiryDate', required: true },
-    { fieldKey: 'work_permit', fieldLabel: 'LMRA work permit number', entityKey: 'workPermitNumber', expiryEntityKey: 'workPermitIssueDate' },
+    { fieldKey: 'work_permit', fieldLabel: 'LMRA work permit number', entityKey: 'workPermitNumber' },
   ],
 };
 
@@ -321,7 +331,7 @@ export const employeeFieldCatalogApi = {
    */
   get: (params?: FieldCatalogQuery) =>
     client
-      .get<RemoteFieldDescriptor[]>('/api/employees/field-catalog', {
+      .get<FieldCatalogResponse | RemoteFieldDescriptor[]>('/api/employees/field-catalog', {
         params: params
           ? {
               companyId: params.companyId || undefined,
@@ -330,9 +340,46 @@ export const employeeFieldCatalogApi = {
             }
           : undefined,
       })
-      .then((r) => (Array.isArray(r.data) ? r.data : null))
+      .then((r) => unwrapFieldCatalog(r.data))
       .catch(() => null),
 };
+
+/**
+ * The endpoint's response envelope. `GET /api/employees/field-catalog` returns an OBJECT carrying the
+ * resolved axes plus the descriptor list under `fields` — never a bare array.
+ *
+ * This client used to array-check the raw response body and discard anything that was not an array —
+ * which is every object the endpoint has ever returned — so it always resolved to `null` and
+ * `resolveFieldCatalog(null)` returned `LOCAL_FIELD_CATALOG` 100% of the time: the entire
+ * server-side country x nationality resolver, the per-country labels, the format regexes and the
+ * nationality hiding never reached a screen, and the hard-coded fallback (with the issue-date expiry
+ * bug above) was what every user got. `EmployeeFieldWiringTests.FieldCatalog_Envelope_*` pins the
+ * property name on the server side so the two cannot diverge again silently.
+ */
+export interface FieldCatalogResponse {
+  countryCode?: string | null;
+  nationality?: string | null;
+  tier?: string | null;
+  disclaimer?: string | null;
+  fields?: RemoteFieldDescriptor[] | null;
+}
+
+/** The property on the response envelope that carries the descriptor list. Pinned by a contract test. */
+export const FIELD_CATALOG_ENVELOPE_KEY = 'fields' as const;
+
+/**
+ * Read the descriptor list out of whatever the endpoint returned. Accepts the envelope (current
+ * contract) and a bare array (older/never-shipped shape) so a redeploy ordering can never blank the
+ * catalogue; anything else degrades to `null` → `LOCAL_FIELD_CATALOG`, exactly as a network failure does.
+ */
+export function unwrapFieldCatalog(data: unknown): RemoteFieldDescriptor[] | null {
+  if (Array.isArray(data)) return data as RemoteFieldDescriptor[];
+  if (data && typeof data === 'object') {
+    const fields = (data as Record<string, unknown>)[FIELD_CATALOG_ENVELOPE_KEY];
+    if (Array.isArray(fields)) return fields as RemoteFieldDescriptor[];
+  }
+  return null;
+}
 
 /** True when a remote descriptor is a statutory/identity (compliance) row. */
 function isComplianceRemote(d: RemoteFieldDescriptor): boolean {
@@ -367,6 +414,44 @@ function toComplianceField(d: RemoteFieldDescriptor): EmployeeComplianceField {
  *    back in. Countries the response does not resolve keep the local fallback (they are not the
  *    active jurisdiction and the modal never reads them).
  */
+/**
+ * The registry's `InputType` vocabulary is wider than the modal's: it includes `lookup`, which names a
+ * picker the edit modal does not render. The modal does `<input type={f.type ?? 'text'} />`, so an
+ * unfiltered overlay would put `type="lookup"` on the Department, Designation and Grade inputs — an
+ * invalid HTML input type. Browsers do fall back to a text box, so it is not a data defect, but it is
+ * invalid markup that only appeared once the catalogue started reaching the UI at all. Anything the modal
+ * cannot render keeps the local type.
+ */
+function renderableInputType(inputType?: string | null): FieldInputType | undefined {
+  const renderable: FieldInputType[] = ['text', 'email', 'date', 'number', 'select', 'toggle'];
+  return renderable.includes(inputType as FieldInputType) ? (inputType as FieldInputType) : undefined;
+}
+
+/**
+ * The overlaid input type, refusing an OPTIONLESS SELECT.
+ *
+ * `EmployeeFieldRegistry` declares `Nationality`, `CountryCode`, `Status`, `Currency`, `PaymentMethod`,
+ * `SaudiOrNonSaudi` and `IdType` as `"select"`, but `EmployeeFieldDescriptor` carries no option list and
+ * the endpoint therefore sends none — the local `BASE_EDIT_FIELDS` entry is the only source of options
+ * there has ever been. Overlaying the remote type blindly turned `nationality` (a local TEXT field with
+ * no options) into a `<select>` whose option list was `undefined`, and the modal's `f.options.map(...)`
+ * threw during EmployeesPage's render. Because modal children are built eagerly by the parent, that took
+ * the ENTIRE People page down behind the error boundary — for every role, not just inside the modal.
+ * The Chrome security gate caught it; nothing else did.
+ *
+ * It was invisible until the envelope fix above let the catalogue reach a screen for the first time. A
+ * select whose options nobody can supply is not renderable, so the local type wins.
+ */
+function optionsAwareType(
+  remoteInputType: string | null | undefined,
+  localType: FieldInputType | undefined,
+  options: string[] | undefined,
+): FieldInputType | undefined {
+  const remote = renderableInputType(remoteInputType);
+  if (remote === 'select' && !(options && options.length > 0)) return localType;
+  return remote ?? localType;
+}
+
 export function resolveFieldCatalog(remote: RemoteFieldDescriptor[] | null | undefined): ResolvedFieldCatalog {
   if (!remote || remote.length === 0) return LOCAL_FIELD_CATALOG;
 
@@ -374,11 +459,12 @@ export function resolveFieldCatalog(remote: RemoteFieldDescriptor[] | null | und
   const editFields = LOCAL_FIELD_CATALOG.editFields.map((field) => {
     const r = byEditKey.get(field.key);
     if (!r) return field;
+    const options = r.options ?? field.options;
     return {
       ...field,
       label: r.label ?? field.label,
-      type: r.inputType ?? field.type,
-      options: r.options ?? field.options,
+      type: optionsAwareType(r.inputType, field.type, options),
+      options,
       sensitive: r.sensitive ?? field.sensitive,
     };
   });

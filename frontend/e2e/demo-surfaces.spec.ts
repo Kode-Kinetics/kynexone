@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import {
   apiLogin, tenantLogin, mainText,
-  INTELLIFLOW_ADMIN, INTELLIFLOW_EMP1, INTELLIFLOW_SLUG,
+  INTELLIFLOW_ADMIN, INTELLIFLOW_EMP1, INTELLIFLOW_EMP2, INTELLIFLOW_SLUG,
 } from './helpers';
 
 /**
@@ -187,7 +187,7 @@ test.describe('Timesheets', () => {
     // THE POINT OF THIS TEST. Saving is not the feature; submitting is. Submit 422s with
     // `no_approval_route` on any tenant that has no ApprovalWorkflow for entity 'Timesheet'.
     // TenantProvisioningBundle seeds one for newly provisioned tenants, but the demo seeders
-    // (IntelliFlowDemoSeeder / CleanDemoKsaSeeder) seed only LEAVE-APPROVAL — so on the demo
+    // (e2e/bootstrap/provision.ts) provisions only LEAVE-APPROVAL — so on the fixture
     // tenants the grid fills in and the Submit button can never succeed.
     const submitted = await request.post(`/api/ess/timesheets/${sheet.id}/submit`, { headers: auth });
     if (submitted.status() === 422) {
@@ -202,8 +202,18 @@ test.describe('Timesheets', () => {
     expect((await submitted.json()).status).toBe('Submitted');
   });
 
+  // Driven as an EMPLOYEE, not as the tenant administrator.
+  //
+  // "My week" is an employee-self-service surface: EssTimesheetsController resolves the caller
+  // through `Employee.UserAccountId`, so a login with no employee behind it gets a named 409 and the
+  // grid never renders. The administrator created by `POST /api/platform/tenants` is exactly such a
+  // login — it is an operator account, not a person on the payroll — and nothing in the product
+  // links an already-existing user to an employee record. The old seeder happened to make the
+  // administrator an employee too; that was a property of the seeder, not of the product.
   test('the weekly grid renders seven named days', async ({ page }) => {
-    await tenantLogin(page, INTELLIFLOW_ADMIN.email, INTELLIFLOW_ADMIN.password, INTELLIFLOW_SLUG);
+    // The SECOND employee, not the first: the test above submits the first employee's current week,
+    // after which the page correctly shows "Awaiting HR Manager" instead of the Submit control.
+    await tenantLogin(page, INTELLIFLOW_EMP2.email, INTELLIFLOW_EMP2.password, INTELLIFLOW_SLUG);
     await page.goto('/timesheets');
     await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => {});
 

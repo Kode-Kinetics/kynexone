@@ -13,6 +13,7 @@ using Zayra.Api.Application.Auth;
 using Zayra.Api.Controllers;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Email;
 using Zayra.Api.Models;
@@ -84,8 +85,14 @@ public abstract class PlatformTestBase
         ZayraDbContext db,
         string platformRole = PlatformRoles.Owner,
         IAuthSeeder? authSeeder = null,
+        // Both sides of this merge added optional dependencies to the same factory: develop's
+        // platform-email work brought emailService/configuration, main's brought mfaService/
+        // accessManagement. The body below already uses all four, so the resolution is to keep
+        // every one rather than choose a side.
         IEmailService? emailService = null,
-        IConfiguration? configuration = null)
+        IConfiguration? configuration = null,
+        IMfaService? mfaService = null,
+        IAccessManagementService? accessManagement = null)
     {
         var jwt    = Options.Create(GetJwtOptions());
         var hasher = new Pbkdf2PasswordHasher();
@@ -93,10 +100,13 @@ public abstract class PlatformTestBase
         var config = configuration ?? new ConfigurationBuilder().Build();
         var email  = emailService ?? new FakePlatformEmailService();
         var seeder = authSeeder ?? new FakeAuthSeeder(db, hasher);
+        var access = accessManagement
+            ?? new AccessManagementService(db, hasher, new AuditService(db), tokenSvc, config);
 
         var controller = new PlatformController(
             db, jwt, hasher, seeder, tokenSvc, email, config,
-            new NullPlatformMfaService(),
+            mfaService ?? new NullPlatformMfaService(),
+            access,
             NullLogger<PlatformController>.Instance,
             new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()));
 
@@ -147,10 +157,12 @@ internal sealed class NullPlatformMfaService : IMfaService
     public Task<string> CreateChallengeAsync(Guid userId, Guid tenantId, string ip, CancellationToken ct) => throw new NotImplementedException();
     public Task<Zayra.Api.Domain.Entities.User?> VerifyChallengeAsync(string token, string code, CancellationToken ct) => throw new NotImplementedException();
     public Task<bool> DisableAsync(Guid userId, Guid tenantId, string code, CancellationToken ct) => throw new NotImplementedException();
+    public Task<bool> AdminDisableAsync(Guid userId, Guid tenantId, RequestContext context, CancellationToken ct) => throw new NotImplementedException();
     public Task<MfaSetupInitDto> InitiatePlatformSetupAsync(Guid id, CancellationToken ct) => throw new NotImplementedException();
     public Task<bool> VerifyPlatformSetupAsync(Guid id, MfaVerifySetupRequest req, CancellationToken ct) => throw new NotImplementedException();
     public Task<string> CreatePlatformChallengeAsync(Guid id, string ip, CancellationToken ct) => throw new NotImplementedException();
     public Task<Zayra.Api.Models.PlatformUser?> VerifyPlatformChallengeAsync(string token, string code, CancellationToken ct) => throw new NotImplementedException();
+    public Task<Zayra.Api.Models.PlatformUser?> CompletePlatformChallengeAsync(string token, string code, RequestContext context, CancellationToken ct) => throw new NotImplementedException();
     public Task<bool> DisablePlatformAsync(Guid id, string code, CancellationToken ct) => throw new NotImplementedException();
 }
 

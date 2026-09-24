@@ -61,13 +61,21 @@ public sealed class EmployeeReadinessPolicyResolver : IEmployeeReadinessPolicyRe
                      && (p.CompanyId == null || (companyId != null && p.CompanyId == companyId)))
             .ToListAsync(ct);
 
+        // JURISDICTION SCOPE (load-bearing). CompanyComplianceProfile is keyed by
+        // (tenant, company, COUNTRY) and TenantProvisioningBundle seeds ONE TENANT-DEFAULT ROW PER GCC
+        // STATE (SA, AE, QA, KW, OM, BH). Selecting the layer without this filter picked an ARBITRARY
+        // country's profile — a Saudi employee was handed the UAE row's EmiratesId/WorkPermitNumber
+        // and/or the Qatar row's Qid as fail-closed activation blockers they can never satisfy.
+        // An employee is only ever subject to the profile for the EMPLOYING COMPANY'S OWN country.
+        candidates = candidates.Where(p => CountryMatches(p.CountryCode, iso2)).ToList();
+
         var tenantDefault = candidates.Where(p => p.CompanyId == null).OrderByDescending(p => p.EffectiveFrom).FirstOrDefault();
         var companyProfile = companyId != null
             ? candidates.Where(p => p.CompanyId == companyId).OrderByDescending(p => p.EffectiveFrom).FirstOrDefault()
             : null;
 
-        // ── Optional additive GCC-setting layer (now company-scoped, D7) ──
-        var gccSetting = await ResolveGccSettingAsync(tenantId, companyId, ct);
+        // ── Optional additive GCC-setting layer (now company-scoped, D7; jurisdiction-scoped) ──
+        var gccSetting = await ResolveGccSettingAsync(tenantId, companyId, iso2, ct);
         var wpsEnabled = gccSetting?.WpsEnabled ?? false;
 
         // ── Start with the code floor (always present) ──
@@ -96,9 +104,13 @@ public sealed class EmployeeReadinessPolicyResolver : IEmployeeReadinessPolicyRe
         {
             var added = false;
             void AddToggle(ReadinessRequirement r) { Union(merged, ApplyConditions(r, nat, wpsEnabled), contradictions); added = true; }
-            if (gccSetting.IqamaRequired)
+            // The two identity toggles name a SPECIFIC country's document: an Iqama is a Saudi
+            // residence permit and an Emirates ID is a UAE identity card. They are gated on the
+            // employing country as well as on the (now jurisdiction-scoped) setting row, so a stray
+            // or legacy row from another GCC state can never block a Saudi activation on a UAE card.
+            if (gccSetting.IqamaRequired && iso2 == "SA")
                 AddToggle(new ReadinessRequirement("IqamaNumber", "identity", true, "activate", "gcc-setting", iso2, null, new AppliesWhen(NonGccExpatOnly: true)));
-            if (gccSetting.EmiratesIdRequired)
+            if (gccSetting.EmiratesIdRequired && iso2 == "AE")
                 AddToggle(new ReadinessRequirement("EmiratesId", "identity", true, "activate", "gcc-setting", iso2));
             if (gccSetting.WpsEnabled)
                 AddToggle(new ReadinessRequirement("BankIban", "payroll", true, "activate", "gcc-setting", iso2));
@@ -167,7 +179,15 @@ public sealed class EmployeeReadinessPolicyResolver : IEmployeeReadinessPolicyRe
         };
     }
 
-    private async Task<GCCComplianceSetting?> ResolveGccSettingAsync(Guid tenantId, Guid? companyId, CancellationToken ct)
+    /// <summary>Whether a config row's country code addresses the employing country. Both sides are
+    /// normalised to ISO-2 first, so a row saved as "SAU"/"KSA" still matches "SA".</summary>
+    private static bool CountryMatches(string? rowCountry, string iso2)
+    {
+        var c = (CountryCodeStandard.NormalizeToIso2(rowCountry) ?? rowCountry ?? string.Empty).Trim().ToUpperInvariant();
+        return string.Equals(c, iso2, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<GCCComplianceSetting?> ResolveGccSettingAsync(Guid tenantId, Guid? companyId, string iso2, CancellationToken ct)
     {
         // IgnoreQueryFilters is intentional: same SYSTEM-read rationale as the profile query above —
         // the additive GCC-setting layer must see the tenant-default (CompanyId==null) row; explicit
@@ -176,6 +196,10 @@ public sealed class EmployeeReadinessPolicyResolver : IEmployeeReadinessPolicyRe
             .IgnoreQueryFilters()
             .Where(g => g.TenantId == tenantId && (g.CompanyId == null || (companyId != null && g.CompanyId == companyId)))
             .ToListAsync(ct);
+        // GCCComplianceSetting is keyed by (tenant, company, COUNTRY) — a tenant configuring both a
+        // KSA and a UAE entity holds one row per state. Picking the first row regardless of country
+        // let KSA's WPS flag and UAE's EmiratesIdRequired toggle leak onto each other's employees.
+        rows = rows.Where(g => CountryMatches(g.CountryCode, iso2)).ToList();
         return rows.FirstOrDefault(g => companyId != null && g.CompanyId == companyId)
             ?? rows.FirstOrDefault(g => g.CompanyId == null);
     }

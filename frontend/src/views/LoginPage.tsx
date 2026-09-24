@@ -1,16 +1,17 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
-  AlertCircle, CheckCircle2, Eye, EyeOff, KeyRound, Lock, Mail,
+  AlertCircle, CheckCircle2, Eye, EyeOff, Lock, Mail,
   ShieldCheck, Smartphone,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { authApi } from '../api/auth';
 import { Logo } from '../components/Logo';
 import { Brief, VendorFooter } from '../components/LoginMarketing';
+import { normalizeWorkspace, resolveWorkspaceAlias, safeLocalReturnPath } from '../lib/publicAuth';
 
 /**
  * The aurora is CODE-SPLIT and never server-rendered.
@@ -42,13 +43,13 @@ const LoginAuroraScene = dynamic(
  */
 const SCENE_MIN_WIDTH = 768;
 
-type Mode = 'login' | 'forgot' | 'reset' | 'mfa' | 'mfa-enroll';
+type Mode = 'login' | 'forgot' | 'mfa' | 'mfa-enroll';
 
 export function LoginPage() {
   const { login, verifyMfaChallenge, mfaPending, mfaEnrollmentPending } = useAuth();
   const router       = useRouter();
   const searchParams = useSearchParams();
-  const from         = searchParams?.get('from') ?? '/dashboard';
+  const from         = safeLocalReturnPath(searchParams?.get('from'));
 
   const [mode,         setMode]         = useState<Mode>('login');
   const [email,        setEmail]        = useState('');
@@ -60,25 +61,23 @@ export function LoginPage() {
   const [loading,      setLoading]      = useState(false);
   const [showPw,       setShowPw]       = useState(false);
   const [forgotEmail,  setForgotEmail]  = useState('');
-  const [resetToken,   setResetToken]   = useState('');
-  const [newPw,        setNewPw]        = useState('');
-  const [confirmPw,    setConfirmPw]    = useState('');
   const [totpCode,     setTotpCode]     = useState('');
   const [enrollmentUri, setEnrollmentUri] = useState('');
   const [enrollmentSecret, setEnrollmentSecret] = useState('');
 
+  useLayoutEffect(() => {
+    // Never retain a query-string bearer credential in browser history, logs, or
+    // copied URLs. Issuance is contained server-side; this is a second boundary.
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has('impersonate')) return;
+    url.searchParams.delete('impersonate');
+    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+  }, []);
+
   useEffect(() => {
-    // Platform-admin impersonation: ?impersonate=<tenant-audience-jwt>
-    // The backend already minted a scoped 1-hour token; just store it and redirect.
-    // The token carries TenantAudience, so platform endpoints remain inaccessible.
-    const impersonateToken = searchParams?.get('impersonate');
-    if (impersonateToken) {
-      localStorage.removeItem('zayra_refresh_token');
-      localStorage.setItem('zayra_access_token', impersonateToken);
-      router.replace('/dashboard');
-      return;
-    }
-    const wsParam = searchParams?.get('workspace') ?? searchParams?.get('w');
+    // Query-string bearer credentials are deliberately rejected. Support and
+    // impersonation are contained until their revocation ledger is proven.
+    const wsParam = searchParams ? resolveWorkspaceAlias(searchParams) : '';
     if (wsParam) { setTenantSlug(wsParam); setTenantLocked(true); return; }
     if (typeof window === 'undefined') return;
     const hostname = window.location.hostname.toLowerCase();
@@ -87,11 +86,13 @@ export function LoginPage() {
     const skip = new Set(['www', 'app', 'admin', 'mail', 'localhost']);
     const first = parts[0];
     const looksLikeSlug = /^[a-z][a-z0-9-]*$/i.test(first);
-    if (parts.length >= 3 && !skip.has(first) && looksLikeSlug) setTenantSlug(first);
-  }, [searchParams, router]);
+    if (parts.length >= 3 && !skip.has(first) && looksLikeSlug) setTenantSlug(normalizeWorkspace(first));
+  }, [searchParams]);
 
   const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault(); setError(''); setLoading(true);
+    e.preventDefault(); setError('');
+    if (!tenantSlug.trim()) { setError('Workspace is required.'); return; }
+    setLoading(true);
     try {
       const outcome = await login(email, password, tenantSlug);
       if (outcome === 'mfa') { setMode('mfa'); return; }
@@ -164,25 +165,13 @@ export function LoginPage() {
   };
 
   const handleForgot = async (e: React.FormEvent) => {
-    e.preventDefault(); setError(''); setLoading(true);
-    try {
-      const res = await authApi.forgotPassword(forgotEmail || email, tenantSlug || undefined);
-      if (res.resetToken) { setResetToken(res.resetToken); setMode('reset'); }
-      else setInfo(res.message ?? 'Check your email for a reset link.');
-    } catch (err: any) { setError(err.response?.data?.message ?? 'Request failed.'); }
-    finally { setLoading(false); }
-  };
-
-  const handleReset = async (e: React.FormEvent) => {
     e.preventDefault(); setError('');
-    if (newPw !== confirmPw) { setError('Passwords do not match.'); return; }
-    if (newPw.length < 10)   { setError('Minimum 10 characters required.'); return; }
+    if (!tenantSlug.trim()) { setError('Workspace is required.'); return; }
     setLoading(true);
     try {
-      await authApi.resetPassword(forgotEmail || email, resetToken, newPw, tenantSlug || undefined);
-      setInfo('Password updated. Sign in with your new password.');
-      setMode('login');
-    } catch (err: any) { setError(err.response?.data?.message ?? 'Reset failed. Token may have expired.'); }
+      const res = await authApi.forgotPassword(forgotEmail || email, tenantSlug);
+      setInfo(res.message ?? 'Check your email for a reset link.');
+    } catch (err: any) { setError(err.response?.data?.message ?? 'Request failed.'); }
     finally { setLoading(false); }
   };
 
@@ -324,44 +313,18 @@ export function LoginPage() {
                   <form onSubmit={handleForgot} noValidate className="lx-form">
                     <Back onClick={() => go('login')} />
                     <Head kicker="Account recovery" title="Reset password"
-                      sub="We'll email you a reset code." icon={<Mail />} />
+                      sub="We'll email you a secure reset link." icon={<Mail />} />
                     <Field legend="Work email" htmlFor="fg-em">
                       <input id="fg-em" type="email" value={forgotEmail || email}
                         onChange={e => setForgotEmail(e.target.value)}
                         className="lx-in" placeholder="you@company.com" autoComplete="email" required />
                     </Field>
-                    <Field legend="Workspace" htmlFor="fg-ws" hint="Optional — helps locate your account">
+                    <Field legend="Workspace" htmlFor="fg-ws">
                       <input id="fg-ws" type="text" value={tenantSlug} onChange={e => setTenantSlug(e.target.value)}
-                        className="lx-in lx-in-mono" placeholder="your-workspace" />
+                        className="lx-in lx-in-mono" placeholder="your-workspace" autoComplete="organization" required />
                     </Field>
                     <Feedback error={error} info={info} />
-                    <Submit busy={busy} label="Send reset code" />
-                  </form>
-                )}
-                {mode === 'reset' && (
-                  <form onSubmit={handleReset} noValidate className="lx-form">
-                    <Back onClick={() => go('forgot')} label="Back" />
-                    <Head kicker="Account recovery" title="New password"
-                      sub="Enter the code from your email and set a new password." icon={<KeyRound />} />
-                    <Field legend="Work email" htmlFor="rs-em">
-                      <input id="rs-em" type="email" value={forgotEmail || email}
-                        onChange={e => setForgotEmail(e.target.value)}
-                        className="lx-in" placeholder="you@company.com" autoComplete="email" required />
-                    </Field>
-                    <Field legend="Reset code" htmlFor="rs-tk">
-                      <input id="rs-tk" type="text" value={resetToken} onChange={e => setResetToken(e.target.value)}
-                        className="lx-in lx-in-mono" placeholder="Paste code from email" required />
-                    </Field>
-                    <Field legend="New password" htmlFor="rs-pw" hint="Minimum 10 characters">
-                      <input id="rs-pw" type="password" value={newPw} onChange={e => setNewPw(e.target.value)}
-                        className="lx-in" placeholder="••••••••••" autoComplete="new-password" required />
-                    </Field>
-                    <Field legend="Confirm password" htmlFor="rs-cf">
-                      <input id="rs-cf" type="password" value={confirmPw} onChange={e => setConfirmPw(e.target.value)}
-                        className="lx-in" placeholder="••••••••••" autoComplete="new-password" required />
-                    </Field>
-                    <Feedback error={error} info={info} />
-                    <Submit busy={busy} label="Update password" />
+                    <Submit busy={busy} label="Send reset link" />
                   </form>
                 )}
 

@@ -11,15 +11,17 @@
  * every spec reuses the stored session. The limiter is left exactly as production runs it.
  */
 
-export const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:5173';
+import { ALMARAI_SLUG, GROUP_PASSWORD, PLATFORM_EMAIL, PLATFORM_PASSWORD } from '../world';
 
-/** Seeded enterprise-group tenant (EnterpriseGroupSeeder, SEED_ENTERPRISE_TEST_DATA=true). */
-export const GROUP_SLUG = 'almarai-test';
-export const GROUP_PASSWORD = process.env.E2E_GROUP_PASSWORD ?? 'GroupDemo123!x';
+export const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? process.env.E2E_BASE_URL ?? 'http://localhost:5173';
 
-/** Platform operator — bootstrapped independently of demo data (Wave 1 B3). */
-export const PLATFORM_EMAIL = process.env.PLATFORM_ADMIN_EMAIL ?? 'admin@platform.local';
-export const PLATFORM_PASSWORD = process.env.PLATFORM_ADMIN_PASSWORD ?? 'YourPassword123!';
+/**
+ * The multi-company group tenant. It is no longer seeded by anything — e2e/bootstrap/provision.ts
+ * creates it, its five companies and every identity below through the platform-admin API, and the
+ * declaration lives in e2e/world.ts so this file and e2e/helpers.ts cannot drift apart again.
+ */
+export const GROUP_SLUG = ALMARAI_SLUG;
+export { GROUP_PASSWORD, PLATFORM_EMAIL, PLATFORM_PASSWORD };
 
 export type Scope = 'group' | 'company' | 'companies' | 'platform';
 
@@ -39,9 +41,14 @@ export interface RoleFixture {
 }
 
 /**
- * Roles present in the enterprise-group seed. `Manager` and `Employee` exist as roles in the product
- * but are NOT seeded into this tenant, so they are deliberately absent rather than faked — see
- * GAP-B3-1 in docs/CHROME_SECURITY_GATE.md.
+ * Roles the bootstrap provisions into the group tenant. `Manager` and `Employee` exist as roles in
+ * the product but are deliberately NOT provisioned here rather than faked — see GAP-B3-1 in
+ * docs/CHROME_SECURITY_GATE.md.
+ *
+ * Every company-scoped identity below is confined by a real `SelectedCompanies` entity grant that
+ * the bootstrap creates through /api/access/entity-grants. Without that grant each of them would be
+ * group-scope, and the negative assertions in isolation.spec.ts ("bakery data is not visible") would
+ * pass for the wrong reason.
  */
 export const ROLES: RoleFixture[] = [
   {
