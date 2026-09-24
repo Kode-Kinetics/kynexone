@@ -292,6 +292,18 @@ jobs:
           tail -80 /tmp/api.log
           exit 1
 
+      # THE THIRD FRONTEND BUILD PATH. The other two are frontend/Dockerfile and the Frontend
+      # Production Build job below; this one is the easiest to forget and the most expensive to
+      # get wrong, because Apply DB Migrations, Build & push backend image and Deploy Backend all
+      # `needs:` this gate. When it died here in run 35948583089 ("An error occurred in
+      # `next/font`", the Google loader) all three were SKIPPED and Release outcome (main)
+      # reported production BEHIND main — a green codebase, taken down by a CDN.
+      #
+      # It stays a single attempt. The six typefaces are vendored in frontend/app/fonts and
+      # loaded with `next/font/local`, so this build no longer reaches fonts.googleapis.com and
+      # cannot fail on it — proven by building it in a container with --network=none. A failure
+      # here is now a real failure, and wrapping it in three attempts would only hide the next
+      # one behind two silent retries, on the exact job the whole deploy chain hangs off.
       - name: Build and serve the PRODUCTION frontend
         working-directory: frontend
         env:
