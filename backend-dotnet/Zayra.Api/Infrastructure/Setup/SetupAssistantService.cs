@@ -1,10 +1,12 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Zayra.Api.Application.AI;
 using Zayra.Api.Application.Setup;
 using Zayra.Api.Infrastructure.AI;
+using Zayra.Api.Infrastructure.Payroll;
 
 namespace Zayra.Api.Infrastructure.Setup;
 
@@ -24,13 +26,16 @@ public sealed class SetupAssistantService : ISetupAssistantService
     private readonly ILlmClient _llm;
     private readonly AiOptions _options;
     private readonly IAiCallRecorder _recorder;
+    private readonly ISetupStatutoryDefaults _statutory;
     private readonly ILogger<SetupAssistantService> _logger;
 
-    public SetupAssistantService(ILlmClient llm, AiOptions options, IAiCallRecorder recorder, ILogger<SetupAssistantService> logger)
+    public SetupAssistantService(ILlmClient llm, AiOptions options, IAiCallRecorder recorder,
+        ISetupStatutoryDefaults statutory, ILogger<SetupAssistantService> logger)
     {
         _llm = llm;
         _options = options;
         _recorder = recorder;
+        _statutory = statutory;
         _logger = logger;
     }
 
@@ -58,9 +63,14 @@ public sealed class SetupAssistantService : ISetupAssistantService
             notes.Insert(0, failureNote);
         }
 
-        // 2. Always deterministic: working week + statutory (never trust an LLM with labour-law rates).
+        // 2. Always deterministic: everything a labour law, a calendar or a country decides.
+        //    The model is never asked for an entitlement, a multiplier or a holiday date — it is
+        //    asked for names and structure, which is the only part of this it can be wrong about
+        //    cheaply. Anything with no built-in figure is left empty and said out loud in a note.
+        var rules = await _statutory.LoadAsync(iso3, requester.TenantId, ct);
+
         if (profile.Sections.Shifts)
-            draft = draft with { WorkingWeek = WorkingWeekFor(iso3) };
+            draft = draft with { WorkingWeek = WorkingWeekFor(profile, iso3) };
         if (profile.Sections.Governance)
             draft = draft with
             {
@@ -69,10 +79,26 @@ public sealed class SetupAssistantService : ISetupAssistantService
             };
         if (profile.Sections.Payroll)
         {
-            draft = draft with { StatutoryRules = StatutoryFor(iso3) };
+            draft = draft with { StatutoryRules = StatutoryFor(profile, iso3) };
             if (draft.StatutoryRules.Count > 0)
                 notes.Add("Statutory rules are country defaults — verify rates against current regulation before relying on them.");
         }
+        if (profile.Sections.Localization)
+            draft = draft with { Localization = LocalizationFor(profile, iso3) };
+        if (profile.Sections.Attendance)
+            draft = draft with
+            {
+                AttendancePolicy = AttendancePolicyFor(profile, notes),
+                OvertimePolicy = OvertimePolicyFor(profile, iso3, rules, notes),
+            };
+        if (profile.Sections.Holidays)
+            draft = draft with { HolidayCalendar = HolidayCalendarFor(iso3, notes) };
+        // Last, because an entitlement is meaningless without the leave type it is attached to:
+        // this reads whichever leave types step 1 produced, the model's or the template's.
+        if (profile.Sections.Leave && profile.Sections.LeavePolicies)
+            draft = draft with { LeavePolicies = LeavePoliciesFor(profile, iso3, draft.LeaveTypes, rules, notes) };
+        else if (profile.Sections.LeavePolicies && !profile.Sections.Leave)
+            notes.Add("Leave entitlements were skipped: an entitlement belongs to a leave type, and leave types are not part of this draft. Turn on \"Leave types\" to include them.");
 
         // 3. Honour section toggles + normalise.
         draft = ApplySectionsAndNormalise(draft, profile.Sections);
@@ -246,12 +272,18 @@ public sealed class SetupAssistantService : ISetupAssistantService
     {
         var sb = new StringBuilder();
         sb.AppendLine($"Country: {iso3}. Industry: {p.Industry}. Company size: {p.CompanySize}. Currency: {p.CurrencyCode}.");
+        // The operating choices the form collects. The model shapes shifts and pay components
+        // around them; it is NOT asked for entitlements, multipliers, holidays or localization,
+        // which GenerateAsync fills from the country's own rules after this returns.
+        sb.AppendLine($"Work pattern: {ResolveWorkPattern(p)}. Workforce: {ResolveWorkforceMix(p)}. " +
+                      $"Overtime: {ResolveOvertime(p)}. Time capture: {ResolveCapture(p)}. " +
+                      $"Pay cycle: {Choice(p.PayCycle, "Monthly", "Monthly", "SemiMonthly", "Biweekly", "Weekly")}.");
         if (!string.IsNullOrWhiteSpace(p.Notes)) sb.AppendLine($"Extra context: {p.Notes}");
         var want = new List<string>();
         if (p.Sections.Org) want.Add("departments, designations, grades");
         if (p.Sections.Entity) want.Add("branches and costCenters");
         if (p.Sections.Leave) want.Add("leaveTypes (align entitlements/categories to the country's labour law)");
-        if (p.Sections.Shifts) want.Add("shifts");
+        if (p.Sections.Shifts) want.Add("shifts (match the work pattern above: a single day shift, two shifts, a three-shift rotation, or a field roster)");
         if (p.Sections.Payroll) want.Add("payComponents (typical earnings & deductions for the country)");
         sb.AppendLine($"Generate only these sections: {string.Join("; ", want)}. Leave other arrays empty.");
         sb.AppendLine("Return ONLY the JSON object.");
@@ -285,6 +317,13 @@ public sealed class SetupAssistantService : ISetupAssistantService
                 null,
                 Arr<DraftPayComponent>("payComponents"),
                 new(),
+                null,
+                null,
+                // Not parsed from the model by design — see GenerateAsync step 2. These are filled
+                // from the country's own rules, so a model that invents them is ignored.
+                new(),
+                null,
+                null,
                 null,
                 null);
         }
@@ -382,6 +421,85 @@ public sealed class SetupAssistantService : ISetupAssistantService
                 Percentage = Math.Clamp(x.Percentage, 0, 100),
             }), x => x.Code);
 
+        // Leave entitlement. A policy whose leave type did not survive normalisation is dropped
+        // rather than kept pointing at nothing — the apply step resolves the type by code, and an
+        // unresolvable one would be silently skipped there instead of visibly missing here.
+        var leaveCodes = leaves.Select(x => x.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var leavePolicies = !(s.Leave && s.LeavePolicies) ? new() : Dedup(
+            d.LeavePolicies
+                .Select(x => x with { LeaveTypeCode = Code(x.LeaveTypeCode, string.Empty) })
+                .Where(x => leaveCodes.Contains(x.LeaveTypeCode))
+                .Select(x => x with
+                {
+                    Name = string.IsNullOrWhiteSpace(x.Name) ? $"{x.LeaveTypeCode} Policy" : x.Name.Trim(),
+                    AnnualEntitlementDays = Math.Clamp(x.AnnualEntitlementDays, 0m, 365m),
+                    AccrualMethod = string.Equals(x.AccrualMethod, "Monthly", StringComparison.OrdinalIgnoreCase) ? "Monthly" : "Yearly",
+                    EncashmentMaxDays = Math.Clamp(x.EncashmentMaxDays, 0m, 365m),
+                    MinimumDaysPerRequest = Math.Clamp(x.MinimumDaysPerRequest, 0m, 365m),
+                    MaximumDaysPerRequest = Math.Clamp(x.MaximumDaysPerRequest, 0m, 365m),
+                    NoticeRequiredDays = Math.Clamp(x.NoticeRequiredDays, 0, 365),
+                    PayrollImpact = string.Equals(x.PayrollImpact, "Unpaid", StringComparison.OrdinalIgnoreCase) ? "Unpaid" : "Full",
+                }),
+            x => x.LeaveTypeCode);
+
+        // Holidays. A row whose date will not parse is dropped: attendance and payroll read this
+        // calendar by date, so a malformed one is not a holiday, it is a crash waiting for the run.
+        var calendar = !s.Holidays ? null : d.HolidayCalendar is null ? null : d.HolidayCalendar with
+        {
+            Holidays = Dedup(
+                d.HolidayCalendar.Holidays
+                    .Where(h => !string.IsNullOrWhiteSpace(h.NameEn)
+                                && DateOnly.TryParseExact(h.Date, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _))
+                    .Select(h => h with
+                    {
+                        NameEn = h.NameEn.Trim(),
+                        HolidayType = string.IsNullOrWhiteSpace(h.HolidayType) ? "National" : h.HolidayType.Trim(),
+                    }),
+                h => h.Date),
+        };
+
+        var attendance = !s.Attendance ? null : d.AttendancePolicy is null ? null : d.AttendancePolicy with
+        {
+            Code = Code(d.AttendancePolicy.Code, "STD_ATT"),
+            GraceMinutes = Math.Clamp(d.AttendancePolicy.GraceMinutes, 0, 120),
+            LateThresholdMinutes = Math.Clamp(d.AttendancePolicy.LateThresholdMinutes, 0, 480),
+            EarlyExitThresholdMinutes = Math.Clamp(d.AttendancePolicy.EarlyExitThresholdMinutes, 0, 480),
+            HalfDayThresholdMinutes = Math.Clamp(d.AttendancePolicy.HalfDayThresholdMinutes, 0, 960),
+            AbsentThresholdMinutes = Math.Clamp(d.AttendancePolicy.AbsentThresholdMinutes, 0, 960),
+            StandardWorkMinutes = Math.Clamp(d.AttendancePolicy.StandardWorkMinutes, 60, 960),
+            BreakMinutes = Math.Clamp(d.AttendancePolicy.BreakMinutes, 0, 240),
+            // Only the two rules OvertimeController can actually evaluate; a third would be stored
+            // and ignored, which is worse than being corrected here.
+            RoundingRule = string.Equals(d.AttendancePolicy.RoundingRule, "NearestMinute", StringComparison.OrdinalIgnoreCase)
+                ? "NearestMinute" : "Nearest15",
+        };
+
+        var overtime = !s.Attendance ? null : d.OvertimePolicy is null ? null : d.OvertimePolicy with
+        {
+            Code = Code(d.OvertimePolicy.Code, "STD_OT"),
+            StandardMonthlyHours = Math.Clamp(d.OvertimePolicy.StandardMonthlyHours, 1, 400),
+            MinimumMinutes = Math.Clamp(d.OvertimePolicy.MinimumMinutes, 0, 480),
+            MaximumMinutesPerDay = Math.Clamp(d.OvertimePolicy.MaximumMinutesPerDay, 0, 960),
+            MonthlyCapMinutes = Math.Clamp(d.OvertimePolicy.MonthlyCapMinutes, 0, 30000),
+            RoundingRule = string.Equals(d.OvertimePolicy.RoundingRule, "NearestMinute", StringComparison.OrdinalIgnoreCase)
+                ? "NearestMinute" : "Nearest15",
+            // A multiplier below 1 pays an overtime hour less than an ordinary one. It is never a
+            // rounding artefact; it is either a typo or an unlawful rate, and both are dropped.
+            Multipliers = Dedup(
+                d.OvertimePolicy.Multipliers.Where(m => m.Multiplier >= 1m && m.Multiplier <= 5m),
+                m => m.DayCategory ?? string.Empty),
+        };
+
+        var localization = !s.Localization ? null : d.Localization is null ? null : d.Localization with
+        {
+            DefaultLanguage = string.Equals(d.Localization.DefaultLanguage, "ar", StringComparison.OrdinalIgnoreCase) ? "ar" : "en",
+            CalendarSystem = string.Equals(d.Localization.CalendarSystem, "Hijri", StringComparison.OrdinalIgnoreCase) ? "Hijri" : "Gregorian",
+            DefaultTimezone = string.IsNullOrWhiteSpace(d.Localization.DefaultTimezone) ? "UTC" : d.Localization.DefaultTimezone.Trim(),
+            DateFormat = string.Equals(d.Localization.DateFormat, "MM/DD/YYYY", StringComparison.OrdinalIgnoreCase) ? "MM/DD/YYYY"
+                : string.Equals(d.Localization.DateFormat, "YYYY-MM-DD", StringComparison.OrdinalIgnoreCase) ? "YYYY-MM-DD"
+                : "DD/MM/YYYY",
+        };
+
         return d with
         {
             Branches = branches, Departments = depts, CostCenters = costCenters, Designations = desigs, Grades = grades,
@@ -391,6 +509,11 @@ public sealed class SetupAssistantService : ISetupAssistantService
             StatutoryRules = s.Payroll ? d.StatutoryRules : new(),
             EmployeeIdRule = s.Governance ? d.EmployeeIdRule : null,
             HrConfig = s.Governance ? d.HrConfig : null,
+            LeavePolicies = leavePolicies,
+            HolidayCalendar = calendar,
+            AttendancePolicy = attendance,
+            OvertimePolicy = overtime,
+            Localization = localization,
         };
     }
 
@@ -419,6 +542,8 @@ public sealed class SetupAssistantService : ISetupAssistantService
         };
     }
 
+    /// <summary>The country's usual working week, used when the customer leaves the weekend on
+    /// "country default".</summary>
     private static DraftWorkingWeek WorkingWeekFor(string iso3) => iso3 switch
     {
         "SAU" or "QAT" or "KWT" or "BHR" or "OMN" => new DraftWorkingWeek("Sun-Thu", "Sunday"),
@@ -426,7 +551,57 @@ public sealed class SetupAssistantService : ISetupAssistantService
         _ => new DraftWorkingWeek("Mon-Fri", "Monday"),
     };
 
-    private static List<DraftStatutoryRule> StatutoryFor(string iso3) => iso3 switch
+    /// <summary>
+    /// The working week, from the REST days the customer chose.
+    ///
+    /// <para>The form asks for the weekend because that is how a business describes itself ("we're
+    /// off Friday and Saturday"); the column stores the complement, which is what
+    /// <c>WorkWeekParser</c> reads — it parses a WORKING-week range and returns the rest days. A
+    /// company off only Friday is a real GCC pattern that the country default cannot express, and
+    /// it changes every overtime and leave-day count in the product.</para>
+    /// </summary>
+    private static DraftWorkingWeek WorkingWeekFor(CompanyProfile p, string iso3)
+        => (p.WeekendPattern ?? "").Trim().ToUpperInvariant() switch
+        {
+            "FRI-SAT" => new DraftWorkingWeek("Sun-Thu", "Sunday"),
+            "SAT-SUN" => new DraftWorkingWeek("Mon-Fri", "Monday"),
+            "FRI" => new DraftWorkingWeek("Sat-Thu", "Saturday"),
+            "SUN" => new DraftWorkingWeek("Mon-Sat", "Monday"),
+            _ => WorkingWeekFor(iso3),
+        };
+
+    /// <summary>
+    /// The country's contribution rules, plus the four employment terms the form now collects.
+    ///
+    /// <para>Probation, notice, pay cycle and leave-year basis have no column of their own on any
+    /// entity — they are tenant rules, and <c>statutory_rules</c> is where this product keeps
+    /// tenant rules. Each is written only when the customer actually chose a value, so an untouched
+    /// field does not become a rule that says "0 days' notice".</para>
+    /// </summary>
+    private static List<DraftStatutoryRule> StatutoryFor(CompanyProfile p, string iso3)
+    {
+        var rules = CountryStatutoryFor(iso3);
+
+        if (p.ProbationMonths > 0)
+            rules.Add(new("employment.probation_months", p.ProbationMonths.ToString(CultureInfo.InvariantCulture), "int",
+                "Default probation length for new hires, in months."));
+        if (p.NoticePeriodDays > 0)
+            rules.Add(new("employment.notice_period_days", p.NoticePeriodDays.ToString(CultureInfo.InvariantCulture), "int",
+                "Default notice period on termination, in days."));
+
+        var cycle = Choice(p.PayCycle, "", "Monthly", "SemiMonthly", "Biweekly", "Weekly");
+        if (cycle.Length > 0)
+            rules.Add(new("payroll.pay_cycle", cycle, "string", "How often payroll runs."));
+
+        var basis = Choice(p.LeaveYearBasis, "", "Calendar", "JoiningDate", "Fiscal");
+        if (basis.Length > 0)
+            rules.Add(new("leave.year_basis", basis, "string",
+                "What a leave year is measured from: Calendar (1 January), JoiningDate (each employee's anniversary) or Fiscal."));
+
+        return rules;
+    }
+
+    private static List<DraftStatutoryRule> CountryStatutoryFor(string iso3) => iso3 switch
     {
         "SAU" => new()
         {
@@ -450,6 +625,376 @@ public sealed class SetupAssistantService : ISetupAssistantService
         },
         _ => new(),
     };
+
+    // ── Operating choices → configuration the product actually reads ────────
+    //
+    // Every helper below fills a column that existed before this form did and that the setup
+    // previously left at its construction-time default. A Saudi tenant was written
+    // America/New_York and MM/DD/YYYY; its leave types were created granting nobody any days.
+
+    /// <summary>Case-insensitive pick from a closed list. Anything the client invents falls back
+    /// to <paramref name="fallback"/> rather than reaching a column.</summary>
+    private static string Choice(string? raw, string fallback, params string[] allowed)
+        => allowed.FirstOrDefault(a => string.Equals(a, (raw ?? string.Empty).Trim(), StringComparison.OrdinalIgnoreCase))
+           ?? fallback;
+
+    /// <summary>The shift pattern. An explicit choice wins; otherwise this is the inference the
+    /// service has always made — industry, then a regex over the free-text note.</summary>
+    private static string ResolveWorkPattern(CompanyProfile p)
+    {
+        var chosen = Choice(p.WorkPattern, string.Empty,
+            "SingleDayShift", "TwoShifts", "ContinuousThreeShifts", "FieldRoster");
+        if (chosen.Length > 0) return chosen;
+        return PackFor(p.Industry).ContinuousOperations || MentionsContinuousOps(p.Notes)
+            ? "ContinuousThreeShifts"
+            : "SingleDayShift";
+    }
+
+    private static string ResolveCapture(CompanyProfile p)
+        => Choice(p.AttendanceCapture, "WebCheckIn", "BiometricDevice", "MobileGeofence", "WebCheckIn", "Manual");
+
+    private static string ResolveOvertime(CompanyProfile p)
+        => Choice(p.OvertimeHandling, "PaidOvertime", "PaidOvertime", "CompensatoryOff", "NotApplicable");
+
+    private static string ResolveWorkforceMix(CompanyProfile p)
+        => Choice(p.WorkforceMix, "Mixed", "MostlyNational", "Mixed", "MostlyExpat");
+
+    private static List<DraftShift> ShiftsFor(string pattern) => pattern switch
+    {
+        "ContinuousThreeShifts" => new()
+        {
+            new("MORNING", "Morning Shift", "06:00", "14:00", 60, "#00C896"),
+            new("EVENING", "Evening Shift", "14:00", "22:00", 60, "#8b5cf6"),
+            new("NIGHT", "Night Shift", "22:00", "06:00", 60, "#2F6BFF"),
+        },
+        "TwoShifts" => new()
+        {
+            new("DAY", "Day Shift", "08:00", "16:00", 60, "#2F6BFF"),
+            new("EVENING", "Evening Shift", "16:00", "00:00", 60, "#8b5cf6"),
+        },
+        "FieldRoster" => new()
+        {
+            new("FIELD", "Field Shift", "06:00", "18:00", 90, "#f59e0b"),
+            new("OFFICE", "Office Shift", "08:00", "17:00", 60, "#2F6BFF"),
+        },
+        _ => new()
+        {
+            new("DAY", "Day Shift", "08:00", "17:00", 60, "#2F6BFF"),
+        },
+    };
+
+    // ── Attendance & overtime ───────────────────────────────────────────────
+
+    /// <summary>
+    /// Thresholds a policy can honestly claim for the way this company actually records time.
+    ///
+    /// <para>Grace and rounding follow the capture method because the method sets the precision:
+    /// a biometric reader is accurate to the minute, so a 5-minute grace is a real allowance; a
+    /// manually keyed timesheet is not, so a 5-minute grace would be arithmetic performed on a
+    /// number nobody measured. <c>RoundingRule</c> is limited to the two values
+    /// <c>OvertimeController</c> can evaluate — a third would be stored and ignored.</para>
+    /// </summary>
+    private static DraftAttendancePolicy AttendancePolicyFor(CompanyProfile p, List<string> notes)
+    {
+        var capture = ResolveCapture(p);
+        var pattern = ResolveWorkPattern(p);
+        var field = pattern == "FieldRoster";
+
+        var grace = capture switch
+        {
+            "BiometricDevice" => 5,
+            "MobileGeofence" => 10,
+            "WebCheckIn" => 15,
+            _ => 30,
+        };
+        var rounding = capture == "BiometricDevice" ? "NearestMinute" : "Nearest15";
+        var standard = field ? 540 : 480;
+        var breakMinutes = field ? 90 : 60;
+
+        if (capture == "Manual")
+            notes.Add("Attendance is set to manual entry, so lateness thresholds are advisory: they measure what someone typed, not when anyone arrived. Grace is 30 minutes and times are rounded to the quarter-hour to avoid implying a precision the source does not have.");
+        if (capture == "MobileGeofence")
+            notes.Add("Mobile check-in needs a geofence per work location before it can reject an off-site punch. The draft creates the policy; the locations and their radii are not part of it.");
+
+        return new DraftAttendancePolicy(
+            Code: "STD_ATT",
+            Name: field ? "Field Attendance Policy" : "Standard Attendance Policy",
+            GraceMinutes: grace,
+            LateThresholdMinutes: grace + 5,
+            EarlyExitThresholdMinutes: 15,
+            HalfDayThresholdMinutes: standard / 2,
+            AbsentThresholdMinutes: 120,
+            StandardWorkMinutes: standard,
+            BreakMinutes: breakMinutes,
+            RoundingRule: rounding,
+            RequiresOvertimeApproval: ResolveOvertime(p) != "NotApplicable",
+            AllowAbsenceToLeaveConversion: true);
+    }
+
+    /// <summary>
+    /// The overtime policy, with its multipliers taken from the platform's own statutory rules.
+    ///
+    /// <para>The rates are not written here. <c>ot.standard_multiplier</c> and its rest-day and
+    /// holiday siblings are seeded per jurisdiction, effective-dated and flagged for labour-law
+    /// sign-off; a second copy in this file would be a second set of legal figures to keep in step
+    /// with the first. Where the platform has no rate the multipliers are left empty and the note
+    /// says which country has none — a drafted 1.5 for a jurisdiction nobody has checked is worse
+    /// than no number, because it would be approved and then paid.</para>
+    /// </summary>
+    private static DraftOvertimePolicy? OvertimePolicyFor(
+        CompanyProfile p, string iso3, IReadOnlyDictionary<string, string> rules, List<string> notes)
+    {
+        var handling = ResolveOvertime(p);
+        if (handling == "NotApplicable")
+        {
+            notes.Add("No overtime policy was drafted, because you said overtime does not apply. Hours beyond the standard day will still be recorded by attendance; nothing will cost them.");
+            return null;
+        }
+
+        decimal? Rate(string key)
+            => rules.TryGetValue(key, out var raw)
+               && decimal.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out var value)
+               && value > 0
+                ? value : null;
+
+        var standard = Rate(OvertimeStatutoryContextResolver.RuleStandardMultiplier);
+        var multipliers = new List<DraftOvertimeMultiplier>();
+        if (standard is { } std)
+        {
+            multipliers.Add(new(OvertimeStatutoryCalculator.DayCategoryRegular, std));
+            multipliers.Add(new(OvertimeStatutoryCalculator.DayCategoryWeekend, Rate(OvertimeStatutoryContextResolver.RuleRestDayMultiplier) ?? std));
+            multipliers.Add(new(OvertimeStatutoryCalculator.DayCategoryPublicHoliday, Rate(OvertimeStatutoryContextResolver.RuleHolidayMultiplier) ?? std));
+        }
+        else
+        {
+            notes.Add($"Overtime multipliers were left empty: this build has no statutory overtime rate on file for {iso3}. Set the ordinary, rest-day and public-holiday rates from local law before running payroll — the policy will not cost an overtime hour without them.");
+        }
+
+        var monthlyHours = Rate(OvertimeStatutoryContextResolver.RuleStandardMonthlyHours) is { } h and >= 1 and <= 400 ? (int)h : 240;
+
+        return new DraftOvertimePolicy(
+            Code: "STD_OT",
+            Name: "Standard Overtime Policy",
+            HourlyRateBasis: OvertimeStatutoryCalculator.BasisBasicSalary,
+            StandardMonthlyHours: monthlyHours,
+            MinimumMinutes: 30,
+            MaximumMinutesPerDay: 240,
+            MonthlyCapMinutes: 3600,
+            RoundingRule: "Nearest15",
+            RequiresApproval: true,
+            // The whole point of choosing time off in lieu; still true for paid overtime, where
+            // an employee may prefer the day back, which is why this is not the same question.
+            AllowCompOffConversion: handling == "CompensatoryOff",
+            Multipliers: multipliers);
+    }
+
+    // ── Leave entitlement ───────────────────────────────────────────────────
+
+    /// <summary>
+    /// One policy per leave type, because <c>LeaveType</c> carries no entitlement: it is
+    /// <c>LeavePolicy.AnnualEntitlementDays</c> that the leave engine reads. Applying a draft
+    /// without these produced a tenant whose leave types existed and granted nobody any days.
+    ///
+    /// <para>Annual and sick days come from the platform's statutory rules for the country
+    /// (<c>leave.annual_base_days</c>, <c>leave.sick_band1_days</c>). Where there is no rule the
+    /// entitlement is left at zero and named in a note, the same way an unpegged currency leaves
+    /// the salary bands at zero rather than inventing them.</para>
+    /// </summary>
+    private static List<DraftLeavePolicy> LeavePoliciesFor(
+        CompanyProfile p, string iso3, List<DraftLeaveType> types,
+        IReadOnlyDictionary<string, string> rules, List<string> notes)
+    {
+        if (types.Count == 0) return new();
+
+        decimal? Days(string key)
+            => rules.TryGetValue(key, out var raw)
+               && decimal.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out var value)
+               && value > 0
+                ? value : null;
+
+        var annual = Days("leave.annual_base_days");
+        var sick = Days("leave.sick_band1_days");
+        var probation = p.ProbationMonths > 0;
+        var policies = new List<DraftLeavePolicy>();
+        var unsourced = new List<string>();
+
+        foreach (var t in types)
+        {
+            var key = $"{t.Code} {t.NameEn} {t.Category}".ToUpperInvariant();
+            bool Is(params string[] needles) => needles.Any(key.Contains);
+
+            var isUnpaid = !t.IsPaid || Is("UNPAID");
+            var isAnnual = !isUnpaid && Is("ANNUAL", "VACATION");
+            var isSick = !isUnpaid && Is("SICK", "MEDICAL");
+
+            // The per-request ceiling the leave type already carries is the entitlement for the
+            // fixed-span leaves (maternity, paternity, Hajj, bereavement): the span IS the grant.
+            // It is not a stand-in for annual or sick leave, where the two are different numbers.
+            decimal entitlement;
+            if (isUnpaid) entitlement = 0m;
+            else if (isAnnual) entitlement = annual ?? 0m;
+            else if (isSick) entitlement = sick ?? 0m;
+            else entitlement = t.MaxConsecutiveDays;
+
+            if (entitlement <= 0m && !isUnpaid) unsourced.Add(t.NameEn);
+
+            policies.Add(new DraftLeavePolicy(
+                Name: $"{t.NameEn} Policy",
+                LeaveTypeCode: t.Code,
+                AnnualEntitlementDays: entitlement,
+                // Annual leave builds up over the year; a fixed-span leave is granted whole when
+                // the event happens, which is what "Yearly" means in this column.
+                AccrualMethod: isAnnual ? "Monthly" : "Yearly",
+                EncashmentAllowed: isAnnual,
+                EncashmentMaxDays: 0m,
+                MinimumDaysPerRequest: 1m,
+                MaximumDaysPerRequest: t.MaxConsecutiveDays,
+                // Sick leave cannot be booked in advance, so requiring notice for it would block
+                // the request it is meant to govern.
+                NoticeRequiredDays: isAnnual ? 7 : 0,
+                WeekendsIncluded: false,
+                PublicHolidaysIncluded: false,
+                AppliesOnProbation: probation && !isAnnual,
+                PayrollImpact: isUnpaid ? "Unpaid" : "Full"));
+        }
+
+        if (unsourced.Count > 0)
+            notes.Add($"These leave types were drafted with an entitlement of 0 days because this build has no statutory figure on file for {iso3}: {string.Join(", ", unsourced)}. Set the days before applying, or the leave type will exist and grant nobody anything.");
+        if (annual is not null)
+            notes.Add($"Annual leave is drafted at {annual.Value:0.##} days — the statutory floor for {iso3}, not a recommendation. Raise it if your contracts promise more; it cannot lawfully go lower.");
+        if (sick is not null)
+            notes.Add($"Sick leave is drafted at {sick.Value:0.##} days, which is the FULL-PAY band only. Longer sickness continues at reduced or nil pay under the statutory scale, which payroll applies separately — the entitlement here is not the whole picture.");
+
+        notes.Add("Leave days are counted in working days: weekends and public holidays inside a request are not deducted. Check this against your own contracts — some entitlements are expressed in calendar days, which is a different number.");
+        notes.Add("Carry-forward is not part of the draft. This build has no year-end rollover, so a cap would be stored and never consulted; unused balance is handled through encashment.");
+        if (probation)
+            notes.Add($"Probation is set to {p.ProbationMonths} month(s). Annual leave is drafted as not available during probation; sick and the fixed-span leaves are.");
+
+        return policies;
+    }
+
+    // ── Public holidays ─────────────────────────────────────────────────────
+
+    private static DateOnly NthWeekday(int year, int month, DayOfWeek day, int nth)
+    {
+        var d = new DateOnly(year, month, 1);
+        while (d.DayOfWeek != day) d = d.AddDays(1);
+        return d.AddDays(7 * (nth - 1));
+    }
+
+    /// <summary>
+    /// The current year's public holidays that have a fixed Gregorian date.
+    ///
+    /// <para>Eid al-Fitr, Eid al-Adha, the Islamic New Year and the Prophet's Birthday move with
+    /// the lunar calendar and are announced locally, often by moon sighting days beforehand. A
+    /// drafted date for them would be wrong most years, and wrong by a day is enough to misprice
+    /// every overtime hour worked over the holiday and to deduct leave that was never taken. They
+    /// are named in a note instead, so the gap is visible rather than filled.</para>
+    /// </summary>
+    private static DraftHolidayCalendar? HolidayCalendarFor(string iso3, List<string> notes)
+    {
+        var year = DateTime.UtcNow.Year;
+        string D(int month, int day) => new DateOnly(year, month, day).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+
+        DraftHoliday H(string en, string ar, string date, string type = "National", bool optional = false)
+            => new(en, ar, date, IsRecurring: true, IsOptional: optional, HolidayType: type, Notes: string.Empty);
+
+        var newYear = H("New Year's Day", "رأس السنة الميلادية", D(1, 1));
+
+        var holidays = iso3 switch
+        {
+            "SAU" => new List<DraftHoliday>
+            {
+                H("Founding Day", "يوم التأسيس", D(2, 22)),
+                H("Saudi National Day", "اليوم الوطني السعودي", D(9, 23)),
+            },
+            "ARE" => new List<DraftHoliday>
+            {
+                newYear,
+                H("Commemoration Day", "يوم الشهيد", D(12, 1)),
+                H("UAE National Day", "اليوم الوطني للإمارات", D(12, 2)),
+                H("UAE National Day Holiday", "عطلة اليوم الوطني", D(12, 3)),
+            },
+            "QAT" => new List<DraftHoliday>
+            {
+                H("National Sports Day", "اليوم الرياضي للدولة",
+                  NthWeekday(year, 2, DayOfWeek.Tuesday, 2).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)),
+                H("Qatar National Day", "اليوم الوطني لقطر", D(12, 18)),
+            },
+            "KWT" => new List<DraftHoliday>
+            {
+                newYear,
+                H("Kuwait National Day", "العيد الوطني الكويتي", D(2, 25)),
+                H("Liberation Day", "يوم التحرير", D(2, 26)),
+            },
+            "BHR" => new List<DraftHoliday>
+            {
+                newYear,
+                H("Bahrain National Day", "العيد الوطني البحريني", D(12, 16)),
+                H("Bahrain National Day Holiday", "عطلة العيد الوطني", D(12, 17)),
+            },
+            "OMN" => new List<DraftHoliday>
+            {
+                newYear,
+                H("Oman National Day", "العيد الوطني العماني", D(11, 18)),
+                H("Oman National Day Holiday", "عطلة العيد الوطني", D(11, 19)),
+            },
+            _ => new List<DraftHoliday>(),
+        };
+
+        if (holidays.Count == 0)
+        {
+            notes.Add($"No public holiday calendar was drafted: this build has no built-in holiday list for {iso3}. Add the year's holidays before running attendance or payroll over them — an unlisted holiday is treated as an ordinary working day.");
+            return null;
+        }
+
+        notes.Add($"The {year} holiday calendar contains only the fixed-date holidays. Eid al-Fitr, Eid al-Adha, the Islamic New Year and the Prophet's Birthday follow the lunar calendar and are confirmed locally close to the date, so they are deliberately not drafted — add them once announced.");
+        return new DraftHolidayCalendar($"{iso3} Public Holidays {year}", year, holidays);
+    }
+
+    // ── Localization ────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Language, calendar, timezone and date format for the country.
+    ///
+    /// <para><c>TenantLocalizationSetting</c> is constructed with America/New_York, MM/DD/YYYY and
+    /// a Monday week start. The setup wrote only the work week and currency over that, so every
+    /// Gulf tenant this assistant has ever configured has been sitting on a New York clock and a
+    /// US date format — visible on every timestamp in the product.</para>
+    /// </summary>
+    private static DraftLocalization LocalizationFor(CompanyProfile p, string iso3)
+    {
+        var gulf = iso3 is "SAU" or "ARE" or "QAT" or "KWT" or "BHR" or "OMN";
+        var language = Choice(p.DefaultLanguage, gulf ? "en" : "en", "en", "ar", "bilingual");
+
+        var timezone = !string.IsNullOrWhiteSpace(p.TimeZone) ? p.TimeZone!.Trim() : iso3 switch
+        {
+            "SAU" => "Asia/Riyadh",
+            "ARE" => "Asia/Dubai",
+            "QAT" => "Asia/Qatar",
+            "KWT" => "Asia/Kuwait",
+            "BHR" => "Asia/Bahrain",
+            "OMN" => "Asia/Muscat",
+            "EGY" => "Africa/Cairo",
+            "IND" => "Asia/Kolkata",
+            "GBR" => "Europe/London",
+            "USA" => "America/New_York",
+            _ => "UTC",
+        };
+
+        return new DraftLocalization(
+            // "bilingual" is not a value the column holds: the product ships both languages and the
+            // setting picks which one a new user starts in. English is the safer start for a mixed
+            // workforce, with right-to-left support on so Arabic is one click away.
+            DefaultLanguage: language == "ar" ? "ar" : "en",
+            RtlEnabled: gulf || language is "ar" or "bilingual",
+            CalendarSystem: "Gregorian",
+            DefaultTimezone: timezone,
+            DateFormat: iso3 == "USA" ? "MM/DD/YYYY" : "DD/MM/YYYY",
+            // Hijri dates appear alongside Gregorian ones; the working calendar stays Gregorian,
+            // which is what payroll periods and contracts are dated in.
+            HijriDatesEnabled: gulf);
+    }
 
     // ── Deterministic full template (LLM fallback) ──────────────────────────
 
@@ -669,12 +1214,20 @@ public sealed class SetupAssistantService : ISetupAssistantService
         desigs.AddRange(pack.Designations.Select(d => new DraftDesignation(
             d.Code, d.Title, d.Dept, Slot(d.Slot), d.IsManager ? "Management" : "Staff", d.IsManager, d.Rank)));
 
+        // The ladder's figures are monthly; a shorter pay cycle pays a fraction of each one, so the
+        // frequency has to travel with the component or the first run pays a month's salary weekly.
+        var frequency = Choice(p.PayCycle, "Monthly", "Monthly", "SemiMonthly", "Biweekly", "Weekly");
+        var cycleDivisor = frequency switch { "SemiMonthly" => 2m, "Biweekly" => 26m / 12m, "Weekly" => 52m / 12m, _ => 1m };
+        decimal PerRun(decimal monthly) => Math.Round(monthly / cycleDivisor, 2);
+        if (frequency != "Monthly")
+            notes.Add($"Pay is set to {frequency.ToLowerInvariant()}, so each component holds the per-run amount rather than the monthly one. The grade bands above stay monthly, which is how they are compared to the market.");
+
         var gradePay = grades.SelectMany(g => new[]
         {
-            new DraftGradePayComponent(g.Code, "BASIC", "Basic Salary", "Earning", "Fixed", Math.Round(g.MidSalary * 0.60m, 2), 0, false, "Monthly"),
-            new DraftGradePayComponent(g.Code, "HOUSING", "Housing Allowance", "Earning", "PercentOfBasic", 0, 25, false, "Monthly"),
-            new DraftGradePayComponent(g.Code, "TRANSPORT", "Transport Allowance", "Earning", "Fixed", Math.Round(g.MidSalary * 0.10m, 2), 0, false, "Monthly"),
-            new DraftGradePayComponent(g.Code, "OTHER", "Other Allowance", "Earning", "Fixed", Math.Round(g.MidSalary * 0.05m, 2), 0, false, "Monthly"),
+            new DraftGradePayComponent(g.Code, "BASIC", "Basic Salary", "Earning", "Fixed", PerRun(g.MidSalary * 0.60m), 0, false, frequency),
+            new DraftGradePayComponent(g.Code, "HOUSING", "Housing Allowance", "Earning", "PercentOfBasic", 0, 25, false, frequency),
+            new DraftGradePayComponent(g.Code, "TRANSPORT", "Transport Allowance", "Earning", "Fixed", PerRun(g.MidSalary * 0.10m), 0, false, frequency),
+            new DraftGradePayComponent(g.Code, "OTHER", "Other Allowance", "Earning", "Fixed", PerRun(g.MidSalary * 0.05m), 0, false, frequency),
         }).ToList();
 
         var branches = new List<DraftBranch>
@@ -693,20 +1246,12 @@ public sealed class SetupAssistantService : ISetupAssistantService
         };
         if (iso3 == "SAU") leaves.Add(new("HAJJ", "Hajj Leave", "Religious", true, 10, false, "#2F6BFF"));
 
-        // A three-shift rotation is a real operational commitment, not a default. It appears only
-        // when the industry runs continuously or the free-text note says the company does.
-        var continuous = pack.ContinuousOperations || MentionsContinuousOps(p.Notes);
-        var shifts = continuous
-            ? new List<DraftShift>
-            {
-                new("MORNING", "Morning Shift", "06:00", "14:00", 60, "#00C896"),
-                new("EVENING", "Evening Shift", "14:00", "22:00", 60, "#8b5cf6"),
-                new("NIGHT", "Night Shift", "22:00", "06:00", 60, "#2F6BFF"),
-            }
-            : new List<DraftShift>
-            {
-                new("DAY", "Day Shift", "08:00", "17:00", 60, "#2F6BFF"),
-            };
+        // A three-shift rotation is a real operational commitment, not a default. The customer now
+        // states the pattern directly; where they left it unset, ResolveWorkPattern falls back to
+        // the old inference (industry, then a regex over the free-text note).
+        var pattern = ResolveWorkPattern(p);
+        var continuous = pattern == "ContinuousThreeShifts";
+        var shifts = ShiftsFor(pattern);
 
         var pay = new List<DraftPayComponent>
         {
@@ -714,15 +1259,29 @@ public sealed class SetupAssistantService : ISetupAssistantService
             new("HRA", "Housing Allowance", "Earning", "Percentage", 0, 25, false),
             new("TRA", "Transport Allowance", "Earning", "Fixed", 0, 0, false),
         };
+        // An expatriate workforce carries contractual entitlements a national one does not. The
+        // amount is left at zero deliberately: an annual ticket accrual is a route and a class,
+        // not a figure this form can know.
+        var mix = ResolveWorkforceMix(p);
+        if (mix is "Mixed" or "MostlyExpat")
+        {
+            pay.Add(new("AIR_TICKET", "Annual Air Ticket Accrual", "Earning", "Fixed", 0, 0, false));
+            notes.Add("An annual air-ticket accrual was added for your expatriate staff with no amount — set the monthly accrual from the routes and cabin class your contracts promise.");
+        }
         var statutory = StatutoryDeductionFor(iso3);
         if (statutory is not null) pay.Add(statutory);
         else if (p.Sections.Payroll)
             notes.Add($"No statutory payroll deduction was added — there is no built-in contribution rule for {iso3}. Add the local one before running payroll.");
+        if (mix == "MostlyExpat" && iso3 is "SAU" or "ARE")
+            notes.Add($"The {(iso3 == "SAU" ? "GOSI" : "GPSSA")} deduction in this draft is the rate for nationals. It does not apply to expatriate staff, who are on a different (usually smaller) contribution — check which of your employees it should be attached to before running payroll.");
 
         if (!string.IsNullOrWhiteSpace(p.Notes) && !continuous)
             notes.Add("Your free-text note was not applied. Without AI the template only recognises shift-pattern hints such as \"24/7\" or \"field crews\"; everything else in that box needs the AI provider.");
 
-        return new SetupDraft(branches, depts, costCenters, desigs, grades, gradePay, leaves, shifts, null, pay, new(), EmployeeIdRuleFor(p, iso3), HrConfigFor(p));
+        // The five trailing members are filled by GenerateAsync from country data, never here:
+        // entitlements, holidays, attendance, overtime and localization are not industry guesses.
+        return new SetupDraft(branches, depts, costCenters, desigs, grades, gradePay, leaves, shifts, null, pay, new(),
+            EmployeeIdRuleFor(p, iso3), HrConfigFor(p), new(), null, null, null, null);
     }
 
     /// <summary>"Riyadh" was the hard-coded head-office city for every country on earth.</summary>

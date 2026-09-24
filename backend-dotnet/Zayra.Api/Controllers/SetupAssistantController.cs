@@ -220,17 +220,63 @@ public class SetupAssistantController : ControllerBase
         }
 
         // ── Leave types ──────────────────────────────────────────────────────
-        var existingLeave = (await _db.LeaveTypes.Where(x => x.TenantId == tenantId)
-            .Select(x => x.Code).ToListAsync(ct)).Select(c => c.ToUpper()).ToHashSet();
+        // Keyed by code and kept, not discarded: the entitlement policies below attach to a leave
+        // type by id, and a type added in this same unit of work has no id in the database yet.
+        var leaveByCode = await _db.LeaveTypes.Where(x => x.TenantId == tenantId)
+            .ToDictionaryAsync(x => x.Code.ToUpperInvariant(), ct);
         foreach (var lt in d.LeaveTypes)
         {
-            if (!existingLeave.Add(lt.Code.ToUpper())) continue;
-            _db.LeaveTypes.Add(new LeaveType
+            if (leaveByCode.ContainsKey(lt.Code.ToUpperInvariant())) continue;
+            var leaveType = new LeaveType
             {
                 TenantId = tenantId, Code = lt.Code, NameEn = lt.NameEn, Category = lt.Category, IsPaid = lt.IsPaid,
                 MaxConsecutiveDays = lt.MaxConsecutiveDays, RequiresAttachment = lt.RequiresAttachment, ColorCode = lt.ColorCode, IsActive = true,
-            });
+            };
+            _db.LeaveTypes.Add(leaveType);
+            leaveByCode[lt.Code.ToUpperInvariant()] = leaveType;
             Bump("leaveTypes", 1);
+        }
+
+        // ── Leave entitlement ────────────────────────────────────────────────
+        // The days themselves. Without these the leave types above exist and grant nobody
+        // anything, because LeaveType carries no entitlement — LeavePolicy does.
+        var existingPolicyKeys = (await _db.LeavePolicies.Where(x => x.TenantId == tenantId)
+            .Select(x => new { x.LeaveTypeId, x.Name }).ToListAsync(ct))
+            .Select(x => $"{x.LeaveTypeId}|{x.Name.ToUpperInvariant()}").ToHashSet();
+        foreach (var lp in d.LeavePolicies)
+        {
+            if (!leaveByCode.TryGetValue((lp.LeaveTypeCode ?? "").ToUpperInvariant(), out var leaveType)) continue;
+            var policyName = string.IsNullOrWhiteSpace(lp.Name) ? $"{leaveType.NameEn} Policy" : lp.Name.Trim();
+            if (!existingPolicyKeys.Add($"{leaveType.Id}|{policyName.ToUpperInvariant()}")) continue;
+            _db.LeavePolicies.Add(new LeavePolicy
+            {
+                TenantId = tenantId,
+                Name = policyName,
+                LeaveTypeId = leaveType.Id,
+                CountryCode = req.CountryCode ?? string.Empty,
+                CompanyId = company?.Id,
+                AppliesOnProbation = lp.AppliesOnProbation,
+                AnnualEntitlementDays = Math.Clamp(lp.AnnualEntitlementDays, 0m, 365m),
+                AccrualMethod = string.Equals(lp.AccrualMethod, "Monthly", StringComparison.OrdinalIgnoreCase) ? "Monthly" : "Yearly",
+                // Both fixed at zero, not taken from the draft. LeavePoliciesController refuses any
+                // non-zero cap or expiry because this build has no year-end rollover to consult one;
+                // writing one here would be a way round that refusal, not a feature.
+                CarryForwardMax = 0m,
+                CarryForwardExpiry = 0,
+                EncashmentAllowed = lp.EncashmentAllowed,
+                EncashmentMaxDays = Math.Clamp(lp.EncashmentMaxDays, 0m, 365m),
+                MinimumDaysPerRequest = lp.MinimumDaysPerRequest > 0 ? lp.MinimumDaysPerRequest : 1m,
+                MaximumDaysPerRequest = Math.Clamp(lp.MaximumDaysPerRequest, 0m, 365m),
+                NoticeRequiredDays = Math.Clamp(lp.NoticeRequiredDays, 0, 365),
+                WeekendsIncluded = lp.WeekendsIncluded,
+                PublicHolidaysIncluded = lp.PublicHolidaysIncluded,
+                PayrollImpact = string.Equals(lp.PayrollImpact, "Unpaid", StringComparison.OrdinalIgnoreCase) ? "Unpaid" : "Full",
+                // The draft was reviewed item by item and approved by someone with the apply
+                // permission, which is the whole of this screen's job. Leaving it Draft would mean
+                // nobody's leave worked until they opened another screen and said yes again.
+                Status = "Active",
+            });
+            Bump("leavePolicies", 1);
         }
 
         // ── Shifts ───────────────────────────────────────────────────────────
@@ -248,15 +294,164 @@ public class SetupAssistantController : ControllerBase
             Bump("shifts", 1);
         }
 
-        // ── Working week (localization upsert) ───────────────────────────────
-        if (d.WorkingWeek is not null)
+        // ── Working week + localization (one upsert on one row) ──────────────
+        // TenantLocalizationSetting is constructed with America/New_York, MM/DD/YYYY and a Monday
+        // week start. Until the localization draft existed, this block wrote the work week and the
+        // currency over that and left the rest, so every Gulf tenant configured by this assistant
+        // kept a New York clock and a US date format on every timestamp in the product.
+        if (d.WorkingWeek is not null || d.Localization is not null)
         {
             var loc = await _db.TenantLocalizationSettings.FirstOrDefaultAsync(x => x.TenantId == tenantId, ct);
             if (loc is null) { loc = new TenantLocalizationSetting { TenantId = tenantId }; _db.TenantLocalizationSettings.Add(loc); }
-            loc.WorkWeek = d.WorkingWeek.WorkWeek;
-            loc.WeekStartDay = d.WorkingWeek.WeekStartDay;
+            if (d.WorkingWeek is not null)
+            {
+                loc.WorkWeek = d.WorkingWeek.WorkWeek;
+                loc.WeekStartDay = d.WorkingWeek.WeekStartDay;
+                Bump("workingWeek", 1);
+            }
+            if (d.Localization is not null)
+            {
+                loc.DefaultLanguage = string.Equals(d.Localization.DefaultLanguage, "ar", StringComparison.OrdinalIgnoreCase) ? "ar" : "en";
+                loc.RtlEnabled = d.Localization.RtlEnabled;
+                loc.CalendarSystem = string.Equals(d.Localization.CalendarSystem, "Hijri", StringComparison.OrdinalIgnoreCase) ? "Hijri" : "Gregorian";
+                if (!string.IsNullOrWhiteSpace(d.Localization.DefaultTimezone)) loc.DefaultTimezone = d.Localization.DefaultTimezone.Trim();
+                if (!string.IsNullOrWhiteSpace(d.Localization.DateFormat)) loc.DateFormat = d.Localization.DateFormat.Trim();
+                loc.HijriDatesEnabled = d.Localization.HijriDatesEnabled;
+                Bump("localization", 1);
+            }
+            if (!string.IsNullOrWhiteSpace(req.CountryCode)) loc.CountryCode = req.CountryCode.Trim().ToUpperInvariant();
             if (!string.IsNullOrWhiteSpace(req.CurrencyCode)) loc.CurrencyCode = req.CurrencyCode;
-            Bump("workingWeek", 1);
+            loc.UpdatedAtUtc = DateTime.UtcNow;
+        }
+
+        // ── Public holidays ──────────────────────────────────────────────────
+        // One calendar per (country, year); its holidays are keyed by date, so re-applying a draft
+        // tops up a partial calendar instead of duplicating the days already in it.
+        if (d.HolidayCalendar is not null && d.HolidayCalendar.Holidays.Count > 0)
+        {
+            var year = d.HolidayCalendar.CalendarYear;
+            var countryCode = (req.CountryCode ?? string.Empty).Trim().ToUpperInvariant();
+            var calendar = await _db.PublicHolidayCalendars.FirstOrDefaultAsync(
+                x => x.TenantId == tenantId && x.CountryCode == countryCode && x.CalendarYear == year, ct);
+            if (calendar is null)
+            {
+                calendar = new PublicHolidayCalendar
+                {
+                    TenantId = tenantId,
+                    Name = d.HolidayCalendar.Name,
+                    CountryCode = countryCode,
+                    CompanyId = company?.Id,
+                    BranchId = defaultBranch?.Id,
+                    CalendarYear = year,
+                    IsActive = true,
+                };
+                _db.PublicHolidayCalendars.Add(calendar);
+                Bump("holidayCalendars", 1);
+            }
+
+            var existingDates = (await _db.PublicHolidays
+                .Where(x => x.TenantId == tenantId && x.CalendarId == calendar.Id)
+                .Select(x => x.Date).ToListAsync(ct)).ToHashSet();
+            foreach (var h in d.HolidayCalendar.Holidays)
+            {
+                if (!DateOnly.TryParse(h.Date, out var date)) continue;
+                if (!existingDates.Add(date)) continue;
+                _db.PublicHolidays.Add(new PublicHoliday
+                {
+                    TenantId = tenantId,
+                    CalendarId = calendar.Id,
+                    NameEn = h.NameEn,
+                    NameAr = h.NameAr ?? string.Empty,
+                    Date = date,
+                    IsRecurring = h.IsRecurring,
+                    IsOptional = h.IsOptional,
+                    HolidayType = string.IsNullOrWhiteSpace(h.HolidayType) ? "National" : h.HolidayType,
+                    Notes = h.Notes ?? string.Empty,
+                });
+                Bump("publicHolidays", 1);
+            }
+        }
+
+        // ── Attendance policy ────────────────────────────────────────────────
+        if (d.AttendancePolicy is not null && !string.IsNullOrWhiteSpace(d.AttendancePolicy.Code))
+        {
+            var ap = d.AttendancePolicy;
+            var existingAttendance = await _db.AttendancePolicies
+                .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Code == ap.Code, ct);
+            if (existingAttendance is null)
+            {
+                _db.AttendancePolicies.Add(new AttendancePolicy
+                {
+                    TenantId = tenantId,
+                    Code = ap.Code,
+                    Name = ap.Name,
+                    BranchId = defaultBranch?.Id,
+                    GraceMinutes = Math.Clamp(ap.GraceMinutes, 0, 120),
+                    LateThresholdMinutes = Math.Clamp(ap.LateThresholdMinutes, 0, 480),
+                    EarlyExitThresholdMinutes = Math.Clamp(ap.EarlyExitThresholdMinutes, 0, 480),
+                    HalfDayThresholdMinutes = Math.Clamp(ap.HalfDayThresholdMinutes, 0, 960),
+                    AbsentThresholdMinutes = Math.Clamp(ap.AbsentThresholdMinutes, 0, 960),
+                    StandardWorkMinutes = Math.Clamp(ap.StandardWorkMinutes, 60, 960),
+                    BreakMinutes = Math.Clamp(ap.BreakMinutes, 0, 240),
+                    RoundingRule = RoundingOrDefault(ap.RoundingRule, "NearestMinute"),
+                    RequiresOvertimeApproval = ap.RequiresOvertimeApproval,
+                    AllowAbsenceToLeaveConversion = ap.AllowAbsenceToLeaveConversion,
+                    IsActive = true,
+                });
+                Bump("attendancePolicies", 1);
+            }
+        }
+
+        // ── Overtime policy + its multipliers ────────────────────────────────
+        if (d.OvertimePolicy is not null && !string.IsNullOrWhiteSpace(d.OvertimePolicy.Code))
+        {
+            var op = d.OvertimePolicy;
+            var overtimePolicy = await _db.OvertimePolicies
+                .FirstOrDefaultAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.Code == op.Code, ct);
+            if (overtimePolicy is null)
+            {
+                overtimePolicy = new OvertimePolicy
+                {
+                    TenantId = tenantId,
+                    Code = op.Code,
+                    Name = op.Name,
+                    BranchId = defaultBranch?.Id,
+                    HourlyRateBasis = string.IsNullOrWhiteSpace(op.HourlyRateBasis) ? "BasicSalary" : op.HourlyRateBasis,
+                    StandardMonthlyHours = Math.Clamp(op.StandardMonthlyHours, 1, 400),
+                    MinimumMinutes = Math.Clamp(op.MinimumMinutes, 0, 480),
+                    MaximumMinutesPerDay = Math.Clamp(op.MaximumMinutesPerDay, 0, 960),
+                    MonthlyCapMinutes = Math.Clamp(op.MonthlyCapMinutes, 0, 30000),
+                    RoundingRule = RoundingOrDefault(op.RoundingRule, "Nearest15"),
+                    RequiresApproval = op.RequiresApproval,
+                    AllowCompOffConversion = op.AllowCompOffConversion,
+                    IsActive = true,
+                    CreatedBy = GetUserId(),
+                };
+                _db.OvertimePolicies.Add(overtimePolicy);
+                Bump("overtimePolicies", 1);
+            }
+
+            var existingCategories = (await _db.OvertimeMultipliers
+                .Where(x => x.TenantId == tenantId && x.OvertimePolicyId == overtimePolicy.Id)
+                .Select(x => x.DayCategory).ToListAsync(ct)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var m in op.Multipliers)
+            {
+                if (string.IsNullOrWhiteSpace(m.DayCategory)) continue;
+                // A multiplier under 1 pays an overtime hour less than an ordinary one; the payroll
+                // run floors it at the statutory rate anyway, so storing one only misleads the
+                // screen that displays it.
+                if (m.Multiplier < 1m || m.Multiplier > 5m) continue;
+                if (!existingCategories.Add(m.DayCategory)) continue;
+                _db.OvertimeMultipliers.Add(new OvertimeMultiplier
+                {
+                    TenantId = tenantId,
+                    OvertimePolicyId = overtimePolicy.Id,
+                    DayCategory = m.DayCategory,
+                    Multiplier = m.Multiplier,
+                    IsActive = true,
+                });
+                Bump("overtimeMultipliers", 1);
+            }
         }
 
         // ── Pay components (under a default salary structure) ─────────────────
@@ -379,6 +574,13 @@ public class SetupAssistantController : ControllerBase
             ct);
         return Ok(new { applied = counts, total = counts.Values.Sum() });
     }
+
+    /// <summary>Only the two rules the overtime/attendance engines actually evaluate. Anything
+    /// else would be stored, displayed, and silently ignored at run time.</summary>
+    private static string RoundingOrDefault(string? value, string fallback)
+        => string.Equals(value, "NearestMinute", StringComparison.OrdinalIgnoreCase) ? "NearestMinute"
+         : string.Equals(value, "Nearest15", StringComparison.OrdinalIgnoreCase) ? "Nearest15"
+         : fallback;
 
     private Guid GetTenantId() => Guid.Parse(User.FindFirstValue("tenant_id")!);
     private Guid? GetUserId() => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var id)
