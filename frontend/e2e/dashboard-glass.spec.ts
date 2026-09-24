@@ -79,7 +79,7 @@ const USER = {
   permissions: ['dashboard.read', 'employees.read', 'attendance.read', 'leave.read', 'approvals.read', 'approvals.decide', 'payroll.read', 'compliance.read', 'reports.read', 'ai.query', 'ai.insights_view'],
 };
 
-async function open(page: Page, opts: { rich?: boolean; now?: Date; theme?: 'light' | 'dark' } = {}) {
+async function open(page: Page, opts: { rich?: boolean; now?: Date; theme?: 'light' | 'dark'; tenantTz?: string } = {}) {
   const now = opts.now ?? EARLY;
   await page.clock.setFixedTime(now);
   await page.addInitScript((th) => {
@@ -93,7 +93,10 @@ async function open(page: Page, opts: { rich?: boolean; now?: Date; theme?: 'lig
     const json = (b: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(b) });
     if (p === '/api/auth/me') return json(USER);
     if (p === '/api/features/disabled-keys' || p === '/api/features/modules' || p === '/api/notifications') return json([]);
-    if (p === '/api/tenant-admin/localization') return json({ defaultTimezone: 'Asia/Riyadh', calendarSystem: 'Gregorian', hijriDatesEnabled: true });
+    // `tenantTz: ''` is the real API answer for a tenant that has stated no zone — see
+    // TenantAdminController.UnstatedLocalizationAsync. It must NOT be a US zone, and the header
+    // must then follow the viewer's own browser zone.
+    if (p === '/api/tenant-admin/localization') return json({ defaultTimezone: opts.tenantTz ?? 'Asia/Riyadh', calendarSystem: 'Gregorian', hijriDatesEnabled: true });
     if (p === '/api/dashboard/full') return json(dataset(!!opts.rich, now));
     if (p === '/api/ai/status') return json({ enabled: true, provider: 'fixture' });
     return json({ items: [], total: 0 });
@@ -277,5 +280,68 @@ test.describe('HR Command Center: accessibility', () => {
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(overflow).toBeLessThanOrEqual(1);
     await evidence(page, 'zoom-200');
+  });
+});
+
+/**
+ * The header clock. THE FIRST LINE OF THE FIRST SCREEN, and it was wrong by seven hours.
+ *
+ * Observed live at 06:28 Riyadh on Thu 24 Sept 2026, the header read "All companies. Wed, 23 Sept
+ * 2026, 23:28" — the WRONG DAY — because /api/tenant-admin/localization answered with the
+ * TenantLocalizationSetting entity's America/New_York property default for a tenant that has no
+ * localization row. The Saudi Compliance panel on the same page formats in the viewer's own zone
+ * and read 24/09/2026 06:29, so the customer saw two clocks a day apart on one screen.
+ *
+ * Two rules, and the difference between them is the whole fix:
+ *   - a tenant that HAS stated a zone is rendered in it, whatever zone the viewer is in;
+ *   - a tenant that has NOT is rendered in the VIEWER's zone — never in a US one.
+ *
+ * EARLY is 02:58 UTC, which is 05:58 on Tue 22 Sept in Riyadh and 22:58 on MON 21 SEPT in New
+ * York: the date differs, so a test that confused the two zones cannot pass by coincidence.
+ */
+const RIYADH_DATE = /Tue, 22 Sept? 2026/;
+const NEW_YORK_DATE = /Mon, 21 Sept? 2026/;
+
+function headerLine(page: Page) {
+  return page.getByRole('heading', { name: 'HR Command Center' })
+    .locator('xpath=following-sibling::p').first();
+}
+
+test.describe('HR Command Center: the header clock is the tenant\'s, not a hard-coded zone', () => {
+  test.describe('viewer in New York, tenant in Riyadh', () => {
+    test.use({ timezoneId: 'America/New_York' });
+
+    test('the stated tenant zone wins over the viewer\'s', async ({ page }) => {
+      await open(page, { tenantTz: 'Asia/Riyadh' });
+      const line = headerLine(page);
+      await expect(line).toContainText(RIYADH_DATE);
+      await expect(line).toContainText('05:58');
+      await expect(line).not.toContainText(NEW_YORK_DATE);
+      await expect(line).not.toContainText('22:58');
+    });
+  });
+
+  test.describe('viewer in Riyadh, tenant has stated no zone', () => {
+    test.use({ timezoneId: 'Asia/Riyadh' });
+
+    test('falls back to the viewer\'s zone, not to US Eastern', async ({ page }) => {
+      await open(page, { tenantTz: '' });
+      const line = headerLine(page);
+      await expect(line).toContainText(RIYADH_DATE);
+      await expect(line).toContainText('05:58');
+      // The defect exactly: US Eastern put this header on the previous day.
+      await expect(line).not.toContainText(NEW_YORK_DATE);
+    });
+  });
+
+  test.describe('viewer in New York, tenant has stated no zone', () => {
+    test.use({ timezoneId: 'America/New_York' });
+
+    test('follows the viewer rather than any pinned zone', async ({ page }) => {
+      await open(page, { tenantTz: '' });
+      const line = headerLine(page);
+      await expect(line).toContainText(NEW_YORK_DATE);
+      await expect(line).toContainText('22:58');
+    });
   });
 });
