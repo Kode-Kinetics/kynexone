@@ -151,6 +151,10 @@ export async function provisionLimitedTenantFixture(request: APIRequestContext, 
       billingCycle: 'Monthly',
       monthlyAmount: 299,
       currencyCode: 'USD',
+      // The tenant's HOME JURISDICTION, required since platform admins state it at creation. It
+      // sets the statutory jurisdiction, the first company's country AND the tenant's timezone —
+      // without it the entity's America/New_York default would decide this fixture's "today".
+      homeCountryCode: 'SA',
     },
   });
   expect(created.status(), await created.text()).toBe(201);
