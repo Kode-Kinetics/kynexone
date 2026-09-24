@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { notifyApiError } from '../api/client';
-import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, Sparkles } from 'lucide-react';
+import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, Sparkles, Eye, EyeOff } from 'lucide-react';
 import { AiSetupAssistant } from '../components/AiSetupAssistant';
 import { EstablishmentPanel } from '../components/EstablishmentPanel';
 import { GlSetupPanel } from '../components/gl/GlSetupPanel';
@@ -151,8 +151,21 @@ function CompaniesTab() {
     setModalOpen(true);
   };
 
+  // Legal entities with NO country. Their employees cannot be added at all — identity documents,
+  // leave entitlements and statutory rules are every one of them resolved from this field — and the
+  // Add Employee modal is where the operator used to discover it, several attempts too late.
+  // Surfaced here, where the fix is, and NEVER guessed: a country inferred from the currency or the
+  // tenant slug would seed the wrong labour law in silence.
+  const missingCountry = items.filter((c) => !(c.countryCode ?? '').trim());
+
   const handleSave = async () => {
     if (!form.legalNameEn.trim()) { setError('Legal name (English) is required'); return; }
+    // The field has always been marked required; it was never enforced, which is part of how a
+    // tenant's first company reached production with an empty country.
+    if (!(form.countryCode ?? '').trim()) {
+      setError('Country is required — it decides this entity’s statutory rules, leave entitlements and the identity documents its employees must hold.');
+      return;
+    }
     // Advisory client-side domain-format check mirroring the server regex (server stays authoritative).
     // Blank is allowed — employees then fall back to manual work-email entry.
     if (!isValidEmailDomain(form.emailDomain ?? '')) {
@@ -206,6 +219,25 @@ function CompaniesTab() {
 
   return (
     <>
+      {missingCountry.length > 0 && (
+        <div role="alert" className="mb-3 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-400/30 dark:bg-amber-500/[0.08] dark:text-amber-200">
+          <p className="font-semibold">
+            {missingCountry.length === 1
+              ? `${missingCountry[0].tradeName?.trim() || missingCountry[0].legalNameEn} has no country set — set it in Setup → Companies before adding employees.`
+              : `${missingCountry.length} companies have no country set — set each one here before adding employees.`}
+          </p>
+          <p className="mt-1 text-xs">
+            A company’s country decides its statutory rules, leave entitlements and the identity documents its
+            employees must hold. Until it is set, employees of that entity cannot be added.
+            {missingCountry.length > 1 && ` Missing: ${missingCountry.map((c) => c.tradeName?.trim() || c.legalNameEn).join(', ')}.`}
+          </p>
+          {canWrite && (
+            <button type="button" onClick={() => openEdit(missingCountry[0])} className="btn-secondary mt-2 h-7 px-2 text-xs">
+              <Pencil className="h-3 w-3" /> Set country for {missingCountry[0].tradeName?.trim() || missingCountry[0].legalNameEn}
+            </button>
+          )}
+        </div>
+      )}
       <TableShell
         columns={['Legal Name', 'Trade Name', 'Country', 'Currency', 'Status']}
         onAdd={canWrite ? openNew : undefined}
@@ -227,7 +259,11 @@ function CompaniesTab() {
             <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{c.legalNameEn}</td>
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{c.tradeName || '—'}</td>
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">
-              {c.countryCode || '—'}
+              {/* "—" read as "nothing to show". It is not: a blank country blocks every employee of
+                  this entity, so it is labelled as the problem it is. */}
+              {c.countryCode?.trim() || (
+                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-500/[0.12] dark:text-amber-300">Not set</span>
+              )}
               {c.jurisdiction && <span className="ms-1 text-xs text-slate-400">({c.jurisdiction})</span>}
             </td>
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{c.defaultCurrency}</td>
@@ -1927,6 +1963,7 @@ function EmailConfigTab() {
     'Smtp.Host': '', 'Smtp.Port': '587', 'Smtp.Username': '', 'Smtp.Password': '',
     'Smtp.FromAddress': '', 'Smtp.FromName': '', 'Smtp.UseTls': 'true',
   });
+  const [showSmtpPassword, setShowSmtpPassword] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -1997,7 +2034,31 @@ function EmailConfigTab() {
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Password</label>
-            <input type="password" className="input w-full" placeholder="••••••••" value={cfg['Smtp.Password']} onChange={e => setCfg(c => ({ ...c, 'Smtp.Password': e.target.value }))} />
+            {/* Reveal toggle. An SMTP password is pasted from a mail provider's console and is
+                wrong far more often than it is read over the operator's shoulder — and a wrong
+                one fails as a 20-second timeout that names no cause. Seeing what was pasted is
+                what makes that diagnosable. */}
+            <div className="relative">
+              <input
+                type={showSmtpPassword ? 'text' : 'password'}
+                className="input w-full pe-10"
+                placeholder="••••••••"
+                autoComplete="off"
+                spellCheck={false}
+                value={cfg['Smtp.Password']}
+                onChange={e => setCfg(c => ({ ...c, 'Smtp.Password': e.target.value }))}
+              />
+              <button
+                type="button"
+                onClick={() => setShowSmtpPassword(v => !v)}
+                aria-label={showSmtpPassword ? 'Hide the SMTP password' : 'Show the SMTP password'}
+                aria-pressed={showSmtpPassword}
+                title={showSmtpPassword ? 'Hide password' : 'Show password'}
+                className="absolute inset-y-0 end-0 flex items-center px-3 text-slate-400 transition-colors hover:text-slate-600 dark:hover:text-slate-200"
+              >
+                {showSmtpPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
           </div>
         </div>
         <div className="grid grid-cols-2 gap-4">

@@ -77,6 +77,8 @@ test.describe('Group→Company: platform admin', () => {
           adminEmail: `admin@${slug}.local`,
           adminPassword: 'E2eGroupAdmin123!x',
           accountType: 'Group',
+          // Required since platform admins state the home jurisdiction at creation.
+          homeCountryCode: 'SA',
         },
       });
       expect(create.status(), await create.text()).toBeLessThan(300);

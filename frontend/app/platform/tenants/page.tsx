@@ -12,6 +12,7 @@ import {
   platformApi,
   type PlatformTenantSummary,
   type CreateTenantBody,
+  type PlatformCountry,
   type BulkOpResult,
 } from '@/src/api/platform';
 
@@ -75,10 +76,17 @@ function NewTenantModal({ onClose, onCreated }: { onClose: () => void; onCreated
     billingEmail: '', billingCycle: 'Monthly', monthlyAmount: 0, currencyCode: 'USD',
     expiresAtUtc: null,
     accountType: 'SingleCompany', companyCreationMode: 'GroupSelfServiceWithinLimit',
+    // Deliberately blank, with no pre-selected country: a default here would be a guess, and a
+    // guessed jurisdiction seeds the wrong labour law without anyone noticing.
+    homeCountryCode: '',
   });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
   const [showPwd, setShowPwd] = useState(false);
+  const [countries, setCountries] = useState<PlatformCountry[]>([]);
+
+  // The one country list the product knows (IsoReference), fetched rather than duplicated here.
+  useEffect(() => { platformApi.countries().then(setCountries).catch(() => setCountries([])); }, []);
 
   function autoSlug(name: string) {
     return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -132,6 +140,23 @@ function NewTenantModal({ onClose, onCreated }: { onClose: () => void; onCreated
               <input required value={form.slug} onChange={e => change('slug', e.target.value)}
                 className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-sapphire/60 placeholder-slate-600"
                 placeholder="acme-corp" />
+            </div>
+            {/* HOME JURISDICTION — required, and the reason this modal exists in its current form.
+                It seeds the tenant's statutory rules and leave entitlements, and the first company
+                inherits it; without it that company was created with no country and none of the
+                tenant's employees could be added. */}
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">Home Country *</label>
+              <select required value={form.homeCountryCode} onChange={e => change('homeCountryCode', e.target.value)}
+                className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60">
+                <option value="">— Select country —</option>
+                {countries.map(c => <option key={c.code} value={c.code}>{c.name} ({c.code})</option>)}
+              </select>
+              <p className="mt-1 text-[10px] text-slate-500">
+                The customer&apos;s statutory jurisdiction. It seeds labour rules and leave entitlements and
+                becomes the first company&apos;s country. Each further legal entity keeps its own country,
+                editable in the tenant&apos;s Setup → Companies.
+              </p>
             </div>
           </fieldset>
 

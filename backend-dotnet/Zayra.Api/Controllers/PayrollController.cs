@@ -1574,14 +1574,27 @@ public class PayrollController : ControllerBase
 
         var employeeIdsForRun = employees.Select(e => e.Id).ToHashSet();
         if (employeeIdsForRun.Count == 0)
+        {
+            // Refusing here is correct — there is no such thing as a payroll run over nobody — but a tenant
+            // that has not added anyone yet reaches this on its very first Process, so the 422 body is a
+            // user-facing empty state, not an error trace. PayrollPage renders `message` verbatim
+            // (PayrollPage.tsx processRun), so it names the company, the period, and the one next action;
+            // `error` stays the stable machine code it always was.
+            var periodLabel = $"{System.Globalization.CultureInfo.InvariantCulture.DateTimeFormat.GetMonthName(run.Month)} {run.Year}";
+            var setAsideCount = runPopulation.Exclusions.Count + runPopulation.NotEligible.Count;
             return UnprocessableEntity(new
             {
                 error = "no_company_employees",
-                message = runPopulation.Mode == "AllEligible"
-                    ? $"No active employees are linked to legal entity '{company.LegalNameEn}'. Payroll run aborted."
-                    : $"This run's include/exclude selection resolves to zero employees for '{company.LegalNameEn}'. Payroll run aborted.",
+                message = runPopulation.Mode != "AllEligible"
+                    ? $"There are no active employees to pay in '{company.LegalNameEn}' for {periodLabel}: this run's include/exclude selection leaves nobody in it. Include at least one active employee, then process the run again."
+                    : setAsideCount > 0
+                        ? $"There are no active employees to pay in '{company.LegalNameEn}' for {periodLabel}. {setAsideCount} employee(s) were set aside for this period — the run's population panel lists each one and why. Correct those records, then process the run again."
+                        : $"There are no active employees to pay in '{company.LegalNameEn}' for {periodLabel}. Add employees to this company and give them a salary, then process the run again.",
                 companyId = company.Id,
+                period = periodLabel,
+                setAsideCount,
             });
+        }
 
         var salaryAssignments = await _db.EmployeeSalaryStructures.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.IsActive && x.EffectiveDate <= periodEnd && employeeIdsForRun.Contains(x.EmployeeId))
@@ -6663,7 +6676,13 @@ public class PayrollController : ControllerBase
             query = query.Where(x => scope.AllowedEmployeeIds!.Contains(x.EmployeeId));
         var slips = await query.OrderBy(x => x.EmployeeCode).ToListAsync(cancellationToken);
 
-        var headers = new[] { "Employee Code", "Employee Name", "Department", "Basic Salary", "Housing Allowance", "Transport Allowance", "Other Allowances", "Gross Salary", "Deductions", "Net Salary", "Status" };
+        // Headers name what the columns ACTUALLY hold. `OtherAllowances` is not "other allowances": it is
+        // the whole non-basic/housing/transport earnings bucket (Process, :2693 — other allowances +
+        // overtime + bonuses + adjustments + arrears + settlement + configured earnings), and `Deductions`
+        // already contains the loan/advance EMIs and the employee GOSI share (:2542-2543, :2635). The four earning
+        // columns are disjoint and sum to Gross; Gross − Deductions = Net. The old headers invited a reader
+        // to count overtime twice and to subtract loans a second time.
+        var headers = new[] { "Employee Code", "Employee Name", "Department", "Basic Salary", "Housing Allowance", "Transport Allowance", "Other Earnings (incl. overtime, bonuses, arrears)", "Gross Salary", "Deductions (incl. loans and GOSI)", "Net Salary", "Status" };
         var rows = slips.Select(s => (IReadOnlyList<object?>)new object?[]
         {
             s.EmployeeCode, s.EmployeeName, s.Department,

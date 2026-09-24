@@ -439,7 +439,7 @@ public class TenantProvisioningTests
         db.Tenants.Add(tenant);
         await db.SaveChangesAsync();
 
-        var result = await Zayra.Api.Infrastructure.Seed.TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, CancellationToken.None);
+        var result = await Zayra.Api.Infrastructure.Seed.TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, "SA", CancellationToken.None);
 
         // Country payroll rules present; UAE weekend corrected to Sat-Sun; packs tier-tagged.
         var countryRules = await db.CountryPayrollRules.Where(r => r.TenantId == tenant.Id).ToListAsync();
@@ -493,7 +493,7 @@ public class TenantProvisioningTests
         var mdValueCount = await db.MasterDataValues.CountAsync(v => v.TenantId == tenant.Id);
 
         // ── Idempotency: re-run installs NOTHING new and never duplicates ──
-        var second = await Zayra.Api.Infrastructure.Seed.TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, CancellationToken.None);
+        var second = await Zayra.Api.Infrastructure.Seed.TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, "SA", CancellationToken.None);
         second.CountryRules.Should().Be(0);
         second.MasterDataTypes.Should().Be(0);
         second.MasterDataValues.Should().Be(0);

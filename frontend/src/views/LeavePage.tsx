@@ -826,11 +826,20 @@ function CalendarTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 
   const firstDay = new Date(calYear, month, 1);
   const lastDay = new Date(calYear, month + 1, 0);
-  const fromDate = firstDay.toISOString().split('T')[0];
-  const toDate = lastDay.toISOString().split('T')[0];
 
   useEffect(() => {
-    leaveCalendarApi.entries({ fromDate, toDate, departmentName: dept || undefined, ...groupFilter }).then(setEntries).catch(() => {});
+    // The month is NAMED (year + 1-based month), not serialised. It used to be sent as
+    //   firstDay.toISOString().split('T')[0]  /  lastDay.toISOString().split('T')[0]
+    // — two LOCAL-midnight dates pushed through a UTC formatter. For any UTC-positive tenant, and
+    // that is every GCC tenant (AST +3, GST +4), local 1 Sep 00:00 became 2026-08-31T21:00Z, so the
+    // window fetched was 31 Aug → 29 Sep: the month's last day was never requested and the previous
+    // month's last day leaked in. entriesForDay below keys off LOCAL components, so the mismatch was
+    // invisible in the code and plainly visible on screen — the one-day shift. fmtDate at the top of
+    // this file documents the same hazard and avoids it; only this call site regressed.
+    leaveCalendarApi
+      .entries({ year: calYear, month: month + 1, departmentName: dept || undefined, ...groupFilter })
+      .then(setEntries)
+      .catch(() => {});
   }, [month, calYear, dept, groupFilter.companyId, groupFilter.branchId]);
 
   const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];

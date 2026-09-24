@@ -392,7 +392,7 @@ public class KsaStatutoryLeaveAndHoursTests
         var submitted = await svc.SubmitRequestAsync(tenantId, new LeaveRequest
         {
             TenantId = tenantId, CompanyId = emp.CompanyId, EmployeeId = emp.Id, EmployeeName = emp.FullName,
-            LeaveTypeId = sickType.Id, StartDate = start, EndDate = start.AddDays(119), DayType = "Full",
+            LeaveTypeId = sickType.Id, StartDate = start, EndDate = start.AddDays(119), DayType = "Full", IsEmergency = true,
             Reason = "Certified illness",
         }, CancellationToken.None);
         await svc.ApproveRequestAsync(tenantId, submitted.Id, Guid.NewGuid(), "Manager", null, CancellationToken.None);
@@ -421,7 +421,7 @@ public class KsaStatutoryLeaveAndHoursTests
         var submitted = await svc.SubmitRequestAsync(tenantId, new LeaveRequest
         {
             TenantId = tenantId, CompanyId = emp.CompanyId, EmployeeId = emp.Id, EmployeeName = emp.FullName,
-            LeaveTypeId = sickType.Id, StartDate = start, EndDate = start.AddDays(9), DayType = "Full",
+            LeaveTypeId = sickType.Id, StartDate = start, EndDate = start.AddDays(9), DayType = "Full", IsEmergency = true,
             Reason = "Certified illness",
         }, CancellationToken.None);
         await svc.ApproveRequestAsync(tenantId, submitted.Id, Guid.NewGuid(), "Manager", null, CancellationToken.None);
@@ -446,7 +446,7 @@ public class KsaStatutoryLeaveAndHoursTests
         var r1 = await svc.SubmitRequestAsync(tenantId, new LeaveRequest
         {
             TenantId = tenantId, CompanyId = emp.CompanyId, EmployeeId = emp.Id, EmployeeName = emp.FullName,
-            LeaveTypeId = sickType.Id, StartDate = first, EndDate = first.AddDays(24), DayType = "Full",
+            LeaveTypeId = sickType.Id, StartDate = first, EndDate = first.AddDays(24), DayType = "Full", IsEmergency = true,
             Reason = "Certified illness",
         }, CancellationToken.None);
         await svc.ApproveRequestAsync(tenantId, r1.Id, Guid.NewGuid(), "Manager", null, CancellationToken.None);
@@ -458,7 +458,7 @@ public class KsaStatutoryLeaveAndHoursTests
         var r2 = await svc.SubmitRequestAsync(tenantId, new LeaveRequest
         {
             TenantId = tenantId, CompanyId = emp.CompanyId, EmployeeId = emp.Id, EmployeeName = emp.FullName,
-            LeaveTypeId = sickType.Id, StartDate = second, EndDate = second.AddDays(19), DayType = "Full",
+            LeaveTypeId = sickType.Id, StartDate = second, EndDate = second.AddDays(19), DayType = "Full", IsEmergency = true,
             Reason = "Certified illness",
         }, CancellationToken.None);
         await svc.ApproveRequestAsync(tenantId, r2.Id, Guid.NewGuid(), "Manager", null, CancellationToken.None);
@@ -481,7 +481,7 @@ public class KsaStatutoryLeaveAndHoursTests
         var submitted = await svc.SubmitRequestAsync(tenantId, new LeaveRequest
         {
             TenantId = tenantId, CompanyId = emp.CompanyId, EmployeeId = emp.Id, EmployeeName = emp.FullName,
-            LeaveTypeId = sickType.Id, StartDate = start, EndDate = start.AddDays(119), DayType = "Full",
+            LeaveTypeId = sickType.Id, StartDate = start, EndDate = start.AddDays(119), DayType = "Full", IsEmergency = true,
             Reason = "Certified illness",
         }, CancellationToken.None);
         await svc.ApproveRequestAsync(tenantId, submitted.Id, Guid.NewGuid(), "Manager", null, CancellationToken.None);
@@ -506,7 +506,7 @@ public class KsaStatutoryLeaveAndHoursTests
         var submitted = await svc.SubmitRequestAsync(tenantId, new LeaveRequest
         {
             TenantId = tenantId, CompanyId = emp.CompanyId, EmployeeId = emp.Id, EmployeeName = emp.FullName,
-            LeaveTypeId = sickType.Id, StartDate = start, EndDate = start.AddDays(119), DayType = "Full",
+            LeaveTypeId = sickType.Id, StartDate = start, EndDate = start.AddDays(119), DayType = "Full", IsEmergency = true,
             Reason = "Certified illness",
         }, CancellationToken.None);
         await svc.ApproveRequestAsync(tenantId, submitted.Id, Guid.NewGuid(), "Manager", null, CancellationToken.None);
@@ -531,6 +531,22 @@ public class KsaStatutoryLeaveAndHoursTests
         };
         db.LeaveTypes.Add(sick);
         await db.SaveChangesAsync();
+
+        // Art. 117 counts sick leave in CALENDAR days — "during a single year, whether such leaves
+        // are continuous or intermittent" — so the policy includes weekends and public holidays.
+        // The fixture used to seed no policy and get calendar days by accident, because a request
+        // that resolved no policy was charged every day on the calendar. That fallback now resolves
+        // the tenant's configured working week instead (correct for annual leave, wrong for Art.
+        // 117), so the statute is stated here, on the policy, rather than inherited from an absence.
+        db.LeavePolicies.Add(new LeavePolicy
+        {
+            TenantId = tenantId, CompanyId = company.Id, CountryCode = countryCode, LeaveTypeId = sick.Id,
+            Name = "Sick Leave (statutory, calendar-day)", Status = "Active",
+            WeekendsIncluded = true, PublicHolidaysIncluded = true,
+        });
+        // The sick-leave requests below are backdated certified illness, which is what sick leave
+        // is: they carry IsEmergency so the policy's notice period — a rule for PLANNED absence —
+        // does not reject them. With no policy at all there was no notice period to satisfy.
 
         db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
         {

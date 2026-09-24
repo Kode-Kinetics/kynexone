@@ -63,7 +63,17 @@ export interface CreateTenantBody {
   accountType?: 'SingleCompany' | 'Group';
   /** PlatformControlled | GroupSelfServiceWithinLimit (default) | GroupDraftPlatformApproval */
   companyCreationMode?: string;
+  /**
+   * REQUIRED. The tenant's home jurisdiction as an ISO 3166-1 alpha-2 code ("SA", "AE", "QA").
+   * It drives statutory seeding and is inherited by the tenant's first company, which used to be
+   * created with an empty country. The server refuses a create that does not state one
+   * (400 tenant_country_missing) — it is never inferred from the currency or the slug.
+   */
+  homeCountryCode: string;
 }
+
+/** ISO country as the platform console reads it — the same IsoReference rows the tenant app uses. */
+export interface PlatformCountry { code: string; name: string; currency: string }
 
 export interface PlatformTenantCompany {
   id: string;
@@ -535,6 +545,12 @@ export const platformApi = {
 
   createTenant: (body: CreateTenantBody) =>
     platform.post<CreateTenantResult>('/api/platform/tenants', body).then(r => r.data),
+
+  // The home-jurisdiction picker's options. Served by the platform API from the same
+  // IsoReference list as /api/reference/countries, so the console never carries its own
+  // copy of the world.
+  countries: () =>
+    platform.get<PlatformCountry[]>('/api/platform/countries').then(r => r.data),
 
   listAdmins: (tenantId: string) =>
     platform.get<TenantAdminUser[]>(`/api/platform/tenants/${tenantId}/admins`).then(r => r.data),
