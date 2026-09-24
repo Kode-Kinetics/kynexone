@@ -1,10 +1,26 @@
 import { Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
+// Imported (not merely re-exported) because this module's own helpers use them below: a bare
+// `export … from` re-export does not bring the names into local scope.
+import { MISSING_WORLD, PLATFORM_EMAIL, PLATFORM_PASSWORD } from './world';
 
-// ── Platform admin credentials ─────────────────────────────────────────────────
-export const PLATFORM_EMAIL    = process.env.PLATFORM_ADMIN_EMAIL    ?? 'platform@kynexone.com';
-export const PLATFORM_PASSWORD = process.env.PLATFORM_ADMIN_PASSWORD ?? 'PlatformAdmin123!';
-export const BASE_URL          = process.env.PLAYWRIGHT_BASE_URL     ?? 'http://localhost:5173';
+// ── Identities ────────────────────────────────────────────────────────────────
+// Re-exported from e2e/world.ts, which is the ONE declaration of the fixture world and the same
+// module e2e/bootstrap/provision.ts creates it from. Declaring them here as well is how this file
+// and e2e/security-gate/roles.ts ended up pointing at two different platform operators
+// (`platform@kynexone.com` vs `admin@platform.local`) — a drift no test could catch, because each
+// lane provisioned nothing and simply failed to log in.
+export {
+  PLATFORM_EMAIL, PLATFORM_PASSWORD,
+  INTELLIFLOW_SLUG, INTELLIFLOW_ADMIN, INTELLIFLOW_HR_DIR, INTELLIFLOW_HR_MGR,
+  INTELLIFLOW_FINANCE, INTELLIFLOW_MANAGER, INTELLIFLOW_SUPERVISOR,
+  INTELLIFLOW_EMP1, INTELLIFLOW_EMP2, INTELLIFLOW_AUDITOR,
+  RASALMANAR_SLUG, RASALMANAR_ADMIN,
+  EVOSTEL_SLUG, EVOSTEL_ADMIN, EVOSTEL_EMP1,
+  ALMARAI_SLUG, TATA_SLUG, GROUP_PASSWORD, groupEmail, companyEmail,
+} from './world';
+
+export const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? process.env.E2E_BASE_URL ?? 'http://localhost:5173';
 
 // Where auth.setup.ts persists the platform-admin session. Reused by every platform spec so the
 // suite authenticates ONCE rather than once per test — see auth.setup.ts for why that matters.
@@ -17,39 +33,24 @@ export const tenantSessionKey = (email: string, slug: string): string =>
   `${slug.toLowerCase()}|${email.toLowerCase()}`;
 
 export async function tenantSetupSession(email: string, slug: string): Promise<TenantSession> {
-  const sessions = JSON.parse(await readFile(TENANT_STATE, 'utf8')) as Record<string, TenantSession>;
+  let sessions: Record<string, TenantSession>;
+  try {
+    sessions = JSON.parse(await readFile(TENANT_STATE, 'utf8')) as Record<string, TenantSession>;
+  } catch {
+    throw new Error(
+      `${TENANT_STATE} does not exist, so no persona sessions were ever minted.\n`
+      + `${MISSING_WORLD}`,
+    );
+  }
   const session = sessions[tenantSessionKey(email, slug)];
   if (!session?.accessToken)
-    throw new Error(`No setup tenant session exists for ${email} / ${slug}.`);
+    throw new Error(
+      `No setup tenant session exists for ${email} / ${slug}.\n`
+      + 'Either auth.setup.ts does not mint this persona, or the login failed because the fixture '
+      + `world is missing that account.\n${MISSING_WORLD}`,
+    );
   return session;
 }
-
-// ── Demo tenant credentials ────────────────────────────────────────────────────
-// IntelliFlow Systems — Enterprise, all features enabled, Active
-export const INTELLIFLOW_SLUG     = 'intelliflow';
-const INTELLIFLOW_PASSWORD = process.env.E2E_INTELLIFLOW_PASSWORD ?? 'IntelliFlow@2026!';
-export const INTELLIFLOW_ADMIN    = { email: 'admin@intelliflow.com',      password: INTELLIFLOW_PASSWORD, role: 'Admin' };
-export const INTELLIFLOW_HR_DIR   = { email: 'hrdirector@intelliflow.com', password: INTELLIFLOW_PASSWORD, role: 'HR Director' };
-export const INTELLIFLOW_HR_MGR   = { email: 'hrmanager@intelliflow.com',  password: INTELLIFLOW_PASSWORD, role: 'HR Manager' };
-export const INTELLIFLOW_FINANCE  = { email: 'finance@intelliflow.com',    password: INTELLIFLOW_PASSWORD, role: 'Finance Approver' };
-export const INTELLIFLOW_MANAGER  = { email: 'manager@intelliflow.com',    password: INTELLIFLOW_PASSWORD, role: 'Manager' };
-export const INTELLIFLOW_SUPERVISOR = { email: 'supervisor@intelliflow.com', password: INTELLIFLOW_PASSWORD, role: 'Supervisor' };
-export const INTELLIFLOW_EMP1     = { email: 'employee1@intelliflow.com',  password: INTELLIFLOW_PASSWORD, role: 'Employee' };
-export const INTELLIFLOW_EMP2     = { email: 'employee2@intelliflow.com',  password: INTELLIFLOW_PASSWORD, role: 'Employee' };
-export const INTELLIFLOW_AUDITOR  = { email: 'auditor@intelliflow.com',    password: INTELLIFLOW_PASSWORD, role: 'Auditor' };
-
-// Ras Al-Manar — second permanent clean-demo tenant used for meaningful
-// cross-tenant isolation checks against real seeded employee/HR data.
-export const RASALMANAR_SLUG  = 'rasalmanar';
-export const RASALMANAR_ADMIN = { email: 'admin@rasalmanar.com', password: 'RasAlManar@2026!', role: 'Admin' };
-
-// Evostel is NOT application demo data. The Playwright setup project provisions
-// this isolated, limited/PastDue tenant and its teardown project purges it. Keeping
-// subscription/feature tests self-contained prevents test fixtures from polluting
-// production-shaped startup data.
-export const EVOSTEL_SLUG    = 'evostel';
-export const EVOSTEL_ADMIN   = { email: 'admin@evostel.com',    password: 'E2E-Demo@1234', role: 'Admin' };
-export const EVOSTEL_EMP1    = { email: 'employee1@evostel.com', password: 'E2E-Demo@1234', role: 'Employee' };
 
 // ── Platform admin helpers ────────────────────────────────────────────────────
 
@@ -252,19 +253,42 @@ const EMPTY_STATE = /no (records|results|data|requests|approvals|entries)|nothin
  *
  * Fails loudly on an empty state rather than treating it as "the page loaded fine", because an
  * empty Attendance / Leave / Approvals screen IS the demo failure mode this suite exists to catch.
+ *
+ * <b>It WAITS for the rows.</b> This used to take a single snapshot the instant the caller asked,
+ * which made it a race rather than an assertion: every one of these screens fetches its rows over
+ * XHR after the route's shell has painted, and the caller's own `expect.poll(mainContentLength)`
+ * is satisfied by the shell alone (the Leave tab strip is ~200 characters on its own). So the
+ * verdict came down to whether the API answered inside the few milliseconds between those two
+ * lines. It did on a warm machine and did not on a cold CI runner — the pilot lane reported
+ * "/leave rendered 0 data row(s)" on main and on every integration branch alike, then retried
+ * green, which is the signature of a racing test and not of a blank module.
+ *
+ * Polling closes that. A screen that genuinely has no rows still fails, one second later, with the
+ * same message; a screen whose rows are merely still in flight now passes for the reason it always
+ * should have. Deliberately NOT short-circuited on {@link EMPTY_STATE}: these modules render their
+ * empty copy while the request is still outstanding, so treating that text as a verdict would
+ * reinstate the same race with extra steps.
  */
-export async function expectNonEmptyList(page: Page, route: string, minRows = 1): Promise<number> {
-  const rows = await renderedRowCount(page);
-  const text = await mainText(page);
-  if (rows < minRows) {
-    const emptyState = EMPTY_STATE.test(text) ? ' The screen is showing its EMPTY STATE.' : '';
-    throw new Error(
-      `${route} rendered ${rows} data row(s); at least ${minRows} was required.${emptyState}\n` +
-      `This is the blank-module failure the pilot feared. Main-region text (first 400 chars):\n` +
-      text.slice(0, 400),
-    );
+export async function expectNonEmptyList(
+  page: Page, route: string, minRows = 1, timeoutMs = 15_000,
+): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  let rows = 0;
+  for (;;) {
+    rows = await renderedRowCount(page);
+    if (rows >= minRows) return rows;
+    if (Date.now() >= deadline) break;
+    await page.waitForTimeout(200);
   }
-  return rows;
+
+  const text = await mainText(page);
+  const emptyState = EMPTY_STATE.test(text) ? ' The screen is showing its EMPTY STATE.' : '';
+  throw new Error(
+    `${route} rendered ${rows} data row(s); at least ${minRows} was required ` +
+    `(waited ${timeoutMs}ms).${emptyState}\n` +
+    `This is the blank-module failure the pilot feared. Main-region text (first 400 chars):\n` +
+    text.slice(0, 400),
+  );
 }
 
 /**

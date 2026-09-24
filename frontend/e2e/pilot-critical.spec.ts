@@ -1,9 +1,12 @@
 import { expect, test } from '@playwright/test';
 import { mainContentLength, mainText, crashIndicators, expectNonEmptyList } from './helpers';
+import { INTELLIFLOW_ADMIN, INTELLIFLOW_SLUG } from './world';
 
-const TENANT_SLUG = process.env.E2E_DEFAULT_TENANT_SLUG ?? 'intelliflow';
-const ADMIN_EMAIL = process.env.E2E_DEFAULT_ADMIN_EMAIL ?? 'admin@intelliflow.com';
-const ADMIN_PASSWORD = process.env.E2E_DEFAULT_ADMIN_PASSWORD ?? 'IntelliFlow@2026!';
+// Defaults come from e2e/world.ts — the declaration e2e/bootstrap/provision.ts builds the tenant
+// from — rather than literals, so this lane cannot be pointed at an account nothing created.
+const TENANT_SLUG = process.env.E2E_DEFAULT_TENANT_SLUG ?? INTELLIFLOW_SLUG;
+const ADMIN_EMAIL = process.env.E2E_DEFAULT_ADMIN_EMAIL ?? INTELLIFLOW_ADMIN.email;
+const ADMIN_PASSWORD = process.env.E2E_DEFAULT_ADMIN_PASSWORD ?? INTELLIFLOW_ADMIN.password;
 const EXPECTED_MIN_EMPLOYEES = Number(process.env.E2E_MIN_EMPLOYEES ?? '1');
 
 /**
@@ -99,5 +102,50 @@ test.describe('client-pilot critical tenant lane', () => {
     }
 
     expect(serverFailures, `Core-module navigation produced server errors:\n${serverFailures.join('\n')}`).toEqual([]);
+  });
+
+  /**
+   * The regression this lane kept reporting as a product bug.
+   *
+   * `/leave rendered 0 data row(s)` failed attempt 1 and passed the retry on MAIN (run
+   * 35950845579) and on the integration branch (run 35953783874) with byte-identical output. No
+   * module was blank: `expectNonEmptyList` took ONE snapshot the moment the route's shell had
+   * painted, before the Leave dashboard's three XHRs had answered, so the gate was measuring CI
+   * runner latency and calling it a demo failure. A gate that goes red on a slow answer cannot be
+   * trusted when it goes red on a real one.
+   *
+   * Holding every leave call for two seconds makes that race DETERMINISTIC, in the direction CI
+   * hit by accident. With the snapshot helper this fails every time; with the polling helper it
+   * passes, and a genuinely empty /leave still fails — `expectNonEmptyList` only ever stops early
+   * on rows it has actually seen.
+   */
+  test('a slow leave API is waited for, not reported as a blank module', async ({ page }) => {
+    test.setTimeout(90_000);
+
+    await page.goto('/login');
+    await page.locator('#li-em, input[type="email"]').first().fill(ADMIN_EMAIL);
+    await page.locator('#li-pw, input[type="password"]').first().fill(ADMIN_PASSWORD);
+    await page.locator('#li-ws, input[autocomplete="organization"]').first().fill(TENANT_SLUG);
+    await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+    await page.waitForURL(/\/dashboard/, { timeout: 20_000 });
+
+    // Delay, never stub. The rows this asserts on are the seeded tenant's real ones; only their
+    // arrival is slowed, so the test still fails if the leave API stops returning them.
+    await page.route('**/api/leave/**', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+      await route.continue();
+    });
+
+    await page.goto('/leave', { waitUntil: 'domcontentloaded' });
+    // The same two steps the walk above performs, in the same order. The poll is satisfied by the
+    // Leave shell (heading + tab strip) while the rows are still in flight — which is exactly how
+    // the snapshot helper came to be asked for a verdict it could not yet have.
+    await expect.poll(
+      async () => mainContentLength(page),
+      { message: '/leave rendered only the navigation shell', timeout: 20_000 },
+    ).toBeGreaterThan(80);
+
+    const rows = await expectNonEmptyList(page, '/leave', 1);
+    console.log(`[pilot] /leave under a 2s API delay rendered ${rows} data row(s)`);
   });
 });

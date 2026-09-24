@@ -2,28 +2,37 @@ using System.ComponentModel.DataAnnotations;
 
 namespace Zayra.Api.Application.Auth;
 
+[AttributeUsage(AttributeTargets.Parameter | AttributeTargets.Property)]
+public sealed class RequiredWorkspaceAttribute : ValidationAttribute
+{
+    public RequiredWorkspaceAttribute() : base("Workspace is required.") { }
+
+    public override bool IsValid(object? value) =>
+        value is string workspace && !string.IsNullOrWhiteSpace(workspace);
+}
+
 public record LoginRequest(
     [Required, EmailAddress] string Email,
     [Required] string Password,
-    string? TenantSlug);
+    [param: RequiredWorkspace] string TenantSlug);
 
 public record RefreshTokenRequest([Required] string RefreshToken);
 
 public record LogoutRequest([Required] string RefreshToken);
 
-public record ForgotPasswordRequest([Required, EmailAddress] string Email, string? TenantSlug);
+public record ForgotPasswordRequest(
+    [Required, EmailAddress] string Email,
+    [param: RequiredWorkspace] string TenantSlug);
 
 public record ResetPasswordRequest(
-    [Required, EmailAddress] string Email,
     [Required] string ResetToken,
     [Required, MinLength(10)] string NewPassword,
-    string? TenantSlug);
+    [param: RequiredWorkspace] string TenantSlug);
 
 public record AcceptInvitationRequest(
-    [Required, EmailAddress] string Email,
     [Required] string InvitationToken,
     [Required, MinLength(10)] string NewPassword,
-    string? TenantSlug);
+    [param: RequiredWorkspace] string TenantSlug);
 
 public record CreateUserRequest(
     [Required, EmailAddress] string Email,
@@ -47,7 +56,14 @@ public record EmployeeLoginInvitationDto(
     string AccessMode,
     string Status,
     string InvitationToken,
-    DateTime? InvitationExpiresAtUtc);
+    DateTime? InvitationExpiresAtUtc,
+    string InvitationUrl,
+    // Delivery truth. The invitation link is minted whether or not a mail transport exists; these
+    // three say whether anything was actually posted to the invitee, so no caller can render
+    // "invited — tell them to check their inbox" over a workspace with no SMTP configured.
+    bool EmailDeliveryConfigured = false,
+    bool EmailSent = false,
+    string DeliveryMessage = "");
 
 public record AccessModeRequest([Required] string AccessMode, string? Reason);
 
@@ -197,6 +213,19 @@ public record ChangePasswordRequest(
 public record AdminResetPasswordRequest(
     [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.MinLength(10)] string NewPassword,
     bool MustChangePassword = true);
+
+/// <summary>
+/// The controlled password-reset link an administrator issues on a user's behalf. The raw
+/// <see cref="ResetToken"/> exists only in this object and in the link built from it — the database
+/// stores nothing but its hash — so it can be shown once and never recovered afterwards.
+/// </summary>
+public record AdminPasswordResetLinkDto(
+    Guid UserId,
+    string Email,
+    string FullName,
+    string ResetToken,
+    string ResetUrl,
+    DateTime ExpiresAtUtc);
 
 public record UserListQuery(string? Search, string? Status, string? Role, int Page = 1, int PageSize = 30);
 

@@ -236,6 +236,9 @@ public sealed class PerformanceDecisionsPostgresTests
         var result = await controller.HrDecision(probation.Id,
             new ProbationHrDecisionRequest("Terminated", "Did not meet the agreed objectives."), default);
         result.Should().BeOfType<OkObjectResult>();
+        System.Text.Json.JsonSerializer.SerializeToElement(((OkObjectResult)result).Value)
+            .GetProperty("employeeStatus").GetString()
+            .Should().Be(EmployeeStatuses.Terminated, "the response must report the post-termination state, not a stale pre-read");
 
         // THE OBSERVABLE CONSEQUENCE — the employment actually ended, through the wired separation path.
         var emp = await db.Employees.AsNoTracking().SingleAsync(e => e.Id == employee.Id);

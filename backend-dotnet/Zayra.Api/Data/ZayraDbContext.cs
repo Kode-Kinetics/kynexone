@@ -196,8 +196,11 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
                         .Where(property => property.IsModified)
                         .All(property => property.Metadata.Name is
                             nameof(User.FailedLoginCount) or
+                            nameof(User.MfaFailedCount) or
                             nameof(User.LastLoginAtUtc));
-                if (!platformLoginTelemetryOnly && !tenantLoginTelemetryOnly)
+                if (entry.Entity is User && !tenantLoginTelemetryOnly)
+                    StampUserSecurityStampMonotonically(entry, now);
+                else if (!platformLoginTelemetryOnly && !tenantLoginTelemetryOnly)
                     TryStamp(entry, "UpdatedAtUtc", now);
                 if (_actorId.HasValue) TryStamp(entry, "UpdatedBy", _actorId.Value);
             }
@@ -705,6 +708,33 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         }
     }
 
+    /// <summary>
+    /// User.UpdatedAtUtc is the tenant access-token security stamp (TenantSessionSecurity), compared
+    /// at microsecond precision. A plain "= now" could equal or precede the stored stamp (same
+    /// microsecond, clock skew between instances, or a stamp already advanced by RotateStamp), which
+    /// would leave tokens minted under the old state valid. The written stamp is therefore never
+    /// lower than a caller's RotateStamp value and always strictly after the stored one.
+    /// </summary>
+    private static void StampUserSecurityStampMonotonically(
+        Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry entry, DateTime now)
+    {
+        var property = entry.Property(nameof(User.UpdatedAtUtc));
+        static DateTime Micro(DateTime value)
+        {
+            var utc = value.Kind == DateTimeKind.Local ? value.ToUniversalTime() : DateTime.SpecifyKind(value, DateTimeKind.Utc);
+            return new DateTime(utc.Ticks - utc.Ticks % 10, DateTimeKind.Utc);
+        }
+
+        var stamp = Micro(now);
+        if (property.CurrentValue is DateTime requested && Micro(requested) > stamp)
+            stamp = Micro(requested);
+        var stored = property.OriginalValue as DateTime?
+            ?? entry.Property(nameof(User.CreatedAtUtc)).OriginalValue as DateTime?;
+        if (stored is { } previous && stamp <= Micro(previous))
+            stamp = Micro(previous).AddTicks(10);
+        property.CurrentValue = stamp;
+    }
+
     private static void TryStamp(Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry entry, string prop, object value, bool skipIfSet = false)
     {
         if (entry.Metadata.FindProperty(prop) is null) return;
@@ -1190,7 +1220,12 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         {
             entity.ToTable("gosi_contribution_rules");
             entity.HasKey(x => x.Id);
-            entity.Property(x => x.Rate).HasPrecision(7, 4);
+            // UNIT: Rate is a decimal FRACTION of the contributory wage (0.09 = 9%), never a
+            // percentage. numeric(9,6) is the rate type TARGET_SCHEMA §2.E specifies and the same
+            // unit StatutoryRule.RuleValue carries for gosi.saudi_employee_rate, so the two stores
+            // can no longer disagree about what a rate means. The column was numeric(7,4) holding
+            // PERCENTS until migration GosiContributionRuleRateToFraction (2026-09-23).
+            entity.Property(x => x.Rate).HasPrecision(9, 6);
             entity.Property(x => x.MinContributoryWage).HasPrecision(12, 2);
             entity.Property(x => x.MaxContributoryWage).HasPrecision(12, 2);
             entity.Property(x => x.Classification).HasMaxLength(20);
@@ -2091,8 +2126,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         modelBuilder.Entity<OvertimeRule>(entity => { entity.ToTable("overtime_rules"); entity.HasKey(x => x.Id); entity.Property(x => x.RuleValueJson).HasColumnType("json"); entity.HasIndex(x => new { x.TenantId, x.OvertimePolicyId, x.RuleType }); });
         modelBuilder.Entity<OvertimeRequest>(entity => { entity.ToTable("overtime_requests"); entity.HasKey(x => x.Id); entity.Property(x => x.DecisionVersion).IsConcurrencyToken(); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.WorkDate }); entity.HasIndex(x => new { x.TenantId, x.Status }); });
         modelBuilder.Entity<OvertimeApproval>(entity => { entity.ToTable("overtime_approvals"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.OvertimeRequestId, x.ApprovalLevel }).IsUnique(); });
-        modelBuilder.Entity<OvertimeCalculation>(entity => { entity.ToTable("overtime_calculations"); entity.HasKey(x => x.Id); entity.Property(x => x.ApprovedHours).HasPrecision(8,2); entity.Property(x => x.HourlyRate).HasPrecision(12,2); entity.Property(x => x.Multiplier).HasPrecision(6,3); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.CalculationJson).HasColumnType("json"); entity.HasIndex(x => new { x.TenantId, x.OvertimeRequestId }).IsUnique(); });
-        modelBuilder.Entity<OvertimePayrollImpact>(entity => { entity.ToTable("overtime_payroll_impacts"); entity.HasKey(x => x.Id); entity.Property(x => x.Hours).HasPrecision(8,2); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.ApprovedMultiplier).HasPrecision(4,2).HasDefaultValue(0m); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status }); entity.HasIndex(x => new { x.TenantId, x.OvertimeRequestId }).IsUnique(); });
+        // ApprovedHours / Hours are DERIVED from the minutes column and deliberately unmapped: the
+        // old numeric(8,2) columns rounded the quantity before any rate touched it. See the model.
+        modelBuilder.Entity<OvertimeCalculation>(entity => { entity.ToTable("overtime_calculations"); entity.HasKey(x => x.Id); entity.Ignore(x => x.ApprovedHours); entity.Property(x => x.HourlyRate).HasPrecision(12,2); entity.Property(x => x.Multiplier).HasPrecision(6,3); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.CalculationJson).HasColumnType("json"); entity.HasIndex(x => new { x.TenantId, x.OvertimeRequestId }).IsUnique(); });
+        modelBuilder.Entity<OvertimePayrollImpact>(entity => { entity.ToTable("overtime_payroll_impacts"); entity.HasKey(x => x.Id); entity.Ignore(x => x.Hours); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.ApprovedMultiplier).HasPrecision(4,2).HasDefaultValue(0m); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status }); entity.HasIndex(x => new { x.TenantId, x.OvertimeRequestId }).IsUnique(); });
         modelBuilder.Entity<OvertimeAdjustment>(entity => { entity.ToTable("overtime_adjustments"); entity.HasKey(x => x.Id); entity.Property(x => x.HoursAdjustment).HasPrecision(8,2); entity.Property(x => x.AmountAdjustment).HasPrecision(14,2); });
         modelBuilder.Entity<OvertimeBudget>(entity => { entity.ToTable("overtime_budgets"); entity.HasKey(x => x.Id); entity.Property(x => x.BudgetAmount).HasPrecision(14,2); entity.Property(x => x.ConsumedAmount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.Year, x.Month }); });
         modelBuilder.Entity<OvertimeCompOffConversion>(entity => { entity.ToTable("overtime_comp_off_conversions"); entity.HasKey(x => x.Id); entity.Property(x => x.OvertimeHours).HasPrecision(8,2); entity.Property(x => x.CompOffDays).HasPrecision(6,2); entity.HasIndex(x => new { x.TenantId, x.OvertimeRequestId }).IsUnique(); });

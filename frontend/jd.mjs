@@ -1,0 +1,44 @@
+import { chromium } from '@playwright/test';
+const SHOT='/private/tmp/claude-501/-Users-zackkhan-Downloads-KynexOne/074df5aa-77b3-476e-892a-2f51f2c41b55/scratchpad/journey';
+const b=await chromium.launch();
+const ctx=await b.newContext({baseURL:'https://kynexone.vercel.app',viewport:{width:1440,height:900},storageState:`${SHOT}/state.json`});
+const p=await ctx.newPage();
+await p.goto('/setup?tab=companies',{waitUntil:'networkidle'}); await p.waitForTimeout(2200);
+await p.locator('button[title*="Edit" i], button:has-text("Edit")').first().click(); await p.waitForTimeout(2000);
+// Country + Registration + Currency + email domain
+const setSel=async(rx)=>{const el=p.locator('[role=dialog] label, .modal label').filter({hasText:rx}).locator('select').first();
+  if(await el.count()){const opts=await el.locator('option').allTextContents();
+    const i=opts.findIndex(o=>/saudi/i.test(o)); await el.selectOption({index:i>0?i:1}); return opts[i>0?i:1];} return null;};
+console.log('country ->', await setSel(/^Country/i));
+console.log('currency ->', await setSel(/Default Currency/i));
+const setInp=async(rx,v)=>{const el=p.locator('[role=dialog] label, .modal label').filter({hasText:rx}).locator('input').first();
+  if(await el.count()){await el.fill(v); return true;} return false;};
+await setInp(/Registration Number/i,'CR-1010101010');
+await setInp(/Work Email Domain/i,'kodekinetics.com');
+await p.locator('[role=dialog] button, .modal button').filter({hasText:/^Save$/}).first().click().catch(()=>{});
+await p.waitForTimeout(3500);
+await p.screenshot({path:`${SHOT}/96-company-saved.png`,fullPage:true});
+// retry employee
+await p.goto('/people',{waitUntil:'networkidle'}); await p.waitForTimeout(2500);
+await p.locator('button:has-text("Add Employee")').first().click(); await p.waitForTimeout(3000);
+const byLabel=async(rx,val)=>{const el=p.locator('label').filter({hasText:rx}).locator('input,select').first();
+  if(!await el.count())return; const tag=await el.evaluate(e=>e.tagName);
+  if(tag==='SELECT'){const o=await el.locator('option').count(); if(o>1)await el.selectOption({index:1});}
+  else await el.fill(val);};
+await byLabel(/English full name/i,'Aisha Al-Rashid');
+await byLabel(/Personal email/i,'aisha.test@example.com');
+await byLabel(/Mobile number/i,'+966500000123');
+for(const f of [/^Company/i,/^Gender/i,/Nationality/i,/Marital status/i,/^Branch/i,/^Department/i,/^Designation/i,/^Grade/i,/Employment type/i,/Contract type/i,/Salary currency/i,/Payment method/i]) await byLabel(f,'');
+await byLabel(/Date of birth/i,'1995-04-12');
+await byLabel(/Joining date/i,'2026-09-01');
+await byLabel(/Basic salary/i,'8000');
+await byLabel(/Job title/i,'Software Engineer');
+await p.screenshot({path:`${SHOT}/97-employee-form.png`,fullPage:true});
+await p.locator('button').filter({hasText:/Create Employee/i}).last().click().catch(()=>{});
+await p.waitForTimeout(5500);
+const t=((await p.locator('body').innerText().catch(()=>''))||'');
+console.log('\nEMPLOYEE CREATED?', t.includes('Aisha')?'✅ YES':'❌ NO');
+const lines=[...new Set(t.split('\n').map(x=>x.trim()).filter(x=>/required|invalid|must|cannot|failed|error|select the/i.test(x)&&x.length<170))];
+for(const l of lines.slice(0,6)) console.log('  -',l);
+await p.screenshot({path:`${SHOT}/98-employee-final.png`,fullPage:true});
+await b.close();

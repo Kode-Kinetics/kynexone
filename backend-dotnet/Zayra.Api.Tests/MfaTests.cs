@@ -46,6 +46,10 @@ public class MfaTests
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
         var db    = new ZayraDbContext(opts);
+        db.Tenants.AddRange(
+            new Tenant { Id = TenantA, Name = "Tenant A", Slug = "tenant-a" },
+            new Tenant { Id = TenantB, Name = "Tenant B", Slug = "tenant-b" });
+        db.SaveChanges();
         var dp    = DataProtectionProvider.Create("ZayraTests");
         var totp  = new TotpService(dp);
         var tokens = new FakeTokenService();
@@ -176,149 +180,6 @@ public class MfaTests
         Assert.Null(stored.UsedAtUtc);
     }
 
-    [Fact]
-    public async Task VerifyChallenge_ValidCodeAndToken_ReturnsUser()
-    {
-        var (db, totp, tokens) = MakeServices();
-        var svc    = MakeMfaService(db, totp, tokens);
-        var secret = totp.GenerateBase32Secret();
-        var user   = MakeUser(TenantA, mfaEnabled: true, encryptedSecret: totp.EncryptSecret(secret));
-        db.Users.Add(user);
-        await db.SaveChangesAsync();
-
-        var raw  = await svc.CreateChallengeAsync(user.Id, TenantA, "127.0.0.1", CancellationToken.None);
-        var code = ComputeTotpDirectly(secret, DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30).ToString("D6");
-
-        var result = await svc.VerifyChallengeAsync(raw, code, CancellationToken.None);
-
-        Assert.NotNull(result);
-        Assert.Equal(user.Id, result!.Id);
-        var stored = await db.MfaChallengeTokens.FirstAsync();
-        Assert.NotNull(stored.UsedAtUtc);
-    }
-
-    [Fact]
-    public async Task VerifyChallenge_InvalidCode_ReturnsNull_IncrementsFailCount()
-    {
-        var (db, totp, tokens) = MakeServices();
-        var svc    = MakeMfaService(db, totp, tokens);
-        var secret = totp.GenerateBase32Secret();
-        var user   = MakeUser(TenantA, mfaEnabled: true, encryptedSecret: totp.EncryptSecret(secret));
-        db.Users.Add(user);
-        await db.SaveChangesAsync();
-
-        var raw = await svc.CreateChallengeAsync(user.Id, TenantA, "127.0.0.1", CancellationToken.None);
-
-        var result = await svc.VerifyChallengeAsync(raw, "000000", CancellationToken.None);
-
-        Assert.Null(result);
-        var stored = await db.Users.FirstAsync(x => x.Id == user.Id);
-        Assert.Equal(1, stored.MfaFailedCount);
-        var challenge = await db.MfaChallengeTokens.FirstAsync();
-        Assert.Null(challenge.UsedAtUtc);
-    }
-
-    [Fact]
-    public async Task VerifyChallenge_ConsumesChallengeAfterMaxWrongAttempts_ThenCorrectCodeFails()
-    {
-        // Security: a single challenge token must not be reusable to brute-force the 6-digit code.
-        var (db, totp, tokens) = MakeServices();
-        var svc    = MakeMfaService(db, totp, tokens);
-        var secret = totp.GenerateBase32Secret();
-        var user   = MakeUser(TenantA, mfaEnabled: true, encryptedSecret: totp.EncryptSecret(secret));
-        db.Users.Add(user);
-        await db.SaveChangesAsync();
-
-        var raw = await svc.CreateChallengeAsync(user.Id, TenantA, "127.0.0.1", CancellationToken.None);
-
-        // Exhaust the attempt budget with wrong codes.
-        for (var i = 0; i < MfaChallengeToken.MaxAttempts; i++)
-            Assert.Null(await svc.VerifyChallengeAsync(raw, "000000", CancellationToken.None));
-
-        var challenge = await db.MfaChallengeTokens.FirstAsync();
-        Assert.NotNull(challenge.UsedAtUtc);                    // challenge consumed → no longer valid
-        Assert.False(challenge.IsValid);
-
-        // Even the CORRECT code must now be rejected: the attacker must re-authenticate for a new challenge.
-        var correct = ComputeTotpDirectly(secret, DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30).ToString("D6");
-        var afterCap = await svc.VerifyChallengeAsync(raw, correct, CancellationToken.None);
-        Assert.Null(afterCap);
-    }
-
-    [Fact]
-    public async Task VerifyChallenge_ExpiredToken_ReturnsNull()
-    {
-        var (db, totp, tokens) = MakeServices();
-        var svc    = MakeMfaService(db, totp, tokens);
-        var secret = totp.GenerateBase32Secret();
-        var user   = MakeUser(TenantA, mfaEnabled: true, encryptedSecret: totp.EncryptSecret(secret));
-        db.Users.Add(user);
-
-        // Manually insert an already-expired challenge
-        var raw  = tokens.CreateSecureToken();
-        db.MfaChallengeTokens.Add(new MfaChallengeToken
-        {
-            UserId = user.Id, TenantId = TenantA,
-            TokenHash = tokens.HashToken(raw),
-            ExpiresAtUtc = DateTime.UtcNow.AddMinutes(-10),
-            CreatedByIp = "127.0.0.1"
-        });
-        await db.SaveChangesAsync();
-
-        var code   = ComputeTotpDirectly(secret, DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30).ToString("D6");
-        var result = await svc.VerifyChallengeAsync(raw, code, CancellationToken.None);
-
-        Assert.Null(result);
-    }
-
-    [Fact]
-    public async Task VerifyChallenge_AlreadyUsedToken_ReturnsNull()
-    {
-        var (db, totp, tokens) = MakeServices();
-        var svc    = MakeMfaService(db, totp, tokens);
-        var secret = totp.GenerateBase32Secret();
-        var user   = MakeUser(TenantA, mfaEnabled: true, encryptedSecret: totp.EncryptSecret(secret));
-        db.Users.Add(user);
-
-        var raw = tokens.CreateSecureToken();
-        db.MfaChallengeTokens.Add(new MfaChallengeToken
-        {
-            UserId = user.Id, TenantId = TenantA,
-            TokenHash = tokens.HashToken(raw),
-            ExpiresAtUtc = DateTime.UtcNow.AddMinutes(5),
-            CreatedByIp = "127.0.0.1",
-            UsedAtUtc = DateTime.UtcNow.AddSeconds(-10)
-        });
-        await db.SaveChangesAsync();
-
-        var code   = ComputeTotpDirectly(secret, DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30).ToString("D6");
-        var result = await svc.VerifyChallengeAsync(raw, code, CancellationToken.None);
-
-        Assert.Null(result);
-    }
-
-    [Fact]
-    public async Task TenantIsolation_ChallengeForUserB_CannotUnlockUserA()
-    {
-        var (db, totp, tokens) = MakeServices();
-        var svc     = MakeMfaService(db, totp, tokens);
-        var secretA = totp.GenerateBase32Secret();
-        var userA   = MakeUser(TenantA, mfaEnabled: true, encryptedSecret: totp.EncryptSecret(secretA));
-        var secretB = totp.GenerateBase32Secret();
-        var userB   = MakeUser(TenantB, mfaEnabled: true, encryptedSecret: totp.EncryptSecret(secretB));
-        db.Users.AddRange(userA, userB);
-        await db.SaveChangesAsync();
-
-        // Create a challenge for user B
-        var rawB = await svc.CreateChallengeAsync(userB.Id, TenantB, "1.1.1.1", CancellationToken.None);
-
-        // Use user A's TOTP code with user B's challenge — must fail
-        var codeA = ComputeTotpDirectly(secretA, DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30).ToString("D6");
-        var result = await svc.VerifyChallengeAsync(rawB, codeA, CancellationToken.None);
-
-        Assert.Null(result);
-    }
-
     // ── MFA secret never exposed ──────────────────────────────────────────────
 
     [Fact]
@@ -435,11 +296,18 @@ public class MfaTests
 
         var enrollmentToken = await svc.CreateEnrollmentChallengeAsync(user.Id, TenantA, "127.0.0.1", CancellationToken.None);
         var init = await svc.InitiateEnrollmentSetupAsync(enrollmentToken, CancellationToken.None);
-        var code = ComputeTotpDirectly(init!.TempSecret, DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30).ToString("D6");
 
-        var loginResult = await svc.VerifyChallengeAsync(enrollmentToken, code, CancellationToken.None);
-
-        Assert.Null(loginResult);
+        Assert.NotNull(init);
+        Assert.False(AuthChallengeTokenCodec.TryParse(
+            enrollmentToken,
+            AuthChallengeTokenCodec.TenantLoginPurpose,
+            out _));
+        Assert.True(AuthChallengeTokenCodec.TryParse(
+            enrollmentToken,
+            AuthChallengeTokenCodec.TenantEnrollmentPurpose,
+            out var envelope));
+        Assert.Equal(user.Id, envelope.PrincipalId);
+        Assert.Equal(TenantA, envelope.TenantId);
         Assert.False((await db.Users.FirstAsync(x => x.Id == user.Id)).MFAEnabled);
         Assert.Equal(1, await db.MfaChallengeTokens.CountAsync());
     }
@@ -575,27 +443,6 @@ public class MfaTests
 
         var stored = await db.SecuritySettings.FirstAsync(x => x.TenantId == TenantA);
         Assert.True(stored.MfaRequired);
-    }
-
-    // ── MfaFailedCount ────────────────────────────────────────────────────────
-
-    [Fact]
-    public async Task VerifyChallenge_Success_ClearsMfaFailedCount()
-    {
-        var (db, totp, tokens) = MakeServices();
-        var svc    = MakeMfaService(db, totp, tokens);
-        var secret = totp.GenerateBase32Secret();
-        var user   = MakeUser(TenantA, mfaEnabled: true, encryptedSecret: totp.EncryptSecret(secret));
-        user.MfaFailedCount = 3;
-        db.Users.Add(user);
-        await db.SaveChangesAsync();
-
-        var raw  = await svc.CreateChallengeAsync(user.Id, TenantA, "127.0.0.1", CancellationToken.None);
-        var code = ComputeTotpDirectly(secret, DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30).ToString("D6");
-        await svc.VerifyChallengeAsync(raw, code, CancellationToken.None);
-
-        var stored = await db.Users.FirstAsync(x => x.Id == user.Id);
-        Assert.Equal(0, stored.MfaFailedCount);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

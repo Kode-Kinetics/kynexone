@@ -29,17 +29,52 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
   // scrolls (overflow hidden) and would clip an absolutely positioned tag.
   const [tip, setTip] = useState<{ path: string; label: string; hint: string; top: number; left: number } | null>(null);
   const tipTimer = useRef<number | null>(null);
+  // The element the visible tip belongs to. Kept so a scroll can REPOSITION the tip instead of
+  // destroying it — see onScroll on the <nav> below.
+  const tipAnchor = useRef<HTMLElement | null>(null);
+
+  const placeTip = (el: HTMLElement, path: string, label: string, hint: string) => {
+    const r = el.getBoundingClientRect();
+    const rtl = document.documentElement.dir === 'rtl';
+    setTip({ path, label, hint, top: r.top + r.height / 2, left: rtl ? window.innerWidth - r.left + 10 : r.right + 10 });
+  };
+
   const showTip = (el: HTMLElement, path: string | undefined, label: string, delay: number) => {
     const hint = path ? navigationHints[path] : undefined;
     if (!path || !hint) return;
     if (tipTimer.current) window.clearTimeout(tipTimer.current);
-    tipTimer.current = window.setTimeout(() => {
-      const r = el.getBoundingClientRect();
-      const rtl = document.documentElement.dir === 'rtl';
-      setTip({ path, label, hint, top: r.top + r.height / 2, left: rtl ? window.innerWidth - r.left + 10 : r.right + 10 });
-    }, delay);
+    tipAnchor.current = el;
+    // A zero delay is shown SYNCHRONOUSLY. Keyboard focus asks for 0, and deferring it by even one
+    // tick lost the race against the scroll the browser performs to bring the focused item into
+    // view: the scroll handler ran first and cleared the pending timer, so the tip never appeared.
+    if (delay <= 0) { placeTip(el, path, label, hint); return; }
+    tipTimer.current = window.setTimeout(() => placeTip(el, path, label, hint), delay);
   };
-  const hideTip = () => { if (tipTimer.current) window.clearTimeout(tipTimer.current); setTip(null); };
+
+  const hideTip = () => {
+    if (tipTimer.current) window.clearTimeout(tipTimer.current);
+    tipAnchor.current = null;
+    setTip(null);
+  };
+
+  /**
+   * Scrolling the rail must not cancel a tip the KEYBOARD just opened.
+   *
+   * Tabbing to an item below the fold makes the browser scroll it into view, which fired this
+   * handler and hid the tooltip that focus had opened a moment earlier — so keyboard users got no
+   * navigation hints at all, while mouse users got them fine. The fix is to keep the tip while its
+   * anchor still holds focus and simply move it to the anchor's new position; a scroll with nothing
+   * focused is still a mouse scroll, and still dismisses.
+   */
+  const onNavScroll = () => {
+    const el = tipAnchor.current;
+    if (el && document.activeElement === el) {
+      const hint = tip?.path ? navigationHints[tip.path] : undefined;
+      if (tip && hint) placeTip(el, tip.path, tip.label, hint);
+      return;
+    }
+    hideTip();
+  };
 
   // All groups expanded by default
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(
@@ -143,7 +178,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
         </div>
 
         {/* Navigation */}
-        <nav aria-label="Primary navigation" onScroll={hideTip} onKeyDown={(e) => { if (e.key === 'Escape') hideTip(); }} className="flex-1 overflow-y-auto overflow-x-hidden py-3">
+        <nav aria-label="Primary navigation" onScroll={onNavScroll} onKeyDown={(e) => { if (e.key === 'Escape') hideTip(); }} className="flex-1 overflow-y-auto overflow-x-hidden py-3">
           {navigationGroups.map((group, gi) => {
             // Module visibility is resolved from the item's PATH against the backend catalog,
             // not only from the hand-tagged `requiredFeatureKey`. Only 8 of ~35 items ever carried

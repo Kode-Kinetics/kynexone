@@ -131,126 +131,126 @@ public class BranchesController : ControllerBase
     // ── Import Preview ────────────────────────────────────────────────────────
 
     [HttpPost("import-preview")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> ImportPreview([FromBody] BranchImportRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        return Ok(await RunPreviewAsync(tenantId.Value, req.Csv, ct));
+        return await RunImportAsync(tenantId.Value, req.Csv, commit: false, ct);
     }
 
     // ── Import Commit ─────────────────────────────────────────────────────────
 
     [HttpPost("import")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> Import([FromBody] BranchImportRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        return Ok(await RunCommitAsync(tenantId.Value, req.Csv, ct));
+        return await RunImportAsync(tenantId.Value, req.Csv, commit: true, ct);
     }
 
-    private async Task<ImportPreviewResult> RunPreviewAsync(Guid tenantId, string csv, CancellationToken ct)
+    /// <summary>
+    /// Preview and commit walk the SAME loop, so a spreadsheet cannot be judged one way in the dry
+    /// run and another way for real. <paramref name="commit"/> decides only whether the service is
+    /// called; every validation and refusal above it is shared.
+    /// </summary>
+    private async Task<IActionResult> RunImportAsync(Guid tenantId, string csv, bool commit, CancellationToken ct)
     {
+        var companyList = await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && !c.IsDeleted).ToListAsync(ct);
+        if (!OrgCodes.TryBuildLookup(companyList, c => c.LegalNameEn, out var companiesByName, out var nameClash))
+            return Conflict(OrgCodeCollision.Payload("company", "LegalNameEn", nameClash));
+
+        var branchList = await _db.Branches.AsNoTracking()
+            .Where(b => b.TenantId == tenantId && !b.IsDeleted).ToListAsync(ct);
+        if (!OrgCodes.TryBuildLookup(branchList, b => b.Code, out var existingByCode, out var codeClash))
+            return Conflict(OrgCodeCollision.Payload("branch", "Code", codeClash));
+
         var rows = Csv.Parse(csv);
-        var companiesByName = await _db.Companies.AsNoTracking()
-            .Where(c => c.TenantId == tenantId && !c.IsDeleted)
-            .ToDictionaryAsync(c => c.LegalNameEn.ToUpperInvariant(), ct);
-        var existingByCode = await _db.Branches.AsNoTracking()
-            .Where(b => b.TenantId == tenantId && !b.IsDeleted)
-            .ToDictionaryAsync(b => b.Code.ToUpperInvariant(), ct);
+        var context = Context();
         var rowResults = new List<ImportRowResult>();
-        int wouldCreate = 0, wouldUpdate = 0, wouldSkip = 0;
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        for (int i = 0; i < rows.Count; i++)
-        {
-            var row = rows[i]; var rowNum = i + 2;
-            var companyName = row.GetValueOrDefault("CompanyLegalName", string.Empty).Trim();
-            var code = row.GetValueOrDefault("Code", string.Empty).Trim();
-            var nameEn = row.GetValueOrDefault("NameEn", string.Empty).Trim();
-            var errors = new List<string>();
-            if (string.IsNullOrWhiteSpace(companyName)) errors.Add("CompanyLegalName is required");
-            else if (!companiesByName.ContainsKey(companyName.ToUpperInvariant())) errors.Add($"Company '{companyName}' not found in this tenant");
-            if (string.IsNullOrWhiteSpace(code)) errors.Add("Code is required");
-            if (string.IsNullOrWhiteSpace(nameEn)) errors.Add("NameEn is required");
-            if (!string.IsNullOrWhiteSpace(code) && seen.Contains(code)) errors.Add($"Duplicate Code '{code}' in this batch");
-            if (errors.Count > 0) { wouldSkip++; rowResults.Add(new ImportRowResult(rowNum, code, nameEn, ImportRowStatus.Error, errors, new List<string>())); continue; }
-            seen.Add(code);
-            bool exists = existingByCode.ContainsKey(code.ToUpperInvariant());
-            if (exists) wouldUpdate++; else wouldCreate++;
-            rowResults.Add(new ImportRowResult(rowNum, code, nameEn, ImportRowStatus.Ok, errors, new List<string>()));
-        }
-        return new ImportPreviewResult(rows.Count, wouldCreate, wouldUpdate, wouldSkip, rowResults);
-    }
-
-    private async Task<ImportCommitResult> RunCommitAsync(Guid tenantId, string csv, CancellationToken ct)
-    {
-        var rows = Csv.Parse(csv);
-        var companiesByName = await _db.Companies.AsNoTracking()
-            .Where(c => c.TenantId == tenantId && !c.IsDeleted)
-            .ToDictionaryAsync(c => c.LegalNameEn.ToUpperInvariant(), ct);
-        var existingByCode = await _db.Branches
-            .Where(b => b.TenantId == tenantId && !b.IsDeleted)
-            .ToDictionaryAsync(b => b.Code.ToUpperInvariant(), ct);
-        var rowResults = new List<ImportRowResult>();
         int created = 0, updated = 0, skipped = 0;
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         for (int i = 0; i < rows.Count; i++)
         {
-            var row = rows[i]; var rowNum = i + 2;
+            var row = rows[i];
+            var rowNum = i + 2;
             var companyName = row.GetValueOrDefault("CompanyLegalName", string.Empty).Trim();
             var code = row.GetValueOrDefault("Code", string.Empty).Trim();
             var nameEn = row.GetValueOrDefault("NameEn", string.Empty).Trim();
             var errors = new List<string>();
+
             if (string.IsNullOrWhiteSpace(companyName)) errors.Add("CompanyLegalName is required");
-            if (!companiesByName.TryGetValue(companyName.ToUpperInvariant(), out var company)) { errors.Add($"Company '{companyName}' not found"); }
+            else if (!companiesByName.ContainsKey(OrgCodes.Normalize(companyName)))
+                errors.Add($"Company '{companyName}' not found in this tenant");
             if (string.IsNullOrWhiteSpace(code)) errors.Add("Code is required");
             if (string.IsNullOrWhiteSpace(nameEn)) errors.Add("NameEn is required");
-            if (!string.IsNullOrWhiteSpace(code) && seen.Contains(code)) errors.Add($"Duplicate Code '{code}' in this batch");
-            if (errors.Count > 0) { skipped++; rowResults.Add(new ImportRowResult(rowNum, code, nameEn, ImportRowStatus.Error, errors, new List<string>())); continue; }
-            seen.Add(code);
-            bool isHeadOffice = row.TryGetValue("IsHeadOffice", out var hov) && string.Equals(hov, "true", StringComparison.OrdinalIgnoreCase);
-            bool isActive = !row.TryGetValue("IsActive", out var av) || !string.Equals(av, "false", StringComparison.OrdinalIgnoreCase);
-            var country = row.GetValueOrDefault("CountryCode", string.Empty).Trim();
-            var city = row.GetValueOrDefault("City", string.Empty).Trim();
-            var addressLine1 = row.GetValueOrDefault("AddressLine1", string.Empty).Trim();
-            var addressLine2 = row.GetValueOrDefault("AddressLine2", string.Empty).Trim();
-            var timeZoneId = row.GetValueOrDefault("TimeZoneId", string.Empty).Trim();
-            if (string.IsNullOrWhiteSpace(timeZoneId)) timeZoneId = "Asia/Dubai";
-            var laborOfficeCode = row.GetValueOrDefault("LaborOfficeCode", string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(code) && !seen.Add(code)) errors.Add($"Duplicate Code '{code}' in this batch");
 
-            if (existingByCode.TryGetValue(code.ToUpperInvariant(), out var existing))
+            existingByCode.TryGetValue(OrgCodes.Normalize(code), out var existing);
+            companiesByName.TryGetValue(OrgCodes.Normalize(companyName), out var company);
+
+            // Branch Code is unique tenant-WIDE, not per company. The old update path wrote every
+            // other column and never re-pointed CompanyId, so a row naming Company B silently
+            // overwrote Company A's branch of the same code and reported it as "updated". A branch
+            // cannot be moved between legal entities by spreadsheet: refuse the row and name the
+            // company that actually owns the code.
+            if (errors.Count == 0 && existing is not null && company is not null && existing.CompanyId != company.Id)
             {
-                existing.NameEn = nameEn;
-                existing.NameAr = row.GetValueOrDefault("NameAr", existing.NameAr).Trim();
-                existing.CountryCode = country; existing.City = city;
-                existing.AddressLine1 = addressLine1;
-                existing.AddressLine2 = addressLine2;
-                existing.TimeZoneId = timeZoneId;
-                existing.LaborOfficeCode = laborOfficeCode;
-                existing.IsHeadOffice = isHeadOffice; existing.IsActive = isActive;
-                existing.UpdatedAtUtc = DateTime.UtcNow; updated++;
+                var owner = companyList.FirstOrDefault(c => c.Id == existing.CompanyId)?.LegalNameEn ?? "another company";
+                errors.Add(
+                    $"Branch code '{code}' already belongs to '{owner}'. Branch codes are unique across the whole " +
+                    $"tenant, so this row would have overwritten that branch. Use a different code for " +
+                    $"'{companyName}', or move the branch from the branch screen.");
             }
-            else
+
+            if (errors.Count == 0)
             {
-                _db.Branches.Add(new Branch
+                var timeZoneId = row.GetValueOrDefault("TimeZoneId", string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(timeZoneId)) timeZoneId = existing?.TimeZoneId is { Length: > 0 } tz ? tz : "Asia/Dubai";
+
+                var request = new BranchRequest(
+                    CompanyId: company!.Id,
+                    Code: code,
+                    NameEn: nameEn,
+                    NameAr: row.GetValueOrDefault("NameAr", existing?.NameAr ?? string.Empty).Trim(),
+                    CountryCode: row.GetValueOrDefault("CountryCode", string.Empty).Trim(),
+                    City: row.GetValueOrDefault("City", string.Empty).Trim(),
+                    AddressLine1: row.GetValueOrDefault("AddressLine1", string.Empty).Trim(),
+                    AddressLine2: row.GetValueOrDefault("AddressLine2", string.Empty).Trim(),
+                    TimeZoneId: timeZoneId,
+                    LaborOfficeCode: row.GetValueOrDefault("LaborOfficeCode", string.Empty).Trim(),
+                    IsHeadOffice: row.TryGetValue("IsHeadOffice", out var hov) && string.Equals(hov.Trim(), "true", StringComparison.OrdinalIgnoreCase),
+                    IsActive: !row.TryGetValue("IsActive", out var av) || !string.Equals(av.Trim(), "false", StringComparison.OrdinalIgnoreCase));
+
+                try
                 {
-                    TenantId = tenantId, CompanyId = company!.Id, Code = code,
-                    NameEn = nameEn, NameAr = row.GetValueOrDefault("NameAr", string.Empty).Trim(),
-                    CountryCode = country, City = city, IsHeadOffice = isHeadOffice,
-                    AddressLine1 = addressLine1,
-                    AddressLine2 = addressLine2,
-                    TimeZoneId = timeZoneId,
-                    LaborOfficeCode = laborOfficeCode,
-                    IsActive = isActive,
-                }); created++;
+                    if (existing is not null)
+                    {
+                        if (commit) await _organization.UpdateBranchAsync(tenantId, existing.Id, request, context, ct);
+                        updated++;
+                    }
+                    else
+                    {
+                        if (commit) await _organization.CreateBranchAsync(tenantId, request, context, ct);
+                        created++;
+                    }
+                }
+                catch (InvalidOperationException ex) { errors.Add(ex.Message); }
             }
-            rowResults.Add(new ImportRowResult(rowNum, code, nameEn, ImportRowStatus.Ok, errors, new List<string>()));
+
+            if (errors.Count > 0) skipped++;
+            rowResults.Add(new ImportRowResult(
+                rowNum, code, nameEn,
+                errors.Count > 0 ? ImportRowStatus.Error : ImportRowStatus.Ok,
+                errors, Array.Empty<string>()));
         }
-        await _db.SaveChangesAsync(ct);
-        return new ImportCommitResult(rows.Count, created, updated, skipped, rowResults, Array.Empty<string>());
+
+        return commit
+            ? Ok(new ImportCommitResult(rows.Count, created, updated, skipped, rowResults, Array.Empty<string>()))
+            : Ok(new ImportPreviewResult(rows.Count, created, updated, skipped, rowResults));
     }
 
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), this.GetUserId(), this.GetTenantId());

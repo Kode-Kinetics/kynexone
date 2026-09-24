@@ -5,6 +5,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Models;
+using Zayra.Api.Infrastructure.Payroll;
 
 namespace Zayra.Api.Controllers;
 
@@ -148,12 +149,59 @@ public class TenantAdminController : ControllerBase
             tenantId = tenant?.Id;
         }
 
-        if (tenantId is null) return Ok(new TenantLocalizationSetting()); // defaults
+        if (tenantId is null) return Ok(await UnstatedLocalizationAsync(null, ct));
 
         var loc = await _db.TenantLocalizationSettings
             .FirstOrDefaultAsync(l => l.TenantId == tenantId, ct);
 
-        return Ok(loc ?? new TenantLocalizationSetting { TenantId = tenantId.Value });
+        return Ok(loc ?? await UnstatedLocalizationAsync(tenantId.Value, ct));
+    }
+
+    /// <summary>
+    /// What this endpoint answers for a tenant that has NO <see cref="TenantLocalizationSetting"/>
+    /// row — every tenant created before <c>PlatformController</c> started writing one.
+    ///
+    /// <para><b>Why this is not just <c>new TenantLocalizationSetting()</c>.</b> The entity defaults
+    /// <c>DefaultTimezone</c> to <c>America/New_York</c> (Models/SaasPlatform.cs), so the old
+    /// fallback served a FABRICATED US Eastern zone to GCC tenants as though it were their stated
+    /// setting. The HR Command Center header renders its clock in that zone, which put the first
+    /// screen of the product 7 hours behind Riyadh — showing the WRONG DAY — while panels that use
+    /// the viewer's own zone showed the right one, two clocks disagreeing on one screen.
+    ///
+    /// <para><b>What it does instead.</b> Resolves the tenant's real jurisdiction from its companies
+    /// and maps it through <see cref="HomeJurisdiction.TimeZoneFor"/> — the product's single
+    /// country→zone mapping, the same one tenant provisioning uses, so there is no second list.
+    /// When no country has been stated anywhere, the zone is returned EMPTY rather than guessed:
+    /// empty means "this tenant has not stated a zone", and the client then renders in the viewer's
+    /// own browser zone. A blank is a question the UI can answer locally; a wrong zone is a lie
+    /// nobody can see. Unlike <c>TimeZoneFor</c>'s own UTC fallback, which is right for server-side
+    /// day boundaries, a header clock has a better local answer available.
+    ///
+    /// <para><b>Nothing is persisted here.</b> A GET must not write. The tenant's real setting is
+    /// still stated in Setup → Localization, and this value is only what is shown until then.
+    /// <c>CountryCode</c> is deliberately left at the entity default: the country default is its own
+    /// wrong-default problem with its own blast radius (currency, statutory surfaces) and is not in
+    /// the scope of the clock fix.</para>
+    /// </summary>
+    private async Task<TenantLocalizationSetting> UnstatedLocalizationAsync(Guid? tenantId, CancellationToken ct)
+    {
+        var fallback = new TenantLocalizationSetting
+        {
+            TenantId = tenantId ?? Guid.Empty,
+            DefaultTimezone = string.Empty,
+        };
+
+        if (tenantId is null) return fallback;
+
+        var country = await _db.Companies
+            .Where(c => c.TenantId == tenantId && c.CountryCode != string.Empty)
+            .Select(c => c.CountryCode)
+            .FirstOrDefaultAsync(ct);
+
+        if (HomeJurisdiction.Normalize(country) is { } iso)
+            fallback.DefaultTimezone = HomeJurisdiction.TimeZoneFor(iso);
+
+        return fallback;
     }
 
     [HttpPut("localization")]
@@ -254,6 +302,15 @@ public class TenantAdminController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+
+        // UNIT GATE. This store takes an arbitrary rule key, so nothing stops an admin writing
+        // "gosi.saudi_employee_rate = 9" here in the belief that it changes payroll. It does not —
+        // only `weekend_days` is read anywhere (WorkWeekService) — but a rate-shaped value written
+        // in the wrong unit should not be allowed to accumulate against the day someone wires this
+        // table up. Same registry, same refusal as every other statutory write path.
+        // See Infrastructure/Payroll/StatutoryValueUnits.cs.
+        if (StatutoryValueUnits.Validate(req.RuleKey, req.DataType, req.RuleValue) is { } unitError)
+            return BadRequest(new { message = unitError });
 
         var rule = new CountryPayrollRule
         {

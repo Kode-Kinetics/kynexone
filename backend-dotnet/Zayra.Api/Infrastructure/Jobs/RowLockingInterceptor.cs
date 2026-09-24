@@ -4,8 +4,7 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 namespace Zayra.Api.Infrastructure.Jobs;
 
 /// <summary>
-/// F3 — appends <c>FOR UPDATE SKIP LOCKED</c> to a query that opted in with
-/// <c>.TagWith(RowLockingInterceptor.ForUpdateSkipLockedTag)</c>.
+/// Appends an explicitly requested PostgreSQL row-locking clause to a tagged LINQ query.
 ///
 /// <para>WHY AN INTERCEPTOR AND NOT RAW SQL. EF Core 8 has no row-locking operator. The alternatives
 /// were <c>FromSqlRaw</c> (banned by <c>BypassLintTests</c> because it bypasses the query filters) or a
@@ -20,8 +19,9 @@ namespace Zayra.Api.Infrastructure.Jobs;
 /// </summary>
 public sealed class RowLockingInterceptor : DbCommandInterceptor
 {
+    public const string ForShareTag = "zayra:for-share";
+    public const string ForUpdateTag = "zayra:for-update";
     public const string ForUpdateSkipLockedTag = "zayra:for-update-skip-locked";
-    private const string TagPrefix = "-- " + ForUpdateSkipLockedTag;
 
     public static readonly RowLockingInterceptor Instance = new();
 
@@ -45,8 +45,25 @@ public sealed class RowLockingInterceptor : DbCommandInterceptor
     internal static void Rewrite(DbCommand command)
     {
         var text = command.CommandText;
-        if (!text.StartsWith(TagPrefix, StringComparison.Ordinal)) return;
+        var clause = FirstTag(text) switch
+        {
+            ForShareTag => "FOR SHARE",
+            ForUpdateTag => "FOR UPDATE",
+            ForUpdateSkipLockedTag => "FOR UPDATE SKIP LOCKED",
+            _ => null
+        };
+        if (clause is null) return;
         if (text.Contains("FOR UPDATE", StringComparison.OrdinalIgnoreCase)) return;
-        command.CommandText = text.TrimEnd().TrimEnd(';') + "\nFOR UPDATE SKIP LOCKED";
+        if (text.Contains("FOR SHARE", StringComparison.OrdinalIgnoreCase)) return;
+        command.CommandText = text.TrimEnd().TrimEnd(';') + "\n" + clause;
+    }
+
+    private static string? FirstTag(string commandText)
+    {
+        const string prefix = "-- ";
+        if (!commandText.StartsWith(prefix, StringComparison.Ordinal)) return null;
+        var end = commandText.IndexOf('\n');
+        var firstLine = end < 0 ? commandText : commandText[..end];
+        return firstLine[prefix.Length..].TrimEnd('\r');
     }
 }

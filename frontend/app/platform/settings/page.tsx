@@ -1,9 +1,47 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { RefreshCw, Send, CheckCircle, AlertTriangle, X, Activity, ShieldAlert, Wrench } from 'lucide-react';
-import { platformApi, type PlatformSettings, type PlatformDiagnostics } from '@/src/api/platform';
+import { RefreshCw, Send, CheckCircle, AlertTriangle, X, Activity, ShieldAlert, Wrench, Info, ExternalLink, Mail } from 'lucide-react';
+import {
+  platformApi,
+  type PlatformSettings,
+  type PlatformDiagnostics,
+  type EmailProviderPreset,
+  type SmtpTestResult,
+} from '@/src/api/platform';
+
+/** Shape of the SMTP form. `provider` drives the auto-configuration. */
+type SmtpForm = {
+  provider: string;
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  fromEmail: string;
+  fromName: string;
+  useSsl: boolean;
+};
+
+const EMPTY_SMTP: SmtpForm = {
+  provider: '', host: '', port: 587, username: '', password: '', fromEmail: '', fromName: '', useSsl: true,
+};
+
+/**
+ * What each provider expects in the Username field. The backend catalog carries the pattern key;
+ * the wording lives here because it is UI copy, not configuration.
+ */
+const USERNAME_HINTS: Record<string, { label: string; placeholder: string; passwordPlaceholder: string }> = {
+  'full-email':        { label: 'Your full mailbox address, including the @domain', placeholder: 'you@yourdomain.com', passwordPlaceholder: 'Mailbox password' },
+  'literal-apikey':    { label: 'The literal word "apikey" — not your account email', placeholder: 'apikey', passwordPlaceholder: 'SG.xxxxxxxx API key' },
+  'literal-resend':    { label: 'The literal word "resend"', placeholder: 'resend', passwordPlaceholder: 're_xxxxxxxx API key' },
+  'ses-credentials':   { label: 'The SES SMTP username from the AWS console (not an AWS access key)', placeholder: 'AKIA…', passwordPlaceholder: 'SES SMTP password' },
+  'domain-postmaster': { label: 'The domain postmaster address from Mailgun', placeholder: 'postmaster@mg.yourdomain.com', passwordPlaceholder: 'Mailgun SMTP password' },
+  'token-both':        { label: 'Your Server API Token — paste the same value into the password', placeholder: 'Server API Token', passwordPlaceholder: 'Same Server API Token' },
+  'api-key-pair':      { label: 'Your Mailjet API Key', placeholder: 'API Key', passwordPlaceholder: 'Secret Key' },
+};
+
+const DEFAULT_HINT = USERNAME_HINTS['full-email'];
 
 export default function PlatformSettingsPage() {
   const router = useRouter();
@@ -13,9 +51,14 @@ export default function PlatformSettingsPage() {
   const [msg, setMsg]           = useState<{ text: string; ok: boolean } | null>(null);
 
   // SMTP form state
-  const [smtp, setSmtp] = useState({ host: '', port: 587, username: '', password: '', fromEmail: '', fromName: '', useSsl: true });
+  const [smtp, setSmtp] = useState<SmtpForm>(EMPTY_SMTP);
+  const [providers, setProviders] = useState<EmailProviderPreset[]>([]);
   const [savingSmtp, setSavingSmtp] = useState(false);
+
+  // Test email — the admin chooses the destination so they can confirm real delivery.
+  const [testTo, setTestTo] = useState('');
   const [testingSmtp, setTestingSmtp] = useState(false);
+  const [testResult, setTestResult] = useState<SmtpTestResult | null>(null);
 
   // Diagnostics
   const [diagnostics, setDiagnostics] = useState<PlatformDiagnostics | null>(null);
@@ -31,8 +74,14 @@ export default function PlatformSettingsPage() {
     if (!token) { router.replace('/platform/login'); return; }
     load();
     loadDiagnostics();
+    loadProviders();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);  // load + loadDiagnostics are stable (useCallback with no deps)
+  }, []);  // load/loadDiagnostics/loadProviders are stable (useCallback with no deps)
+
+  const loadProviders = useCallback(async () => {
+    try { setProviders(await platformApi.getEmailProviders()); }
+    catch { /* the form still works with manual entry */ }
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true); setLoadErr('');
@@ -41,6 +90,7 @@ export default function PlatformSettingsPage() {
       setSettings(s);
       if (s.smtp) {
         setSmtp({
+          provider: s.smtp.provider ?? '',
           host: s.smtp.host ?? '',
           port: s.smtp.port ?? 587,
           username: s.smtp.username ?? '',
@@ -49,6 +99,8 @@ export default function PlatformSettingsPage() {
           fromName: s.smtp.fromName ?? '',
           useSsl: s.smtp.useSsl ?? true,
         });
+        // Default the test recipient to the From address — the one inbox we know exists.
+        setTestTo(prev => prev || s.smtp.fromEmail || '');
       }
     } catch {
       setLoadErr('Failed to load settings. This endpoint may not be implemented yet.');
@@ -68,13 +120,14 @@ export default function PlatformSettingsPage() {
 
   async function saveSmtp(e: React.FormEvent) {
     e.preventDefault();
-    setSavingSmtp(true);
+    setSavingSmtp(true); setTestResult(null);
     try {
       await platformApi.updateSmtpSettings(smtp);
-      setMsg({ text: 'SMTP settings saved.', ok: true });
+      setMsg({ text: 'SMTP settings saved. Send a test email to confirm delivery.', ok: true });
       await load();
-    } catch { setMsg({ text: 'Save failed.', ok: false }); }
-    finally { setSavingSmtp(false); }
+    } catch (err) {
+      setMsg({ text: apiMessage(err, 'Save failed.'), ok: false });
+    } finally { setSavingSmtp(false); }
   }
 
   async function saveMaintenance() {
@@ -88,12 +141,26 @@ export default function PlatformSettingsPage() {
   }
 
   async function testSmtp() {
-    setTestingSmtp(true);
+    setTestingSmtp(true); setTestResult(null); setMsg(null);
     try {
-      const r = await platformApi.testSmtp();
-      setMsg({ text: r.message, ok: r.sent });
-    } catch { setMsg({ text: 'Test failed. Check SMTP config.', ok: false }); }
-    finally { setTestingSmtp(false); }
+      setTestResult(await platformApi.testSmtp(testTo.trim() || undefined));
+    } catch (err) {
+      setTestResult({ sent: false, message: apiMessage(err, 'Test failed. Check the SMTP settings and try again.') });
+    } finally { setTestingSmtp(false); }
+  }
+
+  const activePreset = useMemo(
+    () => providers.find(p => p.key === smtp.provider) ?? null,
+    [providers, smtp.provider],
+  );
+
+  /** Applying a preset fills connection details only — credentials stay as the admin typed them. */
+  function applyPreset(key: string) {
+    const preset = providers.find(p => p.key === key);
+    setSmtp(f => {
+      if (!preset || !preset.host) return { ...f, provider: key };
+      return { ...f, provider: key, host: preset.host, port: preset.port, useSsl: preset.useSsl };
+    });
   }
 
   if (loading) {
@@ -104,6 +171,24 @@ export default function PlatformSettingsPage() {
     );
   }
 
+  const smtpForm = (
+    <SmtpForm
+      smtp={smtp}
+      setSmtp={setSmtp}
+      providers={providers}
+      preset={activePreset}
+      onPreset={applyPreset}
+      onSave={saveSmtp}
+      saving={savingSmtp}
+      testTo={testTo}
+      setTestTo={setTestTo}
+      onTest={testSmtp}
+      testing={testingSmtp}
+      testResult={testResult}
+      clearTestResult={() => setTestResult(null)}
+    />
+  );
+
   if (loadErr) {
     return (
       <div className="space-y-5">
@@ -113,7 +198,7 @@ export default function PlatformSettingsPage() {
           <p className="text-xs text-slate-500 mt-2">SMTP and maintenance settings can still be configured below.</p>
         </div>
         {/* Show SMTP form anyway for configuration */}
-        <SmtpForm smtp={smtp} setSmtp={setSmtp} onSave={saveSmtp} saving={savingSmtp} onTest={testSmtp} testing={testingSmtp} />
+        {smtpForm}
       </div>
     );
   }
@@ -137,23 +222,30 @@ export default function PlatformSettingsPage() {
 
       {/* SMTP status banner */}
       {settings && (
-        <div className={`flex items-center gap-3 px-5 py-3.5 rounded-xl border ${
+        <div className={`flex items-start gap-3 px-5 py-3.5 rounded-xl border ${
           settings.smtp?.isConfigured
             ? 'bg-emerald-500/5 border-emerald-500/20'
             : 'bg-amber-500/5 border-amber-500/20'
         }`}>
           {settings.smtp?.isConfigured
-            ? <CheckCircle className="h-4 w-4 text-emerald-400 shrink-0" />
-            : <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />}
-          <p className={`text-sm font-medium ${settings.smtp?.isConfigured ? 'text-emerald-300' : 'text-amber-300'}`}>
-            {settings.smtp?.isConfigured
-              ? `SMTP configured — sending via ${settings.smtp.host}`
-              : 'SMTP not configured — invoice emails and password reset emails will not work'}
-          </p>
+            ? <CheckCircle className="h-4 w-4 text-emerald-400 shrink-0 mt-0.5" />
+            : <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />}
+          <div>
+            <p className={`text-sm font-medium ${settings.smtp?.isConfigured ? 'text-emerald-300' : 'text-amber-300'}`}>
+              {settings.smtp?.isConfigured
+                ? `Email is configured — sending as ${settings.smtp.fromEmail} via ${settings.smtp.host}:${settings.smtp.port}`
+                : 'Email is not configured — invoice emails and password reset emails will not be delivered'}
+            </p>
+            <p className="text-xs text-slate-500 mt-0.5">
+              {settings.smtp?.isConfigured
+                ? `${settings.smtp.providerLabel ?? 'Custom SMTP'} · ${settings.smtp.source === 'environment' ? 'from environment variables' : 'saved in Platform Settings'}${settings.smtp.hasPassword ? '' : ' · no password stored'}`
+                : 'Choose your email provider below, enter the mailbox credentials, save, then send a test email.'}
+            </p>
+          </div>
         </div>
       )}
 
-      <SmtpForm smtp={smtp} setSmtp={setSmtp} onSave={saveSmtp} saving={savingSmtp} onTest={testSmtp} testing={testingSmtp} />
+      {smtpForm}
 
       {/* AI Provider status */}
       <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden">
@@ -259,78 +351,223 @@ export default function PlatformSettingsPage() {
   );
 }
 
-function SmtpForm({ smtp, setSmtp, onSave, saving, onTest, testing }: {
-  smtp: { host: string; port: number; username: string; password: string; fromEmail: string; fromName: string; useSsl: boolean };
-  setSmtp: (fn: (prev: typeof smtp) => typeof smtp) => void;
+/** Pulls the API's own message out of an axios error so the relay's wording reaches the admin. */
+function apiMessage(err: unknown, fallback: string): string {
+  const data = (err as { response?: { data?: { message?: string } } })?.response?.data;
+  return data?.message || fallback;
+}
+
+const INPUT = 'w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60 placeholder-slate-600';
+
+function SmtpForm({
+  smtp, setSmtp, providers, preset, onPreset, onSave, saving,
+  testTo, setTestTo, onTest, testing, testResult, clearTestResult,
+}: {
+  smtp: SmtpForm;
+  setSmtp: (fn: (prev: SmtpForm) => SmtpForm) => void;
+  providers: EmailProviderPreset[];
+  preset: EmailProviderPreset | null;
+  onPreset: (key: string) => void;
   onSave: (e: React.FormEvent) => void;
   saving: boolean;
+  testTo: string;
+  setTestTo: (v: string) => void;
   onTest: () => void;
   testing: boolean;
+  testResult: SmtpTestResult | null;
+  clearTestResult: () => void;
 }) {
+  const hint = USERNAME_HINTS[preset?.usernamePattern ?? 'full-email'] ?? DEFAULT_HINT;
+
+  // Ports the chosen provider accepts, plus whatever is currently set, so a hand-typed port is
+  // never silently dropped by the select.
+  const portOptions = useMemo(() => {
+    const ports = new Set<number>([587, 465, 25, 2525]);
+    if (preset) { ports.add(preset.port); preset.alternatePorts.forEach(p => ports.add(p)); }
+    ports.add(smtp.port);
+    return [...ports].sort((a, b) => a - b);
+  }, [preset, smtp.port]);
+
+  // Group the catalog so business mailboxes and transactional relays are not one flat list.
+  const grouped = useMemo(() => {
+    const order = ['Business', 'Transactional', 'Consumer', 'Other'];
+    const map = new Map<string, EmailProviderPreset[]>();
+    providers.forEach(p => map.set(p.category, [...(map.get(p.category) ?? []), p]));
+    return order.filter(c => map.has(c)).map(c => [c, map.get(c)!] as const);
+  }, [providers]);
+
   return (
     <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden">
       <div className="px-5 py-3 border-b border-white/[0.06]">
-        <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest">SMTP Configuration</p>
+        <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest">Email / SMTP Configuration</p>
       </div>
       <form onSubmit={onSave} className="px-5 py-5 space-y-4">
+        {/* Provider auto-configuration */}
+        <div>
+          <label htmlFor="smtp-provider" className="block text-xs text-slate-400 mb-1">Email provider</label>
+          <select
+            id="smtp-provider"
+            value={smtp.provider}
+            onChange={e => onPreset(e.target.value)}
+            className={INPUT}
+          >
+            <option value="">Select a provider to auto-fill the server settings…</option>
+            {grouped.map(([category, items]) => (
+              <optgroup key={category} label={category}>
+                {items.map(p => (
+                  <option key={p.key} value={p.key}>
+                    {p.label}{p.host ? ` — ${p.host}:${p.port}` : ''}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+          <p className="mt-1 text-[11px] text-slate-500">
+            Picking a provider fills in the host, port and encryption. Your username and password are never changed by it.
+          </p>
+        </div>
+
+        {preset && (
+          <div className="flex items-start gap-2.5 rounded-lg border border-sky-500/20 bg-sky-500/5 px-4 py-3">
+            <Info className="h-3.5 w-3.5 text-sky-400 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p className="text-xs text-sky-200 leading-relaxed">{preset.guidance}</p>
+              {preset.docsUrl && (
+                <a href={preset.docsUrl} target="_blank" rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-[11px] text-sky-400 hover:text-sky-300">
+                  {preset.label} SMTP documentation <ExternalLink className="h-3 w-3" />
+                </a>
+              )}
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-xs text-slate-400 mb-1">SMTP Host</label>
-            <input value={smtp.host} onChange={e => setSmtp(f => ({ ...f, host: e.target.value }))}
-              className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60 placeholder-slate-600"
-              placeholder="smtp.sendgrid.net" />
+            <label htmlFor="smtp-host" className="block text-xs text-slate-400 mb-1">SMTP Host</label>
+            <input id="smtp-host" value={smtp.host}
+              onChange={e => setSmtp(f => ({ ...f, host: e.target.value }))}
+              className={INPUT} placeholder="smtpout.secureserver.net" />
           </div>
           <div>
-            <label className="block text-xs text-slate-400 mb-1">Port</label>
-            <input type="number" aria-label="SMTP port" value={smtp.port} onChange={e => setSmtp(f => ({ ...f, port: parseInt(e.target.value) || 587 }))}
-              className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60" />
+            <label htmlFor="smtp-port" className="block text-xs text-slate-400 mb-1">Port</label>
+            <select id="smtp-port" value={smtp.port}
+              onChange={e => setSmtp(f => ({ ...f, port: parseInt(e.target.value, 10) || 587 }))}
+              className={INPUT}>
+              {portOptions.map(p => (
+                <option key={p} value={p}>
+                  {p}{p === 587 ? ' — STARTTLS (recommended)' : p === 465 ? ' — implicit TLS' : p === 25 ? ' — unencrypted relay' : ''}
+                </option>
+              ))}
+            </select>
           </div>
         </div>
+
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-xs text-slate-400 mb-1">Username</label>
-            <input value={smtp.username} onChange={e => setSmtp(f => ({ ...f, username: e.target.value }))}
-              className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60 placeholder-slate-600"
-              placeholder="apikey" />
+            <label htmlFor="smtp-username" className="block text-xs text-slate-400 mb-1">Username</label>
+            <input id="smtp-username" value={smtp.username}
+              onChange={e => setSmtp(f => ({ ...f, username: e.target.value }))}
+              className={INPUT} placeholder={hint.placeholder} />
+            <p className="mt-1 text-[11px] text-slate-500">{hint.label}</p>
           </div>
           <div>
-            <label className="block text-xs text-slate-400 mb-1">Password</label>
-            <input type="password" value={smtp.password} onChange={e => setSmtp(f => ({ ...f, password: e.target.value }))}
-              className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60"
-              placeholder="Leave blank to keep current" />
+            <label htmlFor="smtp-password" className="block text-xs text-slate-400 mb-1">Password</label>
+            <input id="smtp-password" type="password" value={smtp.password}
+              onChange={e => setSmtp(f => ({ ...f, password: e.target.value }))}
+              className={INPUT} placeholder="Leave blank to keep the current password" autoComplete="new-password" />
+            <p className="mt-1 text-[11px] text-slate-500">{hint.passwordPlaceholder}. Stored encrypted; never shown again.</p>
           </div>
         </div>
+
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-xs text-slate-400 mb-1">From Email</label>
-            <input type="email" value={smtp.fromEmail} onChange={e => setSmtp(f => ({ ...f, fromEmail: e.target.value }))}
-              className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60 placeholder-slate-600"
-              placeholder="noreply@yourdomain.com" />
+            <label htmlFor="smtp-from-email" className="block text-xs text-slate-400 mb-1">From Email</label>
+            <input id="smtp-from-email" type="email" value={smtp.fromEmail}
+              onChange={e => setSmtp(f => ({ ...f, fromEmail: e.target.value }))}
+              className={INPUT} placeholder="noreply@yourdomain.com" required />
+            <p className="mt-1 text-[11px] text-slate-500">The address recipients see. Most providers require it to match the mailbox.</p>
           </div>
           <div>
-            <label className="block text-xs text-slate-400 mb-1">From Name</label>
-            <input value={smtp.fromName} onChange={e => setSmtp(f => ({ ...f, fromName: e.target.value }))}
-              className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60 placeholder-slate-600"
-              placeholder="KynexOne" />
+            <label htmlFor="smtp-from-name" className="block text-xs text-slate-400 mb-1">From Name</label>
+            <input id="smtp-from-name" value={smtp.fromName}
+              onChange={e => setSmtp(f => ({ ...f, fromName: e.target.value }))}
+              className={INPUT} placeholder="KynexOne" />
           </div>
         </div>
+
         <label className="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" checked={smtp.useSsl} onChange={e => setSmtp(f => ({ ...f, useSsl: e.target.checked }))}
-            className="h-4 w-4 rounded accent-sapphire" />
-          <span className="text-sm text-slate-400">Use SSL/TLS</span>
+          <input type="checkbox" checked={smtp.useSsl}
+            onChange={e => setSmtp(f => ({ ...f, useSsl: e.target.checked }))}
+            disabled={smtp.port === 465}
+            className="h-4 w-4 rounded accent-sapphire disabled:opacity-50" />
+          <span className="text-sm text-slate-400">
+            {smtp.port === 465 ? 'TLS is implicit on port 465 — always encrypted' : 'Use SSL/TLS (STARTTLS)'}
+          </span>
         </label>
-        <div className="flex gap-3 pt-1">
-          <button type="button" onClick={onTest} disabled={testing || !smtp.host}
-            className="flex items-center gap-1.5 text-sm text-slate-400 border border-white/10 hover:border-white/20 px-4 py-2 rounded-lg transition-colors disabled:opacity-40">
-            <Send className="h-3.5 w-3.5" />
-            {testing ? 'Sending…' : 'Test Email'}
-          </button>
+
+        <div className="pt-1">
           <button type="submit" disabled={saving}
             className="bg-sapphire hover:bg-blue-500 text-white px-6 py-2 rounded-lg text-sm font-semibold transition-colors disabled:opacity-40">
             {saving ? 'Saving…' : 'Save SMTP Settings'}
           </button>
         </div>
       </form>
+
+      {/* Test delivery — separate from the form so submitting the form never fires a send. */}
+      <div className="border-t border-white/[0.06] px-5 py-5 space-y-3">
+        <div className="flex items-center gap-2">
+          <Mail className="h-3.5 w-3.5 text-slate-600" />
+          <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest">Send a test email</p>
+        </div>
+        <p className="text-xs text-slate-500">
+          Sends a real message through the <strong className="text-slate-400">saved</strong> settings above. Save first if you just changed something.
+        </p>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <div className="flex-1">
+            <label htmlFor="smtp-test-to" className="block text-xs text-slate-400 mb-1">Deliver the test to</label>
+            <input
+              id="smtp-test-to"
+              type="email"
+              value={testTo}
+              onChange={e => { setTestTo(e.target.value); clearTestResult(); }}
+              className={INPUT}
+              placeholder="you@yourdomain.com"
+            />
+            <p className="mt-1 text-[11px] text-slate-500">
+              Use an inbox you can open right now. Leave blank to send to your own platform-admin address.
+            </p>
+          </div>
+          <button type="button" onClick={onTest} disabled={testing || !smtp.host}
+            className="flex items-center justify-center gap-1.5 text-sm text-slate-300 border border-white/10 hover:border-white/25 px-4 py-2 rounded-lg transition-colors disabled:opacity-40 shrink-0">
+            <Send className="h-3.5 w-3.5" />
+            {testing ? 'Sending…' : 'Send test email'}
+          </button>
+        </div>
+
+        {testResult && (
+          <div className={`rounded-lg border px-4 py-3 ${testResult.sent ? 'border-emerald-500/20 bg-emerald-500/5' : 'border-rose-500/20 bg-rose-500/5'}`}>
+            <div className="flex items-start gap-2">
+              {testResult.sent
+                ? <CheckCircle className="h-4 w-4 text-emerald-400 shrink-0 mt-0.5" />
+                : <AlertTriangle className="h-4 w-4 text-rose-400 shrink-0 mt-0.5" />}
+              <div className="space-y-1">
+                <p className={`text-sm ${testResult.sent ? 'text-emerald-300' : 'text-rose-300'}`}>{testResult.message}</p>
+                {testResult.sent && testResult.host && (
+                  <p className="text-[11px] text-slate-500">
+                    Relayed by {testResult.host}:{testResult.port}
+                    {testResult.sentAtUtc ? ` at ${new Date(testResult.sentAtUtc).toLocaleTimeString()}` : ''}.
+                    Delivery to the inbox is the provider&apos;s job from here — check the spam folder if it does not arrive.
+                  </p>
+                )}
+                {!testResult.sent && testResult.error && (
+                  <p className="text-[11px] text-slate-500 font-mono break-all">{testResult.error}</p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

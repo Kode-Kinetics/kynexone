@@ -36,16 +36,17 @@ public interface IMfaService
     Task<bool> VerifyEnrollmentSetupAsync(string enrollmentToken, Zayra.Api.Application.Auth.MfaVerifySetupRequest request, CancellationToken cancellationToken);
     /// <summary>Creates a short-lived MFA challenge token after the user passes password verification.</summary>
     Task<string> CreateChallengeAsync(Guid userId, Guid tenantId, string ip, CancellationToken cancellationToken);
-    /// <summary>Verifies the challenge token + TOTP code; returns the user if both are valid.</summary>
-    Task<Zayra.Api.Domain.Entities.User?> VerifyChallengeAsync(string challengeToken, string totpCode, CancellationToken cancellationToken);
     /// <summary>Disables MFA for a tenant user (requires valid TOTP code as proof).</summary>
     Task<bool> DisableAsync(Guid userId, Guid tenantId, string totpCode, CancellationToken cancellationToken);
+    /// <summary>Privileged recovery: disables a tenant factor under platform authorization and full credential invalidation.</summary>
+    Task<bool> AdminDisableAsync(Guid userId, Guid tenantId, RequestContext context, CancellationToken cancellationToken);
 
     // ── Platform user MFA ─────────────────────────────────────────────────────
     Task<MfaSetupInitDto> InitiatePlatformSetupAsync(Guid platformUserId, CancellationToken cancellationToken);
     Task<bool> VerifyPlatformSetupAsync(Guid platformUserId, Zayra.Api.Application.Auth.MfaVerifySetupRequest request, CancellationToken cancellationToken);
     Task<string> CreatePlatformChallengeAsync(Guid platformUserId, string ip, CancellationToken cancellationToken);
     Task<Zayra.Api.Models.PlatformUser?> VerifyPlatformChallengeAsync(string challengeToken, string totpCode, CancellationToken cancellationToken);
+    Task<Zayra.Api.Models.PlatformUser?> CompletePlatformChallengeAsync(string challengeToken, string totpCode, RequestContext context, CancellationToken cancellationToken);
     Task<bool> DisablePlatformAsync(Guid platformUserId, string totpCode, CancellationToken cancellationToken);
 }
 

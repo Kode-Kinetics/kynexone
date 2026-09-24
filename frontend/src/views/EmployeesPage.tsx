@@ -35,6 +35,13 @@ import { InfoTip } from '../components/InfoTip';
 import { Modal } from '../components/Modal';
 import { StatusChip } from '../components/StatusChip';
 import { useCompany } from '../contexts/CompanyContext';
+import {
+  COMPANY_COUNTRY_FIX_HREF,
+  COMPANY_COUNTRY_FIX_LOCATION,
+  MISSING_COUNTRY_NOTICE_ID,
+  isEmployeeCreateBlockedByCountry,
+  missingCompanyCountryMessage,
+} from '../lib/employeeCreateGate';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import {
   employeeFieldCatalogApi,
@@ -305,6 +312,22 @@ export function EmployeesPage() {
     [companies, defaultCompany, form.companyId],
   );
   const formCountryCode = normalizeCountryCode(selectedFormCompany?.countryCode);
+  // The employing company IS chosen and still resolves no country. Every identity document, leave
+  // entitlement and statutory requirement is keyed on that country, so the requirement set comes back
+  // EMPTY and the employee cannot be saved — the exact state a tenant whose first company was created
+  // with CountryCode = "" lands in. Kept separate from "no company chosen yet" so the form can name
+  // the cause instead of repeating the generic hint, which never mentioned the country at all.
+  //
+  // ONE predicate, read by BOTH the warning and the Create Employee button (which is disabled on it).
+  // They used to be able to disagree — and did: the warning said "nothing to save here" while the
+  // button stayed enabled, so the click produced a failure instead of the explanation.
+  const formCompanyMissingCountry = isEmployeeCreateBlockedByCountry(Boolean(selectedFormCompany), formCountryCode);
+  const formCompanyName = selectedFormCompany?.tradeName?.trim()
+    || selectedFormCompany?.legalNameEn?.trim()
+    || 'This company';
+  // The one sentence the warning and the disabled button's tooltip both speak (mirrors the server's
+  // HomeJurisdiction.CompanyMessage), so a hovered button never says something the form does not.
+  const formCompanyMissingCountryMessage = missingCompanyCountryMessage(formCompanyName);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -716,6 +739,13 @@ export function EmployeesPage() {
     // Create floor is name-only (server floor). Gender, IDs, and statutory fields are readiness
     // items surfaced on the People list, not create-time gates — "save what I have" never fights
     // the user (§8.6). Required-to-activate is driven by the server policy, not the client.
+    // The employing company has no country: the server refuses this create (400
+    // company_country_missing), so never fire the request. The submit buttons are already disabled on
+    // this predicate — this is the keyboard/programmatic path saying the same thing, not a second rule.
+    if (formCompanyMissingCountry) {
+      setFormError(formCompanyMissingCountryMessage);
+      return;
+    }
     if (!form.englishName.trim()) {
       setFormError('English full name is required.');
       return;
@@ -1745,13 +1775,19 @@ export function EmployeesPage() {
                       {f.sensitive && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-700 dark:bg-amber-500/15 dark:text-amber-400">approval</span>}
                       {editForm[f.key] !== editOriginal[f.key] && <span className="h-1.5 w-1.5 rounded-full bg-sapphire" title="Modified" />}
                     </span>
-                    {f.type === 'select' ? (
+                    {/* A select needs an option list. A non-null assertion here claimed one was always
+                        there; when the field catalogue began reaching this modal, a remote descriptor typed
+                        `select` with no options (the endpoint sends none) made it throw — and because these children are
+                        built during EmployeesPage's own render, the error boundary replaced the WHOLE People
+                        page. An optionless field falls back to a free-text input, which is what it was
+                        before the overlay. employeeFieldCatalog.optionsAwareType stops it upstream too. */}
+                    {f.type === 'select' && f.options && f.options.length > 0 ? (
                       <select id={`edit-field-${f.key}`} value={editForm[f.key] ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, [f.key]: e.target.value }))} className="select mt-1.5 w-full">
                         <option value="">Select</option>
-                        {f.options!.map((o) => <option key={o} value={o}>{o}</option>)}
+                        {f.options.map((o) => <option key={o} value={o}>{o}</option>)}
                       </select>
                     ) : (
-                      <input id={`edit-field-${f.key}`} type={f.type ?? 'text'} value={editForm[f.key] ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, [f.key]: e.target.value }))} className="input mt-1.5 w-full" />
+                      <input id={`edit-field-${f.key}`} type={f.type && f.type !== 'select' ? f.type : 'text'} value={editForm[f.key] ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, [f.key]: e.target.value }))} className="input mt-1.5 w-full" />
                     )}
                   </label>
                   );
@@ -1766,12 +1802,53 @@ export function EmployeesPage() {
       <Modal isOpen={formOpen} title="Add Employee" size="xl" onClose={closeCreateModal} footer={
         <>
           <button type="button" onClick={closeCreateModal} className="btn-secondary">Cancel</button>
-          <button type="button" onClick={() => saveEmployee()} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving...' : 'Create Employee'}</button>
+          {/* Disabled ONLY on the same predicate the warning above renders, and never silently: the
+              tooltip repeats that warning's sentence and aria-describedby points a screen reader at
+              the warning itself, so the reason is never left to be guessed. */}
+          <button
+            type="button"
+            onClick={() => saveEmployee()}
+            disabled={saving || formCompanyMissingCountry}
+            title={formCompanyMissingCountry ? formCompanyMissingCountryMessage : undefined}
+            aria-describedby={formCompanyMissingCountry ? MISSING_COUNTRY_NOTICE_ID : undefined}
+            className="btn-primary disabled:opacity-60"
+          >
+            {saving ? 'Saving...' : 'Create Employee'}
+          </button>
         </>
       }>
         <div className="space-y-3">
           {formError && (
             <p className="rounded-xl bg-red-50 px-3 py-2.5 text-sm text-red-600 ring-1 ring-red-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:bg-red-500/10 dark:text-red-300 dark:ring-red-500/20">{formError}</p>
+          )}
+
+          {/* HOME JURISDICTION BLOCK — exception-first, at the top of the form rather than buried in the
+              Identity section, because it disables the only primary action the form has. The Create
+              Employee button reads the SAME predicate and points here for its reason. */}
+          {formCompanyMissingCountry && (
+            <div id={MISSING_COUNTRY_NOTICE_ID} role="alert" className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-amber-900 dark:border-amber-400/30 dark:bg-amber-500/[0.08] dark:text-amber-200">
+              <p className="flex items-start gap-1.5 text-sm font-bold">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                <span>
+                  {formCompanyName} has no country set — set it in{' '}
+                  <a
+                    href={COMPANY_COUNTRY_FIX_HREF}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-bold underline underline-offset-2 hover:no-underline"
+                  >
+                    {COMPANY_COUNTRY_FIX_LOCATION}
+                  </a>{' '}
+                  before adding employees.
+                </span>
+              </p>
+              <p className="mt-1 text-xs">
+                Identity documents, leave entitlements and statutory rules are all resolved from the employing
+                company’s country. Until it is set there is nothing to require and nothing to save here — so
+                Create Employee stays unavailable. The link opens in a new tab; this form keeps what you have
+                typed.
+              </p>
+            </div>
           )}
 
           {/* Duplicate-person warning (advisory pre-check + authoritative 409 backstop share it).
@@ -1812,7 +1889,16 @@ export function EmployeesPage() {
               </ul>
               <div className="mt-2.5 flex items-center justify-end gap-3">
                 <button type="button" onClick={() => setDuplicateWarning([])} className="text-xs font-semibold text-slate-500 underline">Keep editing</button>
-                <button type="button" onClick={() => saveEmployee(true)} disabled={saving} className="btn-primary h-8 px-3 text-xs disabled:opacity-60">
+                {/* Same submit, so the same country block applies — "Create anyway" overrides the
+                    duplicate warning, never the missing-country refusal the server would return. */}
+                <button
+                  type="button"
+                  onClick={() => saveEmployee(true)}
+                  disabled={saving || formCompanyMissingCountry}
+                  title={formCompanyMissingCountry ? formCompanyMissingCountryMessage : undefined}
+                  aria-describedby={formCompanyMissingCountry ? MISSING_COUNTRY_NOTICE_ID : undefined}
+                  className="btn-primary h-8 px-3 text-xs disabled:opacity-60"
+                >
                   {saving ? 'Creating…' : 'Create anyway'}
                 </button>
               </div>
@@ -1942,7 +2028,18 @@ export function EmployeesPage() {
 
           <Section title="Identity & GCC Compliance">
             {(form.complianceRecords ?? []).length === 0 && (
-              <p className="text-xs text-slate-400">Select the employing company and nationality to see the required identity documents.</p>
+              formCompanyMissingCountry ? (
+                // The full explanation is the alert at the top of the form (it is what disables Create
+                // Employee, so it must be seen without scrolling). One wording, stated once.
+                <p className="text-xs text-amber-700 dark:text-amber-300">
+                  No identity documents can be required until {formCompanyName} has a country —{' '}
+                  <a href={`#${MISSING_COUNTRY_NOTICE_ID}`} className="font-semibold underline underline-offset-2">
+                    see the notice at the top of this form
+                  </a>.
+                </p>
+              ) : (
+                <p className="text-xs text-slate-400">Select the employing company and nationality to see the required identity documents.</p>
+              )
             )}
             {(form.complianceRecords ?? []).map((record, index) => {
               const field = formComplianceFields.find((f) => f.fieldKey === record.fieldKey);

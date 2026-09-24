@@ -27,6 +27,37 @@ public static class TenantTimeZone
     public static DateOnly LocalDate(TimeZoneInfo timeZone, DateTime utcNow) =>
         DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utcNow, DateTimeKind.Utc), timeZone));
 
+    /// <summary>
+    /// The inclusive [first, last] calendar-day window of a named month. A month is a calendar fact,
+    /// not an instant, so this takes no timezone: September 2026 is 1–30 September in every zone.
+    ///
+    /// <para>It exists because the leave calendar used to derive its window by serialising two local
+    /// <c>Date</c> objects through <c>toISOString()</c> in the browser. For any UTC-positive tenant —
+    /// i.e. every GCC tenant, AST +3 and GST +4 — local 1 Sept 00:00 became <c>2026-08-31T21:00Z</c>,
+    /// so the fetched range ran 31 Aug → 29 Sept: <b>the last day of every month was never fetched</b>
+    /// and the previous month's last day leaked in, while the grid keyed its cells off LOCAL
+    /// components. That is the one-day shift users saw. Naming the month instead of serialising an
+    /// instant makes the shift structurally impossible rather than fixed by convention.</para>
+    /// </summary>
+    public static (DateOnly From, DateOnly To) MonthWindow(int year, int month)
+    {
+        if (year < 1 || year > 9999) throw new ArgumentOutOfRangeException(nameof(year));
+        if (month < 1 || month > 12) throw new ArgumentOutOfRangeException(nameof(month));
+        var from = new DateOnly(year, month, 1);
+        return (from, new DateOnly(year, month, DateTime.DaysInMonth(year, month)));
+    }
+
+    /// <summary>
+    /// The month window the tenant is currently IN — "currently" resolved in the tenant's own zone,
+    /// not in UTC. For a Riyadh tenant at 2026-10-01 01:00 local (2026-09-30 22:00 UTC) this is
+    /// October; the UTC reading it replaces said September.
+    /// </summary>
+    public static (DateOnly From, DateOnly To) CurrentMonthWindow(TimeZoneInfo timeZone, DateTime utcNow)
+    {
+        var today = LocalDate(timeZone, utcNow);
+        return MonthWindow(today.Year, today.Month);
+    }
+
     /// <summary>The UTC instant at which the tenant-local <paramref name="localDate"/> begins.</summary>
     public static DateTime LocalDayStartUtc(TimeZoneInfo timeZone, DateOnly localDate)
     {

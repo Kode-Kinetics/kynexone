@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.WorkWeek;
 using Zayra.Api.Controllers.Leave;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Approvals;
@@ -205,7 +206,14 @@ public class LeaveApprovalScopeTests
         managerThenHr.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, WorkflowId = managerThenHr.Id, StepOrder = 1, StepName = "Manager", ApproverType = "Manager" });
         managerThenHr.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, WorkflowId = managerThenHr.Id, StepOrder = 2, StepName = "HR", ApproverType = "HR", IsFinalStep = true });
         db.ApprovalWorkflows.Add(managerThenHr);
+        // TWO WORKING DAYS, stated rather than assumed. This test asserts a 2-day request reserves
+        // 2 days; weekends are now excluded from the count (the Thu-Sun-charged-4-days fix), so a
+        // raw "+7 days" span silently became a 1-day request whenever it straddled the Fri-Sat
+        // weekend. Roll to a start whose next day is also a working day.
         var start = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(7));
+        while (WorkWeekConfig.GccDefault.IsWeekend(start.DayOfWeek)
+               || WorkWeekConfig.GccDefault.IsWeekend(start.AddDays(1).DayOfWeek))
+            start = start.AddDays(1);
         db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
         {
             TenantId = tenantId, EmployeeId = employee.Id, EmployeeName = employee.FullName,
@@ -298,7 +306,14 @@ public class LeaveApprovalScopeTests
         };
         db.Employees.Add(employee);
         await db.SaveChangesAsync();
+        // The contention this test measures is over ONE balance reservation, so the request has to
+        // fall on a WORKING day. A bare today+10 landed on whichever weekday the calendar offered —
+        // and now that a request resolving no policy honours the tenant's rest week instead of
+        // counting every calendar day, a Friday or Saturday is worth zero days and there is no
+        // "Used" transaction for the two approvers to contend over. Roll to the next working day,
+        // using the same rest-day set the service falls back to rather than a literal here.
         var start = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(10));
+        while (WorkWeekConfig.GccDefault.IsWeekend(start.DayOfWeek)) start = start.AddDays(1);
         db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
         {
             TenantId = tenantId, EmployeeId = employee.Id, EmployeeName = employee.FullName,

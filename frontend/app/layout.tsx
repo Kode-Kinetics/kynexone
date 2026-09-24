@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from 'next';
-import { Geist, Geist_Mono } from 'next/font/google';
+import { geist, geistMono, plexArabicFallback } from './fonts/fonts';
 import { Providers } from '@/src/components/Providers';
 
 import '@/src/styles/index.css';
@@ -21,12 +21,9 @@ import '@/src/styles/index.css';
  * layout, so no other route pays for it".
  */
 
-/* The product typeface. Geist is drawn for dense product UI: a tall x-height and open
- * apertures keep 12-14 px labels legible, and its figures are clear in tables. Loaded with
- * next/font, so it is self-hosted with size-adjusted fallbacks (no layout shift, no request
- * to Google at runtime). Arabic codepoints fall through to IBM Plex Sans Arabic, below. */
-const geist = Geist({ subsets: ['latin'], variable: '--font-geist', display: 'swap' });
-const geistMono = Geist_Mono({ subsets: ['latin'], variable: '--font-geist-mono', display: 'swap' });
+/* The product typeface and its Arabic fallback are declared in ./fonts/fonts.ts, where the
+ * .woff2 files are committed. They are self-hosted with size-adjusted fallbacks: no layout
+ * shift, and — since 'fix/vendor-fonts' — no request to Google at build time either. */
 
 export const metadata: Metadata = {
   title: 'KynexOne — One Platform for Every Workforce Operation',
@@ -60,20 +57,9 @@ document.documentElement.lang=l;document.documentElement.dir=d;
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     // suppressHydrationWarning: LOCALE_BOOT rewrites lang/dir before React hydrates.
-    <html lang="en" dir="ltr" suppressHydrationWarning className={`${geist.variable} ${geistMono.variable}`}>
+    <html lang="en" dir="ltr" suppressHydrationWarning className={`${geist.variable} ${geistMono.variable} ${plexArabicFallback.variable}`}>
       <head>
         <script dangerouslySetInnerHTML={{ __html: LOCALE_BOOT }} />
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
-        {/*
-          Geist has no Arabic coverage, so Arabic codepoints fall through to IBM Plex Sans
-          Arabic, whose weight and x-height sit close to Geist; without it an Arabic page
-          fell back to whatever the OS offered.
-        */}
-        <link
-          href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&display=swap"
-          rel="stylesheet"
-        />
       </head>
       <body>
         <Providers>{children}</Providers>

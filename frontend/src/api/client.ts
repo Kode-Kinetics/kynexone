@@ -14,6 +14,19 @@ export const BASE_URL = resolveBaseUrl();
 
 const client = axios.create({ baseURL: BASE_URL });
 
+// Anonymous authentication traffic has its own deliberately minimal client.
+// It never reads localStorage, attaches an old bearer, refreshes a session,
+// clears auth state, or redirects on an expected 4xx response.
+export const publicAuthClient = axios.create({ baseURL: BASE_URL });
+publicAuthClient.interceptors.request.use((config) => {
+  // AxiosHeaders.delete is case-insensitive; direct JS property deletion is
+  // not and would let AUTHORIZATION/AuThOrIzAtIoN defaults survive.
+  config.headers.delete('Authorization');
+  config.headers.delete('X-Company-Id');
+  config.headers.delete('X-Tenant-Id');
+  return config;
+});
+
 // Company-switcher selection, set by CurrentCompanyProvider. Travels as the
 // X-Company-Id header: the backend intersects it with the token scope, so it can only
 // NARROW access — an inaccessible value yields empty data server-side (fail closed).
@@ -23,30 +36,46 @@ export function setActiveCompanyId(companyId: string | null) {
 }
 
 client.interceptors.request.use((config) => {
-  const url = config.url ?? '';
-  const isAuthEndpoint = url.includes('/api/auth/login') || url.includes('/api/auth/refresh');
-  if (!isAuthEndpoint) {
-    const token = localStorage.getItem('zayra_access_token');
-    if (token) config.headers.Authorization = `Bearer ${token}`;
-    if (activeCompanyId) config.headers['X-Company-Id'] = activeCompanyId;
-  }
+  const token = localStorage.getItem('zayra_access_token');
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  if (activeCompanyId) config.headers['X-Company-Id'] = activeCompanyId;
   return config;
 });
 
 let isRefreshing = false;
 const pendingRefreshes = new RefreshQueue();
 
+// Backend restarts (Render redeploys behind the Vercel /api/* rewrite) surface as a brief
+// window of 502/503/504 or a dropped connection. GET requests are safe to replay — they have
+// no side effect — so retry them ONCE, after a short delay, to ride out that window instead of
+// bubbling a spurious error to the UI. A request-scoped flag (_getRetried) caps this at exactly
+// one attempt per request, so a persistently-down backend fails fast instead of looping.
+// Never applies to POST/PUT/PATCH/DELETE: those include single-use calls (login, password
+// reset, accept-invitation) and other mutations where a blind replay could duplicate a write.
+const RETRYABLE_GATEWAY_STATUSES = new Set([502, 503, 504]);
+const GET_RETRY_DELAY_MS = 1500;
+
+function isRetryableGetFailure(err: { code?: string; config?: any; response?: { status?: number } }): boolean {
+  const original = err.config;
+  if (!original || original._getRetried) return false;
+  // A caller-aborted request (unmount, query cancellation) also has no response; replaying it
+  // would resurrect work the caller deliberately discarded.
+  if (err.code === 'ERR_CANCELED') return false;
+  const method = (original.method ?? 'get').toLowerCase();
+  if (method !== 'get') return false;
+  if (!err.response) return true; // network error / timeout — no response at all
+  return RETRYABLE_GATEWAY_STATUSES.has(err.response.status ?? 0);
+}
+
 client.interceptors.response.use(
   (res) => res,
   async (err) => {
     const original = err.config;
-    const url: string = original?.url ?? '';
-    const isAuthEndpoint = url.includes('/api/auth/login') || url.includes('/api/auth/refresh');
 
-    // Never intercept 401s from auth endpoints — propagate directly so the login
-    // form can display its own error message without triggering a redirect loop.
-    if (isAuthEndpoint) {
-      return Promise.reject(err);
+    if (isRetryableGetFailure(err)) {
+      original._getRetried = true;
+      await new Promise((resolve) => setTimeout(resolve, GET_RETRY_DELAY_MS));
+      return client(original);
     }
 
     // The tenant API client must never drive navigation or auth side-effects on
@@ -100,7 +129,7 @@ client.interceptors.response.use(
     try {
       const refreshToken = localStorage.getItem('zayra_refresh_token');
       if (!refreshToken) throw new Error('No refresh token');
-      const { data } = await axios.post(`${resolveBaseUrl()}/api/auth/refresh`, { refreshToken });
+      const { data } = await publicAuthClient.post('/api/auth/refresh', { refreshToken });
       localStorage.setItem('zayra_access_token', data.accessToken);
       localStorage.setItem('zayra_refresh_token', data.refreshToken);
       pendingRefreshes.resolve(data.accessToken);

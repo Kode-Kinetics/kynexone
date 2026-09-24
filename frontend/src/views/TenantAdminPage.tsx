@@ -194,6 +194,10 @@ export default function TenantAdminPage() {
   const [availablePacks, setAvailablePacks] = useState<CountryPackOption[]>([]);
   const [showAddStatRule, setShowAddStatRule] = useState(false);
   const [addingStatRule, setAddingStatRule] = useState(false);
+  // The server refuses a statutory value written in the wrong unit and says exactly what form it
+  // expects (StatutoryValueUnits.cs). That refusal used to be swallowed by a bare `catch {}`, so
+  // the modal simply failed to close and the operator was told nothing. Surface it verbatim.
+  const [statRuleError, setStatRuleError] = useState('');
   const [newStatRule, setNewStatRule] = useState<CreateStatutoryRuleRequest>({
     countryCode: 'SAU', jurisdiction: 'KSA-mainland', ruleKey: '', ruleValue: '',
     dataType: 'decimal', description: '', effectiveFrom: new Date().toISOString().slice(0, 10),
@@ -380,6 +384,7 @@ export default function TenantAdminPage() {
 
   async function addStatRule() {
     setAddingStatRule(true);
+    setStatRuleError('');
     try {
       const created = await statutoryRulesApi.create({
         ...newStatRule,
@@ -389,7 +394,16 @@ export default function TenantAdminPage() {
       setNewStatRule({ countryCode: 'SAU', jurisdiction: 'KSA-mainland', ruleKey: '', ruleValue: '',
         dataType: 'decimal', description: '', effectiveFrom: new Date().toISOString().slice(0, 10) });
       setShowAddStatRule(false);
-    } catch {} finally { setAddingStatRule(false); }
+    } catch (e) {
+      const r = (e as { response?: { data?: unknown } })?.response?.data;
+      setStatRuleError(
+        (typeof r === 'string' && r) ||
+        (typeof r === 'object' && r !== null && typeof (r as { message?: string }).message === 'string'
+          ? (r as { message: string }).message
+          : '') ||
+        'Could not save the statutory override.',
+      );
+    } finally { setAddingStatRule(false); }
   }
 
   function getCountryName(code: string) {
@@ -1345,6 +1359,9 @@ export default function TenantAdminPage() {
                   />
                 </div>
               </div>
+              {statRuleError && (
+                <p className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{statRuleError}</p>
+              )}
               <button
                 type="button"
                 onClick={addStatRule}

@@ -63,7 +63,17 @@ export interface CreateTenantBody {
   accountType?: 'SingleCompany' | 'Group';
   /** PlatformControlled | GroupSelfServiceWithinLimit (default) | GroupDraftPlatformApproval */
   companyCreationMode?: string;
+  /**
+   * REQUIRED. The tenant's home jurisdiction as an ISO 3166-1 alpha-2 code ("SA", "AE", "QA").
+   * It drives statutory seeding and is inherited by the tenant's first company, which used to be
+   * created with an empty country. The server refuses a create that does not state one
+   * (400 tenant_country_missing) — it is never inferred from the currency or the slug.
+   */
+  homeCountryCode: string;
 }
+
+/** ISO country as the platform console reads it — the same IsoReference rows the tenant app uses. */
+export interface PlatformCountry { code: string; name: string; currency: string }
 
 export interface PlatformTenantCompany {
   id: string;
@@ -100,7 +110,8 @@ export interface TenantUser {
   isActive: boolean;
   isLocked: boolean;
   lockoutEnd: string | null;
-  mFAEnabled: boolean;
+  /** Serialised from MFAEnabled by the camelCase policy; was read as `mFAEnabled`. */
+  mfaEnabled: boolean;
   mustChangePassword: boolean;
   status: string;
   createdAtUtc: string;
@@ -325,15 +336,6 @@ export interface SupportSession {
   isActive: boolean;
 }
 
-export interface StartSupportAccessResult {
-  sessionId: string;
-  token: string;
-  expiresAt: string;
-  targetUserEmail: string;
-  tenantSlug: string;
-  reason: string;
-}
-
 // ── Platform API ──────────────────────────────────────────────────────────────
 
 export interface PlatformAnnouncement {
@@ -372,16 +374,50 @@ export interface PlatformSettings {
     fromEmail: string;
     fromName: string;
     useSsl: boolean;
+    /** Key from the email-provider catalog, e.g. 'godaddy'. */
+    provider: string;
+    providerLabel: string | null;
+    password: string;
+    hasPassword: boolean;
     isConfigured: boolean;
+    /** Where the saved values came from — 'database', 'environment' or 'none'. */
+    source: 'database' | 'environment' | 'none';
   };
-  trial: { durationDays: number };
-  branding: { platformName: string; supportEmail: string };
+  /** Matches the API shape — the previous `trial`/`branding` fields were never returned. */
+  ai: { model: string };
+  platform: { trialDurationDays: number; environment: string };
+}
+
+/** One entry in the SMTP auto-configuration catalog. */
+export interface EmailProviderPreset {
+  key: string;
+  label: string;
+  host: string;
+  port: number;
+  useSsl: boolean;
+  usernamePattern: string;
+  guidance: string;
+  alternatePorts: number[];
+  docsUrl: string | null;
+  category: string;
+}
+
+export interface SmtpTestResult {
+  sent: boolean;
+  message: string;
+  to?: string;
+  host?: string;
+  port?: number;
+  provider?: string;
+  error?: string;
+  sentAtUtc?: string;
 }
 
 export interface BillingSummary {
   totalMrr: number;
   totalArr: number;
-  overdueTotalAmount: number;
+  /** Matches the API field name; was `overdueTotalAmount`, which the API never returns. */
+  overdueTotal: number;
   overdueCount: number;
   totalInvoices: number;
   paidThisMonth: number;
@@ -542,11 +578,14 @@ export const platformApi = {
   setFeature: (tenantId: string, featureKey: string, isEnabled: boolean) =>
     platform.put(`/api/platform/tenants/${tenantId}/features/${featureKey}`, { isEnabled }).then(r => r.data),
 
-  impersonate: (tenantId: string, userId: string) =>
-    platform.post<{ token: string }>(`/api/platform/tenants/${tenantId}/impersonate`, { userId }).then(r => r.data),
-
   createTenant: (body: CreateTenantBody) =>
     platform.post<CreateTenantResult>('/api/platform/tenants', body).then(r => r.data),
+
+  // The home-jurisdiction picker's options. Served by the platform API from the same
+  // IsoReference list as /api/reference/countries, so the console never carries its own
+  // copy of the world.
+  countries: () =>
+    platform.get<PlatformCountry[]>('/api/platform/countries').then(r => r.data),
 
   listAdmins: (tenantId: string) =>
     platform.get<TenantAdminUser[]>(`/api/platform/tenants/${tenantId}/admins`).then(r => r.data),
@@ -557,7 +596,14 @@ export const platformApi = {
   listTenantUsers: (tenantId: string, search?: string) =>
     platform.get<TenantUser[]>(`/api/platform/tenants/${tenantId}/users`, { params: search ? { search } : {} }).then(r => r.data),
 
-  createTenantUser: (tenantId: string, body: { email: string; fullName?: string; password: string; roleName?: string; mustChangePassword?: boolean }) =>
+  // entityScope decides which legal entities the new account can SEE. Omitted, the server defaults
+  // to 'group' for the Admin role and 'allCurrentCompanies' for every other role, and refuses
+  // outright when that would reach zero companies — an account that cannot see its own tenant reads
+  // as a 404 on the user's first working day, not as a missing grant.
+  createTenantUser: (tenantId: string, body: {
+    email: string; fullName?: string; password: string; roleName?: string; mustChangePassword?: boolean;
+    entityScope?: 'group' | 'allCurrentCompanies' | 'companies'; companyIds?: string[];
+  }) =>
     platform.post(`/api/platform/tenants/${tenantId}/users`, body).then(r => r.data),
 
   deleteTenantUser: (userId: string) =>
@@ -655,9 +701,6 @@ export const platformApi = {
   sendInvoiceEmail: (tenantId: string, invoiceId: string) =>
     platform.post<{ sent: boolean; billingEmail: string; invoiceNumber: string; pdfAttached?: boolean; smtpRequired?: boolean; message?: string }>(`/api/platform/tenants/${tenantId}/invoices/${invoiceId}/send`).then(r => r.data),
 
-  startSupportAccess: (tenantId: string, userId: string, reason: string) =>
-    platform.post<StartSupportAccessResult>('/api/platform/support-access/start', { tenantId, userId, reason }).then(r => r.data),
-
   endSupportAccess: (sessionId: string) =>
     platform.post('/api/platform/support-access/end', { sessionId }).then(r => r.data),
 
@@ -704,11 +747,15 @@ export const platformApi = {
   getSettings: () =>
     platform.get<PlatformSettings>('/api/platform/settings').then(r => r.data),
 
-  updateSmtpSettings: (body: { host: string; port: number; username: string; password?: string; fromEmail: string; fromName?: string; useSsl: boolean }) =>
+  getEmailProviders: () =>
+    platform.get<EmailProviderPreset[]>('/api/platform/settings/email-providers').then(r => r.data),
+
+  updateSmtpSettings: (body: { host: string; port: number; username: string; password?: string; fromEmail: string; fromName?: string; useSsl: boolean; provider?: string }) =>
     platform.put('/api/platform/settings/smtp', body).then(r => r.data),
 
-  testSmtp: () =>
-    platform.post<{ sent: boolean; message: string }>('/api/platform/settings/smtp/test').then(r => r.data),
+  /** `to` is the inbox the test should land in; omitted, the API sends to the signed-in admin. */
+  testSmtp: (to?: string) =>
+    platform.post<SmtpTestResult>('/api/platform/settings/smtp/test', { to: to ?? null }).then(r => r.data),
 
   getVersion: () =>
     platform.get<{ version: string; environment: string; deployedAt?: string; migrations?: number }>('/api/platform/settings/version').then(r => r.data),
@@ -781,8 +828,15 @@ export const platformApi = {
   deleteInvoice: (tenantId: string, invoiceId: string) =>
     platform.delete(`/api/platform/tenants/${tenantId}/invoices/${invoiceId}`).then(r => r.data),
 
+  /**
+   * `yearMonth` is the UI's "YYYY-MM"; the API binds an int in yyyyMM form. Sending the dashed
+   * string failed model binding, so every request 400'd and the AI Usage page showed "—" for
+   * every tenant in every month. Converted here so no caller has to remember.
+   */
   getTenantAiUsage: (tenantId: string, yearMonth?: string) =>
-    platform.get<TenantAiUsage>(`/api/platform/tenants/${tenantId}/ai-usage`, { params: yearMonth ? { yearMonth } : {} }).then(r => r.data),
+    platform.get<TenantAiUsage>(`/api/platform/tenants/${tenantId}/ai-usage`, {
+      params: yearMonth ? { yearMonth: Number(yearMonth.replace('-', '')) } : {},
+    }).then(r => r.data),
 
   // ── Invoice Lines ──────────────────────────────────────────────────────────
 

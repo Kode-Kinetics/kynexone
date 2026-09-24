@@ -681,6 +681,8 @@ public class LeaverLifecycleS2Tests
             new NullLeaverEmailService(),
             jwt,
             new NullLeaverMfaService(),
+            new Zayra.Api.Infrastructure.Auth.TotpService(
+                Microsoft.AspNetCore.DataProtection.DataProtectionProvider.Create("ZayraTests")),
             Microsoft.Extensions.Logging.Abstractions.NullLogger<Zayra.Api.Infrastructure.Auth.AuthService>.Instance);
     }
 
@@ -748,9 +750,13 @@ public class LeaverLifecycleS2Tests
         Assert.False((await db.Users.AsNoTracking().SingleAsync(u => u.Id == fx.User.Id)).IsActive);
     }
 
-    /// <summary>…but rescinding the separation does, deliberately and attributably.</summary>
+    /// <summary>
+    /// Rescinding restores the employment lifecycle, but revoked credentials stay fail-closed. Access
+    /// must be re-approved through the controlled invitation flow rather than silently restored with
+    /// the employee's old roles, scope, password and MFA state.
+    /// </summary>
     [Fact]
-    public async Task Rescind_RestoresAccess_AndIsAttributable()
+    public async Task Rescind_RestoresEmployment_ButRequiresControlledReinvite()
     {
         await using var db = CreateDb();
         var fx = await SeedLeaverAsync(db);
@@ -761,23 +767,33 @@ public class LeaverLifecycleS2Tests
             fx.Offboarding.Id, new CancelOffboardingRequest("Resignation withdrawn — counter-offer accepted"),
             CancellationToken.None);
         Assert.IsType<OkObjectResult>(result);
+        Assert.Contains("\"accessReprovisioningRequired\":true", Json(((OkObjectResult)result).Value));
 
         var off = await db.EmployeeOffboardings.AsNoTracking().SingleAsync();
         Assert.Equal("Cancelled", off.Status);
-        Assert.False(off.AccessRevoked);
+        Assert.True(off.AccessRevoked);
         Assert.Equal(fx.ActorId, off.CancelledByUserId);
         Assert.NotNull(off.CancelledAtUtc);
         Assert.Equal("Resignation withdrawn — counter-offer accepted", off.CancelReason);
         Assert.True(await db.AuditLogs.AnyAsync(a => a.Action == "offboarding.rescinded"));
 
+        var employee = await db.Employees.AsNoTracking().SingleAsync(e => e.Id == fx.Employee.Id);
+        Assert.Equal("Active", employee.Status);
+        Assert.Equal(fx.User.Id, employee.UserAccountId);
+
         var user = await db.Users.AsNoTracking().SingleAsync(u => u.Id == fx.User.Id);
-        Assert.True(user.IsActive);
-        Assert.Equal(AccessModes.FullPortal, user.AccessMode);
+        Assert.False(user.IsActive);
+        Assert.Equal("PendingPasswordSetup", user.Status);
+        Assert.Equal(AccessModes.NoLogin, user.AccessMode);
+        var link = await db.EmployeeUserAccounts.AsNoTracking().SingleAsync();
+        Assert.Equal("NoLogin", link.Status);
+        Assert.Equal(AccessModes.NoLogin, link.AccessMode);
+        Assert.False(await db.RefreshTokens.AnyAsync(t => t.UserId == fx.User.Id && t.RevokedAtUtc == null));
+
         var auth = BuildAuth(db);
-        var login = await auth.LoginAsync(
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => auth.LoginAsync(
             new Zayra.Api.Application.Auth.LoginRequest("departing@kynexone.local", "CorrectPassword1!", "kynexone"),
-            new Zayra.Api.Application.Auth.RequestContext("127.0.0.1", "tests"), CancellationToken.None);
-        Assert.NotNull(login.Tokens);   // a reinstated employee can sign in again
+            new Zayra.Api.Application.Auth.RequestContext("127.0.0.1", "tests"), CancellationToken.None));
     }
 }
 
@@ -802,9 +818,11 @@ file sealed class NullLeaverMfaService : Zayra.Api.Application.Auth.IMfaService
     public Task<string> CreateChallengeAsync(Guid userId, Guid tenantId, string ip, CancellationToken ct) => throw new NotImplementedException();
     public Task<Zayra.Api.Domain.Entities.User?> VerifyChallengeAsync(string token, string code, CancellationToken ct) => throw new NotImplementedException();
     public Task<bool> DisableAsync(Guid userId, Guid tenantId, string code, CancellationToken ct) => throw new NotImplementedException();
+    public Task<bool> AdminDisableAsync(Guid userId, Guid tenantId, Zayra.Api.Application.Auth.RequestContext context, CancellationToken ct) => throw new NotImplementedException();
     public Task<Zayra.Api.Application.Auth.MfaSetupInitDto> InitiatePlatformSetupAsync(Guid id, CancellationToken ct) => throw new NotImplementedException();
     public Task<bool> VerifyPlatformSetupAsync(Guid id, Zayra.Api.Application.Auth.MfaVerifySetupRequest req, CancellationToken ct) => throw new NotImplementedException();
     public Task<string> CreatePlatformChallengeAsync(Guid id, string ip, CancellationToken ct) => throw new NotImplementedException();
     public Task<Zayra.Api.Models.PlatformUser?> VerifyPlatformChallengeAsync(string token, string code, CancellationToken ct) => throw new NotImplementedException();
+    public Task<Zayra.Api.Models.PlatformUser?> CompletePlatformChallengeAsync(string token, string code, Zayra.Api.Application.Auth.RequestContext context, CancellationToken ct) => throw new NotImplementedException();
     public Task<bool> DisablePlatformAsync(Guid id, string code, CancellationToken ct) => throw new NotImplementedException();
 }

@@ -133,14 +133,14 @@ public class PayComponentCatalogTests
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
         // PlatformController.CreateTenantCore order: seeder (no save) → bundle (which seeds + saves).
         await PayComponentSeeder.SeedTenantDefaultsAsync(db, tenantId, CancellationToken.None);
-        var first = await TenantProvisioningBundle.ProvisionAsync(db, tenantId, CancellationToken.None);
-        var again = await TenantProvisioningBundle.ProvisionAsync(db, tenantId, CancellationToken.None);
+        var first = await TenantProvisioningBundle.ProvisionAsync(db, tenantId, "SA", CancellationToken.None);
+        var again = await TenantProvisioningBundle.ProvisionAsync(db, tenantId, "SA", CancellationToken.None);
         Assert.Equal(0, first.PayComponents); // already added in the unit of work — not added twice
         Assert.Equal(0, again.PayComponents);
         Assert.Equal(17, await db.PayComponents.CountAsync(c => c.TenantId == tenantId));
 
         var fresh = await PostgresFixture.SeedMinimalTenant(db);
-        Assert.Equal(17, (await TenantProvisioningBundle.ProvisionAsync(db, fresh, CancellationToken.None)).PayComponents);
+        Assert.Equal(17, (await TenantProvisioningBundle.ProvisionAsync(db, fresh, "SA", CancellationToken.None)).PayComponents);
     }
 
     // ══ 3. Effective dating across periods; a locked period is never rewritten ═══════════════════

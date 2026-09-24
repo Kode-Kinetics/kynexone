@@ -205,6 +205,10 @@ export interface Payslip {
   id: string;
   payrollRunId: string;
   employeeId: number;
+  /** Denormalised at run time — the same value printed on the payslip PDF. */
+  employeeCode: string;
+  /** Denormalised at run time — the same value printed on the payslip PDF. Never blank. */
+  employeeName: string;
   payslipNumber: string;
   language: string;
   isPublishedToEss: boolean;

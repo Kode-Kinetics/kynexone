@@ -9,7 +9,7 @@
 import { test, expect } from '@playwright/test';
 import {
   assertStackReachable,
-  groupSeedMissingReason,
+  assertFixtureWorld,
   newApi,
   apiLogin,
   tryApiLogin,
@@ -21,22 +21,18 @@ import {
   ALMARAI_SIBLING_CODES,
   empCodePrefix,
 } from './helpers';
+import { MISSING_WORLD } from '../world';
 
 const AUDITOR = groupUser('auditor'); // auditor@almarai-test.local
-const SCOPED = 'scoped.admin@almarai-test.local';
+const SCOPED = groupUser('scoped.admin'); // scoped.admin@almarai-test.local
 const OWNER = groupUser('owner');
 const BAKERY = 'ALM-BAKERY-KSA';
 
-let skipReason: string | null = null;
 
 test.describe('Group→Company: security & fail-closed API checks', () => {
   test.beforeAll(async () => {
     await assertStackReachable();   // hard-fails when the stack is down; never skips
-    skipReason = (await groupSeedMissingReason(OWNER));
-  });
-
-  test.beforeEach(() => {
-    test.skip(skipReason !== null, skipReason ?? '');
+    await assertFixtureWorld(OWNER);
   });
 
   test('(a) auditor can GET /api/employees but POST /api/employees is 403', async () => {
@@ -86,11 +82,11 @@ test.describe('Group→Company: security & fail-closed API checks', () => {
     try {
       // Discover a payroll run belonging to an inaccessible company via the group owner.
       const owner = await tryApiLogin(api, OWNER, ALMARAI.slug);
-      test.skip(!owner, 'group owner login unavailable — cannot discover payroll runs');
+      expect(owner, `The group owner cannot log in, so no payroll run can be discovered.\n${MISSING_WORLD}`).toBeTruthy();
 
       const companies = await fetchCompanies(api, owner!.token).catch(() => []);
       const bakeryId = companyIdByCode(companies, BAKERY);
-      test.skip(!bakeryId, `could not resolve ${BAKERY} company id`);
+      expect(bakeryId, `Could not resolve ${BAKERY}.\n${MISSING_WORLD}`).toBeTruthy();
 
       const runsResp = await api.get('/api/payroll/runs?page=1&pageSize=50', {
         headers: { Authorization: `Bearer ${owner!.token}`, 'X-Company-Id': bakeryId! },
@@ -101,7 +97,15 @@ test.describe('Group→Company: security & fail-closed API checks', () => {
         const first = runs[0];
         runId = first ? (first.id ?? first.Id ?? first.runId ?? null) : null;
       }
-      test.skip(!runId, `no payroll run discoverable for ${BAKERY} — seed has no runs for that company; skipping gracefully`);
+      // "Skipping gracefully" is what made this cross-company payroll boundary unverifiable: the
+      // old seed happened not to create a bakery run, so the one assertion that proves a scoped user
+      // cannot reach a sibling company's payroll never ran. The bootstrap now creates a run per
+      // company precisely so this can be a real check.
+      expect(
+        runId,
+        `No payroll run exists for ${BAKERY}, so the cross-company payroll boundary cannot be `
+        + `exercised.\n${MISSING_WORLD}`,
+      ).toBeTruthy();
 
       // Scoped admin (no access to BAKERY) hits the register export directly.
       const { token: scopedToken } = await apiLogin(api, SCOPED, ALMARAI.slug);

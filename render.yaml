@@ -59,18 +59,17 @@ services:
     # InvalidOperationException ~10s in, twice, and never opened a connection to the database.
     # A comment that lists the guards it knows about is a hazard when the list is incomplete.
     #
-    # THIS BLUEPRINT IS NOT SYNCED TO THE LIVE SERVICE. Read that literally before relying on any
-    # line in this file. Verified against the Render API on 2026-09-21 for srv-d8slkb77f7vs73d2k92g:
-    #   autoDeploy        = no        (matches this file)
-    #   healthCheckPath   = /health/ready (matches this file)
-    #   preDeployCommand  = NOT SET   (this file says `dotnet Zayra.Api.dll --migrate`)
-    # So the pre-deploy migration declared below does not currently run at all. The active
-    # migration path is the CI `migrate-backend` job (`dotnet ef database update` against
-    # PROD_DATABASE_URL, gated on the `production` environment approval). Setting the pre-deploy
-    # command in the dashboard is a product-owner action; until then this line is an intention.
-    # Migrations are idempotent, so running both paths is safe.
-    # See docs/DEPLOY_ROLLBACK_RUNBOOK.md.
-    preDeployCommand: dotnet Zayra.Api.dll --migrate
+    # NO preDeployCommand, DELIBERATELY. It used to say `dotnet Zayra.Api.dll --migrate`, and on
+    # 2026-09-22 a blueprint sync (triggered by PR #74 editing this file) applied it to the live
+    # service for the first time. Every deploy then failed at pre-deploy, because the Dockerfile
+    # strips Migrations/ from the image (`RUN rm -rf Migrations`, to keep the Render builder under
+    # its memory limit) and `--migrate` correctly refuses to run with nothing compiled in:
+    #   "[--migrate] FAILED: this build has NO migrations compiled into it ..."
+    # The one migration path is the CI `migrate-backend` job (`dotnet ef database update` against
+    # PROD_DATABASE_URL, gated on the `production` environment approval), which runs from a full
+    # source checkout. Do not re-add a pre-deploy migration unless the image stops stripping them.
+    # Removing the key here does not clear a value already set on the service: that is cleared in
+    # the dashboard (Settings -> Pre-Deploy Command). See docs/DEPLOY_ROLLBACK_RUNBOOK.md.
     envVars:
       - key: ASPNETCORE_ENVIRONMENT
         value: Production
@@ -93,6 +92,23 @@ services:
       # Fail closed on unexpected Host headers instead of appsettings' local-development wildcard.
       - key: AllowedHosts
         value: zayra-ai-workforce.onrender.com;localhost
+
+      # ── Memory, logging and rate limits: set on the live service 2026-09-22 after 12 OOM kills ──
+      # GC values are parsed as HEX — keep the 0x prefix (see the Dockerfile's runtime stage).
+      # 0x14000000 = 320 MiB for the 512 MB Starter plan; use 0x60000000 (1.5 GiB) on Standard.
+      - key: DOTNET_gcServer
+        value: "0"
+      - key: DOTNET_GCHeapHardLimit
+        value: "0x14000000"
+      # Per-statement SQL logging at Information cost CPU and memory on every request.
+      - key: Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command
+        value: Warning
+      # Limits are per client IP. Raised so a room of users on one network does not share the
+      # default 10 logins/min; revisit once real client IPs are verified behind the Vercel proxy.
+      - key: RateLimit__LoginPermitLimit
+        value: "100"
+      - key: RateLimit__RefreshPermitLimit
+        value: "300"
 
       # ── REQUIRED SECRETS: set these in the Render dashboard (Environment → Secret Files / Env Vars) ──
       #

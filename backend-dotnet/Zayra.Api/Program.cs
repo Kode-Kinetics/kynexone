@@ -60,6 +60,12 @@ if (MigrateOnlyEntryPoint.ShouldHandle(args))
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Recovery and invitation credentials are delivered as browser links. A
+// non-development deployment must never emit a relative or insecure link into
+// email/admin responses; fail the release before any credential can be issued.
+if (!builder.Environment.IsDevelopment())
+    _ = AuthLinkBuilder.RequireHttpsPublicAppUrl(builder.Configuration["APP_URL"]);
+
 // Reverse-proxy headers are trusted only when deployment configuration opts in. Cloud load
 // balancers terminate TLS before the app; without this, generated links and secure redirects use
 // http and audit/rate-limit records see the proxy address. Never trust these headers by default on
@@ -159,63 +165,10 @@ var listenUrl = !string.IsNullOrEmpty(port)
 builder.WebHost.UseUrls(listenUrl);
 
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection("Jwt"));
-builder.Services.Configure<SeedAdminOptions>(builder.Configuration.GetSection("SeedAdmin"));
 
-// ── Seed-admin bootstrap hardening (password fail-fast + demo-seed lock) ──────
-// Every fresh database auto-creates a bootstrap admin (SeedAdmin:Email) on first boot. A blank,
-// placeholder, or well-known password would ship every client-hosted / dedicated deployment with a
-// known-credential admin. A "dedicated" deployment is Production OR anything flagged with
-// DEDICATED_DEPLOYMENT / CLIENT_DEPLOYMENT — the SAME predicate the demo-seed gate below uses — so a
-// client slot running under a non-Production ASPNETCORE_ENVIRONMENT (Staging/QA/custom) is protected
-// too. On a dedicated deployment a weak bootstrap password is REFUSED outright; elsewhere (local dev,
-// docker-compose) a working dev default is substituted with a loud warning so zero-config bring-up
-// keeps working. This guard runs at builder time on EVERY invocation — including the
-// `dotnet Zayra.Api.dll --migrate` one-off job — so a dedicated deployment must set SeedAdmin__Password
-// before that job runs too (mirrors the JWT fail-fast above).
-{
-    const string WeakSeedAdminPassword = "ChangeMe123!";
-
-    var isDedicatedDeployment =
-        builder.Environment.IsProduction()
-        || string.Equals(Environment.GetEnvironmentVariable("DEDICATED_DEPLOYMENT"), "true", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(Environment.GetEnvironmentVariable("CLIENT_DEPLOYMENT"), "true", StringComparison.OrdinalIgnoreCase);
-
-    var seedAdminPassword = builder.Configuration["SeedAdmin:Password"];
-    var isWeakOrPlaceholder =
-        string.IsNullOrWhiteSpace(seedAdminPassword)
-        || seedAdminPassword == WeakSeedAdminPassword
-        || seedAdminPassword.StartsWith("CHANGE_ME", StringComparison.OrdinalIgnoreCase);
-
-    if (isWeakOrPlaceholder)
-    {
-        if (isDedicatedDeployment)
-            throw new InvalidOperationException(
-                $"[{builder.Environment.EnvironmentName}] SeedAdmin bootstrap password fail-fast:\n" +
-                $"  SeedAdmin:Password is null, empty, a documented placeholder (CHANGE_ME...), or still the insecure default ('{WeakSeedAdminPassword}').\n" +
-                "  Set a unique, strong bootstrap admin password before first boot via env var SeedAdmin__Password (config key SeedAdmin:Password).\n" +
-                "  docker-compose maps ${SEED_ADMIN_PASSWORD} -> SeedAdmin__Password; on Render / raw containers set SeedAdmin__Password directly (SEED_ADMIN_PASSWORD is NOT read by the app).");
-
-        // Non-dedicated (local dev / docker-compose): substitute a working dev default so bring-up
-        // stays zero-config, but never persist a CHANGE_ME* placeholder as the effective password.
-        builder.Configuration["SeedAdmin:Password"] = WeakSeedAdminPassword;
-        Console.WriteLine(
-            $"[SeedAdmin] WARNING [{builder.Environment.EnvironmentName}]: bootstrap admin is using the INSECURE default " +
-            "password because SeedAdmin__Password is unset or a placeholder. Never use this outside local development.");
-    }
-
-    // Defense in depth for the AuthSeeder demo path: AuthSeeder (always-on, resolved later) seeds a
-    // demo company + 25 fake employees when SeedAdmin:SeedDemoData is "true". That flag is read from
-    // config BEFORE the runtime demo gate below is evaluated, so neutralize it here for dedicated
-    // deployments — one mis-set SeedAdmin__SeedDemoData must never pollute a client tenant.
-    if (isDedicatedDeployment
-        && string.Equals(builder.Configuration["SeedAdmin:SeedDemoData"], "true", StringComparison.OrdinalIgnoreCase))
-    {
-        builder.Configuration["SeedAdmin:SeedDemoData"] = "false";
-        Console.WriteLine(
-            $"[SeedAdmin] OVERRIDE [{builder.Environment.EnvironmentName}]: SeedAdmin__SeedDemoData was 'true' but this is a " +
-            "Production/dedicated deployment — forced to 'false' so AuthSeeder cannot seed demo org/employee data into a client tenant.");
-    }
-}
+// There is no tenant bootstrap admin: AuthSeeder creates no tenant or user. The only boot-time
+// account is the one-time platform owner (PlatformOwnerBootstrap, gated further down), and every
+// tenant/user is then created through the platform-admin API. See docs/DATA_ENTRY_PATHS.md.
 
 builder.Services.Configure<EntityScopeOptions>(builder.Configuration.GetSection("EntityScope"));
 builder.Services.PostConfigure<EntityScopeOptions>(options =>
@@ -385,7 +338,6 @@ builder.Services.AddScoped<IApprovalWorkflowService, ApprovalWorkflowService>();
 builder.Services.AddScoped<IApprovalRouter, ApprovalRouter>();
 builder.Services.AddScoped<Zayra.Api.Application.Timesheets.ITimesheetService, Zayra.Api.Infrastructure.Timesheets.TimesheetService>();
 builder.Services.AddScoped<IAuthSeeder, AuthSeeder>();
-builder.Services.AddScoped<IEmployeeModuleSchemaBootstrapper, EmployeeModuleSchemaBootstrapper>();
 // P0-5: config-selected durable storage with a Production fail-fast (Render dyno disk is
 // ephemeral on plan:free — LocalDocumentStorage would lose compliance documents on restart).
 builder.Services.AddDocumentStorage(builder.Configuration, builder.Environment.IsDevelopment());
@@ -669,6 +621,21 @@ builder.Services.AddRateLimiter(o =>
                 QueueLimit               = 0,
             }));
 
+    // Platform challenge verification has its own window. Sharing the five-request password
+    // window meant issuing a challenge consumed permit #1 and a deterministic five-client
+    // exactly-once verification race was forced to return one 429 before application security
+    // could account for the attempt. The credential itself still has an exact five-attempt cap.
+    o.AddPolicy("platform_mfa_verify", ctx =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit              = rl.GetValue("PlatformMfaVerifyPermitLimit", 10),
+                Window                   = TimeSpan.FromSeconds(rl.GetValue("PlatformMfaVerifyWindowSeconds", 60)),
+                QueueProcessingOrder     = QueueProcessingOrder.OldestFirst,
+                QueueLimit               = 0,
+            }));
+
     // Public (unauthenticated) marketing writes — quote/estimate submissions. Throttle per-IP to
     // prevent spam / storage-exhaustion since these insert rows without any auth.
     o.AddPolicy("public_write", ctx =>
@@ -781,12 +748,48 @@ app.MapGet("/health/live", () => Results.Ok(new
     commit = Environment.GetEnvironmentVariable("RENDER_GIT_COMMIT") ?? "local"
 })).AllowAnonymous();
 
-app.MapGet("/health/ready", async (ZayraDbContext db, IConfiguration config, CancellationToken ct) =>
+app.MapGet("/health/ready", async (ZayraDbContext db, IConfiguration config, ILoggerFactory lf, CancellationToken ct) =>
 {
     var evidence = await ProductionReadinessEvidence.BuildReadinessAsync(db, config, ct);
-    return evidence.Status == "ready"
-        ? Results.Ok(evidence)
-        : Results.Json(evidence, statusCode: StatusCodes.Status503ServiceUnavailable);
+    if (evidence.Status == "ready") return Results.Ok(evidence);
+
+    // SAY WHY. This gate refused three consecutive production deploys on 2026-09-23 and no log line
+    // anywhere named the term that failed: Render's health check reads the 503 status and discards the
+    // body, the body is the ONLY place the evidence existed, and a failed deploy's instance cannot be
+    // reached from outside to ask it. Fifteen minutes of "503" in the log told us nothing except that
+    // it was unhappy. A gate that can refuse a release must be able to state its reason where an
+    // operator will find it.
+    var failing = new List<string>();
+    if (!evidence.Dependencies.Database.Healthy) failing.Add("database unreachable");
+    if (evidence.PendingMigrations != 0)
+        failing.Add(evidence.PendingMigrations < 0
+            ? "migration parity UNKNOWN (-1): neither compiled migrations nor Migrations.manifest were readable in this image"
+            : $"{evidence.PendingMigrations} migration(s) in this build are not applied to this database");
+    // The worker term is only MEASURED when the database is healthy and migrations are in parity;
+    // otherwise BuildReadinessAsync substitutes WorkerFleetReadiness.Unavailable, which hardcodes
+    // "all six missing" without reading a single heartbeat row. Reporting that as a worker outage
+    // cost hours on 2026-09-23: three deploys were investigated as a dead worker fleet when the
+    // fleet had never been looked at. Only name workers when the number is real.
+    var workersWereMeasured = evidence.Dependencies.Database.Healthy && evidence.PendingMigrations == 0;
+    if (!workersWereMeasured)
+        failing.Add("workers NOT EVALUATED (short-circuited by the terms above — the worker counts "
+                    + "in this response are placeholders, not measurements)");
+    else if (!evidence.Dependencies.Workers.Healthy)
+        failing.Add("workers: " + string.Join(", ", evidence.Dependencies.Workers.Workers
+            .Where(w => w.Status is not ("healthy" or "starting"))
+            .Select(w => $"{w.Name}={w.Status}")));
+
+    lf.CreateLogger("Readiness").LogWarning(
+        "[READINESS-NOT-READY] /health/ready is refusing traffic because: {Failing}. "
+        + "db={DbHealthy} pendingMigrations={Pending} workers(healthy/starting/stale/failed/missing)="
+        + "{H}/{S}/{St}/{F}/{M}",
+        failing.Count > 0 ? string.Join(" | ", failing) : "no individual term failed — the status rule changed",
+        evidence.Dependencies.Database.Healthy, evidence.PendingMigrations,
+        evidence.Dependencies.Workers.HealthyCount, evidence.Dependencies.Workers.StartingCount,
+        evidence.Dependencies.Workers.StaleCount, evidence.Dependencies.Workers.FailedCount,
+        evidence.Dependencies.Workers.MissingCount);
+
+    return Results.Json(evidence, statusCode: StatusCodes.Status503ServiceUnavailable);
 }).AllowAnonymous();
 
 app.MapGet("/health/telemetry", async (ZayraDbContext db, IConfiguration config, ILoggerFactory loggerFactory, CancellationToken ct) =>
@@ -848,8 +851,6 @@ app.MapGet("/health", async (ZayraDbContext db, ILoggerFactory loggerFactory) =>
 // which is handled at the TOP of this file and never reaches here — see
 // MigrateOnlyEntryPoint. Database__RunMigrationsOnStartup below is a LOCAL DEV
 // convenience only (it defaults false in Production).
-var isPurgeDemoMode = args.Contains("--purge-demo");
-var isSundayDemoFixtureMode = args.Contains("--seed-sunday-demo-fixture");
 var runMigrationsOnStartup = app.Configuration.GetValue<bool>("Database:RunMigrationsOnStartup");
 
 using (var scope = app.Services.CreateScope())
@@ -877,22 +878,6 @@ using (var scope = app.Services.CreateScope())
         logger.LogInformation("Skipping EF Core migrations on startup. Set Database:RunMigrationsOnStartup=true or run --migrate.");
     }
 
-    // Explicit one-off, disposable fixture for the 20-Sep-2026 client-demo gate. The seeder owns
-    // additional fail-closed Production/dedicated/client, exact-confirmation, password and database
-    // transaction guards. It exits before the normal startup seed chain so no unrelated tenant is
-    // created or changed as a side effect of preparing this isolated fixture.
-    if (isSundayDemoFixtureMode)
-    {
-        await SundayKsaDemoFixtureSeeder.RunAsync(
-            dbContext,
-            scope.ServiceProvider.GetRequiredService<IPasswordHasher>(),
-            scope.ServiceProvider.GetRequiredService<IAuthSeeder>(),
-            app.Environment,
-            logger);
-        logger.LogInformation("--seed-sunday-demo-fixture mode complete. Exiting.");
-        return 0;
-    }
-
     // Phase 1B default-company backfill — idempotent (only touches null CompanyId rows),
     // non-fatal, and disabled via CompanyScope:Backfill=false / CompanyScope__Backfill=false.
     if (!string.Equals(app.Configuration["CompanyScope:Backfill"], "false", StringComparison.OrdinalIgnoreCase))
@@ -913,19 +898,9 @@ using (var scope = app.Services.CreateScope())
         catch (Exception ex) { logger.LogError(ex, "PayrollAuditChainBackfill failed — continuing startup."); }
     }
 
-    // One-off demo cleanup: `dotnet Zayra.Api.dll --purge-demo`. Deactivates all
-    // demo tenants (guarding the real SeedAdmin tenant) then exits — never seeds.
-    if (isPurgeDemoMode)
-    {
-        await Zayra.Api.Infrastructure.Seed.DemoPurgeRunner.RunAsync(
-            dbContext, app.Configuration["SeedAdmin:TenantSlug"], logger);
-        logger.LogInformation("--purge-demo mode complete. Exiting.");
-        return 0; // Render one-off job succeeds
-    }
-
     // Seed data — each step is independently non-fatal so one failure never
     // prevents subsequent seeders from running (GOSI/Statutory rules must run
-    // even when DemoDataSeeder fails, for example).
+    // even when an earlier seeder fails, for example).
     async Task TrySeedAsync(string name, Func<Task> seed, ILogger log)
     {
         try { await seed(); }
@@ -941,36 +916,16 @@ using (var scope = app.Services.CreateScope())
     var authSeeder = scope.ServiceProvider.GetRequiredService<IAuthSeeder>();
     await TrySeedAsync("AuthSeeder", () => authSeeder.SeedAsync(), logger);
 
-    var demoDataRequested =
-        string.Equals(Environment.GetEnvironmentVariable("SEED_DEMO_DATA"), "true", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(app.Configuration["SeedAdmin:SeedDemoData"], "true", StringComparison.OrdinalIgnoreCase);
-
-    // Defense in depth: a client-hosted / dedicated deployment (or ANY Production env) must NEVER run
-    // demo seeders — even if SEED_DEMO_DATA / SeedAdmin__SeedDemoData is accidentally set to "true".
-    // One mis-set env var must not be able to pollute a client database with demo tenants and users.
-    // (This mirrors the builder-time predicate that also neutralizes SeedAdmin:SeedDemoData before
-    // AuthSeeder runs.)
+    // A dedicated deployment is Production OR anything flagged DEDICATED_DEPLOYMENT / CLIENT_DEPLOYMENT.
+    // It gates the one-time platform-owner bootstrap below.
     var dedicatedDeployment =
         app.Environment.IsProduction()
         || string.Equals(Environment.GetEnvironmentVariable("DEDICATED_DEPLOYMENT"), "true", StringComparison.OrdinalIgnoreCase)
         || string.Equals(Environment.GetEnvironmentVariable("CLIENT_DEPLOYMENT"), "true", StringComparison.OrdinalIgnoreCase);
 
-    var seedDemoData = demoDataRequested && !dedicatedDeployment;
-
-    if (demoDataRequested && dedicatedDeployment)
-        logger.LogWarning(
-            "Demo data seeding REQUESTED but REFUSED — this is a Production/dedicated client deployment " +
-            "(IsProduction={IsProd}, DEDICATED_DEPLOYMENT/CLIENT_DEPLOYMENT respected). Demo seeders will NOT run; " +
-            "only idempotent global config (auth bootstrap, GOSI/statutory rules, pricing) is seeded.",
-            app.Environment.IsProduction());
-
-    logger.LogInformation("Demo data seeding: {State} (environment={Env})",
-        seedDemoData ? "ENABLED" : "DISABLED", app.Environment.EnvironmentName);
-
     // ── WAVE 1 B3: bootstrap the FIRST platform operator, independently of demo data ──────────────
-    // This used to run only inside the demo-data block, so a Production or dedicated deployment — where
-    // demo seeding is deliberately refused — could never get a platform operator account seeded at all.
-    // Creating an operator and fabricating demo tenants are different acts and are now gated separately.
+    // Every tenant, tenant user, test and demo account is created by this operator through the
+    // platform-admin API — no seeder, fixture or demo runner may create them (docs/DATA_ENTRY_PATHS.md).
     //
     // It is inert unless PLATFORM_ADMIN_PASSWORD is explicitly supplied, and it no-ops once ANY platform
     // user exists, so it can only ever create the first. On Production it additionally requires
@@ -978,7 +933,7 @@ using (var scope = app.Services.CreateScope())
     // operator on a live system.
     var platformBootstrapRequested =
         !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PLATFORM_ADMIN_PASSWORD"));
-    // Uses the SAME dedicatedDeployment predicate as the demo-seed gate above, not a bare
+    // Uses the dedicatedDeployment predicate above, not a bare
     // IsProduction(). A client-hosted slot commonly runs as Staging with CLIENT_DEPLOYMENT=true, and
     // IsProduction() alone would let PLATFORM_ADMIN_PASSWORD mint a platform OWNER — the omnipotent
     // cross-tenant actor — on that deployment with no explicit bootstrap flag.
@@ -988,93 +943,43 @@ using (var scope = app.Services.CreateScope())
                          StringComparison.OrdinalIgnoreCase);
 
     // The password is the only thing standing between an env var and a cross-tenant superuser, so it is
-    // held to a real bar. SeedAdmin__Password already gets this treatment; this one had none at all,
-    // while docker-compose and CI both ship well-known defaults.
+    // held to a real bar, while docker-compose and CI both ship well-known defaults.
+    //
+    // A weak password SKIPS the bootstrap; it does not stop the service. The distinction cost an
+    // outage on 2026-09-23: this check threw, so setting PLATFORM_ADMIN_BOOTSTRAP with a short
+    // password took production down — including on a deployment whose platform owner already existed
+    // and for which the bootstrap would have been a no-op anyway. The security property is unchanged:
+    // no owner is ever created with a weak password. What changes is the blast radius of getting the
+    // password wrong: one refused seed, loudly logged, instead of a dead API.
+    var platformBootstrapWeakPassword = false;
     if (platformBootstrapRequested && platformBootstrapPermitted && dedicatedDeployment)
     {
-        var pw = Environment.GetEnvironmentVariable("PLATFORM_ADMIN_PASSWORD") ?? string.Empty;
-        var weak = pw.Length < 16
-                   || pw.Contains("ChangeMe", StringComparison.OrdinalIgnoreCase)
-                   || pw.Contains("YourPassword", StringComparison.OrdinalIgnoreCase)
-                   || pw.Contains("PlatformAdmin123", StringComparison.OrdinalIgnoreCase);
-        if (weak)
-            throw new InvalidOperationException(
-                "PLATFORM_ADMIN_BOOTSTRAP is enabled on a production/dedicated deployment but "
-                + "PLATFORM_ADMIN_PASSWORD is weak or a known default. Refusing to seed a platform owner: "
-                + "this account has cross-tenant reach over every customer's payroll data.");
+        platformBootstrapWeakPassword = PlatformOwnerBootstrap.IsWeakBootstrapPassword(
+            Environment.GetEnvironmentVariable("PLATFORM_ADMIN_PASSWORD"));
+        if (platformBootstrapWeakPassword)
+            logger.LogError(
+                "Platform owner bootstrap REFUSED — PLATFORM_ADMIN_PASSWORD is weak or a known default "
+                + "(needs 16+ characters and must not contain ChangeMe/YourPassword/PlatformAdmin123). "
+                + "No platform operator was created; this account would have cross-tenant reach over "
+                + "every customer's payroll data. The service is running: set a strong password and "
+                + "redeploy to create the first operator.");
     }
 
-    if (platformBootstrapRequested && platformBootstrapPermitted)
-        await TrySeedAsync("PlatformOwnerBootstrap", () => DemoDataSeeder.SeedPlatformOwnerOnlyAsync(
+    if (platformBootstrapRequested && platformBootstrapPermitted && !platformBootstrapWeakPassword)
+        await TrySeedAsync("PlatformOwnerBootstrap", () => PlatformOwnerBootstrap.RunAsync(
             dbContext, scope.ServiceProvider.GetRequiredService<IPasswordHasher>(), logger), logger);
     else if (platformBootstrapRequested)
         logger.LogWarning(
             "Platform owner bootstrap REQUESTED but REFUSED — this is a Production environment and "
             + "PLATFORM_ADMIN_BOOTSTRAP is not 'true'. No platform operator was created.");
 
-    if (seedDemoData)
-        await TrySeedAsync("DemoDataSeeder", () => DemoDataSeeder.SeedAsync(
-            dbContext,
-            scope.ServiceProvider.GetRequiredService<IPasswordHasher>(),
-            authSeeder,
-            logger,
-            seedLegacyTenants: false), logger);
-
-    // Enterprise GROUP demo tenants (ALMARAI_TEST/TATA_TEST/EMAAR_TEST) — E2E/demo only, idempotent,
-    // and NEVER enabled in production/dedicated deployments (separate flag from SEED_DEMO_DATA).
-    var enterpriseTestDataRequested = string.Equals(
-        Environment.GetEnvironmentVariable(Zayra.Api.Infrastructure.Seed.EnterpriseGroupSeeder.EnableEnvVar),
-        "true", StringComparison.OrdinalIgnoreCase);
-
-    if (enterpriseTestDataRequested && dedicatedDeployment)
-        logger.LogWarning(
-            "Enterprise GROUP test-data seeding REQUESTED ({Flag}=true) but REFUSED — this is a Production/dedicated " +
-            "client deployment. Enterprise demo tenants will NOT be seeded.",
-            Zayra.Api.Infrastructure.Seed.EnterpriseGroupSeeder.EnableEnvVar);
-
-    if (enterpriseTestDataRequested && !dedicatedDeployment)
-        await TrySeedAsync("EnterpriseGroupSeeder", () => new Zayra.Api.Infrastructure.Seed.EnterpriseGroupSeeder(
-            dbContext,
-            scope.ServiceProvider.GetRequiredService<IPasswordHasher>(),
-            authSeeder,
-            scope.ServiceProvider.GetRequiredService<Zayra.Api.Application.WorkWeek.IWorkWeekService>(),
-            scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger<Zayra.Api.Infrastructure.Seed.EnterpriseGroupSeeder>()).SeedAsync(), logger);
-
     await TrySeedAsync("GosiRuleSeeder",      () => GosiRuleSeeder.SeedDefaultsAsync(dbContext, logger), logger);
     await TrySeedAsync("StatutoryRuleSeeder", () => Zayra.Api.Infrastructure.Seed.StatutoryRuleSeeder.SeedAsync(dbContext, logger), logger);
-        await TrySeedAsync("NitaqatReferenceSeeder", () => Zayra.Api.Infrastructure.Seed.NitaqatReferenceSeeder.SeedAsync(dbContext, logger), logger);
+    await TrySeedAsync("NitaqatReferenceSeeder", () => Zayra.Api.Infrastructure.Seed.NitaqatReferenceSeeder.SeedAsync(dbContext, logger), logger);
 
-    // Pricing config + module catalog must exist even in production (demo seeding is off there),
-    // otherwise the platform-admin pricing/CPQ console is empty. Idempotent (skips when present).
-    await TrySeedAsync("PricingConfigSeeder", () => DemoDataSeeder.SeedPricingConfigAsync(dbContext, logger, CancellationToken.None), logger);
-
-    // ── DEMO-ONLY ZONE ─────────────────────────────────────────────────────────────────────
-    // Every operation that can MUTATE tenant data (deactivate, rename, or create tenants) runs
-    // ONLY when demo seeding is enabled. In production (SeedAdmin__SeedDemoData=false) NOTHING in
-    // this block runs — so a deploy can NEVER wipe, revert, deactivate, or rename a real customer
-    // tenant. The only seeders that run in production are idempotent, additive global config above
-    // (Auth bootstrap, GOSI/statutory rules, pricing) which never delete or mutate customer records.
-    if (seedDemoData)
-    {
-        // Deactivate leftover/garbage demo tenants and soft-delete renamed fragments — demo envs only.
-        await TrySeedAsync("GarbageDemoCleanup", () => CleanDemoKsaSeeder.DeactivateGarbageDemoTenantsAsync(dbContext, logger), logger);
-        await TrySeedAsync("IntelliFlowFragmentCleanup", () => IntelliFlowFragmentCleanup.RunAsync(dbContext, logger), logger);
-
-        // Seed one clean KSA tenant. Idempotent: no-op when slug exists.
-        await TrySeedAsync("CleanDemoKsaSeeder", () => CleanDemoKsaSeeder.SeedAsync(
-            dbContext,
-            scope.ServiceProvider.GetRequiredService<IPasswordHasher>(),
-            authSeeder,
-            logger), logger);
-
-        // Seed one clean IntelliFlow Systems tenant (KSA, 12 employees, locked payroll).
-        // Idempotent: skips if active "intelliflow" slug already exists.
-        await TrySeedAsync("IntelliFlowDemoSeeder", () => IntelliFlowDemoSeeder.SeedAsync(
-            dbContext,
-            scope.ServiceProvider.GetRequiredService<IPasswordHasher>(),
-            authSeeder,
-            logger), logger);
-    }
+    // Pricing config + module catalog (reference data) — otherwise the platform-admin pricing/CPQ
+    // console is empty. Idempotent (skips when present).
+    await TrySeedAsync("PricingConfigSeeder", () => PricingConfigSeeder.SeedAsync(dbContext, logger, CancellationToken.None), logger);
 
     // ── Tenant defaults backfill (runs LAST, and for EVERY tenant) ─────────────────────────────
     // HR letter templates and the timesheet approval route are installed only on the NEW-TENANT
@@ -1084,18 +989,26 @@ using (var scope = app.Services.CreateScope())
     // the first timesheet submitted 422s with no_approval_route. Both modules look shipped and
     // cannot be used, and nothing on the failing screen says why.
     //
-    // Placed here, AFTER the demo-only zone and OUTSIDE it, for two reasons: a demo tenant created
-    // earlier in this same boot must receive the defaults in this boot rather than the next one,
-    // and a real client tenant must receive them in an environment where no demo seeder runs at
-    // all. That is safe because, unlike everything in the block above, this pass creates,
-    // deactivates, renames and overwrites nothing — it is strictly insert-if-absent, so a template
-    // the client has edited is never reverted by a later deploy.
+    // Safe on every boot because this pass creates no tenant or user and deactivates, renames and
+    // overwrites nothing — it is strictly insert-if-absent, so a template the client has edited is
+    // never reverted by a later deploy.
     //
     // Kill switch: TenantDefaults:Backfill=false / TenantDefaults__Backfill=false.
     if (!string.Equals(app.Configuration["TenantDefaults:Backfill"], "false", StringComparison.OrdinalIgnoreCase))
     {
         await TrySeedAsync("TenantDefaultsBackfill",
             () => TenantDefaultsBackfill.RunAsync(dbContext, logger), logger);
+    }
+
+    // Read-only: names every tenant and legal entity that still has NO country, and where to set it.
+    // A tenant created before the home jurisdiction was required (testclaude, evostel) holds
+    // CountryCode = "", which resolves an EMPTY statutory/identity requirement set and blocks employee
+    // creation. Nothing is guessed and nothing is written — a country inferred from a currency or a
+    // slug would seed the wrong labour law in silence. Kill switch: MissingCountryAudit:Enabled=false.
+    if (!string.Equals(app.Configuration["MissingCountryAudit:Enabled"], "false", StringComparison.OrdinalIgnoreCase))
+    {
+        await TrySeedAsync("MissingCountryAudit",
+            () => MissingCountryAudit.RunAsync(dbContext, logger), logger);
     }
 
 }

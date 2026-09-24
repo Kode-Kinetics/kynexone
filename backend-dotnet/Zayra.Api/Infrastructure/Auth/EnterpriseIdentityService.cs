@@ -1,8 +1,11 @@
+using System.Data;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Auth;
@@ -30,40 +33,83 @@ public class EnterpriseIdentityService : IEnterpriseIdentityService
 
     public async Task<EnterpriseIdentitySettingsDto> UpdateSettingsAsync(Guid tenantId, UpdateEnterpriseIdentitySettingsRequest request, RequestContext context, CancellationToken ct)
     {
-        var setting = await EnsureSettingsAsync(tenantId, ct);
-        var originalValues = _db.Entry(setting).CurrentValues.Clone();
-        if (request.SamlEnabled.HasValue) setting.SamlEnabled = request.SamlEnabled.Value;
-        if (request.OidcEnabled.HasValue) setting.OidcEnabled = request.OidcEnabled.Value;
-        if (request.ScimEnabled.HasValue) setting.ScimEnabled = request.ScimEnabled.Value;
-        if (request.ScimDryRun.HasValue) setting.ScimDryRun = request.ScimDryRun.Value;
-        if (request.AllowedDomains is not null) setting.AllowedDomainsCsv = string.Join(",", NormalizeDomains(request.AllowedDomains));
-        if (request.SamlEntityId is not null) setting.SamlEntityId = Clean(request.SamlEntityId, 512);
-        if (request.SamlSsoUrl is not null) setting.SamlSsoUrl = Clean(request.SamlSsoUrl, 1024);
-        if (request.SamlCertificateThumbprint is not null) setting.SamlCertificateThumbprint = Clean(request.SamlCertificateThumbprint, 160);
-        if (request.OidcAuthority is not null) setting.OidcAuthority = Clean(request.OidcAuthority.TrimEnd('/'), 1024);
-        if (request.OidcClientId is not null) setting.OidcClientId = Clean(request.OidcClientId, 256);
-        if (request.OidcClientSecretConfigured.HasValue) setting.OidcClientSecretConfigured = request.OidcClientSecretConfigured.Value;
+        var changedAtUtc = DateTime.UtcNow;
+        var auditId = Guid.NewGuid();
+        EnterpriseIdentitySettingsDto? result = null;
 
-        if (request.EnforceSsoLogin.HasValue)
+        async Task<bool> UpdateOnceAsync(CancellationToken cancellationToken)
         {
-            setting.EnforceSsoLogin = request.EnforceSsoLogin.Value;
-            var validation = Validate(setting);
-            if (setting.EnforceSsoLogin && !validation.IsValid)
+            _db.ChangeTracker.Clear();
+            var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == tenantId, cancellationToken)
+                ?? throw new InvalidOperationException("Tenant not found.");
+            var setting = await _db.TenantIdentityProviderSettings.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.TenantId == tenantId, cancellationToken);
+            if (setting is null)
             {
-                // This build publishes provider metadata but does not consume SAML assertions or
-                // OIDC callbacks. Restore every staged setting so a rejected request cannot be
-                // flushed by a later SaveChanges call on the same scoped DbContext.
-                _db.Entry(setting).CurrentValues.SetValues(originalValues);
-                throw new InvalidOperationException(
-                    "SSO enforcement is unavailable until a federation adapter is installed; local login remains enabled.");
+                setting = new TenantIdentityProviderSetting { TenantId = tenantId };
+                _db.TenantIdentityProviderSettings.Add(setting);
             }
+
+            var originalValues = _db.Entry(setting).CurrentValues.Clone();
+            if (request.SamlEnabled.HasValue) setting.SamlEnabled = request.SamlEnabled.Value;
+            if (request.OidcEnabled.HasValue) setting.OidcEnabled = request.OidcEnabled.Value;
+            if (request.ScimEnabled.HasValue) setting.ScimEnabled = request.ScimEnabled.Value;
+            if (request.ScimDryRun.HasValue) setting.ScimDryRun = request.ScimDryRun.Value;
+            if (request.AllowedDomains is not null) setting.AllowedDomainsCsv = string.Join(",", NormalizeDomains(request.AllowedDomains));
+            if (request.SamlEntityId is not null) setting.SamlEntityId = Clean(request.SamlEntityId, 512);
+            if (request.SamlSsoUrl is not null) setting.SamlSsoUrl = Clean(request.SamlSsoUrl, 1024);
+            if (request.SamlCertificateThumbprint is not null) setting.SamlCertificateThumbprint = Clean(request.SamlCertificateThumbprint, 160);
+            if (request.OidcAuthority is not null) setting.OidcAuthority = Clean(request.OidcAuthority.TrimEnd('/'), 1024);
+            if (request.OidcClientId is not null) setting.OidcClientId = Clean(request.OidcClientId, 256);
+            if (request.OidcClientSecretConfigured.HasValue) setting.OidcClientSecretConfigured = request.OidcClientSecretConfigured.Value;
+
+            if (request.EnforceSsoLogin.HasValue)
+            {
+                setting.EnforceSsoLogin = request.EnforceSsoLogin.Value;
+                var validation = Validate(setting);
+                if (setting.EnforceSsoLogin && !validation.IsValid)
+                {
+                    _db.Entry(setting).CurrentValues.SetValues(originalValues);
+                    throw new InvalidOperationException(
+                        "SSO enforcement is unavailable until a federation adapter is installed; local login remains enabled.");
+                }
+            }
+
+            setting.UpdatedAtUtc = changedAtUtc;
+            setting.UpdatedBy = context.UserId;
+            _db.AuditLogs.Add(AuthAuditEntry.Create(
+                auditId,
+                changedAtUtc,
+                EnterpriseIdentityEventActions.SsoConfigUpdated,
+                "TenantIdentityProviderSetting",
+                setting.Id.ToString(),
+                context with { TenantId = tenant.Id }));
+            await _db.SaveChangesAsync(cancellationToken);
+            result = ToDto(setting);
+            return true;
         }
 
-        setting.UpdatedAtUtc = DateTime.UtcNow;
-        setting.UpdatedBy = context.UserId;
-        await _db.SaveChangesAsync(ct);
-        await _audit.WriteAsync(EnterpriseIdentityEventActions.SsoConfigUpdated, "TenantIdentityProviderSetting", setting.Id.ToString(), context, null, ct);
-        return ToDto(setting);
+        if (_db.Database.IsRelational())
+        {
+            var strategy = _db.Database.CreateExecutionStrategy();
+            await strategy.ExecuteInTransactionAsync(
+                UpdateOnceAsync,
+                // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
+                async cancellationToken => await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
+                    .AnyAsync(x => x.Id == auditId && x.Action == EnterpriseIdentityEventActions.SsoConfigUpdated, cancellationToken),
+                IsolationLevel.ReadCommitted,
+                ct);
+        }
+        else
+        {
+            await UpdateOnceAsync(ct);
+        }
+
+        if (result is not null) return result;
+        var committed = await _db.TenantIdentityProviderSettings.AsNoTracking()
+            .SingleAsync(x => x.TenantId == tenantId, ct);
+        return ToDto(committed);
     }
 
     public async Task<RotateScimTokenResponse> RotateScimTokenAsync(Guid tenantId, RequestContext context, CancellationToken ct)
@@ -139,110 +185,202 @@ public class EnterpriseIdentityService : IEnterpriseIdentityService
 
     public async Task<ScimUserResource> UpsertScimUserAsync(Guid tenantId, ScimUserUpsertRequest request, RequestContext context, CancellationToken ct)
     {
-        var setting = await EnsureSettingsAsync(tenantId, ct);
-        EnsureScimReady(setting);
         var email = ResolveEmail(request);
-        ValidateDomain(setting, email);
         var normalized = AuthService.Normalize(email);
         var externalId = Clean(request.ExternalId ?? string.Empty, 256);
-        var user = await _db.Users.FirstOrDefaultAsync(x =>
-            x.TenantId == tenantId
-            && !x.IsDeleted
-            && ((externalId != "" && x.ExternalId == externalId) || x.NormalizedEmail == normalized), ct);
-
         var active = request.Active ?? true;
-        var action = user is null ? EnterpriseIdentityEventActions.ScimUserCreated : EnterpriseIdentityEventActions.ScimUserUpdated;
-        if (user is null)
+        var changedAtUtc = DateTime.UtcNow;
+        var eventId = Guid.NewGuid();
+        var proposedUserId = Guid.NewGuid();
+        string? unreachablePasswordHash = null;
+        ScimUserResource? result = null;
+        var action = EnterpriseIdentityEventActions.ScimUserUpdated;
+
+        async Task<bool> UpsertOnceAsync(CancellationToken cancellationToken)
         {
-            user = new User
+            _db.ChangeTracker.Clear();
+            var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == tenantId, cancellationToken)
+                ?? throw new InvalidOperationException("Tenant not found.");
+            if (!tenant.IsActive)
+                throw new UnauthorizedAccessException("SCIM provisioning is unavailable for an inactive tenant.");
+
+            var setting = await _db.TenantIdentityProviderSettings.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.TenantId == tenantId, cancellationToken)
+                ?? throw new UnauthorizedAccessException("SCIM is not enabled for this tenant.");
+            EnsureScimReady(setting);
+            ValidateDomain(setting, email);
+
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
+            var matches = await _db.Users.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.TenantId == tenantId
+                    && !x.IsDeleted
+                    && ((externalId != "" && x.ExternalId == externalId) || x.NormalizedEmail == normalized))
+                .OrderBy(x => x.Id)
+                .Take(2)
+                .ToListAsync(cancellationToken);
+            if (matches.Count > 1)
+                throw new InvalidOperationException("SCIM external identifier and email resolve to different users.");
+
+            var user = matches.SingleOrDefault();
+            if (user is not null && !IsScimOwned(user))
+                throw new InvalidOperationException("SCIM cannot take ownership of an existing non-SCIM identity.");
+
+            action = user is null
+                ? EnterpriseIdentityEventActions.ScimUserCreated
+                : EnterpriseIdentityEventActions.ScimUserUpdated;
+            var wasActive = user?.IsActive == true;
+            var responseUser = user is null
+                ? new User
+                {
+                    Id = proposedUserId,
+                    TenantId = tenantId,
+                    PasswordHash = unreachablePasswordHash ??= _passwordHasher.Hash(_tokens.CreateSecureToken() + "!Aa1"),
+                    IsEmailConfirmed = true
+                }
+                : CopyForScimResponse(user);
+
+            ApplyScimState(responseUser, email, normalized, ResolveName(request), externalId, active, user is null, wasActive, changedAtUtc);
+            result = ToScim(responseUser);
+
+            if (!setting.ScimDryRun)
             {
-                TenantId = tenantId,
-                Email = email,
-                NormalizedEmail = normalized,
-                FullName = ResolveName(request),
-                PasswordHash = _passwordHasher.Hash(_tokens.CreateSecureToken() + "!Aa1"),
-                IdentityProvider = EnterpriseIdentityProtocols.Scim,
-                ProvisioningSource = EnterpriseIdentityProtocols.Scim,
-                ExternalId = externalId,
-                AccessMode = active ? AccessModes.EssOnly : AccessModes.NoLogin,
-                Status = active ? "Active" : "Deactivated",
-                IsActive = active,
-                IsEmailConfirmed = true,
-                LastProvisionedAtUtc = DateTime.UtcNow,
-            };
-            if (!setting.ScimDryRun) _db.Users.Add(user);
-        }
-        else
-        {
-            user.Email = email;
-            user.NormalizedEmail = normalized;
-            user.FullName = ResolveName(request);
-            user.ExternalId = externalId == "" ? user.ExternalId : externalId;
-            user.IdentityProvider = EnterpriseIdentityProtocols.Scim;
-            user.ProvisioningSource = EnterpriseIdentityProtocols.Scim;
-            user.LastProvisionedAtUtc = DateTime.UtcNow;
-            user.IsActive = active;
-            user.Status = active ? "Active" : "Deactivated";
-            user.AccessMode = active ? user.AccessMode : AccessModes.NoLogin;
-            user.UpdatedAtUtc = DateTime.UtcNow;
-            if (!active) await RevokeTokensAsync(user.Id, context.IpAddress, ct);
+                if (user is null)
+                {
+                    user = responseUser;
+                    _db.Users.Add(user);
+                }
+                else
+                {
+                    ApplyScimState(user, email, normalized, ResolveName(request), externalId, active, false, wasActive, changedAtUtc);
+                    await InvalidateUserSessionsAsync(user, changedAtUtc, context, cancellationToken);
+                }
+            }
+
+            await RecordEventAsync(
+                eventId,
+                changedAtUtc,
+                tenantId,
+                action,
+                responseUser.ExternalId,
+                setting.ScimDryRun && user is null ? null : responseUser.Id,
+                null,
+                setting.ScimDryRun ? "DryRun" : "Succeeded",
+                context,
+                cancellationToken);
+            await _db.SaveChangesAsync(cancellationToken);
+            return true;
         }
 
-        await RecordEventAsync(tenantId, action, externalId, user.Id, null, setting.ScimDryRun ? "DryRun" : "Succeeded", context, ct);
-        if (!setting.ScimDryRun) await _db.SaveChangesAsync(ct);
-        return ToScim(user);
+        await ExecuteScimMutationAsync(eventId, () => action, UpsertOnceAsync, ct);
+        return result ?? throw new InvalidOperationException("SCIM provisioning outcome could not be reconciled.");
     }
 
     public async Task<ScimUserResource?> PatchScimUserAsync(Guid tenantId, Guid userId, ScimPatchRequest request, RequestContext context, CancellationToken ct)
     {
-        var setting = await EnsureSettingsAsync(tenantId, ct);
-        EnsureScimReady(setting);
-        var user = await _db.Users.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, ct);
-        if (user is null) return null;
+        var changedAtUtc = DateTime.UtcNow;
+        var eventId = Guid.NewGuid();
+        ScimUserResource? result = null;
+        var found = false;
 
-        foreach (var op in request.Operations)
+        async Task<bool> PatchOnceAsync(CancellationToken cancellationToken)
         {
-            if (!op.Op.Equals("replace", StringComparison.OrdinalIgnoreCase)) continue;
-            var path = op.Path ?? string.Empty;
-            if (path.Equals("active", StringComparison.OrdinalIgnoreCase) && TryBoolean(op.Value, out var active))
+            _db.ChangeTracker.Clear();
+            var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == tenantId, cancellationToken);
+            if (tenant is null || !tenant.IsActive) return true;
+            var setting = await _db.TenantIdentityProviderSettings.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.TenantId == tenantId, cancellationToken)
+                ?? throw new UnauthorizedAccessException("SCIM is not enabled for this tenant.");
+            EnsureScimReady(setting);
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
+            var user = await _db.Users.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, cancellationToken);
+            if (user is null) return true;
+            if (!IsScimOwned(user))
+                throw new UnauthorizedAccessException("SCIM cannot mutate an identity it does not own.");
+            found = true;
+
+            var proposed = CopyForScimResponse(user);
+            ApplyScimPatch(proposed, request, changedAtUtc);
+            result = ToScim(proposed);
+
+            if (!setting.ScimDryRun)
             {
-                user.IsActive = active;
-                user.Status = active ? "Active" : "Deactivated";
-                if (!active)
-                {
-                    user.AccessMode = AccessModes.NoLogin;
-                    await RevokeTokensAsync(user.Id, context.IpAddress, ct);
-                }
+                ApplyScimPatch(user, request, changedAtUtc);
+                await InvalidateUserSessionsAsync(user, changedAtUtc, context, cancellationToken);
             }
-            if (path.Equals("displayName", StringComparison.OrdinalIgnoreCase) && op.Value is not null)
-                user.FullName = Clean(op.Value.ToString() ?? user.FullName, 180);
+
+            await RecordEventAsync(
+                eventId,
+                changedAtUtc,
+                tenantId,
+                EnterpriseIdentityEventActions.ScimUserUpdated,
+                user.ExternalId,
+                user.Id,
+                null,
+                setting.ScimDryRun ? "DryRun" : "Succeeded",
+                context,
+                cancellationToken);
+            await _db.SaveChangesAsync(cancellationToken);
+            return true;
         }
 
-        user.IdentityProvider = EnterpriseIdentityProtocols.Scim;
-        user.ProvisioningSource = EnterpriseIdentityProtocols.Scim;
-        user.LastProvisionedAtUtc = DateTime.UtcNow;
-        user.UpdatedAtUtc = DateTime.UtcNow;
-        await RecordEventAsync(tenantId, EnterpriseIdentityEventActions.ScimUserUpdated, user.ExternalId, user.Id, null, setting.ScimDryRun ? "DryRun" : "Succeeded", context, ct);
-        if (!setting.ScimDryRun) await _db.SaveChangesAsync(ct);
-        return ToScim(user);
+        await ExecuteScimMutationAsync(eventId, () => EnterpriseIdentityEventActions.ScimUserUpdated, PatchOnceAsync, ct);
+        return found ? result : null;
     }
 
     public async Task<bool> DeactivateScimUserAsync(Guid tenantId, Guid userId, RequestContext context, CancellationToken ct)
     {
-        var setting = await EnsureSettingsAsync(tenantId, ct);
-        EnsureScimReady(setting);
-        var user = await _db.Users.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, ct);
-        if (user is null) return false;
-        user.IsActive = false;
-        user.Status = "Deactivated";
-        user.AccessMode = AccessModes.NoLogin;
-        user.ProvisioningSource = EnterpriseIdentityProtocols.Scim;
-        user.LastProvisionedAtUtc = DateTime.UtcNow;
-        user.UpdatedAtUtc = DateTime.UtcNow;
-        await RevokeTokensAsync(user.Id, context.IpAddress, ct);
-        await RecordEventAsync(tenantId, EnterpriseIdentityEventActions.ScimUserDeactivated, user.ExternalId, user.Id, null, setting.ScimDryRun ? "DryRun" : "Succeeded", context, ct);
-        if (!setting.ScimDryRun) await _db.SaveChangesAsync(ct);
-        return true;
+        var changedAtUtc = DateTime.UtcNow;
+        var eventId = Guid.NewGuid();
+        var found = false;
+
+        async Task<bool> DeactivateOnceAsync(CancellationToken cancellationToken)
+        {
+            _db.ChangeTracker.Clear();
+            var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == tenantId, cancellationToken);
+            if (tenant is null || !tenant.IsActive) return true;
+            var setting = await _db.TenantIdentityProviderSettings.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.TenantId == tenantId, cancellationToken)
+                ?? throw new UnauthorizedAccessException("SCIM is not enabled for this tenant.");
+            EnsureScimReady(setting);
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
+            var user = await _db.Users.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, cancellationToken);
+            if (user is null) return true;
+            if (!IsScimOwned(user))
+                throw new UnauthorizedAccessException("SCIM cannot deactivate an identity it does not own.");
+            found = true;
+
+            if (!setting.ScimDryRun)
+            {
+                user.IsActive = false;
+                user.Status = "Deactivated";
+                user.AccessMode = AccessModes.NoLogin;
+                user.ProvisioningSource = EnterpriseIdentityProtocols.Scim;
+                user.LastProvisionedAtUtc = changedAtUtc;
+                await InvalidateUserSessionsAsync(user, changedAtUtc, context, cancellationToken);
+            }
+
+            await RecordEventAsync(
+                eventId,
+                changedAtUtc,
+                tenantId,
+                EnterpriseIdentityEventActions.ScimUserDeactivated,
+                user.ExternalId,
+                user.Id,
+                null,
+                setting.ScimDryRun ? "DryRun" : "Succeeded",
+                context,
+                cancellationToken);
+            await _db.SaveChangesAsync(cancellationToken);
+            return true;
+        }
+
+        await ExecuteScimMutationAsync(eventId, () => EnterpriseIdentityEventActions.ScimUserDeactivated, DeactivateOnceAsync, ct);
+        return found;
     }
 
     private async Task<TenantIdentityProviderSetting> EnsureSettingsAsync(Guid tenantId, CancellationToken ct)
@@ -258,29 +396,186 @@ public class EnterpriseIdentityService : IEnterpriseIdentityService
     private async Task<Tenant?> LoadTenantBySlugAsync(string slug, CancellationToken ct) =>
         await _db.Tenants.AsNoTracking().FirstOrDefaultAsync(x => x.Slug == slug.Trim().ToLowerInvariant() && x.IsActive, ct);
 
-    private async Task RevokeTokensAsync(Guid userId, string? ip, CancellationToken ct)
+    private async Task ExecuteScimMutationAsync(
+        Guid eventId,
+        Func<string> action,
+        Func<CancellationToken, Task<bool>> operation,
+        CancellationToken ct)
     {
-        var tokens = await _db.RefreshTokens.Where(x => x.UserId == userId && x.RevokedAtUtc == null).ToListAsync(ct);
-        foreach (var token in tokens)
+        if (!_db.Database.IsRelational())
         {
-            token.RevokedAtUtc = DateTime.UtcNow;
-            token.RevokedByIp = ip;
+            await operation(ct);
+            return;
+        }
+
+        var strategy = _db.Database.CreateExecutionStrategy();
+        await strategy.ExecuteInTransactionAsync(
+            operation,
+            async cancellationToken =>
+            {
+                var expectedAction = action();
+                return await _db.EnterpriseIdentityProvisioningEvents
+                    // IgnoreQueryFilters is intentional: pinned to a unique key or an id set resolved from the tenant-scoped/locked graph above (register §6).
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .AnyAsync(x => x.Id == eventId && x.Action == expectedAction, cancellationToken);
+            },
+            IsolationLevel.ReadCommitted,
+            ct);
+    }
+
+    private async Task InvalidateUserSessionsAsync(
+        User user,
+        DateTime changedAtUtc,
+        RequestContext context,
+        CancellationToken ct)
+    {
+        TenantSessionSecurity.RotateStamp(user, changedAtUtc);
+
+        await _db.MfaChallengeTokens.TagWith(RowLockingInterceptor.ForUpdateTag)
+            .Where(x => x.UserId == user.Id && x.UsedAtUtc == null)
+            .OrderBy(x => x.Id)
+            .Select(x => x.Id)
+            .ToListAsync(ct);
+        await _db.RefreshTokens.TagWith(RowLockingInterceptor.ForUpdateTag)
+            .Where(x => x.UserId == user.Id && x.RevokedAtUtc == null)
+            .OrderBy(x => x.Id)
+            .Select(x => x.Id)
+            .ToListAsync(ct);
+
+        if (_db.Database.IsRelational())
+        {
+            await _db.MfaChallengeTokens
+                .Where(x => x.UserId == user.Id && x.UsedAtUtc == null)
+                .ExecuteUpdateAsync(s => s.SetProperty(x => x.UsedAtUtc, changedAtUtc), ct);
+            await _db.RefreshTokens
+                .Where(x => x.UserId == user.Id && x.RevokedAtUtc == null)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(x => x.RevokedAtUtc, changedAtUtc)
+                    .SetProperty(x => x.RevokedByIp, context.IpAddress), ct);
+            return;
+        }
+
+        foreach (var challenge in await _db.MfaChallengeTokens
+            .Where(x => x.UserId == user.Id && x.UsedAtUtc == null)
+            .ToListAsync(ct))
+            challenge.UsedAtUtc = changedAtUtc;
+        foreach (var token in await _db.RefreshTokens
+            .Where(x => x.UserId == user.Id && x.RevokedAtUtc == null)
+            .ToListAsync(ct))
+        {
+            token.RevokedAtUtc = changedAtUtc;
+            token.RevokedByIp = context.IpAddress;
         }
     }
 
-    private async Task RecordEventAsync(Guid tenantId, string action, string externalId, Guid? userId, int? employeeId, string status, RequestContext context, CancellationToken ct)
+    private async Task RecordEventAsync(
+        Guid eventId,
+        DateTime createdAtUtc,
+        Guid tenantId,
+        string action,
+        string externalId,
+        Guid? userId,
+        int? employeeId,
+        string status,
+        RequestContext context,
+        CancellationToken ct)
     {
         _db.EnterpriseIdentityProvisioningEvents.Add(new EnterpriseIdentityProvisioningEvent
         {
+            Id = eventId,
             TenantId = tenantId,
             Action = action,
             ExternalId = externalId,
             UserId = userId,
             EmployeeId = employeeId,
             Status = status,
-            DetailsJson = JsonSerializer.Serialize(new { actor = context.UserId, source = EnterpriseIdentityProtocols.Scim })
+            DetailsJson = JsonSerializer.Serialize(new { actor = context.UserId, source = EnterpriseIdentityProtocols.Scim }),
+            CreatedAtUtc = createdAtUtc
         });
-        await _audit.WriteAsync(action, "EnterpriseIdentityProvisioningEvent", userId?.ToString(), context, null, ct);
+        await _audit.WriteAsync(
+            action,
+            "EnterpriseIdentityProvisioningEvent",
+            userId?.ToString(),
+            context with { TenantId = tenantId },
+            JsonSerializer.Serialize(new { eventId, status }),
+            ct);
+    }
+
+    private static bool IsScimOwned(User user) =>
+        string.Equals(user.IdentityProvider, EnterpriseIdentityProtocols.Scim, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(user.ProvisioningSource, EnterpriseIdentityProtocols.Scim, StringComparison.OrdinalIgnoreCase);
+
+    private static User CopyForScimResponse(User source) => new()
+    {
+        Id = source.Id,
+        TenantId = source.TenantId,
+        Email = source.Email,
+        NormalizedEmail = source.NormalizedEmail,
+        FullName = source.FullName,
+        PasswordHash = source.PasswordHash,
+        ExternalId = source.ExternalId,
+        IdentityProvider = source.IdentityProvider,
+        ProvisioningSource = source.ProvisioningSource,
+        AccessMode = source.AccessMode,
+        Status = source.Status,
+        IsActive = source.IsActive,
+        IsEmailConfirmed = source.IsEmailConfirmed,
+        LastProvisionedAtUtc = source.LastProvisionedAtUtc,
+        CreatedAtUtc = source.CreatedAtUtc,
+        UpdatedAtUtc = source.UpdatedAtUtc
+    };
+
+    private static void ApplyScimState(
+        User user,
+        string email,
+        string normalizedEmail,
+        string fullName,
+        string externalId,
+        bool active,
+        bool isNew,
+        bool wasActive,
+        DateTime changedAtUtc)
+    {
+        user.Email = email;
+        user.NormalizedEmail = normalizedEmail;
+        user.FullName = fullName;
+        if (externalId != "") user.ExternalId = externalId;
+        user.IdentityProvider = EnterpriseIdentityProtocols.Scim;
+        user.ProvisioningSource = EnterpriseIdentityProtocols.Scim;
+        user.LastProvisionedAtUtc = changedAtUtc;
+        user.IsActive = active;
+        user.Status = active ? "Active" : "Deactivated";
+        // A SCIM reactivation must not resurrect the account's old authorization. Newly provisioned
+        // users start ESS-only; a previously deactivated user stays NoLogin until an administrator
+        // explicitly re-grants access through the controlled access-management workflow.
+        user.AccessMode = active
+            ? (isNew ? AccessModes.EssOnly : wasActive ? user.AccessMode : AccessModes.NoLogin)
+            : AccessModes.NoLogin;
+        user.UpdatedAtUtc = changedAtUtc;
+    }
+
+    private static void ApplyScimPatch(User user, ScimPatchRequest request, DateTime changedAtUtc)
+    {
+        var wasActive = user.IsActive;
+        foreach (var op in request.Operations)
+        {
+            if (!op.Op.Equals("replace", StringComparison.OrdinalIgnoreCase)) continue;
+            var path = op.Path ?? string.Empty;
+            if (path.Equals("active", StringComparison.OrdinalIgnoreCase) && TryBoolean(op.Value, out var active))
+            {
+                user.IsActive = active;
+                user.Status = active ? "Active" : "Deactivated";
+                if (!active || !wasActive) user.AccessMode = AccessModes.NoLogin;
+            }
+            if (path.Equals("displayName", StringComparison.OrdinalIgnoreCase) && op.Value is not null)
+                user.FullName = Clean(op.Value.ToString() ?? user.FullName, 180);
+        }
+
+        user.IdentityProvider = EnterpriseIdentityProtocols.Scim;
+        user.ProvisioningSource = EnterpriseIdentityProtocols.Scim;
+        user.LastProvisionedAtUtc = changedAtUtc;
+        user.UpdatedAtUtc = changedAtUtc;
     }
 
     private static EnterpriseIdentityValidationResult Validate(TenantIdentityProviderSetting setting)

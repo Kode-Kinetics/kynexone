@@ -87,51 +87,12 @@ public class CompaniesController : ControllerBase
             var tenantId = this.GetTenantId();
             if (tenantId is null) return Unauthorized();
 
-            // ── Subscription limit check ───────────────────────────────────────
-            var sub = await _db.TenantSubscriptions.AsNoTracking()
-                .FirstOrDefaultAsync(s => s.TenantId == tenantId, cancellationToken);
-            if (sub is not null && sub.MaxCompanies > 0)
-            {
-                var companyCount = await _db.Companies.CountAsync(c => c.TenantId == tenantId, cancellationToken);
-                if (companyCount >= sub.MaxCompanies)
-                    return StatusCode(402, new
-                    {
-                        error          = "company_limit_reached",
-                        currentCount   = companyCount,
-                        maxAllowed     = sub.MaxCompanies,
-                        message        = $"Your plan allows up to {sub.MaxCompanies} legal compan{(sub.MaxCompanies == 1 ? "y" : "ies")}. Upgrade your plan to add more.",
-                        upgradeRequired = true,
-                    });
-            }
+            // The subscription limit and the three governance gates live in CompanyCreationGate so
+            // that the CSV importer further down passes exactly the same four checks this form does.
+            var gate = await CompanyCreationGate.EvaluateAsync(_db, tenantId.Value, cancellationToken);
+            if (!gate.Allowed) return GateRefusal(gate);
 
-            // ── Governance gates (product behavior, distinct from the commercial
-            //    MaxCompanies limit above) ──────────────────────────────────────────
-            var tenant = await _db.Tenants.AsNoTracking()
-                .Where(t => t.Id == tenantId)
-                .Select(t => new { t.AccountType, t.CompanyCreationMode })
-                .FirstOrDefaultAsync(cancellationToken);
-            if (tenant is null) return Unauthorized();
-
-            // PlatformControlled: only platform admins create companies for this tenant.
-            if (tenant.CompanyCreationMode == Zayra.Api.Domain.Entities.CompanyCreationModes.PlatformControlled)
-                return StatusCode(403, new
-                {
-                    error = "company_creation_platform_controlled",
-                    message = "Company creation for this account is managed by the platform. Contact your account manager.",
-                });
-
-            // Account type: only Group tenants operate multiple active legal entities.
-            var existingCount = await _db.Companies.CountAsync(c => c.TenantId == tenantId, cancellationToken);
-            if (existingCount >= 1 && tenant.AccountType != Zayra.Api.Domain.Entities.TenantAccountTypes.Group)
-                return Conflict(new
-                {
-                    error = "account_type_single_company",
-                    message = "This account is configured as a single-company account. Ask your platform administrator to enable the Group account type to manage multiple legal entities.",
-                });
-
-            // Draft-approval mode: group admins submit drafts; a platform admin activates.
-            var asDraft = tenant.CompanyCreationMode == Zayra.Api.Domain.Entities.CompanyCreationModes.GroupDraftPlatformApproval;
-            var company = await _organization.CreateCompanyAsync(tenantId.Value, request, Context(), cancellationToken, asDraft);
+            var company = await _organization.CreateCompanyAsync(tenantId.Value, request, Context(), cancellationToken, gate.AsDraft);
             return CreatedAtAction(nameof(Get), new { id = company.Id }, company);
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
@@ -145,39 +106,15 @@ public class CompaniesController : ControllerBase
     [Authorize(Roles = "Admin")]
     public async Task<IActionResult> SetStatus(Guid id, [FromBody] CompanyStatusRequest request, CancellationToken cancellationToken)
     {
-        var tenantId = this.GetTenantId();
-        if (tenantId is null) return Unauthorized();
-
-        var company = await _db.Companies.FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Id == id && !c.IsDeleted, cancellationToken);
-        if (company is null) return NotFound();
-
-        if (!request.IsActive)
+        _ = id;
+        _ = request;
+        _ = cancellationToken;
+        await Task.CompletedTask;
+        return Conflict(new
         {
-            var otherActive = await _db.Companies.CountAsync(
-                c => c.TenantId == tenantId && c.Id != id && c.IsActive && !c.IsDeleted, cancellationToken);
-            if (otherActive == 0)
-                return Conflict(new
-                {
-                    error = "last_active_company",
-                    message = "Cannot deactivate the only active company. Activate another company first.",
-                });
-        }
-
-        var previous = company.IsActive;
-        company.IsActive = request.IsActive;
-        company.UpdatedAtUtc = DateTime.UtcNow;
-        _db.AdminAuditLogs.Add(new AdminAuditLog
-        {
-            TenantId = tenantId.Value,
-            CompanyId = company.Id,
-            EntityType = nameof(Company),
-            EntityId = company.Id.ToString(),
-            Action = request.IsActive ? "CompanyReactivated" : "CompanySuspended",
-            OldValuesJson = System.Text.Json.JsonSerializer.Serialize(new { isActive = previous }),
-            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { isActive = company.IsActive }),
+            error = "company_status_change_disabled",
+            message = "Company suspension and reactivation are temporarily disabled pending atomic authorization invalidation."
         });
-        await _db.SaveChangesAsync(cancellationToken);
-        return Ok(company.ToDto());
     }
 
     [HttpPut("{id:guid}")]
@@ -234,121 +171,191 @@ public class CompaniesController : ControllerBase
     // ── Import Preview ────────────────────────────────────────────────────────
 
     [HttpPost("import-preview")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> ImportPreview([FromBody] CompanyImportRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        return Ok(await RunPreviewAsync(tenantId.Value, req.Csv, ct));
+        return await RunPreviewAsync(tenantId.Value, req.Csv, ct);
     }
 
     // ── Import Commit ─────────────────────────────────────────────────────────
 
     [HttpPost("import")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> Import([FromBody] CompanyImportRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        return Ok(await RunCommitAsync(tenantId.Value, req.Csv, ct));
+        return await RunCommitAsync(tenantId.Value, req.Csv, ct);
     }
 
-    private async Task<ImportPreviewResult> RunPreviewAsync(Guid tenantId, string csv, CancellationToken ct)
+    /// <summary>Render a gate refusal as the HTTP status the form has always returned for it.</summary>
+    private ObjectResult GateRefusal(CompanyCreationGateDecision gate) => gate.Verdict switch
     {
+        CompanyCreationVerdict.SubscriptionLimitReached => StatusCode(402, new
+        {
+            error = gate.ErrorCode,
+            currentCount = gate.CurrentCount,
+            maxAllowed = gate.MaxAllowed,
+            message = gate.Message,
+            upgradeRequired = true,
+        }),
+        CompanyCreationVerdict.PlatformControlled => StatusCode(403, new { error = gate.ErrorCode, message = gate.Message }),
+        CompanyCreationVerdict.SingleCompanyAccount => Conflict(new { error = gate.ErrorCode, message = gate.Message }),
+        _ => Unauthorized(new { error = gate.ErrorCode, message = gate.Message }),
+    };
+
+    /// <summary>
+    /// One row of the companies CSV, validated. Kept separate from the writing so preview and commit
+    /// cannot drift into judging the same spreadsheet differently.
+    /// </summary>
+    private sealed record CompanyImportRow(int RowNumber, string Name, CompanyRequest? Request, List<string> Errors);
+
+    /// <summary>
+    /// Parse and validate every row. Cross-references and business gates are NOT evaluated here —
+    /// those belong to OrganizationSetupService and CompanyCreationGate, which both doors call.
+    /// </summary>
+    private static List<CompanyImportRow> ReadRows(
+        IReadOnlyList<Dictionary<string, string>> rows,
+        IReadOnlyDictionary<string, Company> existingByName)
+    {
+        var parsed = new List<CompanyImportRow>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        for (int i = 0; i < rows.Count; i++)
+        {
+            var row = rows[i];
+            var rowNum = i + 2;
+            var name = row.GetValueOrDefault("LegalNameEn", string.Empty).Trim();
+            var country = row.GetValueOrDefault("CountryCode", string.Empty).Trim();
+            var regNo = row.GetValueOrDefault("RegistrationNumber", string.Empty).Trim();
+            var errors = new List<string>();
+
+            if (string.IsNullOrWhiteSpace(name)) errors.Add("LegalNameEn is required");
+            if (string.IsNullOrWhiteSpace(country)) errors.Add("CountryCode is required");
+            if (string.IsNullOrWhiteSpace(regNo)) errors.Add("RegistrationNumber is required");
+            if (!string.IsNullOrWhiteSpace(name) && !seen.Add(name)) errors.Add($"Duplicate LegalNameEn '{name}' in this batch");
+
+            if (errors.Count > 0) { parsed.Add(new CompanyImportRow(rowNum, name, null, errors)); continue; }
+
+            existingByName.TryGetValue(OrgCodes.Normalize(name), out var existing);
+
+            var currency = row.GetValueOrDefault("DefaultCurrency", string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(currency)) currency = existing?.DefaultCurrency is { Length: > 0 } c ? c : "USD";
+
+            // A blank or absent IsActive cell means "leave this company as it is", never "activate it".
+            // Activation is a controlled workflow; UpdateCompanyAsync refuses a change here by design.
+            var isActive = row.TryGetValue("IsActive", out var activeValue) && !string.IsNullOrWhiteSpace(activeValue)
+                ? !string.Equals(activeValue.Trim(), "false", StringComparison.OrdinalIgnoreCase)
+                : existing?.IsActive ?? true;
+
+            parsed.Add(new CompanyImportRow(rowNum, name, new CompanyRequest(
+                LegalNameEn: name,
+                LegalNameAr: row.GetValueOrDefault("LegalNameAr", existing?.LegalNameAr ?? string.Empty).Trim(),
+                TradeName: row.GetValueOrDefault("TradeName", existing?.TradeName ?? string.Empty).Trim(),
+                CountryCode: country,
+                Jurisdiction: row.GetValueOrDefault("Jurisdiction", string.Empty).Trim(),
+                RegistrationNumber: regNo,
+                TaxNumber: row.GetValueOrDefault("TaxNumber", existing?.TaxNumber ?? string.Empty).Trim(),
+                WpsEmployerId: row.GetValueOrDefault("WpsEmployerId", string.Empty).Trim(),
+                GosiEmployerId: row.GetValueOrDefault("GosiEmployerId", string.Empty).Trim(),
+                QiwaEstablishmentId: row.GetValueOrDefault("QiwaEstablishmentId", string.Empty).Trim(),
+                DefaultCurrency: currency,
+                // Not in the CSV at all. Carried over from the existing row so an import cannot wipe
+                // the config every employee's work email is derived from.
+                EmailDomain: existing?.EmailDomain ?? string.Empty,
+                WorkEmailPattern: existing?.WorkEmailPattern ?? WorkEmailPatterns.FirstLast,
+                IsActive: isActive), errors));
+        }
+
+        return parsed;
+    }
+
+    private async Task<IActionResult> RunPreviewAsync(Guid tenantId, string csv, CancellationToken ct)
+    {
+        var companies = await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && !c.IsDeleted).ToListAsync(ct);
+        if (!OrgCodes.TryBuildLookup(companies, c => c.LegalNameEn, out var existingByName, out var collisions))
+            return Conflict(OrgCodeCollision.Payload("company", "LegalNameEn", collisions));
+
         var rows = Csv.Parse(csv);
-        var existingByName = await _db.Companies.AsNoTracking()
-            .Where(c => c.TenantId == tenantId && !c.IsDeleted)
-            .ToDictionaryAsync(c => c.LegalNameEn.ToUpperInvariant(), ct);
+        var parsed = ReadRows(rows, existingByName);
         var rowResults = new List<ImportRowResult>();
         int wouldCreate = 0, wouldUpdate = 0, wouldSkip = 0;
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        for (int i = 0; i < rows.Count; i++)
+        foreach (var row in parsed)
         {
-            var row = rows[i]; var rowNum = i + 2;
-            var name = row.GetValueOrDefault("LegalNameEn", string.Empty).Trim();
-            var country = row.GetValueOrDefault("CountryCode", string.Empty).Trim();
-            var regNo = row.GetValueOrDefault("RegistrationNumber", string.Empty).Trim();
-            var errors = new List<string>();
-            if (string.IsNullOrWhiteSpace(name)) errors.Add("LegalNameEn is required");
-            if (string.IsNullOrWhiteSpace(country)) errors.Add("CountryCode is required");
-            if (string.IsNullOrWhiteSpace(regNo)) errors.Add("RegistrationNumber is required");
-            if (!string.IsNullOrWhiteSpace(name) && seen.Contains(name)) errors.Add($"Duplicate LegalNameEn '{name}' in this batch");
-            if (errors.Count > 0) { wouldSkip++; rowResults.Add(new ImportRowResult(rowNum, name, name, ImportRowStatus.Error, errors, new List<string>())); continue; }
-            seen.Add(name);
-            bool exists = existingByName.ContainsKey(name.ToUpperInvariant());
-            if (exists) wouldUpdate++; else wouldCreate++;
-            rowResults.Add(new ImportRowResult(rowNum, name, name, ImportRowStatus.Ok, errors, new List<string>()));
+            var errors = new List<string>(row.Errors);
+            if (errors.Count == 0)
+            {
+                if (existingByName.ContainsKey(OrgCodes.Normalize(row.Name)))
+                {
+                    wouldUpdate++;
+                }
+                else
+                {
+                    // Dry-run the same gates the commit will apply, counting the rows this batch has
+                    // already spent, so "would create 4" cannot become "created 1, refused 3".
+                    var gate = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct, wouldCreate);
+                    if (gate.Allowed) wouldCreate++;
+                    else errors.Add(gate.Message);
+                }
+            }
+
+            if (errors.Count > 0) wouldSkip++;
+            rowResults.Add(new ImportRowResult(
+                row.RowNumber, row.Name, row.Name,
+                errors.Count > 0 ? ImportRowStatus.Error : ImportRowStatus.Ok,
+                errors, Array.Empty<string>()));
         }
-        return new ImportPreviewResult(rows.Count, wouldCreate, wouldUpdate, wouldSkip, rowResults);
+
+        return Ok(new ImportPreviewResult(rows.Count, wouldCreate, wouldUpdate, wouldSkip, rowResults));
     }
 
-    private async Task<ImportCommitResult> RunCommitAsync(Guid tenantId, string csv, CancellationToken ct)
+    private async Task<IActionResult> RunCommitAsync(Guid tenantId, string csv, CancellationToken ct)
     {
+        var companies = await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && !c.IsDeleted).ToListAsync(ct);
+        if (!OrgCodes.TryBuildLookup(companies, c => c.LegalNameEn, out var existingByName, out var collisions))
+            return Conflict(OrgCodeCollision.Payload("company", "LegalNameEn", collisions));
+
         var rows = Csv.Parse(csv);
-        var existingByName = await _db.Companies
-            .Where(c => c.TenantId == tenantId && !c.IsDeleted)
-            .ToDictionaryAsync(c => c.LegalNameEn.ToUpperInvariant(), ct);
+        var parsed = ReadRows(rows, existingByName);
+        var context = Context();
         var rowResults = new List<ImportRowResult>();
         int created = 0, updated = 0, skipped = 0;
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        for (int i = 0; i < rows.Count; i++)
+        foreach (var row in parsed)
         {
-            var row = rows[i]; var rowNum = i + 2;
-            var name = row.GetValueOrDefault("LegalNameEn", string.Empty).Trim();
-            var country = row.GetValueOrDefault("CountryCode", string.Empty).Trim();
-            var regNo = row.GetValueOrDefault("RegistrationNumber", string.Empty).Trim();
-            var errors = new List<string>();
-            if (string.IsNullOrWhiteSpace(name)) errors.Add("LegalNameEn is required");
-            if (string.IsNullOrWhiteSpace(country)) errors.Add("CountryCode is required");
-            if (string.IsNullOrWhiteSpace(regNo)) errors.Add("RegistrationNumber is required");
-            if (!string.IsNullOrWhiteSpace(name) && seen.Contains(name)) errors.Add($"Duplicate LegalNameEn '{name}' in this batch");
-            if (errors.Count > 0) { skipped++; rowResults.Add(new ImportRowResult(rowNum, name, name, ImportRowStatus.Error, errors, new List<string>())); continue; }
-            seen.Add(name);
-            bool isActive = !row.TryGetValue("IsActive", out var av) || !string.Equals(av, "false", StringComparison.OrdinalIgnoreCase);
-            var currency = row.GetValueOrDefault("DefaultCurrency", "USD").Trim();
-            if (string.IsNullOrWhiteSpace(currency)) currency = "USD";
-            var jurisdiction = row.GetValueOrDefault("Jurisdiction", string.Empty).Trim();
-            var wpsEmployerId = row.GetValueOrDefault("WpsEmployerId", string.Empty).Trim();
-            var gosiEmployerId = row.GetValueOrDefault("GosiEmployerId", string.Empty).Trim();
-            var qiwaEstablishmentId = row.GetValueOrDefault("QiwaEstablishmentId", string.Empty).Trim();
-
-            if (existingByName.TryGetValue(name.ToUpperInvariant(), out var existing))
+            var errors = new List<string>(row.Errors);
+            if (errors.Count == 0)
             {
-                existing.LegalNameAr = row.GetValueOrDefault("LegalNameAr", existing.LegalNameAr).Trim();
-                existing.TradeName = row.GetValueOrDefault("TradeName", existing.TradeName).Trim();
-                existing.CountryCode = country;
-                existing.Jurisdiction = jurisdiction;
-                existing.RegistrationNumber = regNo;
-                existing.TaxNumber = row.GetValueOrDefault("TaxNumber", existing.TaxNumber).Trim();
-                existing.WpsEmployerId = wpsEmployerId;
-                existing.GosiEmployerId = gosiEmployerId;
-                existing.QiwaEstablishmentId = qiwaEstablishmentId;
-                existing.DefaultCurrency = currency; existing.IsActive = isActive;
-                existing.UpdatedAtUtc = DateTime.UtcNow; updated++;
-            }
-            else
-            {
-                _db.Companies.Add(new Company
+                try
                 {
-                    TenantId = tenantId, LegalNameEn = name,
-                    LegalNameAr = row.GetValueOrDefault("LegalNameAr", string.Empty).Trim(),
-                    TradeName = row.GetValueOrDefault("TradeName", string.Empty).Trim(),
-                    CountryCode = country,
-                    Jurisdiction = jurisdiction,
-                    RegistrationNumber = regNo,
-                    TaxNumber = row.GetValueOrDefault("TaxNumber", string.Empty).Trim(),
-                    WpsEmployerId = wpsEmployerId,
-                    GosiEmployerId = gosiEmployerId,
-                    QiwaEstablishmentId = qiwaEstablishmentId,
-                    DefaultCurrency = currency, IsActive = isActive,
-                }); created++;
+                    if (existingByName.TryGetValue(OrgCodes.Normalize(row.Name), out var existing))
+                    {
+                        await _organization.UpdateCompanyAsync(tenantId, existing.Id, row.Request!, context, ct);
+                        updated++;
+                    }
+                    else
+                    {
+                        var gate = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct);
+                        if (!gate.Allowed) errors.Add(gate.Message);
+                        else { await _organization.CreateCompanyAsync(tenantId, row.Request!, context, ct, gate.AsDraft); created++; }
+                    }
+                }
+                catch (InvalidOperationException ex) { errors.Add(ex.Message); }
             }
-            rowResults.Add(new ImportRowResult(rowNum, name, name, ImportRowStatus.Ok, errors, new List<string>()));
+
+            if (errors.Count > 0) skipped++;
+            rowResults.Add(new ImportRowResult(
+                row.RowNumber, row.Name, row.Name,
+                errors.Count > 0 ? ImportRowStatus.Error : ImportRowStatus.Ok,
+                errors, Array.Empty<string>()));
         }
-        await _db.SaveChangesAsync(ct);
-        return new ImportCommitResult(rows.Count, created, updated, skipped, rowResults, Array.Empty<string>());
+
+        return Ok(new ImportCommitResult(rows.Count, created, updated, skipped, rowResults, Array.Empty<string>()));
     }
 
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), this.GetUserId(), this.GetTenantId());

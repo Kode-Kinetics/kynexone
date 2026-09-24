@@ -270,6 +270,9 @@ public class TenantProvisioningTests
 
         var company = MakeCompany(tenantId, "TP-BlockDelete");
         db.Companies.Add(company);
+        // A second active company, so the separate "only active company" guard is not what blocks
+        // this delete: the active-employee guard must fire on its own.
+        db.Companies.Add(MakeCompany(tenantId, "TP-BlockDelete-Other"));
         db.Employees.Add(MakeEmployee(tenantId, "TP-BD-E1", company.Id));
         await db.SaveChangesAsync();
 
@@ -436,7 +439,7 @@ public class TenantProvisioningTests
         db.Tenants.Add(tenant);
         await db.SaveChangesAsync();
 
-        var result = await Zayra.Api.Infrastructure.Seed.TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, CancellationToken.None);
+        var result = await Zayra.Api.Infrastructure.Seed.TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, "SA", CancellationToken.None);
 
         // Country payroll rules present; UAE weekend corrected to Sat-Sun; packs tier-tagged.
         var countryRules = await db.CountryPayrollRules.Where(r => r.TenantId == tenant.Id).ToListAsync();
@@ -490,7 +493,7 @@ public class TenantProvisioningTests
         var mdValueCount = await db.MasterDataValues.CountAsync(v => v.TenantId == tenant.Id);
 
         // ── Idempotency: re-run installs NOTHING new and never duplicates ──
-        var second = await Zayra.Api.Infrastructure.Seed.TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, CancellationToken.None);
+        var second = await Zayra.Api.Infrastructure.Seed.TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, "SA", CancellationToken.None);
         second.CountryRules.Should().Be(0);
         second.MasterDataTypes.Should().Be(0);
         second.MasterDataValues.Should().Be(0);

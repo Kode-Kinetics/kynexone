@@ -11,6 +11,10 @@ ARG NEXT_PUBLIC_API_URL=http://backend:5117
 ARG NEXT_PUBLIC_API_BASE_URL=http://backend:5117
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
+# No retry loop: this step no longer reaches the public internet. All six typefaces are
+# vendored as .woff2 in app/fonts and loaded with `next/font/local`, so the build does not
+# fetch from fonts.googleapis.com and cannot fail on it. A failure here is now a real failure —
+# do not wrap it in attempts, which is exactly what would hide the next one.
 RUN npm run build
 
 ENV NODE_ENV=production

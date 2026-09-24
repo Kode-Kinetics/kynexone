@@ -294,7 +294,7 @@ export function ScreenTour() {
             navigationRef.navigate('ForgotPassword' as never);
             log('STEP', 'ForgotPassword');
             await result('forgot-password', () =>
-              authApi.forgotPassword(process.env.EXPO_PUBLIC_TOUR_EMAIL!, process.env.EXPO_PUBLIC_TOUR_TENANT)
+              authApi.forgotPassword(process.env.EXPO_PUBLIC_TOUR_EMAIL!, process.env.EXPO_PUBLIC_TOUR_TENANT!)
             );
           }
           log('DONE');

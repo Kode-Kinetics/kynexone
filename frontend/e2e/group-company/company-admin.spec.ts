@@ -9,7 +9,7 @@
 import { test, expect } from '@playwright/test';
 import {
   assertStackReachable,
-  groupSeedMissingReason,
+  assertFixtureWorld,
   newApi,
   apiLogin,
   tryApiLogin,
@@ -27,20 +27,19 @@ import {
   ALMARAI_SIBLING_CODES,
   empCodePrefix,
 } from './helpers';
+import { MISSING_WORLD } from '../world';
 
 const DAIRY = 'ALM-DAIRY-KSA';
 const BAKERY = 'ALM-BAKERY-KSA';
 const COMPANY_ADMIN = companyUser('admin', DAIRY); // admin@alm-dairy-ksa.almarai-test.local
 const OWNER = groupUser('owner');
 
-let skipReason: string | null = null;
 let bakeryId: string | null = null;
 
 test.describe('Group→Company: company admin (ALM-DAIRY-KSA)', () => {
   test.beforeAll(async () => {
     await assertStackReachable();   // hard-fails when the stack is down; never skips
-    skipReason = (await groupSeedMissingReason(COMPANY_ADMIN));
-    if (skipReason) return;
+    await assertFixtureWorld(COMPANY_ADMIN);
 
     // Resolve the sibling (ALM-BAKERY-KSA) company id via a group-scope user —
     // the company admin cannot see it, which is exactly the point.
@@ -54,10 +53,6 @@ test.describe('Group→Company: company admin (ALM-DAIRY-KSA)', () => {
     } finally {
       await api.dispose().catch(() => {});
     }
-  });
-
-  test.beforeEach(() => {
-    test.skip(skipReason !== null, skipReason ?? '');
   });
 
   test('API: company admin sees only ALM-DAIRY-KSA in /api/companies (and me.companies)', async () => {
@@ -102,7 +97,12 @@ test.describe('Group→Company: company admin (ALM-DAIRY-KSA)', () => {
   });
 
   test('API tamper: X-Company-Id = ALM-BAKERY-KSA id fails closed (empty data, no sibling codes)', async () => {
-    test.skip(bakeryId === null, `could not resolve ${BAKERY} company id via group owner — cannot run tamper check`);
+    // The fixture world guarantees this company exists, so "I could not resolve it" is a broken
+    // world or a broken /api/companies — never a reason to pass the tamper check by not running it.
+    expect(
+      bakeryId,
+      `Could not resolve ${BAKERY} via the group owner, so the X-Company-Id tamper check cannot run.\n${MISSING_WORLD}`,
+    ).not.toBeNull();
 
     const api = await newApi();
     try {
