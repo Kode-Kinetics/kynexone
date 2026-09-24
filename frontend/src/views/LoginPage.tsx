@@ -304,7 +304,7 @@ export function LoginPage() {
                       </Field>
 
                       <Feedback error={error} info={info} />
-                      <Submit busy={busy} label="Sign in" />
+                      <Submit busy={busy} label="Sign in" busyLabel="Signing in…" />
                     </form>
                   </>
                 )}
@@ -324,7 +324,7 @@ export function LoginPage() {
                         className="lx-in lx-in-mono" placeholder="your-workspace" autoComplete="organization" required />
                     </Field>
                     <Feedback error={error} info={info} />
-                    <Submit busy={busy} label="Send reset link" />
+                    <Submit busy={busy} label="Send reset link" busyLabel="Sending…" />
                   </form>
                 )}
 
@@ -339,7 +339,7 @@ export function LoginPage() {
                         className="lx-in lx-in-code" placeholder="000000" autoComplete="one-time-code" autoFocus required />
                     </Field>
                     <Feedback error={error} info={info} />
-                    <Submit busy={busy} label="Verify" disabled={totpCode.length !== 6} />
+                    <Submit busy={busy} label="Verify" busyLabel="Verifying…" disabled={totpCode.length !== 6} />
                   </form>
                 )}
 
@@ -362,7 +362,7 @@ export function LoginPage() {
                         className="lx-in lx-in-code" placeholder="000000" autoComplete="one-time-code" required />
                     </Field>
                     <Feedback error={error} info={info} />
-                    <Submit busy={busy} label="Enable MFA" disabled={totpCode.length !== 6 || !enrollmentSecret} />
+                    <Submit busy={busy} label="Enable MFA" busyLabel="Enabling…" disabled={totpCode.length !== 6 || !enrollmentSecret} />
                   </form>
                 )}
 
@@ -456,10 +456,23 @@ function Field({ legend, htmlFor, aside, hint, children }: {
 }
 
 /** The key. It is the brightest object on the page, because you press it. */
-function Submit({ busy, label, disabled }: { busy: boolean; label: string; disabled?: boolean }) {
+/*  The label STAYS while the request is in flight. Swapping it out for a bare
+ *  spinner stripped the button of its accessible name at exactly the moment a
+ *  screen-reader user needs it — the control went from "Sign in, button" to an
+ *  unnamed disabled button, and `aria-busy` alone does not say what is busy.
+ *  It also left `.lx-submit`'s `gap: 9px` dead, which is the tell that
+ *  spinner-beside-label was the original intent.
+ *
+ *  `busyLabel` is also the non-motion alternative the reduced-motion path
+ *  leans on: there the ring is hidden outright, so the word is the only thing
+ *  left to carry the state. */
+function Submit({ busy, label, busyLabel, disabled }: {
+  busy: boolean; label: string; busyLabel: string; disabled?: boolean;
+}) {
   return (
     <button type="submit" disabled={busy || disabled} aria-busy={busy} className="lx-submit">
-      {busy ? <span className="lx-spin" aria-hidden /> : label}
+      {busy && <span className="lx-spin" aria-hidden />}
+      {busy ? busyLabel : label}
     </button>
   );
 }
