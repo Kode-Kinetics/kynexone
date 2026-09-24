@@ -193,6 +193,51 @@ public class PlatformEmailSettingsTests : PlatformTestBase
     }
 
     [Fact]
+    public async Task UpdateSmtp_AuditsTheChange_WithoutRecordingThePassword()
+    {
+        using var db = CreateDb();
+        var controller = CreateController(db);
+        var protection = Protection();
+        const string plaintext = "GoDaddyMailbox#2026";
+
+        await controller.UpdateSmtp(GoDaddyRequest(password: plaintext), protection, default);
+
+        var entry = await db.AdminAuditLogs.SingleAsync(x => x.Action == "SmtpConfigUpdated");
+
+        // Redirecting every outbound platform email is at least as consequential as maintenance
+        // mode, which was already audited.
+        entry.NewValuesJson.Should().Contain("smtpout.secureserver.net").And.Contain("godaddy");
+        entry.NewValuesJson.Should().Contain("passwordChanged");
+
+        // The relay password must never land in the audit trail.
+        entry.NewValuesJson.Should().NotContain(plaintext);
+        entry.OldValuesJson.Should().NotContain(plaintext);
+    }
+
+    [Fact]
+    public async Task UpdateSmtp_RecordsWhatTheRelayWasChangedFrom()
+    {
+        using var db = CreateDb();
+        var controller = CreateController(db);
+        var protection = Protection();
+
+        await controller.UpdateSmtp(GoDaddyRequest(), protection, default);
+        await controller.UpdateSmtp(
+            GoDaddyRequest(password: "") with { Host = "smtp.sendgrid.net", Provider = "sendgrid" },
+            protection, default);
+
+        var entries = await db.AdminAuditLogs.Where(x => x.Action == "SmtpConfigUpdated").ToListAsync();
+        entries.Should().HaveCount(2);
+
+        // Selected by content, not by timestamp — two writes in the same millisecond would tie.
+        var move = entries.Single(x => x.NewValuesJson.Contains("smtp.sendgrid.net"));
+
+        // "Changed to X" is not enough to investigate a misdirected relay — the previous value is
+        // what says whether mail was silently rerouted.
+        move.OldValuesJson.Should().Contain("smtpout.secureserver.net");
+    }
+
+    [Fact]
     public async Task LoadAsync_StillReadsLegacyBase64Passwords()
     {
         using var db = CreateDb();

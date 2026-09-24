@@ -3782,6 +3782,10 @@ public class PlatformController : ControllerBase
                           ?? EmailProviderPresets.DetectByHost(req.Host)?.Key
                           ?? EmailProviderPresets.CustomKey;
 
+        // Read the outgoing values before the upserts overwrite them, so the audit entry can say
+        // what the relay was changed FROM, not just what it is now.
+        var before = await PlatformSmtpConfig.LoadAsync(_db, protection, _config, _log, ct);
+
         await UpsertConfigAsync(PlatformSmtpConfig.KeyHost,        req.Host.Trim(), ct);
         await UpsertConfigAsync(PlatformSmtpConfig.KeyPort,        req.Port.ToString(System.Globalization.CultureInfo.InvariantCulture), ct);
         await UpsertConfigAsync(PlatformSmtpConfig.KeyUsername,    req.Username?.Trim() ?? "", ct);
@@ -3792,13 +3796,47 @@ public class PlatformController : ControllerBase
 
         // Password: only update if a new one was supplied. A blank field means "keep the current
         // one", which is what the form's placeholder promises.
-        if (!string.IsNullOrEmpty(req.Password) && req.Password != "***")
+        var passwordChanged = !string.IsNullOrEmpty(req.Password) && req.Password != "***";
+        if (passwordChanged)
         {
             // Was Base64 — which the old code itself flagged as obfuscation, not encryption.
             // Now IDataProtection, the same mechanism the notification-provider secrets use.
             await UpsertConfigAsync(PlatformSmtpConfig.KeyPassword,
                 PlatformSmtpConfig.ProtectPassword(protection, req.Password), ct);
         }
+
+        // Changing the relay redirects EVERY outbound platform email — invoices, password resets,
+        // notifications — to a different server, under a different From address. Maintenance mode
+        // is audited and this was not, though it is the more consequential of the two. The password
+        // itself is never recorded; whether it changed is.
+        _db.AdminAuditLogs.Add(new AdminAuditLog
+        {
+            TenantId        = Guid.Empty,
+            EntityType      = "PlatformConfig",
+            EntityId        = PlatformSmtpConfig.KeyHost,
+            Action          = "SmtpConfigUpdated",
+            OldValuesJson   = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                host     = before.Host,
+                port     = before.Port,
+                username = before.Username,
+                from     = before.FromAddress,
+                provider = before.ProviderKey,
+                useTls   = before.UseTls,
+            }),
+            NewValuesJson   = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                host     = req.Host.Trim(),
+                port     = req.Port,
+                username = req.Username?.Trim() ?? "",
+                from     = req.FromEmail.Trim(),
+                provider = providerKey,
+                useTls   = req.UseSsl,
+                passwordChanged,
+            }),
+            PerformedByName = "platform_admin",
+            IpAddress       = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
+        });
 
         await _db.SaveChangesAsync(ct);
 
