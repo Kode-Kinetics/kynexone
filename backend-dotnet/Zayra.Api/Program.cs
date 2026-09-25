@@ -212,7 +212,10 @@ builder.Services.AddCors(options => options.AddPolicy("kynexone", policy => poli
     .AllowAnyMethod()
     .AllowAnyHeader()));
 
-var connectionString = builder.Configuration.GetConnectionString("Default");
+// Accepts either Npgsql keyword form or a postgres:// URI. Managed-Postgres consoles hand out
+// URIs; Npgsql parses only keyword form. See PostgresConnectionString for what that cost.
+var connectionString = Zayra.Api.Application.Common.PostgresConnectionString.Normalize(
+    builder.Configuration.GetConnectionString("Default"));
 if (string.IsNullOrWhiteSpace(connectionString))
 {
     if (builder.Environment.IsProduction())
