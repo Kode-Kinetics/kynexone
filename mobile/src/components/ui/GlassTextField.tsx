@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   StyleProp,
   StyleSheet,
@@ -9,6 +9,12 @@ import {
   ViewStyle,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import Animated, {
+  interpolate,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from 'react-native-reanimated';
 import { GlassSurface } from './GlassSurface';
 import { useTheme } from '@/theme/ThemeProvider';
 
@@ -30,18 +36,35 @@ export function GlassTextField({
   onBlur,
   ...inputProps
 }: Props) {
-  const { theme } = useTheme();
+  const { theme, reduceMotion } = useTheme();
   const [focused, setFocused] = useState(false);
+  const focusProgress = useSharedValue(0);
   const multiline = Boolean(inputProps.multiline);
+
+  useEffect(() => {
+    focusProgress.value = reduceMotion
+      ? focused ? 1 : 0
+      : withSpring(focused ? 1 : 0, { damping: 18, stiffness: 220, mass: 0.72 });
+  }, [focusProgress, focused, reduceMotion]);
+
+  const focusMotion = useAnimatedStyle(() => ({
+    transform: [
+      { perspective: 700 },
+      { translateY: interpolate(focusProgress.value, [0, 1], [0, -2]) },
+      { scale: interpolate(focusProgress.value, [0, 1], [1, 1.008]) },
+    ],
+    shadowOpacity: interpolate(focusProgress.value, [0, 1], [0, 0.18]),
+  }));
 
   return (
     <View style={[styles.group, containerStyle]}>
       <Text style={[theme.typography.caption, styles.label, { color: theme.colors.textSecondary }]}>
         {label}
       </Text>
-      <View
+      <Animated.View
         style={[
           styles.focusRing,
+          focusMotion,
           {
             borderColor: error
               ? theme.colors.danger
@@ -53,6 +76,7 @@ export function GlassTextField({
       >
         <GlassSurface
           elevated={false}
+          recessed
           radius={16}
           contentStyle={[styles.inputRow, multiline && styles.inputRowMultiline]}
           style={[styles.surface, multiline && styles.surfaceMultiline]}
@@ -91,7 +115,7 @@ export function GlassTextField({
           />
           {trailing}
         </GlassSurface>
-      </View>
+      </Animated.View>
       {error ? (
         <Text
           accessibilityLiveRegion="polite"
@@ -108,7 +132,14 @@ export function GlassTextField({
 const styles = StyleSheet.create({
   group: { marginBottom: 16 },
   label: { marginBottom: 7, fontWeight: '700' },
-  focusRing: { borderWidth: 1.5, borderRadius: 18, padding: 1 },
+  focusRing: {
+    borderWidth: 1.5,
+    borderRadius: 18,
+    padding: 1,
+    shadowColor: '#4F75FF',
+    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 14,
+  },
   surface: { minHeight: 56 },
   surfaceMultiline: { minHeight: 120 },
   inputRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, gap: 10 },

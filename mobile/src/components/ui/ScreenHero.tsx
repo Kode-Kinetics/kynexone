@@ -1,7 +1,15 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import Animated, {
+  Easing,
+  interpolate,
+  useAnimatedStyle,
+  useSharedValue,
+  withDelay,
+  withTiming,
+} from 'react-native-reanimated';
 import { GlassSurface } from './GlassSurface';
 import { MotionPressable } from './MotionPressable';
 import { useTheme } from '@/theme/ThemeProvider';
@@ -25,13 +33,30 @@ export function ScreenHero({
   onBack,
   backLabel = 'Back',
 }: Props) {
-  const { theme } = useTheme();
+  const { theme, reduceMotion } = useTheme();
   const insets = useSafeAreaInsets();
   const { width, fontScale } = useWindowDimensions();
   const stackHeader = width < 390 || fontScale > 1.15;
+  const entrance = useSharedValue(reduceMotion ? 1 : 0);
+
+  useEffect(() => {
+    entrance.value = reduceMotion
+      ? 1
+      : withDelay(40, withTiming(1, { duration: 520, easing: Easing.out(Easing.cubic) }));
+  }, [entrance, reduceMotion]);
+
+  const entranceMotion = useAnimatedStyle(() => ({
+    opacity: entrance.value,
+    transform: [
+      { perspective: 900 },
+      { translateY: interpolate(entrance.value, [0, 1], [-12, 0]) },
+      { rotateX: `${interpolate(entrance.value, [0, 1], [-2.5, 0])}deg` },
+      { scale: interpolate(entrance.value, [0, 1], [0.985, 1]) },
+    ],
+  }));
 
   return (
-    <View style={[styles.wrapper, { paddingTop: insets.top + 10 }]}>
+    <Animated.View style={[styles.wrapper, { paddingTop: insets.top + 10 }, entranceMotion]}>
       {onBack ? (
         <MotionPressable
           accessibilityRole="button"
@@ -70,7 +95,7 @@ export function ScreenHero({
         </View>
         {children}
       </GlassSurface>
-    </View>
+    </Animated.View>
   );
 }
 

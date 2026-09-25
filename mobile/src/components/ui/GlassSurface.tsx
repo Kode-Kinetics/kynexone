@@ -26,6 +26,7 @@ export interface GlassSurfaceProps extends ViewProps {
   variant?: 'regular' | 'clear';
   tintColor?: string;
   elevated?: boolean;
+  recessed?: boolean;
 }
 
 function canUseNativeLiquidGlass() {
@@ -46,6 +47,7 @@ export function GlassSurface({
   variant = 'regular',
   tintColor,
   elevated = true,
+  recessed = false,
   ...viewProps
 }: GlassSurfaceProps) {
   const { theme } = useTheme();
@@ -116,6 +118,36 @@ export function GlassSurface({
           />
         ) : null}
 
+        {elevated || interactive ? (
+          <LinearGradient
+            pointerEvents="none"
+            colors={
+              theme.isDark
+                ? ['transparent', 'rgba(0,0,0,0.04)', 'rgba(0,2,12,0.24)']
+                : ['transparent', 'rgba(112,142,184,0.035)', 'rgba(63,91,132,0.13)']
+            }
+            locations={[0, 0.58, 1]}
+            start={{ x: 0.05, y: 0.05 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.neumorphicDepth}
+          />
+        ) : null}
+
+        {recessed ? (
+          <LinearGradient
+            pointerEvents="none"
+            colors={
+              theme.isDark
+                ? ['rgba(0,0,0,0.26)', 'transparent', 'rgba(255,255,255,0.05)']
+                : ['rgba(75,103,145,0.13)', 'transparent', 'rgba(255,255,255,0.58)']
+            }
+            locations={[0, 0.42, 1]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={StyleSheet.absoluteFill}
+          />
+        ) : null}
+
         <View style={[styles.content, contentStyle]}>{children}</View>
       </View>
     </View>
@@ -134,6 +166,13 @@ const styles = StyleSheet.create({
     right: 12,
     left: 12,
     height: StyleSheet.hairlineWidth,
+  },
+  neumorphicDepth: {
+    position: 'absolute',
+    right: 0,
+    bottom: 0,
+    left: 0,
+    height: '58%',
   },
   content: {
     flex: 1,

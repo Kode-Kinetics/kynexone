@@ -1,7 +1,13 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
+import Animated, {
+  interpolate,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { GlassSurface, MotionPressable } from '@/components/ui';
 import { useTheme } from '@/theme/ThemeProvider';
@@ -66,18 +72,13 @@ export function LiquidTabBar({ state, descriptors, navigation }: BottomTabBarPro
               style={styles.item}
               contentStyle={styles.itemPressable}
             >
-              <View
-                style={[
-                  styles.iconWrap,
-                  focused && { backgroundColor: theme.colors.surfaceSoft },
-                ]}
-              >
+              <AnimatedTabIcon focused={focused}>
                 <Ionicons
                   name={focused ? meta.active : meta.inactive}
                   size={22}
                   color={focused ? theme.colors.primary : theme.colors.textMuted}
                 />
-              </View>
+              </AnimatedTabIcon>
               <Text
                 numberOfLines={2}
                 style={[
@@ -95,6 +96,37 @@ export function LiquidTabBar({ state, descriptors, navigation }: BottomTabBarPro
         })}
       </GlassSurface>
     </View>
+  );
+}
+
+function AnimatedTabIcon({ focused, children }: { focused: boolean; children: React.ReactNode }) {
+  const { theme, reduceMotion } = useTheme();
+  const selection = useSharedValue(focused ? 1 : 0);
+
+  useEffect(() => {
+    selection.value = reduceMotion
+      ? focused ? 1 : 0
+      : withSpring(focused ? 1 : 0, { damping: 15, stiffness: 240, mass: 0.68 });
+  }, [focused, reduceMotion, selection]);
+
+  const motion = useAnimatedStyle(() => ({
+    transform: [
+      { translateY: interpolate(selection.value, [0, 1], [0, -3]) },
+      { scale: interpolate(selection.value, [0, 1], [1, 1.1]) },
+    ],
+    opacity: interpolate(selection.value, [0, 1], [0.82, 1]),
+  }));
+
+  return (
+    <Animated.View
+      style={[
+        styles.iconWrap,
+        focused && { backgroundColor: theme.colors.surfaceSoft },
+        motion,
+      ]}
+    >
+      {children}
+    </Animated.View>
   );
 }
 

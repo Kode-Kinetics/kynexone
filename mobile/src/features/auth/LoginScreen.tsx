@@ -10,6 +10,19 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import Animated, {
+  cancelAnimation,
+  Easing,
+  interpolate,
+  useAnimatedStyle,
+  useSharedValue,
+  withDelay,
+  withRepeat,
+  withSequence,
+  withSpring,
+  withTiming,
+} from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Controller, useForm } from 'react-hook-form';
@@ -39,13 +52,21 @@ type LoginFormData = z.infer<typeof loginSchema>;
 type Props = NativeStackScreenProps<AuthStackParamList, 'Login'>;
 export default function LoginScreen({ navigation, route }: Props) {
   const { t } = useTranslation();
-  const { theme } = useTheme();
+  const { theme, reduceMotion } = useTheme();
   const insets = useSafeAreaInsets();
   const { width, height, fontScale } = useWindowDimensions();
   const compactLayout = height < 920 || width < 390 || fontScale > 1.1;
   const narrowLayout = width < 370;
   const { login, isLoading, error, clearError } = useAuthStore();
   const [showPassword, setShowPassword] = useState(false);
+  const [focusedField, setFocusedField] = useState<keyof LoginFormData | null>(null);
+  const [loginSucceeded, setLoginSucceeded] = useState(false);
+  const entrance = useSharedValue(reduceMotion ? 1 : 0);
+  const ambient = useSharedValue(0);
+  const sheen = useSharedValue(0);
+  const focusGlow = useSharedValue(0);
+  const buttonPulse = useSharedValue(0);
+  const buttonSuccess = useSharedValue(0);
 
   const {
     control,
@@ -77,6 +98,101 @@ export default function LoginScreen({ navigation, route }: Props) {
   useEffect(() => {
     if (error) Alert.alert('Sign-in failed', error, [{ text: 'OK', onPress: clearError }]);
   }, [clearError, error]);
+
+  useEffect(() => {
+    entrance.value = reduceMotion
+      ? 1
+      : withDelay(90, withTiming(1, { duration: 760, easing: Easing.out(Easing.cubic) }));
+    ambient.value = reduceMotion
+      ? 0
+      : withRepeat(
+          withTiming(1, { duration: 11000, easing: Easing.inOut(Easing.sin) }),
+          -1,
+          true,
+        );
+    sheen.value = reduceMotion
+      ? 0
+      : withRepeat(
+          withSequence(
+            withDelay(1100, withTiming(1, { duration: 1450, easing: Easing.inOut(Easing.quad) })),
+            withDelay(3600, withTiming(0, { duration: 0 })),
+          ),
+          -1,
+          false,
+        );
+  }, [ambient, entrance, reduceMotion, sheen]);
+
+  useEffect(() => {
+    focusGlow.value = reduceMotion
+      ? focusedField ? 1 : 0
+      : withSpring(focusedField ? 1 : 0, { damping: 18, stiffness: 180 });
+  }, [focusGlow, focusedField, reduceMotion]);
+
+  useEffect(() => {
+    cancelAnimation(buttonPulse);
+    if (reduceMotion || !isLoading) {
+      buttonPulse.value = 0;
+    } else {
+      buttonPulse.value = withRepeat(
+        withSequence(
+          withTiming(1, { duration: 620, easing: Easing.inOut(Easing.quad) }),
+          withTiming(0, { duration: 620, easing: Easing.inOut(Easing.quad) }),
+        ),
+        -1,
+        false,
+      );
+    }
+    buttonSuccess.value = reduceMotion
+      ? loginSucceeded ? 1 : 0
+      : withSpring(loginSucceeded ? 1 : 0, { damping: 12, stiffness: 190 });
+  }, [buttonPulse, buttonSuccess, isLoading, loginSucceeded, reduceMotion]);
+
+  const brandMotion = useAnimatedStyle(() => ({
+    opacity: entrance.value,
+    transform: [
+      { perspective: 800 },
+      { translateX: interpolate(ambient.value, [0, 1], [-2, 3]) },
+      { translateY: interpolate(entrance.value, [0, 1], [-18, 0]) },
+      { rotateY: `${interpolate(ambient.value, [0, 1], [-0.7, 0.7])}deg` },
+    ],
+  }));
+  const cardMotion = useAnimatedStyle(() => ({
+    opacity: interpolate(entrance.value, [0, 0.22, 1], [0, 0, 1]),
+    transform: [
+      { perspective: 1100 },
+      { translateY: interpolate(entrance.value, [0, 1], [54, 0]) },
+      { rotateX: `${interpolate(entrance.value, [0, 1], [7, 0])}deg` },
+      { rotateY: `${interpolate(ambient.value, [0, 1], [-0.45, 0.45])}deg` },
+      { scale: interpolate(entrance.value, [0, 1], [0.965, 1]) },
+    ],
+  }));
+  const orbMotion = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: interpolate(ambient.value, [0, 1], [-8, 10]) },
+      { translateY: interpolate(ambient.value, [0, 1], [-4, 12]) },
+      { scale: interpolate(ambient.value, [0, 1], [0.98, 1.025]) },
+      { rotateZ: `${interpolate(ambient.value, [0, 1], [-0.35, 0.35])}deg` },
+    ],
+  }));
+  const cardGlow = useAnimatedStyle(() => ({
+    opacity: interpolate(focusGlow.value, [0, 1], [0, 0.72]),
+    transform: [{ scale: interpolate(focusGlow.value, [0, 1], [0.985, 1]) }],
+  }));
+  const sheenMotion = useAnimatedStyle(() => ({
+    opacity: interpolate(sheen.value, [0, 0.08, 0.84, 1], [0, 0.46, 0.34, 0]),
+    transform: [
+      { translateX: interpolate(sheen.value, [0, 1], [-150, width + 80]) },
+      { rotateZ: '-14deg' },
+    ],
+  }));
+  const buttonMotion = useAnimatedStyle(() => ({
+    transform: [
+      { perspective: 700 },
+      { translateY: interpolate(buttonPulse.value, [0, 1], [0, -2]) },
+      { scale: 1 + buttonSuccess.value * 0.025 + buttonPulse.value * 0.012 },
+      { rotateX: `${buttonPulse.value * -0.7}deg` },
+    ],
+  }));
   const onSubmit = useCallback(
     async (data: LoginFormData) => {
       try {
@@ -85,6 +201,8 @@ export default function LoginScreen({ navigation, route }: Props) {
           navigation.navigate('MfaChallenge', outcome);
         } else if (outcome.kind === 'mfaEnrollment') {
           navigation.navigate('MfaEnrollment', outcome);
+        } else {
+          setLoginSucceeded(true);
         }
       } catch {
         // The auth store owns the user-facing error state.
@@ -98,8 +216,17 @@ export default function LoginScreen({ navigation, route }: Props) {
       style={[styles.root, { backgroundColor: theme.colors.canvas }]}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
-      <LiquidBackdrop />
+      <LiquidBackdrop subtle />
+      <Animated.View pointerEvents="none" style={[styles.heroOrb, orbMotion]}>
+        <Image
+          accessible={false}
+          source={require('../../../ios/DesignOptions/login-cinematic-orb.png')}
+          resizeMode="cover"
+          style={styles.heroOrbImage}
+        />
+      </Animated.View>
       <ScrollView
+        style={styles.foreground}
         contentContainerStyle={[
           styles.scroll,
           compactLayout && styles.scrollCompact,
@@ -118,24 +245,7 @@ export default function LoginScreen({ navigation, route }: Props) {
         automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
         showsVerticalScrollIndicator={false}
       >
-        <View style={[styles.brandBlock, compactLayout && styles.brandBlockCompact]}>
-          <GlassSurface
-            radius={compactLayout ? 22 : 26}
-            style={[styles.logoSurface, compactLayout && styles.logoSurfaceCompact]}
-            contentStyle={styles.logoContent}
-            tintColor={theme.isDark ? 'rgba(47,107,255,0.26)' : 'rgba(255,255,255,0.50)'}
-          >
-            <Image
-              accessible={false}
-              source={
-                Platform.OS === 'ios'
-                  ? { uri: 'KynexLoomMark' }
-                  : require('../../../assets/adaptive-icon.png')
-              }
-              style={styles.logoMark}
-              resizeMode="contain"
-            />
-          </GlassSurface>
+        <Animated.View style={[styles.brandBlock, compactLayout && styles.brandBlockCompact, brandMotion]}>
           <Text
             style={[
               styles.wordmark,
@@ -155,16 +265,29 @@ export default function LoginScreen({ navigation, route }: Props) {
           >
             One intelligent workspace for your workforce
           </Text>
-        </View>
-        <GlassSurface
-          radius={theme.radius.xxl}
+          <LinearGradient colors={['#23D4E9', '#394EFF']} style={styles.brandAccent} />
+          {!compactLayout ? <Text style={styles.brandMotto}>People.{`\n`}Work.{`\n`}Forward.</Text> : null}
+        </Animated.View>
+        <Animated.View style={[styles.cardWrap, cardMotion]}>
+          <Animated.View pointerEvents="none" style={[styles.focusHalo, cardGlow]} />
+          <GlassSurface
+          radius={34}
           style={styles.formCard}
           contentStyle={[
             styles.formContent,
             compactLayout && styles.formContentCompact,
           ]}
-          tintColor={theme.isDark ? 'rgba(10,31,70,0.32)' : 'rgba(255,255,255,0.45)'}
+          tintColor={theme.isDark ? 'rgba(23,52,110,0.40)' : 'rgba(255,255,255,0.58)'}
+          intensity={58}
         >
+          <Animated.View pointerEvents="none" style={[styles.cardSheen, sheenMotion]}>
+            <LinearGradient
+              colors={['transparent', 'rgba(255,255,255,0.78)', 'transparent']}
+              start={{ x: 0, y: 0.5 }}
+              end={{ x: 1, y: 0.5 }}
+              style={StyleSheet.absoluteFill}
+            />
+          </Animated.View>
           <View style={[styles.formHeading, compactLayout && styles.formHeadingCompact]}>
             <Text style={[theme.typography.h1, { color: theme.colors.text }]}>Welcome back</Text>
             <Text style={[theme.typography.body, { color: theme.colors.textSecondary, marginTop: 6 }]}>
@@ -172,6 +295,7 @@ export default function LoginScreen({ navigation, route }: Props) {
             </Text>
           </View>
 
+          <AnimatedLoginField active={focusedField === 'tenantId'} delay={260}>
           <Controller
             control={control}
             name="tenantId"
@@ -181,7 +305,8 @@ export default function LoginScreen({ navigation, route }: Props) {
                 icon="business-outline"
                 value={value}
                 onChangeText={onChange}
-                onBlur={onBlur}
+                onFocus={() => setFocusedField('tenantId')}
+                onBlur={() => { setFocusedField(null); onBlur(); }}
                 placeholder="e.g. acme-corp"
                 autoCapitalize="none"
                 autoCorrect={false}
@@ -192,7 +317,9 @@ export default function LoginScreen({ navigation, route }: Props) {
               />
             )}
           />
+          </AnimatedLoginField>
 
+          <AnimatedLoginField active={focusedField === 'username'} delay={340}>
           <Controller
             control={control}
             name="username"
@@ -202,7 +329,8 @@ export default function LoginScreen({ navigation, route }: Props) {
                 icon="person-outline"
                 value={value}
                 onChangeText={onChange}
-                onBlur={onBlur}
+                onFocus={() => setFocusedField('username')}
+                onBlur={() => { setFocusedField(null); onBlur(); }}
                 placeholder="Work email or username"
                 autoCapitalize="none"
                 autoCorrect={false}
@@ -214,6 +342,8 @@ export default function LoginScreen({ navigation, route }: Props) {
               />
             )}
           />
+          </AnimatedLoginField>
+          <AnimatedLoginField active={focusedField === 'password'} delay={420}>
           <Controller
             control={control}
             name="password"
@@ -223,7 +353,8 @@ export default function LoginScreen({ navigation, route }: Props) {
                 icon="lock-closed-outline"
                 value={value}
                 onChangeText={onChange}
-                onBlur={onBlur}
+                onFocus={() => setFocusedField('password')}
+                onBlur={() => { setFocusedField(null); onBlur(); }}
                 placeholder="Enter your password"
                 autoCapitalize="none"
                 autoCorrect={false}
@@ -252,6 +383,7 @@ export default function LoginScreen({ navigation, route }: Props) {
               />
             )}
           />
+          </AnimatedLoginField>
 
           <MotionPressable
             accessibilityRole="button"
@@ -265,45 +397,68 @@ export default function LoginScreen({ navigation, route }: Props) {
             </Text>
           </MotionPressable>
 
+          <Animated.View style={buttonMotion}>
           <LiquidButton
-            label={t('auth.login')}
-            icon="log-in-outline"
+            label={loginSucceeded ? 'Signed in' : t('auth.login')}
+            icon={loginSucceeded ? 'checkmark-circle-outline' : 'log-in-outline'}
             onPress={handleSubmit(onSubmit)}
             loading={isLoading}
             disabled={isLoading}
+            variant={loginSucceeded ? 'success' : 'primary'}
             style={[styles.submit, compactLayout && styles.submitCompact]}
             testID="login-submit"
           />
+          </Animated.View>
+          <View style={[styles.cardDivider, { backgroundColor: theme.colors.divider }]} />
+          <View style={styles.trustBar}>
+            <TrustItem icon="shield-checkmark-outline" label="Secure access" />
+            <View style={[styles.trustDivider, { backgroundColor: theme.colors.divider }]} />
+            <TrustItem icon="language-outline" label="English · عربي" />
+          </View>
         </GlassSurface>
-        {!compactLayout ? (
-          <>
-            <GlassSurface
-              elevated={false}
-              radius={18}
-              style={styles.trustBarSurface}
-              contentStyle={styles.trustBar}
-            >
-              <TrustItem icon="shield-checkmark-outline" label="Secure" />
-              <View style={[styles.trustDivider, { backgroundColor: theme.colors.divider }]} />
-              <TrustItem icon="language-outline" label="EN · عربي" />
-              <View style={[styles.trustDivider, { backgroundColor: theme.colors.divider }]} />
-              <TrustItem icon="sparkles-outline" label="AI ready" />
-            </GlassSurface>
-
-            <Text
-              style={[
-                theme.typography.micro,
-                styles.footer,
-                { color: theme.colors.textMuted },
-              ]}
-            >
-              Privacy-first · GCC ready
-            </Text>
-          </>
-        ) : null}
+        </Animated.View>
       </ScrollView>
     </KeyboardAvoidingView>
   );
+}
+
+function AnimatedLoginField({
+  active,
+  delay,
+  children,
+}: {
+  active: boolean;
+  delay: number;
+  children: React.ReactNode;
+}) {
+  const { reduceMotion } = useTheme();
+  const entered = useSharedValue(reduceMotion ? 1 : 0);
+  const focused = useSharedValue(active ? 1 : 0);
+
+  useEffect(() => {
+    entered.value = reduceMotion
+      ? 1
+      : withDelay(delay, withTiming(1, { duration: 520, easing: Easing.out(Easing.cubic) }));
+  }, [delay, entered, reduceMotion]);
+
+  useEffect(() => {
+    focused.value = reduceMotion
+      ? active ? 1 : 0
+      : withSpring(active ? 1 : 0, { damping: 17, stiffness: 210, mass: 0.72 });
+  }, [active, focused, reduceMotion]);
+
+  const motion = useAnimatedStyle(() => ({
+    opacity: entered.value,
+    transform: [
+      { perspective: 700 },
+      { translateX: interpolate(entered.value, [0, 1], [18, 0]) },
+      { translateY: interpolate(focused.value, [0, 1], [0, -3]) },
+      { rotateY: `${interpolate(entered.value, [0, 1], [2.5, 0])}deg` },
+      { scale: interpolate(focused.value, [0, 1], [1, 1.012]) },
+    ],
+  }));
+
+  return <Animated.View style={motion}>{children}</Animated.View>;
 }
 
 function TrustItem({ icon, label }: { icon: React.ComponentProps<typeof Ionicons>['name']; label: string }) {
@@ -323,23 +478,32 @@ function TrustItem({ icon, label }: { icon: React.ComponentProps<typeof Ionicons
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
+  foreground: { zIndex: 1 },
   scroll: {
     flexGrow: 1,
-    justifyContent: 'center',
+    justifyContent: 'flex-end',
   },
   scrollCompact: { justifyContent: 'flex-start' },
-  brandBlock: { alignItems: 'center', marginBottom: 26 },
-  brandBlockCompact: { marginBottom: 16 },
-  logoSurface: { width: 76, height: 76, marginBottom: 14 },
-  logoSurfaceCompact: { width: 60, height: 60, marginBottom: 10 },
-  logoContent: { alignItems: 'center', justifyContent: 'center', padding: 7 },
-  logoMark: { flex: 1, width: '100%' },
-  wordmark: { fontSize: 25, lineHeight: 30, fontWeight: '800', letterSpacing: 5.5 },
+  heroOrb: {
+    position: 'absolute', width: 510, height: 510,
+    right: -126, top: -68, zIndex: 0,
+  },
+  heroOrbImage: { width: '100%', height: '100%' },
+  brandBlock: { alignItems: 'flex-start', width: '100%', maxWidth: 440, alignSelf: 'center', marginBottom: 24, paddingLeft: 8 },
+  brandBlockCompact: { marginBottom: 14 },
+  wordmark: { fontSize: 24, lineHeight: 30, fontWeight: '800', letterSpacing: 6.5 },
   wordmarkCompact: { fontSize: 22, lineHeight: 26, letterSpacing: 4.4 },
-  tagline: { marginTop: 6, textAlign: 'center', maxWidth: 310 },
-  taglineCompact: { marginTop: 4, maxWidth: 280 },
-  formCard: { width: '100%', maxWidth: 440, alignSelf: 'center' },
-  formContent: { paddingHorizontal: 22, paddingVertical: 24 },
+  tagline: { marginTop: 12, maxWidth: 190, fontSize: 17, lineHeight: 24 },
+  taglineCompact: { marginTop: 6, maxWidth: 180 },
+  brandAccent: { width: 48, height: 4, borderRadius: 2, marginTop: 18 },
+  brandMotto: { marginTop: 42, color: 'rgba(255,255,255,0.72)', fontSize: 18, lineHeight: 24, letterSpacing: 0.6 },
+  cardWrap: { width: '100%', maxWidth: 440, alignSelf: 'center' },
+  focusHalo: { position: 'absolute', top: -6, right: -6, bottom: -6, left: -6, borderRadius: 40, backgroundColor: 'rgba(64,114,255,0.22)' },
+  cardSheen: {
+    position: 'absolute', top: -90, bottom: -90, left: 0, width: 74,
+  },
+  formCard: { width: '100%', minHeight: 0 },
+  formContent: { paddingHorizontal: 26, paddingTop: 30, paddingBottom: 16 },
   formContentCompact: { paddingHorizontal: 18, paddingVertical: 18 },
   formHeading: { marginBottom: 22 },
   formHeadingCompact: { marginBottom: 16 },
@@ -357,15 +521,9 @@ const styles = StyleSheet.create({
   },
   submit: { marginTop: 16 },
   submitCompact: { marginTop: 12 },
-  trustBarSurface: {
-    width: '100%',
-    maxWidth: 440,
-    alignSelf: 'center',
-    marginTop: 14,
-  },
-  trustBarSurfaceCompact: { marginTop: 10 },
+  cardDivider: { height: StyleSheet.hairlineWidth, marginTop: 24 },
   trustBar: {
-    minHeight: 44,
+    minHeight: 56,
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 8,
@@ -383,10 +541,4 @@ const styles = StyleSheet.create({
     width: StyleSheet.hairlineWidth,
     height: 20,
   },
-  footer: {
-    textAlign: 'center',
-    marginTop: 12,
-    letterSpacing: 0.2,
-  },
-  footerCompact: { marginTop: 8 },
 });
