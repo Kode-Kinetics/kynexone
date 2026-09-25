@@ -1,3 +1,4 @@
+using Zayra.Api.Application.WorkWeek;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Approvals;
@@ -40,6 +41,10 @@ public sealed class LeaveApprovalPostgresIntegrationTests
         Guid hrManagerUserId = Guid.NewGuid();
         int employeeId;
         var start = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(14));
+        // A WORKING day: weekends are excluded from the leave day count, so an assertion of Us
+        // ed == 1 only holds when the booked day is a working one. Unguarded these passed Sund
+        // ay to Thursday and failed every Friday and Saturday.
+        while (WorkWeekConfig.GccDefault.IsWeekend(start.DayOfWeek)) start = start.AddDays(1);
 
         await using (var db = CreateRetryingDb())
         {
