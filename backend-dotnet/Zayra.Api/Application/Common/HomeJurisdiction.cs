@@ -73,6 +73,43 @@ public static class HomeJurisdiction
     };
 
     /// <summary>
+    /// The currency a tenant in this jurisdiction should start with, or EMPTY when the country is
+    /// unknown.
+    ///
+    /// <para>This is the currency half of the same defect <see cref="TimeZoneFor"/> documents.
+    /// <c>TenantLocalizationSetting.CurrencyCode</c> defaults to <c>"USD"</c>, so a tenant with no
+    /// localization row was served USD as though it had been stated — and the setup assistant then
+    /// drafted salary bands in it. A Saudi tenant saw its grades priced in dollars.</para>
+    ///
+    /// <para><b>Empty, not a guess, for an unknown country.</b> This differs from
+    /// <see cref="TimeZoneFor"/>, which falls back to UTC, and the reason is the shape of being
+    /// wrong. UTC is wrong by a known, uniform offset and a clock still tells the truth about
+    /// instants. A wrong CURRENCY is not an offset — it silently relabels every salary figure on
+    /// the screen, and 3,000 reads as 3,000 whether it is riyals or dollars. So an unmapped country
+    /// returns empty, which the caller must treat as "not stated" and ask.</para>
+    ///
+    /// <para>A country's official currency is a fact rather than a policy, which is why this is a
+    /// compiled map and not a statutory rule: unlike a contribution rate, it does not need
+    /// counsel's sign-off and does not change with the tax year.</para>
+    /// </summary>
+    public static string CurrencyFor(string? countryCode) => Normalize(countryCode) switch
+    {
+        "SA" => "SAR",
+        "AE" => "AED",
+        "QA" => "QAR",
+        "KW" => "KWD",
+        "BH" => "BHD",
+        "OM" => "OMR",
+        "EG" => "EGP",
+        "JO" => "JOD",
+        "PK" => "PKR",
+        "IN" => "INR",
+        "GB" => "GBP",
+        "US" => "USD",
+        _    => string.Empty,
+    };
+
+    /// <summary>
     /// Canonical ISO-2 or a loud failure. Used where a country is a precondition rather than a
     /// preference — tenant provisioning above all, which seeds statutory defaults.
     /// </summary>

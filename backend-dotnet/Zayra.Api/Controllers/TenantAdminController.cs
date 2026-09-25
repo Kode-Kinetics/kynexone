@@ -179,16 +179,25 @@ public class TenantAdminController : ControllerBase
     ///
     /// <para><b>Nothing is persisted here.</b> A GET must not write. The tenant's real setting is
     /// still stated in Setup → Localization, and this value is only what is shown until then.
-    /// <c>CountryCode</c> is deliberately left at the entity default: the country default is its own
-    /// wrong-default problem with its own blast radius (currency, statutory surfaces) and is not in
-    /// the scope of the clock fix.</para>
+    /// <c>CountryCode</c> and <c>CurrencyCode</c> are no longer left at the entity default. That
+    /// deferral is what this method later had to answer for: the defaults are <c>"US"</c> and
+    /// <c>"USD"</c>, and the setup assistant reads this endpoint to decide which currency to price
+    /// a tenant's salary bands in. Both are now resolved from the tenant's own companies, or
+    /// returned EMPTY — the same "a blank is a question, a wrong value is a lie" rule as the
+    /// zone.</para>
     /// </summary>
     private async Task<TenantLocalizationSetting> UnstatedLocalizationAsync(Guid? tenantId, CancellationToken ct)
     {
+        // Every field the entity defaults to a US value is blanked here, not just the zone. The
+        // entity defaults are CurrencyCode = "USD" and CountryCode = "US", and returning those
+        // unblanked is what let the setup assistant draft a Saudi tenant's salary bands in dollars:
+        // the form read this endpoint, saw a stated-looking "USD", and believed it.
         var fallback = new TenantLocalizationSetting
         {
             TenantId = tenantId ?? Guid.Empty,
             DefaultTimezone = string.Empty,
+            CurrencyCode = string.Empty,
+            CountryCode = string.Empty,
         };
 
         if (tenantId is null) return fallback;
@@ -199,7 +208,14 @@ public class TenantAdminController : ControllerBase
             .FirstOrDefaultAsync(ct);
 
         if (HomeJurisdiction.Normalize(country) is { } iso)
+        {
             fallback.DefaultTimezone = HomeJurisdiction.TimeZoneFor(iso);
+            fallback.CountryCode = iso;
+            // Empty for an unmapped country. A wrong currency does not read as wrong — 3,000 looks
+            // the same in riyals and dollars — so the caller is told nothing rather than something
+            // plausible, and asks.
+            fallback.CurrencyCode = HomeJurisdiction.CurrencyFor(iso);
+        }
 
         return fallback;
     }

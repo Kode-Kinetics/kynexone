@@ -101,7 +101,8 @@ public sealed class SetupAssistantService : ISetupAssistantService
             notes.Add("Leave entitlements were skipped: an entitlement belongs to a leave type, and leave types are not part of this draft. Turn on \"Leave types\" to include them.");
 
         // 3. Honour section toggles + normalise.
-        draft = ApplySectionsAndNormalise(draft, profile.Sections);
+        // The profile's currency, normalised once, wins over anything in the draft.
+        draft = ApplySectionsAndNormalise(draft, profile.Sections, NormalizeCurrency(profile.CurrencyCode));
         return new SetupPreviewResult(draft, notes, engine);
     }
 
@@ -338,7 +339,14 @@ public sealed class SetupAssistantService : ISetupAssistantService
 
     private static readonly Regex TimeRx = new(@"^([01]\d|2[0-3]):[0-5]\d$", RegexOptions.Compiled);
 
-    private static SetupDraft ApplySectionsAndNormalise(SetupDraft d, SetupSections s)
+    /// <param name="currency">The tenant's currency, from the profile. It OVERWRITES whatever the
+    /// model put on a grade rather than filling in a blank. A model asked for a Saudi starter
+    /// configuration routinely answers in USD — it is the default unit of the text it learned from
+    /// — and the old code only substituted when the field was empty, so "USD" survived all the way
+    /// into Grade.Currency. There is no case where a model picks a tenant's currency better than
+    /// the tenant did, and a mispriced band does not look mispriced: 3,000 reads the same either
+    /// way.</param>
+    private static SetupDraft ApplySectionsAndNormalise(SetupDraft d, SetupSections s, string currency)
     {
         static string Code(string? c, string fallback) =>
             (string.IsNullOrWhiteSpace(c) ? fallback : c).Trim().ToUpperInvariant().Replace(' ', '_');
@@ -358,7 +366,7 @@ public sealed class SetupAssistantService : ISetupAssistantService
                 MinSalary = Math.Max(0, x.MinSalary),
                 MidSalary = Math.Max(0, x.MidSalary),
                 MaxSalary = Math.Max(0, Math.Max(x.MaxSalary, x.MidSalary)),
-                Currency = string.IsNullOrWhiteSpace(x.Currency) ? "SAR" : x.Currency.Trim().ToUpperInvariant(),
+                Currency = currency,
             }), x => x.Code);
         var gradeCodes = grades.Select(x => x.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var desigs = !s.Org ? new() : Dedup(d.Designations.Where(x => !string.IsNullOrWhiteSpace(x.TitleEn))
@@ -544,6 +552,15 @@ public sealed class SetupAssistantService : ISetupAssistantService
 
     /// <summary>The country's usual working week, used when the customer leaves the weekend on
     /// "country default".</summary>
+    /// <summary>Currency as a 3-letter code, or empty. Empty is a real answer: it means the tenant
+    /// has not stated one, and an empty band is visibly unset where a plausible-but-wrong code is
+    /// not.</summary>
+    private static string NormalizeCurrency(string? raw)
+    {
+        var c = (raw ?? string.Empty).Trim().ToUpperInvariant();
+        return c.Length == 3 && c.All(char.IsAsciiLetter) ? c : string.Empty;
+    }
+
     private static DraftWorkingWeek WorkingWeekFor(string iso3) => iso3 switch
     {
         "SAU" or "QAT" or "KWT" or "BHR" or "OMN" => new DraftWorkingWeek("Sun-Thu", "Sunday"),
@@ -1163,9 +1180,15 @@ public sealed class SetupAssistantService : ISetupAssistantService
             7 => new[] { 0, 1, 2, 3, 4, 5, 6 },
             _ => new[] { 0, 1, 2, 3, 4 },
         };
-        var currency = string.IsNullOrWhiteSpace(p.CurrencyCode) ? "SAR" : p.CurrencyCode.Trim().ToUpperInvariant();
-        var pegged = SarPegs.TryGetValue(currency, out var peg);
-        if (!pegged)
+        // No "SAR" fallback. Assuming riyals for a tenant that never said so prices its whole ladder
+        // in a currency nobody chose, and a salary band does not look wrong in the wrong currency.
+        var currency = NormalizeCurrency(p.CurrencyCode);
+        // Declared up front: the short-circuit below means the compiler cannot prove `out` ran.
+        (decimal Factor, decimal Step) peg = default;
+        var pegged = currency.Length > 0 && SarPegs.TryGetValue(currency, out peg);
+        if (currency.Length == 0)
+            notes.Add("Salary bands were left at zero because this workspace has not stated a currency. Set the currency in Setup - Localization, or pick one above, and regenerate.");
+        else if (!pegged)
             notes.Add($"Salary bands were left at zero. The built-in ladder is denominated in SAR and {currency} has no fixed relationship to it, so any figure here would be invented. Set the bands before applying.");
 
         var grades = new List<DraftGrade>();
