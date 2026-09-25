@@ -850,4 +850,51 @@ public class SetupAssistantTemplateTests
         result.Draft.Departments.Should().NotBeEmpty();
     }
 
+
+    // ── Currency: the workspace's, never the model's ────────────────────────
+    //
+    // Reported from the live pilot: a tenant on SAR was shown a draft in USD. Three things
+    // conspired — the form hardcoded its own defaults, the tenant-profile endpoint served the
+    // entity's "USD" as though stated, and normalisation only substituted a currency when the
+    // model left the field BLANK. A model asked for a starter configuration answers in USD by
+    // default, so "USD" survived into Grade.Currency.
+
+    [Fact]
+    public async Task Currency_FromTheModel_IsOverwrittenByTheProfile()
+    {
+        // The model answers in dollars, as they do. The tenant said SAR.
+        var llm = new StubLlm(_ => new LlmResponse(true, "ollama", "test-model",
+            "{\"grades\":[{\"code\":\"G1\",\"name\":\"Grade 1\",\"band\":\"Staff\",\"level\":1,"
+            + "\"minSalary\":3000,\"midSalary\":4500,\"maxSalary\":6000,\"currency\":\"USD\"}]}",
+            Error: null));
+
+        var result = await Generate(Profile(country: "SA", currency: "SAR"), llm: llm);
+
+        result.Draft.Grades.Should().NotBeEmpty();
+        result.Draft.Grades.Should().OnlyContain(g => g.Currency == "SAR");
+    }
+
+    [Fact]
+    public async Task Currency_IsNeverSilentlyAssumedWhenTheTenantHasNotStatedOne()
+    {
+        // The old code fell back to a hardcoded "SAR", pricing a whole ladder in a currency nobody
+        // chose. A salary band in the wrong currency does not look wrong — 3,000 reads the same.
+        var result = await Generate(Profile(currency: ""));
+
+        result.Draft.Grades.Should().OnlyContain(g => g.Currency == string.Empty);
+        result.Draft.Grades.Should().OnlyContain(g => g.MinSalary == 0 && g.MaxSalary == 0);
+        result.Notes.Should().Contain(n => n.Contains("has not stated a currency"));
+    }
+
+    [Theory]
+    [InlineData("sar", "SAR")]
+    [InlineData("  AED  ", "AED")]
+    [InlineData("US DOLLAR", "")]
+    [InlineData("$", "")]
+    public async Task Currency_IsNormalisedOrDiscarded(string given, string expected)
+    {
+        var result = await Generate(Profile(currency: given));
+        result.Draft.Grades.Should().OnlyContain(g => g.Currency == expected);
+    }
+
 }

@@ -68,7 +68,9 @@ public class SetupAssistantController : ControllerBase
                     TradeName = req.LegalEntityName.Trim(),
                     CountryCode = req.CountryCode,
                     Jurisdiction = $"{req.CountryCode}-default",
-                    DefaultCurrency = string.IsNullOrWhiteSpace(req.CurrencyCode) ? "USD" : req.CurrencyCode,
+                    // No "USD" fallback: an unstated currency is left for the tenant to state
+                    // rather than silently booked as dollars on the legal entity.
+                    DefaultCurrency = req.CurrencyCode?.Trim().ToUpperInvariant() ?? string.Empty,
                     IsActive = true,
                     ApprovalStatus = CompanyApprovalStatuses.Active,
                     CreatedBy = GetUserId()
@@ -141,7 +143,8 @@ public class SetupAssistantController : ControllerBase
                 existing.MinSalary = g.MinSalary;
                 existing.MidSalary = g.MidSalary;
                 existing.MaxSalary = g.MaxSalary;
-                existing.Currency = string.IsNullOrWhiteSpace(g.Currency) ? req.CurrencyCode : g.Currency;
+                // The workspace's currency, not the draft's. Same reason as the preview path.
+                existing.Currency = string.IsNullOrWhiteSpace(req.CurrencyCode) ? g.Currency : req.CurrencyCode;
                 existing.IsActive = true;
                 existing.UpdatedAtUtc = DateTime.UtcNow;
             }
@@ -157,7 +160,7 @@ public class SetupAssistantController : ControllerBase
                     MinSalary = g.MinSalary,
                     MidSalary = g.MidSalary,
                     MaxSalary = g.MaxSalary,
-                    Currency = string.IsNullOrWhiteSpace(g.Currency) ? req.CurrencyCode : g.Currency,
+                    Currency = string.IsNullOrWhiteSpace(req.CurrencyCode) ? g.Currency : req.CurrencyCode,
                     IsActive = true,
                     CreatedBy = GetUserId()
                 };

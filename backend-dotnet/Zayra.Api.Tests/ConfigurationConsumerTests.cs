@@ -1,3 +1,4 @@
+using Zayra.Api.Application.WorkWeek;
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -477,6 +478,10 @@ public class ConfigurationConsumerTests
         await db.SaveChangesAsync();
 
         var start = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(7));
+        // A WORKING day: weekends are excluded from the leave day count, so an assertion of Us
+        // ed == 1 only holds when the booked day is a working one. Unguarded these passed Sund
+        // ay to Thursday and failed every Friday and Saturday.
+        while (WorkWeekConfig.GccDefault.IsWeekend(start.DayOfWeek)) start = start.AddDays(1);
         db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
         {
             TenantId = tenantId, EmployeeId = employee.Id, EmployeeName = employee.FullName,
@@ -489,6 +494,8 @@ public class ConfigurationConsumerTests
     private static LeaveRequest NewLeaveRequest(Employee employee, LeaveType leaveType)
     {
         var start = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(7));
+        // A working day — see the note on the first occurrence in this file.
+        while (WorkWeekConfig.GccDefault.IsWeekend(start.DayOfWeek)) start = start.AddDays(1);
         return new LeaveRequest
         {
             EmployeeId = employee.Id, EmployeeName = employee.FullName,
