@@ -97,6 +97,13 @@ public class LeaveApprovalScopeTests
         db.Employees.Add(employee);
         await db.SaveChangesAsync();
         var start = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(7));
+        // A WORKING day, not merely "a week from now". This test asserts Used == 1 for a
+        // one-day request, and weekends are excluded from the count, so the assertion only
+        // holds when the day is a working one. Unguarded it passed Sunday to Thursday and
+        // failed every Friday and Saturday — on main, for anyone, two days in seven. The
+        // other three tests in this file already roll their start this way; this one was
+        // missed, and it blocked an unrelated PR the first time a run landed on a Friday.
+        while (WorkWeekConfig.GccDefault.IsWeekend(start.DayOfWeek)) start = start.AddDays(1);
         db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
         {
             TenantId = tenantId, EmployeeId = employee.Id, EmployeeName = employee.FullName,
