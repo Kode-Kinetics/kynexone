@@ -15,7 +15,7 @@
         "NSMotionUsageDescription": "KynexOne uses motion activity data to improve attendance verification where your organization enables this feature.",
         "ITSAppUsesNonExemptEncryption": false
       },
-      "buildNumber": "5",
+      "buildNumber": "6",
       "icon": "./assets/icon.png"
     },
     "android": {

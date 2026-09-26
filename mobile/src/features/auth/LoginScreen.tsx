@@ -193,6 +193,19 @@ export default function LoginScreen({ navigation, route }: Props) {
       { rotateX: `${buttonPulse.value * -0.7}deg` },
     ],
   }));
+  const loginStatusMotion = useAnimatedStyle(() => ({
+    opacity: interpolate(buttonPulse.value, [0, 1], [0.72, 1]),
+    transform: [
+      { translateY: interpolate(buttonPulse.value, [0, 1], [2, 0]) },
+      { scale: interpolate(buttonPulse.value, [0, 1], [0.99, 1]) },
+    ],
+  }));
+  const loginProgressMotion = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: interpolate(buttonPulse.value, [0, 1], [-112, 112]) },
+      { scaleX: interpolate(buttonPulse.value, [0, 1], [0.42, 0.9]) },
+    ],
+  }));
   const onSubmit = useCallback(
     async (data: LoginFormData) => {
       try {
@@ -409,6 +422,35 @@ export default function LoginScreen({ navigation, route }: Props) {
             testID="login-submit"
           />
           </Animated.View>
+          {isLoading ? (
+            <Animated.View
+              accessibilityLiveRegion="polite"
+              accessibilityLabel="Signing in securely"
+              style={[styles.loginStatus, loginStatusMotion]}
+            >
+              <View style={[styles.loginStatusIcon, { backgroundColor: theme.colors.surfaceSoft }]}>
+                <Ionicons name="shield-checkmark-outline" size={18} color={theme.colors.primary} />
+              </View>
+              <View style={styles.loginStatusCopy}>
+                <Text style={[theme.typography.caption, styles.loginStatusTitle, { color: theme.colors.text }]}>
+                  Securing your workspace
+                </Text>
+                <Text style={[theme.typography.micro, { color: theme.colors.textMuted }]}>
+                  Verifying access and preparing your dashboard
+                </Text>
+                <View style={[styles.loginProgressTrack, { backgroundColor: theme.colors.divider }]}>
+                  <Animated.View style={[styles.loginProgressBar, loginProgressMotion]}>
+                    <LinearGradient
+                      colors={['#23D4E9', '#4F75FF', '#9067F9']}
+                      start={{ x: 0, y: 0.5 }}
+                      end={{ x: 1, y: 0.5 }}
+                      style={StyleSheet.absoluteFill}
+                    />
+                  </Animated.View>
+                </View>
+              </View>
+            </Animated.View>
+          ) : null}
           <View style={[styles.cardDivider, { backgroundColor: theme.colors.divider }]} />
           <View style={styles.trustBar}>
             <TrustItem icon="shield-checkmark-outline" label="Secure access" />
@@ -521,6 +563,40 @@ const styles = StyleSheet.create({
   },
   submit: { marginTop: 16 },
   submitCompact: { marginTop: 12 },
+  loginStatus: {
+    minHeight: 66,
+    marginTop: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: 'rgba(255,255,255,0.16)',
+  },
+  loginStatusIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loginStatusCopy: { flex: 1, minWidth: 0 },
+  loginStatusTitle: { fontWeight: '700', marginBottom: 1 },
+  loginProgressTrack: {
+    height: 3,
+    marginTop: 7,
+    borderRadius: 2,
+    overflow: 'hidden',
+  },
+  loginProgressBar: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: '35%',
+    width: '30%',
+    borderRadius: 2,
+  },
   cardDivider: { height: StyleSheet.hairlineWidth, marginTop: 24 },
   trustBar: {
     minHeight: 56,
