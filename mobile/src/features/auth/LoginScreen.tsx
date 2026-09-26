@@ -233,7 +233,7 @@ export default function LoginScreen({ navigation, route }: Props) {
       <Animated.View pointerEvents="none" style={[styles.heroOrb, orbMotion]}>
         <Image
           accessible={false}
-          source={require('../../../ios/DesignOptions/login-cinematic-orb.png')}
+          source={require('../../../assets/login-cinematic-orb.png')}
           resizeMode="cover"
           style={styles.heroOrbImage}
         />
