@@ -288,6 +288,9 @@ export function assembleWorkEmail(localPart: string, domain: string): string {
   return l && d ? `${l}@${d}` : '';
 }
 
+/** F02 — the Saudi GOSI entrant cohort (Application/CountryPack/GosiCohorts.cs). */
+export type GosiCohort = 'Unknown' | 'PreJuly2024' | 'NewEntrant';
+
 export interface EmployeeEntity {
   id: number;
   tenantId?: string;
@@ -348,6 +351,10 @@ export interface EmployeeEntity {
   iqamaExpiryDate?: string;
   muqeemNumber: string;
   gosiReference: string;
+  /** F02 — the GOSI first-registration date (YYYY-MM-DD). Null when unknown, or when masked. */
+  gosiFirstRegisteredOn?: string | null;
+  /** F02 — the cohort that date places the person in. Null when the caller may not see sensitive fields. */
+  gosiCohort?: GosiCohort | null;
   qiwaContractNumber: string;
   emiratesId: string;
   emiratesIdExpiryDate?: string;

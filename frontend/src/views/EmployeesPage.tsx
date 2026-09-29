@@ -10,6 +10,7 @@ import { ExEmployeesTable } from './ExEmployeesTable';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { ReadinessBadge, hasExpiringId } from '../components/ReadinessBadge';
 import { ReadinessChecklist, type ReadinessFixMode } from '../components/ReadinessChecklist';
+import { GosiCohortPanel } from '../components/GosiCohortPanel';
 import client from '../api/client';
 import { createLatestRequestGate, runLatest } from '../lib/latestRequest';
 
@@ -1651,16 +1652,20 @@ export function EmployeesPage() {
                   ]} />
                 )}
                 {activeTab === 'payroll' && (
-                  <DetailGrid rows={[
-                    ['Bank', detail!.payrollProfile?.bankName],
-                    ['IBAN', detail!.payrollProfile?.iban],
-                    ['Account', detail!.payrollProfile?.accountNumber],
-                    ['Payment method', detail!.payrollProfile?.paymentMethod],
-                    ['Currency', detail!.payrollProfile?.salaryCurrency],
-                    ['Payroll group', detail!.payrollProfile?.payrollGroup],
-                    ['WPS eligible', detail!.payrollProfile?.wpsEligible ? 'Yes' : 'No'],
-                    ['EOSB eligible', detail!.payrollProfile?.eosbEligible ? 'Yes' : 'No'],
-                  ]} />
+                  <>
+                    <DetailGrid rows={[
+                      ['Bank', detail!.payrollProfile?.bankName],
+                      ['IBAN', detail!.payrollProfile?.iban],
+                      ['Account', detail!.payrollProfile?.accountNumber],
+                      ['Payment method', detail!.payrollProfile?.paymentMethod],
+                      ['Currency', detail!.payrollProfile?.salaryCurrency],
+                      ['Payroll group', detail!.payrollProfile?.payrollGroup],
+                      ['WPS eligible', detail!.payrollProfile?.wpsEligible ? 'Yes' : 'No'],
+                      ['EOSB eligible', detail!.payrollProfile?.eosbEligible ? 'Yes' : 'No'],
+                    ]} />
+                    {/* F02 — the statutory fact the Saudi GOSI schedule is keyed on (approval-gated). */}
+                    <GosiCohortPanel key={detail!.id} employee={detail!} />
+                  </>
                 )}
                 {activeTab === 'compliance' && (
                   <div className="space-y-2">

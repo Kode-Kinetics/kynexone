@@ -28,6 +28,7 @@ import { filterPayrollInsightsForReadiness, paymentReadinessHeadline, prerequisi
 import client, { notifyApiError } from '../api/client';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { InfoTip } from '../components/InfoTip';
+import { GosiBasisNote } from '../components/GosiCohortPanel';
 import { useAuth } from '../contexts/AuthContext';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
@@ -1403,6 +1404,8 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
                             {s.employeeStatutoryTotal > 0 && (
                               <p className="text-[10px] leading-tight text-rose-400">of which GOSI {fmt(s.employeeStatutoryTotal)}</p>
                             )}
+                            {/* F02 — which cohort and rate basis produced the statutory lines, read off the slip. */}
+                            {s.statutoryBasis && <GosiBasisNote cohort={s.gosiCohort} basis={s.statutoryBasis} />}
                           </td>
                           {/* Unbracketed: a slice of the cell to its left, not a further subtraction. */}
                           <td className="px-3 py-2.5 text-end text-amber-600 dark:text-amber-400">{s.loanDeductions > 0 ? fmt(s.loanDeductions) : '—'}</td>
@@ -1639,6 +1642,10 @@ function ChainVerifier({ title, description, allowedRoles, verify }: {
 /** Mirrors PayrollValidationOverridePolicy.MinimumReasonLength. "ok" is not accountability. */
 const MIN_OVERRIDE_REASON = 10;
 
+/** F02 — PayrollValidationEngine.GosiCohortNotRecorded / GosiNewEntrantScheduleNotModelled. */
+const GOSI_COHORT_NOT_RECORDED = 'GOSI_COHORT_NOT_RECORDED';
+const GOSI_NEW_ENTRANT_BLOCKED = 'GOSI_NEW_ENTRANT_SCHEDULE_NOT_MODELLED';
+
 function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
   const [runId, setRunId] = useState(selectedRunId ?? '');
   const [runs, setRuns] = useState<PayrollRun[]>([]);
@@ -1683,6 +1690,13 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
 
   const warnings = results.filter(r => r.severity === 'Warning');
   const errors = results.filter(r => r.severity === 'Error');
+  // F02 — the GOSI entrant cohort is judged per employee; group it so it reads as one decision, not N rows.
+  const cohortNotRecorded = results.filter(r => r.code === GOSI_COHORT_NOT_RECORDED);
+  const cohortBlocked = results.filter(r => r.code === GOSI_NEW_ENTRANT_BLOCKED);
+  const [cohortOnly, setCohortOnly] = useState(false);
+  const shown = cohortOnly && cohortBlocked.length + cohortNotRecorded.length > 0
+    ? [...cohortBlocked, ...cohortNotRecorded]
+    : results;
 
   return (
     <div className="space-y-4">
@@ -1706,6 +1720,31 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
         </div>
       )}
 
+      {(cohortNotRecorded.length > 0 || cohortBlocked.length > 0) && (
+        <div className="surface space-y-2 px-5 py-4" data-testid="gosi-cohort-findings">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-semibold text-slate-900 dark:text-white">GOSI cohort — checked per employee</p>
+            <button type="button" className={`${btn.sm} h-7 px-2 text-xs`} onClick={() => setCohortOnly(v => !v)} aria-pressed={cohortOnly}>
+              {cohortOnly ? 'Show all findings' : 'Show only these employees'}
+            </button>
+          </div>
+          {cohortBlocked.length > 0 && (
+            <p className="text-sm text-rose-700 dark:text-rose-400">
+              {cohortBlocked.length} employee{cohortBlocked.length === 1 ? '' : 's'} first registered with GOSI on or after
+              3 July 2024. The new-entrant schedule is not modelled yet, so their GOSI on this run is wrong and approval
+              is blocked. Correct the date if it is wrong, or reopen the run and exclude them.
+            </p>
+          )}
+          {cohortNotRecorded.length > 0 && (
+            <p className="text-sm text-amber-700 dark:text-amber-400">
+              {cohortNotRecorded.length} employee{cohortNotRecorded.length === 1 ? ' has' : 's have'} no GOSI
+              first-registration date, so their contribution basis is unverified (computed on the pre-3-July-2024
+              schedule). Record each date on the employee&apos;s Payroll tab (approval required); runs processed afterwards use it.
+            </p>
+          )}
+        </div>
+      )}
+
       {results.length === 0 && !loading ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <CheckCircle2 className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
@@ -1715,7 +1754,7 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
         </div>
       ) : (
         <div className="surface divide-y divide-slate-100 dark:divide-white/5">
-          {results.map(r => (
+          {shown.map(r => (
             <div key={r.id} className="flex items-start gap-3 px-5 py-4">
               <div className={`mt-0.5 h-2 w-2 shrink-0 rounded-full ${r.severity === 'Error' ? 'bg-rose-500' : r.severity === 'Warning' ? 'bg-amber-500' : 'bg-sky-400'}`} />
               <div className="min-w-0 flex-1">
