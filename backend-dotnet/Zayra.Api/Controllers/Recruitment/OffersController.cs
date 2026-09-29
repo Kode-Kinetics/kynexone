@@ -50,6 +50,8 @@ public class OffersController : ControllerBase
                 error = "invalid_offer_state",
                 message = $"Offer approval decisions require PendingApproval status (current: {offerStatus})."
             }),
+        ApprovalGuardOutcome.MakerIsChecker =>
+            StatusCode(StatusCodes.Status403Forbidden, new { error = "offer_maker_checker", message = verdict.Message }),
         _ => throw new InvalidOperationException($"Unhandled approval guard outcome '{verdict.Outcome}'."),
     };
 
@@ -89,7 +91,43 @@ public class OffersController : ControllerBase
             .Where(x => x.TenantId == tid && x.OfferLetterId == id)
             .OrderBy(x => x.StepOrder).ToListAsync(ct);
 
-        return Ok(new { offer, approvals });
+        // What the caller can do next, from the same rules the actions enforce, so the screen
+        // shows one clear action instead of a button that will be refused.
+        var me = GetUserId();
+        var author = await OfferRules.AuthorAsync(_db, tid, id, ct);
+        var sendVerdict = await OfferRules.EvaluateSendAsync(_db, offer, me, ct);
+        var approval = new
+        {
+            required = await OfferRules.IsApprovalRequiredAsync(_db, offer, ct),
+            isAuthor = me.HasValue && author == me,
+            canSend = sendVerdict == OfferSendVerdict.Sendable,
+            sendBlockedReason = sendVerdict is OfferSendVerdict.Sendable or OfferSendVerdict.InvalidState
+                ? null
+                : OfferRules.SendRefusal(sendVerdict).Message,
+            myPendingStepId = approvals
+                .Where(a => a.Status == "Pending" && me.HasValue && a.ApproverUserId == me && offer.Status == "PendingApproval")
+                .Select(a => (Guid?)a.Id).FirstOrDefault(),
+        };
+
+        return Ok(new { offer, approvals, approval });
+    }
+
+    // GET /api/recruitment/offers/{id}/approver-options
+    /// <summary>The people who can approve this offer: active HR Managers and Admins, other than the
+    /// offer's author.</summary>
+    [HttpGet("{id:guid}/approver-options")]
+    [Authorize(Roles = "Admin,HR Manager")]
+    public async Task<IActionResult> ApproverOptions(Guid id, CancellationToken ct)
+    {
+        var tid = GetTenantId();
+        if (!await _db.OfferLetters.AnyAsync(x => x.Id == id && x.TenantId == tid, ct)) return NotFound();
+        var author = await OfferRules.AuthorAsync(_db, tid, id, ct);
+        var options = await OfferRules.EligibleApprovers(_db, tid)
+            .Where(u => author == null || u.Id != author)
+            .OrderBy(u => u.FullName)
+            .Select(u => new OfferApproverOption(u.Id, u.FullName, u.Email))
+            .ToListAsync(ct);
+        return Ok(options);
     }
 
     // GET /api/recruitment/offers/placement-options
@@ -184,18 +222,18 @@ public class OffersController : ControllerBase
         var tid = GetTenantId();
         var offer = await _db.OfferLetters.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
         if (offer == null) return NotFound();
-        switch (await OfferRules.EvaluateSendAsync(_db, offer, ct))
+        var verdict = await OfferRules.EvaluateSendAsync(_db, offer, GetUserId(), ct);
+        if (verdict == OfferSendVerdict.InvalidState)
+            return BadRequest("Offer must be in Draft or Approved state to send.");
+        if (verdict != OfferSendVerdict.Sendable)
         {
-            case OfferSendVerdict.InvalidState:
-                return BadRequest("Offer must be in Draft or Approved state to send.");
-            case OfferSendVerdict.ApprovalPending:
-                return Conflict(new { error = "offer_approval_incomplete", message = OfferRules.ApprovalPendingMessage });
-            case OfferSendVerdict.ApprovalRejected:
-                return Conflict(new { error = "offer_approval_rejected", message = OfferRules.ApprovalRejectedMessage });
+            var (error, message) = OfferRules.SendRefusal(verdict);
+            return Conflict(new { error, message });
         }
 
         offer.Status = "Sent";
         offer.SentAtUtc = DateTime.UtcNow;
+        _db.RecruitmentAuditLogs.Add(OfferRules.AuditRow(tid, offer.Id, OfferRules.SentAction, GetUserId(), GetUserName()));
 
         _db.ApplicationEvents.Add(new ApplicationEvent
         {
@@ -237,11 +275,11 @@ public class OffersController : ControllerBase
         var tid = GetTenantId();
         var offer = await _db.OfferLetters.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
         if (offer == null) return NotFound();
-        if (offer.Status != "Sent")
+        if (!OfferRules.CanDecline(offer))
             return Conflict(new
             {
                 error = "invalid_offer_state",
-                message = $"Only a Sent offer can be declined (current: {offer.Status}). Accepted offers require an explicit onboarding reversal workflow."
+                message = $"{OfferRules.DeclineStateMessage} (current: {offer.Status})"
             });
 
         offer.Status = "Declined";
@@ -301,17 +339,39 @@ public class OffersController : ControllerBase
         if (await OfferRules.HasRejectedApprovalAsync(_db, tid, id, ct))
             return Conflict(new { error = "offer_approval_rejected", message = OfferRules.ApprovalRejectedMessage });
 
+        // Maker-checker: the step names one eligible person, who is not the offer's author.
+        var approverVerdict = await OfferRules.EvaluateApproverAsync(_db, tid, id, req.ApproverUserId, ct);
+        if (approverVerdict != OfferApproverVerdict.Eligible)
+        {
+            var (error, message) = OfferRules.ApproverRefusal(approverVerdict);
+            return approverVerdict switch
+            {
+                OfferApproverVerdict.NoApproverNamed => BadRequest(new { error, message }),
+                OfferApproverVerdict.ApproverIsAuthor => StatusCode(StatusCodes.Status403Forbidden, new { error, message }),
+                OfferApproverVerdict.AuthorUnknown => Conflict(new { error, message }),
+                _ => UnprocessableEntity(new { error, message }),
+            };
+        }
+        if (await _db.OfferApprovals.AnyAsync(a => a.TenantId == tid && a.OfferLetterId == id
+                && a.ApproverUserId == req.ApproverUserId && a.Status == "Pending", ct))
+            return Conflict(new { error = "offer_approver_already_named", message = "This person is already an approver on this offer." });
+
+        var approverName = string.IsNullOrWhiteSpace(req.ApproverName)
+            ? await _db.Users.AsNoTracking().Where(u => u.Id == req.ApproverUserId).Select(u => u.FullName).FirstOrDefaultAsync(ct) ?? string.Empty
+            : req.ApproverName;
         var nextStep = (await _db.OfferApprovals.Where(a => a.TenantId == tid && a.OfferLetterId == id).CountAsync(ct)) + 1;
 
         var approval = new OfferApproval
         {
             TenantId = tid, OfferLetterId = id, ApplicationId = offer.ApplicationId,
-            StepOrder = nextStep, ApproverName = req.ApproverName,
+            StepOrder = nextStep, ApproverName = approverName,
             ApproverUserId = req.ApproverUserId, ApproverRole = req.ApproverRole ?? string.Empty,
         };
 
         _db.OfferApprovals.Add(approval);
         offer.Status = "PendingApproval";
+        _db.RecruitmentAuditLogs.Add(OfferRules.AuditRow(tid, id, "ApprovalRequested", GetUserId(), GetUserName(),
+            new { approval.StepOrder, approval.ApproverUserId, approval.ApproverName }));
         await _db.SaveChangesAsync(ct);
         return Ok(approval);
     }
@@ -328,6 +388,8 @@ public class OffersController : ControllerBase
         var approval = await _db.OfferApprovals
             .FirstOrDefaultAsync(x => x.Id == approvalId && x.TenantId == tid && x.OfferLetterId == id, ct);
         var offer = await _db.OfferLetters.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
+        var decider = GetUserId();
+        var author = offer is null ? null : await OfferRules.AuthorAsync(_db, tid, id, ct);
 
         var verdict = ApprovalDecisionGuard.Evaluate(new ApprovalDecisionSpec
         {
@@ -339,16 +401,28 @@ public class OffersController : ControllerBase
             ParentStatus = offer?.Status ?? string.Empty,
             ParentStatusesAllowingDecision = new[] { "PendingApproval" },
             Lock = ApprovalLock.None,                 // DECLARED ABSENCE: an offer has no payroll lock.
-            // DECLARED ABSENCE: OfferLetter records no creator at all — there is no CreatedBy or
-            // equivalent on the entity — so this module has no maker to check the checker against.
-            // Closing this needs a schema change, not a refactor.
-            MakerChecker = MakerCheckerRule.None,
+            // The maker is the offer's author, read from its Created audit row (OfferLetter has no
+            // creator column). Approval only: an author may still reject, i.e. withdraw, their offer.
+            MakerChecker = new MakerCheckerRule(
+                author is { } maker && decider.HasValue && maker == decider,
+                new[] { "Approved" },
+                "The person who wrote the offer cannot approve it."),
         });
         if (!verdict.Passed) return OfferDecisionRefusal(verdict, approval?.Status, offer?.Status);
 
         // Guard postcondition: a passing verdict means both records were found.
         ArgumentNullException.ThrowIfNull(approval);
         ArgumentNullException.ThrowIfNull(offer);
+
+        // A step is decided by the person it names, and nobody else.
+        if (approval.ApproverUserId is null || decider is null || approval.ApproverUserId != decider)
+            return StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                error = "not_the_named_approver",
+                message = approval.ApproverUserId is null
+                    ? "This approval step names no approver, so no one can decide it. Generate a new offer and request approval from a named person."
+                    : $"Only {(string.IsNullOrWhiteSpace(approval.ApproverName) ? "the named approver" : approval.ApproverName)} can decide this approval step."
+            });
 
         approval.Status = req.Decision;
         approval.Comments = req.Comments ?? string.Empty;
@@ -358,6 +432,8 @@ public class OffersController : ControllerBase
         var allApprovals = await _db.OfferApprovals.Where(a => a.TenantId == tid && a.OfferLetterId == id).ToListAsync(ct);
         if (allApprovals.All(a => a.Status == "Approved")) offer.Status = "Approved";
         else if (req.Decision == "Rejected") offer.Status = "Draft";
+        _db.RecruitmentAuditLogs.Add(OfferRules.AuditRow(tid, id, OfferRules.ApprovalDecidedAction, decider, GetUserName(),
+            new { approvalId, approval.StepOrder, decision = req.Decision, offerStatus = offer.Status }));
 
         await _db.SaveChangesAsync(ct);
         return Ok(approval);
@@ -377,4 +453,5 @@ public record DeclineOfferRequest(string? Reason);
 public record OfferPlacementOption(Guid Id, string Name, string Code);
 public record OfferPlacementOptions(IReadOnlyList<OfferPlacementOption> Departments, IReadOnlyList<OfferPlacementOption> Designations);
 public record AddOfferApprovalRequest(string ApproverName, Guid? ApproverUserId, string? ApproverRole);
+public record OfferApproverOption(Guid UserId, string Name, string Email);
 public record DecideApprovalRequest(string Decision, string? Comments);
