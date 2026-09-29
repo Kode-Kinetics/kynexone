@@ -245,20 +245,105 @@ public class OffboardingController : ControllerBase
         });
     }
 
+    /// <summary>The exit-interview states the workflow knows. Anything else is refused, not stored.</summary>
+    private static readonly string[] ExitInterviewStatuses = ["Pending", "Scheduled", "Completed", "Waived"];
+
+    /// <summary>
+    /// R07 — record the exit interview. It used to store whatever status string it was sent, silently
+    /// ignore an out-of-range rating, let a completed or withdrawn separation be rewritten, accept a
+    /// waiver with no reason, and write no audit row. Now: a closed status vocabulary (matched
+    /// case-insensitively and stored canonically), a 0–5 rating (0 = not captured) that is refused
+    /// rather than ignored, a reason in Notes to waive, edits only while the offboarding is InProgress,
+    /// under a lock on the offboarding row, and an audit row that records the decision but never the
+    /// employee's confidential notes.
+    /// </summary>
     [HttpPatch("{id:guid}/exit-interview")]
     [HasPermission("employees.write")]
     public async Task<IActionResult> ExitInterview(Guid id, [FromBody] ExitInterviewRequest req, CancellationToken ct)
     {
-        var off = await Find(id, ct);
-        if (off is null) return NotFound();
-        off.ExitInterviewStatus = string.IsNullOrWhiteSpace(req.Status) ? off.ExitInterviewStatus : req.Status;
-        off.ExitInterviewDate = req.Date ?? off.ExitInterviewDate;
-        off.ExitReasonCategory = req.ReasonCategory ?? off.ExitReasonCategory;
-        off.ExitInterviewRating = req.Rating is >= 0 and <= 5 ? req.Rating : off.ExitInterviewRating;
-        off.ExitInterviewNotes = req.Notes ?? off.ExitInterviewNotes;
-        off.UpdatedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct);
-        return Ok(off);
+        var tenantId = this.GetTenantId()!.Value;
+        var canonicalStatus = string.IsNullOrWhiteSpace(req.Status)
+            ? null
+            : ExitInterviewStatuses.FirstOrDefault(s => s.Equals(req.Status.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (!string.IsNullOrWhiteSpace(req.Status) && canonicalStatus is null)
+            return BadRequest(new
+            {
+                error = "unknown_exit_interview_status",
+                message = $"'{req.Status}' is not an exit-interview status. Use Pending, Scheduled, Completed or Waived.",
+                allowed = ExitInterviewStatuses,
+            });
+        if (req.Rating is < 0 or > 5)
+            return BadRequest(new
+            {
+                error = "exit_interview_rating_out_of_range",
+                message = $"The rating must be between 1 and 5, or 0 when no rating was given (received {req.Rating}).",
+            });
+
+        var changedAtUtc = DateTime.UtcNow;
+        var auditId = Guid.NewGuid();
+        IActionResult? refusal = null;
+
+        async Task<bool> MutateOnceAsync(CancellationToken token)
+        {
+            _db.ChangeTracker.Clear();
+            // One row, one lock: Complete and Cancel take this same row lock before they change the
+            // offboarding's status, so the InProgress check below cannot race a close or a rescind.
+            var off = await _db.EmployeeOffboardings
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, token);
+            if (off is null)
+            {
+                refusal = NotFound();
+                return false;
+            }
+            if (off.Status != "InProgress")
+            {
+                refusal = Conflict(new
+                {
+                    error = "offboarding_not_active",
+                    message = $"The exit interview can only be recorded while the offboarding is in progress (current: '{off.Status}')."
+                });
+                return false;
+            }
+
+            var status = canonicalStatus ?? off.ExitInterviewStatus;
+            var notes = req.Notes ?? off.ExitInterviewNotes;
+            if (status == "Waived" && string.IsNullOrWhiteSpace(notes))
+            {
+                refusal = BadRequest(new
+                {
+                    error = "exit_interview_waiver_reason_required",
+                    message = "Say why the exit interview is being waived (in Notes) before saving it as Waived."
+                });
+                return false;
+            }
+
+            off.ExitInterviewStatus = status;
+            off.ExitInterviewDate = req.Date ?? off.ExitInterviewDate;
+            off.ExitReasonCategory = req.ReasonCategory?.Trim() ?? off.ExitReasonCategory;
+            off.ExitInterviewRating = req.Rating;
+            off.ExitInterviewNotes = notes;
+            off.UpdatedAtUtc = changedAtUtc;
+            // The decision is audited; the employee's free-text notes are confidential and are not.
+            _db.AuditLogs.Add(CreateOffboardingAudit(auditId, changedAtUtc, "offboarding.exit_interview_updated", off,
+                new
+                {
+                    status,
+                    date = off.ExitInterviewDate,
+                    rating = off.ExitInterviewRating,
+                    hasReasonCategory = !string.IsNullOrWhiteSpace(off.ExitReasonCategory),
+                    hasNotes = !string.IsNullOrWhiteSpace(notes),
+                }));
+            await _db.SaveChangesAsync(token);
+            return true;
+        }
+
+        await ExecuteAtomicMutationAsync(MutateOnceAsync, auditId, "offboarding.exit_interview_updated", tenantId, ct);
+
+        if (refusal is not null) return refusal;
+        var committed = await _db.EmployeeOffboardings.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
+        return committed is null ? NotFound() : Ok(committed);
     }
 
     [HttpPatch("{id:guid}/checklist")]
@@ -1254,21 +1339,29 @@ public class OffboardingController : ControllerBase
         string action,
         LockedOffboardingGraph graph,
         object details) =>
+        CreateOffboardingAudit(auditId, createdAtUtc, action, graph.Offboarding, details);
+
+    private AuditLog CreateOffboardingAudit(
+        Guid auditId,
+        DateTime createdAtUtc,
+        string action,
+        EmployeeOffboarding offboarding,
+        object details) =>
         AuthAuditEntry.Create(
             auditId,
             createdAtUtc,
             action,
             "EmployeeOffboarding",
-            graph.Offboarding.Id.ToString(),
+            offboarding.Id.ToString(),
             new RequestContext(
                 HttpContext.Connection.RemoteIpAddress?.ToString(),
                 Request.Headers.UserAgent.ToString(),
                 this.GetUserId(),
-                graph.Offboarding.TenantId),
+                offboarding.TenantId),
             System.Text.Json.JsonSerializer.Serialize(new
             {
-                graph.Offboarding.EmployeeId,
-                graph.Offboarding.EmployeeCode,
+                offboarding.EmployeeId,
+                offboarding.EmployeeCode,
                 details
             }));
 
