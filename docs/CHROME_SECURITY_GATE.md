@@ -118,27 +118,70 @@ cannot pass. Proven by substituting a group session into the company-scoped slot
 
 ## 6. Running it locally
 
+The seeders are gone; the world is provisioned by `frontend/e2e/bootstrap` and every step is guarded by
+the **e2e preflight** (§6a). Export ONE set of values and give the same shell to the API and the tests:
+
 ```bash
-# 1. Postgres
-docker run -d --name wave1-e2e-pg -e POSTGRES_PASSWORD=wave1 -e POSTGRES_USER=postgres \
+export PLATFORM_ADMIN_EMAIL="e2e-owner@example.com" PLATFORM_ADMIN_PASSWORD="$(openssl rand -hex 16)"
+export BUILD_COMMIT="$(git rev-parse HEAD)"   # baked into both builds; the preflight compares it
+
+# 1. Postgres (disposable)
+docker run -d --name e2e-pg -e POSTGRES_PASSWORD=e2e -e POSTGRES_USER=postgres \
   -e POSTGRES_DB=zayra -p 55433:5432 postgres:16-alpine
 
-# 2. Backend, with the enterprise seed AND a platform operator
-cd backend-dotnet/Zayra.Api
-ConnectionStrings__Default="Host=localhost;Port=55433;Database=zayra;Username=postgres;Password=wave1" \
+# 2. Backend, from this checkout
+dotnet build backend-dotnet/Zayra.Api -c Release -p:SourceRevisionId="$BUILD_COMMIT"
+ConnectionStrings__Default="Host=localhost;Port=55433;Database=zayra;Username=postgres;Password=e2e" \
 Jwt__Issuer="Zayra.Api" Jwt__TenantAudience="kynexone-tenant" Jwt__PlatformAudience="kynexone-platform" \
 Jwt__SigningKey="LOCAL_ONLY_NOT_A_PRODUCTION_KEY_0123456789_ABCDEFGHIJKLMNOP" \
-SeedAdmin__SeedDemoData=false SEED_ENTERPRISE_TEST_DATA=true \
-PLATFORM_ADMIN_EMAIL="admin@platform.local" PLATFORM_ADMIN_PASSWORD="YourPassword123!" \
-ASPNETCORE_URLS="http://localhost:5117" dotnet run --no-launch-profile
+Database__RunMigrationsOnStartup=true RateLimit__LoginPermitLimit=200 \
+ASPNETCORE_URLS="http://localhost:5117" dotnet run --no-build -c Release --no-launch-profile \
+  --project backend-dotnet/Zayra.Api
 
-# 3. PRODUCTION frontend build
+# 3. PRODUCTION frontend build (BUILD_COMMIT is served at /build-info)
 cd frontend && NEXT_PUBLIC_API_BASE_URL=http://localhost:5117 npx next build
 NEXT_PUBLIC_API_BASE_URL=http://localhost:5117 npx next start -p 5173
 
-# 4. The gate
-PLAYWRIGHT_BASE_URL=http://localhost:5173 npx playwright test --config=playwright.security.config.ts
+# 4. Preflight → provision + verify → the gate
+export PLAYWRIGHT_BASE_URL=http://localhost:5173 E2E_API_BASE_URL=http://localhost:5117 E2E_EXPECTED_DATABASE=zayra
+npx playwright test -c e2e/preflight/playwright.preflight.config.ts
+npx playwright test -c e2e/bootstrap/playwright.bootstrap.config.ts
+npx playwright test --config=playwright.security.config.ts
 ```
+
+## 6a. Test identity contract and preflight (register F07)
+
+One declaration: `frontend/e2e/identity/env.ts` (the variables) and `frontend/e2e/world.ts` (tenants
+and the `PERSONAS` registry). The bootstrap, the preflight, the lanes and `security-gate/roles.ts` all
+resolve identities through it. `PLATFORM_ADMIN_EMAIL` / `PLATFORM_ADMIN_PASSWORD` have **no default**:
+the API creates that owner at boot, so the tests must present exactly the values the API was started
+with. `E2E_DEFAULT_*` and `E2E_MIN_EMPLOYEES` are retired and refused.
+
+| Variable | Required | Meaning |
+|---|---|---|
+| `PLATFORM_ADMIN_EMAIL`, `PLATFORM_ADMIN_PASSWORD` | always | the platform owner; same values as the API process |
+| `E2E_INTELLIFLOW_PASSWORD`, `E2E_RASALMANAR_PASSWORD`, `E2E_GROUP_PASSWORD`, `E2E_EVOSTEL_PASSWORD` | CI | per-run fixture passwords (local defaults otherwise) |
+| `PLAYWRIGHT_BASE_URL` (alias `E2E_BASE_URL`), `E2E_API_BASE_URL` | no | default `:5173` / `:5117` |
+| `E2E_EXPECTED_COMMIT` | CI | the commit both builds must report (local default: `git HEAD`) |
+| `E2E_EXPECTED_DATABASE` | no | database name the API must be attached to |
+| `E2E_DESTRUCTIVE_HOST_ALLOWLIST`, `E2E_DATABASE_HOST_ALLOWLIST` | no | extra non-loopback hosts accepted as disposable |
+| `E2E_ALLOW_UNVERIFIED_BUILD` | never in CI | local escape hatch when a stack cannot report its commit |
+
+`frontend/e2e/preflight` runs in three phases and exits non-zero, naming each failed check:
+**target** (first CI step, and before the bootstrap writes) — env contract complete; both hosts
+disposable, never `*.vercel.app` / `*.onrender.com` / `*.render.com` / `*.neon.tech` / `kynexone.com`
+(decided before any request); API `/health/live` and frontend `/build-info` report the expected commit;
+the frontend proxies to the same API and database; that database (from the authenticated
+`/api/platform/health`) is not `kynexone_clean` / `neondb` nor on a Neon/Render host; the platform owner
+authenticates. **world** (after the bootstrap) — every tenant, legal entity and employee link exists; the
+live role catalog equals `AuthSeeder.cs`; every persona signs in with exactly its role, scope and catalog
+permissions; writes `e2e/.auth/preflight.json`. **lane** (every browser config's global setup) — target
+again, plus the world record must describe this exact stack (URLs, builds, database, tenant ids).
+
+The role matrix (`security-gate/full-role-matrix.spec.ts`) is generated from `AuthSeeder.cs` by
+`e2e/identity/role-catalog.ts`; `e2e/identity/role-policy.ts` holds the separation-of-duties rules,
+checked browserlessly on every PR and against every signed-in persona in the gate. Each test's actor is
+stamped into its annotations and printed by `e2e/identity/actor-reporter.ts`.
 
 ---
 
@@ -146,7 +189,7 @@ PLAYWRIGHT_BASE_URL=http://localhost:5173 npx playwright test --config=playwrigh
 
 | # | Gap |
 |---|---|
-| **GAP-B3-1** | `Manager` and `Employee` roles exist in the product but are **not seeded** into the enterprise-group tenant, so "Employee cannot access HR administration" and "Manager sees only their reporting scope" are **not** covered. Faking those identities would have produced a green test that proves nothing. They need seeder support first. |
+| **GAP-B3-1** | *Narrowed.* Every system role now has a real signed-in persona and a permission/API/navigation matrix (`full-role-matrix.spec.ts`). Still NOT covered: "Manager sees only their reporting scope" — the Manager and Supervisor personas (IntelliFlow) are not linked to an employee and have no direct reports, so no team-scoped journey runs as them. The Employee persona IS employee-linked. |
 | **GAP-B3-2** | Permission **revocation mid-session** is not tested — it needs a defined session-revocation contract to assert against. |
 | **GAP-B3-3** | Payment-batch pages, downloads, imports and confirmations are covered at the API layer by `PaymentBatchScopeTests`, but not yet through the browser. |
 | **GAP-B3-4** | Impersonation and break-glass journeys are not exercised. The resolver invariants for them are unit-tested (`RequestEntityScopeResolverTests`); the end-to-end flow is not. |

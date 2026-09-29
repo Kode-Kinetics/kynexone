@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import { resolveTarget } from './e2e/identity/env';
 
 export default defineConfig({
   testDir: './e2e',
@@ -21,18 +22,22 @@ export default defineConfig({
   // exactly that reason. Do not raise this.
   retries: 1,
   workers: 1,
-  reporter: 'list',
+  // The actor reporter prints who each test acted as (e2e/identity/actor.ts), so a green line in the
+  // CI log also says under whose session it went green.
+  reporter: [['list'], ['./e2e/identity/actor-reporter.ts']],
   use: {
-    // FRONTEND_PORT=5173 per .env. Accept the established E2E_BASE_URL alias so
-    // isolated audit stacks never fall back to an unrelated service on :5173.
-    baseURL: process.env.PLAYWRIGHT_BASE_URL ?? process.env.E2E_BASE_URL ?? 'http://localhost:5173',
+    // One resolution for every config, helper and the preflight (e2e/identity/env.ts): PLAYWRIGHT_BASE_URL,
+    // then the E2E_BASE_URL alias, then :5173 — which the preflight then has to prove is the right stack.
+    baseURL: resolveTarget().baseUrl,
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },
   projects: [
-    // A tenant-critical smoke lane must remain runnable even when the platform-admin
-    // bootstrap account is intentionally absent or broken. Keeping it independent of
-    // `setup` prevents one platform login from suppressing every tenant browser proof.
+    // Independent of the `setup` project, so a failing platform-UI login (the setup project drives the
+    // platform login FORM) cannot suppress the tenant browser proof. It is NOT independent of the
+    // platform owner itself any more: the world it logs in to only exists because the bootstrap created
+    // it as that owner, and the global preflight (F07) refuses to run any lane unless the owner this
+    // process presents authenticates against this API and the world is the verified one.
     {
       name: 'tenant-pilot',
       testMatch: /pilot-critical\.spec\.ts/,

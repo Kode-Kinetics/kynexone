@@ -71,10 +71,14 @@ Jwt__Issuer="Zayra.Api" \
 Jwt__TenantAudience="kynexone-tenant" \
 Jwt__PlatformAudience="kynexone-platform" \
 Jwt__SigningKey="CHANGE_ME_TO_A_64_CHARACTER_PRODUCTION_SECRET_KEY_1234567890" \
-PLATFORM_ADMIN_EMAIL="admin@platform.local" \
-PLATFORM_ADMIN_PASSWORD="YourPassword123!" \
+PLATFORM_ADMIN_EMAIL="$PLATFORM_ADMIN_EMAIL" \
+PLATFORM_ADMIN_PASSWORD="$PLATFORM_ADMIN_PASSWORD" \
 dotnet run
 ```
+
+Export `PLATFORM_ADMIN_EMAIL` / `PLATFORM_ADMIN_PASSWORD` once and give the same values to the
+backend and to Playwright: the tests have no default for them, and the e2e preflight refuses to run
+until they authenticate (docs/CHROME_SECURITY_GATE.md §6a).
 
 - `PLATFORM_ADMIN_*` is the ONLY bootstrap the backend performs: it creates the
   first platform operator (`PlatformOwnerBootstrap`), and nothing else. Every
@@ -127,11 +131,12 @@ npx playwright test e2e/group-company --list    # parse check, no run
 |---|---|---|
 | `PLAYWRIGHT_BASE_URL` | `http://localhost:5173` | frontend baseURL |
 | `E2E_GROUP_PASSWORD` | `GroupDemo123!x` outside CI; generated per run in CI | every group-tenant user |
-| `E2E_DEFAULT_TENANT_SLUG` | `zayra` | single-company regression tenant |
-| `E2E_DEFAULT_ADMIN_EMAIL` | `admin@zayra.local` | single-company regression admin |
-| `E2E_DEFAULT_ADMIN_PASSWORD` | `ChangeMe123!` | single-company regression admin |
-| `PLATFORM_ADMIN_EMAIL` | `admin@platform.local` | platform-admin spec |
-| `PLATFORM_ADMIN_PASSWORD` | `YourPassword123!` outside CI; generated per run in CI | the platform owner, and the bootstrap |
+| `PLATFORM_ADMIN_EMAIL` | **none** — must match the API process | the platform owner, and the bootstrap |
+| `PLATFORM_ADMIN_PASSWORD` | **none** — must match the API process; generated per run in CI | the platform owner, and the bootstrap |
+
+The single-company regression tenant is IntelliFlow from `e2e/world.ts`. The former
+`E2E_DEFAULT_TENANT_SLUG` / `E2E_DEFAULT_ADMIN_EMAIL` / `E2E_DEFAULT_ADMIN_PASSWORD` overrides are
+retired and the preflight refuses them. The full contract is in docs/CHROME_SECURITY_GATE.md §6a.
 
 ## Provisioned test data (frontend/e2e/bootstrap, declared in frontend/e2e/world.ts)
 
@@ -164,8 +169,8 @@ login "Workspace" field. Employee codes follow `<COMPANY-CODE>-E<number>`.
 
 | User | Email / password | Purpose |
 |---|---|---|
-| Default tenant admin | `admin@zayra.local` / `ChangeMe123!` (tenant `zayra`) | single-company regression |
-| Platform admin | `admin@platform.local` / `PLATFORM_ADMIN_PASSWORD` | platform-admin spec |
+| Default tenant admin | `admin@intelliflow.com` / `E2E_INTELLIFLOW_PASSWORD` (tenant `intelliflow`) | single-company regression |
+| Platform admin | `PLATFORM_ADMIN_EMAIL` / `PLATFORM_ADMIN_PASSWORD` | platform-admin spec |
 
 ## Spec map
 

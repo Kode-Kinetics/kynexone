@@ -2,7 +2,10 @@ import { test as setup, expect, request as pwRequest } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROLES, BASE_URL, storageStatePath, tokenPath, type RoleFixture } from './roles';
-import { MISSING_WORLD } from '../world';
+import { MISSING_WORLD, personaForLogin, tenantBySlug } from '../world';
+import { expectedPermissions, loadRoleCatalog } from '../identity/role-catalog';
+import { checkPersonaSession } from '../preflight/rules';
+import { stampActor } from '../identity/actor';
 
 /**
  * WAVE 1 B3 — authenticate every role ONCE, then never again.
@@ -15,7 +18,8 @@ import { MISSING_WORLD } from '../world';
  * <b>Rate limiting is respected, not raised.</b> The API permits 10 login attempts per 60s window. Nine
  * roles authenticate here, paced apart, and every spec then reuses the stored session. Raising
  * `RateLimit:LoginPermitLimit` to make tests pass would weaken a production brute-force control for the
- * convenience of the test suite.
+ * convenience of the test suite. (Every role in roles.ts — the whole system-role catalog — signs in
+ * here, so at the default 7s pacing this project takes about two minutes.)
  */
 
 const PACING_MS = Number(process.env.E2E_LOGIN_PACING_MS ?? 7_000);
@@ -47,7 +51,9 @@ for (const [index, role] of ROLES.entries()) {
 
     const api = await pwRequest.newContext({ baseURL: BASE_URL, timeout: 30_000 });
     try {
-      const { token, refreshToken } = await login(api, role);
+      stampActor({ email: role.email, tenantSlug: role.tenantSlug, via: `security-gate role '${role.key}'` });
+      const { token, refreshToken, user } = await login(api, role);
+      if (role.tenantSlug !== null) verifyPersona(role, user);
 
       // The browser session. Tokens live in localStorage for this app, so the storage state is
       // seeded through an origin script rather than by driving the login form nine times.
@@ -121,5 +127,41 @@ async function login(api: import('@playwright/test').APIRequestContext, role: Ro
   const body = await resp.json();
   const token = body.accessToken ?? body.token ?? body.access_token;
   expect(token, `Login for ${role.key} returned no access token`).toBeTruthy();
-  return { token: token as string, refreshToken: body.refreshToken ?? body.refresh_token };
+  return { token: token as string, refreshToken: body.refreshToken ?? body.refresh_token, user: body.user ?? {} };
+}
+
+/**
+ * The session the gate is about to reuse for every boundary IS the persona it claims to be: the
+ * declared role only, exactly the permissions AuthSeeder.cs gives that role, and the declared scope.
+ * The login response already carries all of it, so this costs no extra request — and without it a
+ * gate role that silently resolved to a different role or scope would make every "must not reach"
+ * assertion prove the wrong thing.
+ */
+function verifyPersona(role: RoleFixture, user: any) {
+  const persona = personaForLogin(role.email, role.tenantSlug);
+  expect(persona, `${role.key} <${role.email}> is not a persona in e2e/world.ts`).toBeTruthy();
+  const catalog = loadRoleCatalog();
+  const findings = checkPersonaSession({
+    key: persona!.key,
+    email: persona!.email,
+    tenantSlug: persona!.tenantSlug!,
+    role: persona!.role!,
+    scope: persona!.scope === 'companies' ? 'companies' : 'group',
+    companyCodes: persona!.companyCodes,
+    employeeLinked: persona!.employeeLinked,
+    tenantCompanyCodes: tenantBySlug(persona!.tenantSlug!).companies.map((c) => c.code),
+    expectedPermissions: expectedPermissions(catalog, [persona!.role!]),
+  }, {
+    status: 200,
+    tenantSlug: user.tenantSlug,
+    roles: user.roles,
+    permissions: user.permissions,
+    companyCodes: (user.companies ?? []).map((c: any) => String(c.code)),
+    isGroupScope: user.isGroupScope,
+    employeeId: user.employeeId ?? null,
+  });
+  expect(
+    findings.filter((f) => !f.ok).map((f) => `${f.check}: ${f.detail}`),
+    `${role.key} signed in, but not as the persona e2e/world.ts declares`,
+  ).toEqual([]);
 }

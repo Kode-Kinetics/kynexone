@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { dirname, join } from 'node:path';
 import { EVOSTEL_ADMIN, EVOSTEL_SLUG } from './world';
 import { assertDisposableHost } from './disposable-host.guard';
+import { resolveTarget } from './identity/env';
 
 /**
  * Records the tenant id this run created, so teardown purges THAT tenant and not merely
@@ -27,8 +28,7 @@ const OWNERSHIP_FILE = join(__dirname, '.auth', 'fixture-tenant.json');
  * The safety property is unchanged: the resolved host is still handed to assertDisposableHost,
  * which still refuses anything that is not loopback or explicitly allowlisted.
  */
-const RESOLVED_BASE_URL =
-  process.env.PLAYWRIGHT_BASE_URL ?? process.env.E2E_BASE_URL ?? 'http://localhost:5173';
+const RESOLVED_BASE_URL = resolveTarget().baseUrl;
 
 function recordOwnership(tenantId: string, baseUrl: string): void {
   mkdirSync(dirname(OWNERSHIP_FILE), { recursive: true });
