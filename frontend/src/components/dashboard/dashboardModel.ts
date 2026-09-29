@@ -18,10 +18,16 @@ import type { AIInsight } from '../../api/intelligence';
 
 // ── Formatting ────────────────────────────────────────────────────────────────
 
-export function fmtMoney(n: number, currency = 'SAR'): string {
-  if (Math.abs(n) >= 1_000_000) return `${currency} ${(n / 1_000_000).toFixed(2)}M`;
-  if (Math.abs(n) >= 1_000) return `${currency} ${(n / 1_000).toFixed(1)}K`;
-  return `${currency} ${Math.round(n).toLocaleString()}`;
+/**
+ * A compact amount. The currency is the run's company currency (lib/payrollCurrency); there is no
+ * default — a Saudi figure used to be labelled SAR for every tenant. With no confirmed currency the
+ * amount is shown bare rather than with a guessed label.
+ */
+export function fmtMoney(n: number, currency?: string | null): string {
+  const amount = Math.abs(n) >= 1_000_000 ? `${(n / 1_000_000).toFixed(2)}M`
+    : Math.abs(n) >= 1_000 ? `${(n / 1_000).toFixed(1)}K`
+    : Math.round(n).toLocaleString();
+  return currency ? `${currency} ${amount}` : amount;
 }
 
 export function timeAgo(iso: string, now = Date.now()): string {
@@ -322,6 +328,8 @@ export interface PulseInput {
   payrollEnabled: boolean;
   /** "05:58" — when the dashboard payload was loaded (the API caches it for up to 60 s). */
   asOfTime?: string | null;
+  /** The latest run's company currency (lib/payrollCurrency), or null when it is not confirmed. */
+  payrollCurrency?: string | null;
 }
 
 /** Hour the working day is treated as started, for "pre-shift" vs "not captured". */
@@ -350,7 +358,7 @@ export function attendanceCaptured(data: DashboardFull): boolean {
   return s.presentToday + s.onLeave + s.absent > 0;
 }
 
-export function buildPulse({ data, insights, tenantHour, now = new Date(), payrollEnabled, asOfTime }: PulseInput): PulseSegment[] {
+export function buildPulse({ data, insights, tenantHour, now = new Date(), payrollEnabled, asOfTime, payrollCurrency = null }: PulseInput): PulseSegment[] {
   const asOfNow = asOfTime ? `As of ${asOfTime}` : undefined;
   if (!data) {
     const unknown = (key: PulseSegment['key'], label: string, to: string, cta: string): PulseSegment =>
@@ -429,7 +437,7 @@ export function buildPulse({ data, insights, tenantHour, now = new Date(), payro
     let payroll: PulseSegment;
     if (currentRun && PAYROLL_DONE.test(currentRun.status)) {
       payroll = { key: 'payroll', label: 'Payroll', to: '/payroll', cta: 'Open payroll', asOf: `${currentRun.periodLabel} run`, state: 'ready',
-        value: fmtMoney(currentRun.totalNet).replace(/^SAR /, ''), detail: `SAR net, ${currentRun.periodLabel}, ${currentRun.status.toLowerCase()}` };
+        value: fmtMoney(currentRun.totalNet), detail: `${payrollCurrency ? `${payrollCurrency} net` : 'Net'}, ${currentRun.periodLabel}, ${currentRun.status.toLowerCase()}` };
     } else if (salaryGap) {
       payroll = { key: 'payroll', label: 'Payroll', to: '/payroll', cta: 'Open salary setup', asOf: `Rules check ${timeAgo(salaryGap.createdAtUtc, now.getTime()).toLowerCase()}`, state: 'blocked',
         value: Number.isFinite(gapCount) ? `${gapCount} without salary` : 'Salary gaps',

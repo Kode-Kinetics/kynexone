@@ -89,3 +89,45 @@ export function commonPayrollCurrency(
   );
   return currencies.size === 1 ? [...currencies][0] : null;
 }
+
+/**
+ * One currency for a SET of payroll amounts (a trend, a year-to-date total), or the reason there is
+ * none. Each item is resolved exactly as a single run is (resolvePayrollRunCurrency); a set whose items
+ * resolve to two currencies is unavailable, because adding or charting them together would state an
+ * amount in neither currency.
+ */
+export function resolvePayrollRunsCurrency(
+  runs: Array<{ companyId: string | null }>,
+  companies: CurrencyCompany[],
+  companiesState: CompaniesLoadState,
+): RunCurrencyResolution {
+  if (runs.length === 0) return { status: 'unavailable', reason: 'No payroll run is on record.' };
+  const resolutions = runs.map((run) => resolvePayrollRunCurrency(run, companies, companiesState));
+  if (resolutions.some((r) => r.status === 'loading')) return { status: 'loading' };
+  for (const r of resolutions) if (r.status === 'unavailable') return r;
+  const currencies = [...new Set(resolutions.map((r) => (r.status === 'resolved' ? r.currency : '')))].filter(Boolean).sort();
+  if (currencies.length === 1) return { status: 'resolved', currency: currencies[0] };
+  return {
+    status: 'unavailable',
+    reason: `These payroll runs are paid in ${currencies.join(', ')}, so they are shown per company rather than added together.`,
+  };
+}
+
+/**
+ * Totals kept apart by currency, largest first. `null` collects amounts whose currency could not be
+ * confirmed. Summing across currencies is never offered.
+ */
+export function totalsByCurrency<T>(
+  items: T[],
+  currencyOf: (item: T) => string | null | undefined,
+  amountOf: (item: T) => number,
+): Array<{ currency: string | null; total: number }> {
+  const totals = new Map<string | null, number>();
+  for (const item of items) {
+    const key = normalize(currencyOf(item)) || null;
+    totals.set(key, (totals.get(key) ?? 0) + amountOf(item));
+  }
+  return [...totals.entries()]
+    .map(([currency, total]) => ({ currency, total }))
+    .sort((a, b) => b.total - a.total);
+}
