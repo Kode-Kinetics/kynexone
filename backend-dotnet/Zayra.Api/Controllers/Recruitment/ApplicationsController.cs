@@ -320,9 +320,10 @@ public class ApplicationsController : ControllerBase
             department: departmentText,
             designationId: req.DesignationId ?? (string.IsNullOrWhiteSpace(req.Designation) ? opening?.DesignationId : null),
             designation: string.IsNullOrWhiteSpace(req.Designation) ? app.JobTitle : req.Designation,
-            ct);
+            ct,
+            companyId: app.CompanyId);
         if (!placement.IsResolved)
-            return UnprocessableEntity(new { error = OfferPlacement.UnresolvedError, field = placement.Field, message = placement.Message });
+            return UnprocessableEntity(new { error = placement.Error, field = placement.Field, message = placement.Message });
 
         var gross = req.BasicSalary + req.HousingAllowance + req.TransportAllowance + req.OtherAllowances;
         var currency = await OfferRules.ResolveCurrencyAsync(_db, tenantId, app.CompanyId, ct);

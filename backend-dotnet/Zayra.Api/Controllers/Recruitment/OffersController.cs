@@ -165,9 +165,9 @@ public class OffersController : ControllerBase
         // The offer's department and designation must be records activation can match, or the
         // accepted offer's draft is refused at approval. Resolved (and re-spelled) here instead.
         var placement = await OfferPlacement.ResolveAsync(_db, tid,
-            req.DepartmentId, req.OfferedDepartment, req.DesignationId, req.OfferedJobTitle, ct);
+            req.DepartmentId, req.OfferedDepartment, req.DesignationId, req.OfferedJobTitle, ct, companyId: app.CompanyId);
         if (!placement.IsResolved)
-            return UnprocessableEntity(new { error = OfferPlacement.UnresolvedError, field = placement.Field, message = placement.Message });
+            return UnprocessableEntity(new { error = placement.Error, field = placement.Field, message = placement.Message });
 
         var gross = req.BasicSalary + req.HousingAllowance + req.TransportAllowance + req.OtherAllowances;
 

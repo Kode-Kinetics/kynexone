@@ -95,6 +95,8 @@ public sealed class OfferPlacementTests
         // The whole chain: generate, send, accept, approve. On the base branch this ended in a 422 at
         // approval, because the offer carried the advert title as its job title.
         var seeded = await SeedAsync(advertTitle: "Senior HR Lead - Riyadh", openingDesignation: true);
+        // This walk-through is about placement, not approval (on by default; see OfferRules).
+        await SwitchOfferApprovalOffAsync(seeded.TenantId);
 
         await using (var db = _fixture.CreateDb())
             (await Applications(db, seeded.TenantId, Guid.NewGuid()).GenerateOffer(
@@ -174,6 +176,118 @@ public sealed class OfferPlacementTests
                 .Should().BeOfType<OkObjectResult>().Subject.Value!;
         options.Departments.Select(d => d.Id).Should().Equal(seeded.DepartmentId);
         options.Designations.Select(d => d.Id).Should().Equal(seeded.DesignationId);
+    }
+
+    // ── Legal entity ─────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task AnOffer_ForADepartmentOfAnotherLegalEntity_IsRefusedAtOfferTime()
+    {
+        // Review finding: the offer was made by entity A, its department hung off a branch of entity
+        // B, and activation placed the hire in B. The offer is now refused while it is being made.
+        var seeded = await SeedAsync();
+        var entityA = await AddEntityAsync(seeded.TenantId, "SA", "SAR");
+        var entityB = await AddEntityAsync(seeded.TenantId, "AE", "AED");
+        var foreignDepartment = await AddDepartmentAsync(seeded.TenantId, entityB.BranchId, "OPS-B", "Operations");
+        await SetApplicationEntityAsync(seeded.ApplicationId, entityA.CompanyId);
+
+        await using (var db = _fixture.CreateDb())
+        {
+            var byName = await Applications(db, seeded.TenantId, Guid.NewGuid()).GenerateOffer(
+                seeded.ApplicationId, Request("Operations"), CancellationToken.None);
+            JsonSerializer.Serialize(byName.Should().BeOfType<UnprocessableEntityObjectResult>().Subject.Value)
+                .Should().Contain("offer_placement_wrong_entity").And.Contain("another legal entity");
+        }
+        await using (var db = _fixture.CreateDb())
+            (await Applications(db, seeded.TenantId, Guid.NewGuid()).GenerateOffer(seeded.ApplicationId,
+                    Request("") with { DepartmentId = foreignDepartment }, CancellationToken.None))
+                .Should().BeOfType<UnprocessableEntityObjectResult>();
+
+        await using var verify = _fixture.CreateDb();
+        (await verify.OfferLetters.CountAsync(x => x.ApplicationId == seeded.ApplicationId)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task ADepartmentNameTwoEntitiesShare_ResolvesToTheOfferingEntitysRecord_AndTheHireLandsThere()
+    {
+        var seeded = await SeedAsync();
+        await SwitchOfferApprovalOffAsync(seeded.TenantId);
+        var entityA = await AddEntityAsync(seeded.TenantId, "SA", "SAR");
+        var entityB = await AddEntityAsync(seeded.TenantId, "AE", "AED");
+        await AddDepartmentAsync(seeded.TenantId, entityB.BranchId, "OPS-B", "Operations");
+        var ownDepartment = await AddDepartmentAsync(seeded.TenantId, entityA.BranchId, "OPS-A", "Operations");
+        await SetApplicationEntityAsync(seeded.ApplicationId, entityA.CompanyId);
+
+        Guid offerId;
+        await using (var db = _fixture.CreateDb())
+        {
+            var created = await Applications(db, seeded.TenantId, Guid.NewGuid()).GenerateOffer(
+                seeded.ApplicationId, Request("Operations"), CancellationToken.None);
+            var offer = (OfferLetter)created.Should().BeOfType<CreatedResult>().Subject.Value!;
+            // Stored by its unique code, because activation resolves by name or code and the name is shared.
+            offer.OfferedDepartment.Should().Be("OPS-A");
+            offerId = offer.Id;
+        }
+        await using (var db = _fixture.CreateDb())
+            (await Applications(db, seeded.TenantId, Guid.NewGuid()).SendOffer(offerId, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        await using (var db = _fixture.CreateDb())
+            (await Applications(db, seeded.TenantId, Guid.NewGuid()).AcceptOffer(offerId, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        Guid draftId;
+        await using (var db = _fixture.CreateDb())
+            draftId = (await db.JobApplications.AsNoTracking().SingleAsync(x => x.Id == seeded.ApplicationId)).OnboardingDraftId!.Value;
+        await using (var db = _fixture.CreateDb())
+            (await Employees(db, seeded.TenantId, Guid.NewGuid()).ApproveDraft(draftId, CancellationToken.None))
+                .Result.Should().BeOfType<OkObjectResult>();
+
+        await using var verify = _fixture.CreateDb();
+        // IgnoreQueryFilters is intentional: the test reads the one employee this tenant owns.
+        var employee = await verify.Employees.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.TenantId == seeded.TenantId);
+        employee.CompanyId.Should().Be(entityA.CompanyId);
+        employee.DepartmentId.Should().Be(ownDepartment);
+    }
+
+    private async Task SwitchOfferApprovalOffAsync(Guid tenantId)
+    {
+        await using var db = _fixture.CreateDb();
+        db.SystemSettings.Add(new SystemSetting
+        {
+            TenantId = tenantId, Category = OfferRules.PolicyCategory, SettingKey = OfferRules.PolicyKey,
+            SettingValue = "false", DataType = "bool",
+        });
+        await db.SaveChangesAsync();
+    }
+
+    private async Task<(Guid CompanyId, Guid BranchId)> AddEntityAsync(Guid tenantId, string country, string currency)
+    {
+        await using var db = _fixture.CreateDb();
+        var company = new Company
+        {
+            Id = Guid.NewGuid(), TenantId = tenantId, LegalNameEn = $"{country} Co {Guid.NewGuid():N}", CountryCode = country,
+            Jurisdiction = country == "SA" ? "KSA-mainland" : "UAE-mainland", RegistrationNumber = $"REG-{Guid.NewGuid():N}",
+            DefaultCurrency = currency, IsActive = true,
+        };
+        var branch = new Branch { TenantId = tenantId, CompanyId = company.Id, Code = $"BR-{country}", NameEn = $"{country} HQ", CountryCode = country, IsActive = true };
+        db.Companies.Add(company);
+        db.Branches.Add(branch);
+        await db.SaveChangesAsync();
+        return (company.Id, branch.Id);
+    }
+
+    private async Task<Guid> AddDepartmentAsync(Guid tenantId, Guid branchId, string code, string name)
+    {
+        await using var db = _fixture.CreateDb();
+        var department = new Department { TenantId = tenantId, BranchId = branchId, Code = code, NameEn = name, IsActive = true };
+        db.Departments.Add(department);
+        await db.SaveChangesAsync();
+        return department.Id;
+    }
+
+    private async Task SetApplicationEntityAsync(Guid applicationId, Guid companyId)
+    {
+        await using var db = _fixture.CreateDb();
+        var application = await db.JobApplications.SingleAsync(x => x.Id == applicationId);
+        application.CompanyId = companyId;
+        await db.SaveChangesAsync();
     }
 
     // ── Seeding and controllers ──────────────────────────────────────────────
