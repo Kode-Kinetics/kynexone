@@ -1244,7 +1244,7 @@ export function EmployeesPage() {
                 entityName="Employees"
                 onExport={employeesImportExport.export}
                 onDownloadTemplate={employeesImportExport.template}
-                onImport={async (csv) => { const r = await employeesApi.import(csv); await load(); return r; }}
+                onImport={async (csv, importKey) => { const r = await employeesApi.import(csv, importKey); await load(); return r; }}
                 onPreview={(csv) => employeesApi.importPreview(csv)}
                 onViewIncomplete={(filter) => {
                   setSearch('');
