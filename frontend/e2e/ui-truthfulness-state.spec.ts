@@ -7,6 +7,15 @@ import {
   regularizationQueueUnavailableMessage,
   unavailableMessage,
 } from '../src/lib/attendanceLoadState';
+import {
+  QIWA_SIMULATED_LABEL,
+  deliveryAttentionSummary,
+  emailModeLabel,
+  qiwaConnectionLabel,
+  qiwaModeLabel,
+  reportRunStatusLabel,
+  reportRunStatusTone,
+} from '../src/lib/integrationDeliveryState';
 import { LOGIN_CAPABILITIES, LOGIN_PREVIEW_DISCLOSURE } from '../src/lib/loginCapabilities';
 import { payrollInsightEmptyCopy, payrollInsightState, payrollPeriodState } from '../src/lib/payrollInsightState';
 
@@ -137,5 +146,42 @@ test.describe('browserless UI truthfulness contracts', () => {
     expect(tabs).toContain('role="tablist"');
     expect(tabs).toContain("event.key === 'Home'");
     expect(tabs).toContain('role="tabpanel"');
+  });
+
+  test('outbound integrations never read as delivered or filed when they were not (F09)', () => {
+    // Qiwa: only a positive "live" from the server is Live. Absent (older API) is a simulation.
+    expect(qiwaModeLabel(true)).toBe('Live');
+    expect(qiwaModeLabel(false)).toBe(QIWA_SIMULATED_LABEL);
+    expect(qiwaModeLabel(undefined)).toBe('Simulated (sandbox)');
+    expect(qiwaConnectionLabel('Simulated')).toBe('Simulated (sandbox)');
+
+    // Scheduled reports: SMTP can confirm a relay accepted it, nothing more; not-set-up and captured
+    // are neither success nor failure.
+    expect(reportRunStatusLabel('Success')).toBe('Accepted by mail server');
+    expect(reportRunStatusLabel('NotConfigured')).toContain('not set up');
+    expect(reportRunStatusLabel('Captured')).toContain('not sent');
+    expect(reportRunStatusTone('NotConfigured')).toBe('warn');
+    expect(reportRunStatusTone('Captured')).toBe('warn');
+    expect(emailModeLabel('capture')).toContain('nothing is sent');
+    expect(emailModeLabel('not_configured')).toContain('nothing is sent');
+    expect(emailModeLabel(undefined)).toBe('Not reported');
+
+    // Zero problems is a count, never "all delivered"; a missing payload is "not reported".
+    expect(deliveryAttentionSummary({ deadLetter: 0, failed: 0 })).toBe('No undelivered messages recorded.');
+    expect(deliveryAttentionSummary({ deadLetter: 2, notConfigured: 1 })).toContain('2 gave up after retries');
+    expect(deliveryAttentionSummary(undefined)).toContain('not reported');
+
+    const dashboard = read('src/views/SaudiComplianceDashboard.tsx');
+    expect(dashboard).toContain('qiwa-simulation-notice');
+    expect(dashboard).toContain('Last filed with Qiwa');
+    expect(dashboard).not.toContain('<dt className="text-slate-400">Last sync</dt>');
+    expect(dashboard).toContain('{qiwaConnectionLabel(status)}');
+
+    const health = read('app/platform/system-health/page.tsx');
+    expect(health).toContain('delivery-health-unavailable');
+    expect(health).not.toContain("{ key: 'smtp',    label: 'Email (SMTP)' }");
+
+    const billing = read('app/platform/tenants/[id]/billing/page.tsx');
+    expect(billing).not.toContain('`Sent to ${r.billingEmail} ✓`');
   });
 });
