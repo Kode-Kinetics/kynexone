@@ -112,17 +112,144 @@ public sealed class ReportsAnalyticsConsistencyTests
         Assert.Contains("250000", shown);
     }
 
-    /// <summary>Each KPI section, the fields it carries, and the data permission that reveals it.</summary>
+    /// <summary>
+    /// Each gated KPI section, the fields it carries, and a data permission that reveals it. Leave,
+    /// attendance and overtime are not here: their modules' lists have no permission gate (only the
+    /// employee scope), so the KPI shows them to every organisation-wide reader, as the modules do.
+    /// </summary>
     public static TheoryData<string, string[], string> GatedSections => new()
     {
-        { "leave", ["pendingLeave", "onLeaveToday"], "leave.read" },
-        { "attendance", ["presentToday", "lateToday"], "attendance.read" },
-        { "overtime", ["pendingOT"], "overtime.read" },
-        { "payroll", ["lastRunYear", "lastRunMonth", "lastRunStatus", "totalNetSalary"], "payroll.read" },
+        { "payroll", ["lastRunYear", "lastRunMonth", "lastRunStatus", "totalNetSalary", "currencyCode", "runCount", "byCurrency"], "payroll.read" },
         { "compliance", ["visasExpiring", "passportsExpiring"], "compliance.read" },
         { "recruitment", ["openPositions", "pendingApplications"], "recruitment.read" },
         { "financial", ["activeLoans", "outstandingLoanBalance"], "loans.read" },
     };
+
+    [Fact]
+    public async Task Kpis_ShowLeaveAttendanceAndOvertime_ToEveryOrganisationReader_AsTheirModulesDo()
+    {
+        await using var db = Db();
+        var tid = await SeedEverySectionAsync(db);
+
+        var json = Ok(await Analytics(db, tid, "reports.read", "employees.read").GetKPIs(default));
+
+        Assert.Equal(1, json.GetProperty("leave").GetProperty("onLeaveToday").GetInt32());
+        Assert.Equal(1, json.GetProperty("attendance").GetProperty("presentToday").GetInt32());
+        Assert.Equal(1, json.GetProperty("overtime").GetProperty("pendingOT").GetInt32());
+    }
+
+    [Fact]
+    public async Task Kpis_AdmitTheModulesRoleList_NotOnlyItsPermission()
+    {
+        // HR Manager holds neither recruitment.read nor compliance.read, but the recruitment reports and
+        // visa-tracking modules admit the role by name, so the KPI does too.
+        await using var db = Db();
+        var tid = await SeedEverySectionAsync(db);
+
+        var json = Ok(await AnalyticsAs(db, tid, "HR Manager", "reports.read", "employees.read").GetKPIs(default));
+
+        Assert.Equal(1, json.GetProperty("recruitment").GetProperty("openPositions").GetInt32());
+        Assert.Equal(1, json.GetProperty("compliance").GetProperty("visasExpiring").GetInt32());
+    }
+
+    // ── Payroll figures: by period, across companies, never across currencies ─────────────
+
+    [Fact]
+    public async Task Kpis_LatestPayroll_SkipsAVoidedRun()
+    {
+        await using var db = Db();
+        var tid = await SeedTenantAsync(db);
+        db.PayrollRuns.AddRange(
+            new PayrollRun { TenantId = tid, Year = 2026, Month = 8, Status = "Locked", TotalNetSalary = 250000 },
+            new PayrollRun { TenantId = tid, Year = 2026, Month = 9, Status = "Voided", TotalNetSalary = 999 });
+        await db.SaveChangesAsync();
+
+        var payroll = Ok(await Analytics(db, tid, FullReader).GetKPIs(default)).GetProperty("payroll");
+
+        Assert.Equal(8, payroll.GetProperty("lastRunMonth").GetInt32());
+        Assert.Equal("Locked", payroll.GetProperty("lastRunStatus").GetString());
+        Assert.Equal(250000m, payroll.GetProperty("totalNetSalary").GetDecimal());
+    }
+
+    [Fact]
+    public async Task Kpis_LatestPayroll_IsEveryCompanysRunForThePeriod_NotOneOfThem()
+    {
+        await using var db = Db();
+        var tid = await SeedTenantAsync(db);
+        var a = new Company { TenantId = tid, LegalNameEn = "A", DefaultCurrency = "SAR", IsActive = true };
+        var b = new Company { TenantId = tid, LegalNameEn = "B", DefaultCurrency = "SAR", IsActive = true };
+        db.Companies.AddRange(a, b);
+        db.PayrollRuns.AddRange(
+            new PayrollRun { TenantId = tid, CompanyId = a.Id, Year = 2026, Month = 9, Status = "Locked", TotalNetSalary = 100000 },
+            new PayrollRun { TenantId = tid, CompanyId = b.Id, Year = 2026, Month = 9, Status = "Locked", TotalNetSalary = 40000 });
+        await db.SaveChangesAsync();
+
+        var payroll = Ok(await Analytics(db, tid, FullReader).GetKPIs(default)).GetProperty("payroll");
+
+        Assert.Equal(140000m, payroll.GetProperty("totalNetSalary").GetDecimal());
+        Assert.Equal("SAR", payroll.GetProperty("currencyCode").GetString());
+    }
+
+    [Fact]
+    public async Task Kpis_LatestPayroll_InTwoCurrencies_IsNotAddedUp()
+    {
+        await using var db = Db();
+        var tid = await SeedTenantAsync(db);
+        var ksa = new Company { TenantId = tid, LegalNameEn = "KSA", DefaultCurrency = "SAR", IsActive = true };
+        var uae = new Company { TenantId = tid, LegalNameEn = "UAE", DefaultCurrency = "AED", IsActive = true };
+        db.Companies.AddRange(ksa, uae);
+        db.PayrollRuns.AddRange(
+            new PayrollRun { TenantId = tid, CompanyId = ksa.Id, Year = 2026, Month = 9, Status = "Locked", TotalNetSalary = 100000 },
+            new PayrollRun { TenantId = tid, CompanyId = uae.Id, Year = 2026, Month = 9, Status = "Locked", TotalNetSalary = 40000 });
+        await db.SaveChangesAsync();
+
+        var payroll = Ok(await Analytics(db, tid, FullReader).GetKPIs(default)).GetProperty("payroll");
+
+        // No single total exists across SAR and AED; the per-currency totals do.
+        Assert.Equal(JsonValueKind.Null, payroll.GetProperty("totalNetSalary").ValueKind);
+        var byCurrency = payroll.GetProperty("byCurrency").EnumerateArray()
+            .ToDictionary(x => x.GetProperty("currencyCode").GetString()!, x => x.GetProperty("totalNetSalary").GetDecimal());
+        Assert.Equal(100000m, byCurrency["SAR"]);
+        Assert.Equal(40000m, byCurrency["AED"]);
+    }
+
+    [Fact]
+    public async Task PayrollTrend_MonthsMeansPayPeriods_NotRuns()
+    {
+        await using var db = Db();
+        var tid = await SeedTenantAsync(db);
+        var companies = Enumerable.Range(0, 3).Select(i => new Company { TenantId = tid, LegalNameEn = $"C{i}", DefaultCurrency = "SAR", IsActive = true }).ToList();
+        db.Companies.AddRange(companies);
+        foreach (var month in new[] { 7, 8, 9 })
+            foreach (var (company, net) in companies.Zip(new[] { 1000m, 2000m, 3000m }))
+                db.PayrollRuns.Add(new PayrollRun { TenantId = tid, CompanyId = company.Id, Year = 2026, Month = month, Status = "Locked", TotalNetSalary = net });
+        db.PayrollRuns.Add(new PayrollRun { TenantId = tid, CompanyId = companies[0].Id, Year = 2026, Month = 9, Status = "Voided", TotalNetSalary = 50000 });
+        await db.SaveChangesAsync();
+
+        var rows = Ok(await Analytics(db, tid, FullReader).PayrollTrend(2, default)).EnumerateArray().ToList();
+
+        Assert.Equal(["2026-08", "2026-09"], rows.Select(r => r.GetProperty("period").GetString()).OrderBy(p => p));
+        Assert.All(rows, r => Assert.Equal(6000m, r.GetProperty("TotalNetSalary").GetDecimal()));
+    }
+
+    [Fact]
+    public async Task PayrollTrend_InTwoCurrencies_GivesOnePointPerCurrency()
+    {
+        await using var db = Db();
+        var tid = await SeedTenantAsync(db);
+        var ksa = new Company { TenantId = tid, LegalNameEn = "KSA", DefaultCurrency = "SAR", IsActive = true };
+        var uae = new Company { TenantId = tid, LegalNameEn = "UAE", DefaultCurrency = "AED", IsActive = true };
+        db.Companies.AddRange(ksa, uae);
+        db.PayrollRuns.AddRange(
+            new PayrollRun { TenantId = tid, CompanyId = ksa.Id, Year = 2026, Month = 9, Status = "Locked", TotalNetSalary = 100000 },
+            new PayrollRun { TenantId = tid, CompanyId = uae.Id, Year = 2026, Month = 9, Status = "Locked", TotalNetSalary = 40000 });
+        await db.SaveChangesAsync();
+
+        var rows = Ok(await Analytics(db, tid, FullReader).PayrollTrend(6, default)).EnumerateArray().ToList();
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(100000m, rows.Single(r => r.GetProperty("currencyCode").GetString() == "SAR").GetProperty("TotalNetSalary").GetDecimal());
+    }
 
     [Theory]
     [MemberData(nameof(GatedSections))]
@@ -151,19 +278,6 @@ public sealed class ReportsAnalyticsConsistencyTests
         var granted = Ok(await Analytics(db, tid, "reports.read", "employees.read", permission).GetKPIs(default));
         Assert.NotEqual(JsonValueKind.Null, granted.GetProperty(section).GetProperty(fields[0]).ValueKind);
         Assert.DoesNotContain(granted.GetProperty("withheld").EnumerateArray(), w => w.GetProperty("section").GetString() == section);
-    }
-
-    [Fact]
-    public async Task Kpis_ShowComplianceCounts_ToAHolderOfEmployeesDocuments()
-    {
-        // HR Manager holds employees.documents rather than compliance.read; the compliance reports accept
-        // either, and so does this section.
-        await using var db = Db();
-        var tid = await SeedEverySectionAsync(db);
-
-        var json = Ok(await Analytics(db, tid, "reports.read", "employees.read", "employees.documents").GetKPIs(default));
-
-        Assert.Equal(1, json.GetProperty("compliance").GetProperty("visasExpiring").GetInt32());
     }
 
     [Fact]
@@ -202,13 +316,15 @@ public sealed class ReportsAnalyticsConsistencyTests
     }
 
     [Fact]
-    public async Task LeaveTrend_WithoutLeaveRead_IsRefusedWithAReason()
+    public async Task LeaveTrend_IsServedToAnOrganisationReader_AsTheLeaveModuleIs()
     {
+        // A Payroll Officer holds no leave.read, and the leave module's own lists admit them regardless
+        // (they have no permission gate, only the employee scope), so the trend does too.
         await using var db = Db();
         var tid = await SeedTenantAsync(db);
 
-        ReportDataAuthorizationTests.AssertForbiddenWithReason(
-            await Analytics(db, tid, "reports.read", "employees.read", "payroll.read").LeaveTrend(6, default), "leave.read");
+        Assert.IsType<OkObjectResult>(
+            await Analytics(db, tid, "reports.read", "employees.read", "payroll.read").LeaveTrend(6, default));
     }
 
     [Fact]
@@ -280,9 +396,16 @@ public sealed class ReportsAnalyticsConsistencyTests
     private static AnalyticsController Analytics(ZayraDbContext db, Guid tid, params string[] permissions) =>
         Analytics(db, tid, null, permissions);
 
-    private static AnalyticsController Analytics(ZayraDbContext db, Guid tid, Guid? companyId, params string[] permissions)
+    private static AnalyticsController Analytics(ZayraDbContext db, Guid tid, Guid? companyId, params string[] permissions) =>
+        Build(db, tid, companyId, null, permissions);
+
+    private static AnalyticsController AnalyticsAs(ZayraDbContext db, Guid tid, string role, params string[] permissions) =>
+        Build(db, tid, null, role, permissions);
+
+    private static AnalyticsController Build(ZayraDbContext db, Guid tid, Guid? companyId, string? role, string[] permissions)
     {
         var claims = new List<Claim> { new("tenant_id", tid.ToString()) };
+        if (role is not null) claims.Add(new Claim(ClaimTypes.Role, role));
         if (companyId is Guid company)
             claims.Add(new Claim(EntityScopeContext.V2ClaimType,
                 JsonSerializer.Serialize(new { v = 2, m = "companies", c = new[] { company } })));

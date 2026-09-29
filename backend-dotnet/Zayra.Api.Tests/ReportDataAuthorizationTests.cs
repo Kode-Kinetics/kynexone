@@ -71,8 +71,10 @@ public sealed class ReportDataAuthorizationTests
         Assert.DoesNotContain("payroll.summary", keys);
         Assert.DoesNotContain("finance.loan-balance", keys);
         Assert.DoesNotContain("finance.bonus-payout", keys);
-        Assert.DoesNotContain("attendance.daily", keys);
         Assert.DoesNotContain("recruitment.pipeline", keys);
+        // The attendance module's lists have no permission gate, only the employee scope, so neither does
+        // its report: listing it here is parity with the module, not a widening.
+        Assert.Contains("attendance.daily", keys);
         Assert.Contains("hr.headcount", keys);
         Assert.Contains("compliance.passport-expiry", keys);
         Assert.Contains("qiwa.readiness", keys);
@@ -104,11 +106,13 @@ public sealed class ReportDataAuthorizationTests
         db.SavedReports.AddRange(
             new SavedReport { TenantId = tid, ReportKey = "payroll.register", Name = "Shared payroll", Category = "Payroll", IsShared = true, CreatedBy = Guid.NewGuid() },
             new SavedReport { TenantId = tid, ReportKey = "hr.headcount", Name = "Shared headcount", Category = "HR", IsShared = true, CreatedBy = Guid.NewGuid() });
+        // Both schedules are the caller's own (payroll's from before they lost payroll access).
+        var me = Guid.NewGuid();
         db.ReportSchedules.AddRange(
-            new ReportSchedule { TenantId = tid, ReportKey = "payroll.summary", ReportName = "Monthly payroll", Category = "Payroll", Frequency = "Monthly", DeliveryMethod = "Email" },
-            new ReportSchedule { TenantId = tid, ReportKey = "hr.headcount", ReportName = "Monthly headcount", Category = "HR", Frequency = "Monthly", DeliveryMethod = "Email" });
+            new ReportSchedule { TenantId = tid, CreatedBy = me, ReportKey = "payroll.summary", ReportName = "Monthly payroll", Category = "Payroll", Frequency = "Monthly", DeliveryMethod = "Email" },
+            new ReportSchedule { TenantId = tid, CreatedBy = me, ReportKey = "hr.headcount", ReportName = "Monthly headcount", Category = "HR", Frequency = "Monthly", DeliveryMethod = "Email" });
         await db.SaveChangesAsync();
-        var ctrl = Reports(db, tid, "reports.read", "reports.schedule", "employees.read");
+        var ctrl = Reports(db, tid, null, me, "reports.read", "reports.schedule", "employees.read");
 
         var saved = JsonSerializer.Serialize(Assert.IsType<OkObjectResult>(await ctrl.ListSavedReports(default)).Value);
         var schedules = JsonSerializer.Serialize(Assert.IsType<OkObjectResult>(await ctrl.ListSchedules(default)).Value);
@@ -231,6 +235,196 @@ public sealed class ReportDataAuthorizationTests
             await ctrl.RunReport(new RunReportRequest("finance.bonus-payout", null), default), "every company");
     }
 
+    // ── Which runs, which people, which currency ──────────────────────────────────────────
+
+    [Fact]
+    public async Task PayrollSummary_CountsPeople_NotPayslips()
+    {
+        // One employee paid by a Regular run and a Supplementary top-up in the same month is ONE person.
+        await using var db = Db();
+        var tid = await SeedTenantAsync(db);
+        var regular = Run(tid, null, 9, "Locked", PayrollRunTypes.Regular);
+        var topUp = Run(tid, null, 9, "Locked", PayrollRunTypes.Supplementary);
+        db.PayrollRuns.AddRange(regular, topUp);
+        db.PayrollSlips.AddRange(Slip(tid, regular, 7, "Finance", 9000), Slip(tid, topUp, 7, "Finance", 500));
+        await db.SaveChangesAsync();
+        var ctrl = Reports(db, tid, "reports.read", "employees.read", "payroll.read");
+        var september = new ReportFilters { Period = "2026-09" };
+
+        var summary = Assert.Single(Data(await ctrl.RunReport(new RunReportRequest("payroll.summary", september), default)).EnumerateArray());
+        Assert.Equal(1, summary.GetProperty("Headcount").GetInt32());
+        Assert.Equal(9500m, summary.GetProperty("TotalNet").GetDecimal());
+
+        // The register keeps both lines — they are two payments — and says which run each came from.
+        var register = Data(await ctrl.RunReport(new RunReportRequest("payroll.register", september), default)).EnumerateArray().ToList();
+        Assert.Equal(2, register.Count);
+        Assert.Contains(register, r => r.GetProperty("RunType").GetString() == PayrollRunTypes.Supplementary);
+        Assert.All(register, r => Assert.Equal("Locked", r.GetProperty("RunStatus").GetString()));
+    }
+
+    [Fact]
+    public async Task PayrollReports_LeaveOutADraftRun()
+    {
+        // A Draft run has not been calculated; its lines are not payroll anyone has signed off.
+        await using var db = Db();
+        var tid = await SeedTenantAsync(db);
+        var locked = Run(tid, null, 9, "Locked", PayrollRunTypes.Regular);
+        var draft = Run(tid, null, 9, "Draft", PayrollRunTypes.OffCycle);
+        db.PayrollRuns.AddRange(locked, draft);
+        db.PayrollSlips.AddRange(Slip(tid, locked, 1, "Finance", 1000), Slip(tid, draft, 2, "Finance", 777));
+        await db.SaveChangesAsync();
+        var ctrl = Reports(db, tid, "reports.read", "employees.read", "payroll.read");
+
+        var register = Data(await ctrl.RunReport(new RunReportRequest("payroll.register", null), default));
+
+        Assert.Equal(["E1"], register.EnumerateArray().Select(r => r.GetProperty("EmployeeCode").GetString()));
+    }
+
+    [Fact]
+    public async Task PayrollSummary_NeverAddsAcrossCurrencies()
+    {
+        await using var db = Db();
+        var tid = await SeedTenantAsync(db);
+        var riyadh = new Company { TenantId = tid, LegalNameEn = "KSA Co", DefaultCurrency = "SAR", IsActive = true };
+        var dubai = new Company { TenantId = tid, LegalNameEn = "UAE Co", DefaultCurrency = "AED", IsActive = true };
+        db.Companies.AddRange(riyadh, dubai);
+        var ksaRun = Run(tid, riyadh.Id, 9, "Locked", PayrollRunTypes.Regular);
+        var uaeRun = Run(tid, dubai.Id, 9, "Locked", PayrollRunTypes.Regular);
+        db.PayrollRuns.AddRange(ksaRun, uaeRun);
+        db.PayrollSlips.AddRange(Slip(tid, ksaRun, 1, "Finance", 10000), Slip(tid, uaeRun, 2, "Finance", 8000));
+        await db.SaveChangesAsync();
+        var ctrl = Reports(db, tid, "reports.read", "employees.read", "payroll.read");
+
+        var rows = Data(await ctrl.RunReport(new RunReportRequest("payroll.summary", null), default)).EnumerateArray().ToList();
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(10000m, rows.Single(r => r.GetProperty("Currency").GetString() == "SAR").GetProperty("TotalNet").GetDecimal());
+        Assert.Equal(8000m, rows.Single(r => r.GetProperty("Currency").GetString() == "AED").GetProperty("TotalNet").GetDecimal());
+    }
+
+    // ── Schedules: who receives, who manages ──────────────────────────────────────────────
+
+    [Fact]
+    public async Task ASchedule_ToAnAddressOutsideTheTenant_IsRefused()
+    {
+        await using var db = Db();
+        var tid = await SeedTenantAsync(db);
+        var ctrl = Reports(db, tid, "reports.read", "reports.schedule", "employees.read");
+
+        var result = await ctrl.CreateSchedule(Schedule("hr.headcount", "outsider@elsewhere.test"), default);
+
+        var bad = Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Contains("outsider@elsewhere.test", JsonSerializer.Serialize(bad.Value));
+        Assert.Equal(0, await db.ReportSchedules.CountAsync());
+    }
+
+    [Fact]
+    public async Task ASchedule_ToAColleagueWhoCannotReadTheData_IsRefused()
+    {
+        await using var db = Db();
+        var tid = await SeedTenantAsync(db);
+        await AddUserAsync(db, tid, "recruiter@tenant.test", "Recruiter", "employees.read", "recruitment.read");
+        var ctrl = Reports(db, tid, "reports.read", "reports.schedule", "employees.read", "payroll.read");
+
+        var result = await ctrl.CreateSchedule(Schedule("payroll.summary", "recruiter@tenant.test"), default);
+
+        var bad = Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Contains("recruiter@tenant.test", JsonSerializer.Serialize(bad.Value));
+    }
+
+    [Fact]
+    public async Task ASchedule_ToAColleagueWhoCanReadTheData_IsCreated_AndItsRecipientsAudited()
+    {
+        await using var db = Db();
+        var tid = await SeedTenantAsync(db);
+        await AddUserAsync(db, tid, "payroll@tenant.test", "Payroll Officer", "employees.read", "payroll.read");
+        var ctrl = Reports(db, tid, "reports.read", "reports.schedule", "employees.read", "payroll.read");
+
+        Assert.IsType<OkObjectResult>(await ctrl.CreateSchedule(Schedule("payroll.summary", "payroll@tenant.test"), default));
+
+        var audit = await db.AuditLogs.SingleAsync();
+        Assert.Contains("payroll@tenant.test", audit.Metadata);
+    }
+
+    [Fact]
+    public async Task Schedules_AreListed_ToTheirOwner_AndToAnAdmin_Only()
+    {
+        await using var db = Db();
+        var tid = await SeedTenantAsync(db);
+        var me = Guid.NewGuid();
+        db.ReportSchedules.AddRange(
+            new ReportSchedule { TenantId = tid, CreatedBy = me, ReportKey = "hr.headcount", ReportName = "Mine", Category = "HR", Frequency = "Monthly", DeliveryMethod = "Email" },
+            new ReportSchedule { TenantId = tid, CreatedBy = Guid.NewGuid(), ReportKey = "hr.headcount", ReportName = "Theirs", Category = "HR", Frequency = "Monthly", DeliveryMethod = "Email" });
+        await db.SaveChangesAsync();
+
+        var mine = JsonSerializer.Serialize(Assert.IsType<OkObjectResult>(
+            await Reports(db, tid, null, me, "reports.schedule", "employees.read").ListSchedules(default)).Value);
+        Assert.Contains("Mine", mine);
+        Assert.DoesNotContain("Theirs", mine);
+
+        var admin = JsonSerializer.Serialize(Assert.IsType<OkObjectResult>(
+            await Reports(db, tid, "Admin", Guid.NewGuid(), "reports.schedule", "employees.read").ListSchedules(default)).Value);
+        Assert.Contains("Mine", admin);
+        Assert.Contains("Theirs", admin);
+    }
+
+    [Fact]
+    public async Task SomeoneElsesSchedule_CannotBePausedOrDeleted_ExceptByAnAdmin()
+    {
+        await using var db = Db();
+        var tid = await SeedTenantAsync(db);
+        var schedule = new ReportSchedule { TenantId = tid, CreatedBy = Guid.NewGuid(), ReportKey = "hr.headcount", ReportName = "Theirs", Category = "HR", Frequency = "Monthly", DeliveryMethod = "Email", IsActive = true };
+        db.ReportSchedules.Add(schedule);
+        await db.SaveChangesAsync();
+        var colleague = Reports(db, tid, null, Guid.NewGuid(), "reports.schedule", "employees.read");
+
+        AssertForbiddenWithReason(await colleague.ToggleSchedule(schedule.Id, Override, default), "owner");
+        AssertForbiddenWithReason(await colleague.DeleteSchedule(schedule.Id, Override, default), "owner");
+        Assert.True((await db.ReportSchedules.AsNoTracking().SingleAsync()).IsActive);
+
+        var admin = Reports(db, tid, "Admin", Guid.NewGuid(), "reports.schedule", "employees.read");
+        Assert.IsType<OkObjectResult>(await admin.ToggleSchedule(schedule.Id, Override, default));
+    }
+
+    private static CreateScheduleRequest Schedule(string key, string recipients) =>
+        new(key, key, "Test", null, "Monthly", "Email", recipients, "csv", Override);
+
+    private static PayrollRun Run(Guid tid, Guid? companyId, int month, string status, string runType) =>
+        new() { TenantId = tid, CompanyId = companyId, Year = 2026, Month = month, Status = status, RunType = runType };
+
+    private static PayrollSlip Slip(Guid tid, PayrollRun run, int employeeId, string department, decimal net) => new()
+    {
+        TenantId = tid, CompanyId = run.CompanyId, RunId = run.Id, EmployeeId = employeeId, EmployeeCode = $"E{employeeId}",
+        EmployeeName = $"Employee {employeeId}", Department = department, GrossSalary = net, NetSalary = net, Status = "Paid",
+    };
+
+    /// <summary>An active tenant user holding <paramref name="permissions"/> through a role named <paramref name="role"/>.</summary>
+    internal static async Task<Guid> AddUserAsync(ZayraDbContext db, Guid tid, string email, string role, params string[] permissions)
+    {
+        var userId = Guid.NewGuid();
+        var roleEntity = new Role { TenantId = tid, Name = role, NormalizedName = role.ToUpperInvariant(), IsActive = true };
+        db.Users.Add(new User
+        {
+            Id = userId, TenantId = tid, Email = email, NormalizedEmail = email.ToUpperInvariant(),
+            FullName = email, PasswordHash = "hash", IsActive = true, IsGroupScope = true,
+        });
+        db.Roles.Add(roleEntity);
+        db.UserRoles.Add(new UserRole { UserId = userId, RoleId = roleEntity.Id });
+        foreach (var key in permissions)
+        {
+            var permission = await db.Permissions.FirstOrDefaultAsync(p => p.Key == key)
+                ?? db.Permissions.Local.FirstOrDefault(p => p.Key == key);
+            if (permission is null)
+            {
+                permission = new Permission { Id = Guid.NewGuid(), Key = key, Module = "Test" };
+                db.Permissions.Add(permission);
+            }
+            db.RolePermissions.Add(new RolePermission { RoleId = roleEntity.Id, PermissionId = permission.Id });
+        }
+        await db.SaveChangesAsync();
+        return userId;
+    }
+
     // ── helpers ───────────────────────────────────────────────────────────────────────────
 
     internal static void AssertForbiddenWithReason(IActionResult result, string expectedFragment)
@@ -258,14 +452,21 @@ public sealed class ReportDataAuthorizationTests
     private static ReportsController Reports(ZayraDbContext db, Guid tid, params string[] permissions) =>
         Reports(db, tid, null, permissions);
 
-    private static ReportsController Reports(ZayraDbContext db, Guid tid, Claim? scopeClaim, params string[] permissions)
+    private static ReportsController Reports(ZayraDbContext db, Guid tid, Claim? scopeClaim, params string[] permissions) =>
+        Reports(db, tid, scopeClaim, null, Guid.NewGuid(), permissions);
+
+    private static ReportsController Reports(ZayraDbContext db, Guid tid, string? role, Guid userId, params string[] permissions) =>
+        Reports(db, tid, null, role, userId, permissions);
+
+    private static ReportsController Reports(ZayraDbContext db, Guid tid, Claim? scopeClaim, string? role, Guid userId, params string[] permissions)
     {
         var claims = new List<Claim>
         {
             new("tenant_id", tid.ToString()),
-            new(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+            new(ClaimTypes.NameIdentifier, userId.ToString()),
             new(ClaimTypes.Name, "Report User"),
         };
+        if (role is not null) claims.Add(new Claim(ClaimTypes.Role, role));
         if (scopeClaim is not null) claims.Add(scopeClaim);
         claims.AddRange(permissions.Select(p => new Claim("permission", p)));
         return new ReportsController(db, new DataScopeService(db))

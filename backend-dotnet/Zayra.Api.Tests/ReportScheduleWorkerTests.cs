@@ -135,6 +135,94 @@ public sealed class ReportScheduleWorkerTests
         Assert.Contains("Restricted", attachment);
     }
 
+    [Fact]
+    public async Task ARecipientWhoIsNotAUserOfTheTenant_IsNotSentTheReport()
+    {
+        await using var db = CreateDb();
+        await SeedAuthorizedScheduleAsync(db);
+        var schedule = await db.ReportSchedules.SingleAsync();
+        schedule.Recipients = "recipient@example.com, outsider@elsewhere.test";
+        await db.SaveChangesAsync();
+
+        var email = await RunWorkerAsync(db);
+
+        Assert.Equal(["recipient@example.com"], email.Messages.Select(m => m.To));
+        // Delivered, and the log says who was left out and why.
+        var execution = await db.ReportExecutionLogs.SingleAsync();
+        Assert.Equal("Success", execution.Status);
+        Assert.Contains("outsider@elsewhere.test", execution.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task WhenNoRecipientMayReceiveTheReport_TheRunFails_SayingWhy()
+    {
+        await using var db = CreateDb();
+        await SeedAuthorizedScheduleAsync(db);
+        var schedule = await db.ReportSchedules.SingleAsync();
+        schedule.Recipients = "outsider@elsewhere.test";
+        await db.SaveChangesAsync();
+
+        var email = await RunWorkerAsync(db);
+
+        Assert.Empty(email.Messages);
+        var execution = await db.ReportExecutionLogs.SingleAsync();
+        Assert.Equal("Failed", execution.Status);
+        Assert.Contains("outsider@elsewhere.test", execution.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task ARecipientScopedToOneCompany_DoesNotReceiveTheOwnersGroupWideReport()
+    {
+        await using var db = CreateDb();
+        var (tenantId, _) = await SeedAuthorizedScheduleAsync(db);
+        var company = new Company { TenantId = tenantId, LegalNameEn = "Only Co", IsActive = true };
+        db.Companies.Add(company);
+        var recipient = await db.Users.SingleAsync(u => u.Email == "recipient@example.com");
+        recipient.IsGroupScope = false;
+        db.UserEntityAccesses.Add(new UserEntityAccess { TenantId = tenantId, UserId = recipient.Id, CompanyId = company.Id, Role = "HR", IsActive = true });
+        await db.SaveChangesAsync();
+
+        var email = await RunWorkerAsync(db);
+
+        Assert.Empty(email.Messages);
+        Assert.Contains("recipient@example.com", (await db.ReportExecutionLogs.SingleAsync()).ErrorMessage);
+    }
+
+    [Fact]
+    public async Task IdentityNumbersAreNeverEmailed_EvenWhenTheOwnerMaySeeThem()
+    {
+        // Email leaves the product: whoever the owner is, a mailed report carries no passport numbers.
+        await using var db = CreateDb();
+        var (tenantId, userId) = await SeedAuthorizedScheduleAsync(db);
+        await GrantAsync(db, userId, "compliance.read");
+        await GrantAsync(db, userId, "employees.sensitive");
+        var employee = await db.Employees.SingleAsync();
+        db.PassportRecords.Add(new PassportRecord
+        {
+            TenantId = tenantId, EmployeeId = employee.PublicId, EmployeeName = employee.FullName,
+            PassportNumber = "P1112223", Status = "Active", ExpiryDate = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(15)),
+        });
+        var schedule = await db.ReportSchedules.SingleAsync();
+        schedule.ReportKey = "compliance.passport-expiry";
+        await db.SaveChangesAsync();
+
+        var email = await RunWorkerAsync(db);
+
+        var attachment = System.Text.Encoding.UTF8.GetString(Assert.Single(email.Messages).Attachment.Data);
+        Assert.DoesNotContain("P1112223", attachment);
+        Assert.Contains("Restricted", attachment);
+    }
+
+    private static async Task<RecordingEmail> RunWorkerAsync(ZayraDbContext db)
+    {
+        var email = new RecordingEmail();
+        using var services = BuildServices(db, email);
+        var worker = new ReportScheduleWorker(
+            services.GetRequiredService<IServiceScopeFactory>(), NullLogger<ReportScheduleWorker>.Instance);
+        await worker.ProcessOnceAsync(CancellationToken.None);
+        return email;
+    }
+
     private static async Task GrantAsync(ZayraDbContext db, Guid userId, string permissionKey)
     {
         var permission = new Permission { Id = Guid.NewGuid(), Key = permissionKey, Module = "Test" };
@@ -182,6 +270,15 @@ public sealed class ReportScheduleWorkerTests
         db.RolePermissions.AddRange(
             new RolePermission { RoleId = roleId, PermissionId = permissionId },
             new RolePermission { RoleId = roleId, PermissionId = employeeReadPermissionId });
+        // The recipient is a colleague in the same role: a scheduled report is only ever mailed to an
+        // active user of the tenant who could open it themselves.
+        var recipientId = Guid.NewGuid();
+        db.Users.Add(new User
+        {
+            Id = recipientId, TenantId = tenantId, Email = "recipient@example.com", NormalizedEmail = "RECIPIENT@EXAMPLE.COM",
+            FullName = "Report Recipient", PasswordHash = "hash", IsActive = true, IsGroupScope = true
+        });
+        db.UserRoles.Add(new UserRole { UserId = recipientId, RoleId = roleId });
         db.Employees.Add(new Employee
         {
             Id = 1, TenantId = tenantId, EmployeeCode = "E-1", FullName = "Engineer", Department = "Engineering",

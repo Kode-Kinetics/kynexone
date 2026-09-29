@@ -52,7 +52,7 @@ public class ReportsController : ControllerBase
     /// not know exposes no data — it can no longer be run — so its rows stay visible and deletable.
     /// </summary>
     private bool MayTouchReport(string reportKey) =>
-        !ReportAccessPolicy.IsKnown(reportKey) || ReportAccessPolicy.CanAccess(reportKey, HasPermission);
+        !ReportAccessPolicy.IsKnown(reportKey) || ReportAccessPolicy.CanAccess(reportKey, HasPermission, User.IsInRole);
 
     private IActionResult? DataAccessDenial(string reportKey) =>
         MayTouchReport(reportKey)
@@ -63,6 +63,7 @@ public class ReportsController : ControllerBase
                 message = ReportAccessPolicy.DenialMessage(reportKey),
                 reportKey,
                 requiredPermissions = ReportAccessPolicy.AcceptedPermissions(reportKey),
+                acceptedRoles = ReportAccessPolicy.AcceptedRoles(reportKey),
             });
 
     private ObjectResult ScopeForbidden(string reportKey, string message) =>
@@ -144,7 +145,7 @@ public class ReportsController : ControllerBase
             new { key = "qiwa.readiness", name = "Qiwa Readiness", category = "Compliance", description = "Employees missing Iqama, Work Permit, National ID, or Passport required for Qiwa" },
             new { key = "compliance.saudization", name = "Saudization / Nitaqat Standing", category = "Compliance", description = "Weighted Nitaqat position per Saudi establishment: Saudi units, total units, achieved percentage, band, and hires to the next band" },
         }
-            .Where(x => ReportAccessPolicy.CanAccess(x.key, HasPermission))
+            .Where(x => ReportAccessPolicy.CanAccess(x.key, HasPermission, User.IsInRole))
             .ToArray();
         return Ok(catalog);
     }
@@ -626,20 +627,22 @@ public class ReportsController : ControllerBase
 
     // ── Payroll Reports ───────────────────────────────────────────────────────
 
+    private sealed record PayrollRunFacts(string RunType, string Status, string? Currency);
+
     /// <summary>
-    /// The runs a payroll report covers: every non-voided run of ONE pay period, inside the caller's
-    /// companies. The period is the one asked for; with none, the latest period that has a run in scope.
+    /// The runs a payroll report covers (see <see cref="PayrollReporting"/>): every reportable run of ONE
+    /// pay period inside the caller's companies — the period asked for, or the latest with a run in scope —
+    /// with each run's type, status and currency.
     ///
-    /// <para>This replaces three copies of "the latest run in the tenant", which ignored the requested
-    /// period (register, summary), counted a voided run as the month's payroll, and — in a multi-company
-    /// tenant — picked one company's run arbitrarily. In the scheduled worker, which has no company filter,
-    /// that was usually a SIBLING company's run, filtered down to the owner's employees: an empty register
-    /// delivered as though nobody had been paid.</para>
+    /// <para>This replaced three copies of "the latest run in the tenant", which ignored the requested
+    /// period, counted a voided run as the month's payroll, and — in a multi-company tenant — picked one
+    /// company's run arbitrarily. In the scheduled worker, which has no company filter, that was usually a
+    /// SIBLING company's run, filtered down to the owner's employees: an empty register.</para>
     /// </summary>
-    private async Task<List<Guid>> PayrollRunIdsForPeriodAsync(
+    private async Task<Dictionary<Guid, PayrollRunFacts>> PayrollRunsForPeriodAsync(
         Guid tid, RunReportRequest req, ReportDataScope scope, CancellationToken ct)
     {
-        var runs = _db.PayrollRuns.Where(x => x.TenantId == tid && x.Status != "Voided");
+        var runs = PayrollReporting.ReportableRuns(_db.PayrollRuns, tid);
         if (scope.CompanyIds is { } companyIds)
             runs = runs.Where(x => x.CompanyId != null && companyIds.Contains(x.CompanyId.Value));
 
@@ -653,51 +656,84 @@ public class ReportsController : ControllerBase
                 .OrderByDescending(x => x.Year).ThenByDescending(x => x.Month)
                 .Select(x => new { x.Year, x.Month })
                 .FirstOrDefaultAsync(ct);
-            if (latest is null) return new List<Guid>();
+            if (latest is null) return new Dictionary<Guid, PayrollRunFacts>();
             (year, month) = (latest.Year, latest.Month);
         }
 
-        return await runs.Where(x => x.Year == year && x.Month == month)
-            .Select(x => x.Id).ToListAsync(ct);
+        var period = await runs.Where(x => x.Year == year && x.Month == month)
+            .Select(x => new { x.Id, x.RunType, x.Status, x.CompanyId })
+            .ToListAsync(ct);
+        var currencies = await PayrollReporting.CompanyCurrenciesAsync(_db, tid, period.Select(r => r.CompanyId), ct);
+        return period.ToDictionary(r => r.Id,
+            r => new PayrollRunFacts(r.RunType, r.Status, PayrollReporting.CurrencyOf(r.CompanyId, currencies)));
     }
 
-    private async Task<IQueryable<PayrollSlip>> PayrollSlipsForPeriodAsync(
-        Guid tid, RunReportRequest req, ReportDataScope scope, CancellationToken ct)
+    private IQueryable<PayrollSlip> SlipsOf(Guid tid, IReadOnlyCollection<Guid> runIds, ReportDataScope scope)
     {
-        var runIds = await PayrollRunIdsForPeriodAsync(tid, req, scope, ct);
         var q = _db.PayrollSlips.Where(x => x.TenantId == tid && runIds.Contains(x.RunId));
         if (scope.EmployeeIds is { } employeeIds) q = q.Where(x => employeeIds.Contains(x.EmployeeId));
         return q;
     }
 
+    /// <summary>
+    /// One line per payslip. An employee paid by a Regular and a Supplementary run has two lines — two
+    /// payments — so each line names its run's type and status, and its currency.
+    /// </summary>
     private async Task<object> RunPayrollRegister(Guid tid, RunReportRequest req, ReportDataScope scope, CancellationToken ct)
     {
-        var q = await PayrollSlipsForPeriodAsync(tid, req, scope, ct);
-        return await q
-            .Select(x => new { x.EmployeeCode, x.EmployeeName, x.Department, x.BasicSalary, x.GrossSalary, x.Deductions, x.NetSalary, x.Status })
-            .OrderBy(x => x.Department).ThenBy(x => x.EmployeeName).ToListAsync(ct);
+        var runs = await PayrollRunsForPeriodAsync(tid, req, scope, ct);
+        var lines = await SlipsOf(tid, runs.Keys.ToList(), scope)
+            .Select(x => new { x.RunId, x.EmployeeCode, x.EmployeeName, x.Department, x.BasicSalary, x.GrossSalary, x.Deductions, x.NetSalary, x.Status })
+            .ToListAsync(ct);
+        return lines.OrderBy(x => x.Department).ThenBy(x => x.EmployeeName)
+            .Select(x => new
+            {
+                x.EmployeeCode, x.EmployeeName, x.Department, x.BasicSalary, x.GrossSalary, x.Deductions, x.NetSalary, x.Status,
+                RunType = runs[x.RunId].RunType, RunStatus = runs[x.RunId].Status, Currency = runs[x.RunId].Currency,
+            }).ToList();
     }
 
+    /// <summary>
+    /// Per department AND currency — amounts are never added across currencies. Headcount is people:
+    /// one employee paid by two runs of the month is one head, not two payslips.
+    /// </summary>
     private async Task<object> RunPayrollSummary(Guid tid, RunReportRequest req, ReportDataScope scope, CancellationToken ct)
     {
-        var q = await PayrollSlipsForPeriodAsync(tid, req, scope, ct);
-        return await q
-            .GroupBy(x => x.Department)
-            .Select(g => new { Department = g.Key, Headcount = g.Count(), TotalGross = g.Sum(x => x.GrossSalary), TotalNet = g.Sum(x => x.NetSalary), TotalDeductions = g.Sum(x => x.Deductions) })
-            .OrderBy(x => x.Department).ToListAsync(ct);
+        var runs = await PayrollRunsForPeriodAsync(tid, req, scope, ct);
+        var lines = await SlipsOf(tid, runs.Keys.ToList(), scope)
+            .Select(x => new { x.RunId, x.EmployeeId, x.Department, x.GrossSalary, x.NetSalary, x.Deductions })
+            .ToListAsync(ct);
+        return lines
+            .GroupBy(x => new { x.Department, runs[x.RunId].Currency })
+            .Select(g => new
+            {
+                g.Key.Department, g.Key.Currency,
+                Headcount = g.Select(x => x.EmployeeId).Distinct().Count(),
+                TotalGross = g.Sum(x => x.GrossSalary), TotalNet = g.Sum(x => x.NetSalary), TotalDeductions = g.Sum(x => x.Deductions),
+            })
+            .OrderBy(x => x.Department).ThenBy(x => x.Currency).ToList();
     }
 
     private async Task<object> RunPayrollSlips(Guid tid, RunReportRequest req, ReportDataScope scope, CancellationToken ct)
     {
-        var slips = await PayrollSlipsForPeriodAsync(tid, req, scope, ct);
-        return await slips.OrderBy(x => x.Department).ThenBy(x => x.EmployeeName)
+        var runs = await PayrollRunsForPeriodAsync(tid, req, scope, ct);
+        var lines = await SlipsOf(tid, runs.Keys.ToList(), scope)
+            .Select(x => new
+            {
+                x.RunId, x.EmployeeCode, x.EmployeeName, x.Department, x.BasicSalary,
+                x.HousingAllowance, x.TransportAllowance, x.OtherAllowances,
+                x.GrossSalary, x.Deductions, x.EmployeeStatutoryTotal,
+                x.LoanDeductions, x.NetSalary, x.Status
+            }).ToListAsync(ct);
+        return lines.OrderBy(x => x.Department).ThenBy(x => x.EmployeeName)
             .Select(x => new
             {
                 x.EmployeeCode, x.EmployeeName, x.Department, x.BasicSalary,
                 x.HousingAllowance, x.TransportAllowance, x.OtherAllowances,
                 x.GrossSalary, x.Deductions, x.EmployeeStatutoryTotal,
-                x.LoanDeductions, x.NetSalary, x.Status
-            }).ToListAsync(ct);
+                x.LoanDeductions, x.NetSalary, x.Status,
+                RunType = runs[x.RunId].RunType, RunStatus = runs[x.RunId].Status, Currency = runs[x.RunId].Currency,
+            }).ToList();
     }
 
     // ── Recruitment Reports ───────────────────────────────────────────────────
@@ -1055,9 +1091,44 @@ public class ReportsController : ControllerBase
     {
         if (!HasPermission("reports.schedule")) return Forbid();
         var tid = GetTenantId();
+        var uid = GetUserId();
+        var isAdmin = User.IsInRole("Admin");
         var rows = await _db.ReportSchedules.Where(x => x.TenantId == tid && !x.IsDeleted)
+            .Where(x => isAdmin || x.CreatedBy == uid)
             .OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct);
+        // A schedule is its owner's (an administrator sees them all): it mails the owner's view of the data.
         return Ok(rows.Where(x => MayTouchReport(x.ReportKey)).ToList());
+    }
+
+    /// <summary>Only a schedule's owner, or an administrator, may pause or delete it.</summary>
+    private IActionResult? NotOwnerDenial(ReportSchedule s) =>
+        s.CreatedBy == GetUserId() || User.IsInRole("Admin")
+            ? null
+            : StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                error = "report_schedule_not_owner",
+                message = "Only the schedule's owner or an administrator can pause or delete it.",
+            });
+
+    /// <summary>
+    /// Every recipient must be an active user of this organisation who could open the report themselves,
+    /// over every company the creator's delivery covers. The worker re-checks this on every run.
+    /// </summary>
+    private async Task<IActionResult?> RecipientDenialAsync(Guid tid, string reportKey, string? recipients, CancellationToken ct)
+    {
+        var entity = this.GetRequestScope();
+        var delivered = entity.IsGroupLevel || entity.IsSystemScope ? null : entity.AuthorizedCompanyIds;
+        var audience = await ReportAudience.EvaluateRecipientsAsync(
+            _db, tid, reportKey, ReportSchedulePolicy.ParseRecipients(recipients), delivered, ct);
+        var refused = audience.Where(a => a.Refusal is not null).ToList();
+        if (refused.Count == 0) return null;
+        return BadRequest(new
+        {
+            code = "recipient_not_allowed",
+            message = "A scheduled report can only be sent to people in this organisation who can open it themselves. " +
+                      "Not allowed: " + ReportAudience.Describe(refused) + ".",
+            recipients = refused.Select(r => new { email = r.Email, reason = r.Refusal }).ToList(),
+        });
     }
 
     [HttpPost("schedules")]
@@ -1071,9 +1142,10 @@ public class ReportsController : ControllerBase
         if (!ReportSchedulePolicy.TryValidate(req, out var validationError))
             return BadRequest(new { message = validationError });
         if (InvalidPeriod(req.Filters) is { } badPeriod) return badPeriod;
+        var tid = GetTenantId();
+        if (await RecipientDenialAsync(tid, req.ReportKey, req.Recipients, ct) is { } recipientDenied) return recipientDenied;
         if (!TryValidateControlledOverride(req.GovernanceOverride, "report.schedule.create", out var rejection))
             return rejection!;
-        var tid = GetTenantId();
         var uid = GetUserId();
         var s = new ReportSchedule
         {
@@ -1088,7 +1160,7 @@ public class ReportsController : ControllerBase
             NextRunAtUtc = ReportSchedulePolicy.NextRun(DateTime.UtcNow, req.Frequency),
         };
         _db.ReportSchedules.Add(s);
-        AddGovernanceAudit("governance.controlled_override.report_schedule_created", "ReportSchedule", s.Id.ToString(), req.GovernanceOverride!, new { s.ReportKey, s.ReportName, s.Frequency, s.DeliveryMethod, s.ExportFormat });
+        AddGovernanceAudit("governance.controlled_override.report_schedule_created", "ReportSchedule", s.Id.ToString(), req.GovernanceOverride!, new { s.ReportKey, s.ReportName, s.Frequency, s.DeliveryMethod, s.ExportFormat, s.Recipients });
         await _db.SaveChangesAsync(ct);
         return Ok(s);
     }
@@ -1103,11 +1175,12 @@ public class ReportsController : ControllerBase
         var tid = GetTenantId();
         var s = await _db.ReportSchedules.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (s == null) return NotFound();
+        if (NotOwnerDenial(s) is { } notOwner) return notOwner;
         if (DataAccessDenial(s.ReportKey) is { } denied) return denied;
         s.IsActive = !s.IsActive; s.UpdatedAtUtc = DateTime.UtcNow;
         if (s.IsActive && (s.NextRunAtUtc is null || s.NextRunAtUtc <= DateTime.UtcNow))
             s.NextRunAtUtc = ReportSchedulePolicy.NextRun(DateTime.UtcNow, s.Frequency);
-        AddGovernanceAudit("governance.controlled_override.report_schedule_toggled", "ReportSchedule", s.Id.ToString(), governanceOverride!, new { s.ReportKey, s.ReportName, s.IsActive });
+        AddGovernanceAudit("governance.controlled_override.report_schedule_toggled", "ReportSchedule", s.Id.ToString(), governanceOverride!, new { s.ReportKey, s.ReportName, s.IsActive, s.Recipients, owner = s.CreatedBy });
         await _db.SaveChangesAsync(ct);
         return Ok(s);
     }
@@ -1122,9 +1195,10 @@ public class ReportsController : ControllerBase
         var tid = GetTenantId();
         var s = await _db.ReportSchedules.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (s == null) return NotFound();
+        if (NotOwnerDenial(s) is { } notOwner) return notOwner;
         if (DataAccessDenial(s.ReportKey) is { } denied) return denied;
         s.IsDeleted = true; s.UpdatedAtUtc = DateTime.UtcNow;
-        AddGovernanceAudit("governance.controlled_override.report_schedule_deleted", "ReportSchedule", s.Id.ToString(), governanceOverride!, new { s.ReportKey, s.ReportName });
+        AddGovernanceAudit("governance.controlled_override.report_schedule_deleted", "ReportSchedule", s.Id.ToString(), governanceOverride!, new { s.ReportKey, s.ReportName, s.Recipients, owner = s.CreatedBy });
         await _db.SaveChangesAsync(ct);
         return NoContent();
     }

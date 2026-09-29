@@ -174,6 +174,16 @@ public class ReportCompanyScopeTests
             db.RolePermissions.Add(new RolePermission { RoleId = role.Id, PermissionId = permission.Id });
         }
         db.UserEntityAccesses.Add(new UserEntityAccess { TenantId = w.TenantId, UserId = userId, CompanyId = companyId, Role = "HR", IsActive = true });
+        // The recipient is a colleague with the same role and the same company: reports are only mailed
+        // to tenant users who could open them, over no more than they can see.
+        var recipientId = Guid.NewGuid();
+        db.Users.Add(new User
+        {
+            Id = recipientId, TenantId = w.TenantId, Email = recipient, NormalizedEmail = recipient.ToUpperInvariant(),
+            FullName = "Scoped Recipient", PasswordHash = "hash", IsActive = true, IsGroupScope = false,
+        });
+        db.UserRoles.Add(new UserRole { UserId = recipientId, RoleId = role.Id });
+        db.UserEntityAccesses.Add(new UserEntityAccess { TenantId = w.TenantId, UserId = recipientId, CompanyId = companyId, Role = "HR", IsActive = true });
         var schedule = new ReportSchedule
         {
             TenantId = w.TenantId, CreatedBy = userId, ReportKey = reportKey, ReportName = reportKey,

@@ -83,37 +83,60 @@ public sealed class ReportAccessPolicyTests
     }
 
     /// <summary>
-    /// What the data rules mean for the roles a new tenant is provisioned with. This is the record of the
-    /// narrowing: before, every role holding reports.read could run every report.
+    /// The final effect on every seeded role that holds reports.read, run through the controller with the
+    /// role's real permission bundle AND its role name, exactly as its token carries them.
+    ///
+    /// <para>A report now admits at least everyone its module admits — the module's permission, its role
+    /// list, or (attendance, leave, overtime, employee documents) any caller, filtered to their employee
+    /// scope, because those module lists have no permission gate at all. What is still denied below is
+    /// denied by the module too: each entry names the module gate that refuses the same role.</para>
     /// </summary>
     [Theory]
-    [InlineData("HR Director", "", "")]
-    [InlineData("HR Manager", "hr.headcount,attendance.daily,leave.balance,overtime.requests,payroll.register,compliance.passport-expiry,qiwa.readiness",
-        "recruitment.pipeline,finance.loan-balance")]
-    [InlineData("Payroll Manager", "hr.headcount,attendance.daily,leave.balance,overtime.requests,payroll.register,finance.loan-balance,finance.bonus-payout",
-        "compliance.passport-expiry,recruitment.pipeline,qiwa.readiness")]
-    [InlineData("Payroll Officer", "hr.headcount,attendance.daily,payroll.register,finance.loan-balance",
-        "leave.balance,overtime.requests,compliance.passport-expiry,recruitment.pipeline")]
-    [InlineData("Compliance Officer", "hr.headcount,compliance.passport-expiry,compliance.document-compliance,qiwa.readiness,compliance.saudization",
-        "attendance.daily,leave.balance,overtime.requests,payroll.register,finance.loan-balance,recruitment.pipeline")]
-    [InlineData("Auditor", "hr.headcount,attendance.daily,leave.balance,payroll.register,compliance.passport-expiry,qiwa.readiness",
-        "overtime.requests,recruitment.pipeline,finance.loan-balance")]
-    public async Task SeededRoles_CanRunTheReportsForTheirOwnData_AndNoOthers(string role, string allowed, string denied)
+    [InlineData("HR Director", "")]
+    [InlineData("HR Manager", "")]
+    // Recruitment reports: role-gated Admin/HR Manager/HR Officer/Recruiter, no recruitment.read.
+    // Visa/passport/contract: VisaTracking and Contracts are Admin/HR Manager/HR Officer, no compliance.read.
+    // Qiwa and Saudization: the Qiwa and Saudi-compliance modules need qiwa.read or compliance.read.
+    [InlineData("Payroll Manager", "recruitment.pipeline,recruitment.time-to-hire,compliance.visa-expiry,compliance.passport-expiry,compliance.contract-expiry,qiwa.readiness,compliance.saudization")]
+    [InlineData("Payroll Officer", "recruitment.pipeline,recruitment.time-to-hire,compliance.visa-expiry,compliance.passport-expiry,compliance.contract-expiry,qiwa.readiness,compliance.saudization")]
+    // Payroll: Admin/HR Manager/Payroll Manager/Payroll Officer or payroll.read. Loans: loans.read or
+    // loans.write. Bonus batches: payroll.read. Recruitment: as above.
+    [InlineData("Compliance Officer", "payroll.register,payroll.summary,payroll.slips,finance.bonus-payout,finance.loan-balance,finance.advance-report,recruitment.pipeline,recruitment.time-to-hire")]
+    [InlineData("Auditor", "finance.loan-balance,finance.advance-report,recruitment.pipeline,recruitment.time-to-hire")]
+    public async Task SeededRoles_RunEveryReportTheirModulesAllow_AndOnlyThose(string role, string denied)
     {
         await using var db = Db();
         var tid = Guid.NewGuid();
         db.Tenants.Add(new Tenant { Id = tid, Name = "Roles", Slug = $"roles-{tid:N}" });
         await db.SaveChangesAsync();
         await new AuthSeeder(db).EnsureTenantRolesAsync(tid);
-        var keys = await db.Roles.Where(r => r.TenantId == tid && r.Name == role)
+        var permissions = await db.Roles.Where(r => r.TenantId == tid && r.Name == role)
             .SelectMany(r => r.RolePermissions.Select(rp => rp.Permission!.Key)).ToListAsync();
-        bool Has(string p) => keys.Contains(p, StringComparer.OrdinalIgnoreCase);
+        Assert.Contains("reports.read", permissions);
+        var ctrl = ReportsAs(db, tid, role, permissions.ToArray());
+        var deniedKeys = Split(denied).ToHashSet();
 
-        Assert.True(Has("reports.read"), $"{role} is expected to hold reports.read");
-        if (role == "HR Director")
-            Assert.All(ReportAccessPolicy.Keys, k => Assert.True(ReportAccessPolicy.CanAccess(k, Has), k));
-        foreach (var key in Split(allowed)) Assert.True(ReportAccessPolicy.CanAccess(key, Has), $"{role} should run {key}");
-        foreach (var key in Split(denied)) Assert.False(ReportAccessPolicy.CanAccess(key, Has), $"{role} should not run {key}");
+        foreach (var key in ReportAccessPolicy.Keys)
+        {
+            var result = await ctrl.RunReport(new RunReportRequest(key, null), default);
+            if (deniedKeys.Contains(key))
+                ReportDataAuthorizationTests.AssertForbiddenWithReason(result, "role");
+            else
+                Assert.True(result is OkObjectResult, $"{role} should run {key}, got {result.GetType().Name}");
+        }
+    }
+
+    [Fact]
+    public async Task AReportAdmitsTheModulesRoleList_NotOnlyItsPermission()
+    {
+        // HR Manager holds no recruitment.read, yet the recruitment reports module admits the role by name.
+        await using var db = Db();
+        var tid = Guid.NewGuid();
+        db.Tenants.Add(new Tenant { Id = tid, Name = "Role", Slug = $"role-{tid:N}" });
+        await db.SaveChangesAsync();
+        var ctrl = ReportsAs(db, tid, "HR Manager", "reports.read", "employees.read", "employees.write");
+
+        Assert.IsType<OkObjectResult>(await ctrl.RunReport(new RunReportRequest("recruitment.pipeline", null), default));
     }
 
     [Theory]
@@ -143,7 +166,10 @@ public sealed class ReportAccessPolicyTests
     private static ZayraDbContext Db() => new(
         new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
 
-    private static ReportsController Reports(ZayraDbContext db, Guid tid, params string[] permissions)
+    private static ReportsController Reports(ZayraDbContext db, Guid tid, params string[] permissions) =>
+        ReportsAs(db, tid, null, permissions);
+
+    private static ReportsController ReportsAs(ZayraDbContext db, Guid tid, string? role, params string[] permissions)
     {
         var claims = new List<Claim>
         {
@@ -151,6 +177,7 @@ public sealed class ReportAccessPolicyTests
             new(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
             new(ClaimTypes.Name, "Policy Tester"),
         };
+        if (role is not null) claims.Add(new Claim(ClaimTypes.Role, role));
         claims.AddRange(permissions.Select(p => new Claim("permission", p)));
         return new ReportsController(db, new DataScopeService(db))
         {

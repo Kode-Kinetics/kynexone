@@ -368,6 +368,15 @@ public sealed class ReportExportTests
         await db.SaveChangesAsync();
 
         var ownerId = await AddScheduleHolderAsync(db, tenantId, "owner@example.com");
+        // Scheduled reports are only mailed to active tenant users who could open them: the recipient
+        // shares the owner's role.
+        var recipientId = Guid.NewGuid();
+        db.Users.Add(new User
+        {
+            Id = recipientId, TenantId = tenantId, Email = "recipient@example.com", NormalizedEmail = "RECIPIENT@EXAMPLE.COM",
+            FullName = "Recipient", PasswordHash = "hash", IsActive = true, IsGroupScope = true,
+        });
+        db.UserRoles.Add(new UserRole { UserId = recipientId, RoleId = (await db.UserRoles.FirstAsync(x => x.UserId == ownerId)).RoleId });
         db.ReportSchedules.Add(new ReportSchedule
         {
             TenantId = tenantId, CreatedBy = ownerId, ReportKey = "hr.headcount", ReportName = "Headcount",

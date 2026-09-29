@@ -37,7 +37,7 @@ public class AnalyticsController : ControllerBase
     public async Task<IActionResult> GetKPIs(CancellationToken ct)
     {
         if (!HasPermission("reports.read")) return Forbid();
-        if (Refuse("employees.read", "employee records") is { } denied) return denied;
+        if (Refuse(DataDomains.Employees) is { } denied) return denied;
         if (OutOfScope() is { } outOfScope) return outOfScope;
         var tid = GetTenantId();
         var timeZone = await ResolveTenantTimeZoneAsync(tid, ct);
@@ -57,22 +57,23 @@ public class AnalyticsController : ControllerBase
             && (x.Status == "Resigned" || x.Status == "Terminated")
             && x.ContractEndDate.HasValue && x.ContractEndDate.Value >= thisMonth && x.ContractEndDate.Value < nextMonth, ct);
 
-        // Every section below is data from another module, and is shown only to a caller holding that
-        // module's read permission — the same permissions the report catalog asks for. Otherwise its fields
-        // stay in the response (the page's shape does not change) but are null: withheld, not zero, because
-        // a zero is a claim. `withheld` names each withheld section, its fields and the permission that
-        // would show it. Headcount is the endpoint's own permission, so it is always shown.
+        // Every section below is another module's data, shown to exactly who that module shows it to (its
+        // DataDomain — the same rule the report catalog uses). Otherwise its fields stay in the response
+        // (the page's shape does not change) but are null: withheld, not zero, because a zero is a claim.
+        // `withheld` names each withheld section, its fields, and the permissions or roles that would show
+        // it. Leave, attendance and overtime lists have no permission gate in their modules, so they are
+        // never withheld here; headcount is the endpoint's own gate.
         var withheld = new List<object>();
-        bool Shows(string section, string[] fields, params string[] anyOf)
+        bool Shows(string section, string[] fields, DataDomain domain)
         {
-            if (anyOf.Any(HasPermission)) return true;
-            withheld.Add(new { section, fields, requiredPermissions = anyOf });
+            if (Admits(domain)) return true;
+            withheld.Add(new { section, fields, requiredPermissions = domain.Permissions, acceptedRoles = domain.Roles });
             return false;
         }
 
         // Leave
         int? pendingLeave = null, onLeaveToday = null;
-        if (Shows("leave", ["pendingLeave", "onLeaveToday"], "leave.read"))
+        if (Shows("leave", ["pendingLeave", "onLeaveToday"], DataDomains.Leave))
         {
             pendingLeave = await _db.LeaveRequests.CountAsync(x => x.TenantId == tid && (x.Status == "Submitted" || x.Status == "Pending"), ct);
             onLeaveToday = await _db.LeaveRequests.CountAsync(x => x.TenantId == tid && x.Status == "Approved"
@@ -82,7 +83,7 @@ public class AnalyticsController : ControllerBase
         // Attendance (today). Present means attended — a late arrival and a half day included — which is
         // the attendance module's own definition (AttendanceStatuses.IsAttended).
         int? presentToday = null, lateToday = null;
-        if (Shows("attendance", ["presentToday", "lateToday"], "attendance.read"))
+        if (Shows("attendance", ["presentToday", "lateToday"], DataDomains.Attendance))
         {
             var attendance = AttendanceInScope(tid);
             presentToday = await attendance.CountAsync(x => x.WorkDate == today
@@ -92,18 +93,22 @@ public class AnalyticsController : ControllerBase
 
         // Overtime
         int? pendingOT = null;
-        if (Shows("overtime", ["pendingOT"], "overtime.read"))
+        if (Shows("overtime", ["pendingOT"], DataDomains.Overtime))
             pendingOT = await _db.OvertimeRequests.CountAsync(x => x.TenantId == tid && x.Status == "Pending", ct);
 
-        // Payroll
-        PayrollRun? latestRun = null;
-        if (Shows("payroll", ["lastRunYear", "lastRunMonth", "lastRunStatus", "totalNetSalary"], "payroll.read"))
-            latestRun = await _db.PayrollRuns.Where(x => x.TenantId == tid)
-                .OrderByDescending(x => x.Year).ThenByDescending(x => x.Month).FirstOrDefaultAsync(ct);
+        // Payroll: the latest pay period's runs across the caller's companies, never a voided or draft run,
+        // and never a total added up across currencies (PayrollReporting).
+        object payroll = new
+        {
+            lastRunYear = (int?)null, lastRunMonth = (int?)null, lastRunStatus = (string?)null,
+            totalNetSalary = (decimal?)null, currencyCode = (string?)null, runCount = (int?)null, byCurrency = (object?)null,
+        };
+        if (Shows("payroll", ["lastRunYear", "lastRunMonth", "lastRunStatus", "totalNetSalary", "currencyCode", "runCount", "byCurrency"], DataDomains.Payroll))
+            payroll = await LatestPayrollAsync(tid, ct);
 
-        // Compliance — the same pair of permissions the visa and passport expiry reports accept.
+        // Compliance — visa and passport records, as the visa-tracking module admits them.
         int? visasExpiring = null, passportsExpiring = null;
-        if (Shows("compliance", ["visasExpiring", "passportsExpiring"], "compliance.read", "employees.documents"))
+        if (Shows("compliance", ["visasExpiring", "passportsExpiring"], DataDomains.IdentityDocuments))
         {
             var in30 = today.AddDays(30);
             visasExpiring = await _db.VisaRecords.CountAsync(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Active" && x.ExpiryDate >= today && x.ExpiryDate <= in30, ct);
@@ -112,7 +117,7 @@ public class AnalyticsController : ControllerBase
 
         // Recruitment
         int? openPositions = null, pendingApplications = null;
-        if (Shows("recruitment", ["openPositions", "pendingApplications"], "recruitment.read"))
+        if (Shows("recruitment", ["openPositions", "pendingApplications"], DataDomains.Recruitment))
         {
             openPositions = await _db.JobOpenings.CountAsync(x => x.TenantId == tid && x.Status == "Open", ct);
             pendingApplications = await _db.JobApplications.CountAsync(x => x.TenantId == tid && x.Stage == "Screening", ct);
@@ -121,7 +126,7 @@ public class AnalyticsController : ControllerBase
         // Loans/Advances
         int? activeLoans = null;
         decimal? outstandingLoanBalance = null;
-        if (Shows("financial", ["activeLoans", "outstandingLoanBalance"], "loans.read"))
+        if (Shows("financial", ["activeLoans", "outstandingLoanBalance"], DataDomains.Loans))
         {
             activeLoans = await _db.EmployeeLoans.CountAsync(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Active", ct);
             outstandingLoanBalance = await _db.EmployeeLoans.Where(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Active").SumAsync(x => x.OutstandingBalance, ct);
@@ -133,7 +138,7 @@ public class AnalyticsController : ControllerBase
             leave = new { pendingLeave, onLeaveToday },
             attendance = new { presentToday, lateToday },
             overtime = new { pendingOT },
-            payroll = new { lastRunYear = latestRun?.Year, lastRunMonth = latestRun?.Month, lastRunStatus = latestRun?.Status, totalNetSalary = latestRun?.TotalNetSalary },
+            payroll,
             compliance = new { visasExpiring, passportsExpiring },
             recruitment = new { openPositions, pendingApplications },
             financial = new { activeLoans, outstandingLoanBalance },
@@ -147,7 +152,7 @@ public class AnalyticsController : ControllerBase
     public async Task<IActionResult> HeadcountTrend([FromQuery] int months = 6, CancellationToken ct = default)
     {
         if (!HasPermission("reports.read")) return Forbid();
-        if (Refuse("employees.read", "employee records") is { } denied) return denied;
+        if (Refuse(DataDomains.Employees) is { } denied) return denied;
         if (OutOfScope() is { } outOfScope) return outOfScope;
         var tid = GetTenantId();
         months = Math.Clamp(months, 1, 24);
@@ -174,16 +179,79 @@ public class AnalyticsController : ControllerBase
     public async Task<IActionResult> PayrollTrend([FromQuery] int months = 6, CancellationToken ct = default)
     {
         if (!HasPermission("reports.read")) return Forbid();
-        if (Refuse("payroll.read", "payroll data") is { } denied) return denied;
+        if (Refuse(DataDomains.Payroll) is { } denied) return denied;
         if (OutOfScope() is { } outOfScope) return outOfScope;
         var tid = GetTenantId();
         months = Math.Clamp(months, 1, 24);
-        // A voided run is not payroll that happened; its replacement is the month's figure.
-        return Ok(await _db.PayrollRuns.Where(x => x.TenantId == tid && x.Status != "Voided")
-            .OrderByDescending(x => x.Year).ThenByDescending(x => x.Month)
-            .Take(months)
-            .Select(x => new { period = $"{x.Year}-{x.Month:D2}", x.TotalGrossSalary, x.TotalNetSalary, x.TotalDeductions, x.EmployeeCount, x.Status })
-            .ToListAsync(ct));
+
+        // `months` is pay periods, not runs: every company's runs of a period are one point, so three
+        // companies no longer turn "6 months" into two. One point per period AND currency — amounts are
+        // never added across currencies — and no voided or draft run (PayrollReporting).
+        var runs = await PayrollReporting.ReportableRuns(_db.PayrollRuns, tid)
+            .Select(x => new { x.Id, x.Year, x.Month, x.CompanyId, x.Status, x.TotalGrossSalary, x.TotalNetSalary, x.TotalDeductions })
+            .ToListAsync(ct);
+        var periods = runs.Select(r => (r.Year, r.Month)).Distinct()
+            .OrderByDescending(p => p.Year).ThenByDescending(p => p.Month).Take(months).ToHashSet();
+        var inWindow = runs.Where(r => periods.Contains((r.Year, r.Month))).ToList();
+        var currencies = await PayrollReporting.CompanyCurrenciesAsync(_db, tid, inWindow.Select(r => r.CompanyId), ct);
+        var runIds = inWindow.Select(r => r.Id).ToList();
+        // People paid in the period, counted once each however many runs paid them.
+        var paid = await _db.PayrollSlips.Where(s => s.TenantId == tid && runIds.Contains(s.RunId))
+            .Select(s => new { s.RunId, s.EmployeeId }).Distinct().ToListAsync(ct);
+        var runById = inWindow.ToDictionary(r => r.Id);
+
+        return Ok(inWindow
+            .GroupBy(r => new { r.Year, r.Month, Currency = PayrollReporting.CurrencyOf(r.CompanyId, currencies) })
+            .OrderByDescending(g => g.Key.Year).ThenByDescending(g => g.Key.Month).ThenBy(g => g.Key.Currency)
+            .Select(g => new
+            {
+                period = $"{g.Key.Year}-{g.Key.Month:D2}",
+                currencyCode = g.Key.Currency,
+                TotalGrossSalary = g.Sum(r => r.TotalGrossSalary),
+                TotalNetSalary = g.Sum(r => r.TotalNetSalary),
+                TotalDeductions = g.Sum(r => r.TotalDeductions),
+                EmployeeCount = paid.Where(p => g.Any(r => r.Id == p.RunId)).Select(p => p.EmployeeId).Distinct().Count(),
+                Status = PayrollReporting.DescribeStatuses(g.Select(r => r.Status)),
+                runCount = g.Count(),
+            })
+            .ToList());
+    }
+
+    /// <summary>
+    /// The KPI's "last payroll": the latest pay period with a reportable run in the caller's companies,
+    /// summed per currency. <c>totalNetSalary</c> and <c>currencyCode</c> are set only when the period is
+    /// in one currency; with several, <c>byCurrency</c> carries each total and no grand total exists.
+    /// </summary>
+    private async Task<object> LatestPayrollAsync(Guid tid, CancellationToken ct)
+    {
+        var runs = PayrollReporting.ReportableRuns(_db.PayrollRuns, tid);
+        var latest = await runs.OrderByDescending(x => x.Year).ThenByDescending(x => x.Month)
+            .Select(x => new { x.Year, x.Month }).FirstOrDefaultAsync(ct);
+        if (latest is null)
+            return new
+            {
+                lastRunYear = (int?)null, lastRunMonth = (int?)null, lastRunStatus = (string?)null,
+                totalNetSalary = (decimal?)null, currencyCode = (string?)null, runCount = (int?)0, byCurrency = (object?)Array.Empty<object>(),
+            };
+        var period = await runs.Where(x => x.Year == latest.Year && x.Month == latest.Month)
+            .Select(x => new { x.CompanyId, x.Status, x.TotalNetSalary }).ToListAsync(ct);
+        var currencies = await PayrollReporting.CompanyCurrenciesAsync(_db, tid, period.Select(r => r.CompanyId), ct);
+        var byCurrency = period
+            .GroupBy(r => PayrollReporting.CurrencyOf(r.CompanyId, currencies))
+            .OrderBy(g => g.Key)
+            .Select(g => new { currencyCode = g.Key, totalNetSalary = g.Sum(r => r.TotalNetSalary), runCount = g.Count() })
+            .ToList();
+        var single = byCurrency.Count == 1 ? byCurrency[0] : null;
+        return new
+        {
+            lastRunYear = (int?)latest.Year,
+            lastRunMonth = (int?)latest.Month,
+            lastRunStatus = PayrollReporting.DescribeStatuses(period.Select(r => r.Status)),
+            totalNetSalary = single?.totalNetSalary,
+            currencyCode = single?.currencyCode,
+            runCount = (int?)period.Count,
+            byCurrency = (object?)byCurrency,
+        };
     }
 
     // GET /api/analytics/trends/attendance
@@ -191,7 +259,7 @@ public class AnalyticsController : ControllerBase
     public async Task<IActionResult> AttendanceTrend([FromQuery] int days = 30, CancellationToken ct = default)
     {
         if (!HasPermission("reports.read")) return Forbid();
-        if (Refuse("attendance.read", "attendance records") is { } denied) return denied;
+        if (Refuse(DataDomains.Attendance) is { } denied) return denied;
         if (OutOfScope() is { } outOfScope) return outOfScope;
         var tid = GetTenantId();
         days = Math.Clamp(days, 1, 366);
@@ -217,7 +285,7 @@ public class AnalyticsController : ControllerBase
     public async Task<IActionResult> LeaveTrend([FromQuery] int months = 6, CancellationToken ct = default)
     {
         if (!HasPermission("reports.read")) return Forbid();
-        if (Refuse("leave.read", "leave records") is { } denied) return denied;
+        if (Refuse(DataDomains.Leave) is { } denied) return denied;
         if (OutOfScope() is { } outOfScope) return outOfScope;
         var tid = GetTenantId();
         var (from, today) = await MonthWindowAsync(tid, months, ct);
@@ -236,7 +304,7 @@ public class AnalyticsController : ControllerBase
     public async Task<IActionResult> OvertimeTrend([FromQuery] int months = 6, CancellationToken ct = default)
     {
         if (!HasPermission("reports.read")) return Forbid();
-        if (Refuse("overtime.read", "overtime records") is { } denied) return denied;
+        if (Refuse(DataDomains.Overtime) is { } denied) return denied;
         if (OutOfScope() is { } outOfScope) return outOfScope;
         var tid = GetTenantId();
         var (from, today) = await MonthWindowAsync(tid, months, ct);
@@ -255,8 +323,8 @@ public class AnalyticsController : ControllerBase
     public async Task<IActionResult> DepartmentComparison(CancellationToken ct)
     {
         if (!HasPermission("reports.read")) return Forbid();
-        if (Refuse("employees.read", "employee records") is { } denied) return denied;
-        if (Refuse("payroll.read", "payroll data") is { } payrollDenied) return payrollDenied;
+        if (Refuse(DataDomains.Employees) is { } denied) return denied;
+        if (Refuse(DataDomains.Payroll) is { } payrollDenied) return payrollDenied;
         if (OutOfScope() is { } outOfScope) return outOfScope;
         var tid = GetTenantId();
 
@@ -266,19 +334,26 @@ public class AnalyticsController : ControllerBase
             .Select(g => new { Department = g.Key, Headcount = g.Count() })
             .ToListAsync(ct);
 
-        // Every company's run for the latest pay period, as the payroll reports do — not one run picked
-        // from a multi-company tenant beside a headcount that counts them all.
-        var runs = _db.PayrollRuns.Where(x => x.TenantId == tid && x.Status != "Voided");
+        // Every company's reportable run for the latest pay period, as the payroll reports do — not one run
+        // picked from a multi-company tenant beside a headcount that counts them all — per currency.
+        var runs = PayrollReporting.ReportableRuns(_db.PayrollRuns, tid);
         var latest = await runs.OrderByDescending(x => x.Year).ThenByDescending(x => x.Month)
             .Select(x => new { x.Year, x.Month }).FirstOrDefaultAsync(ct);
         object payrollByDept = Array.Empty<object>();
         if (latest is not null)
         {
-            var runIds = await runs.Where(x => x.Year == latest.Year && x.Month == latest.Month).Select(x => x.Id).ToListAsync(ct);
-            payrollByDept = await _db.PayrollSlips.Where(x => x.TenantId == tid && runIds.Contains(x.RunId))
-                .GroupBy(x => x.Department)
-                .Select(g => new { Department = g.Key, TotalNet = g.Sum(x => x.NetSalary) })
-                .ToListAsync(ct);
+            var period = await runs.Where(x => x.Year == latest.Year && x.Month == latest.Month)
+                .Select(x => new { x.Id, x.CompanyId }).ToListAsync(ct);
+            var currencies = await PayrollReporting.CompanyCurrenciesAsync(_db, tid, period.Select(r => r.CompanyId), ct);
+            var currencyOfRun = period.ToDictionary(r => r.Id, r => PayrollReporting.CurrencyOf(r.CompanyId, currencies));
+            var runIds = currencyOfRun.Keys.ToList();
+            var slips = await _db.PayrollSlips.Where(x => x.TenantId == tid && runIds.Contains(x.RunId))
+                .Select(x => new { x.RunId, x.Department, x.NetSalary }).ToListAsync(ct);
+            payrollByDept = slips
+                .GroupBy(x => new { x.Department, Currency = currencyOfRun[x.RunId] })
+                .Select(g => new { g.Key.Department, currencyCode = g.Key.Currency, TotalNet = g.Sum(x => x.NetSalary) })
+                .OrderBy(x => x.Department).ThenBy(x => x.currencyCode)
+                .ToList();
         }
 
         return Ok(new { headcountByDept, payrollByDept });
@@ -316,15 +391,17 @@ public class AnalyticsController : ControllerBase
         return TenantTimeZone.FromId(id);
     }
 
-    private IActionResult? Refuse(string permission, string dataLabel) =>
-        HasPermission(permission)
+    private bool Admits(DataDomain domain) => domain.Admits(HasPermission, User.IsInRole);
+
+    private IActionResult? Refuse(DataDomain domain) =>
+        Admits(domain)
             ? null
             : StatusCode(StatusCodes.Status403Forbidden, new
             {
                 error = "report_data_forbidden",
-                message = $"These figures come from {dataLabel}, which your role cannot view. " +
-                          $"Ask an administrator for the {permission} permission if you need them.",
-                requiredPermissions = new[] { permission },
+                message = domain.Refusal("These figures come from"),
+                requiredPermissions = domain.Permissions,
+                acceptedRoles = domain.Roles,
             });
 
     private IActionResult? OutOfScope()
