@@ -795,6 +795,97 @@ public class LeaverLifecycleS2Tests
             new Zayra.Api.Application.Auth.LoginRequest("departing@kynexone.local", "CorrectPassword1!", "kynexone"),
             new Zayra.Api.Application.Auth.RequestContext("127.0.0.1", "tests"), CancellationToken.None));
     }
+
+    // ── R04 — a withdrawn resignation withdraws its own backfill, and only that ─────────────────────
+
+    /// <summary>
+    /// R04. Submitting a requisition under a seeded workflow makes it <c>PendingApproval</c> and opens a
+    /// shared ApprovalRequest. Rescinding the resignation used to skip <c>PendingApproval</c> entirely
+    /// (it only knew Draft/Pending/Submitted), and even when it did withdraw a requisition it left the
+    /// ApprovalRequest Pending — so an approver could still approve hiring a replacement for someone who
+    /// is staying. Approved or converted recruitment is real work in flight and is never touched, and an
+    /// approval that belongs to another tenant or another entity is never closed through this link.
+    /// </summary>
+    [Theory]
+    [InlineData("PendingApproval", true, true)]
+    [InlineData("Submitted", true, true)]
+    [InlineData("Draft", true, true)]
+    [InlineData("Approved", true, true)]
+    [InlineData("Converted", true, true)]
+    [InlineData("PendingApproval", false, true)]
+    [InlineData("PendingApproval", true, false)]
+    public async Task Rescind_WithdrawsOnlyItsOwnBackfill_AndClosesItsPendingApproval(
+        string requisitionStatus, bool approvalInSameTenant, bool approvalForThisRequisition)
+    {
+        await using var db = CreateDb();
+        var fx = await SeedLeaverAsync(db);
+        var requisition = new ManpowerRequisition
+        {
+            TenantId = fx.TenantId, RequisitionNumber = "MRQ-2026-0042", Status = requisitionStatus,
+        };
+        var approval = new ApprovalRequest
+        {
+            TenantId = approvalInSameTenant ? fx.TenantId : Guid.NewGuid(),
+            EntityName = nameof(ManpowerRequisition),
+            EntityId = approvalForThisRequisition ? requisition.Id.ToString() : Guid.NewGuid().ToString(),
+            Status = "Pending", CurrentApproverName = "Hiring Approver", CurrentQueue = "HR Manager",
+        };
+        requisition.ApprovalRequestId = approval.Id;
+        fx.Offboarding.BackfillRequisitionId = requisition.Id;
+        db.AddRange(requisition, approval);
+        await db.SaveChangesAsync();
+
+        var response = Assert.IsType<OkObjectResult>(await Controller(db, fx.TenantId, fx.ActorId).Cancel(
+            fx.Offboarding.Id, new CancelOffboardingRequest("Resignation withdrawn"), CancellationToken.None));
+
+        var withdraw = requisitionStatus is "Draft" or "Submitted" or "PendingApproval";
+        Assert.Equal(withdraw, JsonSerializer.SerializeToElement(response.Value).GetProperty("backfillWithdrawn").GetBoolean());
+        Assert.Equal(withdraw ? "Cancelled" : requisitionStatus,
+            (await db.ManpowerRequisitions.AsNoTracking().SingleAsync(x => x.Id == requisition.Id)).Status);
+
+        var saved = await db.ApprovalRequests.AsNoTracking().SingleAsync(x => x.Id == approval.Id);
+        var closeApproval = withdraw && approvalInSameTenant && approvalForThisRequisition;
+        Assert.Equal(closeApproval ? "Cancelled" : "Pending", saved.Status);
+        if (closeApproval)
+        {
+            Assert.NotNull(saved.CompletedAtUtc);
+            Assert.Equal(string.Empty, saved.CurrentQueue);   // gone from the approver's queue
+            Assert.Null(saved.CurrentApproverUserId);
+            var audit = await db.AuditLogs.AsNoTracking().SingleAsync(a => a.Action == "offboarding.rescinded");
+            Assert.Contains(approval.Id.ToString(), audit.Metadata);
+        }
+    }
+
+    /// <summary>R04 — other recruitment in the tenant, and its approvals, are not this rescind's business.</summary>
+    [Fact]
+    public async Task Rescind_LeavesUnrelatedRecruitmentAndApprovalsUntouched()
+    {
+        await using var db = CreateDb();
+        var fx = await SeedLeaverAsync(db);
+        var own = new ManpowerRequisition { TenantId = fx.TenantId, RequisitionNumber = "MRQ-OWN", Status = "PendingApproval" };
+        var ownApproval = new ApprovalRequest
+        {
+            TenantId = fx.TenantId, EntityName = nameof(ManpowerRequisition), EntityId = own.Id.ToString(), Status = "Pending",
+        };
+        own.ApprovalRequestId = ownApproval.Id;
+        var unrelated = new ManpowerRequisition { TenantId = fx.TenantId, RequisitionNumber = "MRQ-OTHER", Status = "PendingApproval" };
+        var unrelatedApproval = new ApprovalRequest
+        {
+            TenantId = fx.TenantId, EntityName = nameof(ManpowerRequisition), EntityId = unrelated.Id.ToString(), Status = "Pending",
+        };
+        unrelated.ApprovalRequestId = unrelatedApproval.Id;
+        fx.Offboarding.BackfillRequisitionId = own.Id;
+        db.AddRange(own, ownApproval, unrelated, unrelatedApproval);
+        await db.SaveChangesAsync();
+
+        Assert.IsType<OkObjectResult>(await Controller(db, fx.TenantId, fx.ActorId).Cancel(
+            fx.Offboarding.Id, new CancelOffboardingRequest("Resignation withdrawn"), CancellationToken.None));
+
+        Assert.Equal("Cancelled", (await db.ManpowerRequisitions.AsNoTracking().SingleAsync(x => x.Id == own.Id)).Status);
+        Assert.Equal("Cancelled", (await db.ApprovalRequests.AsNoTracking().SingleAsync(x => x.Id == ownApproval.Id)).Status);
+        Assert.Equal("PendingApproval", (await db.ManpowerRequisitions.AsNoTracking().SingleAsync(x => x.Id == unrelated.Id)).Status);
+        Assert.Equal("Pending", (await db.ApprovalRequests.AsNoTracking().SingleAsync(x => x.Id == unrelatedApproval.Id)).Status);
+    }
 }
 
 // ── Local test doubles (file-scoped, mirroring AuthServiceTests') ───────────────────────────────────

@@ -819,16 +819,25 @@ public class OffboardingController : ControllerBase
             // re-issued through the invitation workflow so roles, scope and MFA are freshly approved.
             accessReprovisioningRequired = off.AccessRevoked;
 
+            // R04 — withdraw the backfill this separation raised, and only that one, while it is still
+            // awaiting a decision. Submitting under a seeded workflow makes it PendingApproval (a status
+            // this list used to miss) and opens a shared ApprovalRequest, which is closed with it so no
+            // approver can still sign off a replacement for someone who is staying. An approved or
+            // converted requisition is recruitment genuinely in flight and is left alone.
             backfillWithdrawn = false;
+            Guid? backfillApprovalCancelled = null;
             if (off.BackfillRequisitionId is Guid requisitionId)
             {
                 var requisition = await _db.ManpowerRequisitions
                     .TagWith(RowLockingInterceptor.ForUpdateTag)
                     .SingleOrDefaultAsync(x => x.Id == requisitionId && x.TenantId == tenantId, token);
-                if (requisition is not null && requisition.Status is "Draft" or "Pending" or "Submitted")
+                if (requisition is not null && requisition.Status is "Draft" or "Submitted" or "PendingApproval")
                 {
                     requisition.Status = "Cancelled";
                     backfillWithdrawn = true;
+                    if (requisition.ApprovalRequestId is Guid approvalId)
+                        backfillApprovalCancelled = await CancelPendingRequisitionApprovalAsync(
+                            tenantId, approvalId, requisition.Id, cancelledAtUtc, token);
                 }
             }
 
@@ -839,7 +848,9 @@ public class OffboardingController : ControllerBase
                     reason = off.CancelReason,
                     accessRestored = false,
                     accessReprovisioningRequired,
-                    backfillWithdrawn
+                    backfillWithdrawn,
+                    backfillRequisitionId = backfillWithdrawn ? off.BackfillRequisitionId : null,
+                    backfillApprovalCancelled
                 }));
             await _db.SaveChangesAsync(token);
             return true;
@@ -982,6 +993,36 @@ public class OffboardingController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
         return Ok(new { offboarding = off, accessRestored, backfillWithdrawn });
+    }
+
+    /// <summary>
+    /// Closes the requisition's own ApprovalRequest if, and only if, it is still Pending and really is
+    /// this tenant's approval for this requisition — the link is a stored id, so it is re-checked
+    /// rather than trusted. Returns the id it closed, or null. The caller owns the save.
+    /// </summary>
+    private async Task<Guid?> CancelPendingRequisitionApprovalAsync(
+        Guid tenantId, Guid approvalId, Guid requisitionId, DateTime cancelledAtUtc, CancellationToken ct)
+    {
+        var entityId = requisitionId.ToString();
+        var approval = await _db.ApprovalRequests
+            .TagWith(RowLockingInterceptor.ForUpdateTag)
+            .SingleOrDefaultAsync(a => a.Id == approvalId && a.TenantId == tenantId
+                && a.EntityName == nameof(ManpowerRequisition) && a.EntityId == entityId
+                && a.Status == "Pending", ct);
+        if (approval is null) return null;
+
+        approval.Status = "Cancelled";
+        approval.CompletedAtUtc = cancelledAtUtc;
+        // Out of every approver's queue: the routing fields are what the Approval Center lists by.
+        approval.CurrentApproverEmployeeId = null;
+        approval.CurrentApproverUserId = null;
+        approval.CurrentApproverName = string.Empty;
+        approval.CurrentApproverRole = string.Empty;
+        approval.CurrentApproverType = string.Empty;
+        approval.CurrentQueue = string.Empty;
+        // A decider who read the Pending version cannot now advance it.
+        approval.DecisionVersion++;
+        return approval.Id;
     }
 
     private async Task<int?> ResolveOffboardingEmployeeIdAsync(
