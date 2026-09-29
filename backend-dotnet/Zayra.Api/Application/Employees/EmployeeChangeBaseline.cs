@@ -3,6 +3,8 @@ using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Data;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Application.Employees;
@@ -26,6 +28,16 @@ public static class EmployeeChangeBaseline
 {
     /// <summary>EmployeeHistory.EventType of the row written when a future-dated change is approved.</summary>
     public const string ScheduledEventType = "SensitiveChangeScheduled";
+
+    /// <summary>EmployeeHistory.EventType of the row the effective-date job writes when it applies a change.</summary>
+    public const string AppliedEventType = "SensitiveChangeApplied";
+
+    /// <summary>
+    /// EmployeeHistory.EventType of the row the effective-date job writes when it sends a change back to the
+    /// Approval Center. Its snapshot carries a sealed baseline of what the reviewer is shown, so approving the
+    /// re-review can check nothing moved in the meantime (<see cref="CheckUnchangedSinceReviewAsync"/>).
+    /// </summary>
+    public const string ReturnedForReviewEventType = "SensitiveChangeReturnedForReview";
 
     /// <summary>Data Protection purpose. Changing it makes every stored baseline unreadable.</summary>
     public const string ProtectorPurpose = "Zayra.Api.EmployeeChangeRequest.Baseline.v1";
@@ -79,17 +91,98 @@ public static class EmployeeChangeBaseline
     /// The field names whose value on file no longer matches the baseline. A column present on one side
     /// only counts as moved. Names only — never values — so the result is safe to log and to show.
     /// </summary>
+    /// <param name="alsoExpected">Per column, one more value that is NOT drift: what an earlier-dated change
+    /// of the same schedule wrote when it took effect after this one was approved (see
+    /// <see cref="Projected"/>). Without it the second of two approved future changes to one field always
+    /// read its own predecessor as "changed since approval".</param>
     public static IReadOnlyList<string> Drifted(
-        IReadOnlyDictionary<string, string> baseline, IReadOnlyDictionary<string, string>? current)
+        IReadOnlyDictionary<string, string> baseline, IReadOnlyDictionary<string, string>? current,
+        IReadOnlyDictionary<string, string>? alsoExpected = null)
     {
         if (current is null) return baseline.Keys.Select(FieldName).Distinct(StringComparer.Ordinal).ToList();
         return baseline.Keys.Union(current.Keys, StringComparer.Ordinal)
-            .Where(k => !baseline.TryGetValue(k, out var before) || !current.TryGetValue(k, out var now)
-                        || !string.Equals(before, now, StringComparison.Ordinal))
+            .Where(k => !current.TryGetValue(k, out var now)
+                        || !((baseline.TryGetValue(k, out var before) && string.Equals(before, now, StringComparison.Ordinal))
+                             || (alsoExpected is not null && alsoExpected.TryGetValue(k, out var scheduled)
+                                 && string.Equals(scheduled, now, StringComparison.Ordinal))))
             .Select(FieldName)
             .Distinct(StringComparer.Ordinal)
             .OrderBy(x => x, StringComparer.Ordinal)
             .ToList();
+    }
+
+    /// <summary>
+    /// The columns a change set leaves on the record once applied, keyed like <see cref="Capture"/>: the
+    /// patch is run through <see cref="EmployeeChangeApplier.Apply"/> on a scratch employee, and the bank
+    /// keys are mirrored onto a scratch profile the way <see cref="EmployeeBankProfileSync"/> does. Null when
+    /// the patch cannot be applied (unknown key, malformed value) — then nothing is "expected" from it.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string>? Projected(IReadOnlyDictionary<string, JsonElement> changes)
+    {
+        var employee = new Employee();
+        try
+        {
+            if (EmployeeChangeApplier.Apply(employee, changes).Count > 0) return null;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or FormatException)
+        {
+            return null;
+        }
+        var profile = new EmployeePayrollProfile { BankName = employee.BankName, Iban = employee.BankIban };
+        if (changes.TryGetValue("socialInsuranceReference", out var reference))
+            profile.SocialInsuranceReference = reference.ValueKind == JsonValueKind.Null ? string.Empty : reference.GetString() ?? string.Empty;
+        return Capture(employee, profile, changes.Keys);
+    }
+
+    /// <summary>The value on file for one patch key, as <see cref="Capture"/> reads it — the payroll-profile
+    /// column when the key is paid or filed from there and a profile exists, else the employee column.</summary>
+    public static string? ValueOf(IReadOnlyDictionary<string, string>? values, string key) =>
+        values is null ? null
+        : values.TryGetValue(ProfilePrefix + key, out var onProfile) && (EmployeeChangeApplier.PayrollProfileKeys.Contains(key) || onProfile.Length > 0)
+            ? onProfile
+            : values.TryGetValue(EmployeePrefix + key, out var onEmployee) ? onEmployee : null;
+
+    /// <summary>What <see cref="CheckUnchangedSinceReviewAsync"/> found.</summary>
+    /// <param name="Verified">False when the change was returned for review but what the reviewer was shown
+    /// cannot be read back — the approval must not proceed on an unverifiable record.</param>
+    /// <param name="ChangedFields">Patch keys whose value moved after the re-review was raised.</param>
+    public sealed record ReviewCheck(bool Verified, IReadOnlyList<string> ChangedFields)
+    {
+        public bool Unchanged => Verified && ChangedFields.Count == 0;
+
+        /// <summary>Why the approval is refused, in plain words. <paramref name="labels"/> turns
+        /// "bankIban,salary" into display names.</summary>
+        public string Refusal(Func<string?, string?> labels) => !Verified
+            ? "This re-review cannot be checked against the values it showed, so approving it could overwrite a newer value. "
+              + "Reject it and submit the change again."
+            : $"{labels(string.Join(',', ChangedFields)) ?? string.Join(", ", ChangedFields)} changed after this re-review was raised, "
+              + "so approving it would overwrite a newer value. Reject it and submit the change again.";
+    }
+
+    /// <summary>
+    /// For a change the effective-date job sent back for review: re-checks, at approval, that every column
+    /// still holds what the re-review showed. A change that was never returned for review passes untouched —
+    /// immediate approvals behave exactly as before. Read-only.
+    /// </summary>
+    public static async Task<ReviewCheck> CheckUnchangedSinceReviewAsync(
+        ZayraDbContext db, IDataProtector? protector, Guid tenantId, Guid changeId, Employee employee,
+        IReadOnlyCollection<string> keys, CancellationToken ct)
+    {
+        var snapshots = await db.EmployeeHistories.AsNoTracking()
+            .Where(h => h.TenantId == tenantId && h.EmployeeId == employee.Id && h.EventType == ReturnedForReviewEventType)
+            .OrderByDescending(h => h.CreatedAtUtc)
+            .Select(h => h.SnapshotJson)
+            .ToListAsync(ct);
+        foreach (var json in snapshots)
+        {
+            if (!TryReadSnapshot(json, out var id, out var sealedReview) || id != changeId) continue;
+            var reviewed = protector is null ? null : Unprotect(protector, changeId, sealedReview);
+            if (reviewed is null) return new ReviewCheck(false, keys.ToList());
+            var profile = await db.EmployeePayrollProfiles
+                .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && !x.IsDeleted, ct);
+            return new ReviewCheck(true, Drifted(reviewed, Capture(employee, profile, keys)));
+        }
+        return new ReviewCheck(true, Array.Empty<string>());
     }
 
     /// <summary>SnapshotJson of the <see cref="ScheduledEventType"/> history row.</summary>

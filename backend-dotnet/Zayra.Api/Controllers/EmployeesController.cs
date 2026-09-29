@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.DataProtection;
 using System.ComponentModel.DataAnnotations;
 using System.Data;
 using System.Security.Cryptography;
@@ -4274,6 +4275,14 @@ public class EmployeesController : ControllerBase
         var changes = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.ProposedChangesJson) ?? new();
         var priorDeptId = employee.DepartmentId;
         var priorDesigId = employee.DesignationId;
+        // Same re-check as the Approval Center: a change the effective-date job returned for review is refused
+        // if a value moved after the re-review was raised. A change never returned for review passes through.
+        var baselineKeys = HttpContext?.RequestServices?.GetService(typeof(IDataProtectionProvider)) as IDataProtectionProvider;
+        var review = await EmployeeChangeBaseline.CheckUnchangedSinceReviewAsync(_db,
+            baselineKeys is null ? null : EmployeeChangeBaseline.CreateProtector(baselineKeys), tenantId, change.Id, employee,
+            changes.Keys, cancellationToken);
+        if (!review.Unchanged)
+            return UnprocessableEntity(new { error = "changed_since_review", message = review.Refusal(DashboardController.FormatChangedFields) });
         // managerEmployeeId is not a sensitive key, so a change request only carries one if it was stored by an
         // older build; it is still checked here, because every apply path goes through the same rules.
         if (await EmployeeChangeApplier.ValidateManagerChangeAsync(_db, employee, changes, null, cancellationToken) is { } managerRejection)

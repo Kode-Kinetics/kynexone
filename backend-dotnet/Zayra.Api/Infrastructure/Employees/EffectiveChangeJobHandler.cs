@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Attendance;
 using Zayra.Api.Application.Auth;
+using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
@@ -31,6 +32,8 @@ public enum EffectiveChangeOutcome
     ReturnedForReview,
     /// <summary>Not written: the employee record no longer exists. Status Cancelled.</summary>
     Cancelled,
+    /// <summary>Not written: approved too long ago to verify and never re-offered for a reflex approval. Status Expired.</summary>
+    Expired,
     /// <summary>Not written YET: a payroll run the employee is on is awaiting its payment batch. Status unchanged.</summary>
     Deferred,
     /// <summary>Another attempt or path already decided it (it was no longer ApprovedPendingEffectiveDate).</summary>
@@ -63,11 +66,21 @@ public sealed record EffectiveChangeResult(
 /// baseline sealed at approval (<see cref="EmployeeChangeBaseline"/>). If a column moved since approval,
 /// if there is no baseline (every change approved before this shipped), if the employee has separated, or
 /// if a rule refuses the write, the change is NOT applied: it goes back to the Approval Center as a new
-/// request naming why, with a history row, an audit row and a notification. A removed employee's change is
-/// cancelled. A bank change for someone on a payroll run that is processed or locked but has no payment
+/// request naming why (approved on, effective, and the masked value on file against the approved one),
+/// with a history row, an audit row and a notification; approving that re-review re-checks nothing moved
+/// since. A change that cannot be verified and is older than
+/// <see cref="EffectiveChangeOptions.UnverifiableMaxAgeDays"/> is expired instead, so nobody re-approves a
+/// stale IBAN by reflex. Two approved future changes to one field are a schedule, not drift: the later one
+/// accepts what the earlier one wrote (<see cref="ScheduledPredecessorValuesAsync"/>). A removed employee's
+/// change is cancelled. A bank change for someone on a payroll run that is processed or locked but has no payment
 /// batch yet is deferred until the batch exists (see <see cref="RunsAwaitingPaymentAsync"/>).</para>
 ///
-/// <para><b>OBSERVABLE.</b> One audit row per applied, returned, cancelled or first-deferred change; the
+/// <para><b>LOCK ORDER.</b> employee_change_requests → employee_payroll_profiles → employees. It is the order
+/// EF Core issues the UPDATEs of one SaveChanges on the Approval Center and approve-endpoint paths (independent
+/// rows are sorted by table name), so the job and an approval committing for the same employee queue on the
+/// same first row instead of deadlocking. <c>JobLockOrder_MatchesTheApprovalCenterUpdateOrder</c> pins it.</para>
+///
+/// <para><b>OBSERVABLE.</b> One audit row per applied, returned, expired, cancelled or first-deferred change; the
 /// job's result counts every outcome; a change that throws is logged, counted, and fails the attempt
 /// AFTER the others have been processed, so the queue retries only what failed.</para>
 /// </summary>
@@ -79,10 +92,12 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
     public const string ReturnedForReviewAction = "employee.change_effective_returned_for_review";
     public const string CancelledAction = "employee.change_effective_cancelled";
     public const string DeferredAction = "employee.change_effective_deferred";
+    public const string ExpiredAction = "employee.change_effective_expired";
 
-    public const string AppliedEventType = "SensitiveChangeApplied";
-    public const string ReturnedForReviewEventType = "SensitiveChangeReturnedForReview";
+    public const string AppliedEventType = EmployeeChangeBaseline.AppliedEventType;
+    public const string ReturnedForReviewEventType = EmployeeChangeBaseline.ReturnedForReviewEventType;
     public const string CancelledEventType = "SensitiveChangeCancelled";
+    public const string ExpiredEventType = "SensitiveChangeExpired";
 
     /// <summary>The actor recorded on the audit rows and the review request this job writes.</summary>
     public const string SystemActor = "kynexone:effective-change-job";
@@ -180,7 +195,7 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
             if (!committed || result is null) continue;
 
             tally[result.Outcome]++;
-            if (result.Outcome is EffectiveChangeOutcome.ReturnedForReview or EffectiveChangeOutcome.Cancelled)
+            if (result.Outcome is EffectiveChangeOutcome.ReturnedForReview or EffectiveChangeOutcome.Cancelled or EffectiveChangeOutcome.Expired)
                 _log.LogWarning(
                     "Approved employee change {ChangeId} (tenant {TenantId}, employee {EmployeeId}) was not applied: {Outcome} ({ReasonCode}).",
                     changeId, ctx.TenantId, result.EmployeeId, result.Outcome, result.ReasonCode);
@@ -192,9 +207,10 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
 
         _log.LogInformation(
             "Effective employee changes for tenant {TenantId} on {LocalDate:yyyy-MM-dd}: {Due} due, {Applied} applied, "
-            + "{Returned} returned for review, {Cancelled} cancelled, {Deferred} deferred, {Handled} already handled, {Failed} failed.",
+            + "{Returned} returned for review, {Expired} expired, {Cancelled} cancelled, {Deferred} deferred, {Handled} already handled, {Failed} failed.",
             ctx.TenantId, localToday, due.Count, tally[EffectiveChangeOutcome.Applied], tally[EffectiveChangeOutcome.ReturnedForReview],
-            tally[EffectiveChangeOutcome.Cancelled], tally[EffectiveChangeOutcome.Deferred], tally[EffectiveChangeOutcome.AlreadyHandled], failed);
+            tally[EffectiveChangeOutcome.Expired], tally[EffectiveChangeOutcome.Cancelled], tally[EffectiveChangeOutcome.Deferred],
+            tally[EffectiveChangeOutcome.AlreadyHandled], failed);
 
         if (failed > 0)
             // Fails the ATTEMPT after every other change was processed and checkpointed; the queue retries with
@@ -208,6 +224,7 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
             due = due.Count,
             applied = tally[EffectiveChangeOutcome.Applied],
             returnedForReview = tally[EffectiveChangeOutcome.ReturnedForReview],
+            expired = tally[EffectiveChangeOutcome.Expired],
             cancelled = tally[EffectiveChangeOutcome.Cancelled],
             deferred = tally[EffectiveChangeOutcome.Deferred],
             alreadyHandled = tally[EffectiveChangeOutcome.AlreadyHandled],
@@ -224,6 +241,7 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
         CancellationToken ct)
     {
         // 1. The change, locked. Whoever holds this lock decides it; everyone after sees the decision.
+        //    Lock order (see the class summary): change → payroll profile → employee.
         var change = await LockChangeAsync(db, tenantId, changeId, ct);
         if (change is null
             || change.Status != EmployeeChangeStatuses.ApprovedPendingEffectiveDate
@@ -231,45 +249,57 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
             || change.EffectiveDate > localToday)
             return new EffectiveChangeResult(changeId, EffectiveChangeOutcome.AlreadyHandled);
 
-        // 2. The employee — including a soft-deleted one, so "removed" is told apart from "never existed".
+        // 2. The profile row payroll pays from, then the employee — including a soft-deleted one, so "removed"
+        //    is told apart from "never existed". Both locked before anything is compared or written.
+        var profile = await LockProfileAsync(db, tenantId, change.EmployeeId, ct);
         var employee = await LockEmployeeAsync(db, tenantId, change.EmployeeId, ct);
-        var fields = FieldLabels(change.SensitiveFields);
-        var context = new Decision(db, services, tenantId, change, employee, fields, localToday, jobId);
+        Dictionary<string, JsonElement>? changes = null;
+        try { changes = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.ProposedChangesJson); }
+        catch (JsonException) { /* handled below */ }
+        if (changes is { Count: 0 }) changes = null;
+        var context = new Decision(db, services, tenantId, change, employee, profile, changes,
+            FieldLabels(change.SensitiveFields), localToday, jobId);
+
         if (employee is null || employee.IsDeleted)
             return Cancel(context, "employee_removed",
                 "The employee record was removed before the effective date, so there is nothing to apply the change to.");
         if (SeparatedStatuses.Contains(employee.Status))
-            return await ReturnForReviewAsync(context, "employee_separated",
+            return await ReturnForReviewAsync(context, "employee_separated", $"employee is now {employee.Status}",
                 $"The employee's status is now {employee.Status}. Confirm the change should still take effect.", ct);
-
-        Dictionary<string, JsonElement>? changes = null;
-        try { changes = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.ProposedChangesJson); }
-        catch (JsonException) { /* handled below */ }
-        if (changes is null || changes.Count == 0)
-            return await ReturnForReviewAsync(context, "unreadable_change",
+        if (changes is null)
+            return await ReturnForReviewAsync(context, "unreadable_change", "the stored change could not be read",
                 "The stored change could not be read, so it was not applied.", ct);
 
-        // 3. The profile row payroll pays from, locked before it is compared or written.
-        var profile = await db.EmployeePayrollProfiles
-            .TagWith(RowLockingInterceptor.ForUpdateTag)
-            .Where(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && !x.IsDeleted)
-            .FirstOrDefaultAsync(ct);
-
-        // 4. Drift: every column the change writes must still hold what the approver saw.
+        // 3. Drift: every column the change writes must still hold what the approver saw — or what an earlier-
+        //    dated change of the same schedule wrote when it took effect after this one was approved.
         var baseline = await LoadBaselineAsync(db, tenantId, employee.Id, change.Id, ct);
         if (baseline.Values is null)
+        {
+            // Unverifiable. An old one is expired rather than offered for a reflex re-approval of a stale value.
+            var approvedOn = DateOnly.FromDateTime(change.ApprovedAtUtc ?? change.CreatedAtUtc);
+            var oldest = localToday.AddDays(-Math.Max(0, _options.UnverifiableMaxAgeDays));
+            if (approvedOn < oldest || change.EffectiveDate < oldest)
+                return Expire(context,
+                    $"It was approved on {approvedOn:yyyy-MM-dd} for {change.EffectiveDate:yyyy-MM-dd} — more than "
+                    + $"{_options.UnverifiableMaxAgeDays} days ago — and what the approver saw cannot be checked, so it was not "
+                    + "applied and is no longer open. Submit the change again if it is still wanted.");
             return await ReturnForReviewAsync(context, baseline.Found ? "baseline_unreadable" : "no_baseline",
+                "unverifiable: approved values were not recorded",
                 baseline.Found
-                    ? "The record of what was approved could not be read, so the current values cannot be checked against it."
-                    : "It was approved before approved values were recorded, so the current values cannot be checked against what the approver saw.",
+                    ? "The record of what was approved could not be read, so the values on file cannot be checked against it."
+                    : "It was approved before approved values were recorded, so the values on file cannot be checked against what the approver saw.",
                 ct);
-        var drifted = EmployeeChangeBaseline.Drifted(baseline.Values, EmployeeChangeBaseline.Capture(employee, profile, changes.Keys));
+        }
+        var scheduled = await ScheduledPredecessorValuesAsync(db, tenantId, employee.Id, change, changes.Keys, ct);
+        var drifted = EmployeeChangeBaseline.Drifted(baseline.Values, EmployeeChangeBaseline.Capture(employee, profile, changes.Keys), scheduled);
         if (drifted.Count > 0)
-            return await ReturnForReviewAsync(context, "changed_since_approval",
-                $"{FieldLabels(string.Join(',', drifted))} changed after this change was approved, so applying it would overwrite a newer value.",
-                ct);
+        {
+            var labels = FieldLabels(string.Join(',', drifted));
+            return await ReturnForReviewAsync(context, "changed_since_approval", $"{labels} changed since approval",
+                $"{labels} changed after this change was approved, so applying it would overwrite a newer value.", ct);
+        }
 
-        // 5. Payroll: never move a bank account underneath a run that has been processed but not yet paid.
+        // 4. Payroll: never move a bank account underneath a run that has been processed but not yet paid.
         if (EmployeeBankProfileSync.TouchesBankColumns(changes.Keys))
         {
             var runs = await RunsAwaitingPaymentAsync(db, tenantId, employee.Id, change.EffectiveDate, ct);
@@ -280,9 +310,9 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
                     ct);
         }
 
-        // 6. The same rules the other approval paths run before they write.
+        // 5. The same rules the other approval paths run before they write.
         if (await EmployeeChangeApplier.ValidateManagerChangeAsync(db, employee, changes, null, ct) is { } managerRejection)
-            return await ReturnForReviewAsync(context, "invalid_manager", managerRejection.Message, ct);
+            return await ReturnForReviewAsync(context, "invalid_manager", "manager no longer valid", managerRejection.Message, ct);
 
         var priorDepartmentId = employee.DepartmentId;
         var priorDesignationId = employee.DesignationId;
@@ -293,21 +323,21 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
         }
         catch (InvalidOperationException ex)
         {
-            return await ReturnForReviewAfterFailedApplyAsync(context, "apply_failed", ex.Message, ct);
+            return await ReturnForReviewAfterFailedApplyAsync(context, "apply_failed", "it could not be applied", ex.Message, ct);
         }
         if (employee.DepartmentId != priorDepartmentId || employee.DesignationId != priorDesignationId)
         {
             var guard = services.GetService<IEstablishmentGuard>() ?? new EstablishmentGuardService(db);
             var check = await guard.CheckAsync(tenantId, employee.DepartmentId, employee.DesignationId, employee.Id, 1, ct);
             if (!check.Allowed)
-                return await ReturnForReviewAfterFailedApplyAsync(context, "establishment_blocked",
+                return await ReturnForReviewAfterFailedApplyAsync(context, "establishment_blocked", "staffing budget full",
                     check.Block is { } block
                         ? $"{block.DepartmentName} already has {block.Current} of {block.Budgeted} budgeted {block.LevelNameEn}(s)."
                         : "The staffing budget does not allow this change.",
                     ct);
         }
 
-        // 7. Applied — the marker is written in the same transaction as the values.
+        // 6. Applied — the marker is written in the same transaction as the values.
         var now = DateTime.UtcNow;
         employee.UpdatedAtUtc = now;
         employee.UpdatedBy = change.ApprovedByUserId;
@@ -336,30 +366,52 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
             fields = change.SensitiveFields,
             approvedByUserId = change.ApprovedByUserId,
             payrollProfileSynced = profile is not null && EmployeeBankProfileSync.TouchesBankColumns(changes.Keys),
+            acceptedEarlierScheduledValues = scheduled.Count > 0,
             unappliedFields = unknown,
             jobId,
         });
         return new EffectiveChangeResult(change.Id, EffectiveChangeOutcome.Applied, EmployeeId: employee.Id,
-            EmployeeCode: employee.EmployeeCode, Fields: fields, NotifyUserId: change.ApprovedByUserId);
+            EmployeeCode: employee.EmployeeCode, Fields: context.Fields, NotifyUserId: change.ApprovedByUserId);
     }
 
     // ───────────────────────────── outcomes ─────────────────────────────
 
     private sealed record Decision(
         ZayraDbContext Db, IServiceProvider Services, Guid TenantId, EmployeeChangeRequest Change, Employee? Employee,
-        string Fields, DateOnly LocalToday, Guid? JobId);
+        EmployeePayrollProfile? Profile, Dictionary<string, JsonElement>? Changes, string Fields, DateOnly LocalToday, Guid? JobId);
 
     /// <summary>
-    /// Sends the change back to the Approval Center: a new approval request on the same workflow, titled with
-    /// the reason, and the change back to PendingApproval. Approving it applies the change immediately through
-    /// the normal path (its date has passed); rejecting it closes it. Nothing on the employee is written.
+    /// Sends the change back to the Approval Center: a new approval request on the same workflow and the change
+    /// back to PendingApproval; nothing on the employee is written. The request and the notification say when it
+    /// was approved, for which date, why it was not applied, and the value on file against the approved one
+    /// (masked to the last four characters). What the reviewer is shown is sealed on the history row, and
+    /// approving the re-review re-checks it (EmployeeChangeBaseline.CheckUnchangedSinceReviewAsync), so a value
+    /// that moves while the request waits is refused rather than overwritten.
     /// </summary>
-    private async Task<EffectiveChangeResult> ReturnForReviewAsync(Decision d, string reasonCode, string reason, CancellationToken ct)
+    private async Task<EffectiveChangeResult> ReturnForReviewAsync(Decision d, string reasonCode, string headline, string reason,
+        CancellationToken ct)
     {
         var change = d.Change;
         var employee = d.Employee!;
         var originalApprover = change.ApprovedByUserId;
+        var approvedOn = (change.ApprovedAtUtc ?? change.CreatedAtUtc).ToString("yyyy-MM-dd");
         var previousApprovalId = change.ApprovalRequestId;
+
+        // What the reviewer is shown: the value on file against the approved one, per field, masked.
+        IReadOnlyDictionary<string, string>? onFile = null;
+        var values = string.Empty;
+        if (d.Changes is not null)
+        {
+            onFile = EmployeeChangeBaseline.Capture(employee, d.Profile, d.Changes.Keys);
+            var proposed = EmployeeChangeBaseline.Projected(d.Changes);
+            values = string.Join("; ", d.Changes.Keys.Select(k =>
+                $"{FieldLabels(k)} now {Mask(EmployeeChangeBaseline.ValueOf(onFile, k))}, approved {Mask(EmployeeChangeBaseline.ValueOf(proposed, k))}"));
+        }
+        var dates = $"Approved {approvedOn}, effective {change.EffectiveDate:yyyy-MM-dd}.";
+        var detail = string.IsNullOrEmpty(values) ? $"{reason} {dates}" : $"{reason} {dates} {values}.";
+        var sealedReview = onFile is not null && _baselineProtector is not null
+            ? EmployeeChangeBaseline.Protect(_baselineProtector, change.Id, onFile)
+            : null;
 
         // Same workflow as the original approval while it is still active; otherwise the router's default.
         Guid? workflowId = null;
@@ -387,14 +439,16 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
             EventType = ReturnedForReviewEventType,
             FieldName = change.SensitiveFields,
             EffectiveDate = change.EffectiveDate,
-            Reason = Truncate(reason, 1000),
+            Reason = Truncate(detail, 1000),
             ApprovedByUserId = originalApprover,
-            SnapshotJson = EventSnapshot.Json(change.Id, d.JobId, reasonCode, previousApprovalId),
+            SnapshotJson = EventSnapshot.Json(change.Id, d.JobId, reasonCode, previousApprovalId, baseline: sealedReview),
         });
 
         var approvals = d.Services.GetService<IApprovalWorkflowService>()
                         ?? new ApprovalWorkflowService(d.Db, d.Services.GetService<IAuditService>() ?? new AuditService(d.Db));
-        var title = Truncate($"Employee change re-review - {employee.EmployeeCode} {employee.FullName}: {reason}", 240);
+        var title = Truncate(
+            $"Employee change re-review - {employee.EmployeeCode} {employee.FullName}: {headline}. {dates}"
+            + (string.IsNullOrEmpty(values) ? string.Empty : $" {values}"), 240);
         var approval = await approvals.CreateRequestAsync(d.TenantId,
             new CreateApprovalRequest(workflowId, nameof(EmployeeChangeRequest), change.Id.ToString(), title,
                 employee.Id, employee.CompanyId, "High"),
@@ -405,17 +459,19 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
         AddAudit(d, ReturnedForReviewAction, new
         {
             employeeId = employee.Id,
+            approvedOn,
             effectiveDate = change.EffectiveDate.ToString("yyyy-MM-dd"),
             tenantLocalDate = d.LocalToday.ToString("yyyy-MM-dd"),
             fields = change.SensitiveFields,
             reasonCode,
             reason,
+            values,
             previousApprovalRequestId = previousApprovalId,
             reviewApprovalRequestId = approval.Id,
             originallyApprovedByUserId = originalApprover,
             d.JobId,
         });
-        return new EffectiveChangeResult(change.Id, EffectiveChangeOutcome.ReturnedForReview, reasonCode, reason,
+        return new EffectiveChangeResult(change.Id, EffectiveChangeOutcome.ReturnedForReview, reasonCode, detail,
             employee.Id, employee.EmployeeCode, d.Fields, originalApprover);
     }
 
@@ -424,42 +480,53 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
     /// change (nothing has been flushed; the row locks stay held by the open transaction), reload the rows
     /// and return the change for review.
     /// </summary>
-    private async Task<EffectiveChangeResult> ReturnForReviewAfterFailedApplyAsync(Decision d, string reasonCode, string reason, CancellationToken ct)
+    private async Task<EffectiveChangeResult> ReturnForReviewAfterFailedApplyAsync(Decision d, string reasonCode, string headline,
+        string reason, CancellationToken ct)
     {
         d.Db.ChangeTracker.Clear();
         var change = await LockChangeAsync(d.Db, d.TenantId, d.Change.Id, ct)
                      ?? throw new InvalidOperationException($"Employee change {d.Change.Id} disappeared inside its own lock.");
+        var profile = await LockProfileAsync(d.Db, d.TenantId, change.EmployeeId, ct);
         var employee = await LockEmployeeAsync(d.Db, d.TenantId, change.EmployeeId, ct);
-        return await ReturnForReviewAsync(d with { Change = change, Employee = employee }, reasonCode, reason, ct);
+        return await ReturnForReviewAsync(d with { Change = change, Employee = employee, Profile = profile }, reasonCode, headline, reason, ct);
     }
 
-    private EffectiveChangeResult Cancel(Decision d, string reasonCode, string reason)
+    private EffectiveChangeResult Cancel(Decision d, string reasonCode, string reason) =>
+        Close(d, EmployeeChangeStatuses.Cancelled, EffectiveChangeOutcome.Cancelled, CancelledAction, CancelledEventType, reasonCode, reason);
+
+    private EffectiveChangeResult Expire(Decision d, string reason) =>
+        Close(d, EmployeeChangeStatuses.Expired, EffectiveChangeOutcome.Expired, ExpiredAction, ExpiredEventType, "unverifiable_too_old", reason);
+
+    /// <summary>Closes the change without applying it (Cancelled / Expired), with its history and audit rows.</summary>
+    private EffectiveChangeResult Close(Decision d, string status, EffectiveChangeOutcome outcome, string action, string eventType,
+        string reasonCode, string reason)
     {
         var change = d.Change;
-        change.Status = EmployeeChangeStatuses.Cancelled;
+        change.Status = status;
         change.RejectionReason = Truncate(reason, 1000);
         if (d.Employee is not null)
             d.Db.EmployeeHistories.Add(new EmployeeHistory
             {
                 TenantId = d.TenantId,
                 EmployeeId = d.Employee.Id,
-                EventType = CancelledEventType,
+                EventType = eventType,
                 FieldName = change.SensitiveFields,
                 EffectiveDate = change.EffectiveDate,
                 Reason = Truncate(reason, 1000),
                 ApprovedByUserId = change.ApprovedByUserId,
                 SnapshotJson = EventSnapshot.Json(change.Id, d.JobId, reasonCode),
             });
-        AddAudit(d, CancelledAction, new
+        AddAudit(d, action, new
         {
             employeeId = change.EmployeeId,
+            approvedOn = change.ApprovedAtUtc?.ToString("yyyy-MM-dd"),
             effectiveDate = change.EffectiveDate.ToString("yyyy-MM-dd"),
             fields = change.SensitiveFields,
             reasonCode,
             reason,
             d.JobId,
         });
-        return new EffectiveChangeResult(change.Id, EffectiveChangeOutcome.Cancelled, reasonCode, reason,
+        return new EffectiveChangeResult(change.Id, outcome, reasonCode, reason,
             change.EmployeeId, d.Employee?.EmployeeCode, d.Fields, change.ApprovedByUserId);
     }
 
@@ -493,6 +560,62 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
             .TagWith(RowLockingInterceptor.ForUpdateTag)
             .Where(x => x.TenantId == tenantId && x.Id == changeId)
             .FirstOrDefaultAsync(ct);
+
+    private static Task<EmployeePayrollProfile?> LockProfileAsync(ZayraDbContext db, Guid tenantId, int employeeId, CancellationToken ct) =>
+        db.EmployeePayrollProfiles
+            .TagWith(RowLockingInterceptor.ForUpdateTag)
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && !x.IsDeleted)
+            .FirstOrDefaultAsync(ct);
+
+    /// <summary>
+    /// A SCHEDULE IS NOT DRIFT. Two approved future changes to one field (an IBAN on the 1st and another on the
+    /// 15th; a salary in January and a promotion in April) were both approved against the value on file at the
+    /// time, so when the earlier one takes effect the later one sees a "changed" column — changed by its own
+    /// predecessor. Per patch key, this returns what the latest earlier-dated change that THIS JOB applied
+    /// (a <see cref="EmployeeChangeBaseline.AppliedEventType"/> history row) wrote, provided it took effect after
+    /// this change was approved (if before, this change's baseline already holds it). Only job-applied changes
+    /// count: an immediate edit or approval made after this change was approved is still drift, and still
+    /// goes to review.
+    /// </summary>
+    private static async Task<IReadOnlyDictionary<string, string>> ScheduledPredecessorValuesAsync(
+        ZayraDbContext db, Guid tenantId, int employeeId, EmployeeChangeRequest change, IEnumerable<string> keys, CancellationToken ct)
+    {
+        var expected = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (change.ApprovedAtUtc is not DateTime approvedAt) return expected;
+        var appliedIds = (await db.EmployeeHistories.AsNoTracking()
+                .Where(h => h.TenantId == tenantId && h.EmployeeId == employeeId && h.EventType == AppliedEventType)
+                .Select(h => h.SnapshotJson)
+                .ToListAsync(ct))
+            .Select(json => EmployeeChangeBaseline.TryReadSnapshot(json, out var id, out _) ? id : Guid.Empty)
+            .Where(id => id != Guid.Empty && id != change.Id)
+            .Distinct()
+            .ToList();
+        if (appliedIds.Count == 0) return expected;
+
+        var predecessors = await db.EmployeeChangeRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && appliedIds.Contains(x.Id)
+                        && x.Status == EmployeeChangeStatuses.ApprovedApplied
+                        && x.EffectiveDate <= change.EffectiveDate
+                        && x.AppliedAtUtc > approvedAt)
+            .OrderByDescending(x => x.EffectiveDate).ThenByDescending(x => x.AppliedAtUtc)
+            .Select(x => x.ProposedChangesJson)
+            .ToListAsync(ct);
+        foreach (var key in keys)
+        {
+            foreach (var json in predecessors)
+            {
+                Dictionary<string, JsonElement>? patch;
+                try { patch = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json); }
+                catch (JsonException) { continue; }
+                if (patch is null || !patch.ContainsKey(key)) continue;
+                // Latest earlier-dated change on this key wins; its columns for this key are what is expected now.
+                if (EmployeeChangeBaseline.Projected(new Dictionary<string, JsonElement> { [key] = patch[key] }) is { } projected)
+                    foreach (var (column, value) in projected) expected[column] = value;
+                break;
+            }
+        }
+        return expected;
+    }
 
     private static Task<Employee?> LockEmployeeAsync(ZayraDbContext db, Guid tenantId, int employeeId, CancellationToken ct) =>
         ScopedBypass.NullableTenantWide(db.Employees, tenantId,
@@ -589,6 +712,8 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
                  $"The approved {what} change for {who} was not applied. {result.Reason} It is back in the Approval Center: approve it to apply it now, or reject it."),
             EffectiveChangeOutcome.Cancelled =>
                 ("Approved employee change cancelled", $"The approved {what} change for {who} was cancelled. {result.Reason}"),
+            EffectiveChangeOutcome.Expired =>
+                ("Approved employee change expired", $"The approved {what} change for {who} was not applied. {result.Reason}"),
             EffectiveChangeOutcome.Deferred when result.FirstDeferral =>
                 ("Approved bank change waiting for payroll", $"The approved {what} change for {who} is waiting. {result.Reason}"),
             _ => null,
@@ -615,12 +740,17 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
         [property: System.Text.Json.Serialization.JsonPropertyName("jobId")] Guid? JobId,
         [property: System.Text.Json.Serialization.JsonPropertyName("reasonCode")] string? ReasonCode,
         [property: System.Text.Json.Serialization.JsonPropertyName("previousApprovalRequestId")] Guid? PreviousApprovalRequestId,
-        [property: System.Text.Json.Serialization.JsonPropertyName("unappliedFields")] IReadOnlyList<string>? UnappliedFields)
+        [property: System.Text.Json.Serialization.JsonPropertyName("unappliedFields")] IReadOnlyList<string>? UnappliedFields,
+        // Sealed (Data Protection), same property name EmployeeChangeBaseline.TryReadSnapshot reads.
+        [property: System.Text.Json.Serialization.JsonPropertyName("baseline")] string? Baseline)
     {
         public static string Json(Guid changeRequestId, Guid? jobId, string? reasonCode = null,
-            Guid? previousApprovalRequestId = null, IReadOnlyList<string>? unappliedFields = null) =>
-            JsonSerializer.Serialize(new EventSnapshot(changeRequestId, jobId, reasonCode, previousApprovalRequestId, unappliedFields));
+            Guid? previousApprovalRequestId = null, IReadOnlyList<string>? unappliedFields = null, string? baseline = null) =>
+            JsonSerializer.Serialize(new EventSnapshot(changeRequestId, jobId, reasonCode, previousApprovalRequestId, unappliedFields, baseline));
     }
+
+    /// <summary>A value as the reviewer may see it: the last four characters, never the whole IBAN or ID.</summary>
+    private static string Mask(string? value) => string.IsNullOrEmpty(value) ? "blank" : SensitiveValueMask.MaskId(value);
 
     private static string FieldLabels(string? keys) => Zayra.Api.Controllers.DashboardController.FormatChangedFields(keys) ?? string.Empty;
 

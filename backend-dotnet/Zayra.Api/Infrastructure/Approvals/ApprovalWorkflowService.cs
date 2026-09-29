@@ -639,6 +639,13 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == approval.TenantId && x.Id == change.EmployeeId && !x.IsDeleted, cancellationToken);
         if (employee is null) throw new InvalidOperationException("Employee for this change request was not found.");
         var changes = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.ProposedChangesJson) ?? new();
+        // A change the effective-date job sent back for review: the reviewer approved what the re-review showed,
+        // so a value that moved since is refused, not overwritten (throws => nothing saved, request stays Pending;
+        // the remedy is to reject it). A change never returned for review passes straight through.
+        var review = await EmployeeChangeBaseline.CheckUnchangedSinceReviewAsync(
+            _db, _changeBaselineProtector, approval.TenantId, change.Id, employee, changes.Keys, cancellationToken);
+        if (!review.Unchanged)
+            throw new InvalidOperationException(review.Refusal(Zayra.Api.Controllers.DashboardController.FormatChangedFields));
         // Tenant + reporting-cycle check on a manager id, BEFORE anything is applied (throws ⇒ nothing saved,
         // the request stays Pending). Same rule set as every other apply path.
         if (await Zayra.Api.Application.Employees.EmployeeChangeApplier

@@ -19,4 +19,10 @@ public static class EmployeeChangeStatuses
     public const string ApprovedApplied = "ApprovedApplied";
     public const string Rejected = "Rejected";
     public const string Cancelled = "Cancelled";
+
+    /// <summary>
+    /// Closed without being applied: its approval-time values could not be verified and it was older than
+    /// <c>EmployeeEffectiveChanges:UnverifiableMaxAgeDays</c>. Terminal; the change must be submitted again.
+    /// </summary>
+    public const string Expired = "Expired";
 }

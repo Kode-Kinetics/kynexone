@@ -43,6 +43,7 @@ public sealed class EmployeeEffectiveChangePostgresTests(PostgresFixture fx)
     private const string OldIban = "SA0380000000608010167519";
     private const string NewIban = "SA5380000000006080101001";
     private const string OtherIban = "SA4420000001234567891234";
+    private const string ThirdIban = "SA0310000001234567895678";
 
     // One key ring for the approver (seals the baseline) and the job (opens it) — as in production, where
     // every instance shares the ring persisted in PostgreSQL.
@@ -107,6 +108,232 @@ public sealed class EmployeeEffectiveChangePostgresTests(PostgresFixture fx)
         await DrainAsync(sp, tenant);
         (await AuditCountAsync(tenant, changeId, EffectiveChangeJobHandler.AppliedAction)).Should().Be(1);
         (await HistoryCountAsync(tenant, employeeId, EffectiveChangeJobHandler.AppliedEventType)).Should().Be(1);
+    }
+
+    // ─────────────────────── a schedule is not drift ───────────────────────
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TwoScheduledChangesToTheSameField_BothApply_InDateOrder(bool laterDatedApprovedFirst)
+    {
+        // Review finding: the later of two approved future changes to one field always bounced to re-review,
+        // reading its own predecessor as "changed since approval". Holds whichever of the two was approved first.
+        var clock = new ManualClock(DateTimeOffset.UtcNow);
+        await using var sp = BuildInstance(clock, new RecordingNotifications());
+        var (tenant, employeeId) = await SeedAsync();
+        Guid first, second;
+        if (laterDatedApprovedFirst)
+        {
+            second = await RequestAndApproveAsync(tenant, employeeId, UtcToday.AddDays(2), "bankIban", OtherIban);
+            first = await RequestAndApproveAsync(tenant, employeeId, UtcToday.AddDays(1), "bankIban", NewIban);
+        }
+        else
+        {
+            first = await RequestAndApproveAsync(tenant, employeeId, UtcToday.AddDays(1), "bankIban", NewIban);
+            second = await RequestAndApproveAsync(tenant, employeeId, UtcToday.AddDays(2), "bankIban", OtherIban);
+        }
+
+        clock.Advance(TimeSpan.FromDays(3));
+        await sp.GetRequiredService<EffectiveChangeScheduler>().EnqueueDueAsync(default);
+        await DrainAsync(sp, tenant);
+
+        await using var db = fx.CreateDb();
+        (await db.EmployeeChangeRequests.SingleAsync(x => x.Id == first)).Status.Should().Be(EmployeeChangeStatuses.ApprovedApplied);
+        var returned = await db.AuditLogs.IgnoreQueryFilters().Where(a => a.EntityId == second.ToString()
+            && a.Action == EffectiveChangeJobHandler.ReturnedForReviewAction).Select(a => a.Metadata).FirstOrDefaultAsync();
+        (await db.EmployeeChangeRequests.SingleAsync(x => x.Id == second)).Status.Should().Be(EmployeeChangeStatuses.ApprovedApplied,
+            $"both changes were approved and the job orders them by date; returned-for-review audit: {returned}");
+        (await ProfileAsync(db, tenant, employeeId)).Iban.Should().Be(OtherIban, "the later-dated change is the one in effect");
+        (await db.Employees.SingleAsync(x => x.Id == employeeId)).BankIban.Should().Be(OtherIban);
+    }
+
+    [Fact]
+    public async Task AnImmediateChangeAfterApproval_IsStillDrift_EvenWithAnEarlierScheduledChangeApplied()
+    {
+        // The schedule allowance is narrow: only a value the job wrote for an earlier-dated scheduled change is
+        // expected. A value someone else wrote after approval still sends the later change to review.
+        var clock = new ManualClock(DateTimeOffset.UtcNow);
+        await using var sp = BuildInstance(clock, new RecordingNotifications());
+        var (tenant, employeeId) = await SeedAsync();
+        await RequestAndApproveAsync(tenant, employeeId, UtcToday.AddDays(1), "bankIban", NewIban);
+        var second = await RequestAndApproveAsync(tenant, employeeId, UtcToday.AddDays(3), "bankIban", OtherIban);
+
+        clock.Advance(TimeSpan.FromDays(2));
+        await sp.GetRequiredService<EffectiveChangeScheduler>().EnqueueDueAsync(default);
+        await DrainAsync(sp, tenant);
+        await using (var db = fx.CreateDb())
+        {
+            // After the first took effect, the account is edited directly on the payroll profile.
+            (await ProfileAsync(db, tenant, employeeId)).Iban = ThirdIban;
+            await db.SaveChangesAsync();
+        }
+        clock.Advance(TimeSpan.FromDays(2));
+        await sp.GetRequiredService<EffectiveChangeScheduler>().EnqueueDueAsync(default);
+        await DrainAsync(sp, tenant);
+
+        await using var verify = fx.CreateDb();
+        (await ProfileAsync(verify, tenant, employeeId)).Iban.Should().Be(ThirdIban);
+        (await verify.EmployeeChangeRequests.SingleAsync(x => x.Id == second)).Status.Should().Be(EmployeeChangeStatuses.PendingApproval);
+    }
+
+    // ─────────────────────── lock order ───────────────────────
+
+    [Fact]
+    public async Task JobLockOrder_MatchesTheApprovalCenterUpdateOrder()
+    {
+        // Review finding: the Approval Center's SaveChanges updates employee_change_requests →
+        // employee_payroll_profiles → employees (EF sorts independent rows by table name); the job used to lock
+        // the employee before the profile, so a bank approval committing for the same employee could deadlock.
+        var (tenant, employeeId) = await SeedAsync();
+        Guid approvalId;
+        await using (var db = fx.CreateDb())
+        {
+            var controller = HrmHierarchyTests.BuildImportControllerInternal(db, tenant);
+            controller.HttpContext.User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+            {
+                new Claim("tenant_id", tenant.ToString()), new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+                new Claim(ClaimTypes.Role, "Admin"), new Claim("permission", "employees.write"),
+                new Claim("permission", "employees.sensitive"),
+            }, "Test"));
+            (await controller.UpdateEmployee(employeeId, new EmployeeUpdateRequest(UtcToday,
+                new() { ["bankIban"] = JsonSerializer.SerializeToElement(NewIban) }), default)).Should().BeOfType<AcceptedResult>();
+            approvalId = (await db.EmployeeChangeRequests.SingleAsync(x => x.TenantId == tenant && x.EmployeeId == employeeId)).ApprovalRequestId!.Value;
+        }
+        var approvalSql = new SqlCapture();
+        await using (var db = CapturingDb(approvalSql))
+        {
+            var service = new ApprovalWorkflowService(db, new AuditService(db), new HrmHierarchyService(db, new AuditService(db)), dataProtection: Keys);
+            approvalSql.Sql.Clear();
+            await service.DecideAsync(tenant, approvalId, new ApprovalDecisionRequest("Approve", "Checked"),
+                new RequestContext("127.0.0.1", "test", Guid.NewGuid(), tenant, ["HR Manager"], []), default);
+        }
+
+        var changeId = await RequestAndApproveAsync(tenant, employeeId, UtcToday.AddDays(1), "bankIban", OtherIban);
+        var jobSql = new SqlCapture();
+        await using (var db = CapturingDb(jobSql))
+        {
+            var handler = new EffectiveChangeJobHandler(new EffectiveChangeOptions(), NullLogger<EffectiveChangeJobHandler>.Instance, Keys);
+            await db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+            {
+                await using var tx = await db.Database.BeginTransactionAsync();
+                jobSql.Sql.Clear();
+                (await handler.ProcessAsync(db, new ServiceCollection().BuildServiceProvider(), tenant, changeId, UtcToday.AddDays(2), null, default))
+                    .Outcome.Should().Be(EffectiveChangeOutcome.Applied);
+                await db.SaveChangesAsync();
+                await tx.CommitAsync();
+            });
+        }
+
+        string[] rowTables = ["employee_change_requests", "employee_payroll_profiles", "employees"];
+        var approvalOrder = approvalSql.Sql
+            .SelectMany(s => System.Text.RegularExpressions.Regex.Matches(s, "UPDATE (\\w+)").Select(m => m.Groups[1].Value))
+            .Where(rowTables.Contains).ToList();
+        var jobOrder = jobSql.Sql
+            .Where(s => s.Contains("FOR UPDATE"))
+            .Select(s => System.Text.RegularExpressions.Regex.Match(s, "FROM (\\w+)").Groups[1].Value)
+            .Where(rowTables.Contains).ToList();
+        approvalOrder.Should().Equal(rowTables, "EF's UPDATE order on the approval path");
+        jobOrder.Should().Equal(approvalOrder, "the job must take its row locks in the order approvals update the same rows");
+    }
+
+    private ZayraDbContext CapturingDb(SqlCapture capture) => new(
+        new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseNpgsql(fx.ConnectionString, o => o.EnableRetryOnFailure(5, TimeSpan.FromSeconds(5), null))
+            .AddInterceptors(RowLockingInterceptor.Instance, capture).Options);
+
+    private sealed class SqlCapture : Microsoft.EntityFrameworkCore.Diagnostics.DbCommandInterceptor
+    {
+        public List<string> Sql { get; } = [];
+        public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<System.Data.Common.DbDataReader>> ReaderExecutingAsync(
+            System.Data.Common.DbCommand command, Microsoft.EntityFrameworkCore.Diagnostics.CommandEventData eventData,
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<System.Data.Common.DbDataReader> result, CancellationToken cancellationToken = default)
+        {
+            // Registered after RowLockingInterceptor, so a tagged query is seen with its FOR UPDATE appended.
+            Sql.Add(command.CommandText);
+            return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+        }
+        public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int>> NonQueryExecutingAsync(
+            System.Data.Common.DbCommand command, Microsoft.EntityFrameworkCore.Diagnostics.CommandEventData eventData,
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            Sql.Add(command.CommandText);
+            return base.NonQueryExecutingAsync(command, eventData, result, cancellationToken);
+        }
+    }
+
+    // ─────────────────────── deploy safety ───────────────────────
+
+    [Fact]
+    public async Task UnverifiableChange_OlderThanTheMaxAge_IsExpired_NotOfferedForReapproval()
+    {
+        var clock = new ManualClock(DateTimeOffset.UtcNow);
+        var notes = new RecordingNotifications();
+        await using var sp = BuildInstance(clock, notes);
+        var (tenant, employeeId) = await SeedAsync();
+        var approver = Guid.NewGuid();
+        var changeId = await RequestAndApproveAsync(tenant, employeeId, UtcToday.AddDays(1), "bankIban", NewIban, approver);
+        await using (var db = fx.CreateDb())
+        {
+            // Production today: approved 40 days ago for a date 35 days ago, and no baseline anywhere.
+            await db.EmployeeHistories.Where(h => h.TenantId == tenant && h.EventType == EmployeeChangeBaseline.ScheduledEventType)
+                .ExecuteDeleteAsync();
+            await db.EmployeeChangeRequests.Where(x => x.Id == changeId).ExecuteUpdateAsync(s => s
+                .SetProperty(x => x.ApprovedAtUtc, DateTime.UtcNow.AddDays(-40))
+                .SetProperty(x => x.EffectiveDate, UtcToday.AddDays(-35)));
+        }
+
+        await sp.GetRequiredService<EffectiveChangeScheduler>().EnqueueDueAsync(default);
+        await DrainAsync(sp, tenant);
+
+        await using var verify = fx.CreateDb();
+        var change = await verify.EmployeeChangeRequests.SingleAsync(x => x.Id == changeId);
+        change.Status.Should().Be("Expired");
+        change.RejectionReason.Should().Contain("Submit the change again");
+        (await ProfileAsync(verify, tenant, employeeId)).Iban.Should().Be(OldIban);
+        (await verify.ApprovalRequests.CountAsync(a => a.TenantId == tenant && a.Status == "Pending"))
+            .Should().Be(0, "an unverifiable months-old IBAN is never put in front of an approver again");
+        (await SingleAuditAsync(tenant, changeId, "employee.change_effective_expired")).Metadata.Should().Contain("unverifiable_too_old");
+        notes.Sent.Should().ContainSingle(n => n.UserId == approver && n.Title.Contains("expired"));
+    }
+
+    [Fact]
+    public async Task ApprovingAReReview_IsRefused_WhenTheValueMovedAfterTheReReviewWasRaised()
+    {
+        var clock = new ManualClock(DateTimeOffset.UtcNow);
+        await using var sp = BuildInstance(clock, new RecordingNotifications());
+        var (tenant, employeeId) = await SeedAsync();
+        var changeId = await RequestAndApproveAsync(tenant, employeeId, UtcToday.AddDays(1), "bankIban", NewIban);
+        await using (var db = fx.CreateDb())
+        {
+            (await ProfileAsync(db, tenant, employeeId)).Iban = OtherIban;   // drift → re-review
+            await db.SaveChangesAsync();
+        }
+        clock.Advance(TimeSpan.FromDays(2));
+        await sp.GetRequiredService<EffectiveChangeScheduler>().EnqueueDueAsync(default);
+        await DrainAsync(sp, tenant);
+
+        Guid reviewId;
+        await using (var db = fx.CreateDb())
+        {
+            reviewId = (await db.EmployeeChangeRequests.SingleAsync(x => x.Id == changeId)).ApprovalRequestId!.Value;
+            // While the re-review waits, the account moves again.
+            (await ProfileAsync(db, tenant, employeeId)).Iban = ThirdIban;
+            await db.SaveChangesAsync();
+            await db.EmployeeChangeRequests.Where(x => x.Id == changeId)
+                .ExecuteUpdateAsync(s => s.SetProperty(x => x.EffectiveDate, UtcToday));
+        }
+        await using (var db = fx.CreateDb())
+        {
+            var service = new ApprovalWorkflowService(db, new AuditService(db), new HrmHierarchyService(db, new AuditService(db)), dataProtection: Keys);
+            var refused = await Assert.ThrowsAsync<InvalidOperationException>(() => service.DecideAsync(tenant, reviewId,
+                new ApprovalDecisionRequest("Approve", "Looks fine"), new RequestContext("127.0.0.1", "test", Guid.NewGuid(), tenant, ["HR Manager"], []), default));
+            refused.Message.Should().Contain("IBAN changed after this re-review was raised");
+        }
+        await using var verify = fx.CreateDb();
+        (await ProfileAsync(verify, tenant, employeeId)).Iban.Should().Be(ThirdIban, "the newer value is not overwritten by a stale re-review");
+        (await verify.ApprovalRequests.SingleAsync(x => x.Id == reviewId)).Status.Should().Be("Pending", "the reviewer can still reject it");
+        (await verify.EmployeeChangeRequests.SingleAsync(x => x.Id == changeId)).Status.Should().Be(EmployeeChangeStatuses.PendingApproval);
     }
 
     // ─────────────────────── exactly once ───────────────────────
@@ -221,7 +448,11 @@ public sealed class EmployeeEffectiveChangePostgresTests(PostgresFixture fx)
             var review = await db.ApprovalRequests.SingleAsync(x => x.Id == reviewApprovalId);
             review.Status.Should().Be("Pending");
             review.EntityId.Should().Be(changeId.ToString());
-            review.Title.Should().Contain("re-review").And.Contain("IBAN changed after this change was approved");
+            // The request says when it was approved, for which date, why, and the value on file against the
+            // approved one — masked to the last four characters.
+            review.Title.Should().Contain("re-review").And.Contain("IBAN changed since approval")
+                .And.Contain($"effective {UtcToday.AddDays(1):yyyy-MM-dd}").And.Contain("IBAN now ***1234, approved ***1001")
+                .And.NotContain(OtherIban).And.NotContain(NewIban);
             (await db.ApprovalRequests.SingleAsync(x => x.Id == originalApprovalId)).Status.Should().Be("Approved");
         }
         var audit = await SingleAuditAsync(tenant, changeId, EffectiveChangeJobHandler.ReturnedForReviewAction);
