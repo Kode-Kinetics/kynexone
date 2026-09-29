@@ -198,6 +198,26 @@ test('ambiguous gateway failure locks the one-use form against replay', async ({
   expect(posts).toBe(1);
 });
 
+test('impersonate is stripped by the server before the login page is rendered', async ({ request }) => {
+  // The page's own strip runs after hydration, so without middleware the browser had already
+  // loaded, rendered and recorded the credential-bearing URL. This proves the server answers
+  // first, keeps every other parameter, and touches no other route.
+  const res = await request.get('/login?workspace=acme&impersonate=attacker-jwt&from=%2Fpeople', {
+    maxRedirects: 0,
+  });
+  expect(res.status()).toBe(307);
+  const location = new URL(res.headers()['location'] ?? '', 'http://origin.invalid');
+  expect(location.pathname).toBe('/login');
+  expect(location.searchParams.has('impersonate')).toBe(false);
+  expect(location.searchParams.get('workspace')).toBe('acme');
+  expect(location.searchParams.get('from')).toBe('/people');
+
+  const clean = await request.get('/login?workspace=acme', { maxRedirects: 0 });
+  expect(clean.status(), 'a login URL without impersonate must not be redirected').toBe(200);
+  const other = await request.get('/platform/login?impersonate=x', { maxRedirects: 0 });
+  expect(other.status(), 'the middleware matcher is /login only').toBe(200);
+});
+
 test('impersonate query is inert and unsafe return paths remain on the login surface', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('zayra_access_token', 'existing-access'));
   await page.goto('/login?workspace=acme&impersonate=attacker-jwt&from=javascript:alert(1)');
