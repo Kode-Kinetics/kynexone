@@ -174,7 +174,9 @@ public class SyntheticWorkforcePlanningSimulationTests
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
-        var principal = Principal(tenantId, "reports.read", "reports.schedule");
+        // payroll.read: the scheduled report is the payroll summary, and scheduling is refused to anyone
+        // who could not open it by hand.
+        var principal = Principal(tenantId, "reports.read", "reports.schedule", "payroll.read");
         var reports = new ReportsController(db, new DataScopeService(db))
         {
             ControllerContext = Context(principal)
