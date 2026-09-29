@@ -22,6 +22,8 @@ import {
 } from '../api/payroll';
 import { identityAuditApi } from '../api/identity';
 import { formatCalendarDate } from '../lib/calendarDate';
+import { commonPayrollCurrency, resolvePayrollRunCurrency, type CompaniesLoadState } from '../lib/payrollCurrency';
+import { filterPayrollInsightsForReadiness, paymentReadinessHeadline, prerequisiteLabel, type PaymentPrerequisites, type PayrollReadinessWithPrerequisites } from '../lib/payrollPrerequisites';
 import client, { notifyApiError } from '../api/client';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { InfoTip } from '../components/InfoTip';
@@ -211,10 +213,141 @@ function PayrollSetupWizard({ readiness, onNavigate }: { readiness: PayrollReadi
   );
 }
 
+// ── Payment prerequisites (who can actually be paid) ──────────────────────────
+// Salary coverage says who can be CALCULATED. This panel says who can be PAID, per employee, before a
+// run exists — the same gaps the run validation will later raise. Blocking gaps and recommendations
+// are separate lists; nothing here is inferred on the client.
+
+function PrerequisiteRow({ label, count, nextAction, danger, action }: {
+  label: string; count?: number; nextAction: string; danger: boolean; action?: { label: string; onClick: () => void };
+}) {
+  return (
+    <li className="flex flex-wrap items-center gap-x-3 gap-y-1 px-5 py-2.5">
+      <span className={`w-12 shrink-0 text-sm font-semibold tabular-nums ${danger ? 'text-rose-700 dark:text-rose-300' : 'text-amber-700 dark:text-amber-300'}`}>
+        {count !== undefined
+          ? count.toLocaleString('en-US')
+          : <Building2 className="h-4 w-4" aria-label="Company setting" />}
+      </span>
+      <span className="min-w-0 flex-1 text-sm text-slate-800 dark:text-slate-100">
+        {label}
+        <span className="block text-xs text-slate-500 dark:text-slate-400">Next: {nextAction}</span>
+      </span>
+      {action && (
+        <button type="button" onClick={action.onClick} className={btn.sm}>{action.label} <ChevronRight className="h-3 w-3" /></button>
+      )}
+    </li>
+  );
+}
+
+function PaymentPrerequisitesPanel({ prerequisites, onNavigate }: { prerequisites: PaymentPrerequisites; onNavigate: (t: Tab) => void }) {
+  const headline = paymentReadinessHeadline(prerequisites);
+  if (headline.tone === 'unknown' || headline.tone === 'empty') return null;
+  const tone = {
+    blocked: { box: 'border-rose-200 dark:border-rose-500/30', icon: 'text-rose-600 dark:text-rose-400' },
+    attention: { box: 'border-amber-200 dark:border-amber-500/30', icon: 'text-amber-600 dark:text-amber-400' },
+    clear: { box: 'border-emerald-200 dark:border-emerald-500/30', icon: 'text-emerald-600 dark:text-emerald-400' },
+  }[headline.tone];
+  // Salary gaps are fixed on a payroll tab; every other gap lives on the employee record.
+  const salaryAction = { label: 'Assign salaries', onClick: () => onNavigate('employee-salary') };
+  const hasBlocking = prerequisites.companyBlocking.length > 0 || prerequisites.blocking.length > 0;
+  const hasRecommended = prerequisites.companyRecommended.length > 0 || prerequisites.recommended.length > 0;
+  const listed = prerequisites.employees.length;
+
+  return (
+    <section aria-label="Payment readiness" className={`surface overflow-hidden border ${tone.box}`}>
+      <div className="flex items-start gap-3 border-b border-slate-100 px-5 py-4 dark:border-white/10">
+        {headline.tone === 'clear'
+          ? <CheckCircle2 className={`mt-0.5 h-5 w-5 shrink-0 ${tone.icon}`} />
+          : <AlertTriangle className={`mt-0.5 h-5 w-5 shrink-0 ${tone.icon}`} />}
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{headline.title}</h3>
+          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{headline.detail}</p>
+          <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
+            Checked for {prerequisites.evaluatedEmployees.toLocaleString('en-US')} active employees against salary assignments, payroll profiles and IBANs, statutory readiness and nationality
+            {prerequisites.attendanceChecked ? ', and attendance for this period' : ' (attendance is checked once the period starts)'} — the rules the run validation applies. One employee can have more than one gap.
+          </p>
+        </div>
+      </div>
+
+      {hasBlocking && (
+        <div>
+          <p className="bg-rose-50 px-5 py-2 text-xs font-semibold uppercase tracking-wide text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">Blocks payment</p>
+          <ul className="divide-y divide-slate-100 dark:divide-white/5">
+            {prerequisites.companyBlocking.map(c => (
+              <PrerequisiteRow key={`c-${c.companyId ?? 'none'}-${c.code}`} danger label={c.companyName ? `${c.companyName}: ${c.label}` : c.label} nextAction={c.nextAction} />
+            ))}
+            {prerequisites.blocking.map(b => (
+              <PrerequisiteRow key={b.code} danger label={b.label} count={b.count} nextAction={b.nextAction}
+                action={b.code === 'MISSING_SALARY_STRUCTURE' ? salaryAction : undefined} />
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {hasRecommended && (
+        <div>
+          <p className="bg-amber-50 px-5 py-2 text-xs font-semibold uppercase tracking-wide text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">Recommended — does not block approval</p>
+          <ul className="divide-y divide-slate-100 dark:divide-white/5">
+            {prerequisites.companyRecommended.map(c => (
+              <PrerequisiteRow key={`c-${c.companyId ?? 'none'}-${c.code}`} danger={false} label={c.companyName ? `${c.companyName}: ${c.label}` : c.label} nextAction={c.nextAction} />
+            ))}
+            {prerequisites.recommended.map(r => (
+              <PrerequisiteRow key={r.code} danger={false} label={r.label} count={r.count} nextAction={r.nextAction} />
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {listed > 0 && (
+        <details className="border-t border-slate-100 dark:border-white/10">
+          <summary className="cursor-pointer px-5 py-3 text-xs font-medium text-sapphire dark:text-cyanAccent">
+            Show each employee ({listed.toLocaleString('en-US')}{prerequisites.employeesTruncated ? ', the first 500 — the counts above include everyone' : ''})
+          </summary>
+          <div className="max-h-96 overflow-auto">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-slate-50 text-slate-500 dark:bg-slate-900 dark:text-slate-400">
+                <tr>
+                  <th scope="col" className="px-5 py-2 text-start font-medium">Employee</th>
+                  <th scope="col" className="px-3 py-2 text-start font-medium">Blocks payment</th>
+                  <th scope="col" className="px-3 py-2 text-start font-medium">Recommended</th>
+                  <th scope="col" className="px-5 py-2 text-end font-medium">Next action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-white/5">
+                {prerequisites.employees.map(e => (
+                  <tr key={e.employeeId}>
+                    <td className="px-5 py-2">
+                      <span className="font-mono text-slate-500 dark:text-slate-400">{e.employeeCode}</span>{' '}
+                      <span className="text-slate-800 dark:text-slate-100">{e.employeeName}</span>
+                    </td>
+                    <td className="px-3 py-2 text-rose-700 dark:text-rose-300">{e.blocking.map(code => prerequisiteLabel(prerequisites, code)).join('; ') || '—'}</td>
+                    <td className="px-3 py-2 text-amber-700 dark:text-amber-300">{e.recommended.map(code => prerequisiteLabel(prerequisites, code)).join('; ') || '—'}</td>
+                    <td className="px-5 py-2 text-end">
+                      {e.blocking.length === 1 && e.blocking[0] === 'MISSING_SALARY_STRUCTURE' ? (
+                        <button type="button" onClick={salaryAction.onClick} className="font-medium text-sapphire hover:underline dark:text-cyanAccent">Assign salary</button>
+                      ) : (
+                        <Link href={`/people?employeeId=${e.employeeId}`} className="font-medium text-sapphire hover:underline dark:text-cyanAccent">
+                          Open {e.employeeCode}
+                        </Link>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      )}
+    </section>
+  );
+}
+
 // ── Company Bird's-Eye Table ───────────────────────────────────────────────────
 
 function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOverview; onDrillDown: (company: PayrollCompanySummary) => void }) {
-  const { currencyCode } = useTenantSettings();
+  // Group totals add every company's run together, so they only have one currency when every
+  // company with a run pays in the same one. A mixed group is read per company row instead.
+  const groupCurrency = commonPayrollCurrency(overview.companies.filter((company) => company.hasPayrollRun));
   return (
     <div className="surface overflow-hidden">
       <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5 dark:border-white/10">
@@ -308,8 +441,16 @@ function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOver
         <div className="border-t border-slate-100 bg-slate-50 px-5 py-3 dark:border-white/5 dark:bg-white/3">
           <div className="flex items-center gap-8 text-xs">
             <span className="text-slate-500 dark:text-slate-400">Group totals:</span>
-            <span className="font-semibold text-slate-800 dark:text-white">Gross: {fmtAmt(overview.totalGrossPayroll, currencyCode)}</span>
-            <span className="font-semibold text-emerald-600 dark:text-emerald-400">Net: {fmtAmt(overview.totalNetPayroll, currencyCode)}</span>
+            {groupCurrency ? (
+              <>
+                <span className="font-semibold text-slate-800 dark:text-white">Gross: {fmtAmt(overview.totalGrossPayroll, groupCurrency)}</span>
+                <span className="font-semibold text-emerald-600 dark:text-emerald-400">Net: {fmtAmt(overview.totalNetPayroll, groupCurrency)}</span>
+              </>
+            ) : overview.companies.some((company) => company.hasPayrollRun) ? (
+              <span className="font-semibold text-amber-700 dark:text-amber-300">Companies pay in different currencies — read the totals per company above</span>
+            ) : (
+              <span className="text-slate-500 dark:text-slate-400">No payroll run in this period</span>
+            )}
             {overview.totalValidationErrors > 0 && <span className="font-semibold text-rose-600 dark:text-rose-400">{overview.totalValidationErrors} errors</span>}
             {overview.totalPendingApprovals > 0 && <span className="font-semibold text-amber-600 dark:text-amber-400">{overview.totalPendingApprovals} pending approvals</span>}
           </div>
@@ -321,7 +462,7 @@ function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOver
 
 // ── AI Insights Panel ─────────────────────────────────────────────────────────
 
-function AiInsightsPanel() {
+function AiInsightsPanel({ readiness }: { readiness: PayrollReadiness | null }) {
   const [insights, setInsights] = useState<AIInsight[]>([]);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
@@ -344,7 +485,9 @@ function AiInsightsPanel() {
     Info: 'text-blue-600 dark:text-blue-400',
   };
 
-  const state = payrollInsightState(loading, failed, insights.length);
+  // A salary-gap insight the live readiness has already disproved is history, not a current finding.
+  const visibleInsights = filterPayrollInsightsForReadiness(insights, readiness);
+  const state = payrollInsightState(loading, failed, visibleInsights.length);
   if (state === 'loading') return <div className="surface h-16 animate-pulse" aria-label="Loading payroll insights" />;
   if (state === 'empty' || state === 'unavailable') return (
     <div role={state === 'unavailable' ? 'alert' : 'status'} className={`surface flex items-center gap-3 p-5 ${state === 'unavailable' ? 'border-amber-300 dark:border-amber-500/30' : ''}`}>
@@ -358,10 +501,10 @@ function AiInsightsPanel() {
       <div className="flex items-center gap-2 border-b border-slate-100 px-5 py-3.5 dark:border-white/10">
         <Lightbulb className="h-4 w-4 text-sapphire dark:text-cyanAccent" />
         <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Insights</h3>
-        <span className="ms-auto rounded-full bg-rose-100 px-2 py-0.5 text-xs font-semibold text-rose-600 dark:bg-rose-500/20 dark:text-rose-400">{insights.length} active</span>
+        <span className="ms-auto rounded-full bg-rose-100 px-2 py-0.5 text-xs font-semibold text-rose-600 dark:bg-rose-500/20 dark:text-rose-400">{visibleInsights.length} active</span>
       </div>
       <div className="divide-y divide-slate-100 dark:divide-white/5">
-        {insights.map(ins => (
+        {visibleInsights.map(ins => (
           <div key={ins.id} className={`mx-4 my-2 rounded-xl border p-3.5 ${severityStyle[ins.severity] ?? severityStyle.Info}`}>
             <div className="flex items-start gap-3">
               <AlertTriangle className={`mt-0.5 h-4 w-4 shrink-0 ${severityIcon[ins.severity] ?? severityIcon.Info}`} />
@@ -385,13 +528,12 @@ function AiInsightsPanel() {
 
 function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
   const now = new Date();
-  const { currencyCode } = useTenantSettings();
   const [selectedCompanyId, setSelectedCompanyId] = useState<string>('all');
   const [selectedYear, setSelectedYear] = useState(now.getFullYear());
   const [selectedMonth, setSelectedMonth] = useState(now.getMonth() + 1);
   const [companies, setCompanies] = useState<PayrollCompany[]>([]);
   const [overview, setOverview] = useState<PayrollOverview | null>(null);
-  const [readiness, setReadiness] = useState<PayrollReadiness | null>(null);
+  const [readiness, setReadiness] = useState<PayrollReadinessWithPrerequisites | null>(null);
   const [drillDown, setDrillDown] = useState<PayrollCompanySummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [summary, setSummary] = useState<PayrollSummary | null>(null);
@@ -421,6 +563,13 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
   const isNotConfigured = !loading && readiness && readiness.completionPercent < 30;
   const hasPayrollRun = overview?.companies.some((company) => company.hasPayrollRun) ?? false;
   const periodState = payrollPeriodState(hasPayrollRun, overview !== null);
+  // The KPI cards add up every company in scope; label them only with a currency they all share.
+  const overviewCurrency = overview
+    ? selectedCompanyId === 'all'
+      ? commonPayrollCurrency(overview.companies.filter((company) => company.hasPayrollRun))
+      : commonPayrollCurrency(overview.companies.filter((company) => company.companyId === selectedCompanyId))
+    : null;
+  const overviewAmount = (value: number) => overviewCurrency ? fmtAmt(value, overviewCurrency) : 'Mixed currencies';
 
   const years = Array.from({ length: 3 }, (_, i) => now.getFullYear() - i);
 
@@ -483,12 +632,17 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
         </div>
       )}
 
+      {/* ── Who can actually be paid (exceptions first) ── */}
+      {!loading && readiness?.paymentPrerequisites && (
+        <PaymentPrerequisitesPanel prerequisites={readiness.paymentPrerequisites} onNavigate={onNavigate} />
+      )}
+
       {/* ── Summary KPIs ── */}
       {!loading && overview && (
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <KpiCard label="Active Employees" value={overview.totalActiveEmployees.toLocaleString()} icon={Users} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
-          <KpiCard label="Gross Payroll" value={periodState === 'no-run' ? 'No run' : fmtAmt(overview.totalGrossPayroll, currencyCode)} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
-          <KpiCard label="Net Payroll" value={periodState === 'no-run' ? 'No run' : fmtAmt(overview.totalNetPayroll, currencyCode)} icon={TrendingUp} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
+          <KpiCard label="Gross Payroll" value={periodState === 'no-run' ? 'No run' : overviewAmount(overview.totalGrossPayroll)} sub={periodState !== 'no-run' && !overviewCurrency ? 'See each company below' : undefined} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
+          <KpiCard label="Net Payroll" value={periodState === 'no-run' ? 'No run' : overviewAmount(overview.totalNetPayroll)} sub={periodState !== 'no-run' && !overviewCurrency ? 'See each company below' : undefined} icon={TrendingUp} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
           <KpiCard label="Locked Runs YTD" value={summary?.lockedRuns ?? '—'} icon={Lock} color="bg-violet-100 text-violet-600 dark:bg-violet-500/20 dark:text-violet-400" />
         </div>
       )}
@@ -500,7 +654,7 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
       )}
 
       {/* ── Insights Panel ── */}
-      <AiInsightsPanel />
+      <AiInsightsPanel readiness={readiness} />
 
       {/* ── Drill-down panel (when a company row is clicked) ── */}
       {drillDown && (
@@ -794,7 +948,11 @@ function SalaryStructuresTab() {
           entityName="Salary Structures"
           onExport={salaryStructuresImportExport.export}
           onDownloadTemplate={salaryStructuresImportExport.template}
-          onImport={salaryStructuresImportExport.import}
+          onImport={async (csv) => {
+            const result = await salaryStructuresImportExport.import(csv);
+            load(); // Refresh separately: a list error must not reclassify a committed import.
+            return result;
+          }}
         />
         <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> New Structure</button>
       </div>
@@ -1733,6 +1891,56 @@ function AcknowledgementPanel({
   );
 }
 
+// ── Run currency ──────────────────────────────────────────────────────────────
+// A run is denominated in its employing company's currency, never the tenant display default. Every
+// view that prints one run's amounts resolves it here; until it is confirmed the amounts carry no
+// currency label (and the approval view withholds approval).
+
+function useRunCurrency(run: PayrollRun | undefined) {
+  const [companies, setCompanies] = useState<PayrollCompany[]>([]);
+  const [companiesState, setCompaniesState] = useState<CompaniesLoadState>('loading');
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setCompaniesState('loading');
+    payrollApi.listCompanies()
+      .then(items => { if (active) { setCompanies(items); setCompaniesState('loaded'); } })
+      .catch(() => { if (active) { setCompanies([]); setCompaniesState('failed'); } });
+    return () => { active = false; };
+  }, [attempt]);
+  const resolution = resolvePayrollRunCurrency(run, companies, companiesState);
+  const amount = (n: number) => resolution.status === 'resolved'
+    ? fmtAmt(n, resolution.currency)
+    : `${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (currency not confirmed)`;
+  return { resolution, companiesState, amount, retry: () => setAttempt(n => n + 1) };
+}
+
+function RunCurrencyNotice({ resolution, companiesState, onRetry, blocksApproval }: {
+  resolution: ReturnType<typeof useRunCurrency>['resolution'];
+  companiesState: CompaniesLoadState;
+  onRetry: () => void;
+  blocksApproval?: boolean;
+}) {
+  if (resolution.status === 'loading') return (
+    <p className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+      Confirming the employing company's currency…
+    </p>
+  );
+  if (resolution.status !== 'unavailable') return null;
+  return (
+    <div role="alert" className="flex flex-wrap items-start gap-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700 dark:border-rose-400/20 dark:bg-rose-500/10 dark:text-rose-400">
+      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+      <span className="min-w-0 flex-1">{resolution.reason}{blocksApproval ? ' Approval is unavailable until the currency is confirmed.' : ''}</span>
+      {companiesState === 'failed' && (
+        <button type="button" className={btn.sm} onClick={onRetry}>
+          <RefreshCw className="h-3.5 w-3.5" /> Retry
+        </button>
+      )}
+    </div>
+  );
+}
+
 function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
   selectedRunId?: string;
   isAdmin: boolean;
@@ -1743,7 +1951,6 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
   const [runId, setRunId] = useState(selectedRunId ?? '');
   const [approvals, setApprovals] = useState<PayrollApproval[]>([]);
   const [notes, setNotes] = useState('');
-  const { currencyCode } = useTenantSettings();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -1790,13 +1997,16 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
   }, [runId, refreshGate]);
 
   const selectedRun = runs.find(r => r.id === runId);
+  // Until the run's currency is confirmed its amounts carry no currency label and approval is withheld.
+  const { resolution: runCurrency, companiesState, amount: runAmount, retry: retryRunCurrency } = useRunCurrency(selectedRun);
+  const currencyConfirmed = runCurrency.status === 'resolved';
 
   const excludedCount = population?.excludedCount ?? 0;
   const overriddenCount = overrideReport?.overrides.length ?? 0;
   const needsExcludedAck = excludedCount > 0;
   const needsOverriddenAck = overriddenCount > 0;
   const gateSatisfied =
-    (!needsExcludedAck || ackExcluded) && (!needsOverriddenAck || ackOverridden) && !gateLoading && !gateError;
+    (!needsExcludedAck || ackExcluded) && (!needsOverriddenAck || ackOverridden) && !gateLoading && !gateError && currencyConfirmed;
 
   const handleApprove = async () => {
     if (!runId) return;
@@ -1884,11 +2094,16 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
         <div className="surface p-5 space-y-4">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <p className="text-sm font-semibold text-slate-900 dark:text-white">Payroll Run — {MONTHS[selectedRun.month - 1]} {selectedRun.year}</p>
-              <p className="text-xs text-slate-400">{selectedRun.employeeCount} employees · Gross {fmtAmt(selectedRun.totalGrossSalary, currencyCode)} · Net {fmtAmt(selectedRun.totalNetSalary, currencyCode)}</p>
+              <p className="text-sm font-semibold text-slate-900 dark:text-white">
+                Payroll Run — {MONTHS[selectedRun.month - 1]} {selectedRun.year}
+                {runCurrency.status === 'resolved' && runCurrency.companyName ? ` · ${runCurrency.companyName}` : ''}
+              </p>
+              <p className="text-xs text-slate-400">{selectedRun.employeeCount} employees · Gross {runAmount(selectedRun.totalGrossSalary)} · Net {runAmount(selectedRun.totalNetSalary)}</p>
             </div>
             <StatusBadge status={selectedRun.status} />
           </div>
+
+          <RunCurrencyNotice resolution={runCurrency} companiesState={companiesState} onRetry={retryRunCurrency} blocksApproval />
 
           {canApproveStep1 && !canFinanceApproveDirectly && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700 dark:border-amber-400/20 dark:bg-amber-500/10 dark:text-amber-400">
@@ -1952,7 +2167,9 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
                   className={btn.primary}
                   onClick={handleApprove}
                   disabled={saving || !gateSatisfied}
-                  title={gateSatisfied ? undefined : 'Acknowledge the exclusions and overrides above before approving.'}
+                  title={gateSatisfied ? undefined : !currencyConfirmed
+                    ? "The run's currency must be confirmed before it can be approved."
+                    : 'Acknowledge the exclusions and overrides above before approving.'}
                 >
                   <CheckCircle2 className="h-4 w-4" />
                   {saving ? 'Saving…' : canFinanceApproveDirectly || canApproveStep2 ? 'Approve — Final' : 'Approve → Send to Finance'}
@@ -2490,6 +2707,7 @@ function ReportsTab() {
   const [summary, setSummary] = useState<PayrollSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const { currencyCode } = useTenantSettings();
+  const registerCurrency = useRunCurrency(runs.find(r => r.id === runId));
 
   useEffect(() => {
     payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {});
@@ -2531,9 +2749,10 @@ function ReportsTab() {
           <>
             <div className="mt-4 rounded-lg bg-slate-50 px-4 py-3 dark:bg-white/5">
               <p className="text-sm text-slate-600 dark:text-slate-400">
-                {slips.length} employees · Gross {fmtAmt(slips.reduce((s, x) => s + x.grossSalary, 0), currencyCode)} · Net {fmtAmt(slips.reduce((s, x) => s + x.netSalary, 0), currencyCode)}
+                {slips.length} employees · Gross {registerCurrency.amount(slips.reduce((s, x) => s + x.grossSalary, 0))} · Net {registerCurrency.amount(slips.reduce((s, x) => s + x.netSalary, 0))}
               </p>
             </div>
+            <RunCurrencyNotice resolution={registerCurrency.resolution} companiesState={registerCurrency.companiesState} onRetry={registerCurrency.retry} />
             <div className="mt-4 overflow-x-auto">
               <table className="w-full min-w-[640px] text-sm">
                 <thead>
@@ -2703,8 +2922,8 @@ function EOSBTab() {
       <div className="surface p-4 space-y-3">
         <p className="text-sm font-semibold text-slate-800 dark:text-white">EOSB / Gratuity Calculator</p>
         <p className="text-xs text-slate-500 dark:text-slate-400">
-          Calculates End-of-Service Benefit per UAE Labour Law (21 days/year for first 5 years, 30 days/year thereafter).
-          Rates are configurable in Setup → GCC Settings.
+          Calculates End-of-Service Benefit under the rules of the employee’s employing-company country.
+          Statutory rates and wage-basis rules come from that country pack and your tenant settings (Setup → GCC Settings).
         </p>
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -2875,7 +3094,8 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
   const [runId, setRunId] = useState(selectedRunId ?? '');
   const [report, setReport] = useState<PayrollReconciliation | null>(null);
   const [loading, setLoading] = useState(false);
-  const { currencyCode } = useTenantSettings();
+  const [error, setError] = useState('');
+  const runCurrency = useRunCurrency(runs.find(r => r.id === runId));
 
   useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
   useEffect(() => { if (selectedRunId) setRunId(selectedRunId); }, [selectedRunId]);
@@ -2883,7 +3103,22 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
   const load = async () => {
     if (!runId) return;
     setLoading(true);
-    payrollApi.reconciliation(runId).then(r => setReport(r)).catch(() => {}).finally(() => setLoading(false));
+    setError('');
+    try {
+      setReport(await payrollApi.reconciliation(runId));
+    } catch (e: unknown) {
+      // A failed reconciliation used to leave the previous report (or nothing) on screen, silently.
+      setReport(null);
+      const response = (e as { response?: { status?: number; data?: { message?: string; error?: string } } })?.response;
+      setError(
+        response?.data?.message
+        ?? (response?.status === 403
+          ? 'You do not have permission to run payroll reconciliation.'
+          : 'Payroll reconciliation could not be loaded. Try again.'),
+      );
+    } finally {
+      setLoading(false);
+    }
   };
 
   const fmt = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2 });
@@ -2906,6 +3141,14 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
         </button>
       </div>
 
+      {error && (
+        <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300">
+          {error}
+        </div>
+      )}
+
+      {report && <RunCurrencyNotice resolution={runCurrency.resolution} companiesState={runCurrency.companiesState} onRetry={runCurrency.retry} />}
+
       {report && (
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -2920,9 +3163,9 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
               {[{ label: 'Gross', prior: report.priorTotalGross, current: report.currentTotalGross }, { label: 'Net', prior: report.priorTotalNet, current: report.currentTotalNet }].map(m => (
                 <div key={m.label} className="p-4">
                   <p className="text-xs text-slate-400">Total {m.label}</p>
-                  <p className="text-lg font-bold text-slate-900 dark:text-white">{fmtAmt(m.current, currencyCode)}</p>
+                  <p className="text-lg font-bold text-slate-900 dark:text-white">{runCurrency.amount(m.current)}</p>
                   <p className={`text-xs ${m.current >= m.prior ? 'text-emerald-500' : 'text-rose-500'}`}>
-                    {m.current >= m.prior ? '+' : ''}{fmtAmt(m.current - m.prior, currencyCode)} vs {report.priorPeriod ?? 'prior period'}
+                    {m.current >= m.prior ? '+' : ''}{runCurrency.amount(m.current - m.prior)} vs {report.priorPeriod ?? 'prior period'}
                   </p>
                 </div>
               ))}

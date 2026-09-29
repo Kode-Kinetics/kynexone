@@ -1158,6 +1158,21 @@ public class DashboardController : ControllerBase
                 .Distinct()
                 .Count() < QiwaRequiredDocsLower.Length, ct);
 
+        // Payroll prerequisites are LIVE state, read from the same tables payroll readiness reads, for
+        // the caller's own population. The rules-engine "MissingSalarySetup" insight used to be the only
+        // signal: it stays open after HR fixes the assignments (so the dashboard kept saying nobody had a
+        // salary while Payroll showed 100% coverage), and it never covered bank details at all.
+        // Same definitions as GET /api/payroll/readiness for the current month: a salary counts when it
+        // is active and effective by month end; bank details count when a live payroll profile carries
+        // an IBAN (its format is checked there, per employee).
+        var monthEnd = new DateOnly(today.Year, today.Month, 1).AddMonths(1).AddDays(-1);
+        var missingSalaryAssignments = await empQ.CountAsync(e =>
+            !_db.EmployeeSalaryStructures.Any(s => s.TenantId == tenantId
+                && s.EmployeeId == e.Id && s.IsActive && s.EffectiveDate <= monthEnd), ct);
+        var missingBankDetails = await empQ.CountAsync(e =>
+            !_db.EmployeePayrollProfiles.Any(p => p.TenantId == tenantId
+                && p.EmployeeId == e.Id && !p.IsDeleted && p.Iban != null && p.Iban.Trim() != ""), ct);
+
         return new DashboardKpisDto(
             counters?.PendingLeave ?? 0,
             counters?.PendingCorrections ?? 0,
@@ -1165,7 +1180,9 @@ public class DashboardController : ControllerBase
             counters?.ExpiringDocuments ?? 0,
             counters?.ExpiredDocuments ?? 0,
             missingDocuments,
-            saudizationEnabled);
+            saudizationEnabled,
+            missingSalaryAssignments,
+            missingBankDetails);
     }
 
     private static DashboardFullDto EmptyFull(DashboardKpisDto kpis) => new(
@@ -1299,7 +1316,11 @@ public record DashboardKpisDto(
     int ExpiringDocuments,
     int ExpiredDocuments,
     int MissingDocuments,
-    bool QiwaEnabled);
+    bool QiwaEnabled,
+    // Live payroll prerequisites for the caller's population (see BuildKpis). Additive: older
+    // clients ignore them, and they default to 0 where the KPIs are not computed (no tenant).
+    int MissingSalaryAssignments = 0,
+    int MissingBankDetails = 0);
 
 // ── Analytics (additive, v5) ─────────────────────────────────────────────────
 

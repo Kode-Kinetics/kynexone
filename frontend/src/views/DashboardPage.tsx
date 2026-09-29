@@ -22,6 +22,7 @@ import type { DashboardFull } from '../api/dashboard';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
+import { useAuth } from '../contexts/AuthContext';
 import { useWorkforceFindings } from '../hooks/useWorkforceFindings';
 import { useMediaQuery } from '../hooks/useMediaQuery';
 import { useT } from '../hooks/useT';
@@ -88,6 +89,7 @@ export function DashboardPage() {
   const clock = useTenantClock();
   const { companies, selectedCompanyId, isGroupScope, companyVersion } = useCompany();
   const { isFeatureEnabled } = useFeatureFlags();
+  const { hasPermission } = useAuth();
   const findings = useWorkforceFindings();
 
   const [data, setData] = useState<DashboardFull | null>(null);
@@ -124,7 +126,12 @@ export function DashboardPage() {
 
   const payrollEnabled = isFeatureEnabled('payroll') || !!data?.overview.payrollSummary || (data?.payrollTrends.some((p) => p.totalNet > 0) ?? false);
   const hour = tenantHour(clock.tz, clock.now);
-  const attention = useMemo(() => buildAttention(data, findings.insights), [data, findings.insights]);
+  // Payroll readiness items link to /payroll, so they are only raised for someone who can open it.
+  const showPayrollAttention = payrollEnabled && hasPermission('payroll.read');
+  const attention = useMemo(
+    () => buildAttention(data, findings.insights, Date.now(), { payroll: showPayrollAttention }),
+    [data, findings.insights, showPayrollAttention],
+  );
   // Tiles show the last six months; the hero uses the full year.
   const tileData = useMemo(() => (data ? { ...data, trends: data.trends.slice(-6) } : null), [data]);
 
