@@ -5,6 +5,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Recruitment;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Notifications;
+using Zayra.Api.Infrastructure.Recruitment;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Recruitment;
@@ -157,24 +158,20 @@ public class ApplicationsController : ControllerBase
         var nextStage = RecruitmentStages.Next(app.Stage);
         if (nextStage is null) return BadRequest(new { message = "Application is already at the final stage." });
 
+        // Hiring is not a stage move. Accepting the offer marks the application Hired, takes the
+        // seat on the opening and creates the employee draft in one transaction. Moving the card
+        // did only the first two, left no draft to activate, and made the offer unacceptable.
+        if (nextStage == "Hired")
+            return Conflict(new
+            {
+                error = "hire_requires_offer_acceptance",
+                message = "A candidate is hired by accepting their offer, which also creates their employee record. Open the offer and choose Accept."
+            });
+
         var prevStage = app.Stage;
         app.Stage = nextStage;
         app.StageOrder = RecruitmentStages.OrderOf(nextStage);
         app.StageChangedAtUtc = DateTime.UtcNow;
-
-        if (nextStage == "Hired")
-        {
-            app.Status = "Hired";
-            app.HiredAtUtc = DateTime.UtcNow;
-
-            // Increment filled count on the opening
-            var opening = await _db.JobOpenings.FirstOrDefaultAsync(j => j.Id == app.JobOpeningId && j.TenantId == tenantId, ct);
-            if (opening is not null)
-            {
-                opening.FilledCount++;
-                if (opening.FilledCount >= opening.HeadCount) opening.Status = "Closed";
-            }
-        }
 
         await LogEventAsync(tenantId, app.Id, "StageAdvanced", nextStage,
             req.Notes ?? $"Moved from {prevStage} to {nextStage}.", userId, req.PerformedByName ?? "HR", ct);
@@ -302,18 +299,21 @@ public class ApplicationsController : ControllerBase
         if (app is null) return NotFound();
         if (app.Stage != "Offer") return BadRequest(new { message = "Application must be in Offer stage to generate an offer letter." });
 
-        // Remove any previous draft offer
+        // Replace an unsent draft. A draft that went through approval is kept: it is the record of
+        // what an approver rejected, and its approval rows point at it.
         var existing = await _db.OfferLetters
-            .Where(o => o.TenantId == tenantId && o.ApplicationId == id && o.Status == "Draft")
+            .Where(o => o.TenantId == tenantId && o.ApplicationId == id && o.Status == "Draft"
+                && !_db.OfferApprovals.Any(a => a.TenantId == tenantId && a.OfferLetterId == o.Id))
             .ToListAsync(ct);
         _db.OfferLetters.RemoveRange(existing);
 
         var gross = req.BasicSalary + req.HousingAllowance + req.TransportAllowance + req.OtherAllowances;
+        var currency = await OfferRules.ResolveCurrencyAsync(_db, tenantId, app.CompanyId, ct);
         var templateData = new OfferLetterTemplateData(
             app.CandidateName, app.JobTitle,
             req.Department, req.StartDate,
             req.BasicSalary, req.HousingAllowance, req.TransportAllowance, req.OtherAllowances,
-            gross, req.ProbationMonths);
+            gross, req.ProbationMonths, currency);
 
         var offer = new OfferLetter
         {
@@ -338,7 +338,7 @@ public class ApplicationsController : ControllerBase
         app.OfferedSalary = gross;
 
         await LogEventAsync(tenantId, id, "OfferGenerated", "Offer",
-            $"Offer letter generated. Gross salary: {gross:N2} AED/month.", userId, "HR", ct);
+            $"Offer letter generated. Gross salary: {currency} {gross:N2}/month.", userId, "HR", ct);
 
         await _db.SaveChangesAsync(ct);
         return Created($"/api/recruitment/offers/{offer.Id}", offer);
@@ -352,7 +352,15 @@ public class ApplicationsController : ControllerBase
         var userId = this.GetUserId();
         var offer = await _db.OfferLetters.FirstOrDefaultAsync(o => o.Id == offerId && o.TenantId == tenantId, ct);
         if (offer is null) return NotFound();
-        if (offer.Status != "Draft") return BadRequest(new { message = "Offer must be in Draft status to send." });
+        switch (await OfferRules.EvaluateSendAsync(_db, offer, ct))
+        {
+            case OfferSendVerdict.InvalidState:
+                return BadRequest(new { message = "Offer must be in Draft or Approved status to send." });
+            case OfferSendVerdict.ApprovalPending:
+                return Conflict(new { error = "offer_approval_incomplete", message = OfferRules.ApprovalPendingMessage });
+            case OfferSendVerdict.ApprovalRejected:
+                return Conflict(new { error = "offer_approval_rejected", message = OfferRules.ApprovalRejectedMessage });
+        }
 
         offer.Status = "Sent";
         offer.SentAtUtc = DateTime.UtcNow;

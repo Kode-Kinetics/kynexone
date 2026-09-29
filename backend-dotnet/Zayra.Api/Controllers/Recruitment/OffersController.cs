@@ -7,6 +7,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Recruitment;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Documents.Letters;
+using Zayra.Api.Infrastructure.Recruitment;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Recruitment;
@@ -154,7 +155,15 @@ public class OffersController : ControllerBase
         var tid = GetTenantId();
         var offer = await _db.OfferLetters.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
         if (offer == null) return NotFound();
-        if (offer.Status != "Draft" && offer.Status != "Approved") return BadRequest("Offer must be in Draft or Approved state to send.");
+        switch (await OfferRules.EvaluateSendAsync(_db, offer, ct))
+        {
+            case OfferSendVerdict.InvalidState:
+                return BadRequest("Offer must be in Draft or Approved state to send.");
+            case OfferSendVerdict.ApprovalPending:
+                return Conflict(new { error = "offer_approval_incomplete", message = OfferRules.ApprovalPendingMessage });
+            case OfferSendVerdict.ApprovalRejected:
+                return Conflict(new { error = "offer_approval_rejected", message = OfferRules.ApprovalRejectedMessage });
+        }
 
         offer.Status = "Sent";
         offer.SentAtUtc = DateTime.UtcNow;
@@ -230,7 +239,7 @@ public class OffersController : ControllerBase
         var offer = await _db.OfferLetters.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
         if (offer == null) return NotFound();
         var tenant = await _db.Tenants.AsNoTracking().Select(t => new { t.Id, t.Name }).FirstOrDefaultAsync(t => t.Id == tid, ct);
-        var offerCurrency = await _db.ResolveTenantCurrencyAsync(tid, ct);
+        var offerCurrency = await OfferRules.ResolveCurrencyAsync(_db, tid, offer.CompanyId, ct);
         var data = new OfferLetterData(
             CandidateName: offer.CandidateName,
             Position: offer.OfferedJobTitle,
@@ -260,6 +269,8 @@ public class OffersController : ControllerBase
                 error = "invalid_offer_state",
                 message = $"Approval steps can only be configured while an offer is Draft or PendingApproval (current: {offer.Status})."
             });
+        if (await OfferRules.HasRejectedApprovalAsync(_db, tid, id, ct))
+            return Conflict(new { error = "offer_approval_rejected", message = OfferRules.ApprovalRejectedMessage });
 
         var nextStep = (await _db.OfferApprovals.Where(a => a.TenantId == tid && a.OfferLetterId == id).CountAsync(ct)) + 1;
 

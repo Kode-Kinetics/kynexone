@@ -151,6 +151,54 @@ public sealed class OfferAcceptanceExactlyOnceTests
     }
 
     [Fact]
+    public async Task BothSendEndpoints_RefuseDraftOfferWithApprovalHistory()
+    {
+        // A rejected approval step returns the offer to Draft. Draft used to be sendable, so the
+        // rejection could be bypassed by pressing Send.
+        var seeded = await SeedOfferAsync();
+        await using (var seedDb = _fixture.CreateDb())
+        {
+            var offer = await seedDb.OfferLetters.SingleAsync(x => x.Id == seeded.OfferId);
+            offer.Status = "Draft";
+            offer.SentAtUtc = null;
+            seedDb.OfferApprovals.Add(new OfferApproval
+            {
+                TenantId = seeded.TenantId,
+                OfferLetterId = seeded.OfferId,
+                ApplicationId = seeded.ApplicationId,
+                StepOrder = 1,
+                ApproverName = "Finance",
+                ApproverRole = "Finance Approver",
+                Status = "Rejected",
+                DecidedAtUtc = DateTime.UtcNow,
+            });
+            await seedDb.SaveChangesAsync();
+        }
+
+        await using (var offerDb = _fixture.CreateDb())
+        {
+            var controller = new OffersController(
+                offerDb, new AcceptanceNullLetters(), new RecruitmentService(offerDb));
+            SetPrincipal(controller, seeded.TenantId, Guid.NewGuid());
+            var result = await controller.Send(seeded.OfferId, CancellationToken.None);
+            result.Should().BeOfType<ConflictObjectResult>();
+        }
+
+        await using (var appDb = _fixture.CreateDb())
+        {
+            var controller = new ApplicationsController(
+                appDb, new RecruitmentService(appDb), new AcceptanceNullNotifications());
+            SetPrincipal(controller, seeded.TenantId, Guid.NewGuid());
+            var result = await controller.SendOffer(seeded.OfferId, CancellationToken.None);
+            result.Should().BeOfType<ConflictObjectResult>();
+        }
+
+        await using var verify = _fixture.CreateDb();
+        (await verify.OfferLetters.AsNoTracking().SingleAsync(x => x.Id == seeded.OfferId))
+            .Status.Should().Be("Draft", "a refused send must not change the offer");
+    }
+
+    [Fact]
     public async Task DecideApproval_InvalidDecision_IsRejectedAndLeavesPendingRowsUnchanged()
     {
         var seeded = await SeedOfferAsync();
@@ -203,6 +251,15 @@ public sealed class OfferAcceptanceExactlyOnceTests
         opening.FilledCount.Should().Be(expectedEffects);
         (await verify.EmployeeDrafts.CountAsync(x => x.TenantId == seeded.TenantId))
             .Should().Be(expectedEffects);
+        if (expectedEffects == 1)
+        {
+            // Acceptance is the submission: the draft lands where HR approval picks it up.
+            var draft = await verify.EmployeeDrafts.AsNoTracking()
+                .SingleAsync(x => x.TenantId == seeded.TenantId);
+            draft.Status.Should().Be("PendingHrApproval");
+            draft.CurrentStep.Should().Be("HrApproval");
+            draft.SubmittedAtUtc.Should().NotBeNull();
+        }
         (await verify.ApplicationEvents.CountAsync(x =>
                 x.TenantId == seeded.TenantId
                 && x.ApplicationId == seeded.ApplicationId

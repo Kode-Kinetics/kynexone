@@ -95,6 +95,9 @@ public class RecruitmentService : IRecruitmentService
         var candidateName = HtmlEncoder.Default.Encode(d.CandidateName ?? string.Empty);
         var jobTitle = HtmlEncoder.Default.Encode(d.JobTitle ?? string.Empty);
         var department = HtmlEncoder.Default.Encode(d.Department ?? string.Empty);
+        var amountHeader = string.IsNullOrWhiteSpace(d.CurrencyCode)
+            ? "Monthly"
+            : $"Monthly ({HtmlEncoder.Default.Encode(d.CurrencyCode.Trim().ToUpperInvariant())})";
         var otherRow = d.OtherAllowances > 0
             ? $"<tr><td>Other Allowances</td><td>{d.OtherAllowances:N2}</td></tr>"
             : string.Empty;
@@ -141,7 +144,7 @@ public class RecruitmentService : IRecruitmentService
   </table>
   <h2>Compensation Package</h2>
   <table>
-    <tr><th>Component</th><th>Monthly (AED)</th></tr>
+    <tr><th>Component</th><th>{amountHeader}</th></tr>
     <tr><td>Basic Salary</td><td>{d.BasicSalary:N2}</td></tr>
     <tr><td>Housing Allowance</td><td>{d.HousingAllowance:N2}</td></tr>
     <tr><td>Transport Allowance</td><td>{d.TransportAllowance:N2}</td></tr>
@@ -224,12 +227,15 @@ public class RecruitmentService : IRecruitmentService
             .Select(d => d.ManagerEmployeeId)
             .FirstOrDefaultAsync(ct);
 
+        // Acceptance is the submission. "Submitted" was a status nothing reads: draft approval takes
+        // Draft or PendingHrApproval only, and no screen offers a resubmit, so every hire stopped here.
         var draft = new EmployeeDraft
         {
             TenantId = tenantId,
             CreatedByUserId = requestedByUserId,
-            Status = "Submitted",
-            CurrentStep = "EmploymentInformation",
+            Status = "PendingHrApproval",
+            CurrentStep = "HrApproval",
+            SubmittedAtUtc = DateTime.UtcNow,
             EnglishName = fullName,
             PersonalEmail = candidate.Email,
             Phone = candidate.Phone,
