@@ -29,7 +29,9 @@ public class QueryFilterBypassRatchetTests
     {
         ["Application/Employees/EmployeeOrgFieldResolver.cs"] = 3,
         // Auth-recovery candidate (+15, provisional): every new site pins TenantId or a server-generated unique key; see register §6.
-        ["Controllers/EmployeesController.cs"] = 23,
+        // 23 -> 20: the draft-approval placement reads (two Branches, one Department) moved into
+        // ResolveDraftPlacementAsync and now go through ScopedBypass.TenantWide.
+        ["Controllers/EmployeesController.cs"] = 20,
         ["Controllers/EstablishmentController.cs"] = 12,
         ["Controllers/Finance/AdvancesController.cs"] = 2,
         ["Controllers/Finance/BonusesController.cs"] = 3,
