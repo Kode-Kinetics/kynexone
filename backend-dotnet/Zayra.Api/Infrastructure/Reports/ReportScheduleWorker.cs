@@ -136,7 +136,7 @@ public sealed class ReportScheduleWorker : BackgroundService
 
             try
             {
-                var employeeIds = await ResolveCurrentScopeAsync(db, schedule, ct);
+                var reportScope = await ResolveCurrentScopeAsync(db, schedule, ct);
                 var filters = string.IsNullOrWhiteSpace(schedule.FiltersJson)
                     ? null
                     : JsonSerializer.Deserialize<ReportFilters>(schedule.FiltersJson);
@@ -145,7 +145,7 @@ public sealed class ReportScheduleWorker : BackgroundService
                 // would make the worker unconstructable in it for no gain.
                 var controller = new ReportsController(db, dataScope);
                 var data = await controller.ExecuteReportDataAsync(
-                    schedule.TenantId, new RunReportRequest(schedule.ReportKey, filters), employeeIds, ct)
+                    schedule.TenantId, new RunReportRequest(schedule.ReportKey, filters), reportScope, ct)
                     ?? throw new InvalidOperationException("The scheduled report key is no longer supported.");
                 var json = JsonSerializer.SerializeToElement(data);
                 var artifact = BuildArtifact(schedule, json);
@@ -197,7 +197,16 @@ public sealed class ReportScheduleWorker : BackgroundService
         tracked.OwnerInvalidatedAtUtc = null;
     }
 
-    private static async Task<IReadOnlyCollection<int>?> ResolveCurrentScopeAsync(
+    /// <summary>
+    /// Re-derives, on every run, what the schedule's OWNER may see today — not what they could see when
+    /// they created it — and fails closed (an <see cref="UnauthorizedAccessException"/>, which marks the
+    /// schedule as needing a new owner) the moment the report is no longer theirs to read.
+    ///
+    /// <para>This worker has no HTTP user, so the database's company filter is open for it: the scope
+    /// returned here is the ONLY restriction the report runs under, and it must carry the companies as
+    /// well as the employees.</para>
+    /// </summary>
+    private static async Task<ReportDataScope> ResolveCurrentScopeAsync(
         ZayraDbContext db, ReportSchedule schedule, CancellationToken ct)
     {
         if (schedule.CreatedBy is not Guid creatorId)
@@ -210,8 +219,23 @@ public sealed class ReportScheduleWorker : BackgroundService
             .Include(x => x.EntityAccesses)
             .FirstOrDefaultAsync(x => x.Id == creatorId && x.TenantId == schedule.TenantId && x.IsActive && !x.IsDeleted, ct)
             ?? throw new UnauthorizedAccessException("Schedule creator is inactive or missing.");
-        if (!AuthService.GetPermissions(user).Contains("reports.schedule", StringComparer.OrdinalIgnoreCase))
+        var permissions = AuthService.GetPermissions(user);
+        bool Has(string permission) => permissions.Contains(permission, StringComparer.OrdinalIgnoreCase);
+        if (!Has("reports.schedule"))
             throw new UnauthorizedAccessException("Schedule creator no longer has reports.schedule permission.");
+
+        // Not an owner problem: the report itself is gone, and no new owner would change that.
+        if (!ReportAccessPolicy.IsKnown(schedule.ReportKey))
+            throw new InvalidOperationException("The scheduled report key is no longer supported.");
+        // The same data rule as the interactive endpoints. A demoted owner's schedule stops here.
+        if (!ReportAccessPolicy.CanAccess(schedule.ReportKey, Has))
+            throw new UnauthorizedAccessException(ReportAccessPolicy.OwnerDenialMessage(schedule.ReportKey));
+        // Interactively, a team-scoped user gets their team's rows. A delivery has no team to cut to and
+        // was served organisation-wide, i.e. more than the owner could open by hand; refuse it instead.
+        if (!ReportAccessPolicy.GrantsOrganisationScope(Has))
+            throw new UnauthorizedAccessException(
+                "The schedule's owner can only see their own team's records, but a scheduled report is " +
+                "delivered organisation-wide, so it no longer runs.");
 
         var activeCompanyIds = await ScopedBypass.TenantWide(db.Companies, schedule.TenantId,
                 "Scheduled report resolves active legal entities inside its tenant.").AsNoTracking()
@@ -220,16 +244,24 @@ public sealed class ReportScheduleWorker : BackgroundService
         var grants = user.EntityAccesses.Where(x => x.IsActive)
             .Select(x => new EntityAccessGrant(x.CompanyId, x.Role, x.GrantMode)).ToList();
         var descriptor = EntityScopeClaims.Resolve(user.IsGroupScope, grants, activeCompanyIds);
-        if (descriptor.Mode == EntityScopeModes.Group) return null;
-        if (descriptor.Mode != EntityScopeModes.Companies || descriptor.CompanyIds.Count == 0)
+        var groupLevel = descriptor.Mode == EntityScopeModes.Group;
+        if (!groupLevel && (descriptor.Mode != EntityScopeModes.Companies || descriptor.CompanyIds.Count == 0))
             throw new UnauthorizedAccessException("Schedule creator has no active legal-entity scope.");
+        if (ReportAccessPolicy.ScopeDenial(schedule.ReportKey, organisationLevel: true, groupLevel) is { } scopeDenial)
+            throw new UnauthorizedAccessException(scopeDenial);
+
+        var canSeeSensitive = Has(ReportAccessPolicy.SensitivePermission);
+        if (groupLevel) return new ReportDataScope(null, null, canSeeSensitive);
+
         // Employee has a legacy nullable TenantId and cannot use ScopedBypass.TenantWide's
         // non-nullable type guard. System context already bypasses filters; the explicit
         // non-null tenant predicate below is the surviving tenant boundary.
-        return await db.Employees.AsNoTracking()
+        var companyIds = descriptor.CompanyIds.ToList();
+        var employeeIds = await db.Employees.AsNoTracking()
             .Where(x => x.TenantId == schedule.TenantId && !x.IsDeleted
-                        && x.CompanyId != null && descriptor.CompanyIds.Contains(x.CompanyId.Value))
+                        && x.CompanyId != null && companyIds.Contains(x.CompanyId.Value))
             .Select(x => x.Id).ToListAsync(ct);
+        return new ReportDataScope(employeeIds, companyIds, canSeeSensitive);
     }
 
     private static async Task<bool> TryClaimAsync(ZayraDbContext db, ReportSchedule item, DateTime now, CancellationToken ct)
