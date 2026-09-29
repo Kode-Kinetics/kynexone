@@ -72,8 +72,8 @@ negative cross-tenant test) should be closed before unsupervised production at s
 - Both Docker images rebuilt and serving (frontend 200, API swagger 200).
 
 ## Deliverables produced
-- `DEAD_FEATURE_AUDIT.md` · `FRONTEND_CONNECTIVITY_AUDIT.md` · `BACKEND_CONNECTIVITY_AUDIT.md`
-- `DATABASE_CONNECTIVITY_AUDIT.md` · `RBAC_TENANT_ISOLATION_AUDIT.md` · `LIVE_READINESS_CHECKLIST.md` (this file)
+- `DEAD_FEATURE_AUDIT.md` · `FRONTEND_CONNECTIVITY_AUDIT.md` · `docs/BACKEND_CONNECTIVITY_AUDIT.md`
+- `docs/DATABASE_CONNECTIVITY_AUDIT.md` · `RBAC_TENANT_ISOLATION_AUDIT.md` · `LIVE_READINESS_CHECKLIST.md` (this file)
 
 ---
 _Per the engagement guidance: this product is **not** claimed as fully production-live —
