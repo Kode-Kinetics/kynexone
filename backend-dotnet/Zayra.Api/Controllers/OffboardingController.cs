@@ -729,14 +729,7 @@ public class OffboardingController : ControllerBase
     public async Task<IActionResult> RecordExternalSettlementPayment(
         Guid id, [FromBody] ExternalSettlementPaymentRequest req, CancellationToken ct)
     {
-        var off = await Find(id, ct);
-        if (off is null) return NotFound();
-        if (off.Status != "InProgress")
-            return Conflict(new
-            {
-                error   = "offboarding_not_in_progress",
-                message = $"A settlement payment can only be recorded while the offboarding is in progress (current: '{off.Status}').",
-            });
+        var tenantId = this.GetTenantId()!.Value;
         var actorId = this.GetUserId();
         if (actorId is null) return Forbid();
 
@@ -754,104 +747,166 @@ public class OffboardingController : ControllerBase
                 message = "A bank reference or cheque number is required — it is the evidence that the money moved, "
                         + "and it is what replaces the payroll run's payment batch in the audit trail.",
             });
+        var reference = req.Reference.Trim();
+        var paidOn = req.PaidOn ?? DateOnly.FromDateTime(DateTime.UtcNow);
 
-        var settlement = await _db.EmployeeFinalSettlements
-            .FirstOrDefaultAsync(s => s.TenantId == off.TenantId && s.OffboardingId == off.Id
-                                   && s.EmployeeId == off.EmployeeId
-                                   && s.Status != FinalSettlementStatuses.Cancelled, ct);
-        if (settlement is null)
-            return Conflict(new
-            {
-                error   = "no_settlement",
-                message = "There is no live final settlement for this offboarding. Compute and approve the "
-                        + "settlement first — the amount paid has to be the one the system determined.",
-            });
+        // ── ONE LOCKED TRANSACTION, POSTED ONCE ─────────────────────────────────────────────────────
+        // This used to read the settlement without a lock and write in two separate saves, so two
+        // recordings that overlapped each found an Approved, uncleared settlement and each posted the
+        // discharge: the payable was cleared twice and cash credited twice. Now the whole recording is one
+        // transaction that locks the offboarding and then the settlement (the order Complete and Cancel
+        // use), and every check below runs on the locked rows: whichever request commits second waits,
+        // re-reads a Paid settlement and is refused. A retry after an ambiguous commit is settled by this
+        // request's own audit row, so a retry never posts the discharge a second time either.
+        var recordedAtUtc = DateTime.UtcNow;
+        var auditId = Guid.NewGuid();
+        IActionResult? outcome = null;
 
-        // ── F10 — SEGREGATION OF DUTIES ON THE DISBURSEMENT ─────────────────────────────────────────
-        // The approver signs off the amount; recording the payment asserts the money left the bank and
-        // posts the journal that closes the payable. One person doing both is a single point of
-        // control over the whole liability, so the recorder must be someone else — and an Approved
-        // settlement with no recorded approver cannot prove that, so it is refused rather than assumed.
-        // (A settlement that is not Approved falls through to the discharge's own status refusal.)
-        if (settlement.Status == FinalSettlementStatuses.Approved)
+        async Task<bool> RecordOnceAsync(CancellationToken token)
         {
-            if (settlement.ApprovedByUserId is null)
-                return Conflict(new
+            _db.ChangeTracker.Clear();
+            var off = await _db.EmployeeOffboardings
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, token);
+            if (off is null)
+            {
+                outcome = NotFound();
+                return false;
+            }
+            if (off.Status != "InProgress")
+            {
+                outcome = Conflict(new
                 {
-                    error   = "settlement_approver_unknown",
-                    message = "This settlement has no recorded approver, so an independent payment check cannot be "
-                            + "shown. Cancel it, recompute it and have it approved through the settlement workflow "
-                            + "before recording the payment.",
+                    error   = "offboarding_not_in_progress",
+                    message = $"A settlement payment can only be recorded while the offboarding is in progress (current: '{off.Status}').",
                 });
-            if (settlement.ApprovedByUserId == actorId)
-                return Conflict(new
+                return false;
+            }
+
+            var settlement = await _db.EmployeeFinalSettlements
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(s => s.TenantId == tenantId && s.OffboardingId == off.Id
+                         && s.EmployeeId == off.EmployeeId
+                         && s.Status != FinalSettlementStatuses.Cancelled)
+                .OrderBy(s => s.Id)
+                .FirstOrDefaultAsync(token);
+            if (settlement is null)
+            {
+                outcome = Conflict(new
                 {
-                    error   = "segregation_of_duties",
-                    message = "You approved this settlement, so you cannot also record its payment. A different "
-                            + "finance user with payroll approval rights must record the disbursement.",
+                    error   = "no_settlement",
+                    message = "There is no live final settlement for this offboarding. Compute and approve the "
+                            + "settlement first — the amount paid has to be the one the system determined.",
                 });
+                return false;
+            }
+
+            // ── F10 — SEGREGATION OF DUTIES ON THE DISBURSEMENT ─────────────────────────────────────
+            // The approver signs off the amount; recording the payment asserts the money left the bank and
+            // posts the journal that closes the payable. One person doing both is a single point of
+            // control over the whole liability, so the recorder must be someone else — and an Approved
+            // settlement with no recorded approver cannot prove that, so it is refused rather than assumed.
+            // (A settlement that is not Approved falls through to the discharge's own status refusal.)
+            if (settlement.Status == FinalSettlementStatuses.Approved)
+            {
+                if (settlement.ApprovedByUserId is null)
+                {
+                    outcome = Conflict(new
+                    {
+                        error   = "settlement_approver_unknown",
+                        message = "This settlement has no recorded approver, so an independent payment check cannot be "
+                                + "shown. Cancel it, recompute it and have it approved through the settlement workflow "
+                                + "before recording the payment.",
+                    });
+                    return false;
+                }
+                if (settlement.ApprovedByUserId == actorId)
+                {
+                    outcome = Conflict(new
+                    {
+                        error   = "segregation_of_duties",
+                        message = "You approved this settlement, so you cannot also record its payment. A different "
+                                + "finance user with payroll approval rights must record the disbursement.",
+                    });
+                    return false;
+                }
+            }
+
+            // The amount is CONFIRMED against the settlement, never taken from the caller: a settlement
+            // recorded as paid for a figure the system did not compute is how an underpayment becomes
+            // evidenced by the employer's own signed record.
+            if (Math.Abs(req.Amount - Math.Round(settlement.NetPayable, 2)) > 0.01m)
+            {
+                outcome = UnprocessableEntity(new
+                {
+                    error   = "amount_does_not_match_settlement",
+                    message = $"The amount paid ({req.Amount:N2}) does not match the settlement's net payable "
+                            + $"({settlement.NetPayable:N2}). Correct the payment record, or cancel and recompute the "
+                            + "settlement if the figure itself is wrong.",
+                    netPayable = settlement.NetPayable,
+                });
+                return false;
+            }
+
+            // Re-checks, on the locked row, that the settlement is still Approved and its payable still
+            // uncleared: the check that refuses the second of two overlapping recordings.
+            var (discharge, refusal) = await Infrastructure.Payroll.FinalSettlementExternalDischarge.StageAsync(
+                _db, settlement, paidOn, method, reference, actorId, GetActorName(), token);
+            if (refusal is not null)
+            {
+                outcome = UnprocessableEntity(new { error = refusal.Error, message = refusal.Message });
+                return false;
+            }
+
+            settlement.Status = FinalSettlementStatuses.Paid;
+            settlement.PaidAtUtc = recordedAtUtc;
+            settlement.PaidOutsidePayroll = true;
+            settlement.ExternalPaymentMethod = method;
+            settlement.ExternalPaymentReference = reference;
+            settlement.ExternalPaymentDate = paidOn;
+            settlement.ExternalPaymentRecordedByUserId = actorId;
+            settlement.ExternalPaymentRecordedByName = GetActorName();
+            settlement.UpdatedAtUtc = recordedAtUtc;
+
+            off.FinalSettlementDone = true;
+            off.UpdatedAtUtc = recordedAtUtc;
+
+            _db.AuditLogs.Add(AuthAuditEntry.Create(
+                auditId, recordedAtUtc, ExternalSettlementPaymentAuditAction, "EmployeeFinalSettlement",
+                settlement.Id.ToString(),
+                new RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(),
+                    Request.Headers.UserAgent.ToString(), actorId, tenantId),
+                System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    offboardingId = off.Id, settlement.EmployeeId, settlement.EmployeeCode,
+                    settlement.NetPayable, settlement.Currency, method, reference,
+                    paidOn, period = discharge!.Period,
+                    payableCleared = discharge.PayableCleared, payableAccount = discharge.PayableAccount,
+                })));
+            await _db.SaveChangesAsync(token);
+
+            outcome = Ok(new
+            {
+                settlementId  = settlement.Id,
+                status        = settlement.Status,
+                paidOutsidePayroll = true,
+                method, reference, paidOn,
+                period        = discharge.Period,
+                payableCleared = discharge.PayableCleared,
+                journal = discharge.Journal.Select(l => new
+                {
+                    l.EventType, debit = l.DebitAccount, credit = l.CreditAccount, l.Amount, l.Description,
+                }).ToList(),
+                nextStep = "The payable is discharged. Complete the offboarding to archive the employee.",
+            });
+            return true;
         }
 
-        var paidOn = req.PaidOn ?? DateOnly.FromDateTime(DateTime.UtcNow);
-        // The amount is CONFIRMED against the settlement, never taken from the caller: a settlement
-        // recorded as paid for a figure the system did not compute is how an underpayment becomes
-        // evidenced by the employer's own signed record.
-        if (Math.Abs(req.Amount - Math.Round(settlement.NetPayable, 2)) > 0.01m)
-            return UnprocessableEntity(new
-            {
-                error   = "amount_does_not_match_settlement",
-                message = $"The amount paid ({req.Amount:N2}) does not match the settlement's net payable "
-                        + $"({settlement.NetPayable:N2}). Correct the payment record, or cancel and recompute the "
-                        + "settlement if the figure itself is wrong.",
-                netPayable = settlement.NetPayable,
-            });
-
-        var (discharge, refusal) = await Infrastructure.Payroll.FinalSettlementExternalDischarge.StageAsync(
-            _db, settlement, paidOn, method, req.Reference.Trim(), this.GetUserId(), GetActorName(), ct);
-        if (refusal is not null)
-            return UnprocessableEntity(new { error = refusal.Error, message = refusal.Message });
-
-        settlement.Status = FinalSettlementStatuses.Paid;
-        settlement.PaidAtUtc = DateTime.UtcNow;
-        settlement.PaidOutsidePayroll = true;
-        settlement.ExternalPaymentMethod = method;
-        settlement.ExternalPaymentReference = req.Reference.Trim();
-        settlement.ExternalPaymentDate = paidOn;
-        settlement.ExternalPaymentRecordedByUserId = this.GetUserId();
-        settlement.ExternalPaymentRecordedByName = GetActorName();
-        settlement.UpdatedAtUtc = DateTime.UtcNow;
-
-        off.FinalSettlementDone = true;
-        off.UpdatedAtUtc = DateTime.UtcNow;
-
-        var ctx = new RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(),
-            Request.Headers.UserAgent.ToString(), this.GetUserId(), off.TenantId);
-        await _audit.WriteAsync("payroll.final_settlement.paid_outside_payroll", "EmployeeFinalSettlement",
-            settlement.Id.ToString(), ctx, System.Text.Json.JsonSerializer.Serialize(new
-            {
-                offboardingId = off.Id, settlement.EmployeeId, settlement.EmployeeCode,
-                settlement.NetPayable, settlement.Currency, method, reference = req.Reference.Trim(),
-                paidOn, period = discharge!.Period,
-                payableCleared = discharge.PayableCleared, payableAccount = discharge.PayableAccount,
-            }), ct);
-
-        await _db.SaveChangesAsync(ct);
-
-        return Ok(new
-        {
-            settlementId  = settlement.Id,
-            status        = settlement.Status,
-            paidOutsidePayroll = true,
-            method, reference = settlement.ExternalPaymentReference, paidOn,
-            period        = discharge.Period,
-            payableCleared = discharge.PayableCleared,
-            journal = discharge.Journal.Select(l => new
-            {
-                l.EventType, debit = l.DebitAccount, credit = l.CreditAccount, l.Amount, l.Description,
-            }).ToList(),
-            nextStep = "The payable is discharged. Complete the offboarding to archive the employee.",
-        });
+        await ExecuteAtomicMutationAsync(RecordOnceAsync, auditId, ExternalSettlementPaymentAuditAction, tenantId, ct);
+        return outcome ?? throw new InvalidOperationException("The settlement payment finished without an outcome.");
     }
+
+    private const string ExternalSettlementPaymentAuditAction = "payroll.final_settlement.paid_outside_payroll";
 
     /// <summary>Rescind a resignation while serving notice — reinstates the employee.</summary>
     [HttpPost("{id:guid}/cancel")]

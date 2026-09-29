@@ -628,7 +628,9 @@ public class LeaverLifecycleS2Tests
 
         // A settlement that recovers employee debt belongs on the run, whose deduction lines relieve the
         // control accounts. Paying it here would be a double recovery.
-        settlement.PlannedLoanRecovery = 3_000m;
+        // Re-read: each recording starts from a clean change tracker, so the seeded instance is detached.
+        var tracked = await db.EmployeeFinalSettlements.SingleAsync(x => x.Id == settlement.Id);
+        tracked.PlannedLoanRecovery = 3_000m;
         await db.SaveChangesAsync();
         var withDebt = await controller.RecordExternalSettlementPayment(
             fx.Offboarding.Id, new ExternalSettlementPaymentRequest("Cheque", "CHQ-9", settlement.NetPayable, null),
