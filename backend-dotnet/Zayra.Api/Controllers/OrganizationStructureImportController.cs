@@ -608,12 +608,18 @@ public class OrganizationStructureImportController : ControllerBase
         AddRows("grades", parsed.Grades, "Code", "Name", required: ["Code", "Name"], known: gradeCodes, rows);
         AddGradeSanityRows(parsed.Grades, rows);
         Merge(gradeCodes, parsed.Grades.Select(x => Val(x, "Code")));
+        // A parent may be saved already or arrive in this same file, above or below its child.
+        // Commit applies parents in a second pass, so validation must accept both. The saved set
+        // stays separate so a new row is not reported as "already exists and will be updated".
+        var parentCandidates = new HashSet<string>(departmentCodes, StringComparer.OrdinalIgnoreCase);
+        Merge(parentCandidates, parsed.Departments.Select(x => Val(x, "Code")));
         AddRows("departments", parsed.Departments, "Code", "NameEn", required: ["Code", "NameEn"], known: departmentCodes, rows,
-            refs: [("CompanyLegalName", companyNames, "Company"), ("BranchCode", branchCodes, "Branch"), ("CostCenterCode", costCenterCodes, "Cost center"), ("ParentDepartmentCode", departmentCodes, "Parent department"), ("ManagerEmployeeCode", employeeCodes, "Manager employee")]);
+            refs: [("CompanyLegalName", companyNames, "Company"), ("BranchCode", branchCodes, "Branch"), ("CostCenterCode", costCenterCodes, "Cost center"), ("ParentDepartmentCode", parentCandidates, "Parent department"), ("ManagerEmployeeCode", employeeCodes, "Manager employee")]);
         AddDepartmentCompanyConsistencyRows(parsed.Departments, parsed.Branches, parsed.CostCenters, rows);
         Merge(departmentCodes, parsed.Departments.Select(x => Val(x, "Code")));
         AddRows("gradePayComponents", parsed.GradePayComponents, "ComponentCode", "ComponentName", required: ["GradeCode", "ComponentCode", "ComponentName"], known: new HashSet<string>(StringComparer.OrdinalIgnoreCase), rows,
-            refs: [("GradeCode", gradeCodes, "Grade")]);
+            // BASIC under G1 and BASIC under G2 are two components. Commit keys them by (grade, code).
+            refs: [("GradeCode", gradeCodes, "Grade")], duplicateScopeKey: "GradeCode");
         AddGradePayComponentSanityRows(parsed.GradePayComponents, rows);
         AddRows("designations", parsed.Designations, "Code", "TitleEn", required: ["Code", "TitleEn"], known: new HashSet<string>(StringComparer.OrdinalIgnoreCase), rows,
             refs: [("DepartmentCode", departmentCodes, "Department"), ("GradeCode", gradeCodes, "Grade")]);
@@ -624,7 +630,9 @@ public class OrganizationStructureImportController : ControllerBase
 
         var parentMap = parsed.Departments
             .Where(x => !string.IsNullOrWhiteSpace(Val(x, "Code")) && !string.IsNullOrWhiteSpace(Val(x, "ParentDepartmentCode")))
-            .ToDictionary(x => Val(x, "Code"), x => Val(x, "ParentDepartmentCode"), StringComparer.OrdinalIgnoreCase);
+            // A duplicated code already carries a blocking row error; reporting it must not throw.
+            .GroupBy(x => Val(x, "Code"), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => Val(g.First(), "ParentDepartmentCode"), StringComparer.OrdinalIgnoreCase);
         foreach (var start in parentMap.Keys)
         {
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { start };
@@ -717,7 +725,7 @@ public class OrganizationStructureImportController : ControllerBase
             [$"{section} row references company '{companyName}' outside the caller's entity scope."], []));
     }
 
-    private static void AddRows(string section, IReadOnlyList<Dictionary<string, string>> source, string codeKey, string nameKey, string[] required, HashSet<string> known, List<ImportRowResult> rows, (string Key, HashSet<string> Known, string Label)[]? refs = null)
+    private static void AddRows(string section, IReadOnlyList<Dictionary<string, string>> source, string codeKey, string nameKey, string[] required, HashSet<string> known, List<ImportRowResult> rows, (string Key, HashSet<string> Known, string Label)[]? refs = null, string? duplicateScopeKey = null)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         for (var i = 0; i < source.Count; i++)
@@ -726,7 +734,14 @@ public class OrganizationStructureImportController : ControllerBase
             var code = Val(row, codeKey);
             var errors = required.Where(key => string.IsNullOrWhiteSpace(Val(row, key))).Select(key => $"{key} is required").ToList();
             var warnings = new List<string>();
-            if (!string.IsNullOrWhiteSpace(code) && !seen.Add(code)) errors.Add($"Duplicate {codeKey} '{code}' in {section}");
+            // A scoped code is unique within its scope. The tuple is serialized so a code containing
+            // a separator character cannot collide with a different (scope, code) pair.
+            var uniqueKey = duplicateScopeKey is null
+                ? code
+                : JsonSerializer.Serialize(new[] { Val(row, duplicateScopeKey).ToUpperInvariant(), code.ToUpperInvariant() });
+            if (!string.IsNullOrWhiteSpace(code) && !seen.Add(uniqueKey))
+                errors.Add($"Duplicate {codeKey} '{code}' in {section}"
+                    + (duplicateScopeKey is null ? string.Empty : $" for {duplicateScopeKey} '{Val(row, duplicateScopeKey)}'"));
             if (!string.IsNullOrWhiteSpace(code) && known.Contains(code))
                 warnings.Add($"{section} record '{code}' already exists and will be updated");
             foreach (var (key, knownRefs, label) in refs ?? [])
@@ -736,7 +751,9 @@ public class OrganizationStructureImportController : ControllerBase
                     errors.Add($"{label} reference '{value}' not found");
             }
             var status = errors.Count > 0 ? ImportRowStatus.Error : warnings.Count > 0 ? ImportRowStatus.Warning : ImportRowStatus.Ok;
-            rows.Add(new ImportRowResult(i + 2, $"{section}:{code}", Val(row, nameKey), status, errors, warnings));
+            // Same identifier the grade/component sanity rows use, so both findings group together.
+            var rowKey = duplicateScopeKey is null ? code : $"{Val(row, duplicateScopeKey)}/{code}";
+            rows.Add(new ImportRowResult(i + 2, $"{section}:{rowKey}", Val(row, nameKey), status, errors, warnings));
         }
     }
 
