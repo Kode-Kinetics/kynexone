@@ -246,6 +246,40 @@ public class EmployeeModuleTests
             x.IsActive)).Should().BeTrue();
     }
 
+    /// <summary>R06 (money). The Approval Center is where a bank change is normally approved, and its applier
+    /// did not sync the payroll profile at all — WPS paid the OLD account. The sync must also be FIELD-SCOPED:
+    /// an IBAN-only approval must not copy the employee's (often stale) BankName over the profile's, and vice
+    /// versa. Nothing reaches the profile before approval, or on rejection. (From the parallel WT session.)</summary>
+    [Theory]
+    [InlineData("bankIban", "Approve")]
+    [InlineData("bankName", "Approve")]
+    [InlineData("bankIban", "Reject")]
+    [InlineData("bankName", "Reject")]
+    public async Task ApprovalCenterBankChange_ReachesPayrollProfileOnlyAfterApproval(string field, string decision)
+    {
+        await using var db = CreateDb();
+        var tenant = await SeedTenantAndEmployeeRole(db);
+        var requester = Guid.NewGuid(); var approver = Guid.NewGuid();
+        var employee = new Employee { TenantId = tenant, EmployeeCode = "BANK-JOURNEY", FullName = "Synthetic Bank Journey", Status = "Active", JoiningDate = DateTime.UtcNow.Date, BankName = "Stale display bank", BankIban = "" };
+        db.Employees.Add(employee); await db.SaveChangesAsync();
+        var profile = new EmployeePayrollProfile { TenantId = tenant, EmployeeId = employee.Id, BankName = "Authoritative Bank", Iban = "SA0380000000608010167519", SalaryCurrency = "SAR", AccountNumber = "KEEP-ACCOUNT", MolId = "KEEP-MOL", WpsEligible = false, EosbEligible = false };
+        db.EmployeePayrollProfiles.Add(profile); await db.SaveChangesAsync();
+        var value = field == "bankIban" ? "SA5380000000006080101001" : "Approved New Bank";
+        var controller = CreateController(db, tenant, requester);
+        var result = await controller.UpdateEmployee(employee.Id, new EmployeeUpdateRequest(DateOnly.FromDateTime(DateTime.UtcNow.Date), new() { [field] = System.Text.Json.JsonSerializer.SerializeToElement(value) }), CancellationToken.None);
+        Assert.IsType<AcceptedResult>(result);
+        Assert.Equal("Authoritative Bank", profile.BankName); Assert.Equal("SA0380000000608010167519", profile.Iban);
+        var approval = await db.ApprovalRequests.SingleAsync(x => x.EntityName == nameof(EmployeeChangeRequest));
+        var service = new ApprovalWorkflowService(db, new AuditService(db));
+        await service.DecideAsync(tenant, approval.Id, new Zayra.Api.Application.Approvals.ApprovalDecisionRequest(decision, "Synthetic bank regression"), new Zayra.Api.Application.Auth.RequestContext("127.0.0.1", "tests", approver, tenant, ["HR Manager"], []), CancellationToken.None);
+        db.ChangeTracker.Clear();
+        var saved = await db.EmployeePayrollProfiles.SingleAsync(p => p.TenantId == tenant && p.EmployeeId == employee.Id);
+        Assert.Equal(decision == "Approve" && field == "bankName" ? value : "Authoritative Bank", saved.BankName);
+        Assert.Equal(decision == "Approve" && field == "bankIban" ? value : "SA0380000000608010167519", saved.Iban);
+        Assert.Equal("KEEP-ACCOUNT", saved.AccountNumber); Assert.Equal("KEEP-MOL", saved.MolId);
+        Assert.Equal("SAR", saved.SalaryCurrency); Assert.False(saved.WpsEligible); Assert.False(saved.EosbEligible);
+    }
+
     private static ZayraDbContext CreateDb()
     {
         var options = new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
