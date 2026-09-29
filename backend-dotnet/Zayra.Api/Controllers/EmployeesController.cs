@@ -41,7 +41,12 @@ public class EmployeesController : ControllerBase
         "passportExpiryDate", "visaNumber", "visaIssueDate", "visaExpiryDate", "iqamaNumber", "muqeemNumber",
         "gosiReference", "qiwaContractNumber", "emiratesId", "laborCardNumber", "visaFileNumber", "qid", "civilId", "residencyNumber",
         "residencyIssueDate", "workPermitNumber", "workPermitIssueDate", "medicalInformation", "disciplinaryRecords",
-        "terminationReason"
+        "terminationReason",
+        // The GPSSA/GRSIA/PIFSS/SPF/SIO counterpart of gosiReference (Saudi GOSI). Same class of value — the
+        // social-insurance enrolment every contribution is filed against — so it takes the same maker-checker
+        // route. It became writable through PUT when EmployeeChangeApplier gained its payroll-profile key;
+        // without this entry that write would have skipped the approval gosiReference always required.
+        "socialInsuranceReference"
     };
 
     private readonly ZayraDbContext _db;
@@ -120,8 +125,8 @@ public class EmployeesController : ControllerBase
         // applied in BOTH scope branches or a scoped user's post-import cleanup link breaks past page 1.
         query = EmployeeReadinessQuery.ApplyReadinessFilter(query, _db, tenantId, readiness, importBatchId, gapType);
         var total = await query.CountAsync(cancellationToken);
-        var items = await query.OrderBy(e => e.FullName).Skip((page - 1) * pageSize).Take(pageSize)
-            .Select(e => new EmployeeListItemDto(e.Id, e.EmployeeCode, e.FullName, e.ArabicName ?? string.Empty, e.Department ?? string.Empty, e.Designation ?? string.Empty, e.Branch ?? string.Empty, e.ManagerEmployeeId, e.Status, e.ProfileCompletenessScore, e.VisaExpiryDate, e.PassportExpiryDate, e.ReadinessState, e.ActivationBlockersCount, e.PublicId))
+        var items = await query.OrderBy(e => e.EmployeeCode).Skip((page - 1) * pageSize).Take(pageSize)
+            .Select(e => new EmployeeListItemDto(e.Id, e.EmployeeCode, e.FullName, e.ArabicName ?? string.Empty, e.Department ?? string.Empty, e.Designation ?? string.Empty, string.IsNullOrEmpty(e.Branch) ? (_db.Branches.Where(b => b.Id == e.BranchId).Select(b => b.NameEn).FirstOrDefault() ?? string.Empty) : e.Branch, e.ManagerEmployeeId, e.Status, e.ProfileCompletenessScore, e.VisaExpiryDate, e.PassportExpiryDate, e.ReadinessState, e.ActivationBlockersCount, e.PublicId))
             .ToListAsync(cancellationToken);
         return Ok(new PagedResult<EmployeeListItemDto>(items, total, page, pageSize));
     }
@@ -301,6 +306,35 @@ public class EmployeesController : ControllerBase
         var positionCodes = await _db.Positions.AsNoTracking()
             .Where(p => p.TenantId == tenantId && !p.IsDeleted)
             .ToDictionaryAsync(p => p.Id, p => p.Code, ct);
+        // ORG PLACEMENT — resolved from the FKs, not hardcoded blank. CompanyLegalName, BranchCode,
+        // DepartmentCode, ManagerEmployeeCode and SupervisorEmployeeCode used to be emitted as
+        // string.Empty and ManagerEmail/SupervisorEmail were absent from the value map entirely (the only
+        // two of the 92 headers missing), so an export → re-import round trip reassigned every person to
+        // the importer's default company and erased every reporting line. Each lookup is the exact shape
+        // the importer resolves BY (EmployeeImportRowResolver: company by LegalNameEn, branch/department
+        // by Code; Pass 2: manager/supervisor by employee code, email as fallback), so the file a customer
+        // exports can be re-imported without moving anybody.
+        var companyNames = await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId)
+            .ToDictionaryAsync(c => c.Id, c => c.LegalNameEn, ct);
+        var branchCodes = await _db.Branches.AsNoTracking()
+            .Where(b => b.TenantId == tenantId && !b.IsDeleted)
+            .ToDictionaryAsync(b => b.Id, b => b.Code, ct);
+        var departmentCodes = await _db.Departments.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && !d.IsDeleted)
+            .ToDictionaryAsync(d => d.Id, d => d.Code, ct);
+        // Line managers/supervisors are frequently OUTSIDE the exported set (a scoped export, a single
+        // department), so they are loaded by the referenced IDs rather than read off `emps`.
+        var hierarchyIds = emps
+            .SelectMany(e => new[] { e.ManagerEmployeeId, e.SupervisorEmployeeId })
+            .Where(x => x.HasValue).Select(x => x!.Value).Distinct().ToList();
+        var hierarchyRefs = hierarchyIds.Count == 0
+            ? new Dictionary<int, (string Code, string Email)>()
+            : (await _db.Employees.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && hierarchyIds.Contains(x.Id))
+                .Select(x => new { x.Id, x.EmployeeCode, x.WorkEmail })
+                .ToListAsync(ct))
+                .ToDictionary(x => x.Id, x => (Code: x.EmployeeCode, Email: x.WorkEmail));
         var headers = EmployeeCsvHeaders;
         var rows = emps.Select(e =>
         {
@@ -308,6 +342,11 @@ public class EmployeesController : ControllerBase
             salaries.TryGetValue(e.Id, out var salary);
             var structureCode = salary is not null && structures.TryGetValue(salary.SalaryStructureId, out var structure) ? structure.Code : string.Empty;
             var positionCode = e.PositionId is not null && positionCodes.TryGetValue(e.PositionId.Value, out var pc) ? pc : string.Empty;
+            var companyLegalName = e.CompanyId is not null && companyNames.TryGetValue(e.CompanyId.Value, out var cn) ? cn : string.Empty;
+            var branchCode = e.BranchId is not null && branchCodes.TryGetValue(e.BranchId.Value, out var bc) ? bc : string.Empty;
+            var departmentCode = e.DepartmentId is not null && departmentCodes.TryGetValue(e.DepartmentId.Value, out var dc) ? dc : string.Empty;
+            var manager = e.ManagerEmployeeId is not null && hierarchyRefs.TryGetValue(e.ManagerEmployeeId.Value, out var mgr) ? mgr : default;
+            var supervisor = e.SupervisorEmployeeId is not null && hierarchyRefs.TryGetValue(e.SupervisorEmployeeId.Value, out var sup) ? sup : default;
             // Value map keyed by CSV header — the row is projected in registry order below, so a header
             // added/reordered in the catalog can never misalign the export (replaces the old positional
             // object[] that had to be kept in lock-step with the header array by hand).
@@ -315,8 +354,8 @@ public class EmployeesController : ControllerBase
             var v = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
             {
                 ["EmployeeCode"] = e.EmployeeCode,
-                ["CompanyLegalName"] = string.Empty,
-                ["BranchCode"] = string.Empty,
+                ["CompanyLegalName"] = companyLegalName,
+                ["BranchCode"] = branchCode,
                 ["CostCenterCode"] = e.CostCenter,
                 ["WorkLocation"] = e.WorkLocation,
                 ["FullName"] = e.FullName,
@@ -333,15 +372,17 @@ public class EmployeesController : ControllerBase
                 ["EmergencyContactName"] = e.EmergencyContactName,
                 ["EmergencyContactPhone"] = e.EmergencyContactPhone,
                 ["Department"] = e.Department,
-                ["DepartmentCode"] = string.Empty,
+                ["DepartmentCode"] = departmentCode,
                 ["Designation"] = e.Designation,
                 ["JobTitle"] = e.JobTitle,
                 ["EmploymentType"] = e.EmploymentType,
                 ["ContractType"] = e.ContractType,
                 ["Grade"] = e.Grade,
                 ["PositionCode"] = positionCode,
-                ["ManagerEmployeeCode"] = string.Empty,
-                ["SupervisorEmployeeCode"] = string.Empty,
+                ["ManagerEmployeeCode"] = manager.Code ?? string.Empty,
+                ["ManagerEmail"] = manager.Email ?? string.Empty,
+                ["SupervisorEmployeeCode"] = supervisor.Code ?? string.Empty,
+                ["SupervisorEmail"] = supervisor.Email ?? string.Empty,
                 ["Status"] = e.Status,
                 ["JoiningDate"] = e.JoiningDate.ToString("yyyy-MM-dd"),
                 ["ConfirmationDate"] = Iso(e.ConfirmationDate),
@@ -2002,7 +2043,9 @@ public class EmployeesController : ControllerBase
                     });
             }
 
-            var employee = await employeeManagement.CreateAsync(tenantId, request, Context(), cancellationToken);
+            // CanViewSensitive() — the write response is a read of the record and obeys the same mask
+            // gate as GET {id}; see IEmployeeManagementService.CreateAsync.
+            var employee = await employeeManagement.CreateAsync(tenantId, request, Context(), cancellationToken, CanViewSensitive());
             return CreatedAtAction(nameof(Get), new { id = employee.Id }, employee);
         }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
@@ -2670,6 +2713,14 @@ public class EmployeesController : ControllerBase
                           + "No change was applied. Field keys are case-sensitive.",
                 unknownFields,
             });
+        // A manager id is checked for tenant, data scope and reporting cycles BEFORE any column is touched —
+        // the same three rules PUT {id}/manager enforces (see EmployeeChangeApplier.ValidateManagerChangeAsync).
+        if (await EmployeeChangeApplier.ValidateManagerChangeAsync(
+                _db, employee, request.Changes, scope.CanAccessEmployee, cancellationToken) is { } managerRejection)
+        {
+            if (managerRejection.OutOfScope) return Forbid();
+            return UnprocessableEntity(new { error = "invalid_manager", message = managerRejection.Message + " No change was applied." });
+        }
         var sensitive = request.Changes.Keys.Where(SensitiveFields.Contains).ToList();
         // Establishment integrity: the free-text department/designation/branch cases in
         // ApplyChanges are resolved to IDs (shared resolver — unresolvable name ⇒ 422) and any
@@ -2695,6 +2746,9 @@ public class EmployeesController : ControllerBase
                 if (immediateChanges.Count > 0)
                 {
                     ApplyChanges(employee, immediateChanges);
+                    // Keys stored on the payroll profile (socialInsuranceReference) have no home on
+                    // Employee — written here, in the same unit of work as the columns above.
+                    await EmployeeChangeApplier.ApplyPayrollProfileAsync(_db, employee, immediateChanges, GetUserId(), cancellationToken);
                     await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, immediateChanges.Keys, cancellationToken);
                     await ApplyWorkEmailPatchAsync(employee, immediateChanges.Keys, priorWorkEmail, cancellationToken);
                     employee.UpdatedAtUtc = DateTime.UtcNow;
@@ -2753,6 +2807,7 @@ public class EmployeesController : ControllerBase
             }
 
             ApplyChanges(employee, request.Changes);
+            await EmployeeChangeApplier.ApplyPayrollProfileAsync(_db, employee, request.Changes, GetUserId(), cancellationToken);
             await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, request.Changes.Keys, cancellationToken);
             await ApplyWorkEmailPatchAsync(employee, request.Changes.Keys, priorWorkEmail, cancellationToken);
             employee.UpdatedAtUtc = DateTime.UtcNow;
@@ -2790,7 +2845,7 @@ public class EmployeesController : ControllerBase
             // mint a gratuity-determining fact. It is dropped rather than rejected so ordinary status
             // changes keep working unchanged; a caller who needs to state it uses /terminate.
             var employee = await employeeManagement.ChangeStatusAsync(
-                RequireTenant(), id, request with { SeparationType = null }, Context(), cancellationToken);
+                RequireTenant(), id, request with { SeparationType = null }, Context(), cancellationToken, CanViewSensitive());
             return employee is null ? NotFound() : Ok(employee);
         }
         // Readiness block MUST be caught before InvalidOperationException (which would swallow the
@@ -2885,7 +2940,7 @@ public class EmployeesController : ControllerBase
     {
         try
         {
-            var employee = await employeeManagement.ActivateAsync(RequireTenant(), id, request, Context(), cancellationToken);
+            var employee = await employeeManagement.ActivateAsync(RequireTenant(), id, request, Context(), cancellationToken, CanViewSensitive());
             return employee is null ? NotFound() : Ok(employee);
         }
         catch (EmployeeActivationBlockedException ex) { await Audit("employee.activation_blocked", "Employee", id.ToString(), cancellationToken); return this.NotActivatable(ex); }
@@ -2899,7 +2954,7 @@ public class EmployeesController : ControllerBase
     {
         try
         {
-            var employee = await employeeManagement.TerminateAsync(RequireTenant(), id, request, Context(), cancellationToken);
+            var employee = await employeeManagement.TerminateAsync(RequireTenant(), id, request, Context(), cancellationToken, CanViewSensitive());
             return employee is null ? NotFound() : Ok(employee);
         }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
@@ -3304,6 +3359,25 @@ public class EmployeesController : ControllerBase
         var (cancelledApprovals, reroutedApprovals) = await CancelPendingApprovalWorkAsync(
             tenantId, id, employee.UserAccountId, deletedAt, "Employee record was deleted before approval.", cancellationToken);
 
+        // ── CREDENTIAL REVOCATION ────────────────────────────────────────────────────────────────
+        // Setting Status = "Inactive" above removes the person from every list, but by itself it
+        // closes NO credential edge: their self-service login still authenticated and their live
+        // refresh tokens kept minting access tokens after DELETE /api/employees/{id}. "Inactive" is
+        // exactly the status ChangeStatusAsync revokes for, so this reuses that ONE primitive rather
+        // than growing a second, weaker revocation. Staged (no ExecuteUpdate, no SaveChanges of its
+        // own) so it flushes in the SAME SaveChanges as the delete — a revocation cannot commit
+        // without the delete, and the delete cannot commit without the revocation.
+        var (credentialLinks, credentialUsers, credentialUserIds) =
+            await EmployeeManagementService.LoadCredentialGraphAsync(_db, tenantId, id, employee.UserAccountId, cancellationToken);
+        var revokedCredentials = await EmployeeManagementService.StageCredentialInvalidationAsync(
+            _db, credentialLinks, credentialUsers, credentialUserIds,
+            loginDisabledReason: "Employee record was deleted.",
+            effectiveAtUtc: deletedAt,
+            actorUserId: context.UserId,
+            actorIpAddress: context.IpAddress,
+            bulkTokenUpdates: false,
+            cancellationToken);
+
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("employees.deleted", "Employee", id.ToString(), context, JsonSerializer.Serialize(new
         {
@@ -3312,6 +3386,14 @@ public class EmployeesController : ControllerBase
             Reason = reason,
             CancelledApprovalRequests = cancelledApprovals,
             ReroutedApprovalRequests = reroutedApprovals,
+            Credentials = new
+            {
+                links = revokedCredentials.Links,
+                users = revokedCredentials.Users,
+                passwordResets = revokedCredentials.PasswordResets,
+                mfaChallenges = revokedCredentials.MfaChallenges,
+                refreshTokens = revokedCredentials.RefreshTokens
+            },
             ApproverDeletionFallback = "Pending approvals assigned to the deleted approver are rerouted to the HR Manager role queue; approvals for the deleted employee are cancelled."
         }), cancellationToken);
 
@@ -3551,6 +3633,10 @@ public class EmployeesController : ControllerBase
         var changes = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.ProposedChangesJson) ?? new();
         var priorDeptId = employee.DepartmentId;
         var priorDesigId = employee.DesignationId;
+        // managerEmployeeId is not a sensitive key, so a change request only carries one if it was stored by an
+        // older build; it is still checked here, because every apply path goes through the same rules.
+        if (await EmployeeChangeApplier.ValidateManagerChangeAsync(_db, employee, changes, null, cancellationToken) is { } managerRejection)
+            return UnprocessableEntity(new { error = "invalid_manager", message = managerRejection.Message + " The change remains pending." });
         try
         {
             // The payload was validated against EditableEmployeeFields when the change was REQUESTED, so an
@@ -3561,6 +3647,7 @@ public class EmployeesController : ControllerBase
                 _logger?.LogWarning(
                     "Approved employee change {ChangeId} for employee {EmployeeId} carried unrecognised field(s) {UnknownFields}; those values were NOT applied.",
                     change.Id, employee.Id, string.Join(", ", unknownApproved));
+            await EmployeeChangeApplier.ApplyPayrollProfileAsync(_db, employee, changes, approverId, cancellationToken);
             await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, changes.Keys, cancellationToken);
             // Keep the payroll profile's bank columns in step with the employee scalar so an IBAN fixed
             // via the checklist actually reaches the WPS/payroll run (Δ13 / P1-1).
@@ -3810,12 +3897,39 @@ public class EmployeesController : ControllerBase
         return Ok(await employeeManagement.CheckDocumentExpiryAsync(RequireTenant(), cancellationToken));
     }
 
+    /// <summary>
+    /// Natural-language roster insight. This is a DIRECTORY READ dressed as a question, so it carries the
+    /// EXACT authorization of the People list (<see cref="Search"/>): the same six roles at the attribute,
+    /// and the same <c>_scopeService.ResolveAsync</c> + entity-scope company boundary on the query.
+    ///
+    /// Before this it was a bare [Authorize] over <c>_db.Employees.Where(TenantId == …)</c>, so any
+    /// authenticated principal — an ESS-only employee included — could page out up to 50 colleagues per
+    /// question (name, department, designation, branch, manager, status, visa/passport expiry), and
+    /// <c>?query=bank</c> enumerated exactly who has no IBAN on file. The projection is the non-sensitive
+    /// <see cref="EmployeeListItemDto"/>, which is why the fix is a scope gate rather than a mask.
+    /// </summary>
     [HttpGet("ai/insights")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer,Manager,Auditor")]
     public async Task<ActionResult<EmployeeAiResponseDto>> AiInsights([FromQuery] string query, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
+        var entityScope = this.GetEntityScope();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
+
         var normalized = (query ?? string.Empty).ToLowerInvariant();
-        var employees = _db.Employees.Where(x => x.TenantId == tenantId);
+        // Same base predicate as the People list: tenant, not soft-deleted, not a former employee.
+        var employees = _db.Employees.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && !x.IsDeleted && !ExitEmployeeStatuses.Exit.Contains(x.Status));
+        // DATA SCOPE: a Manager/Supervisor sees their reporting tree, an unscoped caller sees nothing.
+        if (!scope.IsUnrestricted)
+            employees = employees.Where(x => scope.AllowedEmployeeIds!.Contains(x.Id));
+        // COMPANY BOUNDARY: a company-scoped caller never sees a sibling company; a null CompanyId is
+        // invisible to them (the poison-default rule the People list applies).
+        if (!entityScope.IsGroupLevel)
+        {
+            var accessibleIds = entityScope.AccessibleCompanyIds;
+            employees = employees.Where(x => x.CompanyId.HasValue && accessibleIds.Contains(x.CompanyId.Value));
+        }
         var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
         if (normalized.Contains("iqama") || normalized.Contains("visa") || normalized.Contains("expiry"))
         {
@@ -4252,107 +4366,30 @@ public class EmployeesController : ControllerBase
         "emiratesId", "emiratesIdExpiryDate", "laborCardNumber", "visaFileNumber", "qid", "qidExpiryDate",
         "workPermitNumber", "workPermitIssueDate", "civilId", "civilIdExpiryDate", "residencyNumber",
         "residencyIssueDate", "idNumber", "qiwaContractNumber", "sponsorName", "terminationReason",
+        // Stored on EmployeePayrollProfile, not on Employee (registry binding
+        // `payrollProfile.socialInsuranceReference`). It is a fail-closed PAY gate in five GCC branches
+        // — GPSSA/GRSIA/PIFSS/SPF/SIO — yet it had NO write path outside CSV import, so every
+        // Bahraini-company employee and every AE/QA/KW/OM national was permanently payroll-blocked on a
+        // field the readiness checklist told the user to fix "in profile". Applied by
+        // EmployeeChangeApplier.ApplyPayrollProfileAsync, which every apply path runs.
+        "socialInsuranceReference",
     };
 
     /// <summary>
-    /// Applies an edit-modal patch and RETURNS the keys it did not recognise. The switch used to have no
-    /// <c>default</c> arm, so an unknown key was dropped in silence: `emiratesIdExpiryDate`,
-    /// `qidExpiryDate` and `civilIdExpiryDate` are fail-closed PAY gates, so an AE/QA/KW/OM/BH employee
-    /// could be payroll-blocked on a wrong expiry with no way to correct it — the save returned 200 and
-    /// changed nothing. `idNumber` (activate gate) and `qiwaContractNumber` behaved the same, the latter
-    /// only AFTER an approver had approved it, since it routes through <see cref="SensitiveFields"/>.
+    /// Applies an edit-modal patch and RETURNS the keys it did not recognise, by delegating to the ONE
+    /// shared applier — <see cref="EmployeeChangeApplier"/> — that EVERY apply path now goes through
+    /// (this controller's PUT and approve, plus ApprovalWorkflowService's generic decide). The approval
+    /// path used to carry a hand-copied duplicate of this switch which had already lost six keys and had
+    /// no <c>default</c> arm, so an approved change could be discarded in silence.
     /// Callers MUST act on the returned list: <see cref="UpdateEmployee"/> rejects up front,
     /// <see cref="ApproveChange"/> logs (its payload was already validated when it was requested, so
     /// refusing there would strand an in-flight approval).
+    /// Keys stored on the payroll profile (<see cref="EmployeeChangeApplier.PayrollProfileKeys"/>) are
+    /// recognised here and written by <see cref="EmployeeChangeApplier.ApplyPayrollProfileAsync"/>, which
+    /// every caller runs in the same unit of work.
     /// </summary>
     private IReadOnlyList<string> ApplyChanges(Employee employee, Dictionary<string, JsonElement> changes)
-    {
-        var unknown = new List<string>();
-        foreach (var (field, value) in changes)
-        {
-            switch (field)
-            {
-                case "englishName":
-                    employee.EnglishName = value.GetString() ?? employee.EnglishName;
-                    employee.FullName = employee.EnglishName;
-                    break;
-                case "arabicName": employee.ArabicName = value.GetString() ?? employee.ArabicName; break;
-                case "preferredName": employee.PreferredName = value.GetString() ?? employee.PreferredName; break;
-                case "gender": employee.Gender = value.GetString() ?? employee.Gender; break;
-                case "nationality": employee.Nationality = value.GetString() ?? employee.Nationality; break;
-                case "personalEmail": employee.PersonalEmail = value.GetString() ?? employee.PersonalEmail; break;
-                case "workEmail": employee.WorkEmail = value.GetString() ?? employee.WorkEmail; break;
-                case "phone": employee.Phone = value.GetString() ?? employee.Phone; break;
-                case "jobTitle": employee.JobTitle = value.GetString() ?? employee.JobTitle; break;
-                case "employmentType": employee.EmploymentType = value.GetString() ?? employee.EmploymentType; break;
-                case "joiningDate":
-                    if (value.ValueKind == JsonValueKind.String && DateTime.TryParse(value.GetString(), out var joining))
-                        employee.JoiningDate = DateTime.SpecifyKind(joining, DateTimeKind.Utc);
-                    break;
-                case "department": employee.Department = value.GetString() ?? employee.Department; break;
-                case "designation": employee.Designation = value.GetString() ?? employee.Designation; break;
-                case "branch": employee.Branch = value.GetString() ?? employee.Branch; break;
-                case "workLocation": employee.WorkLocation = value.GetString() ?? employee.WorkLocation; break;
-                case "managerEmployeeId": employee.ManagerEmployeeId = value.ValueKind == JsonValueKind.Null ? null : value.GetInt32(); break;
-                case "dateOfBirth": employee.DateOfBirth = ReadDateOnly(value); break;
-                case "maritalStatus": employee.MaritalStatus = value.GetString() ?? employee.MaritalStatus; break;
-                case "emergencyContactName": employee.EmergencyContactName = value.GetString() ?? employee.EmergencyContactName; break;
-                case "emergencyContactPhone": employee.EmergencyContactPhone = value.GetString() ?? employee.EmergencyContactPhone; break;
-                case "contractType": employee.ContractType = value.GetString() ?? employee.ContractType; break;
-                case "grade": employee.Grade = value.GetString() ?? employee.Grade; break;
-                case "costCenter": employee.CostCenter = value.GetString() ?? employee.CostCenter; break;
-                case "salary": employee.Salary = value.GetDecimal(); break;
-                case "bankName": employee.BankName = value.GetString() ?? employee.BankName; break;
-                case "bankIban": employee.BankIban = value.GetString() ?? employee.BankIban; break;
-                case "wpsBankDetails": employee.WpsBankDetails = value.GetString() ?? employee.WpsBankDetails; break;
-                case "passportNumber": employee.PassportNumber = value.GetString() ?? employee.PassportNumber; break;
-                case "passportIssueDate": employee.PassportIssueDate = ReadDateOnly(value); break;
-                case "passportExpiryDate": employee.PassportExpiryDate = ReadDateOnly(value); break;
-                case "visaNumber": employee.VisaNumber = value.GetString() ?? employee.VisaNumber; break;
-                case "visaIssueDate": employee.VisaIssueDate = ReadDateOnly(value); break;
-                case "visaExpiryDate": employee.VisaExpiryDate = ReadDateOnly(value); break;
-                case "iqamaNumber": employee.IqamaNumber = value.GetString() ?? employee.IqamaNumber; break;
-                // IqamaExpiry was readable and CSV-importable but had no edit path: it is exported at
-                // the employee-detail projection and read by both CSV importers, yet ApplyChanges had
-                // no case for it. GccReadinessFloor treats it as a fail-closed PAY gate for non-GCC
-                // expats, so an employee whose iqama expiry was wrong could be blocked from payroll
-                // with no supported way to correct it. Mirrors passportExpiryDate directly above.
-                case "iqamaExpiryDate": employee.IqamaExpiryDate = ReadDateOnly(value); break;
-                case "muqeemNumber": employee.MuqeemNumber = value.GetString() ?? employee.MuqeemNumber; break;
-                case "gosiReference": employee.GosiReference = value.GetString() ?? employee.GosiReference; break;
-                case "emiratesId": employee.EmiratesId = value.GetString() ?? employee.EmiratesId; break;
-                case "laborCardNumber": employee.LaborCardNumber = value.GetString() ?? employee.LaborCardNumber; break;
-                case "visaFileNumber": employee.VisaFileNumber = value.GetString() ?? employee.VisaFileNumber; break;
-                case "qid": employee.Qid = value.GetString() ?? employee.Qid; break;
-                case "workPermitNumber": employee.WorkPermitNumber = value.GetString() ?? employee.WorkPermitNumber; break;
-                case "workPermitIssueDate": employee.WorkPermitIssueDate = ReadDateOnly(value); break;
-                case "civilId": employee.CivilId = value.GetString() ?? employee.CivilId; break;
-                case "residencyNumber": employee.ResidencyNumber = value.GetString() ?? employee.ResidencyNumber; break;
-                case "residencyIssueDate": employee.ResidencyIssueDate = ReadDateOnly(value); break;
-                // The five (six with sponsorName) keys the modal emitted into a switch that had no case for
-                // them. All mirror `iqamaExpiryDate` above, which already did the right thing for Saudi
-                // Arabia only; the identical hole was left open for the other five GCC states.
-                case "emiratesIdExpiryDate": employee.EmiratesIdExpiryDate = ReadDateOnly(value); break;   // AE pay gate
-                case "qidExpiryDate": employee.QidExpiryDate = ReadDateOnly(value); break;                 // QA pay gate
-                case "civilIdExpiryDate": employee.CivilIdExpiryDate = ReadDateOnly(value); break;         // KW/OM/BH pay gate
-                case "idNumber": employee.IdNumber = value.GetString() ?? employee.IdNumber; break;        // SA national Hawiyya, activate gate
-                case "qiwaContractNumber": employee.QiwaContractNumber = value.GetString() ?? employee.QiwaContractNumber; break;
-                // Emitted by the server catalogue for every expat (registry `SponsorName`, compliance key
-                // `sponsor`); unreachable while the catalogue was dead, reachable the moment it was fixed.
-                case "sponsorName": employee.SponsorName = value.GetString() ?? employee.SponsorName; break;
-                case "terminationReason": employee.TerminationReason = value.GetString() ?? employee.TerminationReason; break;
-                // NEVER add a silent fall-through here. An unrecognised key is reported, not dropped.
-                default: unknown.Add(field); break;
-            }
-        }
-        return unknown;
-    }
-
-    private static DateOnly? ReadDateOnly(JsonElement value)
-    {
-        if (value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined) return null;
-        return DateOnly.TryParse(value.GetString(), out var parsed) ? parsed : null;
-    }
+        => EmployeeChangeApplier.Apply(employee, changes);
 
     private async Task AddHistory(Employee employee, string eventType, DateOnly effectiveDate, CancellationToken cancellationToken)
     {
