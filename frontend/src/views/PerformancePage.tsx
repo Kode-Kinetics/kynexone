@@ -4,6 +4,7 @@ import { InfoTip } from '../components/InfoTip';
 import { EmployeeSearchSelect } from '../components/EmployeeSearchSelect';
 import type { EmployeeSelection } from '../components/EmployeeSearchSelect';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
+import { useAuth } from '../contexts/AuthContext';
 import { formatCalendarDate } from '../lib/calendarDate';
 import { useEffect, useState } from 'react';
 import {
@@ -699,6 +700,8 @@ function CreateGoalModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
   const save = async () => {
     if (!selectedEmployee) { setError('Please select an employee.'); return; }
     if (!form.title || !form.targetValue) { setError('Title and Target Value are required.'); return; }
+    const weight = Number(form.weight);
+    if (!(weight > 0 && weight <= 100)) { setError('Weight is this goal\'s share of the scorecard: enter a percentage above 0 and up to 100.'); return; }
     setSaving(true); setError('');
     try {
       await goalsApi.create({
@@ -707,11 +710,11 @@ function CreateGoalModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
         kpiType: form.kpiType, measurementUnit: form.measurementUnit,
         baselineValue: Number(form.baselineValue),
         targetValue: Number(form.targetValue), actualValue: Number(form.actualValue),
-        weight: Number(form.weight), priority: form.priority,
+        weight, priority: form.priority,
         startDate: form.startDate || undefined, dueDate: form.dueDate || undefined,
       });
       onSaved();
-    } catch { setError('Failed to create goal.'); setSaving(false); }
+    } catch (e) { setError(goalApiMessage(e, 'Failed to create goal.')); setSaving(false); }
   };
 
   return (
@@ -760,6 +763,15 @@ function CreateGoalModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
   );
 }
 
+/** The server's reason for refusing a goal action, so the user sees why rather than "failed". */
+function goalApiMessage(e: unknown, fallback: string) {
+  return (e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? fallback;
+}
+
+/** Mirrors the roles POST /api/performance/goals/{id}/approve accepts; a Manager is further checked
+ *  against the employee's reporting line on the server, and a refusal is shown with its reason. */
+const GOAL_APPROVER_ROLES = ['Admin', 'HR Manager', 'Manager'];
+
 const PRIORITY_BADGE: Record<string, string> = {
   High: 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400',
   Medium: 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400',
@@ -767,6 +779,11 @@ const PRIORITY_BADGE: Record<string, string> = {
 };
 
 function GoalsTab() {
+  const { hasRole } = useAuth();
+  const canApproveGoals = GOAL_APPROVER_ROLES.some(hasRole);
+  const [approvingId, setApprovingId] = useState<string | null>(null);
+  const [goalActionError, setGoalActionError] = useState('');
+  const [progressError, setProgressError] = useState('');
   const [goals, setGoals] = useState<EmployeeGoal[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
@@ -783,10 +800,20 @@ function GoalsTab() {
   };
   useEffect(load, [statusFilter]);
 
+  // A goal is agreed before it is measured: approving a draft makes it Active, which is what opens
+  // progress updates. The server refuses progress on anything that is not Active.
+  const approveGoal = async (id: string) => {
+    setApprovingId(id); setGoalActionError('');
+    try { await goalsApi.approve(id); load(); }
+    catch (e) { setGoalActionError(goalApiMessage(e, 'The goal could not be approved. Check that you approve for this employee.')); }
+    finally { setApprovingId(null); }
+  };
+
   const updateProgress = async () => {
     if (!progressGoal || !progressVal) return;
+    setProgressError('');
     try { await goalsApi.updateProgress(progressGoal.id, Number(progressVal), progressNotes); setProgressGoal(null); load(); }
-    catch { alert('Update failed.'); }
+    catch (e) { setProgressError(goalApiMessage(e, 'Progress could not be saved.')); }
   };
 
   const confirmDelete = async () => {
@@ -807,6 +834,7 @@ function GoalsTab() {
         <p className="flex-1 text-sm text-slate-500 dark:text-slate-400">{goals.length} goal{goals.length !== 1 ? 's' : ''}</p>
         <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> Add Goal</button>
       </div>
+      {goalActionError && <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">{goalActionError}</p>}
 
       {loading ? <p className="text-sm text-slate-400">Loading…</p> : goals.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
@@ -834,14 +862,24 @@ function GoalsTab() {
                 <div className="flex shrink-0 items-center gap-2">
                   <span className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium ${PRIORITY_BADGE[g.priority] ?? PRIORITY_BADGE.Medium}`}>{g.priority}</span>
                   {statusBadge(g.status)}
+                  {g.status === 'Draft' && canApproveGoals && (
+                    <button type="button" className={btn.primary} disabled={approvingId !== null} onClick={() => approveGoal(g.id)}>
+                      {approvingId === g.id ? 'Approving…' : 'Approve goal'}
+                    </button>
+                  )}
                   {g.status === 'Active' && (
-                    <button type="button" className={btn.ghost} onClick={() => { setProgressGoal(g); setProgressVal(String(g.actualValue)); setProgressNotes(''); }}>Update</button>
+                    <button type="button" className={btn.ghost} onClick={() => { setProgressGoal(g); setProgressVal(String(g.actualValue)); setProgressNotes(''); setProgressError(''); }}>Update progress</button>
                   )}
                   {!g.managerApproved && (
                     <button type="button" className="rounded px-2 py-1 text-xs text-rose-600 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-900/20" onClick={() => setDeleteId(g.id)}>Delete</button>
                   )}
                 </div>
               </div>
+              {g.status === 'Draft' && (
+                <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                  Next step: {canApproveGoals ? 'approve this goal to make it active' : 'the employee\'s manager or HR approves this goal'} — progress can be recorded once it is active.
+                </p>
+              )}
             </div>
           ))}
         </div>
@@ -855,6 +893,7 @@ function GoalsTab() {
               <input type="number" title="New Actual Value" className={inp} value={progressVal} onChange={e => setProgressVal(e.target.value)} />
             </Field>
             <Field label="Notes"><textarea className={inp} value={progressNotes} onChange={e => setProgressNotes(e.target.value)} /></Field>
+            {progressError && <p role="alert" className="text-xs text-rose-600 dark:text-rose-400">{progressError}</p>}
             <div className="flex justify-end gap-2">
               <button type="button" className={btn.ghost} onClick={() => setProgressGoal(null)}>Cancel</button>
               <button type="button" className={btn.primary} onClick={updateProgress}>Save Progress</button>
