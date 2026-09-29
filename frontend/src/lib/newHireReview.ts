@@ -104,7 +104,7 @@ type AxiosLike = {
  * Why a request failed, in words an operator can act on. Local equivalent of
  * requestFailureReason (src/lib/requestFailure.ts, PR #121, not on this branch's base). One
  * difference: a 403 carries the server's own reason when it gives one, because the draft endpoints
- * use 403 for maker-checker ("another HR approver has to decide it"), which is actionable.
+ * use 403 for maker-checker ("a second user with employees.approve must activate this hire"), which is actionable.
  */
 export function draftRequestFailureReason(err: unknown): string {
   const e = err as AxiosLike;

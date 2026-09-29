@@ -33,8 +33,8 @@ test.describe('New hires — review rules', () => {
   test('each row offers exactly one next action, and it is the right one', () => {
     expect(nextDraftAction(row()).kind).toBe('review');
     // The maker never gets the decision; they are told who has to act.
-    const mine = nextDraftAction(row({ isMine: true, canApprove: false, approveBlockedReason: 'You created this draft, so another HR approver has to approve it.' }));
-    expect(mine).toMatchObject({ kind: 'waiting', reason: expect.stringContaining('another HR approver') });
+    const mine = nextDraftAction(row({ isMine: true, canApprove: false, approveBlockedReason: 'You made this hire. A second user with employees.approve must activate this hire.' }));
+    expect(mine).toMatchObject({ kind: 'waiting', reason: expect.stringContaining('A second user with employees.approve') });
     // A draft still being prepared is sent by its maker, not approved around them.
     expect(nextDraftAction(row({ status: 'Draft', isMine: true, canApprove: false })).kind).toBe('submit');
     // ...and a checker is not offered a decision on a draft nobody has sent yet.
@@ -67,15 +67,15 @@ test.describe('New hires — review rules', () => {
     expect(approveDisabledReason(true, null, 2)).toContain('Fix the 2 problems');
     expect(approveDisabledReason(true, null, 1)).toContain('Fix the problem');
     expect(approveDisabledReason(true, null, null)).toContain('Checking');
-    expect(approveDisabledReason(false, 'You changed this draft, so another HR approver has to approve it.', 0))
-      .toContain('You changed this draft');
+    expect(approveDisabledReason(false, 'You made this hire. A second user with employees.approve must activate this hire.', 0))
+      .toContain('A second user with employees.approve');
   });
 
   test('a failure is reported as a reason, never as an empty result', () => {
     expect(draftRequestFailureReason({ isAxiosError: true })).toContain('could not be reached');
     expect(draftRequestFailureReason({ response: { status: 500 } })).toContain('HTTP 500');
-    expect(draftRequestFailureReason({ response: { status: 403, data: { message: 'another HR approver has to approve or reject it.' } } }))
-      .toContain('another HR approver');
+    expect(draftRequestFailureReason({ response: { status: 403, data: { message: 'A second user with employees.approve must activate this hire.' } } }))
+      .toContain('A second user with employees.approve');
     expect(draftRequestFailureReason({ response: { status: 403 } })).toBe('You do not have permission for this.');
     expect(isClosedDraftError({ response: { status: 409, data: { error: 'draft_closed' } } })).toBe(true);
     expect(isClosedDraftError({ response: { status: 409, data: { error: 'ESTABLISHMENT_BUDGET_EXCEEDED' } } })).toBe(false);
