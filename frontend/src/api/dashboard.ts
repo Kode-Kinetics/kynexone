@@ -101,6 +101,13 @@ export interface DashboardKpis {
   expiredDocuments: number;
   missingDocuments: number;
   qiwaEnabled: boolean;
+  /**
+   * Live payroll prerequisites for the caller's population, current month (same definitions as
+   * GET /api/payroll/readiness). Undefined from an API that predates them — then "unknown", never 0.
+   */
+  missingSalaryAssignments?: number;
+  /** Active employees with no IBAN on a live payroll profile. */
+  missingBankDetails?: number;
 }
 
 export interface HeatmapCell { date: string; rostered: number; attended: number; rate: number | null }

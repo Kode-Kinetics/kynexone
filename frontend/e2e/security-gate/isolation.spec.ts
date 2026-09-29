@@ -1,6 +1,7 @@
 import { test, expect, request as pwRequest, type APIRequestContext } from '@playwright/test';
 import fs from 'node:fs';
 import { BASE_URL, GROUP_SLUG, roleByKey, tokenPath } from './roles';
+import { collectAllPages, pageItems, pageTotal } from '../paging';
 
 /**
  * WAVE 1 B3 — the Chrome role and isolation security gate.
@@ -38,6 +39,23 @@ const codesFrom = (payload: any): string[] => {
   const rows = Array.isArray(payload) ? payload : payload?.items ?? payload?.data ?? [];
   return rows.map((r: any) => r.employeeCode ?? r.code ?? '').filter(Boolean);
 };
+
+/**
+ * Every employee code the API returns to this caller, across all pages. The API caps a page at 100
+ * rows, so a single `pageSize=200` request never saw row 101 onward: a leak there passed the gate.
+ * `status` is the first non-2xx page's status, or 200 if every page succeeded.
+ */
+async function allEmployeeCodes(api: APIRequestContext): Promise<{ status: number; codes: string[] }> {
+  let status = 0;
+  const rows = await collectAllPages(async (page, pageSize) => {
+    const resp = await api.get(`/api/employees?page=${page}&pageSize=${pageSize}`);
+    status = resp.status();
+    if (!resp.ok()) return { items: [], total: 0 };
+    const json = await resp.json();
+    return { items: pageItems(json), total: pageTotal(json) };
+  });
+  return { status, codes: codesFrom(rows) };
+}
 
 test.describe('Chrome security gate — identity boundaries', () => {
   test('a tenant user cannot reach platform administration (API and browser)', async ({ browser }) => {
@@ -113,9 +131,8 @@ test.describe('Chrome security gate — company isolation', () => {
   test('a company-scoped user sees only their own company (API)', async () => {
     const api = await apiAs('company-hr-dairy');
     try {
-      const resp = await api.get('/api/employees?pageSize=200');
-      expect(resp.status()).toBe(200);
-      const codes = codesFrom(await resp.json());
+      const { status, codes } = await allEmployeeCodes(api);
+      expect(status).toBe(200);
       expect(codes.length, 'the seeded company should have employees to compare against').toBeGreaterThan(0);
       expect(
         codes.filter(c => c.startsWith('ALM-BAKERY-KSA')),
@@ -132,10 +149,9 @@ test.describe('Chrome security gate — company isolation', () => {
     const bakeryId = await companyIdByCode('ALM-BAKERY-KSA');
     const api = await apiAs('company-hr-dairy', { 'X-Company-Id': bakeryId });
     try {
-      const resp = await api.get('/api/employees?pageSize=200');
-      expect([200, 403]).toContain(resp.status());
-      if (resp.status() === 200) {
-        const codes = codesFrom(await resp.json());
+      const { status, codes } = await allEmployeeCodes(api);
+      expect([200, 403]).toContain(status);
+      if (status === 200) {
         expect(
           codes.filter(c => c.startsWith('ALM-BAKERY-KSA')),
           'Selecting an unauthorized company widened the caller\'s scope instead of failing closed.',

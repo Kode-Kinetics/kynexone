@@ -2487,9 +2487,10 @@ public class PayrollController : ControllerBase
             {
                 // S1/A3 — the person dimension. DateOfBirth exists on Employee today and drives the
                 // age-based eligibility corollary (annuities and SANED cease at retirement age).
-                // SocialInsuranceFirstRegisteredOn has no column yet; null means UNKNOWN, and no pack
-                // may read unknown as "new entrant".
+                // F02 — the GOSI first-registration date resolves the person's cohort in the pack; null
+                // means UNKNOWN, and no pack may read unknown as "new entrant".
                 DateOfBirth = e.DateOfBirth,
+                SocialInsuranceFirstRegisteredOn = e.GosiFirstRegisteredOn,
             };
             var statutoryResult = await deductionCalc.CalculateAsync(statutoryInput, cancellationToken);
             if (priorStatutoryByEmp.Count > 0)
@@ -2734,6 +2735,10 @@ public class PayrollController : ControllerBase
                 // else. C3 emits NO EOSB, no notice pay, no leave encashment, no termination payable and
                 // no off-cycle settlement journal. Everything after PaidToDate is C1's.
                 IsFinalWageMonth = includesRecurringPay && proration.IsFinalWageMonth,
+                // F02 — the calculation explanation: the cohort and rate basis the statutory lines above
+                // were computed on, frozen with them. The validator judges THIS, not the live record.
+                GosiCohort = statutoryResult.SocialInsuranceCohort,
+                StatutoryBasis = statutoryResult.Basis,
             };
             slips.Add(slip);
             slip.CompanyId = company.Id;
@@ -3122,10 +3127,9 @@ public class PayrollController : ControllerBase
             // default — so an unseeded tenant keeps the 45,000 warning it has always had rather than
             // silently losing it.
             GosiCoveredWageCeiling                  = statutoryCeiling == decimal.MaxValue ? 0m : statutoryCeiling,
-            // S1/A3 — the cohort gap is announced unless the tenant has acknowledged it, and the
-            // retirement-age corollary is checked only when an age is configured.
-            EntrantCohortSchemeAcknowledged         = await Zayra.Api.Application.CountryPack.StatutoryFlag.ReadAsync(
-                _ruleReader, packCc, packJur, "gosi.new_entrant_scheme_acknowledged", eff, false, cancellationToken),
+            // S1/A3 — the retirement-age corollary is checked only when an age is configured. (The
+            // GOSI entrant cohort is judged per employee from the slips — F02 — so the tenant-wide
+            // gosi.new_entrant_scheme_acknowledged flag that used to silence it is no longer read.)
             GosiRetirementAgeYears                  = (int)(await _ruleReader.GetDecimalAsync(
                 packCc, packJur, "gosi.retirement_age_years", eff, tenantId, cancellationToken) ?? 0m),
         };
@@ -3930,9 +3934,6 @@ public class PayrollController : ControllerBase
             GosiCoveredWageCeiling                  = await _ruleReader.GetDecimalAsync(
                 "SAU", "KSA-mainland", "gosi.covered_wage_ceiling_sar",
                 new DateOnly(run.Year, run.Month, 1), tenantId, cancellationToken) ?? 45_000m,
-            EntrantCohortSchemeAcknowledged         = await Zayra.Api.Application.CountryPack.StatutoryFlag.ReadAsync(
-                _ruleReader, "SAU", "KSA-mainland", "gosi.new_entrant_scheme_acknowledged",
-                new DateOnly(run.Year, run.Month, 1), false, cancellationToken),
             GosiRetirementAgeYears                  = (int)(await _ruleReader.GetDecimalAsync(
                 "SAU", "KSA-mainland", "gosi.retirement_age_years",
                 new DateOnly(run.Year, run.Month, 1), tenantId, cancellationToken) ?? 0m),
@@ -9622,13 +9623,16 @@ public class PayrollController : ControllerBase
         };
 
         var completedSteps = steps.Count(s => s.Complete);
+        var prerequisites = await BuildPaymentPrerequisitesAsync(
+            tenantId, companyId, activeEmployeeQuery, targetYear, targetMonth, targetPeriodEnd, cancellationToken);
+        var isReadyForProcessing = hasComponents && hasStructures && coveragePercent >= 80;
         return Ok(new
         {
             Year = targetYear,
             Month = targetMonth,
             CompanyId = companyId,
             CompletionPercent = Math.Round(completedSteps * 100.0 / steps.Length, 0),
-            IsReadyForProcessing = hasComponents && hasStructures && coveragePercent >= 80,
+            IsReadyForProcessing = isReadyForProcessing,
             TotalActiveEmployees = totalActive,
             EmployeesWithSalary = assignedCount,
             SalaryCoveragePercent = coveragePercent,
@@ -9636,7 +9640,54 @@ public class PayrollController : ControllerBase
             PayrollRunStatus = run?.Status,
             Steps = steps,
             OffCycleRunCount = offCycleRunsForPeriod,   // POD-B2: additional runs in the period, if any
+            // Salary coverage says who CAN be calculated; this says who can actually be PAID. A run can
+            // be processed with gaps here, but its validation will then block approval on them.
+            IsReadyToPay = isReadyForProcessing && totalActive > 0
+                && prerequisites.BlockedEmployees == 0 && prerequisites.CompanyBlocking.Count == 0,
+            PaymentPrerequisites = prerequisites,
         });
+    }
+
+    /// <summary>
+    /// Per-employee payment prerequisites for the period, evaluated before any run exists
+    /// (see <see cref="PayrollPaymentPrerequisites"/>). Every query is tenant-filtered and bounded by
+    /// the same active-employee population the readiness counts use, so its numbers reconcile with
+    /// <c>TotalActiveEmployees</c> and <c>EmployeesWithSalary</c>.
+    /// </summary>
+    private async Task<PayrollPaymentPrerequisitesDto> BuildPaymentPrerequisitesAsync(
+        Guid tenantId, Guid? companyId, IQueryable<Employee> activeEmployeeQuery,
+        int year, int month, DateOnly periodEnd, CancellationToken ct)
+    {
+        var employees = await activeEmployeeQuery.AsNoTracking().OrderBy(e => e.EmployeeCode).ToListAsync(ct);
+        var employeeIds = employees.Select(e => e.Id).ToList();
+
+        var companies = await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted && (!companyId.HasValue || c.Id == companyId))
+            .ToListAsync(ct);
+
+        var withSalary = (await _db.EmployeeSalaryStructures.AsNoTracking()
+            .Where(s => s.TenantId == tenantId && s.IsActive && s.EffectiveDate <= periodEnd && employeeIds.Contains(s.EmployeeId))
+            .Select(s => s.EmployeeId).Distinct().ToListAsync(ct)).ToHashSet();
+
+        var profiles = await _db.EmployeePayrollProfiles.AsNoTracking()
+            .Where(p => p.TenantId == tenantId && !p.IsDeleted && employeeIds.Contains(p.EmployeeId))
+            .ToListAsync(ct);
+
+        // The ONE readiness evaluator's pay-block verdict — the same one the bank file refuses on.
+        var (hardBlocked, driftBlocked) = await ComputePayReadinessAsync(tenantId, employees, ct);
+        var payBlocked = hardBlocked.Concat(driftBlocked).ToHashSet();
+
+        // Attendance is only evidence once the period has begun; before that its absence means nothing.
+        var periodStart = new DateOnly(year, month, 1);
+        HashSet<int>? withAttendance = null;
+        if (periodStart <= DateOnly.FromDateTime(DateTime.UtcNow))
+            withAttendance = (await _db.AttendanceDailyRecords.AsNoTracking()
+                .Where(r => r.TenantId == tenantId && !r.IsDeleted && r.WorkDate >= periodStart && r.WorkDate <= periodEnd
+                         && employeeIds.Contains(r.EmployeeId))
+                .Select(r => r.EmployeeId).Distinct().ToListAsync(ct)).ToHashSet();
+
+        return PayrollPaymentPrerequisites.Evaluate(new PayrollPaymentPrerequisites.Input(
+            employees, companies, withSalary, profiles, payBlocked, withAttendance));
     }
 
     // ── Employee Salary Import / Export ───────────────────────────────────────────

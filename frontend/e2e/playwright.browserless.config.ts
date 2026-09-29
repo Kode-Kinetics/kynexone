@@ -5,7 +5,8 @@ export default defineConfig({
   // Source lints that need neither a browser nor the docker stack. rtl-logical-properties
   // is the RTL ratchet: it reads app/ and src/ and fails on a physical direction utility
   // that is not on its documented allow-list.
-  testMatch: /(ui-truthfulness-state|rtl-logical-properties|employee-create-country-gate)\.spec\.ts/,
+
+  testMatch: /(ui-truthfulness-state|rtl-logical-properties|employee-create-country-gate|toast-context-stability|calendar-date)\.spec\.ts/,
   fullyParallel: false,
   retries: 0,
   workers: 1,

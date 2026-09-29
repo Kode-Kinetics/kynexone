@@ -503,8 +503,17 @@ export interface AttentionItem {
   cta: string;
 }
 
-export function buildAttention(data: DashboardFull | null, insights: AIInsight[] | null, now = Date.now()): AttentionItem[] {
+export function buildAttention(
+  data: DashboardFull | null,
+  insights: AIInsight[] | null,
+  now = Date.now(),
+  options: { payroll?: boolean } = {},
+): AttentionItem[] {
   const items: AttentionItem[] = [];
+  const showPayroll = options.payroll ?? true;
+  // Live payroll prerequisites replace the rules-engine salary finding when the API provides them:
+  // that insight stays open after HR assigns the salaries, and it never covered bank details.
+  const livePayroll = data?.kpis.missingSalaryAssignments != null;
   if (data) {
     const o = data.overview;
     const k = data.kpis;
@@ -526,6 +535,18 @@ export function buildAttention(data: DashboardFull | null, insights: AIInsight[]
       title: `${plural(k.missingDocuments, 'employee')} missing required documents`,
       detail: 'Each is missing at least one document type the policy requires',
       source: 'Employee documents', to: '/compliance?tab=employee-documents', cta: 'Review missing documents',
+    });
+    if (showPayroll && (k.missingSalaryAssignments ?? 0) > 0) items.push({
+      id: 'payroll-salary-missing', severity: 'critical',
+      title: `${plural(k.missingSalaryAssignments!, 'employee')} without a salary this month`,
+      detail: 'Active employees with no salary effective by month end cannot be paid',
+      source: 'Salary assignments · live', to: '/payroll', cta: 'Review payroll readiness',
+    });
+    if (showPayroll && (k.missingBankDetails ?? 0) > 0) items.push({
+      id: 'payroll-bank-missing', severity: 'critical',
+      title: `${plural(k.missingBankDetails!, 'employee')} without bank details`,
+      detail: 'No IBAN on their payroll profile; payroll approval is blocked until each has one',
+      source: 'Payroll profiles · live', to: '/payroll', cta: 'Review payroll readiness',
     });
     if (k.attendanceExceptions > 0) items.push({
       id: 'att-exceptions', severity: 'critical',
@@ -553,6 +574,7 @@ export function buildAttention(data: DashboardFull | null, insights: AIInsight[]
     });
   }
   for (const i of dedupeInsights(insights ?? [])) {
+    if (livePayroll && showPayroll && i.insightType === 'MissingSalarySetup') continue;
     const sev = normSeverity(i.severity);
     if (sev === 'Info') continue;
     items.push({
