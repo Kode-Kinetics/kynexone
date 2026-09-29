@@ -39,6 +39,12 @@ public class EstablishmentEnforcementPathTests
 
     private static RequestContext Ctx(Guid tenantId) => new("127.0.0.1", "xunit", Guid.NewGuid(), tenantId);
 
+    /// <summary>The jurisdiction every fixture in this suite hires into, with a real policy, so the
+    /// readiness these tests observe is evaluated rather than the "no readiness policy" NeedsAttention a
+    /// country-less employee now gets. The policy is deliberately minimal (a joining date) so the ONLY
+    /// thing these tests can trip on is the establishment guard.</summary>
+    private const string TestCountry = "IN";
+
     private sealed record Fixture(Guid TenantId, Department Ops, StaffingLevel Manager, Designation OpsManager, Department Hr, Designation HrOfficer);
 
     /// <summary>Tenant + "Operations" dept with a Manager-level designation, plus an
@@ -59,6 +65,13 @@ public class EstablishmentEnforcementPathTests
             {
                 TenantId = tenant.Id, DepartmentId = ops.Id, StaffingLevelId = level.Id, BudgetedHeadcount = managerBudget.Value
             });
+        db.CompanyComplianceProfiles.Add(new CompanyComplianceProfile
+        {
+            TenantId = tenant.Id, CompanyId = null, CountryCode = TestCountry,
+            Jurisdiction = string.Empty, CompliancePack = string.Empty,
+            EffectiveFrom = new DateOnly(2020, 1, 1), Status = CompanyPolicyStatuses.Active,
+            RequiredFieldsJson = """[{"key":"JoiningDate","category":"contract","failClosed":true}]""",
+        });
         await db.SaveChangesAsync();
         return new Fixture(tenant.Id, ops, level, opsManager, hr, hrOfficer);
     }
@@ -70,6 +83,7 @@ public class EstablishmentEnforcementPathTests
             TenantId = fx.TenantId,
             EmployeeCode = $"E-{Guid.NewGuid():N}"[..12],
             FullName = "Path Employee",
+            CountryCode = TestCountry,
             Status = status,
             JoiningDate = DateTime.UtcNow,
             DepartmentId = dept.Id,
@@ -127,10 +141,10 @@ public class EstablishmentEnforcementPathTests
         var controller = CreateController(db, fx.TenantId);
 
         const string csv =
-            "EmployeeCode,FullName,Department,Designation,Status,JoiningDate\n" +
-            "M1,Mgr One,Operations,Operations Manager,Active,2026-01-01\n" +
-            "M2,Mgr Two,Operations,Operations Manager,Active,2026-01-01\n" +
-            "M3,Mgr Three,Operations,Operations Manager,Active,2026-01-01\n";
+            "EmployeeCode,FullName,Department,Designation,Status,JoiningDate,CountryCode\n" +
+            "M1,Mgr One,Operations,Operations Manager,Active,2026-01-01,IN\n" +
+            "M2,Mgr Two,Operations,Operations Manager,Active,2026-01-01,IN\n" +
+            "M3,Mgr Three,Operations,Operations Manager,Active,2026-01-01,IN\n";
 
         var result = await controller.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
         var payload = JsonSerializer.Serialize(((OkObjectResult)result).Value);
@@ -150,6 +164,55 @@ public class EstablishmentEnforcementPathTests
             .And.Contain("\"levelNameEn\":\"Manager\"", "bulk over-budget rows are the highest-volume demand signal — they must audit too");
     }
 
+    /// <summary>Records which entity types each SaveChanges carried, in order.</summary>
+    private sealed class SaveOrderRecorder : Microsoft.EntityFrameworkCore.Diagnostics.SaveChangesInterceptor
+    {
+        public List<HashSet<Type>> Saves { get; } = new();
+        public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int>> SavingChangesAsync(
+            Microsoft.EntityFrameworkCore.Diagnostics.DbContextEventData eventData,
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result, CancellationToken ct = default)
+        {
+            Saves.Add(eventData.Context!.ChangeTracker.Entries()
+                .Where(e => e.State is EntityState.Added or EntityState.Modified)
+                .Select(e => e.Entity.GetType()).ToHashSet());
+            return base.SavingChangesAsync(eventData, result, ct);
+        }
+    }
+
+    /// <summary>
+    /// Defect 4: an audit write takes the tenant's audit-chain advisory lock (ZayraDbContext) and, inside the
+    /// import's transaction, holds it until COMMIT. The over-budget "establishment.assignment_blocked" audit
+    /// used to be written right after the FIRST data save, so every other audited action in the tenant queued
+    /// behind the rest of the import (payroll, links, gaps). Every import audit must now come AFTER the last
+    /// data save, immediately before the commit.
+    /// </summary>
+    [Fact]
+    public async Task Import_WritesItsAudits_OnlyAfterTheLastDataSave()
+    {
+        var recorder = new SaveOrderRecorder();
+        await using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString()).AddInterceptors(recorder).Options);
+        var fx = await SeedOrg(db, managerBudget: 2);
+        recorder.Saves.Clear();
+
+        const string csv =
+            "EmployeeCode,FullName,Department,Designation,Status,JoiningDate,CountryCode,BankName,ManagerEmployeeCode\n" +
+            "M1,Mgr One,Operations,Operations Manager,Active,2026-01-01,IN,Bank,\n" +
+            "M2,Mgr Two,Operations,Operations Manager,Active,2026-01-01,IN,Bank,M1\n" +
+            "M3,Mgr Three,Operations,Operations Manager,Active,2026-01-01,IN,Bank,M1\n";
+        var result = await CreateController(db, fx.TenantId).Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
+        result.Should().BeOfType<OkObjectResult>();
+        (await db.AuditLogs.CountAsync(a => a.TenantId == fx.TenantId && a.Action == "establishment.assignment_blocked"))
+            .Should().Be(1, "the over-budget row still produces its demand-signal audit");
+
+        var dataTypes = new[] { typeof(Employee), typeof(EmployeePayrollProfile), typeof(ReportingLine), typeof(EmployeeImportGap) };
+        var lastDataSave = recorder.Saves.FindLastIndex(types => types.Overlaps(dataTypes));
+        var firstAuditSave = recorder.Saves.FindIndex(types => types.Contains(typeof(AuditLog)));
+        lastDataSave.Should().BeGreaterThan(0);
+        firstAuditSave.Should().BeGreaterThan(lastDataSave,
+            "no audit row (and so no tenant audit-chain lock) may be taken before the import's last data save");
+    }
+
     [Fact]
     public async Task ImportPreview_OverBudgetRow_ProjectsDraft_MatchingCommit()
     {
@@ -161,9 +224,9 @@ public class EstablishmentEnforcementPathTests
         var controller = CreateController(db, fx.TenantId);
 
         const string csv =
-            "EmployeeCode,FullName,Department,Designation,Status,JoiningDate\n" +
-            "M1,Mgr One,Operations,Operations Manager,Active,2026-01-01\n" +
-            "M2,Mgr Two,Operations,Operations Manager,Active,2026-01-01\n";
+            "EmployeeCode,FullName,Department,Designation,Status,JoiningDate,CountryCode\n" +
+            "M1,Mgr One,Operations,Operations Manager,Active,2026-01-01,IN\n" +
+            "M2,Mgr Two,Operations,Operations Manager,Active,2026-01-01,IN\n";
 
         var preview = ((OkObjectResult)await controller.ImportPreview(
             new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None)).Value!;
@@ -184,10 +247,10 @@ public class EstablishmentEnforcementPathTests
         var controller = CreateController(db, fx.TenantId);
 
         const string csv =
-            "EmployeeCode,FullName,Department,Designation,Status,JoiningDate\n" +
-            "T1,Term Mgr,Operations,Operations Manager,Terminated,2026-01-01\n" + // non-occupying — no slot
-            "A1,Active Mgr,Operations,Operations Manager,Active,2026-01-01\n" +
-            "A2,Second Mgr,Operations,Operations Manager,Active,2026-01-01\n";
+            "EmployeeCode,FullName,Department,Designation,Status,JoiningDate,CountryCode\n" +
+            "T1,Term Mgr,Operations,Operations Manager,Terminated,2026-01-01,IN\n" + // non-occupying — no slot
+            "A1,Active Mgr,Operations,Operations Manager,Active,2026-01-01,IN\n" +
+            "A2,Second Mgr,Operations,Operations Manager,Active,2026-01-01,IN\n";
 
         var first = JsonSerializer.Serialize(((OkObjectResult)await controller.Import(
             new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None)).Value);
@@ -213,9 +276,9 @@ public class EstablishmentEnforcementPathTests
         var controller = CreateController(db, fx.TenantId);
 
         const string csv =
-            "EmployeeCode,FullName,Department,Designation,Status,JoiningDate\n" +
-            "M1,Mgr One,Operations,Operations Manager,Active,2026-01-01\n" +
-            "M2,Mgr Two,Operations,Operations Manager,Active,2026-01-01\n";
+            "EmployeeCode,FullName,Department,Designation,Status,JoiningDate,CountryCode\n" +
+            "M1,Mgr One,Operations,Operations Manager,Active,2026-01-01,IN\n" +
+            "M2,Mgr Two,Operations,Operations Manager,Active,2026-01-01,IN\n";
 
         var payload = JsonSerializer.Serialize(((OkObjectResult)await controller.Import(
             new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None)).Value);
@@ -234,6 +297,7 @@ public class EstablishmentEnforcementPathTests
             Status = "PendingHrApproval",
             CurrentStep = "HrApproval",
             EnglishName = "Draft Hire",
+            CountryCode = TestCountry,
             WorkEmail = $"draft-{Guid.NewGuid():N}@test.local",
             Department = department,
             Designation = designation,
