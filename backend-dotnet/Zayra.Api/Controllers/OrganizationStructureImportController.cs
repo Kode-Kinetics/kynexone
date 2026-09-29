@@ -293,7 +293,7 @@ public class OrganizationStructureImportController : ControllerBase
     {
         void Bump(string key) => counts[key] = counts.GetValueOrDefault(key) + 1;
 
-        var companies = await _db.Companies.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToDictionaryAsync(x => x.LegalNameEn.ToUpperInvariant(), ct);
+        var companies = SavedIndex.Of(await _db.Companies.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync(ct), x => x.LegalNameEn, "company");
         foreach (var row in parsed.Companies)
         {
             var name = Val(row, "LegalNameEn");
@@ -340,7 +340,7 @@ public class OrganizationStructureImportController : ControllerBase
             }
         }
 
-        var branches = await _db.Branches.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToDictionaryAsync(x => x.Code.ToUpperInvariant(), ct);
+        var branches = SavedIndex.Of(await _db.Branches.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync(ct), x => x.Code, "branch");
         foreach (var row in parsed.Branches)
         {
             var code = Val(row, "Code");
@@ -385,7 +385,7 @@ public class OrganizationStructureImportController : ControllerBase
             }
         }
 
-        var costCenters = await _db.CostCenters.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToDictionaryAsync(x => x.Code.ToUpperInvariant(), ct);
+        var costCenters = SavedIndex.Of(await _db.CostCenters.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync(ct), x => x.Code, "cost center");
         foreach (var row in parsed.CostCenters)
         {
             var code = Val(row, "Code");
@@ -406,7 +406,7 @@ public class OrganizationStructureImportController : ControllerBase
             }
         }
 
-        var grades = await _db.Grades.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToDictionaryAsync(x => x.Code.ToUpperInvariant(), ct);
+        var grades = SavedIndex.Of(await _db.Grades.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync(ct), x => x.Code, "grade");
         foreach (var row in parsed.Grades)
         {
             var code = Val(row, "Code");
@@ -428,8 +428,8 @@ public class OrganizationStructureImportController : ControllerBase
             grade.UpdatedAtUtc = DateTime.UtcNow;
         }
 
-        var departments = await _db.Departments.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToDictionaryAsync(x => x.Code.ToUpperInvariant(), ct);
-        var employeesByCode = await _db.Employees.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToDictionaryAsync(x => x.EmployeeCode.ToUpperInvariant(), ct);
+        var departments = SavedIndex.Of(await _db.Departments.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync(ct), x => x.Code, "department");
+        var employeesByCode = SavedIndex.Of(await _db.Employees.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync(ct), x => x.EmployeeCode, "employee");
         foreach (var row in parsed.Departments)
         {
             var code = Val(row, "Code");
@@ -489,7 +489,7 @@ public class OrganizationStructureImportController : ControllerBase
             Bump("gradePayComponents");
         }
 
-        var designations = await _db.Designations.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToDictionaryAsync(x => x.Code.ToUpperInvariant(), ct);
+        var designations = SavedIndex.Of(await _db.Designations.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync(ct), x => x.Code, "designation");
         foreach (var row in parsed.Designations)
         {
             var code = Val(row, "Code");
@@ -516,7 +516,7 @@ public class OrganizationStructureImportController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
 
-        var positions = await _db.Positions.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToDictionaryAsync(x => x.Code.ToUpperInvariant(), ct);
+        var positions = SavedIndex.Of(await _db.Positions.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync(ct), x => x.Code, "position");
         foreach (var row in parsed.Positions)
         {
             var code = Val(row, "Code");
@@ -555,28 +555,70 @@ public class OrganizationStructureImportController : ControllerBase
             .Select(x => new { x.Id, x.LegalNameEn, x.IsActive })
             .ToListAsync(ct);
         var companyNames = existingCompanies.Select(x => x.LegalNameEn).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var companyIdsByName = existingCompanies.ToDictionary(x => x.LegalNameEn, x => x.Id, StringComparer.OrdinalIgnoreCase);
-        var companyLifecycleByName = existingCompanies.ToDictionary(x => x.LegalNameEn, x => x.IsActive, StringComparer.OrdinalIgnoreCase);
+        // Saved names or codes can differ only in letter case ("Evostel Trading LLC" and
+        // "EVOSTEL TRADING LLC", or codes "OPS" and "ops": the unique indexes are case-sensitive).
+        // Import matches case-insensitively, so ToDictionary threw on them — a 500 whatever the
+        // package held. The first record stands in for lookups; a package row that names an
+        // ambiguous key is refused below with a row error instead.
+        var companyIdsByName = existingCompanies.GroupBy(x => x.LegalNameEn, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First().Id, StringComparer.OrdinalIgnoreCase);
+        var companyLifecycleByName = existingCompanies.GroupBy(x => x.LegalNameEn, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First().IsActive, StringComparer.OrdinalIgnoreCase);
         var branchRows = await _db.Branches.AsNoTracking()
             .Where(x => x.TenantId == tenantId && !x.IsDeleted)
             .Select(x => new { x.Code, x.CompanyId })
             .ToListAsync(ct);
         var branchCodes = branchRows.Select(x => x.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var branchCompanyByCode = branchRows.ToDictionary(x => x.Code, x => (Guid?)x.CompanyId, StringComparer.OrdinalIgnoreCase);
+        var branchCompanyByCode = branchRows.GroupBy(x => x.Code, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => (Guid?)g.First().CompanyId, StringComparer.OrdinalIgnoreCase);
         var costCenterRows = await _db.CostCenters.AsNoTracking()
             .Where(x => x.TenantId == tenantId && !x.IsDeleted)
             .Select(x => new { x.Code, x.CompanyId })
             .ToListAsync(ct);
         var costCenterCodes = costCenterRows.Select(x => x.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var costCenterCompanyByCode = costCenterRows.ToDictionary(x => x.Code, x => (Guid?)x.CompanyId, StringComparer.OrdinalIgnoreCase);
-        var departmentCodes = (await _db.Departments.AsNoTracking()
+        var costCenterCompanyByCode = costCenterRows.GroupBy(x => x.Code, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => (Guid?)g.First().CompanyId, StringComparer.OrdinalIgnoreCase);
+        var savedDepartmentCodes = await _db.Departments.AsNoTracking()
             .Where(x => x.TenantId == tenantId && !x.IsDeleted)
             .Select(x => x.Code)
-            .ToListAsync(ct)).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var gradeCodes = (await _db.Grades.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted).Select(x => x.Code).ToListAsync(ct)).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var employeeCodes = (await _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted).Select(x => x.EmployeeCode).ToListAsync(ct)).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var designationCodes = (await _db.Designations.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted).Select(x => x.Code).ToListAsync(ct)).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var positionCodes = (await _db.Positions.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted).Select(x => x.Code).ToListAsync(ct)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            .ToListAsync(ct);
+        var savedGradeCodes = await _db.Grades.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted).Select(x => x.Code).ToListAsync(ct);
+        var savedEmployeeCodes = await _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted).Select(x => x.EmployeeCode).ToListAsync(ct);
+        var savedDesignationCodes = await _db.Designations.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted).Select(x => x.Code).ToListAsync(ct);
+        var savedPositionCodes = await _db.Positions.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted).Select(x => x.Code).ToListAsync(ct);
+        var departmentCodes = savedDepartmentCodes.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var gradeCodes = savedGradeCodes.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var employeeCodes = savedEmployeeCodes.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var designationCodes = savedDesignationCodes.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var positionCodes = savedPositionCodes.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var ambiguousCompanies = Ambiguous(existingCompanies.Select(x => x.LegalNameEn));
+        var ambiguousBranches = Ambiguous(branchRows.Select(x => x.Code));
+        var ambiguousCostCenters = Ambiguous(costCenterRows.Select(x => x.Code));
+        var ambiguousDepartments = Ambiguous(savedDepartmentCodes);
+        var ambiguousGrades = Ambiguous(savedGradeCodes);
+        var ambiguousEmployees = Ambiguous(savedEmployeeCodes);
+        var ambiguousDesignations = Ambiguous(savedDesignationCodes);
+        var ambiguousPositions = Ambiguous(savedPositionCodes);
+        AddAmbiguityRows("companies", parsed.Companies, "LegalNameEn", rows, ("LegalNameEn", ambiguousCompanies, "company"));
+        AddAmbiguityRows("branches", parsed.Branches, "Code", rows,
+            ("Code", ambiguousBranches, "branch"), ("CompanyLegalName", ambiguousCompanies, "company"));
+        AddAmbiguityRows("costCenters", parsed.CostCenters, "Code", rows,
+            ("Code", ambiguousCostCenters, "cost center"), ("CompanyLegalName", ambiguousCompanies, "company"));
+        AddAmbiguityRows("grades", parsed.Grades, "Code", rows, ("Code", ambiguousGrades, "grade"));
+        AddAmbiguityRows("departments", parsed.Departments, "Code", rows,
+            ("Code", ambiguousDepartments, "department"), ("ParentDepartmentCode", ambiguousDepartments, "department"),
+            ("CompanyLegalName", ambiguousCompanies, "company"), ("BranchCode", ambiguousBranches, "branch"),
+            ("CostCenterCode", ambiguousCostCenters, "cost center"), ("ManagerEmployeeCode", ambiguousEmployees, "employee"));
+        AddAmbiguityRows("gradePayComponents", parsed.GradePayComponents, "ComponentCode", rows, ("GradeCode", ambiguousGrades, "grade"));
+        AddAmbiguityRows("designations", parsed.Designations, "Code", rows,
+            ("Code", ambiguousDesignations, "designation"), ("DepartmentCode", ambiguousDepartments, "department"),
+            ("GradeCode", ambiguousGrades, "grade"), ("JobGrade", ambiguousGrades, "grade"));
+        AddAmbiguityRows("positions", parsed.Positions, "Code", rows,
+            ("Code", ambiguousPositions, "position"), ("CompanyLegalName", ambiguousCompanies, "company"),
+            ("BranchCode", ambiguousBranches, "branch"), ("DepartmentCode", ambiguousDepartments, "department"),
+            ("CostCenterCode", ambiguousCostCenters, "cost center"), ("DesignationCode", ambiguousDesignations, "designation"),
+            ("GradeCode", ambiguousGrades, "grade"));
 
         AddScopeRows(parsed, scope, companyNames, companyIdsByName, branchCompanyByCode, costCenterCompanyByCode, rows);
 
@@ -608,12 +650,18 @@ public class OrganizationStructureImportController : ControllerBase
         AddRows("grades", parsed.Grades, "Code", "Name", required: ["Code", "Name"], known: gradeCodes, rows);
         AddGradeSanityRows(parsed.Grades, rows);
         Merge(gradeCodes, parsed.Grades.Select(x => Val(x, "Code")));
+        // A parent may be saved already or arrive in this same file, above or below its child.
+        // Commit applies parents in a second pass, so validation must accept both. The saved set
+        // stays separate so a new row is not reported as "already exists and will be updated".
+        var parentCandidates = new HashSet<string>(departmentCodes, StringComparer.OrdinalIgnoreCase);
+        Merge(parentCandidates, parsed.Departments.Select(x => Val(x, "Code")));
         AddRows("departments", parsed.Departments, "Code", "NameEn", required: ["Code", "NameEn"], known: departmentCodes, rows,
-            refs: [("CompanyLegalName", companyNames, "Company"), ("BranchCode", branchCodes, "Branch"), ("CostCenterCode", costCenterCodes, "Cost center"), ("ParentDepartmentCode", departmentCodes, "Parent department"), ("ManagerEmployeeCode", employeeCodes, "Manager employee")]);
+            refs: [("CompanyLegalName", companyNames, "Company"), ("BranchCode", branchCodes, "Branch"), ("CostCenterCode", costCenterCodes, "Cost center"), ("ParentDepartmentCode", parentCandidates, "Parent department"), ("ManagerEmployeeCode", employeeCodes, "Manager employee")]);
         AddDepartmentCompanyConsistencyRows(parsed.Departments, parsed.Branches, parsed.CostCenters, rows);
         Merge(departmentCodes, parsed.Departments.Select(x => Val(x, "Code")));
         AddRows("gradePayComponents", parsed.GradePayComponents, "ComponentCode", "ComponentName", required: ["GradeCode", "ComponentCode", "ComponentName"], known: new HashSet<string>(StringComparer.OrdinalIgnoreCase), rows,
-            refs: [("GradeCode", gradeCodes, "Grade")]);
+            // BASIC under G1 and BASIC under G2 are two components. Commit keys them by (grade, code).
+            refs: [("GradeCode", gradeCodes, "Grade")], duplicateScopeKey: "GradeCode");
         AddGradePayComponentSanityRows(parsed.GradePayComponents, rows);
         AddRows("designations", parsed.Designations, "Code", "TitleEn", required: ["Code", "TitleEn"], known: new HashSet<string>(StringComparer.OrdinalIgnoreCase), rows,
             refs: [("DepartmentCode", departmentCodes, "Department"), ("GradeCode", gradeCodes, "Grade")]);
@@ -624,7 +672,9 @@ public class OrganizationStructureImportController : ControllerBase
 
         var parentMap = parsed.Departments
             .Where(x => !string.IsNullOrWhiteSpace(Val(x, "Code")) && !string.IsNullOrWhiteSpace(Val(x, "ParentDepartmentCode")))
-            .ToDictionary(x => Val(x, "Code"), x => Val(x, "ParentDepartmentCode"), StringComparer.OrdinalIgnoreCase);
+            // A duplicated code already carries a blocking row error; reporting it must not throw.
+            .GroupBy(x => Val(x, "Code"), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => Val(g.First(), "ParentDepartmentCode"), StringComparer.OrdinalIgnoreCase);
         foreach (var start in parentMap.Keys)
         {
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { start };
@@ -717,7 +767,75 @@ public class OrganizationStructureImportController : ControllerBase
             [$"{section} row references company '{companyName}' outside the caller's entity scope."], []));
     }
 
-    private static void AddRows(string section, IReadOnlyList<Dictionary<string, string>> source, string codeKey, string nameKey, string[] required, HashSet<string> known, List<ImportRowResult> rows, (string Key, HashSet<string> Known, string Label)[]? refs = null)
+    /// <summary>Saved keys that more than one saved record answers to, ignoring letter case.</summary>
+    private static HashSet<string> Ambiguous(IEnumerable<string> savedKeys) =>
+        savedKeys.Where(k => !string.IsNullOrWhiteSpace(k))
+            .GroupBy(k => k.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>One blocking row error for each package row that names an ambiguous saved key, so the
+    /// preview says which record to fix instead of the commit guessing between them.</summary>
+    private static void AddAmbiguityRows(string section, IReadOnlyList<Dictionary<string, string>> source, string codeKey,
+        List<ImportRowResult> rows, params (string Key, HashSet<string> Ambiguous, string Label)[] refs)
+    {
+        if (refs.All(r => r.Ambiguous.Count == 0)) return;
+        for (var i = 0; i < source.Count; i++)
+        {
+            var row = source[i];
+            var errors = refs
+                .Where(r => !string.IsNullOrWhiteSpace(Val(row, r.Key)) && r.Ambiguous.Contains(Val(row, r.Key)))
+                .Select(r => $"{r.Key} '{Val(row, r.Key)}' matches more than one saved {r.Label} (their names differ only in letter case). Rename or remove the duplicate in Setup, then import again.")
+                .Distinct()
+                .ToList();
+            if (errors.Count > 0)
+                rows.Add(new ImportRowResult(i + 2, $"{section}:{Val(row, codeKey)}", Val(row, codeKey), ImportRowStatus.Error, errors, []));
+        }
+    }
+
+    /// <summary>
+    /// Saved records keyed case-insensitively, as import matches them. Keys that more than one saved
+    /// record answers to are ambiguous: validation refuses any row that names one, and looking one
+    /// up here throws rather than silently picking either record.
+    /// </summary>
+    private sealed class SavedIndex<T>
+    {
+        private readonly Dictionary<string, T> _unique = new(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _ambiguous = new(StringComparer.OrdinalIgnoreCase);
+        private readonly string _label;
+
+        public SavedIndex(IEnumerable<T> rows, Func<T, string> key, string label)
+        {
+            _label = label;
+            foreach (var group in rows.GroupBy(r => (key(r) ?? string.Empty).Trim(), StringComparer.OrdinalIgnoreCase))
+            {
+                if (group.Count() > 1) _ambiguous.Add(group.Key);
+                else _unique[group.Key] = group.First();
+            }
+        }
+
+        public bool TryGetValue(string key, [System.Diagnostics.CodeAnalysis.MaybeNullWhen(false)] out T value)
+        {
+            if (_ambiguous.Contains(key.Trim()))
+                throw new InvalidOperationException(
+                    $"More than one saved {_label} matches '{key}' (their names differ only in letter case). Rename or remove the duplicate in Setup, then import again.");
+            return _unique.TryGetValue(key.Trim(), out value);
+        }
+
+        public T this[string key]
+        {
+            get => TryGetValue(key, out var value) ? value : throw new KeyNotFoundException($"No saved {_label} matches '{key}'.");
+            set => _unique[key.Trim()] = value;
+        }
+    }
+
+    private static class SavedIndex
+    {
+        public static SavedIndex<T> Of<T>(IEnumerable<T> rows, Func<T, string> key, string label) => new(rows, key, label);
+    }
+
+    private static void AddRows(string section, IReadOnlyList<Dictionary<string, string>> source, string codeKey, string nameKey, string[] required, HashSet<string> known, List<ImportRowResult> rows, (string Key, HashSet<string> Known, string Label)[]? refs = null, string? duplicateScopeKey = null)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         for (var i = 0; i < source.Count; i++)
@@ -726,7 +844,14 @@ public class OrganizationStructureImportController : ControllerBase
             var code = Val(row, codeKey);
             var errors = required.Where(key => string.IsNullOrWhiteSpace(Val(row, key))).Select(key => $"{key} is required").ToList();
             var warnings = new List<string>();
-            if (!string.IsNullOrWhiteSpace(code) && !seen.Add(code)) errors.Add($"Duplicate {codeKey} '{code}' in {section}");
+            // A scoped code is unique within its scope. The tuple is serialized so a code containing
+            // a separator character cannot collide with a different (scope, code) pair.
+            var uniqueKey = duplicateScopeKey is null
+                ? code
+                : JsonSerializer.Serialize(new[] { Val(row, duplicateScopeKey).ToUpperInvariant(), code.ToUpperInvariant() });
+            if (!string.IsNullOrWhiteSpace(code) && !seen.Add(uniqueKey))
+                errors.Add($"Duplicate {codeKey} '{code}' in {section}"
+                    + (duplicateScopeKey is null ? string.Empty : $" for {duplicateScopeKey} '{Val(row, duplicateScopeKey)}'"));
             if (!string.IsNullOrWhiteSpace(code) && known.Contains(code))
                 warnings.Add($"{section} record '{code}' already exists and will be updated");
             foreach (var (key, knownRefs, label) in refs ?? [])
@@ -736,7 +861,9 @@ public class OrganizationStructureImportController : ControllerBase
                     errors.Add($"{label} reference '{value}' not found");
             }
             var status = errors.Count > 0 ? ImportRowStatus.Error : warnings.Count > 0 ? ImportRowStatus.Warning : ImportRowStatus.Ok;
-            rows.Add(new ImportRowResult(i + 2, $"{section}:{code}", Val(row, nameKey), status, errors, warnings));
+            // Same identifier the grade/component sanity rows use, so both findings group together.
+            var rowKey = duplicateScopeKey is null ? code : $"{Val(row, duplicateScopeKey)}/{code}";
+            rows.Add(new ImportRowResult(i + 2, $"{section}:{rowKey}", Val(row, nameKey), status, errors, warnings));
         }
     }
 
