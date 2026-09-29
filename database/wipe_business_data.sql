@@ -1,6 +1,28 @@
 -- ─────────────────────────────────────────────────────────────────────────────
 -- wipe_business_data.sql — FULL clean-slate wipe of ALL business/tenant data
 -- ─────────────────────────────────────────────────────────────────────────────
+-- REFUSE-GUARD. Read this first. The script changes NOTHING unless both are true:
+--
+--   1. The connected database is not a production database. Production is
+--      `kynexone_clean` (live since the 2026-09-23 cutover) and `neondb` (kept
+--      as its rollback). A Neon branch of production keeps those names, so a
+--      branch is refused too.
+--   2. The session names the database it intends to wipe, exactly:
+--        psql "$URL" -c "SET kynexone.wipe_confirm_database = 'zayra_dev'" \
+--                    -f database/wipe_business_data.sql
+--      or
+--        PGOPTIONS='-c kynexone.wipe_confirm_database=zayra_dev' \
+--          psql "$URL" -f database/wipe_business_data.sql
+--      A confirmation that names a different database is refused, so a setting
+--      left over from another target cannot carry over.
+--
+-- The same check runs again inside the wipe transaction. A client that carries
+-- on after an error (psql without ON_ERROR_STOP, an editor that runs every
+-- statement) still truncates nothing, and the COMMIT becomes a ROLLBACK.
+--
+-- There is no flag that permits a production wipe. Doing that needs a reviewed
+-- change to this file, and that is deliberate.
+--
 -- Outcome (per owner decision 2026-07-26):
 --   • Schema untouched (TRUNCATE, not DROP)
 --   • ALL tenant/business data across the ENTIRE database is removed
@@ -10,9 +32,8 @@
 --   • ONE clean bootstrap tenant + admin is re-created on next boot from env
 --     (SeedAdmin__TenantName / __TenantSlug / __Email / __Password)
 --
--- Unlike neon_truncate.sql (a static table list that goes stale as the schema
--- grows), this script discovers tables dynamically — it truncates EVERY table
--- in `public` EXCEPT the preserve list below, so new tables are always covered.
+-- The table list is not hard-coded. The script finds every table in `public`
+-- EXCEPT the preserve list below, so tables added later are always covered.
 --
 -- PRESERVED (not truncated):
 --   __EFMigrationsHistory  — REQUIRED: wiping it desyncs EF migrations and the
@@ -25,13 +46,30 @@
 --                            NOT come back automatically. Remove them from the
 --                            preserve list only if you accept that.
 --
--- RUN ORDER:
---   1. Neon Dashboard → Branches → create a branch snapshot (instant rollback)
---   2. Run this script in the Neon SQL editor against the production branch
---   3. Render → Manual Deploy → "Deploy latest commit" (or Restart) so the
---      boot seeders re-create reference config + the bootstrap tenant/admin
+-- RUN ORDER (non-production only):
+--   1. Take a snapshot or backup of the target database
+--   2. Run this script with the confirmation shown above
+--   3. Restart the backend that uses this database, so the boot seeders
+--      re-create reference config + the bootstrap tenant/admin
 --   4. Log in with the SeedAdmin env credentials and verify a clean slate
 -- ─────────────────────────────────────────────────────────────────────────────
+
+-- Fail fast, before anything else runs.
+DO $guard$
+DECLARE
+  db         text   := current_database();
+  confirmed  text   := nullif(current_setting('kynexone.wipe_confirm_database', true), '');
+  production text[] := ARRAY['kynexone_clean', 'neondb'];
+BEGIN
+  IF db = ANY (production) THEN
+    RAISE EXCEPTION 'wipe_business_data.sql refused: "%" is a production database. Nothing was changed.', db;
+  END IF;
+  IF confirmed IS DISTINCT FROM db THEN
+    RAISE EXCEPTION 'wipe_business_data.sql refused: connected to "%", but kynexone.wipe_confirm_database is "%". Run SET kynexone.wipe_confirm_database = ''%'' in this session first. Nothing was changed.',
+      db, coalesce(confirmed, '(not set)'), db;
+  END IF;
+END
+$guard$;
 
 BEGIN;
 
@@ -39,7 +77,16 @@ DO $$
 DECLARE
   t record;
   preserved text[] := ARRAY['__EFMigrationsHistory'];
+  db         text   := current_database();
+  confirmed  text   := nullif(current_setting('kynexone.wipe_confirm_database', true), '');
+  production text[] := ARRAY['kynexone_clean', 'neondb'];
 BEGIN
+  -- The same guard again, in the wipe's own transaction. If the block above was
+  -- skipped or its error ignored, this still stops before the first TRUNCATE.
+  IF db = ANY (production) OR confirmed IS DISTINCT FROM db THEN
+    RAISE EXCEPTION 'wipe_business_data.sql refused inside the wipe transaction (database "%"). Nothing was changed.', db;
+  END IF;
+
   FOR t IN
     SELECT tablename
     FROM pg_tables
