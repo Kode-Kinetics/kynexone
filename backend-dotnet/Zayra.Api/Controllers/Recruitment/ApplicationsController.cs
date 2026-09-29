@@ -339,6 +339,9 @@ public class ApplicationsController : ControllerBase
 
         await LogEventAsync(tenantId, id, "OfferGenerated", "Offer",
             $"Offer letter generated. Gross salary: {currency} {gross:N2}/month.", userId, "HR", ct);
+        // The offer's author, for maker-checker: OfferLetter has no creator column.
+        _db.RecruitmentAuditLogs.Add(OfferRules.AuditRow(tenantId, offer.Id, OfferRules.CreatedAction, userId, UserName(),
+            new { offer.GrossSalary, offer.StartDate, currency }));
 
         await _db.SaveChangesAsync(ct);
         return Created($"/api/recruitment/offers/{offer.Id}", offer);
@@ -352,18 +355,18 @@ public class ApplicationsController : ControllerBase
         var userId = this.GetUserId();
         var offer = await _db.OfferLetters.FirstOrDefaultAsync(o => o.Id == offerId && o.TenantId == tenantId, ct);
         if (offer is null) return NotFound();
-        switch (await OfferRules.EvaluateSendAsync(_db, offer, ct))
+        var verdict = await OfferRules.EvaluateSendAsync(_db, offer, userId, ct);
+        if (verdict == OfferSendVerdict.InvalidState)
+            return BadRequest(new { message = "Offer must be in Draft or Approved status to send." });
+        if (verdict != OfferSendVerdict.Sendable)
         {
-            case OfferSendVerdict.InvalidState:
-                return BadRequest(new { message = "Offer must be in Draft or Approved status to send." });
-            case OfferSendVerdict.ApprovalPending:
-                return Conflict(new { error = "offer_approval_incomplete", message = OfferRules.ApprovalPendingMessage });
-            case OfferSendVerdict.ApprovalRejected:
-                return Conflict(new { error = "offer_approval_rejected", message = OfferRules.ApprovalRejectedMessage });
+            var (error, message) = OfferRules.SendRefusal(verdict);
+            return Conflict(new { error, message });
         }
 
         offer.Status = "Sent";
         offer.SentAtUtc = DateTime.UtcNow;
+        _db.RecruitmentAuditLogs.Add(OfferRules.AuditRow(tenantId, offer.Id, OfferRules.SentAction, userId, UserName()));
         offer.ResponseDeadline = DateTime.UtcNow.AddDays(7);
 
         await LogEventAsync(tenantId, offer.ApplicationId, "OfferSent", "Offer",
@@ -416,6 +419,14 @@ public class ApplicationsController : ControllerBase
         var userId = this.GetUserId();
         var offer = await _db.OfferLetters.FirstOrDefaultAsync(o => o.Id == offerId && o.TenantId == tenantId, ct);
         if (offer is null) return NotFound();
+        // The same rule as the Offers tab. Declining an Accepted offer left the application Hired and
+        // its employee draft live.
+        if (!OfferRules.CanDecline(offer))
+            return Conflict(new
+            {
+                error = "invalid_offer_state",
+                message = $"{OfferRules.DeclineStateMessage} (current: {offer.Status})"
+            });
 
         offer.Status = "Declined";
         offer.DeclinedAtUtc = DateTime.UtcNow;
@@ -444,6 +455,8 @@ public class ApplicationsController : ControllerBase
     }
 
     // ── Shared helpers ─────────────────────────────────────────────────────────
+
+    private string UserName() => User.FindFirst("name")?.Value ?? User.Identity?.Name ?? "HR";
 
     private Task LogEventAsync(Guid tenantId, Guid applicationId, string eventType, string stage,
         string notes, Guid? userId, string performedByName, CancellationToken ct)

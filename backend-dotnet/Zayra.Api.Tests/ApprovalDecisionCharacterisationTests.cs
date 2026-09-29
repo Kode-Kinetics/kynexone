@@ -413,35 +413,44 @@ public class ApprovalDecisionCharacterisationTests
     }
 
     [Fact]
-    public async Task Offers_DecideApproval_HasNoMakerCheckerControlAtAll_UnlikeLoansAndAdvances()
+    public async Task Offers_DecideApproval_OnlyTheNamedApproverDecides_AndTheAuthorCannotApprove()
     {
-        // FINDING (not fixed here): OffersController.DecideApproval never compares the decider to
-        // anyone. It CANNOT: OfferLetter records no creator at all — there is no CreatedBy or
-        // equivalent on the entity — so the module has no maker to check the checker against.
-        // Closing this needs a schema change, not a refactor. Pinned so the convergence cannot be
-        // read as having "added" a control that is in fact still absent.
+        // Was pinned as a FINDING: the decider was never compared to anyone, because OfferLetter
+        // records no creator. The author now comes from the offer's Created audit row, and a step is
+        // decided only by the person it names.
         await using var db = CreateDb();
-        var anyone = Guid.NewGuid();
-        var f = await SeedOfferAsync(db, status: "PendingApproval");
+        var author = Guid.NewGuid();
+        var f = await SeedOfferAsync(db, status: "PendingApproval", author: author);
 
-        var result = await Offers(db, f.TenantId, anyone)
+        var byAnyone = await Offers(db, f.TenantId, Guid.NewGuid())
             .DecideApproval(f.OfferId, f.ApprovalId, new DecideApprovalRequest("Approved", "self"), CancellationToken.None);
+        Assert.Equal("not_the_named_approver", ErrorCode(Assert.IsType<ObjectResult>(byAnyone).Value));
 
-        Assert.IsType<OkObjectResult>(result);
+        var byAuthor = await Offers(db, f.TenantId, author)
+            .DecideApproval(f.OfferId, f.ApprovalId, new DecideApprovalRequest("Approved", "self"), CancellationToken.None);
+        Assert.Equal("offer_maker_checker", ErrorCode(Assert.IsType<ObjectResult>(byAuthor).Value));
+        Assert.Equal("PendingApproval", (await db.OfferLetters.SingleAsync()).Status);
+
+        var byApprover = await Offers(db, f.TenantId, f.ApproverUserId)
+            .DecideApproval(f.OfferId, f.ApprovalId, new DecideApprovalRequest("Approved", "ok"), CancellationToken.None);
+        Assert.IsType<OkObjectResult>(byApprover);
         Assert.Equal("Approved", (await db.OfferLetters.SingleAsync()).Status);
     }
 
     [Fact]
-    public async Task Offers_DecideApproval_WritesNoAuditRowAnywhere_UnlikeLoansAndAdvances()
+    public async Task Offers_DecideApproval_RecordsWhoDecided_InTheRecruitmentAudit()
     {
-        // FINDING (not fixed here): the offer approval decision leaves no audit trail. Loans write
-        // LoanAuditLog and advances write AdvanceAuditLog for the identical operation.
+        // Was pinned as a FINDING: the decision left no audit trail. It now writes a recruitment
+        // audit row naming the decider; the hash-chained AuditLogs table is not touched.
         await using var db = CreateDb();
         var f = await SeedOfferAsync(db, status: "PendingApproval");
 
-        await Offers(db, f.TenantId, Guid.NewGuid())
+        await Offers(db, f.TenantId, f.ApproverUserId)
             .DecideApproval(f.OfferId, f.ApprovalId, new DecideApprovalRequest("Approved", "ok"), CancellationToken.None);
 
+        var row = await db.RecruitmentAuditLogs.SingleAsync(l => l.Action == "ApprovalDecided");
+        Assert.Equal(f.ApproverUserId, row.PerformedByUserId);
+        Assert.Equal(f.OfferId.ToString(), row.EntityId);
         Assert.Empty(await db.AuditLogs.ToListAsync());
     }
 
@@ -451,7 +460,7 @@ public class ApprovalDecisionCharacterisationTests
         await using var db = CreateDb();
         var f = await SeedOfferAsync(db, status: "PendingApproval");
 
-        var result = await Offers(db, f.TenantId, Guid.NewGuid())
+        var result = await Offers(db, f.TenantId, f.ApproverUserId)
             .DecideApproval(f.OfferId, f.ApprovalId, new DecideApprovalRequest("Approved", "ok"), CancellationToken.None);
 
         Assert.IsType<OkObjectResult>(result);
@@ -470,11 +479,11 @@ public class ApprovalDecisionCharacterisationTests
         db.OfferApprovals.Add(new OfferApproval
         {
             TenantId = f.TenantId, OfferLetterId = f.OfferId, ApplicationId = f.ApplicationId,
-            StepOrder = 2, ApproverName = "CFO",
+            StepOrder = 2, ApproverName = "CFO", ApproverUserId = Guid.NewGuid(),
         });
         await db.SaveChangesAsync();
 
-        var result = await Offers(db, f.TenantId, Guid.NewGuid())
+        var result = await Offers(db, f.TenantId, f.ApproverUserId)
             .DecideApproval(f.OfferId, f.ApprovalId, new DecideApprovalRequest("Approved", null), CancellationToken.None);
 
         Assert.IsType<OkObjectResult>(result);
@@ -489,7 +498,7 @@ public class ApprovalDecisionCharacterisationTests
         await using var db = CreateDb();
         var f = await SeedOfferAsync(db, status: "PendingApproval");
 
-        var result = await Offers(db, f.TenantId, Guid.NewGuid())
+        var result = await Offers(db, f.TenantId, f.ApproverUserId)
             .DecideApproval(f.OfferId, f.ApprovalId, new DecideApprovalRequest("Rejected", "band too high"), CancellationToken.None);
 
         Assert.IsType<OkObjectResult>(result);
@@ -517,10 +526,12 @@ public class ApprovalDecisionCharacterisationTests
     public async Task Offers_AddApproval_OnADraftOffer_AddsTheStepAndMovesTheOfferToPendingApproval()
     {
         await using var db = CreateDb();
-        var f = await SeedOfferAsync(db, status: "Draft");
+        var author = Guid.NewGuid();
+        var f = await SeedOfferAsync(db, status: "Draft", author: author);
+        var cfo = await SeedApproverAsync(db, f.TenantId);
 
-        var result = await Offers(db, f.TenantId, Guid.NewGuid())
-            .AddApproval(f.OfferId, new AddOfferApprovalRequest("CFO", null, "Finance"), CancellationToken.None);
+        var result = await Offers(db, f.TenantId, author)
+            .AddApproval(f.OfferId, new AddOfferApprovalRequest("CFO", cfo, "Finance"), CancellationToken.None);
 
         Assert.IsType<OkObjectResult>(result);
         Assert.Equal("PendingApproval", (await db.OfferLetters.SingleAsync()).Status);
@@ -608,10 +619,25 @@ public class ApprovalDecisionCharacterisationTests
         return new AdvanceFixture(tenantId, advance.Id);
     }
 
-    private sealed record OfferFixture(Guid TenantId, Guid OfferId, Guid ApplicationId, Guid ApprovalId);
+    private sealed record OfferFixture(Guid TenantId, Guid OfferId, Guid ApplicationId, Guid ApprovalId, Guid ApproverUserId);
+
+    /// <summary>An active HR Manager of the tenant: someone an offer step may name.</summary>
+    private static async Task<Guid> SeedApproverAsync(ZayraDbContext db, Guid tenantId)
+    {
+        var role = new Zayra.Api.Domain.Entities.Role { TenantId = tenantId, Name = "HR Manager", NormalizedName = "HR MANAGER", IsActive = true };
+        var user = new Zayra.Api.Domain.Entities.User
+        {
+            TenantId = tenantId, Email = "cfo@example.test", NormalizedEmail = "CFO@EXAMPLE.TEST", FullName = "CFO",
+            Status = "Active", IsActive = true,
+        };
+        user.UserRoles.Add(new Zayra.Api.Domain.Entities.UserRole { UserId = user.Id, RoleId = role.Id, Role = role });
+        db.AddRange(role, user);
+        await db.SaveChangesAsync();
+        return user.Id;
+    }
 
     private static async Task<OfferFixture> SeedOfferAsync(
-        ZayraDbContext db, string status, string stepStatus = "Pending")
+        ZayraDbContext db, string status, string stepStatus = "Pending", Guid? author = null)
     {
         var tenantId = Guid.NewGuid();
         var applicationId = Guid.NewGuid();
@@ -625,14 +651,17 @@ public class ApprovalDecisionCharacterisationTests
             StartDate = new DateOnly(2026, 11, 1),
             Status = status,
         };
+        var approverUserId = Guid.NewGuid();
         var approval = new OfferApproval
         {
             TenantId = tenantId, OfferLetterId = offer.Id, ApplicationId = applicationId,
-            StepOrder = 1, ApproverName = "Head of Eng", Status = stepStatus,
+            StepOrder = 1, ApproverName = "Head of Eng", ApproverUserId = approverUserId, Status = stepStatus,
         };
         db.AddRange(offer, approval);
+        if (author is { } a)
+            db.RecruitmentAuditLogs.Add(OfferRules.AuditRow(tenantId, offer.Id, OfferRules.CreatedAction, a, "Author"));
         await db.SaveChangesAsync();
-        return new OfferFixture(tenantId, offer.Id, applicationId, approval.Id);
+        return new OfferFixture(tenantId, offer.Id, applicationId, approval.Id, approverUserId);
     }
 
     private static ZayraDbContext CreateDb()
