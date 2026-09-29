@@ -627,14 +627,44 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == approval.TenantId && x.Id == change.EmployeeId && !x.IsDeleted, cancellationToken);
         if (employee is null) throw new InvalidOperationException("Employee for this change request was not found.");
         var changes = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.ProposedChangesJson) ?? new();
+        // Tenant + reporting-cycle check on a manager id, BEFORE anything is applied (throws ⇒ nothing saved,
+        // the request stays Pending). Same rule set as every other apply path.
+        if (await Zayra.Api.Application.Employees.EmployeeChangeApplier
+                .ValidateManagerChangeAsync(_db, employee, changes, null, cancellationToken) is { } managerRejection)
+            throw new InvalidOperationException(managerRejection.Message);
         var priorDeptId = employee.DepartmentId;
         var priorDesigId = employee.DesignationId;
-        ApplyEmployeeChange(employee, changes);
+        // ONE shared applier with EmployeesController (Application/Employees/EmployeeChangeApplier).
+        // This used to be a hand-copied duplicate of the controller's switch that had drifted: six keys
+        // missing (iqamaExpiryDate, emiratesIdExpiryDate, qidExpiryDate, civilIdExpiryDate, idNumber,
+        // sponsorName — four of them fail-closed PAY gates) and NO default arm, so approving a change
+        // to any of them returned success and wrote nothing, leaving the employee blocked on the very
+        // value the approver had just accepted.
+        // Unrecognised keys are REPORTED, never dropped: they are recorded on the EmployeeHistory row
+        // written below (same unit of work — an audit write here would SaveChanges and commit a
+        // half-applied change before the establishment guard can block it). The payload was validated
+        // against EditableEmployeeFields when the change was REQUESTED, so an unknown key here is a
+        // stored patch from an older build; refusing would strand an in-flight approval with no remedy.
+        var unknownApproved = Zayra.Api.Application.Employees.EmployeeChangeApplier.Apply(employee, changes);
+        // Keys whose storage target is EmployeePayrollProfile (socialInsuranceReference — a fail-closed
+        // pay gate in five GCC branches) have no home on Employee; written in this same unit of work.
+        await Zayra.Api.Application.Employees.EmployeeChangeApplier
+            .ApplyPayrollProfileAsync(_db, employee, changes, approverId, cancellationToken);
         // Same shared resolver as EmployeesController.ApplyChanges (consultant R-B): free-text
         // department/designation/branch changes resolve to IDs (unresolvable ⇒ throws, surfaced
         // to the decider) — this duplicate apply path can no longer manufacture string-only rows.
         await Zayra.Api.Application.Employees.EmployeeOrgFieldResolver
             .ResolveAppliedChangesAsync(_db, approval.TenantId, employee, changes.Keys, cancellationToken);
+        // P0 (money): bankIban/bankName are SENSITIVE, so EVERY bank change lands on one of the two
+        // appliers — and the WPS/SIF export pays from EmployeePayrollProfile.Iban, not the Employee
+        // scalar. EmployeesController.ApproveChange has always mirrored the two homes here; this
+        // path (the normal Approvals screen) did not, so an IBAN approved from the approval queue
+        // left payroll on the OLD account. Same shared primitive, same unit of work: it only mutates
+        // the tracked profile row and DecideAsync's single SaveChanges commits it in the same
+        // relational transaction as the employee columns and the change request — there is no window
+        // in which Employee.BankIban is new while EmployeePayrollProfile.Iban is stale.
+        await Zayra.Api.Application.Employees.EmployeeBankProfileSync
+            .SyncAsync(_db, employee, changes.Keys, cancellationToken);
         // ESTABLISHMENT GUARD (path "approval" via generic decide): authoritative re-check at
         // apply. A block throws BEFORE DecideAsync saves anything, so the approval request stays
         // Pending and the change stays PendingApproval — re-approve after a budget raise. The 409
@@ -656,74 +686,13 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             FieldName = change.SensitiveFields,
             EffectiveDate = change.EffectiveDate,
             Reason = comments,
-            SnapshotJson = "{}",
+            // Any key the shared applier did not recognise is named here rather than discarded in
+            // silence, so an operator can see exactly which approved value did NOT reach a column.
+            SnapshotJson = unknownApproved.Count == 0
+                ? "{}"
+                : JsonSerializer.Serialize(new { unappliedFields = unknownApproved }),
             CreatedByUserId = approverId
         });
-    }
-
-    private static void ApplyEmployeeChange(Employee employee, Dictionary<string, JsonElement> changes)
-    {
-        foreach (var (field, value) in changes)
-        {
-            switch (field)
-            {
-                case "englishName": employee.EnglishName = value.GetString() ?? employee.EnglishName; employee.FullName = employee.EnglishName; break;
-                case "arabicName": employee.ArabicName = value.GetString() ?? employee.ArabicName; break;
-                case "preferredName": employee.PreferredName = value.GetString() ?? employee.PreferredName; break;
-                case "gender": employee.Gender = value.GetString() ?? employee.Gender; break;
-                case "nationality": employee.Nationality = value.GetString() ?? employee.Nationality; break;
-                case "personalEmail": employee.PersonalEmail = value.GetString() ?? employee.PersonalEmail; break;
-                case "workEmail": employee.WorkEmail = value.GetString() ?? employee.WorkEmail; break;
-                case "phone": employee.Phone = value.GetString() ?? employee.Phone; break;
-                case "jobTitle": employee.JobTitle = value.GetString() ?? employee.JobTitle; break;
-                case "employmentType": employee.EmploymentType = value.GetString() ?? employee.EmploymentType; break;
-                case "joiningDate": if (value.ValueKind == JsonValueKind.String && DateTime.TryParse(value.GetString(), out var joining)) employee.JoiningDate = DateTime.SpecifyKind(joining, DateTimeKind.Utc); break;
-                case "department": employee.Department = value.GetString() ?? employee.Department; break;
-                case "designation": employee.Designation = value.GetString() ?? employee.Designation; break;
-                case "branch": employee.Branch = value.GetString() ?? employee.Branch; break;
-                case "workLocation": employee.WorkLocation = value.GetString() ?? employee.WorkLocation; break;
-                case "managerEmployeeId": employee.ManagerEmployeeId = value.ValueKind == JsonValueKind.Null ? null : value.GetInt32(); break;
-                case "dateOfBirth": employee.DateOfBirth = ReadDateOnly(value); break;
-                case "maritalStatus": employee.MaritalStatus = value.GetString() ?? employee.MaritalStatus; break;
-                case "emergencyContactName": employee.EmergencyContactName = value.GetString() ?? employee.EmergencyContactName; break;
-                case "emergencyContactPhone": employee.EmergencyContactPhone = value.GetString() ?? employee.EmergencyContactPhone; break;
-                case "contractType": employee.ContractType = value.GetString() ?? employee.ContractType; break;
-                case "grade": employee.Grade = value.GetString() ?? employee.Grade; break;
-                case "costCenter": employee.CostCenter = value.GetString() ?? employee.CostCenter; break;
-                case "salary": employee.Salary = value.GetDecimal(); break;
-                case "bankName": employee.BankName = value.GetString() ?? employee.BankName; break;
-                case "bankIban": employee.BankIban = value.GetString() ?? employee.BankIban; break;
-                case "wpsBankDetails": employee.WpsBankDetails = value.GetString() ?? employee.WpsBankDetails; break;
-                case "passportNumber": employee.PassportNumber = value.GetString() ?? employee.PassportNumber; break;
-                case "passportIssueDate": employee.PassportIssueDate = ReadDateOnly(value); break;
-                case "passportExpiryDate": employee.PassportExpiryDate = ReadDateOnly(value); break;
-                case "visaNumber": employee.VisaNumber = value.GetString() ?? employee.VisaNumber; break;
-                case "visaIssueDate": employee.VisaIssueDate = ReadDateOnly(value); break;
-                case "visaExpiryDate": employee.VisaExpiryDate = ReadDateOnly(value); break;
-                case "iqamaNumber": employee.IqamaNumber = value.GetString() ?? employee.IqamaNumber; break;
-                case "muqeemNumber": employee.MuqeemNumber = value.GetString() ?? employee.MuqeemNumber; break;
-                case "gosiReference": employee.GosiReference = value.GetString() ?? employee.GosiReference; break;
-                // F02 — same key, same column as EmployeesController.ApplyChanges (the Approvals-screen path).
-                case "gosiFirstRegisteredOn": employee.GosiFirstRegisteredOn = ReadDateOnly(value); break;
-                case "qiwaContractNumber": employee.QiwaContractNumber = value.GetString() ?? employee.QiwaContractNumber; break;
-                case "emiratesId": employee.EmiratesId = value.GetString() ?? employee.EmiratesId; break;
-                case "laborCardNumber": employee.LaborCardNumber = value.GetString() ?? employee.LaborCardNumber; break;
-                case "visaFileNumber": employee.VisaFileNumber = value.GetString() ?? employee.VisaFileNumber; break;
-                case "qid": employee.Qid = value.GetString() ?? employee.Qid; break;
-                case "workPermitNumber": employee.WorkPermitNumber = value.GetString() ?? employee.WorkPermitNumber; break;
-                case "workPermitIssueDate": employee.WorkPermitIssueDate = ReadDateOnly(value); break;
-                case "civilId": employee.CivilId = value.GetString() ?? employee.CivilId; break;
-                case "residencyNumber": employee.ResidencyNumber = value.GetString() ?? employee.ResidencyNumber; break;
-                case "residencyIssueDate": employee.ResidencyIssueDate = ReadDateOnly(value); break;
-                case "terminationReason": employee.TerminationReason = value.GetString() ?? employee.TerminationReason; break;
-            }
-        }
-    }
-
-    private static DateOnly? ReadDateOnly(JsonElement value)
-    {
-        if (value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined) return null;
-        return DateOnly.TryParse(value.GetString(), out var parsed) ? parsed : null;
     }
 
     private static string Clean(string? value) => value?.Trim() ?? string.Empty;

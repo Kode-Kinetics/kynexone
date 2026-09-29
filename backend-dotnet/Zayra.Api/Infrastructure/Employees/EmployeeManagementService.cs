@@ -75,7 +75,7 @@ public class EmployeeManagementService : IEmployeeManagementService
 
         var total = await query.CountAsync(cancellationToken);
         var items = await query.OrderBy(x => x.EmployeeCode).Skip((page - 1) * pageSize).Take(pageSize)
-            .Select(x => new EmployeeListItemDto(x.Id, x.EmployeeCode, x.FullName, x.ArabicName, x.Department, x.Designation, x.Branch, x.ManagerEmployeeId, x.Status, x.ProfileCompletenessScore, x.VisaExpiryDate, x.PassportExpiryDate, x.ReadinessState, x.ActivationBlockersCount, x.PublicId))
+            .Select(x => new EmployeeListItemDto(x.Id, x.EmployeeCode, x.FullName, x.ArabicName, x.Department, x.Designation, string.IsNullOrEmpty(x.Branch) ? (_db.Branches.Where(b => b.Id == x.BranchId).Select(b => b.NameEn).FirstOrDefault() ?? string.Empty) : x.Branch, x.ManagerEmployeeId, x.Status, x.ProfileCompletenessScore, x.VisaExpiryDate, x.PassportExpiryDate, x.ReadinessState, x.ActivationBlockersCount, x.PublicId))
             .ToListAsync(cancellationToken);
         return new PagedResult<EmployeeListItemDto>(items, total, page, pageSize);
     }
@@ -97,7 +97,7 @@ public class EmployeeManagementService : IEmployeeManagementService
             await _db.EmployeeTransferRequests.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == id).OrderByDescending(x => x.CreatedAtUtc).ToListAsync(cancellationToken));
     }
 
-    public async Task<EmployeeDetailDto> CreateAsync(Guid tenantId, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken)
+    public async Task<EmployeeDetailDto> CreateAsync(Guid tenantId, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false)
     {
         // ── HOME JURISDICTION PRECONDITION (server-authoritative) ───────────────────────────────────
         // The EMPLOYING company's country keys every statutory requirement (identity documents, leave
@@ -188,10 +188,13 @@ public class EmployeeManagementService : IEmployeeManagementService
                     signals = duplicateMatches.SelectMany(m => m.Signals).Distinct(),
                 }), cancellationToken);
         }
-        return (await GetAsync(tenantId, employee.Id, true, context, cancellationToken))!;
+        // The write response is a READ of the record, so it obeys the SAME mask gate as GET {id}.
+        // Hard-coding true here made every create/update/status-flip an unmasked salary + IBAN read for
+        // any caller holding employees.write, and (via GetAsync) falsely stamped employee.sensitive_viewed.
+        return (await GetAsync(tenantId, employee.Id, includeSensitive, context, cancellationToken))!;
     }
 
-    public async Task<EmployeeDetailDto?> UpdateAsync(Guid tenantId, int id, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken)
+    public async Task<EmployeeDetailDto?> UpdateAsync(Guid tenantId, int id, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false)
     {
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
         if (employee is null) return null;
@@ -241,10 +244,11 @@ public class EmployeeManagementService : IEmployeeManagementService
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("employee.updated", "Employee", id.ToString(), context, null, cancellationToken);
         await WriteWorkEmailAuditsAsync(employee, workEmailAudit, context, cancellationToken);
-        return await GetAsync(tenantId, id, true, context, cancellationToken);
+        // Same mask gate as GET {id} — see CreateAsync.
+        return await GetAsync(tenantId, id, includeSensitive, context, cancellationToken);
     }
 
-    public async Task<EmployeeDetailDto?> ChangeStatusAsync(Guid tenantId, int id, EmployeeStatusChangeRequest request, RequestContext context, CancellationToken cancellationToken)
+    public async Task<EmployeeDetailDto?> ChangeStatusAsync(Guid tenantId, int id, EmployeeStatusChangeRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false)
     {
         var changedAtUtc = DateTime.UtcNow;
         var statusAuditId = Guid.NewGuid();
@@ -366,66 +370,23 @@ public class EmployeeManagementService : IEmployeeManagementService
         var invalidatedRefreshTokens = 0;
         if (invalidatesCredentials)
         {
-            foreach (var link in links)
-            {
-                link.AccessMode = AccessModes.NoLogin;
-                link.Status = "NoLogin";
-                link.RequiresPasswordSetup = false;
-                link.InvitationTokenHash = string.Empty;
-                link.InvitationExpiresAtUtc = null;
-                link.LoginDisabledReason = $"Employee lifecycle status: {request.Status}";
-                link.UpdatedAtUtc = changedAtUtc;
-                link.UpdatedBy = context.UserId;
-                invalidatedLinks++;
-            }
-
-            foreach (var linkedUser in linkedUsers)
-            {
-                linkedUser.IsActive = false;
-                linkedUser.Status = "Deactivated";
-                linkedUser.AccessMode = AccessModes.NoLogin;
-                TenantSessionSecurity.RotateStamp(linkedUser, changedAtUtc);
-                invalidatedUsers++;
-            }
-
-            if (_db.Database.IsRelational())
-            {
-                invalidatedPasswordResets = await _db.PasswordResetTokens
-                    .Where(x => linkedUserIds.Contains(x.UserId) && x.UsedAtUtc == null)
-                    .ExecuteUpdateAsync(s => s.SetProperty(x => x.UsedAtUtc, changedAtUtc), ct);
-                invalidatedMfaChallenges = await _db.MfaChallengeTokens
-                    .Where(x => x.UserId.HasValue && linkedUserIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
-                    .ExecuteUpdateAsync(s => s.SetProperty(x => x.UsedAtUtc, changedAtUtc), ct);
-                invalidatedRefreshTokens = await _db.RefreshTokens
-                    .Where(x => linkedUserIds.Contains(x.UserId) && x.RevokedAtUtc == null)
-                    .ExecuteUpdateAsync(s => s
-                        .SetProperty(x => x.RevokedAtUtc, changedAtUtc)
-                        .SetProperty(x => x.RevokedByIp, context.IpAddress), ct);
-            }
-            else
-            {
-                var resets = await _db.PasswordResetTokens
-                    .Where(x => linkedUserIds.Contains(x.UserId) && x.UsedAtUtc == null)
-                    .ToListAsync(ct);
-                foreach (var reset in resets) reset.UsedAtUtc = changedAtUtc;
-                invalidatedPasswordResets = resets.Count;
-
-                var challenges = await _db.MfaChallengeTokens
-                    .Where(x => x.UserId.HasValue && linkedUserIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
-                    .ToListAsync(ct);
-                foreach (var challenge in challenges) challenge.UsedAtUtc = changedAtUtc;
-                invalidatedMfaChallenges = challenges.Count;
-
-                var refreshTokens = await _db.RefreshTokens
-                    .Where(x => linkedUserIds.Contains(x.UserId) && x.RevokedAtUtc == null)
-                    .ToListAsync(ct);
-                foreach (var refresh in refreshTokens)
-                {
-                    refresh.RevokedAtUtc = changedAtUtc;
-                    refresh.RevokedByIp = context.IpAddress;
-                }
-                invalidatedRefreshTokens = refreshTokens.Count;
-            }
+            // ONE primitive, shared with the soft-delete path (EmployeesController.SoftDeleteEmployeeAsync)
+            // so a record can never be removed from the product while its login still authenticates.
+            // bulkTokenUpdates: true — this whole method runs inside ChangeStatusOnceAsync's explicit
+            // transaction, so ExecuteUpdate participates in it rather than committing on its own.
+            var revoked = await StageCredentialInvalidationAsync(
+                _db, links, linkedUsers, linkedUserIds,
+                loginDisabledReason: $"Employee lifecycle status: {request.Status}",
+                effectiveAtUtc: changedAtUtc,
+                actorUserId: context.UserId,
+                actorIpAddress: context.IpAddress,
+                bulkTokenUpdates: true,
+                ct);
+            invalidatedLinks = revoked.Links;
+            invalidatedUsers = revoked.Users;
+            invalidatedPasswordResets = revoked.PasswordResets;
+            invalidatedMfaChallenges = revoked.MfaChallenges;
+            invalidatedRefreshTokens = revoked.RefreshTokens;
         }
 
         // ── D1: A TERMINATION MUST PRODUCE AUTHORITATIVE SEPARATION DATA ─────────────────────────────
@@ -766,7 +727,142 @@ public class EmployeeManagementService : IEmployeeManagementService
         // only this call's exact stable marker/history tuple before returning the authoritative DTO.
         if (!employeeFound && !await ExactCommitExistsAsync(cancellationToken)) return null;
         _db.ChangeTracker.Clear();
-        return await GetAsync(tenantId, id, true, context, cancellationToken);
+        // Same mask gate as GET {id} — see CreateAsync. A PATCH {id}/status must not be a salary/IBAN
+        // read primitive for a caller who cannot read those fields through the read endpoint.
+        return await GetAsync(tenantId, id, includeSensitive, context, cancellationToken);
+    }
+
+    /// <summary>Credential edges closed by <see cref="StageCredentialInvalidationAsync"/>.</summary>
+    public readonly record struct CredentialInvalidationCounts(
+        int Links, int Users, int PasswordResets, int MfaChallenges, int RefreshTokens);
+
+    /// <summary>
+    /// THE credential-revocation primitive for an employee losing working access. Closes all five
+    /// edges the auth stack can authenticate through: the EmployeeUserAccount link(s), the linked
+    /// User row(s) (deactivated AND session stamp rotated, which kills issued access tokens),
+    /// outstanding password-reset tokens, outstanding MFA challenges, and live refresh tokens.
+    ///
+    /// <para>STAGED ONLY — no SaveChanges, no audit. The caller commits it together with the state
+    /// change that caused it, so a revocation can never commit without its lifecycle write or vice
+    /// versa. Static so the status transition (<see cref="ChangeStatusAsync"/>) and the soft delete
+    /// (<c>EmployeesController.SoftDeleteEmployeeAsync</c>) share the exact same closure set: the
+    /// delete previously wrote <c>Status = "Inactive"</c> by hand and touched none of these tables,
+    /// so the person vanished from every list while their self-service login kept working and their
+    /// refresh tokens kept minting access tokens.</para>
+    ///
+    /// <para><paramref name="bulkTokenUpdates"/> selects <c>ExecuteUpdateAsync</c> for the three
+    /// token tables. That is only legal when the caller already holds an explicit transaction,
+    /// because ExecuteUpdate bypasses the change tracker and commits immediately otherwise — which
+    /// is precisely the partial commit the soft-delete path must not introduce, so it passes false
+    /// and gets tracked mutations that flush with its own SaveChanges.</para>
+    /// </summary>
+    public static async Task<CredentialInvalidationCounts> StageCredentialInvalidationAsync(
+        ZayraDbContext db,
+        IReadOnlyList<EmployeeUserAccount> links,
+        IReadOnlyList<Zayra.Api.Domain.Entities.User> linkedUsers,
+        IReadOnlyList<Guid> linkedUserIds,
+        string loginDisabledReason,
+        DateTime effectiveAtUtc,
+        Guid? actorUserId,
+        string? actorIpAddress,
+        bool bulkTokenUpdates,
+        CancellationToken ct)
+    {
+        var invalidatedLinks = 0;
+        foreach (var link in links)
+        {
+            link.AccessMode = AccessModes.NoLogin;
+            link.Status = "NoLogin";
+            link.RequiresPasswordSetup = false;
+            link.InvitationTokenHash = string.Empty;
+            link.InvitationExpiresAtUtc = null;
+            link.LoginDisabledReason = loginDisabledReason;
+            link.UpdatedAtUtc = effectiveAtUtc;
+            link.UpdatedBy = actorUserId;
+            invalidatedLinks++;
+        }
+
+        var invalidatedUsers = 0;
+        foreach (var linkedUser in linkedUsers)
+        {
+            linkedUser.IsActive = false;
+            linkedUser.Status = "Deactivated";
+            linkedUser.AccessMode = AccessModes.NoLogin;
+            TenantSessionSecurity.RotateStamp(linkedUser, effectiveAtUtc);
+            invalidatedUsers++;
+        }
+
+        int invalidatedPasswordResets, invalidatedMfaChallenges, invalidatedRefreshTokens;
+        if (bulkTokenUpdates && db.Database.IsRelational())
+        {
+            invalidatedPasswordResets = await db.PasswordResetTokens
+                .Where(x => linkedUserIds.Contains(x.UserId) && x.UsedAtUtc == null)
+                .ExecuteUpdateAsync(s => s.SetProperty(x => x.UsedAtUtc, effectiveAtUtc), ct);
+            invalidatedMfaChallenges = await db.MfaChallengeTokens
+                .Where(x => x.UserId.HasValue && linkedUserIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
+                .ExecuteUpdateAsync(s => s.SetProperty(x => x.UsedAtUtc, effectiveAtUtc), ct);
+            invalidatedRefreshTokens = await db.RefreshTokens
+                .Where(x => linkedUserIds.Contains(x.UserId) && x.RevokedAtUtc == null)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(x => x.RevokedAtUtc, effectiveAtUtc)
+                    .SetProperty(x => x.RevokedByIp, actorIpAddress), ct);
+        }
+        else
+        {
+            var resets = await db.PasswordResetTokens
+                .Where(x => linkedUserIds.Contains(x.UserId) && x.UsedAtUtc == null)
+                .ToListAsync(ct);
+            foreach (var reset in resets) reset.UsedAtUtc = effectiveAtUtc;
+            invalidatedPasswordResets = resets.Count;
+
+            var challenges = await db.MfaChallengeTokens
+                .Where(x => x.UserId.HasValue && linkedUserIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
+                .ToListAsync(ct);
+            foreach (var challenge in challenges) challenge.UsedAtUtc = effectiveAtUtc;
+            invalidatedMfaChallenges = challenges.Count;
+
+            var refreshTokens = await db.RefreshTokens
+                .Where(x => linkedUserIds.Contains(x.UserId) && x.RevokedAtUtc == null)
+                .ToListAsync(ct);
+            foreach (var refresh in refreshTokens)
+            {
+                refresh.RevokedAtUtc = effectiveAtUtc;
+                refresh.RevokedByIp = actorIpAddress;
+            }
+            invalidatedRefreshTokens = refreshTokens.Count;
+        }
+
+        return new CredentialInvalidationCounts(
+            invalidatedLinks, invalidatedUsers, invalidatedPasswordResets,
+            invalidatedMfaChallenges, invalidatedRefreshTokens);
+    }
+
+    /// <summary>
+    /// Resolves the employee's full credential graph (link rows, linked user rows and their ids) for
+    /// <see cref="StageCredentialInvalidationAsync"/>. Mirrors the graph the status transition locks
+    /// and reads, including the legacy <c>Employee.UserAccountId</c> edge, so neither path can close
+    /// a smaller set than the other.
+    /// </summary>
+    public static async Task<(List<EmployeeUserAccount> Links, List<Zayra.Api.Domain.Entities.User> Users, List<Guid> UserIds)>
+        LoadCredentialGraphAsync(ZayraDbContext db, Guid tenantId, int employeeId, Guid? employeeUserAccountId, CancellationToken ct)
+    {
+        var links = await db.EmployeeUserAccounts
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && !x.IsDeleted)
+            .OrderBy(x => x.Id)
+            .ToListAsync(ct);
+        var userIds = links.Where(x => x.UserId.HasValue).Select(x => x.UserId!.Value)
+            .Append(employeeUserAccountId ?? Guid.Empty)
+            .Where(x => x != Guid.Empty)
+            .Distinct()
+            .OrderBy(x => x)
+            .ToList();
+        var users = userIds.Count == 0
+            ? []
+            : await db.Users
+                .Where(x => x.TenantId == tenantId && userIds.Contains(x.Id) && !x.IsDeleted)
+                .OrderBy(x => x.Id)
+                .ToListAsync(ct);
+        return (links, users, userIds);
     }
 
     /// <summary>
@@ -1007,11 +1103,11 @@ public class EmployeeManagementService : IEmployeeManagementService
         return match;
     }
 
-    public Task<EmployeeDetailDto?> ActivateAsync(Guid tenantId, int employeeId, EmployeeStatusChangeRequest request, RequestContext context, CancellationToken cancellationToken)
-        => ChangeStatusAsync(tenantId, employeeId, request with { Status = "Active" }, context, cancellationToken);
+    public Task<EmployeeDetailDto?> ActivateAsync(Guid tenantId, int employeeId, EmployeeStatusChangeRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false)
+        => ChangeStatusAsync(tenantId, employeeId, request with { Status = "Active" }, context, cancellationToken, includeSensitive);
 
-    public Task<EmployeeDetailDto?> TerminateAsync(Guid tenantId, int employeeId, EmployeeStatusChangeRequest request, RequestContext context, CancellationToken cancellationToken)
-        => ChangeStatusAsync(tenantId, employeeId, request with { Status = "Terminated" }, context, cancellationToken);
+    public Task<EmployeeDetailDto?> TerminateAsync(Guid tenantId, int employeeId, EmployeeStatusChangeRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false)
+        => ChangeStatusAsync(tenantId, employeeId, request with { Status = "Terminated" }, context, cancellationToken, includeSensitive);
 
     public async Task<EmployeeHeadcountReportDto> HeadcountAsync(Guid tenantId, CancellationToken cancellationToken)
     {
