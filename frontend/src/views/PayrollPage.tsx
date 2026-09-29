@@ -3213,7 +3213,7 @@ function FinalSettlementTab() {
   const [actionSaving, setActionSaving] = useState<string | null>(null);
   const [actionForms, setActionForms] = useState<Record<string, {
     reason: string; accrualDate: string; acknowledgeWageBaseFloor: boolean;
-    acknowledgeWagesUnpaid: boolean; wagesUnpaidReason: string; acknowledgeSelfApproval: boolean;
+    acknowledgeWagesUnpaid: boolean; wagesUnpaidReason: string;
   }>>({});
 
   const loadSettlements = () => payrollApi.listFinalSettlements().then(r => {
@@ -3224,7 +3224,7 @@ function FinalSettlementTab() {
   const defaultActionForm = {
     reason: '', accrualDate: new Date().toISOString().slice(0, 10),
     acknowledgeWageBaseFloor: false, acknowledgeWagesUnpaid: false,
-    wagesUnpaidReason: '', acknowledgeSelfApproval: false,
+    wagesUnpaidReason: '',
   };
   const actionForm = (id: string) => actionForms[id] ?? defaultActionForm;
   const setActionForm = (id: string, patch: Partial<typeof defaultActionForm>) =>
@@ -3242,7 +3242,6 @@ function FinalSettlementTab() {
         acknowledgeWageBaseFloor: af.acknowledgeWageBaseFloor,
         acknowledgeWagesUnpaid: af.acknowledgeWagesUnpaid,
         wagesUnpaidReason: af.wagesUnpaidReason || undefined,
-        acknowledgeSelfApproval: af.acknowledgeSelfApproval,
         accrualDate: af.accrualDate || undefined,
         reason: af.reason || undefined,
       });
@@ -3272,6 +3271,9 @@ function FinalSettlementTab() {
         <p className="text-sm font-semibold text-slate-800 dark:text-white">Final Settlement Lifecycle</p>
         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
           Calculate and save a Draft payable, submit it, approve the GL accrual, disburse it through an off-cycle payroll run, then settle the accepted payment batch.
+        </p>
+        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+          Approval needs a second person: whoever calculated, recalculated or submitted a settlement cannot approve it.
         </p>
         <p className="mt-2 text-sm font-semibold text-sapphire dark:text-cyanAccent">Outstanding approved/disbursing payable: {outstandingTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
       </div>
@@ -3373,7 +3375,6 @@ function FinalSettlementTab() {
                     {(s.status === 'Draft' || s.status === 'PendingApproval') && <>
                       <div className="flex flex-wrap gap-3 text-xs text-slate-600 dark:text-slate-300">
                         <label><input type="checkbox" checked={af.acknowledgeWageBaseFloor} onChange={e => setActionForm(s.id, { acknowledgeWageBaseFloor: e.target.checked })} /> Accept flagged wage-base floor</label>
-                        <label><input type="checkbox" checked={af.acknowledgeSelfApproval} onChange={e => setActionForm(s.id, { acknowledgeSelfApproval: e.target.checked })} /> Acknowledge maker/checker exception</label>
                         <label><input type="checkbox" checked={af.acknowledgeWagesUnpaid} onChange={e => setActionForm(s.id, { acknowledgeWagesUnpaid: e.target.checked })} /> Add acknowledged unpaid wages</label>
                       </div>
                       {af.acknowledgeWagesUnpaid && <input className={inp} aria-label={`Unpaid wages reason for ${s.employeeName}`} placeholder="Required unpaid-wages justification" value={af.wagesUnpaidReason} onChange={e => setActionForm(s.id, { wagesUnpaidReason: e.target.value })} />}

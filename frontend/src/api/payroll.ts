@@ -617,7 +617,6 @@ export const payrollApi = {
     acknowledgeWageBaseFloor?: boolean;
     acknowledgeWagesUnpaid?: boolean;
     wagesUnpaidReason?: string;
-    acknowledgeSelfApproval?: boolean;
     accrualDate?: string;
     reason?: string;
   }) => client.post<{ settlementId: string; status: string }>(`/api/payroll/final-settlements/${id}/approve`, body).then((r) => r.data),
