@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createLatestRequestGate, runLatest } from '../src/lib/latestRequest';
+import { commonPayrollCurrency, resolvePayrollRunCurrency } from '../src/lib/payrollCurrency';
 import {
   ATTENDANCE_DOMAINS,
   attendanceErrorSummary,
@@ -141,7 +142,7 @@ test.describe('browserless UI truthfulness contracts', () => {
   });
 });
 
-// R02 — kept in its own block (appended) so parallel additions to the block above merge cleanly.
+// R02 / R03 — kept in their own block (appended) so parallel additions to the block above merge cleanly.
 test.describe('browserless employee search race and payroll currency contracts', () => {
   const deferred = <T,>() => {
     let resolve!: (value: T) => void;
@@ -234,5 +235,52 @@ test.describe('browserless employee search race and payroll currency contracts',
       expect(source, file).not.toMatch(/employeesApi\.list\([^)]*\)\s*\n?\s*\.then/);
     }
     expect(read('src/components/EmployeePicker.tsx')).toContain('{!value && open && results.length > 0 && (');
+  });
+
+  test('R03: a run is shown in its employing company\'s currency, never the tenant default', () => {
+    const companies = [
+      { id: 'ksa', name: 'Evostel Certification KSA', tradeName: '', defaultCurrency: 'sar' },
+      { id: 'uae', name: 'Evostel UAE', tradeName: 'Evostel Dubai', defaultCurrency: 'AED' },
+    ];
+    expect(resolvePayrollRunCurrency({ companyId: 'ksa' }, companies, 'loaded'))
+      .toEqual({ status: 'resolved', currency: 'SAR', companyName: 'Evostel Certification KSA' });
+    expect(resolvePayrollRunCurrency({ companyId: 'uae' }, companies, 'loaded'))
+      .toEqual({ status: 'resolved', currency: 'AED', companyName: 'Evostel Dubai' });
+    expect(resolvePayrollRunCurrency({ companyId: 'ksa' }, [], 'loading')).toEqual({ status: 'loading' });
+  });
+
+  test('R03: an unconfirmed currency is unavailable with a reason, never guessed', () => {
+    const failed = resolvePayrollRunCurrency({ companyId: 'ksa' }, [], 'failed');
+    expect(failed.status).toBe('unavailable');
+    expect(failed.status === 'unavailable' && failed.reason).toContain('could not be loaded');
+    const unknown = resolvePayrollRunCurrency({ companyId: 'gone' }, [{ id: 'ksa', defaultCurrency: 'SAR' }], 'loaded');
+    expect(unknown.status).toBe('unavailable');
+    const blank = resolvePayrollRunCurrency({ companyId: 'ksa' }, [{ id: 'ksa', name: 'KSA Co', defaultCurrency: ' ' }], 'loaded');
+    expect(blank.status === 'unavailable' && blank.reason).toContain('KSA Co has no default currency');
+    expect(resolvePayrollRunCurrency(null, [], 'loaded').status).toBe('unavailable');
+  });
+
+  test('R03: a run without a legal entity is labelled only when every company shares one currency', () => {
+    expect(resolvePayrollRunCurrency({ companyId: null }, [{ id: 'a', defaultCurrency: 'SAR' }, { id: 'b', defaultCurrency: 'sar' }], 'loaded'))
+      .toEqual({ status: 'resolved', currency: 'SAR' });
+    const mixed = resolvePayrollRunCurrency({ companyId: null }, [{ id: 'a', defaultCurrency: 'SAR' }, { id: 'b', defaultCurrency: 'AED' }], 'loaded');
+    expect(mixed.status).toBe('unavailable');
+    expect(mixed.status === 'unavailable' && mixed.reason).toContain('AED, SAR');
+  });
+
+  test('R03: group totals never add different currencies into one labelled figure', () => {
+    expect(commonPayrollCurrency([{ currency: 'sar', hasPayrollRun: true }, { currency: 'SAR', hasPayrollRun: true }])).toBe('SAR');
+    expect(commonPayrollCurrency([{ currency: 'SAR', hasPayrollRun: true }, { currency: 'AED', hasPayrollRun: true }])).toBeNull();
+    expect(commonPayrollCurrency([{ currency: 'SAR', hasPayrollRun: true }, { currency: 'AED', hasPayrollRun: false }])).toBe('SAR');
+    expect(commonPayrollCurrency([])).toBeNull();
+  });
+
+  test('R03: the approval gate requires a confirmed run currency and no tenant-currency totals remain', () => {
+    const payroll = read('src/views/PayrollPage.tsx');
+    expect(payroll).toContain('const runCurrency = resolvePayrollRunCurrency(selectedRun, approvalCompanies, companiesState);');
+    expect(payroll).toMatch(/const gateSatisfied =\n.*&& currencyConfirmed;/);
+    expect(payroll).toContain('Approval is unavailable until the currency is confirmed.');
+    expect(payroll).not.toContain('fmtAmt(selectedRun.totalGrossSalary, currencyCode)');
+    expect(payroll).not.toContain('fmtAmt(overview.totalGrossPayroll, currencyCode)');
   });
 });

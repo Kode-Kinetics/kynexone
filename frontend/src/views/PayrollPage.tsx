@@ -21,6 +21,7 @@ import {
   type PayrollRunPopulation, type PayrollValidationOverrideReport, type AuditIntegrityReport,
 } from '../api/payroll';
 import { identityAuditApi } from '../api/identity';
+import { commonPayrollCurrency, resolvePayrollRunCurrency, type CompaniesLoadState } from '../lib/payrollCurrency';
 import client, { notifyApiError } from '../api/client';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { InfoTip } from '../components/InfoTip';
@@ -213,7 +214,9 @@ function PayrollSetupWizard({ readiness, onNavigate }: { readiness: PayrollReadi
 // ── Company Bird's-Eye Table ───────────────────────────────────────────────────
 
 function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOverview; onDrillDown: (company: PayrollCompanySummary) => void }) {
-  const { currencyCode } = useTenantSettings();
+  // Group totals add every company's run together, so they only have one currency when every
+  // company with a run pays in the same one. A mixed group is read per company row instead.
+  const groupCurrency = commonPayrollCurrency(overview.companies.filter((company) => company.hasPayrollRun));
   return (
     <div className="surface overflow-hidden">
       <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5 dark:border-white/10">
@@ -307,8 +310,16 @@ function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOver
         <div className="border-t border-slate-100 bg-slate-50 px-5 py-3 dark:border-white/5 dark:bg-white/3">
           <div className="flex items-center gap-8 text-xs">
             <span className="text-slate-500 dark:text-slate-400">Group totals:</span>
-            <span className="font-semibold text-slate-800 dark:text-white">Gross: {fmtAmt(overview.totalGrossPayroll, currencyCode)}</span>
-            <span className="font-semibold text-emerald-600 dark:text-emerald-400">Net: {fmtAmt(overview.totalNetPayroll, currencyCode)}</span>
+            {groupCurrency ? (
+              <>
+                <span className="font-semibold text-slate-800 dark:text-white">Gross: {fmtAmt(overview.totalGrossPayroll, groupCurrency)}</span>
+                <span className="font-semibold text-emerald-600 dark:text-emerald-400">Net: {fmtAmt(overview.totalNetPayroll, groupCurrency)}</span>
+              </>
+            ) : overview.companies.some((company) => company.hasPayrollRun) ? (
+              <span className="font-semibold text-amber-700 dark:text-amber-300">Companies pay in different currencies — read the totals per company above</span>
+            ) : (
+              <span className="text-slate-500 dark:text-slate-400">No payroll run in this period</span>
+            )}
             {overview.totalValidationErrors > 0 && <span className="font-semibold text-rose-600 dark:text-rose-400">{overview.totalValidationErrors} errors</span>}
             {overview.totalPendingApprovals > 0 && <span className="font-semibold text-amber-600 dark:text-amber-400">{overview.totalPendingApprovals} pending approvals</span>}
           </div>
@@ -384,7 +395,6 @@ function AiInsightsPanel() {
 
 function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
   const now = new Date();
-  const { currencyCode } = useTenantSettings();
   const [selectedCompanyId, setSelectedCompanyId] = useState<string>('all');
   const [selectedYear, setSelectedYear] = useState(now.getFullYear());
   const [selectedMonth, setSelectedMonth] = useState(now.getMonth() + 1);
@@ -420,6 +430,13 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
   const isNotConfigured = !loading && readiness && readiness.completionPercent < 30;
   const hasPayrollRun = overview?.companies.some((company) => company.hasPayrollRun) ?? false;
   const periodState = payrollPeriodState(hasPayrollRun, overview !== null);
+  // The KPI cards add up every company in scope; label them only with a currency they all share.
+  const overviewCurrency = overview
+    ? selectedCompanyId === 'all'
+      ? commonPayrollCurrency(overview.companies.filter((company) => company.hasPayrollRun))
+      : commonPayrollCurrency(overview.companies.filter((company) => company.companyId === selectedCompanyId))
+    : null;
+  const overviewAmount = (value: number) => overviewCurrency ? fmtAmt(value, overviewCurrency) : 'Mixed currencies';
 
   const years = Array.from({ length: 3 }, (_, i) => now.getFullYear() - i);
 
@@ -486,8 +503,8 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
       {!loading && overview && (
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <KpiCard label="Active Employees" value={overview.totalActiveEmployees.toLocaleString()} icon={Users} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
-          <KpiCard label="Gross Payroll" value={periodState === 'no-run' ? 'No run' : fmtAmt(overview.totalGrossPayroll, currencyCode)} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
-          <KpiCard label="Net Payroll" value={periodState === 'no-run' ? 'No run' : fmtAmt(overview.totalNetPayroll, currencyCode)} icon={TrendingUp} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
+          <KpiCard label="Gross Payroll" value={periodState === 'no-run' ? 'No run' : overviewAmount(overview.totalGrossPayroll)} sub={periodState !== 'no-run' && !overviewCurrency ? 'See each company below' : undefined} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
+          <KpiCard label="Net Payroll" value={periodState === 'no-run' ? 'No run' : overviewAmount(overview.totalNetPayroll)} sub={periodState !== 'no-run' && !overviewCurrency ? 'See each company below' : undefined} icon={TrendingUp} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
           <KpiCard label="Locked Runs YTD" value={summary?.lockedRuns ?? '—'} icon={Lock} color="bg-violet-100 text-violet-600 dark:bg-violet-500/20 dark:text-violet-400" />
         </div>
       )}
@@ -1742,7 +1759,19 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
   const [runId, setRunId] = useState(selectedRunId ?? '');
   const [approvals, setApprovals] = useState<PayrollApproval[]>([]);
   const [notes, setNotes] = useState('');
-  const { currencyCode } = useTenantSettings();
+  // The run is denominated in its employing company's currency, never the tenant display default.
+  // Until that currency is confirmed the amounts carry no currency label and approval is withheld.
+  const [approvalCompanies, setApprovalCompanies] = useState<PayrollCompany[]>([]);
+  const [companiesState, setCompaniesState] = useState<CompaniesLoadState>('loading');
+  const [companiesAttempt, setCompaniesAttempt] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setCompaniesState('loading');
+    payrollApi.listCompanies()
+      .then(items => { if (active) { setApprovalCompanies(items); setCompaniesState('loaded'); } })
+      .catch(() => { if (active) { setApprovalCompanies([]); setCompaniesState('failed'); } });
+    return () => { active = false; };
+  }, [companiesAttempt]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -1789,13 +1818,18 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
   }, [runId, refreshGate]);
 
   const selectedRun = runs.find(r => r.id === runId);
+  const runCurrency = resolvePayrollRunCurrency(selectedRun, approvalCompanies, companiesState);
+  const currencyConfirmed = runCurrency.status === 'resolved';
+  const runAmount = (n: number) => runCurrency.status === 'resolved'
+    ? fmtAmt(n, runCurrency.currency)
+    : `${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (currency not confirmed)`;
 
   const excludedCount = population?.excludedCount ?? 0;
   const overriddenCount = overrideReport?.overrides.length ?? 0;
   const needsExcludedAck = excludedCount > 0;
   const needsOverriddenAck = overriddenCount > 0;
   const gateSatisfied =
-    (!needsExcludedAck || ackExcluded) && (!needsOverriddenAck || ackOverridden) && !gateLoading && !gateError;
+    (!needsExcludedAck || ackExcluded) && (!needsOverriddenAck || ackOverridden) && !gateLoading && !gateError && currencyConfirmed;
 
   const handleApprove = async () => {
     if (!runId) return;
@@ -1883,11 +1917,32 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
         <div className="surface p-5 space-y-4">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <p className="text-sm font-semibold text-slate-900 dark:text-white">Payroll Run — {MONTHS[selectedRun.month - 1]} {selectedRun.year}</p>
-              <p className="text-xs text-slate-400">{selectedRun.employeeCount} employees · Gross {fmtAmt(selectedRun.totalGrossSalary, currencyCode)} · Net {fmtAmt(selectedRun.totalNetSalary, currencyCode)}</p>
+              <p className="text-sm font-semibold text-slate-900 dark:text-white">
+                Payroll Run — {MONTHS[selectedRun.month - 1]} {selectedRun.year}
+                {runCurrency.status === 'resolved' && runCurrency.companyName ? ` · ${runCurrency.companyName}` : ''}
+              </p>
+              <p className="text-xs text-slate-400">{selectedRun.employeeCount} employees · Gross {runAmount(selectedRun.totalGrossSalary)} · Net {runAmount(selectedRun.totalNetSalary)}</p>
             </div>
             <StatusBadge status={selectedRun.status} />
           </div>
+
+          {runCurrency.status === 'loading' && (
+            <p className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+              Confirming the employing company's currency…
+            </p>
+          )}
+          {runCurrency.status === 'unavailable' && (
+            <div role="alert" className="flex flex-wrap items-start gap-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700 dark:border-rose-400/20 dark:bg-rose-500/10 dark:text-rose-400">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span className="min-w-0 flex-1">{runCurrency.reason} Approval is unavailable until the currency is confirmed.</span>
+              {companiesState === 'failed' && (
+                <button type="button" className={btn.sm} onClick={() => setCompaniesAttempt(n => n + 1)}>
+                  <RefreshCw className="h-3.5 w-3.5" /> Retry
+                </button>
+              )}
+            </div>
+          )}
 
           {canApproveStep1 && !canFinanceApproveDirectly && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700 dark:border-amber-400/20 dark:bg-amber-500/10 dark:text-amber-400">
@@ -1951,7 +2006,9 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
                   className={btn.primary}
                   onClick={handleApprove}
                   disabled={saving || !gateSatisfied}
-                  title={gateSatisfied ? undefined : 'Acknowledge the exclusions and overrides above before approving.'}
+                  title={gateSatisfied ? undefined : !currencyConfirmed
+                    ? "The run's currency must be confirmed before it can be approved."
+                    : 'Acknowledge the exclusions and overrides above before approving.'}
                 >
                   <CheckCircle2 className="h-4 w-4" />
                   {saving ? 'Saving…' : canFinanceApproveDirectly || canApproveStep2 ? 'Approve — Final' : 'Approve → Send to Finance'}
