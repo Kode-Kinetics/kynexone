@@ -1886,6 +1886,56 @@ function AcknowledgementPanel({
   );
 }
 
+// ── Run currency ──────────────────────────────────────────────────────────────
+// A run is denominated in its employing company's currency, never the tenant display default. Every
+// view that prints one run's amounts resolves it here; until it is confirmed the amounts carry no
+// currency label (and the approval view withholds approval).
+
+function useRunCurrency(run: PayrollRun | undefined) {
+  const [companies, setCompanies] = useState<PayrollCompany[]>([]);
+  const [companiesState, setCompaniesState] = useState<CompaniesLoadState>('loading');
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setCompaniesState('loading');
+    payrollApi.listCompanies()
+      .then(items => { if (active) { setCompanies(items); setCompaniesState('loaded'); } })
+      .catch(() => { if (active) { setCompanies([]); setCompaniesState('failed'); } });
+    return () => { active = false; };
+  }, [attempt]);
+  const resolution = resolvePayrollRunCurrency(run, companies, companiesState);
+  const amount = (n: number) => resolution.status === 'resolved'
+    ? fmtAmt(n, resolution.currency)
+    : `${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (currency not confirmed)`;
+  return { resolution, companiesState, amount, retry: () => setAttempt(n => n + 1) };
+}
+
+function RunCurrencyNotice({ resolution, companiesState, onRetry, blocksApproval }: {
+  resolution: ReturnType<typeof useRunCurrency>['resolution'];
+  companiesState: CompaniesLoadState;
+  onRetry: () => void;
+  blocksApproval?: boolean;
+}) {
+  if (resolution.status === 'loading') return (
+    <p className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+      Confirming the employing company's currency…
+    </p>
+  );
+  if (resolution.status !== 'unavailable') return null;
+  return (
+    <div role="alert" className="flex flex-wrap items-start gap-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700 dark:border-rose-400/20 dark:bg-rose-500/10 dark:text-rose-400">
+      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+      <span className="min-w-0 flex-1">{resolution.reason}{blocksApproval ? ' Approval is unavailable until the currency is confirmed.' : ''}</span>
+      {companiesState === 'failed' && (
+        <button type="button" className={btn.sm} onClick={onRetry}>
+          <RefreshCw className="h-3.5 w-3.5" /> Retry
+        </button>
+      )}
+    </div>
+  );
+}
+
 function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
   selectedRunId?: string;
   isAdmin: boolean;
@@ -1896,19 +1946,6 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
   const [runId, setRunId] = useState(selectedRunId ?? '');
   const [approvals, setApprovals] = useState<PayrollApproval[]>([]);
   const [notes, setNotes] = useState('');
-  // The run is denominated in its employing company's currency, never the tenant display default.
-  // Until that currency is confirmed the amounts carry no currency label and approval is withheld.
-  const [approvalCompanies, setApprovalCompanies] = useState<PayrollCompany[]>([]);
-  const [companiesState, setCompaniesState] = useState<CompaniesLoadState>('loading');
-  const [companiesAttempt, setCompaniesAttempt] = useState(0);
-  useEffect(() => {
-    let active = true;
-    setCompaniesState('loading');
-    payrollApi.listCompanies()
-      .then(items => { if (active) { setApprovalCompanies(items); setCompaniesState('loaded'); } })
-      .catch(() => { if (active) { setApprovalCompanies([]); setCompaniesState('failed'); } });
-    return () => { active = false; };
-  }, [companiesAttempt]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -1955,11 +1992,9 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
   }, [runId, refreshGate]);
 
   const selectedRun = runs.find(r => r.id === runId);
-  const runCurrency = resolvePayrollRunCurrency(selectedRun, approvalCompanies, companiesState);
+  // Until the run's currency is confirmed its amounts carry no currency label and approval is withheld.
+  const { resolution: runCurrency, companiesState, amount: runAmount, retry: retryRunCurrency } = useRunCurrency(selectedRun);
   const currencyConfirmed = runCurrency.status === 'resolved';
-  const runAmount = (n: number) => runCurrency.status === 'resolved'
-    ? fmtAmt(n, runCurrency.currency)
-    : `${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (currency not confirmed)`;
 
   const excludedCount = population?.excludedCount ?? 0;
   const overriddenCount = overrideReport?.overrides.length ?? 0;
@@ -2063,23 +2098,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
             <StatusBadge status={selectedRun.status} />
           </div>
 
-          {runCurrency.status === 'loading' && (
-            <p className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-              Confirming the employing company's currency…
-            </p>
-          )}
-          {runCurrency.status === 'unavailable' && (
-            <div role="alert" className="flex flex-wrap items-start gap-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700 dark:border-rose-400/20 dark:bg-rose-500/10 dark:text-rose-400">
-              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-              <span className="min-w-0 flex-1">{runCurrency.reason} Approval is unavailable until the currency is confirmed.</span>
-              {companiesState === 'failed' && (
-                <button type="button" className={btn.sm} onClick={() => setCompaniesAttempt(n => n + 1)}>
-                  <RefreshCw className="h-3.5 w-3.5" /> Retry
-                </button>
-              )}
-            </div>
-          )}
+          <RunCurrencyNotice resolution={runCurrency} companiesState={companiesState} onRetry={retryRunCurrency} blocksApproval />
 
           {canApproveStep1 && !canFinanceApproveDirectly && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700 dark:border-amber-400/20 dark:bg-amber-500/10 dark:text-amber-400">
@@ -2672,6 +2691,7 @@ function ReportsTab() {
   const [summary, setSummary] = useState<PayrollSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const { currencyCode } = useTenantSettings();
+  const registerCurrency = useRunCurrency(runs.find(r => r.id === runId));
 
   useEffect(() => {
     payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {});
@@ -2713,9 +2733,10 @@ function ReportsTab() {
           <>
             <div className="mt-4 rounded-lg bg-slate-50 px-4 py-3 dark:bg-white/5">
               <p className="text-sm text-slate-600 dark:text-slate-400">
-                {slips.length} employees · Gross {fmtAmt(slips.reduce((s, x) => s + x.grossSalary, 0), currencyCode)} · Net {fmtAmt(slips.reduce((s, x) => s + x.netSalary, 0), currencyCode)}
+                {slips.length} employees · Gross {registerCurrency.amount(slips.reduce((s, x) => s + x.grossSalary, 0))} · Net {registerCurrency.amount(slips.reduce((s, x) => s + x.netSalary, 0))}
               </p>
             </div>
+            <RunCurrencyNotice resolution={registerCurrency.resolution} companiesState={registerCurrency.companiesState} onRetry={registerCurrency.retry} />
             <div className="mt-4 overflow-x-auto">
               <table className="w-full min-w-[640px] text-sm">
                 <thead>
@@ -3057,7 +3078,8 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
   const [runId, setRunId] = useState(selectedRunId ?? '');
   const [report, setReport] = useState<PayrollReconciliation | null>(null);
   const [loading, setLoading] = useState(false);
-  const { currencyCode } = useTenantSettings();
+  const [error, setError] = useState('');
+  const runCurrency = useRunCurrency(runs.find(r => r.id === runId));
 
   useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
   useEffect(() => { if (selectedRunId) setRunId(selectedRunId); }, [selectedRunId]);
@@ -3065,7 +3087,22 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
   const load = async () => {
     if (!runId) return;
     setLoading(true);
-    payrollApi.reconciliation(runId).then(r => setReport(r)).catch(() => {}).finally(() => setLoading(false));
+    setError('');
+    try {
+      setReport(await payrollApi.reconciliation(runId));
+    } catch (e: unknown) {
+      // A failed reconciliation used to leave the previous report (or nothing) on screen, silently.
+      setReport(null);
+      const response = (e as { response?: { status?: number; data?: { message?: string; error?: string } } })?.response;
+      setError(
+        response?.data?.message
+        ?? (response?.status === 403
+          ? 'You do not have permission to run payroll reconciliation.'
+          : 'Payroll reconciliation could not be loaded. Try again.'),
+      );
+    } finally {
+      setLoading(false);
+    }
   };
 
   const fmt = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2 });
@@ -3088,6 +3125,14 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
         </button>
       </div>
 
+      {error && (
+        <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300">
+          {error}
+        </div>
+      )}
+
+      {report && <RunCurrencyNotice resolution={runCurrency.resolution} companiesState={runCurrency.companiesState} onRetry={runCurrency.retry} />}
+
       {report && (
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -3102,9 +3147,9 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
               {[{ label: 'Gross', prior: report.priorTotalGross, current: report.currentTotalGross }, { label: 'Net', prior: report.priorTotalNet, current: report.currentTotalNet }].map(m => (
                 <div key={m.label} className="p-4">
                   <p className="text-xs text-slate-400">Total {m.label}</p>
-                  <p className="text-lg font-bold text-slate-900 dark:text-white">{fmtAmt(m.current, currencyCode)}</p>
+                  <p className="text-lg font-bold text-slate-900 dark:text-white">{runCurrency.amount(m.current)}</p>
                   <p className={`text-xs ${m.current >= m.prior ? 'text-emerald-500' : 'text-rose-500'}`}>
-                    {m.current >= m.prior ? '+' : ''}{fmtAmt(m.current - m.prior, currencyCode)} vs {report.priorPeriod ?? 'prior period'}
+                    {m.current >= m.prior ? '+' : ''}{runCurrency.amount(m.current - m.prior)} vs {report.priorPeriod ?? 'prior period'}
                   </p>
                 </div>
               ))}

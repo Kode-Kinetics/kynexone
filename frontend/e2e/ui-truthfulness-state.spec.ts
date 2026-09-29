@@ -281,11 +281,16 @@ test.describe('browserless employee search race and payroll currency contracts',
 
   test('R03: the approval gate requires a confirmed run currency and no tenant-currency totals remain', () => {
     const payroll = read('src/views/PayrollPage.tsx');
-    expect(payroll).toContain('const runCurrency = resolvePayrollRunCurrency(selectedRun, approvalCompanies, companiesState);');
+    expect(payroll).toContain('const resolution = resolvePayrollRunCurrency(run, companies, companiesState);');
+    expect(payroll).toContain('= useRunCurrency(selectedRun);');
     expect(payroll).toMatch(/const gateSatisfied =\n.*&& currencyConfirmed;/);
+    expect(payroll).toContain('<RunCurrencyNotice resolution={runCurrency} companiesState={companiesState} onRetry={retryRunCurrency} blocksApproval />');
     expect(payroll).toContain('Approval is unavailable until the currency is confirmed.');
+    // No single run's amounts — approval, register or reconciliation — are labelled with the tenant default.
     expect(payroll).not.toContain('fmtAmt(selectedRun.totalGrossSalary, currencyCode)');
     expect(payroll).not.toContain('fmtAmt(overview.totalGrossPayroll, currencyCode)');
+    expect(payroll).not.toContain('fmtAmt(m.current, currencyCode)');
+    expect(payroll).not.toContain('fmtAmt(slips.reduce((s, x) => s + x.grossSalary, 0), currencyCode)');
   });
 });
 
