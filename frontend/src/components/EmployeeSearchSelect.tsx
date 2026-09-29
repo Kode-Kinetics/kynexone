@@ -1,9 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Search, X, User } from 'lucide-react';
 import { employeesApi } from '../api/employees';
 import type { EmployeeListItem } from '../api/employees';
+import { createLatestRequestGate, runLatest } from '../lib/latestRequest';
 
 export interface EmployeeSelection {
   intId: number;
@@ -38,33 +39,39 @@ export function EmployeeSearchSelect({ value, onChange, placeholder = 'Search by
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
+  // Debounce spaces requests out but does not order their responses. Only the latest search may
+  // write results; typing, picking or clearing retires every older request, so a slow response for
+  // an earlier query can never replace newer results or resurface after a pick.
+  const searchGate = useMemo(() => createLatestRequestGate(), []);
+
   const search = useCallback(async (q: string) => {
-    if (q.trim().length < 1) { setResults([]); return; }
+    if (q.trim().length < 1) { searchGate.invalidate(); setResults([]); setSearching(false); return; }
     setSearching(true);
-    try {
-      const r = await employeesApi.list({ search: q, pageSize: 8, status: 'Active' });
-      setResults(r.items ?? []);
-    } catch {
-      setResults([]);
-    } finally {
-      setSearching(false);
-    }
-  }, []);
+    await runLatest(searchGate, () => employeesApi.list({ search: q, pageSize: 8, status: 'Active' }), {
+      onResult: (r) => setResults(r.items ?? []),
+      onError: () => setResults([]),
+      onSettled: () => setSearching(false),
+    });
+  }, [searchGate]);
 
   // Debounce search
   useEffect(() => {
-    const t = setTimeout(() => { if (open) search(query); }, 280);
+    searchGate.invalidate();
+    // A retired request never settles the spinner, so a closed dropdown must clear it here.
+    if (!open) { setSearching(false); return; }
+    const t = setTimeout(() => search(query), 280);
     return () => clearTimeout(t);
-  }, [query, open, search]);
+  }, [query, open, search, searchGate]);
 
   const select = (emp: EmployeeListItem) => {
+    searchGate.invalidate();
     onChange({ intId: emp.id, publicId: emp.publicId, fullName: emp.fullName, employeeCode: emp.employeeCode, department: emp.department ?? '' });
     setQuery('');
     setResults([]);
     setOpen(false);
   };
 
-  const clear = () => { onChange(null); setQuery(''); setResults([]); };
+  const clear = () => { searchGate.invalidate(); onChange(null); setQuery(''); setResults([]); };
 
   if (value) {
     return (

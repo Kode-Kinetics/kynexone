@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
+import { createLatestRequestGate, runLatest } from '../src/lib/latestRequest';
 import {
   ATTENDANCE_DOMAINS,
   attendanceErrorSummary,
@@ -137,5 +138,101 @@ test.describe('browserless UI truthfulness contracts', () => {
     expect(tabs).toContain('role="tablist"');
     expect(tabs).toContain("event.key === 'Home'");
     expect(tabs).toContain('role="tabpanel"');
+  });
+});
+
+// R02 — kept in its own block (appended) so parallel additions to the block above merge cleanly.
+test.describe('browserless employee search race and payroll currency contracts', () => {
+  const deferred = <T,>() => {
+    let resolve!: (value: T) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  };
+
+  test('R02: a slow earlier search that resolves after a newer one never replaces it', async () => {
+    // Control: the pre-fix shape (write whatever resolves) ends on the STALE result.
+    const naive = { rows: [] as string[] };
+    const slowOld = deferred<string[]>();
+    const fastNew = deferred<string[]>();
+    const n1 = slowOld.promise.then((rows) => { naive.rows = rows; });
+    const n2 = fastNew.promise.then((rows) => { naive.rows = rows; });
+    fastNew.resolve(['EVO0004']); await n2;
+    slowOld.resolve(['EVO0003']); await n1;
+    expect(naive.rows).toEqual(['EVO0003']);
+
+    // Gated: the newest request wins regardless of arrival order, and the stale one is reported as such.
+    const gate = createLatestRequestGate();
+    const state = { rows: [] as string[], loading: true, error: '' };
+    const handlers = {
+      onResult: (rows: string[]) => { state.rows = rows; },
+      onError: () => { state.error = 'failed'; },
+      onSettled: () => { state.loading = false; },
+    };
+    const older = deferred<string[]>();
+    const newer = deferred<string[]>();
+    const first = runLatest(gate, () => older.promise, handlers);
+    const second = runLatest(gate, () => newer.promise, handlers);
+    newer.resolve(['EVO0004']);
+    expect(await second).toBe('applied');
+    expect(state.rows).toEqual(['EVO0004']);
+    older.resolve(['EVO0003']);
+    expect(await first).toBe('stale');
+    expect(state.rows).toEqual(['EVO0004']);
+  });
+
+  test('R02: a pick retires the in-flight search, so a late response cannot reopen the list or change the selection', async () => {
+    const gate = createLatestRequestGate();
+    const picker = { open: false, results: [] as string[], selected: 'EVO0004' };
+    const late = deferred<string[]>();
+    const pending = runLatest(gate, () => late.promise, {
+      onResult: (rows) => { picker.results = rows; picker.open = true; },
+    });
+    gate.invalidate(); // select(emp) / clear() / the query being emptied
+    late.resolve(['EVO0003']);
+    expect(await pending).toBe('stale');
+    expect(picker.open).toBe(false);
+    expect(picker.results).toEqual([]);
+    expect(picker.selected).toBe('EVO0004');
+  });
+
+  test('R02: a stale failure neither shows an error nor ends the newer request\'s loading state', async () => {
+    const gate = createLatestRequestGate();
+    const state = { loading: true, error: '', rows: [] as string[] };
+    const handlers = {
+      onResult: (rows: string[]) => { state.rows = rows; },
+      onError: () => { state.error = 'Could not load employees from the API.'; },
+      onSettled: () => { state.loading = false; },
+    };
+    const older = deferred<string[]>();
+    const newer = deferred<string[]>();
+    const first = runLatest(gate, () => older.promise, handlers);
+    const second = runLatest(gate, () => newer.promise, handlers);
+    older.reject(new Error('timeout'));
+    expect(await first).toBe('stale');
+    expect(state.error).toBe('');
+    expect(state.loading).toBe(true);
+    newer.reject(new Error('HTTP 500'));
+    expect(await second).toBe('failed');
+    expect(state.error).toBe('Could not load employees from the API.');
+    expect(state.loading).toBe(false);
+  });
+
+  test('R02: every employee search surface goes through the latest-request gate', () => {
+    const people = read('src/views/EmployeesPage.tsx');
+    expect(people).toContain('const employeeLoadGate = useMemo(() => createLatestRequestGate(), []);');
+    expect(people).toContain('await runLatest(employeeLoadGate, () => employeesApi.list({');
+    // Handlers holding an older `load` must refresh the CURRENT query, not re-run the old one.
+    expect(people).toContain('const query = employeeQueryRef.current;');
+    expect(people).toContain('useEffect(() => { load(); }, [load, employeeQuery]);');
+    for (const file of ['src/components/EmployeePicker.tsx', 'src/components/EmployeeSearchSelect.tsx']) {
+      const source = read(file);
+      expect(source, file).toContain('const searchGate = useMemo(() => createLatestRequestGate(), []);');
+      expect(source, file).toContain('runLatest(searchGate, () => employeesApi.list(');
+      expect(source, file).toMatch(/const select = \(emp: EmployeeListItem\) => \{\n\s+searchGate\.invalidate\(\);/);
+      expect(source, file).toContain('const clear = () => { searchGate.invalidate();');
+      expect(source, file).not.toMatch(/employeesApi\.list\([^)]*\)\s*\n?\s*\.then/);
+    }
+    expect(read('src/components/EmployeePicker.tsx')).toContain('{!value && open && results.length > 0 && (');
   });
 });
