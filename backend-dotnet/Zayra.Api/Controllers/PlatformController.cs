@@ -367,12 +367,16 @@ public class PlatformController : ControllerBase
             redisStatus = "error";
         }
 
+        // Name and host only — for platform operators, so a test run (or an operator) can tell WHICH
+        // database this API is attached to. See DatabaseIdentity for what is deliberately left out.
+        var dbIdentity = Zayra.Api.Infrastructure.Operations.DatabaseIdentity.Describe(_db.Database);
+
         return Ok(new
         {
             status = dbOk ? "healthy" : "degraded",
             components = new
             {
-                database = new { status = dbOk ? "ok" : "error" },
+                database = new { status = dbOk ? "ok" : "error", name = dbIdentity.Name, host = dbIdentity.Host },
                 smtp     = new { status = smtpConfigured ? "configured" : "not_configured" },
                 redis    = new { status = redisStatus },
                 jobs     = new { status = "unknown" },

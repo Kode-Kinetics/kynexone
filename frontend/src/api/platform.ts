@@ -449,7 +449,8 @@ export interface PlatformTeamMember {
 export interface PlatformHealthStatus {
   status: 'healthy' | 'degraded' | 'error';
   components: {
-    database: { status: 'ok' | 'error' | 'unknown' };
+    // name/host: which database this API is attached to (never port, user or password).
+    database: { status: 'ok' | 'error' | 'unknown'; name?: string | null; host?: string | null };
     smtp:     { status: 'configured' | 'not_configured' | 'unknown' };
     redis:    { status: 'ok' | 'error' | 'unknown' | 'not_configured' | 'disconnected' };
     jobs:     { status: 'ok' | 'error' | 'unknown' };

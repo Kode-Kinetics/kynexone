@@ -52,17 +52,15 @@ export const empCodePrefix = (companyCode: string): string => `${companyCode}-E`
 /** Sibling (inaccessible) Almarai company codes for the scoped/company users. */
 export const ALMARAI_SIBLING_CODES = ['ALM-BAKERY-KSA', 'ALM-DIST-KSA', 'ALM-UAE-TRD'];
 
-// ── Default single-company tenant (backend appsettings.json → SeedAdmin) ─────
-// Override via env if your local SeedAdmin config differs.
+// ── Default single-company tenant: IntelliFlow, from e2e/world.ts ────────────
 
 // The full E2E setup already authenticates this production-shaped, single-company tenant. Using
-// it as the default keeps the regression deterministic and avoids an extra login outside the
-// production 10/minute budget. Deployments may still override all three values.
-export const DEFAULT_TENANT_SLUG = process.env.E2E_DEFAULT_TENANT_SLUG ?? INTELLIFLOW_SLUG;
-export const DEFAULT_ADMIN_EMAIL = process.env.E2E_DEFAULT_ADMIN_EMAIL ?? INTELLIFLOW_ADMIN.email;
-// Falls back to the WORLD's password, not a literal. The literal here and the literal in
-// e2e/helpers.ts were the same string by coincidence, and CI passed a third copy in ci.yml.
-export const DEFAULT_ADMIN_PASSWORD = process.env.E2E_DEFAULT_ADMIN_PASSWORD ?? INTELLIFLOW_ADMIN.password;
+// it keeps the regression deterministic and avoids an extra login outside the production
+// 10/minute budget. The E2E_DEFAULT_* env overrides are retired (F07): they let this suite act as
+// an account the world does not declare, and the preflight now refuses them if set.
+export const DEFAULT_TENANT_SLUG = INTELLIFLOW_SLUG;
+export const DEFAULT_ADMIN_EMAIL = INTELLIFLOW_ADMIN.email;
+export const DEFAULT_ADMIN_PASSWORD = INTELLIFLOW_ADMIN.password;
 
 // ── Platform admin ───────────────────────────────────────────────────────────
 // From e2e/world.ts. This file used to default to `platform@kynexone.com` while

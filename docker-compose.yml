@@ -20,6 +20,10 @@ services:
   backend:
     build:
       context: ./backend-dotnet/Zayra.Api
+      # Baked into the image and reported by /health/live; the e2e preflight compares it with the
+      # commit under test. `BUILD_COMMIT=$(git rev-parse HEAD) docker compose up -d --build`.
+      args:
+        BUILD_COMMIT: ${BUILD_COMMIT:-}
     container_name: zayra-api
     restart: unless-stopped
     depends_on:
@@ -77,6 +81,9 @@ services:
   frontend:
     build:
       context: ./frontend
+      # Served at /build-info; see the backend's BUILD_COMMIT above.
+      args:
+        BUILD_COMMIT: ${BUILD_COMMIT:-}
     container_name: zayra-frontend
     restart: unless-stopped
     depends_on:
