@@ -39,6 +39,9 @@ export interface ImportResult {
   failed?: number;
   /** The same file was already imported under the same import key; nothing was imported again. */
   replayed?: boolean;
+  /** Existing-employee rows whose bank / payroll-identity / salary values were NOT applied (need approval). */
+  approvalRequiredCount?: number;
+  approvalRequired?: Array<{ row: number; employeeCode: string; fields: string[] }>;
   /** Rows created but not activatable (imported as Draft, need completion before going Active). */
   createdIncomplete?: Array<{ employeeId: number; employeeCode: string; name: string; blockingCount: number; gaps?: ImportGap[] }>;
   // ── Countable org-skeleton summary (accept-never-block). All optional; the summary line
@@ -176,6 +179,8 @@ export interface ImportPreview {
   wouldSkip: number;
   /** Rows holding a value that cannot be stored — the import is refused while any remain. */
   wouldFail?: number;
+  /** Existing employees whose bank / payroll-identity / salary values in the file would NOT be applied. */
+  wouldNeedApproval?: number;
   wouldCreateActive?: number;
   wouldCreateDraft?: number;
   rows: ImportPreviewRow[];
@@ -583,6 +588,7 @@ export function ImportExportToolbar({
                 {(preview.wouldRepair ?? 0) > 0 && <span className="rounded-md bg-sky-500/10 px-2 py-1 font-semibold text-sky-700 ring-1 ring-sky-500/20 dark:text-sky-300">{preview.wouldRepair} existing · fill missing details</span>}
                 {preview.wouldSkip > 0 && <span className="rounded-md bg-rose-500/10 px-2 py-1 font-semibold text-rose-700 ring-1 ring-rose-500/20 dark:text-rose-300">{preview.wouldSkip} rejected</span>}
                 {(preview.wouldFail ?? 0) > 0 && <span className="rounded-md bg-rose-500/10 px-2 py-1 font-semibold text-rose-700 ring-1 ring-rose-500/20 dark:text-rose-300">{preview.wouldFail} to fix before importing</span>}
+                {(preview.wouldNeedApproval ?? 0) > 0 && <span className="rounded-md bg-amber-400/15 px-2 py-1 font-semibold text-amber-800 ring-1 ring-amber-400/25 dark:text-amber-300">{preview.wouldNeedApproval} existing · bank/salary need approval</span>}
               </div>
               {(preview.wouldFail ?? 0) > 0 && (
                 <div className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300" role="alert">
@@ -594,7 +600,7 @@ export function ImportExportToolbar({
               )}
               {(preview.wouldRepair ?? 0) > 0 && (
                 <p className="text-xs text-slate-600 dark:text-slate-300">
-                  Employees that already exist are never overwritten. Only details they are missing — payroll profile fields, a salary, a manager, an unknown joining date — are filled in from this file.
+                  Employees that already exist are never overwritten. Only missing non-sensitive details — payroll group, salary-structure reference, currency, a manager, an unknown joining date — are filled in. Their bank, payroll-identity and salary details are never changed by an import: edit the employee (it goes to approval).
                 </p>
               )}
               {(preview.wouldCreateDraft ?? 0) > 0 ? (
@@ -710,6 +716,7 @@ export function ImportExportToolbar({
                 <CheckCircle2 className="h-3.5 w-3.5" /> {result.imported ?? result.created} created
               </span>
               {(result.repaired ?? 0) > 0 && <span className="rounded-md bg-sky-500/10 px-2 py-1 font-semibold text-sky-700 ring-1 ring-sky-500/20 dark:text-sky-300">{result.repaired} existing completed</span>}
+              {(result.approvalRequiredCount ?? 0) > 0 && <span className="rounded-md bg-amber-400/15 px-2 py-1 font-semibold text-amber-800 ring-1 ring-amber-400/25 dark:text-amber-300">{result.approvalRequiredCount} existing · bank/salary not applied</span>}
               {result.skipped > 0 && <span className="rounded-md bg-rose-500/10 px-2 py-1 font-semibold text-rose-700 ring-1 ring-rose-500/20 dark:text-rose-300">{result.skipped} skipped</span>}
               {incompleteCount > 0 && <span className="rounded-md bg-amber-400/15 px-2 py-1 font-semibold text-amber-700 ring-1 ring-amber-400/25 dark:text-amber-300">{incompleteCount} inactive · needs info</span>}
               {(result.possibleDuplicates ?? 0) > 0 && <span className="inline-flex items-center gap-1 rounded-md bg-fuchsia-500/10 px-2 py-1 font-semibold text-fuchsia-700 ring-1 ring-fuchsia-500/20 dark:text-fuchsia-300"><Users className="h-3.5 w-3.5" /> {result.possibleDuplicates} possible {result.possibleDuplicates === 1 ? 'duplicate' : 'duplicates'}</span>}

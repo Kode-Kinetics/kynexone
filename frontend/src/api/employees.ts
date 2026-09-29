@@ -550,6 +550,12 @@ export interface EmployeeImportResult {
   failed?: number;
   /** True when this file was already imported under the same import key and nothing was imported again. */
   replayed?: boolean;
+  /** Existing employees skipped because they are separated (Terminated, Offboarded, Archived, Exited, Inactive). */
+  skippedSeparated?: number;
+  /** Existing-employee rows whose bank / payroll-identity / salary values were NOT applied — they change only
+   *  through an approved change on the employee. */
+  approvalRequiredCount?: number;
+  approvalRequired?: Array<{ row: number; employeeCode: string; fields: string[] }>;
   hierarchyLinked?: number;
   payrollProfilesCreated?: number;
   payrollProfilesRepaired?: number;
@@ -615,6 +621,8 @@ export interface EmployeeImportPreview {
   wouldSkip: number;
   /** Rows holding a value the database cannot store; the import is refused until they are fixed. */
   wouldFail?: number;
+  /** Existing-employee rows whose approval-gated values would NOT be applied. */
+  wouldNeedApproval?: number;
   wouldCreateActive: number;
   wouldCreateDraft: number;
   rows: EmployeeImportPreviewRow[];

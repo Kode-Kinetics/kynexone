@@ -111,6 +111,8 @@ const APPROVAL_REQUIRED_EDIT_KEYS = new Set<string>([
   'medicalinformation', 'disciplinaryrecords', 'terminationreason',
   // The GPSSA/GRSIA/PIFSS/SPF/SIO counterpart of gosiReference — approval-gated server-side too.
   'socialinsurancereference',
+  // Where the WPS/SIF line pays — approval-gated server-side with the IBAN.
+  'bankroutingcode', 'accountnumber',
 ]);
 
 /** True when saving this edit key submits a change request instead of writing immediately. */

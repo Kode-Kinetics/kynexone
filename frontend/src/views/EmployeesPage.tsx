@@ -196,6 +196,8 @@ const READINESS_FIELD_EDIT_ALIAS: Record<string, string> = {
   civilIdExpiry: 'civilIdExpiryDate',
   // Payroll-profile sub-field the PUT path takes as a flat key.
   'payrollProfile.socialInsuranceReference': 'socialInsuranceReference',
+  // The routing code the WPS/SIF line carries: an approval-gated edit key (a bank move clears and pay-gates it).
+  'payrollProfile.bankRoutingCode': 'bankRoutingCode',
 };
 const READINESS_EDITABLE_TARGETS = new Set<string>([
   'englishName', 'dateOfBirth', 'nationality', 'gender', 'workEmail', 'phone', 'joiningDate',
@@ -212,7 +214,7 @@ function readinessUpdateKey(target: string): string | null {
 // Fields captured ONLY on the add-employee form: there is no post-create write path, so the
 // checklist must not point at the profile for them (the Edit modal does not carry them either).
 const CREATE_ONLY_READINESS_TARGETS = new Set<string>([
-  'payrollProfile.molId', 'payrollProfile.bankRoutingCode', 'payrollProfile.paymentMethod',
+  'payrollProfile.molId', 'payrollProfile.paymentMethod',
 ]);
 
 /** Where this gap can actually be closed — drives the checklist's inline box vs. read-only hint. */
