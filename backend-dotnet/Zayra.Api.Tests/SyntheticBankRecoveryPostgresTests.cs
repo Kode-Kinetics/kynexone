@@ -20,7 +20,7 @@ public sealed class SyntheticBankRecoveryPostgresTests
     [InlineData(1, true, false, false)]
     [InlineData(1, false, true, false)]
     [InlineData(1, false, false, true)]
-    public async Task RecoverMissingProfiles_WithExistingSalary_PreservesBankAuthority(
+    public async Task RecoverMissingProfiles_NeverWritesBankDetailsOntoExistingEmployees(
         int count, bool hasApprovedBank, bool hasPendingBankChange, bool profileAlreadyRepaired)
     {
         await using var db = _fixture.CreateDb();
@@ -78,13 +78,21 @@ public sealed class SyntheticBankRecoveryPostgresTests
         var people = await db.Employees.Where(x => x.TenantId == tid).OrderBy(x => x.EmployeeCode).ToListAsync();
         var profiles = await db.EmployeePayrollProfiles.Where(x => x.TenantId == tid).ToDictionaryAsync(x => x.EmployeeId);
         Assert.Equal(count, people.Count); Assert.Equal(count, profiles.Count);
+        // The file's bank details are NEVER written onto an existing employee (#129 review, P0): a recreated profile
+        // carries the non-sensitive currency only; an approved employee IBAN and a pending approval stay exactly as
+        // they were; and a profile repaired by hand keeps its own values.
         foreach (var (e,index) in people.Select((e,i) => (e,i)))
         {
-            var expected = hasPendingBankChange ? "" : hasApprovedBank ? TestIban(900001) : TestIban(index+1);
-            Assert.Equal(expected, profiles[e.Id].Iban);
-            Assert.Equal(expected, e.BankIban);
-            Assert.Equal(e.BankName, profiles[e.Id].BankName);
+            var isFirst = index == 0;
+            Assert.Equal(profileAlreadyRepaired && isFirst ? TestIban(1) : "", profiles[e.Id].Iban);
+            Assert.Equal(profileAlreadyRepaired && isFirst ? "SYNTHETIC TEST BANK" : "", profiles[e.Id].BankName);
+            Assert.Equal(profileAlreadyRepaired && isFirst ? "9000000001" : "", profiles[e.Id].MolId);
+            Assert.Equal(hasApprovedBank && isFirst ? TestIban(900001) : "", e.BankIban);
+            Assert.Equal("SAR", profiles[e.Id].SalaryCurrency);
         }
+        // Every row whose file bank details differ from what the employee holds is named for approval.
+        var expectedApproval = count - (profileAlreadyRepaired ? 1 : 0);
+        Assert.Equal(expectedApproval, JsonSerializer.SerializeToElement(result.Value).GetProperty("approvalRequiredCount").GetInt32());
         var salariesAfter = await db.EmployeeSalaryStructures.AsNoTracking()
             .Where(x => x.TenantId == tid).OrderBy(x => x.EmployeeId).ToListAsync();
         Assert.Equal(salariesBefore.Select(x => (x.Id,x.BasicSalary,x.Currency,x.EffectiveDate)),
