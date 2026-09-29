@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { notifyApiError } from '../api/client';
 import { useSearchParams } from 'next/navigation';
 import {
@@ -76,6 +76,16 @@ const CHART_COLORS = ['#2F6BFF', '#00C896', '#5EEBFF', '#F59E0B', '#EF4444', '#8
 
 // ── Analytics Dashboard ───────────────────────────────────────────────────────
 
+const ANALYTICS_SOURCE_LABELS = {
+  kpis: 'KPI summary',
+  headcount: 'Headcount trend',
+  payroll: 'Payroll trend',
+  attendance: 'Attendance trend',
+  leave: 'Leave trend',
+} as const;
+
+type AnalyticsSource = keyof typeof ANALYTICS_SOURCE_LABELS;
+
 function AnalyticsDashboard() {
   const [kpis, setKpis] = useState<AnalyticsKPIs | null>(null);
   const [headcountTrend, setHeadcountTrend] = useState<{ period: string; headcount: number }[]>([]);
@@ -83,36 +93,66 @@ function AnalyticsDashboard() {
   const [attendanceTrend, setAttendanceTrend] = useState<{ date: string; present: number; absent: number; late: number }[]>([]);
   const [leaveTrend, setLeaveTrend] = useState<{ period: string; totalRequests: number; totalDays: number }[]>([]);
   const [loading, setLoading] = useState(true);
+  const [failedSources, setFailedSources] = useState<Set<AnalyticsSource>>(new Set());
+  const [loadedSources, setLoadedSources] = useState<Set<AnalyticsSource>>(new Set());
+  const requestIdRef = useRef(0);
+  const mountedRef = useRef(true);
 
   useEffect(() => {
-    const load = async () => {
-      setLoading(true);
-      try {
-        const [k, hc, pr, at, lv] = await Promise.allSettled([
-          analyticsApi.kpis(),
-          analyticsApi.headcountTrend(6),
-          analyticsApi.payrollTrend(6),
-          analyticsApi.attendanceTrend(30),
-          analyticsApi.leaveTrend(6),
-        ]);
-        if (k.status === 'fulfilled') setKpis(k.value as AnalyticsKPIs);
-        if (hc.status === 'fulfilled') setHeadcountTrend(hc.value as { period: string; headcount: number }[]);
-        if (pr.status === 'fulfilled') setPayrollTrend(pr.value as { period: string; TotalNetSalary: number; TotalGrossSalary: number }[]);
-        if (at.status === 'fulfilled') setAttendanceTrend(at.value as { date: string; present: number; absent: number; late: number }[]);
-        if (lv.status === 'fulfilled') setLeaveTrend(lv.value as { period: string; totalRequests: number; totalDays: number }[]);
-      } finally {
-        setLoading(false);
-      }
-    };
-    load();
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
   }, []);
+
+  const load = useCallback(async () => {
+    const requestId = ++requestIdRef.current;
+    setLoading(true);
+    const [k, hc, pr, at, lv] = await Promise.allSettled([
+      analyticsApi.kpis(),
+      analyticsApi.headcountTrend(6),
+      analyticsApi.payrollTrend(6),
+      analyticsApi.attendanceTrend(30),
+      analyticsApi.leaveTrend(6),
+    ]);
+    if (!mountedRef.current || requestIdRef.current !== requestId) return;
+
+    const failed = new Set<AnalyticsSource>();
+    const loaded = new Set<AnalyticsSource>();
+
+    if (k.status === 'fulfilled') { setKpis(k.value as AnalyticsKPIs); loaded.add('kpis'); } else { failed.add('kpis'); }
+    if (hc.status === 'fulfilled') { setHeadcountTrend(hc.value as { period: string; headcount: number }[]); loaded.add('headcount'); } else { failed.add('headcount'); }
+    if (pr.status === 'fulfilled') { setPayrollTrend(pr.value as { period: string; TotalNetSalary: number; TotalGrossSalary: number }[]); loaded.add('payroll'); } else { failed.add('payroll'); }
+    if (at.status === 'fulfilled') { setAttendanceTrend(at.value as { date: string; present: number; absent: number; late: number }[]); loaded.add('attendance'); } else { failed.add('attendance'); }
+    if (lv.status === 'fulfilled') { setLeaveTrend(lv.value as { period: string; totalRequests: number; totalDays: number }[]); loaded.add('leave'); } else { failed.add('leave'); }
+
+    setFailedSources(failed);
+    setLoadedSources((prev) => new Set([...prev, ...loaded]));
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
 
   if (loading) return <div className="flex justify-center py-24"><div className="h-8 w-8 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></div>;
 
+  const failedCount = failedSources.size;
+  const allFailed = failedCount === Object.keys(ANALYTICS_SOURCE_LABELS).length;
+
   return (
     <div className="space-y-6">
+      {failedCount > 0 && (
+        <div role="alert" className="flex items-center justify-between gap-3 rounded-lg bg-red-50 px-3 py-2.5 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-400">
+          <span>
+            {allFailed ? 'Analytics data could not be loaded.' : `Some analytics data could not be loaded: ${[...failedSources].map((s) => ANALYTICS_SOURCE_LABELS[s]).join(', ')}.`}
+          </span>
+          <button type="button" onClick={load} className="btn-secondary h-7 px-2 text-xs shrink-0">
+            <RefreshCw className="h-3 w-3" /> Retry
+          </button>
+        </div>
+      )}
+
       {/* KPI Section */}
-      {kpis && (
+      {failedSources.has('kpis') ? (
+        <div className="surface p-4 text-sm text-slate-400">KPI summary unavailable</div>
+      ) : kpis && (
         <>
           <div>
             <h3 className="mb-3 text-sm font-bold uppercase tracking-wide text-slate-400">Workforce</h3>
@@ -156,33 +196,49 @@ function AnalyticsDashboard() {
 
       {/* Charts */}
       <div className="grid gap-4 lg:grid-cols-2">
-        {headcountTrend.length > 0 && (
-          <div className="surface p-4">
-            <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">Headcount Trend</h3>
+        <div className="surface p-4">
+          <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">Headcount Trend</h3>
+          {failedSources.has('headcount') ? (
+            <p className="text-sm text-slate-400">Unavailable</p>
+          ) : loadedSources.has('headcount') && headcountTrend.length === 0 ? (
+            <p className="text-sm text-slate-400">No data for this period</p>
+          ) : headcountTrend.length > 0 ? (
             <ReportsHeadcountTrendChart data={headcountTrend} />
-          </div>
-        )}
+          ) : null}
+        </div>
 
-        {payrollTrend.length > 0 && (
-          <div className="surface p-4">
-            <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">Payroll Trend (Net Salary)</h3>
+        <div className="surface p-4">
+          <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">Payroll Trend (Net Salary)</h3>
+          {failedSources.has('payroll') ? (
+            <p className="text-sm text-slate-400">Unavailable</p>
+          ) : loadedSources.has('payroll') && payrollTrend.length === 0 ? (
+            <p className="text-sm text-slate-400">No data for this period</p>
+          ) : payrollTrend.length > 0 ? (
             <ReportsPayrollTrendChart data={payrollTrend} />
-          </div>
-        )}
+          ) : null}
+        </div>
 
-        {attendanceTrend.length > 0 && (
-          <div className="surface p-4">
-            <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">Attendance (Last 30 Days)</h3>
+        <div className="surface p-4">
+          <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">Attendance (Last 30 Days)</h3>
+          {failedSources.has('attendance') ? (
+            <p className="text-sm text-slate-400">Unavailable</p>
+          ) : loadedSources.has('attendance') && attendanceTrend.length === 0 ? (
+            <p className="text-sm text-slate-400">No data for this period</p>
+          ) : attendanceTrend.length > 0 ? (
             <ReportsAttendanceTrendChart data={attendanceTrend} />
-          </div>
-        )}
+          ) : null}
+        </div>
 
-        {leaveTrend.length > 0 && (
-          <div className="surface p-4">
-            <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">Leave Taken (Days)</h3>
+        <div className="surface p-4">
+          <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">Leave Taken (Days)</h3>
+          {failedSources.has('leave') ? (
+            <p className="text-sm text-slate-400">Unavailable</p>
+          ) : loadedSources.has('leave') && leaveTrend.length === 0 ? (
+            <p className="text-sm text-slate-400">No data for this period</p>
+          ) : leaveTrend.length > 0 ? (
             <ReportsLeaveTrendChart data={leaveTrend} />
-          </div>
-        )}
+          ) : null}
+        </div>
       </div>
     </div>
   );
