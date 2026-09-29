@@ -4,6 +4,7 @@ import { InfoTip } from '../components/InfoTip';
 import { EmployeeSearchSelect } from '../components/EmployeeSearchSelect';
 import type { EmployeeSelection } from '../components/EmployeeSearchSelect';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
+import { formatCalendarDate } from '../lib/calendarDate';
 import { useEffect, useState } from 'react';
 import {
   Activity, AlertTriangle, BarChart2, CheckCircle, ChevronRight,
@@ -23,8 +24,7 @@ import type {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function fmtDate(s: string | null | undefined) {
-  if (!s) return '—';
-  return new Date(s).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' });
+  return formatCalendarDate(s, 'en-US');
 }
 
 function fmtCurrency(n: number) {
