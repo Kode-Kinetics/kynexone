@@ -21,7 +21,8 @@ import {
   type PayrollRunPopulation, type PayrollValidationOverrideReport, type AuditIntegrityReport,
 } from '../api/payroll';
 import { identityAuditApi } from '../api/identity';
-import { commonPayrollCurrency, resolvePayrollRunCurrency, type CompaniesLoadState } from '../lib/payrollCurrency';
+import { commonPayrollCurrency, resolvePayrollRunCurrency, totalsByCurrency, type CompaniesLoadState } from '../lib/payrollCurrency';
+import { usePayrollCompanies } from '../hooks/usePayrollCompanies';
 import { filterPayrollInsightsForReadiness, paymentReadinessHeadline, prerequisiteLabel, type PaymentPrerequisites, type PayrollReadinessWithPrerequisites } from '../lib/payrollPrerequisites';
 import client, { notifyApiError } from '../api/client';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
@@ -1896,22 +1897,23 @@ function AcknowledgementPanel({
 // currency label (and the approval view withholds approval).
 
 function useRunCurrency(run: PayrollRun | undefined) {
-  const [companies, setCompanies] = useState<PayrollCompany[]>([]);
-  const [companiesState, setCompaniesState] = useState<CompaniesLoadState>('loading');
-  const [attempt, setAttempt] = useState(0);
-  useEffect(() => {
-    let active = true;
-    setCompaniesState('loading');
-    payrollApi.listCompanies()
-      .then(items => { if (active) { setCompanies(items); setCompaniesState('loaded'); } })
-      .catch(() => { if (active) { setCompanies([]); setCompaniesState('failed'); } });
-    return () => { active = false; };
-  }, [attempt]);
+  const { companies, state: companiesState, retry } = usePayrollCompanies();
   const resolution = resolvePayrollRunCurrency(run, companies, companiesState);
   const amount = (n: number) => resolution.status === 'resolved'
     ? fmtAmt(n, resolution.currency)
-    : `${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (currency not confirmed)`;
-  return { resolution, companiesState, amount, retry: () => setAttempt(n => n + 1) };
+    : unconfirmedAmount(n);
+  return { resolution, companiesState, companies, amount, retry };
+}
+
+const unconfirmedAmount = (n: number) =>
+  `${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (currency not confirmed)`;
+
+/**
+ * R03 — amounts in several currencies, one line per currency. Used where a total spans runs or batches
+ * of different companies; the amounts are never added across currencies.
+ */
+function perCurrency(totals: Array<{ currency: string | null; total: number }>) {
+  return totals.map(t => t.currency ? fmtAmt(t.total, t.currency) : unconfirmedAmount(t.total)).join(' · ');
 }
 
 function RunCurrencyNotice({ resolution, companiesState, onRetry, blocksApproval }: {
@@ -2519,7 +2521,6 @@ function PaymentTrackingTab() {
   const [wpsSaving, setWpsSaving] = useState<string | null>(null);
   const [financeSaving, setFinanceSaving] = useState<string | null>(null);
   const [financeForms, setFinanceForms] = useState<Record<string, FinanceActionForm>>({});
-  const { currencyCode } = useTenantSettings();
 
   const loadBatches = () => {
     setLoading(true);
@@ -2528,7 +2529,10 @@ function PaymentTrackingTab() {
 
   useEffect(() => { loadBatches(); }, []);
 
-  const total = batches.reduce((sum, b) => sum + b.totalAmount, 0);
+  // R03 — each batch is labelled with its OWN currency (the same one its row shows), never the tenant
+  // default, and batches in different currencies are totalled per currency rather than added together.
+  const totals = totalsByCurrency(batches, b => b.currency, b => b.totalAmount);
+  const totalLabel = totals.length === 1 && totals[0].currency ? fmtAmt(totals[0].total, totals[0].currency) : 'Mixed currencies';
   const fileGenerated = batches.filter(b => b.status === 'FileGenerated').length;
   const allowedWpsNext = (status: string) => {
     switch (status) {
@@ -2588,7 +2592,7 @@ function PaymentTrackingTab() {
         <div className="grid grid-cols-3 gap-4">
           <KpiCard label="Total Batches" value={batches.length} icon={WalletCards} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
           <KpiCard label="WPS Files Generated" value={fileGenerated} icon={CheckCircle2} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
-          <KpiCard label="Total Amount" value={fmtAmt(total, currencyCode)} icon={TrendingUp} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
+          <KpiCard label="Total Amount" value={totalLabel} sub={totalLabel === 'Mixed currencies' ? perCurrency(totals) : undefined} icon={TrendingUp} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
         </div>
       )}
       {loading ? <p className="text-sm text-slate-400">Loading…</p> : batches.length === 0 ? (
@@ -2694,8 +2698,24 @@ function ReportsTab() {
   const [slips, setSlips] = useState<PayrollSlip[]>([]);
   const [summary, setSummary] = useState<PayrollSummary | null>(null);
   const [loading, setLoading] = useState(false);
-  const { currencyCode } = useTenantSettings();
   const registerCurrency = useRunCurrency(runs.find(r => r.id === runId));
+
+  // R03 — year to date is per legal entity: each company's locked runs are labelled with that company's
+  // currency and currencies are never added together. An API without the per-company breakdown gets its
+  // figure shown unlabelled rather than with the tenant default.
+  const ytd = (pick: (row: { totalGrossYtd: number; totalNetYtd: number }) => number): { value: string; sub?: string } => {
+    if (!summary) return { value: '' };
+    if (!summary.ytdByCompany) return { value: unconfirmedAmount(pick(summary)) };
+    if (summary.ytdByCompany.length === 0) return { value: 'None yet', sub: 'No locked run this year' };
+    const totals = totalsByCurrency(summary.ytdByCompany, row => {
+      const resolved = resolvePayrollRunCurrency({ companyId: row.companyId }, registerCurrency.companies, registerCurrency.companiesState);
+      return resolved.status === 'resolved' ? resolved.currency : null;
+    }, pick);
+    if (totals.length === 1) return { value: totals[0].currency ? fmtAmt(totals[0].total, totals[0].currency) : unconfirmedAmount(totals[0].total) };
+    return { value: 'Mixed currencies', sub: perCurrency(totals) };
+  };
+  const grossYtd = ytd(row => row.totalGrossYtd);
+  const netYtd = ytd(row => row.totalNetYtd);
 
   useEffect(() => {
     payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {});
@@ -2716,8 +2736,8 @@ function ReportsTab() {
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
           <KpiCard label="Total Runs" value={summary.totalRuns} icon={FileText} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
           <KpiCard label="Locked Runs" value={summary.lockedRuns} icon={Lock} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
-          <KpiCard label="Gross YTD" value={fmtAmt(summary.totalGrossYtd, currencyCode)} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
-          <KpiCard label="Net YTD" value={fmtAmt(summary.totalNetYtd, currencyCode)} icon={TrendingUp} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
+          <KpiCard label="Gross YTD" value={grossYtd.value} sub={grossYtd.sub} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
+          <KpiCard label="Net YTD" value={netYtd.value} sub={netYtd.sub} icon={TrendingUp} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
         </div>
       )}
 
@@ -2890,11 +2910,12 @@ function EOSBTab() {
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState<unknown[]>([]);
   const [error, setError] = useState('');
-  const { currencyCode } = useTenantSettings();
+  // The history is fetched for the employee just calculated, so it shares that calculation's currency.
+  const historyCurrency = typeof result?.currency === 'string' ? result.currency : '';
 
   const calculate = async () => {
     if (!employeeId) return;
-    setLoading(true); setError(''); setResult(null);
+    setLoading(true); setError(''); setResult(null); setHistory([]);
     try {
       const res = await payrollApi.calculateEosb(Number(employeeId), asOfDate);
       setResult(res as Record<string, unknown>);
@@ -2961,8 +2982,10 @@ function EOSBTab() {
               {(history as Array<Record<string, unknown>>).map((h, i) => (
                 <tr key={i} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                   <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{h.calculationDate as string}</td>
-                  <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{currencyCode} {(h.eligibleSalary as number).toLocaleString()}</td>
-                  <td className="px-4 py-2.5 font-medium text-sapphire dark:text-cyanAccent">{currencyCode} {(h.calculatedAmount as number).toLocaleString()}</td>
+                  {/* R03 — this employee's own calculations, in the currency the server just computed
+                      their EOSB in (their salary's, i.e. their employing company's), not the tenant default. */}
+                  <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{historyCurrency} {(h.eligibleSalary as number).toLocaleString()}</td>
+                  <td className="px-4 py-2.5 font-medium text-sapphire dark:text-cyanAccent">{historyCurrency} {(h.calculatedAmount as number).toLocaleString()}</td>
                   <td className="px-4 py-2.5"><StatusBadge status={h.status as string} /></td>
                 </tr>
               ))}

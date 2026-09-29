@@ -6775,13 +6775,28 @@ public class PayrollController : ControllerBase
     {
         var tenantId = GetTenantId();
         var runs = await _db.PayrollRuns.AsNoTracking().Where(x => x.TenantId == tenantId).ToListAsync(cancellationToken);
+        var lockedThisYear = runs.Where(x => x.Status == "Locked" && x.Year == DateTime.UtcNow.Year).ToList();
         return Ok(new
         {
             totalRuns = runs.Count,
             lockedRuns = runs.Count(x => x.Status == "Locked"),
             totalEmployeesPaid = runs.Where(x => x.Status == "Locked").Sum(x => x.EmployeeCount),
-            totalGrossYtd = runs.Where(x => x.Status == "Locked" && x.Year == DateTime.UtcNow.Year).Sum(x => x.TotalGrossSalary),
-            totalNetYtd = runs.Where(x => x.Status == "Locked" && x.Year == DateTime.UtcNow.Year).Sum(x => x.TotalNetSalary),
+            // Kept for older clients. In a group whose companies pay in different currencies these two
+            // add SAR to AED; ytdByCompany is what a client labels and totals per currency.
+            totalGrossYtd = lockedThisYear.Sum(x => x.TotalGrossSalary),
+            totalNetYtd = lockedThisYear.Sum(x => x.TotalNetSalary),
+            // R03 — year-to-date per legal entity. A run is paid in its company's currency, so the client
+            // resolves each company's currency and never sums across two.
+            ytdByCompany = lockedThisYear
+                .GroupBy(x => x.CompanyId)
+                .Select(g => new
+                {
+                    companyId = g.Key,
+                    totalGrossYtd = g.Sum(x => x.TotalGrossSalary),
+                    totalNetYtd = g.Sum(x => x.TotalNetSalary),
+                    lockedRuns = g.Count(),
+                })
+                .ToList(),
         });
     }
 
