@@ -18,6 +18,7 @@ using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Infrastructure.Organization;
 using Zayra.Api.Infrastructure.Notifications;
@@ -2832,6 +2833,141 @@ public class EmployeesController : ControllerBase
                 null, string.Empty, m.MatchType, new[] { "Contact a group administrator" }, false);
     }
 
+    /// <summary>
+    /// The review queue for new hires: every draft the caller may see, newest first, filterable by
+    /// lifecycle. <paramref name="status"/> is <c>awaiting</c> (the default: Submitted or
+    /// PendingHrApproval), <c>open</c>, <c>all</c>, or one exact status. Rows carry identity,
+    /// placement and lifecycle only; the counts are over the same visible set.
+    /// </summary>
+    [HttpGet("drafts")]
+    [HasPermission("employees.write", "employees.approve")]
+    public async Task<ActionResult<EmployeeDraftListResponse>> ListDrafts(
+        [FromQuery] string? status = "awaiting", [FromQuery] string? search = null,
+        [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
+    {
+        var tenantId = RequireTenant();
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+        var visible = VisibleDrafts(tenantId);
+
+        var statusCounts = await visible.GroupBy(d => d.Status)
+            .Select(g => new { Status = g.Key, Count = g.Count() })
+            .ToListAsync(cancellationToken);
+        int CountOf(params string[] statuses) => statusCounts.Where(x => statuses.Contains(x.Status)).Sum(x => x.Count);
+        var counts = new EmployeeDraftStatusCounts(
+            CountOf(EmployeeDraftStatuses.AwaitingApproval),
+            CountOf(EmployeeDraftStatuses.Draft),
+            CountOf(EmployeeDraftStatuses.Activated),
+            CountOf(EmployeeDraftStatuses.Rejected),
+            CountOf(EmployeeDraftStatuses.Cancelled));
+
+        var query = visible;
+        var filter = (status ?? "awaiting").Trim();
+        if (filter.Equals("awaiting", StringComparison.OrdinalIgnoreCase))
+            query = query.Where(d => EmployeeDraftStatuses.AwaitingApproval.Contains(d.Status));
+        else if (filter.Equals("open", StringComparison.OrdinalIgnoreCase))
+            query = query.Where(d => EmployeeDraftStatuses.Open.Contains(d.Status));
+        else if (!filter.Equals("all", StringComparison.OrdinalIgnoreCase))
+            query = query.Where(d => d.Status == filter);
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var term = search.Trim().ToLower();
+            query = query.Where(d => d.EnglishName.ToLower().Contains(term) || d.ArabicName.Contains(term)
+                || d.Department.ToLower().Contains(term) || d.Designation.ToLower().Contains(term));
+        }
+
+        var total = await query.CountAsync(cancellationToken);
+        var drafts = await query.AsNoTracking()
+            .OrderByDescending(d => d.SubmittedAtUtc ?? d.CreatedAtUtc).ThenBy(d => d.Id)
+            .Skip((page - 1) * pageSize).Take(pageSize)
+            .ToListAsync(cancellationToken);
+        var items = await ToDraftListItemsAsync(tenantId, drafts, cancellationToken);
+        return Ok(new EmployeeDraftListResponse(items, total, page, pageSize, counts));
+    }
+
+    /// <summary>
+    /// One draft for review: the masked draft, its lifecycle summary and, while it is still open, the
+    /// activation check — every reason approval would be refused (organisation records that don't
+    /// match, entity conflicts, readiness blockers, a login identity already using the work email),
+    /// computed with the same resolvers and readiness policy approval uses. Read-only.
+    /// </summary>
+    [HttpGet("drafts/{draftId:guid}")]
+    [HasPermission("employees.write", "employees.approve")]
+    public async Task<ActionResult<EmployeeDraftReviewDto>> GetDraft(Guid draftId, CancellationToken cancellationToken)
+    {
+        var tenantId = RequireTenant();
+        var draft = await VisibleDrafts(tenantId).AsNoTracking().SingleOrDefaultAsync(d => d.Id == draftId, cancellationToken);
+        if (draft is null) return NotFound();
+        var summary = (await ToDraftListItemsAsync(tenantId, new[] { draft }, cancellationToken)).Single();
+        var documentCount = await ScopedBypass.TenantWide(_db.EmployeeDocuments, tenantId,
+                "Draft documents carry no company until activation; the draft's own visibility was checked above.")
+            .CountAsync(x => x.DraftId == draftId && !x.IsDeleted, cancellationToken);
+        var check = EmployeeDraftStatuses.IsOpen(draft.Status)
+            ? await CheckDraftActivationAsync(tenantId, draft, cancellationToken)
+            : null;
+        return Ok(new EmployeeDraftReviewDto(summary, EmployeeDraftDto.Project(draft, CanViewSensitive()), documentCount, check));
+    }
+
+    /// <summary>
+    /// A checker refuses the hire. The reason is required and kept on the audit record; the draft is
+    /// closed for good (Rejected), so it can never be approved afterwards. Maker-checker applies.
+    /// </summary>
+    [HttpPost("drafts/{draftId:guid}/reject")]
+    [HasPermission("employees.approve")]
+    public async Task<IActionResult> RejectDraft(Guid draftId, EmployeeDraftDecisionRequest request, CancellationToken cancellationToken)
+    {
+        var reason = request?.Reason?.Trim() ?? string.Empty;
+        if (reason.Length < 5)
+            return BadRequest(new { error = "reason_required", message = "Say why this hire is rejected (at least 5 characters). The reason is kept on the record." });
+        if (reason.Length > 1000)
+            return BadRequest(new { error = "reason_too_long", message = "Keep the rejection reason under 1,000 characters." });
+
+        var tenantId = RequireTenant();
+        var draft = await VisibleDrafts(tenantId).AsNoTracking()
+            .Where(d => d.Id == draftId).Select(d => new { d.Status, d.CreatedByUserId })
+            .SingleOrDefaultAsync(cancellationToken);
+        if (draft is null) return NotFound();
+        if (await MakerCheckerRefusalAsync(tenantId, draftId, draft.CreatedByUserId, cancellationToken) is { } refusal) return refusal;
+        if (!EmployeeDraftStatuses.IsOpen(draft.Status)) return await DraftClosedConflictAsync(tenantId, draftId, draft.Status, cancellationToken);
+
+        var moved = await TransitionDraftAsync(tenantId, draftId, EmployeeDraftStatuses.Open,
+            s => s.SetProperty(d => d.Status, EmployeeDraftStatuses.Rejected).SetProperty(d => d.CurrentStep, EmployeeDraftStatuses.Rejected),
+            d => { d.Status = EmployeeDraftStatuses.Rejected; d.CurrentStep = EmployeeDraftStatuses.Rejected; },
+            EmployeeDraftAuditActions.Rejected, JsonSerializer.Serialize(new { reason }), cancellationToken);
+        if (!moved) return await DraftClosedConflictAsync(tenantId, draftId, await CurrentDraftStatusAsync(tenantId, draftId, cancellationToken), cancellationToken);
+
+        await NotifyBestEffortAsync("Employee draft rejected", $"A new-hire draft was rejected: {reason}", draftId, cancellationToken);
+        return NoContent();
+    }
+
+    /// <summary>
+    /// Withdraw a draft that should not become an employee. Anyone who can see and edit the draft may
+    /// withdraw it while it is open; it is then closed for good (Cancelled).
+    /// </summary>
+    [HttpPost("drafts/{draftId:guid}/cancel")]
+    [HasPermission("employees.write")]
+    public async Task<IActionResult> CancelDraft(Guid draftId, EmployeeDraftDecisionRequest? request, CancellationToken cancellationToken)
+    {
+        var reason = request?.Reason?.Trim() ?? string.Empty;
+        if (reason.Length > 1000)
+            return BadRequest(new { error = "reason_too_long", message = "Keep the reason under 1,000 characters." });
+
+        var tenantId = RequireTenant();
+        var status = await VisibleDrafts(tenantId).AsNoTracking()
+            .Where(d => d.Id == draftId).Select(d => d.Status)
+            .SingleOrDefaultAsync(cancellationToken);
+        if (status is null) return NotFound();
+        if (!EmployeeDraftStatuses.IsOpen(status)) return await DraftClosedConflictAsync(tenantId, draftId, status, cancellationToken);
+
+        var moved = await TransitionDraftAsync(tenantId, draftId, EmployeeDraftStatuses.Open,
+            s => s.SetProperty(d => d.Status, EmployeeDraftStatuses.Cancelled).SetProperty(d => d.CurrentStep, EmployeeDraftStatuses.Cancelled),
+            d => { d.Status = EmployeeDraftStatuses.Cancelled; d.CurrentStep = EmployeeDraftStatuses.Cancelled; },
+            EmployeeDraftAuditActions.Cancelled,
+            reason.Length == 0 ? null : JsonSerializer.Serialize(new { reason }), cancellationToken);
+        if (!moved) return await DraftClosedConflictAsync(tenantId, draftId, await CurrentDraftStatusAsync(tenantId, draftId, cancellationToken), cancellationToken);
+        return NoContent();
+    }
+
     [HttpPost("drafts")]
     [HasPermission("employees.write")]
     public async Task<ActionResult<EmployeeDraftDto>> CreateDraft(EmployeeDraftRequest request, CancellationToken cancellationToken)
@@ -2849,8 +2985,9 @@ public class EmployeesController : ControllerBase
     public async Task<ActionResult<EmployeeDraftDto>> UpdateDraft(Guid draftId, EmployeeDraftRequest request, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
-        var draft = await _db.EmployeeDrafts.FirstOrDefaultAsync(x => x.Id == draftId && x.TenantId == tenantId, cancellationToken);
+        var draft = await VisibleDrafts(tenantId).FirstOrDefaultAsync(x => x.Id == draftId, cancellationToken);
         if (draft is null) return NotFound();
+        if (!EmployeeDraftStatuses.IsOpen(draft.Status)) return await DraftClosedConflictAsync(tenantId, draftId, draft.Status, cancellationToken);
         ApplyDraft(draft, request);
         var docs = await _db.EmployeeDocuments.CountAsync(x => x.TenantId == tenantId && x.DraftId == draftId, cancellationToken);
         draft.ProfileCompletenessScore = CalculateCompleteness(draft, docs);
@@ -2864,7 +3001,9 @@ public class EmployeesController : ControllerBase
     public async Task<ActionResult<EmployeeDocumentDto>> AddDraftDocument(Guid draftId, EmployeeDocumentRequest request, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
-        if (!await _db.EmployeeDrafts.AnyAsync(x => x.Id == draftId && x.TenantId == tenantId, cancellationToken)) return NotFound();
+        var draftStatus = await VisibleDrafts(tenantId).Where(x => x.Id == draftId).Select(x => x.Status).SingleOrDefaultAsync(cancellationToken);
+        if (draftStatus is null) return NotFound();
+        if (!EmployeeDraftStatuses.IsOpen(draftStatus)) return await DraftClosedConflictAsync(tenantId, draftId, draftStatus, cancellationToken);
         var storageUrl = request.StorageUrl?.Trim() ?? string.Empty;
         if (storageUrl.Length == 0)
             return BadRequest(new { message = "A storage key is required. Upload the file before attaching it to a draft." });
@@ -2908,7 +3047,9 @@ public class EmployeesController : ControllerBase
     {
         var tenantId = RequireTenant();
         if (request.File is null) return BadRequest(new { message = "Document file is required." });
-        if (!await _db.EmployeeDrafts.AnyAsync(x => x.Id == draftId && x.TenantId == tenantId, cancellationToken)) return NotFound();
+        var draftStatus = await VisibleDrafts(tenantId).Where(x => x.Id == draftId).Select(x => x.Status).SingleOrDefaultAsync(cancellationToken);
+        if (draftStatus is null) return NotFound();
+        if (!EmployeeDraftStatuses.IsOpen(draftStatus)) return await DraftClosedConflictAsync(tenantId, draftId, draftStatus, cancellationToken);
         var stored = await _documents.SaveAsync(tenantId, request.File, cancellationToken);
         var document = new EmployeeDocument
         {
@@ -2944,13 +3085,12 @@ public class EmployeesController : ControllerBase
         }
         else if (document.DraftId.HasValue)
         {
-            var actorId = GetUserId();
-            var draft = await _db.EmployeeDrafts.AsNoTracking()
-                .Where(x => x.Id == document.DraftId.Value && x.TenantId == tenantId)
-                .Select(x => new { x.CreatedByUserId })
-                .FirstOrDefaultAsync(cancellationToken);
-            if (draft is null) return NotFound();
-            if (!this.GetEntityScope().IsGroupLevel && draft.CreatedByUserId != actorId)
+            // A draft's documents follow the draft's visibility: its maker, a checker whose legal
+            // entities include the accepted offer's application, or group scope.
+            var draftExists = await _db.EmployeeDrafts.AsNoTracking()
+                .AnyAsync(x => x.Id == document.DraftId.Value && x.TenantId == tenantId, cancellationToken);
+            if (!draftExists) return NotFound();
+            if (!await VisibleDrafts(tenantId).AnyAsync(x => x.Id == document.DraftId.Value, cancellationToken))
                 return Forbid();
         }
 
@@ -2981,14 +3121,40 @@ public class EmployeesController : ControllerBase
     [HasPermission("employees.write")]
     public async Task<IActionResult> SubmitDraft(Guid draftId, CancellationToken cancellationToken)
     {
-        var draft = await FindDraft(draftId, cancellationToken);
-        if (draft is null) return NotFound();
-        draft.Status = "PendingHrApproval";
-        draft.CurrentStep = "HrApproval";
-        draft.SubmittedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(cancellationToken);
-        await Notify("Employee draft submitted", "A draft is waiting for HR approval.", "EmployeeDraft", draftId.ToString(), cancellationToken);
-        await Audit("employee.draft_submitted", "EmployeeDraft", draftId.ToString(), cancellationToken);
+        // Submission only ever moves an open draft forward. It used to write PendingHrApproval
+        // unconditionally, so an Activated draft could be reopened and approved into a second
+        // employee. Resubmitting a draft that is already waiting is a no-op, not a new submission.
+        var tenantId = RequireTenant();
+        var status = await VisibleDrafts(tenantId).AsNoTracking()
+            .Where(x => x.Id == draftId).Select(x => x.Status)
+            .SingleOrDefaultAsync(cancellationToken);
+        if (status is null) return NotFound();
+        if (status == EmployeeDraftStatuses.PendingHrApproval) return NoContent();
+        if (!EmployeeDraftStatuses.IsOpen(status)) return await DraftClosedConflictAsync(tenantId, draftId, status, cancellationToken);
+
+        var submittedAtUtc = DateTime.UtcNow;
+        var moved = await TransitionDraftAsync(tenantId, draftId, EmployeeDraftStatuses.Submittable,
+            s => s.SetProperty(d => d.Status, EmployeeDraftStatuses.PendingHrApproval)
+                  .SetProperty(d => d.CurrentStep, "HrApproval")
+                  .SetProperty(d => d.SubmittedAtUtc, d => d.SubmittedAtUtc ?? submittedAtUtc),
+            d =>
+            {
+                d.Status = EmployeeDraftStatuses.PendingHrApproval;
+                d.CurrentStep = "HrApproval";
+                d.SubmittedAtUtc ??= submittedAtUtc;
+            },
+            EmployeeDraftAuditActions.Submitted, null, cancellationToken);
+        if (!moved)
+        {
+            // Lost a race: another request moved the draft first. A concurrent submission is the
+            // same outcome; anything else (approved, rejected, withdrawn) is a closed draft.
+            var now = await CurrentDraftStatusAsync(tenantId, draftId, cancellationToken);
+            return now == EmployeeDraftStatuses.PendingHrApproval
+                ? NoContent()
+                : await DraftClosedConflictAsync(tenantId, draftId, now, cancellationToken);
+        }
+
+        await NotifyBestEffortAsync("Employee draft submitted", "A draft is waiting for HR approval.", draftId, cancellationToken);
         return NoContent();
     }
 
@@ -3000,14 +3166,15 @@ public class EmployeesController : ControllerBase
         var actorId = GetUserId();
         var entityScope = this.GetEntityScope();
         var requestContext = Context();
-        var preflight = await _db.EmployeeDrafts.AsNoTracking()
-            .Where(x => x.Id == draftId && x.TenantId == tenantId)
+        var preflight = await VisibleDrafts(tenantId).AsNoTracking()
+            .Where(x => x.Id == draftId)
             .Select(x => new { x.CreatedByUserId, x.Status })
             .SingleOrDefaultAsync(cancellationToken);
         if (preflight is null) return NotFound();
-        if (!entityScope.IsGroupLevel && preflight.CreatedByUserId != actorId) return Forbid();
-        if (preflight.Status is not ("PendingHrApproval" or "Draft"))
-            return BadRequest(new { message = "Draft is not ready for HR approval." });
+        if (await MakerCheckerRefusalAsync(tenantId, draftId, preflight.CreatedByUserId, cancellationToken) is { } refusal)
+            return refusal;
+        if (!EmployeeDraftStatuses.IsOpen(preflight.Status))
+            return await DraftClosedConflictAsync(tenantId, draftId, preflight.Status, cancellationToken);
 
         // The marker identity and timestamp are allocated outside the retry delegate. If COMMIT is
         // durable but its acknowledgement is lost, the execution strategy can prove this exact
@@ -3037,129 +3204,37 @@ public class EmployeesController : ControllerBase
                 .TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.Id == draftId && x.TenantId == tenantId, ct)
                 ?? throw new DraftApprovalNotFoundException();
-            if (!entityScope.IsGroupLevel && draft.CreatedByUserId != actorId)
-                throw new DraftApprovalForbiddenException();
-            if (draft.Status is not ("PendingHrApproval" or "Draft"))
-                throw new DraftApprovalNotReadyException();
+            // Re-checked under the lock, because the preflight read is advisory. Maker-checker: the
+            // person who made the draft (or accepted the offer that made it) never activates it.
+            if (actorId is null || draft.CreatedByUserId == actorId)
+                throw new DraftApprovalMakerCheckerException();
+            if (!entityScope.IsGroupLevel)
+            {
+                // A company-scoped checker decides only accepted-offer drafts whose application sits in
+                // one of their legal entities. A manual draft names no entity until it is resolved
+                // here, so it needs group scope (the resolved entity is checked again below).
+                var originCompanyId = await ScopedBypass.TenantWide(_db.JobApplications, tenantId,
+                        "The application's own company is the scope being checked, so the company filter must not pre-empt it.")
+                    .AsNoTracking()
+                    .Where(a => a.OnboardingDraftId == draftId)
+                    .Select(a => a.CompanyId)
+                    .FirstOrDefaultAsync(ct);
+                if (!entityScope.CanAccessCompany(originCompanyId))
+                    throw new DraftApprovalForbiddenException();
+            }
+            if (!EmployeeDraftStatuses.IsOpen(draft.Status))
+                throw new DraftApprovalNotReadyException(draft.Status);
 
             // Resolve every mutable draft field again after taking the draft lock. A preflight read
-            // is authorization/UX only and is never trusted for the durable employee record.
-            Guid? draftDeptId = null; var draftDeptName = draft.Department;
-            Guid? draftDesigId = null; var draftDesigTitle = draft.Designation;
-            Guid? draftBranchId = null; var draftBranchName = draft.Branch;
-            try
-            {
-                if (!string.IsNullOrWhiteSpace(draft.Department))
-                    (draftDeptId, draftDeptName) = await EmployeeOrgFieldResolver.ResolveDepartmentAsync(_db, tenantId, draft.Department, ct);
-                if (!string.IsNullOrWhiteSpace(draft.Designation))
-                    (draftDesigId, draftDesigTitle) = await EmployeeOrgFieldResolver.ResolveDesignationAsync(_db, tenantId, draft.Designation, ct);
-                if (!string.IsNullOrWhiteSpace(draft.Branch))
-                    (draftBranchId, draftBranchName) = await EmployeeOrgFieldResolver.ResolveBranchAsync(_db, tenantId, draft.Branch, ct);
-            }
-            catch (InvalidOperationException ex)
-            {
-                throw new DraftApprovalValidationException(ex.Message, ex);
-            }
-
-            Guid? companyId = null;
-            if (draftBranchId.HasValue)
-            {
-                // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
-                var resolvedCompanyId = await _db.Branches.IgnoreQueryFilters().AsNoTracking()
-                    .Where(x => x.TenantId == tenantId && x.Id == draftBranchId.Value && !x.IsDeleted)
-                    .Select(x => x.CompanyId)
-                    .SingleAsync(ct);
-                if (resolvedCompanyId != Guid.Empty) companyId = resolvedCompanyId;
-            }
-            if (draftDeptId.HasValue)
-            {
-                var departmentBranchId = await _db.Departments.IgnoreQueryFilters().AsNoTracking()
-                    .Where(x => x.TenantId == tenantId && x.Id == draftDeptId.Value && !x.IsDeleted)
-                    .Select(x => x.BranchId)
-                    .SingleAsync(ct);
-                if (departmentBranchId.HasValue)
-                {
-                    // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
-                    var departmentCompanyId = await _db.Branches.IgnoreQueryFilters().AsNoTracking()
-                        .Where(x => x.TenantId == tenantId && x.Id == departmentBranchId.Value && !x.IsDeleted)
-                        .Select(x => x.CompanyId)
-                        .SingleAsync(ct);
-                    if (departmentCompanyId != Guid.Empty)
-                    {
-                        if (companyId.HasValue && companyId.Value != departmentCompanyId)
-                            throw new DraftApprovalValidationException(
-                                "The selected department and branch belong to different legal entities.");
-                        companyId = departmentCompanyId;
-                    }
-                }
-            }
-            if (!entityScope.IsGroupLevel && !entityScope.CanAccessCompany(companyId))
+            // is authorization/UX only and is never trusted for the durable employee record. The
+            // review screen's activation check runs this same resolution, so it cannot disagree.
+            var placement = await ResolveDraftPlacementAsync(tenantId, draft, problems: null, ct);
+            if (!entityScope.IsGroupLevel && !entityScope.CanAccessCompany(placement.CompanyId))
                 throw new DraftApprovalForbiddenException();
 
-            var employee = new Employee
-            {
-                TenantId = tenantId,
-                CompanyId = companyId,
-                EmployeeCode = await GenerateEmployeeCode(tenantId, ct),
-                FullName = FirstNonEmpty(draft.EnglishName, draft.ArabicName),
-                EnglishName = draft.EnglishName,
-                ArabicName = draft.ArabicName,
-                PersonalEmail = draft.PersonalEmail,
-                WorkEmail = draft.WorkEmail,
-                Phone = draft.Phone,
-                Gender = draft.Gender,
-                DateOfBirth = draft.DateOfBirth,
-                MaritalStatus = draft.MaritalStatus,
-                EmergencyContactName = draft.EmergencyContactName,
-                EmergencyContactPhone = draft.EmergencyContactPhone,
-                Nationality = draft.Nationality,
-                CountryCode = draft.CountryCode,
-                Department = draftDeptName,
-                DepartmentId = draftDeptId,
-                Designation = draftDesigTitle,
-                DesignationId = draftDesigId,
-                WorkLocation = draft.WorkLocation,
-                Branch = draftBranchName,
-                BranchId = draftBranchId,
-                ManagerEmployeeId = draft.ManagerEmployeeId,
-                Status = EmployeeStatuses.Active,
-                JoiningDate = draft.JoiningDate ?? approvedAtUtc.Date,
-                ContractType = draft.ContractType,
-                Grade = draft.Grade,
-                CostCenter = draft.CostCenter,
-                ContractStartDate = draft.ContractStartDate,
-                ContractEndDate = draft.ContractEndDate,
-                ProbationEndDate = draft.ProbationEndDate,
-                PayrollProfileCode = draft.PayrollProfileCode,
-                Salary = draft.Salary,
-                BankName = draft.BankName,
-                BankIban = draft.BankIban,
-                WpsBankDetails = draft.WpsBankDetails,
-                ShiftPolicyCode = draft.ShiftPolicyCode,
-                LeavePolicyCode = draft.LeavePolicyCode,
-                SponsorName = draft.SponsorName,
-                PassportIssueDate = draft.PassportIssueDate,
-                PassportNumber = draft.PassportNumber,
-                PassportExpiryDate = draft.PassportExpiryDate,
-                VisaIssueDate = draft.VisaIssueDate,
-                VisaNumber = draft.VisaNumber,
-                VisaExpiryDate = draft.VisaExpiryDate,
-                ResidencyIssueDate = draft.ResidencyIssueDate,
-                WorkPermitIssueDate = draft.WorkPermitIssueDate,
-                IqamaNumber = draft.IqamaNumber,
-                MuqeemNumber = draft.MuqeemNumber,
-                GosiReference = draft.GosiReference,
-                QiwaContractNumber = draft.QiwaContractNumber,
-                EmiratesId = draft.EmiratesId,
-                LaborCardNumber = draft.LaborCardNumber,
-                VisaFileNumber = draft.VisaFileNumber,
-                Qid = draft.Qid,
-                WorkPermitNumber = draft.WorkPermitNumber,
-                CivilId = draft.CivilId,
-                ResidencyNumber = draft.ResidencyNumber,
-                ProfileCompletenessScore = draft.ProfileCompletenessScore,
-                ActivatedAtUtc = approvedAtUtc
-            };
+            var employee = EmployeeFromDraft(draft, tenantId, placement, approvedAtUtc);
+            employee.EmployeeCode = await GenerateEmployeeCode(tenantId, ct);
+            employee.ActivatedAtUtc = approvedAtUtc;
 
             if (employee.ManagerEmployeeId is null && employee.DepartmentId.HasValue)
             {
@@ -3214,11 +3289,26 @@ public class EmployeesController : ControllerBase
                     await _db.LinkOnboardingTasksForActivatedDraftAsync(
                         tenantId, draftId, employee, ct);
 
-                    draft.Status = "Activated";
-                    draft.CurrentStep = "Activated";
+                    draft.Status = EmployeeDraftStatuses.Activated;
+                    draft.CurrentStep = EmployeeDraftStatuses.Activated;
                     draft.ApprovedAtUtc = approvedAtUtc;
                     draft.ActivatedAtUtc = approvedAtUtc;
                     await AddHistory(employee, "Activated", DateOnly.FromDateTime(employee.JoiningDate), ct);
+
+                    // The draft-side record of the same event: which employee this draft became and
+                    // who approved it. The review list and the "already activated" refusal read it by
+                    // (EntityName, EntityId), which the audit index covers; the marker below is keyed
+                    // by the employee and only names the draft inside its JSON.
+                    var draftActivated = AuthAuditEntry.Create(
+                        Guid.NewGuid(),
+                        approvedAtUtc,
+                        EmployeeDraftAuditActions.Activated,
+                        "EmployeeDraft",
+                        draftId.ToString(),
+                        requestContext with { TenantId = tenantId },
+                        JsonSerializer.Serialize(new { employeeId = employee.Id, employeeCode = employee.EmployeeCode, employeePublicId = employee.PublicId }));
+                    draftActivated.CompanyId = employee.CompanyId;
+                    _db.AuditLogs.Add(draftActivated);
 
                     var marker = AuthAuditEntry.Create(
                         auditId,
@@ -3282,10 +3372,16 @@ public class EmployeesController : ControllerBase
             _db.ChangeTracker.Clear();
             return Forbid();
         }
-        catch (DraftApprovalNotReadyException)
+        catch (DraftApprovalMakerCheckerException)
         {
             _db.ChangeTracker.Clear();
-            return BadRequest(new { message = "Draft is not ready for HR approval." });
+            return MakerCheckerForbidden();
+        }
+        catch (DraftApprovalNotReadyException ex)
+        {
+            // Lost the race to another decision, or the draft closed after the preflight read.
+            _db.ChangeTracker.Clear();
+            return await DraftClosedConflictAsync(tenantId, draftId, ex.Status, cancellationToken);
         }
         catch (DraftApprovalNotFoundException)
         {
@@ -4732,7 +4828,500 @@ public class EmployeesController : ControllerBase
             .FirstOrDefaultAsync(cancellationToken);
     }
 
-    private async Task<EmployeeDraft?> FindDraft(Guid draftId, CancellationToken cancellationToken) => await _db.EmployeeDrafts.FirstOrDefaultAsync(x => x.Id == draftId && x.TenantId == RequireTenant(), cancellationToken);
+    // ── Employee draft lifecycle helpers ─────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The drafts the caller may see. A draft carries no legal entity until approval resolves one, so
+    /// the scope is: group scope sees every draft in the tenant; a company-scoped user sees the drafts
+    /// they made, plus accepted-offer drafts whose job application belongs to one of their companies.
+    /// Every draft endpoint (list, review, edit, documents, submit, approve, reject, withdraw) starts
+    /// here, so what a user can act on is exactly what they can list.
+    /// </summary>
+    private IQueryable<EmployeeDraft> VisibleDrafts(Guid tenantId)
+    {
+        var scope = this.GetEntityScope();
+        var drafts = _db.EmployeeDrafts.Where(d => d.TenantId == tenantId);
+        if (scope.IsGroupLevel) return drafts;
+        var actorId = GetUserId();
+        var applications = ScopedBypass.ForCompanies(_db.JobApplications, tenantId, scope.AccessibleCompanyIds,
+            "A company-scoped user sees an accepted offer's draft only when its application is in one of their companies.");
+        return drafts.Where(d =>
+            (actorId != null && d.CreatedByUserId == actorId)
+            || applications.Any(a => a.OnboardingDraftId == d.Id));
+    }
+
+    private const string MakerCheckerError = "draft_maker_checker";
+
+    private ObjectResult MakerCheckerForbidden(bool edited = false) => StatusCode(StatusCodes.Status403Forbidden, new
+    {
+        error = MakerCheckerError,
+        message = edited
+            ? "You changed this draft, so another HR approver has to approve or reject it."
+            : "You created this draft (or accepted the offer behind it), so another HR approver has to approve or reject it.",
+    });
+
+    /// <summary>Maker-checker for a draft decision. The makers are whoever created the draft (for an
+    /// accepted offer, whoever accepted it) and whoever has since changed its content: a checker who
+    /// edits the hire's terms cannot then approve their own edit.</summary>
+    private async Task<ObjectResult?> MakerCheckerRefusalAsync(Guid tenantId, Guid draftId, Guid? createdByUserId, CancellationToken ct)
+    {
+        var actorId = GetUserId();
+        if (actorId is null || createdByUserId == actorId) return MakerCheckerForbidden();
+        var entityId = draftId.ToString();
+        var edited = await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId,
+                "The caller's own edit rows for this draft, whichever company they were stamped with.")
+            .AsNoTracking()
+            .AnyAsync(a => a.EntityName == "EmployeeDraft" && a.EntityId == entityId
+                && a.Action == "employee.draft_updated" && a.UserId == actorId, ct);
+        return edited ? MakerCheckerForbidden(edited: true) : null;
+    }
+
+    private async Task<string> CurrentDraftStatusAsync(Guid tenantId, Guid draftId, CancellationToken ct) =>
+        await _db.EmployeeDrafts.AsNoTracking()
+            .Where(d => d.Id == draftId && d.TenantId == tenantId)
+            .Select(d => d.Status)
+            .SingleAsync(ct);
+
+    /// <summary>409 for a draft that can no longer move: says which state it is in and, for an
+    /// activated draft, which employee it became.</summary>
+    private async Task<ConflictObjectResult> DraftClosedConflictAsync(Guid tenantId, Guid draftId, string status, CancellationToken ct)
+    {
+        int? employeeId = null;
+        string? employeeCode = null;
+        if (status == EmployeeDraftStatuses.Activated)
+        {
+            var draft = await _db.EmployeeDrafts.AsNoTracking()
+                .SingleAsync(d => d.Id == draftId && d.TenantId == tenantId, ct);
+            var decisions = await LoadDraftDecisionsAsync(tenantId, new[] { draft }, ct);
+            if (decisions.TryGetValue(draftId, out var decision))
+            {
+                employeeId = decision.EmployeeId;
+                employeeCode = decision.EmployeeCode;
+            }
+        }
+        var closed = !EmployeeDraftStatuses.IsOpen(status);
+        return Conflict(new
+        {
+            error = closed ? "draft_closed" : "draft_state_changed",
+            status,
+            employeeId,
+            employeeCode,
+            message = closed
+                ? EmployeeDraftStatuses.ClosedMessage(status, employeeCode)
+                : "This draft changed while you were working on it. Reload it and try again.",
+        });
+    }
+
+    /// <summary>
+    /// Moves a draft between lifecycle states as one compare-and-swap plus its audit row, in one
+    /// transaction. The UPDATE only matches while the draft is still in one of <paramref name="from"/>,
+    /// so a transition racing an approval (which holds the draft row lock) re-evaluates after that
+    /// commit and matches nothing. Returns false when the draft was no longer in a <paramref name="from"/> state.
+    /// </summary>
+    private async Task<bool> TransitionDraftAsync(
+        Guid tenantId, Guid draftId, string[] from,
+        System.Linq.Expressions.Expression<Func<Microsoft.EntityFrameworkCore.Query.SetPropertyCalls<EmployeeDraft>, Microsoft.EntityFrameworkCore.Query.SetPropertyCalls<EmployeeDraft>>> setters,
+        Action<EmployeeDraft> applyTracked,
+        string auditAction, string? auditMetadata, CancellationToken cancellationToken)
+    {
+        var auditId = Guid.NewGuid();
+        var at = DateTime.UtcNow;
+        var context = Context() with { TenantId = tenantId };
+
+        async Task<bool> OnceAsync(CancellationToken ct)
+        {
+            _db.ChangeTracker.Clear();
+            if (_db.Database.IsRelational())
+            {
+                var changed = await _db.EmployeeDrafts
+                    .Where(d => d.Id == draftId && d.TenantId == tenantId && from.Contains(d.Status))
+                    .ExecuteUpdateAsync(setters, ct);
+                if (changed == 0) return false;
+            }
+            else
+            {
+                // EF's in-memory provider (fast unit tests) cannot run set-based updates; the same
+                // state check runs on the tracked row. Concurrency is proven on Postgres.
+                var tracked = await _db.EmployeeDrafts.SingleOrDefaultAsync(d => d.Id == draftId && d.TenantId == tenantId, ct);
+                if (tracked is null || !from.Contains(tracked.Status)) return false;
+                applyTracked(tracked);
+            }
+            _db.AuditLogs.Add(AuthAuditEntry.Create(auditId, at, auditAction, "EmployeeDraft", draftId.ToString(), context, auditMetadata));
+            await _db.SaveChangesAsync(ct);
+            return true;
+        }
+
+        if (!_db.Database.IsRelational()) return await OnceAsync(cancellationToken);
+        return await _db.Database.CreateExecutionStrategy().ExecuteInTransactionAsync(
+            OnceAsync,
+            async ct => await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId,
+                    "Commit verification of this command's own audit row by its server-generated id.")
+                .AsNoTracking().AnyAsync(a => a.Id == auditId, ct),
+            IsolationLevel.ReadCommitted,
+            cancellationToken);
+    }
+
+    /// <summary>Notification is post-commit and best-effort: an outage must not turn a durable state
+    /// change into an error that invites a retry.</summary>
+    private async Task NotifyBestEffortAsync(string title, string message, Guid draftId, CancellationToken ct)
+    {
+        try { await Notify(title, message, "EmployeeDraft", draftId.ToString(), ct); }
+        catch (Exception ex) { _logger?.LogWarning(ex, "Draft {DraftId} changed state, but the notification failed.", draftId); }
+    }
+
+    private sealed record DraftDecision(string Action, Guid? UserId, DateTime AtUtc, string? Reason, int? EmployeeId, string? EmployeeCode);
+
+    /// <summary>The latest decision recorded for each closed draft (activated, rejected, withdrawn),
+    /// read from the draft's own audit rows. An activation from before those rows existed is found by
+    /// its employee.activated marker, which is written at exactly the draft's ActivatedAtUtc.</summary>
+    private async Task<Dictionary<Guid, DraftDecision>> LoadDraftDecisionsAsync(Guid tenantId, IReadOnlyCollection<EmployeeDraft> drafts, CancellationToken ct)
+    {
+        var result = new Dictionary<Guid, DraftDecision>();
+        var closed = drafts.Where(d => !EmployeeDraftStatuses.IsOpen(d.Status)).ToList();
+        if (closed.Count == 0) return result;
+
+        var entityIds = closed.Select(d => d.Id.ToString()).ToList();
+        var rows = await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId,
+                "Decision rows for drafts the caller can already see, whichever company they were stamped with.")
+            .AsNoTracking()
+            .Where(a => a.EntityName == "EmployeeDraft" && a.EntityId != null
+                && entityIds.Contains(a.EntityId) && EmployeeDraftAuditActions.Decisions.Contains(a.Action))
+            .Select(a => new { a.EntityId, a.Action, a.UserId, a.CreatedAtUtc, a.Metadata })
+            .ToListAsync(ct);
+        foreach (var row in rows.OrderBy(r => r.CreatedAtUtc))
+        {
+            if (!Guid.TryParse(row.EntityId, out var id)) continue;
+            string? reason = null; int? employeeId = null;
+            if (!string.IsNullOrWhiteSpace(row.Metadata))
+            {
+                try
+                {
+                    using var json = JsonDocument.Parse(row.Metadata);
+                    if (json.RootElement.ValueKind == JsonValueKind.Object)
+                    {
+                        if (json.RootElement.TryGetProperty("reason", out var r) && r.ValueKind == JsonValueKind.String) reason = r.GetString();
+                        if (json.RootElement.TryGetProperty("employeeId", out var e) && e.ValueKind == JsonValueKind.Number && e.TryGetInt32(out var eid)) employeeId = eid;
+                    }
+                }
+                catch (JsonException) { /* an unreadable row still records who and when */ }
+            }
+            result[id] = new DraftDecision(row.Action, row.UserId, row.CreatedAtUtc, reason, employeeId, null);
+        }
+
+        // Activations recorded before the draft-side row existed: the employee.activated marker.
+        var legacy = closed.Where(d => d.Status == EmployeeDraftStatuses.Activated && d.ActivatedAtUtc.HasValue && !result.ContainsKey(d.Id)).ToList();
+        if (legacy.Count > 0)
+        {
+            var times = legacy.Select(d => d.ActivatedAtUtc!.Value).Distinct().ToList();
+            var markers = await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId,
+                    "Activation markers of drafts the caller can already see, matched by timestamp and then by the draft id inside each marker.")
+                .AsNoTracking()
+                .Where(a => a.Action == "employee.activated" && times.Contains(a.CreatedAtUtc))
+                .Select(a => new { a.EntityId, a.UserId, a.CreatedAtUtc, a.Metadata })
+                .ToListAsync(ct);
+            foreach (var marker in markers)
+            {
+                if (string.IsNullOrWhiteSpace(marker.Metadata) || !int.TryParse(marker.EntityId, out var eid)) continue;
+                try
+                {
+                    using var json = JsonDocument.Parse(marker.Metadata);
+                    if (json.RootElement.ValueKind == JsonValueKind.Object
+                        && json.RootElement.TryGetProperty("draftId", out var d) && d.ValueKind == JsonValueKind.String
+                        && Guid.TryParse(d.GetString(), out var did) && legacy.Any(x => x.Id == did))
+                        result[did] = new DraftDecision(EmployeeDraftAuditActions.Activated, marker.UserId, marker.CreatedAtUtc, null, eid, null);
+                }
+                catch (JsonException) { /* skip an unreadable marker */ }
+            }
+        }
+
+        var employeeIds = result.Values.Where(v => v.EmployeeId.HasValue).Select(v => v.EmployeeId!.Value).Distinct().ToList();
+        if (employeeIds.Count > 0)
+        {
+            var codes = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId,
+                    "The codes of the employees drafts the caller can already see became, in whichever company they landed.")
+                .AsNoTracking()
+                .Where(e => employeeIds.Contains(e.Id))
+                .Select(e => new { e.Id, e.EmployeeCode })
+                .ToDictionaryAsync(e => e.Id, e => e.EmployeeCode, ct);
+            foreach (var (draftId, decision) in result.ToList())
+                if (decision.EmployeeId is { } eid && codes.TryGetValue(eid, out var code))
+                    result[draftId] = decision with { EmployeeCode = code };
+        }
+        return result;
+    }
+
+    private async Task<IReadOnlyList<EmployeeDraftListItemDto>> ToDraftListItemsAsync(
+        Guid tenantId, IReadOnlyCollection<EmployeeDraft> drafts, CancellationToken ct)
+    {
+        if (drafts.Count == 0) return Array.Empty<EmployeeDraftListItemDto>();
+        var actorId = GetUserId();
+        var canApprovePermission = User.HasPermission("employees.approve");
+        var draftIds = drafts.Select(d => d.Id).ToList();
+        var entityIds = draftIds.Select(id => id.ToString()).ToList();
+
+        var origins = await ScopedBypass.TenantWide(_db.JobApplications, tenantId,
+                "The job application behind each draft the caller can already see (visibility was decided by VisibleDrafts).")
+            .AsNoTracking()
+            .Where(a => a.OnboardingDraftId != null && draftIds.Contains(a.OnboardingDraftId.Value))
+            .Select(a => new { DraftId = a.OnboardingDraftId!.Value, a.Id, a.JobTitle })
+            .ToListAsync(ct);
+        var originByDraft = origins.GroupBy(o => o.DraftId).ToDictionary(g => g.Key, g => g.First());
+
+        var editedByMe = new HashSet<string>();
+        if (actorId is not null)
+        {
+            editedByMe = (await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId,
+                    "The caller's own edit rows on drafts they can already see, whichever company they were stamped with.")
+                .AsNoTracking()
+                .Where(a => a.EntityName == "EmployeeDraft" && a.EntityId != null
+                    && entityIds.Contains(a.EntityId) && a.Action == "employee.draft_updated" && a.UserId == actorId)
+                .Select(a => a.EntityId!)
+                .ToListAsync(ct)).ToHashSet();
+        }
+
+        var decisions = await LoadDraftDecisionsAsync(tenantId, drafts, ct);
+        var userIds = drafts.Where(d => d.CreatedByUserId.HasValue).Select(d => d.CreatedByUserId!.Value)
+            .Concat(decisions.Values.Where(v => v.UserId.HasValue).Select(v => v.UserId!.Value))
+            .Distinct().ToList();
+        var names = new Dictionary<Guid, string>();
+        if (userIds.Count > 0)
+            names = await ScopedBypass.TenantWide(_db.Users, tenantId,
+                    "Display names of the users who made or decided drafts the caller can already see, including since-removed users.")
+                .AsNoTracking()
+                .Where(u => userIds.Contains(u.Id))
+                .Select(u => new { u.Id, u.FullName })
+                .ToDictionaryAsync(u => u.Id, u => u.FullName, ct);
+
+        return drafts.Select(d =>
+        {
+            var isMine = actorId is not null && d.CreatedByUserId == actorId;
+            var edited = editedByMe.Contains(d.Id.ToString());
+            var open = EmployeeDraftStatuses.IsOpen(d.Status);
+            string? blocked = !open ? null
+                : !canApprovePermission ? "You don't have permission to approve new hires."
+                : isMine ? "You created this draft (or accepted the offer behind it), so another HR approver has to approve it."
+                : edited ? "You changed this draft, so another HR approver has to approve it."
+                : null;
+            originByDraft.TryGetValue(d.Id, out var origin);
+            decisions.TryGetValue(d.Id, out var decision);
+            return new EmployeeDraftListItemDto(
+                d.Id, d.Status, d.CurrentStep,
+                FirstNonEmpty(d.EnglishName, d.ArabicName), d.ArabicName,
+                d.Department, d.Designation, d.Branch, d.JoiningDate,
+                origin is null ? "Manual" : "Recruitment", origin?.Id, origin?.JobTitle,
+                d.CreatedByUserId,
+                d.CreatedByUserId is { } c && names.TryGetValue(c, out var creator) ? creator : null,
+                isMine, open && blocked is null, blocked,
+                d.ProfileCompletenessScore, d.CreatedAtUtc, d.SubmittedAtUtc,
+                decision?.AtUtc ?? d.ActivatedAtUtc,
+                decision?.UserId is { } u && names.TryGetValue(u, out var decider) ? decider : null,
+                decision?.Reason,
+                decision?.EmployeeId, decision?.EmployeeCode);
+        }).ToList();
+    }
+
+    /// <summary>What approval would do with this draft's placement: the organisation records its
+    /// department, designation and branch resolve to, and the legal entity they imply. With
+    /// <paramref name="problems"/> null this throws the first refusal, exactly as approval always has;
+    /// with a list it records every problem and carries on, for the review screen.</summary>
+    private async Task<DraftPlacement> ResolveDraftPlacementAsync(
+        Guid tenantId, EmployeeDraft draft, List<EmployeeDraftActivationProblem>? problems, CancellationToken ct)
+    {
+        Guid? deptId = null; var deptName = draft.Department;
+        Guid? desigId = null; var desigTitle = draft.Designation;
+        Guid? branchId = null; var branchName = draft.Branch;
+
+        async Task ResolveOne(string key, string label, string value, Func<Task> resolve)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return;
+            try { await resolve(); }
+            catch (InvalidOperationException ex)
+            {
+                if (problems is null) throw new DraftApprovalValidationException(ex.Message, ex);
+                problems.Add(new EmployeeDraftActivationProblem(key, label,
+                    $"'{value.Trim()}' does not match any active {label.ToLowerInvariant()} in your organisation records.",
+                    $"Change the draft's {label.ToLowerInvariant()} to one from the organisation list, or add '{value.Trim()}' under Setup first."));
+            }
+        }
+
+        await ResolveOne("department", "Department", draft.Department,
+            async () => (deptId, deptName) = await EmployeeOrgFieldResolver.ResolveDepartmentAsync(_db, tenantId, draft.Department, ct));
+        await ResolveOne("designation", "Designation", draft.Designation,
+            async () => (desigId, desigTitle) = await EmployeeOrgFieldResolver.ResolveDesignationAsync(_db, tenantId, draft.Designation, ct));
+        await ResolveOne("branch", "Branch", draft.Branch,
+            async () => (branchId, branchName) = await EmployeeOrgFieldResolver.ResolveBranchAsync(_db, tenantId, draft.Branch, ct));
+
+        Guid? companyId = null;
+        if (branchId.HasValue)
+        {
+            var resolvedCompanyId = await ScopedBypass.TenantWide(_db.Branches, tenantId,
+                    "Draft placement: the legal entity of the branch the draft resolved to (register section 6).")
+                .AsNoTracking()
+                .Where(x => x.Id == branchId.Value && !x.IsDeleted)
+                .Select(x => x.CompanyId)
+                .SingleAsync(ct);
+            if (resolvedCompanyId != Guid.Empty) companyId = resolvedCompanyId;
+        }
+        if (deptId.HasValue)
+        {
+            var departmentBranchId = await ScopedBypass.TenantWide(_db.Departments, tenantId,
+                    "Draft placement: the branch of the department the draft resolved to (register section 6).")
+                .AsNoTracking()
+                .Where(x => x.Id == deptId.Value && !x.IsDeleted)
+                .Select(x => x.BranchId)
+                .SingleAsync(ct);
+            if (departmentBranchId.HasValue)
+            {
+                var departmentCompanyId = await ScopedBypass.TenantWide(_db.Branches, tenantId,
+                        "Draft placement: the legal entity of the department's branch (register section 6).")
+                    .AsNoTracking()
+                    .Where(x => x.Id == departmentBranchId.Value && !x.IsDeleted)
+                    .Select(x => x.CompanyId)
+                    .SingleAsync(ct);
+                if (departmentCompanyId != Guid.Empty)
+                {
+                    if (companyId.HasValue && companyId.Value != departmentCompanyId)
+                    {
+                        const string conflict = "The selected department and branch belong to different legal entities.";
+                        if (problems is null) throw new DraftApprovalValidationException(conflict);
+                        problems.Add(new EmployeeDraftActivationProblem("legalEntity", "Legal entity", conflict,
+                            "Pick a branch and a department from the same company."));
+                    }
+                    else companyId = departmentCompanyId;
+                }
+            }
+        }
+        return new DraftPlacement(deptId, deptName, desigId, desigTitle, branchId, branchName, companyId);
+    }
+
+    private sealed record DraftPlacement(
+        Guid? DepartmentId, string DepartmentName, Guid? DesignationId, string DesignationTitle,
+        Guid? BranchId, string BranchName, Guid? CompanyId);
+
+    /// <summary>The employee record a draft becomes (without its code, which is allocated under the
+    /// tenant lock). Shared by approval and the review screen's activation check.</summary>
+    private static Employee EmployeeFromDraft(EmployeeDraft draft, Guid tenantId, DraftPlacement placement, DateTime approvedAtUtc) => new()
+    {
+        TenantId = tenantId,
+        CompanyId = placement.CompanyId,
+        FullName = FirstNonEmpty(draft.EnglishName, draft.ArabicName),
+        EnglishName = draft.EnglishName,
+        ArabicName = draft.ArabicName,
+        PersonalEmail = draft.PersonalEmail,
+        WorkEmail = draft.WorkEmail,
+        Phone = draft.Phone,
+        Gender = draft.Gender,
+        DateOfBirth = draft.DateOfBirth,
+        MaritalStatus = draft.MaritalStatus,
+        EmergencyContactName = draft.EmergencyContactName,
+        EmergencyContactPhone = draft.EmergencyContactPhone,
+        Nationality = draft.Nationality,
+        CountryCode = draft.CountryCode,
+        Department = placement.DepartmentName,
+        DepartmentId = placement.DepartmentId,
+        Designation = placement.DesignationTitle,
+        DesignationId = placement.DesignationId,
+        WorkLocation = draft.WorkLocation,
+        Branch = placement.BranchName,
+        BranchId = placement.BranchId,
+        ManagerEmployeeId = draft.ManagerEmployeeId,
+        Status = EmployeeStatuses.Active,
+        JoiningDate = draft.JoiningDate ?? approvedAtUtc.Date,
+        ContractType = draft.ContractType,
+        Grade = draft.Grade,
+        CostCenter = draft.CostCenter,
+        ContractStartDate = draft.ContractStartDate,
+        ContractEndDate = draft.ContractEndDate,
+        ProbationEndDate = draft.ProbationEndDate,
+        PayrollProfileCode = draft.PayrollProfileCode,
+        Salary = draft.Salary,
+        BankName = draft.BankName,
+        BankIban = draft.BankIban,
+        WpsBankDetails = draft.WpsBankDetails,
+        ShiftPolicyCode = draft.ShiftPolicyCode,
+        LeavePolicyCode = draft.LeavePolicyCode,
+        SponsorName = draft.SponsorName,
+        PassportIssueDate = draft.PassportIssueDate,
+        PassportNumber = draft.PassportNumber,
+        PassportExpiryDate = draft.PassportExpiryDate,
+        VisaIssueDate = draft.VisaIssueDate,
+        VisaNumber = draft.VisaNumber,
+        VisaExpiryDate = draft.VisaExpiryDate,
+        ResidencyIssueDate = draft.ResidencyIssueDate,
+        WorkPermitIssueDate = draft.WorkPermitIssueDate,
+        IqamaNumber = draft.IqamaNumber,
+        MuqeemNumber = draft.MuqeemNumber,
+        GosiReference = draft.GosiReference,
+        QiwaContractNumber = draft.QiwaContractNumber,
+        EmiratesId = draft.EmiratesId,
+        LaborCardNumber = draft.LaborCardNumber,
+        VisaFileNumber = draft.VisaFileNumber,
+        Qid = draft.Qid,
+        WorkPermitNumber = draft.WorkPermitNumber,
+        CivilId = draft.CivilId,
+        ResidencyNumber = draft.ResidencyNumber,
+        ProfileCompletenessScore = draft.ProfileCompletenessScore,
+    };
+
+    /// <summary>
+    /// Every reason approval would refuse this draft today, found without writing anything: the same
+    /// placement resolution, the same readiness policy and evaluator, and the same work-email identity
+    /// rule approval applies. The establishment budget is still checked only at approval, where it is
+    /// taken under a lock (a preview of it would be stale by the time anyone acts on it).
+    /// </summary>
+    private async Task<EmployeeDraftActivationCheck> CheckDraftActivationAsync(Guid tenantId, EmployeeDraft draft, CancellationToken ct)
+    {
+        var problems = new List<EmployeeDraftActivationProblem>();
+        var advisories = new List<string>();
+        var placement = await ResolveDraftPlacementAsync(tenantId, draft, problems, ct);
+
+        string? companyName = null;
+        if (placement.CompanyId is { } companyId)
+            companyName = await ScopedBypass.TenantWide(_db.Companies, tenantId,
+                    "Naming the legal entity a draft's placement resolves to, before the caller's entity check at approval.")
+                .AsNoTracking()
+                .Where(c => c.Id == companyId)
+                .Select(c => c.LegalNameEn)
+                .FirstOrDefaultAsync(ct);
+
+        if (!string.IsNullOrWhiteSpace(draft.WorkEmail))
+        {
+            var normalized = AuthService.Normalize(draft.WorkEmail);
+            if (await ScopedBypass.TenantWide(_db.Users, tenantId,
+                    "The same tenant-wide identity check approval runs before provisioning a login, including removed users.")
+                .AsNoTracking().AnyAsync(u => u.NormalizedEmail == normalized, ct))
+                problems.Add(new EmployeeDraftActivationProblem("workEmail", "Work email",
+                    $"A login already uses {draft.WorkEmail.Trim()}.",
+                    "Change the draft's work email, or resolve the existing login first."));
+        }
+
+        var employee = EmployeeFromDraft(draft, tenantId, placement, DateTime.UtcNow);
+        var documents = await ScopedBypass.TenantWide(_db.EmployeeDocuments, tenantId,
+                "A draft's documents carry no company until activation; the draft's visibility was checked by the caller.")
+            .AsNoTracking()
+            .Where(x => x.DraftId == draft.Id && !x.IsDeleted)
+            .Select(x => new { x.DocumentType, x.ApprovalStatus, x.ExpiryDate })
+            .ToListAsync(ct);
+        var gateDocs = documents
+            .Select(x => new DocumentPresence(x.DocumentType,
+                string.Equals(x.ApprovalStatus, "Verified", StringComparison.OrdinalIgnoreCase), x.ExpiryDate))
+            .ToList();
+        var snapshot = EmployeeReadinessEvaluator.BuildFromEmployee(
+            employee, null, gateDocs, new Dictionary<string, DateOnly?>(), (employee.Salary ?? 0m) > 0m);
+        var policy = await _activationGuard.ResolvePolicyAsync(tenantId, employee.CompanyId, snapshot.CountryCode, snapshot.Nationality, ct);
+        var readiness = _activationGuard.Evaluate(snapshot, policy);
+        foreach (var item in readiness.Blocking)
+            problems.Add(new EmployeeDraftActivationProblem(item.Key, item.Label,
+                $"{item.Label} is {item.Reason}.",
+                item.FixKind == "document" && !string.IsNullOrWhiteSpace(item.DocumentType)
+                    ? $"Attach the {item.DocumentType} document to the draft."
+                    : $"Add {item.Label.ToLowerInvariant()} to the draft."));
+        advisories.AddRange(readiness.Recommended.Select(i => $"{i.Label} is {i.Reason} (recommended, not required to activate)."));
+        if (draft.JoiningDate is null)
+            advisories.Add("No joining date is set: activation will use the approval date.");
+
+        return new EmployeeDraftActivationCheck(problems.Count == 0, companyName, problems, advisories);
+    }
 
     private EmployeeDraft ApplyDraft(EmployeeDraft draft, EmployeeDraftRequest request)
     {
@@ -5193,7 +5782,12 @@ internal sealed class DraftApprovalValidationException : InvalidOperationExcepti
         : base(message, innerException) { }
 }
 internal sealed class DraftApprovalForbiddenException : InvalidOperationException { }
-internal sealed class DraftApprovalNotReadyException : InvalidOperationException { }
+internal sealed class DraftApprovalMakerCheckerException : InvalidOperationException { }
+internal sealed class DraftApprovalNotReadyException : InvalidOperationException
+{
+    public DraftApprovalNotReadyException(string status) => Status = status;
+    public string Status { get; }
+}
 internal sealed class DraftApprovalNotFoundException : InvalidOperationException { }
 public record EmployeeDocumentRequest(string DocumentType, string FileName, string ContentType, string StorageUrl, bool IsRequired, DateOnly? ExpiryDate);
 public record EmployeeTransferRequestDto(string NewDepartment, string NewBranch, int? NewManagerEmployeeId, DateOnly EffectiveDate);
