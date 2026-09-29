@@ -7,7 +7,7 @@ export default defineConfig({
   // that is not on its documented allow-list. preflight-rules and identity-contract prove the
   // e2e preflight's refusals and that the role matrix is generated from (and agrees with)
   // backend AuthSeeder.cs — register item F07.
-  testMatch: /(ui-truthfulness-state|rtl-logical-properties|employee-create-country-gate|preflight-rules|identity-contract|toast-context-stability|calendar-date|new-hire-review|recruitment-journey-actions)\.spec\.ts/,
+  testMatch: /(ui-truthfulness-state|rtl-logical-properties|employee-create-country-gate|preflight-rules|identity-contract|toast-context-stability|calendar-date|new-hire-review|recruitment-journey-actions|offer-placement)\.spec\.ts/,
   fullyParallel: false,
   retries: 0,
   workers: 1,

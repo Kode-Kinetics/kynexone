@@ -49,6 +49,17 @@ export function assessmentScoreLabel(totalMarks: number | null | undefined): str
   return totalMarks != null && totalMarks > 0 ? `Marks (0–${totalMarks})` : 'Score % (0–100)';
 }
 
+/**
+ * Why an offer could not be created, in the API's own words. The API refuses an offer whose
+ * department or designation is not one of the organisation's records (422
+ * `offer_placement_unresolved`), because the accepted offer's employee record could never be
+ * activated. That reason must reach the recruiter, not a generic "Failed".
+ */
+export function offerCreationFailure(err: unknown, fallback = 'The offer could not be created. Please try again.'): string {
+  const e = err as { response?: { data?: { message?: string } } } | null;
+  return e?.response?.data?.message ?? fallback;
+}
+
 /** Whole numbers on the assessment's own scale; anything else is refused before it is sent. */
 export function parseAssessmentScore(raw: string | undefined, totalMarks: number | null | undefined): number | null {
   if (raw == null || raw.trim() === '') return null;
