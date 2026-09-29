@@ -307,11 +307,28 @@ public class ApplicationsController : ControllerBase
             .ToListAsync(ct);
         _db.OfferLetters.RemoveRange(existing);
 
+        // Place the hire before anything is written: the department and designation must be records
+        // activation can match, or the accepted offer's draft is refused at approval. What HR picked
+        // wins; otherwise the opening's own department and designation; otherwise the advert title.
+        var opening = await _db.JobOpenings.AsNoTracking()
+            .Where(o => o.Id == app.JobOpeningId && o.TenantId == tenantId)
+            .Select(o => new { o.DepartmentId, o.DepartmentName, o.DesignationId })
+            .FirstOrDefaultAsync(ct);
+        var departmentText = string.IsNullOrWhiteSpace(req.Department) ? opening?.DepartmentName : req.Department;
+        var placement = await OfferPlacement.ResolveAsync(_db, tenantId,
+            departmentId: req.DepartmentId ?? (string.IsNullOrWhiteSpace(req.Department) ? opening?.DepartmentId : null),
+            department: departmentText,
+            designationId: req.DesignationId ?? (string.IsNullOrWhiteSpace(req.Designation) ? opening?.DesignationId : null),
+            designation: string.IsNullOrWhiteSpace(req.Designation) ? app.JobTitle : req.Designation,
+            ct);
+        if (!placement.IsResolved)
+            return UnprocessableEntity(new { error = OfferPlacement.UnresolvedError, field = placement.Field, message = placement.Message });
+
         var gross = req.BasicSalary + req.HousingAllowance + req.TransportAllowance + req.OtherAllowances;
         var currency = await OfferRules.ResolveCurrencyAsync(_db, tenantId, app.CompanyId, ct);
         var templateData = new OfferLetterTemplateData(
-            app.CandidateName, app.JobTitle,
-            req.Department, req.StartDate,
+            app.CandidateName, placement.Designation,
+            placement.Department, req.StartDate,
             req.BasicSalary, req.HousingAllowance, req.TransportAllowance, req.OtherAllowances,
             gross, req.ProbationMonths, currency);
 
@@ -321,8 +338,8 @@ public class ApplicationsController : ControllerBase
             CompanyId = app.CompanyId, // inherit legal entity from parent application
             ApplicationId = id,
             CandidateName = app.CandidateName,
-            OfferedJobTitle = app.JobTitle,
-            OfferedDepartment = req.Department,
+            OfferedJobTitle = placement.Designation,
+            OfferedDepartment = placement.Department,
             StartDate = req.StartDate,
             BasicSalary = req.BasicSalary,
             HousingAllowance = req.HousingAllowance,
@@ -474,7 +491,11 @@ public record NoteRequest(string Notes, string? PerformedByName);
 
 public record InterviewFeedbackRequest(int OverallRating, string Recommendation, string FeedbackNotes);
 
+/// <summary>Department and designation are resolved against the organisation's records when the offer
+/// is generated (<see cref="Zayra.Api.Infrastructure.Recruitment.OfferPlacement"/>). An id wins over a
+/// name. Left empty, they default to the job opening's department and designation.</summary>
 public record GenerateOfferRequest(
-    string Department, DateOnly StartDate,
+    string? Department, DateOnly StartDate,
     decimal BasicSalary, decimal HousingAllowance, decimal TransportAllowance, decimal OtherAllowances,
-    int ProbationMonths);
+    int ProbationMonths,
+    Guid? DepartmentId = null, Guid? DesignationId = null, string? Designation = null);

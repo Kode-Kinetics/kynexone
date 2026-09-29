@@ -92,6 +92,28 @@ public class OffersController : ControllerBase
         return Ok(new { offer, approvals });
     }
 
+    // GET /api/recruitment/offers/placement-options
+    /// <summary>The active departments and designations an offer can place a hire in: the records
+    /// activation resolves against. Open to everyone who can create an offer, including recruiters,
+    /// who cannot read the organisation setup screens.</summary>
+    [HttpGet("placement-options")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer,Recruiter")]
+    public async Task<IActionResult> PlacementOptions(CancellationToken ct)
+    {
+        var tid = GetTenantId();
+        var departments = await _db.Departments.AsNoTracking()
+            .Where(d => d.TenantId == tid && d.IsActive && !d.IsDeleted)
+            .OrderBy(d => d.NameEn)
+            .Select(d => new OfferPlacementOption(d.Id, d.NameEn, d.Code))
+            .ToListAsync(ct);
+        var designations = await _db.Designations.AsNoTracking()
+            .Where(d => d.TenantId == tid && d.IsActive && !d.IsDeleted)
+            .OrderBy(d => d.TitleEn)
+            .Select(d => new OfferPlacementOption(d.Id, d.TitleEn, d.Code))
+            .ToListAsync(ct);
+        return Ok(new OfferPlacementOptions(departments, designations));
+    }
+
     // POST /api/recruitment/offers
     [HttpPost]
     [Authorize(Roles = "Admin,HR Manager,Recruiter")]
@@ -102,6 +124,13 @@ public class OffersController : ControllerBase
         var app = await _db.JobApplications.FirstOrDefaultAsync(x => x.Id == req.ApplicationId && x.TenantId == tid, ct);
         if (app == null) return BadRequest("Application not found.");
 
+        // The offer's department and designation must be records activation can match, or the
+        // accepted offer's draft is refused at approval. Resolved (and re-spelled) here instead.
+        var placement = await OfferPlacement.ResolveAsync(_db, tid,
+            req.DepartmentId, req.OfferedDepartment, req.DesignationId, req.OfferedJobTitle, ct);
+        if (!placement.IsResolved)
+            return UnprocessableEntity(new { error = OfferPlacement.UnresolvedError, field = placement.Field, message = placement.Message });
+
         var gross = req.BasicSalary + req.HousingAllowance + req.TransportAllowance + req.OtherAllowances;
 
         var offer = new OfferLetter
@@ -110,8 +139,8 @@ public class OffersController : ControllerBase
             CompanyId = app.CompanyId, // inherit legal entity from parent application
             ApplicationId = req.ApplicationId,
             CandidateName = app.CandidateName,
-            OfferedJobTitle = req.OfferedJobTitle,
-            OfferedDepartment = req.OfferedDepartment ?? string.Empty,
+            OfferedJobTitle = placement.Designation,
+            OfferedDepartment = placement.Department,
             StartDate = req.StartDate,
             BasicSalary = req.BasicSalary,
             HousingAllowance = req.HousingAllowance,
@@ -335,12 +364,17 @@ public class OffersController : ControllerBase
     }
 }
 
+/// <summary>The job title and department are resolved against the organisation's designation and
+/// department records (<see cref="OfferPlacement"/>); an id, when given, wins over the text.</summary>
 public record CreateOfferRequest(
     Guid ApplicationId, string OfferedJobTitle, string? OfferedDepartment,
     DateOnly StartDate, decimal BasicSalary, decimal HousingAllowance,
     decimal TransportAllowance, decimal OtherAllowances, int ProbationMonths,
-    string? ContentHtml, DateTime? ResponseDeadline);
+    string? ContentHtml, DateTime? ResponseDeadline,
+    Guid? DepartmentId = null, Guid? DesignationId = null);
 
 public record DeclineOfferRequest(string? Reason);
+public record OfferPlacementOption(Guid Id, string Name, string Code);
+public record OfferPlacementOptions(IReadOnlyList<OfferPlacementOption> Departments, IReadOnlyList<OfferPlacementOption> Designations);
 public record AddOfferApprovalRequest(string ApproverName, Guid? ApproverUserId, string? ApproverRole);
 public record DecideApprovalRequest(string Decision, string? Comments);
