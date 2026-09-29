@@ -90,7 +90,9 @@ public sealed class QiwaPostgresConcurrencyTests
         Assert.Equal(new[] { syncLogId }, adapter.IdempotencyKeys);
         await using var verify = _fixture.CreateDb();
         var log = await verify.QiwaSyncLogs.IgnoreQueryFilters().SingleAsync(x => x.Id == syncLogId);
-        Assert.Equal(QiwaSyncLogStatuses.Success, log.Status);
+        // The spy does not declare itself live, so the completed attempt is recorded as a
+        // simulation (F09): only the live adapter may write Success.
+        Assert.Equal(QiwaSyncLogStatuses.Simulated, log.Status);
         Assert.NotNull(log.CompletedAtUtc);
     }
 

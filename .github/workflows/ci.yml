@@ -243,6 +243,10 @@ jobs:
           Jwt__TenantAudience: 'kynexone-tenant'
           Jwt__PlatformAudience: 'kynexone-platform'
           Jwt__SigningKey: 'CI_ONLY_EPHEMERAL_SIGNING_KEY_NOT_A_PRODUCTION_SECRET_0123456789'
+          # Safe test delivery (F09): CI never sends email. Messages are captured in-process and as
+          # .eml files, so no gate can reach a real person whatever relay a fixture saves.
+          Email__DeliveryMode: 'capture'
+          Email__CaptureDirectory: '/tmp/kynexone-captured-mail'
           # SeedAdmin__* and SEED_ENTERPRISE_TEST_DATA used to live here. Both are gone: every
           # demo/fixture seeder was deleted (docs/DATA_ENTRY_PATHS.md) and
           # Zayra.Api.Tests/Security/NoSideDoorDataTests.cs fails the build if one returns. Leaving

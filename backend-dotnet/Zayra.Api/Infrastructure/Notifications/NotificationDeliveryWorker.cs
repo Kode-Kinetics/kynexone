@@ -239,17 +239,33 @@ public sealed class NotificationDeliveryWorker : BackgroundService
             Finalize(delivery, DeliveryOutcomes.NoContact, result.ProviderName, string.Empty,
                 result.ErrorCode, result.ErrorMessage);
         }
-        else if ((result.IsTransient || (result.Outcome == DeliveryOutcomes.Unknown && dispatcher.RetryOnAmbiguous))
-                 && delivery.AttemptCount < delivery.MaxAttempts)
+        else if (result.Outcome == DeliveryOutcomes.Captured)
         {
-            var index = Math.Min(delivery.AttemptCount - 1, Backoff.Length - 1);
-            delivery.Outcome = DeliveryOutcomes.Queued;
-            delivery.NextAttemptAtUtc = DateTime.UtcNow.Add(Backoff[Math.Max(index, 0)]);
-            delivery.ProviderName = result.ProviderName;
-            delivery.ErrorCode = result.ErrorCode;
-            delivery.ErrorMessage = NotificationBodyPolicy.ScrubProviderError(result.ErrorMessage);
-            delivery.LeaseOwner = null;
-            delivery.LeaseExpiresAtUtc = null;
+            // F09: test delivery mode. Recorded as exactly that — never "sent", never retried.
+            Finalize(delivery, DeliveryOutcomes.Captured, result.ProviderName, string.Empty,
+                result.ErrorCode, result.ErrorMessage);
+        }
+        else if (result.IsTransient || (result.Outcome == DeliveryOutcomes.Unknown && dispatcher.RetryOnAmbiguous))
+        {
+            if (delivery.AttemptCount < delivery.MaxAttempts)
+            {
+                var index = Math.Min(delivery.AttemptCount - 1, Backoff.Length - 1);
+                delivery.Outcome = DeliveryOutcomes.Queued;
+                delivery.NextAttemptAtUtc = DateTime.UtcNow.Add(Backoff[Math.Max(index, 0)]);
+                delivery.ProviderName = result.ProviderName;
+                delivery.ErrorCode = result.ErrorCode;
+                delivery.ErrorMessage = NotificationBodyPolicy.ScrubProviderError(result.ErrorMessage);
+                delivery.LeaseOwner = null;
+                delivery.LeaseExpiresAtUtc = null;
+            }
+            else
+            {
+                // F09 DEAD LETTER: every attempt failed in a way that looked recoverable. It used to
+                // end as a plain "failed", indistinguishable from a permanent refusal; it is now its
+                // own terminal state, counted by readiness and requeueable once the relay is back.
+                Finalize(delivery, DeliveryOutcomes.DeadLetter, result.ProviderName, result.ProviderReference,
+                    result.ErrorCode, DeadLetterReason(delivery.AttemptCount, result.ErrorMessage));
+            }
         }
         else
         {
@@ -331,8 +347,14 @@ public sealed class NotificationDeliveryWorker : BackgroundService
         {
             if (row.AttemptCount >= row.MaxAttempts)
             {
-                Finalize(row, DeliveryOutcomes.Failed, row.ProviderName, row.ProviderReference,
-                    "lease_expired", "Delivery attempt did not complete and the retry budget is exhausted.");
+                // An expired lease means the last attempt's outcome is unknown. For SMS/WhatsApp that
+                // stays "unknown" — never a requeueable dead letter, because a second send is a second
+                // billed, delivered message. Other channels are dead letters an admin may requeue.
+                var billedChannel = row.Channel.Equals(NotificationChannels.Sms, StringComparison.OrdinalIgnoreCase)
+                                    || row.Channel.Equals(NotificationChannels.WhatsApp, StringComparison.OrdinalIgnoreCase);
+                Finalize(row, billedChannel ? DeliveryOutcomes.Unknown : DeliveryOutcomes.DeadLetter,
+                    row.ProviderName, row.ProviderReference, "lease_expired",
+                    DeadLetterReason(row.AttemptCount, "the last attempt did not complete before its lease expired."));
                 continue;
             }
             row.Outcome = DeliveryOutcomes.Queued;
@@ -363,6 +385,9 @@ public sealed class NotificationDeliveryWorker : BackgroundService
     }
 
     private static string? NullIfEmpty(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
+
+    private static string DeadLetterReason(int attempts, string? lastError) =>
+        $"Gave up after {attempts} attempts. Last error: {(string.IsNullOrWhiteSpace(lastError) ? "none recorded" : lastError)}";
 
     private static string Trim(string? value, int max) =>
         string.IsNullOrEmpty(value) ? string.Empty : value.Length <= max ? value : value[..max];

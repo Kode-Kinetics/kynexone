@@ -36,6 +36,13 @@ services:
       # Without this, EnsureCreated produces a schema with no migration history and readiness
       # correctly reports every migration as pending. Production still uses the CI/pre-deploy gate.
       Database__RunMigrationsOnStartup: ${RUN_MIGRATIONS_ON_STARTUP:-true}
+      # Safe test delivery (F09): this stack never sends email. Every message is captured inside the
+      # API and written as .eml under /tmp/kynexone-captured-mail, so a local or CI run cannot reach
+      # a real employee even if an SMTP relay is saved in its database. EMAIL_DELIVERY_MODE=smtp
+      # opts a developer back into a real relay; EMAIL_ALLOWED_RECIPIENTS then limits who receives it.
+      Email__DeliveryMode: ${EMAIL_DELIVERY_MODE:-capture}
+      Email__CaptureDirectory: ${EMAIL_CAPTURE_DIRECTORY:-/tmp/kynexone-captured-mail}
+      Email__AllowedRecipients: ${EMAIL_ALLOWED_RECIPIENTS:-}
       AI_PROVIDER: ${AI_PROVIDER:-ollama}
       AI_MODEL: ${AI_MODEL:-gpt-oss:120b-cloud}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11435}

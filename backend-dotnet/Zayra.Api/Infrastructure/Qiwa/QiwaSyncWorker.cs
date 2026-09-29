@@ -323,7 +323,9 @@ public sealed class QiwaSyncWorker : BackgroundService
             // and CONNECTION-facing claims now say which of the two things actually happened.
             var live = _adapter.IsLiveIntegration;
 
-            log.Status         = QiwaSyncLogStatuses.Success;
+            // F09: the LOG says which of the two happened too. It used to read "Success" for a
+            // simulator run, and the sync-log API and the dashboard's "last sync" date showed it.
+            log.Status         = live ? QiwaSyncLogStatuses.Success : QiwaSyncLogStatuses.Simulated;
             log.CompletedAtUtc = DateTime.UtcNow;
             log.ErrorMessage   = null;
             employee.QiwaSyncStatus = live ? QiwaSyncStatuses.Synced : QiwaSyncStatuses.Simulated;

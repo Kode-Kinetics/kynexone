@@ -153,7 +153,11 @@ public class SyntheticWorkforcePlanningSimulationTests
         telemetry.Status.Should().Be("ok");
         telemetry.Dependencies.Redis.Should().Be(new DependencyMode("configured", true));
         telemetry.Dependencies.Qiwa.Should().Be(new DependencyMode("live_adapter", true));
-        telemetry.Dependencies.Smtp.Should().Be(new DependencyMode("configured", true));
+        // F09: one workspace's own relay is not the platform's. Email from every other workspace
+        // ends NotConfigured, and the evidence now says so instead of reporting "configured".
+        telemetry.Dependencies.Smtp.Mode.Should().Be("tenant_relays_only");
+        telemetry.Dependencies.Smtp.Configured.Should().BeTrue();
+        telemetry.Dependencies.Smtp.Detail.Should().Contain("1 workspace(s)");
         telemetry.Governance.ControlledOverrides24h.Should().Be(1);
         telemetry.Governance.LatestControlledOverrideAtUtc.Should().NotBeNull();
         telemetry.Reporting.ReportRuns24h.Should().Be(2);

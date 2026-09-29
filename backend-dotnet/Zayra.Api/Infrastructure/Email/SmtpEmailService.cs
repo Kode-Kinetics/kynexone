@@ -71,29 +71,76 @@ public class SmtpEmailService : IEmailService
         IReadOnlyList<EmailAttachment>? attachments = null, CancellationToken cancellationToken = default)
         => SendCoreAsync(Scope.Platform(), toAddress, toName, subject, htmlBody, attachments, cancellationToken);
 
+    public Task<EmailDeliveryResult> DeliverAsync(Guid tenantId, string toAddress, string toName, string subject,
+        string htmlBody, IReadOnlyList<EmailAttachment>? attachments = null, CancellationToken cancellationToken = default)
+        => DeliverCoreAsync(Scope.Tenant(tenantId), toAddress, toName, subject, htmlBody, attachments, cancellationToken);
+
+    public Task<EmailDeliveryResult> DeliverPlatformAsync(string toAddress, string toName, string subject,
+        string htmlBody, IReadOnlyList<EmailAttachment>? attachments = null, CancellationToken cancellationToken = default)
+        => DeliverCoreAsync(Scope.Platform(), toAddress, toName, subject, htmlBody, attachments, cancellationToken);
+
+    /// <summary>
+    /// "Will a send be handled?" Test capture mode answers yes without a relay: the message IS
+    /// handled, by being captured. Callers that report an outcome use <see cref="DeliverAsync"/>,
+    /// whose result never lets "captured" read as "sent".
+    /// </summary>
     public async Task<bool> IsConfiguredAsync(CancellationToken cancellationToken = default)
-        => await LoadConfigAsync(Scope.Ambient(), cancellationToken) is not null;
+        => Policy.IsCapture || await LoadConfigAsync(Scope.Ambient(), cancellationToken) is not null;
 
     public async Task<bool> IsConfiguredAsync(Guid tenantId, CancellationToken cancellationToken = default)
-        => await LoadConfigAsync(Scope.Tenant(tenantId), cancellationToken) is not null;
+        => Policy.IsCapture || await LoadConfigAsync(Scope.Tenant(tenantId), cancellationToken) is not null;
 
     public async Task<bool> IsPlatformConfiguredAsync(CancellationToken cancellationToken = default)
-        => await LoadConfigAsync(Scope.Platform(), cancellationToken) is not null;
+        => Policy.IsCapture || await LoadConfigAsync(Scope.Platform(), cancellationToken) is not null;
 
+    /// <summary>Read per call, so a changed setting can never be served from a stale copy.</summary>
+    private EmailTransportPolicy Policy => EmailTransportPolicy.From(_config);
+
+    /// <summary>
+    /// The older fire-and-forget contract, made honest (F09): no relay is an
+    /// <see cref="EmailNotConfiguredException"/>, never a normal return. It used to log a warning
+    /// and return, so every caller that had not pre-checked reported the message as sent.
+    /// </summary>
     private async Task SendCoreAsync(Scope scope, string toAddress, string toName, string subject, string htmlBody,
         IReadOnlyList<EmailAttachment>? attachments, CancellationToken cancellationToken)
     {
+        var result = await DeliverCoreAsync(scope, toAddress, toName, subject, htmlBody, attachments, cancellationToken);
+        if (result.Status == EmailDeliveryStatus.NotConfigured)
+            throw new EmailNotConfiguredException(result.Detail);
+    }
+
+    private async Task<EmailDeliveryResult> DeliverCoreAsync(Scope scope, string toAddress, string toName,
+        string subject, string htmlBody, IReadOnlyList<EmailAttachment>? attachments, CancellationToken cancellationToken)
+    {
+        var policy = Policy;
+
+        // TEST CAPTURE MODE is decided BEFORE any relay is loaded, so a server that was told not to
+        // send can never reach a relay, however one came to be configured in its database.
+        if (policy.IsCapture)
+        {
+            await CaptureAsync(scope, toAddress, toName, subject, htmlBody, attachments, policy,
+                $"{EmailTransportPolicy.ModeKey} is '{policy.UnrecognisedMode ?? "capture"}'", null, cancellationToken);
+            return EmailDeliveryResult.CapturedNotSent("test delivery mode is on for this server.");
+        }
+
         var cfg = await LoadConfigAsync(scope, cancellationToken);
         if (cfg is null)
         {
-            // Still logged, but the caller is no longer the only witness: NotificationDeliveryWorker
-            // turns a false IsConfiguredAsync into a durable "not_configured" delivery row.
             // D5: MASKED. The delivery ledger already scrubs the destination; logging the raw address
             // here would re-introduce the PII the same wave removed, in the one place it is hardest
             // to purge later — a centralised log sink.
-            _log.LogWarning("SMTP not configured — email to {To} dropped.",
+            _log.LogWarning("SMTP not configured — email to {To} was not sent.",
                 NotificationBodyPolicy.MaskEmail(toAddress));
-            return;
+            return EmailDeliveryResult.NoRelay;
+        }
+
+        // PERMITTED TEST DELIVERY. A staging database holds copies of real employees; only the
+        // allow-listed recipients reach the relay and everything else is captured instead.
+        if (!policy.Permits(toAddress))
+        {
+            await CaptureAsync(scope, toAddress, toName, subject, htmlBody, attachments, policy,
+                $"recipient is not on {EmailTransportPolicy.AllowedRecipientsKey}", cfg.FromAddress, cancellationToken);
+            return EmailDeliveryResult.CapturedNotSent("the recipient is not on this server's permitted test list.");
         }
 
         var message = new MimeMessage();
@@ -115,8 +162,19 @@ public class SmtpEmailService : IEmailService
         // D5: MASKED recipient, and the SUBJECT is dropped entirely. A template subject routinely
         // carries the employee name or the payroll period ("Payslip for Ahmed — July 2026"), so it
         // is PII in its own right; the template code identifies the message without disclosing it.
-        _log.LogInformation("Email sent to {To}.", NotificationBodyPolicy.MaskEmail(toAddress));
+        // "Accepted", not "delivered": a 250 from the relay is the most SMTP can tell us.
+        _log.LogInformation("Email to {To} accepted by the relay.", NotificationBodyPolicy.MaskEmail(toAddress));
+        return EmailDeliveryResult.Accepted(cfg.Host);
     }
+
+    private Task CaptureAsync(Scope scope, string toAddress, string toName, string subject, string htmlBody,
+        IReadOnlyList<EmailAttachment>? attachments, EmailTransportPolicy policy, string reason,
+        string? fromAddress, CancellationToken ct)
+        => EmailCaptureSink.RecordAsync(
+            new CapturedEmail(DateTime.UtcNow, scope.TenantId, scope.PlatformOnly, toAddress, toName, subject, htmlBody,
+                (attachments ?? []).Select(a => a.FileName).ToList(), reason),
+            string.IsNullOrWhiteSpace(fromAddress) ? "capture@kynexone.invalid" : fromAddress,
+            policy.CaptureDirectory, _log, attachments, ct);
 
     /// <summary>
     /// POD-D5 CROSS-TENANT FIX. This method had NO explicit TenantId predicate and relied entirely

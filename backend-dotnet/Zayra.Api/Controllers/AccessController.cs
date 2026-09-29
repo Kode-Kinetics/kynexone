@@ -314,18 +314,23 @@ public class AccessController : ControllerBase
 
             var emailDeliveryConfigured = await _emailService.IsConfiguredAsync(tenantId.Value, cancellationToken);
             var emailSent = false;
+            var captured = false;
             if (emailDeliveryConfigured)
             {
                 try
                 {
-                    await _emailService.SendAsync(
+                    // F09: the delivery result, not the absence of an exception, decides what the
+                    // administrator is told. Test capture mode is "handled" but reaches nobody.
+                    var delivery = await _emailService.DeliverAsync(
                         tenantId.Value,
                         link.Email,
                         link.FullName,
                         "Set a new password for your KynexOne account",
                         BuildResetLinkEmailHtml(link),
                         cancellationToken: cancellationToken);
-                    emailSent = true;
+                    emailSent = delivery.ReachedARelay;
+                    captured = delivery.Status == EmailDeliveryStatus.Captured;
+                    emailDeliveryConfigured = delivery.Status != EmailDeliveryStatus.NotConfigured;
                 }
                 catch (Exception)
                 {
@@ -338,10 +343,12 @@ public class AccessController : ControllerBase
             }
 
             var message = emailSent
-                ? $"Reset link emailed to {link.Email}. It can be used once and expires at {link.ExpiresAtUtc:HH:mm} UTC."
-                : emailDeliveryConfigured
-                    ? "Email delivery is configured but the message could not be sent. Copy the link below and give it to the user directly — it can be used once and expires in 1 hour."
-                    : "No email delivery is configured for this workspace, so nothing was sent. Copy the link below and give it to the user directly — it can be used once and expires in 1 hour.";
+                ? $"Reset link accepted by the mail server for {link.Email}. It can be used once and expires at {link.ExpiresAtUtc:HH:mm} UTC."
+                : captured
+                    ? "This server is in test delivery mode, so the email was captured and not sent. Copy the link below and give it to the user directly — it can be used once and expires in 1 hour."
+                    : emailDeliveryConfigured
+                        ? "Email delivery is configured but the message could not be sent. Copy the link below and give it to the user directly — it can be used once and expires in 1 hour."
+                        : "No email delivery is configured for this workspace, so nothing was sent. Copy the link below and give it to the user directly — it can be used once and expires in 1 hour.";
 
             // A disclosure is a security event in its own right, separate from the issuance audit
             // the service wrote: it records that a human saw a live credential link.
@@ -470,11 +477,13 @@ public class AccessController : ControllerBase
 
         var emailDeliveryConfigured = await _emailService.IsConfiguredAsync(tenantId, cancellationToken);
         var emailSent = false;
+        var captured = false;
         if (emailDeliveryConfigured)
         {
             try
             {
-                await _emailService.SendAsync(
+                // F09: see IssuePasswordResetLink — the delivery result decides the message.
+                var delivery = await _emailService.DeliverAsync(
                     tenantId,
                     invite.Email,
                     invite.Email,
@@ -487,7 +496,9 @@ public class AccessController : ControllerBase
                     <p style="font-size:12px;color:#666">KynexOne Workforce</p>
                     """,
                     cancellationToken: cancellationToken);
-                emailSent = true;
+                emailSent = delivery.ReachedARelay;
+                captured = delivery.Status == EmailDeliveryStatus.Captured;
+                emailDeliveryConfigured = delivery.Status != EmailDeliveryStatus.NotConfigured;
             }
             catch (Exception)
             {
@@ -502,10 +513,12 @@ public class AccessController : ControllerBase
             EmailDeliveryConfigured = emailDeliveryConfigured,
             EmailSent = emailSent,
             DeliveryMessage = emailSent
-                ? $"Invitation emailed to {invite.Email}."
-                : emailDeliveryConfigured
-                    ? "Email delivery is configured but the invitation could not be sent. Share the invitation link with them directly."
-                    : "No email delivery is configured for this workspace, so no invitation was sent. Share the invitation link with them directly."
+                ? $"Invitation accepted by the mail server for {invite.Email}."
+                : captured
+                    ? "This server is in test delivery mode, so the invitation email was captured and not sent. Share the invitation link with them directly."
+                    : emailDeliveryConfigured
+                        ? "Email delivery is configured but the invitation could not be sent. Share the invitation link with them directly."
+                        : "No email delivery is configured for this workspace, so no invitation was sent. Share the invitation link with them directly."
         };
     }
 
