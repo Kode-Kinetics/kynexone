@@ -4283,16 +4283,15 @@ public class EmployeesController : ControllerBase
             // The payload was validated against EditableEmployeeFields when the change was REQUESTED, so an
             // unknown key here is a stored patch from an older build. Refusing would strand an approved
             // change with no operator remedy, so it is logged loudly instead of dropped in silence.
-            var unknownApproved = ApplyChanges(employee, changes);
+            // ONE apply sequence for every approval path (EmployeeChangeApplier.ApplyApprovedChangeAsync):
+            // employee columns, payroll-profile keys, org ids, and the approved bank field(s) mirrored onto
+            // the payroll profile so an IBAN fixed via the checklist actually reaches the WPS run (Δ13 / P1-1).
+            var unknownApproved = await EmployeeChangeApplier.ApplyApprovedChangeAsync(
+                _db, tenantId, employee, changes, approverId, cancellationToken);
             if (unknownApproved.Count > 0)
                 _logger?.LogWarning(
                     "Approved employee change {ChangeId} for employee {EmployeeId} carried unrecognised field(s) {UnknownFields}; those values were NOT applied.",
                     change.Id, employee.Id, string.Join(", ", unknownApproved));
-            await EmployeeChangeApplier.ApplyPayrollProfileAsync(_db, employee, changes, approverId, cancellationToken);
-            await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, changes.Keys, cancellationToken);
-            // Keep the payroll profile's bank columns in step with the employee scalar so an IBAN fixed
-            // via the checklist actually reaches the WPS/payroll run (Δ13 / P1-1).
-            await EmployeeBankProfileSync.SyncAsync(_db, employee, changes.Keys, cancellationToken);
             employee.UpdatedAtUtc = DateTime.UtcNow;
             change.Status = "ApprovedApplied";
             change.ApprovedByUserId = approverId;

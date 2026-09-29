@@ -211,8 +211,12 @@ public static class ProductionReadinessEvidence
         // provider messages, or other customer payloads are returned by readiness/telemetry.
         using var systemScope = SystemScopeContext.Begin();
         var now = DateTime.UtcNow;
-        // Readiness is polled continuously by the load balancer. Keep the seven independent queue
-        // counters in one database command so the health probe does not compete with user requests.
+        // An approved employee change still waiting a full day after its effective date — in every
+        // timezone, since no zone is a day behind UTC-yesterday — means the effective-change scheduler or
+        // job is not running (or a bank change is deferred behind a payroll run with no payment batch).
+        var employeeChangeOverdueBefore = DateOnly.FromDateTime(now).AddDays(-1);
+        // Readiness is polled continuously by the load balancer. Keep the independent queue counters in
+        // one database command so the health probe does not compete with user requests.
         var counts = await db.Tenants.AsNoTracking()
             .Select(_ => new
             {
@@ -223,6 +227,9 @@ public static class ProductionReadinessEvidence
                 ReportsDue = db.ReportSchedules.Count(x => x.IsActive && !x.IsDeleted && (x.NextRunAtUtc == null || x.NextRunAtUtc <= now)),
                 ReportsFailed = db.ReportExecutionLogs.Count(x => x.Status == "Failed" && x.CreatedAtUtc >= now.AddHours(-24)),
                 ComplianceDue = db.ComplianceReminders.Count(x => x.Status == "Pending" && x.ScheduledAtUtc != null && x.ScheduledAtUtc <= now),
+                EmployeeChangesOverdue = db.EmployeeChangeRequests.Count(x =>
+                    x.Status == Zayra.Api.Application.Employees.EmployeeChangeStatuses.ApprovedPendingEffectiveDate
+                    && x.AppliedAtUtc == null && x.EffectiveDate < employeeChangeOverdueBefore),
             })
             .FirstOrDefaultAsync(ct);
 
@@ -234,7 +241,8 @@ public static class ProductionReadinessEvidence
             counts?.NotificationsFailed ?? 0,
             counts?.ReportsDue ?? 0,
             counts?.ReportsFailed ?? 0,
-            counts?.ComplianceDue ?? 0);
+            counts?.ComplianceDue ?? 0,
+            counts?.EmployeeChangesOverdue ?? 0);
     }
 
     private static async Task<DependencyProbe> ProbeDatabaseAsync(ZayraDbContext db, CancellationToken ct)
@@ -360,7 +368,11 @@ public sealed record QueueHealthEvidence(
     int NotificationsFailed,
     int ReportsDue,
     int ReportsFailed24h,
-    int ComplianceRemindersDue)
+    int ComplianceRemindersDue,
+    // Approved employee changes more than a day past their effective date and still not applied.
+    // Informational (never gates readiness): non-zero means the effective-change job is not running, or a
+    // bank change is deferred behind a payroll run that has no payment batch yet.
+    int EmployeeChangesOverdue = 0)
 {
     public static readonly QueueHealthEvidence Unavailable = new(false, 0, 0, 0, 0, 0, 0, 0);
 }
