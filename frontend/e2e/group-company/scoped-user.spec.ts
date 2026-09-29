@@ -7,8 +7,8 @@
  */
 import { test, expect } from '@playwright/test';
 import {
-  stackDownReason,
-  groupSeedMissingReason,
+  assertStackReachable,
+  assertFixtureWorld,
   newApi,
   apiLogin,
   fetchMe,
@@ -23,20 +23,17 @@ import {
   ALMARAI,
   ALMARAI_SIBLING_CODES,
   empCodePrefix,
+  groupUser,
 } from './helpers';
 
-const SCOPED = 'scoped.admin@almarai-test.local';
+const SCOPED = groupUser('scoped.admin'); // scoped.admin@almarai-test.local
 const ALLOWED = ['ALM-DAIRY-KSA', 'ALM-POULTRY-KSA'];
 
-let skipReason: string | null = null;
 
 test.describe('Group→Company: selected-companies user (scoped.admin, almarai-test)', () => {
   test.beforeAll(async () => {
-    skipReason = (await stackDownReason()) ?? (await groupSeedMissingReason(SCOPED));
-  });
-
-  test.beforeEach(() => {
-    test.skip(skipReason !== null, skipReason ?? '');
+    await assertStackReachable();   // hard-fails when the stack is down; never skips
+    await assertFixtureWorld(SCOPED);
   });
 
   test('API: /api/auth/me and /api/companies expose exactly the two granted companies', async () => {
@@ -46,13 +43,22 @@ test.describe('Group→Company: selected-companies user (scoped.admin, almarai-t
 
       const me = await fetchMe(api, token);
       expect(me.status).toBe(200);
-      if (Array.isArray(me.json?.companies)) {
-        expect(me.json.companies.length).toBe(ALLOWED.length);
+      // Unconditional: a response that stops reporting `companies` or
+      // `isGroupScope` is precisely how a scope regression would present, and
+      // the old `if (field present)` guards let exactly that through silently.
+      expect(Array.isArray(me.json?.companies), '/api/auth/me must report a companies array').toBe(true);
+      expect(me.json.companies.length).toBe(ALLOWED.length);
+      const meCompanies = JSON.stringify(me.json.companies);
+      for (const code of ALLOWED) {
+        expect(meCompanies, `granted company ${code} missing from /api/auth/me`).toContain(code);
       }
+      for (const sibling of ALMARAI_SIBLING_CODES) {
+        expect(meCompanies, `sibling company ${sibling} leaked into /api/auth/me`).not.toContain(sibling);
+      }
+
       // A selected-companies grant is NOT full group scope.
-      if (me.json?.isGroupScope !== undefined) {
-        expect(me.json.isGroupScope).toBeFalsy();
-      }
+      expect(me.json?.isGroupScope, '/api/auth/me must report isGroupScope').toBeDefined();
+      expect(me.json.isGroupScope, 'a selected-companies grant is not group scope').toBeFalsy();
 
       const companies = await fetchCompanies(api, token);
       expect(companies.length).toBe(ALLOWED.length);

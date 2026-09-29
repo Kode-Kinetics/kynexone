@@ -101,6 +101,27 @@ public class PayComponent : ITenantOwned, ICompanyScoped
     public bool IsActive { get; set; } = true;
     public bool IsDeleted { get; set; }
 
+    // ── F2: effective dating ───────────────────────────────────────────────────
+    // A component definition is a sequence of VERSIONS sharing (TenantId, CompanyId, Code, ComponentType).
+    // Each version is in effect for the payroll periods whose first day falls in
+    // [EffectiveFrom, EffectiveTo]; NULL on either side is open-ended. Both bounds are always the first /
+    // last day of a month (enforced by the write API), so a version covers WHOLE payroll periods — a
+    // mid-period change is never half-applied. A change is written as a NEW version from a date forward;
+    // the prior version is closed (EffectiveTo), never rewritten, and the write API refuses any date that
+    // reaches into a period that already holds an approved/locked run. The system seeds carry NULL/NULL
+    // ("always"), which is exactly the pre-F2 behaviour.
+
+    /// <summary>First day of the first payroll period this version applies to. NULL = since the beginning.</summary>
+    public DateOnly? EffectiveFrom { get; set; }
+
+    /// <summary>Last day of the last payroll period this version applies to. NULL = open-ended.</summary>
+    public DateOnly? EffectiveTo { get; set; }
+
+    /// <summary>True when this version is in effect for the payroll period starting <paramref name="periodStart"/>.</summary>
+    public bool IsInEffect(DateOnly periodStart) =>
+        (EffectiveFrom is null || EffectiveFrom.Value <= periodStart)
+        && (EffectiveTo is null || EffectiveTo.Value >= periodStart);
+
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? CreatedBy { get; set; }
     public DateTime? UpdatedAtUtc { get; set; }
@@ -178,14 +199,30 @@ public static class PayComponentCatalog
         Comp(tenantId, "BASIC", "Basic salary", "الراتب الأساسي", PayComponentTypes.Earning, PayComponentCalcMethods.StructureField,
             structureField: PayComponentStructureFields.BasicSalary, glDriverKey: "EARN:BASIC", order: 30,
             emitWhenZero: true, taxable: true, gosi: true, wps: true, eosb: true),
-        // HOUSING: part of the GOSI/GPSSA covered wage (pack-derived), not EOSB base.
+        // HOUSING: part of the GOSI/GPSSA covered wage (pack-derived), AND part of the EOSB base.
+        // S1/A1 — this row previously carried no `eosb` flag, under a comment asserting housing "is not
+        // EOSB base". That assertion was WRONG as a statement of Saudi law and it cost every Saudi leaver
+        // roughly a third of their award. KSA Labour Law (M/51) Art. 84 measures the award on the LAST
+        // WAGE, and Art. 2 defines wage as "the basic wage plus all other due increments" — housing is
+        // the least arguable of those increments and is the single most litigated exclusion in the
+        // Kingdom. The flag is safe to set globally: each country pack applies its OWN statutory base
+        // (UAE Art. 51 and Qatar Art. 54 are basic-only and read Salary.Basic, so they are unaffected),
+        // and the flagged sum reaches a pack as EndOfServiceInput.ConfiguredEosbWage, which can only
+        // ever RAISE a base above statute, never lower it.
         Comp(tenantId, "HOUSING", "Housing allowance", "بدل السكن", PayComponentTypes.Earning, PayComponentCalcMethods.StructureField,
             structureField: PayComponentStructureFields.HousingAllowance, glDriverKey: "EARN:HOUSING", order: 40,
-            gosi: true, wps: true),
+            gosi: true, wps: true, eosb: true),
+        // TRANSPORT: [COUNSEL] for KSA. A fixed monthly transport allowance reads as an Art. 2 "increment"
+        // and so as part of the last wage; a reimbursive travel float does not. The catalog flag stays OFF
+        // so that no NON-KSA tenant picks it up by accident — the KSA decision is made by the KSA pack,
+        // effective-dated, under the rule key `eosb.include_transport` (default: include).
         Comp(tenantId, "TRANSPORT", "Transport allowance", "بدل النقل", PayComponentTypes.Earning, PayComponentCalcMethods.StructureField,
             structureField: PayComponentStructureFields.TransportAllowance, glDriverKey: "EARN:TRANSPORT", order: 50,
             wps: true),
         // OTHER_ALLOWANCES: the current engine LUMPS Food + Mobile + Other into this single line + one GL driver.
+        // Not EOSB-flagged: the composite mixes regular cash increments (which ARE wage under Art. 2) with
+        // reimbursive items (which are not), and the model cannot tell them apart. A tenant whose "other"
+        // is a regular allowance should model it as its own EOSB-included component. See `eosb.include_other_allowances`.
         Comp(tenantId, "OTHER_ALLOWANCES", "Other allowances", "بدلات أخرى", PayComponentTypes.Earning, PayComponentCalcMethods.StructureField,
             structureField: PayComponentStructureFields.OtherAllowancesComposite, glDriverKey: "EARN:OTHER_ALLOWANCES", order: 60,
             wps: true),

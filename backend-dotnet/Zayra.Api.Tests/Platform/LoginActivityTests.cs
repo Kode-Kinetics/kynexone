@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -45,6 +46,7 @@ public class LoginActivityTests : PlatformTestBase
             new FakeEmailService(),
             jwt,
             new NullMfaService(),
+            new TotpService(DataProtectionProvider.Create("ZayraTests")),
             NullLogger<AuthService>.Instance);
     }
 
@@ -282,9 +284,11 @@ internal sealed class NullMfaService : IMfaService
     public Task<string> CreateChallengeAsync(Guid u, Guid t, string ip, CancellationToken c) => throw new NotImplementedException();
     public Task<User?> VerifyChallengeAsync(string token, string code, CancellationToken c) => throw new NotImplementedException();
     public Task<bool> DisableAsync(Guid u, Guid t, string code, CancellationToken c) => throw new NotImplementedException();
+    public Task<bool> AdminDisableAsync(Guid u, Guid t, RequestContext context, CancellationToken c) => throw new NotImplementedException();
     public Task<MfaSetupInitDto> InitiatePlatformSetupAsync(Guid id, CancellationToken c) => throw new NotImplementedException();
     public Task<bool> VerifyPlatformSetupAsync(Guid id, MfaVerifySetupRequest r, CancellationToken c) => throw new NotImplementedException();
     public Task<string> CreatePlatformChallengeAsync(Guid id, string ip, CancellationToken c) => throw new NotImplementedException();
     public Task<PlatformUser?> VerifyPlatformChallengeAsync(string token, string code, CancellationToken c) => throw new NotImplementedException();
+    public Task<PlatformUser?> CompletePlatformChallengeAsync(string token, string code, RequestContext context, CancellationToken c) => throw new NotImplementedException();
     public Task<bool> DisablePlatformAsync(Guid id, string code, CancellationToken c) => throw new NotImplementedException();
 }

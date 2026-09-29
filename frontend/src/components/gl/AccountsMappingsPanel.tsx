@@ -238,12 +238,12 @@ export function AccountsMappingsPanel({ scope, scopeLabel, isGroupScope, canMana
 
         <div className="overflow-hidden rounded-lg border border-slate-200 dark:border-white/10">
           <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-left text-xs text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
+            <thead className="bg-slate-50 text-start text-xs text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
               <tr>
                 <th className="px-3 py-2">Code</th>
                 <th className="px-3 py-2">Name</th>
                 <th className="px-3 py-2">Type</th>
-                <th className="px-3 py-2 text-right">Scope</th>
+                <th className="px-3 py-2 text-end">Scope</th>
               </tr>
             </thead>
             <tbody>
@@ -327,7 +327,7 @@ export function AccountsMappingsPanel({ scope, scopeLabel, isGroupScope, canMana
                       ))}
                     </select>
                   </td>
-                  <td className="px-3 py-2 text-right">
+                  <td className="px-3 py-2 text-end">
                     <button type="button" onClick={addAccount} className="btn-secondary h-8 px-2 text-xs">
                       <Plus className="h-3 w-3" /> Add {inCompanyView ? 'company' : 'group'} account
                     </button>
@@ -350,7 +350,7 @@ export function AccountsMappingsPanel({ scope, scopeLabel, isGroupScope, canMana
                 ? 'Point each posting line at a company account to override the group default. Leave blank to inherit.'
                 : 'Point each posting line at a group account. Blank = use the built-in default.'}
               {inCompanyView && overrideCount > 0 && (
-                <span className="ml-1 font-medium text-violet-600 dark:text-violet-300">{overrideCount} company override{overrideCount === 1 ? '' : 's'}.</span>
+                <span className="ms-1 font-medium text-violet-600 dark:text-violet-300">{overrideCount} company override{overrideCount === 1 ? '' : 's'}.</span>
               )}
             </p>
           </div>
@@ -380,7 +380,7 @@ export function AccountsMappingsPanel({ scope, scopeLabel, isGroupScope, canMana
                     </div>
                     <p className="text-[11px] text-slate-400">
                       default: {r.defaultAccount}
-                      {inheritedAccount && !isOverridden && <span className="ml-1 text-slate-400">· inherits {inheritedAccount}</span>}
+                      {inheritedAccount && !isOverridden && <span className="ms-1 text-slate-400">· inherits {inheritedAccount}</span>}
                     </p>
                   </div>
                   <div className="col-span-4 hidden text-xs text-slate-500 sm:col-span-2 sm:block">{r.category}</div>

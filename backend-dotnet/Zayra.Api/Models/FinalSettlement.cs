@@ -167,6 +167,24 @@ public class EmployeeFinalSettlement : ITenantOwned, ICompanyScopedOperational
     public Guid? PaymentBatchId { get; set; }
     public DateTime? PaidAtUtc { get; set; }
 
+    // ── S2-B2 — discharged OUTSIDE payroll ────────────────────────────────────────────────────────
+    /// <summary>
+    /// True when this settlement was paid by bank transfer / cheque / cash rather than through a payroll
+    /// run, and <c>FinalSettlementExternalDischarge</c> posted the DR payable / CR cash journal for it.
+    /// <see cref="PayrollRunId"/> and <see cref="PaymentBatchId"/> stay null in that case, so "which rail
+    /// paid this?" is answerable from the row alone. Normal for a single leaver settled mid-month inside
+    /// the KSA Art. 88 window — the route that previously made offboarding impossible to complete.
+    /// </summary>
+    public bool PaidOutsidePayroll { get; set; }
+    /// <summary><c>FinalSettlementExternalDischarge.Methods</c> — BankTransfer | Cheque | Cash | Other.</summary>
+    public string? ExternalPaymentMethod { get; set; }
+    /// <summary>Bank reference / cheque number. Mandatory: it is the evidence the money moved.</summary>
+    public string? ExternalPaymentReference { get; set; }
+    /// <summary>Value date of the payment — drives the GL period the discharge posts into.</summary>
+    public DateOnly? ExternalPaymentDate { get; set; }
+    public Guid? ExternalPaymentRecordedByUserId { get; set; }
+    public string? ExternalPaymentRecordedByName { get; set; }
+
     /// <summary>POD-C1 (F2) — residual employee debt RECLASSIFIED to the 1420 Employee Overpayment
     /// Receivable when the settlement was paid, so an ex-employee's loan does not sit Active on 1400
     /// forever with nobody able to collect it.</summary>
@@ -312,6 +330,8 @@ public static class FinalSettlementGlDescriptions
     public const string PayrollClearingPrefix   = "Final settlement payable cleared via payroll: ";
     public const string ProvisionReliefPrefix   = "EOSB provision consumed on settlement: ";
     public const string ResidualReclassPrefix   = "Residual employee debt reclassified on settlement: ";
+    /// <summary>S2-B2 — settlement paid outside payroll (bank transfer / cheque / cash).</summary>
+    public const string ExternalPaymentPrefix   = "Final settlement paid outside payroll: ";
 
     /// <summary>Machine-precise link from a clearing line back to its settlement. Stored in
     /// <c>FinanceGlEntry.SourceEntityRef</c> because the clearing line lives INSIDE the payroll journal,

@@ -57,6 +57,8 @@ public class LeaverAccessRevocationTests
             ExitInterviewStatus = "Waived",
         };
 
+        // The offboarding writer locks the tenant anchor first, so a real tenant row is required.
+        db.Tenants.Add(new Tenant { Id = tenantId, Name = "Leaver Tenant", Slug = "leaver-tenant", IsActive = true });
         db.Employees.Add(employee);
         db.Users.Add(user);
         db.EmployeeUserAccounts.Add(new EmployeeUserAccount
@@ -115,7 +117,12 @@ public class LeaverAccessRevocationTests
         var storedOffboarding = await db.EmployeeOffboardings.SingleAsync(o => o.Id == offboarding.Id);
 
         Assert.False(storedUser.IsActive);
-        Assert.Equal("Deactivated", storedUser.Status);
+        // The leaver lands in the non-operational PendingPasswordSetup state (the only state the
+        // controlled invitation workflow accepts after a rescind); access is closed by IsActive,
+        // NoLogin, an unusable password hash and a rotated stamp, not by the status word.
+        Assert.Equal("PendingPasswordSetup", storedUser.Status);
+        Assert.StartsWith("OFFBOARDED$", storedUser.PasswordHash);
+        Assert.False(storedUser.IsEmailConfirmed);
         Assert.Equal(AccessModes.NoLogin, storedUser.AccessMode);
         Assert.Equal(AccessModes.NoLogin, link.AccessMode);
         Assert.Equal("NoLogin", link.Status);

@@ -19,7 +19,13 @@ export interface TenantSettings {
 const DEFAULTS: TenantSettings = {
   currencyCode: 'USD',
   countryCode: 'US',
-  defaultTimezone: 'America/New_York',
+  // EMPTY, never a zone. This used to be 'America/New_York', which meant a tenant whose zone was
+  // unknown — the API still loading, the request failing, or the tenant having no localization row
+  // — silently rendered its clocks in US Eastern. For a GCC customer that is 7-11 hours out, and on
+  // the HR Command Center header it showed the wrong DAY. Empty means "unknown", and every consumer
+  // passes it to Intl as `undefined`, which renders in the VIEWER's own browser zone: still not the
+  // tenant's stated zone, but never a foreign one, and never silently wrong by a day.
+  defaultTimezone: '',
   dateFormat: 'MM/DD/YYYY',
   workWeek: 'Mon-Fri',
   weekStartDay: 'Monday',

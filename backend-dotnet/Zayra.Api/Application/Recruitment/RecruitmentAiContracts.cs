@@ -51,10 +51,24 @@ public sealed record InterviewQuestionsRequest(string Title, string? SeniorityLe
 public sealed record QuestionCategory(string Category, List<string> Questions);
 public sealed record InterviewQuestionsResult(List<QuestionCategory> Categories, string Engine);
 
+// ── Who asked ───────────────────────────────────────────────────────────────
+
+/// <summary>
+/// The caller behind a recruitment AI request.
+///
+/// <para>Every model call must produce a usage/cost record carrying tenant, user and role. This
+/// service is not a controller and there is no ambient tenant accessor in DI, so the identity has
+/// to be threaded in explicitly — the same shape <c>AiUserContext</c> already uses for the
+/// advisory path. Passing it in rather than reading it from an ambient HttpContext also keeps the
+/// service usable from a background job, and keeps the tenant visible at every call site.</para>
+/// </summary>
+/// <param name="UserRole">Comma-joined role claims, as <c>AiAdvisoryService</c> records them.</param>
+public sealed record RecruitmentAiCaller(Guid TenantId, Guid? UserId, string UserRole);
+
 public interface IRecruitmentAiService
 {
-    Task<JobDescriptionResult> GenerateJobDescriptionAsync(JobDescriptionRequest req, CancellationToken ct);
+    Task<JobDescriptionResult> GenerateJobDescriptionAsync(RecruitmentAiCaller caller, JobDescriptionRequest req, CancellationToken ct);
     /// <summary>Scores/ranks candidates against a role. Advisory only — never auto-rejects.</summary>
-    Task<ScreeningResult> ScreenAsync(ScreeningInput input, CancellationToken ct);
-    Task<InterviewQuestionsResult> GenerateInterviewQuestionsAsync(InterviewQuestionsRequest req, CancellationToken ct);
+    Task<ScreeningResult> ScreenAsync(RecruitmentAiCaller caller, ScreeningInput input, CancellationToken ct);
+    Task<InterviewQuestionsResult> GenerateInterviewQuestionsAsync(RecruitmentAiCaller caller, InterviewQuestionsRequest req, CancellationToken ct);
 }

@@ -34,17 +34,31 @@ public static class ControllerTenantExtensions
     /// </summary>
     public static RequestEntityScope GetRequestScope(this ControllerBase controller)
     {
-        var resolver = controller.HttpContext?.RequestServices
-            ?.GetService(typeof(Zayra.Api.Infrastructure.Scope.IRequestEntityScopeResolver))
+        var services = controller.HttpContext?.RequestServices;
+        var resolver = services?.GetService(typeof(Zayra.Api.Infrastructure.Scope.IRequestEntityScopeResolver))
             as Zayra.Api.Infrastructure.Scope.IRequestEntityScopeResolver;
 
-        // Unit tests construct controllers with a bare DefaultHttpContext and no service provider.
-        // Falling back to a directly-constructed resolver keeps them working AND keeps them honest:
-        // it is the same class, applying the same rules, just without the per-request cache.
-        resolver ??= new Zayra.Api.Infrastructure.Scope.RequestEntityScopeResolver();
-        return resolver.ResolveFor(
-            controller.User,
-            controller.HttpContext?.Request.Headers[Zayra.Api.Data.ZayraDbContext.CompanySelectionHeader].FirstOrDefault());
+        // Resolve(), not ResolveFor(). ResolveFor neither reads nor writes the per-request cache, so an
+        // earlier version of this method re-parsed the claims on every call and agreed with the
+        // DbContext only by coincidence — both being deterministic over the same inputs. They would have
+        // diverged the moment anything mutated the X-Company-Id header mid-request, and on the
+        // payment-batch and GL-export paths the controller decision is the ONLY company control.
+        if (resolver is not null) return resolver.Resolve();
+
+        // No service provider: a unit test with a bare DefaultHttpContext. Build the resolver with the
+        // SAME options the DI path would give it. Passing none silently yields strictMode=false and a
+        // dead platform gate — which is exactly the strict-mode divergence this class exists to remove,
+        // reintroduced in the fallback.
+        var scopeOptions = services?.GetService(typeof(Microsoft.Extensions.Options.IOptions<EntityScopeOptions>))
+            as Microsoft.Extensions.Options.IOptions<EntityScopeOptions>;
+        var jwtOptions = services?.GetService(typeof(Microsoft.Extensions.Options.IOptions<Zayra.Api.Application.Auth.JwtOptions>))
+            as Microsoft.Extensions.Options.IOptions<Zayra.Api.Application.Auth.JwtOptions>;
+
+        return new Zayra.Api.Infrastructure.Scope.RequestEntityScopeResolver(
+                http: null, scopeOptions: scopeOptions, jwtOptions: jwtOptions)
+            .ResolveFor(
+                controller.User,
+                controller.HttpContext?.Request.Headers[Zayra.Api.Data.ZayraDbContext.CompanySelectionHeader].FirstOrDefault());
     }
 
     /// <summary>

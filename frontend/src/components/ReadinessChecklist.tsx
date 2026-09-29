@@ -86,8 +86,8 @@ function ItemRow({
             <Circle className={`h-3 w-3 shrink-0 ${dotColor}`} aria-hidden="true" />
             <span className="truncate">{item.label}</span>
           </p>
-          {why && <p className="mt-0.5 pl-5 text-[11px] text-slate-500 dark:text-slate-400">{why}</p>}
-          {notice && <p className="mt-1 pl-5 text-[11px] font-medium text-amber-700 dark:text-amber-400">{notice}</p>}
+          {why && <p className="mt-0.5 ps-5 text-[11px] text-slate-500 dark:text-slate-400">{why}</p>}
+          {notice && <p className="mt-1 ps-5 text-[11px] font-medium text-amber-700 dark:text-amber-400">{notice}</p>}
         </div>
         <div className="shrink-0">
           {docType && onFixDocument ? (
@@ -113,7 +113,7 @@ function ItemRow({
         </div>
       </div>
       {open && canEditField && (
-        <div className="mt-2 flex items-center gap-2 pl-5">
+        <div className="mt-2 flex items-center gap-2 ps-5">
           <input
             autoFocus
             type={isDateTarget(fieldTarget!) ? 'date' : 'text'}

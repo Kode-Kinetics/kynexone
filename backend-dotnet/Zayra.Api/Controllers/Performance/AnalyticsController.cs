@@ -3,12 +3,31 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 
 namespace Zayra.Api.Controllers.Performance;
 
+/// <summary>
+/// Read-only analytics over the appraisal cycle.
+///
+/// <para><b>Why the permission gate is here and not just <c>[Authorize]</c>.</b> This was the one
+/// controller in <c>Controllers/Performance/</c> with no gate beyond bare authentication — every
+/// sibling (Cycles, Reviews, Goals, Calibration, Recommendations, PIP, Probation, Competencies,
+/// ScorecardTemplates) carries a role or permission requirement. The payload is not aggregate-only:
+/// <see cref="CycleAnalytics"/> returns named <c>topPerformers</c>/<c>lowPerformers</c> with
+/// employee id, name, department, designation and score, plus per-manager leniency/severity flags,
+/// and <see cref="Dashboard"/> returns the last 20 <c>PerformanceAuditLog</c> rows verbatim. Any
+/// authenticated employee could read all of it for the whole tenant.</para>
+///
+/// <para>The gate is <c>performance.read</c> — the same permission the Next.js route already
+/// requires to render the page (<c>frontend/app/(dashboard)/performance/page.tsx</c>), so no caller
+/// who can reach this screen today loses access. The tenant/company SCOPE gap is a separate,
+/// larger defect and is reported rather than changed here.</para>
+/// </summary>
 [ApiController]
 [Route("api/performance/analytics")]
 [Authorize]
+[HasPermission("performance.read")]
 public class AnalyticsController : ControllerBase
 {
     private readonly ZayraDbContext _db;

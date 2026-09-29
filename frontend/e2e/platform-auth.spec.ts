@@ -40,13 +40,24 @@ test.describe('Platform authentication', () => {
   test('password visibility toggle works on login form', async ({ page }) => {
     await page.addInitScript(() => localStorage.removeItem('platform_access_token'));
     await page.goto('/platform/login');
-    const passwordInput = page.getByRole('textbox', { name: 'Password' });
-    // Initially masked
+    // Address the input by id: its ARIA role changes with the very attribute
+    // under test, so a role-based locator is the wrong tool here.
+    const passwordInput = page.locator('#platform-password');
+    const toggle = page.getByRole('button', { name: /show password|hide password/i });
+
+    // Initially masked.
     await expect(passwordInput).toHaveAttribute('type', 'password');
-    // Click toggle
-    await page.getByRole('button', { name: /show password|hide password/i }).click();
-    // Should now be visible (type=text)
-    const typeAfterToggle = await passwordInput.getAttribute('type');
-    expect(['text', 'password']).toContain(typeAfterToggle);
+    await expect(toggle).toHaveAccessibleName(/show password/i);
+
+    // Reveal: the type must actually FLIP. `expect(['text','password']).toContain(type)`
+    // is true of every possible input type, so an inert toggle passed it.
+    await toggle.click();
+    await expect(passwordInput).toHaveAttribute('type', 'text');
+    await expect(toggle).toHaveAccessibleName(/hide password/i);
+
+    // …and back.
+    await toggle.click();
+    await expect(passwordInput).toHaveAttribute('type', 'password');
+    await expect(toggle).toHaveAccessibleName(/show password/i);
   });
 });

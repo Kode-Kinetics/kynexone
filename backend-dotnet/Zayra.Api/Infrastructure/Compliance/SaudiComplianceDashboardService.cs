@@ -31,7 +31,7 @@ public sealed class SaudiComplianceDashboardService
         var wps  = await BuildWpsAsync(tenantId, ct);
         var gosi = await BuildGosiAsync(tenantId, ct);
 
-        var overallScore  = ComputeComplianceScore(qiwa, wps, gosi);
+        var (overallScore, scoreBreakdown) = ComputeComplianceScore(qiwa, wps, gosi);
         var actionItems   = BuildActionItems(qiwa, wps, gosi, evaluatedAt);
 
         var urgentCount   = actionItems.Count(a => a.Severity is "Critical" or "High");
@@ -42,7 +42,7 @@ public sealed class SaudiComplianceDashboardService
         enabledModules.Add("WPS");   // WPS is always structurally active when Payroll is on
         enabledModules.Add("GOSI");
 
-        var overall = new OverallSection(overallScore, urgentCount, evaluatedAt, enabledModules);
+        var overall = new OverallSection(overallScore, urgentCount, evaluatedAt, enabledModules, scoreBreakdown);
         return new SaudiComplianceDashboard(overall, qiwa, wps, gosi, actionItems);
     }
 
@@ -71,7 +71,10 @@ public sealed class SaudiComplianceDashboardService
 
         var total   = employees.Count;
         var ready   = total - blocked.Count;
-        var percent = total == 0 ? 0 : Math.Round(ready * 100.0 / total, 1);
+        // A readiness percentage with nothing to be ready is undefined, not 0% and not 100%.
+        // null travels to the UI, which renders "Not configured" instead of a coloured bar that
+        // claims a state the tenant has not reached yet.
+        double? percent = total == 0 ? null : Math.Round(ready * 100.0 / total, 1);
 
         var failedCount = await _db.QiwaSyncLogs
             .CountAsync(l => l.TenantId == tenantId &&
@@ -117,7 +120,7 @@ public sealed class SaudiComplianceDashboardService
                 .ToListAsync(ct);
             missingIbanCount = profiles.Count(p => !IbanValidator.IsValid(p.Iban));
             if (missingIbanCount > 0)
-                issues.Add($"{missingIbanCount} employee(s) missing or invalid IBAN for WPS payment.");
+                issues.Add($"{Plural(missingIbanCount, "employee has", "employees have")} a missing or invalid IBAN for WPS payment.");
         }
 
         // WPS export history from SIF file batches.
@@ -161,7 +164,12 @@ public sealed class SaudiComplianceDashboardService
 
         var periodDate   = DateOnly.FromDateTime(DateTime.UtcNow);
         var missingRef   = employees.Count(e => string.IsNullOrWhiteSpace(e.GosiReference));
+        // EmployeesMissingGosiEmployerId counts AFFECTED EMPLOYEES, so it is 0 for a tenant with no
+        // employees — even when the employer ID is missing. The card was reading that count as
+        // "is it set?" and printing a confident "Set" directly above "Company GOSI employer ID is
+        // not set". The boolean below is the actual answer to the question the card asks.
         var missingEmpId = string.IsNullOrWhiteSpace(company?.GosiEmployerId) ? employees.Count : 0;
+        var employerIdConfigured = !string.IsNullOrWhiteSpace(company?.GosiEmployerId);
 
         // Run readiness validator for every active employee.
         var reports = employees.Select(e =>
@@ -181,7 +189,10 @@ public sealed class SaudiComplianceDashboardService
         var readyCount      = reports.Count(r => r.IsReady);
         var blockedCount    = reports.Count(r => !r.IsReady);
         var warningCount    = reports.Count(r => r.WarningCount > 0);
-        var readinessPct    = employees.Count == 0 ? 100.0 : Math.Round(readyCount * 100.0 / employees.Count, 1);
+        // Was `employees.Count == 0 ? 100.0`, which put a full green "100% Readiness" bar directly
+        // above the tenant's own "Company GOSI employer ID is not set" warning. Zero ready out of
+        // zero employees is undefined — the UI shows "Not configured" for null.
+        double? readinessPct = employees.Count == 0 ? null : Math.Round(readyCount * 100.0 / employees.Count, 1);
         var gccCount        = reports.Count(r => r.Classification == GosiClassifications.GCC);
 
         // Blocked employee list: only codes + blocking issue codes, no sensitive values.
@@ -213,38 +224,115 @@ public sealed class SaudiComplianceDashboardService
 
         var warnings = new List<string>();
         if (missingRef > 0)
-            warnings.Add($"{missingRef} employee(s) missing GOSI reference number.");
+            warnings.Add($"{Plural(missingRef, "employee is", "employees are")} missing a GOSI reference number.");
         if (string.IsNullOrWhiteSpace(company?.GosiEmployerId))
             warnings.Add("Company GOSI employer ID is not set.");
         if (gccCount > 0)
-            warnings.Add($"{gccCount} GCC employee(s) — contribution rates pending legal confirmation.");
+            warnings.Add($"{Plural(gccCount, "GCC employee", "GCC employees")} — contribution rates pending legal confirmation.");
 
         return new GosiDashboardSection(
-            missingRef, missingEmpId,
+            missingRef, missingEmpId, employerIdConfigured,
             readyCount, blockedCount, warningCount, readinessPct,
             gccCount, varianceCount, warnings, blockedEmployees);
     }
 
     // ── Score ─────────────────────────────────────────────────────────────────
 
-    private static int ComputeComplianceScore(
+    private const double QiwaWeight = 0.30;
+    private const double WpsWeight  = 0.35;
+    private const double GosiWeight = 0.35;
+
+    /// <summary>
+    /// The compliance score and the working behind it. The arithmetic is unchanged — what is new is
+    /// that every component now carries its weight, its own sub-score and a plain-language basis, so
+    /// a customer can see exactly how the headline number was reached instead of being handed an
+    /// unexplained "70 / 100". A KPI nobody can trace is a KPI nobody can act on.
+    /// </summary>
+    private static (int Score, IReadOnlyList<ComplianceScoreComponent> Breakdown) ComputeComplianceScore(
         QiwaDashboardSection qiwa, WpsDashboardSection wps, GosiDashboardSection gosi)
     {
-        // QIWA weight: 30% when the feature is enabled; skip (treat as 100%) otherwise.
-        double qiwaScore = qiwa.FeatureEnabled ? qiwa.ReadinessPercent : 100.0;
+        // ── QIWA (30%) — readiness percent when the module is on; full marks when it is off ──
+        double qiwaScore;
+        bool   qiwaMeasurable;
+        string qiwaBasis;
+        if (!qiwa.FeatureEnabled)
+        {
+            qiwaScore      = 100.0;
+            qiwaMeasurable = true;
+            qiwaBasis      = "QIWA is not switched on for this account, so it is not held against you and scores full marks.";
+        }
+        else if (qiwa.ReadinessPercent is null)
+        {
+            // NOTE: an unmeasurable QIWA component scores 0 while an unmeasurable GOSI component
+            // scores 100 (below). That asymmetry is pre-existing and is exactly why a brand-new
+            // tenant lands on 70. It is left untouched here on purpose — this change makes the
+            // number explainable, it does not redefine it. Rebalancing the weights is a separate,
+            // product-owned decision.
+            qiwaScore      = 0.0;
+            qiwaMeasurable = false;
+            qiwaBasis      = "No active employees yet, so QIWA readiness cannot be measured. This section scores nothing until the first employee is added.";
+        }
+        else
+        {
+            qiwaScore      = qiwa.ReadinessPercent.Value;
+            qiwaMeasurable = true;
+            qiwaBasis      = $"{qiwa.ReadyForSync} of {Plural(qiwa.TotalEmployees, "active employee", "active employees")} have every detail QIWA asks for.";
+        }
 
-        // WPS weight: 35% — deduct 25 per blocking issue; deduct 3 per missing IBAN (max 25).
-        double wpsScore = 100.0 - (wps.BlockingIssues.Count * 25.0);
-        if (wps.MissingIbanCount > 0) wpsScore -= Math.Min(25.0, wps.MissingIbanCount * 3.0);
-        wpsScore = Math.Max(0, wpsScore);
+        // ── WPS (35%) — starts at 100; 25 off per blocking issue, 3 off per unusable IBAN (max 25) ──
+        var issuePenalty = wps.BlockingIssues.Count * 25.0;
+        var ibanPenalty  = wps.MissingIbanCount > 0 ? Math.Min(25.0, wps.MissingIbanCount * 3.0) : 0.0;
+        var wpsScore     = Math.Max(0, 100.0 - issuePenalty - ibanPenalty);
 
-        // GOSI weight: 35% — based on readiness percent; 100% if no employees.
-        double gosiScore = (gosi.ReadyCount + gosi.BlockedCount) > 0
-            ? gosi.ReadinessPercent
-            : 100.0;
+        var wpsParts = new List<string>();
+        if (issuePenalty > 0)
+            wpsParts.Add($"{issuePenalty:0.#} off for {Plural(wps.BlockingIssues.Count, "payroll issue", "payroll issues")} blocking a salary file");
+        if (ibanPenalty > 0)
+            wpsParts.Add($"{ibanPenalty:0.#} off for {Plural(wps.MissingIbanCount, "employee", "employees")} without a usable bank IBAN");
+        var wpsBasis = wpsParts.Count == 0
+            ? "Starts at 100. Nothing is blocking a salary file and every employee has a usable bank IBAN."
+            : $"Starts at 100. {string.Join("; ", wpsParts)}.";
 
-        return (int)Math.Round((qiwaScore * 0.30) + (wpsScore * 0.35) + (gosiScore * 0.35));
+        // ── GOSI (35%) — readiness percent; full marks while there is nobody to assess ──
+        double gosiScore;
+        bool   gosiMeasurable;
+        string gosiBasis;
+        var gosiPopulation = gosi.ReadyCount + gosi.BlockedCount;
+        if (gosiPopulation == 0)
+        {
+            gosiScore      = 100.0;
+            gosiMeasurable = false;
+            gosiBasis      = "No active employees yet, so GOSI readiness cannot be measured. This section keeps full marks until the first employee is added.";
+        }
+        else
+        {
+            gosiScore      = gosi.ReadinessPercent ?? 100.0;
+            gosiMeasurable = true;
+            gosiBasis      = $"{gosi.ReadyCount} of {Plural(gosiPopulation, "active employee", "active employees")} are ready to be filed to GOSI.";
+        }
+
+        var breakdown = new List<ComplianceScoreComponent>
+        {
+            Component("QIWA", QiwaWeight, qiwaScore, qiwaMeasurable, qiwaBasis),
+            Component("WPS",  WpsWeight,  wpsScore,  true,           wpsBasis),
+            Component("GOSI", GosiWeight, gosiScore, gosiMeasurable, gosiBasis),
+        };
+
+        var score = (int)Math.Round((qiwaScore * QiwaWeight) + (wpsScore * WpsWeight) + (gosiScore * GosiWeight));
+        return (score, breakdown);
     }
+
+    private static ComplianceScoreComponent Component(
+        string module, double weight, double score, bool measurable, string basis)
+        => new(module,
+               Math.Round(weight * 100.0, 0),
+               Math.Round(score, 1),
+               Math.Round(score * weight, 1),
+               measurable,
+               basis);
+
+    /// <summary>"1 employee" / "2 employees" — user-facing copy never says "employee(s)".</summary>
+    private static string Plural(int n, string one, string many) => $"{n} {(n == 1 ? one : many)}";
 
     // ── Action items ──────────────────────────────────────────────────────────
 
@@ -310,7 +398,7 @@ public sealed class SaudiComplianceDashboardService
             items.Add(new(
                 "qiwa_blocked_employees",
                 severity, "QIWA",
-                $"{qiwa.BlockedFromSync} employee(s) blocked from QIWA sync",
+                $"{Plural(qiwa.BlockedFromSync, "employee is", "employees are")} blocked from QIWA sync",
                 "These employees are missing required fields (e.g. National ID, Date of Birth, Job Title) and cannot be submitted to QIWA.",
                 qiwa.BlockedFromSync,
                 "Open the People module and complete the missing QIWA fields for each blocked employee.",
@@ -323,7 +411,7 @@ public sealed class SaudiComplianceDashboardService
             items.Add(new(
                 "qiwa_failed_syncs",
                 "Medium", "QIWA",
-                $"{qiwa.FailedSyncCount} QIWA sync attempt(s) failed or dead-lettered",
+                $"{Plural(qiwa.FailedSyncCount, "QIWA sync attempt", "QIWA sync attempts")} failed and need retrying",
                 "One or more recent employee sync operations to QIWA did not complete successfully. This may indicate a credential or API issue.",
                 qiwa.FailedSyncCount,
                 "Review sync logs and retry failed records. Check credentials if the failure rate is high.",
@@ -338,7 +426,7 @@ public sealed class SaudiComplianceDashboardService
             items.Add(new(
                 "wps_missing_iban",
                 severity, "WPS",
-                $"{wps.MissingIbanCount} employee(s) missing or invalid IBAN",
+                $"{Plural(wps.MissingIbanCount, "employee has", "employees have")} a missing or invalid IBAN",
                 "Saudi WPS requires a valid Saudi IBAN (SA + 22 digits) for every employee. Payroll cannot be disbursed via WPS for these employees.",
                 wps.MissingIbanCount,
                 "Go to People → Employee → Payroll Profile → Payment Details and add the correct IBAN.",
@@ -351,7 +439,7 @@ public sealed class SaudiComplianceDashboardService
             items.Add(new(
                 "wps_pending_approvals",
                 "Medium", "WPS",
-                $"{wps.PendingApprovals} payroll run(s) awaiting approval",
+                $"{Plural(wps.PendingApprovals, "payroll run is", "payroll runs are")} awaiting approval",
                 "Payroll runs that are not yet Locked or Paid have not been submitted through WPS. Delays beyond the 10th of the month may result in non-compliance.",
                 wps.PendingApprovals,
                 "Navigate to Payroll and lock or approve the pending runs.",
@@ -380,7 +468,7 @@ public sealed class SaudiComplianceDashboardService
             items.Add(new(
                 "gosi_blocked_employees",
                 severity, "GOSI",
-                $"{gosi.BlockedCount} employee(s) blocked from GOSI calculation",
+                $"{Plural(gosi.BlockedCount, "employee is", "employees are")} blocked from GOSI calculation",
                 "These employees are missing a GOSI reference number or basic salary and will be excluded from GOSI contribution deductions.",
                 gosi.BlockedCount,
                 "Open the People module and ensure each employee has a GOSI Reference and an active salary structure.",
@@ -393,7 +481,7 @@ public sealed class SaudiComplianceDashboardService
             items.Add(new(
                 "gosi_gcc_pending_confirmation",
                 "Medium", "GOSI",
-                $"{gosi.GccEmployeeCount} GCC employee(s) — contribution rates pending legal confirmation",
+                $"{Plural(gosi.GccEmployeeCount, "GCC employee", "GCC employees")} — contribution rates pending legal confirmation",
                 "GCC national contribution rates are seeded at the Saudi baseline pending bilateral treaty verification. Confirm applicable rates with your legal team before payroll processing.",
                 gosi.GccEmployeeCount,
                 "Review GCC employee GOSI rates under Compliance → GOSI Contribution Rules and update if required.",
@@ -406,7 +494,7 @@ public sealed class SaudiComplianceDashboardService
             items.Add(new(
                 "gosi_variance_detected",
                 "High", "GOSI",
-                $"{gosi.VarianceCount} GOSI variance(s) detected in last payroll run",
+                $"{Plural(gosi.VarianceCount, "GOSI variance", "GOSI variances")} detected in the last payroll run",
                 "Actual GOSI deductions in the most recent run differ from expected rule-based amounts. This may indicate a rule change that was not applied retroactively.",
                 gosi.VarianceCount,
                 "Run the GOSI variance report for the most recent payroll period and investigate discrepancies.",
@@ -445,7 +533,21 @@ public record OverallSection(
     int ComplianceScore,
     int UrgentActionCount,
     DateTime LastEvaluatedAt,
-    IReadOnlyList<string> EnabledModules);
+    IReadOnlyList<string> EnabledModules,
+    IReadOnlyList<ComplianceScoreComponent> ScoreBreakdown);
+
+/// <summary>
+/// One weighted input to the headline compliance score, with the evidence behind it.
+/// <paramref name="Measurable"/> is false when the tenant has no records to assess yet, which is
+/// what lets the UI say "nothing to measure" rather than present a confident-looking sub-score.
+/// </summary>
+public record ComplianceScoreComponent(
+    string Module,
+    double WeightPercent,
+    double Score,
+    double PointsContributed,
+    bool Measurable,
+    string Basis);
 
 public record QiwaDashboardSection(
     bool FeatureEnabled,
@@ -455,7 +557,8 @@ public record QiwaDashboardSection(
     int TotalEmployees,
     int ReadyForSync,
     int BlockedFromSync,
-    double ReadinessPercent,
+    /// <summary>null when there are no active employees — readiness is undefined, not 0% or 100%.</summary>
+    double? ReadinessPercent,
     int FailedSyncCount,
     DateTime? LastSuccessfulSync,
     IReadOnlyList<BlockedEmployee> BlockedEmployees);
@@ -474,11 +577,15 @@ public record WpsDashboardSection(
 
 public record GosiDashboardSection(
     int EmployeesMissingGosiRef,
+    /// <summary>How many employees are affected — 0 when the tenant has no employees at all.</summary>
     int EmployeesMissingGosiEmployerId,
+    /// <summary>Whether the company actually has a GOSI employer ID. Not derivable from the count above.</summary>
+    bool GosiEmployerIdConfigured,
     int ReadyCount,
     int BlockedCount,
     int WarningCount,
-    double ReadinessPercent,
+    /// <summary>null when there are no active employees — readiness is undefined, not 0% or 100%.</summary>
+    double? ReadinessPercent,
     int GccEmployeeCount,
     int VarianceCount,
     IReadOnlyList<string> Warnings,

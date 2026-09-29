@@ -67,12 +67,13 @@ public class PlatformAccountTypeTests : PlatformTestBase
         var controller = CreateController(db);
 
         var groupReq = new CreateTenantRequest("Group Co", "group-co", "admin@group.co", null, "Password123!x",
-            null, null, null, null, null, null, null, null, AccountType: TenantAccountTypes.Group);
+            null, null, null, null, null, null, null, null, AccountType: TenantAccountTypes.Group,
+            HomeCountryCode: "SA");
         (await controller.CreateTenant(groupReq, CancellationToken.None)).Should().BeOfType<CreatedAtActionResult>();
         (await db.Tenants.SingleAsync(t => t.Slug == "group-co")).AccountType.Should().Be(TenantAccountTypes.Group);
 
         var plainReq = new CreateTenantRequest("Plain Co", "plain-co", "admin@plain.co", null, "Password123!x",
-            null, null, null, null, null, null, null, null);
+            null, null, null, null, null, null, null, null, HomeCountryCode: "SA");
         (await controller.CreateTenant(plainReq, CancellationToken.None)).Should().BeOfType<CreatedAtActionResult>();
         (await db.Tenants.SingleAsync(t => t.Slug == "plain-co")).AccountType.Should().Be(TenantAccountTypes.SingleCompany);
     }

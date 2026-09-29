@@ -20,11 +20,16 @@ public class DataScopeService : IDataScopeService
     public DataScopeService(
         ZayraDbContext db,
         Zayra.Api.Infrastructure.Scope.IRequestEntityScopeResolver? scopeResolver = null,
-        Microsoft.AspNetCore.Http.IHttpContextAccessor? http = null)
+        Microsoft.AspNetCore.Http.IHttpContextAccessor? http = null,
+        Microsoft.Extensions.Options.IOptions<EntityScopeOptions>? scopeOptions = null,
+        Microsoft.Extensions.Options.IOptions<Zayra.Api.Application.Auth.JwtOptions>? jwtOptions = null)
     {
         _db = db;
         _http = http;
-        _scopeResolver = scopeResolver ?? new Zayra.Api.Infrastructure.Scope.RequestEntityScopeResolver(http);
+        // The options are forwarded rather than dropped: a resolver built with scopeOptions:null silently
+        // runs strictMode=false with a dead platform gate, which is the divergence this design removes.
+        _scopeResolver = scopeResolver
+            ?? new Zayra.Api.Infrastructure.Scope.RequestEntityScopeResolver(http, scopeOptions, jwtOptions);
     }
 
     public async Task<DataScope> ResolveAsync(ClaimsPrincipal caller, Guid tenantId, CancellationToken ct)

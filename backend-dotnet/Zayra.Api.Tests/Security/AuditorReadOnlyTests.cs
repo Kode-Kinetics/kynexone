@@ -24,9 +24,7 @@ public class AuditorReadOnlyTests
         db.Tenants.Add(new Zayra.Api.Domain.Entities.Tenant { Id = tenantId, Name = "Audit T", Slug = $"aud-{Guid.NewGuid():N}"[..20] });
         await db.SaveChangesAsync();
 
-        var seeder = new Zayra.Api.Infrastructure.Seed.AuthSeeder(db,
-            new Zayra.Api.Infrastructure.Auth.Pbkdf2PasswordHasher(),
-            Microsoft.Extensions.Options.Options.Create(new Zayra.Api.Application.Auth.SeedAdminOptions()));
+        var seeder = new Zayra.Api.Infrastructure.Seed.AuthSeeder(db);
         await seeder.EnsureTenantRolesAsync(tenantId, CancellationToken.None);
 
         var auditorPermissions = await db.Roles

@@ -43,7 +43,7 @@ export function CompanySwitcher() {
       </button>
 
       {open && (
-        <div role="menu" aria-label="Select company" className="absolute left-0 top-full z-50 mt-2 max-h-80 w-64 overflow-y-auto rounded-xl border border-slate-200/80 bg-white/[0.92] shadow-2xl backdrop-blur-xl dark:border-white/[0.08] dark:bg-[#0c1120]/[0.92]">
+        <div role="menu" aria-label="Select company" className="absolute start-0 top-full z-50 mt-2 max-h-80 w-64 overflow-y-auto rounded-xl border border-slate-200/80 bg-white/[0.92] shadow-2xl backdrop-blur-xl dark:border-white/[0.08] dark:bg-[#0c1120]/[0.92]">
           {isGroupScope && (
             <button
               type="button"
@@ -63,11 +63,11 @@ export function CompanySwitcher() {
               onClick={() => { setSelectedCompany(company.id); setOpen(false); }}
               className={`flex w-full items-center justify-between px-4 py-2.5 text-sm transition hover:bg-slate-50 dark:hover:bg-white/[0.04] ${selectedCompanyId === company.id ? 'bg-sapphire/[0.06] font-semibold text-sapphire dark:text-cyanAccent' : 'text-slate-700 dark:text-slate-300'}`}
             >
-              <span className="min-w-0 flex-1 truncate text-left">
+              <span className="min-w-0 flex-1 truncate text-start">
                 {company.name}
-                <span className="ml-1.5 text-xs text-slate-400 dark:text-slate-500">{company.code} · {company.countryCode}</span>
+                <span className="ms-1.5 text-xs text-slate-400 dark:text-slate-500">{company.code} · {company.countryCode}</span>
               </span>
-              {selectedCompanyId === company.id && <span className="ml-2 h-1.5 w-1.5 shrink-0 rounded-full bg-sapphire dark:bg-cyanAccent" />}
+              {selectedCompanyId === company.id && <span className="ms-2 h-1.5 w-1.5 shrink-0 rounded-full bg-sapphire dark:bg-cyanAccent" />}
             </button>
           ))}
         </div>

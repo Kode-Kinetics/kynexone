@@ -1,3 +1,4 @@
+using Zayra.Api.Application.WorkWeek;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Approvals;
@@ -40,6 +41,10 @@ public sealed class LeaveApprovalPostgresIntegrationTests
         Guid hrManagerUserId = Guid.NewGuid();
         int employeeId;
         var start = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(14));
+        // A WORKING day: weekends are excluded from the leave day count, so an assertion of Us
+        // ed == 1 only holds when the booked day is a working one. Unguarded these passed Sund
+        // ay to Thursday and failed every Friday and Saturday.
+        while (WorkWeekConfig.GccDefault.IsWeekend(start.DayOfWeek)) start = start.AddDays(1);
 
         await using (var db = CreateRetryingDb())
         {
@@ -69,8 +74,9 @@ public sealed class LeaveApprovalPostgresIntegrationTests
                 UserAccountId = employeeUserId,
                 EmployeeCode = $"EE-{Guid.NewGuid():N}"[..12],
                 FullName = "Postgres Leave Requester",
-                // No direct manager and no ApprovalPolicy intentionally exercises the visible
-                // HR Manager role fallback used by the client-pilot seed.
+                // No direct manager: the configured "Manager" step cannot resolve a person, so the
+                // router escalates it VISIBLY to the HR Manager role queue (F1 — the escalation is a
+                // property of a configured workflow step, no longer a hard-coded no-config fallback).
                 Status = "Active",
                 JoiningDate = DateTime.UtcNow.AddYears(-2)
             };
@@ -91,7 +97,7 @@ public sealed class LeaveApprovalPostgresIntegrationTests
             });
             await db.SaveChangesAsync();
 
-            var submitted = await new LeaveService(db, new ApprovalPolicyService(db))
+            var submitted = await (await TestApprovalConfig.LeaveServiceAsync(db, tenantId, approverType: "Manager"))
                 .SubmitRequestAsync(tenantId, new LeaveRequest
                 {
                     EmployeeId = employee.Id,
@@ -108,7 +114,7 @@ public sealed class LeaveApprovalPostgresIntegrationTests
         // actionable. This also proves maker-checker remains inside the retry-safe transaction.
         await using (var rollbackDb = CreateRetryingDb())
         {
-            var selfApproval = () => new LeaveService(rollbackDb, new ApprovalPolicyService(rollbackDb))
+            var selfApproval = () => new LeaveService(rollbackDb, new ApprovalRouter(rollbackDb))
                 .ApproveRequestAsync(tenantId, requestId, employeeUserId, "Postgres Leave Requester", "self");
             await selfApproval.Should().ThrowAsync<InvalidOperationException>()
                 .WithMessage("*Maker-checker*");

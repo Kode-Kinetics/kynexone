@@ -30,7 +30,7 @@ public class LeaveAccrualInvariantTests
             new LeavePolicy { TenantId = tenantId, LeaveTypeId = type.Id, CompanyId = company.Id, Name = "Company override", Status = "Active", AccrualMethod = "Monthly", AnnualEntitlementDays = 24, UpdatedAtUtc = DateTime.UtcNow });
         await db.SaveChangesAsync();
 
-        var service = new LeaveService(db, new ApprovalPolicyService(db));
+        var service = new LeaveService(db, new ApprovalRouter(db));
         await service.AccrueMonthlyAsync(tenantId);
         await service.AccrueMonthlyAsync(tenantId);
 

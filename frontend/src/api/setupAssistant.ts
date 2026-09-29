@@ -1,6 +1,9 @@
 import client from './client';
 
-export interface SetupSections { org: boolean; leave: boolean; shifts: boolean; payroll: boolean; entity: boolean; governance: boolean; }
+export interface SetupSections {
+  org: boolean; leave: boolean; shifts: boolean; payroll: boolean; entity: boolean; governance: boolean;
+  leavePolicies: boolean; holidays: boolean; attendance: boolean; localization: boolean;
+}
 
 export interface CompanyProfile {
   countryCode: string;
@@ -17,6 +20,20 @@ export interface CompanyProfile {
   requireCostCenterForPayroll: boolean;
   requireGradeForApprovalPolicy: boolean;
   sections: SetupSections;
+
+  // Operating choices. Each one lands in a column the product already reads; see
+  // SetupAssistantContracts.cs for what each drives.
+  workPattern?: string;          // SingleDayShift | TwoShifts | ContinuousThreeShifts | FieldRoster
+  weekendPattern?: string;       // CountryDefault | Fri-Sat | Sat-Sun | Fri | Sun  (REST days)
+  leaveYearBasis?: string;       // Calendar | JoiningDate | Fiscal
+  probationMonths?: number;      // 0 = not stated
+  noticePeriodDays?: number;     // 0 = not stated
+  workforceMix?: string;         // MostlyNational | Mixed | MostlyExpat
+  overtimeHandling?: string;     // PaidOvertime | CompensatoryOff | NotApplicable
+  attendanceCapture?: string;    // BiometricDevice | MobileGeofence | WebCheckIn | Manual
+  payCycle?: string;             // Monthly | SemiMonthly | Biweekly | Weekly
+  timeZone?: string;             // IANA zone; empty = derive from country
+  defaultLanguage?: string;      // en | ar | bilingual
 }
 
 export interface DraftDepartment { code: string; nameEn: string; }
@@ -31,6 +48,13 @@ export interface DraftWorkingWeek { workWeek: string; weekStartDay: string; }
 export interface DraftPayComponent { code: string; name: string; componentType: string; calculationType: string; amount: number; percentage: number; isTaxable: boolean; }
 export interface DraftStatutoryRule { ruleKey: string; ruleValue: string; dataType: string; description: string; }
 export interface DraftEmployeeIdRule { companyPrefix: string; useCountryPrefix: boolean; useBranchPrefix: boolean; useDepartmentPrefix: boolean; useYear: boolean; paddingLength: number; nextSequence: number; allowManualOverride: boolean; }
+export interface DraftLeavePolicy { name: string; leaveTypeCode: string; annualEntitlementDays: number; accrualMethod: string; encashmentAllowed: boolean; encashmentMaxDays: number; minimumDaysPerRequest: number; maximumDaysPerRequest: number; noticeRequiredDays: number; weekendsIncluded: boolean; publicHolidaysIncluded: boolean; appliesOnProbation: boolean; payrollImpact: string; }
+export interface DraftHoliday { nameEn: string; nameAr: string; date: string; isRecurring: boolean; isOptional: boolean; holidayType: string; notes: string; }
+export interface DraftHolidayCalendar { name: string; calendarYear: number; holidays: DraftHoliday[]; }
+export interface DraftAttendancePolicy { code: string; name: string; graceMinutes: number; lateThresholdMinutes: number; earlyExitThresholdMinutes: number; halfDayThresholdMinutes: number; absentThresholdMinutes: number; standardWorkMinutes: number; breakMinutes: number; roundingRule: string; requiresOvertimeApproval: boolean; allowAbsenceToLeaveConversion: boolean; }
+export interface DraftOvertimeMultiplier { dayCategory: string; multiplier: number; }
+export interface DraftOvertimePolicy { code: string; name: string; hourlyRateBasis: string; standardMonthlyHours: number; minimumMinutes: number; maximumMinutesPerDay: number; monthlyCapMinutes: number; roundingRule: string; requiresApproval: boolean; allowCompOffConversion: boolean; multipliers: DraftOvertimeMultiplier[]; }
+export interface DraftLocalization { defaultLanguage: string; rtlEnabled: boolean; calendarSystem: string; defaultTimezone: string; dateFormat: string; hijriDatesEnabled: boolean; }
 export interface DraftHrConfig { useDeptHeadApproval: boolean; useHrFinalApproval: boolean; useSupervisorBeforeManager: boolean; allowDottedLineApproval: boolean; autoCreateDeptOnImport: boolean; autoCreateDesignationOnImport: boolean; requireImportPreviewBeforeCommit: boolean; allowCrossDeptManager: boolean; allowCrossLocationManager: boolean; requireCostCenterForPayroll: boolean; requireGradeForApprovalPolicy: boolean; }
 
 export interface SetupDraft {
@@ -47,6 +71,11 @@ export interface SetupDraft {
   statutoryRules: DraftStatutoryRule[];
   employeeIdRule: DraftEmployeeIdRule | null;
   hrConfig: DraftHrConfig | null;
+  leavePolicies: DraftLeavePolicy[];
+  holidayCalendar: DraftHolidayCalendar | null;
+  attendancePolicy: DraftAttendancePolicy | null;
+  overtimePolicy: DraftOvertimePolicy | null;
+  localization: DraftLocalization | null;
 }
 
 export interface SetupPreviewResult { draft: SetupDraft; notes: string[]; engine: string; }
@@ -75,6 +104,17 @@ export function normalizeDraft(raw: unknown): SetupDraft {
     statutoryRules: asArray<DraftStatutoryRule>(d.statutoryRules),
     employeeIdRule: d.employeeIdRule ?? null,
     hrConfig: d.hrConfig ?? null,
+    leavePolicies: asArray<DraftLeavePolicy>(d.leavePolicies),
+    // The calendar's own holiday list is mapped over during render, so it gets the same
+    // treatment as every top-level list: a calendar with a null list must not blank the page.
+    holidayCalendar: d.holidayCalendar
+      ? { ...d.holidayCalendar, holidays: asArray<DraftHoliday>(d.holidayCalendar.holidays) }
+      : null,
+    attendancePolicy: d.attendancePolicy ?? null,
+    overtimePolicy: d.overtimePolicy
+      ? { ...d.overtimePolicy, multipliers: asArray<DraftOvertimeMultiplier>(d.overtimePolicy.multipliers) }
+      : null,
+    localization: d.localization ?? null,
   };
 }
 

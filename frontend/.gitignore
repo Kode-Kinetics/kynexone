@@ -7,6 +7,7 @@ e2e/.auth/
 
 # Wave 1 B3 — never commit dependencies, Playwright artifacts, or session material
 node_modules/
+node_modules
 test-results/
 playwright-report/
 blob-report/

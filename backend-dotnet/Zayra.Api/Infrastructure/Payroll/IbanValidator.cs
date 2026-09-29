@@ -12,6 +12,11 @@ public static class IbanValidator
         iban = iban.Replace(" ", "").ToUpperInvariant();
         if (iban.Length is < 15 or > 34) return false;
         if (!iban.All(c => char.IsLetterOrDigit(c))) return false;
+        // ISO 13616 delegates length and BBAN structure to each country. Saudi IBANs are exactly
+        // 24 characters: SA + 2 numeric check digits + 2 numeric bank-code digits + an 18-character
+        // account body. A shorter SA value can still be made to satisfy mod-97, so checksum alone is
+        // not sufficient and previously allowed 22-character demo accounts into WPS readiness.
+        if (iban.StartsWith("SA", StringComparison.Ordinal) && !HasSaudiStructure(iban)) return false;
 
         // Move the first 4 chars to the end, map letters → numbers, then mod-97 must equal 1.
         var rearranged = iban[4..] + iban[..4];
@@ -24,9 +29,18 @@ public static class IbanValidator
         return remainder == 1;
     }
 
-    /// <summary>True only for a structurally valid IBAN that begins with the Saudi country code "SA".</summary>
+    /// <summary>True only for a 24-character Saudi IBAN with valid country structure and mod-97.</summary>
     public static bool IsSaudiIban(string? iban)
-        => IsValid(iban) && iban!.Replace(" ", "").ToUpperInvariant().StartsWith("SA");
+    {
+        var cleaned = (iban ?? string.Empty).Replace(" ", "").ToUpperInvariant();
+        return HasSaudiStructure(cleaned) && IsValid(cleaned);
+    }
+
+    private static bool HasSaudiStructure(string iban) =>
+        iban.Length == 24
+        && iban.StartsWith("SA", StringComparison.Ordinal)
+        && iban.Skip(2).Take(4).All(char.IsDigit)
+        && iban.Skip(6).All(char.IsLetterOrDigit);
 
     /// <summary>
     /// Returns the given IBAN with its two check digits recomputed so it satisfies the ISO 13616

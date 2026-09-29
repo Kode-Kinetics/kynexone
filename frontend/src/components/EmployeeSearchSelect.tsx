@@ -104,7 +104,7 @@ export function EmployeeSearchSelect({ value, onChange, placeholder = 'Search by
               <button
                 type="button"
                 onClick={() => select(emp)}
-                className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-white/[0.05]"
+                className="flex w-full items-center gap-3 px-3 py-2 text-start hover:bg-slate-50 dark:hover:bg-white/[0.05]"
               >
                 <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-sapphire/10 text-xs font-bold text-sapphire">
                   {emp.fullName.charAt(0)}

@@ -33,7 +33,8 @@ public sealed class PlatformTenantAtomicityPostgresTests : PlatformTestBase
             BillingCycle: null,
             MonthlyAmount: null,
             CurrencyCode: null,
-            ExpiresAtUtc: null);
+            ExpiresAtUtc: null,
+            HomeCountryCode: "SA");
 
         var action = () => controller.CreateTenant(request, CancellationToken.None);
 

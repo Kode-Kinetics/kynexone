@@ -12,7 +12,7 @@ function UsageBar({ pct }: { pct: number }) {
         <div className={`h-full rounded-full ${pct >= 90 ? 'bg-rose-500' : pct >= 70 ? 'bg-amber-500' : 'bg-purple-500'}`}
           style={{ width: `${Math.min(pct, 100)}%` }} />
       </div>
-      <span className="text-[11px] text-slate-500 tabular-nums w-8 text-right">{pct}%</span>
+      <span className="text-[11px] text-slate-500 tabular-nums w-8 text-end">{pct}%</span>
     </div>
   );
 }
@@ -143,7 +143,7 @@ export default function AiUsagePage() {
               <thead>
                 <tr className="border-b border-white/[0.06]">
                   {['Tenant', 'Plan', 'Tokens Used', 'Requests', 'Blocked', 'Usage'].map(h => (
-                    <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
+                    <th key={h} className="px-4 py-2.5 text-start text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
                   ))}
                 </tr>
               </thead>

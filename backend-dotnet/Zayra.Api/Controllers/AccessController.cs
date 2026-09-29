@@ -1,11 +1,13 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Email;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -21,11 +23,16 @@ public class AccessController : ControllerBase
 {
     private readonly IAccessManagementService _accessManagement;
     private readonly ZayraDbContext _db;
+    private readonly IEmailService _emailService;
 
-    public AccessController(IAccessManagementService accessManagement, ZayraDbContext db)
+    public AccessController(
+        IAccessManagementService accessManagement,
+        ZayraDbContext db,
+        IEmailService emailService)
     {
         _accessManagement = accessManagement;
         _db = db;
+        _emailService = emailService;
     }
 
     [HttpGet("roles")]
@@ -260,18 +267,128 @@ public class AccessController : ControllerBase
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
+    /// <summary>
+    /// Deliberately and permanently disabled: an administrator must never choose another person's
+    /// password. <see cref="IssuePasswordResetLink"/> is the supported replacement, and the message
+    /// now names it — previously this 409 was a dead end with no reachable alternative, so the
+    /// product's "Reset password" action could not succeed at all.
+    /// </summary>
     [HttpPost("users/{userId:guid}/admin-reset-password")]
     public async Task<IActionResult> AdminResetPassword(Guid userId, AdminResetPasswordRequest request, CancellationToken cancellationToken)
+    {
+        await Task.CompletedTask;
+        return Conflict(new
+        {
+            error = "temporary_password_flow_disabled",
+            message = "Setting a password on a user's behalf is disabled. Send a password-reset link instead.",
+            useEndpoint = $"POST /api/access/users/{userId}/password-reset-link"
+        });
+    }
+
+    /// <summary>
+    /// Issues a single-use password-reset link for a user in the caller's workspace and, when a mail
+    /// transport is configured for the workspace, emails it to them.
+    ///
+    /// AUTHORIZATION: the class-level <c>security.manage</c> requirement — the same permission that
+    /// creates a user through <see cref="CreateUser"/>. Anyone who can mint the identity can already
+    /// mint a credential for it, so disclosing the link to that caller grants no new authority.
+    ///
+    /// DISCLOSURE: the raw link is returned to the administrator ONLY when the email did not go out,
+    /// which on a workspace with no SMTP is every time. That is the whole point: the alternative is
+    /// reporting success over mail that was never sent. Every issuance is audited, and every
+    /// response that carried the link is recorded as a disclosure in <c>AdminAuditLogs</c>.
+    ///
+    /// The link stays single-use and one-hour-lived, is tied to this user and workspace, and is
+    /// stored only as a hash — the administrator learns a one-shot link, never a password.
+    /// </summary>
+    [HttpPost("users/{userId:guid}/password-reset-link")]
+    public async Task<IActionResult> IssuePasswordResetLink(Guid userId, CancellationToken cancellationToken)
     {
         try
         {
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
-            await _accessManagement.AdminResetPasswordAsync(tenantId.Value, userId, request, this.GetEntityScope(), GetContext(), cancellationToken);
-            return NoContent();
+
+            var link = await _accessManagement.IssuePasswordResetLinkAsync(
+                tenantId.Value, userId, this.GetEntityScope(), GetContext(), cancellationToken);
+
+            var emailDeliveryConfigured = await _emailService.IsConfiguredAsync(tenantId.Value, cancellationToken);
+            var emailSent = false;
+            if (emailDeliveryConfigured)
+            {
+                try
+                {
+                    await _emailService.SendAsync(
+                        tenantId.Value,
+                        link.Email,
+                        link.FullName,
+                        "Set a new password for your KynexOne account",
+                        BuildResetLinkEmailHtml(link),
+                        cancellationToken: cancellationToken);
+                    emailSent = true;
+                }
+                catch (Exception)
+                {
+                    // Swallowed on purpose: the token is already committed and the link below is
+                    // still valid, so a relay failure must degrade to "copy this link", not to a
+                    // 500 that leaves the administrator with no way through. The provider message
+                    // is not echoed — it routinely contains the relay host and credentials.
+                    emailSent = false;
+                }
+            }
+
+            var message = emailSent
+                ? $"Reset link emailed to {link.Email}. It can be used once and expires at {link.ExpiresAtUtc:HH:mm} UTC."
+                : emailDeliveryConfigured
+                    ? "Email delivery is configured but the message could not be sent. Copy the link below and give it to the user directly — it can be used once and expires in 1 hour."
+                    : "No email delivery is configured for this workspace, so nothing was sent. Copy the link below and give it to the user directly — it can be used once and expires in 1 hour.";
+
+            // A disclosure is a security event in its own right, separate from the issuance audit
+            // the service wrote: it records that a human saw a live credential link.
+            _db.AdminAuditLogs.Add(new Models.AdminAuditLog
+            {
+                TenantId = tenantId.Value,
+                EntityType = "User",
+                EntityId = userId.ToString(),
+                Action = emailSent ? "PasswordResetLinkEmailed" : "PasswordResetLinkDisclosedToAdmin",
+                OldValuesJson = "{}",
+                NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    emailDeliveryConfigured,
+                    emailSent,
+                    linkShownToAdmin = !emailSent,
+                    expiresAtUtc = link.ExpiresAtUtc
+                }),
+                PerformedBy = GetUserId(),
+                PerformedByName = User.FindFirstValue("name") ?? GetUserId()?.ToString() ?? "unknown",
+                IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
+            });
+            await _db.SaveChangesAsync(cancellationToken);
+
+            return Ok(new
+            {
+                userId = link.UserId,
+                email = link.Email,
+                expiresAtUtc = link.ExpiresAtUtc,
+                emailDeliveryConfigured,
+                emailSent,
+                // Withheld once the user has it in their inbox; there is no reason for a second copy
+                // to sit in an admin's browser or in an API log.
+                resetUrl = emailSent ? null : link.ResetUrl,
+                message
+            });
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
+
+    private static string BuildResetLinkEmailHtml(AdminPasswordResetLinkDto link) => $"""
+        <p>Hi {System.Web.HttpUtility.HtmlEncode(link.FullName)},</p>
+        <p>An administrator in your workspace asked us to help you set a new password. Click the link below to choose one. This link can be used once and expires in <strong>1 hour</strong>.</p>
+        <p><a href="{link.ResetUrl}" style="background:#2563EB;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;display:inline-block">Set a new password</a></p>
+        <p>If you did not expect this, contact your administrator.</p>
+        <hr/>
+        <p style="font-size:12px;color:#666">KynexOne Workforce</p>
+        """;
 
     [HttpDelete("users/{userId:guid}")]
     public async Task<IActionResult> DeleteUser(Guid userId, CancellationToken cancellationToken)
@@ -323,10 +440,73 @@ public class AccessController : ControllerBase
                     });
             }
 
-            var invite = await _accessManagement.InviteEmployeeLoginAsync(tenantId.Value, request, GetContext(), cancellationToken);
+            var invite = await _accessManagement.InviteEmployeeLoginAsync(
+                tenantId.Value,
+                request,
+                this.GetEntityScope(),
+                GetContext(),
+                cancellationToken);
+
+            // DELIVERY TRUTH. Before this, the invitation was minted and the response said nothing
+            // at all about email — so a caller could only assume one had gone out. On a workspace
+            // with no SMTP (the production default) nothing ever did. The invitation is now actually
+            // emailed when a transport exists, and the response states plainly which happened.
+            invite = await AttachInvitationDeliveryAsync(tenantId.Value, invite, cancellationToken);
             return Created($"/api/access/users/{invite.UserId}", invite);
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
+    private async Task<EmployeeLoginInvitationDto> AttachInvitationDeliveryAsync(
+        Guid tenantId, EmployeeLoginInvitationDto invite, CancellationToken cancellationToken)
+    {
+        // A no-login mapping has no invitation to deliver; saying "no email was sent" about it would
+        // be its own small untruth.
+        if (string.IsNullOrEmpty(invite.InvitationUrl))
+            return invite with
+            {
+                DeliveryMessage = "This person was given employee access without a portal login, so no invitation was sent."
+            };
+
+        var emailDeliveryConfigured = await _emailService.IsConfiguredAsync(tenantId, cancellationToken);
+        var emailSent = false;
+        if (emailDeliveryConfigured)
+        {
+            try
+            {
+                await _emailService.SendAsync(
+                    tenantId,
+                    invite.Email,
+                    invite.Email,
+                    "You have been invited to KynexOne",
+                    $"""
+                    <p>Hello,</p>
+                    <p>You have been invited to your organisation's KynexOne workspace. Click the link below to accept the invitation and set your password.</p>
+                    <p><a href="{invite.InvitationUrl}" style="background:#2563EB;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;display:inline-block">Accept invitation</a></p>
+                    <hr/>
+                    <p style="font-size:12px;color:#666">KynexOne Workforce</p>
+                    """,
+                    cancellationToken: cancellationToken);
+                emailSent = true;
+            }
+            catch (Exception)
+            {
+                // See IssuePasswordResetLink: the invitation is already committed and its link is in
+                // this response, so a relay failure degrades to "share the link", never to a 500.
+                emailSent = false;
+            }
+        }
+
+        return invite with
+        {
+            EmailDeliveryConfigured = emailDeliveryConfigured,
+            EmailSent = emailSent,
+            DeliveryMessage = emailSent
+                ? $"Invitation emailed to {invite.Email}."
+                : emailDeliveryConfigured
+                    ? "Email delivery is configured but the invitation could not be sent. Share the invitation link with them directly."
+                    : "No email delivery is configured for this workspace, so no invitation was sent. Share the invitation link with them directly."
+        };
     }
 
     [HttpGet("users/{userId:guid}/access")]
@@ -380,18 +560,42 @@ public class AccessController : ControllerBase
         return Ok(await _accessManagement.GetDelegationsAsync(tenantId.Value, cancellationToken));
     }
 
+    // ── Approval delegation and approval authority: writes refuse ─────────────────────────────
+    //
+    // Both of these are configuration a tenant could store and nothing has ever read. They now
+    // answer 501 on every write, following the rule this codebase already states in
+    // ApprovalPoliciesController — "accepting a write here would recreate exactly the silent
+    // misconfiguration F1 removes: configuration that is stored but never applied" — and the status
+    // EnterpriseIdentityController uses for the same reason: 501 for never-built, not 410 for
+    // retired, because neither of these was ever wired.
+    //
+    // The GETs are deliberately left alive. A tenant that already stored rows must still be able to
+    // see them; hiding the data would be a second deception on top of the first.
+
+    /// <summary>The reason a delegation write refuses. Public so the test and the API agree on one string.</summary>
+    public const string DelegationNotImplementedMessage =
+        "Approval delegation is not implemented in this build. Delegations were stored and never consulted: "
+        + "no approval router, workflow service or leave path has ever read them, so an approver who recorded "
+        + "a delegation before going on leave would have had their queue stall anyway, with the UI showing the "
+        + "delegation as active. Accepting the write would restate that. Reassign the approver on the approval "
+        + "workflow's step, or deactivate the employee to reroute their pending approvals.";
+
+    /// <summary>The reason an approval-authority write refuses.</summary>
+    public const string AuthorityNotImplementedMessage =
+        "Approval authority limits are not enforced in this build. An amount limit has nothing to compare "
+        + "against: ApprovalRequest carries no monetary amount, so 'department managers may approve up to "
+        + "SAR 50,000' could never have been applied and a manager could final-approve any sum with the audit "
+        + "log recording a legitimate approval. Storing the rule would be evidence of a control that does not "
+        + "exist. Express approval seniority as ordered steps on the approval workflow instead.";
+
     [HttpPost("approval-delegations")]
-    public async Task<ActionResult<ApprovalDelegationDto>> CreateApprovalDelegation(ApprovalDelegationRequest request, CancellationToken cancellationToken)
-    {
-        try
+    public IActionResult CreateApprovalDelegation(ApprovalDelegationRequest request)
+        => StatusCode(StatusCodes.Status501NotImplemented, new
         {
-            var tenantId = GetTenantId();
-            if (tenantId is null) return Unauthorized();
-            var delegation = await _accessManagement.CreateDelegationAsync(tenantId.Value, request, GetContext(), cancellationToken);
-            return Created($"/api/access/approval-delegations/{delegation.Id}", delegation);
-        }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
-    }
+            code = "approval_delegation_not_implemented",
+            message = DelegationNotImplementedMessage,
+            replacement = "/api/approval-workflows",
+        });
 
     [HttpGet("approval-authorities")]
     public async Task<ActionResult<IReadOnlyCollection<ApprovalAuthorityDto>>> ApprovalAuthorities(CancellationToken cancellationToken)
@@ -402,18 +606,17 @@ public class AccessController : ControllerBase
     }
 
     [HttpPost("approval-authorities")]
-    public async Task<ActionResult<ApprovalAuthorityDto>> CreateApprovalAuthority(ApprovalAuthorityRequest request, CancellationToken cancellationToken)
-    {
-        try
+    public IActionResult CreateApprovalAuthority(ApprovalAuthorityRequest request)
+        => StatusCode(StatusCodes.Status501NotImplemented, new
         {
-            var tenantId = GetTenantId();
-            if (tenantId is null) return Unauthorized();
-            var authority = await _accessManagement.CreateAuthorityAsync(tenantId.Value, request, GetContext(), cancellationToken);
-            return Created($"/api/access/approval-authorities/{authority.Id}", authority);
-        }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
-    }
+            code = "approval_authority_not_implemented",
+            message = AuthorityNotImplementedMessage,
+            replacement = "/api/approval-workflows",
+        });
 
+    // Cancel stays live: it is the one write that makes an already-stored delegation LESS
+    // believable, which is the direction this change is going in. Refusing it would leave a tenant
+    // holding rows the UI shows as active with no way to clear them.
     [HttpPatch("approval-delegations/{delegationId:guid}/cancel")]
     public async Task<IActionResult> CancelDelegation(Guid delegationId, CancellationToken cancellationToken)
     {
@@ -424,17 +627,13 @@ public class AccessController : ControllerBase
     }
 
     [HttpPut("approval-authorities/{authorityId:guid}")]
-    public async Task<ActionResult<ApprovalAuthorityDto>> UpdateApprovalAuthority(Guid authorityId, ApprovalAuthorityRequest request, CancellationToken cancellationToken)
-    {
-        try
+    public IActionResult UpdateApprovalAuthority(Guid authorityId, ApprovalAuthorityRequest request)
+        => StatusCode(StatusCodes.Status501NotImplemented, new
         {
-            var tenantId = GetTenantId();
-            if (tenantId is null) return Unauthorized();
-            var authority = await _accessManagement.UpdateAuthorityAsync(tenantId.Value, authorityId, request, GetContext(), cancellationToken);
-            return authority is null ? NotFound() : Ok(authority);
-        }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
-    }
+            code = "approval_authority_not_implemented",
+            message = AuthorityNotImplementedMessage,
+            replacement = "/api/approval-workflows",
+        });
 
     // ── Permission Grantors ───────────────────────────────────────────────────
 

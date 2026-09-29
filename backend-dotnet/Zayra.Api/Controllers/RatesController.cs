@@ -229,6 +229,14 @@ public class RatesController : ControllerBase
         if (req.ReviewBy is null) return BadRequest(new { message = "reviewBy (expiry/review date) is required so the override cannot silently outlive its justification." });
         if (string.IsNullOrWhiteSpace(req.OverrideValue)) return BadRequest(new { message = "overrideValue is required." });
 
+        // UNIT GATE. OverrideValue is free text and StatutoryRateResolver hands it straight to the
+        // payroll calculators ahead of the platform default, so this is the highest-consequence
+        // rate write in the product. A rate key takes a decimal FRACTION (0.09 = 9%); "9" is
+        // refused with the expected form named rather than interpreted.
+        // See Infrastructure/Payroll/StatutoryValueUnits.cs.
+        if (StatutoryValueUnits.Validate(req.RuleKey, req.DataType, req.OverrideValue) is { } unitError)
+            return BadRequest(new { message = unitError });
+
         var cc = req.CountryCode.ToUpperInvariant();
         var jur = req.Jurisdiction ?? "";
         var onDate = req.EffectiveFrom;

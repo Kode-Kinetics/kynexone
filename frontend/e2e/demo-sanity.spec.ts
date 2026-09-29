@@ -1,16 +1,43 @@
 import { test, expect, type Page } from '@playwright/test';
-import { tenantLogin, INTELLIFLOW_SLUG, INTELLIFLOW_ADMIN, RASALMANAR_SLUG, RASALMANAR_ADMIN } from './helpers';
+import {
+  tenantLogin, INTELLIFLOW_SLUG, INTELLIFLOW_ADMIN, RASALMANAR_SLUG, RASALMANAR_ADMIN,
+  mainContentLength, mainText, crashIndicators,
+} from './helpers';
 
 /**
  * Demo sanity — ensures no demo-critical route crashes or shows blank screens.
  *
- * Rules:
- * - No route should show "Something went wrong"
- * - No route should show a full blank white page
- * - No console errors from React crashes (detected via body content)
- * - Platform admin routes load without crashing
- * - Tenant admin routes load without crashing
+ * ── Why every length check below measures <main>, not <body> ──────────────────
+ * This file used `(await page.locator('body').innerText()).length > 50` (and > 100) as its "the
+ * page rendered" proxy. That is a FALSE GREEN. The persistent application shell — sidebar, nav,
+ * header — paints before any data arrives and is ~950 characters on its own, so the threshold was
+ * already met by:
+ *   • a route whose every /api/** call returned 500,
+ *   • a route that rendered nothing but a spinner,
+ *   • a redirect that still painted chrome.
+ * Proven in e2e/group-company/helpers.ts: nav 382 + aside 479 + header 90 characters, with every
+ * /api/** request fulfilled as a 500, cleared the bar on /payroll, /leave, /attendance, /people,
+ * /offboarding and /saudi-compliance.
+ *
+ * Rules now:
+ * - The ROUTE's own <main> region must render content (the shell does not count)
+ * - The route must not have bounced to /login
+ * - No route may show a crash string
+ * - Demo-critical tenant routes must additionally show named, route-specific content
  */
+
+/** Route-specific proof that the RIGHT screen rendered — not merely "a" screen. */
+const TENANT_ROUTE_CONTENT: Record<string, RegExp> = {
+  '/people':            /employee|staff|headcount/i,
+  '/attendance':        /attendance|check.?in|present|absent/i,
+  '/leave':             /leave|balance|request/i,
+  '/payroll':           /payroll|gross|net|salary|run/i,
+  '/approvals':         /approval|pending|request/i,
+  '/reports':           /report/i,
+  '/saudi-compliance':  /gosi|saudi|nitaqat|compliance|wps/i,
+  '/org-chart':         /org|report|hierarch/i,
+  '/dashboard':         /dashboard|overview|employee|headcount/i,
+};
 
 async function gotoRoute(page: Page, route: string): Promise<void> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -56,18 +83,16 @@ test.describe('Platform admin — demo sanity', () => {
     test(`${route} loads without crash`, async ({ page }) => {
       await gotoRoute(page, route);
 
+      // Measure the route's OWN region. `body` length here was satisfied by the shell alone.
       await expect.poll(
-        async () => ((await page.locator('body').innerText()) ?? '').trim().length,
-        { timeout: 10_000, message: `${route} did not render meaningful content` },
-      ).toBeGreaterThan(100);
+        async () => mainContentLength(page),
+        { timeout: 10_000, message: `${route} rendered only the navigation shell — no content of its own` },
+      ).toBeGreaterThan(80);
 
-      const body = (await page.locator('body').innerText()) ?? '';
+      await expect(page, `${route} bounced to the login screen`).not.toHaveURL(/\/login/);
 
-      // Check for crashes
-      expect(body.toLowerCase()).not.toContain('something went wrong');
-      expect(body.toLowerCase()).not.toContain('unexpected error');
-      expect(body.toLowerCase()).not.toContain('cannot read properties of undefined');
-      expect(body.toLowerCase()).not.toContain('typeerror');
+      const main = await mainText(page);
+      expect(crashIndicators(main), `${route} rendered a fatal error`).toEqual([]);
     });
   }
 });
@@ -111,15 +136,20 @@ test.describe('IntelliFlow tenant — demo sanity', () => {
     for (const route of TENANT_ROUTES) {
       await gotoRoute(page, route);
 
+      await expect(page, `${route} bounced to the login screen`).not.toHaveURL(/\/login/);
       await expect.poll(
-        async () => ((await page.locator('body').innerText()) ?? '').trim().length,
-        { timeout: 10_000, message: `${route} did not render meaningful content` },
-      ).toBeGreaterThan(50);
+        async () => mainContentLength(page),
+        { timeout: 10_000, message: `${route} rendered only the navigation shell — no content of its own` },
+      ).toBeGreaterThan(80);
 
-      const body = (await page.locator('body').innerText()) ?? '';
-      expect(body.toLowerCase(), `${route} rendered a fatal error`).not.toContain('something went wrong');
-      expect(body.toLowerCase(), `${route} rendered an unexpected error`).not.toContain('unexpected error');
-      expect(body.trim().length, `${route} remained blank`).toBeGreaterThan(50);
+      const main = await mainText(page);
+      expect(crashIndicators(main), `${route} rendered a fatal error`).toEqual([]);
+
+      // Named content: proves the RIGHT module rendered, which a length check never could.
+      const expected = TENANT_ROUTE_CONTENT[route];
+      if (expected)
+        expect(main, `${route} rendered content, but nothing matching ${expected} — wrong screen or an error surface`)
+          .toMatch(expected);
     }
   });
 });
@@ -129,13 +159,15 @@ test.describe('Ras Al-Manar tenant — demo sanity', () => {
     await tenantLogin(page, RASALMANAR_ADMIN.email, RASALMANAR_ADMIN.password, RASALMANAR_SLUG);
     for (const route of ['/dashboard', '/people']) {
       await gotoRoute(page, route);
+      await expect(page, `${route} bounced to the login screen`).not.toHaveURL(/\/login/);
       await expect.poll(
-        async () => ((await page.locator('body').innerText()) ?? '').trim().length,
-        { timeout: 10_000, message: `${route} did not render meaningful content` },
-      ).toBeGreaterThan(50);
-      const body = (await page.locator('body').innerText()) ?? '';
-      expect(body.toLowerCase(), `${route} rendered a fatal error`).not.toContain('something went wrong');
-      expect(body.trim().length, `${route} remained blank`).toBeGreaterThan(50);
+        async () => mainContentLength(page),
+        { timeout: 10_000, message: `${route} rendered only the navigation shell — no content of its own` },
+      ).toBeGreaterThan(80);
+      const main = await mainText(page);
+      expect(crashIndicators(main), `${route} rendered a fatal error`).toEqual([]);
+      const expected = TENANT_ROUTE_CONTENT[route];
+      if (expected) expect(main, `${route} did not render ${expected}`).toMatch(expected);
     }
   });
 });
@@ -148,8 +180,8 @@ test.describe('Platform tenant detail — demo sanity', () => {
     await link.click();
     await page.waitForURL(/\/platform\/tenants\/[0-9a-f-]{36}/, { timeout: 10_000 });
     await page.waitForLoadState('networkidle');
-    const body = (await page.locator('body').innerText()) ?? '';
-    expect(body.toLowerCase()).not.toContain('something went wrong');
+    const main = await mainText(page);
+    expect(crashIndicators(main), 'tenant detail rendered a fatal error').toEqual([]);
     await expect(page.getByText(/intelliflow systems/i).first()).toBeVisible();
   });
 

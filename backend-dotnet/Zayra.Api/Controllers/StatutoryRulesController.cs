@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -137,13 +138,24 @@ public class StatutoryRulesController : ControllerBase
             .AnyAsync(r => (r.TenantId == null || r.TenantId == tenantId) && r.CountryCode == cc && r.Jurisdiction == jur && r.RuleKey == key, ct);
         if (!exists) return BadRequest($"Unknown statutory rule key '{key}' for {cc}/{jur}. Overrides may only be created for seeded rules.");
 
+        // UNIT GATE. RuleValue is stored as free text, so this is the ONLY place the unit of a
+        // statutory value can be enforced on the way in. A rate key takes a decimal FRACTION
+        // (0.09 = 9%), never a percentage: the payslip multiplies this value straight into the
+        // contributory wage (KsaDeductionCalculator, `coveredWage * empAnnuity`), so "9" entered
+        // for gosi.saudi_employee_rate would deduct nine times the wage. "9" could be meant either
+        // way, so it is refused with the expected form named, not guessed.
+        // See Infrastructure/Payroll/StatutoryValueUnits.cs.
+        var value = req.RuleValue.Trim();
+        if (StatutoryValueUnits.Validate(key, req.DataType, value) is { } unitError)
+            return BadRequest(unitError);
+
         var rule = new StatutoryRule
         {
             TenantId     = tenantId,
             CountryCode  = cc,
             Jurisdiction = jur,
             RuleKey      = key,
-            RuleValue    = req.RuleValue.Trim(),
+            RuleValue    = value,
             DataType     = string.IsNullOrWhiteSpace(req.DataType) ? "decimal" : req.DataType,
             Description  = req.Description.Trim(),
             EffectiveFrom = req.EffectiveFrom,
@@ -184,13 +196,19 @@ public class StatutoryRulesController : ControllerBase
             .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (prior is null) return NotFound();
 
+        // Same unit gate as Create — a supersede writes a new effective-dated value and is the
+        // path an operator actually uses to change a rate.
+        var nextValue = (req.RuleValue ?? string.Empty).Trim();
+        if (StatutoryValueUnits.Validate(prior.RuleKey, prior.DataType, nextValue) is { } unitError)
+            return BadRequest(unitError);
+
         // Supersede (append-only): close the prior row, insert the new effective-dated value.
         var before = prior.RuleValue;
         prior.EffectiveTo = req.EffectiveFrom;
         var next = new StatutoryRule
         {
             TenantId = tenantId, CountryCode = prior.CountryCode, Jurisdiction = prior.Jurisdiction,
-            RuleKey = prior.RuleKey, RuleValue = req.RuleValue.Trim(), DataType = prior.DataType,
+            RuleKey = prior.RuleKey, RuleValue = nextValue, DataType = prior.DataType,
             Description = req.Description.Trim(), EffectiveFrom = req.EffectiveFrom, EffectiveTo = req.EffectiveTo,
             CreatedBy = this.GetUserId(), CreatedAtUtc = DateTime.UtcNow,
         };

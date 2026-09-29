@@ -50,6 +50,11 @@ public class NotificationDeliveryTests
             services.AddScoped<INotificationChannelDispatcher, WhatsAppChannelDispatcher>();
             services.AddScoped<INotificationChannelDispatcher, PushChannelDispatcher>();
             services.AddScoped<INotificationService, NotificationService>();
+            // Module gate: a switched-off module must stop notifying people, so the dispatcher
+            // resolves module state. Registered here so the gate is actually exercised by these
+            // tests rather than silently skipped.
+            services.AddScoped<Zayra.Api.Infrastructure.Modules.ITenantModuleService,
+                               Zayra.Api.Infrastructure.Modules.TenantModuleService>();
             Provider = services.BuildServiceProvider();
         }
 
@@ -162,6 +167,93 @@ public class NotificationDeliveryTests
         });
         db.SaveChanges();
         return tenantId;
+    }
+
+    // ── Module gate ───────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// A switched-off module must stop talking to people, not merely stop answering its API.
+    /// A tenant that has turned payroll off should not keep receiving "your payslip is ready".
+    /// </summary>
+    [Fact]
+    public async Task PayslipNotice_IsSuppressed_WhenThePayrollModuleIsSwitchedOff()
+    {
+        using var h = new Harness();
+        await using var db = h.NewDb();
+        var tenantId = SeedTenantUserAndEmployee(db, "aisha@acme.test", "+971501234567");
+        var userId = UserIdOf(db, tenantId);
+
+        db.TenantFeatureFlags.Add(new Zayra.Api.Models.TenantFeatureFlag
+        {
+            TenantId = tenantId,
+            FeatureKey = Zayra.Api.Infrastructure.Modules.ModuleKeys.Payroll,
+            IsEnabled = false,
+        });
+        await db.SaveChangesAsync();
+
+        await h.Notifications.EnqueueAsync(new NotificationRequest
+        {
+            TenantId = tenantId, UserId = userId, EventCode = "PAYSLIP_READY",
+            EntityName = "Payslip", Title = "Payslip ready", Message = "Your payslip is ready.",
+        }, default);
+
+        await using var check = h.NewDb();
+        check.Notifications.IgnoreQueryFilters().Count(n => n.TenantId == tenantId)
+            .Should().Be(0, "the in-app row is the terminal fallback and must not be written either");
+        check.NotificationDeliveries.IgnoreQueryFilters().Count(d => d.TenantId == tenantId)
+            .Should().Be(0);
+    }
+
+    /// <summary>The same notice must still arrive while the module is on — the control case.</summary>
+    [Fact]
+    public async Task PayslipNotice_IsDelivered_WhenThePayrollModuleIsOn()
+    {
+        using var h = new Harness();
+        await using var db = h.NewDb();
+        var tenantId = SeedTenantUserAndEmployee(db, "aisha@acme.test", "+971501234567");
+        var userId = UserIdOf(db, tenantId);
+
+        await h.Notifications.EnqueueAsync(new NotificationRequest
+        {
+            TenantId = tenantId, UserId = userId, EventCode = "PAYSLIP_READY",
+            EntityName = "Payslip", Title = "Payslip ready", Message = "Your payslip is ready.",
+        }, default);
+
+        await using var check = h.NewDb();
+        check.Notifications.IgnoreQueryFilters().Count(n => n.TenantId == tenantId)
+            .Should().BeGreaterThan(0);
+    }
+
+    /// <summary>
+    /// Security notices are mandatory: no module switch may silence a password-reset or sign-in
+    /// notice. Access &amp; Identity owns that category and is Core, but the dispatcher checks
+    /// mandatory status first regardless.
+    /// </summary>
+    [Fact]
+    public async Task SecurityNotice_IsNeverSuppressedByAModuleSwitch()
+    {
+        using var h = new Harness();
+        await using var db = h.NewDb();
+        var tenantId = SeedTenantUserAndEmployee(db, "aisha@acme.test", "+971501234567");
+        var userId = UserIdOf(db, tenantId);
+
+        db.TenantFeatureFlags.Add(new Zayra.Api.Models.TenantFeatureFlag
+        {
+            TenantId = tenantId,
+            FeatureKey = Zayra.Api.Infrastructure.Modules.ModuleKeys.AccessControl,
+            IsEnabled = false,
+        });
+        await db.SaveChangesAsync();
+
+        await h.Notifications.EnqueueAsync(new NotificationRequest
+        {
+            TenantId = tenantId, UserId = userId, EventCode = "PASSWORD_RESET",
+            EntityName = "Security", Title = "Password reset", Message = "Your password was reset.",
+        }, default);
+
+        await using var check = h.NewDb();
+        check.Notifications.IgnoreQueryFilters().Count(n => n.TenantId == tenantId)
+            .Should().BeGreaterThan(0, "a security notice must survive any module configuration");
     }
 
     private static Guid UserIdOf(ZayraDbContext db, Guid tenantId) =>

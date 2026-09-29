@@ -5,6 +5,11 @@ import { MessageSquareText, Clock, Search, X } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { Sidebar } from './Sidebar';
 import { TopBar } from './TopBar';
+import dynamic from 'next/dynamic';
+
+// The drawer's code loads the first time someone opens it, not on every page load.
+const AssistantDrawer = dynamic(() => import('./AssistantDrawer').then((m) => m.AssistantDrawer), { ssr: false });
+import { MobileBottomNav } from './MobileBottomNav';
 import { employeesApi } from '../api/employees';
 import { reportsApi } from '../api/reports';
 import { usersApi } from '../api/identity';
@@ -50,6 +55,9 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => typeof window !== 'undefined' && localStorage.getItem('sidebar-collapsed') === 'true');
   const [commandOpen, setCommandOpen] = useState(false);
+  // Lives here, not in a page: <main> is keyed by pathname and remounts on navigation.
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const [assistantUsed, setAssistantUsed] = useState(false);
   const [commandQuery, setCommandQuery] = useState('');
   const [searchHistory, setSearchHistory] = useState<string[]>([]);
   const [employeeResults, setEmployeeResults] = useState<Array<{ id: number; label: string; sublabel: string }>>([]);
@@ -337,7 +345,9 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
 
   return (
     <LocaleProvider>
-    <div className="tenant-app-shell min-h-screen overflow-x-hidden bg-lightBg text-slate-950 dark:bg-midnight dark:text-white">
+    {/* overflow-x-CLIP, not hidden: `hidden` turns this div into a scroll container, which
+        silently disabled every position:sticky inside it (the command bar scrolled away). */}
+    <div className="tenant-app-shell wg-canvas min-h-screen overflow-x-clip text-slate-950 dark:text-white">
       <div className="flex min-h-screen">
         <Sidebar
           isOpen={sidebarOpen}
@@ -355,11 +365,15 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
             onToggleTheme={onToggleTheme}
             onOpenSidebar={() => setSidebarOpen(true)}
             onOpenSearch={openCommandPalette}
-            onAskKynexOne={() => router.push('/ai-assistant')}
+            onAskKynexOne={() => { setAssistantUsed(true); setAssistantOpen(true); }}
           />
-          <main key={pathname} className="animate-fade-in-up px-4 py-6 sm:px-6 lg:px-8">{children}</main>
+          {/* Bottom padding below lg clears the fixed bottom nav and the device safe area. */}
+          <main key={pathname} className="animate-fade-in-up px-4 pb-[calc(5.5rem+env(safe-area-inset-bottom))] pt-6 sm:px-6 lg:px-8 lg:pb-8">{children}</main>
         </div>
       </div>
+
+      <MobileBottomNav onOpenMore={() => setSidebarOpen(true)} />
+      {assistantUsed && <AssistantDrawer open={assistantOpen} onClose={() => setAssistantOpen(false)} />}
 
       {commandOpen && (
         <div
@@ -400,7 +414,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
                     {searchHistory.map((item) => (
                       <div key={item} className="group flex items-center gap-2 rounded-xl px-4 py-2.5 hover:bg-slate-50 dark:hover:bg-white/[0.05]">
                         <Clock className="h-3.5 w-3.5 shrink-0 text-slate-300 dark:text-slate-600" />
-                        <button type="button" className="flex-1 text-left text-sm text-slate-600 dark:text-slate-300" onClick={() => setCommandQuery(item)}>
+                        <button type="button" className="flex-1 text-start text-sm text-slate-600 dark:text-slate-300" onClick={() => setCommandQuery(item)}>
                           {item}
                         </button>
                         <button type="button" onClick={() => removeHistoryItem(item)} title="Remove from history" className="opacity-0 group-hover:opacity-100 transition grid h-5 w-5 place-items-center rounded text-slate-300 hover:text-slate-500 dark:text-slate-600 dark:hover:text-slate-400">
@@ -426,7 +440,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
                             key={`employee-${item.id}`}
                             type="button"
                             onClick={() => openEmployeeResult(item.id)}
-                            className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left transition ${selected ? 'bg-sapphire/10 dark:bg-cyanAccent/10' : 'hover:bg-slate-50 dark:hover:bg-white/[0.05]'}`}
+                            className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-start transition ${selected ? 'bg-sapphire/10 dark:bg-cyanAccent/10' : 'hover:bg-slate-50 dark:hover:bg-white/[0.05]'}`}
                           >
                             <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-sapphire/10 text-sapphire dark:bg-cyanAccent/10 dark:text-cyanAccent">
                               <Search className="h-4 w-4" />
@@ -456,7 +470,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
                             key={`user-${item.id}`}
                             type="button"
                             onClick={() => openUserResult(item.searchText)}
-                            className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left transition ${selected ? 'bg-sapphire/10 dark:bg-cyanAccent/10' : 'hover:bg-slate-50 dark:hover:bg-white/[0.05]'}`}
+                            className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-start transition ${selected ? 'bg-sapphire/10 dark:bg-cyanAccent/10' : 'hover:bg-slate-50 dark:hover:bg-white/[0.05]'}`}
                           >
                             <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-slate-100 text-slate-500 dark:bg-white/[0.06] dark:text-slate-300">
                               <Search className="h-4 w-4" />
@@ -486,7 +500,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
                             key={`report-${item.key}`}
                             type="button"
                             onClick={() => openReportResult(item.key)}
-                            className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left transition ${selected ? 'bg-sapphire/10 dark:bg-cyanAccent/10' : 'hover:bg-slate-50 dark:hover:bg-white/[0.05]'}`}
+                            className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-start transition ${selected ? 'bg-sapphire/10 dark:bg-cyanAccent/10' : 'hover:bg-slate-50 dark:hover:bg-white/[0.05]'}`}
                           >
                             <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-slate-100 text-slate-500 dark:bg-white/[0.06] dark:text-slate-300">
                               <Search className="h-4 w-4" />
@@ -521,7 +535,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
                       key={`${item.path}-${item.label}`}
                       type="button"
                       onClick={() => runCommand(item.path)}
-                      className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left transition ${selected ? 'bg-sapphire/10 dark:bg-cyanAccent/10' : 'hover:bg-slate-50 dark:hover:bg-white/[0.05]'}`}
+                      className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-start transition ${selected ? 'bg-sapphire/10 dark:bg-cyanAccent/10' : 'hover:bg-slate-50 dark:hover:bg-white/[0.05]'}`}
                     >
                       <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-slate-100 text-slate-500 dark:bg-white/[0.06] dark:text-slate-300">
                         {isAssistant ? <MessageSquareText className="h-4 w-4" /> : <Search className="h-4 w-4" />}

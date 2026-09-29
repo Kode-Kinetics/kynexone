@@ -18,22 +18,3 @@ public class JwtOptions
     public int AccessTokenMinutes { get; set; } = 30;
     public int RefreshTokenDays { get; set; } = 14;
 }
-
-public class SeedAdminOptions
-{
-    public string TenantName { get; set; } = "Zayra HQ";
-    public string TenantSlug { get; set; } = "zayra";
-    public string Email { get; set; } = "admin@zayra.local";
-    public string FullName { get; set; } = "Zayra Admin";
-    // No hard-coded default: the bootstrap admin password MUST be supplied via config/env
-    // (SeedAdmin:Password / env SeedAdmin__Password). Program.cs fails fast in Production/dedicated
-    // deployments when it is missing or weak, and substitutes a dev default in local development.
-    public string Password { get; set; } = string.Empty;
-
-    /// <summary>
-    /// When true, seeds sample/demo business data (company, branches, departments,
-    /// grades, sample policies and approval workflows). Defaults to FALSE so production
-    /// tenants start clean — the admin configures their own organisation via Setup.
-    /// </summary>
-    public bool SeedDemoData { get; set; } = false;
-}

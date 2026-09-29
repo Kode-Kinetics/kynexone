@@ -28,7 +28,8 @@ public class QueryFilterBypassRatchetTests
     private static readonly Dictionary<string, int> ApprovedBypassCounts = new()
     {
         ["Application/Employees/EmployeeOrgFieldResolver.cs"] = 3,
-        ["Controllers/EmployeesController.cs"] = 8,
+        // Auth-recovery candidate (+15, provisional): every new site pins TenantId or a server-generated unique key; see register §6.
+        ["Controllers/EmployeesController.cs"] = 23,
         ["Controllers/EstablishmentController.cs"] = 12,
         ["Controllers/Finance/AdvancesController.cs"] = 2,
         ["Controllers/Finance/BonusesController.cs"] = 3,
@@ -38,20 +39,27 @@ public class QueryFilterBypassRatchetTests
         ["Controllers/GosiController.cs"] = 2,
         ["Controllers/OrganizationStructureImportController.cs"] = 6,
         ["Controllers/PayrollController.cs"] = 8,
-        ["Controllers/PlatformController.cs"] = 3,
+        // Auth-recovery candidate (+12, provisional): every new site pins TenantId or a server-generated unique key; see register §6.
+        ["Controllers/PlatformController.cs"] = 15,
         ["Controllers/RatesController.cs"] = 11,
         ["Controllers/StatutoryRulesController.cs"] = 1,
         ["Data/ZayraDbContext.cs"] = 3,
-        // 2 -> 4 (Wave 1 B1). ResolveEmployee gained two: the device-ingest webhook is
+        // 2 -> 3 (Wave 1 B1). ResolveEmployee gained ONE: the device-ingest webhook is
         // [AllowAnonymous], and Employee is the only entity on that path that is
         // ICompanyScopedOperational as well as tenant-owned. The company clause of the read filter
         // is independent of the system-scope bypass, so in Production (strict mode) an anonymous
         // request resolved to an EMPTY company scope and this lookup matched zero rows — every
-        // device punch was recorded as unmatched and no daily record was ever created. Both new
-        // sites re-apply `TenantId == device.TenantId`, a value read from the database after the
+        // device punch was recorded as unmatched and no daily record was ever created. The new
+        // site re-applies `TenantId == device.TenantId`, a value read from the database after the
         // device key is authenticated, so the scope is the same one the filter would have applied.
-        ["Infrastructure/Attendance/AttendanceService.cs"] = 4,
-        ["Infrastructure/Auth/AuthService.cs"] = 2,
+        //
+        // This was pinned at 4 while the file has only ever held 3 (lines ~381, ~404, ~976). The
+        // ratchet fails only on count > approved, so the surplus slot was a silently pre-authorised
+        // future bypass — the exact thing this table exists to prevent. Pinned to the real count so
+        // the next raw bypass added to this file fails the build.
+        ["Infrastructure/Attendance/AttendanceService.cs"] = 3,
+        // Auth-recovery candidate (+10, provisional): every new site pins TenantId or a server-generated unique key; see register §6.
+        ["Infrastructure/Auth/AuthService.cs"] = 12,
         ["Infrastructure/Boot/CompanyScopeBackfill.cs"] = 1,
         ["Infrastructure/Boot/PayrollAuditChainBackfill.cs"] = 3,
         ["Infrastructure/Compliance/GosiReadinessReportService.cs"] = 1,
@@ -60,7 +68,8 @@ public class QueryFilterBypassRatchetTests
         ["Infrastructure/Email/SmtpEmailService.cs"] = 1,
         ["Infrastructure/Employees/EmployeeDuplicateDetector.cs"] = 2,
         ["Infrastructure/Employees/EmployeeImportEstablishmentEvaluator.cs"] = 5,
-        ["Infrastructure/Employees/EmployeeManagementService.cs"] = 1,
+        // Auth-recovery candidate (+6, provisional): every new site pins TenantId or a server-generated unique key; see register §6.
+        ["Infrastructure/Employees/EmployeeManagementService.cs"] = 7,
         ["Infrastructure/Employees/EmployeeReadinessPolicyResolver.cs"] = 2,
         ["Infrastructure/Finance/ErpPostingEvidence.cs"] = 4,
         ["Infrastructure/Finance/JournalExportBuilder.cs"] = 1,
@@ -73,7 +82,8 @@ public class QueryFilterBypassRatchetTests
         ["Infrastructure/Notifications/NotificationRecipientResolver.cs"] = 6,
         ["Infrastructure/Notifications/NotificationService.cs"] = 3,
         ["Infrastructure/Organization/EstablishmentGuardService.cs"] = 8,
-        ["Infrastructure/Organization/OrganizationSetupService.cs"] = 1,
+        // Auth-recovery candidate (+8, provisional): every new site pins TenantId or a server-generated unique key; see register §6.
+        ["Infrastructure/Organization/OrganizationSetupService.cs"] = 9,
         ["Infrastructure/Payroll/BonusGlLedger.cs"] = 6,
         ["Infrastructure/Payroll/CompanyRateResolvers.cs"] = 2,
         ["Infrastructure/Payroll/EosbProvisionLedger.cs"] = 2,
@@ -88,8 +98,20 @@ public class QueryFilterBypassRatchetTests
         ["Infrastructure/Seed/GosiRuleSeeder.cs"] = 2,
         ["Infrastructure/Seed/PayComponentSeeder.cs"] = 1,
         ["Infrastructure/Seed/StatutoryRuleSeeder.cs"] = 1,
-        ["Infrastructure/Seed/TenantProvisioningBundle.cs"] = 11,
+        // 11 -> 10: the default-leave-policy installer reads through ScopedBypass.TenantWide, which
+        // re-applies the tenant predicate it names, so the raw site it replaced is gone for good.
+        ["Infrastructure/Seed/TenantProvisioningBundle.cs"] = 10,
         ["Infrastructure/WorkWeek/WorkWeekService.cs"] = 3,
+        // Auth-recovery candidate (new file, provisional): see register §6.
+        ["Controllers/OffboardingController.cs"] = 7,
+        // Auth-recovery candidate (new file, provisional): see register §6.
+        ["Infrastructure/Auth/AccessManagementService.cs"] = 39,
+        // Auth-recovery candidate (new file, provisional): see register §6.
+        ["Infrastructure/Auth/AuthTenantGraphIntegrity.cs"] = 2,
+        // Auth-recovery candidate (new file, provisional): see register §6.
+        ["Infrastructure/Auth/EnterpriseIdentityService.cs"] = 5,
+        // Auth-recovery candidate (new file, provisional): see register §6.
+        ["Infrastructure/Auth/MfaService.cs"] = 16,
     };
 
     private static string? ResolveApiRoot()

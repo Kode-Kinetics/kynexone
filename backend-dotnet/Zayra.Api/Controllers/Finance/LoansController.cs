@@ -2,11 +2,13 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
+using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Finance;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
@@ -185,33 +187,112 @@ public class LoansController : ControllerBase
 
     [HttpPost("{id:guid}/approvals")]
     [Authorize(Roles = "Admin,HR Manager,Finance,Manager")]
-    public async Task<IActionResult> AddApprovalStep(Guid id, [FromBody] LoanApprovalRequest req, CancellationToken ct)
+    public Task<IActionResult> AddApprovalStep(Guid id, [FromBody] LoanApprovalRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
-        var loan = await _db.EmployeeLoans.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
-        if (loan == null) return NotFound();
-        var step = new LoanApproval
+        // Serialized against DecideApproval on the SAME loan: the status guard below is a
+        // read-then-write check, so without the lock a step added at the same instant as the final
+        // decide slips in behind the "all steps approved" roll-up and re-opens a disbursed loan.
+        return FinanceDecisionSerializer.SerializeAsync<IActionResult>(
+            _db, FinanceDecisionSerializer.ScopeLoan, tid, id, async () =>
         {
-            TenantId = tid, LoanId = id, StepOrder = req.StepOrder,
-            ApproverRole = req.ApproverRole,
-        };
-        _db.LoanApprovals.Add(step);
-        await _db.SaveChangesAsync(ct);
-        // SAFE-SERIALIZATION: LoanApproval is a workflow step record — no salary or personal financial data.
-        return Ok(step);
+            var loan = await _db.EmployeeLoans.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
+            if (loan == null) return NotFound();
+            // A new Pending step on a decided loan resets the "all steps approved" roll-up that
+            // DecideApproval uses, which is the back door around the status guard added there.
+            // OffersController.AddApproval refuses the same way.
+            if (loan.Status != "Pending")
+                return Conflict(new
+                {
+                    error = "invalid_loan_state",
+                    message = $"Approval steps can only be added to a Pending loan (current: {loan.Status})."
+                });
+            var step = new LoanApproval
+            {
+                TenantId = tid, LoanId = id, StepOrder = req.StepOrder,
+                ApproverRole = req.ApproverRole,
+            };
+            _db.LoanApprovals.Add(step);
+            await _db.SaveChangesAsync(ct);
+            // SAFE-SERIALIZATION: LoanApproval is a workflow step record — no salary or personal financial data.
+            return Ok(step);
+        }, ct);
     }
 
     [HttpPatch("{id:guid}/approvals/{approvalId:guid}/decide")]
     [Authorize(Roles = "Admin,HR Manager,Finance,Manager")]
-    public async Task<IActionResult> DecideApproval(Guid id, Guid approvalId, [FromBody] ApprovalDecisionRequest req, CancellationToken ct)
+    public Task<IActionResult> DecideApproval(Guid id, Guid approvalId, [FromBody] ApprovalDecisionRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
         var uid = GetUserId();
+
+        // Pure input validation — no state is read, so it belongs outside the critical section.
+        if (req.Decision is not ("Approved" or "Rejected"))
+            return Task.FromResult<IActionResult>(
+                BadRequest(new { error = "invalid_decision", message = "Decision must be Approved or Rejected." }));
+
+        // ── The CONCURRENCY guard ────────────────────────────────────────────────────────────
+        // The status guards below are read-then-write checks. They close a sequential replay and
+        // nothing else: two decides arriving at the same instant both read Status == "Pending",
+        // both pass, and both disburse. Everything from here on runs as the sole writer of this
+        // loan (transaction-scoped advisory lock inside the retrying execution strategy — see
+        // FinanceDecisionSerializer for why the delegate is safe to re-run), so the loser's guard
+        // sees the winner's committed status and returns the 409 it was always meant to return.
+        return FinanceDecisionSerializer.SerializeAsync<IActionResult>(
+            _db, FinanceDecisionSerializer.ScopeLoan, tid, id, async () =>
+        {
+        // ── The state guard ──────────────────────────────────────────────────────────────────
+        // The checklist itself now lives in ApprovalDecisionGuard, shared with AdvancesController
+        // and OffersController. It used to be copied into each of them, which is how
+        // AdvancesController.Reject came to be missing its status check entirely. The order of the
+        // checks and every response body below are unchanged from the hand-rolled version;
+        // ApprovalDecisionCharacterisationTests pins them.
+        //
+        // What the guard protects here: this endpoint used to act on a loan in ANY status and on an
+        // approval step that had already been decided. Concretely, before it:
+        //   • Approving an already-Active loan re-ran the whole disbursement block below — it
+        //     reset ApprovedAmount and OutstandingBalance while TotalRepaid stayed put, breaking
+        //     the ApprovedAmount − TotalRepaid − OutstandingBalance == 0 invariant AuditReport
+        //     reconciles on, pushed a fresh DisbursementDate, and re-ran GenerateInstallments
+        //     into the unique (TenantId, LoanId, InstallmentNumber) index for an unhandled 500.
+        //   • Rejecting an Active or Settled loan silently flipped it to Rejected while the
+        //     disbursement GL entry and the installment schedule stayed live.
+        //   • A replayed request simply re-decided the same step, overwriting the decider and
+        //     the decision itself.
+        // Only the GL posting was idempotent (POD-B1b, below), which was a band-aid over this
+        // missing guard rather than the guard. The shape and the error codes mirror
+        // OffersController.DecideApproval — the same route on the same kind of two-row aggregate,
+        // and since the convergence the two literally share this checklist.
+        //
+        // Both records are resolved before the guard runs so the checklist can be evaluated in one
+        // place; they are side-effect-free reads, and the guard reports them in the same order the
+        // inline checks did (a decided step still outranks a missing loan).
         var approval = await _db.LoanApprovals.FirstOrDefaultAsync(x => x.Id == approvalId && x.LoanId == id && x.TenantId == tid, ct);
-        if (approval == null) return NotFound();
-        var loan = await _db.EmployeeLoans.FirstAsync(x => x.Id == id && x.TenantId == tid, ct);
-        if (req.Decision == "Approved" && loan.CreatedBy.HasValue && uid.HasValue && loan.CreatedBy == uid)
-            return BadRequest("Maker-checker control: requester cannot approve their own loan.");
+        var loan = await _db.EmployeeLoans.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
+
+        var verdict = ApprovalDecisionGuard.Evaluate(new ApprovalDecisionSpec
+        {
+            Decision = req.Decision,
+            AllowedDecisions = ApprovalDecisionGuard.ApprovedOrRejected,
+            Step = new ApprovalStepState(approval is not null, approval?.Status ?? string.Empty),
+            ParentLabel = "loan",
+            ParentExists = loan is not null,
+            ParentStatus = loan?.Status ?? string.Empty,
+            ParentStatusesAllowingDecision = new[] { "Pending" },
+            Lock = new ApprovalLock(
+                loan?.IsLockedByPayroll == true,
+                "This loan is locked by an in-flight payroll run and cannot be decided."),
+            // Approval only: a requester may still reject (withdraw) their own loan.
+            MakerChecker = new MakerCheckerRule(
+                loan?.CreatedBy is { } maker && uid.HasValue && maker == uid,
+                new[] { "Approved" },
+                "Maker-checker control: requester cannot approve their own loan."),
+        });
+        if (!verdict.Passed) return LoanDecisionRefusal(verdict, loan?.Status);
+
+        // Guard postcondition: a passing verdict means both records were found.
+        ArgumentNullException.ThrowIfNull(approval);
+        ArgumentNullException.ThrowIfNull(loan);
 
         var oldStatus = approval.Status;
         approval.Status = req.Decision; approval.Comments = req.Comments ?? string.Empty;
@@ -249,6 +330,7 @@ public class LoansController : ControllerBase
             JsonSerializer.Serialize(new { Status = oldStatus }),
             JsonSerializer.Serialize(new { Status = req.Decision, Step = approval.StepOrder, approval.Comments }), ct);
         return Ok(new { loan = EmployeeLoanDto.Project(loan), approval });
+        }, ct);
     }
 
     [HttpPatch("{id:guid}/settle")]
@@ -443,6 +525,32 @@ public class LoansController : ControllerBase
         _db.FinanceGlEntries.IgnoreQueryFilters().AsNoTracking()
             .AnyAsync(x => x.TenantId == tid && x.SourceModule == "Loan"
                         && x.SourceEntityId == loanId && x.EventType == "Disbursement" && !x.IsReversed, ct);
+
+    /// <summary>
+    /// Maps a shared-guard refusal to the exact response this endpoint has always returned.
+    /// The shapes are deliberately NOT unified across the converged modules — Advances answers the
+    /// same conditions with different codes and even different status classes, and changing that
+    /// would be an API break wearing a refactor's clothes. The guard owns the checklist; each
+    /// module keeps its own contract.
+    /// </summary>
+    private IActionResult LoanDecisionRefusal(ApprovalGuardVerdict verdict, string? loanStatus) => verdict.Outcome switch
+    {
+        ApprovalGuardOutcome.DecisionOutsideVocabulary =>
+            BadRequest(new { error = "invalid_decision", message = "Decision must be Approved or Rejected." }),
+        ApprovalGuardOutcome.StepNotFound or ApprovalGuardOutcome.ParentNotFound => NotFound(),
+        ApprovalGuardOutcome.StepAlreadyDecided =>
+            Conflict(new { error = "approval_already_decided", message = verdict.Message }),
+        ApprovalGuardOutcome.ParentStateForbidsDecision =>
+            Conflict(new
+            {
+                error = "invalid_loan_state",
+                message = $"Loan approval decisions require Pending status (current: {loanStatus})."
+            }),
+        ApprovalGuardOutcome.ParentLocked =>
+            Conflict(new { error = "locked_by_payroll", message = verdict.Message }),
+        ApprovalGuardOutcome.MakerIsChecker => BadRequest(verdict.Message),
+        _ => throw new InvalidOperationException($"Unhandled approval guard outcome '{verdict.Outcome}'."),
+    };
 
     private async Task WriteLoanAudit(Guid tid, Guid? uid, Guid loanId, string action, string? oldVal, string newVal, CancellationToken ct)
     {

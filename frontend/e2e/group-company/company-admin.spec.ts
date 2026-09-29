@@ -8,8 +8,8 @@
  */
 import { test, expect } from '@playwright/test';
 import {
-  stackDownReason,
-  groupSeedMissingReason,
+  assertStackReachable,
+  assertFixtureWorld,
   newApi,
   apiLogin,
   tryApiLogin,
@@ -27,19 +27,19 @@ import {
   ALMARAI_SIBLING_CODES,
   empCodePrefix,
 } from './helpers';
+import { MISSING_WORLD } from '../world';
 
 const DAIRY = 'ALM-DAIRY-KSA';
 const BAKERY = 'ALM-BAKERY-KSA';
 const COMPANY_ADMIN = companyUser('admin', DAIRY); // admin@alm-dairy-ksa.almarai-test.local
 const OWNER = groupUser('owner');
 
-let skipReason: string | null = null;
 let bakeryId: string | null = null;
 
 test.describe('Group→Company: company admin (ALM-DAIRY-KSA)', () => {
   test.beforeAll(async () => {
-    skipReason = (await stackDownReason()) ?? (await groupSeedMissingReason(COMPANY_ADMIN));
-    if (skipReason) return;
+    await assertStackReachable();   // hard-fails when the stack is down; never skips
+    await assertFixtureWorld(COMPANY_ADMIN);
 
     // Resolve the sibling (ALM-BAKERY-KSA) company id via a group-scope user —
     // the company admin cannot see it, which is exactly the point.
@@ -55,10 +55,6 @@ test.describe('Group→Company: company admin (ALM-DAIRY-KSA)', () => {
     }
   });
 
-  test.beforeEach(() => {
-    test.skip(skipReason !== null, skipReason ?? '');
-  });
-
   test('API: company admin sees only ALM-DAIRY-KSA in /api/companies (and me.companies)', async () => {
     const api = await newApi();
     try {
@@ -70,12 +66,15 @@ test.describe('Group→Company: company admin (ALM-DAIRY-KSA)', () => {
 
       const me = await fetchMe(api, token);
       expect(me.status).toBe(200);
-      if (Array.isArray(me.json?.companies)) {
-        expect(me.json.companies.length).toBe(1);
-      }
-      if (me.json?.isGroupScope !== undefined) {
-        expect(me.json.isGroupScope).toBeFalsy();
-      }
+      // Both checks were `if (field present) { expect(...) }`. A response that
+      // dropped `companies` or `isGroupScope` — which is how a scope regression
+      // would surface — made this test assert nothing about scope at all.
+      expect(Array.isArray(me.json?.companies), '/api/auth/me must report a companies array').toBe(true);
+      expect(me.json.companies.length).toBe(1);
+      expect(JSON.stringify(me.json.companies)).toContain(DAIRY);
+
+      expect(me.json?.isGroupScope, '/api/auth/me must report isGroupScope').toBeDefined();
+      expect(me.json.isGroupScope, 'a company-scoped admin must not be group scope').toBeFalsy();
     } finally {
       await api.dispose().catch(() => {});
     }
@@ -98,7 +97,12 @@ test.describe('Group→Company: company admin (ALM-DAIRY-KSA)', () => {
   });
 
   test('API tamper: X-Company-Id = ALM-BAKERY-KSA id fails closed (empty data, no sibling codes)', async () => {
-    test.skip(bakeryId === null, `could not resolve ${BAKERY} company id via group owner — cannot run tamper check`);
+    // The fixture world guarantees this company exists, so "I could not resolve it" is a broken
+    // world or a broken /api/companies — never a reason to pass the tamper check by not running it.
+    expect(
+      bakeryId,
+      `Could not resolve ${BAKERY} via the group owner, so the X-Company-Id tamper check cannot run.\n${MISSING_WORLD}`,
+    ).not.toBeNull();
 
     const api = await newApi();
     try {

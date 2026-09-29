@@ -71,6 +71,13 @@ public static class LegacyRolePermissionResolver
             ["ApprovalPolicies"] = new("approvals.read", "approvals.manage", Manage: "approvals.manage"),
             ["EmployeeSelfService"] = new("ess.read", "ess.write", "manager.approve"),
             ["HRRequestCenter"] = new("employees.read", "employees.write", "employees.approve"),
+            // B6 HR letters. Same family as the employee record the letter states facts about:
+            // reading the register or the request queue is employees.read, issuing or declining
+            // is employees.write. There is deliberately no separate "letters.issue" permission —
+            // a tenant that has granted employees.write to an HR Officer has already decided that
+            // person may state the company's position about an employee in writing.
+            ["HrLetters"] = new("employees.read", "employees.write", "employees.approve",
+                Manage: "employees.write", Export: "employees.documents"),
             ["Offboarding"] = new("employees.read", "employees.write", "employees.approve", "employees.delete"),
             ["Employees"] = new("employees.read", "employees.write", "employees.approve", "employees.delete", "employees.write", "employees.documents", "employees.bulk_import"),
             ["MigrationImport"] = new("employees.bulk_import", "employees.bulk_import", Import: "employees.bulk_import"),

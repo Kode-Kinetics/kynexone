@@ -134,6 +134,10 @@ public class LeaveTypesController : ControllerBase
     private static readonly string[] LeaveTypeCsvHeaders =
         { "Code", "NameEn", "NameAr", "Category", "IsPaid", "IsHalfDayAllowed", "IsHourlyAllowed", "RequiresAttachment", "RequiresReason", "MaxConsecutiveDays", "ColorCode", "SortOrder" };
 
+    /// <summary>Neutral example row, kept adjacent to the header it is positionally paired with.</summary>
+    private static readonly string[] LeaveTypeCsvExampleRow =
+        { "EXAMPLE", "Example Leave Type", "", "General", "true", "false", "false", "false", "false", "30", "#3B82F6", "1" };
+
     [HttpGet("export")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
     public async Task<IActionResult> Export(CancellationToken ct)
@@ -160,7 +164,7 @@ public class LeaveTypesController : ControllerBase
     public IActionResult ImportTemplate()
     {
         Response.Headers["Content-Disposition"] = "attachment; filename=leave_types_import_template.csv";
-        return Content(Csv.Template(LeaveTypeCsvHeaders), "text/csv");
+        return Content(Csv.Template(LeaveTypeCsvHeaders, LeaveTypeCsvExampleRow), "text/csv");
     }
 
     [HttpPost("import")]

@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
-  ArrowLeft, Search, RefreshCw, UserCog, Key, X, Shield,
+  ArrowLeft, Search, RefreshCw, Key, X, Shield,
   LogOut, Unlock, ShieldOff, Edit2, Mail, Check, AlertTriangle,
   ChevronDown, Eye, EyeOff, UserPlus, Trash2,
 } from 'lucide-react';
@@ -225,14 +225,6 @@ export default function TenantUsersPage() {
     } catch { notify('Failed to revoke sessions.', false); }
   }
 
-  async function impersonate(u: TenantUser) {
-    try {
-      const { token } = await platformApi.impersonate(id, u.id);
-      window.open(`${window.location.origin}/login?impersonate=${token}`, '_blank');
-      notify(`Impersonating ${u.email} — new tab opened.`);
-    } catch { notify('Impersonation failed.', false); }
-  }
-
   // ── render ───────────────────────────────────────────────────────────────────
 
   return (
@@ -262,18 +254,18 @@ export default function TenantUsersPage() {
       {/* search + refresh */}
       <div className="flex items-center gap-3">
         <div className="relative flex-1 max-w-xs">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-600 pointer-events-none" />
+          <Search className="absolute start-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-600 pointer-events-none" />
           <input
             type="text" value={search} onChange={e => setSearch(e.target.value)} onKeyDown={e => e.key === 'Enter' && load()}
             placeholder="Search by name or email…"
-            className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg pl-8 pr-3 py-1.5 text-sm text-slate-300 placeholder-slate-600 focus:outline-none focus:border-sapphire/60 transition-colors" />
+            className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg ps-8 pe-3 py-1.5 text-sm text-slate-300 placeholder-slate-600 focus:outline-none focus:border-sapphire/60 transition-colors" />
         </div>
         <button type="button" title="Refresh" onClick={load} disabled={loading}
           className="h-8 w-8 flex items-center justify-center text-slate-500 hover:text-white border border-white/10 rounded-lg transition-colors disabled:opacity-40">
           <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
         </button>
         <button type="button" onClick={openAdd}
-          className="ml-auto flex items-center gap-1.5 text-xs font-medium text-white bg-sapphire/90 hover:bg-sapphire px-3 py-1.5 rounded-lg transition-colors">
+          className="ms-auto flex items-center gap-1.5 text-xs font-medium text-white bg-sapphire/90 hover:bg-sapphire px-3 py-1.5 rounded-lg transition-colors">
           <UserPlus className="h-3.5 w-3.5" />
           Add User
         </button>
@@ -293,7 +285,7 @@ export default function TenantUsersPage() {
               <thead>
                 <tr className="border-b border-white/[0.06]">
                   {['User', 'Roles', 'Status', 'Flags', 'Joined', ''].map(h => (
-                    <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
+                    <th key={h} className="px-4 py-2.5 text-start text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -321,7 +313,7 @@ export default function TenantUsersPage() {
                     </td>
                     <td className="px-3 py-3">
                       <div className="flex items-center gap-1">
-                        {u.mFAEnabled && (
+                        {u.mfaEnabled && (
                           <span title="MFA enabled" className="text-[10px] bg-blue-500/10 text-blue-400 border border-blue-500/20 px-1.5 py-0.5 rounded">MFA</span>
                         )}
                         {u.mustChangePassword && (
@@ -338,11 +330,6 @@ export default function TenantUsersPage() {
                           className="flex items-center gap-1 text-[11px] text-sapphire border border-sapphire/20 hover:border-sapphire/50 px-2 py-1 rounded transition-colors">
                           <Edit2 className="h-3 w-3" />
                           Manage
-                        </button>
-                        <button type="button" onClick={() => impersonate(u)}
-                          className="flex items-center gap-1 text-[11px] text-blue-400 border border-blue-500/20 hover:border-blue-500/40 px-2 py-1 rounded transition-colors">
-                          <UserCog className="h-3 w-3" />
-                          Login As
                         </button>
                       </div>
                     </td>
@@ -361,7 +348,7 @@ export default function TenantUsersPage() {
           <div className="flex-1 bg-black/60 backdrop-blur-sm" onClick={closePanel} />
 
           {/* drawer */}
-          <div className="w-full max-w-md bg-[#0d1117] border-l border-white/[0.08] flex flex-col overflow-y-auto">
+          <div className="w-full max-w-md bg-[#0d1117] border-s border-white/[0.08] flex flex-col overflow-y-auto">
             <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.07]">
               <div>
                 <p className="text-sm font-semibold text-white">{selected.fullName}</p>
@@ -407,25 +394,25 @@ export default function TenantUsersPage() {
                     <Field label="Status">
                       <div className="relative">
                         <select value={editForm.status} onChange={e => setEditForm(f => ({ ...f, status: e.target.value }))}
-                          title="Account status" className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60 appearance-none pr-7">
+                          title="Account status" className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60 appearance-none pe-7">
                           <option value="Active">Active</option>
                           <option value="Suspended">Suspended</option>
                           <option value="Deactivated">Deactivated</option>
                           <option value="Invited">Invited</option>
                           <option value="PendingPasswordSetup">Pending Password Setup</option>
                         </select>
-                        <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-600 pointer-events-none" />
+                        <ChevronDown className="absolute end-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-600 pointer-events-none" />
                       </div>
                     </Field>
                     {roles.length > 0 && (
                       <Field label="Role">
                         <div className="relative">
                           <select value={editForm.roleName} onChange={e => setEditForm(f => ({ ...f, roleName: e.target.value }))}
-                            title="Assign role" className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60 appearance-none pr-7">
+                            title="Assign role" className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60 appearance-none pe-7">
                             <option value="">— no change —</option>
                             {roles.map(r => <option key={r.id} value={r.name}>{r.name}</option>)}
                           </select>
-                          <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-600 pointer-events-none" />
+                          <ChevronDown className="absolute end-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-600 pointer-events-none" />
                         </div>
                       </Field>
                     )}
@@ -449,9 +436,9 @@ export default function TenantUsersPage() {
                         type={showPwd ? 'text' : 'password'}
                         value={newPwd} onChange={e => setNewPwd(e.target.value)}
                         placeholder="Min. 10 characters"
-                        className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60 pr-8" />
+                        className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60 pe-8" />
                       <button type="button" title={showPwd ? 'Hide password' : 'Show password'} onClick={() => setShowPwd(v => !v)}
-                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-300 transition-colors">
+                        className="absolute end-2.5 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-300 transition-colors">
                         {showPwd ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                       </button>
                     </div>
@@ -486,7 +473,7 @@ export default function TenantUsersPage() {
                     onClick={() => { unlock(selected); closePanel(); }} />
                 )}
 
-                {selected.mFAEnabled && (
+                {selected.mfaEnabled && (
                   <ActionButton icon={ShieldOff} label="Disable MFA" desc="Remove MFA requirement from this user"
                     color="text-amber-400 border-amber-500/20 hover:border-amber-500/40"
                     onClick={() => { disableMfa(selected); closePanel(); }} />
@@ -495,10 +482,6 @@ export default function TenantUsersPage() {
                 <ActionButton icon={LogOut} label="Revoke All Sessions" desc="Force logout from all devices immediately"
                   color="text-rose-400 border-rose-500/20 hover:border-rose-500/40"
                   onClick={() => { revokeSessions(selected); closePanel(); }} />
-
-                <ActionButton icon={UserCog} label="Login As User" desc="Impersonate in a new tab (support access)"
-                  color="text-blue-400 border-blue-500/20 hover:border-blue-500/40"
-                  onClick={() => { impersonate(selected); closePanel(); }} />
 
                 <ActionButton icon={Shield} label="View Audit Logs" desc="See all actions for this user"
                   color="text-slate-400 border-slate-500/20 hover:border-slate-500/40"
@@ -538,7 +521,7 @@ export default function TenantUsersPage() {
       {addOpen && (
         <div className="fixed inset-0 z-50 flex">
           <div className="flex-1 bg-black/60 backdrop-blur-sm" onClick={() => !saving && setAddOpen(false)} />
-          <div className="w-full max-w-md bg-[#0d1117] border-l border-white/[0.08] flex flex-col overflow-y-auto">
+          <div className="w-full max-w-md bg-[#0d1117] border-s border-white/[0.08] flex flex-col overflow-y-auto">
             <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.07]">
               <div className="flex items-center gap-2">
                 <UserPlus className="h-4 w-4 text-sapphire" />
@@ -563,12 +546,12 @@ export default function TenantUsersPage() {
               <Field label="Role">
                 <div className="relative">
                   <select value={addForm.roleName} onChange={e => setAddForm(f => ({ ...f, roleName: e.target.value }))}
-                    title="Assign role" className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60 appearance-none pr-7">
+                    title="Assign role" className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60 appearance-none pe-7">
                     {roles.length > 0
                       ? roles.map(r => <option key={r.id} value={r.name}>{r.name}</option>)
                       : <option value="Admin">Admin</option>}
                   </select>
-                  <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-600 pointer-events-none" />
+                  <ChevronDown className="absolute end-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-600 pointer-events-none" />
                 </div>
               </Field>
               <Field label="Temporary Password">
@@ -576,9 +559,9 @@ export default function TenantUsersPage() {
                   <input type={showAddPwd ? 'text' : 'password'}
                     value={addForm.password} onChange={e => setAddForm(f => ({ ...f, password: e.target.value }))}
                     placeholder="Min. 10 characters"
-                    className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60 pr-8" />
+                    className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60 pe-8" />
                   <button type="button" title={showAddPwd ? 'Hide password' : 'Show password'} onClick={() => setShowAddPwd(v => !v)}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-300 transition-colors">
+                    className="absolute end-2.5 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-300 transition-colors">
                     {showAddPwd ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                   </button>
                 </div>
@@ -621,7 +604,7 @@ function ActionButton({ icon: Icon, label, desc, color, onClick }: {
     <button type="button" onClick={onClick}
       className={`w-full flex items-start gap-3 p-3 rounded-lg border bg-white/[0.02] hover:bg-white/[0.04] transition-colors ${color}`}>
       <Icon className="h-4 w-4 shrink-0 mt-0.5" />
-      <div className="text-left">
+      <div className="text-start">
         <p className="text-xs font-medium">{label}</p>
         <p className="text-[10px] text-slate-600">{desc}</p>
       </div>

@@ -34,7 +34,11 @@ public class PayComponentEngineTests
         {
             Basic = 10_000m, Housing = 3_000m, Transport = 1_000m, OtherAllowances = 900m,
             FixedDeduction = 250m, Gross = 14_900m,
-            OvertimePay = 750m, OtHours = 10m, HourlyRate = 41.6667m, OtMultiplier = 1.5m,
+            // 10 h × (41.6667 + 41.6667 × 0.50) = 625.00. OvertimePay stays 750 because this test
+            // pins line SELECTION/ORDER/LABELS, not the overtime arithmetic — the amount is handed
+            // to the engine, which performs none of it.
+            OvertimePay = 750m, OtHours = 10m, HourlyRate = 41.6667m,
+            OtUpliftHourly = 41.6667m, OtMultiplier = 1.5m,
             TaxDeduction = 500m, IncomeTaxRate = 5m,
             AttendanceDeduction = 75m, LopDeduction = 300m, LopDays = 1m, LopDayRate = 300m,
             LeaveDeduction = 150m, LoanEmi = 1_000m, AdvEmi = 400m,
@@ -61,7 +65,10 @@ public class PayComponentEngineTests
         result.Deductions.Where(l => l.IsEmployerContribution).Select(l => l.Code)
             .Should().Equal("GOSI-ANN-ER", "GOSI-OH-ER");
         // Dynamic labels are byte-identical to the current engine.
-        result.Earnings.Single(l => l.Code == "OVERTIME").Name.Should().Be("Overtime (10.00 h × 41.67/h × 1.50)");
+        // The label states the expression the money was computed with — base hourly plus the uplift
+        // measured on basic hourly — not "rate × multiplier", which produced a different number
+        // from the amount printed beside it.
+        result.Earnings.Single(l => l.Code == "OVERTIME").Name.Should().Be("Overtime (10.00 h × (41.67 + 41.67 × 0.50)/h)");
         result.Deductions.Single(l => l.Code == "INCOME_TAX").Name.Should().Be("Income tax (5%)");
         result.Deductions.Single(l => l.Code == "LOP_DEDUCTION").Name.Should().Be("Loss of Pay (1.00 d × 300.00/d)");
     }
@@ -177,5 +184,70 @@ public class PayComponentEngineTests
             .NameEn.Should().Be("Base pay (company)");
         // The tenant default (unchanged) still resolves for every other code.
         resolved.Single(c => c.Code == "HOUSING").NameEn.Should().Be("Housing allowance");
+    }
+
+    // ── F2: effective-dated resolution, the fallback, and driver pinning ────────────────────────────
+
+    private static PayComponent Tenant(Guid t, string code, decimal value, DateOnly? from, DateOnly? to, Guid? company = null) => new()
+    {
+        TenantId = t, CompanyId = company, Code = code, NameEn = code, NameAr = code,
+        ComponentType = PayComponentTypes.Deduction, CalcMethod = PayComponentCalcMethods.Fixed, Value = value,
+        GlDriverKey = "DED:OTHER", DisplayOrder = 500, EffectiveFrom = from, EffectiveTo = to, IsActive = true,
+    };
+
+    [Fact]
+    public void ResolveInEffect_EmptyStore_IsExactlyTheCompiledCatalog()
+    {
+        var t = Guid.NewGuid();
+        var resolved = PayComponentEngine.ResolveInEffect(Array.Empty<PayComponent>(), t, new DateOnly(2026, 6, 1));
+        resolved.Select(c => (c.Code, c.ComponentType)).Should()
+            .BeEquivalentTo(PayComponentCatalog.SystemComponentSeeds(t).Select(c => (c.Code, c.ComponentType)));
+    }
+
+    [Fact]
+    public void ResolveInEffect_TenantRowsWithoutSystemRows_KeepTheSystemCatalog()
+    {
+        // Pre-F2, ANY persisted row switched the fallback off — one tenant component on an unseeded tenant
+        // silently dropped BASIC, HOUSING and statutory from every payslip.
+        var t = Guid.NewGuid();
+        var resolved = PayComponentEngine.ResolveInEffect(new[] { Tenant(t, "UNION_DUES", 100m, null, null) }, t, new DateOnly(2026, 6, 1));
+        resolved.Should().HaveCount(18);
+        resolved.Select(c => c.Code).Should().Contain(new[] { "BASIC", "STATUTORY_EE", "STATUTORY_ER", "UNION_DUES" });
+    }
+
+    [Fact]
+    public void ResolveInEffect_PicksTheVersionForThePeriod_AndHonoursTheCompanyOverride()
+    {
+        var t = Guid.NewGuid(); var co = Guid.NewGuid();
+        var rows = PayComponentCatalog.SystemComponentSeeds(t).Concat(new[]
+        {
+            Tenant(t, "UNION_DUES", 100m, new DateOnly(2026, 6, 1), new DateOnly(2026, 7, 31)),
+            Tenant(t, "UNION_DUES", 150m, new DateOnly(2026, 8, 1), new DateOnly(2026, 9, 30)),
+            Tenant(t, "UNION_DUES", 175m, new DateOnly(2026, 9, 1), null, company: co),
+        }).ToList();
+        decimal? Dues(int month, Guid? company) => PayComponentEngine
+            .ResolveInEffect(rows.Where(r => r.CompanyId == null || r.CompanyId == company), t, new DateOnly(2026, month, 1))
+            .SingleOrDefault(c => c.Code == "UNION_DUES")?.Value;
+        Dues(5, null).Should().BeNull();
+        Dues(6, null).Should().Be(100m);
+        Dues(7, null).Should().Be(100m);
+        Dues(8, null).Should().Be(150m);
+        Dues(9, null).Should().Be(150m);
+        Dues(10, null).Should().BeNull();
+        Dues(9, co).Should().Be(175m);   // company override wins
+        Dues(10, co).Should().Be(175m);
+    }
+
+    [Fact]
+    public void ConfiguredValueLines_CarryTheirDriver_SystemLinesNever()
+    {
+        var t = Guid.NewGuid();
+        var comps = PayComponentCatalog.SystemComponentSeeds(t).Append(Tenant(t, "UNION_DUES", 100m, null, null)).ToList();
+        var result = PayComponentEngine.Compute(comps, new PayComponentContext { Basic = 5_000m, Gross = 5_000m });
+        result.Deductions.Single(l => l.Code == "UNION_DUES").GlDriverKey.Should().Be("DED:OTHER");
+        result.Earnings.Single(l => l.Code == "BASIC").GlDriverKey.Should().BeNull();
+        PayComponentCatalog.SystemComponentSeeds(t).Should().OnlyContain(c => !PayComponentEngine.IsConfiguredValue(c),
+            "no system row may be folded into the aggregates a second time");
+        PayComponentEngine.IsConfiguredValue(Tenant(t, "X", 1m, null, null)).Should().BeTrue();
     }
 }

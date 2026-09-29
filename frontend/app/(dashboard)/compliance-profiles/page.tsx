@@ -50,7 +50,7 @@ export default function ComplianceProfilesPage() {
           <select
             value={companyId}
             onChange={(e) => setCompanyId(e.target.value)}
-            className="ml-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-slate-200"
+            className="ms-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-slate-200"
           >
             {companies.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.code})</option>)}
           </select>
@@ -104,12 +104,12 @@ export default function ComplianceProfilesPage() {
                 {fields.length === 0 ? (
                   <p className="text-xs text-slate-400">No required fields declared on this profile.</p>
                 ) : (
-                  <table className="w-full text-left text-sm">
+                  <table className="w-full text-start text-sm">
                     <thead>
                       <tr className="text-[11px] uppercase tracking-wide text-slate-400">
                         <th className="pb-2 font-semibold">Field</th>
                         <th className="pb-2 font-semibold">Enforcement</th>
-                        <th className="pb-2 text-right font-semibold">Missing</th>
+                        <th className="pb-2 text-end font-semibold">Missing</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -117,7 +117,7 @@ export default function ComplianceProfilesPage() {
                         <tr key={f.field} className="border-t border-slate-50 dark:border-white/[0.03]">
                           <td className="py-2 font-medium text-slate-700 dark:text-slate-200">{f.field}</td>
                           <td className="py-2 text-xs text-slate-500">{f.failClosed ? 'Fail closed' : 'Advisory'}</td>
-                          <td className={`py-2 text-right font-bold ${f.missingEmployeeCount > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                          <td className={`py-2 text-end font-bold ${f.missingEmployeeCount > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
                             {f.missingEmployeeCount}
                           </td>
                         </tr>

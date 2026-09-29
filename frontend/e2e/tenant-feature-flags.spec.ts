@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, APIRequestContext } from '@playwright/test';
 import {
   apiLogin,
   INTELLIFLOW_SLUG, INTELLIFLOW_ADMIN,
@@ -9,12 +9,31 @@ import {
 /**
  * Feature flag tests — verifies that:
  * 1. Disabled features return 403 from the API (backend enforcement).
- * 2. Enabled features (IntelliFlow) return 200 or appropriate non-403.
+ * 2. Enabled (or unguarded) features actually SERVE the resource — HTTP 200.
  * 3. Platform admin can toggle feature flags.
  *
  * Evostel has: ai_assistant=false, recruitment=false, performance=false, shifts=false
  * IntelliFlow has: all=true
  */
+
+/**
+ * A route that is NOT blocked by the feature guard must return the resource.
+ * `not.toBe(403)` is satisfied by 401, 404, 429 and 500, so it could not
+ * distinguish "the guard let it through" from "the route no longer exists".
+ */
+async function expectEnabledFeatureServes(
+  request: APIRequestContext,
+  endpoint: string,
+  token: string,
+): Promise<void> {
+  const resp = await request.get(endpoint, { headers: { Authorization: `Bearer ${token}` } });
+  expect(resp.status(), `GET ${endpoint} must be served (200), got ${resp.status()}: ${(await resp.text()).slice(0, 200)}`)
+    .toBe(200);
+  // A 200 with a non-JSON body would mean the proxy answered, not the API.
+  const body = await resp.json();
+  expect(body, `GET ${endpoint} returned 200 with no JSON payload`).not.toBeNull();
+}
+
 test.describe('Feature flag enforcement (API-level)', () => {
   let intelliflowToken: string;
   let evostelToken: string;
@@ -62,49 +81,35 @@ test.describe('Feature flag enforcement (API-level)', () => {
   });
 
   // ── IntelliFlow: enabled features pass through ────────────────────────────────
+  //
+  // `expect(status).not.toBe(403)` was true of 404, 401, 429 and 500 alike, so a
+  // deleted route or a crashed handler read as "the feature flag lets it
+  // through". An enabled feature must actually SERVE the resource: assert 200.
 
-  test('IntelliFlow: AI assistant API does not return 403 (feature enabled)', async ({ request }) => {
-    const resp = await request.get('/api/ai/insights', {
-      headers: { Authorization: `Bearer ${intelliflowToken}` },
-    });
-    expect(resp.status()).not.toBe(403);
+  test('IntelliFlow: AI assistant API returns 200 (feature enabled)', async ({ request }) => {
+    await expectEnabledFeatureServes(request, '/api/ai/insights', intelliflowToken);
   });
 
-  test('IntelliFlow: recruitment API does not return 403 (feature enabled)', async ({ request }) => {
-    const resp = await request.get('/api/recruitment/applications', {
-      headers: { Authorization: `Bearer ${intelliflowToken}` },
-    });
-    expect(resp.status()).not.toBe(403);
+  test('IntelliFlow: recruitment API returns 200 (feature enabled)', async ({ request }) => {
+    await expectEnabledFeatureServes(request, '/api/recruitment/applications', intelliflowToken);
   });
 
-  test('IntelliFlow: performance API does not return 403 (feature enabled)', async ({ request }) => {
-    const resp = await request.get('/api/performance/cycles', {
-      headers: { Authorization: `Bearer ${intelliflowToken}` },
-    });
-    expect(resp.status()).not.toBe(403);
+  test('IntelliFlow: performance API returns 200 (feature enabled)', async ({ request }) => {
+    await expectEnabledFeatureServes(request, '/api/performance/cycles', intelliflowToken);
   });
 
   // ── Always-allowed routes bypass feature guard ────────────────────────────────
 
   test('Evostel: /api/employees is always allowed (not behind any feature flag)', async ({ request }) => {
-    const resp = await request.get('/api/employees', {
-      headers: { Authorization: `Bearer ${evostelToken}` },
-    });
-    expect(resp.status()).not.toBe(403);
+    await expectEnabledFeatureServes(request, '/api/employees', evostelToken);
   });
 
   test('Evostel: /api/leave/requests is always allowed', async ({ request }) => {
-    const resp = await request.get('/api/leave/requests', {
-      headers: { Authorization: `Bearer ${evostelToken}` },
-    });
-    expect(resp.status()).not.toBe(403);
+    await expectEnabledFeatureServes(request, '/api/leave/requests', evostelToken);
   });
 
   test('Evostel: /api/attendance is always allowed', async ({ request }) => {
-    const resp = await request.get('/api/attendance', {
-      headers: { Authorization: `Bearer ${evostelToken}` },
-    });
-    expect(resp.status()).not.toBe(403);
+    await expectEnabledFeatureServes(request, '/api/attendance', evostelToken);
   });
 
   // ── Platform API: feature flag read ────────────────────────────────────────────

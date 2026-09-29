@@ -172,7 +172,7 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
                   <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{o.title}</p>
                   <p className="text-xs text-slate-400 dark:text-slate-500">{o.departmentName} · {o.activeApplications ?? 0} applicants</p>
                 </div>
-                <span className="ml-3 shrink-0 text-xs font-semibold text-sapphire dark:text-cyanAccent">{o.remaining ?? o.headCount - o.filledCount} left</span>
+                <span className="ms-3 shrink-0 text-xs font-semibold text-sapphire dark:text-cyanAccent">{o.remaining ?? o.headCount - o.filledCount} left</span>
               </div>
             ))}
           </div>
@@ -373,7 +373,7 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
           <option value="">All Statuses</option>
           {['Draft', 'Submitted', 'PendingApproval', 'Approved', 'Rejected', 'Converted'].map(s => <option key={s}>{s}</option>)}
         </select>
-        <span className="ml-auto text-xs text-slate-500 dark:text-slate-400">{total} requisitions</span>
+        <span className="ms-auto text-xs text-slate-500 dark:text-slate-400">{total} requisitions</span>
         <button type="button" className="btn-primary flex items-center gap-1.5 text-sm" onClick={() => setCreateOpen(true)}>
           <Plus className="h-3.5 w-3.5" />New Requisition
         </button>
@@ -384,7 +384,7 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
           <thead className="border-b border-slate-200 bg-slate-50 dark:border-white/10 dark:bg-white/[0.03]">
             <tr>
               {['Number', 'Position', 'Department', 'Count', 'Priority', 'Status', 'Actions'].map(h => (
-                <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-slate-500 dark:text-slate-400">{h}</th>
+                <th key={h} className="px-4 py-3 text-start text-xs font-semibold text-slate-500 dark:text-slate-400">{h}</th>
               ))}
             </tr>
           </thead>
@@ -639,12 +639,12 @@ function RecruitmentAiModal({ openings, onClose }: { openings: JobOpening[]; onC
                     <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-bold text-slate-500 dark:bg-white/10 dark:text-slate-300">{i + 1}</span>
                     <span className="font-medium text-slate-800 dark:text-slate-200">{c.name}</span>
                     <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${recTone(c.recommendation)}`}>{c.recommendation}</span>
-                    <div className="ml-auto flex items-center gap-2">
+                    <div className="ms-auto flex items-center gap-2">
                       <div className="h-1.5 w-24 rounded-full bg-slate-200 dark:bg-white/10"><div className="h-1.5 rounded-full bg-sapphire dark:bg-cyanAccent" style={{ width: `${c.score}%` }} /></div>
-                      <span className="w-9 text-right text-xs font-semibold text-slate-600 dark:text-slate-300">{c.score}</span>
+                      <span className="w-9 text-end text-xs font-semibold text-slate-600 dark:text-slate-300">{c.score}</span>
                     </div>
                   </div>
-                  {c.rationale && <p className="mt-1.5 pl-9 text-xs text-slate-500 dark:text-slate-400">{c.rationale}</p>}
+                  {c.rationale && <p className="mt-1.5 ps-9 text-xs text-slate-500 dark:text-slate-400">{c.rationale}</p>}
                 </div>
               ))}
             </div>
@@ -695,7 +695,7 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
     <div>
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <p className="text-sm text-slate-500 dark:text-slate-400">{items.length} opening{items.length !== 1 ? 's' : ''}</p>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
+        <div className="ms-auto flex flex-wrap items-center gap-2">
           <ImportExportToolbar
             entityName="Job Openings"
             onExport={jobOpeningsImportExport.export}
@@ -719,7 +719,7 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
             key={o.id}
             type="button"
             onClick={() => onSelectOpening(o)}
-            className="surface group flex flex-col gap-3 p-5 text-left transition hover:border-sapphire/30 hover:shadow-md dark:hover:border-cyanAccent/20"
+            className="surface group flex flex-col gap-3 p-5 text-start transition hover:border-sapphire/30 hover:shadow-md dark:hover:border-cyanAccent/20"
           >
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
@@ -875,7 +875,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
   return (
     <div className="fixed inset-0 z-50 flex">
       <div className="flex-1 bg-black/40" onClick={onClose} />
-      <div className="flex h-full w-full max-w-lg flex-col overflow-hidden border-l border-slate-200 bg-white dark:border-white/10 dark:bg-[#0B1020]">
+      <div className="flex h-full w-full max-w-lg flex-col overflow-hidden border-s border-slate-200 bg-white dark:border-white/10 dark:bg-[#0B1020]">
         {/* Header */}
         <div className="flex items-start gap-3 border-b border-slate-200 p-5 dark:border-white/10">
           <div className="flex-1 min-w-0">
@@ -927,7 +927,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
             <button key={t} type="button" onClick={() => setTab(t)}
               className={`py-2.5 text-xs font-medium capitalize transition ${tab === t ? 'border-b-2 border-sapphire text-sapphire dark:border-cyanAccent dark:text-cyanAccent' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'}`}>
               {t}
-              {t === 'interviews' && detail.interviews.length > 0 && <span className="ml-1 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] dark:bg-white/10">{detail.interviews.length}</span>}
+              {t === 'interviews' && detail.interviews.length > 0 && <span className="ms-1 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] dark:bg-white/10">{detail.interviews.length}</span>}
             </button>
           ))}
         </div>
@@ -976,7 +976,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                       {Array.from({ length: 5 }, (_, i) => (
                         <Star key={i} className={`h-3.5 w-3.5 ${i < iv.overallRating! ? 'fill-amber-400 text-amber-400' : 'text-slate-200 dark:text-slate-700'}`} />
                       ))}
-                      <span className="ml-1 text-xs font-medium text-slate-600 dark:text-slate-400">{iv.recommendation}</span>
+                      <span className="ms-1 text-xs font-medium text-slate-600 dark:text-slate-400">{iv.recommendation}</span>
                     </div>
                   )}
                   {iv.feedbackNotes && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{iv.feedbackNotes}</p>}
@@ -1134,7 +1134,7 @@ function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => 
         <span className="text-slate-300 dark:text-slate-600">/</span>
         <span className="text-sm font-semibold text-slate-800 dark:text-slate-200">{opening.title}</span>
         <StatusChip {...openingStatusTone(opening.status)} />
-        <span className="ml-auto text-xs text-slate-400 dark:text-slate-500">{totalActive} active</span>
+        <span className="ms-auto text-xs text-slate-400 dark:text-slate-500">{totalActive} active</span>
         <button type="button" className="btn-primary flex items-center gap-1.5 text-sm" onClick={openAddModal}>
           <UserPlus className="h-3.5 w-3.5" />Add Candidate
         </button>
@@ -1149,7 +1149,7 @@ function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => 
               <div className="flex items-center gap-2 px-1">
                 <div className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: STAGE_COLORS[col.stage] ?? '#64748b' }} />
                 <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">{col.stage}</p>
-                <span className="ml-auto rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-white/10 dark:text-slate-400">{col.applications.length}</span>
+                <span className="ms-auto rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-white/10 dark:text-slate-400">{col.applications.length}</span>
               </div>
               <div className="flex flex-col gap-2 rounded-xl border border-slate-200/70 bg-slate-50 p-2 dark:border-white/[0.06] dark:bg-white/[0.02]" style={{ minHeight: 120 }}>
                 {col.applications.map(app => (
@@ -1157,7 +1157,7 @@ function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => 
                     key={app.id}
                     type="button"
                     onClick={() => setSelectedAppId(app.id)}
-                    className="rounded-lg border border-slate-200 bg-white p-3 text-left shadow-sm transition hover:border-sapphire/30 hover:shadow-md dark:border-white/10 dark:bg-white/[0.04] dark:hover:border-cyanAccent/20"
+                    className="rounded-lg border border-slate-200 bg-white p-3 text-start shadow-sm transition hover:border-sapphire/30 hover:shadow-md dark:border-white/10 dark:bg-white/[0.04] dark:hover:border-cyanAccent/20"
                   >
                     <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">{app.candidateName}</p>
                     <p className="mt-0.5 text-[10px] text-slate-400 dark:text-slate-500">{app.candidateEmail}</p>
@@ -1177,7 +1177,7 @@ function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => 
               <div className="flex items-center gap-2 px-1">
                 <div className="h-2.5 w-2.5 rounded-full bg-rose-400" />
                 <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">Rejected</p>
-                <span className="ml-auto rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-white/10">{rejected.length}</span>
+                <span className="ms-auto rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-white/10">{rejected.length}</span>
               </div>
               <div className="flex flex-col gap-2 rounded-xl border border-rose-100 bg-rose-50/50 p-2 dark:border-rose-500/10 dark:bg-rose-500/[0.03]" style={{ minHeight: 60 }}>
                 {rejected.map(app => (
@@ -1264,7 +1264,7 @@ function AddCandidateModal({ onClose, onSaved }: { onClose: () => void; onSaved:
             </div>
             <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Email *</label><input type="email" className="input w-full" placeholder="email@example.com" value={form.email} onChange={e => set('email', e.target.value)} /></div>
             <div className="grid grid-cols-2 gap-3">
-              <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Phone</label><input className="input w-full" placeholder="+971 50 000 0000" aria-label="Phone" value={form.phone} onChange={e => set('phone', e.target.value)} /></div>
+              <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Phone</label><input className="input field-ltr w-full" placeholder="+971 50 000 0000" aria-label="Phone" value={form.phone} onChange={e => set('phone', e.target.value)} /></div>
               <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Experience (years)</label><input type="number" className="input w-full" min={0} value={form.totalExperienceYears} onChange={e => set('totalExperienceYears', Number(e.target.value))} aria-label="Experience years" /></div>
             </div>
             <div className="grid grid-cols-2 gap-3">
@@ -1327,7 +1327,7 @@ function CandidatesTab() {
     <div>
       <div className="mb-4 flex items-center gap-3">
         <input className="input w-72" placeholder="Search name, email, title…" value={search} onChange={e => onSearch(e.target.value)} />
-        <span className="ml-auto text-xs text-slate-500 dark:text-slate-400">{total} candidates</span>
+        <span className="ms-auto text-xs text-slate-500 dark:text-slate-400">{total} candidates</span>
         <button type="button" className="btn-primary flex items-center gap-1.5 text-sm" onClick={() => setAddOpen(true)}>
           <Plus className="h-3.5 w-3.5" />Add Candidate
         </button>
@@ -1338,7 +1338,7 @@ function CandidatesTab() {
           <thead className="border-b border-slate-200 bg-slate-50 dark:border-white/10 dark:bg-white/[0.03]">
             <tr>
               {['Name', 'Title / Company', 'Experience', 'Education', 'Source', 'CV', 'Applied'].map(h => (
-                <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-slate-500 dark:text-slate-400">{h}</th>
+                <th key={h} className="px-4 py-3 text-start text-xs font-semibold text-slate-500 dark:text-slate-400">{h}</th>
               ))}
             </tr>
           </thead>
@@ -1480,19 +1480,19 @@ function WorkforcePlanningTab() {
               <thead>
                 <tr className="border-b border-slate-200 dark:border-white/10">
                   {['Code', 'Name', 'Year', 'Department', 'Gap', 'Budget', 'Status'].map(h => (
-                    <th key={h} className="pb-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{h}</th>
+                    <th key={h} className="pb-2 text-start text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-white/5">
                 {plans.map(p => (
                   <tr key={p.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.02]">
-                    <td className="py-2.5 pr-3 font-mono text-xs text-sapphire dark:text-cyanAccent">{p.planCode}</td>
-                    <td className="py-2.5 pr-3 font-medium text-slate-800 dark:text-slate-200">{p.planName}</td>
-                    <td className="py-2.5 pr-3 text-slate-500 dark:text-slate-400">{p.planYear}</td>
-                    <td className="py-2.5 pr-3 text-slate-500 dark:text-slate-400">{p.departmentName || '—'}</td>
-                    <td className="py-2.5 pr-3 font-semibold text-slate-900 dark:text-white">{p.gapCount > 0 ? `+${p.gapCount}` : p.gapCount}</td>
-                    <td className="py-2.5 pr-3 text-slate-500 dark:text-slate-400">{p.currencyCode} {p.budgetAllocated.toLocaleString()}</td>
+                    <td className="py-2.5 pe-3 font-mono text-xs text-sapphire dark:text-cyanAccent">{p.planCode}</td>
+                    <td className="py-2.5 pe-3 font-medium text-slate-800 dark:text-slate-200">{p.planName}</td>
+                    <td className="py-2.5 pe-3 text-slate-500 dark:text-slate-400">{p.planYear}</td>
+                    <td className="py-2.5 pe-3 text-slate-500 dark:text-slate-400">{p.departmentName || '—'}</td>
+                    <td className="py-2.5 pe-3 font-semibold text-slate-900 dark:text-white">{p.gapCount > 0 ? `+${p.gapCount}` : p.gapCount}</td>
+                    <td className="py-2.5 pe-3 text-slate-500 dark:text-slate-400">{p.currencyCode} {p.budgetAllocated.toLocaleString()}</td>
                     <td className="py-2.5">
                       <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[p.status] ?? ''}`}>{p.status}</span>
                     </td>
@@ -1571,7 +1571,7 @@ function InterviewsTab() {
           <option value="">All Statuses</option>
           {['Scheduled', 'Completed', 'Cancelled', 'NoShow'].map(s => <option key={s}>{s}</option>)}
         </select>
-        <button type="button" onClick={openSchedule} className="ml-auto flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-sm font-medium text-white hover:bg-sapphire/90">
+        <button type="button" onClick={openSchedule} className="ms-auto flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-sm font-medium text-white hover:bg-sapphire/90">
           <Calendar className="h-3.5 w-3.5" />Schedule Interview
         </button>
       </div>
@@ -1670,7 +1670,7 @@ function InterviewsTab() {
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   {iv.overallRating && (
-                    <div className="text-right">
+                    <div className="text-end">
                       <p className="text-lg font-bold text-slate-900 dark:text-white">{iv.overallRating}/5</p>
                       <p className="text-xs text-slate-400">Rating</p>
                     </div>
@@ -1757,7 +1757,7 @@ function AssessmentsTab() {
           <option value="">All Statuses</option>
           {['Pending', 'Sent', 'InProgress', 'Completed', 'Expired'].map(s => <option key={s}>{s}</option>)}
         </select>
-        <button type="button" onClick={openAssign} className="ml-auto flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-sm font-medium text-white hover:bg-sapphire/90">
+        <button type="button" onClick={openAssign} className="ms-auto flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-sm font-medium text-white hover:bg-sapphire/90">
           <ClipboardList className="h-3.5 w-3.5" />Assign Assessment
         </button>
       </div>
@@ -1810,7 +1810,7 @@ function AssessmentsTab() {
             <thead>
               <tr className="border-b border-slate-200 dark:border-white/10">
                 {['Assessment', 'Status', 'Sent', 'Expires', 'Score', 'Result', 'Actions'].map(h => (
-                  <th key={h} className="p-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{h}</th>
+                  <th key={h} className="p-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -1928,7 +1928,7 @@ function OffersTab() {
           <option value="">All Statuses</option>
           {['Draft', 'PendingApproval', 'Approved', 'Sent', 'Accepted', 'Declined', 'Expired'].map(s => <option key={s}>{s}</option>)}
         </select>
-        <button type="button" onClick={openCreate} className="ml-auto flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-sm font-medium text-white hover:bg-sapphire/90">
+        <button type="button" onClick={openCreate} className="ms-auto flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-sm font-medium text-white hover:bg-sapphire/90">
           <FileText className="h-3.5 w-3.5" />Create Offer
         </button>
       </div>
@@ -2196,7 +2196,7 @@ function OnboardingTab() {
             </span>
           )}
           <button type="button" onClick={() => setShowTemplate(v => !v)}
-            className="ml-auto flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/5">
+            className="ms-auto flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/5">
             <ClipboardList className="h-3.5 w-3.5" />Checklist Templates
           </button>
         </div>
@@ -2288,7 +2288,7 @@ function OnboardingTab() {
           <option value="">All Statuses</option>
           {['Pending', 'InProgress', 'Completed', 'Blocked', 'Skipped'].map(s => <option key={s}>{s}</option>)}
         </select>
-        <button type="button" onClick={() => setShowAdd(true)} className="ml-auto flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-sm font-medium text-white hover:bg-sapphire/90">
+        <button type="button" onClick={() => setShowAdd(true)} className="ms-auto flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-sm font-medium text-white hover:bg-sapphire/90">
           <Plus className="h-3.5 w-3.5" />Add Task
         </button>
       </div>
@@ -2418,7 +2418,7 @@ function ReportsTab() {
               <div className="flex-1 h-2 rounded-full bg-slate-200 dark:bg-white/10">
                 <div className="h-2 rounded-full bg-sapphire" style={{ width: `${Math.min(100, s.count * 5)}%` }} />
               </div>
-              <span className="shrink-0 text-xs font-semibold text-slate-900 dark:text-white w-8 text-right">{s.count}</span>
+              <span className="shrink-0 text-xs font-semibold text-slate-900 dark:text-white w-8 text-end">{s.count}</span>
             </div>
           ))}
           {!pipeline?.byStage.length && <p className="text-sm text-slate-400">No pipeline data.</p>}
@@ -2458,17 +2458,17 @@ function RecruitmentAITab() {
   }, []);
 
   const SEV_COLORS: Record<string, string> = {
-    High: 'border-l-rose-500 bg-rose-50 dark:bg-rose-500/5',
-    Medium: 'border-l-amber-500 bg-amber-50 dark:bg-amber-500/5',
-    Low: 'border-l-blue-400 bg-blue-50 dark:bg-blue-500/5',
+    High: 'border-s-rose-500 bg-rose-50 dark:bg-rose-500/5',
+    Medium: 'border-s-amber-500 bg-amber-50 dark:bg-amber-500/5',
+    Low: 'border-s-blue-400 bg-blue-50 dark:bg-blue-500/5',
   };
 
   return (
     <div className="space-y-4">
       <div className="rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-500/20 dark:bg-amber-500/5 px-4 py-3 text-xs text-amber-700 dark:text-amber-400">
-        <Lightbulb className="inline h-3.5 w-3.5 mr-1.5" />
+        <Lightbulb className="inline h-3.5 w-3.5 me-1.5" />
         All insights are <strong>advisory only</strong>. Final hiring and staffing decisions remain with authorized HR personnel.
-        {genTime && <span className="ml-2 opacity-60">Generated: {new Date(genTime).toLocaleString()}</span>}
+        {genTime && <span className="ms-2 opacity-60">Generated: {new Date(genTime).toLocaleString()}</span>}
       </div>
 
       {loading ? <p className="text-center text-sm text-slate-400 py-8">Loading AI insights…</p> : insights.length === 0 ? (
@@ -2476,7 +2476,7 @@ function RecruitmentAITab() {
       ) : (
         <div className="space-y-3">
           {insights.map((ins, i) => (
-            <div key={i} className={`rounded-xl border-l-4 p-4 ${SEV_COLORS[ins.severity] ?? 'border-l-slate-400 bg-slate-50'}`}>
+            <div key={i} className={`rounded-xl border-s-4 p-4 ${SEV_COLORS[ins.severity] ?? 'border-s-slate-400 bg-slate-50'}`}>
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{ins.title}</p>

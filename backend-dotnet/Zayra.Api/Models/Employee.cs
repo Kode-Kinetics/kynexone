@@ -39,6 +39,12 @@ public class Employee : INullableTenantOwned, ICompanyScopedOperational
     public string ArabicName { get; set; } = string.Empty;
     public string PreferredName { get; set; } = string.Empty;
     public string ProfilePhotoUrl { get; set; } = string.Empty;
+    /// <summary>
+    /// W2-D (S3) — the storage key of the re-encoded self-service photo. SERVER-ONLY: never serialised
+    /// (ProfilePhotoUrl carries the API route /api/ess/profile/photo instead), so the key never leaves.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string ProfilePhotoStorageKey { get; set; } = string.Empty;
     public string PersonalEmail { get; set; } = string.Empty;
     public string WorkEmail { get; set; } = string.Empty;
     public string Phone { get; set; } = string.Empty;

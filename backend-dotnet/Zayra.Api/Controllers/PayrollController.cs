@@ -5,6 +5,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Attendance;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Application.Finance;
@@ -1422,15 +1423,15 @@ public class PayrollController : ControllerBase
             return UnprocessableEntity(new
             {
                 error   = "company_not_resolved",
-                message = "No active company found for this tenant. Cannot resolve a country pack for statutory deductions. " +
-                          "Create and activate a company with a CountryCode before processing payroll.",
+                message = "No active company was found for this account, so statutory deductions cannot be worked out. " +
+                          "Create and activate a company with a country set in Setup → Companies before running payroll.",
             });
         if (string.IsNullOrWhiteSpace(company.CountryCode))
             return UnprocessableEntity(new
             {
                 error       = "country_code_missing",
-                message     = $"Company '{company.LegalNameEn}' (id: {company.Id}) has no CountryCode set. " +
-                              "Set the company country in Setup → Companies and retry.",
+                message     = $"{company.LegalNameEn} has no country set, so statutory deductions cannot be worked out. " +
+                              "Set it in Setup → Companies, then try again.",
                 companyId   = company.Id,
                 companyName = company.LegalNameEn,
             });
@@ -1573,14 +1574,27 @@ public class PayrollController : ControllerBase
 
         var employeeIdsForRun = employees.Select(e => e.Id).ToHashSet();
         if (employeeIdsForRun.Count == 0)
+        {
+            // Refusing here is correct — there is no such thing as a payroll run over nobody — but a tenant
+            // that has not added anyone yet reaches this on its very first Process, so the 422 body is a
+            // user-facing empty state, not an error trace. PayrollPage renders `message` verbatim
+            // (PayrollPage.tsx processRun), so it names the company, the period, and the one next action;
+            // `error` stays the stable machine code it always was.
+            var periodLabel = $"{System.Globalization.CultureInfo.InvariantCulture.DateTimeFormat.GetMonthName(run.Month)} {run.Year}";
+            var setAsideCount = runPopulation.Exclusions.Count + runPopulation.NotEligible.Count;
             return UnprocessableEntity(new
             {
                 error = "no_company_employees",
-                message = runPopulation.Mode == "AllEligible"
-                    ? $"No active employees are linked to legal entity '{company.LegalNameEn}'. Payroll run aborted."
-                    : $"This run's include/exclude selection resolves to zero employees for '{company.LegalNameEn}'. Payroll run aborted.",
+                message = runPopulation.Mode != "AllEligible"
+                    ? $"There are no active employees to pay in '{company.LegalNameEn}' for {periodLabel}: this run's include/exclude selection leaves nobody in it. Include at least one active employee, then process the run again."
+                    : setAsideCount > 0
+                        ? $"There are no active employees to pay in '{company.LegalNameEn}' for {periodLabel}. {setAsideCount} employee(s) were set aside for this period — the run's population panel lists each one and why. Correct those records, then process the run again."
+                        : $"There are no active employees to pay in '{company.LegalNameEn}' for {periodLabel}. Add employees to this company and give them a salary, then process the run again.",
                 companyId = company.Id,
+                period = periodLabel,
+                setAsideCount,
             });
+        }
 
         var salaryAssignments = await _db.EmployeeSalaryStructures.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.IsActive && x.EffectiveDate <= periodEnd && employeeIdsForRun.Contains(x.EmployeeId))
@@ -1621,16 +1635,39 @@ public class PayrollController : ControllerBase
         }
         else
         {
+            // F2 — EXPLICITLY tenant-scoped, like ResolveUseComponentEngineAsync. This read relied on the
+            // ambient global query filter alone; wherever that filter is not bound to the request tenant (the
+            // integration fixture, any non-HTTP caller) FirstOrDefault returned ANOTHER tenant's rate and
+            // taxed this tenant's payroll with it.
             var taxRateSetting = await _db.SystemSettings.AsNoTracking()
-                .Where(x => x.Category == "Payroll" && x.SettingKey == "IncomeTaxRate")
+                .Where(x => x.TenantId == tenantId && x.Category == "Payroll" && x.SettingKey == "IncomeTaxRate")
                 .Select(x => x.SettingValue)
                 .FirstOrDefaultAsync(cancellationToken);
             decimal.TryParse(taxRateSetting, out incomeTaxRate); // 0 if unset
             if (incomeTaxRate > 0m)
                 Console.WriteLine($"[Payroll] DEPRECATION: tenant {tenantId} income tax resolved from the legacy SystemSettings magic key (no CompanyTaxPolicy). Migrate to a CompanyTaxPolicy for company {company.Id}.");
         }
+        // A RUN MUST NOT CONSUME WHAT IT DOES NOT PAY.
+        //
+        // "Overtime payable" impacts were loaded here, matched NEITHER money bucket below (the
+        // short-hours bucket wants "deduction", the LOP bucket wants "Absence"), and were then flipped
+        // to "Processed" with the rest of the list at the end of the run. The `Status != "Processed"`
+        // predicate on this very query then hid them from every future run: attendance-derived
+        // overtime was silently destroyed, unpaid, by the first run that covered its period. The
+        // consumption witness even records Amount = 0m for it, so the audit trail could not show the
+        // loss either.
+        //
+        // Overtime is PAID from OvertimePayrollImpacts, which are created only when an overtime
+        // REQUEST is approved (OvertimeController). The bridge from attendance into that path is the
+        // explicit POST /api/overtime/detect-from-attendance. Until a product decision says attendance
+        // overtime should pay automatically, the correct behaviour is to leave those rows untouched and
+        // still claimable — not to swallow them. Excluding them here is what makes that true, because
+        // this list is exactly what the end of the run marks Processed.
         var attendanceImpacts = await _db.AttendancePayrollImpacts.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.WorkDate >= periodStart && x.WorkDate <= periodEnd && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId))
+            .Where(x => x.TenantId == tenantId && x.WorkDate >= periodStart && x.WorkDate <= periodEnd
+                     && x.Status != "Processed"
+                     && x.ImpactType != AttendanceImpactTypes.OvertimePayable
+                     && employeeIdsForRun.Contains(x.EmployeeId))
             .ToListAsync(cancellationToken);
         var leaveImpacts = await _db.LeavePayrollImpacts.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.PayPeriod == $"{run.Year}-{run.Month:00}" && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId))
@@ -1806,34 +1843,71 @@ public class PayrollController : ControllerBase
             .ToDictionaryAsync(p => p.EmployeeId, cancellationToken);
 
         // C4: filter overtime impacts to the current pay period only (via WorkDate on the originating request)
-        var periodOvertimeRequestIds = await _db.OvertimeRequests.AsNoTracking()
+        // S1/A5 — the WorkDate is now KEPT, not discarded. It is what lets the run tell a rest-day or
+        // public-holiday overtime hour from an ordinary one, which is the distinction that made
+        // ot.restday_multiplier and ot.holiday_multiplier dead rules: the seeder wrote them and nothing
+        // in the payroll run could ever have read them, because the run did not know the day type.
+        var periodOvertimeRequests = await _db.OvertimeRequests.AsNoTracking()
             .Where(r => r.TenantId == tenantId && (r.CompanyId == company.Id || (allowLegacyUnscopedEmployees && r.CompanyId == null)) && r.WorkDate >= periodStart && r.WorkDate <= periodEnd)
-            .Select(r => r.Id)
+            .Select(r => new { r.Id, r.WorkDate })
             .ToListAsync(cancellationToken);
+        var periodOvertimeRequestIds = periodOvertimeRequests.Select(r => r.Id).ToList();
+        var overtimeWorkDates = periodOvertimeRequests.ToDictionary(r => r.Id, r => r.WorkDate);
+        var periodPublicHolidays = (await _db.PublicHolidays.AsNoTracking()
+            .Where(h => h.TenantId == tenantId && !h.IsOptional && h.Date >= periodStart && h.Date <= periodEnd)
+            .Select(h => h.Date)
+            .ToListAsync(cancellationToken)).ToHashSet();
         var overtimeImpacts = await _db.OvertimePayrollImpacts.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId) && periodOvertimeRequestIds.Contains(x.OvertimeRequestId))
             .ToListAsync(cancellationToken);
 
-        // L1: use policy-configured monthly hours as divisor; fall back to 240
-        var standardMonthlyHours = await _db.OvertimePolicies.AsNoTracking()
+        // L1: use policy-configured monthly hours as divisor; fall back to 240.
+        // The SAME policy row also carries the tenant's configured OT hourly BASIS. The run used to
+        // read only the divisor off it, so a tenant on HourlyRateBasis = FixedHourlyRate (or
+        // GrossSalary in a basic-base jurisdiction) was shown one overtime rate by OvertimeController
+        // and paid a different one here. Both now resolve the hour through
+        // OvertimeStatutoryCalculator.ResolveHourRate with these same two fields.
+        var otPolicy = await _db.OvertimePolicies.AsNoTracking()
             .Where(p => p.TenantId == tenantId && p.IsActive && !p.IsDeleted)
             .OrderBy(p => p.CreatedAtUtc)
-            .Select(p => (int?)p.StandardMonthlyHours)
-            .FirstOrDefaultAsync(cancellationToken) ?? 240;
+            .Select(p => new { p.StandardMonthlyHours, p.HourlyRateBasis, p.FixedHourlyRate })
+            .FirstOrDefaultAsync(cancellationToken);
+        var standardMonthlyHours = otPolicy?.StandardMonthlyHours ?? 240;
+        var otPolicyBasis = otPolicy?.HourlyRateBasis;
+        var otPolicyFixedHourlyRate = otPolicy?.FixedHourlyRate ?? 0m;
 
         // ── OT/LOP statutory rules from country pack config ───────────────────
         // Read from StatutoryRule table (tenant-overridable).  Fallback defaults are
         // directional KSA values — FLAG FOR COMPLIANCE SIGN-OFF before production filing.
         var eff = new DateOnly(run.Year, run.Month, 1);
-        // OT multiplier: KSA Labour Law Art.107 = 1.5× for regular overtime days.
+        // ── S1/A5 + the OT hourly BASE, resolved by the SHARED context ───────────────────────────
+        // KSA Labour Law Art. 107: the worker is paid for an overtime hour "an additional amount equal
+        // to the hourly wage plus 50% of his basic wage". The base is the WAGE (Art. 2: basic plus all
+        // due increments); the 50% uplift is on BASIC. Pre-S1 the run computed basic/240 × 1.5 for
+        // everyone — on a 60/40 package that is about 30% short on every KSA overtime hour — and the
+        // seeded ot.restday_multiplier / ot.holiday_multiplier rates were read by nothing at all.
+        //
+        // The general form covers all three jurisdictions with one expression:
+        //     hour pay = baseHourly + basicHourly × (multiplier − 1)
+        //   KSA  base = "wage":  wageHourly + 0.5 × basicHourly           (Art. 107)
+        //   UAE  base = "basic": basicHourly × 1.25                        (basic + 25%)
+        //   QAT  base = "basic": basicHourly × 1.25                        (Art. 74, +25% minimum)
+        // With base = "basic" the expression collapses to basicHourly × multiplier, i.e. EXACTLY the
+        // pre-S1 arithmetic — so nothing moves for UAE or Qatar.
+        //
+        // These five rule keys, their fallbacks and the arithmetic they feed now live in
+        // OvertimeStatutoryContext / OvertimeStatutoryCalculator and are shared verbatim with
+        // OvertimeController, which used to duplicate the calculation on the pre-S1 basis and
+        // therefore reported a different number for the same overtime hour.
         // [FLAG-COMPLIANCE-KSA: weekend/holiday OT multipliers may differ — Art.107 baseline only]
-        var otMultiplier = await _ruleReader.GetDecimalAsync(
-            packCc, packJur, "ot.standard_multiplier", eff, tenantId, cancellationToken) ?? 1.5m;
+        var otContext = await _ruleReader.ResolveAsync(packCc, packJur, eff, tenantId, cancellationToken);
+        var otMultiplier = otContext.StandardMultiplier;
+        var otRestDayMultiplier = otContext.RestDayMultiplier;
+        var otHolidayMultiplier = otContext.HolidayMultiplier;
+        var otBaseIsFullWage = otContext.BaseIsFullWage;
         // Standard monthly hours for hourly-rate divisor (overrides policy value if configured).
-        var otMonthlyHoursRule = await _ruleReader.GetDecimalAsync(
-            packCc, packJur, "ot.standard_monthly_hours", eff, tenantId, cancellationToken);
-        if (otMonthlyHoursRule.HasValue && otMonthlyHoursRule.Value > 0)
-            standardMonthlyHours = (int)otMonthlyHoursRule.Value;
+        if (otContext.StandardMonthlyHoursOverride is int otMonthlyHoursRule)
+            standardMonthlyHours = otMonthlyHoursRule;
         // LOP day-rate divisor: basic ÷ lopDayDivisor per absent day.
         // [FLAG-COMPLIANCE-KSA: basic/30 is common KSA practice but court precedent varies — VERIFY]
         var lopDayDivisor = (int)(await _ruleReader.GetDecimalAsync(
@@ -1861,7 +1935,7 @@ public class PayrollController : ControllerBase
         // changes any output, so "false" only exists for instant per-tenant rollback to the legacy path.
         var useComponentEngine = await ResolveUseComponentEngineAsync(tenantId, cancellationToken);
         var payComponents = useComponentEngine
-            ? await LoadPayComponentsAsync(tenantId, company.Id, cancellationToken)
+            ? await LoadPayComponentsAsync(tenantId, company.Id, periodStart, cancellationToken)
             : (IReadOnlyList<PayComponent>)Array.Empty<PayComponent>();
 
         // ════ POD-C3 ══════════════════════════════════════════════════════════════════════════════
@@ -2162,7 +2236,14 @@ public class PayrollController : ControllerBase
             // ── Short-hours deduction (late/early) at hourly rate ─────────────
             var attendanceDeduction = Math.Round(
                 attendanceImpacts
-                    .Where(x => x.EmployeeId == e.Id && x.ImpactType.Contains("deduction", StringComparison.OrdinalIgnoreCase))
+                    // "Absence deduction" also contains "deduction", so an absent day was charged
+                    // here at the hourly rate AND again as LOP twelve lines below. With the shipped KSA
+                    // defaults the two are identical (480/60 x basic/240 == basic/30), so every absent
+                    // day cost two days' basic and the payslip captioned it "Late/early" to an employee
+                    // who was never late. Absences belong to the LOP bucket only.
+                    .Where(x => x.EmployeeId == e.Id
+                                && x.ImpactType.Contains("deduction", StringComparison.OrdinalIgnoreCase)
+                                && !x.ImpactType.Contains("Absence", StringComparison.OrdinalIgnoreCase))
                     .Sum(x => x.Minutes) / 60m * hourlyRate, 2);
 
             // ── LOP (Loss of Pay): absent days at day-rate (basic ÷ lopDayDivisor) ──
@@ -2185,21 +2266,118 @@ public class PayrollController : ControllerBase
                 .Where(x => x.EmployeeId == e.Id && x.ImpactType.Contains("Deduction", StringComparison.OrdinalIgnoreCase))
                 .Sum(x => leaveImpactScale.TryGetValue(x.Id, out var sc) ? Math.Round(x.Amount * sc, 2) : x.Amount);
 
-            // ── Overtime pay: approved hours × hourly rate × statutory multiplier ──
-            // Recomputed from OvertimePayrollImpacts.Hours (not .Amount) so the statutory
-            // multiplier from StatutoryRule drives the rate, not the policy-level multiplier
-            // stored at approval time.
+            // ── Overtime pay: approved MINUTES × hourly rate × statutory multiplier ──
+            // Recomputed from OvertimePayrollImpacts (not .Amount) so the statutory multiplier
+            // from StatutoryRule drives the rate, not the policy-level multiplier stored at
+            // approval time.
+            // `.Hours` is now DERIVED from the impact's int minutes (Minutes / 60m, no rounding),
+            // so the quantity reaches this expression intact and the only rounding is the
+            // Math.Round on the summed line below. It was a numeric(8,2) column written as
+            // Math.Round(ApprovedMinutes / 60m, 2): 50 approved minutes were paid as 0.83 h.
             // [FLAG-COMPLIANCE-KSA: OT is excluded from GOSI covered wage in this implementation.
             //  Art.107 sets 1.5× for regular OT; weekend/holiday rates may require separate rules.
             //  Whether OT pay is included in the GOSI covered wage requires sign-off before filing.]
             var empOtImpacts = overtimeImpacts.Where(x => x.EmployeeId == e.Id).ToList();
             var otHours = empOtImpacts.Sum(x => x.Hours);
-            // Use per-impact approved multiplier if set (> 0); fall back to statutory standard multiplier.
-            // This supports holiday/rest-day OT at 2× per KSA Art.107 where ApprovedMultiplier = 2.0.
-            var overtimePay = empOtImpacts.Count > 0 && hourlyRate > 0m
-                ? Math.Round(empOtImpacts.Sum(x =>
-                    x.Hours * hourlyRate * (x.ApprovedMultiplier > 0m ? x.ApprovedMultiplier : otMultiplier)), 2)
+            // ── S1/A5: Art. 107 base + the day-category statutory FLOOR ───────────────────────────
+            // `hourlyRate` above is basic ÷ standardMonthlyHours and stays the uplift base, because
+            // Art. 107's 50% is expressly "of his basic wage". What changes is the FIRST term: for a
+            // jurisdiction whose ot.hourly_base is "wage" it is the full-wage hourly rate, not basic.
+            // The full monthly wage is used for the same reason the basic hourly rate is: a joiner's
+            // overtime must not be paid at a fraction of their real hourly rate.
+            var fullWageForOt = fullBasic + fullHousing + fullTransport + fullOther;
+            var otBaseHourly = standardMonthlyHours > 0
+                ? (otBaseIsFullWage ? fullWageForOt : fullBasic) / standardMonthlyHours
                 : 0m;
+            // The full-wage hourly rate, for the GrossSalary policy basis. Identical to otBaseHourly
+            // wherever ot.hourly_base is already "wage" (KSA), so nothing moves there.
+            var otWageHourly = standardMonthlyHours > 0 ? fullWageForOt / standardMonthlyHours : 0m;
+            // A per-request ApprovedMultiplier is honoured only where it is at or above the statutory
+            // floor for the day actually worked. It was previously preferred unconditionally whenever
+            // non-zero, which made it a back door around the statutory rate: an approved request on a
+            // policy configured at 1.0 paid 1.0, with no floor check anywhere in the system.
+            //
+            // The tenant's OvertimePolicy basis is applied HERE, through the same shared resolver
+            // OvertimeController calls, and is honoured only where it is worth at least the Art. 107
+            // hour. Before this the run ignored the policy basis outright, so a FixedHourlyRate
+            // tenant was shown one number by the overtime module and paid this one.
+            // The `otBaseHourly > 0` gate is widened to admit a configured fixed rate: with no salary
+            // structure the statutory base is zero, but a configured rate is still a real amount owed.
+            var overtimePay = empOtImpacts.Count > 0 && (otBaseHourly > 0m || otPolicyFixedHourlyRate > 0m)
+                ? Math.Round(empOtImpacts.Sum(x => x.Hours * OvertimeStatutoryCalculator.ResolveHourRate(
+                    otPolicyBasis, otPolicyFixedHourlyRate,
+                    otBaseHourly, otWageHourly, hourlyRate, OtEffectiveMultiplier(x)).HourPay), 2)
+                : 0m;
+
+            // The payslip line must describe the arithmetic that actually produced the money. The
+            // weighted-average effective multiplier collapses to otMultiplier exactly when every
+            // impact sits on the ordinary-day floor with no approved override, so an unaffected run's
+            // label is byte-identical; it diverges only where the rate genuinely did.
+            var otEffectiveMultiplier = otHours > 0m
+                ? empOtImpacts.Sum(x => x.Hours * OtEffectiveMultiplier(x)) / otHours
+                : otMultiplier;
+
+            // For the same reason, the hourly rate on the line and on the payslip record must be the
+            // base the money was actually computed on — the statutory base, or the tenant's
+            // configured base where it beat it. Weighted the same way, and collapsing to
+            // otBaseHourly exactly when no configured base applies, so an unaffected run's label and
+            // PayrollSlip.HourlyRate are byte-identical.
+            var otEffectiveBaseHourly = otHours > 0m
+                ? empOtImpacts.Sum(x => x.Hours * OvertimeStatutoryCalculator.ResolveHourRate(
+                      otPolicyBasis, otPolicyFixedHourlyRate,
+                      otBaseHourly, otWageHourly, hourlyRate, OtEffectiveMultiplier(x)).BaseHourly) / otHours
+                : otBaseHourly;
+
+            // The SECOND term of the hour, weighted identically: what the × (multiplier − 1) uplift is
+            // measured on. Art. 107's "50% of his BASIC wage" is a separate base from the first term,
+            // and without it on the line the payslip could only state a rate × multiplier shape that
+            // the money was never computed with. Collapses to `hourlyRate` (basic hourly) wherever no
+            // configured base applies, which is every statutory run.
+            var otEffectiveUpliftHourly = otHours > 0m
+                ? empOtImpacts.Sum(x => x.Hours * OvertimeStatutoryCalculator.ResolveHourRate(
+                      otPolicyBasis, otPolicyFixedHourlyRate,
+                      otBaseHourly, otWageHourly, hourlyRate, OtEffectiveMultiplier(x)).UpliftBasisHourly) / otHours
+                : hourlyRate;
+
+            decimal OtEffectiveMultiplier(OvertimePayrollImpact impact)
+            {
+                var floor = otMultiplier;
+                if (overtimeWorkDates.TryGetValue(impact.OvertimeRequestId, out var workDate))
+                    floor = OvertimeStatutoryCalculator.StatutoryFloor(
+                        OvertimeStatutoryCalculator.DayCategory(
+                            workDate,
+                            periodPublicHolidays.Contains(workDate),
+                            workWeekConfig.IsWeekend(workDate.DayOfWeek)),
+                        otMultiplier, otRestDayMultiplier, otHolidayMultiplier);
+                return OvertimeStatutoryCalculator.EffectiveMultiplier(impact.ApprovedMultiplier, floor);
+            }
+            // ── F2: CONFIGURED-VALUE PAY COMPONENTS — THE ENGINE IS THE SOLE SOURCE OF THEIR AMOUNTS ─────
+            // Every other payslip line re-emits an amount computed HERE (structure columns, tax, attendance,
+            // leave, loans, bonus, adjustments, the country pack), so it is already in the aggregates below.
+            // A tenant-configured Fixed / PercentOfBasic / PercentOfGross component exists ONLY in the
+            // engine's output. Pre-F2 those lines were emitted onto the payslip but never reached gross,
+            // deductions or net — net pay ignored them and the Lock journal failed gl_unbalanced by exactly
+            // their amount. They are now resolved by the SAME engine call the emission below makes (same
+            // components, same Basic/Gross inputs ⇒ same amounts), folded into every aggregate, and the
+            // post-loop PAYSLIP_LINES_MISMATCH check proves Σ emitted lines == the slip aggregates.
+            //   • Supplemental runs carry none (they pay no recurring component), mirroring the effective
+            //     set filter at emission.
+            //   • They are NEVER in the statutory covered wage: the SalaryBreakdown fed to the pack below is
+            //     unchanged, so GOSI/GPSSA/GRSIA and the 45,000 ceiling are untouched by construction.
+            //   • Fixed amounts are monthly and NOT prorated; PercentOf* follow the prorated basic/gross.
+            //   • Empty for every tenant without such a component, and for the legacy kill-switch path, so
+            //     every existing run's aggregates are the pre-F2 expressions + 0.
+            var configuredComponents = includesRecurringPay
+                ? payComponents.Where(PayComponentEngine.IsConfiguredValue).ToList()
+                : new List<PayComponent>();
+            var configuredCtx = new PayComponentContext { Basic = basic, Gross = gross };
+            var configured = PayComponentEngine.Compute(configuredComponents, configuredCtx);
+            var configuredEarnings = configured.Earnings.Sum(l => l.Amount);
+            var configuredDeductions = configured.Deductions.Where(l => !l.IsEmployerContribution).Sum(l => l.Amount);
+            var configuredTaxableEarnings = configuredComponents.Count == 0 ? 0m : PayComponentEngine.Compute(
+                    configuredComponents.Where(c => c.IsTaxable && c.ComponentType == PayComponentTypes.Earning).ToList(),
+                    configuredCtx).Earnings.Sum(l => l.Amount);
+
             // Tax deduction: apply income tax rate to taxable components only
             decimal taxDeduction = 0m;
             if (incomeTaxRate > 0 && salary is not null)
@@ -2214,6 +2392,8 @@ public class PayrollController : ControllerBase
                         structureComponents.Sum(c => c.CalculationType == "Percentage" ? fullBasic * c.Percentage / 100m : c.Amount),
                         factor)
                     : basic;
+                // F2 — a configured earning flagged IsTaxable is taxable income. 0 for every tenant without one.
+                taxableBase += configuredTaxableEarnings;
                 taxDeduction = Math.Round(taxableBase * incomeTaxRate / 100m, 2);
             }
 
@@ -2303,7 +2483,14 @@ public class PayrollController : ControllerBase
                 Nationality:  e.Nationality ?? string.Empty,
                 ContractType: e.ContractType ?? "Indefinite",
                 PeriodYear:   run.Year,
-                PeriodMonth:  run.Month);
+                PeriodMonth:  run.Month)
+            {
+                // S1/A3 — the person dimension. DateOfBirth exists on Employee today and drives the
+                // age-based eligibility corollary (annuities and SANED cease at retirement age).
+                // SocialInsuranceFirstRegisteredOn has no column yet; null means UNKNOWN, and no pack
+                // may read unknown as "new entrant".
+                DateOfBirth = e.DateOfBirth,
+            };
             var statutoryResult = await deductionCalc.CalculateAsync(statutoryInput, cancellationToken);
             if (priorStatutoryByEmp.Count > 0)
             {
@@ -2367,9 +2554,9 @@ public class PayrollController : ControllerBase
             // underpays nor unbalances). An EMI is a DEBT INSTALMENT, not a wage — it is never prorated.
             var deductionsBeforeDebt = fixedDeduction + attendanceDeduction + lopDeduction + leaveDeduction
                                      + taxDeduction + gosiEmployeeTotal + adjustmentDeductions + totalBonusTax
-                                     + settlementDeductionTotal;
+                                     + settlementDeductionTotal + configuredDeductions;
             var earningsForPeriod = gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal
-                                  + settlementEarningTotal;
+                                  + settlementEarningTotal + configuredEarnings;
             var affordable = Math.Round(earningsForPeriod - deductionsBeforeDebt, 2);
 
             var loanTakenById = new Dictionary<Guid, decimal>();
@@ -2516,14 +2703,14 @@ public class PayrollController : ControllerBase
                 // POD-C1 — the settlement's earnings ride the SAME aggregate as bonus/adjustment/arrears do,
                 // so NetSalary, the WPS/SIF amount and the payment batch total all pick them up with no new
                 // machinery. (The statutory base is untouched — see the GOSI decision on FinalSettlement.)
-                OtherAllowances = otherAllowances + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal,
-                GrossSalary = gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal,
+                OtherAllowances = otherAllowances + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal + configuredEarnings,
+                GrossSalary = gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal + configuredEarnings,
                 Deductions = deductions,
                 NetSalary = netSalary,
                 EmployeeStatutoryTotal = statutoryResult.TotalEmployeeDeduction,
                 EmployerStatutoryTotal = statutoryResult.TotalEmployerContribution,
                 LoanDeductions = totalLoanDeduction,
-                YtdGross = ytdGross + gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal,
+                YtdGross = ytdGross + gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal + configuredEarnings,
                 YtdDeductions = ytdDeduct + deductions,
                 YtdNet = ytdNet + netSalary,
                 Status = "Draft",
@@ -2575,12 +2762,13 @@ public class PayrollController : ControllerBase
             if (transport > 0) AddEarning(tenantId, id, e.Id, "TRANSPORT", "Transport allowance", transport, "Salary");
             if (otherAllowances > 0) AddEarning(tenantId, id, e.Id, "OTHER_ALLOWANCES", "Other allowances", otherAllowances, "Salary");
             if (overtimePay > 0)
-            {
-                var otRateDisplay = Math.Round(hourlyRate * otMultiplier, 2);
+                // ONE definition, shared with PayComponentEngine and sitting beside the HourPay
+                // expression it describes — `otRateDisplay` (hourlyRate × otMultiplier), computed here
+                // and read by nothing, was the last trace of the shape that did not add up.
                 AddEarning(tenantId, id, e.Id, "OVERTIME",
-                    $"Overtime ({otHours:N2} h × {Math.Round(hourlyRate, 2):N2}/h × {otMultiplier:N2})",
+                    OvertimeStatutoryCalculator.PayslipLabel(
+                        otHours, otEffectiveBaseHourly, otEffectiveUpliftHourly, otEffectiveMultiplier),
                     overtimePay, "Overtime");
-            }
             if (fixedDeduction > 0) AddDeduction(tenantId, company.Id, id, e.Id, "FIXED_DEDUCTION",
                 WithProrationNote("Fixed deduction", policy.Prorates(ProratedComponentCodes.FixedDeduction) ? prorationNote : string.Empty),
                 fixedDeduction, "Salary");
@@ -2616,7 +2804,8 @@ public class PayrollController : ControllerBase
                 {
                     Basic = basic, Housing = housing, Transport = transport,
                     OtherAllowances = otherAllowances, FixedDeduction = fixedDeduction, Gross = gross,
-                    OvertimePay = overtimePay, OtHours = otHours, HourlyRate = hourlyRate, OtMultiplier = otMultiplier,
+                    OvertimePay = overtimePay, OtHours = otHours, HourlyRate = otEffectiveBaseHourly,
+                    OtUpliftHourly = otEffectiveUpliftHourly, OtMultiplier = otEffectiveMultiplier,
                     TaxDeduction = taxDeduction, IncomeTaxRate = incomeTaxRate,
                     AttendanceDeduction = attendanceDeduction,
                     LopDeduction = lopDeduction, LopDays = lopDays, LopDayRate = lopDayRate,
@@ -2648,12 +2837,13 @@ public class PayrollController : ControllerBase
                 foreach (var line in computation.Earnings)
                     AddEarning(tenantId, id, e.Id, line.Code,
                         line.Code == "BASIC" ? WithProrationNote(line.Name, prorationNote) : line.Name,
-                        line.Amount, line.Source);
+                        line.Amount, line.Source, glDriverKey: line.GlDriverKey);
                 foreach (var line in computation.Deductions)
                     AddDeduction(tenantId, company.Id, id, e.Id, line.Code,
                         line.Code == "FIXED_DEDUCTION" && policy.Prorates(ProratedComponentCodes.FixedDeduction)
                             ? WithProrationNote(line.Name, prorationNote) : line.Name,
-                        line.Amount, line.Source, isEmployerContribution: line.IsEmployerContribution);
+                        line.Amount, line.Source, isEmployerContribution: line.IsEmployerContribution,
+                        glDriverKey: line.GlDriverKey);
             }
 
             // ── POD-C3: ARREARS LINES — ITEMISED PER COVERED PERIOD ─────────────────────────────────
@@ -2732,6 +2922,25 @@ public class PayrollController : ControllerBase
                 AddDeduction(tenantId, company.Id, id, e.Id,
                     BonusGlDescriptions.PayrollTaxComponentCode, BonusGlDescriptions.PayrollTaxComponentName,
                     totalBonusTax, "Tax");
+        }
+
+        // ── F2: PAYSLIP LINES == SLIP AGGREGATES, PER EMPLOYEE, ON EVERY RUN ─────────────────────────
+        // See PayslipLineInvariant: Σ lines ≠ the slip aggregates means the Lock journal cannot balance —
+        // the pre-F2 defect. Checked HERE, at Process, against the lines actually emitted (both emission
+        // paths), so a divergence is NAMED per employee as a non-overridable Error that blocks Approve and
+        // Lock, instead of surfacing later as an anonymous gl_unbalanced 422. The check itself is a pure
+        // per-employee function; this block only groups the staged lines by employee (one pass, O(lines)).
+        var lineMismatches = new List<(int EmpId, string Code, string Name, PayslipLineInvariant.Mismatch M)>();
+        {
+            var earnByEmp = _db.ChangeTracker.Entries<PayrollEarning>()
+                .Where(x => x.State == EntityState.Added && x.Entity.PayrollRunId == id)
+                .Select(x => x.Entity).ToLookup(x => x.EmployeeId);
+            var dedByEmp = _db.ChangeTracker.Entries<PayrollDeduction>()
+                .Where(x => x.State == EntityState.Added && x.Entity.PayrollRunId == id)
+                .Select(x => x.Entity).ToLookup(x => x.EmployeeId);
+            foreach (var slip in slips)
+                if (PayslipLineInvariant.Check(slip, earnByEmp[slip.EmployeeId], dedByEmp[slip.EmployeeId]) is { } m)
+                    lineMismatches.Add((slip.EmployeeId, slip.EmployeeCode, slip.EmployeeName, m));
         }
 
         // POD-B2 (M4) — refuse the whole run BEFORE anything is written, rather than shipping an
@@ -2906,6 +3115,19 @@ public class PayrollController : ControllerBase
             // than this run in isolation. Derived from the same priorStatutoryByEmp map the incremental
             // netting above used, so the figure Rule 2 credits is exactly the figure that was netted off.
             PriorPeriodGosiEeByEmployee             = BuildPriorPeriodGosiEe(priorStatutoryByEmp),
+            // S1/A2(c) — the ONE ceiling: the same effective-dated rule the country pack caps on,
+            // instead of a compiled 45,000 the validator would keep warning on after GOSI moves it.
+            // statutoryCeiling is decimal.MaxValue when no rule exists (the arrears delta wants "no
+            // cap" there). Zero means "not supplied" to the engine, which then applies its own
+            // default — so an unseeded tenant keeps the 45,000 warning it has always had rather than
+            // silently losing it.
+            GosiCoveredWageCeiling                  = statutoryCeiling == decimal.MaxValue ? 0m : statutoryCeiling,
+            // S1/A3 — the cohort gap is announced unless the tenant has acknowledged it, and the
+            // retirement-age corollary is checked only when an age is configured.
+            EntrantCohortSchemeAcknowledged         = await Zayra.Api.Application.CountryPack.StatutoryFlag.ReadAsync(
+                _ruleReader, packCc, packJur, "gosi.new_entrant_scheme_acknowledged", eff, false, cancellationToken),
+            GosiRetirementAgeYears                  = (int)(await _ruleReader.GetDecimalAsync(
+                packCc, packJur, "gosi.retirement_age_years", eff, tenantId, cancellationToken) ?? 0m),
         };
         foreach (var r in PayrollValidationEngine.Run(validationCtx))
             _db.PayrollValidationResults.Add(r);
@@ -2939,6 +3161,20 @@ public class PayrollController : ControllerBase
                                 "policy to 'Prorated', or add a positive adjustment covering the shortfall."
                               : " Reduce the absence/LOP or adjustment deductions, or add a positive adjustment.") +
                           " This Error blocks Approve and Lock, so no unbalanced journal can be posted.",
+            });
+        // F2 — see lineMismatches. Error severity, and NON-overridable (PayrollValidationOverridePolicy):
+        // it states that the journal this run would post cannot balance, which is not a judgement.
+        foreach (var (empId, code, name, (earnLines, grossAgg, dedLines, dedAgg)) in lineMismatches)
+            _db.PayrollValidationResults.Add(new PayrollValidationResult
+            {
+                TenantId = tenantId, PayrollRunId = id, EmployeeId = empId,
+                Severity = "Error", Code = "PAYSLIP_LINES_MISMATCH",
+                Message = $"{name} ({code}): the payslip lines do not add up to the payslip totals — earning lines " +
+                          $"{earnLines:N2} vs gross {grossAgg:N2}, deduction lines {dedLines:N2} vs deductions {dedAgg:N2}. " +
+                          "Net pay and the GL journal are derived from the totals, so this run cannot post a balanced " +
+                          "journal. The usual cause is a pay component whose amount duplicates or bypasses the " +
+                          "salary structure (check the pay-component catalog for this company). This Error blocks " +
+                          "Approve and Lock and cannot be overridden.",
             });
         foreach (var (empId, code, name, amount) in deferredEmiEmployees)
             C3Warn("WARN_EMI_DEFERRED_PRORATED_PERIOD", empId,
@@ -3688,6 +3924,18 @@ public class PayrollController : ControllerBase
             // run had already reported statutory for these employees, which is exactly this condition.
             StatutoryComputedIncrementally          = valPriorStatutory.Count > 0,
             PriorPeriodGosiEeByEmployee             = BuildPriorPeriodGosiEe(valPriorStatutory),
+            // S1/A2(c) — same ceiling source as Process. /validate REPLACES the stored results
+            // wholesale, so a version that read a different ceiling here would flip the warning on
+            // and off depending on which endpoint last ran.
+            GosiCoveredWageCeiling                  = await _ruleReader.GetDecimalAsync(
+                "SAU", "KSA-mainland", "gosi.covered_wage_ceiling_sar",
+                new DateOnly(run.Year, run.Month, 1), tenantId, cancellationToken) ?? 45_000m,
+            EntrantCohortSchemeAcknowledged         = await Zayra.Api.Application.CountryPack.StatutoryFlag.ReadAsync(
+                _ruleReader, "SAU", "KSA-mainland", "gosi.new_entrant_scheme_acknowledged",
+                new DateOnly(run.Year, run.Month, 1), false, cancellationToken),
+            GosiRetirementAgeYears                  = (int)(await _ruleReader.GetDecimalAsync(
+                "SAU", "KSA-mainland", "gosi.retirement_age_years",
+                new DateOnly(run.Year, run.Month, 1), tenantId, cancellationToken) ?? 0m),
         };
         var results = PayrollValidationEngine.Run(ctx);
 
@@ -3783,10 +4031,13 @@ public class PayrollController : ControllerBase
                 overrides       = overriddenErrors,
             });
 
-        // Maker-checker: the user who processed the run cannot approve it.
+        // Maker-checker: neither the user who created the run nor the user who processed it may
+        // approve it. Checking only ProcessedByUserId let a creator hand processing to a colleague
+        // and then approve their own payroll proposal.
         var approverId = GetUserId();
-        if (run.ProcessedByUserId.HasValue && run.ProcessedByUserId == approverId)
-            return StatusCode(403, new { error = "maker_checker_violation", message = "The user who processed this run cannot approve it. A different approver is required (maker-checker policy)." });
+        if (approverId.HasValue
+            && (run.CreatedByUserId == approverId || run.ProcessedByUserId == approverId))
+            return StatusCode(403, new { error = "maker_checker_violation", message = "The user who created or processed this run cannot approve it. A different approver is required (maker-checker policy)." });
 
         var isAdmin = User.IsInRole("Admin");
         var isHROrPayroll = User.IsInRole("HR Manager") || User.IsInRole("Payroll Manager");
@@ -3799,7 +4050,8 @@ public class PayrollController : ControllerBase
             run.Status = "Approved";
             await PayrollAudit("payroll.run.approved", "PayrollRun", id.ToString(), new { notes = req.Notes, level = "Finance" }, cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
-            await _notifications.NotifyAsync(tenantId, GetUserId(), $"Payroll Run Approved — {run.Year}/{run.Month:D2}", $"Payroll run for {run.Year}/{run.Month:D2} has been approved by Finance. Total net: {run.TotalNetSalary:N2} AED.", "PayrollRun", id.ToString(), cancellationToken);
+            var runCurrency = await ResolveRunCurrencyAsync(tenantId, run.CompanyId, cancellationToken);
+            await _notifications.NotifyAsync(tenantId, GetUserId(), $"Payroll Run Approved — {run.Year}/{run.Month:D2}", $"Payroll run for {run.Year}/{run.Month:D2} has been approved by Finance. Total net: {run.TotalNetSalary:N2} {runCurrency}.", "PayrollRun", id.ToString(), cancellationToken);
             return Ok(run);
         }
 
@@ -4338,7 +4590,8 @@ public class PayrollController : ControllerBase
         "NEGATIVE_NET" or "ZERO_NET_WITH_GROSS" =>
             $"{code} states an arithmetic fact about a payslip, not a business judgement. Correct the deductions and " +
             "re-process (POST runs/{id}/reopen, then process).",
-        "GL_WILL_NOT_BALANCE" or "TOTALS_GROSS_MISMATCH" or "TOTALS_DEDUCTIONS_MISMATCH" or "TOTALS_NET_MISMATCH" =>
+        "GL_WILL_NOT_BALANCE" or "TOTALS_GROSS_MISMATCH" or "TOTALS_DEDUCTIONS_MISMATCH" or "TOTALS_NET_MISMATCH"
+            or "PAYSLIP_LINES_MISMATCH" =>
             $"{code} means the journal this run would post does not balance. Overriding it does not accept a risk, it " +
             "produces a corrupt ledger. Reopen and re-process the run so the totals are recomputed.",
         "DUPLICATE_EMPLOYEE" =>
@@ -4502,7 +4755,7 @@ public class PayrollController : ControllerBase
             foreach (var grp in earnings.GroupBy(e => e.ComponentCode))
             {
                 var first = grp.First();
-                var driver = EarningDriverKeyFor(glCtx.Drivers, grp.Key, first.Source);
+                var driver = PinnedGlDriver(grp.Select(e => e.GlDriverKey)) ?? EarningDriverKeyFor(glCtx.Drivers, grp.Key, first.Source);
                 if (previewClearsBonus && first.Source == "Bonus")
                 {
                     var bonusAmount = grp.Sum(e => e.Amount);
@@ -4562,9 +4815,15 @@ public class PayrollController : ControllerBase
             foreach (var grp in deductions.GroupBy(d => new { d.ComponentCode, d.Source }))
             {
                 var first = grp.First();
-                var driverRow = ResolveDeductionDriverRow(glCtx.Drivers, grp.Key.ComponentCode, grp.Key.Source);
+                var pinned = PinnedGlDriver(grp.Select(d => d.GlDriverKey));
+                var driverRow = pinned is null ? ResolveDeductionDriverRow(glCtx.Drivers, grp.Key.ComponentCode, grp.Key.Source) : null;
                 string driver;
-                if (driverRow is not null)
+                if (pinned is not null)
+                {
+                    // F2 — a configured component posts to its validated, pinned driver; never an employer pair.
+                    driver = pinned;
+                }
+                else if (driverRow is not null)
                 {
                     driver = driverRow.Key;
                     if (driverRow.EmitsEmployerExpensePair)
@@ -4731,7 +4990,15 @@ public class PayrollController : ControllerBase
         await PayrollAudit("payroll.payslips.generated", "PayrollRun", id.ToString(),
             new { generated = slips.Count - refreshed, refreshed, publishedToEss = published }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
-        return Ok(await _db.Payslips.AsNoTracking().Where(x => x.TenantId == tenantId && x.PayrollRunId == id).ToListAsync(cancellationToken));
+        // Same header-only projection as ListPayslips — carrying the employee name so the caller never has
+        // to fall back to a placeholder code.
+        var generated = await _db.Payslips.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.PayrollRunId == id)
+            .OrderBy(x => x.EmployeeId).ToListAsync(cancellationToken);
+        var generatedNames = await ResolvePayslipEmployeeNamesAsync(tenantId, id, generated, cancellationToken);
+        return Ok(generated
+            .Select(x => PayslipListItemDto.Project(x, generatedNames[x.EmployeeId].Code, generatedNames[x.EmployeeId].Name))
+            .ToList());
     }
 
     /// <summary>
@@ -4798,10 +5065,16 @@ public class PayrollController : ControllerBase
         await PayrollAudit("payroll.payment_batch.created", "PayrollPaymentBatch", batch.Id.ToString(),
             new { totalAmount = batch.TotalAmount, method = batch.PaymentMethod, runType = run.RunType, excludedCount = batchExcludedCount }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
+        // `Status` is NOT optional here. ListPaymentBatches returns it, the client's
+        // PayrollPaymentBatch type declares it non-nullable, and BankWpsTab renders the freshly
+        // created batch straight from THIS body — `<StatusBadge status={b.status} />` calls
+        // status.replace(...), so omitting the field threw a TypeError inside render and the Next
+        // error boundary replaced the whole payroll module with "Something went wrong" the moment
+        // an operator created a payment batch. Create and list must project the same shape.
         return Created($"/api/payroll/payment-batches/{batch.Id}", new
         {
             batch.Id, batch.TenantId, batch.PayrollRunId, batch.BatchNumber, batch.PaymentMethod,
-            batch.TotalAmount, batch.Currency, batch.WpsStatus,
+            batch.TotalAmount, batch.Currency, batch.Status, batch.WpsStatus,
             runType       = run.RunType,
             parentRunId   = run.ParentRunId,
             excludedCount = batchExcludedCount,
@@ -4842,6 +5115,11 @@ public class PayrollController : ControllerBase
             // §6.6: already-Active employees who drifted pay-blocked after a policy change. Surfaced
             // (never silently dropped); GenerateWps requires explicit acknowledgement to proceed.
             readinessDrift = driftWarn.ToArray(),
+            // What "valid" means here, precisely. This validator checks the DATA in the file and
+            // cannot check that the FORMAT is one a Saudi WPS gateway will parse — and no file from
+            // this generator has ever been put in front of one. An operator reading "0 errors" must
+            // not conclude the submission is safe, so the scope of the guarantee travels with it.
+            conformance = Infrastructure.Payroll.WpsConformance.For(null),
         });
     }
 
@@ -5124,6 +5402,10 @@ public class PayrollController : ControllerBase
             wps.TotalSalaryAmount,
             wps.GeneratedByUserId,
             wps.CreatedAtUtc,
+            // "File generated" is not "wage filed". The generated artefact's layout has never been
+            // accepted by a live Mudad/bank gateway, and the screen that celebrates a successful
+            // generation is exactly where that has to be said.
+            conformance = Infrastructure.Payroll.WpsConformance.For(genResult.FormatVersion),
         });
     }
 
@@ -6152,6 +6434,12 @@ public class PayrollController : ControllerBase
 
         var mimeType = dlResult.Format == "mudad-xml" ? "application/xml" : "text/plain";
         Response.Headers["Content-Disposition"] = $"attachment; filename={dlResult.FileName}";
+        // The artefact itself states what it is. The bytes are content-addressed by SHA-256 and
+        // their determinism is pinned by tests, so the statement rides on a header rather than in
+        // the payload — a WPS gateway would reject an unexpected comment line anyway. Without this,
+        // the downloaded file is completely silent about never having been accepted by a gateway.
+        Response.Headers[Infrastructure.Payroll.WpsConformance.DownloadHeader] =
+            Infrastructure.Payroll.WpsConformance.HeaderValue(dlResult.Format);
         return File(dlResult.FileBytes, mimeType, dlResult.FileName);
     }
 
@@ -6332,8 +6620,69 @@ public class PayrollController : ControllerBase
             query = query.Where(x => scope.AllowedEmployeeIds!.Contains(x.EmployeeId));
         var total = await query.CountAsync(cancellationToken);
         var items = await query.OrderBy(x => x.EmployeeId).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(cancellationToken);
-        // SAFE-SERIALIZATION: Payslip is a header-only record (Id, EmployeeId, PayslipNumber, IsPublishedToEss) — no salary amounts.
-        return Ok(new PagedResult<Payslip>(items, total, page, pageSize));
+        var names = await ResolvePayslipEmployeeNamesAsync(tenantId, id, items, cancellationToken);
+        // SAFE-SERIALIZATION: PayslipListItemDto is a header-only record (Id, EmployeeId, employee name/code,
+        // PayslipNumber, IsPublishedToEss) — no salary amounts. The name comes from the same PayrollSlip row
+        // the payslip PDF prints from, so the list and the document always agree.
+        // Order stays EmployeeId (the paged DB order) — re-sorting by name inside the page would make
+        // page boundaries and display order disagree once a run exceeds one page.
+        var dtos = items
+            .Select(x => PayslipListItemDto.Project(x, names[x.EmployeeId].Code, names[x.EmployeeId].Name))
+            .ToList();
+        return Ok(new PagedResult<PayslipListItemDto>(dtos, total, page, pageSize));
+    }
+
+    /// <summary>
+    /// Resolves the employee name + code for a set of payslip headers.
+    ///
+    /// The <see cref="Payslip"/> row is header-only and stores neither, so the name is read from the
+    /// PayrollSlip row for the same run + employee — the SAME denormalised value
+    /// <see cref="DownloadSlipPdf"/> prints on the PDF, captured when the run was processed. Reading it
+    /// from anywhere else (e.g. the live Employees row) would let a renamed or transferred employee's
+    /// list entry drift away from their issued payslip document.
+    ///
+    /// Employees whose PayrollSlip row is gone (a reopened run mid-reprocess wipes slips but keeps
+    /// payslips) fall back to the live Employee record, and only then — never silently — to the
+    /// employee code. A payslip header with no resolvable identity at all is still listed, labelled by
+    /// its numeric id, rather than being dropped from the page.
+    /// </summary>
+    private async Task<Dictionary<int, (string Code, string Name)>> ResolvePayslipEmployeeNamesAsync(
+        Guid tenantId, Guid runId, IReadOnlyCollection<Payslip> payslips, CancellationToken ct)
+    {
+        var resolved = new Dictionary<int, (string Code, string Name)>();
+        if (payslips.Count == 0) return resolved;
+
+        var employeeIds = payslips.Select(p => p.EmployeeId).Distinct().ToList();
+
+        foreach (var s in await _db.PayrollSlips.AsNoTracking()
+                     .Where(s => s.TenantId == tenantId && s.RunId == runId && employeeIds.Contains(s.EmployeeId))
+                     .Select(s => new { s.EmployeeId, s.EmployeeCode, s.EmployeeName })
+                     .ToListAsync(ct))
+        {
+            if (!string.IsNullOrWhiteSpace(s.EmployeeName))
+                resolved[s.EmployeeId] = (s.EmployeeCode, s.EmployeeName);
+        }
+
+        var missing = employeeIds.Where(eid => !resolved.ContainsKey(eid)).ToList();
+        if (missing.Count > 0)
+        {
+            foreach (var e in await _db.Employees.AsNoTracking()
+                         .Where(e => e.TenantId == tenantId && missing.Contains(e.Id))
+                         .Select(e => new { e.Id, e.EmployeeCode, e.FullName })
+                         .ToListAsync(ct))
+            {
+                if (!string.IsNullOrWhiteSpace(e.FullName))
+                    resolved[e.Id] = (e.EmployeeCode, e.FullName);
+                else if (!string.IsNullOrWhiteSpace(e.EmployeeCode))
+                    resolved[e.Id] = (e.EmployeeCode, e.EmployeeCode);
+            }
+        }
+
+        foreach (var eid in employeeIds)
+        {
+            if (!resolved.ContainsKey(eid)) resolved[eid] = (string.Empty, $"Employee {eid}");
+        }
+        return resolved;
     }
 
     [HttpGet("runs/{id:guid}/approvals")]
@@ -6396,7 +6745,13 @@ public class PayrollController : ControllerBase
             query = query.Where(x => scope.AllowedEmployeeIds!.Contains(x.EmployeeId));
         var slips = await query.OrderBy(x => x.EmployeeCode).ToListAsync(cancellationToken);
 
-        var headers = new[] { "Employee Code", "Employee Name", "Department", "Basic Salary", "Housing Allowance", "Transport Allowance", "Other Allowances", "Gross Salary", "Deductions", "Net Salary", "Status" };
+        // Headers name what the columns ACTUALLY hold. `OtherAllowances` is not "other allowances": it is
+        // the whole non-basic/housing/transport earnings bucket (Process, :2693 — other allowances +
+        // overtime + bonuses + adjustments + arrears + settlement + configured earnings), and `Deductions`
+        // already contains the loan/advance EMIs and the employee GOSI share (:2542-2543, :2635). The four earning
+        // columns are disjoint and sum to Gross; Gross − Deductions = Net. The old headers invited a reader
+        // to count overtime twice and to subtract loans a second time.
+        var headers = new[] { "Employee Code", "Employee Name", "Department", "Basic Salary", "Housing Allowance", "Transport Allowance", "Other Earnings (incl. overtime, bonuses, arrears)", "Gross Salary", "Deductions (incl. loans and GOSI)", "Net Salary", "Status" };
         var rows = slips.Select(s => (IReadOnlyList<object?>)new object?[]
         {
             s.EmployeeCode, s.EmployeeName, s.Department,
@@ -6456,10 +6811,10 @@ public class PayrollController : ControllerBase
             .FirstOrDefaultAsync(cancellationToken);
 
         var wageBasis = await ResolveEosbWageBasisAsync(tenantId, company.Id, salary, employee, cancellationToken);
-        var eligibleSalary = wageBasis.EligibleWage;
+        // M1 — the CARRIED service start wins when it is earlier than this product's joining date. See
+        // ResolveEosbServiceStartAsync for why it is the earlier of the two and never the sum.
+        var (serviceStart, carriedStart) = await ResolveEosbServiceStartAsync(tenantId, employee, cancellationToken);
         var joiningDate = employee.JoiningDate;
-        var dailySalary = eligibleSalary * 12 / 365m;
-        var monthlySalary = eligibleSalary;
 
         // Resolve the separation reason once, consistently with /final-settlement:
         // explicit request override → recorded EmployeeOffboarding.SeparationType → conservative default.
@@ -6470,11 +6825,19 @@ public class PayrollController : ControllerBase
         // pro-rata gratuity to short-service TERMINATIONS from day one; the <2yr RESIGNATION
         // forfeiture, the Art.80 dismissal forfeiture, and the non-KSA ≥1yr eligibility floors
         // are all owned by the country packs (the single source of truth).
+        var unpaidLeaveDays = await ResolveUnpaidLeaveDaysAsync(
+            tenantId, employee.Id, serviceStart, DateOnly.FromDateTime(calcDate), cancellationToken);
         var (eosbResult, totalYears) = await ComputeEndOfServiceAsync(
-            company.CountryCode, company.Jurisdiction, company.Id, eligibleSalary,
-            joiningDate, calcDate, terminationReason, employee, cancellationToken);
+            company.CountryCode, company.Jurisdiction, company.Id, wageBasis,
+            serviceStart, calcDate, terminationReason, employee, unpaidLeaveDays, gcc, cancellationToken);
         var eosbAmount  = Math.Round(eosbResult.TotalGratuity, 2);
         var eosbFormula = eosbResult.ApplicableRule;
+        // S1/A1 — the wage the PACK awarded on, not the controller's pre-narrowed scalar. When a pack
+        // does not report one (Default), fall back to the configured wage so the field is never zero
+        // against a non-zero award.
+        var eligibleSalary = eosbResult.AppliedWageBase > 0m ? eosbResult.AppliedWageBase : wageBasis.ConfiguredWage;
+        var dailySalary = eligibleSalary * 12 / 365m;
+        var monthlySalary = eligibleSalary;
 
         // Persist the calculation
         var existing = await _db.EOSBCalculations.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == req.EmployeeId && x.Status == "Draft", cancellationToken);
@@ -6501,6 +6864,10 @@ public class PayrollController : ControllerBase
             employeeId = req.EmployeeId,
             employeeName = employee.FullName,
             joiningDate,
+            // M1 — the date the award was actually measured from, beside the joining date it may differ
+            // from, so "ten years of gratuity for a four-month employee" is explained on its face.
+            serviceStartDate = serviceStart,
+            carriedServiceStartDate = carriedStart,
             asOfDate = calcDate,
             totalYears = Math.Round(totalYears, 2),
             eligibleSalary,
@@ -6508,6 +6875,10 @@ public class PayrollController : ControllerBase
             formula = eosbFormula,
             eosbAmount,
             wageBasis = wageBasis.IncludedComponents,
+            // S1/A1 — the pack's statutory notices and the compatibility-fallback reason are part of the
+            // ANSWER, not a snapshot footnote. A caller that cannot see them cannot sign off on the award.
+            statutoryNotices = EosbCalculateNotices(eosbResult, wageBasis, serviceStart, joiningDate),
+            unpaidLeaveDays,
             countryCode = company.CountryCode,
             jurisdiction = company.Jurisdiction,
             terminationReason,
@@ -6530,7 +6901,21 @@ public class PayrollController : ControllerBase
     // Service period: the pack derives service length from DateOnly start/end
     // (fullMonths/12 + remDays/365), eliminating the /365.0 leap drift the old inline
     // final-settlement formula suffered.
-    private sealed record EosbWageBasis(decimal EligibleWage, IReadOnlyList<string> IncludedComponents);
+    /// <summary>
+    /// S1/A1 — the EOSB wage inputs. The controller no longer DECIDES the wage base; it reports the
+    /// facts (the real salary package, and whatever the tenant's component catalog flags in) and the
+    /// country pack applies its own statute to them.
+    ///
+    /// <para>Before this change the controller collapsed the package into a single scalar and handed it
+    /// to the pack as <c>new SalaryBreakdown(eligibleWage, 0, 0, 0)</c> — housing and transport
+    /// explicitly zeroed — so no pack could ever see, let alone apply, the Art. 84 "last wage". That is
+    /// the mechanical cause of A1.</para>
+    /// </summary>
+    private sealed record EosbWageBasis(
+        SalaryBreakdown Package,
+        decimal ConfiguredWage,
+        IReadOnlyList<string> IncludedComponents,
+        string? FallbackReason);
 
     private async Task<EosbWageBasis> ResolveEosbWageBasisAsync(
         Guid tenantId, Guid? companyId, EmployeeSalaryStructure? salary, Employee employee, CancellationToken ct)
@@ -6540,7 +6925,10 @@ public class PayrollController : ControllerBase
         var transport = salary?.TransportAllowance ?? 0m;
         var other = (salary?.FoodAllowance ?? 0m) + (salary?.MobileAllowance ?? 0m) + (salary?.OtherAllowance ?? 0m);
         var gross = basic + housing + transport + other;
-        var components = await LoadPayComponentsAsync(tenantId, companyId, ct);
+        var package = new SalaryBreakdown(basic, housing, transport, other);
+        // F2 — the catalog version in effect for the CURRENT payroll month (the EOSB wage is the last wage).
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var components = await LoadPayComponentsAsync(tenantId, companyId, new DateOnly(today.Year, today.Month, 1), ct);
         var included = components
             .Where(c => c.ComponentType == PayComponentTypes.Earning && c.EosbIncluded && c.IsActive && !c.IsDeleted)
             .ToList();
@@ -6554,31 +6942,167 @@ public class PayrollController : ControllerBase
         }).Earnings;
         var eligible = Math.Round(computed.Sum(l => l.Amount), 2);
         if (eligible > 0m)
-            return new EosbWageBasis(eligible, computed.Select(l => l.Code).Distinct(StringComparer.Ordinal).ToList());
+            return new EosbWageBasis(package, eligible,
+                computed.Select(l => l.Code).Distinct(StringComparer.Ordinal).ToList(), null);
 
-        // Existing tenants may have a partially seeded component catalog with no EOSB flags. Preserve the
-        // historical basic-wage floor, but make the fallback explicit in every persisted result snapshot.
-        return new EosbWageBasis(Math.Round(basic, 2), ["BASIC (compatibility fallback: no positive EOSB-included component)"]);
+        // A tenant may have a partially seeded component catalog with no EOSB flags at all. The OLD
+        // behaviour here was to fall back to BASIC ALONE and record the reason in a snapshot column
+        // nobody reads — a silent 40% under-award on a Saudi settlement. It now falls back to the FULL
+        // PACKAGE and leaves the statutory narrowing to the pack (KSA takes basic + housing + configured
+        // allowances; UAE Art. 51 and Qatar Art. 54 take basic and are unaffected), and the fallback is
+        // surfaced as a settlement warning by the caller instead of being buried.
+        return new EosbWageBasis(package, 0m,
+            ["(compatibility fallback: no EOSB-flagged pay component — statutory base applied by the country pack)"],
+            "No active pay component in this company's catalog is flagged EosbIncluded, so the gratuity was " +
+            "computed on the country pack's STATUTORY base rather than on a configured one. For KSA that is " +
+            "Art. 84 last wage (basic + housing, plus transport unless disabled); for UAE/Qatar it is basic. " +
+            "Seed the pay-component catalog so the base is an explicit, auditable configuration.");
     }
 
+    /// <summary>
+    /// S1/A8 — calendar days of APPROVED UNPAID leave falling inside the service window.
+    ///
+    /// <para>UAE Decree-Law 33/2021 Art. 51 says expressly that periods of unpaid leave are not
+    /// included in the service period for gratuity. The product had the data all along — an unpaid
+    /// leave type already drives a payroll deduction — and simply never fed it back into service
+    /// accrual, so every UAE gratuity was over-stated by the unpaid time and the EOSB provision on the
+    /// balance sheet with it. KSA and Qatar turn on "continuous service" and their packs default to
+    /// INCLUDING the days; each pack decides, this method only reports the fact.</para>
+    ///
+    /// <para>A request straddling the window boundary is apportioned by the overlapping fraction of its
+    /// own span, so a leave that starts before the joining date or runs past the last working day
+    /// contributes only the part actually inside service.</para>
+    /// </summary>
+    private async Task<int> ResolveUnpaidLeaveDaysAsync(
+        Guid tenantId, int employeeId, DateOnly windowStart, DateOnly windowEnd, CancellationToken ct)
+    {
+        if (windowEnd < windowStart) return 0;
+
+        var unpaidTypeIds = await _db.LeaveTypes.AsNoTracking()
+            .Where(t => t.TenantId == tenantId && !t.IsPaid)
+            .Select(t => t.Id)
+            .ToListAsync(ct);
+        if (unpaidTypeIds.Count == 0) return 0;
+
+        var requests = await _db.LeaveRequests.AsNoTracking()
+            .Where(r => r.TenantId == tenantId
+                     && r.EmployeeId == employeeId
+                     && r.Status == "Approved"
+                     && unpaidTypeIds.Contains(r.LeaveTypeId)
+                     && r.StartDate <= windowEnd
+                     && r.EndDate >= windowStart)
+            .Select(r => new { r.StartDate, r.EndDate, r.TotalDays })
+            .ToListAsync(ct);
+
+        decimal days = 0m;
+        foreach (var r in requests)
+        {
+            var span = r.EndDate.DayNumber - r.StartDate.DayNumber + 1;
+            if (span <= 0) continue;
+            var from = r.StartDate > windowStart ? r.StartDate : windowStart;
+            var to   = r.EndDate   < windowEnd   ? r.EndDate   : windowEnd;
+            var overlap = to.DayNumber - from.DayNumber + 1;
+            if (overlap <= 0) continue;
+            var counted = r.TotalDays > 0m ? r.TotalDays : span;
+            days += overlap >= span ? counted : counted * overlap / span;
+        }
+
+        return (int)Math.Round(days, MidpointRounding.AwayFromZero);
+    }
+
+    /// <summary>
+    /// M1 — the service start the gratuity is actually measured from, and why.
+    ///
+    /// <para><see cref="EmployeeEosbOpeningBalance.PriorServiceStartDate"/> is the service start the
+    /// PREVIOUS employer or system recognised: a TUPE-style transfer, an acquired book, or simply the
+    /// real joining date of an employee whose KynexOne record starts at the migration cutover. The
+    /// migration importer has validated and persisted it since the cutover stream shipped
+    /// (<c>MigrationImportController.OpeningBalances.cs:642,669</c>) and, until this change, NOTHING in
+    /// the solution read it back. Both EOSB entry points measured service from
+    /// <c>Employee.JoiningDate</c> alone, so a customer who migrated a ten-year employee settled them
+    /// as a new joiner and the gratuity was short by the carried years.</para>
+    ///
+    /// <para><b>WHICH DATE WINS.</b> The EARLIER of the two, never a sum. The carried date is a claim
+    /// about the SAME continuous service the joining date describes, not a separate period tacked on
+    /// the front — a KynexOne joining date of 2026-09-01 with a prior service start of 2016-03-01 is one
+    /// employee with ten years of service, not ten years plus five months. Adding the two would be the
+    /// double count. A prior date LATER than the joining date is ignored rather than honoured: it can
+    /// only mean a stale or mis-keyed carried row, and shortening a statutory entitlement on that
+    /// evidence is the direction that gets litigated.</para>
+    ///
+    /// <para><b>WHAT IS DELIBERATELY NOT USED HERE.</b> <c>AccruedMonths</c> and <c>AccruedAmount</c> on
+    /// the same row are the PROVISION the outgoing system had already booked — an accounting fact about
+    /// the balance sheet, consumed by <see cref="EosbProvisionLedger"/> so the expense is not booked
+    /// twice. They are NOT a second input to service length. Feeding both the carried months and the
+    /// carried start date into the calculator would count the pre-cutover service twice over, which is
+    /// exactly the error this method exists to avoid; the entity's own doc comment says so, and it is
+    /// repeated here because the two live in one imported row and look interchangeable.</para>
+    ///
+    /// <para>Several carried rows can exist for one employee (a re-migration restates the provision at a
+    /// later AsAtDate). The most recently struck row wins, and among rows struck on the same date, the
+    /// earliest prior-service claim — the one most favourable to the employee, and the one an employer
+    /// cannot quietly walk back by re-importing.</para>
+    /// </summary>
+    private async Task<(DateOnly Start, DateOnly? Carried)> ResolveEosbServiceStartAsync(
+        Guid tenantId, Employee employee, CancellationToken ct)
+    {
+        var joining = DateOnly.FromDateTime(employee.JoiningDate);
+        var carried = await _db.EmployeeEosbOpeningBalances.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.PriorServiceStartDate != null)
+            .OrderByDescending(x => x.AsAtDate)
+            .ThenBy(x => x.PriorServiceStartDate)
+            .Select(x => x.PriorServiceStartDate)
+            .FirstOrDefaultAsync(ct);
+        return carried is DateOnly prior && prior < joining ? (prior, prior) : (joining, carried);
+    }
+
+    private static List<string> EosbCalculateNotices(
+        EndOfServiceResult result, EosbWageBasis wageBasis, DateOnly serviceStart, DateTime joiningDate)
+    {
+        var notices = result.Notices.ToList();
+        if (wageBasis.FallbackReason is not null) notices.Insert(0, wageBasis.FallbackReason);
+        var joining = DateOnly.FromDateTime(joiningDate);
+        if (serviceStart < joining) notices.Insert(0, CarriedServiceNotice(serviceStart, joining));
+        return notices;
+    }
+
+    /// <summary>M1 — the settlement-facing notice for a gratuity measured on carried service.</summary>
+    private static string CarriedServiceNotice(DateOnly carried, DateOnly joining) =>
+        $"[MIGRATION] Gratuity is measured from the CARRIED service start {carried:yyyy-MM-dd}, not this "
+      + $"product's joining date {joining:yyyy-MM-dd}. The earlier date was carried in by the opening-balance "
+      + "import as the service the previous employer or system recognised, and it is the whole service "
+      + "period for end-of-service purposes. If it is wrong, correct the carried end-of-service opening "
+      + "balance before approving — not the joining date, which payroll and tenure both depend on.";
+
     private async Task<(EndOfServiceResult Result, double ServiceYearsDisplay)> ComputeEndOfServiceAsync(
-        string countryCode, string jurisdiction, Guid companyId, decimal eligibleWage,
-        DateTime joiningDate, DateTime asOfDate, string terminationReason, Employee employee, CancellationToken ct)
+        string countryCode, string jurisdiction, Guid companyId, EosbWageBasis wageBasis,
+        DateOnly serviceStartDate, DateTime asOfDate, string terminationReason, Employee employee,
+        int unpaidLeaveDays, GCCComplianceSetting? gcc, CancellationToken ct)
     {
         var calc = _packResolver.ResolveEndOfServiceCalculator(countryCode, jurisdiction);
 
         var input = new EndOfServiceInput(
             EmployeeId:        employee.PublicId,
             CompanyId:         companyId,
-            Salary:            new SalaryBreakdown(eligibleWage, 0m, 0m, 0m),
-            ServiceStartDate:  DateOnly.FromDateTime(joiningDate),
+            Salary:            wageBasis.Package,
+            ServiceStartDate:  serviceStartDate,
             ServiceEndDate:    DateOnly.FromDateTime(asOfDate),
             TerminationReason: terminationReason,
             ContractType:      employee.ContractType ?? "Indefinite",
-            Nationality:       employee.Nationality ?? string.Empty);
+            Nationality:       employee.Nationality ?? string.Empty)
+        {
+            ConfiguredEosbWage = wageBasis.ConfiguredWage,
+            UnpaidLeaveDays    = unpaidLeaveDays,
+            // S1 — the three EOSB fields the country compliance-config screen has always let a customer
+            // edit and which nothing read. The pack decides what it is lawful to honour.
+            Policy             = gcc is null ? null : new EosbPolicyOverride(
+                                     gcc.EosbYears1To5Rate, gcc.EosbYearsAbove5Rate, gcc.EosbMinYears),
+        };
 
         var result = await calc.CalculateAsync(input, ct);
-        var serviceYearsDisplay = (asOfDate - joiningDate).Days / 365.0;
+        // M1 — the displayed years are measured on the SAME start the pack awarded on, so the settlement
+        // screen cannot show four years next to a ten-year award.
+        var serviceYearsDisplay = (asOfDate.Date - serviceStartDate.ToDateTime(TimeOnly.MinValue)).Days / 365.0;
         return (result, serviceYearsDisplay);
     }
 
@@ -6606,8 +7130,9 @@ public class PayrollController : ControllerBase
 
     // Maps free-form / domain separation strings to the canonical reason vocabulary the
     // country packs branch on: "Resignation" (Art.85 reduction), "Article80" (Art.80
-    // dismissal-for-cause forfeiture), or a pass-through employer-side reason (full award).
-    private static string NormalizeTerminationReason(string? raw)
+    // dismissal-for-cause forfeiture), "Article87" / "Article81" (the express exceptions to
+    // Art.85 — full award), or a pass-through employer-side reason (full award).
+    internal static string NormalizeTerminationReason(string? raw)
     {
         if (string.IsNullOrWhiteSpace(raw)) return "Termination"; // conservative default: employer-side, full award
         var r = raw.Trim();
@@ -6620,6 +7145,16 @@ public class PayrollController : ControllerBase
             || r.Equals("DismissalForCause", StringComparison.OrdinalIgnoreCase)
             || r.Equals("SummaryDismissal", StringComparison.OrdinalIgnoreCase))
             return "Article80";
+        // Art.87 and Art.81 are the express EXCEPTIONS to the Art.85 resignation reduction: the
+        // worker left, but the FULL Art.84 award is due. They must canonicalise to their own codes —
+        // falling through to "Resignation" would cut the award by a third or two thirds, and falling
+        // through as free text would work only by accident. See KsaEndOfServiceCalculator.
+        if (r.Equals("Article87", StringComparison.OrdinalIgnoreCase)
+            || r.Equals("Art87", StringComparison.OrdinalIgnoreCase))
+            return "Article87";
+        if (r.Equals("Article81", StringComparison.OrdinalIgnoreCase)
+            || r.Equals("Art81", StringComparison.OrdinalIgnoreCase))
+            return "Article81";
         // Termination / EndOfContract / Non-renewal / Retirement / Other / … → full award.
         return r;
     }
@@ -6754,11 +7289,11 @@ public class PayrollController : ControllerBase
     private static string WithProrationNote(string name, string note)
         => string.IsNullOrEmpty(note) ? name : $"{name} ({note})";
 
-    private void AddEarning(Guid tenantId, Guid runId, int employeeId, string code, string name, decimal amount, string source) =>
-        _db.PayrollEarnings.Add(new PayrollEarning { TenantId = tenantId, PayrollRunId = runId, EmployeeId = employeeId, ComponentCode = code, ComponentName = name, Amount = amount, Source = source });
+    private void AddEarning(Guid tenantId, Guid runId, int employeeId, string code, string name, decimal amount, string source, string? glDriverKey = null) =>
+        _db.PayrollEarnings.Add(new PayrollEarning { TenantId = tenantId, PayrollRunId = runId, EmployeeId = employeeId, ComponentCode = code, ComponentName = name, Amount = amount, Source = source, GlDriverKey = glDriverKey });
 
-    private void AddDeduction(Guid tenantId, Guid companyId, Guid runId, int employeeId, string code, string name, decimal amount, string source, bool isEmployerContribution = false) =>
-        _db.PayrollDeductions.Add(new PayrollDeduction { TenantId = tenantId, CompanyId = companyId, PayrollRunId = runId, EmployeeId = employeeId, ComponentCode = code, ComponentName = name, Amount = amount, Source = source, IsEmployerContribution = isEmployerContribution });
+    private void AddDeduction(Guid tenantId, Guid companyId, Guid runId, int employeeId, string code, string name, decimal amount, string source, bool isEmployerContribution = false, string? glDriverKey = null) =>
+        _db.PayrollDeductions.Add(new PayrollDeduction { TenantId = tenantId, CompanyId = companyId, PayrollRunId = runId, EmployeeId = employeeId, ComponentCode = code, ComponentName = name, Amount = amount, Source = source, IsEmployerContribution = isEmployerContribution, GlDriverKey = glDriverKey });
 
     // ── Shared GL routing (single source of truth for BOTH the on-screen GL Journal
     //    preview and the locked-run posting, so a preview equals what will post) ──────────
@@ -6844,6 +7379,11 @@ public class PayrollController : ControllerBase
 
         return direct?.Key ?? EarningDriverKey(componentCode, source);
     }
+
+    /// <summary>F2 — the GL driver pinned on a line group by a tenant-configured pay component, or null for
+    /// every system/subsystem line (which then routes exactly as before F2).</summary>
+    private static string? PinnedGlDriver(IEnumerable<string?> lineDriverKeys)
+        => lineDriverKeys.FirstOrDefault(k => !string.IsNullOrWhiteSpace(k));
 
     /// <summary>
     /// Deduction component group → GL driver key. Also reports the employer side
@@ -7051,7 +7591,7 @@ public class PayrollController : ControllerBase
         foreach (var grp in earnings.GroupBy(e => e.ComponentCode))
         {
             var src = grp.First().Source;
-            var driverKey = EarningDriverKeyFor(gl.Drivers, grp.Key, src);
+            var driverKey = PinnedGlDriver(grp.Select(e => e.GlDriverKey)) ?? EarningDriverKeyFor(gl.Drivers, grp.Key, src);
             if (clearsSettlement && src == FinalSettlementComponents.SettlementSource)
             {
                 var settlementAmount = grp.Sum(e => e.Amount);
@@ -7231,11 +7771,21 @@ public class PayrollController : ControllerBase
         var employerExpenseByPairKey = new Dictionary<string, decimal>(StringComparer.Ordinal);
         foreach (var grp in deductions.GroupBy(d => new { d.ComponentCode, d.Source }))
         {
-            var driverRow = ResolveDeductionDriverRow(gl.Drivers, grp.Key.ComponentCode, grp.Key.Source);
+            var pinned = PinnedGlDriver(grp.Select(d => d.GlDriverKey));
+            var driverRow = pinned is null ? ResolveDeductionDriverRow(gl.Drivers, grp.Key.ComponentCode, grp.Key.Source) : null;
             string driver;
             bool isEmployerSide;
             string pairKey;
-            if (driverRow is not null)
+            if (pinned is not null)
+            {
+                // F2 — a tenant-configured component posts to the driver validated when it was written and
+                // pinned on the line at Process. The write API refuses statutory / employer-pair / control
+                // drivers, so this is never an employer-side pair.
+                driver = pinned;
+                isEmployerSide = false;
+                pairKey = "EMPLOYER_STATUTORY_EXPENSE";
+            }
+            else if (driverRow is not null)
             {
                 driver = driverRow.Key;
                 isEmployerSide = driverRow.EmitsEmployerExpensePair;
@@ -7322,26 +7872,22 @@ public class PayrollController : ControllerBase
         return val.Trim().ToLowerInvariant() is not ("false" or "0" or "off" or "no" or "disabled");
     }
 
-    /// <summary>Loads the active pay-component definitions for a run (company-first). Mirrors
-    /// LoadGlResolutionContextAsync / CompanyTaxPolicyResolver: IgnoreQueryFilters is intentional — payroll
-    /// processing is a SYSTEM read that must see BOTH the run's company rows AND the tenant-default
-    /// (CompanyId == null) rows regardless of the caller's own company claims; the WHERE re-applies exact
-    /// tenant + company/default scope and never reads another tenant. The company row wins over the
-    /// tenant-default per (Code, ComponentType). When the store is empty the compiled PayComponentCatalog
-    /// system seeds are returned so an un-seeded tenant is byte-identical to the legacy path (the same
-    /// empty-store fallback the gl_drivers store uses).</summary>
-    private async Task<IReadOnlyList<PayComponent>> LoadPayComponentsAsync(Guid tenantId, Guid? companyId, CancellationToken ct)
+    /// <summary>Loads the pay-component definitions IN EFFECT for the payroll period starting
+    /// <paramref name="periodStart"/> (company-first). Mirrors LoadGlResolutionContextAsync /
+    /// CompanyTaxPolicyResolver: IgnoreQueryFilters is intentional — payroll processing is a SYSTEM read
+    /// that must see BOTH the run's company rows AND the tenant-default (CompanyId == null) rows regardless
+    /// of the caller's own company claims; the WHERE re-applies exact tenant + company/default scope and
+    /// never reads another tenant. Version selection, company-first precedence and the compiled-catalog
+    /// fallback live in <see cref="PayComponentEngine.ResolveInEffect"/> — the ONE resolver the run and the
+    /// catalog API share, so what the API reports as "in effect" is exactly what a run pays.</summary>
+    private async Task<IReadOnlyList<PayComponent>> LoadPayComponentsAsync(
+        Guid tenantId, Guid? companyId, DateOnly periodStart, CancellationToken ct)
     {
         var rows = await _db.PayComponents.IgnoreQueryFilters().AsNoTracking()
             .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted
                      && (c.CompanyId == companyId || c.CompanyId == null))
             .ToListAsync(ct);
-        if (rows.Count == 0)
-            return PayComponentCatalog.SystemComponentSeeds(tenantId); // compiled fallback (empty store)
-        return rows
-            .GroupBy(c => (c.Code, c.ComponentType))
-            .Select(g => g.OrderByDescending(c => c.CompanyId != null).First())
-            .ToList();
+        return PayComponentEngine.ResolveInEffect(rows, tenantId, periodStart);
     }
 
     // M1: audit log now captures caller IP and structured metadata
@@ -7392,6 +7938,19 @@ public class PayrollController : ControllerBase
             "EligibleGradeIds", "EligibleDesignationIds",
             "ComponentCode", "ComponentName", "ComponentType", "CalculationType",
             "Amount", "Percentage", "IsTaxable", "ComponentIsActive"
+        };
+
+    /// <summary>Neutral example row, kept adjacent to the header it is positionally paired with. This is
+    /// the widest template in the product (20 columns) and the one where a hand-written row drifting out
+    /// of step with the header would be hardest to spot by eye. The two Eligible* columns are blank
+    /// because they are cross-references to grades/designations the tenant may not have imported yet.</summary>
+    private static readonly string[] SalaryStructureCsvExampleRow =
+        {
+            "Example Company Ltd", "STD", "Standard Structure", "SAR", "2026-01-01", "true",
+            "0", "0", "0", "0",
+            "", "",
+            "BASIC", "Basic Salary", "Earning", "Fixed",
+            "8000", "0", "false", "true"
         };
 
     [HttpGet("structures/export")]
@@ -7449,7 +8008,7 @@ public class PayrollController : ControllerBase
     public IActionResult StructuresImportTemplate()
     {
         Response.Headers["Content-Disposition"] = "attachment; filename=salary_structures_import_template.csv";
-        return Content(Csv.Template(SalaryStructureCsvHeaders), "text/csv");
+        return Content(Csv.Template(SalaryStructureCsvHeaders, SalaryStructureCsvExampleRow), "text/csv");
     }
 
     [HttpPost("structures/import")]
@@ -8561,26 +9120,47 @@ public class PayrollController : ControllerBase
         // ── POD-A2's ONE authoritative engine. The Breakdown is kept IN FULL — /eosb/calculate discards
         //    it and keeps only the rule string, so the Art.84 tier split and the Art.85/80 adjustment line
         //    were unrecoverable from anything the product persisted.
+        // M1 — the carried service start wins when it is earlier than this product's joining date, so a
+        // migrated leaver is settled on their whole service and not on their KynexOne tenure alone.
+        var (serviceStart, _carriedStart) = await ResolveEosbServiceStartAsync(tenantId, employee, ct);
+        var unpaidLeaveDays = await ResolveUnpaidLeaveDaysAsync(
+            tenantId, employee.Id, serviceStart, lastDay, ct);
         var (eosbResult, serviceYears) = await ComputeEndOfServiceAsync(
-            countryCode, jurisdiction, companyId ?? Guid.Empty, wageBasis.EligibleWage,
-            employee.JoiningDate, calcDate, terminationReason, employee, ct);
+            countryCode, jurisdiction, companyId ?? Guid.Empty, wageBasis,
+            serviceStart, calcDate, terminationReason, employee, unpaidLeaveDays, gcc, ct);
         var gratuity = Math.Round(eosbResult.TotalGratuity, 2);
+        var appliedWageBase = eosbResult.AppliedWageBase > 0m ? eosbResult.AppliedWageBase : wageBasis.ConfiguredWage;
 
-        // [FLAG-COMPLIANCE-KSA] the Art. 84 wage-base delta, computed by re-running the SAME pack on the
-        // full package. Purely indicative and never paid automatically — it is the number the approver
-        // must consciously accept or correct.
+        // ── S1/A1: the pack's own statutory notices, surfaced ON THE SETTLEMENT ──────────────────────
+        // A [COUNSEL] default that changes the award (transport in / other out) and a DIFC trustee
+        // position that means "do not pay this" are decisions the approver has to make consciously.
+        warnings.AddRange(eosbResult.Notices);
+        if (serviceStart < DateOnly.FromDateTime(employee.JoiningDate))
+            warnings.Add(CarriedServiceNotice(serviceStart, DateOnly.FromDateTime(employee.JoiningDate)));
+        if (wageBasis.FallbackReason is not null && gratuity > 0m)
+            warnings.Add("[FLAG-COMPLIANCE] " + wageBasis.FallbackReason);
+
+        // [FLAG-COMPLIANCE] the wage-base delta against the FULL package, computed by re-running the SAME
+        // pack on a package whose every component is loaded into the pack's configured-wage slot. Purely
+        // indicative and never paid automatically — it is the number the approver must consciously accept
+        // or correct. Post-A1 this is ZERO for a KSA leaver on the default rules whose only allowances are
+        // housing and transport, because those are now IN the statutory base; it still fires where a
+        // composite "other allowance" sits outside it.
         decimal wageBaseDelta = 0m;
-        if (monthlyGross > wageBasis.EligibleWage && gratuity > 0m)
+        if (monthlyGross > appliedWageBase && gratuity > 0m)
         {
+            var fullBasis = wageBasis with { ConfiguredWage = monthlyGross };
             var (fullResult, _) = await ComputeEndOfServiceAsync(
-                countryCode, jurisdiction, companyId ?? Guid.Empty, monthlyGross,
-                employee.JoiningDate, calcDate, terminationReason, employee, ct);
+                countryCode, jurisdiction, companyId ?? Guid.Empty, fullBasis,
+                serviceStart, calcDate, terminationReason, employee, unpaidLeaveDays, gcc, ct);
             wageBaseDelta = Math.Max(0m, Math.Round(fullResult.TotalGratuity - gratuity, 2));
             if (wageBaseDelta > 0m)
-                warnings.Add($"[FLAG-COMPLIANCE-KSA] Gratuity is computed on the configured EOSB wage base ({wageBasis.EligibleWage:N2}: {string.Join(", ", wageBasis.IncludedComponents)}). On the " +
+                warnings.Add($"[FLAG-COMPLIANCE] Gratuity is computed on the wage base the country pack applied " +
+                             $"({appliedWageBase:N2}; configured components: {string.Join(", ", wageBasis.IncludedComponents)}). On the " +
                              $"full package ({monthlyGross:N2}) it would be {wageBaseDelta:N2} {currency} higher. " +
-                             "KSA Art. 84 measures the award on the LAST WAGE, which is read as including regular " +
-                             "allowances. Approval requires an explicit acknowledgement of this floor.");
+                             "KSA Art. 84 measures the award on the LAST WAGE (Art. 2: basic plus all due increments); " +
+                             "UAE Art. 51 and Qatar Art. 54 are basic-only and this delta is expected there. " +
+                             "Approval requires an explicit acknowledgement of this floor.");
         }
 
         // ── K5: one authoritative encashable-days function ───────────────────────────────────────────
@@ -8757,7 +9337,10 @@ public class PayrollController : ControllerBase
 
         return new FinalSettlementPlan(
             employee.EmployeeCode, employee.FullName, companyId,
-            lastDay, DateOnly.FromDateTime(employee.JoiningDate), dueDate,
+            // M1 — the settlement records the service period it was AWARDED on. That is also what the
+            // B4 no-overlapping-service-window guard compares, so a carried period cannot be settled
+            // twice by re-settling on the KynexOne joining date.
+            lastDay, serviceStart, dueDate,
             terminationReason, (decimal)Math.Round(serviceYears, 4), currency,
             basicWage, monthlyGross,
             JsonSerializer.Serialize(new
@@ -8765,19 +9348,32 @@ public class PayrollController : ControllerBase
                 totalGratuity = eosbResult.TotalGratuity,
                 applicableRule = eosbResult.ApplicableRule,
                 breakdown = eosbResult.Breakdown.Select(b => new { b.Label, b.Amount }).ToList(),
+                notices = eosbResult.Notices,
             }),
             JsonSerializer.Serialize(new
             {
-                basicWage, monthlyGross, eligibleEosbWage = wageBasis.EligibleWage,
+                basicWage, monthlyGross,
+                // S1/A1 — the wage the PACK awarded on. `configuredEosbWage` is what the tenant's
+                // component catalog contributed; `appliedWageBase` is what statute actually used, and
+                // the two differ whenever statute is the more generous of the pair.
+                appliedWageBase, configuredEosbWage = wageBasis.ConfiguredWage,
+                packageHousing = wageBasis.Package.HousingAllowance,
+                packageTransport = wageBasis.Package.TransportAllowance,
+                packageOther = wageBasis.Package.OtherAllowances,
+                unpaidLeaveDays,
                 eosbIncludedComponents = wageBasis.IncludedComponents, currency,
-                serviceStart = DateOnly.FromDateTime(employee.JoiningDate),
+                // M1 — the start the pack measured on, plus the joining date it may differ from, so the
+                // snapshot alone explains a migrated leaver's award years later.
+                serviceStart,
+                joiningDate = DateOnly.FromDateTime(employee.JoiningDate),
+                carriedServiceStart = _carriedStart,
                 serviceEnd = lastDay,
                 terminationReason,
                 countryCode,
                 jurisdiction,
                 contractType = employee.ContractType,
                 nationality = employee.Nationality,
-                wageBase = "configured PayComponent.EosbIncluded",
+                wageBase = "country-pack statutory base, raised (never lowered) by PayComponent.EosbIncluded",
             }),
             gratuity, encashment.TotalAmount, encashment.TotalDays,
             noticePay, Math.Max(0m, req.OtherDuesAmount),
@@ -8793,6 +9389,21 @@ public class PayrollController : ControllerBase
 
     private Task<string> ResolveCurrencyAsync(Guid tenantId, CancellationToken ct)
         => _db.ResolveTenantCurrencyAsync(tenantId, ct);
+
+    private async Task<string> ResolveRunCurrencyAsync(Guid tenantId, Guid? companyId, CancellationToken ct)
+    {
+        if (companyId.HasValue)
+        {
+            var companyCurrency = await _db.Companies.AsNoTracking()
+                .Where(c => c.TenantId == tenantId && c.Id == companyId.Value && !c.IsDeleted)
+                .Select(c => c.DefaultCurrency)
+                .FirstOrDefaultAsync(ct);
+            if (!string.IsNullOrWhiteSpace(companyCurrency))
+                return companyCurrency.Trim().ToUpperInvariant();
+        }
+
+        return (await _db.ResolveTenantCurrencyAsync(tenantId, ct)).Trim().ToUpperInvariant();
+    }
 
     // ── Payroll Command Center ────────────────────────────────────────────────────
 
@@ -9033,6 +9644,10 @@ public class PayrollController : ControllerBase
     private static readonly string[] EmployeeSalaryCsvHeaders =
         { "EmployeeCode", "SalaryStructureCode", "BasicSalary", "HousingAllowance", "TransportAllowance", "FoodAllowance", "MobileAllowance", "OtherAllowance", "FixedDeduction", "Currency", "EffectiveDate" };
 
+    /// <summary>Neutral example row, kept adjacent to the header it is positionally paired with.</summary>
+    private static readonly string[] EmployeeSalaryCsvExampleRow =
+        { "EMP-0001", "STD", "8000", "2000", "1000", "0", "0", "0", "0", "SAR", "2026-01-01" };
+
     [HttpGet("employee-salaries")]
     [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> ListEmployeeSalaries([FromQuery] Guid? companyId, [FromQuery] string? departmentId, [FromQuery] bool activeOnly = true, CancellationToken cancellationToken = default)
@@ -9093,7 +9708,7 @@ public class PayrollController : ControllerBase
     public IActionResult EmployeeSalariesImportTemplate()
     {
         Response.Headers["Content-Disposition"] = "attachment; filename=employee_salaries_import_template.csv";
-        return Content(Csv.Template(EmployeeSalaryCsvHeaders), "text/csv");
+        return Content(Csv.Template(EmployeeSalaryCsvHeaders, EmployeeSalaryCsvExampleRow), "text/csv");
     }
 
     [HttpPost("employee-salaries/import")]

@@ -2,6 +2,7 @@ import { test as setup, expect, request as pwRequest } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROLES, BASE_URL, storageStatePath, tokenPath, type RoleFixture } from './roles';
+import { MISSING_WORLD } from '../world';
 
 /**
  * WAVE 1 B3 — authenticate every role ONCE, then never again.
@@ -70,8 +71,22 @@ for (const [index, role] of ROLES.entries()) {
       );
 
       fs.mkdirSync(path.dirname(storageStatePath(role.key)), { recursive: true });
-      await ctx.storageState({ path: storageStatePath(role.key) });
+      const state = await ctx.storageState({ path: storageStatePath(role.key) });
       await ctx.close();
+
+      // VERIFY THE SESSION IS REAL. Without this the whole gate can go quietly anonymous again: if the
+      // evaluate above ever no-ops (a renamed key, a navigation failure), every browser context is
+      // logged out, and because most browser assertions are NEGATIVE ("sibling data is not visible")
+      // they keep passing — because NO data is visible. That is the exact bug this file already had.
+      const expectedKey = role.tenantSlug === null ? 'platform_access_token' : 'zayra_access_token';
+      const stored = state.origins
+        .flatMap(o => o.localStorage)
+        .find(e => e.name === expectedKey)?.value;
+      expect(
+        stored,
+        `Storage state for '${role.key}' does not contain '${expectedKey}'. Every browser assertion `
+        + `would run anonymously and the negative ones would still pass.`,
+      ).toBe(token);
 
       // The raw token, for the direct-API half of every boundary. Rule 15: a security boundary must be
       // proven through the API as well as the browser, because a hidden menu item is not authorization.
@@ -100,8 +115,7 @@ async function login(api: import('@playwright/test').APIRequestContext, role: Ro
     + (resp.status() === 429
       ? 'This is the login rate limiter (10 per 60s). Increase E2E_LOGIN_PACING_MS — do NOT raise '
         + 'RateLimit:LoginPermitLimit, which would weaken a production brute-force control.'
-      : 'Check that the enterprise-group seed ran (SEED_ENTERPRISE_TEST_DATA=true) and, for the '
-        + 'platform operator, that PLATFORM_ADMIN_PASSWORD was supplied.'),
+      : MISSING_WORLD),
   ).toBe(200);
 
   const body = await resp.json();

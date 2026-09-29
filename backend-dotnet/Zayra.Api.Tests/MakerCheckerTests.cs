@@ -34,7 +34,8 @@ public class MakerCheckerTests
             .Options);
 
     private static PayrollController MakeCtrl(
-        ZayraDbContext db, Guid tenantId, Guid userId, string role = "Admin")
+        ZayraDbContext db, Guid tenantId, Guid userId, string role = "Admin",
+        INotificationService? notifications = null)
     {
         var claims = new List<Claim>
         {
@@ -49,7 +50,7 @@ public class MakerCheckerTests
             db,
             new _MakerUnrestrictedScope(),
             new _MakerHttpAccessor(httpCtx),
-            new _MakerNullNotifications(),
+            notifications ?? new _MakerNullNotifications(),
             new _MakerNullPackResolver(),
             new StubRuleReader(),
             new _MakerNullLetterService(),
@@ -154,6 +155,52 @@ public class MakerCheckerTests
         Assert.Equal("Processed", unchanged!.Status);
     }
 
+    [Fact]
+    public async Task CreatorCannotApprove_WhenAnotherUserProcessedTheRun()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var creatorId = Guid.NewGuid();
+        var processorId = Guid.NewGuid();
+        var run = await SeedProcessedRun(db, tenantId, processorId);
+        run.CreatedByUserId = creatorId;
+        await db.SaveChangesAsync();
+
+        var result = await MakeCtrl(db, tenantId, creatorId).Approve(
+            run.Id, new PayrollDecisionRequest("creator self-approval"), CancellationToken.None);
+
+        var denied = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(403, denied.StatusCode);
+        Assert.Contains("maker_checker_violation", System.Text.Json.JsonSerializer.Serialize(denied.Value));
+        Assert.Equal("Processed", run.Status);
+    }
+
+    [Fact]
+    public async Task ApprovalNotification_UsesRunsLegalEntityCurrency()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var company = new Company
+        {
+            TenantId = tenantId, LegalNameEn = "Saudi Entity", RegistrationNumber = "SA-001",
+            CountryCode = "SAU", Jurisdiction = "KSA-mainland", DefaultCurrency = "SAR", IsActive = true
+        };
+        db.Companies.Add(company);
+        await db.SaveChangesAsync();
+        var run = await SeedProcessedRun(db, tenantId, Guid.NewGuid());
+        run.CompanyId = company.Id;
+        run.TotalNetSalary = 12_345.67m;
+        await db.SaveChangesAsync();
+        var capture = new _MakerCaptureNotifications();
+
+        var result = await MakeCtrl(db, tenantId, Guid.NewGuid(), notifications: capture)
+            .Approve(run.Id, new PayrollDecisionRequest("finance approved"), CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(result);
+        Assert.Contains("12,345.67 SAR", capture.Message);
+        Assert.DoesNotContain("AED", capture.Message);
+    }
+
     // ── Edge: null ProcessedByUserId (legacy run) allows approval ────────────
 
     [Fact]
@@ -202,6 +249,17 @@ file sealed class _MakerHttpAccessor : IHttpContextAccessor
 file sealed class _MakerNullNotifications : INotificationService
 {
     public Task NotifyAsync(Guid t, Guid? u, string title, string msg, string en, string? eid, CancellationToken ct) => Task.CompletedTask;
+    public Task SendEmailAsync(Guid t, string code, string to, string name, Dictionary<string, string> vars, CancellationToken ct) => Task.CompletedTask;
+}
+
+file sealed class _MakerCaptureNotifications : INotificationService
+{
+    public string Message { get; private set; } = string.Empty;
+    public Task NotifyAsync(Guid t, Guid? u, string title, string msg, string en, string? eid, CancellationToken ct)
+    {
+        Message = msg;
+        return Task.CompletedTask;
+    }
     public Task SendEmailAsync(Guid t, string code, string to, string name, Dictionary<string, string> vars, CancellationToken ct) => Task.CompletedTask;
 }
 

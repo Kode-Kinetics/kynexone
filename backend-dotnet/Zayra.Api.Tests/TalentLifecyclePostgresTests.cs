@@ -90,6 +90,9 @@ public sealed class TalentLifecyclePostgresTests
         (await controller.Complete(offboarding.Id, CancellationToken.None))
             .Should().BeOfType<ConflictObjectResult>();
 
+        // The controller runs each command in its own unit of work and clears the shared change
+        // tracker, so re-load the row before staging the next precondition.
+        offboarding = await db.EmployeeOffboardings.SingleAsync(x => x.Id == offboarding.Id);
         offboarding.LastWorkingDay = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-1));
         offboarding.AssetsReturned = true;
         offboarding.KnowledgeHandover = true;

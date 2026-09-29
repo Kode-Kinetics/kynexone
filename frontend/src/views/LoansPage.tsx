@@ -62,7 +62,7 @@ function FormField({ label, required, children }: { label: string; required?: bo
   return (
     <div>
       <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
-        {label}{required && <span className="ml-0.5 text-red-500">*</span>}
+        {label}{required && <span className="ms-0.5 text-red-500">*</span>}
       </label>
       {children}
     </div>
@@ -99,7 +99,7 @@ function GlEntriesTable({ entries, fmt }: { entries: FinanceGlEntry[]; fmt: (n: 
         <thead>
           <tr className="border-b border-slate-100 dark:border-white/[0.07]">
             {['Date', 'Event', 'Debit Account', 'Credit Account', 'Amount', 'Posted By'].map((h) => (
-              <th key={h} className="px-3 py-2 text-left font-bold uppercase tracking-wide text-slate-400">{h}</th>
+              <th key={h} className="px-3 py-2 text-start font-bold uppercase tracking-wide text-slate-400">{h}</th>
             ))}
           </tr>
         </thead>
@@ -128,7 +128,7 @@ function AuditTrailTable({ logs }: { logs: AuditLogEntry[] }) {
         <thead>
           <tr className="border-b border-slate-100 dark:border-white/[0.07]">
             {['Timestamp', 'Action', 'Performed By', 'Details'].map((h) => (
-              <th key={h} className="px-3 py-2 text-left font-bold uppercase tracking-wide text-slate-400">{h}</th>
+              <th key={h} className="px-3 py-2 text-start font-bold uppercase tracking-wide text-slate-400">{h}</th>
             ))}
           </tr>
         </thead>
@@ -189,7 +189,7 @@ function LoanTypesTab() {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Code', 'Name', `Max Amount (${currencyCode})`, 'Max Installments', 'Frequency', 'Interest', 'Min Service', 'Approval', 'Status'].map((h) => (
-                  <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                  <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -346,7 +346,7 @@ function LoansTab({ loanTypes }: { loanTypes: LoanType[] }) {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Loan #', 'Employee', 'Type', 'Requested', 'Approved', 'Outstanding', 'Installment', 'Status', ''].map((h) => (
-                  <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                  <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -418,7 +418,7 @@ function LoansTab({ loanTypes }: { loanTypes: LoanType[] }) {
             {selected?.loan.status === 'Active' && (
               <button type="button" onClick={() => { setSettleForm({ settlementType: 'Early', settlementAmount: selected.loan.outstandingBalance, settlementDate: new Date().toISOString().split('T')[0], notes: '' }); setError(''); setSettleModal(true); }} className="btn-primary h-8 px-3 text-sm">Settle Loan</button>
             )}
-            <button type="button" onClick={() => setDetailModal(false)} className="btn-secondary ml-auto">Close</button>
+            <button type="button" onClick={() => setDetailModal(false)} className="btn-secondary ms-auto">Close</button>
           </div>
         }>
         {selected && (
@@ -454,7 +454,7 @@ function LoansTab({ loanTypes }: { loanTypes: LoanType[] }) {
             {detailTab === 'schedule' && selected.installments.length > 0 && (
               <div className="max-h-48 overflow-y-auto surface">
                 <table className="w-full text-xs">
-                  <thead><tr className="border-b border-slate-100 dark:border-white/10">{['#', 'Due Date', 'Amount Due', 'Paid', 'Status'].map((h) => <th key={h} className="px-3 py-2 text-left font-bold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
+                  <thead><tr className="border-b border-slate-100 dark:border-white/10">{['#', 'Due Date', 'Amount Due', 'Paid', 'Status'].map((h) => <th key={h} className="px-3 py-2 text-start font-bold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
                     {selected.installments.map((ins) => (
                       <tr key={ins.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
@@ -667,7 +667,7 @@ function AdvancesTab() {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Advance #', 'Employee', 'Requested', 'Approved', 'Outstanding', 'Repayment', 'Status', ''].map((h) => (
-                  <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                  <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -857,7 +857,7 @@ function BonusTypesTab() {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Code', 'Name', 'Method', 'Default Value', 'Frequency', 'Compliance', 'Tax Treatment', 'Status', ''].map((h) => (
-                  <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                  <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -871,7 +871,7 @@ function BonusTypesTab() {
                   <td className="px-4 py-3 font-mono text-xs text-slate-500">{t.code}</td>
                   <td className="px-4 py-3">
                     <p className="font-medium text-slate-900 dark:text-white">{t.nameEn}</p>
-                    {t.nameAr && <p className="text-xs text-slate-400 text-right" dir="rtl">{t.nameAr}</p>}
+                    {t.nameAr && <p className="text-xs text-slate-400 text-end" dir="rtl">{t.nameAr}</p>}
                   </td>
                   <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{t.calculationMethod}</td>
                   <td className="px-4 py-3 font-semibold text-slate-900 dark:text-white">
@@ -887,7 +887,7 @@ function BonusTypesTab() {
                   </td>
                   <td className="px-4 py-3 text-slate-600 dark:text-slate-300">
                     {t.frequency ?? 'OneTime'}
-                    {(t.minServiceMonths ?? 0) > 0 && <span className="ml-1 text-xs text-slate-400">· {t.minServiceMonths}m min</span>}
+                    {(t.minServiceMonths ?? 0) > 0 && <span className="ms-1 text-xs text-slate-400">· {t.minServiceMonths}m min</span>}
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap gap-1">
@@ -932,19 +932,19 @@ function BonusTypesTab() {
             <FormField label={form.calculationMethod === 'PercentageSalary' ? 'Default Percentage (%)' : 'Default Amount'} required>
               <div className="relative">
                 {form.calculationMethod === 'Fixed' && (
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400 pointer-events-none">{currencyCode}</span>
+                  <span className="absolute start-3 top-1/2 -translate-y-1/2 text-sm text-slate-400 pointer-events-none">{currencyCode}</span>
                 )}
                 <input
                   type="number" min={0} step={form.calculationMethod === 'PercentageSalary' ? 0.01 : 1}
                   max={form.calculationMethod === 'PercentageSalary' ? 100 : undefined}
                   value={form.defaultCalculationValue}
                   onChange={(e) => setForm(x => ({ ...x, defaultCalculationValue: parseFloat(e.target.value) || 0 }))}
-                  className={`input w-full ${form.calculationMethod === 'Fixed' ? 'pl-12' : ''}`}
+                  className={`input w-full ${form.calculationMethod === 'Fixed' ? 'ps-12' : ''}`}
                   placeholder={form.calculationMethod === 'PercentageSalary' ? 'e.g. 10 = 10% of basic salary' : 'e.g. 5000'}
                   title={form.calculationMethod === 'PercentageSalary' ? 'Default Percentage' : 'Default Amount'}
                 />
                 {form.calculationMethod === 'PercentageSalary' && (
-                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-400 pointer-events-none">%</span>
+                  <span className="absolute end-3 top-1/2 -translate-y-1/2 text-sm text-slate-400 pointer-events-none">%</span>
                 )}
               </div>
               <p className="mt-1 text-xs text-slate-400">
@@ -1201,7 +1201,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Batch #', 'Name', 'Type', 'Period', 'Payment Date', 'Employees', 'Total Amount', 'Status', ''].map((h) => (
-                  <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                  <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -1293,7 +1293,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
               <button type="button" onClick={openBulkModal} className="btn-primary h-8 px-3 text-sm"><Plus className="h-3.5 w-3.5" /> Bulk Add</button>
               <button type="button" onClick={() => { const btype = bonusTypes.find(t => t.id === selected?.batch.bonusTypeId); setEmpForm({ basicSalary: 0, calculationMethod: btype?.calculationMethod ?? 'Fixed', calculationValue: btype?.defaultCalculationValue ?? 0, notes: '' }); setSelectedBonusEmp(null); setAddResult(null); setError(''); setAddEmployeeModal(true); }} className="btn-secondary h-8 px-3 text-sm"><Plus className="h-3.5 w-3.5" /> Add One</button>
             </>}
-            <button type="button" onClick={() => setDetailModal(false)} className="btn-secondary ml-auto">Close</button>
+            <button type="button" onClick={() => setDetailModal(false)} className="btn-secondary ms-auto">Close</button>
           </div>
         }>
         {selected && (
@@ -1318,7 +1318,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
             {detailTab === 'employees' && (
               <div className="surface overflow-hidden max-h-64 overflow-y-auto">
                 <table className="w-full text-xs">
-                  <thead><tr className="border-b border-slate-100 dark:border-white/10">{['Employee', 'Department', 'Basic Salary', 'Method', 'Value', 'Gross Bonus', 'Status'].map((h) => <th key={h} className="px-3 py-2 text-left font-bold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
+                  <thead><tr className="border-b border-slate-100 dark:border-white/10">{['Employee', 'Department', 'Basic Salary', 'Method', 'Value', 'Gross Bonus', 'Status'].map((h) => <th key={h} className="px-3 py-2 text-start font-bold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
                     {selected.bonuses.length === 0 ? (
                       <tr><td colSpan={7} className="py-6 text-center text-slate-400">No employees added yet</td></tr>
@@ -1492,7 +1492,7 @@ function AuditReportTab() {
               <thead>
                 <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                   {['Loan #', 'Employee', 'Type', 'Disbursed', 'Repaid', 'Outstanding', 'Status', 'Reconciled'].map((h) => (
-                    <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                    <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -1529,7 +1529,7 @@ function AuditReportTab() {
               <thead>
                 <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                   {['Advance #', 'Employee', 'Disbursed', 'Repaid', 'Outstanding', 'Status', 'Reconciled'].map((h) => (
-                    <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                    <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -1566,7 +1566,7 @@ function AuditReportTab() {
                 <thead>
                   <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                     {['Department', 'Employees', 'Total Bonus'].map((h) => (
-                      <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                      <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
                     ))}
                   </tr>
                 </thead>

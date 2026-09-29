@@ -60,7 +60,7 @@ export default function TenantAuditPage() {
               <thead>
                 <tr className="border-b border-white/[0.06]">
                   {['Time', 'Action', 'Entity', 'Performed By', 'IP'].map(h => (
-                    <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
+                    <th key={h} className="px-4 py-2.5 text-start text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
                   ))}
                 </tr>
               </thead>

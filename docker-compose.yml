@@ -30,6 +30,7 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://0.0.0.0:5117
+      APP_URL: ${APP_URL:-http://localhost:5173}
       ConnectionStrings__Default: Host=postgres;Port=5432;Database=${POSTGRES_DATABASE:-zayra};Username=${POSTGRES_USER:-zayra};Password=${POSTGRES_PASSWORD:-zayra_password}
       # Compose owns an isolated Development database, so migrate it before AuthSeeder runs.
       # Without this, EnsureCreated produces a schema with no migration history and readiness
@@ -52,17 +53,20 @@ services:
       # deployments MUST provide a real SEED_ADMIN_PASSWORD — the backend refuses to boot on
       # 'ChangeMe123!' in Production.
       SeedAdmin__Password: ${SEED_ADMIN_PASSWORD:-ChangeMe123!}
-      # Default false so a normal local/deployment stack cannot rewrite tenant
-      # data. Use SEED_DEMO_DATA=true only in an isolated demo database.
-      SeedAdmin__SeedDemoData: ${SEED_DEMO_DATA:-false}
-      # Dedicated, disposable group-company E2E fixture; never enabled by default.
-      SEED_ENTERPRISE_TEST_DATA: ${SEED_ENTERPRISE_TEST_DATA:-false}
+      # SeedAdmin__SeedDemoData and SEED_ENTERPRISE_TEST_DATA used to be here. Both seeders were
+      # deleted (docs/DATA_ENTRY_PATHS.md) and NoSideDoorDataTests fails the build if either returns,
+      # so the variables now switch on nothing — and a variable that reads as "seed the demo data"
+      # while seeding nothing is worse than its absence. A compose stack comes up with an EMPTY
+      # database; provision it with frontend/e2e/bootstrap.
       PLATFORM_ADMIN_EMAIL: ${PLATFORM_ADMIN_EMAIL:-platform@kynexone.com}
       PLATFORM_ADMIN_PASSWORD: ${PLATFORM_ADMIN_PASSWORD:-PlatformAdmin123!}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       # Deployed/local default remains 10/minute. An isolated broad browser suite may opt into a
       # larger login budget without changing the production security default.
       RateLimit__LoginPermitLimit: ${LOGIN_PERMIT_LIMIT:-10}
+      # Same reasoning for the platform operator's own limiter: the e2e bootstrap authenticates as
+      # the platform owner to create every tenant, so a disposable stack may raise it. Default 5.
+      RateLimit__PlatformLoginPermitLimit: ${PLATFORM_LOGIN_PERMIT_LIMIT:-5}
     ports:
       - "${BACKEND_PORT:-5117}:5117"
     extra_hosts:

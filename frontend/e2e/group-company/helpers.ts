@@ -11,9 +11,9 @@
  *   a surface is not present yet — callers skip with a clear message.
  * • Where the DOM is uncertain we prefer API assertions via APIRequestContext.
  *
- * Test data: seeded by EnterpriseGroupSeeder when the backend runs with
- * SEED_ENTERPRISE_TEST_DATA=true. Password for ALL enterprise-group users
- * is GroupDemo123!x. See README.md in this directory.
+ * Test data: provisioned by e2e/bootstrap/provision.ts through the platform-admin API. There is no
+ * seeder any more — see docs/DATA_ENTRY_PATHS.md and e2e/world.ts, which declares every identity
+ * this file names. Run the bootstrap before this suite or it fails, loudly.
  */
 import {
   request as pwRequest,
@@ -22,27 +22,21 @@ import {
   Locator,
 } from '@playwright/test';
 import { platformSetupToken, tenantSetupSession } from '../helpers';
+import {
+  ALMARAI_COMPANY_CODES, ALMARAI_SLUG, GROUP_PASSWORD, INTELLIFLOW_ADMIN, INTELLIFLOW_SLUG,
+  MISSING_WORLD, TATA_COMPANY_CODES, TATA_SLUG,
+} from '../world';
 
 // ── Base URL / stack constants ────────────────────────────────────────────────
 
 export const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? process.env.E2E_BASE_URL ?? 'http://localhost:5173';
 
-// ── Enterprise group seed data (EnterpriseGroupSeeder) ───────────────────────
+// ── Group tenant, provisioned by e2e/bootstrap from e2e/world.ts ─────────────
 
-export const GROUP_PASSWORD = process.env.E2E_GROUP_PASSWORD ?? 'GroupDemo123!x';
+export { GROUP_PASSWORD } from '../world';
 
-export const ALMARAI = {
-  slug: 'almarai-test',
-  companies: ['ALM-DAIRY-KSA', 'ALM-POULTRY-KSA', 'ALM-BAKERY-KSA', 'ALM-DIST-KSA', 'ALM-UAE-TRD'],
-};
-export const TATA = {
-  slug: 'tata-test',
-  companies: ['TATA-TCS-IN', 'TATA-MOTORS-IN', 'TATA-STEEL-IN', 'TATA-HOTELS-IN', 'TATA-JLR-UK'],
-};
-export const EMAAR = {
-  slug: 'emaar-test',
-  companies: ['EMAAR-PROP-UAE', 'EMAAR-MALLS-UAE', 'EMAAR-HOSP-UAE', 'EMAAR-LEISURE-UAE', 'EMAAR-KSA-PROP'],
-};
+export const ALMARAI = { slug: ALMARAI_SLUG, companies: ALMARAI_COMPANY_CODES };
+export const TATA = { slug: TATA_SLUG, companies: TATA_COMPANY_CODES };
 
 /** Group-scope users: owner@ / admin@ / hr@ / finance@ / compliance@ / auditor@ <slug>.local */
 export const groupUser = (role: string, slug: string = ALMARAI.slug): string =>
@@ -64,14 +58,18 @@ export const ALMARAI_SIBLING_CODES = ['ALM-BAKERY-KSA', 'ALM-DIST-KSA', 'ALM-UAE
 // The full E2E setup already authenticates this production-shaped, single-company tenant. Using
 // it as the default keeps the regression deterministic and avoids an extra login outside the
 // production 10/minute budget. Deployments may still override all three values.
-export const DEFAULT_TENANT_SLUG = process.env.E2E_DEFAULT_TENANT_SLUG ?? 'intelliflow';
-export const DEFAULT_ADMIN_EMAIL = process.env.E2E_DEFAULT_ADMIN_EMAIL ?? 'admin@intelliflow.com';
-export const DEFAULT_ADMIN_PASSWORD = process.env.E2E_DEFAULT_ADMIN_PASSWORD ?? 'IntelliFlow@2026!';
+export const DEFAULT_TENANT_SLUG = process.env.E2E_DEFAULT_TENANT_SLUG ?? INTELLIFLOW_SLUG;
+export const DEFAULT_ADMIN_EMAIL = process.env.E2E_DEFAULT_ADMIN_EMAIL ?? INTELLIFLOW_ADMIN.email;
+// Falls back to the WORLD's password, not a literal. The literal here and the literal in
+// e2e/helpers.ts were the same string by coincidence, and CI passed a third copy in ci.yml.
+export const DEFAULT_ADMIN_PASSWORD = process.env.E2E_DEFAULT_ADMIN_PASSWORD ?? INTELLIFLOW_ADMIN.password;
 
-// ── Platform admin (same envs the legacy e2e/helpers.ts uses) ────────────────
+// ── Platform admin ───────────────────────────────────────────────────────────
+// From e2e/world.ts. This file used to default to `platform@kynexone.com` while
+// e2e/security-gate/roles.ts defaulted to `admin@platform.local`, so the two lanes authenticated as
+// different operators and neither could have been provisioned by one bootstrap.
 
-export const PLATFORM_EMAIL = process.env.PLATFORM_ADMIN_EMAIL ?? 'platform@kynexone.com';
-export const PLATFORM_PASSWORD = process.env.PLATFORM_ADMIN_PASSWORD ?? 'PlatformAdmin123!';
+export { PLATFORM_EMAIL, PLATFORM_PASSWORD } from '../world';
 
 // ── Stack probing / suite skipping ────────────────────────────────────────────
 
@@ -81,28 +79,42 @@ export async function newApi(): Promise<APIRequestContext> {
 }
 
 /**
- * Returns null only when the frontend proxy reaches the real backend auth endpoint.
- * A 401 response from /api/auth/me proves that chain; accepting any sub-500
- * response previously let an unrelated Vite HTML page masquerade as a healthy HRM API.
+ * Hard pre-flight. THROWS when the stack is not reachable — it never returns a skip reason.
+ *
+ * ── Why this changed ─────────────────────────────────────────────────────────
+ * This used to be `stackDownReason()`, returning a string that every suite fed to
+ * `test.skip(reason !== null, reason)`. The README called it "CI-safe by design". It was not safe,
+ * it was BLIND: a completely dead backend produced a green run. Seven spec files — every suite in
+ * this directory — reported success while asserting nothing whatsoever, and nothing in the output
+ * distinguished "28 boundaries verified" from "the API was never contacted".
+ *
+ * A suite that cannot reach the system it tests has not passed. It has failed to run, and that is a
+ * failure. A 401 from /api/auth/me through the frontend proxy proves frontend AND backend are alive
+ * and talking; accepting any sub-500 response would let an unrelated dev server on the same port
+ * masquerade as a healthy HRM API.
  */
-export async function stackDownReason(): Promise<string | null> {
+export async function assertStackReachable(): Promise<void> {
   let api: APIRequestContext | null = null;
+  let failure: string | null = null;
   try {
     api = await pwRequest.newContext({ baseURL: BASE_URL, timeout: 15_000 });
     const resp = await api.get('/api/auth/me');
     const contentType = resp.headers()['content-type'] ?? '';
-    if (resp.status() === 401) return null;
+    if (resp.status() === 401) return;
 
     const preview = (await resp.text()).replace(/\s+/g, ' ').slice(0, 160);
-    return `Stack unhealthy: GET ${BASE_URL}/api/auth/me must return 401, but returned ` +
+    failure = `STACK UNHEALTHY: GET ${BASE_URL}/api/auth/me must return 401, but returned ` +
       `${resp.status()} ${contentType || '(no content-type)'}: ${preview}. ` +
       `The configured URL may point to an unrelated frontend or a broken API proxy.`;
-  } catch {
-    return `Stack not reachable at ${BASE_URL}. Start the backend + frontend first ` +
-      `(see e2e/group-company/README.md) or set PLAYWRIGHT_BASE_URL.`;
+  } catch (error) {
+    failure = `STACK UNREACHABLE at ${BASE_URL}: ` +
+      `${error instanceof Error ? error.message : String(error)}. ` +
+      `Start the backend + frontend first (see e2e/group-company/README.md) or set ` +
+      `PLAYWRIGHT_BASE_URL. This is a FAILURE, not a skip — a dead backend must never go green.`;
   } finally {
     await api?.dispose().catch(() => {});
   }
+  if (failure) throw new Error(failure);
 }
 
 /** Login via API; throws with details on failure. Returns the raw auth payload. */
@@ -131,22 +143,31 @@ export async function tryApiLogin(
 }
 
 /**
- * Returns null when the enterprise-group seed data is present (probe user can
- * log in), otherwise a skip reason instructing how to seed it.
+ * Hard gate: the fixture world must exist. THROWS — it never returns a skip reason.
+ *
+ * ── Why this changed ─────────────────────────────────────────────────────────
+ * This was `groupSeedMissingReason()`, and every suite in this directory fed its result to
+ * `test.skip(reason !== null, reason)`. The justification was that the group seed was env-gated, so
+ * its absence was "a configuration statement, not a broken system". That justification is now void
+ * on both counts: there is no seeder and no env gate — the world is provisioned by a bootstrap that
+ * CI runs unconditionally — and the skip was hiding the one failure mode that matters. Seven spec
+ * files reported green against a database with no `almarai-test` tenant in it, which is
+ * indistinguishable, in the CI summary, from seven suites of verified company-isolation boundaries.
  */
-export async function groupSeedMissingReason(
+export async function assertFixtureWorld(
   probeEmail: string = groupUser('owner'),
   slug: string = ALMARAI.slug,
-): Promise<string | null> {
+): Promise<void> {
   const api = await newApi();
   try {
     const login = await tryApiLogin(api, probeEmail, slug);
-    if (login) return null;
-    return `Enterprise group test data not seeded (login failed for ${probeEmail} / tenant ${slug}). ` +
-      `Run the backend with SEED_ENTERPRISE_TEST_DATA=true. See e2e/group-company/README.md.`;
+    if (login) return;
   } finally {
     await api.dispose().catch(() => {});
   }
+  throw new Error(
+    `Cannot authenticate ${probeEmail} against tenant '${slug}'.\n${MISSING_WORLD}`,
+  );
 }
 
 /** Platform admin API login; returns null (with reason) when unavailable. */
@@ -320,8 +341,46 @@ export async function pickCompanyInSwitcher(page: Page, code: string): Promise<b
 }
 
 /** Full visible page text (lowercased comparisons are up to the caller). */
+/**
+ * Reads the page body. Deliberately does NOT swallow errors.
+ *
+ * This used to be `.catch(() => '')`. Its output feeds ~14 leak assertions of the form
+ * `expect(text).not.toContain('<sibling company code>')` — and an empty string contains no
+ * sibling codes. So a detached frame, a redirect to /login, an unrendered page, or any thrown
+ * locator error all produced PASS. Proved: the verbatim leak assertion from scoped-user.spec.ts
+ * passed against a completely logged-out browser.
+ *
+ * A negative assertion is only meaningful if the thing it reads actually loaded, so this now
+ * throws on failure and asserts the page is authenticated and has rendered real content — not
+ * just the navigation shell, which is 479-685 characters on its own.
+ */
 export async function bodyText(page: Page): Promise<string> {
-  return (await page.locator('body').innerText().catch(() => '')) ?? '';
+  if (/\/login/.test(page.url())) {
+    throw new Error(
+      `bodyText() called on ${page.url()} — the page is the login screen, not authenticated `
+      + 'content. Any "does not contain sibling data" assertion here would pass vacuously.',
+    );
+  }
+  const text = await page.locator('body').innerText();
+  if (!text || text.trim().length === 0) {
+    throw new Error(`bodyText() read an empty body at ${page.url()} — nothing rendered.`);
+  }
+  return text;
+}
+
+/**
+ * Content length excluding the static navigation shell.
+ *
+ * `innerText().length > 50` was the suite's standard "the page loaded" proxy, and the shell alone
+ * satisfies it: nav 382 + aside 479 + header 90 characters. Proved by fulfilling every /api/**
+ * request with a 500 — /payroll, /leave, /attendance, /people, /offboarding and
+ * /saudi-compliance all still cleared the threshold. Measure the main region instead.
+ */
+export async function mainContentLength(page: Page): Promise<number> {
+  const main = page.locator('main, [role="main"]').first();
+  if (await main.count() === 0) return 0;
+  const text = await main.innerText().catch(() => '');
+  return (text ?? '').trim().length;
 }
 
 /** True when the current page looks like a Next.js 404 / not-found. */

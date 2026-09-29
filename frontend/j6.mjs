@@ -1,0 +1,17 @@
+import { chromium } from '@playwright/test';
+const SHOT='/private/tmp/claude-501/-Users-zackkhan-Downloads-KynexOne/074df5aa-77b3-476e-892a-2f51f2c41b55/scratchpad/journey';
+const b=await chromium.launch();
+const ctx=await b.newContext({baseURL:'https://kynexone.vercel.app',viewport:{width:1440,height:900},storageState:`${SHOT}/state.json`});
+const p=await ctx.newPage();
+await p.goto('/setup?tab=departments',{waitUntil:'networkidle'}); await p.waitForTimeout(2500);
+console.log('buttons:', (await p.locator('main button, [role=dialog] button').allTextContents()).filter(x=>x.trim()).slice(0,12).join(' | '));
+const add=p.locator('button').filter({hasText:/Add|New/i}).first();
+console.log('add text:', (await add.textContent().catch(()=>'?'))?.trim());
+await add.click(); await p.waitForTimeout(2200);
+await p.screenshot({path:`${SHOT}/40-dept-modal.png`,fullPage:true});
+console.log('\nlabels:', (await p.locator('[role=dialog] label, .modal label').allTextContents()).map(x=>x.trim().split('\n')[0]).filter(Boolean).slice(0,15).join(' | '));
+console.log('inputs:', await p.locator('[role=dialog] input, .modal input').count());
+const ph=await p.locator('[role=dialog] input, .modal input').evaluateAll(els=>els.map(e=>e.placeholder||e.name||e.id||'(none)'));
+console.log('placeholders:', ph.slice(0,12).join(' | '));
+console.log('modal buttons:', (await p.locator('[role=dialog] button, .modal button').allTextContents()).filter(x=>x.trim()).join(' | '));
+await b.close();

@@ -52,8 +52,25 @@ test.describe('Platform tenants', () => {
     await tenantLink.click();
     await page.waitForURL(/\/platform\/tenants\/[0-9a-f-]{36}/, { timeout: 10_000 });
     await page.waitForLoadState('networkidle');
-    // Feature flags section should be present (labelled "Features", "Feature Flags", or similar)
-    await expect(page.getByText(/feature/i).first()).toBeVisible({ timeout: 10_000 });
+
+    // `getByText(/feature/i).first()` matched the word "feature" ANYWHERE on the
+    // page — including the tab label itself — so the section could be entirely
+    // absent and the test still passed. Open the Features tab and assert the
+    // section's own contents.
+    const featuresTab = page.getByRole('button', { name: 'Features', exact: true });
+    await expect(featuresTab).toBeVisible({ timeout: 10_000 });
+    await featuresTab.click();
+
+    // The feature-flag section renders one aria switch per flag.
+    const flagSwitches = page.getByRole('switch');
+    await expect(flagSwitches.first()).toBeVisible({ timeout: 10_000 });
+    expect(await flagSwitches.count(), 'tenant detail must list the tenant feature flags').toBeGreaterThan(0);
+
+    // IntelliFlow is the all-features-enabled Enterprise tenant: at least one
+    // flag must read as enabled, which also proves the tenant's own state is
+    // rendered rather than a static catalogue.
+    const enabled = page.locator('[role="switch"][aria-checked="true"]');
+    expect(await enabled.count(), 'IntelliFlow (Enterprise) must show enabled feature flags').toBeGreaterThan(0);
   });
 
   test('Provision New Tenant link or button is visible on tenants list', async ({ page }) => {

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Xunit;
 using Zayra.Api.Infrastructure.Documents;
 
@@ -32,14 +33,19 @@ public class PdfRenderGateTests
     {
         var gate = new PdfRenderGate(2);
         var tcs = new TaskCompletionSource();
-        var completionOrder = new List<int>();
+        // CONCURRENT, not List<int>. The two blocked renders resume on thread-pool threads the
+        // instant tcs completes and record themselves at the same moment; List<T>.Add is not
+        // thread-safe, so one write could be lost and the count came back 2. That fails as
+        // "the gate dropped a render" when the gate is fine and the TEST is what lost the item —
+        // and it fails more often on a loaded CI runner than on a developer's machine.
+        var completionOrder = new ConcurrentQueue<int>();
 
         // Fill capacity
-        var blocking1 = gate.RenderAsync(async () => { await tcs.Task; completionOrder.Add(1); return 1; }, default);
-        var blocking2 = gate.RenderAsync(async () => { await tcs.Task; completionOrder.Add(2); return 2; }, default);
+        var blocking1 = gate.RenderAsync(async () => { await tcs.Task; completionOrder.Enqueue(1); return 1; }, default);
+        var blocking2 = gate.RenderAsync(async () => { await tcs.Task; completionOrder.Enqueue(2); return 2; }, default);
 
         // Third should queue (gate full)
-        var queued = gate.RenderAsync(() => { completionOrder.Add(3); return Task.FromResult(3); }, default);
+        var queued = gate.RenderAsync(() => { completionOrder.Enqueue(3); return Task.FromResult(3); }, default);
 
         await Task.Delay(30); // Let tasks reach the await point
         Assert.Equal(0, gate.Available); // gate full

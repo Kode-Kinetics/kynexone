@@ -45,7 +45,27 @@ using Zayra.Api.Infrastructure.Operations;
 using Zayra.Api.Infrastructure.Qiwa;
 using Zayra.Api.Models;
 
+// ── MIGRATION-ONLY FAST PATH — must stay the FIRST statement in this file ─────────────────────
+// `dotnet Zayra.Api.dll --migrate` applies migrations and exits. It returns here, BEFORE
+// WebApplication.CreateBuilder, so not one line of web-host configuration below can stop a
+// migration from running.
+//
+// This is not defensive tidying. The Render pre-deploy migrate job died ~10s in, twice, at the
+// reverse-proxy guard immediately below — Proxy__TrustForwardedHeaders was "true" with neither
+// trust key set — and never reached the database. The backend could then neither ship nor roll
+// back. Every guard between here and the old handling site (~line 860) was a precondition of
+// migrating: the proxy trust boundary, the JWT signing key, the seed-admin password, the document
+// storage provider. A migration needs a connection string. See MigrateOnlyEntryPoint.
+if (MigrateOnlyEntryPoint.ShouldHandle(args))
+    return await MigrateOnlyEntryPoint.RunAsync(args);
+
 var builder = WebApplication.CreateBuilder(args);
+
+// Recovery and invitation credentials are delivered as browser links. A
+// non-development deployment must never emit a relative or insecure link into
+// email/admin responses; fail the release before any credential can be issued.
+if (!builder.Environment.IsDevelopment())
+    _ = AuthLinkBuilder.RequireHttpsPublicAppUrl(builder.Configuration["APP_URL"]);
 
 // Reverse-proxy headers are trusted only when deployment configuration opts in. Cloud load
 // balancers terminate TLS before the app; without this, generated links and secure redirects use
@@ -146,63 +166,10 @@ var listenUrl = !string.IsNullOrEmpty(port)
 builder.WebHost.UseUrls(listenUrl);
 
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection("Jwt"));
-builder.Services.Configure<SeedAdminOptions>(builder.Configuration.GetSection("SeedAdmin"));
 
-// ── Seed-admin bootstrap hardening (password fail-fast + demo-seed lock) ──────
-// Every fresh database auto-creates a bootstrap admin (SeedAdmin:Email) on first boot. A blank,
-// placeholder, or well-known password would ship every client-hosted / dedicated deployment with a
-// known-credential admin. A "dedicated" deployment is Production OR anything flagged with
-// DEDICATED_DEPLOYMENT / CLIENT_DEPLOYMENT — the SAME predicate the demo-seed gate below uses — so a
-// client slot running under a non-Production ASPNETCORE_ENVIRONMENT (Staging/QA/custom) is protected
-// too. On a dedicated deployment a weak bootstrap password is REFUSED outright; elsewhere (local dev,
-// docker-compose) a working dev default is substituted with a loud warning so zero-config bring-up
-// keeps working. This guard runs at builder time on EVERY invocation — including the
-// `dotnet Zayra.Api.dll --migrate` one-off job — so a dedicated deployment must set SeedAdmin__Password
-// before that job runs too (mirrors the JWT fail-fast above).
-{
-    const string WeakSeedAdminPassword = "ChangeMe123!";
-
-    var isDedicatedDeployment =
-        builder.Environment.IsProduction()
-        || string.Equals(Environment.GetEnvironmentVariable("DEDICATED_DEPLOYMENT"), "true", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(Environment.GetEnvironmentVariable("CLIENT_DEPLOYMENT"), "true", StringComparison.OrdinalIgnoreCase);
-
-    var seedAdminPassword = builder.Configuration["SeedAdmin:Password"];
-    var isWeakOrPlaceholder =
-        string.IsNullOrWhiteSpace(seedAdminPassword)
-        || seedAdminPassword == WeakSeedAdminPassword
-        || seedAdminPassword.StartsWith("CHANGE_ME", StringComparison.OrdinalIgnoreCase);
-
-    if (isWeakOrPlaceholder)
-    {
-        if (isDedicatedDeployment)
-            throw new InvalidOperationException(
-                $"[{builder.Environment.EnvironmentName}] SeedAdmin bootstrap password fail-fast:\n" +
-                $"  SeedAdmin:Password is null, empty, a documented placeholder (CHANGE_ME...), or still the insecure default ('{WeakSeedAdminPassword}').\n" +
-                "  Set a unique, strong bootstrap admin password before first boot via env var SeedAdmin__Password (config key SeedAdmin:Password).\n" +
-                "  docker-compose maps ${SEED_ADMIN_PASSWORD} -> SeedAdmin__Password; on Render / raw containers set SeedAdmin__Password directly (SEED_ADMIN_PASSWORD is NOT read by the app).");
-
-        // Non-dedicated (local dev / docker-compose): substitute a working dev default so bring-up
-        // stays zero-config, but never persist a CHANGE_ME* placeholder as the effective password.
-        builder.Configuration["SeedAdmin:Password"] = WeakSeedAdminPassword;
-        Console.WriteLine(
-            $"[SeedAdmin] WARNING [{builder.Environment.EnvironmentName}]: bootstrap admin is using the INSECURE default " +
-            "password because SeedAdmin__Password is unset or a placeholder. Never use this outside local development.");
-    }
-
-    // Defense in depth for the AuthSeeder demo path: AuthSeeder (always-on, resolved later) seeds a
-    // demo company + 25 fake employees when SeedAdmin:SeedDemoData is "true". That flag is read from
-    // config BEFORE the runtime demo gate below is evaluated, so neutralize it here for dedicated
-    // deployments — one mis-set SeedAdmin__SeedDemoData must never pollute a client tenant.
-    if (isDedicatedDeployment
-        && string.Equals(builder.Configuration["SeedAdmin:SeedDemoData"], "true", StringComparison.OrdinalIgnoreCase))
-    {
-        builder.Configuration["SeedAdmin:SeedDemoData"] = "false";
-        Console.WriteLine(
-            $"[SeedAdmin] OVERRIDE [{builder.Environment.EnvironmentName}]: SeedAdmin__SeedDemoData was 'true' but this is a " +
-            "Production/dedicated deployment — forced to 'false' so AuthSeeder cannot seed demo org/employee data into a client tenant.");
-    }
-}
+// There is no tenant bootstrap admin: AuthSeeder creates no tenant or user. The only boot-time
+// account is the one-time platform owner (PlatformOwnerBootstrap, gated further down), and every
+// tenant/user is then created through the platform-admin API. See docs/DATA_ENTRY_PATHS.md.
 
 builder.Services.Configure<EntityScopeOptions>(builder.Configuration.GetSection("EntityScope"));
 builder.Services.PostConfigure<EntityScopeOptions>(options =>
@@ -211,6 +178,11 @@ builder.Services.PostConfigure<EntityScopeOptions>(options =>
         builder.Environment.IsProduction(),
         options.StrictMode);
 });
+
+// Effective module state (stored flags + the catalog's statutory/core locks). Scoped because it
+// reads the tenant's DbContext; the result is cached per tenant in IMemoryCache.
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Modules.ITenantModuleService,
+                           Zayra.Api.Infrastructure.Modules.TenantModuleService>();
 
 builder.Services.AddControllers(options =>
 {
@@ -241,7 +213,10 @@ builder.Services.AddCors(options => options.AddPolicy("kynexone", policy => poli
     .AllowAnyMethod()
     .AllowAnyHeader()));
 
-var connectionString = builder.Configuration.GetConnectionString("Default");
+// Accepts either Npgsql keyword form or a postgres:// URI. Managed-Postgres consoles hand out
+// URIs; Npgsql parses only keyword form. See PostgresConnectionString for what that cost.
+var connectionString = Zayra.Api.Application.Common.PostgresConnectionString.Normalize(
+    builder.Configuration.GetConnectionString("Default"));
 if (string.IsNullOrWhiteSpace(connectionString))
 {
     if (builder.Environment.IsProduction())
@@ -251,6 +226,9 @@ if (string.IsNullOrWhiteSpace(connectionString))
 builder.Services.AddDbContextPool<ZayraDbContext>(options => options
     .UseNpgsql(connectionString,
         npgsqlOptions => npgsqlOptions.EnableRetryOnFailure(maxRetryCount: 5, maxRetryDelay: TimeSpan.FromSeconds(5), errorCodesToAdd: null))
+    // F3: turns a query tagged ForUpdateSkipLockedTag into SELECT … FOR UPDATE SKIP LOCKED (job claiming).
+    // Inert for every other command.
+    .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance)
     .ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.CoreEventId.PossibleIncorrectRequiredNavigationWithQueryFilterInteractionWarning)));
 
 builder.Services.AddMemoryCache();
@@ -361,9 +339,9 @@ builder.Services.AddScoped<Zayra.Api.Application.WorkWeek.IWorkWeekService, Zayr
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.IProrationPolicyResolver, Zayra.Api.Infrastructure.Payroll.ProrationPolicyResolver>();
 builder.Services.AddScoped<IHrmHierarchyService, HrmHierarchyService>();
 builder.Services.AddScoped<IApprovalWorkflowService, ApprovalWorkflowService>();
-builder.Services.AddScoped<IApprovalPolicyService, ApprovalPolicyService>();
+builder.Services.AddScoped<IApprovalRouter, ApprovalRouter>();
+builder.Services.AddScoped<Zayra.Api.Application.Timesheets.ITimesheetService, Zayra.Api.Infrastructure.Timesheets.TimesheetService>();
 builder.Services.AddScoped<IAuthSeeder, AuthSeeder>();
-builder.Services.AddScoped<IEmployeeModuleSchemaBootstrapper, EmployeeModuleSchemaBootstrapper>();
 // P0-5: config-selected durable storage with a Production fail-fast (Render dyno disk is
 // ephemeral on plan:free — LocalDocumentStorage would lose compliance documents on restart).
 builder.Services.AddDocumentStorage(builder.Configuration, builder.Environment.IsDevelopment());
@@ -381,12 +359,20 @@ builder.Services.AddScoped<INotificationRecipientResolver, NotificationRecipient
 builder.Services.AddScoped<INotificationProviderConfigReader, NotificationProviderConfigReader>();
 builder.Services.AddScoped<ISmsProvider, NullSmsProvider>();
 builder.Services.AddScoped<IWhatsAppProvider, NullWhatsAppProvider>();
-builder.Services.AddScoped<IPushProvider, NullPushProvider>();
+// POD-D5 / mobile enablement — REAL push. The Expo adapter replaces NullPushProvider because the
+// mobile client registers Expo tokens (ExponentPushToken[...]) via getExpoPushTokenAsync(); it stays
+// dormant (visible "not_configured" delivery rows) until a tenant sets Notifications/Push.Provider=expo.
+builder.Services.AddScoped<IPushProvider, ExpoPushProvider>();
+// Timeout MUST stay above ProviderBackedDispatcher.SendTimeout (10 s) so the dispatcher's linked CTS
+// is what fires first and the outcome is classified Ambiguous rather than a bare transport failure.
+builder.Services.AddHttpClient(ExpoPushProvider.HttpClientName,
+    c => c.Timeout = TimeSpan.FromSeconds(30));
 builder.Services.AddScoped<INotificationChannelDispatcher, EmailChannelDispatcher>();
 builder.Services.AddScoped<INotificationChannelDispatcher, SmsChannelDispatcher>();
 builder.Services.AddScoped<INotificationChannelDispatcher, WhatsAppChannelDispatcher>();
 builder.Services.AddScoped<INotificationChannelDispatcher, PushChannelDispatcher>();
 builder.Services.AddScoped<ILetterService, LetterService>();
+builder.Services.AddScoped<IHrLetterIssuer, HrLetterIssuer>();
 var pdfCapacity = builder.Configuration.GetValue("Pdf:MaxConcurrentRenders", 3);
 builder.Services.AddSingleton(new Zayra.Api.Infrastructure.Documents.PdfRenderGate(pdfCapacity));
 builder.Services.AddScoped<IRecruitmentService, RecruitmentService>();
@@ -409,15 +395,23 @@ builder.Services.AddScoped<AiTokenBudgetService>();
 builder.Services.AddScoped<IAiGovernanceService, AiGovernanceService>();
 builder.Services.AddScoped<IAiPromptBuilder, AiPromptBuilder>();
 builder.Services.AddScoped<IAiAuditService, AiAuditService>();
+// One recorder for every model call. See AiCallRecorder's header: four of the five call sites
+// used to record nothing, which is how a permanently-degraded setup assistant stayed invisible.
+builder.Services.AddScoped<IAiCallRecorder, AiCallRecorder>();
 builder.Services.AddScoped<IAiResponseCacheService, AiResponseCacheService>();
 builder.Services.AddScoped<IAiAdvisoryService, AiAdvisoryService>();
 builder.Services.AddScoped<Zayra.Api.Application.Shifts.IRosterPlannerService, Zayra.Api.Infrastructure.Shifts.RosterPlannerService>();
+builder.Services.AddScoped<Zayra.Api.Application.Setup.ISetupStatutoryDefaults, Zayra.Api.Infrastructure.Setup.SetupStatutoryDefaults>();
 builder.Services.AddScoped<Zayra.Api.Application.Setup.ISetupAssistantService, Zayra.Api.Infrastructure.Setup.SetupAssistantService>();
 builder.Services.AddScoped<Zayra.Api.Application.Recruitment.IRecruitmentAiService, Zayra.Api.Infrastructure.Recruitment.RecruitmentAiService>();
 builder.Services.AddScoped<IPolicyDocumentService, PolicyDocumentService>();
 builder.Services.AddScoped<IQiwaIntegrationService, QiwaIntegrationService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Compliance.SaudiComplianceDashboardService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Compliance.NitaqatCalculationService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Compliance.GosiReadinessReportService>();
+// Nitaqat MHRSD grid loader: the product ships the MECHANISM, not the grid (see
+// NitaqatGridImportService for why seeding ~3,000 unverified thresholds would be worse than none).
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Compliance.NitaqatGridImportService>();
 // POD-A1: single GOSI/statutory reconciliation truth (contribution-summary, variance-report,
 // compliance dashboard variance count). Scoped so it shares the request's memoized IStatutoryRuleReader.
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.GosiReconciliationService>();
@@ -463,7 +457,39 @@ builder.Services.AddHostedService<AiInsightEngine>();
 builder.Services.AddHostedService<NotificationDeliveryWorker>();
 builder.Services.AddHostedService<ComplianceReminderWorker>();
 
-builder.Services.AddHttpClient<ILlmClient, LlmClient>();
+// F3 — durable background jobs (job store + per-item checkpoints + leased, fenced worker). Runs on
+// every instance: claims are FOR UPDATE SKIP LOCKED with a lease token, so old and new instances share
+// the queue during a deploy cutover without running any job twice. BackgroundJobs__WorkerEnabled=false
+// turns the worker off on an instance that should only serve HTTP.
+var backgroundJobOptions = builder.Configuration.GetSection(Zayra.Api.Infrastructure.Jobs.BackgroundJobOptions.SectionName)
+    .Get<Zayra.Api.Infrastructure.Jobs.BackgroundJobOptions>() ?? new Zayra.Api.Infrastructure.Jobs.BackgroundJobOptions();
+builder.Services.AddSingleton(backgroundJobOptions);
+builder.Services.AddSingleton(Zayra.Api.Infrastructure.Attendance.AttendanceProcessingJobHandler.Descriptor);
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Attendance.AttendanceProcessingJobHandler>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Jobs.BackgroundJobTypeRegistry>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Jobs.BackgroundJobStore>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Jobs.BackgroundJobRunner>();
+builder.Services.AddSingleton(Zayra.Api.Infrastructure.Retention.DataRetentionSweepJobHandler.Descriptor);
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.DataRetentionSweepJobHandler>();
+builder.Services.AddHostedService<Zayra.Api.Infrastructure.Jobs.BackgroundJobWorker>();
+
+// D3 — data retention. EVERY SWITCH IS OFF BY DEFAULT and the defaults are the safe ones:
+// DataRetention__ScheduleEnabled=true starts producing a daily DRY-RUN report and nothing else;
+// DataRetention__ApplyDeletions=true is what actually lets a record be anonymised or deleted;
+// DataRetention__AllowTenantErasure=true is additionally required before a soft-deleted tenant's data
+// is erased. See scratchpad/data-retention.md for the per-entity policy and the enable procedure.
+var dataRetentionOptions = builder.Configuration.GetSection(Zayra.Api.Infrastructure.Retention.DataRetentionOptions.SectionName)
+    .Get<Zayra.Api.Infrastructure.Retention.DataRetentionOptions>() ?? new Zayra.Api.Infrastructure.Retention.DataRetentionOptions();
+builder.Services.AddSingleton(dataRetentionOptions);
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Zayra.Api.Infrastructure.Retention.Rules.ExpiredEmployeeRecordRule>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Zayra.Api.Infrastructure.Retention.Rules.ExpiredRefreshTokenRule>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Zayra.Api.Infrastructure.Retention.Rules.SoftDeletedTenantRule>();
+builder.Services.AddHostedService<Zayra.Api.Infrastructure.Retention.DataRetentionScheduler>();
+
+// HttpClient's default timeout is 100s. Left unset, a slow or wedged model call blocked a
+// user-facing request for a minute and a half before anything degraded. Callers that can fall
+// back (setup assistant, advisory) impose their own, tighter budget on top of this ceiling.
+builder.Services.AddHttpClient<ILlmClient, LlmClient>(c => c.Timeout = TimeSpan.FromSeconds(120));
 builder.Services.AddHttpContextAccessor();
 
 // Country pack framework — scoped per request (strategies depend on scoped IStatutoryRuleReader).
@@ -604,6 +630,21 @@ builder.Services.AddRateLimiter(o =>
                 QueueLimit               = 0,
             }));
 
+    // Platform challenge verification has its own window. Sharing the five-request password
+    // window meant issuing a challenge consumed permit #1 and a deterministic five-client
+    // exactly-once verification race was forced to return one 429 before application security
+    // could account for the attempt. The credential itself still has an exact five-attempt cap.
+    o.AddPolicy("platform_mfa_verify", ctx =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit              = rl.GetValue("PlatformMfaVerifyPermitLimit", 10),
+                Window                   = TimeSpan.FromSeconds(rl.GetValue("PlatformMfaVerifyWindowSeconds", 60)),
+                QueueProcessingOrder     = QueueProcessingOrder.OldestFirst,
+                QueueLimit               = 0,
+            }));
+
     // Public (unauthenticated) marketing writes — quote/estimate submissions. Throttle per-IP to
     // prevent spam / storage-exhaustion since these insert rows without any auth.
     o.AddPolicy("public_write", ctx =>
@@ -729,15 +770,51 @@ app.MapGet("/health/live", () => Results.Ok(new
     commit = Environment.GetEnvironmentVariable("RENDER_GIT_COMMIT") ?? "local"
 })).AllowAnonymous();
 
-app.MapGet("/health/ready", async (ZayraDbContext db, IConfiguration config, CancellationToken ct) =>
+app.MapGet("/health/ready", async (ZayraDbContext db, IConfiguration config, ILoggerFactory lf, CancellationToken ct) =>
 {
     var evidence = await ProductionReadinessEvidence.BuildReadinessAsync(db, config, ct);
-    return evidence.Status == "ready"
-        ? Results.Ok(evidence)
-        : Results.Json(evidence, statusCode: StatusCodes.Status503ServiceUnavailable);
+    if (evidence.Status == "ready") return Results.Ok(evidence);
+
+    // SAY WHY. This gate refused three consecutive production deploys on 2026-09-23 and no log line
+    // anywhere named the term that failed: Render's health check reads the 503 status and discards the
+    // body, the body is the ONLY place the evidence existed, and a failed deploy's instance cannot be
+    // reached from outside to ask it. Fifteen minutes of "503" in the log told us nothing except that
+    // it was unhappy. A gate that can refuse a release must be able to state its reason where an
+    // operator will find it.
+    var failing = new List<string>();
+    if (!evidence.Dependencies.Database.Healthy) failing.Add("database unreachable");
+    if (evidence.PendingMigrations != 0)
+        failing.Add(evidence.PendingMigrations < 0
+            ? "migration parity UNKNOWN (-1): neither compiled migrations nor Migrations.manifest were readable in this image"
+            : $"{evidence.PendingMigrations} migration(s) in this build are not applied to this database");
+    // The worker term is only MEASURED when the database is healthy and migrations are in parity;
+    // otherwise BuildReadinessAsync substitutes WorkerFleetReadiness.Unavailable, which hardcodes
+    // "all six missing" without reading a single heartbeat row. Reporting that as a worker outage
+    // cost hours on 2026-09-23: three deploys were investigated as a dead worker fleet when the
+    // fleet had never been looked at. Only name workers when the number is real.
+    var workersWereMeasured = evidence.Dependencies.Database.Healthy && evidence.PendingMigrations == 0;
+    if (!workersWereMeasured)
+        failing.Add("workers NOT EVALUATED (short-circuited by the terms above — the worker counts "
+                    + "in this response are placeholders, not measurements)");
+    else if (!evidence.Dependencies.Workers.Healthy)
+        failing.Add("workers: " + string.Join(", ", evidence.Dependencies.Workers.Workers
+            .Where(w => w.Status is not ("healthy" or "starting"))
+            .Select(w => $"{w.Name}={w.Status}")));
+
+    lf.CreateLogger("Readiness").LogWarning(
+        "[READINESS-NOT-READY] /health/ready is refusing traffic because: {Failing}. "
+        + "db={DbHealthy} pendingMigrations={Pending} workers(healthy/starting/stale/failed/missing)="
+        + "{H}/{S}/{St}/{F}/{M}",
+        failing.Count > 0 ? string.Join(" | ", failing) : "no individual term failed — the status rule changed",
+        evidence.Dependencies.Database.Healthy, evidence.PendingMigrations,
+        evidence.Dependencies.Workers.HealthyCount, evidence.Dependencies.Workers.StartingCount,
+        evidence.Dependencies.Workers.StaleCount, evidence.Dependencies.Workers.FailedCount,
+        evidence.Dependencies.Workers.MissingCount);
+
+    return Results.Json(evidence, statusCode: StatusCodes.Status503ServiceUnavailable);
 }).AllowAnonymous();
 
-app.MapGet("/health/telemetry", async (ZayraDbContext db, IConfiguration config, CancellationToken ct) =>
+app.MapGet("/health/telemetry", async (ZayraDbContext db, IConfiguration config, ILoggerFactory loggerFactory, CancellationToken ct) =>
 {
     try
     {
@@ -745,11 +822,17 @@ app.MapGet("/health/telemetry", async (ZayraDbContext db, IConfiguration config,
     }
     catch (Exception ex)
     {
+        // Authenticated, but still not a place for driver text. Npgsql messages routinely carry the
+        // host, database and username, and SLO_AND_ALERT_CATALOG.md states plainly that health
+        // endpoints leak "no connection strings, no driver detail, no secret". Returning ex.Message
+        // made that claim false for every signed-in user. The public /health endpoint was corrected
+        // the same way; this is the last of the pair.
+        loggerFactory.CreateLogger("TelemetryHealthCheck")
+            .LogError(ex, "Telemetry health check failed");
         return Results.Json(new
         {
             status = "telemetry_unavailable",
             utc = DateTime.UtcNow,
-            error = ex.Message
         }, statusCode: StatusCodes.Status503ServiceUnavailable);
     }
 }).RequireAuthorization();
@@ -784,13 +867,12 @@ app.MapGet("/health", async (ZayraDbContext db, ILoggerFactory loggerFactory) =>
 
 // ── Migration mode ────────────────────────────────────────────────────────────
 // In Production the web process NEVER runs migrations on startup to avoid crashing
-// the web service when TiDB or network is unavailable.
+// the web service when the database or network is unavailable.
 // Migrations run via a one-off command:
 //   dotnet Zayra.Api.dll --migrate
-// or via Render pre-deploy job. Set Database__RunMigrationsOnStartup=true ONLY
-// for local dev convenience (it defaults false in Production).
-var isMigrateMode = args.Contains("--migrate");
-var isPurgeDemoMode = args.Contains("--purge-demo");
+// which is handled at the TOP of this file and never reaches here — see
+// MigrateOnlyEntryPoint. Database__RunMigrationsOnStartup below is a LOCAL DEV
+// convenience only (it defaults false in Production).
 var runMigrationsOnStartup = app.Configuration.GetValue<bool>("Database:RunMigrationsOnStartup");
 
 using (var scope = app.Services.CreateScope())
@@ -807,7 +889,7 @@ using (var scope = app.Services.CreateScope())
         CompanyScopeBootAssertion.ResolveStrictMode(app.Environment.IsProduction()),
         logger);
 
-    if (isMigrateMode || runMigrationsOnStartup)
+    if (runMigrationsOnStartup)
     {
         logger.LogInformation("Running EF Core migrations...");
         await dbContext.Database.MigrateAsync();
@@ -816,12 +898,6 @@ using (var scope = app.Services.CreateScope())
     else
     {
         logger.LogInformation("Skipping EF Core migrations on startup. Set Database:RunMigrationsOnStartup=true or run --migrate.");
-    }
-
-    if (isMigrateMode)
-    {
-        logger.LogInformation("--migrate mode complete. Exiting.");
-        return; // exit 0 — Render one-off job succeeds
     }
 
     // Phase 1B default-company backfill — idempotent (only touches null CompanyId rows),
@@ -844,19 +920,9 @@ using (var scope = app.Services.CreateScope())
         catch (Exception ex) { logger.LogError(ex, "PayrollAuditChainBackfill failed — continuing startup."); }
     }
 
-    // One-off demo cleanup: `dotnet Zayra.Api.dll --purge-demo`. Deactivates all
-    // demo tenants (guarding the real SeedAdmin tenant) then exits — never seeds.
-    if (isPurgeDemoMode)
-    {
-        await Zayra.Api.Infrastructure.Seed.DemoPurgeRunner.RunAsync(
-            dbContext, app.Configuration["SeedAdmin:TenantSlug"], logger);
-        logger.LogInformation("--purge-demo mode complete. Exiting.");
-        return; // exit 0 — Render one-off job succeeds
-    }
-
     // Seed data — each step is independently non-fatal so one failure never
     // prevents subsequent seeders from running (GOSI/Statutory rules must run
-    // even when DemoDataSeeder fails, for example).
+    // even when an earlier seeder fails, for example).
     async Task TrySeedAsync(string name, Func<Task> seed, ILogger log)
     {
         try { await seed(); }
@@ -872,36 +938,16 @@ using (var scope = app.Services.CreateScope())
     var authSeeder = scope.ServiceProvider.GetRequiredService<IAuthSeeder>();
     await TrySeedAsync("AuthSeeder", () => authSeeder.SeedAsync(), logger);
 
-    var demoDataRequested =
-        string.Equals(Environment.GetEnvironmentVariable("SEED_DEMO_DATA"), "true", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(app.Configuration["SeedAdmin:SeedDemoData"], "true", StringComparison.OrdinalIgnoreCase);
-
-    // Defense in depth: a client-hosted / dedicated deployment (or ANY Production env) must NEVER run
-    // demo seeders — even if SEED_DEMO_DATA / SeedAdmin__SeedDemoData is accidentally set to "true".
-    // One mis-set env var must not be able to pollute a client database with demo tenants and users.
-    // (This mirrors the builder-time predicate that also neutralizes SeedAdmin:SeedDemoData before
-    // AuthSeeder runs.)
+    // A dedicated deployment is Production OR anything flagged DEDICATED_DEPLOYMENT / CLIENT_DEPLOYMENT.
+    // It gates the one-time platform-owner bootstrap below.
     var dedicatedDeployment =
         app.Environment.IsProduction()
         || string.Equals(Environment.GetEnvironmentVariable("DEDICATED_DEPLOYMENT"), "true", StringComparison.OrdinalIgnoreCase)
         || string.Equals(Environment.GetEnvironmentVariable("CLIENT_DEPLOYMENT"), "true", StringComparison.OrdinalIgnoreCase);
 
-    var seedDemoData = demoDataRequested && !dedicatedDeployment;
-
-    if (demoDataRequested && dedicatedDeployment)
-        logger.LogWarning(
-            "Demo data seeding REQUESTED but REFUSED — this is a Production/dedicated client deployment " +
-            "(IsProduction={IsProd}, DEDICATED_DEPLOYMENT/CLIENT_DEPLOYMENT respected). Demo seeders will NOT run; " +
-            "only idempotent global config (auth bootstrap, GOSI/statutory rules, pricing) is seeded.",
-            app.Environment.IsProduction());
-
-    logger.LogInformation("Demo data seeding: {State} (environment={Env})",
-        seedDemoData ? "ENABLED" : "DISABLED", app.Environment.EnvironmentName);
-
     // ── WAVE 1 B3: bootstrap the FIRST platform operator, independently of demo data ──────────────
-    // This used to run only inside the demo-data block, so a Production or dedicated deployment — where
-    // demo seeding is deliberately refused — could never get a platform operator account seeded at all.
-    // Creating an operator and fabricating demo tenants are different acts and are now gated separately.
+    // Every tenant, tenant user, test and demo account is created by this operator through the
+    // platform-admin API — no seeder, fixture or demo runner may create them (docs/DATA_ENTRY_PATHS.md).
     //
     // It is inert unless PLATFORM_ADMIN_PASSWORD is explicitly supplied, and it no-ops once ANY platform
     // user exists, so it can only ever create the first. On Production it additionally requires
@@ -909,81 +955,96 @@ using (var scope = app.Services.CreateScope())
     // operator on a live system.
     var platformBootstrapRequested =
         !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PLATFORM_ADMIN_PASSWORD"));
+    // Uses the dedicatedDeployment predicate above, not a bare
+    // IsProduction(). A client-hosted slot commonly runs as Staging with CLIENT_DEPLOYMENT=true, and
+    // IsProduction() alone would let PLATFORM_ADMIN_PASSWORD mint a platform OWNER — the omnipotent
+    // cross-tenant actor — on that deployment with no explicit bootstrap flag.
     var platformBootstrapPermitted =
-        !app.Environment.IsProduction()
+        !dedicatedDeployment
         || string.Equals(Environment.GetEnvironmentVariable("PLATFORM_ADMIN_BOOTSTRAP"), "true",
                          StringComparison.OrdinalIgnoreCase);
 
-    if (platformBootstrapRequested && platformBootstrapPermitted)
-        await TrySeedAsync("PlatformOwnerBootstrap", () => DemoDataSeeder.SeedPlatformOwnerOnlyAsync(
+    // The password is the only thing standing between an env var and a cross-tenant superuser, so it is
+    // held to a real bar, while docker-compose and CI both ship well-known defaults.
+    //
+    // A weak password SKIPS the bootstrap; it does not stop the service. The distinction cost an
+    // outage on 2026-09-23: this check threw, so setting PLATFORM_ADMIN_BOOTSTRAP with a short
+    // password took production down — including on a deployment whose platform owner already existed
+    // and for which the bootstrap would have been a no-op anyway. The security property is unchanged:
+    // no owner is ever created with a weak password. What changes is the blast radius of getting the
+    // password wrong: one refused seed, loudly logged, instead of a dead API.
+    var platformBootstrapWeakPassword = false;
+    if (platformBootstrapRequested && platformBootstrapPermitted && dedicatedDeployment)
+    {
+        platformBootstrapWeakPassword = PlatformOwnerBootstrap.IsWeakBootstrapPassword(
+            Environment.GetEnvironmentVariable("PLATFORM_ADMIN_PASSWORD"));
+        if (platformBootstrapWeakPassword)
+            logger.LogError(
+                "Platform owner bootstrap REFUSED — PLATFORM_ADMIN_PASSWORD is weak or a known default "
+                + "(needs 16+ characters and must not contain ChangeMe/YourPassword/PlatformAdmin123). "
+                + "No platform operator was created; this account would have cross-tenant reach over "
+                + "every customer's payroll data. The service is running: set a strong password and "
+                + "redeploy to create the first operator.");
+    }
+
+    if (platformBootstrapRequested && platformBootstrapPermitted && !platformBootstrapWeakPassword)
+        await TrySeedAsync("PlatformOwnerBootstrap", () => PlatformOwnerBootstrap.RunAsync(
             dbContext, scope.ServiceProvider.GetRequiredService<IPasswordHasher>(), logger), logger);
     else if (platformBootstrapRequested)
         logger.LogWarning(
             "Platform owner bootstrap REQUESTED but REFUSED — this is a Production environment and "
             + "PLATFORM_ADMIN_BOOTSTRAP is not 'true'. No platform operator was created.");
 
-    if (seedDemoData)
-        await TrySeedAsync("DemoDataSeeder", () => DemoDataSeeder.SeedAsync(
-            dbContext,
-            scope.ServiceProvider.GetRequiredService<IPasswordHasher>(),
-            authSeeder,
-            logger,
-            seedLegacyTenants: false), logger);
-
-    // Enterprise GROUP demo tenants (ALMARAI_TEST/TATA_TEST/EMAAR_TEST) — E2E/demo only, idempotent,
-    // and NEVER enabled in production/dedicated deployments (separate flag from SEED_DEMO_DATA).
-    var enterpriseTestDataRequested = string.Equals(
-        Environment.GetEnvironmentVariable(Zayra.Api.Infrastructure.Seed.EnterpriseGroupSeeder.EnableEnvVar),
-        "true", StringComparison.OrdinalIgnoreCase);
-
-    if (enterpriseTestDataRequested && dedicatedDeployment)
-        logger.LogWarning(
-            "Enterprise GROUP test-data seeding REQUESTED ({Flag}=true) but REFUSED — this is a Production/dedicated " +
-            "client deployment. Enterprise demo tenants will NOT be seeded.",
-            Zayra.Api.Infrastructure.Seed.EnterpriseGroupSeeder.EnableEnvVar);
-
-    if (enterpriseTestDataRequested && !dedicatedDeployment)
-        await TrySeedAsync("EnterpriseGroupSeeder", () => new Zayra.Api.Infrastructure.Seed.EnterpriseGroupSeeder(
-            dbContext,
-            scope.ServiceProvider.GetRequiredService<IPasswordHasher>(),
-            authSeeder,
-            scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger<Zayra.Api.Infrastructure.Seed.EnterpriseGroupSeeder>()).SeedAsync(), logger);
-
     await TrySeedAsync("GosiRuleSeeder",      () => GosiRuleSeeder.SeedDefaultsAsync(dbContext, logger), logger);
     await TrySeedAsync("StatutoryRuleSeeder", () => Zayra.Api.Infrastructure.Seed.StatutoryRuleSeeder.SeedAsync(dbContext, logger), logger);
+    await TrySeedAsync("NitaqatReferenceSeeder", () => Zayra.Api.Infrastructure.Seed.NitaqatReferenceSeeder.SeedAsync(dbContext, logger), logger);
 
-    // Pricing config + module catalog must exist even in production (demo seeding is off there),
-    // otherwise the platform-admin pricing/CPQ console is empty. Idempotent (skips when present).
-    await TrySeedAsync("PricingConfigSeeder", () => DemoDataSeeder.SeedPricingConfigAsync(dbContext, logger, CancellationToken.None), logger);
+    // Pricing config + module catalog (reference data) — otherwise the platform-admin pricing/CPQ
+    // console is empty. Idempotent (skips when present).
+    await TrySeedAsync("PricingConfigSeeder", () => PricingConfigSeeder.SeedAsync(dbContext, logger, CancellationToken.None), logger);
 
-    // ── DEMO-ONLY ZONE ─────────────────────────────────────────────────────────────────────
-    // Every operation that can MUTATE tenant data (deactivate, rename, or create tenants) runs
-    // ONLY when demo seeding is enabled. In production (SeedAdmin__SeedDemoData=false) NOTHING in
-    // this block runs — so a deploy can NEVER wipe, revert, deactivate, or rename a real customer
-    // tenant. The only seeders that run in production are idempotent, additive global config above
-    // (Auth bootstrap, GOSI/statutory rules, pricing) which never delete or mutate customer records.
-    if (seedDemoData)
+    // ── Tenant defaults backfill (runs LAST, and for EVERY tenant) ─────────────────────────────
+    // HR letter templates and the timesheet approval route are installed only on the NEW-TENANT
+    // path (TenantProvisioningBundle / the hr-letters seed-defaults admin action), so every tenant
+    // that predates those two modules — which is all of them — came up without them: the HR Letters
+    // "Issue" tab has no template to issue from, ESS offers an empty document-request dropdown, and
+    // the first timesheet submitted 422s with no_approval_route. Both modules look shipped and
+    // cannot be used, and nothing on the failing screen says why.
+    //
+    // Safe on every boot because this pass creates no tenant or user and deactivates, renames and
+    // overwrites nothing — it is strictly insert-if-absent, so a template the client has edited is
+    // never reverted by a later deploy.
+    //
+    // Kill switch: TenantDefaults:Backfill=false / TenantDefaults__Backfill=false.
+    if (!string.Equals(app.Configuration["TenantDefaults:Backfill"], "false", StringComparison.OrdinalIgnoreCase))
     {
-        // Deactivate leftover/garbage demo tenants and soft-delete renamed fragments — demo envs only.
-        await TrySeedAsync("GarbageDemoCleanup", () => CleanDemoKsaSeeder.DeactivateGarbageDemoTenantsAsync(dbContext, logger), logger);
-        await TrySeedAsync("IntelliFlowFragmentCleanup", () => IntelliFlowFragmentCleanup.RunAsync(dbContext, logger), logger);
+        await TrySeedAsync("TenantDefaultsBackfill",
+            () => TenantDefaultsBackfill.RunAsync(dbContext, logger), logger);
+    }
 
-        // Seed one clean KSA tenant. Idempotent: no-op when slug exists.
-        await TrySeedAsync("CleanDemoKsaSeeder", () => CleanDemoKsaSeeder.SeedAsync(
-            dbContext,
-            scope.ServiceProvider.GetRequiredService<IPasswordHasher>(),
-            authSeeder,
-            logger), logger);
-
-        // Seed one clean IntelliFlow Systems tenant (KSA, 12 employees, locked payroll).
-        // Idempotent: skips if active "intelliflow" slug already exists.
-        await TrySeedAsync("IntelliFlowDemoSeeder", () => IntelliFlowDemoSeeder.SeedAsync(
-            dbContext,
-            scope.ServiceProvider.GetRequiredService<IPasswordHasher>(),
-            authSeeder,
-            logger), logger);
+    // Read-only: names every tenant and legal entity that still has NO country, and where to set it.
+    // A tenant created before the home jurisdiction was required (testclaude, evostel) holds
+    // CountryCode = "", which resolves an EMPTY statutory/identity requirement set and blocks employee
+    // creation. Nothing is guessed and nothing is written — a country inferred from a currency or a
+    // slug would seed the wrong labour law in silence. Kill switch: MissingCountryAudit:Enabled=false.
+    if (!string.Equals(app.Configuration["MissingCountryAudit:Enabled"], "false", StringComparison.OrdinalIgnoreCase))
+    {
+        await TrySeedAsync("MissingCountryAudit",
+            () => MissingCountryAudit.RunAsync(dbContext, logger), logger);
     }
 
 }
 
 app.Run();
+
+// Explicit exit code. The entry point returns int now that `--migrate` short-circuits at the top
+// of this file and reports success or failure to the Render pre-deploy job; app.Run() returns only
+// on graceful shutdown, which is a clean exit.
+return 0;
+
+// Top-level statements generate an INTERNAL Program class. WebApplicationFactory<Program> in
+// Zayra.Api.Tests boots THIS file — the real middleware order, the real JWT TokenValidationParameters,
+// the real authorization policies — so authentication and authorization are asserted over HTTP
+// instead of around it. Exposing the generated class is the documented ASP.NET convention for that
+// and changes no runtime behaviour.
+public partial class Program { }

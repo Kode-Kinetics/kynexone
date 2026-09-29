@@ -5,6 +5,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Models;
+using Zayra.Api.Infrastructure.Payroll;
 
 namespace Zayra.Api.Controllers;
 
@@ -116,17 +117,22 @@ public class TenantAdminController : ControllerBase
         return Ok(flags);
     }
 
+    /// <summary>
+    /// Retired. This route answered 403 unconditionally while the Tenant Admin UI rendered toggles
+    /// against it and swallowed the failure, so every module switch an administrator clicked was a
+    /// no-op. Module enablement is now a real, audited tenant-administrator capability at
+    /// <c>/api/tenant-modules</c>, which refuses only the modules that are load-bearing or
+    /// statutory — and says which, and why.
+    /// </summary>
     [HttpPut("feature-flags/{featureKey}")]
     public IActionResult SetFeatureFlag(string featureKey)
-    {
-        // Module/feature entitlements are provisioned by the platform administrator only.
-        // A company admin can read their flags but cannot enable or disable modules.
-        return StatusCode(StatusCodes.Status403Forbidden, new
+        => StatusCode(StatusCodes.Status410Gone, new
         {
-            error = "not_permitted",
-            message = "Feature flag changes are managed by KynexOne platform administrators. Please contact support."
+            code = "feature_flag_write_moved",
+            message = "Module enablement moved to /api/tenant-modules, which enforces the "
+                      + "non-disableable set instead of refusing every write.",
+            replacement = $"/api/tenant-modules/{featureKey}",
         });
-    }
 
     // ── Localization ─────────────────────────────────────────────────────────
 
@@ -143,12 +149,75 @@ public class TenantAdminController : ControllerBase
             tenantId = tenant?.Id;
         }
 
-        if (tenantId is null) return Ok(new TenantLocalizationSetting()); // defaults
+        if (tenantId is null) return Ok(await UnstatedLocalizationAsync(null, ct));
 
         var loc = await _db.TenantLocalizationSettings
             .FirstOrDefaultAsync(l => l.TenantId == tenantId, ct);
 
-        return Ok(loc ?? new TenantLocalizationSetting { TenantId = tenantId.Value });
+        return Ok(loc ?? await UnstatedLocalizationAsync(tenantId.Value, ct));
+    }
+
+    /// <summary>
+    /// What this endpoint answers for a tenant that has NO <see cref="TenantLocalizationSetting"/>
+    /// row — every tenant created before <c>PlatformController</c> started writing one.
+    ///
+    /// <para><b>Why this is not just <c>new TenantLocalizationSetting()</c>.</b> The entity defaults
+    /// <c>DefaultTimezone</c> to <c>America/New_York</c> (Models/SaasPlatform.cs), so the old
+    /// fallback served a FABRICATED US Eastern zone to GCC tenants as though it were their stated
+    /// setting. The HR Command Center header renders its clock in that zone, which put the first
+    /// screen of the product 7 hours behind Riyadh — showing the WRONG DAY — while panels that use
+    /// the viewer's own zone showed the right one, two clocks disagreeing on one screen.
+    ///
+    /// <para><b>What it does instead.</b> Resolves the tenant's real jurisdiction from its companies
+    /// and maps it through <see cref="HomeJurisdiction.TimeZoneFor"/> — the product's single
+    /// country→zone mapping, the same one tenant provisioning uses, so there is no second list.
+    /// When no country has been stated anywhere, the zone is returned EMPTY rather than guessed:
+    /// empty means "this tenant has not stated a zone", and the client then renders in the viewer's
+    /// own browser zone. A blank is a question the UI can answer locally; a wrong zone is a lie
+    /// nobody can see. Unlike <c>TimeZoneFor</c>'s own UTC fallback, which is right for server-side
+    /// day boundaries, a header clock has a better local answer available.
+    ///
+    /// <para><b>Nothing is persisted here.</b> A GET must not write. The tenant's real setting is
+    /// still stated in Setup → Localization, and this value is only what is shown until then.
+    /// <c>CountryCode</c> and <c>CurrencyCode</c> are no longer left at the entity default. That
+    /// deferral is what this method later had to answer for: the defaults are <c>"US"</c> and
+    /// <c>"USD"</c>, and the setup assistant reads this endpoint to decide which currency to price
+    /// a tenant's salary bands in. Both are now resolved from the tenant's own companies, or
+    /// returned EMPTY — the same "a blank is a question, a wrong value is a lie" rule as the
+    /// zone.</para>
+    /// </summary>
+    private async Task<TenantLocalizationSetting> UnstatedLocalizationAsync(Guid? tenantId, CancellationToken ct)
+    {
+        // Every field the entity defaults to a US value is blanked here, not just the zone. The
+        // entity defaults are CurrencyCode = "USD" and CountryCode = "US", and returning those
+        // unblanked is what let the setup assistant draft a Saudi tenant's salary bands in dollars:
+        // the form read this endpoint, saw a stated-looking "USD", and believed it.
+        var fallback = new TenantLocalizationSetting
+        {
+            TenantId = tenantId ?? Guid.Empty,
+            DefaultTimezone = string.Empty,
+            CurrencyCode = string.Empty,
+            CountryCode = string.Empty,
+        };
+
+        if (tenantId is null) return fallback;
+
+        var country = await _db.Companies
+            .Where(c => c.TenantId == tenantId && c.CountryCode != string.Empty)
+            .Select(c => c.CountryCode)
+            .FirstOrDefaultAsync(ct);
+
+        if (HomeJurisdiction.Normalize(country) is { } iso)
+        {
+            fallback.DefaultTimezone = HomeJurisdiction.TimeZoneFor(iso);
+            fallback.CountryCode = iso;
+            // Empty for an unmapped country. A wrong currency does not read as wrong — 3,000 looks
+            // the same in riyals and dollars — so the caller is told nothing rather than something
+            // plausible, and asks.
+            fallback.CurrencyCode = HomeJurisdiction.CurrencyFor(iso);
+        }
+
+        return fallback;
     }
 
     [HttpPut("localization")]
@@ -249,6 +318,15 @@ public class TenantAdminController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+
+        // UNIT GATE. This store takes an arbitrary rule key, so nothing stops an admin writing
+        // "gosi.saudi_employee_rate = 9" here in the belief that it changes payroll. It does not —
+        // only `weekend_days` is read anywhere (WorkWeekService) — but a rate-shaped value written
+        // in the wrong unit should not be allowed to accumulate against the day someone wires this
+        // table up. Same registry, same refusal as every other statutory write path.
+        // See Infrastructure/Payroll/StatutoryValueUnits.cs.
+        if (StatutoryValueUnits.Validate(req.RuleKey, req.DataType, req.RuleValue) is { } unitError)
+            return BadRequest(new { message = unitError });
 
         var rule = new CountryPayrollRule
         {

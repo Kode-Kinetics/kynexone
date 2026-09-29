@@ -45,6 +45,13 @@ import type {
 import { employeesApi } from '../api/employees';
 import type { EmployeeListItem } from '../api/employees';
 import { StatusChip } from '../components/StatusChip';
+import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
+import {
+  attendanceErrorSummary,
+  regularizationQueueUnavailableMessage,
+  unavailableMessage,
+  type AttendanceLoadErrors,
+} from '../lib/attendanceLoadState';
 
 type TabKey = 'dashboard' | 'devices' | 'raw' | 'processing' | 'regularization' | 'reports' | 'ai';
 type KvPair = { key: string; value: string };
@@ -160,8 +167,12 @@ export function AttendancePage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [loadErrors, setLoadErrors] = useState<AttendanceLoadErrors>({});
 
-  const [filterDate, setFilterDate] = useState(today());
+  // Empty until resolved from the DATA on mount — see the effect below. Defaulting this to
+  // today() opened the whole screen empty on every tenant, because attendance only exists for
+  // days that have already happened.
+  const [filterDate, setFilterDate] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [punchEmployeeId, setPunchEmployeeId] = useState('');
   const [punchDirection, setPunchDirection] = useState('In');
@@ -175,6 +186,7 @@ export function AttendancePage() {
   const [syncLogsDevice, setSyncLogsDevice] = useState<AttendanceDevice | null>(null);
   const [syncLogs, setSyncLogs] = useState<AttendanceDeviceSyncLog[]>([]);
   const [syncLogsLoading, setSyncLogsLoading] = useState(false);
+  const [syncLogsError, setSyncLogsError] = useState('');
   const [rawForm, setRawForm] = useState({ employeeCode: '', employeeId: '', deviceId: '', punchAt: nowLocal(), direction: 'In', source: 'API push', verificationMethod: 'RFID' });
   const [csvContent, setCsvContent] = useState('');
   const [processForm, setProcessForm] = useState({ fromDate: today(), toDate: today(), employeeId: '' });
@@ -186,11 +198,50 @@ export function AttendancePage() {
     [employees, punchEmployeeId, regularizationForm.employeeId, processForm.employeeId],
   );
 
+  // Open on the most recent day that actually HAS attendance, resolved from the data itself.
+  //
+  // Why not today(): attendance is only ever written for days that have happened. The demo
+  // seeders stop at yesterday, so the screen opened empty on every tenant. Re-seeding cannot fix
+  // that and neither can seeding further ahead — a Tuesday reseed still leaves a Wednesday demo
+  // looking at an empty day, and seeding attendance into the future would be fabricating
+  // punches for days nobody worked. Asking the data "what is the latest day you have?" is the
+  // only default that is correct on any day, with no reseed and nothing to re-run.
+  //
+  // The request deliberately sends no from/to: GetDailyAsync now defaults to a trailing window
+  // ordered by WorkDate descending, so item[0] is the latest record. today() is used only when
+  // the tenant has no attendance at all, which keeps a brand-new tenant on a sensible date.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let resolved = today();
+      try {
+        const latest = await attendanceApi.daily({ pageSize: 1 });
+        const workDate = latest.items[0]?.workDate;
+        if (workDate) resolved = String(workDate).slice(0, 10);
+      } catch {
+        /* fall back to today() — the main load below surfaces any real error */
+      }
+      if (!cancelled) setFilterDate(resolved);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   const load = useCallback(async () => {
+    if (!filterDate) return;   // wait for the initial date to resolve from the data
     setLoading(true);
     setError('');
-    try {
-      const [dashboard, day, raw, devicePage, employeePage, regPage, pendingPage, payroll, sync, ai] = await Promise.all([
+    setLoadErrors({});
+    setSummary(null);
+    setDaily([]);
+    setRawEvents([]);
+    setDevices([]);
+    setEmployees([]);
+    setRegularizations([]);
+    setPendingRegularizations([]);
+    setPayrollSummary([]);
+    setDeviceSync([]);
+    setInsights([]);
+    const [dashboard, day, raw, devicePage, employeePage, regPage, pendingPage, payroll, sync, ai] = await Promise.allSettled([
         attendanceApi.dashboard(filterDate),
         attendanceApi.daily({ from: filterDate, to: filterDate, status: statusFilter || undefined, pageSize: 50 }),
         attendanceApi.events.raw({ from: filterDate, to: filterDate, pageSize: 50 }),
@@ -202,21 +253,19 @@ export function AttendancePage() {
         attendanceApi.reports.deviceSync(),
         attendanceApi.aiInsights(),
       ]);
-      setSummary(dashboard);
-      setDaily(day.items);
-      setRawEvents(raw.items);
-      setDevices(devicePage.items);
-      setEmployees(employeePage.items);
-      setRegularizations(regPage.items);
-      setPendingRegularizations(pendingPage.items);
-      setPayrollSummary(payroll);
-      setDeviceSync(sync);
-      setInsights(ai);
-    } catch (err: any) {
-      setError(err.response?.data?.message ?? err.message ?? 'Unable to load attendance workspace.');
-    } finally {
-      setLoading(false);
-    }
+    const failures: AttendanceLoadErrors = {};
+    if (dashboard.status === 'fulfilled') setSummary(dashboard.value); else failures.dashboard = 'failed';
+    if (day.status === 'fulfilled') setDaily(day.value.items); else failures.daily = 'failed';
+    if (raw.status === 'fulfilled') setRawEvents(raw.value.items); else failures.raw = 'failed';
+    if (devicePage.status === 'fulfilled') setDevices(devicePage.value.items); else failures.devices = 'failed';
+    if (employeePage.status === 'fulfilled') setEmployees(employeePage.value.items); else failures.employees = 'failed';
+    if (regPage.status === 'fulfilled') setRegularizations(regPage.value.items); else failures.regularizations = 'failed';
+    if (pendingPage.status === 'fulfilled') setPendingRegularizations(pendingPage.value.items); else failures.pendingRegularizations = 'failed';
+    if (payroll.status === 'fulfilled') setPayrollSummary(payroll.value); else failures.payrollSummary = 'failed';
+    if (sync.status === 'fulfilled') setDeviceSync(sync.value); else failures.deviceSync = 'failed';
+    if (ai.status === 'fulfilled') setInsights(ai.value); else failures.insights = 'failed';
+    setLoadErrors(failures);
+    setLoading(false);
   }, [filterDate, statusFilter]);
 
   useEffect(() => { load(); }, [load]);
@@ -354,26 +403,37 @@ export function AttendancePage() {
   const openSyncLogs = async (device: AttendanceDevice) => {
     setSyncLogsDevice(device);
     setSyncLogsLoading(true);
+    setSyncLogsError('');
     try {
       const logs = await attendanceApi.devices.logs(device.id);
       setSyncLogs(logs);
     } catch {
       setSyncLogs([]);
+      setSyncLogsError('Sync logs could not be loaded. This is not an empty log history.');
     } finally {
       setSyncLogsLoading(false);
     }
   };
 
   const totalWorked = daily.reduce((sum, item) => sum + item.totalWorkedMinutes, 0);
+  const dashboardUnavailable = unavailableMessage('dashboard', loadErrors);
+  const dailyUnavailable = unavailableMessage('daily', loadErrors);
+  const devicesUnavailable = unavailableMessage('devices', loadErrors);
+  const deviceSyncUnavailable = unavailableMessage('deviceSync', loadErrors);
+  const rawUnavailable = unavailableMessage('raw', loadErrors);
+  const payrollSummaryUnavailable = unavailableMessage('payrollSummary', loadErrors);
+  const insightsUnavailable = unavailableMessage('insights', loadErrors);
+  const regularizationsUnavailable = unavailableMessage('regularizations', loadErrors);
+  const correctionQueueUnavailable = regularizationQueueUnavailableMessage(loadErrors, pendingRegularizations.length);
 
   return (
     <div className="space-y-5">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <p className="text-xs font-bold uppercase tracking-wide text-sapphire">Attendance & Time Tracking</p>
-          <h1 className="mt-1 text-2xl font-bold text-slate-950 dark:text-white">Device-agnostic attendance command center</h1>
+          <h1 className="mt-1 text-2xl font-bold text-slate-950 dark:text-white">Attendance workspace</h1>
           <p className="mt-1 max-w-3xl text-sm text-slate-500 dark:text-slate-400">
-            Live punches, device health, regularization, processing, payroll impacts, and exceptions from the database.
+            Review punches, device health, corrections, processing, payroll impacts, and exceptions from available data sources.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -390,28 +450,38 @@ export function AttendancePage() {
       </div>
 
       {(error || message) && (
-        <div className={`rounded-lg border px-4 py-3 text-sm ${error ? 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300' : 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300'}`}>
+        <div role={error ? 'alert' : 'status'} aria-live={error ? 'assertive' : 'polite'} className={`rounded-lg border px-4 py-3 text-sm ${error ? 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300' : 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300'}`}>
           {error || message}
         </div>
       )}
 
-      <div className="flex gap-2 overflow-x-auto pb-1">
-        {tabs.map(({ key, label, icon: Icon }) => (
-          <button key={key} type="button" onClick={() => setActiveTab(key)} className={`inline-flex h-9 shrink-0 items-center gap-2 rounded-lg px-3 text-sm font-semibold transition ${activeTab === key ? 'bg-sapphire text-white' : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300'}`}>
-            <Icon className="h-4 w-4" />{label}
-          </button>
-        ))}
-      </div>
+      {attendanceErrorSummary(loadErrors) && (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+          <span>{attendanceErrorSummary(loadErrors)} Successful sections remain available.</span>
+          <button type="button" onClick={load} disabled={loading} className="btn-secondary h-8 px-3 text-xs">Retry data sources</button>
+        </div>
+      )}
 
+      <RovingTabList
+        items={tabs.map(({ key, label, icon }) => ({ id: key, label, icon }))}
+        activeId={activeTab}
+        onChange={setActiveTab}
+        idPrefix="attendance"
+        label="Attendance workspace sections"
+      />
+
+      <TabPanel idPrefix="attendance" tabId={activeTab}>
       {activeTab === 'dashboard' && (
         <div className="grid gap-5 xl:grid-cols-[1fr_360px]">
           <div className="space-y-5">
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-              <Kpi label="Present" value={summary?.present ?? 0} icon={Users} tone="emerald" />
-              <Kpi label="Absent" value={summary?.absent ?? 0} icon={AlertTriangle} tone="rose" />
-              <Kpi label="Late" value={summary?.late ?? 0} icon={Clock} tone="amber" />
-              <Kpi label="Missing Punch" value={summary?.missingPunch ?? 0} icon={Timer} tone="blue" />
-            </div>
+            {dashboardUnavailable ? <DomainUnavailable message={dashboardUnavailable} /> : (
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                <Kpi label="Present" value={summary?.present ?? 0} icon={Users} tone="emerald" />
+                <Kpi label="Absent" value={summary?.absent ?? 0} icon={AlertTriangle} tone="rose" />
+                <Kpi label="Late" value={summary?.late ?? 0} icon={Clock} tone="amber" />
+                <Kpi label="Missing Punch" value={summary?.missingPunch ?? 0} icon={Timer} tone="blue" />
+              </div>
+            )}
 
             <div className="grid gap-5 lg:grid-cols-[360px_1fr]">
               <form onSubmit={submitPunch} className="surface p-4">
@@ -431,19 +501,20 @@ export function AttendancePage() {
                       <option>BreakOut</option>
                     </select>
                   </div>
-                  <button type="submit" disabled={saving || !punchEmployeeId} className="btn-primary w-full justify-center"><Clock className="h-4 w-4" />Save Punch</button>
+                  <button type="submit" disabled={saving || !punchEmployeeId || !!loadErrors.employees} className="btn-primary w-full justify-center"><Clock className="h-4 w-4" />Save Punch</button>
                 </div>
               </form>
 
-              <DailyTable records={daily} loading={loading} />
+              {unavailableMessage('daily', loadErrors) ? <DomainUnavailable message={unavailableMessage('daily', loadErrors)!} /> : <DailyTable records={daily} loading={loading} />}
             </div>
           </div>
 
           <div className="space-y-5">
-            <Panel title="Device Health" action={`${deviceSync.length} devices`}>
-              <div className="space-y-3">
-                {deviceSync.length === 0 && <Empty text="No attendance devices configured yet." />}
-                {deviceSync.slice(0, 6).map((device) => (
+            <Panel title="Device Health" action={deviceSyncUnavailable ? 'Unavailable' : `${deviceSync.length} devices`}>
+              {deviceSyncUnavailable ? <DomainUnavailable message={deviceSyncUnavailable} /> : (
+                <div className="space-y-3">
+                  {deviceSync.length === 0 && <Empty text="No attendance devices configured yet." />}
+                  {deviceSync.slice(0, 6).map((device) => (
                   <div key={device.deviceId} className="flex items-center justify-between rounded-lg border border-slate-100 p-3 dark:border-white/10">
                     <div>
                       <p className="text-sm font-semibold text-slate-900 dark:text-white">{device.deviceName}</p>
@@ -451,11 +522,12 @@ export function AttendancePage() {
                     </div>
                     <StatusChip label={device.status || 'Never'} tone={statusTone(device.status || 'Never')} dot />
                   </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </Panel>
-            <Panel title="Exceptions" action={`${insights.length} open`}>
-              <InsightList insights={insights.slice(0, 5)} />
+            <Panel title="Exceptions" action={insightsUnavailable ? 'Unavailable' : `${insights.length} open`}>
+              {insightsUnavailable ? <DomainUnavailable message={insightsUnavailable} /> : <InsightList insights={insights.slice(0, 5)} />}
             </Panel>
           </div>
         </div>
@@ -467,12 +539,12 @@ export function AttendancePage() {
             <p className="text-sm text-slate-500 dark:text-slate-400">
               Connect any attendance source — biometric, RFID, face recognition, REST API, SFTP, or manual CSV.
             </p>
-            <button type="button" onClick={() => { setDeviceForm(emptyDeviceForm); setShowAddDevice(true); }} className="btn-primary shrink-0">
+            <button type="button" onClick={() => { setDeviceForm(emptyDeviceForm); setShowAddDevice(true); }} className="btn-primary shrink-0" disabled={!!loadErrors.devices}>
               <Fingerprint className="h-4 w-4" />Add Device
             </button>
           </div>
-          <Panel title="Configured Devices" action={`${devices.length} sources`}>
-            <DeviceTable
+          <Panel title="Configured Devices" action={devicesUnavailable ? 'Unavailable' : `${devices.length} sources`}>
+            {devicesUnavailable ? <DomainUnavailable message={devicesUnavailable} /> : <DeviceTable
               devices={devices}
               onTest={(id) => runAction(() => attendanceApi.devices.test(id), 'Connection test completed.')}
               onSync={(id) => runAction(() => attendanceApi.devices.sync(id), 'Sync attempt completed.')}
@@ -480,7 +552,7 @@ export function AttendancePage() {
               onDelete={setDeleteConfirmDevice}
               onGenerateKey={generateKey}
               onViewLogs={openSyncLogs}
-            />
+            />}
           </Panel>
         </div>
       )}
@@ -522,27 +594,28 @@ export function AttendancePage() {
               </button>
             </form>
           </div>
-          <Panel title="Raw Punch Logs" action={`${rawEvents.length} latest`}>
-            <RawTable rows={rawEvents} />
+          <Panel title="Raw Punch Logs" action={rawUnavailable ? 'Unavailable' : `${rawEvents.length} latest`}>
+            {rawUnavailable ? <DomainUnavailable message={rawUnavailable} /> : <RawTable rows={rawEvents} />}
           </Panel>
         </div>
       )}
 
       {activeTab === 'processing' && (
         <div className="grid gap-5 lg:grid-cols-[360px_1fr]">
+          {dailyUnavailable && <DomainUnavailable message={dailyUnavailable} />}
           <form onSubmit={submitProcessing} className="surface p-4">
             <SectionTitle icon={RefreshCw} title="Process Attendance" subtitle="Transforms raw punches into daily attendance, exceptions, and payroll impacts." />
             <div className="mt-4 space-y-3">
               <input type="date" className="input w-full" value={processForm.fromDate} onChange={(e) => setProcessForm({ ...processForm, fromDate: e.target.value })} aria-label="From date" />
               <input type="date" className="input w-full" value={processForm.toDate} onChange={(e) => setProcessForm({ ...processForm, toDate: e.target.value })} aria-label="To date" />
               <EmployeeSelect value={processForm.employeeId} employees={employees} onChange={(value) => setProcessForm({ ...processForm, employeeId: value })} includeAll />
-              <button type="submit" disabled={saving} className="btn-primary w-full justify-center">Process Records</button>
+              <button type="submit" disabled={saving || !!loadErrors.daily || !!loadErrors.employees} className="btn-primary w-full justify-center">Process Records</button>
             </div>
           </form>
           <div className="grid gap-5 md:grid-cols-3">
-            <Kpi label="Worked Today" value={minutes(totalWorked)} icon={Timer} tone="blue" />
-            <Kpi label="Overtime Cases" value={summary?.overtimeEmployees ?? 0} icon={Clock} tone="amber" />
-            <Kpi label="Payroll Locked" value={daily.filter((x) => x.isPayrollLocked).length} icon={ShieldCheck} tone="slate" />
+            <Kpi label="Worked Today" value={dailyUnavailable ? 'Unavailable' : minutes(totalWorked)} icon={Timer} tone="blue" />
+            <Kpi label="Overtime Cases" value={dashboardUnavailable ? 'Unavailable' : (summary?.overtimeEmployees ?? 0)} icon={Clock} tone="amber" />
+            <Kpi label="Payroll Locked" value={dailyUnavailable ? 'Unavailable' : daily.filter((x) => x.isPayrollLocked).length} icon={ShieldCheck} tone="slate" />
           </div>
         </div>
       )}
@@ -551,6 +624,7 @@ export function AttendancePage() {
         <div className="grid gap-5 xl:grid-cols-[420px_1fr]">
           <form onSubmit={submitRegularization} className="surface p-4">
             <SectionTitle icon={ShieldCheck} title="Correction Request" subtitle="Missed punch, wrong punch, WFH, site visit, or manual correction." />
+            {regularizationsUnavailable && <div className="mt-4"><DomainUnavailable message={regularizationsUnavailable} /></div>}
             <div className="mt-4 space-y-3">
               <EmployeeSelect value={regularizationForm.employeeId} employees={employees} onChange={(value) => setRegularizationForm({ ...regularizationForm, employeeId: value })} />
               <input type="date" className="input w-full" value={regularizationForm.workDate} onChange={(e) => setRegularizationForm({ ...regularizationForm, workDate: e.target.value })} aria-label="Work date" />
@@ -562,31 +636,33 @@ export function AttendancePage() {
                 <input type="datetime-local" className="input w-full" value={regularizationForm.requestedOut} onChange={(e) => setRegularizationForm({ ...regularizationForm, requestedOut: e.target.value })} aria-label="Requested out" />
               </div>
               <textarea className="input min-h-24 w-full" value={regularizationForm.reason} onChange={(e) => setRegularizationForm({ ...regularizationForm, reason: e.target.value })} placeholder="Reason required" />
-              <button type="submit" disabled={saving || !regularizationForm.employeeId || !regularizationForm.reason} className="btn-primary w-full justify-center">Submit Request</button>
+              <button type="submit" disabled={saving || !regularizationForm.employeeId || !regularizationForm.reason || !!loadErrors.employees || !!loadErrors.regularizations} className="btn-primary w-full justify-center">Submit Request</button>
             </div>
           </form>
-          <Panel title="Pending Approval Queue" action={`${pendingRegularizations.length} pending`}>
+          <Panel title="Pending Approval Queue" action={correctionQueueUnavailable ? 'Unavailable' : `${pendingRegularizations.length} pending`}>
             <input className="input mb-3 w-full" value={decisionComment} onChange={(e) => setDecisionComment(e.target.value)} aria-label="Decision comment" />
-            <RegularizationTable rows={pendingRegularizations.length ? pendingRegularizations : regularizations} onApprove={(id) => runAction(() => attendanceApi.regularization.approve(id, decisionComment), 'Regularization approved and attendance reprocessed.')} onReject={(id) => runAction(() => attendanceApi.regularization.reject(id, decisionComment), 'Regularization rejected.')} />
+            {correctionQueueUnavailable
+              ? <DomainUnavailable message={correctionQueueUnavailable} />
+              : <RegularizationTable rows={pendingRegularizations.length ? pendingRegularizations : regularizations} onApprove={(id) => runAction(() => attendanceApi.regularization.approve(id, decisionComment), 'Regularization approved and attendance reprocessed.')} onReject={(id) => runAction(() => attendanceApi.regularization.reject(id, decisionComment), 'Regularization rejected.')} />}
           </Panel>
         </div>
       )}
 
       {activeTab === 'reports' && (
         <div className="grid gap-5 xl:grid-cols-2">
-          <Panel title="Payroll Attendance Summary" action={`${payrollSummary.length} employees`}>
-            <PayrollTable rows={payrollSummary} />
+          <Panel title="Payroll Attendance Summary" action={payrollSummaryUnavailable ? 'Unavailable' : `${payrollSummary.length} employees`}>
+            {payrollSummaryUnavailable ? <DomainUnavailable message={payrollSummaryUnavailable} /> : <PayrollTable rows={payrollSummary} />}
           </Panel>
           <Panel title="Daily Exception Reports" action={filterDate}>
-            <DailyTable records={daily.filter((x) => x.lateMinutes > 0 || x.missingPunch || x.status === 'Absent')} compact />
+            {unavailableMessage('daily', loadErrors) ? <DomainUnavailable message={unavailableMessage('daily', loadErrors)!} /> : <DailyTable records={daily.filter((x) => x.lateMinutes > 0 || x.missingPunch || x.status === 'Absent')} compact />}
           </Panel>
         </div>
       )}
 
       {activeTab === 'ai' && (
         <div className="grid gap-5 lg:grid-cols-[1fr_360px]">
-          <Panel title="Attendance Insights" action={`${insights.length} signals`}>
-            <InsightList insights={insights} />
+          <Panel title="Attendance Insights" action={insightsUnavailable ? 'Unavailable' : `${insights.length} signals`}>
+            {insightsUnavailable ? <DomainUnavailable message={insightsUnavailable} /> : <InsightList insights={insights} />}
           </Panel>
           <Panel title="Human Review Guardrails">
             <div className="space-y-3 text-sm text-slate-600 dark:text-slate-300">
@@ -597,6 +673,7 @@ export function AttendancePage() {
           </Panel>
         </div>
       )}
+      </TabPanel>
 
       {/* ── Add / Edit Device Modal ─────────────────────────────────────────── */}
       {(showAddDevice || editingDevice) && (
@@ -658,7 +735,8 @@ export function AttendancePage() {
       {syncLogsDevice && (
         <Modal title={`Sync Logs — ${syncLogsDevice.deviceName}`} onClose={() => setSyncLogsDevice(null)}>
           {syncLogsLoading && <p className="py-6 text-center text-sm text-slate-400">Loading logs…</p>}
-          {!syncLogsLoading && syncLogs.length === 0 && <Empty text="No sync logs found for this device." />}
+          {!syncLogsLoading && syncLogsError && <div role="alert"><DomainUnavailable message={syncLogsError} /></div>}
+          {!syncLogsLoading && !syncLogsError && syncLogs.length === 0 && <Empty text="No sync logs found for this device." />}
           {!syncLogsLoading && syncLogs.length > 0 && (
             <div className="space-y-2 max-h-96 overflow-y-auto">
               {syncLogs.map((log) => (
@@ -701,6 +779,14 @@ function Kpi({ label, value, icon: Icon, tone }: { label: string; value: string 
         <span className={`grid h-9 w-9 place-items-center rounded-lg ${color}`}><Icon className="h-4 w-4" /></span>
       </div>
       <p className="mt-3 text-2xl font-bold text-slate-950 dark:text-white">{value}</p>
+    </div>
+  );
+}
+
+function DomainUnavailable({ message }: { message: string }) {
+  return (
+    <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+      <span className="inline-flex items-center gap-2"><AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />{message}</span>
     </div>
   );
 }
@@ -752,7 +838,7 @@ function DailyTable({ records, loading, compact }: { records: AttendanceDailyRec
     <div className="surface overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full min-w-[760px] text-sm">
-          <thead><tr className="border-b border-slate-100 dark:border-white/[0.07]">{['Date', 'Employee', 'In', 'Out', 'Worked', 'Late', 'Missing', 'Status'].map((h) => <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
+          <thead><tr className="border-b border-slate-100 dark:border-white/[0.07]">{['Date', 'Employee', 'In', 'Out', 'Worked', 'Late', 'Missing', 'Status'].map((h) => <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
           <tbody className="divide-y divide-slate-100 dark:divide-white/[0.06]">
             {loading && <tr><td colSpan={8} className="py-12 text-center text-slate-400">Loading live attendance...</td></tr>}
             {!loading && records.length === 0 && <tr><td colSpan={8}><Empty text="No processed attendance records for this selection." /></td></tr>}
@@ -850,7 +936,7 @@ function RawTable({ rows }: { rows: AttendanceRawEvent[] }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[760px] text-sm">
-        <thead><tr className="border-b border-slate-100 dark:border-white/[0.07]">{['Timestamp', 'Employee', 'Source', 'Direction', 'Method', 'Processed'].map((h) => <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
+        <thead><tr className="border-b border-slate-100 dark:border-white/[0.07]">{['Timestamp', 'Employee', 'Source', 'Direction', 'Method', 'Processed'].map((h) => <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
         <tbody className="divide-y divide-slate-100 dark:divide-white/[0.06]">
           {rows.map((r) => <tr key={r.id}><td className="px-4 py-3 font-mono text-slate-700 dark:text-slate-300">{dateTime(r.punchTimestampUtc)}</td><td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.employeeCode || r.employeeId}</td><td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.source}</td><td className="px-4 py-3"><StatusChip label={r.punchDirection} tone="blue" /></td><td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.verificationMethod}</td><td className="px-4 py-3"><StatusChip label={r.isProcessed ? 'Processed' : 'Raw'} tone={r.isProcessed ? 'emerald' : 'amber'} dot /></td></tr>)}
         </tbody>
@@ -881,7 +967,7 @@ function PayrollTable({ rows }: { rows: AttendancePayrollSummary[] }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[640px] text-sm">
-        <thead><tr className="border-b border-slate-100 dark:border-white/[0.07]">{['Employee', 'Late', 'Early', 'Absences', 'OT', 'Lock'].map((h) => <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
+        <thead><tr className="border-b border-slate-100 dark:border-white/[0.07]">{['Employee', 'Late', 'Early', 'Absences', 'OT', 'Lock'].map((h) => <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
         <tbody className="divide-y divide-slate-100 dark:divide-white/[0.06]">{rows.map((r) => <tr key={r.employeeId}><td className="px-4 py-3 font-semibold text-slate-900 dark:text-white">{r.employeeName}</td><td className="px-4 py-3">{r.lateMinutes}m</td><td className="px-4 py-3">{r.earlyExitMinutes}m</td><td className="px-4 py-3">{r.absenceDays}</td><td className="px-4 py-3">{minutes(r.overtimeMinutes)}</td><td className="px-4 py-3"><StatusChip label={r.hasLockedRecords ? 'Locked' : 'Open'} tone={r.hasLockedRecords ? 'rose' : 'emerald'} /></td></tr>)}</tbody>
       </table>
     </div>

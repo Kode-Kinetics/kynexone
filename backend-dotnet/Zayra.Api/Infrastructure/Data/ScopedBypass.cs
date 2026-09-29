@@ -62,6 +62,33 @@ public static class ScopedBypass
     }
 
     /// <summary>
+    /// Tenant-pinned bypass for a MODEL-DERIVED sweep — one that discovers its entity types from
+    /// <c>DbContext.Model</c> at run time and therefore cannot satisfy <see cref="TenantWide{T}"/>'s
+    /// <c>ITenantOwned</c> constraint, because the open generic it is invoked through has no static
+    /// type. The only caller today is the retention sweep's whole-tenant erasure
+    /// (<c>Zayra.Api.Infrastructure.Retention.Rules.SoftDeletedTenantRule</c>), which enumerates every
+    /// <c>ITenantOwned</c>/<c>INullableTenantOwned</c> CLR type and reflects into this method.
+    ///
+    /// <para>WHY IT IS SAFE WITHOUT THE INTERFACE CONSTRAINT. The tenant predicate is built with
+    /// <c>EF.Property&lt;Guid?&gt;(e, "TenantId")</c>, which is exactly what
+    /// <c>ZayraDbContext.ApplyTenantQueryFilters</c> keys its own reflection-applied filters on, and
+    /// which is asserted at startup by <c>TenantOwnershipBootAssertion</c>. An entity WITHOUT a
+    /// <c>TenantId</c> fails at query translation rather than returning unscoped rows — it cannot
+    /// silently widen a sweep. Callers must still restrict themselves to tenant-owned types; this
+    /// helper pins the tenant, it does not decide what is tenant-owned.</para>
+    /// </summary>
+    public static IQueryable<T> TenantWideByConvention<T>(DbSet<T> set, Guid tenantId, string justification)
+        where T : class
+    {
+        RequireJustification(justification);
+        // IgnoreQueryFilters is intentional: this IS the sanctioned bypass. The company filter and the
+        // soft-delete filter are dropped — an erasure must reach soft-deleted and unattributed rows —
+        // and the tenant filter is immediately re-applied below by the same convention the global
+        // filter itself uses, so it cannot be forgotten.
+        return set.IgnoreQueryFilters().Where(e => EF.Property<Guid?>(e, "TenantId") == tenantId);
+    }
+
+    /// <summary>
     /// Drops the COMPANY filter but re-applies the caller's authorised entity set. This is the
     /// correct helper for any path reachable by a request principal that is not group-level:
     /// tenant isolation alone would still let one entity's user read another entity's records.

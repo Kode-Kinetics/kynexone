@@ -62,7 +62,10 @@ public record AttendanceDeviceRequest(
     string? ApiKeyReference,
     string? SyncMethod,
     string? SyncFrequency,
-    // Flexible configuration — all stored as JSON; MissingTableCreator adds columns on first deploy
+    // Flexible configuration — all stored as JSON so new device parameters need no schema change.
+    // (Historical note: this used to say MissingTableCreator adds columns on first deploy. That type
+    // was MySQL-only boot-time DDL, never wired on Postgres, and has been deleted. Schema changes go
+    // through an EF migration and the pre-deploy migration gate — nothing issues DDL at startup.)
     string? AuthType,
     string? AuthCredentialsJson,
     string? CustomHeadersJson,

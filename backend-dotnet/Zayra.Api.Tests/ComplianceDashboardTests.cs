@@ -53,7 +53,8 @@ public class ComplianceDashboardTests
 
         Assert.Equal(1, dash.Gosi.ReadyCount);
         Assert.Equal(1, dash.Gosi.BlockedCount);
-        Assert.InRange(dash.Gosi.ReadinessPercent, 1.0, 99.0);
+        Assert.NotNull(dash.Gosi.ReadinessPercent);
+        Assert.InRange(dash.Gosi.ReadinessPercent!.Value, 1.0, 99.0);
     }
 
     [Fact]
@@ -321,6 +322,215 @@ public class ComplianceDashboardTests
         // Tenant A has no WPS file batches.
         Assert.Equal(0, dash.Wps.ExportHistoryCount);
         Assert.Null(dash.Wps.LastRunPeriod);
+    }
+
+    // ── Zero-denominator readiness ────────────────────────────────────────────
+    // The defect: a tenant with no employees showed "100% Readiness", a full green bar and
+    // "0 ready / 0 blocked" immediately above its own "Company GOSI employer ID is not set"
+    // warning. ready/total with total = 0 is undefined — it is not 100%, and it is not 0%.
+
+    [Fact]
+    public async Task GosiReadiness_IsNull_NotOneHundred_WhenThereAreNoEmployees()
+    {
+        using var db = MakeDb();
+        await GosiRuleSeeder.SeedDefaultsAsync(db, NullLogger.Instance);
+
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
+
+        Assert.Equal(0, dash.Gosi.ReadyCount);
+        Assert.Equal(0, dash.Gosi.BlockedCount);
+        Assert.Null(dash.Gosi.ReadinessPercent);
+        Assert.NotEqual(100.0, dash.Gosi.ReadinessPercent ?? -1.0);
+    }
+
+    [Fact]
+    public async Task QiwaReadiness_IsNull_WhenThereAreNoEmployees()
+    {
+        using var db = MakeDb();
+
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
+
+        Assert.Equal(0, dash.Qiwa.TotalEmployees);
+        Assert.Null(dash.Qiwa.ReadinessPercent);
+    }
+
+    [Fact]
+    public async Task ReadinessPercent_SerializesAsNull_SoTheUiCannotRenderOneHundred()
+    {
+        using var db = MakeDb();
+        await GosiRuleSeeder.SeedDefaultsAsync(db, NullLogger.Instance);
+
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
+        var json = System.Text.Json.JsonSerializer.Serialize(dash);
+
+        Assert.Contains("\"ReadinessPercent\":null", json);
+        Assert.DoesNotContain("\"ReadinessPercent\":100", json);
+    }
+
+    [Fact]
+    public async Task GosiReadiness_IsOneHundred_OnlyWhenEveryEmployeeIsActuallyReady()
+    {
+        using var db = MakeDb();
+        await GosiRuleSeeder.SeedDefaultsAsync(db, NullLogger.Instance);
+
+        db.Employees.Add(MakeEmployee(TenantA, 1, nationality: "Saudi", gosiRef: "SA001"));
+        db.EmployeeSalaryStructures.Add(MakeSalary(TenantA, 1, 10_000m));
+        await db.SaveChangesAsync();
+
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
+
+        Assert.Equal(100.0, dash.Gosi.ReadinessPercent);
+    }
+
+    [Fact]
+    public async Task GosiEmployerId_ReadsNotSet_EvenWhenNoEmployeesAreAffected()
+    {
+        // The affected-employee count is 0 for a tenant with no employees, which the card was
+        // reading as "Set" — directly above its own "Company GOSI employer ID is not set" warning.
+        using var db = MakeDb();
+        await GosiRuleSeeder.SeedDefaultsAsync(db, NullLogger.Instance);
+
+        db.Companies.Add(new Company { TenantId = TenantA, LegalNameEn = "Test for Claude", GosiEmployerId = "" });
+        await db.SaveChangesAsync();
+
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
+
+        Assert.Equal(0, dash.Gosi.EmployeesMissingGosiEmployerId);
+        Assert.False(dash.Gosi.GosiEmployerIdConfigured);
+        Assert.Contains(dash.Gosi.Warnings, w => w.Contains("GOSI employer ID is not set"));
+    }
+
+    [Fact]
+    public async Task GosiEmployerId_ReadsSet_WhenTheCompanyActuallyHasOne()
+    {
+        using var db = MakeDb();
+        await GosiRuleSeeder.SeedDefaultsAsync(db, NullLogger.Instance);
+
+        db.Companies.Add(new Company
+        {
+            TenantId       = TenantA,
+            LegalNameEn    = "Test for Claude",
+            GosiEmployerId = "10000000001",
+        });
+        await db.SaveChangesAsync();
+
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
+
+        Assert.True(dash.Gosi.GosiEmployerIdConfigured);
+    }
+
+    // ── Score breakdown ───────────────────────────────────────────────────────
+    // AGENTS.md: every KPI must expose its definition/evidence. "Compliance Score 70 / 100"
+    // with no working was unauditable; these lock the working to the number.
+
+    [Fact]
+    public async Task ScoreBreakdown_AccountsForEveryPointOfTheHeadlineScore()
+    {
+        using var db = MakeDb();
+        await GosiRuleSeeder.SeedDefaultsAsync(db, NullLogger.Instance);
+
+        db.Employees.Add(MakeEmployee(TenantA, 1, nationality: "Saudi", gosiRef: ""));
+        db.EmployeePayrollProfiles.Add(new EmployeePayrollProfile { TenantId = TenantA, EmployeeId = 1, Iban = "" });
+        db.PayrollRuns.Add(new PayrollRun { TenantId = TenantA, Year = 2026, Month = 5, Status = "Draft" });
+        await db.SaveChangesAsync();
+
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
+        var breakdown = dash.Overall.ScoreBreakdown;
+
+        Assert.Equal(3, breakdown.Count);
+        Assert.Equal(100.0, breakdown.Sum(c => c.WeightPercent));
+        // Points sum to the headline score (each point is rounded to 1dp, so allow 1 point of slack).
+        Assert.InRange(breakdown.Sum(c => c.PointsContributed), dash.Overall.ComplianceScore - 1.0, dash.Overall.ComplianceScore + 1.0);
+
+        foreach (var c in breakdown)
+        {
+            Assert.False(string.IsNullOrWhiteSpace(c.Module), "Every score component must name its module");
+            Assert.False(string.IsNullOrWhiteSpace(c.Basis),  $"{c.Module} must explain how it scored");
+            Assert.InRange(c.Score, 0.0, 100.0);
+        }
+    }
+
+    [Fact]
+    public async Task ScoreBreakdown_SaysNothingIsMeasurable_OnAnUnconfiguredTenant()
+    {
+        using var db = MakeDb();
+        await GosiRuleSeeder.SeedDefaultsAsync(db, NullLogger.Instance);
+
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
+
+        var qiwa = dash.Overall.ScoreBreakdown.Single(c => c.Module == "QIWA");
+        var gosi = dash.Overall.ScoreBreakdown.Single(c => c.Module == "GOSI");
+
+        Assert.False(qiwa.Measurable);
+        Assert.False(gosi.Measurable);
+        Assert.Contains("cannot be measured", qiwa.Basis);
+        Assert.Contains("cannot be measured", gosi.Basis);
+    }
+
+    [Fact]
+    public async Task ComplianceScore_IsUnchangedByTheDisclosure_ForAnEmptyTenant()
+    {
+        // The score's arithmetic was deliberately NOT redefined while making it explainable.
+        // An empty tenant scored 70 before (QIWA 0 × 0.30 + WPS 100 × 0.35 + GOSI 100 × 0.35)
+        // and must still score 70 — if this ever changes it must be a deliberate product decision,
+        // not a side effect of a copy fix.
+        using var db = MakeDb();
+        await GosiRuleSeeder.SeedDefaultsAsync(db, NullLogger.Instance);
+
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
+
+        Assert.Equal(70, dash.Overall.ComplianceScore);
+    }
+
+    // ── Customer-facing copy ──────────────────────────────────────────────────
+
+    [Fact]
+    public async Task DashboardCopy_UsesRealPlurals_AndLeaksNoInternalFieldNames()
+    {
+        using var db = MakeDb();
+        await GosiRuleSeeder.SeedDefaultsAsync(db, NullLogger.Instance);
+
+        // One of each, so every "1 x" string is exercised in the singular.
+        db.Employees.Add(MakeEmployee(TenantA, 1, nationality: "Saudi", gosiRef: ""));
+        db.EmployeePayrollProfiles.Add(new EmployeePayrollProfile { TenantId = TenantA, EmployeeId = 1, Iban = "" });
+        db.PayrollRuns.Add(new PayrollRun { TenantId = TenantA, Year = 2026, Month = 5, Status = "Draft" });
+        await db.SaveChangesAsync();
+
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
+
+        var copy = string.Join("\n", dash.Gosi.Warnings
+            .Concat(dash.Wps.BlockingIssues)
+            .Concat(dash.ActionItems.Select(a => $"{a.Title}\n{a.Description}\n{a.RecommendedAction}"))
+            .Concat(dash.Overall.ScoreBreakdown.Select(c => c.Basis)));
+
+        Assert.DoesNotContain("(s)", copy);
+        foreach (var leak in new[] { "CountryCode", "TenantId", "EmployeeId", "CompanyId", "GosiEmployerId", "LegalNameEn" })
+            Assert.DoesNotContain(leak, copy);
+
+        // Singular agreement, not "1 employee(s)" and not "1 employees".
+        Assert.Contains("1 employee is blocked from GOSI calculation", copy);
+        Assert.DoesNotContain("1 employees", copy);
+    }
+
+    [Fact]
+    public async Task DashboardCopy_UsesPluralForms_WhenCountIsGreaterThanOne()
+    {
+        using var db = MakeDb();
+        await GosiRuleSeeder.SeedDefaultsAsync(db, NullLogger.Instance);
+
+        for (var i = 1; i <= 2; i++)
+        {
+            db.Employees.Add(MakeEmployee(TenantA, i, nationality: "Saudi", gosiRef: ""));
+            db.EmployeeSalaryStructures.Add(MakeSalary(TenantA, i, 5_000m));
+        }
+        await db.SaveChangesAsync();
+
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
+        var copy = string.Join("\n", dash.Gosi.Warnings.Concat(dash.ActionItems.Select(a => a.Title)));
+
+        Assert.Contains("2 employees are blocked from GOSI calculation", copy);
+        Assert.Contains("2 employees are missing a GOSI reference number.", copy);
+        Assert.DoesNotContain("2 employee is", copy);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

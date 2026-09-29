@@ -1,4 +1,7 @@
 import client from './client';
+import type { AuditIntegrityReport } from './payroll';
+
+export type { AuditIntegrityReport } from './payroll';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -157,6 +160,21 @@ export interface PagedResult<T> {
   pageSize: number;
 }
 
+/**
+ * The outcome of issuing a password-reset link. `emailSent` is the only field that means the user
+ * actually received something; `resetUrl` is populated exactly when it is false, so the
+ * administrator can pass the link on instead of being told about an email that never left.
+ */
+export interface PasswordResetLinkResult {
+  userId: string;
+  email: string;
+  expiresAtUtc: string;
+  emailDeliveryConfigured: boolean;
+  emailSent: boolean;
+  resetUrl: string | null;
+  message: string;
+}
+
 // ── API clients ───────────────────────────────────────────────────────────────
 
 export const usersApi = {
@@ -196,8 +214,16 @@ export const usersApi = {
   unlock: (userId: string) =>
     client.patch(`/api/access/users/${userId}/unlock`),
 
-  adminResetPassword: (userId: string, newPassword: string, mustChangePassword = true) =>
-    client.post(`/api/access/users/${userId}/admin-reset-password`, { newPassword, mustChangePassword }),
+  /**
+   * Issues a single-use, one-hour password-reset link for the user. Administrators never choose
+   * another person's password; the server emails the link when the workspace has a mail transport
+   * and otherwise hands it back here to be passed on by hand. `resetUrl` is present only in that
+   * second case, and only once — it cannot be fetched again.
+   */
+  issuePasswordResetLink: (userId: string) =>
+    client
+      .post<PasswordResetLinkResult>(`/api/access/users/${userId}/password-reset-link`)
+      .then(r => r.data),
 
   delete: (userId: string) =>
     client.delete(`/api/access/users/${userId}`),
@@ -304,4 +330,12 @@ export const securitySettingsApi = {
 export const identityAuditApi = {
   list: (params: { limit?: number } = {}) =>
     client.get<AuditLogItem[]>('/api/audit-logs', { params }).then(r => r.data),
+
+  /**
+   * The tenant-wide tamper-evident audit chain, verified end to end (Admin only). The sibling
+   * verifier for the payroll chain is `payrollApi.auditIntegrity`. Both existed with no caller:
+   * the product could prove its own audit trail had not been altered and no human could ask it to.
+   */
+  integrity: () =>
+    client.get<AuditIntegrityReport>('/api/audit-logs/integrity').then(r => r.data),
 };

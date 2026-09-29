@@ -12,12 +12,14 @@ const sizeClasses = {
   lg: 'h-10 w-10 text-sm',
 };
 
+// Every swatch keeps its initials at ≥4.5:1 (WCAG AA) — amber-500/rose-500 with white did not.
 const palette = [
-  'bg-sapphire text-white',
+  'bg-blue-600 text-white',
   'bg-emeraldZ text-midnight',
-  'bg-violet-500 text-white',
-  'bg-amber-500 text-white',
-  'bg-rose-500 text-white',
+  'bg-violet-600 text-white',
+  'bg-amber-700 text-white',
+  'bg-rose-600 text-white',
+  'bg-cyan-700 text-white',
 ];
 
 function initials(name: string) {

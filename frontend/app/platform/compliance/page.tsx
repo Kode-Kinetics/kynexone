@@ -258,7 +258,7 @@ export default function CompliancePage() {
                 <thead>
                   <tr className="border-b border-white/[0.05]">
                     {['Control ID', 'Title', 'Status', 'Owner', 'Evidence', 'Last Review', ''].map(h => (
-                      <th key={h} className="px-4 py-2 text-left text-xs font-semibold uppercase text-slate-500">{h}</th>
+                      <th key={h} className="px-4 py-2 text-start text-xs font-semibold uppercase text-slate-500">{h}</th>
                     ))}
                   </tr>
                 </thead>
@@ -304,7 +304,7 @@ export default function CompliancePage() {
               <thead>
                 <tr className="border-b border-white/[0.07]">
                   {['Title', 'Severity', 'Status', 'Reporter', 'Occurred', 'Resolved', ''].map(h => (
-                    <th key={h} className="px-4 py-3 text-left text-xs font-semibold uppercase text-slate-500">{h}</th>
+                    <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase text-slate-500">{h}</th>
                   ))}
                 </tr>
               </thead>

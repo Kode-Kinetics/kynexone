@@ -1,11 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, ChevronDown, LogOut, X } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { Avatar } from '../components/Avatar';
 import { Logo } from '../components/Logo';
-import { navigationGroups } from '../routes/navigation';
+import { navigationGroups, navigationHints } from '../routes/navigation';
 import { useAuth } from '../contexts/AuthContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { useCompany } from '../contexts/CompanyContext';
@@ -22,8 +22,59 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
   const router = useRouter();
   const pathname = usePathname();
   const { user, logout, hasPermission } = useAuth();
-  const { isFeatureEnabled } = useFeatureFlags();
+  const { isFeatureEnabled, verdictForPath } = useFeatureFlags();
   const { t } = useLocale();
+
+  // Hover / focus info tag for a menu entry. Rendered fixed beside the rail, because the nav
+  // scrolls (overflow hidden) and would clip an absolutely positioned tag.
+  const [tip, setTip] = useState<{ path: string; label: string; hint: string; top: number; left: number } | null>(null);
+  const tipTimer = useRef<number | null>(null);
+  // The element the visible tip belongs to. Kept so a scroll can REPOSITION the tip instead of
+  // destroying it — see onScroll on the <nav> below.
+  const tipAnchor = useRef<HTMLElement | null>(null);
+
+  const placeTip = (el: HTMLElement, path: string, label: string, hint: string) => {
+    const r = el.getBoundingClientRect();
+    const rtl = document.documentElement.dir === 'rtl';
+    setTip({ path, label, hint, top: r.top + r.height / 2, left: rtl ? window.innerWidth - r.left + 10 : r.right + 10 });
+  };
+
+  const showTip = (el: HTMLElement, path: string | undefined, label: string, delay: number) => {
+    const hint = path ? navigationHints[path] : undefined;
+    if (!path || !hint) return;
+    if (tipTimer.current) window.clearTimeout(tipTimer.current);
+    tipAnchor.current = el;
+    // A zero delay is shown SYNCHRONOUSLY. Keyboard focus asks for 0, and deferring it by even one
+    // tick lost the race against the scroll the browser performs to bring the focused item into
+    // view: the scroll handler ran first and cleared the pending timer, so the tip never appeared.
+    if (delay <= 0) { placeTip(el, path, label, hint); return; }
+    tipTimer.current = window.setTimeout(() => placeTip(el, path, label, hint), delay);
+  };
+
+  const hideTip = () => {
+    if (tipTimer.current) window.clearTimeout(tipTimer.current);
+    tipAnchor.current = null;
+    setTip(null);
+  };
+
+  /**
+   * Scrolling the rail must not cancel a tip the KEYBOARD just opened.
+   *
+   * Tabbing to an item below the fold makes the browser scroll it into view, which fired this
+   * handler and hid the tooltip that focus had opened a moment earlier — so keyboard users got no
+   * navigation hints at all, while mouse users got them fine. The fix is to keep the tip while its
+   * anchor still holds focus and simply move it to the anchor's new position; a scroll with nothing
+   * focused is still a mouse scroll, and still dismisses.
+   */
+  const onNavScroll = () => {
+    const el = tipAnchor.current;
+    if (el && document.activeElement === el) {
+      const hint = tip?.path ? navigationHints[tip.path] : undefined;
+      if (tip && hint) placeTip(el, tip.path, tip.label, hint);
+      return;
+    }
+    hideTip();
+  };
 
   // All groups expanded by default
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(
@@ -86,9 +137,15 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
         aria-hidden="true"
       />
 
+      {/*
+        The off-canvas position is a transform, and transforms stay physical even when the panel
+        is anchored logically (`start-0`). Without the rtl: variant, a negative X translation
+        hides the drawer off the LEFT edge in both directions — in Arabic that slides it straight
+        across the viewport instead of off-screen.
+      */}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex flex-col border-r border-slate-200/70 bg-white/[0.93] backdrop-blur-xl transition-all duration-300 dark:border-white/[0.06] dark:bg-[#0c1120]/[0.90] lg:static lg:translate-x-0 ${
-          isOpen ? 'translate-x-0' : '-translate-x-full'
+        className={`wg-glass fixed inset-y-0 start-0 z-40 flex flex-col border-e transition-all duration-300 lg:sticky lg:top-0 lg:h-screen lg:translate-x-0 ${
+          isOpen ? 'translate-x-0' : '-translate-x-full max-lg:rtl:translate-x-full'
         } ${isCollapsed ? 'lg:w-[60px]' : 'lg:w-[240px]'} w-[240px]`}
       >
         {/* Logo / header */}
@@ -121,12 +178,18 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
         </div>
 
         {/* Navigation */}
-        <nav aria-label="Primary navigation" className="flex-1 overflow-y-auto overflow-x-hidden py-3">
+        <nav aria-label="Primary navigation" onScroll={onNavScroll} onKeyDown={(e) => { if (e.key === 'Escape') hideTip(); }} className="flex-1 overflow-y-auto overflow-x-hidden py-3">
           {navigationGroups.map((group, gi) => {
+            // Module visibility is resolved from the item's PATH against the backend catalog,
+            // not only from the hand-tagged `requiredFeatureKey`. Only 8 of ~35 items ever carried
+            // that tag, so switching off Timesheets, Benefits, Loans or HR Letters left their nav
+            // entries in place, leading straight to a page whose API refuses it.
+            // `requiredFeatureKey` is still honoured as an explicit override.
             const visibleItems = group.items.filter(
               (item) =>
                 canSee(item.requiredPermissions) &&
                 (!item.requiredFeatureKey || isFeatureEnabled(item.requiredFeatureKey)) &&
+                (!item.path || verdictForPath(item.path).allowed) &&
                 (!item.groupAccountOnly || canSeeGroupItem),
             );
             if (visibleItems.length === 0) return null;
@@ -187,8 +250,12 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
                           <button
                             key={item.label}
                             type="button"
-                            title={isCollapsed ? t(item.label) : undefined}
-                            onClick={() => handleNav(item.path)}
+                            aria-describedby={tip?.path === item.path ? 'nav-tip' : undefined}
+                            onMouseEnter={(e) => showTip(e.currentTarget, item.path, t(item.label), 350)}
+                            onMouseLeave={hideTip}
+                            onFocus={(e) => { if (e.currentTarget.matches(':focus-visible')) showTip(e.currentTarget, item.path, t(item.label), 0); }}
+                            onBlur={hideTip}
+                            onClick={() => { hideTip(); handleNav(item.path); }}
                             className={`nav-item group ${active ? 'nav-item-active' : 'nav-item-idle'} ${
                               isCollapsed ? 'justify-center' : ''
                             }`}
@@ -220,7 +287,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
                             )}
 
                             {item.badge != null && isCollapsed && (
-                              <span className="absolute right-2 top-2 h-1.5 w-1.5 rounded-full bg-sapphire" />
+                              <span className="absolute end-2 top-2 h-1.5 w-1.5 rounded-full bg-sapphire" />
                             )}
                           </button>
                         );
@@ -259,7 +326,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
             <div className="p-3">
               <div className="flex items-center gap-2.5 rounded-lg border border-transparent px-2 py-2 transition hover:border-slate-200/70 hover:bg-white/70 dark:hover:border-white/[0.07] dark:hover:bg-white/[0.05]">
                 <Avatar name={user?.fullName ?? 'User'} size="sm" />
-                <div className="min-w-0 flex-1 text-left">
+                <div className="min-w-0 flex-1 text-start">
                   <p className="truncate text-[13px] font-semibold text-slate-800 dark:text-slate-100">
                     {user?.fullName ?? 'User'}
                   </p>
@@ -283,6 +350,16 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
           )}
         </div>
       </aside>
+
+      {tip && (
+        <div id="nav-tip" role="tooltip"
+          className="wg-tip pointer-events-none fixed z-[60] hidden w-[260px] -translate-y-1/2 rounded-xl border border-slate-200/80 bg-white px-3.5 py-2.5 shadow-[0_12px_32px_-12px_rgba(15,23,42,0.35)] lg:block dark:border-white/10 dark:bg-slate-900"
+          style={{ top: tip.top, insetInlineStart: tip.left }}>
+          <span aria-hidden className="absolute -start-[5px] top-1/2 h-2.5 w-2.5 -translate-y-1/2 rotate-45 border-b border-s border-slate-200/80 bg-white dark:border-white/10 dark:bg-slate-900" />
+          <span className="block text-[13px] font-semibold text-slate-900 dark:text-white">{tip.label}</span>
+          <span className="mt-0.5 block text-xs leading-snug text-slate-600 dark:text-slate-300">{tip.hint}</span>
+        </div>
+      )}
     </>
   );
 }

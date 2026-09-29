@@ -11,44 +11,42 @@
  */
 import { test, expect } from '@playwright/test';
 import {
-  stackDownReason,
+  assertStackReachable,
   newApi,
   tryApiLogin,
   fetchMe,
   uiLogin,
   findCompanySwitcher,
   bodyText,
+  mainContentLength,
   crashIndicators,
   DEFAULT_TENANT_SLUG,
   DEFAULT_ADMIN_EMAIL,
   DEFAULT_ADMIN_PASSWORD,
 } from './helpers';
+import { MISSING_WORLD } from '../world';
 
-let skipReason: string | null = null;
 let token: string | null = null;
 
 test.describe('Group→Company: single-company regression', () => {
   test.beforeAll(async () => {
-    skipReason = await stackDownReason();
-    if (skipReason) return;
+    await assertStackReachable();   // hard-fails when the stack is down; never skips
     const api = await newApi();
     try {
       const login = await tryApiLogin(api, DEFAULT_ADMIN_EMAIL, DEFAULT_TENANT_SLUG, DEFAULT_ADMIN_PASSWORD);
+      // FAIL, never skip. This suite is the single-company REGRESSION guard: it is what proves the
+      // group feature did not leak a switcher or a /group nav entry into an ordinary tenant. Skipping
+      // it when the tenant is absent means the regression it guards can ship unnoticed.
       if (!login) {
-        skipReason =
-          `Default single-company tenant login failed (${DEFAULT_ADMIN_EMAIL} / tenant ${DEFAULT_TENANT_SLUG}). ` +
-          `Set E2E_DEFAULT_TENANT_SLUG / E2E_DEFAULT_ADMIN_EMAIL / E2E_DEFAULT_ADMIN_PASSWORD to match your ` +
-          `backend SeedAdmin config. See e2e/group-company/README.md.`;
-        return;
+        throw new Error(
+          `Default single-company tenant login failed (${DEFAULT_ADMIN_EMAIL} / tenant ${DEFAULT_TENANT_SLUG}).\n`
+          + `${MISSING_WORLD}`,
+        );
       }
       token = login.token;
     } finally {
       await api.dispose().catch(() => {});
     }
-  });
-
-  test.beforeEach(() => {
-    test.skip(skipReason !== null, skipReason ?? '');
   });
 
   test('API: /api/auth/me marks the default tenant as SingleCompany with ≤1 company', async () => {
@@ -60,12 +58,16 @@ test.describe('Group→Company: single-company regression', () => {
       // isGroupScope is deliberately true for grant-less users (the documented explicit
       // tenant default — docs/GROUP_COMPANY_ACCESS_MODEL.md); with one company that
       // still renders no switcher and no group UI.
-      if (me.json?.accountType !== undefined && me.json.accountType !== null) {
-        expect(String(me.json.accountType)).not.toMatch(/^group$/i);
-      }
-      if (me.json?.companies !== undefined && Array.isArray(me.json.companies)) {
-        expect(me.json.companies.length).toBeLessThanOrEqual(1);
-      }
+      //
+      // These were `if (field !== undefined) { expect(...) }`. Losing either field
+      // from /api/auth/me — the exact regression this test is named for — asserted
+      // nothing at all. Require the fields, THEN assert their values.
+      expect(me.json?.accountType, '/api/auth/me must report accountType').toBeDefined();
+      expect(me.json.accountType, '/api/auth/me must report accountType').not.toBeNull();
+      expect(String(me.json.accountType)).not.toMatch(/^group$/i);
+
+      expect(Array.isArray(me.json?.companies), '/api/auth/me must report a companies array').toBe(true);
+      expect(me.json.companies.length).toBeLessThanOrEqual(1);
     } finally {
       await api.dispose().catch(() => {});
     }
@@ -77,7 +79,10 @@ test.describe('Group→Company: single-company regression', () => {
 
     const text = await bodyText(page);
     expect(crashIndicators(text)).toEqual([]);
-    expect(text.trim().length).toBeGreaterThan(50);
+    // Count only the ROUTE's own output: the persistent sidebar alone clears
+    // 50 characters, so `bodyText().length > 50` passed on a blank dashboard.
+    expect(await mainContentLength(page), 'the dashboard route rendered no content of its own')
+      .toBeGreaterThan(50);
 
     // No "Group Overview" navigation for a single-company tenant.
     expect(text.toLowerCase()).not.toContain('group overview');
@@ -96,6 +101,7 @@ test.describe('Group→Company: single-company regression', () => {
     await expect(page).not.toHaveURL(/\/login/);
     const text = await bodyText(page);
     expect(crashIndicators(text)).toEqual([]);
-    expect(text.trim().length).toBeGreaterThan(50);
+    expect(await mainContentLength(page), 'the employees route rendered no content of its own')
+      .toBeGreaterThan(50);
   });
 });

@@ -29,15 +29,41 @@ public class ApprovalWorkflowsController : ControllerBase
     public async Task<ActionResult<ApprovalWorkflowDto>> Get(Guid id, CancellationToken cancellationToken)
         => await _approvals.GetWorkflowAsync(RequireTenant(), id, cancellationToken) is { } workflow ? Ok(workflow) : NotFound();
 
+    // ── The EntityName guard ──────────────────────────────────────────────────────────────────
+    //
+    // Before this, EntityName was accepted as any string: the only processing anywhere on the write
+    // path was a Trim(). Four of the seven chains the seeders installed had no producer —
+    // OvertimeRequest, PayrollRun, EmployeeDraft, EmployeeTransferRequest — so a tenant could list,
+    // edit and demo a two-step "Manager → HR" transfer chain that no code path would ever consult.
+    // It saved, it read back, and it routed nothing.
+    //
+    // This is the second half of the rule ApprovalPoliciesController already states: a configuration
+    // endpoint that no runtime path reads must refuse rather than answer 200. There the whole
+    // controller is retired; here only the unproducible values are, so the refusal is a 400 that
+    // names the entities that do work and, for the four known ones, says what really governs that
+    // decision instead. See ApprovalEntities.
+    private ActionResult? RefuseUnroutableEntity(ApprovalWorkflowRequest request)
+        => ApprovalEntities.HasProducer(request.EntityName)
+            ? null
+            : BadRequest(new
+            {
+                code = "approval_entity_has_no_producer",
+                message = ApprovalEntities.RefusalMessage(request.EntityName),
+                entityName = (request.EntityName ?? string.Empty).Trim(),
+                validEntities = ApprovalEntities.Producers.OrderBy(x => x, StringComparer.Ordinal).ToArray(),
+            });
+
     [HttpPost]
     [HasPermission("approvals.manage")]
     public async Task<ActionResult<ApprovalWorkflowDto>> Create(ApprovalWorkflowRequest request, CancellationToken cancellationToken)
     {
+        if (RefuseUnroutableEntity(request) is { } refusal) return refusal;
         try
         {
             var workflow = await _approvals.CreateWorkflowAsync(RequireTenant(), request, Context(), cancellationToken);
             return Created($"/api/approval-workflows/{workflow.Id}", workflow);
         }
+        catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -45,10 +71,14 @@ public class ApprovalWorkflowsController : ControllerBase
     [HasPermission("approvals.manage")]
     public async Task<ActionResult<ApprovalWorkflowDto>> Update(Guid id, ApprovalWorkflowRequest request, CancellationToken cancellationToken)
     {
+        // Update is guarded too: without it a tenant could create a valid workflow and then rename
+        // its entity to a dead one — the same silent misconfiguration by a second route.
+        if (RefuseUnroutableEntity(request) is { } refusal) return refusal;
         try
         {
             return await _approvals.UpdateWorkflowAsync(RequireTenant(), id, request, Context(), cancellationToken) is { } workflow ? Ok(workflow) : NotFound();
         }
+        catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -74,6 +104,7 @@ public class ApprovalWorkflowsController : ControllerBase
             var approval = await _approvals.CreateRequestAsync(RequireTenant(), request, Context(), cancellationToken);
             return Created($"/api/approval-workflows/requests/{approval.Id}", approval);
         }
+        catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -85,6 +116,7 @@ public class ApprovalWorkflowsController : ControllerBase
         {
             return await _approvals.DecideAsync(RequireTenant(), requestId, request, Context(), cancellationToken) is { } approval ? Ok(approval) : NotFound();
         }
+        catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 

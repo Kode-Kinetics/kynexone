@@ -33,24 +33,17 @@ public static class CompanyScopeBackfill
 
         foreach (var tenant in tenants)
         {
-            // 1. Default company — oldest active, else create one.
+            // 1. Default company — the oldest active one. This pass never CREATES a company: every
+            // tenant gets its first company from the platform admin's CreateTenant
+            // (docs/DATA_ENTRY_PATHS.md). A tenant without one is reported and skipped.
             var defaultCompany = await db.Companies
                 .Where(c => c.TenantId == tenant.Id && !c.IsDeleted && c.IsActive)
                 .OrderBy(c => c.CreatedAtUtc)
                 .FirstOrDefaultAsync(ct);
             if (defaultCompany is null)
             {
-                defaultCompany = new Company
-                {
-                    TenantId = tenant.Id,
-                    LegalNameEn = tenant.Name,
-                    TradeName = tenant.Name,
-                    IsActive = true,
-                };
-                db.Companies.Add(defaultCompany);
-                await db.SaveChangesAsync(ct);
-                summary.CompaniesCreated++;
-                logger.LogInformation("CompanyScopeBackfill: created default company for tenant {TenantId} ({Name})", tenant.Id, tenant.Name);
+                logger.LogWarning("CompanyScopeBackfill: tenant {TenantId} ({Name}) has no active company; skipped. Create one via the platform admin.", tenant.Id, tenant.Name);
+                continue;
             }
             var defaultId = defaultCompany.Id;
 
