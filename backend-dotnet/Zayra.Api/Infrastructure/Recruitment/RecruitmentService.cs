@@ -176,13 +176,14 @@ public class RecruitmentService : IRecruitmentService
         string performedByName,
         CancellationToken ct = default)
     {
-        var offer = await _db.OfferLetters.AsNoTracking()
-            .FirstOrDefaultAsync(o => o.Id == offerId && o.TenantId == tenantId, ct);
-        if (offer is null)
+        // One statement, so one snapshot. Reading the offer and then the application separately let a
+        // concurrent acceptance commit in between: the loser saw a Sent offer on a Hired application
+        // and answered 409 InvalidApplicationState instead of returning the winner's draft.
+        var state = await ReadOfferAndApplicationAsync(tenantId, offerId, ct);
+        if (state is null)
             return Result(OfferAcceptanceOutcome.NotFound, offerId, null, null, "Offer not found.");
-
-        var app = await _db.JobApplications.AsNoTracking()
-            .FirstOrDefaultAsync(a => a.Id == offer.ApplicationId && a.TenantId == tenantId, ct);
+        var offer = state.Offer;
+        var app = state.Application;
         if (app is null)
             return Result(OfferAcceptanceOutcome.IncompleteRecruitmentData, offerId, offer.ApplicationId, null,
                 "The offer is not linked to an application in this tenant.");
@@ -440,17 +441,33 @@ public class RecruitmentService : IRecruitmentService
         });
     }
 
+    private sealed record OfferState(OfferLetter Offer, JobApplication? Application);
+
+    /// <summary>The offer and its application from a single query, so both come from the same
+    /// snapshot and a concurrent acceptance is seen either entirely or not at all.</summary>
+    private async Task<OfferState?> ReadOfferAndApplicationAsync(Guid tenantId, Guid offerId, CancellationToken ct)
+    {
+        var row = await (
+                from o in _db.OfferLetters.AsNoTracking()
+                where o.Id == offerId && o.TenantId == tenantId
+                join a in _db.JobApplications.AsNoTracking().Where(a => a.TenantId == tenantId)
+                    on o.ApplicationId equals a.Id into apps
+                from a in apps.DefaultIfEmpty()
+                select new { Offer = o, Application = a })
+            .FirstOrDefaultAsync(ct);
+        return row is null ? null : new OfferState(row.Offer, row.Application);
+    }
+
     private async Task<OfferAcceptanceResult> ResolveReplayAsync(
         Guid tenantId, Guid offerId, CancellationToken ct)
     {
         _db.ChangeTracker.Clear();
-        var current = await _db.OfferLetters.AsNoTracking()
-            .FirstOrDefaultAsync(o => o.Id == offerId && o.TenantId == tenantId, ct);
-        if (current is null)
+        var state = await ReadOfferAndApplicationAsync(tenantId, offerId, ct);
+        if (state is null)
             return Result(OfferAcceptanceOutcome.NotFound, offerId, null, null, "Offer not found.");
 
-        var currentApp = await _db.JobApplications.AsNoTracking()
-            .FirstOrDefaultAsync(a => a.Id == current.ApplicationId && a.TenantId == tenantId, ct);
+        var current = state.Offer;
+        var currentApp = state.Application;
         if (current.Status == "Accepted" && currentApp?.OnboardingDraftId is { } draftId)
             return Result(OfferAcceptanceOutcome.AlreadyAccepted, offerId, current.ApplicationId, draftId,
                 "Offer was already accepted; the existing onboarding draft was returned.");
