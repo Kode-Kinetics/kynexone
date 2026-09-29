@@ -54,6 +54,9 @@ public class RawSqlExecutionRatchetTests
         // here because it goes through the same API. The key is derived per tenant/entity at
         // each site. No tenant-boundary risk. ────────────────────────────────────────────────
         ["Controllers/MigrationImportController.cs"] = 2,
+        // Employee CSV import: serializes two submissions carrying the same client ImportKey
+        // (key = SHA-256 of "EMPIMPRT" ‖ tenantId ‖ importKey), transaction-scoped.
+        ["Controllers/EmployeesController.cs"] = 1,
         ["Data/ZayraDbContext.cs"] = 2,
         ["Infrastructure/Auth/AccessManagementService.cs"] = 2,
         ["Infrastructure/Finance/FinanceDecisionSerializer.cs"] = 1,

@@ -116,11 +116,30 @@ public static class Csv
     /// </summary>
     public static IReadOnlyList<string> SplitRow(string line) => ParseLine(line);
 
-    private static List<string> SplitLines(string content) =>
-        content.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n').ToList();
+    /// <summary>
+    /// U+FEFF, the UTF-8 byte-order mark, as the decoder leaves it at the start of the text.
+    ///
+    /// <para>It is Unicode category Cf (format), NOT whitespace, so <see cref="string.Trim()"/> does not
+    /// remove it on .NET Core — the first header of a BOM'd file arrives as "﻿EmployeeCode", matches
+    /// nothing, and the header validator's near-match helper then folds the BOM away and produces the
+    /// nonsense sentence "Column 'EmployeeCode' is not an employee import column. Did you mean
+    /// 'EmployeeCode'?". "Save as CSV UTF-8" in Excel is the ordinary way an HR user produces a file, so
+    /// the BOM is stripped here, once, on the way in.</para>
+    /// </summary>
+    private const char ByteOrderMark = '﻿';
+
+    private static List<string> SplitLines(string content)
+    {
+        if (content.Length > 0 && content[0] == ByteOrderMark) content = content[1..];
+        return content.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n').ToList();
+    }
 
     private static List<string> ParseLine(string line)
     {
+        // Also stripped per-line, not only per-file, because SplitRow is public: the employee header
+        // validator slices the first physical line off the raw content itself and hands it here.
+        if (line.Length > 0 && line[0] == ByteOrderMark) line = line[1..];
+
         var result = new List<string>();
         var sb = new StringBuilder();
         var inQuotes = false;
@@ -134,12 +153,40 @@ public static class Csv
                 else sb.Append(ch);
             }
             else if (ch == '"') inQuotes = true;
-            else if (ch == ',') { result.Add(sb.ToString().Trim()); sb.Clear(); }
+            else if (ch == ',') { result.Add(Unescape(sb.ToString().Trim())); sb.Clear(); }
             else sb.Append(ch);
         }
-        result.Add(sb.ToString().Trim());
+        result.Add(Unescape(sb.ToString().Trim()));
         return result;
     }
+
+    /// <summary>
+    /// The exact inverse of the formula-injection guard in <see cref="Escape"/>: removes the apostrophe
+    /// <see cref="Escape"/> prefixes, and nothing else.
+    ///
+    /// <para>The guard is only ever applied when the value's first character is a
+    /// <see cref="FormulaTriggers">trigger</see>, so the apostrophe is removed only when the character
+    /// AFTER it is one of those same triggers. That conditional strip is deliberate, and the naive
+    /// unconditional one is wrong: a value that genuinely begins with an apostrophe — an Arabic
+    /// transliteration such as <c>'Abdullah</c> or <c>'Aisha</c>, a quoted nickname, a note opening with
+    /// a quote mark — was never escaped on the way out and must survive the way in. (A name like
+    /// <c>O'Brien</c> is unaffected either way; its apostrophe is not leading.) Restricting the strip to
+    /// the trigger characters makes Escape and Parse exact inverses over every value the exporter can
+    /// emit while leaving every other leading apostrophe untouched.</para>
+    ///
+    /// <para>The one value this cannot distinguish is a cell that genuinely starts with an apostrophe
+    /// followed by a trigger (<c>'=total</c>). That ambiguity is inherent to the guard — the escaped and
+    /// the literal form are byte-identical — and resolving it in favour of the exporter's own output is
+    /// what makes the product's export survive the product's importer, which is the case that occurs in
+    /// practice (<c>+966…</c> phone numbers, <c>-500</c> deductions).</para>
+    ///
+    /// <para>Exactly ONE apostrophe is removed, so a re-exported value is not eroded a character per
+    /// round trip.</para>
+    /// </summary>
+    private static string Unescape(string cell) =>
+        cell.Length >= 2 && cell[0] == '\'' && Array.IndexOf(FormulaTriggers, cell[1]) >= 0
+            ? cell[1..]
+            : cell;
 
     // Characters that make a spreadsheet treat a cell as a formula. A cell that begins
     // with any of these is prefixed with a leading apostrophe so Excel/Sheets/LibreOffice
