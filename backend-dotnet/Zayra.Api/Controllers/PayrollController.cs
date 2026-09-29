@@ -2487,9 +2487,10 @@ public class PayrollController : ControllerBase
             {
                 // S1/A3 — the person dimension. DateOfBirth exists on Employee today and drives the
                 // age-based eligibility corollary (annuities and SANED cease at retirement age).
-                // SocialInsuranceFirstRegisteredOn has no column yet; null means UNKNOWN, and no pack
-                // may read unknown as "new entrant".
+                // F02 — the GOSI first-registration date resolves the person's cohort in the pack; null
+                // means UNKNOWN, and no pack may read unknown as "new entrant".
                 DateOfBirth = e.DateOfBirth,
+                SocialInsuranceFirstRegisteredOn = e.GosiFirstRegisteredOn,
             };
             var statutoryResult = await deductionCalc.CalculateAsync(statutoryInput, cancellationToken);
             if (priorStatutoryByEmp.Count > 0)
@@ -2734,6 +2735,10 @@ public class PayrollController : ControllerBase
                 // else. C3 emits NO EOSB, no notice pay, no leave encashment, no termination payable and
                 // no off-cycle settlement journal. Everything after PaidToDate is C1's.
                 IsFinalWageMonth = includesRecurringPay && proration.IsFinalWageMonth,
+                // F02 — the calculation explanation: the cohort and rate basis the statutory lines above
+                // were computed on, frozen with them. The validator judges THIS, not the live record.
+                GosiCohort = statutoryResult.SocialInsuranceCohort,
+                StatutoryBasis = statutoryResult.Basis,
             };
             slips.Add(slip);
             slip.CompanyId = company.Id;
@@ -3122,10 +3127,9 @@ public class PayrollController : ControllerBase
             // default — so an unseeded tenant keeps the 45,000 warning it has always had rather than
             // silently losing it.
             GosiCoveredWageCeiling                  = statutoryCeiling == decimal.MaxValue ? 0m : statutoryCeiling,
-            // S1/A3 — the cohort gap is announced unless the tenant has acknowledged it, and the
-            // retirement-age corollary is checked only when an age is configured.
-            EntrantCohortSchemeAcknowledged         = await Zayra.Api.Application.CountryPack.StatutoryFlag.ReadAsync(
-                _ruleReader, packCc, packJur, "gosi.new_entrant_scheme_acknowledged", eff, false, cancellationToken),
+            // S1/A3 — the retirement-age corollary is checked only when an age is configured. (The
+            // GOSI entrant cohort is judged per employee from the slips — F02 — so the tenant-wide
+            // gosi.new_entrant_scheme_acknowledged flag that used to silence it is no longer read.)
             GosiRetirementAgeYears                  = (int)(await _ruleReader.GetDecimalAsync(
                 packCc, packJur, "gosi.retirement_age_years", eff, tenantId, cancellationToken) ?? 0m),
         };
@@ -3930,9 +3934,6 @@ public class PayrollController : ControllerBase
             GosiCoveredWageCeiling                  = await _ruleReader.GetDecimalAsync(
                 "SAU", "KSA-mainland", "gosi.covered_wage_ceiling_sar",
                 new DateOnly(run.Year, run.Month, 1), tenantId, cancellationToken) ?? 45_000m,
-            EntrantCohortSchemeAcknowledged         = await Zayra.Api.Application.CountryPack.StatutoryFlag.ReadAsync(
-                _ruleReader, "SAU", "KSA-mainland", "gosi.new_entrant_scheme_acknowledged",
-                new DateOnly(run.Year, run.Month, 1), false, cancellationToken),
             GosiRetirementAgeYears                  = (int)(await _ruleReader.GetDecimalAsync(
                 "SAU", "KSA-mainland", "gosi.retirement_age_years",
                 new DateOnly(run.Year, run.Month, 1), tenantId, cancellationToken) ?? 0m),

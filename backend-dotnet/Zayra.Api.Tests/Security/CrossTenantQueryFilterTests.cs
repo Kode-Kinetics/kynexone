@@ -48,7 +48,10 @@ public class CrossTenantQueryFilterTests
             new Claim("tenant_id", tenantId.ToString()),
             new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
             new Claim(ClaimTypes.Role, "Admin"),
-            new Claim("permission", "payroll.manage"),
+            // The GOSI rule write permission. This used to fabricate `payroll.manage`, a key no role or user
+            // override could ever hold (it is not in the catalog), so these tests exercised a path no real
+            // caller could reach. PermissionCatalogCoverageTests now fails on that class of key.
+            new Claim("permission", "payroll.rates.statutory_override"),
         }, "Test"));
         controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = user } };
         return controller;

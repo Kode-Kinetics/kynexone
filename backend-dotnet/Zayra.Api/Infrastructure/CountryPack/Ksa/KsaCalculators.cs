@@ -65,7 +65,12 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
                 // names the two rule keys to seed. Blocking is the right outcome: filing a Saudi
                 // payroll that under-contributes for a GCC national accrues back-contributions with a
                 // monthly surcharge and costs the establishment its GOSI compliance certificate.
-                return new(0m, 0m, lines);
+                return new(0m, 0m, lines)
+                {
+                    Basis = $"GCC national ({home}): insured under {home}'s own scheme, collected by GOSI. " +
+                            $"{home} rates are not configured ('{RuleKeys.GosiGccEmployeeRate(home)}' / " +
+                            $"'{RuleKeys.GosiGccEmployerRate(home)}'), so no contribution was computed for {Month(eff)}.",
+                };
 
             decimal gccEmpAmt = Math.Round(coveredWage * gccEmp.Value, 2);
             // The employer's share under the extension scheme is capped at what it would pay for a
@@ -86,7 +91,13 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
             decimal gccOh = Math.Round(coveredWage * gccOhRate, 2);
             lines.Add(new("GOSI-OH-ER", "Occupational Hazard (Employer)", 0m, gccOh));
 
-            return new(gccEmpAmt + excessToEmployee, gccErAmt + gccOh, lines);
+            return new(gccEmpAmt + excessToEmployee, gccErAmt + gccOh, lines)
+            {
+                Basis = $"GCC national ({home}): insured under {home}'s own scheme, collected by GOSI — employee " +
+                        $"{Pct(gccEmp.Value)}, employer {Pct(erRateApplied)} (capped at the Saudi employer rate; any " +
+                        $"excess is borne by the employee), occupational hazards {Pct(gccOhRate)} employer, for {Month(eff)}. " +
+                        "No Saudi cohort applies.",
+            };
         }
 
         if (isSaudi)
@@ -98,13 +109,15 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
             // It held PERCENTS until 2026-09 and now holds fractions too; GosiRuleSeeder.
             // StatutoryRuleKeyFor maps one store's (branch, payer) to the other's rule key, and
             // GosiRuleSeeder.VerifyStoresAgree fails the boot log and the suite if they diverge.
-            decimal empAnnuity = await _rules.GetDecimalAsync(
-                CountryCodes.Saudi, Jurisdictions.KsaMainland,
-                RuleKeys.GosiSaudiEmployeeRate, eff, null, ct) ?? 0.09m;    // VERIFY: 9%
-
-            decimal erAnnuity = await _rules.GetDecimalAsync(
-                CountryCodes.Saudi, Jurisdictions.KsaMainland,
-                RuleKeys.GosiSaudiEmployerRate, eff, null, ct) ?? 0.09m;    // VERIFY: 9%
+            //
+            // F02 — the ANNUITIES pair is looked up by the person's COHORT and the period, through the
+            // one typed lookup that owns it. An unknown cohort is never read as a new entrant; a new
+            // entrant is never silently priced as an existing subscriber — the status travels to the
+            // payslip and the validator.
+            var cohort = input.SocialInsuranceCohort ?? GosiCohorts.Resolve(input.SocialInsuranceFirstRegisteredOn);
+            var annuities = await KsaGosiCohortSchedule.ResolveAnnuitiesAsync(_rules, cohort, eff, ct);
+            decimal empAnnuity = annuities.EmployeeRate;
+            decimal erAnnuity  = annuities.EmployerRate;
 
             decimal sanedRate = await _rules.GetDecimalAsync(
                 CountryCodes.Saudi, Jurisdictions.KsaMainland,
@@ -129,6 +142,14 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
 
             empTotal = annuityEmp + sanedEmp;
             erTotal  = annuityEr  + sanedEr + ohEr;
+
+            return new(empTotal, erTotal, lines)
+            {
+                SocialInsuranceCohort = annuities.Cohort,
+                Basis = SaudiBasis(annuities, input.SocialInsuranceFirstRegisteredOn,
+                    $"annuities {Pct(empAnnuity)} employee / {Pct(erAnnuity)} employer, SANED {Pct(sanedRate)} each side, " +
+                    $"occupational hazards {Pct(ohRate)} employer, for {Month(eff)}"),
+            };
         }
         else
         {
@@ -139,10 +160,47 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
             decimal oh = Math.Round(coveredWage * ohRate, 2);
             lines.Add(new("GOSI-OH-ER", "Occupational Hazard (Employer)", 0m, oh));
             erTotal = oh;
-        }
 
-        return new(empTotal, erTotal, lines);
+            return new(empTotal, erTotal, lines)
+            {
+                Basis = $"Non-Saudi: occupational hazards {Pct(ohRate)} employer only, for {Month(eff)}; no annuities " +
+                        "or SANED, and no Saudi cohort applies.",
+            };
+        }
     }
+
+    /// <summary>
+    /// F02 — the payslip's calculation explanation for a Saudi national: which cohort, which schedule, and
+    /// whether that schedule is the person's confirmed one. Plain language; this is shown to payroll users.
+    /// </summary>
+    internal static string SaudiBasis(GosiAnnuityRates annuities, DateOnly? firstRegisteredOn, string rates)
+    {
+        var since = firstRegisteredOn is DateOnly d ? $"first registered {Day(d)}, " : string.Empty;
+        return annuities.Status switch
+        {
+            GosiCohortRateStatus.CohortSchedule when annuities.Cohort == GosiCohorts.PreJuly2024 =>
+                $"GOSI cohort: existing subscriber ({since}before 3 July 2024). Rate basis: pre-3-July-2024 " +
+                $"schedule — {rates}.",
+            GosiCohortRateStatus.CohortSchedule =>
+                $"GOSI cohort: new entrant ({since}on or after 3 July 2024). Rate basis: new-entrant schedule — {rates}.",
+            GosiCohortRateStatus.NewEntrantScheduleNotModelled =>
+                $"GOSI cohort: new entrant ({since}on or after 3 July 2024). Rate basis: NOT MODELLED — the new-entrant " +
+                $"schedule is not in this product, so the pre-3-July-2024 schedule was applied ({rates}) and is wrong " +
+                "for this person. Payroll validation blocks approval of a run that computes GOSI for them.",
+            _ =>
+                "GOSI cohort: unverified — no GOSI first-registration date on record. Rate basis: pre-3-July-2024 " +
+                $"schedule ASSUMED — {rates}. Record the first-registration date to verify it.",
+        };
+    }
+
+    /// <summary>A decimal fraction as a percentage for a sentence: 0.09 → "9%", 0.0075 → "0.75%".</summary>
+    private static string Pct(decimal fraction) =>
+        (fraction * 100m).ToString("0.####", System.Globalization.CultureInfo.InvariantCulture) + "%";
+
+    // Gregorian ISO dates whatever the server culture: under ar-SA the default calendar is Umm al-Qura,
+    // and a frozen payslip explanation must not change meaning with the host's locale.
+    private static string Month(DateOnly d) => d.ToString("yyyy-MM", System.Globalization.CultureInfo.InvariantCulture);
+    private static string Day(DateOnly d) => d.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
 
     // S1/A4 — the local IsSaudiNational is GONE. Classification is now derived exclusively by
     // GosiCalculationService.DeriveClassification, the same function PayrollValidationEngine uses, so

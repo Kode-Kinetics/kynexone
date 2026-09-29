@@ -39,6 +39,9 @@ public class EmployeesController : ControllerBase
         "salary", "bankName", "bankIban", "wpsBankDetails", "passportNumber", "passportExpiryDate", "visaNumber",
         "dateOfBirth", "salary", "bankName", "bankIban", "wpsBankDetails", "passportNumber", "passportIssueDate",
         "passportExpiryDate", "visaNumber", "visaIssueDate", "visaExpiryDate", "iqamaNumber", "muqeemNumber",
+        // F02 — the GOSI first-registration date decides which contribution schedule a Saudi national is on,
+        // so it takes the same maker-checker route as the GOSI reference beside it.
+        "gosiFirstRegisteredOn",
         "gosiReference", "qiwaContractNumber", "emiratesId", "laborCardNumber", "visaFileNumber", "qid", "civilId", "residencyNumber",
         "residencyIssueDate", "workPermitNumber", "workPermitIssueDate", "medicalInformation", "disciplinaryRecords",
         "terminationReason"
@@ -2671,6 +2674,11 @@ public class EmployeesController : ControllerBase
                 unknownFields,
             });
         var sensitive = request.Changes.Keys.Where(SensitiveFields.Contains).ToList();
+        // F02 — refused up front, not at approval: ReadDateOnly turns an unparseable value into NULL, so a
+        // bad string would be approved as "a date" and then silently clear the person's GOSI cohort.
+        if (request.Changes.TryGetValue("gosiFirstRegisteredOn", out var gosiFirstRegisteredOn)
+            && GosiFirstRegisteredOnError(gosiFirstRegisteredOn) is { } gosiDateError)
+            return UnprocessableEntity(new { error = "invalid_gosi_first_registered_on", message = gosiDateError + " No change was applied." });
         // Establishment integrity: the free-text department/designation/branch cases in
         // ApplyChanges are resolved to IDs (shared resolver — unresolvable name ⇒ 422) and any
         // resulting (department, designation) pair change routes through the guard on BOTH
@@ -2776,6 +2784,20 @@ public class EmployeesController : ControllerBase
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
         catch (WorkEmailConflictException ex) { return Conflict(new { error = "work_email_conflict", attempted = ex.Attempted, suggestion = ex.Suggestion }); }
         catch (InvalidOperationException ex) { return UnprocessableEntity(new { message = ex.Message }); }
+    }
+
+    /// <summary>F02 — a GOSI first-registration date is null (clear it back to Unknown) or an ISO calendar
+    /// date that has already happened. Returns the reason it is not, or null when it is acceptable.</summary>
+    internal static string? GosiFirstRegisteredOnError(JsonElement value)
+    {
+        if (value.ValueKind == JsonValueKind.Null) return null;
+        if (value.ValueKind != JsonValueKind.String
+            || !DateOnly.TryParseExact(value.GetString(), "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.None, out var date))
+            return "gosiFirstRegisteredOn must be a date in YYYY-MM-DD form, or null to clear it.";
+        if (date > DateOnly.FromDateTime(DateTime.UtcNow))
+            return "gosiFirstRegisteredOn cannot be in the future: it is the date GOSI first registered this person.";
+        return null;
     }
 
     [HttpPatch("{id:int}/status")]
@@ -4249,6 +4271,7 @@ public class EmployeesController : ControllerBase
         "emergencyContactPhone", "contractType", "grade", "costCenter", "salary", "bankName", "bankIban",
         "wpsBankDetails", "passportNumber", "passportIssueDate", "passportExpiryDate", "visaNumber",
         "visaIssueDate", "visaExpiryDate", "iqamaNumber", "iqamaExpiryDate", "muqeemNumber", "gosiReference",
+        "gosiFirstRegisteredOn",
         "emiratesId", "emiratesIdExpiryDate", "laborCardNumber", "visaFileNumber", "qid", "qidExpiryDate",
         "workPermitNumber", "workPermitIssueDate", "civilId", "civilIdExpiryDate", "residencyNumber",
         "residencyIssueDate", "idNumber", "qiwaContractNumber", "sponsorName", "terminationReason",
@@ -4320,6 +4343,8 @@ public class EmployeesController : ControllerBase
                 case "iqamaExpiryDate": employee.IqamaExpiryDate = ReadDateOnly(value); break;
                 case "muqeemNumber": employee.MuqeemNumber = value.GetString() ?? employee.MuqeemNumber; break;
                 case "gosiReference": employee.GosiReference = value.GetString() ?? employee.GosiReference; break;
+                // F02 — resolves the person's GOSI cohort. Null clears it back to Unknown (never to a cohort).
+                case "gosiFirstRegisteredOn": employee.GosiFirstRegisteredOn = ReadDateOnly(value); break;
                 case "emiratesId": employee.EmiratesId = value.GetString() ?? employee.EmiratesId; break;
                 case "laborCardNumber": employee.LaborCardNumber = value.GetString() ?? employee.LaborCardNumber; break;
                 case "visaFileNumber": employee.VisaFileNumber = value.GetString() ?? employee.VisaFileNumber; break;
