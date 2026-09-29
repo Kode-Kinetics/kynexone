@@ -947,7 +947,11 @@ function SalaryStructuresTab() {
           entityName="Salary Structures"
           onExport={salaryStructuresImportExport.export}
           onDownloadTemplate={salaryStructuresImportExport.template}
-          onImport={salaryStructuresImportExport.import}
+          onImport={async (csv) => {
+            const result = await salaryStructuresImportExport.import(csv);
+            load(); // Refresh separately: a list error must not reclassify a committed import.
+            return result;
+          }}
         />
         <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> New Structure</button>
       </div>
@@ -2906,8 +2910,8 @@ function EOSBTab() {
       <div className="surface p-4 space-y-3">
         <p className="text-sm font-semibold text-slate-800 dark:text-white">EOSB / Gratuity Calculator</p>
         <p className="text-xs text-slate-500 dark:text-slate-400">
-          Calculates End-of-Service Benefit per UAE Labour Law (21 days/year for first 5 years, 30 days/year thereafter).
-          Rates are configurable in Setup → GCC Settings.
+          Calculates End-of-Service Benefit under the rules of the employee’s employing-company country.
+          Statutory rates and wage-basis rules come from that country pack and your tenant settings (Setup → GCC Settings).
         </p>
         <div className="grid grid-cols-2 gap-3">
           <div>
