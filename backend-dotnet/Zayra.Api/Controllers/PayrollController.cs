@@ -8144,19 +8144,46 @@ public class PayrollController : ControllerBase
     }
 
     /// <summary>
+    /// F10 — who may read a run's per-employee reconciliation (the mismatch report and the
+    /// month-over-month reconciliation). Both used to require <c>payroll.review</c>, a permission that is
+    /// not in the catalog, so no role — not even Admin — could open them. They are read-only views derived
+    /// from the run's slips and the salary assignments, so they take the permission that already governs
+    /// those reads: <c>payroll.read</c>. The slip, register and salary-assignment GETs carry legacy role
+    /// gates, but the permission-aware role handler admits any caller holding <c>payroll.read</c> to them
+    /// (LegacyRolePermissionResolver maps a Payroll GET to payroll.read), so this grants nobody a figure
+    /// they cannot already read: Admin, HR Director, HR Manager, Payroll Manager, Payroll Officer, Finance
+    /// Approver (who needs the variance to approve a run) and the Auditor.
+    /// </summary>
+    private bool CanReviewRunPayDetail() => HasPermission("payroll.read");
+
+    /// <summary>
+    /// A run's slips, limited to the employees the caller may see. Organization-level callers see the
+    /// whole run (the run itself is already company-filtered); a team- or department-scoped caller — only
+    /// possible through a custom role — sees their own people's rows, and the totals built from them.
+    /// </summary>
+    private async Task<List<PayrollSlip>> VisibleRunSlipsAsync(Guid tenantId, Guid runId, CancellationToken ct)
+    {
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        var query = _db.PayrollSlips.AsNoTracking().Where(x => x.TenantId == tenantId && x.RunId == runId);
+        if (scope.Level != DataScopeLevel.Organization && scope.AllowedEmployeeIds is { } allowed)
+            query = query.Where(x => allowed.Contains(x.EmployeeId));
+        return await query.ToListAsync(ct);
+    }
+
+    /// <summary>
     /// Per-employee reconciliation between contract salary and the processed payroll
     /// slip, plus WPS/GOSI/QIWA readiness flags.  Variance &gt; 5% is flagged as a warning.
     /// </summary>
     [HttpGet("runs/{id:guid}/mismatch-report")]
     public async Task<IActionResult> MismatchReport(Guid id, CancellationToken cancellationToken)
     {
-        if (!HasPermission("payroll.review")) return Forbid();
+        if (!CanReviewRunPayDetail()) return Forbid();
 
         var tenantId = GetTenantId();
         var run = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (run is null) return NotFound();
 
-        var slips = await _db.PayrollSlips.AsNoTracking().Where(x => x.TenantId == tenantId && x.RunId == id).ToListAsync(cancellationToken);
+        var slips = await VisibleRunSlipsAsync(tenantId, id, cancellationToken);
         var salaries = await _db.EmployeeSalaryStructures.AsNoTracking().Where(x => x.TenantId == tenantId).ToListAsync(cancellationToken);
         var profiles = await _db.EmployeePayrollProfiles.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync(cancellationToken);
         var empIds = slips.Select(s => s.EmployeeId).ToList();
@@ -8211,7 +8238,7 @@ public class PayrollController : ControllerBase
     [HttpGet("reports/reconciliation")]
     public async Task<IActionResult> Reconciliation([FromQuery] Guid runId, CancellationToken cancellationToken)
     {
-        if (!HasPermission("payroll.review")) return Forbid();
+        if (!CanReviewRunPayDetail()) return Forbid();
         var tenantId = GetTenantId();
         var run = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == runId, cancellationToken);
         if (run is null) return NotFound();
@@ -8228,8 +8255,8 @@ public class PayrollController : ControllerBase
                      && x.Status != "Voided")
             .FirstOrDefaultAsync(cancellationToken);
 
-        var currentSlips = await _db.PayrollSlips.AsNoTracking().Where(x => x.TenantId == tenantId && x.RunId == runId).ToListAsync(cancellationToken);
-        var priorSlips   = priorRun is not null ? await _db.PayrollSlips.AsNoTracking().Where(x => x.TenantId == tenantId && x.RunId == priorRun.Id).ToListAsync(cancellationToken) : new List<PayrollSlip>();
+        var currentSlips = await VisibleRunSlipsAsync(tenantId, runId, cancellationToken);
+        var priorSlips   = priorRun is not null ? await VisibleRunSlipsAsync(tenantId, priorRun.Id, cancellationToken) : new List<PayrollSlip>();
 
         var currentIds = currentSlips.Select(s => s.EmployeeId).ToHashSet();
         var priorIds   = priorSlips.Select(s => s.EmployeeId).ToHashSet();
