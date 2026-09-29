@@ -66,8 +66,9 @@ public class EmployeesController : ControllerBase
     private readonly IEstablishmentGuard _establishmentGuard;
     private readonly IEmployeeActivationGuard _activationGuard;
     private readonly IEmployeeDuplicateDetector _duplicateDetector;
+    private readonly IDraftHireMakers _draftHireMakers;
 
-    public EmployeesController(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IHijriDateService hijri, IDataScopeService scopeService, ILetterService letters, IApprovalWorkflowService? approvalWorkflow = null, ILogger<EmployeesController>? logger = null, IEstablishmentGuard? establishmentGuard = null, IEmployeeActivationGuard? activationGuard = null, IEmployeeDuplicateDetector? duplicateDetector = null, IHrLetterIssuer? letterIssuer = null)
+    public EmployeesController(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IHijriDateService hijri, IDataScopeService scopeService, ILetterService letters, IApprovalWorkflowService? approvalWorkflow = null, ILogger<EmployeesController>? logger = null, IEstablishmentGuard? establishmentGuard = null, IEmployeeActivationGuard? activationGuard = null, IEmployeeDuplicateDetector? duplicateDetector = null, IHrLetterIssuer? letterIssuer = null, IDraftHireMakers? draftHireMakers = null)
     {
         _db = db;
         _passwordHasher = passwordHasher;
@@ -89,6 +90,9 @@ public class EmployeesController : ControllerBase
         _establishmentGuard = establishmentGuard ?? new EstablishmentGuardService(db);
         _activationGuard = activationGuard ?? new EmployeeActivationGuard(db);
         _duplicateDetector = duplicateDetector ?? new EmployeeDuplicateDetector(db);
+        // Who made a hire (maker-checker on drafts). Recruitment registers a wider implementation that
+        // adds the offer's sender and acceptor; the fallback is the employee module's own view.
+        _draftHireMakers = draftHireMakers ?? new DraftHireMakers(db);
     }
 
     [HttpGet]
@@ -2925,7 +2929,7 @@ public class EmployeesController : ControllerBase
             .Where(d => d.Id == draftId).Select(d => new { d.Status, d.CreatedByUserId })
             .SingleOrDefaultAsync(cancellationToken);
         if (draft is null) return NotFound();
-        if (await MakerCheckerRefusalAsync(tenantId, draftId, draft.CreatedByUserId, cancellationToken) is { } refusal) return refusal;
+        if (await MakerCheckerRefusalAsync(tenantId, draftId, cancellationToken) is { } refusal) return refusal;
         if (!EmployeeDraftStatuses.IsOpen(draft.Status)) return await DraftClosedConflictAsync(tenantId, draftId, draft.Status, cancellationToken);
 
         var moved = await TransitionDraftAsync(tenantId, draftId, EmployeeDraftStatuses.Open,
@@ -2970,6 +2974,8 @@ public class EmployeesController : ControllerBase
     [HasPermission("employees.write")]
     public async Task<ActionResult<EmployeeDraftDto>> CreateDraft(EmployeeDraftRequest request, CancellationToken cancellationToken)
     {
+        if (await DraftManagerRefusalAsync(RequireTenant(), request.ManagerEmployeeId, cancellationToken) is { } managerRefusal)
+            return managerRefusal;
         var draft = ApplyDraft(new EmployeeDraft { TenantId = RequireTenant(), CreatedByUserId = GetUserId() }, request);
         draft.ProfileCompletenessScore = CalculateCompleteness(draft, 0);
         _db.EmployeeDrafts.Add(draft);
@@ -2983,15 +2989,22 @@ public class EmployeesController : ControllerBase
     public async Task<ActionResult<EmployeeDraftDto>> UpdateDraft(Guid draftId, EmployeeDraftRequest request, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
-        var draft = await VisibleDrafts(tenantId).FirstOrDefaultAsync(x => x.Id == draftId, cancellationToken);
-        if (draft is null) return NotFound();
-        if (!EmployeeDraftStatuses.IsOpen(draft.Status)) return await DraftClosedConflictAsync(tenantId, draftId, draft.Status, cancellationToken);
-        ApplyDraft(draft, request);
-        var docs = await _db.EmployeeDocuments.CountAsync(x => x.TenantId == tenantId && x.DraftId == draftId, cancellationToken);
-        draft.ProfileCompletenessScore = CalculateCompleteness(draft, docs);
-        await _db.SaveChangesAsync(cancellationToken);
-        await Audit("employee.draft_updated", "EmployeeDraft", draft.Id.ToString(), cancellationToken);
-        return Ok(EmployeeDraftDto.Project(draft, CanViewSensitive()));
+        EmployeeDraft? saved = null;
+        var refusal = await ChangeOpenDraftAsync(tenantId, draftId, EmployeeDraftAuditActions.Updated, async (draft, ct) =>
+        {
+            if (request.ManagerEmployeeId is { } managerId && managerId != draft.ManagerEmployeeId
+                && await DraftManagerRefusalAsync(tenantId, managerId, ct) is { } managerRefusal)
+                return managerRefusal;
+            ApplyDraft(draft, request);
+            var docs = await ScopedBypass.TenantWide(_db.EmployeeDocuments, tenantId,
+                    "A draft's documents carry no company until activation; the draft's visibility was checked under its lock.")
+                .CountAsync(x => x.DraftId == draftId && !x.IsDeleted, ct);
+            draft.ProfileCompletenessScore = CalculateCompleteness(draft, docs);
+            saved = draft;
+            return null;
+        }, cancellationToken);
+        if (refusal is not null) return (ActionResult)refusal;
+        return Ok(EmployeeDraftDto.Project(saved!, CanViewSensitive()));
     }
 
     [HttpPost("drafts/{draftId:guid}/documents")]
@@ -3032,9 +3045,14 @@ public class EmployeesController : ControllerBase
             IsRequired = request.IsRequired,
             ExpiryDate = request.ExpiryDate
         };
-        _db.EmployeeDocuments.Add(document);
-        await _db.SaveChangesAsync(cancellationToken);
-        await Audit("employee.document_uploaded", "EmployeeDraft", draftId.ToString(), cancellationToken);
+        // Attaching a document changes the hire: it is saved with the audit row that makes its author
+        // one of the hire's makers, under the draft's lock.
+        var refusal = await ChangeOpenDraftAsync(tenantId, draftId, EmployeeDraftAuditActions.DocumentAttached, (_, _) =>
+        {
+            _db.EmployeeDocuments.Add(document);
+            return Task.FromResult<IActionResult?>(null);
+        }, cancellationToken);
+        if (refusal is not null) return (ActionResult)refusal;
         return Created($"/api/employees/documents/{document.Id}", EmployeeDocumentDto.Project(document));
     }
 
@@ -3060,10 +3078,13 @@ public class EmployeesController : ControllerBase
             IsRequired = request.IsRequired,
             ExpiryDate = request.ExpiryDate
         };
-        _db.EmployeeDocuments.Add(document);
-        await _db.SaveChangesAsync(cancellationToken);
-        await Notify("Document uploaded", $"{request.DocumentType} was uploaded for draft {draftId}.", "EmployeeDraft", draftId.ToString(), cancellationToken);
-        await Audit("employee.document_file_uploaded", "EmployeeDraft", draftId.ToString(), cancellationToken);
+        var refusal = await ChangeOpenDraftAsync(tenantId, draftId, EmployeeDraftAuditActions.DocumentUploaded, (_, _) =>
+        {
+            _db.EmployeeDocuments.Add(document);
+            return Task.FromResult<IActionResult?>(null);
+        }, cancellationToken);
+        if (refusal is not null) return (ActionResult)refusal;
+        await NotifyBestEffortAsync("Document uploaded", $"{request.DocumentType} was uploaded for draft {draftId}.", draftId, cancellationToken);
         return Created($"/api/employees/documents/{document.Id}", EmployeeDocumentDto.Project(document));
     }
 
@@ -3071,12 +3092,19 @@ public class EmployeesController : ControllerBase
     public async Task<IActionResult> DownloadDocument(Guid documentId, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
-        var document = await _db.EmployeeDocuments.FirstOrDefaultAsync(x => x.Id == documentId && x.TenantId == tenantId && !x.IsDeleted, cancellationToken);
+        // Loaded tenant-wide, then authorized below by whoever the document belongs to. The company
+        // filter cannot decide this: a draft's documents have no company until the hire is activated,
+        // so under that filter a company-scoped checker got 404 for a document the draft review had
+        // just listed.
+        var document = await ScopedBypass.TenantWide(_db.EmployeeDocuments, tenantId,
+                "A draft's documents carry no company until activation; access is decided below by employee or draft scope.")
+            .FirstOrDefaultAsync(x => x.Id == documentId && !x.IsDeleted, cancellationToken);
         if (document is null) return NotFound();
 
-        // Enforce access: unrestricted roles pass; otherwise caller must be in scope for this employee.
         if (document.EmployeeId.HasValue)
         {
+            // The company rule the filter used to apply, then the caller's data scope for this employee.
+            if (!this.GetEntityScope().CanAccessCompany(document.CompanyId)) return NotFound();
             var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
             if (!scope.IsUnrestricted && !scope.AllowedEmployeeIds!.Contains(document.EmployeeId.Value))
                 return Forbid();
@@ -3085,11 +3113,12 @@ public class EmployeesController : ControllerBase
         {
             // A draft's documents follow the draft's visibility: its maker, a checker whose legal
             // entities include the accepted offer's application, or group scope.
-            var draftExists = await _db.EmployeeDrafts.AsNoTracking()
-                .AnyAsync(x => x.Id == document.DraftId.Value && x.TenantId == tenantId, cancellationToken);
-            if (!draftExists) return NotFound();
             if (!await VisibleDrafts(tenantId).AnyAsync(x => x.Id == document.DraftId.Value, cancellationToken))
-                return Forbid();
+                return NotFound();
+        }
+        else if (!this.GetEntityScope().CanAccessCompany(document.CompanyId))
+        {
+            return NotFound();
         }
 
         byte[] contents;
@@ -3169,7 +3198,7 @@ public class EmployeesController : ControllerBase
             .Select(x => new { x.CreatedByUserId, x.Status })
             .SingleOrDefaultAsync(cancellationToken);
         if (preflight is null) return NotFound();
-        if (await MakerCheckerRefusalAsync(tenantId, draftId, preflight.CreatedByUserId, cancellationToken) is { } refusal)
+        if (await MakerCheckerRefusalAsync(tenantId, draftId, cancellationToken) is { } refusal)
             return refusal;
         if (!EmployeeDraftStatuses.IsOpen(preflight.Status))
             return await DraftClosedConflictAsync(tenantId, draftId, preflight.Status, cancellationToken);
@@ -3202,9 +3231,9 @@ public class EmployeesController : ControllerBase
                 .TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.Id == draftId && x.TenantId == tenantId, ct)
                 ?? throw new DraftApprovalNotFoundException();
-            // Re-checked under the lock, because the preflight read is advisory. Maker-checker: the
-            // person who made the draft (or accepted the offer that made it) never activates it.
-            if (actorId is null || draft.CreatedByUserId == actorId)
+            // Re-checked under the lock, because the preflight read is advisory: an edit committed in
+            // between makes its editor a maker. No maker of the hire ever activates it.
+            if (actorId is null || (await _draftHireMakers.MakersAsync(tenantId, draftId, ct)).Contains(actorId.Value))
                 throw new DraftApprovalMakerCheckerException();
             if (!entityScope.IsGroupLevel)
             {
@@ -3229,6 +3258,14 @@ public class EmployeesController : ControllerBase
             var placement = await ResolveDraftPlacementAsync(tenantId, draft, problems: null, ct);
             if (!entityScope.IsGroupLevel && !entityScope.CanAccessCompany(placement.CompanyId))
                 throw new DraftApprovalForbiddenException();
+            // The draft's manager is checked again here, under the lock and against the approver's own
+            // scope: a draft saved before this rule, or by another path, may name anyone.
+            if (await DraftManagerRejectionAsync(tenantId, draft.ManagerEmployeeId, ct) is { } managerRejection)
+            {
+                if (managerRejection.OutOfScope) throw new DraftApprovalForbiddenException();
+                throw new DraftApprovalValidationException(
+                    managerRejection.Message + " Change the draft's manager, then approve it.");
+            }
 
             var employee = EmployeeFromDraft(draft, tenantId, placement, approvedAtUtc);
             employee.EmployeeCode = await GenerateEmployeeCode(tenantId, ct);
@@ -4849,30 +4886,92 @@ public class EmployeesController : ControllerBase
             || applications.Any(a => a.OnboardingDraftId == d.Id));
     }
 
-    private const string MakerCheckerError = "draft_maker_checker";
-
-    private ObjectResult MakerCheckerForbidden(bool edited = false) => StatusCode(StatusCodes.Status403Forbidden, new
+    private ObjectResult MakerCheckerForbidden() => StatusCode(StatusCodes.Status403Forbidden, new
     {
-        error = MakerCheckerError,
-        message = edited
-            ? "You changed this draft, so another HR approver has to approve or reject it."
-            : "You created this draft (or accepted the offer behind it), so another HR approver has to approve or reject it.",
+        error = DraftMakerChecker.Error,
+        message = DraftMakerChecker.Message,
     });
 
-    /// <summary>Maker-checker for a draft decision. The makers are whoever created the draft (for an
-    /// accepted offer, whoever accepted it) and whoever has since changed its content: a checker who
-    /// edits the hire's terms cannot then approve their own edit.</summary>
-    private async Task<ObjectResult?> MakerCheckerRefusalAsync(Guid tenantId, Guid draftId, Guid? createdByUserId, CancellationToken ct)
+    /// <summary>Maker-checker for a draft decision: no maker of the hire (<see cref="IDraftHireMakers"/>)
+    /// may approve or reject it, and neither may an anonymous caller.</summary>
+    private async Task<ObjectResult?> MakerCheckerRefusalAsync(Guid tenantId, Guid draftId, CancellationToken ct)
     {
         var actorId = GetUserId();
-        if (actorId is null || createdByUserId == actorId) return MakerCheckerForbidden();
-        var entityId = draftId.ToString();
-        var edited = await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId,
-                "The caller's own edit rows for this draft, whichever company they were stamped with.")
-            .AsNoTracking()
-            .AnyAsync(a => a.EntityName == "EmployeeDraft" && a.EntityId == entityId
-                && a.Action == "employee.draft_updated" && a.UserId == actorId, ct);
-        return edited ? MakerCheckerForbidden(edited: true) : null;
+        if (actorId is null) return MakerCheckerForbidden();
+        var makers = await _draftHireMakers.MakersAsync(tenantId, draftId, ct);
+        return makers.Contains(actorId.Value) ? MakerCheckerForbidden() : null;
+    }
+
+    /// <summary>
+    /// One change to an open draft, as a single unit. The draft row is locked, so the change cannot land
+    /// on a draft an approval is activating; not-found and closed are decided under that lock; and the
+    /// change is saved in the same transaction as the audit row that records who made it. That row is
+    /// what makes its author a maker of the hire (<see cref="IDraftHireMakers"/>), so the two can never
+    /// be split. Returns the refusal, or null when the change was saved.
+    /// </summary>
+    private async Task<IActionResult?> ChangeOpenDraftAsync(
+        Guid tenantId, Guid draftId, string auditAction,
+        Func<EmployeeDraft, CancellationToken, Task<IActionResult?>> change, CancellationToken cancellationToken)
+    {
+        var auditId = Guid.NewGuid();
+        var context = Context() with { TenantId = tenantId };
+        IActionResult? refusal = null;
+
+        async Task<bool> OnceAsync(CancellationToken ct)
+        {
+            _db.ChangeTracker.Clear();
+            refusal = null;
+            var draft = await VisibleDrafts(tenantId).TagWith(RowLockingInterceptor.ForUpdateTag)
+                .FirstOrDefaultAsync(d => d.Id == draftId, ct);
+            if (draft is null) { refusal = NotFound(); return false; }
+            if (!EmployeeDraftStatuses.IsOpen(draft.Status))
+            {
+                refusal = await DraftClosedConflictAsync(tenantId, draftId, draft.Status, ct);
+                return false;
+            }
+            refusal = await change(draft, ct);
+            if (refusal is not null) return false;
+            _db.AuditLogs.Add(AuthAuditEntry.Create(auditId, DateTime.UtcNow, auditAction, "EmployeeDraft", draftId.ToString(), context));
+            await _db.SaveChangesAsync(ct);
+            return true;
+        }
+
+        if (!_db.Database.IsRelational())
+        {
+            await OnceAsync(cancellationToken);
+            return refusal;
+        }
+        await _db.Database.CreateExecutionStrategy().ExecuteInTransactionAsync(
+            OnceAsync,
+            async ct => await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId,
+                    "Commit verification of this command's own audit row by its server-generated id.")
+                .AsNoTracking().AnyAsync(a => a.Id == auditId, ct),
+            IsolationLevel.ReadCommitted,
+            cancellationToken);
+        return refusal;
+    }
+
+    /// <summary>
+    /// A draft's manager must be a live employee of this tenant that the caller can see: the same rule
+    /// every other manager write enforces (<see cref="EmployeeChangeApplier.ValidateManagerChangeAsync"/>).
+    /// The draft has no employee id yet, so self-management and reporting cycles cannot arise.
+    /// </summary>
+    private async Task<ObjectResult?> DraftManagerRefusalAsync(Guid tenantId, int? managerId, CancellationToken ct)
+    {
+        var rejection = await DraftManagerRejectionAsync(tenantId, managerId, ct);
+        if (rejection is null) return null;
+        var body = new { error = "invalid_manager", message = rejection.Message + " The draft was not saved." };
+        return rejection.OutOfScope ? StatusCode(StatusCodes.Status403Forbidden, body) : UnprocessableEntity(body);
+    }
+
+    private async Task<EmployeeChangeApplier.ManagerChangeRejection?> DraftManagerRejectionAsync(Guid tenantId, int? managerId, CancellationToken ct)
+    {
+        if (managerId is null) return null;
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        return await EmployeeChangeApplier.ValidateManagerChangeAsync(
+            _db, new Employee { TenantId = tenantId },
+            new Dictionary<string, JsonElement> { ["managerEmployeeId"] = JsonSerializer.SerializeToElement(managerId.Value) },
+            scope.CanAccessEmployee, ct);
     }
 
     private async Task<string> CurrentDraftStatusAsync(Guid tenantId, Guid draftId, CancellationToken ct) =>
@@ -5056,7 +5155,6 @@ public class EmployeesController : ControllerBase
         var actorId = GetUserId();
         var canApprovePermission = User.HasPermission("employees.approve");
         var draftIds = drafts.Select(d => d.Id).ToList();
-        var entityIds = draftIds.Select(id => id.ToString()).ToList();
 
         var origins = await ScopedBypass.TenantWide(_db.JobApplications, tenantId,
                 "The job application behind each draft the caller can already see (visibility was decided by VisibleDrafts).")
@@ -5066,17 +5164,7 @@ public class EmployeesController : ControllerBase
             .ToListAsync(ct);
         var originByDraft = origins.GroupBy(o => o.DraftId).ToDictionary(g => g.Key, g => g.First());
 
-        var editedByMe = new HashSet<string>();
-        if (actorId is not null)
-        {
-            editedByMe = (await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId,
-                    "The caller's own edit rows on drafts they can already see, whichever company they were stamped with.")
-                .AsNoTracking()
-                .Where(a => a.EntityName == "EmployeeDraft" && a.EntityId != null
-                    && entityIds.Contains(a.EntityId) && a.Action == "employee.draft_updated" && a.UserId == actorId)
-                .Select(a => a.EntityId!)
-                .ToListAsync(ct)).ToHashSet();
-        }
+        var makers = await _draftHireMakers.MakersAsync(tenantId, draftIds, ct);
 
         var decisions = await LoadDraftDecisionsAsync(tenantId, drafts, ct);
         var userIds = drafts.Where(d => d.CreatedByUserId.HasValue).Select(d => d.CreatedByUserId!.Value)
@@ -5094,12 +5182,11 @@ public class EmployeesController : ControllerBase
         return drafts.Select(d =>
         {
             var isMine = actorId is not null && d.CreatedByUserId == actorId;
-            var edited = editedByMe.Contains(d.Id.ToString());
+            var isMaker = actorId is not null && makers.TryGetValue(d.Id, out var draftMakers) && draftMakers.Contains(actorId.Value);
             var open = EmployeeDraftStatuses.IsOpen(d.Status);
             string? blocked = !open ? null
-                : !canApprovePermission ? "You don't have permission to approve new hires."
-                : isMine ? "You created this draft (or accepted the offer behind it), so another HR approver has to approve it."
-                : edited ? "You changed this draft, so another HR approver has to approve it."
+                : !canApprovePermission ? "You don't have permission to approve new hires (employees.approve)."
+                : isMaker ? DraftMakerChecker.Message
                 : null;
             originByDraft.TryGetValue(d.Id, out var origin);
             decisions.TryGetValue(d.Id, out var decision);
@@ -5273,6 +5360,9 @@ public class EmployeesController : ControllerBase
         var problems = new List<EmployeeDraftActivationProblem>();
         var advisories = new List<string>();
         var placement = await ResolveDraftPlacementAsync(tenantId, draft, problems, ct);
+        if (await DraftManagerRejectionAsync(tenantId, draft.ManagerEmployeeId, ct) is { } managerRejection)
+            problems.Add(new EmployeeDraftActivationProblem("manager", "Manager", managerRejection.Message,
+                "Pick a current employee you can see as the manager, or clear it."));
 
         string? companyName = null;
         if (placement.CompanyId is { } companyId)
