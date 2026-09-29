@@ -21,7 +21,12 @@ export function usePayrollCompanies(enabled = true) {
     let active = true;
     setState('loading');
     payrollApi.listCompanies()
-      .then((items) => { if (active) { setCompanies(items); setState('loaded'); } })
+      // Anything but a list is a failed load: the amounts then carry no currency, never a guessed one.
+      .then((items) => {
+        if (!active) return;
+        if (Array.isArray(items)) { setCompanies(items); setState('loaded'); }
+        else { setCompanies([]); setState('failed'); }
+      })
       .catch(() => { if (active) { setCompanies([]); setState('failed'); } });
     return () => { active = false; };
   }, [attempt, enabled]);
