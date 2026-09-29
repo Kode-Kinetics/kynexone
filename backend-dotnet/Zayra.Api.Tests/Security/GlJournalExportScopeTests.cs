@@ -215,7 +215,8 @@ public class GlJournalExportScopeTests
         var mine = Guid.NewGuid();
         var exportId = SeedGroupExportWithUnattributed(db, tenantId, mine);
 
-        var result = await MakeCtrl(db, tenantId, scopedCompany: mine, "finance.gl.manage")
+        // The caller HOLDS the confirm permission, so the refusal below can only come from the scope guard.
+        var result = await MakeCtrl(db, tenantId, scopedCompany: mine, "finance.erp.confirm")
             .Confirm(exportId, new ErpImportConfirmationRequest("DOC-1"), default);
 
         result.Should().BeOfType<ForbidResult>(
@@ -357,7 +358,9 @@ public class GlJournalExportScopeTests
         var companyA = Guid.NewGuid();
         var exportId = SeedGroupExportWithUnattributed(db, tenantId, companyA);
 
-        var ctrl = MakeCtrl(db, tenantId, companyA, "finance.gl.read", "finance.gl.confirm");
+        // "finance.gl.confirm" was used here — a key that exists nowhere — so this passed on the PERMISSION
+        // check and never reached the scope guard it names. The real checker key makes it test the guard.
+        var ctrl = MakeCtrl(db, tenantId, companyA, "finance.gl.read", "finance.erp.confirm");
         var result = await ctrl.Reject(exportId, new ErpImportRejectionRequest("ERP refused the batch"), default);
 
         result.Should().BeOfType<ForbidResult>();

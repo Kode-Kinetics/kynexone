@@ -188,10 +188,13 @@ public class AuthSeeder : IAuthSeeder
         // Level 7 — Finance Approver: finance approvals
         // payroll.lock reconciles the method-level [Authorize(Roles="...Finance Approver")] intent on the
         // run lock/void/send-back endpoints (financial-controller tier) into the effective-permission model.
+        // finance.erp.confirm makes this role the CHECKER of the GL hand-off: Payroll Manager produces the
+        // journal export (finance.gl.manage) and this role attests the client's ERP imported it. Payroll
+        // Manager deliberately does not hold it, so no seeded role but Admin can attest its own export.
         await EnsureRole(tenantId, "Finance Approver", "Finance approver for loans, advances and payroll", Ps(new[] {
             "dashboard.read", "employees.read", "payroll.read", "payroll.approve", "payroll.lock",
             "loans.read", "loans.approve", "approvals.read", "approvals.decide",
-            "finance.gl.read", "payroll.rates.read"
+            "finance.gl.read", "payroll.rates.read", "finance.erp.confirm"
         }), 7, true, cancellationToken);
 
         // Level 8 — Compliance Officer: compliance and contracts
@@ -376,6 +379,9 @@ public class AuthSeeder : IAuthSeeder
             ("finance.gl.manage", "Finance", "Manage GL accounts, mappings and per-company overrides"),
             ("finance.gl.drivers.manage", "Finance", "Manage custom GL posting drivers"),
             ("finance.gl.drivers.author_predicates", "Finance", "Author non-Exact GL driver predicates and employer-expense pairs (Admin/vendor)"),
+            // Finance — GL / ERP hand-off checker. Separate from finance.gl.manage (which produces the export)
+            // so the person who exports a journal is not the person who attests the ERP posted it.
+            ("finance.erp.confirm", "Finance", "Confirm or reject that the client's ERP imported a GL journal export"),
             // Payroll — client rate configuration (Phase 2)
             ("payroll.rates.read", "Payroll", "View company and statutory rate configuration"),
             ("payroll.rates.manage", "Payroll", "Manage non-statutory company rate policies"),
