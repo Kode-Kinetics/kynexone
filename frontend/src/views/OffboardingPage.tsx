@@ -8,6 +8,7 @@ import {
   type Offboarding, type OffboardingSummary, type SeparationTypeInfo,
 } from '../api/offboarding';
 import { employeesApi } from '../api/employees';
+import { requestFailureReason } from '../lib/requestFailure';
 
 const EXIT_REASONS = ['Compensation', 'Career Growth', 'Management', 'Work-Life Balance', 'Relocation', 'Job Content', 'Company Culture', 'Better Offer', 'Personal', 'Other'];
 
@@ -41,17 +42,37 @@ export function OffboardingPage() {
   const [summary, setSummary] = useState<OffboardingSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [showInitiate, setShowInitiate] = useState(false);
+  // A failed load used to be swallowed and render "No offboardings yet" — HR read an outage as
+  // "nobody is leaving". The list and summary now fail independently, and each says so.
+  const [listError, setListError] = useState('');
+  const [summaryError, setSummaryError] = useState('');
+  const [listLoaded, setListLoaded] = useState(false);
+  // Only the newest load may write state, so a slow earlier response (or Strict Mode's double
+  // mount) can never overwrite a newer result.
+  const loadSeq = useRef(0);
 
-  const load = () => {
+  const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setLoading(true);
-    Promise.all([offboardingApi.list(), offboardingApi.summary()])
-      .then(([i, s]) => { setItems(i); setSummary(s); })
-      .catch(() => {}).finally(() => setLoading(false));
-  };
-  useEffect(() => { load(); }, []);
+    const [list, sum] = await Promise.allSettled([offboardingApi.list(), offboardingApi.summary()]);
+    if (seq !== loadSeq.current) return;
+    if (list.status === 'fulfilled') { setItems(list.value); setListLoaded(true); setListError(''); }
+    else setListError(requestFailureReason(list.reason));
+    if (sum.status === 'fulfilled') { setSummary(sum.value); setSummaryError(''); }
+    else setSummaryError(requestFailureReason(sum.reason));
+    setLoading(false);
+  }, []);
+  useEffect(() => { void load(); }, [load]);
 
   const inProgress = items.filter(o => o.status === 'InProgress');
   const closed = items.filter(o => o.status !== 'InProgress');
+  const listUnavailable = !!listError && !listLoaded;
+  const staleNotices = [
+    listError && listLoaded ? `The list could not be refreshed and shows the last successful load. ${listError}` : '',
+    summaryError
+      ? (summary ? `The summary figures could not be refreshed and show the last successful load. ${summaryError}` : `The summary figures are unavailable. ${summaryError}`)
+      : '',
+  ].filter(Boolean);
 
   return (
     <div className="space-y-5 p-4 sm:p-6">
@@ -64,6 +85,13 @@ export function OffboardingPage() {
           <UserMinus className="h-3.5 w-3.5" /> Initiate Offboarding
         </button>
       </div>
+
+      {!loading && !listUnavailable && staleNotices.length > 0 && (
+        <div role="alert" className="flex items-start justify-between gap-3 rounded-lg bg-amber-50 px-3 py-2.5 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
+          <div className="space-y-1">{staleNotices.map(n => <p key={n}>{n}</p>)}</div>
+          <button type="button" onClick={() => void load()} className="btn-secondary h-7 shrink-0 px-2 text-xs">Retry</button>
+        </div>
+      )}
 
       {/* Summary + attrition insight */}
       {summary && (
@@ -96,6 +124,13 @@ export function OffboardingPage() {
 
       {loading ? (
         <div className="flex justify-center py-12"><div className="h-5 w-5 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></div>
+      ) : listUnavailable ? (
+        <div role="alert" className="surface flex flex-col items-center gap-3 p-10 text-center">
+          <AlertTriangle className="h-6 w-6 text-amber-500" />
+          <p className="text-sm font-medium text-slate-700 dark:text-slate-200">Offboardings could not be loaded. {listError}</p>
+          <p className="max-w-md text-xs text-slate-500 dark:text-slate-400">This does not mean there are no separations in progress.</p>
+          <button type="button" onClick={() => void load()} className="btn-secondary h-8 px-3 text-sm">Retry</button>
+        </div>
       ) : items.length === 0 ? (
         <div className="surface p-10 text-center text-sm text-slate-400">No offboardings yet. Click “Initiate Offboarding” to start a separation.</div>
       ) : (
