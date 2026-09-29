@@ -47,7 +47,9 @@ public class EmployeesController : ControllerBase
         // social-insurance enrolment every contribution is filed against — so it takes the same maker-checker
         // route. It became writable through PUT when EmployeeChangeApplier gained its payroll-profile key;
         // without this entry that write would have skipped the approval gosiReference always required.
-        "socialInsuranceReference"
+        "socialInsuranceReference",
+        // Where the WPS/SIF line pays: the bank's routing code and the account number (payroll profile).
+        "bankRoutingCode", "accountNumber"
     };
 
     private readonly ZayraDbContext _db;
@@ -769,6 +771,9 @@ public class EmployeesController : ControllerBase
             // Rows matched to an existing employee, and the subset where something was actually filled in.
             var repairExistingCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var repairedTouchedCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            // Existing-employee rows whose approval-gated values were left unapplied, and separated employees skipped.
+            var approvalRequired = new List<(int Row, string EmployeeCode, IReadOnlyList<string> Fields)>();
+            var skippedSeparated = 0;
 
             // ── WORK-EMAIL derivation/uniqueness (accept-never-block) ─────────────────────────────────────
             // Existing tenant work emails keyed by the LOGIN normalization (AuthService.Normalize) + a cumulative
@@ -909,11 +914,28 @@ public class EmployeesController : ControllerBase
                     { skipped++; skippedDupCode++; errors.Add($"Row {rowNum}: EmployeeCode '{code}' is duplicated within the import file; row skipped."); continue; }
                     if (existingEmployeesByCode.TryGetValue(code, out var existingEmployee))
                     {
-                        // REPAIR, NEVER OVERWRITE (see EmployeeImportRepairPlan): the row may only fill what the existing
-                        // employee is missing. A row with nothing left to fill is the ordinary duplicate skip.
+                        // A separated employee is never changed by an import (see EmployeeImportRepairPlan.IsSeparated).
+                        if (EmployeeImportRepairPlan.IsSeparated(existingEmployee))
+                        {
+                            skipped++; skippedDupCode++; skippedSeparated++;
+                            errors.Add($"Row {rowNum}: EmployeeCode '{code}' belongs to a separated employee ({existingEmployee.Status}) — an import never changes a separated employee.");
+                            continue;
+                        }
+                        // Approval-gated values in the row (bank, IBAN, account, routing, MOL ID, payment method,
+                        // social insurance, GOSI, salary) are NEVER applied to an existing employee — named here so
+                        // the operator knows to submit them through the employee's profile, where they need approval.
+                        var gatedNotApplied = EmployeeImportRepairPlan.ApprovalGatedValuesNotApplied(existingEmployee, row, repairLookups);
+                        if (gatedNotApplied.Count > 0)
+                        {
+                            approvalRequired.Add((rowNum, code, gatedNotApplied));
+                            warnings.Add($"Row {rowNum}: EmployeeCode '{code}' already exists — {string.Join(", ", gatedNotApplied)} in this row were NOT applied. "
+                                         + "An existing employee's bank, payroll-identity and salary details change only through an approved change: edit the employee.");
+                        }
+                        // REPAIR, NEVER OVERWRITE (see EmployeeImportRepairPlan): the row may only fill NON-sensitive
+                        // details the existing employee is missing. A row with nothing left to fill is the ordinary skip.
                         var rowJoining = ParseImportJoiningDate(row);
                         if (!EmployeeImportRepairPlan.NeedsRepair(existingEmployee, row, repairLookups,
-                                ParseImportSalary(row).CanAssign, rowJoining.Supplied && !rowJoining.Unparsed ? rowJoining.Value : null))
+                                rowJoining.Supplied && !rowJoining.Unparsed ? rowJoining.Value : null))
                         { skipped++; skippedDupCode++; errors.Add($"Row {rowNum}: EmployeeCode '{code}' already exists."); continue; }
                         repairExistingCodes.Add(code);
                         batchCodes[code] = existingEmployee;
@@ -1149,25 +1171,8 @@ public class EmployeesController : ControllerBase
                 if (await PersistAsync("positions") is { } positionSaveError) return positionSaveError;
             }
 
-            // A repair row never touches bank details that are waiting for a checker (including an approved change
-            // whose effective date has not arrived): the pending approval stays the only way they change.
-            var repairEmployeeIds = batchPayroll.Where(kv => repairExistingCodes.Contains(kv.Key)).Select(kv => kv.Value.emp.Id).ToArray();
-            var pendingBankEmployeeIds = repairEmployeeIds.Length == 0
-                ? new HashSet<int>()
-                : (await _db.EmployeeChangeRequests.AsNoTracking()
-                    .Where(x => x.TenantId == tenantId && repairEmployeeIds.Contains(x.EmployeeId)
-                        && x.AppliedAtUtc == null
-                        && (x.Status == "PendingApproval" || x.Status == "ApprovedPendingEffectiveDate"))
-                    .Select(x => new { x.EmployeeId, x.SensitiveFields })
-                    .ToListAsync(ct))
-                    .Where(x => x.SensitiveFields.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
-                        .Any(k => k.Equals("bankIban", StringComparison.OrdinalIgnoreCase)
-                               || k.Equals("bankName", StringComparison.OrdinalIgnoreCase)
-                               || k.Equals("wpsBankDetails", StringComparison.OrdinalIgnoreCase)))
-                    .Select(x => x.EmployeeId).ToHashSet();
-
             // ── Pass 1b: payroll profiles + salary structures ────────────────────────
-            int payrollProfilesCreated = 0, payrollProfilesRepaired = 0, salaryAssignmentsRecovered = 0, hierarchyLinksRecovered = 0;
+            int payrollProfilesCreated = 0, payrollProfilesRepaired = 0, hierarchyLinksRecovered = 0;
             var payrollArtifactsChanged = false;
             var stagedPayrollEntities = new List<object>();
             // EF queries cannot see Added entities until SaveChanges: reuse each structure staged in this import so
@@ -1177,7 +1182,57 @@ public class EmployeesController : ControllerBase
             var tenantCurrency = await _db.ResolveTenantCurrencyAsync(tenantId, ct);
             foreach (var (payrollCode, (emp, rowData)) in batchPayroll)
             {
-                var isRepair = repairExistingCodes.Contains(payrollCode);
+                if (repairExistingCodes.Contains(payrollCode))
+                {
+                    // REPAIR: fills only the NON-sensitive payroll columns an existing employee is missing — payroll
+                    // group, salary-structure reference, currency — creating the profile (with NO bank details) when
+                    // there is none. Bank, IBAN, account, routing, MOL ID, payment method, social insurance and salary
+                    // are approval-gated for an existing employee and were reported, not applied, in Pass 1.
+                    var repairGroup = rowData.GetValueOrDefault("PayrollGroup", string.Empty).Trim();
+                    var repairStructure = rowData.GetValueOrDefault("SalaryStructureCode", string.Empty).Trim();
+                    var repairCurrency = rowData.GetValueOrDefault("Currency", string.Empty).Trim().ToUpperInvariant();
+                    repairLookups.ProfilesByEmployee.TryGetValue(emp.Id, out var existingProfile);
+                    if (existingProfile is null)
+                    {
+                        if (repairGroup.Length == 0 && repairStructure.Length == 0 && repairCurrency.Length == 0) continue;
+                        existingProfile = new EmployeePayrollProfile
+                        {
+                            TenantId = tenantId, EmployeeId = emp.Id,
+                            SalaryCurrency = repairCurrency.Length > 0 ? repairCurrency : tenantCurrency,
+                            PayrollGroup = repairGroup, SalaryStructureReference = repairStructure,
+                            WpsEligible = true, EosbEligible = true, CreatedBy = GetUserId()
+                        };
+                        _db.EmployeePayrollProfiles.Add(existingProfile);
+                        repairLookups.ProfilesByEmployee[emp.Id] = existingProfile;
+                        stagedPayrollEntities.Add(existingProfile);
+                        payrollProfilesCreated++;
+                        payrollArtifactsChanged = true;
+                        repairedTouchedCodes.Add(payrollCode);
+                        continue;
+                    }
+                    var repairedAny = false;
+                    string FillBlank(string target, string source)
+                    {
+                        if (!string.IsNullOrWhiteSpace(target) || source.Length == 0) return target;
+                        repairedAny = true;
+                        return source;
+                    }
+                    existingProfile.PayrollGroup = FillBlank(existingProfile.PayrollGroup, repairGroup);
+                    existingProfile.SalaryStructureReference = FillBlank(existingProfile.SalaryStructureReference, repairStructure);
+                    existingProfile.SalaryCurrency = FillBlank(existingProfile.SalaryCurrency, repairCurrency);
+                    if (repairedAny)
+                    {
+                        existingProfile.UpdatedAtUtc = DateTime.UtcNow;
+                        existingProfile.UpdatedBy = GetUserId();
+                        stagedPayrollEntities.Add(existingProfile);
+                        payrollProfilesRepaired++;
+                        payrollArtifactsChanged = true;
+                        repairedTouchedCodes.Add(payrollCode);
+                    }
+                    continue;
+                }
+
+                // ── A NEW employee: initial data entry, the same as POST /api/employees (bank and salary included). ──
                 var ibanRaw = rowData.GetValueOrDefault("IBAN", string.Empty).Trim();
                 if (!string.IsNullOrWhiteSpace(ibanRaw) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(ibanRaw))
                     warnings.Add($"Employee {emp.EmployeeCode}: IBAN '{ibanRaw}' fails country format/length or the ISO 13616 mod-97 checksum — imported, but it must be corrected before this employee can be included in a payroll run.");
@@ -1190,26 +1245,6 @@ public class EmployeesController : ControllerBase
                 var socialInsuranceRaw = rowData.GetValueOrDefault("SocialInsuranceReference", string.Empty).Trim();
                 var structureCodeRaw = rowData.GetValueOrDefault("SalaryStructureCode", string.Empty).Trim();
                 var currencyRaw = rowData.GetValueOrDefault("Currency", string.Empty).Trim();
-                if (isRepair)
-                {
-                    // APPROVED BANK DETAILS WIN. An employee's applied bank values (reached through maker-checker)
-                    // outrank whatever the file proposes; a file IBAN that disagrees also loses its account/routing.
-                    if (!string.IsNullOrWhiteSpace(emp.BankIban))
-                    {
-                        if (!string.Equals(emp.BankIban.Replace(" ", ""), ibanRaw.Replace(" ", ""), StringComparison.OrdinalIgnoreCase))
-                        { accountRaw = string.Empty; routingRaw = string.Empty; }
-                        ibanRaw = emp.BankIban;
-                    }
-                    if (!string.IsNullOrWhiteSpace(emp.BankName)) bankNameRaw = emp.BankName;
-                    if (pendingBankEmployeeIds.Contains(emp.Id))
-                    {
-                        ibanRaw = emp.BankIban ?? string.Empty;
-                        bankNameRaw = emp.BankName ?? string.Empty;
-                        accountRaw = string.Empty;
-                        routingRaw = string.Empty;
-                        warnings.Add($"Employee {emp.EmployeeCode}: a bank change is awaiting approval or its effective date, so the import left the bank details alone and filled only other missing payroll fields. Complete that approval before payroll.");
-                    }
-                }
                 var currency = string.IsNullOrWhiteSpace(currencyRaw)
                     ? defaultCompany is null && string.Equals(tenantCurrency, "USD", StringComparison.OrdinalIgnoreCase) ? "SAR" : tenantCurrency
                     : currencyRaw.ToUpperInvariant();
@@ -1230,8 +1265,8 @@ public class EmployeesController : ControllerBase
                                   !string.IsNullOrEmpty(currencyRaw) || !string.IsNullOrEmpty(structureCodeRaw) ||
                                   salary.Gross > 0;
 
-                repairLookups.ProfilesByEmployee.TryGetValue(emp.Id, out var payrollProfile);
-                if (hasPayroll && payrollProfile is null)
+                EmployeePayrollProfile? payrollProfile = null;
+                if (hasPayroll)
                 {
                     payrollProfile = new EmployeePayrollProfile
                     {
@@ -1248,78 +1283,26 @@ public class EmployeesController : ControllerBase
                     stagedPayrollEntities.Add(payrollProfile);
                     payrollProfilesCreated++;
                     payrollArtifactsChanged = true;
-                    if (isRepair) repairedTouchedCodes.Add(payrollCode);
                 }
-                else if (isRepair && payrollProfile is not null)
-                {
-                    // Fill ONLY blank columns; a value already on the profile is never replaced by the file.
-                    var profileChanged = false;
-                    string Fill(string target, string source)
-                    {
-                        if (!string.IsNullOrWhiteSpace(target) || string.IsNullOrWhiteSpace(source)) return target;
-                        profileChanged = true;
-                        return source;
-                    }
-                    payrollProfile.BankName = Fill(payrollProfile.BankName, bankNameRaw);
-                    payrollProfile.Iban = Fill(payrollProfile.Iban, ibanRaw);
-                    payrollProfile.AccountNumber = Fill(payrollProfile.AccountNumber, accountRaw);
-                    payrollProfile.BankRoutingCode = Fill(payrollProfile.BankRoutingCode, routingRaw);
-                    payrollProfile.PayrollGroup = Fill(payrollProfile.PayrollGroup, payrollGroupRaw);
-                    payrollProfile.SalaryStructureReference = Fill(payrollProfile.SalaryStructureReference, structureCodeRaw);
-                    payrollProfile.SocialInsuranceReference = Fill(payrollProfile.SocialInsuranceReference, socialInsuranceRaw);
-                    payrollProfile.MolId = Fill(payrollProfile.MolId, molIdRaw);
-                    payrollProfile.SalaryCurrency = Fill(payrollProfile.SalaryCurrency, currency);
-                    if (profileChanged)
-                    {
-                        payrollProfile.UpdatedAtUtc = DateTime.UtcNow;
-                        payrollProfile.UpdatedBy = GetUserId();
-                        stagedPayrollEntities.Add(payrollProfile);
-                        payrollProfilesRepaired++;
-                        payrollArtifactsChanged = true;
-                        repairedTouchedCodes.Add(payrollCode);
-                    }
-                }
-
                 // ── ONE SET OF BANK DETAILS, IN BOTH HOMES ──────────────────────────────────────────────
                 // The WPS/SIF export pays from the payroll profile; the employee record, its readiness snapshot
                 // and the People list read Employee.BankName/BankIban. The import used to write the Employee copy
                 // only when a salary structure was ALSO created, so every row whose salary was held, under review
                 // or absent carried bank details in the profile and none on the employee. A NEW employee now gets
-                // exactly the profile's values; an existing one only has BLANK columns filled (never an approved
-                // value replaced, never one waiting for approval).
+                // exactly the profile's values.
                 if (payrollProfile is not null)
                 {
-                    if (!isRepair)
-                    {
-                        emp.BankName = payrollProfile.BankName;
-                        emp.BankIban = payrollProfile.Iban;
-                    }
-                    else if (!pendingBankEmployeeIds.Contains(emp.Id))
-                    {
-                        var employeeBankRepaired = false;
-                        if (string.IsNullOrWhiteSpace(emp.BankIban) && !string.IsNullOrWhiteSpace(payrollProfile.Iban))
-                        { emp.BankIban = payrollProfile.Iban; employeeBankRepaired = true; }
-                        if (string.IsNullOrWhiteSpace(emp.BankName) && !string.IsNullOrWhiteSpace(payrollProfile.BankName))
-                        { emp.BankName = payrollProfile.BankName; employeeBankRepaired = true; }
-                        if (employeeBankRepaired)
-                        {
-                            emp.UpdatedAtUtc = DateTime.UtcNow;
-                            payrollArtifactsChanged = true;
-                            repairedTouchedCodes.Add(payrollCode);
-                        }
-                    }
+                    emp.BankName = payrollProfile.BankName;
+                    emp.BankIban = payrollProfile.Iban;
                 }
 
-                // Never a second active structure: a repair row only fills a MISSING one (and says nothing about
-                // the salary cells of an employee who already has a salary).
-                if (repairLookups.ActiveSalaryEmployeeIds.Contains(emp.Id)) continue;
-                // Every discard path below records a TYPED gap as well as a warning (new rows), so the withheld
-                // salary is visible on the employee's readiness checklist and in the import summary.
+                // Every discard path below records a TYPED gap as well as a warning, so the withheld salary is
+                // visible on the employee's readiness checklist and in the import summary.
                 var structureGap = SalaryStructureGap(salary, emp.JoiningDate != default);
                 if (structureGap is not null)
                 {
                     warnings.Add($"Employee {emp.EmployeeCode}: {structureGap.Detail}");
-                    if (!isRepair) gapsByCode[payrollCode].Add(structureGap);
+                    gapsByCode[payrollCode].Add(structureGap);
                     continue;
                 }
                 if (!salary.CanAssign) continue;                                   // no salary in the file
@@ -1339,13 +1322,7 @@ public class EmployeesController : ControllerBase
                 };
                 _db.EmployeeSalaryStructures.Add(assignment);
                 stagedPayrollEntities.Add(assignment);
-                repairLookups.ActiveSalaryEmployeeIds.Add(emp.Id);
                 payrollArtifactsChanged = true;
-                if (isRepair)
-                {
-                    salaryAssignmentsRecovered++;
-                    repairedTouchedCodes.Add(payrollCode);
-                }
                 if (emp.Salary is null or 0m) emp.Salary = salary.Gross;
                 if (string.IsNullOrWhiteSpace(emp.PayrollProfileCode) && !string.IsNullOrWhiteSpace(payrollGroupRaw)) emp.PayrollProfileCode = payrollGroupRaw;
             }
@@ -1590,6 +1567,14 @@ public class EmployeesController : ControllerBase
                 replayed = false,
                 skippedNoName,
                 skippedDupCode,
+                // Existing employees in a separated status: never changed by an import (included in skippedDupCode).
+                skippedSeparated,
+                // Existing-employee rows carrying approval-gated values (bank, IBAN, account, routing, MOL ID, payment
+                // method, social insurance, GOSI, salary) that were NOT applied — change them through the employee,
+                // where they go to approval.
+                approvalRequiredCount = approvalRequired.Count,
+                approvalRequired = approvalRequired.Take(100)
+                    .Select(a => new { row = a.Row, employeeCode = a.EmployeeCode, fields = a.Fields }).ToList(),
                 incompleteDraft = createdIncomplete.Count,
                 managersUnresolved,
                 newDepartments,
@@ -1599,7 +1584,6 @@ public class EmployeesController : ControllerBase
                 hierarchyLinked,
                 payrollProfilesCreated,
                 payrollProfilesRepaired,
-                salaryAssignmentsRecovered,
                 hierarchyLinksRecovered,
                 importBatchId,
                 errors = allErrors,
@@ -2199,6 +2183,8 @@ public class EmployeesController : ControllerBase
         var previewRows = new List<object>();
         var seen = new HashSet<string>();
         int wouldCreate = 0, wouldRepair = 0, wouldSkip = 0, wouldFail = 0, wouldCreateActive = 0, wouldCreateDraft = 0;
+        // Existing-employee rows whose approval-gated values would be left unapplied (see Import).
+        int wouldNeedApproval = 0;
         int activeSeatsProjected = 0; // Active-landing rows counted against the active-seat budget (P1-4).
         // Dry-run readiness projection (§7.1): per non-error row, the landing state it WOULD get
         // (Active vs Draft) + why. Persists nothing. Policy per (company, country, nationality).
@@ -2251,13 +2237,26 @@ public class EmployeesController : ControllerBase
                     rowErrors.Add($"Duplicate EmployeeCode '{code}'");
                 else if (existingEmployeesByCode.TryGetValue(code, out var candidate))
                 {
-                    if (EmployeeImportRepairPlan.NeedsRepair(candidate, row, repairLookups, salary.CanAssign,
-                            joining.Supplied && !joining.Unparsed ? joining.Value : null))
+                    // The SAME decisions as the commit (see Import): separated employees are never touched,
+                    // approval-gated values are named and never applied, and only non-sensitive gaps are filled.
+                    if (EmployeeImportRepairPlan.IsSeparated(candidate))
+                        rowErrors.Add($"EmployeeCode '{code}' belongs to a separated employee ({candidate.Status}) — an import never changes a separated employee");
+                    else
                     {
-                        repairTarget = candidate;
-                        rowWarnings.Add("This employee already exists and will not be overwritten — only details they are missing (payroll profile fields, salary, reporting lines, an unknown joining date) will be filled in.");
+                        var gatedNotApplied = EmployeeImportRepairPlan.ApprovalGatedValuesNotApplied(candidate, row, repairLookups);
+                        if (gatedNotApplied.Count > 0)
+                        {
+                            wouldNeedApproval++;
+                            rowWarnings.Add($"{string.Join(", ", gatedNotApplied)} will NOT be applied to this existing employee — bank, payroll-identity and salary details change only through an approved change: edit the employee.");
+                        }
+                        if (EmployeeImportRepairPlan.NeedsRepair(candidate, row, repairLookups,
+                                joining.Supplied && !joining.Unparsed ? joining.Value : null))
+                        {
+                            repairTarget = candidate;
+                            rowWarnings.Add("This employee already exists and will not be overwritten — only missing non-sensitive details (payroll group, salary-structure reference, currency, reporting lines, an unknown joining date) will be filled in.");
+                        }
+                        else rowErrors.Add($"Duplicate EmployeeCode '{code}'");
                     }
-                    else rowErrors.Add($"Duplicate EmployeeCode '{code}'");
                 }
                 else if (takenCodes.Contains(code))
                     rowErrors.Add($"Duplicate EmployeeCode '{code}'");
@@ -2469,8 +2468,6 @@ public class EmployeesController : ControllerBase
             else if (!hasErrors && repairTarget is not null)
             {
                 projectedStatus = repairTarget.Status;
-                if (salary.Errors.Count > 0 && !repairLookups.ActiveSalaryEmployeeIds.Contains(repairTarget.Id))
-                    rowWarnings.Add(SalaryStructureGap(salary, true)!.Detail);
             }
 
             if (hasErrors) { status = "Error"; wouldSkip++; }
@@ -2526,6 +2523,7 @@ public class EmployeesController : ControllerBase
             wouldSkip,
             // Rows holding a value the database cannot store. The commit refuses the WHOLE file while any remain.
             wouldFail,
+            wouldNeedApproval,
             wouldCreateActive,
             wouldCreateDraft,
             fieldGaps,
@@ -5078,6 +5076,9 @@ public class EmployeesController : ControllerBase
         // field the readiness checklist told the user to fix "in profile". Applied by
         // EmployeeChangeApplier.ApplyPayrollProfileAsync, which every apply path runs.
         "socialInsuranceReference",
+        // Payroll-profile bank columns the WPS/SIF export reads; approval-gated (SensitiveFields) and applied by
+        // EmployeeChangeApplier.ApplyPayrollProfileAsync.
+        "bankRoutingCode", "accountNumber",
     };
 
     /// <summary>

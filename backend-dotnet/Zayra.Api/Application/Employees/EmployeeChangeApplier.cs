@@ -42,6 +42,11 @@ public static class EmployeeChangeApplier
         // Bahraini-company employee and every AE/QA/KW/OM national was permanently payroll-blocked on a
         // field the readiness checklist told the user to fix "in profile".
         "socialInsuranceReference",
+        // The bank's routing code and the account number are read LIVE by the WPS/SIF export. They had no edit
+        // key at all, so an approved move to another bank left the OLD bank's routing code on every wage line.
+        // Approval-gated with the IBAN (EmployeesController.SensitiveFields); see EmployeeBankProfileSync.
+        "bankRoutingCode",
+        "accountNumber",
     };
 
     /// <summary>True when the change set touches a key stored on the payroll profile.</summary>
@@ -132,6 +137,8 @@ public static class EmployeeChangeApplier
                 // reported as unknown and never rejected by the PUT allow-list check) and written by
                 // ApplyPayrollProfileAsync, which the caller runs in the same unit of work.
                 case "socialInsuranceReference": break;
+                case "bankRoutingCode": break;
+                case "accountNumber": break;
                 // NEVER add a silent fall-through here. An unrecognised key is reported, not dropped.
                 default: unknown.Add(field); break;
             }
@@ -180,8 +187,10 @@ public static class EmployeeChangeApplier
         if (!TouchesPayrollProfile(changes.Keys)) return;
 
         var tenantId = employee.TenantId.Value;
-        var profile = await db.EmployeePayrollProfiles
-            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && !x.IsDeleted, ct);
+        var profile = db.EmployeePayrollProfiles.Local
+                          .FirstOrDefault(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && !x.IsDeleted)
+                      ?? await db.EmployeePayrollProfiles
+                          .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && !x.IsDeleted, ct);
         if (profile is null)
         {
             profile = new EmployeePayrollProfile
@@ -203,6 +212,16 @@ public static class EmployeeChangeApplier
                     profile.SocialInsuranceReference = value.ValueKind == JsonValueKind.Null
                         ? string.Empty
                         : value.GetString() ?? profile.SocialInsuranceReference;
+                    break;
+                case "bankRoutingCode":
+                    profile.BankRoutingCode = value.ValueKind == JsonValueKind.Null
+                        ? string.Empty
+                        : (value.GetString() ?? profile.BankRoutingCode).Trim();
+                    break;
+                case "accountNumber":
+                    profile.AccountNumber = value.ValueKind == JsonValueKind.Null
+                        ? string.Empty
+                        : (value.GetString() ?? profile.AccountNumber).Trim();
                     break;
             }
         }
