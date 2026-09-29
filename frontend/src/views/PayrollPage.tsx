@@ -30,6 +30,7 @@ import { InfoTip } from '../components/InfoTip';
 import { useAuth } from '../contexts/AuthContext';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
+import { SaudiBankExportGate } from '../components/payroll/SaudiBankExportGate';
 import { payrollInsightEmptyCopy, payrollInsightState, payrollPeriodState } from '../lib/payrollInsightState';
 
 // ── Payroll import/export helpers ───────────────────────────────────────────────
@@ -2365,22 +2366,32 @@ function BankWpsTab() {
   const [creating, setCreating] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState('WPS');
   const [error, setError] = useState('');
+  const openBatchIdRef = useRef<string | null>(null);
+  const currentRunRef = useRef(runId);
+  currentRunRef.current = runId;
 
   useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
 
   useEffect(() => {
-    if (!runId) { setBatches([]); return; }
+    let cancelled = false;
+    openBatchIdRef.current = null;
+    setBatches([]); setSelectedBatch(null); setRecords([]);
+    if (!runId) return;
     setError('');
-    payrollApi.listPaymentBatches(runId).then(setBatches).catch(() => {});
+    payrollApi.listPaymentBatches(runId).then(rows => { if (!cancelled) setBatches(rows); }).catch(() => {});
+    return () => { cancelled = true; };
   }, [runId]);
 
   const selectedRun = runs.find(r => r.id === runId);
   // Backend (C5 control) only allows payment batches for Locked runs — finance must lock first.
   const runIsLocked = selectedRun?.status === 'Locked';
+  const hasExistingBatch = batches.some(b => b.wpsStatus !== 'Voided');
 
   const openBatch = (batch: PayrollPaymentBatch) => {
-    setSelectedBatch(batch);
-    payrollApi.paymentRecords(batch.id).then(setRecords).catch(() => {});
+    openBatchIdRef.current = batch.id;
+    setSelectedBatch(batch); setRecords([]);
+    payrollApi.paymentRecords(batch.id)
+      .then(rows => { if (openBatchIdRef.current === batch.id) setRecords(rows); }).catch(() => {});
   };
 
   const createBatch = async () => {
@@ -2389,9 +2400,9 @@ function BankWpsTab() {
     setError('');
     try {
       const batch = await payrollApi.createPaymentBatch(runId, paymentMethod);
+      if (currentRunRef.current !== runId) return;
       setBatches(b => [batch, ...b]);
-      setSelectedBatch(batch);
-      payrollApi.paymentRecords(batch.id).then(setRecords).catch(() => {});
+      openBatch(batch);
     } catch (e) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
       setError(msg ?? 'Could not create payment batch. The payroll run must be Locked first (Approvals tab → Lock Run).');
@@ -2423,8 +2434,8 @@ function BankWpsTab() {
             <select aria-label="Payment method" className={`${sel} w-40`} value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)}>
               {['WPS', 'BankTransfer', 'Cash'].map(m => <option key={m}>{m}</option>)}
             </select>
-            <button type="button" className={btn.primary} onClick={createBatch} disabled={creating || !runIsLocked}>
-              {creating ? 'Creating…' : 'Create Payment Batch'}
+            <button type="button" className={btn.primary} onClick={createBatch} disabled={creating || !runIsLocked || hasExistingBatch}>
+              {creating ? 'Creating…' : hasExistingBatch ? 'Payment Batch Created' : 'Create Payment Batch'}
             </button>
           </>
         )}
@@ -2505,6 +2516,7 @@ function BankWpsTab() {
           )}
         </div>
       </div>
+      {selectedBatch && <SaudiBankExportGate key={selectedBatch.id} batchId={selectedBatch.id} employeeIds={records.map(r => r.employeeId)} />}
     </div>
   );
 }
