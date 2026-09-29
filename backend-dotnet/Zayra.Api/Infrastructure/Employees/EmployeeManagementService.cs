@@ -1,13 +1,17 @@
+using System.Data;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Controllers;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Documents;
+using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Models;
 
@@ -95,6 +99,18 @@ public class EmployeeManagementService : IEmployeeManagementService
 
     public async Task<EmployeeDetailDto> CreateAsync(Guid tenantId, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken)
     {
+        // ── HOME JURISDICTION PRECONDITION (server-authoritative) ───────────────────────────────────
+        // The EMPLOYING company's country keys every statutory requirement (identity documents, leave
+        // entitlements, activation gates). A blank one resolves an EMPTY requirement set, so the create
+        // can only fail — see HomeJurisdiction. The Add Employee modal disables its submit button in this
+        // state, but a disabled button is a UX affordance, not authorization: this is the refusal a direct
+        // API call, a stale tab or an integration also hits. Reuses HomeJurisdiction.IsMissing /
+        // CompanyMessage so the API and the modal can never disagree about the condition or the wording.
+        //
+        // Runs FIRST — before duplicate detection and GenerateEmployeeCode (which persists an
+        // EmployeeIdRule sequence bump) — so a refusal never burns a code number (M1).
+        await EnsureCompanyHasCountryAsync(tenantId, request.CompanyId, cancellationToken);
+
         // ── AUTHORITATIVE DUPLICATE BACKSTOP (never-silent-dup) ─────────────────────────────────────
         // Runs FIRST — before GenerateEmployeeCode (which persists an EmployeeIdRule sequence bump), so a
         // refusal never burns a code number or leaves an orphan rule write (M1). Identity values come from
@@ -130,7 +146,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         // below is the backstop for other callers.
         var createIban = Clean(request.PayrollProfile?.Iban);
         if (!string.IsNullOrWhiteSpace(createIban) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(createIban))
-            throw new InvalidOperationException($"IBAN '{createIban}' is invalid — it fails the ISO 13616 mod-97 checksum. Enter a correct IBAN before saving.");
+            throw new InvalidOperationException($"IBAN '{createIban}' is invalid — its country format/length or ISO 13616 mod-97 checksum is incorrect. Enter a correct IBAN before saving.");
         employee.Status = "Draft";
         employee.ProfileCompletenessScore = CalculateCompleteness(employee, request.PayrollProfile, request.ComplianceRecords);
         // ESTABLISHMENT GUARD (path "create"): hard-enforced at the form save even though a Draft
@@ -230,8 +246,66 @@ public class EmployeeManagementService : IEmployeeManagementService
 
     public async Task<EmployeeDetailDto?> ChangeStatusAsync(Guid tenantId, int id, EmployeeStatusChangeRequest request, RequestContext context, CancellationToken cancellationToken)
     {
-        var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
-        if (employee is null) return null;
+        var changedAtUtc = DateTime.UtcNow;
+        var statusAuditId = Guid.NewGuid();
+        var payrollAuditId = Guid.NewGuid();
+        var statusHistoryId = Guid.NewGuid();
+        var lifecycleHistoryId = Guid.NewGuid();
+        var separationId = Guid.NewGuid();
+        var employeeFound = false;
+
+        async Task ChangeStatusOnceAsync(CancellationToken ct)
+        {
+        _db.ChangeTracker.Clear();
+        employeeFound = false;
+
+        // Authentication and lifecycle writers share this lock order. Holding the user anchor before
+        // touching a challenge/refresh row means an MFA completion or refresh cannot commit on the old
+        // eligibility state while this employee transition commits on the new one.
+        var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForShareTag)
+            .SingleOrDefaultAsync(x => x.Id == tenantId, ct);
+        // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
+        var employee = await _db.Employees.IgnoreQueryFilters()
+            .TagWith(RowLockingInterceptor.ForUpdateTag)
+            .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, ct);
+        // A real relational write requires the tenant serialization anchor. The legacy InMemory
+        // lifecycle fixtures intentionally seed only Employee rows; there are no row locks there,
+        // so retaining that provider-compatible test contract is safe.
+        if (employee is null || (_db.Database.IsRelational() && tenant is null)) return;
+
+        var links = await _db.EmployeeUserAccounts.IgnoreQueryFilters()
+            .TagWith(RowLockingInterceptor.ForUpdateTag)
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == id && !x.IsDeleted)
+            .OrderBy(x => x.Id)
+            .ToListAsync(ct);
+        var linkedUserIds = links.Where(x => x.UserId.HasValue).Select(x => x.UserId!.Value)
+            .Append(employee.UserAccountId ?? Guid.Empty)
+            .Where(x => x != Guid.Empty)
+            .Distinct()
+            .OrderBy(x => x)
+            .ToList();
+        var linkedUsers = linkedUserIds.Count == 0
+            ? []
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
+            : await _db.Users.IgnoreQueryFilters()
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.TenantId == tenantId && linkedUserIds.Contains(x.Id) && !x.IsDeleted)
+                .OrderBy(x => x.Id)
+                .ToListAsync(ct);
+
+        if (linkedUserIds.Count > 0)
+        {
+            await _db.PasswordResetTokens.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => linkedUserIds.Contains(x.UserId) && x.UsedAtUtc == null)
+                .OrderBy(x => x.Id).Select(x => x.Id).ToListAsync(ct);
+            await _db.MfaChallengeTokens.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.UserId.HasValue && linkedUserIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
+                .OrderBy(x => x.Id).Select(x => x.Id).ToListAsync(ct);
+            await _db.RefreshTokens.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => linkedUserIds.Contains(x.UserId) && x.RevokedAtUtc == null)
+                .OrderBy(x => x.Id).Select(x => x.Id).ToListAsync(ct);
+        }
+
         var oldStatus = employee.Status;
         // READINESS GATE (§5.2/§5.3): fire ONLY when becoming Active from a NON-occupying status —
         // first-time activations and rehires (Draft/Invited/Terminated/…→Active). Runs BEFORE any
@@ -240,24 +314,119 @@ public class EmployeeManagementService : IEmployeeManagementService
         // occupying→occupying and are deliberately NOT gated (mandated reinstatement is never refused).
         if (_activationGuard.ShouldGate(oldStatus, request.Status))
         {
-            var gateSnapshot = await _activationGuard.BuildSnapshotAsync(tenantId, id, cancellationToken);
+            var gateSnapshot = await _activationGuard.BuildSnapshotAsync(tenantId, id, ct);
             if (gateSnapshot is not null)
-                await _activationGuard.EnsureActivatableAsync(tenantId, employee.CompanyId, gateSnapshot, context, cancellationToken);
+                await _activationGuard.EnsureActivatableAsync(tenantId, employee.CompanyId, gateSnapshot, context, ct);
         }
         employee.Status = request.Status;
-        employee.UpdatedAtUtc = DateTime.UtcNow;
+        employee.UpdatedAtUtc = changedAtUtc;
         employee.UpdatedBy = context.UserId;
         _db.EmployeeStatusHistories.Add(new EmployeeStatusHistory
         {
+            Id = statusHistoryId,
             TenantId = tenantId,
             EmployeeId = id,
             OldStatus = oldStatus,
             NewStatus = request.Status,
             EffectiveDate = request.EffectiveDate,
             Reason = request.Reason,
-            ChangedByUserId = context.UserId
+            ChangedByUserId = context.UserId,
+            CreatedAtUtc = changedAtUtc
         });
-        await AddHistory(employee, "StatusChange", "Status", oldStatus, request.Status, request.EffectiveDate, request.Reason, context, cancellationToken);
+        _db.EmployeeHistories.Add(new EmployeeHistory
+        {
+            Id = lifecycleHistoryId,
+            TenantId = tenantId,
+            EmployeeId = id,
+            EventType = "StatusChange",
+            FieldName = "Status",
+            OldValue = EmployeeSafeSnapshot.SanitizeFieldValue("Status", oldStatus),
+            NewValue = EmployeeSafeSnapshot.SanitizeFieldValue("Status", request.Status),
+            EffectiveDate = request.EffectiveDate,
+            Reason = request.Reason,
+            CreatedByUserId = context.UserId,
+            SnapshotJson = EmployeeSafeSnapshot.Serialize(employee),
+            CreatedAtUtc = changedAtUtc
+        });
+
+        // A lifecycle transition that removes working access must close every credential edge in
+        // the SAME transaction as the employee state. Offboarded is deliberately excluded: that
+        // status means serving notice, and access remains until the explicit offboarding revoke.
+        // Reactivation never grants login here; identity re-enablement is a separate, privileged
+        // access-management decision.
+        var invalidatesCredentials = request.Status is EmployeeStatuses.Suspended
+            or EmployeeStatuses.Inactive
+            or EmployeeStatuses.Terminated
+            or EmployeeStatuses.Archived
+            or EmployeeStatuses.Exited;
+        var invalidatedLinks = 0;
+        var invalidatedUsers = 0;
+        var invalidatedPasswordResets = 0;
+        var invalidatedMfaChallenges = 0;
+        var invalidatedRefreshTokens = 0;
+        if (invalidatesCredentials)
+        {
+            foreach (var link in links)
+            {
+                link.AccessMode = AccessModes.NoLogin;
+                link.Status = "NoLogin";
+                link.RequiresPasswordSetup = false;
+                link.InvitationTokenHash = string.Empty;
+                link.InvitationExpiresAtUtc = null;
+                link.LoginDisabledReason = $"Employee lifecycle status: {request.Status}";
+                link.UpdatedAtUtc = changedAtUtc;
+                link.UpdatedBy = context.UserId;
+                invalidatedLinks++;
+            }
+
+            foreach (var linkedUser in linkedUsers)
+            {
+                linkedUser.IsActive = false;
+                linkedUser.Status = "Deactivated";
+                linkedUser.AccessMode = AccessModes.NoLogin;
+                TenantSessionSecurity.RotateStamp(linkedUser, changedAtUtc);
+                invalidatedUsers++;
+            }
+
+            if (_db.Database.IsRelational())
+            {
+                invalidatedPasswordResets = await _db.PasswordResetTokens
+                    .Where(x => linkedUserIds.Contains(x.UserId) && x.UsedAtUtc == null)
+                    .ExecuteUpdateAsync(s => s.SetProperty(x => x.UsedAtUtc, changedAtUtc), ct);
+                invalidatedMfaChallenges = await _db.MfaChallengeTokens
+                    .Where(x => x.UserId.HasValue && linkedUserIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
+                    .ExecuteUpdateAsync(s => s.SetProperty(x => x.UsedAtUtc, changedAtUtc), ct);
+                invalidatedRefreshTokens = await _db.RefreshTokens
+                    .Where(x => linkedUserIds.Contains(x.UserId) && x.RevokedAtUtc == null)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(x => x.RevokedAtUtc, changedAtUtc)
+                        .SetProperty(x => x.RevokedByIp, context.IpAddress), ct);
+            }
+            else
+            {
+                var resets = await _db.PasswordResetTokens
+                    .Where(x => linkedUserIds.Contains(x.UserId) && x.UsedAtUtc == null)
+                    .ToListAsync(ct);
+                foreach (var reset in resets) reset.UsedAtUtc = changedAtUtc;
+                invalidatedPasswordResets = resets.Count;
+
+                var challenges = await _db.MfaChallengeTokens
+                    .Where(x => x.UserId.HasValue && linkedUserIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
+                    .ToListAsync(ct);
+                foreach (var challenge in challenges) challenge.UsedAtUtc = changedAtUtc;
+                invalidatedMfaChallenges = challenges.Count;
+
+                var refreshTokens = await _db.RefreshTokens
+                    .Where(x => linkedUserIds.Contains(x.UserId) && x.RevokedAtUtc == null)
+                    .ToListAsync(ct);
+                foreach (var refresh in refreshTokens)
+                {
+                    refresh.RevokedAtUtc = changedAtUtc;
+                    refresh.RevokedByIp = context.IpAddress;
+                }
+                invalidatedRefreshTokens = refreshTokens.Count;
+            }
+        }
 
         // ── D1: A TERMINATION MUST PRODUCE AUTHORITATIVE SEPARATION DATA ─────────────────────────────
         // Before this, POST /employees/{id}/terminate set Status = "Terminated" and created NOTHING
@@ -296,7 +465,7 @@ public class EmployeeManagementService : IEmployeeManagementService
                 .Where(o => o.TenantId == tenantId && o.EmployeeId == id
                          && o.Status != "Cancelled" && o.Status != "Completed")
                 .OrderByDescending(o => o.CreatedAtUtc)
-                .FirstOrDefaultAsync(cancellationToken);
+                .FirstOrDefaultAsync(ct);
 
             // ── A CLOSED SERVICE PERIOD IS NOT REOPENED BY REPEATING THE COMMAND ───────────────────
             // Dropping the oldStatus condition (R2) let the archive be remediated, but it also made the
@@ -328,7 +497,7 @@ public class EmployeeManagementService : IEmployeeManagementService
                     .Where(o => o.TenantId == tenantId && o.EmployeeId == id && o.Status == "Completed")
                     .OrderByDescending(o => o.LastWorkingDay)
                     .Select(o => (DateOnly?)o.LastWorkingDay)
-                    .FirstOrDefaultAsync(cancellationToken);
+                    .FirstOrDefaultAsync(ct);
                 if (lastClosed is { } closedOn)
                 {
                     var returnedToWork = await _db.EmployeeStatusHistories
@@ -337,7 +506,7 @@ public class EmployeeManagementService : IEmployeeManagementService
                                     && (h.NewStatus == EmployeeStatuses.Active
                                      || h.NewStatus == "Offboarded"
                                      || h.NewStatus == "Suspended"),
-                                  cancellationToken);
+                                  ct);
                     periodAlreadyClosed = !returnedToWork;
                 }
             }
@@ -357,6 +526,7 @@ public class EmployeeManagementService : IEmployeeManagementService
 
                 _db.EmployeeOffboardings.Add(new EmployeeOffboarding
                 {
+                    Id = separationId,
                     TenantId = tenantId,
                     EmployeeId = id,
                     EmployeeName = employee.FullName,
@@ -374,7 +544,7 @@ public class EmployeeManagementService : IEmployeeManagementService
                     Status = "InProgress",
                     // L9: a record that drives a payable must name its author.
                     CreatedByUserId = context.UserId,
-                    CreatedAtUtc = DateTime.UtcNow,
+                    CreatedAtUtc = changedAtUtc,
                 });
                 separationCreated = true;
             }
@@ -422,11 +592,11 @@ public class EmployeeManagementService : IEmployeeManagementService
                 .Where(f => f.TenantId == tenantId && f.EmployeeId == id
                          && f.Status != FinalSettlementStatuses.Cancelled)
                 .Select(f => f.OffboardingId)
-                .ToListAsync(cancellationToken);
+                .ToListAsync(ct);
             var open = await _db.EmployeeOffboardings
                 .Where(o => o.TenantId == tenantId && o.EmployeeId == id
                          && o.Status != "Cancelled" && o.Status != "Completed")
-                .ToListAsync(cancellationToken);
+                .ToListAsync(ct);
 
             // An accrued settlement has a journal behind it, so this code may not quietly cancel the
             // record it was raised against. Nor may it leave it live, because the next termination would
@@ -451,14 +621,14 @@ public class EmployeeManagementService : IEmployeeManagementService
                     ? $"Superseded: employee reactivated on {request.EffectiveDate:yyyy-MM-dd}."
                     : $"{stale.Reason} | Superseded: employee reactivated on {request.EffectiveDate:yyyy-MM-dd}. "
                       + "A new service period starts here and will get its own separation.";
-                stale.UpdatedAtUtc = DateTime.UtcNow;
+                stale.UpdatedAtUtc = changedAtUtc;
                 cancelledSeparationIds.Add(stale.Id);
             }
         }
 
         // Stamp ActivatedAtUtc on the first successful activation (the gate above already passed).
         if (string.Equals(request.Status, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase) && employee.ActivatedAtUtc is null)
-            employee.ActivatedAtUtc = DateTime.UtcNow;
+            employee.ActivatedAtUtc = changedAtUtc;
         // ── EXIT CASCADE — STAGED INTO THIS TRANSACTION, NOT A LATER ONE ────────────────────────────
         // Deactivate the WPS footprint so an ex-employee cannot be swept into a SIF export. This used to
         // run AFTER the status transition had already committed, in a transaction of its own: a client
@@ -474,7 +644,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         var footprintStaged = (Profiles: 0, SalaryStructures: 0);
         if (ExitEmployeeStatuses.PayrollDeactivation.Contains(request.Status, StringComparer.OrdinalIgnoreCase))
             footprintStaged = await StagePayrollFootprintDeactivationAsync(
-                _db, tenantId, id, deactivateSalaryStructure: false, context, cancellationToken);
+                _db, tenantId, id, deactivateSalaryStructure: false, context, ct);
 
         // ESTABLISHMENT GUARD (path "reactivate"): only a transition INTO an occupying status
         // (Draft/Invited/Terminated/… → Active, activation, rehire) consumes a seat and is
@@ -485,39 +655,117 @@ public class EmployeeManagementService : IEmployeeManagementService
             await _establishmentGuard.EnforceAndExecuteAsync(tenantId, employee.DepartmentId, employee.DesignationId,
                 excludeEmployeeId: employee.Id, path: "reactivate", context, async () =>
                 {
-                    await _db.SaveChangesAsync(cancellationToken);
+                    await _db.SaveChangesAsync(ct);
                     return true;
-                }, cancellationToken);
+                }, ct);
         }
         else
         {
-            await _db.SaveChangesAsync(cancellationToken);
+            await _db.SaveChangesAsync(ct);
         }
-        await RefreshReadinessSnapshotAsync(employee, cancellationToken);
-        await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("employee.status_changed", "Employee", id.ToString(), context,
-            JsonSerializer.Serialize(new
-            {
-                oldStatus, request.Status, request.Reason,
-                // D1: the separation is part of the evidence for this transition, not a side effect.
-                separationCreated,
-                separationType = separationCreated ? separationType : null,
-                lastWorkingDay = separationCreated ? request.EffectiveDate : (DateOnly?)null,
-                // Cancelling a separation decides which record /final-settlement picks, so it is
-                // evidence in its own right — it used to happen silently.
-                cancelledSeparationIds = cancelledSeparationIds.Count == 0 ? null : cancelledSeparationIds,
-            }), cancellationToken);
+        await RefreshReadinessSnapshotAsync(employee, ct);
 
-        // The cascade itself already committed with the status change above; this is only its evidence.
+        var auditContext = context with { TenantId = tenantId };
+        var statusMetadata = JsonSerializer.Serialize(new
+        {
+            oldStatus,
+            request.Status,
+            request.Reason,
+            // D1: the separation is part of the evidence for this transition, not a side effect.
+            separationCreated,
+            separationType = separationCreated ? separationType : null,
+            lastWorkingDay = separationCreated ? request.EffectiveDate : (DateOnly?)null,
+            // Cancelling a separation decides which record /final-settlement picks, so it is
+            // evidence in its own right — it used to happen silently.
+            cancelledSeparationIds = cancelledSeparationIds.Count == 0 ? null : cancelledSeparationIds,
+            credentials = invalidatesCredentials
+                ? new
+                {
+                    links = invalidatedLinks,
+                    users = invalidatedUsers,
+                    passwordResets = invalidatedPasswordResets,
+                    mfaChallenges = invalidatedMfaChallenges,
+                    refreshTokens = invalidatedRefreshTokens
+                }
+                : null
+        });
+        _db.AuditLogs.Add(AuthAuditEntry.Create(
+            statusAuditId,
+            changedAtUtc,
+            "employee.status_changed",
+            "Employee",
+            id.ToString(),
+            auditContext,
+            statusMetadata));
+
+        // The cascade itself is committed with the status transition; its marker is staged in that
+        // same unit so a caller can never see the effect without its evidence (or vice versa).
         if (footprintStaged.Profiles > 0 || footprintStaged.SalaryStructures > 0)
-            await _audit.WriteAsync("employee.payroll_footprint_deactivated", "Employee", id.ToString(), context,
+        {
+            _db.AuditLogs.Add(AuthAuditEntry.Create(
+                payrollAuditId,
+                changedAtUtc,
+                "employee.payroll_footprint_deactivated",
+                "Employee",
+                id.ToString(),
+                auditContext,
                 JsonSerializer.Serialize(new
                 {
                     reason = $"status:{oldStatus}->{request.Status}",
                     salaryDeactivated = footprintStaged.SalaryStructures,
                     profileDeactivated = footprintStaged.Profiles,
-                }), cancellationToken);
+                })));
+        }
 
+        await _db.SaveChangesAsync(ct);
+        employeeFound = true;
+        }
+
+        async Task<bool> ExactCommitExistsAsync(CancellationToken ct)
+        {
+            // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
+            var markerExists = await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
+                .AnyAsync(x => x.Id == statusAuditId
+                    && x.TenantId == tenantId
+                    && x.Action == "employee.status_changed"
+                    && x.EntityName == "Employee"
+                    && x.EntityId == id.ToString(), ct);
+            if (!markerExists) return false;
+
+            // The stable marker and both stable history rows are written by one transaction. Requiring
+            // all three prevents a similarly named audit from being mistaken for this invocation.
+            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
+            return await _db.EmployeeStatusHistories.IgnoreQueryFilters().AsNoTracking()
+                    .AnyAsync(x => x.Id == statusHistoryId
+                        && x.TenantId == tenantId
+                        && x.EmployeeId == id
+                        && x.NewStatus == request.Status, ct)
+                && await _db.EmployeeHistories.IgnoreQueryFilters().AsNoTracking()
+                    .AnyAsync(x => x.Id == lifecycleHistoryId
+                        && x.TenantId == tenantId
+                        && x.EmployeeId == id
+                        && x.EventType == "StatusChange"
+                        && x.NewValue == EmployeeSafeSnapshot.SanitizeFieldValue("Status", request.Status), ct);
+        }
+
+        if (_db.Database.IsRelational())
+        {
+            var strategy = _db.Database.CreateExecutionStrategy();
+            await strategy.ExecuteInTransactionAsync(
+                ChangeStatusOnceAsync,
+                async ct => await ExactCommitExistsAsync(ct),
+                IsolationLevel.ReadCommitted,
+                cancellationToken);
+        }
+        else
+        {
+            await ChangeStatusOnceAsync(cancellationToken);
+        }
+
+        // A lost COMMIT acknowledgement can complete with the local result unavailable. Reconcile
+        // only this call's exact stable marker/history tuple before returning the authoritative DTO.
+        if (!employeeFound && !await ExactCommitExistsAsync(cancellationToken)) return null;
+        _db.ChangeTracker.Clear();
         return await GetAsync(tenantId, id, true, context, cancellationToken);
     }
 
@@ -692,7 +940,16 @@ public class EmployeeManagementService : IEmployeeManagementService
     /// it entirely. Failing closed here means an unrecognised value is refused at the door instead of
     /// becoming a wrong payment months later.</para>
     /// </summary>
-    private static readonly string[] AllowedSeparationTypes =
+    /// <remarks>
+    /// S2-B3 — this is now PUBLIC. It used to be private, and the only caller was the
+    /// <c>PATCH /employees/{id}/status</c> terminate command. <c>OffboardingController.Initiate</c> — the
+    /// endpoint the offboarding SCREEN posts to — wrote <c>req.SeparationType</c> verbatim, so the closed
+    /// vocabulary this comment defends was bypassed by the product's own UI, which offered
+    /// "End of Contract" and "Other" (neither of which is in the set) and could not offer
+    /// <c>Article80</c>, <c>Death</c>, <c>ProbationFailure</c> or <c>Redundancy</c> at all. Publishing the
+    /// vocabulary lets the initiate path and the screen read the SAME list instead of drifting from it.
+    /// </remarks>
+    public static readonly string[] AllowedSeparationTypes =
     [
         "Termination", "Resignation", "Retirement", "EndOfContract", "Redundancy",
         // NOTE: no "Abscondment". PayrollController.NormalizeTerminationReason recognises only
@@ -700,9 +957,42 @@ public class EmployeeManagementService : IEmployeeManagementService
         // "Abscondment" would have paid a full gratuity in exactly the case this doc-comment cites as
         // the reason the vocabulary is closed. An absconding case is recorded as "Article80".
         "ProbationFailure", "Article80", "Death",
+        // The Art.85 EXCEPTIONS. Both are resignations in fact, and both pay the FULL Art.84 award.
+        // Without them the screen could only record "Resignation", which applies the Art.85 haircut —
+        // so a woman resigning within six months of marriage, or anyone leaving under Art.81 because
+        // the employer was at fault, was under-paid with no way for the operator to say otherwise.
+        "Article87", "Article81",
     ];
 
-    internal static string NormalizeSeparationType(string? requested)
+    /// <summary>
+    /// S2-B3 — the separation types that FORFEIT the end-of-service award outright.
+    /// <c>PayrollController.NormalizeTerminationReason</c> maps only "Article80" (and its aliases) to the
+    /// Art. 80 forfeiture branch; everything else is paid. Keying a summary dismissal as "Termination"
+    /// therefore pays a FULL Art. 84 award — which is exactly what happened while the screen could not
+    /// offer Article80. Callers use this to make the consequence explicit before the record is written.
+    /// </summary>
+    public static bool ForfeitsEndOfServiceAward(string? separationType) =>
+        string.Equals(separationType?.Trim(), "Article80", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// S2-B3 — non-throwing form of <see cref="NormalizeSeparationType"/> for the HTTP paths, which must
+    /// answer with a 400 naming the allowed values rather than a 500.
+    /// </summary>
+    public static bool TryNormalizeSeparationType(string? requested, out string normalized)
+    {
+        try
+        {
+            normalized = NormalizeSeparationType(requested);
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            normalized = string.Empty;
+            return false;
+        }
+    }
+
+    public static string NormalizeSeparationType(string? requested)
     {
         // Conservative default for an employer-initiated command with nothing stated.
         if (string.IsNullOrWhiteSpace(requested)) return "Termination";
@@ -1108,7 +1398,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         // the person entering it fixes it now. Empty is allowed (bank details filled in later).
         var cleanIban = Clean(request.Iban);
         if (!string.IsNullOrWhiteSpace(cleanIban) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(cleanIban))
-            throw new InvalidOperationException($"IBAN '{cleanIban}' is invalid — it fails the ISO 13616 mod-97 checksum. Enter a correct IBAN before saving.");
+            throw new InvalidOperationException($"IBAN '{cleanIban}' is invalid — its country format/length or ISO 13616 mod-97 checksum is incorrect. Enter a correct IBAN before saving.");
         profile.Iban = cleanIban;
         profile.AccountNumber = Clean(request.AccountNumber);
         profile.PaymentMethod = Clean(request.PaymentMethod);
@@ -1212,17 +1502,29 @@ public class EmployeeManagementService : IEmployeeManagementService
 
     private async Task UpsertEmployeeSalaryStructure(Employee employee, EmployeeSalaryBreakdownRequest? request, RequestContext context, CancellationToken cancellationToken)
     {
-        if (employee.TenantId is null || employee.GradeId is null) return;
-        var grade = await _db.Grades.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == employee.TenantId && x.Id == employee.GradeId && !x.IsDeleted, cancellationToken);
-        if (grade is null) return;
+        // A GRADE IS NO LONGER THE GATE. It used to be: an employee without a grade returned here
+        // before the breakdown was ever read, so an explicit salaryBreakdown on the create/update
+        // request was accepted with 200 and silently dropped — employee.Salary stayed 0, no
+        // EmployeeSalaryStructure row was written, and the employee joined payroll on nothing. A
+        // 14-employee run then reported a gross total of the one person who happened to have a
+        // grade. The repo rule is refuse rather than guess; silent partial success is neither, so
+        // the operator's numbers are now honoured whether or not a grade resolves.
+        if (employee.TenantId is null) return;
+        var grade = employee.GradeId is null
+            ? null
+            : await _db.Grades.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == employee.TenantId && x.Id == employee.GradeId && !x.IsDeleted, cancellationToken);
 
-        var components = await _db.GradePayScaleComponents
-            .AsNoTracking()
-            .Where(x => x.TenantId == employee.TenantId && x.GradeId == grade.Id && x.IsActive)
-            .OrderBy(x => x.SortOrder)
-            .ToListAsync(cancellationToken);
+        var components = grade is null
+            ? new List<GradePayScaleComponent>()
+            : await _db.GradePayScaleComponents
+                .AsNoTracking()
+                .Where(x => x.TenantId == employee.TenantId && x.GradeId == grade.Id && x.IsActive)
+                .OrderBy(x => x.SortOrder)
+                .ToListAsync(cancellationToken);
 
         var salary = BuildSalaryBreakdown(request, components);
+        // Nothing to assign: no grade pay scale AND no supplied figures. Unchanged behaviour — this
+        // is the ordinary "the salary section of the form was left empty" case, not a dropped value.
         if (GrossSalary(salary) <= 0) return;
 
         var effectiveDate = request?.EffectiveDate ?? DateOnly.FromDateTime(employee.JoiningDate == default ? DateTime.UtcNow : employee.JoiningDate);
@@ -1231,17 +1533,25 @@ public class EmployeeManagementService : IEmployeeManagementService
             .ExecuteUpdateAsync(x => x.SetProperty(p => p.IsActive, false), cancellationToken);
 
         var structureCode = Clean(request?.SalaryStructureCode);
-        if (string.IsNullOrWhiteSpace(structureCode)) structureCode = $"GRADE-{grade.Code}";
+        if (string.IsNullOrWhiteSpace(structureCode))
+            structureCode = grade is null ? DirectSalaryStructureCode : $"GRADE-{grade.Code}";
         var structure = await _db.SalaryStructures.FirstOrDefaultAsync(x => x.TenantId == employee.TenantId && x.Code == structureCode && !x.IsDeleted, cancellationToken);
         if (structure is null)
         {
+            // Currency, most specific first: what the operator typed, then the grade's, then the
+            // employing company's default. Never a hard-coded literal — the entity default is "AED".
+            var structureCurrency = Clean(request?.Currency) is { Length: > 0 } requestCurrency
+                ? requestCurrency.ToUpperInvariant()
+                : grade?.Currency is { Length: > 0 } gradeCurrency
+                    ? gradeCurrency
+                    : await ResolveCompanyCurrencyAsync(employee, cancellationToken);
             structure = new SalaryStructure
             {
                 TenantId = employee.TenantId.Value,
                 CompanyId = employee.CompanyId,
                 Code = structureCode,
-                Name = $"{grade.Name} salary structure",
-                Currency = Clean(request?.Currency) is { Length: > 0 } requestCurrency ? requestCurrency.ToUpperInvariant() : grade.Currency,
+                Name = grade is null ? "Direct salary structure" : $"{grade.Name} salary structure",
+                Currency = structureCurrency,
                 EffectiveDate = effectiveDate,
                 CreatedBy = context.UserId
             };
@@ -1283,6 +1593,22 @@ public class EmployeeManagementService : IEmployeeManagementService
         _db.EmployeeSalaryStructures.Add(assignment);
         employee.Salary = GrossSalary(salary);
         employee.PayrollProfileCode = string.IsNullOrWhiteSpace(employee.PayrollProfileCode) ? structure.Code : employee.PayrollProfileCode;
+    }
+
+    /// <summary>Code of the structure that carries a salary entered directly on the employee, with no
+    /// grade pay scale behind it. One per tenant, mirroring the GRADE-{code} convention above.</summary>
+    private const string DirectSalaryStructureCode = "DIRECT";
+
+    /// <summary>The employing company's default currency — the last fallback when neither the request
+    /// nor a grade names one.</summary>
+    private async Task<string> ResolveCompanyCurrencyAsync(Employee employee, CancellationToken cancellationToken)
+    {
+        if (employee.CompanyId is not Guid companyId) return "AED";
+        var currency = await _db.Companies.AsNoTracking()
+            .Where(x => x.TenantId == employee.TenantId && x.Id == companyId)
+            .Select(x => x.DefaultCurrency)
+            .FirstOrDefaultAsync(cancellationToken);
+        return string.IsNullOrWhiteSpace(currency) ? "AED" : currency.Trim().ToUpperInvariant();
     }
 
     private static EmployeeSalaryBreakdownRequest BuildSalaryBreakdown(EmployeeSalaryBreakdownRequest? request, IReadOnlyCollection<GradePayScaleComponent> components)
@@ -1344,6 +1670,32 @@ public class EmployeeManagementService : IEmployeeManagementService
     /// stamping in ZayraDbContext enforces explicit company context instead of a silent
     /// oldest-company guess.
     /// </summary>
+    /// <summary>
+    /// Refuses a create whose employing company has no stated country. The company is the one the
+    /// request names, or — when it names none — the tenant's single company, which is exactly what
+    /// <see cref="ResolveDefaultCompanyId"/> assigns the employee moments later. When no single company
+    /// resolves there is nothing to check and nothing to state, so the existing behaviour stands.
+    /// </summary>
+    private async Task EnsureCompanyHasCountryAsync(Guid tenantId, Guid? requestedCompanyId, CancellationToken cancellationToken)
+    {
+        var companyId = requestedCompanyId ?? await ResolveDefaultCompanyId(tenantId, cancellationToken);
+        if (companyId is not Guid employingCompanyId) return;
+
+        var company = await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.Id == employingCompanyId && !c.IsDeleted)
+            .Select(c => new { c.CountryCode, c.LegalNameEn, c.TradeName })
+            .FirstOrDefaultAsync(cancellationToken);
+        if (company is null) return;   // a bad company id is the existing paths' business, not this guard's
+
+        if (!HomeJurisdiction.IsMissing(company.CountryCode)) return;
+
+        // Same label the boot-time MissingCountryAudit reports, so one company is named one way everywhere.
+        var label = string.IsNullOrWhiteSpace(company.LegalNameEn)
+            ? (string.IsNullOrWhiteSpace(company.TradeName) ? null : company.TradeName)
+            : company.LegalNameEn;
+        throw new CompanyCountryMissingException(employingCompanyId, label);
+    }
+
     private async Task<Guid?> ResolveDefaultCompanyId(Guid tenantId, CancellationToken cancellationToken)
     {
         var ids = await _db.Companies

@@ -1,13 +1,5 @@
-// ============================================================
-// KynexOne Mobile — Cross-tab navigation
-// ============================================================
-//
-// Screens live in per-tab stacks, so navigation.navigate('Notifications') from
-// the Home stack is silently unhandled: no navigator above Home knows that name.
-// Every cross-tab jump goes through navigateTo(), which knows which tab (and
-// which nested stack) owns each screen for the current user's tab layout.
-
 import { createNavigationContainerRef } from '@react-navigation/native';
+import { deriveMobileAccess, type MobileSurface } from '@/auth/accessPolicy';
 import type { AuthUser } from '@/types';
 
 export const navigationRef = createNavigationContainerRef<any>();
@@ -28,62 +20,101 @@ export type AppRoute =
   | 'AttendanceHistory'
   | 'AttendanceCorrection'
   | 'Approvals'
-  | 'Team';
+  | 'Team'
+  | 'KioskPunch'
+  | 'Account';
 
-/** Managers, supervisors, HR and admins get the manager tab layout (Team + Approvals). */
+const ROUTE_SURFACE: Record<AppRoute, MobileSurface> = {
+  Home: 'employeeHome',
+  Notifications: 'notifications',
+  AIAssistant: 'aiAssistant',
+  Documents: 'documents',
+  HRRequests: 'hrRequests',
+  HRRequestDetail: 'hrRequests',
+  Profile: 'profile',
+  Settings: 'settings',
+  Overtime: 'overtime',
+  ApplyLeave: 'leave',
+  Payslips: 'payslips',
+  PayslipDetail: 'payslips',
+  AttendanceHistory: 'attendance',
+  AttendanceCorrection: 'attendanceCorrection',
+  Approvals: 'approvals',
+  Team: 'team',
+  KioskPunch: 'kioskPunch',
+  Account: 'account',
+};
+
 export function isManagerUser(user: AuthUser | null | undefined): boolean {
-  if (!user) return false;
-  if (['MANAGER', 'SUPERVISOR', 'HR', 'SUPER_ADMIN'].includes(user.role)) return true;
-  return user.permissions.some(
-    (p) => p.module === 'approvals' && (p.actions.includes('decide') || p.actions.includes('*'))
-  );
+  return deriveMobileAccess(user).surfaces.has('managerHome');
 }
 
 type Target = { name: string; params?: object };
 
+function more(screen: string, params?: Record<string, unknown>): Target {
+  return { name: 'More', params: { screen, params, initial: false } };
+}
+
+function accountTarget(user: AuthUser | null | undefined): Target {
+  const policy = deriveMobileAccess(user);
+  const specialist = policy.mode === 'PayrollPortal' || policy.mode === 'FinancePortal'
+    || user?.role === 'PAYROLL' || user?.role === 'FINANCE_APPROVER';
+  const hasPrimaryHome = policy.surfaces.has('employeeHome') || policy.surfaces.has('managerHome');
+  if (policy.mode === 'KioskOnly' || policy.mode === 'ReadOnlyAuditor' || (!hasPrimaryHome && !specialist)) {
+    return { name: 'Account' };
+  }
+  return more('Account');
+}
+
+/** Resolves only registered routes; denied deep links are redirected to Account. */
 export function resolveRoute(
   route: AppRoute,
   params: Record<string, unknown> | undefined,
-  manager: boolean
+  user: AuthUser | null | undefined
 ): Target {
-  const more = (screen: string): Target => ({ name: 'More', params: { screen, params, initial: false } });
+  const policy = deriveMobileAccess(user);
+  const required = route === 'Home' && policy.surfaces.has('managerHome')
+    ? 'managerHome'
+    : ROUTE_SURFACE[route];
+  if (!policy.surfaces.has(required)) return accountTarget(user);
+
+  const manager = policy.surfaces.has('managerHome');
+  const specialist = policy.mode === 'PayrollPortal' || policy.mode === 'FinancePortal'
+    || user?.role === 'PAYROLL' || user?.role === 'FINANCE_APPROVER';
   switch (route) {
-    case 'Home':
-      return { name: 'Home' };
-    case 'AttendanceHistory':
-      return { name: 'Attendance' };
-    case 'Approvals':
-      return manager ? { name: 'Approvals', params } : more('Notifications');
-    case 'Team':
-      return manager ? { name: 'Team' } : { name: 'Home' };
-    case 'ApplyLeave':
-      return manager ? more('ApplyLeave') : { name: 'Leave' };
-    case 'Payslips':
-      return manager ? more('PayslipsList') : { name: 'Payslips', params: { screen: 'PayslipsList' } };
+    case 'Home': return { name: 'Home' };
+    case 'KioskPunch': return { name: 'Punch' };
+    case 'Account': return accountTarget(user);
+    case 'AttendanceHistory': return { name: 'Attendance' };
+    case 'Approvals': return { name: 'Approvals', params };
+    case 'Team': return { name: 'Team', params };
+    case 'ApplyLeave': return manager || specialist ? more('ApplyLeave', params) : { name: 'Leave' };
+    case 'Payslips': return manager ? more('PayslipsList', params) : { name: 'Payslips', params: { screen: 'PayslipsList' } };
     case 'PayslipDetail':
       return manager
-        ? more('PayslipDetail')
+        ? more('PayslipDetail', params)
         : { name: 'Payslips', params: { screen: 'PayslipDetail', params, initial: false } };
-    default:
-      return more(route);
+    default: return more(route, params);
   }
 }
 
-/** Navigate from inside any screen. */
 export function navigateTo(
   navigation: { navigate: (name: string, params?: object) => void },
   route: AppRoute,
-  manager: boolean,
+  user: AuthUser | null | undefined,
   params?: Record<string, unknown>
 ) {
-  const target = resolveRoute(route, params, manager);
+  const target = resolveRoute(route, params, user);
   navigation.navigate(target.name, target.params);
 }
 
-/** Navigate from outside the React tree (push notification taps). */
-export function navigateFromRoot(route: AppRoute, manager: boolean, params?: Record<string, unknown>): boolean {
+export function navigateFromRoot(
+  route: AppRoute,
+  user: AuthUser | null | undefined,
+  params?: Record<string, unknown>
+): boolean {
   if (!navigationRef.isReady()) return false;
-  const target = resolveRoute(route, params, manager);
+  const target = resolveRoute(route, params, user);
   navigationRef.navigate(target.name, target.params);
   return true;
 }

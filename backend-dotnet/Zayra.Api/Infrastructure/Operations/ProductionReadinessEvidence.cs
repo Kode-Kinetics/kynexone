@@ -15,8 +15,12 @@ public static class ProductionReadinessEvidence
     public static async Task<ReadinessEvidence> BuildReadinessAsync(ZayraDbContext db, IConfiguration config, CancellationToken ct)
     {
         var dbProbe = await ProbeDatabaseAsync(db, ct);
-        var tenantCount = dbProbe.Healthy ? await db.Tenants.AsNoTracking().CountAsync(ct) : 0;
-        var activeTenantCount = dbProbe.Healthy ? await db.Tenants.AsNoTracking().CountAsync(x => x.IsActive, ct) : 0;
+        var tenantCounts = dbProbe.Healthy
+            ? await db.Tenants.AsNoTracking()
+                .GroupBy(_ => 1)
+                .Select(g => new { Total = g.Count(), Active = g.Count(x => x.IsActive) })
+                .FirstOrDefaultAsync(ct)
+            : null;
 
         // P0-4: migration-parity gate. A migration-bearing image deployed against a DB that
         // has NOT yet had `dotnet Zayra.Api.dll --migrate` applied would 42703/42P01 tenant-wide.
@@ -39,8 +43,8 @@ public static class ProductionReadinessEvidence
                 QiwaDependency(config),
                 await SmtpDependencyAsync(db, ct),
                 workers),
-            tenantCount,
-            activeTenantCount,
+            tenantCounts?.Total ?? 0,
+            tenantCounts?.Active ?? 0,
             pendingMigrations,
             queues);
     }
@@ -91,14 +95,47 @@ public static class ProductionReadinessEvidence
             statuses);
     }
 
+    /// <summary>
+    /// Migrations this build expects to exist, newest source of truth first.
+    /// </summary>
+    /// <remarks>
+    /// Prefers the assembly's own migration classes. Falls back to the build-time manifest for the
+    /// production image, which deletes Migrations/ to keep the Render build under its memory limit
+    /// (see <see cref="MigrationManifest"/>). Returns empty only when BOTH are absent — a state the
+    /// caller treats as unknown, never as zero.
+    /// </remarks>
+    internal static IReadOnlyCollection<string> ResolveExpectedMigrations(IEnumerable<string> assemblyMigrations)
+    {
+        var fromAssembly = assemblyMigrations as IReadOnlyCollection<string> ?? assemblyMigrations.ToList();
+        if (fromAssembly.Count > 0) return fromAssembly;
+        return MigrationManifest.Ids;
+    }
+
     private static async Task<int> CountPendingMigrationsAsync(ZayraDbContext db, bool dbHealthy, CancellationToken ct)
     {
         if (!dbHealthy) return 0; // DB probe already reports not_ready; don't double-count.
         if (!db.Database.IsRelational()) return 0;
         try
         {
-            var pending = await db.Database.GetPendingMigrationsAsync(ct);
-            return pending.Count();
+            // DO NOT "simplify" this back to GetPendingMigrationsAsync(). That call is
+            // GetMigrations() minus the applied history, and GetMigrations() reads the migration
+            // classes compiled into THIS assembly. The production Dockerfile deletes Migrations/
+            // before publishing, so in the deployed image that set is empty and the subtraction
+            // returns zero pending for every database, unconditionally. This check was a no-op by
+            // construction from the day the strip landed: /health/ready reported `ready` with twelve
+            // migrations missing, which is how a release was promoted against an un-migrated
+            // database. A gate that cannot fail is not a gate.
+            var expected = ResolveExpectedMigrations(db.Database.GetMigrations());
+            if (expected.Count == 0)
+            {
+                // Fail closed. We know nothing about what this build should have applied, so we
+                // cannot claim parity. -1 is the unknown sentinel; ResolveStatus turns it into
+                // not_ready and Render keeps the previous instance serving.
+                return -1;
+            }
+
+            var applied = await db.Database.GetAppliedMigrationsAsync(ct);
+            return expected.Except(applied, StringComparer.Ordinal).Count();
         }
         catch
         {
@@ -174,15 +211,30 @@ public static class ProductionReadinessEvidence
         // provider messages, or other customer payloads are returned by readiness/telemetry.
         using var systemScope = SystemScopeContext.Begin();
         var now = DateTime.UtcNow;
+        // Readiness is polled continuously by the load balancer. Keep the seven independent queue
+        // counters in one database command so the health probe does not compete with user requests.
+        var counts = await db.Tenants.AsNoTracking()
+            .Select(_ => new
+            {
+                QiwaPending = db.QiwaSyncLogs.Count(x => x.Status == QiwaSyncLogStatuses.Pending || x.Status == QiwaSyncLogStatuses.Processing),
+                QiwaDeadLetter = db.QiwaSyncLogs.Count(x => x.Status == QiwaSyncLogStatuses.DeadLetter),
+                NotificationsPending = db.NotificationDeliveries.Count(x => x.Outcome == DeliveryOutcomes.Queued || x.Outcome == DeliveryOutcomes.Sending),
+                NotificationsFailed = db.NotificationDeliveries.Count(x => x.Outcome == DeliveryOutcomes.Failed || x.Outcome == DeliveryOutcomes.Unknown),
+                ReportsDue = db.ReportSchedules.Count(x => x.IsActive && !x.IsDeleted && (x.NextRunAtUtc == null || x.NextRunAtUtc <= now)),
+                ReportsFailed = db.ReportExecutionLogs.Count(x => x.Status == "Failed" && x.CreatedAtUtc >= now.AddHours(-24)),
+                ComplianceDue = db.ComplianceReminders.Count(x => x.Status == "Pending" && x.ScheduledAtUtc != null && x.ScheduledAtUtc <= now),
+            })
+            .FirstOrDefaultAsync(ct);
+
         return new QueueHealthEvidence(
             true,
-            await db.QiwaSyncLogs.CountAsync(x => x.Status == QiwaSyncLogStatuses.Pending || x.Status == QiwaSyncLogStatuses.Processing, ct),
-            await db.QiwaSyncLogs.CountAsync(x => x.Status == QiwaSyncLogStatuses.DeadLetter, ct),
-            await db.NotificationDeliveries.CountAsync(x => x.Outcome == DeliveryOutcomes.Queued || x.Outcome == DeliveryOutcomes.Sending, ct),
-            await db.NotificationDeliveries.CountAsync(x => x.Outcome == DeliveryOutcomes.Failed || x.Outcome == DeliveryOutcomes.Unknown, ct),
-            await db.ReportSchedules.CountAsync(x => x.IsActive && !x.IsDeleted && (x.NextRunAtUtc == null || x.NextRunAtUtc <= now), ct),
-            await db.ReportExecutionLogs.CountAsync(x => x.Status == "Failed" && x.CreatedAtUtc >= now.AddHours(-24), ct),
-            await db.ComplianceReminders.CountAsync(x => x.Status == "Pending" && x.ScheduledAtUtc != null && x.ScheduledAtUtc <= now, ct));
+            counts?.QiwaPending ?? 0,
+            counts?.QiwaDeadLetter ?? 0,
+            counts?.NotificationsPending ?? 0,
+            counts?.NotificationsFailed ?? 0,
+            counts?.ReportsDue ?? 0,
+            counts?.ReportsFailed ?? 0,
+            counts?.ComplianceDue ?? 0);
     }
 
     private static async Task<DependencyProbe> ProbeDatabaseAsync(ZayraDbContext db, CancellationToken ct)
@@ -282,9 +334,20 @@ public sealed record WorkerFleetReadiness(
     int MissingCount,
     IReadOnlyList<WorkerReadiness> Workers)
 {
+    /// <summary>
+    /// The fleet was NOT MEASURED, because an earlier term — the database probe or migration parity —
+    /// already decided the answer (see BuildReadinessAsync). Every count is zero and every worker reads
+    /// <c>not_evaluated</c>, because no heartbeat row was read.
+    ///
+    /// <para>This used to report <c>MissingCount = 6</c> with all six workers <c>"unavailable"</c>.
+    /// That is a FABRICATION, and it is indistinguishable from a genuinely dead worker fleet. On
+    /// 2026-09-23 three production deploys were investigated as a worker outage on the strength of it,
+    /// while the real cause — two migrations absent from the connected database — sat one field away in
+    /// the same payload. A readiness probe must never report a measurement it did not take.</para>
+    /// </summary>
     public static readonly WorkerFleetReadiness Unavailable = new(
-        false, 0, 0, 0, 0, ProductionWorkerNames.All.Count,
-        ProductionWorkerNames.All.Select(x => new WorkerReadiness(x, "unavailable", null, null)).ToList());
+        false, 0, 0, 0, 0, 0,
+        ProductionWorkerNames.All.Select(x => new WorkerReadiness(x, "not_evaluated", null, null)).ToList());
 }
 
 public sealed record WorkerReadiness(string Name, string Status, DateTime? LastSucceededAtUtc, DateTime? UpdatedAtUtc);

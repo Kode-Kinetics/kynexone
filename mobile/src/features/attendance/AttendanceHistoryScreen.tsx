@@ -11,8 +11,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { parseISO } from 'date-fns';
 import { attendanceApi } from '@/api/services';
 import { formatTime, formatWorkHours } from '@/utils/date';
-import { navigateTo, isManagerUser } from '@/navigation/routes';
+import { navigateTo } from '@/navigation/routes';
 import { useAuthStore } from '@/auth/authStore';
+import { deriveMobileAccess } from '@/auth/accessPolicy';
+import { riyadhBusinessDate } from '@/utils/businessDate';
 import { useTheme } from '@/theme/ThemeProvider';
 import {
   GlassIconButton,
@@ -31,13 +33,15 @@ interface Props {
 export default function AttendanceHistoryScreen({ navigation }: Props) {
   const { user } = useAuthStore();
   const { theme } = useTheme();
-  const now = new Date();
-  const [year, setYear] = useState(now.getFullYear());
-  const [month, setMonth] = useState(now.getMonth() + 1);
+  const [riyadhYear, riyadhMonth] = riyadhBusinessDate().split('-').map(Number);
+  const [year, setYear] = useState(riyadhYear);
+  const [month, setMonth] = useState(riyadhMonth);
   const [records, setRecords] = useState<AttendanceDay[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const canCorrect = deriveMobileAccess(user).surfaces.has('attendanceCorrection');
+
   const load = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
     else setLoading(true);
@@ -68,8 +72,8 @@ export default function AttendanceHistoryScreen({ navigation }: Props) {
   };
 
   const nextMonth = () => {
-    const current = new Date();
-    if (year === current.getFullYear() && month === current.getMonth() + 1) return;
+    const [nowYear, nowMonth] = riyadhBusinessDate().split('-').map(Number);
+    if (year === nowYear && month === nowMonth) return;
     if (month === 12) {
       setYear((value) => value + 1);
       setMonth(1);
@@ -100,7 +104,7 @@ export default function AttendanceHistoryScreen({ navigation }: Props) {
     navigateTo(
       navigation,
       'AttendanceCorrection',
-      isManagerUser(user),
+      user,
       date ? { date } : undefined,
     );
   };
@@ -115,7 +119,7 @@ export default function AttendanceHistoryScreen({ navigation }: Props) {
           <View style={styles.recordItem}>
             <AttendanceRecordCard
               record={item}
-              onCorrection={() => openCorrection(item.date)}
+              onCorrection={canCorrect ? () => openCorrection(item.date) : undefined}
             />
           </View>
         )}
@@ -135,12 +139,14 @@ export default function AttendanceHistoryScreen({ navigation }: Props) {
                   {navigation.canGoBack() ? (
                     <GlassIconButton icon="arrow-back" label="Go back" onPress={() => navigation.goBack()} />
                   ) : null}
-                  <GlassIconButton
-                    icon="create-outline"
-                    label="Request attendance correction"
-                    accent
-                    onPress={() => openCorrection()}
-                  />
+                  {canCorrect ? (
+                    <GlassIconButton
+                      icon="create-outline"
+                      label="Request attendance correction"
+                      accent
+                      onPress={() => openCorrection()}
+                    />
+                  ) : null}
                 </View>
               }
             />
@@ -247,7 +253,7 @@ function AttendanceRecordCard({
   onCorrection,
 }: {
   record: AttendanceDay;
-  onCorrection: () => void;
+  onCorrection?: () => void;
 }) {
   const { theme } = useTheme();
   const config = getStatusConfig(record.status, theme);
@@ -295,7 +301,7 @@ function AttendanceRecordCard({
         </View>
       </View>
 
-      {record.status === 'MISSING_PUNCH' ? (
+      {onCorrection && record.status === 'MISSING_PUNCH' ? (
         <MotionPressable
           onPress={onCorrection}
           haptic="selection"

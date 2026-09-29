@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
@@ -47,9 +48,18 @@ namespace Zayra.Api.Tests.Security;
 public sealed class AuthorizationPipelineHost : WebApplicationFactory<Program>
 {
     private readonly string _sqliteConnectionString;
+    private readonly Action<IServiceCollection>? _configureTestServices;
+    private readonly IReadOnlyDictionary<string, string?>? _configuration;
 
-    public AuthorizationPipelineHost(string sqliteConnectionString)
-        => _sqliteConnectionString = sqliteConnectionString;
+    public AuthorizationPipelineHost(
+        string sqliteConnectionString,
+        Action<IServiceCollection>? configureTestServices = null,
+        IReadOnlyDictionary<string, string?>? configuration = null)
+    {
+        _sqliteConnectionString = sqliteConnectionString;
+        _configureTestServices = configureTestServices;
+        _configuration = configuration;
+    }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -60,6 +70,12 @@ public sealed class AuthorizationPipelineHost : WebApplicationFactory<Program>
         // committed appsettings.json — which is precisely what we want to test.
         builder.UseEnvironment(Environments.Development);
 
+        if (_configuration is not null)
+        {
+            builder.ConfigureAppConfiguration((_, configuration) =>
+                configuration.AddInMemoryCollection(_configuration));
+        }
+
         // ConfigureTestServices runs AFTER every builder.Services.* call in Program.cs and BEFORE the
         // container is built, so these three edits land on the finished production registration set.
         builder.ConfigureTestServices(services =>
@@ -67,6 +83,7 @@ public sealed class AuthorizationPipelineHost : WebApplicationFactory<Program>
             ReplacePostgresWithSqlite(services, _sqliteConnectionString);
             RemoveApplicationBackgroundWorkers(services);
             AddFallbackPolicyProbeController(services);
+            _configureTestServices?.Invoke(services);
         });
     }
 

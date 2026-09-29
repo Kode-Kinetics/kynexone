@@ -2,15 +2,9 @@ using Zayra.Api.Domain.Entities;
 namespace Zayra.Api.Models;
 
 /// <summary>
-/// One step in an ApprovalPolicy.
-/// ApproverType determines how the actual approver is resolved at runtime:
-///   Manager           → Employee.ManagerEmployeeId of the requester
-///   Supervisor        → Employee.SupervisorEmployeeId
-///   DepartmentHead    → Department.ManagerEmployeeId of the requester's department
-///   HR                → Any user with the HR Manager or HR Officer role for this tenant
-///   HRBusinessPartner → Employee.HRBusinessPartnerEmployeeId
-///   SpecificEmployee  → SpecificEmployeeId (fixed person)
-///   Role              → Any user with ApproverRole role (legacy behaviour)
+/// DEPRECATED (F1). Frozen legacy step of an <see cref="ApprovalPolicy"/>; copied into
+/// <see cref="ApprovalWorkflowStep"/> by migration <c>ConvergeApprovalPolicyIntoWorkflow</c>.
+/// See <see cref="ApprovalWorkflowStep"/> for the live model and approver-type semantics.
 /// </summary>
 public class ApprovalPolicyStep : ITenantOwned
 {

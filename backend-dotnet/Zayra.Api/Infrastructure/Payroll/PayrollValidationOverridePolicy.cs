@@ -74,6 +74,8 @@ public static class PayrollValidationOverridePolicy
         "TOTALS_GROSS_MISMATCH",
         "TOTALS_DEDUCTIONS_MISMATCH",
         "TOTALS_NET_MISMATCH",
+        // F2 — Σ payslip lines ≠ the slip's gross/deductions: the journal built from those lines cannot balance.
+        "PAYSLIP_LINES_MISMATCH",
         // The same employee twice in one run — a data fault with one correct answer.
         "DUPLICATE_EMPLOYEE",
         // No company ⇒ no country pack ⇒ the statutory figures on the slips are not merely doubtful,

@@ -12,5 +12,6 @@
     "**/*.ts",
     "**/*.tsx",
     ".expo/types/**/*.d.ts"
-  ]
+  ],
+  "exclude": ["tests"]
 }

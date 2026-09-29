@@ -81,7 +81,10 @@ public class AIAssistantController : ControllerBase
 
         var userContext = new AiUserContext(tenantId.Value, userId, roles, permissions, isEmployee ? callerEmployeeId : req.EmployeeId)
         {
-            ScopeEmployeeIds = scope.IsUnrestricted ? null : scope.AllowedEmployeeIds?.ToList()
+            ScopeEmployeeIds = scope.IsUnrestricted ? null : scope.AllowedEmployeeIds?.ToList(),
+            // Derived from the SAME resolution the DbContext's company query filters use, so the
+            // cached answer and the data behind it cannot disagree.
+            CompanyScopeSignature = this.GetRequestScope().ToCacheDiscriminator(),
         };
 
         var response = await _aiAdvisoryService.QueryAsync(userContext, req, ct);

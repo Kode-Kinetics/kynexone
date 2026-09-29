@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.WorkWeek;
 using Zayra.Api.Controllers.Leave;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Approvals;
@@ -24,8 +25,55 @@ public class LeaveApprovalScopeTests
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options);
 
+    /// <summary>
+    /// F1 — a tenant with NO applicable approval workflow used to be routed to a guessed approver
+    /// ("direct manager, else HR Manager") in code. That is removed: the submission is refused with a
+    /// typed configuration error and nothing is written.
+    /// </summary>
     [Fact]
-    public async Task MissingPolicy_FallsBackToActionableManagerQueue_InsteadOfOrphanedSubmittedState()
+    public async Task MissingWorkflow_IsRefusedWithTypedError_InsteadOfRoutingToAGuessedManager()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var leaveType = new LeaveType { TenantId = tenantId, Code = "AL", NameEn = "Annual Leave", IsActive = true };
+        var manager = new Employee
+        {
+            TenantId = tenantId, UserAccountId = Guid.NewGuid(), EmployeeCode = "MGR-NOCFG",
+            FullName = "Would-be Manager", Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-3)
+        };
+        db.LeaveTypes.Add(leaveType);
+        db.Employees.Add(manager);
+        await db.SaveChangesAsync();
+        var employee = new Employee
+        {
+            TenantId = tenantId, EmployeeCode = "EMP-NOCFG", FullName = "No Config", ManagerEmployeeId = manager.Id,
+            Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-1)
+        };
+        db.Employees.Add(employee);
+        await db.SaveChangesAsync();
+        var start = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(7));
+        db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
+        {
+            TenantId = tenantId, EmployeeId = employee.Id, EmployeeName = employee.FullName,
+            LeaveTypeId = leaveType.Id, LeaveTypeName = leaveType.NameEn, Year = start.Year, Entitled = 21
+        });
+        await db.SaveChangesAsync();
+
+        var submit = () => new LeaveService(db, new ApprovalRouter(db)).SubmitRequestAsync(tenantId, new LeaveRequest
+        {
+            TenantId = tenantId, EmployeeId = employee.Id, LeaveTypeId = leaveType.Id,
+            StartDate = start, EndDate = start, DayType = "Full"
+        });
+
+        (await submit.Should().ThrowAsync<ApprovalRouteNotConfiguredException>()).Which.Code.Should().Be("approval_route_not_configured");
+        (await db.LeaveRequests.AnyAsync()).Should().BeFalse();
+        (await db.LeaveApprovals.AnyAsync()).Should().BeFalse("no approver may be guessed");
+        (await db.ApprovalRequests.AnyAsync()).Should().BeFalse();
+        (await db.EmployeeLeaveBalances.SingleAsync()).Pending.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task ConfiguredManagerStep_RoutesToActionableManagerQueue_AndHardeningHolds()
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
@@ -49,6 +97,13 @@ public class LeaveApprovalScopeTests
         db.Employees.Add(employee);
         await db.SaveChangesAsync();
         var start = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(7));
+        // A WORKING day, not merely "a week from now". This test asserts Used == 1 for a
+        // one-day request, and weekends are excluded from the count, so the assertion only
+        // holds when the day is a working one. Unguarded it passed Sunday to Thursday and
+        // failed every Friday and Saturday — on main, for anyone, two days in seven. The
+        // other three tests in this file already roll their start this way; this one was
+        // missed, and it blocked an unrelated PR the first time a run landed on a Friday.
+        while (WorkWeekConfig.GccDefault.IsWeekend(start.DayOfWeek)) start = start.AddDays(1);
         db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
         {
             TenantId = tenantId, EmployeeId = employee.Id, EmployeeName = employee.FullName,
@@ -56,7 +111,7 @@ public class LeaveApprovalScopeTests
         });
         await db.SaveChangesAsync();
 
-        var service = new LeaveService(db, new ApprovalPolicyService(db));
+        var service = await TestApprovalConfig.LeaveServiceAsync(db, tenantId, approverType: "Manager");
         var submitted = await service.SubmitRequestAsync(tenantId, new LeaveRequest
         {
             TenantId = tenantId, EmployeeId = employee.Id, LeaveTypeId = leaveType.Id,
@@ -149,17 +204,23 @@ public class LeaveApprovalScopeTests
         db.Employees.Add(employee);
         await db.SaveChangesAsync();
 
-        db.ApprovalPolicies.Add(new ApprovalPolicy
+        // F1: configured as an ApprovalWorkflow — the single model (ApprovalPolicy is retired).
+        var managerThenHr = new ApprovalWorkflow
         {
-            TenantId = tenantId, WorkflowType = "Leave", Name = "Manager then HR",
-            IsDefault = true, IsActive = true,
-            Steps =
-            {
-                new ApprovalPolicyStep { TenantId = tenantId, StepOrder = 1, StepName = "Manager", ApproverType = "Manager" },
-                new ApprovalPolicyStep { TenantId = tenantId, StepOrder = 2, StepName = "HR", ApproverType = "HR", IsFinalStep = true },
-            }
-        });
+            TenantId = tenantId, Code = "MGR-HR", Name = "Manager then HR", EntityName = nameof(LeaveRequest),
+            IsDefault = true, IsActive = true
+        };
+        managerThenHr.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, WorkflowId = managerThenHr.Id, StepOrder = 1, StepName = "Manager", ApproverType = "Manager" });
+        managerThenHr.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, WorkflowId = managerThenHr.Id, StepOrder = 2, StepName = "HR", ApproverType = "HR", IsFinalStep = true });
+        db.ApprovalWorkflows.Add(managerThenHr);
+        // TWO WORKING DAYS, stated rather than assumed. This test asserts a 2-day request reserves
+        // 2 days; weekends are now excluded from the count (the Thu-Sun-charged-4-days fix), so a
+        // raw "+7 days" span silently became a 1-day request whenever it straddled the Fri-Sat
+        // weekend. Roll to a start whose next day is also a working day.
         var start = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(7));
+        while (WorkWeekConfig.GccDefault.IsWeekend(start.DayOfWeek)
+               || WorkWeekConfig.GccDefault.IsWeekend(start.AddDays(1).DayOfWeek))
+            start = start.AddDays(1);
         db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
         {
             TenantId = tenantId, EmployeeId = employee.Id, EmployeeName = employee.FullName,
@@ -168,7 +229,7 @@ public class LeaveApprovalScopeTests
         });
         await db.SaveChangesAsync();
 
-        var service = new LeaveService(db, new ApprovalPolicyService(db));
+        var service = new LeaveService(db, new ApprovalRouter(db));
         var submitted = await service.SubmitRequestAsync(tenantId, new LeaveRequest
         {
             TenantId = tenantId, EmployeeId = employee.Id, LeaveTypeId = leaveType.Id,
@@ -195,13 +256,18 @@ public class LeaveApprovalScopeTests
         approvals.Should().HaveCount(2);
         approvals[0].Decision.Should().Be("Approved");
         approvals[1].Decision.Should().Be("Pending");
-        approvals[1].ApproverId.Should().Be(hrUserId);
+        // F1: an "HR" step is the HR Manager role queue — deterministic — not one employee picked by
+        // an unordered designation match.
+        approvals[1].ApproverId.Should().BeNull();
+        approvals[1].ApproverRole.Should().Be("HR");
 
         var afterManagerProjection = await db.ApprovalRequests.Include(a => a.Decisions)
             .SingleAsync(a => a.Id == submitted.Id);
         afterManagerProjection.Status.Should().Be("Pending");
         afterManagerProjection.CurrentStepOrder.Should().Be(2);
-        afterManagerProjection.CurrentApproverUserId.Should().Be(hrUserId);
+        afterManagerProjection.CurrentApproverUserId.Should().BeNull();
+        afterManagerProjection.CurrentApproverRole.Should().Be("HR Manager");
+        afterManagerProjection.WorkflowId.Should().Be(managerThenHr.Id);
         afterManagerProjection.Decisions.Should().ContainSingle(d => d.StepOrder == 1 && d.Decision == "Approved");
 
         await service.ApproveRequestAsync(tenantId, submitted.Id, hrUserId, "HR One", "final");
@@ -247,7 +313,14 @@ public class LeaveApprovalScopeTests
         };
         db.Employees.Add(employee);
         await db.SaveChangesAsync();
+        // The contention this test measures is over ONE balance reservation, so the request has to
+        // fall on a WORKING day. A bare today+10 landed on whichever weekday the calendar offered —
+        // and now that a request resolving no policy honours the tenant's rest week instead of
+        // counting every calendar day, a Friday or Saturday is worth zero days and there is no
+        // "Used" transaction for the two approvers to contend over. Roll to the next working day,
+        // using the same rest-day set the service falls back to rather than a literal here.
         var start = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(10));
+        while (WorkWeekConfig.GccDefault.IsWeekend(start.DayOfWeek)) start = start.AddDays(1);
         db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
         {
             TenantId = tenantId, EmployeeId = employee.Id, EmployeeName = employee.FullName,
@@ -255,7 +328,7 @@ public class LeaveApprovalScopeTests
         });
         await db.SaveChangesAsync();
 
-        var service = new LeaveService(db, new ApprovalPolicyService(db));
+        var service = await TestApprovalConfig.LeaveServiceAsync(db, tenantId, approverType: "Manager");
         var submitted = await service.SubmitRequestAsync(tenantId, new LeaveRequest
         {
             EmployeeId = employee.Id, LeaveTypeId = leaveType.Id,
@@ -271,7 +344,7 @@ public class LeaveApprovalScopeTests
                 await using var workerDb = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>()
                     .UseSqlite(workerConnection)
                     .Options);
-                await new LeaveService(workerDb, new ApprovalPolicyService(workerDb))
+                await new LeaveService(workerDb, new ApprovalRouter(workerDb))
                     .ApproveRequestAsync(tenantId, submitted.Id, managerUserId, manager.FullName, comment);
                 return true;
             }
@@ -302,7 +375,7 @@ public class LeaveApprovalScopeTests
             .Should().Be(1);
         (await verifyDb.ApprovalRequests.SingleAsync(a => a.Id == submitted.Id)).Status.Should().Be("Approved");
 
-        var replayService = new LeaveService(verifyDb, new ApprovalPolicyService(verifyDb));
+        var replayService = new LeaveService(verifyDb, new ApprovalRouter(verifyDb));
         var replay = () => replayService.ApproveRequestAsync(tenantId, submitted.Id, managerUserId, manager.FullName, "CAS replay");
         await replay.Should().ThrowAsync<InvalidOperationException>();
         (await verifyDb.LeaveBalanceTransactions.CountAsync(t => t.Reference == submitted.Id.ToString() && t.TransactionType == "Used"))
@@ -325,6 +398,7 @@ public class LeaveApprovalScopeTests
             new LeaveRequest { TenantId = tenantId, EmployeeId = outOfScope.Id, EmployeeName = outOfScope.FullName, LeaveTypeId = leaveType.Id, LeaveTypeName = leaveType.NameEn, StartDate = new DateOnly(2026, 8, 2), EndDate = new DateOnly(2026, 8, 2), TotalDays = 1, Status = "Submitted" });
         await db.SaveChangesAsync();
 
+        await TestApprovalConfig.EnsureDefaultLeaveWorkflowAsync(db, tenantId);
         var controller = CreateController(db, tenantId, new FixedScopeService(inScope.Id));
         var result = await controller.Export(CancellationToken.None);
 
@@ -358,6 +432,7 @@ EMP-IN,In Scope,AL,Annual Leave,2026-08-01,2026-08-01,Full,0,false,,,Submitted,S
 EMP-OUT,Out Scope,AL,Annual Leave,2026-08-02,2026-08-02,Full,0,false,,,Submitted,Should not import
 """;
 
+        await TestApprovalConfig.EnsureDefaultLeaveWorkflowAsync(db, tenantId);
         var controller = CreateController(db, tenantId, new FixedScopeService(inScope.Id));
         var result = await controller.Import(new ImportLeaveRequestsRequest(csv), CancellationToken.None);
 
@@ -372,7 +447,7 @@ EMP-OUT,Out Scope,AL,Annual Leave,2026-08-02,2026-08-02,Full,0,false,,,Submitted
     {
         var controller = new LeaveRequestsController(
             db,
-            new LeaveService(db, new ApprovalPolicyService(db)),
+            new LeaveService(db, new ApprovalRouter(db)),
             scope,
             new NullNotificationService());
         controller.ControllerContext = new ControllerContext

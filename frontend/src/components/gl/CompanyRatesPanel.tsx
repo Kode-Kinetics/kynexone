@@ -169,14 +169,14 @@ export function CompanyRatesPanel({ scope, scopeLabel, canManage }: Props) {
       <PanelState loading={loading} empty={sorted.length === 0} emptyLabel="No company rates configured yet.">
         <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10">
           <table className="w-full min-w-[680px] text-sm">
-            <thead className="bg-slate-50 text-left text-xs text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
+            <thead className="bg-slate-50 text-start text-xs text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
               <tr>
                 <th className="px-3 py-2">Rate</th>
                 <th className="px-3 py-2">Category</th>
-                <th className="px-3 py-2 text-right">Value</th>
+                <th className="px-3 py-2 text-end">Value</th>
                 <th className="px-3 py-2">Effective</th>
                 <th className="px-3 py-2">Status</th>
-                <th className="px-3 py-2 text-right">Manage</th>
+                <th className="px-3 py-2 text-end">Manage</th>
               </tr>
             </thead>
             <tbody>
@@ -193,7 +193,7 @@ export function CompanyRatesPanel({ scope, scopeLabel, canManage }: Props) {
                       {r.notes && <p className="text-[11px] text-slate-400">{r.notes}</p>}
                     </td>
                     <td className="px-3 py-2 text-slate-500">{r.rateCategory}</td>
-                    <td className="px-3 py-2 text-right font-medium tabular-nums">{formatValue(r.rateValue, r.unit)}</td>
+                    <td className="px-3 py-2 text-end font-medium tabular-nums">{formatValue(r.rateValue, r.unit)}</td>
                     <td className="px-3 py-2 text-xs text-slate-500">
                       {fmtDate(r.effectiveFrom)} → {r.effectiveTo ? fmtDate(r.effectiveTo) : 'open'}
                     </td>

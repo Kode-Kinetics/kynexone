@@ -109,6 +109,36 @@ public sealed record RequestEntityScope(
             ? EntityScopeContext.GroupLevel
             : EntityScopeContext.ForCompanies(AuthorizedCompanyIds);
 
+    /// <summary>
+    /// A stable, total discriminator over everything the company query filter branches on, for use
+    /// as a CACHE KEY segment.
+    ///
+    /// <para>Any cache whose payload was produced by queries running under this scope must carry
+    /// this in its key. The company dimension enters those queries silently, through the
+    /// <c>ICompanyScopedOperational</c> global filters, so a cache keyed on tenant alone looks
+    /// correct and leaks: in a group tenant the first company's payload is served to the next
+    /// caller until the entry expires, and across pods when the distributed cache is Redis. The
+    /// dashboard's four keys did exactly that.</para>
+    ///
+    /// <para>It keys on the AUTHORIZED SET, not <see cref="SelectedCompanyId"/>: a multi-company
+    /// non-group caller who has made no switcher selection has a set of size &gt; 1 and no
+    /// selection, and the set is what the filter uses. "none" is its own bucket, so a scope that
+    /// sees nothing can never share an entry with one that sees everything.</para>
+    ///
+    /// <para>This is deliberately NOT <see cref="ToAuditString"/>, which carries resolution
+    /// provenance (<see cref="Source"/>, <see cref="DenialReason"/>) that does not affect the data
+    /// and would fragment the cache.</para>
+    /// </summary>
+    public string ToCacheDiscriminator()
+    {
+        if (IsSystemScope) return "sys";
+        if (IsGroupLevel) return "group";
+        if (AuthorizedCompanyIds.Count == 0) return "none";
+        return "c" + string.Join(
+            '+',
+            AuthorizedCompanyIds.Select(id => id.ToString("N")).OrderBy(s => s, StringComparer.Ordinal));
+    }
+
     /// <summary>A safe one-line summary for logs and traces. Contains NO claim values and NO token material.</summary>
     public string ToAuditString() =>
         $"tenant={(TenantId?.ToString() ?? "none")} group={IsGroupLevel} companies={AuthorizedCompanyIds.Count} "

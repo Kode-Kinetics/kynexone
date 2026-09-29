@@ -46,6 +46,33 @@ export interface MatrixRow extends EstablishmentRow {
   unresolvedDepartmentCount: number;
 }
 
+/**
+ * What `GET /api/establishment/matrix` actually returns. The rows live under `departments`;
+ * the two siblings are tenant-wide facts that do not belong on any single row.
+ */
+export interface MatrixResponse {
+  enforcementMode?: string | null;
+  unresolvedDepartmentCount?: number | null;
+  departments?: MatrixRow[] | null;
+}
+
+/** The property carrying the rows. Pinned by a contract test so the two sides cannot diverge. */
+export const MATRIX_ENVELOPE_KEY = 'departments' as const;
+
+/**
+ * Read the rows out of whatever the endpoint returned. Accepts the envelope (current contract)
+ * and a bare array (the shape this client wrongly assumed), and degrades to an empty list rather
+ * than handing a non-iterable to a caller that will spread it.
+ */
+export function unwrapMatrix(data: unknown): MatrixRow[] {
+  if (Array.isArray(data)) return data as MatrixRow[];
+  if (data && typeof data === 'object') {
+    const rows = (data as Record<string, unknown>)[MATRIX_ENVELOPE_KEY];
+    if (Array.isArray(rows)) return rows as MatrixRow[];
+  }
+  return [];
+}
+
 export interface BudgetRowUpdate {
   staffingLevelId: string;
   /** null deletes the row → level returns to uncontrolled (unlimited). */
@@ -129,8 +156,22 @@ export const establishmentApi = {
   deleteLevel: (id: string) =>
     client.delete(`/api/establishment/levels/${id}`).then(r => r.data),
 
+  /**
+   * The endpoint returns an ENVELOPE, not a bare array:
+   *   { enforcementMode, unresolvedDepartmentCount, departments: MatrixRow[] }
+   *
+   * It was typed and read as `MatrixRow[]`, so `setRows(...)` stored the object and the grouping
+   * `useMemo` in EstablishmentPanel then did `for (const r of rows)` and threw
+   * `TypeError: … is not iterable` — taking the whole Setup page down behind the error boundary
+   * for anyone who opened Cost Centres & Budget. Reproduced against production on 2026-09-23.
+   *
+   * Same defect class as the employee field catalogue (`{fields: […]}` read as an array): the
+   * server's shape was correct and stable the whole time; the client's reading of it was wrong.
+   * A bare array is still accepted, so no deploy ordering can blank the screen.
+   */
   matrix: () =>
-    client.get<MatrixRow[]>('/api/establishment/matrix').then(r => r.data),
+    client.get<MatrixResponse | MatrixRow[]>('/api/establishment/matrix')
+      .then(r => unwrapMatrix(r.data)),
 
   /** Reason is mandatory server-side; every budget mutation is audited with before/after per level. */
   saveBudgets: (departmentId: string, rows: BudgetRowUpdate[], reason: string) =>

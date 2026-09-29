@@ -1,0 +1,59 @@
+Vendored web fonts
+==================
+
+The .woff2 files in this directory were downloaded from Google Fonts
+(fonts.gstatic.com) via the fonts.googleapis.com/css2 API on 2026-09-23 and are
+committed here so that building and running KynexOne never requires reaching
+Google. They are unmodified subsets as served by Google Fonts.
+
+All six families are licensed under the SIL Open Font License, Version 1.1,
+which permits redistribution of the font files, bundled with software, provided
+this notice is retained and the fonts are not sold on their own.
+Full licence text: https://openfontlicense.org/open-font-license-official-text/
+
+--------------------------------------------------------------------------------
+Geist — OFL 1.1
+  Copyright 2024 The Geist Project Authors (https://github.com/vercel/geist-font)
+  Upstream: https://fonts.google.com/specimen/Geist
+  Files: Geist-Variable-latin.woff2            (latin subset, wght 100-900)
+
+Geist Mono — OFL 1.1
+  Copyright 2024 The Geist Project Authors (https://github.com/vercel/geist-font)
+  Upstream: https://fonts.google.com/specimen/Geist+Mono
+  Files: GeistMono-Variable-latin.woff2        (latin subset, wght 100-900)
+
+Manrope — OFL 1.1
+  Copyright 2018 The Manrope Project Authors (https://github.com/googlefonts/manrope)
+  Upstream: https://fonts.google.com/specimen/Manrope
+  Files: Manrope-Variable-latin.woff2          (latin subset, variable wght axis;
+           pinned to 300/400/500/600/700 in fonts.ts, as Google's css2 does)
+
+Instrument Serif — OFL 1.1
+  Copyright 2022 The Instrument Serif Project Authors
+    (https://github.com/Instrument/instrument-serif)
+  Upstream: https://fonts.google.com/specimen/Instrument+Serif
+  Files: InstrumentSerif-Italic-400-latin.woff2 (latin subset, 400 italic)
+
+IBM Plex Mono — OFL 1.1
+  Copyright (c) 2017 IBM Corp. with Reserved Font Name "Plex"
+  Upstream: https://fonts.google.com/specimen/IBM+Plex+Mono
+  Files: IBMPlexMono-400-latin.woff2           (latin subset, 400)
+         IBMPlexMono-500-latin.woff2           (latin subset, 500)
+
+IBM Plex Sans Arabic — OFL 1.1
+  Copyright (c) 2017 IBM Corp. with Reserved Font Name "Plex"
+  Upstream: https://fonts.google.com/specimen/IBM+Plex+Sans+Arabic
+  Files: IBMPlexSansArabic-400-arabic.woff2    (arabic subset, 400)
+         IBMPlexSansArabic-500-arabic.woff2    (arabic subset, 500)
+         IBMPlexSansArabic-600-arabic.woff2    (arabic subset, 600)
+         IBMPlexSansArabic-700-arabic.woff2    (arabic subset, 700)
+--------------------------------------------------------------------------------
+
+"Plex" is a Reserved Font Name under the OFL. The IBM Plex files here are
+unmodified, so no renaming obligation is triggered; any future modification of
+those files must be published under a different family name.
+
+To add a weight or a subset, fetch it the same way and add the file plus an
+entry in ./fonts.ts. Do not reintroduce the `next/font` Google loader: it
+performs a network fetch during `next build` and took down five releases on
+2026-09-23.

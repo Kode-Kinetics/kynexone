@@ -41,7 +41,19 @@ public class EmployeeOffboarding : ITenantOwned
 
     // ── Offboarding checklist ────────────────────────────────────────────────
     public bool AssetsReturned { get; set; }
+    /// <summary>
+    /// S2-B2 — this is now an EFFECT, not a note. Setting it true runs the real revocation (deactivate
+    /// the user, force AccessMode=NoLogin on every employee↔user link, revoke every live refresh token).
+    /// It used to be a plain boolean while the only code that actually revoked anything ran inside
+    /// <c>Complete</c> — so HR ticked "Access revoked" on the last working day and the ex-employee kept a
+    /// working login for the whole settlement window. Because it is irreversible, it can only be cleared
+    /// by rescinding the offboarding (which restores the login deliberately and audibly), never by
+    /// un-ticking the box.
+    /// </summary>
     public bool AccessRevoked { get; set; }
+    /// <summary>S2-B2 — when the revocation actually ran, and who ran it.</summary>
+    public DateTime? AccessRevokedAtUtc { get; set; }
+    public Guid? AccessRevokedByUserId { get; set; }
     public bool KnowledgeHandover { get; set; }
     public bool FinalSettlementDone { get; set; }
 
@@ -52,4 +64,11 @@ public class EmployeeOffboarding : ITenantOwned
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAtUtc { get; set; }
     public DateTime? CompletedAtUtc { get; set; }
+
+    // ── Rescind (S2-F4) ──────────────────────────────────────────────────────
+    // A withdrawn resignation reinstates an employee and re-grants their login. That is an access
+    // decision, and before this it left no trace at all: no actor, no time, no reason, no audit row.
+    public DateTime? CancelledAtUtc { get; set; }
+    public Guid? CancelledByUserId { get; set; }
+    public string? CancelReason { get; set; }
 }

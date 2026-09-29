@@ -71,7 +71,7 @@ export function useCanViewPayrollData(): boolean {
 export function useIsKioskMode(): boolean {
   return useAuthStore(
     (s) =>
-      s.user?.accessMode === 'KIOSK' || s.user?.accessMode === 'ATTENDANCE_ONLY'
+      s.user?.accessMode === 'KioskOnly'
   );
 }
 

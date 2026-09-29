@@ -29,7 +29,8 @@ public static class ProductionWorkerNames
     public const string AiInsights = "ai-insights";
     public const string Reports = "report-schedules";
     public const string ComplianceReminders = "compliance-reminders";
+    public const string BackgroundJobs = "background-jobs";
 
     public static readonly IReadOnlyList<string> All =
-        [Qiwa, Notifications, AiInsights, Reports, ComplianceReminders];
+        [Qiwa, Notifications, AiInsights, Reports, ComplianceReminders, BackgroundJobs];
 }

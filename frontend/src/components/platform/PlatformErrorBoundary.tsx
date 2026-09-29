@@ -63,7 +63,7 @@ export class PlatformErrorBoundary extends Component<Props, State> {
               </a>
             )}
           </div>
-          <details className="mt-2 text-left">
+          <details className="mt-2 text-start">
             <summary className="text-[11px] text-slate-700 cursor-pointer hover:text-slate-500">Show error details</summary>
             <pre className="mt-2 text-[10px] text-slate-600 bg-black/30 rounded-lg p-3 max-w-lg overflow-x-auto whitespace-pre-wrap">
               {this.state.error.stack}

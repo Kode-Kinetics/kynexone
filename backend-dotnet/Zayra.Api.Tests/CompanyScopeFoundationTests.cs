@@ -33,12 +33,17 @@ public class CompanyScopeFoundationTests
     // ── K1 + K2: default-company backfill, idempotent ──────────────────────────
 
     [Fact]
-    public async Task Backfill_CreatesDefaultCompany_AssignsEmployeesAndOperationalRows_Idempotently()
+    public async Task Backfill_AssignsEmployeesAndOperationalRows_ToTheExistingCompany_Idempotently()
     {
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
 
-        // Legacy-shaped data: no company, employees and operational rows unassigned.
+        // The tenant's first company comes from the platform admin's CreateTenant, never from this
+        // repair pass (docs/DATA_ENTRY_PATHS.md).
+        db.Companies.Add(new Company { TenantId = tenantId, LegalNameEn = "BF1B Co", TradeName = "BF1B Co", IsActive = true });
+        await db.SaveChangesAsync();
+
+        // Legacy-shaped data: employees and operational rows unassigned.
         var e1 = MakeEmployee(tenantId, "BF1B-E1", null);
         var e2 = MakeEmployee(tenantId, "BF1B-E2", null);
         db.Employees.AddRange(e1, e2);
@@ -52,7 +57,7 @@ public class CompanyScopeFoundationTests
 
         var defaultCompany = await db.Companies.IgnoreQueryFilters()
             .SingleAsync(c => c.TenantId == tenantId);
-        first.CompaniesCreated.Should().BeGreaterThan(0);
+        first.CompaniesCreated.Should().Be(0, "the repair pass must never create a company");
 
         (await db.Employees.IgnoreQueryFilters().Where(e => e.TenantId == tenantId).ToListAsync())
             .Should().OnlyContain(e => e.CompanyId == defaultCompany.Id,
@@ -69,6 +74,24 @@ public class CompanyScopeFoundationTests
         // SingleCompany tenant stays SingleCompany (K3).
         (await db.Tenants.AsNoTracking().SingleAsync(t => t.Id == tenantId)).AccountType
             .Should().Be(TenantAccountTypes.SingleCompany);
+    }
+
+    // A tenant with no company is a platform-admin problem to fix, not something the boot pass
+    // papers over by inventing a legal entity nobody asked for.
+    [Fact]
+    public async Task Backfill_TenantWithNoCompany_IsSkipped_AndNoCompanyIsCreated()
+    {
+        await using var db = _fx.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        db.Employees.Add(MakeEmployee(tenantId, "BF1B-NOCO", null));
+        await db.SaveChangesAsync();
+
+        var summary = await CompanyScopeBackfill.RunAsync(db, NullLogger.Instance);
+
+        summary.CompaniesCreated.Should().Be(0);
+        (await db.Companies.IgnoreQueryFilters().CountAsync(c => c.TenantId == tenantId)).Should().Be(0);
+        (await db.Employees.IgnoreQueryFilters().Where(e => e.TenantId == tenantId).ToListAsync())
+            .Should().OnlyContain(e => e.CompanyId == null);
     }
 
     // ── K2 + K4 + A: multi-company accuracy and Group promotion ────────────────

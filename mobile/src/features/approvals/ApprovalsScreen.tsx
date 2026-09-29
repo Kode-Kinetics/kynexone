@@ -29,6 +29,8 @@ import {
   SectionHeader,
 } from '@/components/ui';
 import type { ApprovalItem, ApprovalItemType } from '@/types';
+import { useAuthStore } from '@/auth/authStore';
+import { hasEffectivePermission } from '@/auth/accessPolicy';
 
 interface Props {
   navigation: any;
@@ -41,6 +43,9 @@ type DecisionFeedback = { action: ApprovalAction; title: string };
 
 export default function ApprovalsScreen({ navigation, route }: Props) {
   const { theme } = useTheme();
+  const user = useAuthStore((state) => state.user);
+  const canDecide = user?.accessMode !== 'ReadOnlyAuditor'
+    && hasEffectivePermission(user, 'approvals.decide');
   const [tab, setTab] = useState<ApprovalTab>('PENDING');
   const [items, setItems] = useState<ApprovalItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -105,6 +110,7 @@ export default function ApprovalsScreen({ navigation, route }: Props) {
   }, {}), [items]);
 
   const openAction = (item: ApprovalItem, action: ApprovalAction) => {
+    if (!canDecide) return;
     if (action === 'APPROVE' && !item.canApprove) return;
     if (action === 'REJECT' && !item.canReject) return;
     if (action === 'SEND_BACK' && !item.canSendBack) return;
@@ -155,7 +161,7 @@ export default function ApprovalsScreen({ navigation, route }: Props) {
           <View style={styles.listItem}>
             <ApprovalCard
               item={item}
-              pending={tab === 'PENDING'}
+              pending={tab === 'PENDING' && canDecide}
               meta={typeConfig[item.type] ?? {
                 label: item.type,
                 icon: 'document-outline',

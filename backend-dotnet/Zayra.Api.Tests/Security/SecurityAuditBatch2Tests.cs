@@ -359,7 +359,11 @@ public class SecurityAuditBatch2Tests
 
         var result = await controller.List(null, null, CancellationToken.None) as OkObjectResult;
         result.Should().NotBeNull();
-        var items = (result!.Value as IEnumerable<PerformanceImprovementPlan>)!.ToList();
+        // The list payload is Zayra.Api.Controllers.Performance.PipListItem, not the entity: the row now
+        // also carries the latest check-in outcome, which PIPCheckIn.Outcome previously had no reader for.
+        // The scoping contract this test exists for is unchanged and asserted identically below.
+        var items = (result!.Value as IEnumerable<Zayra.Api.Controllers.Performance.PipListItem>)!.ToList();
+        items.Should().NotBeEmpty("the scoped employee does have a PIP — an empty list would pass vacuously");
         items.Should().OnlyContain(p => p.EmployeeId == me.Id,
             "a scoped employee must only see their own PIP in the list");
     }

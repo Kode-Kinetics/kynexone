@@ -208,6 +208,36 @@ public record PayrollSlipDto(
         s.IsFinalWageMonth);
 }
 
+// ── Payslips (formal payslip records) ─────────────────────────────────────────
+
+/// <summary>
+/// Flat projection of <see cref="Payslip"/> — the formal payslip header the payroll UI lists.
+/// The entity itself is header-only and carries no employee name, so the raw entity forced every
+/// surface that listed it to render a placeholder code ("Emp #4") while the payslip PDF, built from
+/// the PayrollSlip row, printed "Aisha Al-Harbi". This DTO carries the SAME denormalised name and
+/// code the PDF uses (<see cref="PayrollSlip.EmployeeName"/> / <see cref="PayrollSlip.EmployeeCode"/>,
+/// captured when the run was processed), so the list and the document cannot disagree.
+///
+/// No salary amounts: this stays a header-only projection.
+/// </summary>
+public record PayslipListItemDto(
+    Guid Id,
+    Guid PayrollRunId,
+    int EmployeeId,
+    string EmployeeCode,
+    string EmployeeName,
+    string PayslipNumber,
+    string Language,
+    bool IsPublishedToEss,
+    DateTime CreatedAtUtc,
+    DateTime? PublishedAtUtc)
+{
+    public static PayslipListItemDto Project(Payslip p, string employeeCode, string employeeName) => new(
+        p.Id, p.PayrollRunId, p.EmployeeId,
+        employeeCode, employeeName,
+        p.PayslipNumber, p.Language, p.IsPublishedToEss, p.CreatedAtUtc, p.PublishedAtUtc);
+}
+
 // ── EOSB Calculations ─────────────────────────────────────────────────────────
 
 /// <summary>

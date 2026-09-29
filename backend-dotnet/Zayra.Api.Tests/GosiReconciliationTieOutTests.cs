@@ -758,7 +758,7 @@ public class GosiReconciliationTieOutTests
 
     private GosiController BuildGosi(ZayraDbContext db, Guid tenantId, StubRuleReader ruleReader)
     {
-        var ctrl = new GosiController(db, new GosiReconciliationService(db, KsaResolver(ruleReader)));
+        var ctrl = new GosiController(db, new GosiReconciliationService(db, KsaResolver(ruleReader)), ruleReader);
         ctrl.ControllerContext = MakeContext(tenantId, null);
         return ctrl;
     }

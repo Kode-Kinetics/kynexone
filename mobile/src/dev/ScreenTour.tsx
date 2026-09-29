@@ -96,7 +96,8 @@ async function createTourUpload(): Promise<PickedFile> {
 }
 
 async function show(name: string, route: AppRoute, manager: boolean, params?: Record<string, unknown>) {
-  navigateFromRoot(route, manager, params);
+  void manager; // tour scenarios still label the intended persona; access comes from the real session
+  navigateFromRoot(route, useAuthStore.getState().user, params);
   log('STEP', name);
   await wait(DWELL_MS);
 }
@@ -293,7 +294,7 @@ export function ScreenTour() {
             navigationRef.navigate('ForgotPassword' as never);
             log('STEP', 'ForgotPassword');
             await result('forgot-password', () =>
-              authApi.forgotPassword(process.env.EXPO_PUBLIC_TOUR_EMAIL!, process.env.EXPO_PUBLIC_TOUR_TENANT)
+              authApi.forgotPassword(process.env.EXPO_PUBLIC_TOUR_EMAIL!, process.env.EXPO_PUBLIC_TOUR_TENANT!)
             );
           }
           log('DONE');

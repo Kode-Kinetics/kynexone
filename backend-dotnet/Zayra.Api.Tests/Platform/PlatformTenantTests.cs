@@ -91,7 +91,8 @@ public class PlatformTenantTests : PlatformTestBase
             BillingCycle:   null,
             MonthlyAmount:  null,
             CurrencyCode:   null,
-            ExpiresAtUtc:   null);
+            ExpiresAtUtc:   null,
+            HomeCountryCode: "SA");
 
         var result = await controller.CreateTenant(req, CancellationToken.None);
 
@@ -122,7 +123,8 @@ public class PlatformTenantTests : PlatformTestBase
             BillingCycle:  null,
             MonthlyAmount: null,
             CurrencyCode:  null,
-            ExpiresAtUtc:  null);
+            ExpiresAtUtc:  null,
+            HomeCountryCode: "SA");
 
         var result = await controller.CreateTenant(req, CancellationToken.None);
 
@@ -147,7 +149,8 @@ public class PlatformTenantTests : PlatformTestBase
             BillingCycle:  null,
             MonthlyAmount: null,
             CurrencyCode:  null,
-            ExpiresAtUtc:  null);
+            ExpiresAtUtc:  null,
+            HomeCountryCode: "SA");
 
         var result = await controller.CreateTenant(req, CancellationToken.None);
 

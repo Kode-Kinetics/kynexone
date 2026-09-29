@@ -327,9 +327,17 @@ public class ReviewsController : ControllerBase
         if (review is null) return NotFound();
         if (review.Status != "FinalApproval")
             return Conflict(new { error = "review_not_final_approval", message = $"Only a review in FinalApproval can be published (current: {review.Status})." });
+        // ── RE-ISSUE AFTER AN UPHELD APPEAL ──────────────────────────────────────────────────────────
+        // The cycle gate exists to stop a review being published AHEAD of cycle sign-off. It must not
+        // also govern the RE-issue of a review that was already published once and then withdrawn for
+        // revision by an upheld appeal (see RespondToAppeal). By the time an appeal is decided the cycle
+        // has normally moved on to Closed, so applying the gate to a re-issue would leave the review
+        // parked in FinalApproval with no reachable exit — recreating the exact permanent compensation
+        // freeze the appeal-resolution path removes, one status along.
+        var isReIssueAfterAppeal = review.PublishedAt is not null;
         var cycle = await _db.PerformanceCycles.AsNoTracking()
             .FirstOrDefaultAsync(c => c.Id == review.CycleId && c.TenantId == tenantId, ct);
-        if (cycle?.Status != "FinalApproval")
+        if (!isReIssueAfterAppeal && cycle?.Status != "FinalApproval")
             return Conflict(new { error = "cycle_not_final_approval", message = "The parent cycle must be in FinalApproval before publishing reviews." });
 
         var oldStatus = review.Status;
@@ -407,6 +415,54 @@ public class ReviewsController : ControllerBase
         return Created($"/api/performance/reviews/{id}/appeal", appeal);
     }
 
+    /// <summary>
+    /// The open appeals an HR caller may decide. Without this the resolution path below had no reachable
+    /// entry point in the product at all: <c>respondToAppeal</c> existed in the API client and was called
+    /// from nowhere, so every appeal — including one HR intended to reject — stayed open forever.
+    /// </summary>
+    [HttpGet("appeals")]
+    [Authorize(Roles = "Admin,HR Manager")]
+    public async Task<IActionResult> ListAppeals([FromQuery] string? status, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId()!.Value;
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        var query = _db.AppraisalAppeals.AsNoTracking().Where(a => a.TenantId == tenantId);
+        if (!scope.IsUnrestricted)
+            query = query.Where(a => scope.AllowedEmployeeIds!.Contains(a.EmployeeId));
+        query = string.IsNullOrWhiteSpace(status)
+            ? query.Where(a => a.Status == "Submitted" || a.Status == "UnderReview")
+            : query.Where(a => a.Status == status);
+        var items = await query.OrderBy(a => a.SubmittedAt).ToListAsync(ct);
+        return Ok(items);
+    }
+
+    /// <summary>
+    /// Decide an appeal — and move the REVIEW, which is the whole point.
+    ///
+    /// <para>THE DEFECT. <c>SubmitAppeal</c> parks the review at <c>Appealed</c> and nothing ever moved
+    /// it out. <c>RecommendationsController.ResolveSubjectAsync</c> refuses every increment, promotion
+    /// and bonus unless the review is <c>Published</c> or <c>Acknowledged</c>. So submitting an appeal —
+    /// <b>even one HR then rejected</b> — locked that employee out of compensation permanently, and
+    /// <c>Upheld</c> and <c>Rejected</c> were behaviourally identical because neither did anything
+    /// beyond writing its own name into a column.</para>
+    ///
+    /// <para>REJECTED — the published result stands, so the employee returns to exactly where they were.
+    /// The pre-appeal status is not stored anywhere, and it does not need to be: an appeal can only be
+    /// submitted from <c>Published</c> or <c>Acknowledged</c> (see <c>SubmitAppeal</c>), and
+    /// <c>AcknowledgedAt</c> already records which of the two it was. Deriving it rather than adding a
+    /// column means the appeals Evostel already has open resolve correctly, with no backfill.</para>
+    ///
+    /// <para>UPHELD — the appeal succeeded, so the published outcome was wrong and is WITHDRAWN for
+    /// revision: the review returns to <c>FinalApproval</c>, the stage HR revises from.
+    /// <c>PublishedAt</c>/<c>AcknowledgedAt</c> are deliberately left intact — they are the history of
+    /// the issue being appealed, not a claim about the current state — and <c>Publish</c> reads
+    /// <c>PublishedAt</c> to recognise the re-issue and waive the cycle gate, so the exit is reachable
+    /// even after the cycle has closed. Compensation stays blocked until HR re-issues, which is correct:
+    /// an increment must not be raised against a score the employer has just accepted was wrong.
+    /// This controller deliberately does NOT adjust the score itself — what an upheld appeal does to the
+    /// numbers is a product decision (see scratchpad/performance-decisions.md, Q1); HR states it
+    /// explicitly through <c>override-score</c>, which already requires a written reason.</para>
+    /// </summary>
     [HttpPost("appeals/{appealId:guid}/respond")]
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> RespondToAppeal(
@@ -416,18 +472,54 @@ public class ReviewsController : ControllerBase
         var userId   = this.GetUserId();
         if (req.Decision is not ("Upheld" or "Rejected"))
             return BadRequest(new { error = "invalid_decision", message = "Decision must be Upheld or Rejected." });
+        if (string.IsNullOrWhiteSpace(req.Response))
+            return BadRequest(new { error = "appeal_response_required", message = "An appeal decision changes the employee's review and their compensation eligibility. Record the reasoning given to them." });
         var appeal = await _db.AppraisalAppeals
             .FirstOrDefaultAsync(a => a.Id == appealId && a.TenantId == tenantId, ct);
         if (appeal is null) return NotFound();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        if (!scope.CanAccessEmployee(appeal.EmployeeId)) return Forbid();
         if (appeal.Status is not ("Submitted" or "UnderReview"))
             return Conflict(new { error = "appeal_already_decided", message = $"Appeal is already in '{appeal.Status}' status." });
+
+        // Tracked, not AsNoTracking: this row is the reason the endpoint exists.
+        var review = await _db.AppraisalReviews
+            .FirstOrDefaultAsync(r => r.Id == appeal.ReviewId && r.TenantId == tenantId, ct);
+        if (review is null)
+            return Conflict(new { error = "review_missing", message = "The appealed review no longer exists, so the appeal cannot be resolved against it." });
 
         appeal.Status           = req.Decision; // Upheld/Rejected
         appeal.HrResponse       = req.Response;
         appeal.ReviewedByUserId = userId;
+        appeal.ReviewedByName   = User.FindFirst("FullName")?.Value ?? User.Identity?.Name ?? "HR";
         appeal.ReviewedAt       = DateTime.UtcNow;
+
+        var oldReviewStatus = review.Status;
+        var restoredStatus = req.Decision == "Rejected"
+            ? (review.AcknowledgedAt is not null ? "Acknowledged" : "Published")
+            : "FinalApproval";
+        // Only move a review the appeal actually parked. A review that has since been moved on by some
+        // other path is left where it is rather than dragged backwards by a late appeal decision.
+        if (review.Status == "Appealed")
+        {
+            review.Status = restoredStatus;
+            review.UpdatedAtUtc = DateTime.UtcNow;
+        }
+
+        await _svc.LogAuditAsync(tenantId, "AppraisalReview", review.Id.ToString(),
+            $"Appeal{req.Decision}", oldReviewStatus, review.Status, req.Response, userId, appeal.ReviewedByName, ct);
         await _db.SaveChangesAsync(ct);
-        return Ok(appeal);
+        return Ok(new
+        {
+            appeal,
+            reviewStatus = review.Status,
+            // Stated back to the caller because it is the consequence they actually care about, and the
+            // one that was silently absent before.
+            compensationPermitted = review.Status is "Published" or "Acknowledged",
+            nextStep = req.Decision == "Upheld"
+                ? "The published outcome is withdrawn. Revise the scores through override-score (a written reason is required), then publish the review again to re-issue it to the employee."
+                : "The published outcome stands and the employee is eligible for increment, promotion and bonus recommendations again.",
+        });
     }
 
     // ── Compute attendance score ────────────────────────────────────────────────

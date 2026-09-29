@@ -39,12 +39,14 @@ public class OrganizationStructureImportController : ControllerBase
     public IActionResult Template()
     {
         var sb = new StringBuilder();
-        void Section(string name, string[] headers, string sample)
+        // Each section is written through Csv.Template, which refuses an example row whose cell count
+        // does not match its header (CSV rows are positional — a short row silently shifts every value
+        // one column left) and applies the same formula-injection escaping the export path does.
+        void Section(string name, string[] headers, params string[] sample)
         {
-            sb.AppendLine($"# {name}");
-            sb.AppendLine(string.Join(",", headers.Select(Csv.Escape)));
-            sb.AppendLine(sample);
-            sb.AppendLine();
+            sb.Append("# ").Append(name).Append('\n');
+            sb.Append(Csv.Template(headers, sample));
+            sb.Append('\n');
         }
 
         // One consistent, self-explanatory EXAMPLE row per section. Every value is
@@ -53,14 +55,22 @@ public class OrganizationStructureImportController : ControllerBase
         // Preview() with no blocking errors (see OrganizationStructureTemplateRoundTripTests).
         // ManagerEmployeeCode / ParentDepartmentCode are intentionally blank — an empty
         // tenant has no employees or parent departments to reference yet.
-        Section("companies", CompaniesHeaders, "Example Company Ltd,,Example Company,SA,SA-default,,,,,,SAR,true");
-        Section("branches", BranchesHeaders, "Example Company Ltd,HQ,Head Office,,SA,Main City,,,Asia/Riyadh,,true,true");
-        Section("costCenters", CostCentersHeaders, "Example Company Ltd,CC-OPS,Operations,true");
-        Section("departments", DepartmentsHeaders, "Example Company Ltd,HQ,OPS,Operations,,,,CC-OPS,10,100000,true");
-        Section("grades", GradesHeaders, "G1,Grade 1,Staff,1,8000,10000,12000,SAR,true");
-        Section("gradePayComponents", GradePayHeaders, "G1,BASIC,Basic Salary,Earning,Fixed,8000,0,Monthly,false,true");
-        Section("designations", DesignationsHeaders, "OPS-OFF,Operations Officer,,OPS,G1,G1,Staff,,false,5,true");
-        Section("positions", PositionsHeaders, "POS-OPS-001,Operations Officer,Example Company Ltd,HQ,OPS,CC-OPS,OPS-OFF,G1,1,10000,SAR,Open,2026-01-01,");
+        Section("companies", CompaniesHeaders,
+            "Example Company Ltd", "", "Example Company", "SA", "SA-default", "", "", "", "", "", "SAR", "true");
+        Section("branches", BranchesHeaders,
+            "Example Company Ltd", "HQ", "Head Office", "", "SA", "Main City", "", "", "Asia/Riyadh", "", "true", "true");
+        Section("costCenters", CostCentersHeaders,
+            "Example Company Ltd", "CC-OPS", "Operations", "true");
+        Section("departments", DepartmentsHeaders,
+            "Example Company Ltd", "HQ", "OPS", "Operations", "", "", "", "CC-OPS", "10", "100000", "true");
+        Section("grades", GradesHeaders,
+            "G1", "Grade 1", "Staff", "1", "8000", "10000", "12000", "SAR", "true");
+        Section("gradePayComponents", GradePayHeaders,
+            "G1", "BASIC", "Basic Salary", "Earning", "Fixed", "8000", "0", "Monthly", "false", "true");
+        Section("designations", DesignationsHeaders,
+            "OPS-OFF", "Operations Officer", "", "OPS", "G1", "G1", "Staff", "", "false", "5", "true");
+        Section("positions", PositionsHeaders,
+            "POS-OPS-001", "Operations Officer", "Example Company Ltd", "HQ", "OPS", "CC-OPS", "OPS-OFF", "G1", "1", "10000", "SAR", "Open", "2026-01-01", "");
         return File(Encoding.UTF8.GetBytes(sb.ToString()), "text/plain", "organization_structure_import_package.txt");
     }
 
@@ -149,6 +159,12 @@ public class OrganizationStructureImportController : ControllerBase
         await _db.SaveChangesAsync(ct);
 
         var commit = await Commit(req, ct);
+        // Commit() now runs its unit through the execution strategy, and a retry inside that
+        // strategy clears the change tracker. Re-attach the batch from persisted state so the
+        // status updates below are actually written instead of being applied to a detached
+        // entity and silently dropped by SaveChanges.
+        if (_db.Entry(batch).State == EntityState.Detached)
+            batch = await _db.MigrationImportBatches.FirstAsync(x => x.TenantId == tenantId && x.Id == id, ct);
         if (commit.Result is OkObjectResult ok && ok.Value is OrganizationStructureImportResult result)
         {
             var reconciliation = await BuildReconciliationAsync(tenantId, ParsePackage(req), result, ct);
@@ -199,8 +215,82 @@ public class OrganizationStructureImportController : ControllerBase
         if (validation.HasBlockingErrors)
             return UnprocessableEntity(validation);
 
-        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+        // Program.cs registers the DbContext with EnableRetryOnFailure, so the ambient execution
+        // strategy is NpgsqlRetryingExecutionStrategy, and it refuses a user-initiated
+        // BeginTransactionAsync unless the whole unit runs inside
+        // Database.CreateExecutionStrategy().ExecuteAsync(...). The bare transaction that stood
+        // here threw InvalidOperationException before touching a single row, and the generic
+        // exception handler turned it into HTTP 400 — so the org-structure import could never
+        // commit, 100% of the time.
         var counts = new Dictionary<string, int>();
+
+        if (!_db.Database.IsRelational())
+        {
+            // Preserved branch: the in-memory provider the fast unit tests use has neither
+            // transactions nor an execution strategy to satisfy.
+            await ApplyStructureAsync(tenantId, parsed, counts, ct);
+        }
+        else
+        {
+            var strategy = _db.Database.CreateExecutionStrategy();
+            var attempt = 0;
+            await strategy.ExecuteAsync(async () =>
+            {
+                if (attempt++ > 0)
+                {
+                    // ExecuteAsync may re-run this delegate. A retry must not inherit the change
+                    // tracker a failed attempt left behind: every Company/Branch/Department it
+                    // added is still pending and would be inserted a second time, and — worse —
+                    // rows whose SaveChanges succeeded before a transient failure swallowed the
+                    // COMMIT are tracked as Unchanged, so a naive retry would silently write
+                    // nothing at all. ApplyStructureAsync re-reads every lookup from the database,
+                    // so a cleared tracker means the attempt restarts from persisted state.
+                    _db.ChangeTracker.Clear();
+                    counts.Clear();
+                }
+
+                var tx = await _db.Database.BeginTransactionAsync(ct);
+                try
+                {
+                    await ApplyStructureAsync(tenantId, parsed, counts, ct);
+                    await tx.CommitAsync(ct);
+                }
+                catch
+                {
+                    // Never let a failing rollback mask the original error: the strategy has to
+                    // see the real exception to classify it as transient. Dispose still releases.
+                    try { await tx.RollbackAsync(ct); } catch { /* connection already gone */ }
+                    throw;
+                }
+                finally
+                {
+                    await tx.DisposeAsync();
+                }
+            });
+        }
+
+        await _audit.WriteAsync(
+            "setup.organization_structure_import_committed",
+            "OrganizationStructureImport",
+            "bulk",
+            BuildContext(tenantId),
+            JsonSerializer.Serialize(new { received = validation.Received, warnings = validation.Warnings, applied = counts }),
+            ct);
+        return Ok(validation with { Applied = counts, Committed = true });
+    }
+
+    /// <summary>
+    /// Upserts every organization-structure section and persists it. Extracted from
+    /// <see cref="Commit"/> verbatim so the whole apply can be handed to the ambient execution
+    /// strategy as one retriable unit. Every lookup dictionary is re-read from the database on
+    /// entry, so with a cleared change tracker the strategy may safely run it again.
+    /// </summary>
+    private async Task ApplyStructureAsync(
+        Guid tenantId,
+        ParsedOrgPackage parsed,
+        Dictionary<string, int> counts,
+        CancellationToken ct)
+    {
         void Bump(string key) => counts[key] = counts.GetValueOrDefault(key) + 1;
 
         var companies = await _db.Companies.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToDictionaryAsync(x => x.LegalNameEn.ToUpperInvariant(), ct);
@@ -210,6 +300,9 @@ public class OrganizationStructureImportController : ControllerBase
             var active = Bool(row, "IsActive", true);
             if (companies.TryGetValue(name.ToUpperInvariant(), out var company))
             {
+                if (HasValue(row, "IsActive") && active != company.IsActive)
+                    throw new InvalidOperationException(
+                        "Organization-structure import cannot change an existing company's activation state. Use the controlled company lifecycle workflow.");
                 company.LegalNameAr = Val(row, "LegalNameAr");
                 company.TradeName = Val(row, "TradeName");
                 company.CountryCode = Val(row, "CountryCode");
@@ -220,7 +313,6 @@ public class OrganizationStructureImportController : ControllerBase
                 company.GosiEmployerId = Val(row, "GosiEmployerId");
                 company.QiwaEstablishmentId = Val(row, "QiwaEstablishmentId");
                 company.DefaultCurrency = Val(row, "DefaultCurrency", "SAR");
-                company.IsActive = active;
                 company.UpdatedAtUtc = DateTime.UtcNow;
             }
             else
@@ -453,15 +545,6 @@ public class OrganizationStructureImportController : ControllerBase
         }
 
         await _db.SaveChangesAsync(ct);
-        await tx.CommitAsync(ct);
-        await _audit.WriteAsync(
-            "setup.organization_structure_import_committed",
-            "OrganizationStructureImport",
-            "bulk",
-            BuildContext(tenantId),
-            JsonSerializer.Serialize(new { received = validation.Received, warnings = validation.Warnings, applied = counts }),
-            ct);
-        return Ok(validation with { Applied = counts, Committed = true });
     }
 
     private async Task<OrganizationStructureImportResult> ValidateAsync(Guid tenantId, ParsedOrgPackage parsed, EntityScopeContext scope, CancellationToken ct)
@@ -469,10 +552,11 @@ public class OrganizationStructureImportController : ControllerBase
         var rows = new List<ImportRowResult>();
         var existingCompanies = await _db.Companies.AsNoTracking()
             .Where(x => x.TenantId == tenantId && !x.IsDeleted)
-            .Select(x => new { x.Id, x.LegalNameEn })
+            .Select(x => new { x.Id, x.LegalNameEn, x.IsActive })
             .ToListAsync(ct);
         var companyNames = existingCompanies.Select(x => x.LegalNameEn).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var companyIdsByName = existingCompanies.ToDictionary(x => x.LegalNameEn, x => x.Id, StringComparer.OrdinalIgnoreCase);
+        var companyLifecycleByName = existingCompanies.ToDictionary(x => x.LegalNameEn, x => x.IsActive, StringComparer.OrdinalIgnoreCase);
         var branchRows = await _db.Branches.AsNoTracking()
             .Where(x => x.TenantId == tenantId && !x.IsDeleted)
             .Select(x => new { x.Code, x.CompanyId })
@@ -497,6 +581,23 @@ public class OrganizationStructureImportController : ControllerBase
         AddScopeRows(parsed, scope, companyNames, companyIdsByName, branchCompanyByCode, costCenterCompanyByCode, rows);
 
         AddRows("companies", parsed.Companies, "LegalNameEn", "LegalNameEn", required: ["LegalNameEn", "CountryCode", "DefaultCurrency"], known: companyNames, rows);
+        for (var i = 0; i < parsed.Companies.Count; i++)
+        {
+            var row = parsed.Companies[i];
+            var name = Val(row, "LegalNameEn");
+            if (companyLifecycleByName.TryGetValue(name, out var current)
+                && HasValue(row, "IsActive")
+                && Bool(row, "IsActive", true) != current)
+            {
+                rows.Add(new ImportRowResult(
+                    i + 2,
+                    $"companies:{name}",
+                    name,
+                    ImportRowStatus.Error,
+                    ["Existing company activation cannot be changed by organization import. Use the controlled company lifecycle workflow."],
+                    []));
+            }
+        }
         Merge(companyNames, parsed.Companies.Select(x => Val(x, "LegalNameEn")));
         AddRows("branches", parsed.Branches, "Code", "NameEn", required: ["CompanyLegalName", "Code", "NameEn"], known: branchCodes, rows,
             refs: [("CompanyLegalName", companyNames, "Company")]);
@@ -762,6 +863,8 @@ public class OrganizationStructureImportController : ControllerBase
         Csv.Parse(req.PositionsCsv ?? string.Empty));
 
     private static string Val(Dictionary<string, string> row, string key, string fallback = "") => row.GetValueOrDefault(key, fallback).Trim();
+    private static bool HasValue(Dictionary<string, string> row, string key) =>
+        row.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value);
     private static bool Bool(Dictionary<string, string> row, string key, bool fallback) => !row.TryGetValue(key, out var v) ? fallback : !string.Equals(v.Trim(), "false", StringComparison.OrdinalIgnoreCase);
     private static int Int(Dictionary<string, string> row, string key, int fallback = 0) => int.TryParse(Val(row, key), out var v) ? v : fallback;
     private static decimal Dec(Dictionary<string, string> row, string key) => decimal.TryParse(Val(row, key), out var v) ? v : 0m;

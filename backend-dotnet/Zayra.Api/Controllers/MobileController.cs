@@ -36,7 +36,14 @@ public class MobileController : ControllerBase
     private async Task<int?> ResolveCallerEmployeeIdAsync(Guid tenantId, CancellationToken ct)
     {
         if (int.TryParse(User.FindFirstValue("employee_id"), out var empId))
-            return empId;
+        {
+            // A JWT claim is an identifier, not proof that the employee still exists in this tenant.
+            // Validate it so a stale/cross-tenant/unlinked session cannot mutate mobile resources.
+            var linked = await _db.Employees.AsNoTracking()
+                .AnyAsync(x => x.TenantId == tenantId && x.Id == empId && !x.IsDeleted
+                    && x.Status == EmployeeStatuses.Active, ct);
+            return linked ? empId : null;
+        }
 
         var email = User.FindFirstValue("email") ?? User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
         if (!string.IsNullOrWhiteSpace(email))
@@ -44,6 +51,7 @@ public class MobileController : ControllerBase
             var normalizedEmail = email.Trim().ToUpperInvariant();
             var employee = await _db.Employees.AsNoTracking()
                 .FirstOrDefaultAsync(x => x.TenantId == tenantId && !x.IsDeleted &&
+                    x.Status == EmployeeStatuses.Active &&
                     (x.WorkEmail.ToUpper() == normalizedEmail || x.PersonalEmail.ToUpper() == normalizedEmail), ct);
             if (employee is not null) return employee.Id;
         }
@@ -89,6 +97,33 @@ public class MobileController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
         return Ok(new { deviceId = existing.Id, registered = true });
+    }
+
+    /// <summary>
+    /// Removes this caller's device registration. The operation is intentionally idempotent and does
+    /// not reveal whether the same identifier belongs to another employee or tenant.
+    /// </summary>
+    [HttpDelete("register-device/{deviceIdentifier}")]
+    public async Task<IActionResult> UnregisterDevice(string deviceIdentifier, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+
+        var employeeId = await ResolveCallerEmployeeIdAsync(tenantId.Value, ct);
+        if (employeeId is null) return Forbid();
+        if (string.IsNullOrWhiteSpace(deviceIdentifier)) return BadRequest(new { message = "Device identifier is required." });
+
+        var device = await _db.EmployeeMobileDevices.FirstOrDefaultAsync(d =>
+            d.TenantId == tenantId.Value
+            && d.EmployeeId == employeeId.Value
+            && d.DeviceIdentifier == deviceIdentifier, ct);
+        if (device is not null)
+        {
+            _db.EmployeeMobileDevices.Remove(device);
+            await _db.SaveChangesAsync(ct);
+        }
+
+        return NoContent();
     }
 
     // ── Dashboard (lightweight) ──────────────────────────────────────────────
@@ -276,8 +311,17 @@ public class MobileController : ControllerBase
         // CONFIDENTIALITY: the per-employee gross/net MUST come from THIS payslip's own
         // components, never the PayrollRun totals — projecting r.TotalGrossSalary/
         // r.TotalNetSalary leaked the whole company's monthly payroll to every employee.
-        // Gross = sum of "Earning" lines; Net = the stored "Net" line (PayrollController
-        // writes these component types when generating the slip).
+        // Gross = sum of "Earning" lines; Net = the stored "Net" line when there is one, else
+        // derived as Earning - Deduction from the SAME slip's lines.
+        //
+        // Why the fallback: only ONE writer ever emits a "Net" component —
+        // PayrollController.cs:4720, on slip generation, with Amount = slip.NetSalary. No seeder
+        // writes one, so every seeded and every pre-4720 legacy slip had no "Net" line at all and
+        // Sum() over the empty set returned 0.00, which is what the mobile list displayed.
+        // Deriving from this slip's own Earning/Deduction lines keeps the confidentiality rule
+        // above intact: it still reads nothing but THIS payslip's components, and never
+        // PayrollRun.TotalNetSalary/TotalGrossSalary. The stored line stays authoritative when
+        // present, so generated slips return exactly the value they return today.
         var slipIds = heads.Select(h => h.Id).ToList();
         var comps = await _db.PayslipComponents
             .Where(c => c.TenantId == tenantId && slipIds.Contains(c.PayslipId))
@@ -287,11 +331,14 @@ public class MobileController : ControllerBase
         var payslips = heads.Select(h =>
         {
             var own = comps.Where(c => c.PayslipId == h.Id).ToList();
+            var earnings = own.Where(c => c.ComponentType == "Earning").Sum(c => c.Amount);
+            var deductions = own.Where(c => c.ComponentType == "Deduction").Sum(c => c.Amount);
+            var storedNet = own.Where(c => c.ComponentType == "Net").ToList();
             return new
             {
                 h.Id, h.Year, h.Month,
-                TotalGrossSalary = own.Where(c => c.ComponentType == "Earning").Sum(c => c.Amount),
-                TotalNetSalary = own.Where(c => c.ComponentType == "Net").Sum(c => c.Amount),
+                TotalGrossSalary = earnings,
+                TotalNetSalary = storedNet.Count > 0 ? storedNet.Sum(c => c.Amount) : earnings - deductions,
                 h.IsPublishedToEss, h.CreatedAtUtc
             };
         }).ToList();
@@ -334,8 +381,22 @@ public class MobileController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
+        // BROKEN OBJECT-LEVEL AUTHORIZATION (CWE-639) — FIXED.
+        // This was the ONLY endpoint on this controller that skipped ResolveCallerEmployeeIdAsync.
+        // Filtering on (id + tenant) alone let ANY authenticated user in the tenant mark ANY
+        // colleague's notification read: a silent integrity write against another employee's record,
+        // and an oracle for notification ids (204 = exists in my tenant, 404 = does not). Every
+        // sibling endpoint (dashboard, leave, payslips, notifications list) resolves the caller
+        // first; this one now matches them.
+        //
+        // 404 rather than 403 for a notification belonging to someone else is deliberate — it keeps
+        // the existing not-found shape and does not confirm the id exists.
+        var callerId = await ResolveCallerEmployeeIdAsync(tenantId.Value, ct);
+        if (callerId is null) return Forbid();
+
         var notification = await _db.EmployeeNotifications
-            .FirstOrDefaultAsync(n => n.Id == notificationId && n.TenantId == tenantId, ct);
+            .FirstOrDefaultAsync(n => n.Id == notificationId && n.TenantId == tenantId
+                && n.EmployeeId == callerId.Value, ct);
 
         if (notification is null) return NotFound();
 

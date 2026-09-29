@@ -210,14 +210,14 @@ export default function HRRequestCenterPage() {
                   {requests.map(r => (
                     <div
                       key={r.id}
-                      className={`px-4 py-3 cursor-pointer hover:bg-gray-50 ${selectedRequest === r.id ? 'bg-blue-50 border-l-2 border-blue-500' : ''}`}
+                      className={`px-4 py-3 cursor-pointer hover:bg-gray-50 ${selectedRequest === r.id ? 'bg-blue-50 border-s-2 border-blue-500' : ''}`}
                       onClick={() => loadRequestDetail(r.id)}
                     >
                       <p className="text-sm font-medium text-gray-900 truncate">{r.subject}</p>
                       <div className="flex items-center gap-2 mt-1">
                         <span className={`text-xs px-1.5 py-0.5 rounded-full ${STATUS_COLORS[r.status] || STATUS_COLORS.Open}`}>{r.status}</span>
                         <span className={`text-xs ${PRIORITY_COLORS[r.priority]}`}>{r.priority}</span>
-                        <span className="text-xs text-gray-400 ml-auto">{new Date(r.createdAtUtc).toLocaleDateString()}</span>
+                        <span className="text-xs text-gray-400 ms-auto">{new Date(r.createdAtUtc).toLocaleDateString()}</span>
                       </div>
                     </div>
                   ))}

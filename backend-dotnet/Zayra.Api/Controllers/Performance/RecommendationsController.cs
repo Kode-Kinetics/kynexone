@@ -20,23 +20,49 @@ public class RecommendationsController : ControllerBase
     public RecommendationsController(ZayraDbContext db, IPerformanceService svc, IDataScopeService scopeService)
     { _db = db; _svc = svc; _scopeService = scopeService; }
 
+    /// <summary>
+    /// The HR/payroll work queue of approved-but-unimplemented compensation decisions.
+    ///
+    /// <para>SCOPE. This action had NO <see cref="IDataScopeService"/> call while its sibling
+    /// <see cref="ListIncrements"/> did, and none of the three recommendation entities carries a company
+    /// dimension (they are <c>ITenantOwned</c> only, so the EF company query filter never touches them).
+    /// The tenant clause therefore returned every company's rows: a Payroll Manager scoped to one company
+    /// read every sibling company's new salaries and bonus amounts off this one endpoint. That is the
+    /// live leak, not a theoretical one — the resolved scope is what materialises an org-wide caller's
+    /// employee universe down to their accessible companies (DataScopeService.ApplyCompanyBoundaryAsync),
+    /// so applying it here is the only thing that contains these rows.</para>
+    /// </summary>
     [HttpGet("implementation-queue")]
     [Authorize(Roles = "Admin,HR Manager,Payroll Manager")]
     public async Task<IActionResult> ImplementationQueue(CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
-        var increments = await _db.IncrementRecommendations.AsNoTracking()
-            .Where(r => r.TenantId == tenantId && r.Status == "PendingImplementation")
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        // Materialised once and reused by all three queries so the three lists cannot disagree about
+        // who the caller may see.
+        var allowed = scope.IsUnrestricted ? null : scope.AllowedEmployeeIds!;
+
+        var incrementQuery = _db.IncrementRecommendations.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && r.Status == "PendingImplementation");
+        if (allowed is not null) incrementQuery = incrementQuery.Where(r => allowed.Contains(r.EmployeeId));
+        var increments = await incrementQuery
             .Select(r => new { r.Id, Type = "SalaryIncrement", r.EmployeeId, r.EmployeeName, r.EffectiveDate, Amount = r.NewSalary, Action = "Create an effective-dated employee salary assignment, then record implementation evidence." })
             .ToListAsync(ct);
-        var promotions = await _db.PromotionRecommendations.AsNoTracking()
-            .Where(r => r.TenantId == tenantId && r.Status == "PendingImplementation")
+
+        var promotionQuery = _db.PromotionRecommendations.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && r.Status == "PendingImplementation");
+        if (allowed is not null) promotionQuery = promotionQuery.Where(r => allowed.Contains(r.EmployeeId));
+        var promotions = await promotionQuery
             .Select(r => new { r.Id, Type = "Promotion", r.EmployeeId, r.EmployeeName, r.EffectiveDate, Amount = (decimal?)null, Action = "Apply the approved designation/position change through employee position management." })
             .ToListAsync(ct);
-        var bonuses = await _db.BonusRecommendations.AsNoTracking()
-            .Where(r => r.TenantId == tenantId && r.Status == "PendingImplementation")
+
+        var bonusQuery = _db.BonusRecommendations.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && r.Status == "PendingImplementation");
+        if (allowed is not null) bonusQuery = bonusQuery.Where(r => allowed.Contains(r.EmployeeId));
+        var bonuses = await bonusQuery
             .Select(r => new { r.Id, Type = "PerformanceBonus", r.EmployeeId, r.EmployeeName, EffectiveDate = (DateOnly?)null, Amount = (decimal?)r.BonusAmount, Action = "Create the approved bonus in Finance Bonuses so it follows maker-checker and payroll/GL controls." })
             .ToListAsync(ct);
+
         return Ok(new { increments, promotions, bonuses, total = increments.Count + promotions.Count + bonuses.Count });
     }
 

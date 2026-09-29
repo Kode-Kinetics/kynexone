@@ -16,9 +16,13 @@ public class QatarPackTests
     [Fact]
     public async Task Grsia_QatariNational_CalculatesContributions()
     {
-        // Basic QAR 10,000 — GRSIA base = basic only
-        // Employee 7%: QAR 700
-        // Employer 14%: QAR 1,400
+        // S1/A11 — REWRITTEN. This test asserted a basic-only contribution salary (QAR 700 / 1,400),
+        // which is Law 24/2002 and was superseded. Social Insurance Law No. 1 of 2022, in force from
+        // January 2023, defines the contribution salary as basic + social allowance + housing
+        // allowance — so for a 2026 period the base is 10,000 + 2,000 = QAR 12,000.
+        //   Employee 7%:  QAR   840
+        //   Employer 14%: QAR 1,680
+        // Transport stays OUT: the statute names basic, social and housing, and nothing else.
         var calc = new QatarDeductionCalculator(StubRules);
         var input = new StatutoryDeductionInput(
             Guid.NewGuid(), Guid.NewGuid(),
@@ -27,10 +31,10 @@ public class QatarPackTests
 
         var result = await calc.CalculateAsync(input);
 
-        Assert.Equal(700m, result.TotalEmployeeDeduction);
-        Assert.Equal(1_400m, result.TotalEmployerContribution);
-        Assert.Contains(result.Lines, l => l.Code == "GRSIA-EE" && l.EmployeeAmount == 700m);
-        Assert.Contains(result.Lines, l => l.Code == "GRSIA-ER" && l.EmployerAmount == 1_400m);
+        Assert.Equal(840m, result.TotalEmployeeDeduction);
+        Assert.Equal(1_680m, result.TotalEmployerContribution);
+        Assert.Contains(result.Lines, l => l.Code == "GRSIA-EE" && l.EmployeeAmount == 840m);
+        Assert.Contains(result.Lines, l => l.Code == "GRSIA-ER" && l.EmployerAmount == 1_680m);
     }
 
     [Fact]

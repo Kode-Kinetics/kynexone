@@ -30,6 +30,29 @@ interface OverrideDraft {
   reason: string;
 }
 
+// The server is the authority on a statutory value's unit — StatutoryValueUnits.cs refuses a rate
+// written as a percentage and says so. This mirrors the rate families so the operator sees the
+// expected form BEFORE typing, rather than after a refusal. A key this does not recognise stays a
+// plain text field, because inventing bounds for it would be worse than having none.
+function unitHintFor(ruleKey: string): { hint: string; min?: number; max?: number; step?: string } | null {
+  const k = ruleKey.toLowerCase();
+  if (k.startsWith('nitaqat.curve.')) return null;
+  if (k.endsWith('_rate') || k.endsWith('_ratio')) {
+    const contribution = ['gosi.', 'saned.', 'gpssa.', 'grsia.', 'dews.'].some((f) => k.startsWith(f));
+    return {
+      hint: contribution
+        ? 'A decimal FRACTION of the contributory wage, not a percentage: 9% is 0.09, 9.75% is 0.0975, 0.75% is 0.0075. Values above 0.3 are refused.'
+        : 'A decimal FRACTION, not a percentage: 35% is 0.35, 100% is 1.0.',
+      min: 0,
+      max: contribution ? 0.3 : 1,
+      step: '0.0001',
+    };
+  }
+  if (k.endsWith('_sar')) return { hint: 'A money amount in major units, e.g. 45000 for SAR 45,000.', min: 0, step: '0.01' };
+  if (k.endsWith('_multiplier')) return { hint: 'A multiplier, e.g. 1.5 for time-and-a-half.', min: 0, max: 10, step: '0.01' };
+  return null;
+}
+
 export function StatutoryRatesPanel({ scope, scopeLabel, countryCode, jurisdiction, canOverride, canApprove }: Props) {
   const [rows, setRows] = useState<StatutoryRateRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -178,13 +201,13 @@ export function StatutoryRatesPanel({ scope, scopeLabel, countryCode, jurisdicti
       <PanelState loading={loading} empty={rows.length === 0} emptyLabel="No statutory rules found for this country/jurisdiction.">
         <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10">
           <table className="w-full min-w-[760px] text-sm">
-            <thead className="bg-slate-50 text-left text-xs text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
+            <thead className="bg-slate-50 text-start text-xs text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
               <tr>
                 <th className="px-3 py-2">Statutory rule</th>
-                <th className="px-3 py-2 text-right">Platform default</th>
-                <th className="px-3 py-2 text-right">Resolved</th>
+                <th className="px-3 py-2 text-end">Platform default</th>
+                <th className="px-3 py-2 text-end">Resolved</th>
                 <th className="px-3 py-2">Override</th>
-                <th className="px-3 py-2 text-right">Manage</th>
+                <th className="px-3 py-2 text-end">Manage</th>
               </tr>
             </thead>
             <tbody>
@@ -194,8 +217,8 @@ export function StatutoryRatesPanel({ scope, scopeLabel, countryCode, jurisdicti
                 return (
                   <tr key={r.ruleKey} className="border-t border-slate-100 dark:border-white/5">
                     <td className="px-3 py-2 font-mono text-xs">{r.ruleKey}</td>
-                    <td className="px-3 py-2 text-right tabular-nums text-slate-500">{r.platformDefault ?? '—'}</td>
-                    <td className="px-3 py-2 text-right font-medium tabular-nums">{r.resolvedValue ?? '—'}</td>
+                    <td className="px-3 py-2 text-end tabular-nums text-slate-500">{r.platformDefault ?? '—'}</td>
+                    <td className="px-3 py-2 text-end font-medium tabular-nums">{r.resolvedValue ?? '—'}</td>
                     <td className="px-3 py-2">
                       {pend ? (
                         <div className="space-y-0.5">
@@ -314,8 +337,22 @@ export function StatutoryRatesPanel({ scope, scopeLabel, countryCode, jurisdicti
               <Field label="Platform default">
                 <input value={baseRow?.platformDefault ?? '—'} disabled className="input w-full opacity-60" />
               </Field>
-              <Field label="Override value" required>
-                <input value={draft.overrideValue} onChange={(e) => setDraft({ ...draft, overrideValue: e.target.value })} className="input w-full" placeholder="0.00" />
+              <Field
+                label="Override value"
+                required
+                hint={unitHintFor(draft.ruleKey)?.hint ?? 'Entered in the same form as the platform default shown beside it.'}
+              >
+                <input
+                  type={unitHintFor(draft.ruleKey) ? 'number' : 'text'}
+                  inputMode="decimal"
+                  min={unitHintFor(draft.ruleKey)?.min}
+                  max={unitHintFor(draft.ruleKey)?.max}
+                  step={unitHintFor(draft.ruleKey)?.step}
+                  value={draft.overrideValue}
+                  onChange={(e) => setDraft({ ...draft, overrideValue: e.target.value })}
+                  className="input w-full"
+                  placeholder={baseRow?.platformDefault != null ? String(baseRow.platformDefault) : '0.0'}
+                />
               </Field>
             </div>
             <div className="grid grid-cols-2 gap-3">

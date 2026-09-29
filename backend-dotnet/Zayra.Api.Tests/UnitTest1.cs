@@ -8,6 +8,7 @@ using System.Security.Claims;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Controllers;
 using Zayra.Api.Data;
+using Zayra.Api.Domain.Entities;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Tests;
@@ -27,6 +28,14 @@ public class DashboardControllerTests
             new AttendanceRecord { TenantId = tenantId, EmployeeId = 2, WorkDate = today, Status = "Absent", OvertimeHours = 0m },
             new AttendanceRecord { TenantId = tenantId, EmployeeId = 3, WorkDate = today, Status = "On Leave", OvertimeHours = 0m },
             new AttendanceRecord { TenantId = tenantId, EmployeeId = 4, WorkDate = earlier, Status = "Present", OvertimeHours = 4.5m });
+        // Today's tiles (present / absent / on leave) read AttendanceDailyRecords — the table every
+        // capture path writes — while overtime and churn still read the legacy mirror above. No
+        // TenantLocalizationSetting is seeded, so "today" is the UTC date.
+        db.AttendanceDailyRecords.AddRange(
+            new AttendanceDailyRecord { TenantId = tenantId, EmployeeId = 1, WorkDate = today, Status = "Present" },
+            new AttendanceDailyRecord { TenantId = tenantId, EmployeeId = 2, WorkDate = today, Status = "Absent" },
+            new AttendanceDailyRecord { TenantId = tenantId, EmployeeId = 3, WorkDate = today, Status = "On Leave" },
+            new AttendanceDailyRecord { TenantId = tenantId, EmployeeId = 4, WorkDate = earlier, Status = "Present" });
         await db.SaveChangesAsync();
 
         var result = await CreateController(db, tenantId).Summary(CancellationToken.None);
@@ -43,6 +52,7 @@ public class DashboardControllerTests
         Assert.Equal(1, summary.PresentToday);
         Assert.Equal(1, summary.Absent);
         Assert.Equal(1, summary.OnLeave);
+        Assert.Equal(3, summary.AttendanceRecordsToday);
         Assert.Equal(expectedOvertime, summary.OvertimeHours);
         Assert.Equal(2, summary.ChurnRisk);
     }
@@ -83,6 +93,12 @@ public class DashboardControllerTests
 
     private static void SeedEmployees(ZayraDbContext db, Guid tenantId)
     {
+        db.Tenants.Add(new Tenant
+        {
+            Id = tenantId,
+            Name = "Dashboard Test Tenant",
+            Slug = $"dashboard-{tenantId:N}",
+        });
         db.Employees.AddRange(
             new Employee { Id = 1, TenantId = tenantId, EmployeeCode = "E001", FullName = "Aisha Khan", Status = "Active" },
             new Employee { Id = 2, TenantId = tenantId, EmployeeCode = "E002", FullName = "Omar Ali", Status = "Active" },

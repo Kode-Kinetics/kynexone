@@ -91,7 +91,13 @@ public class StatutoryRuleMemoTests
         // Without memoization this would be ~5 × headcount. The gate: flat, not proportional.
         counter.Count.Should().BeLessThan(headcount,
             $"statutory_rules queries ({counter.Count}) must be flat, not ~5×{headcount} — memoization must collapse repeats");
-        counter.Count.Should().BeLessThanOrEqualTo(12);
+        // S1/A5 raised this snapshot bound from 12 to 16. The run now also reads
+        // ot.restday_multiplier, ot.holiday_multiplier and ot.hourly_base — the two day-rate rules
+        // the seeder had been writing and nothing had ever read, plus the Art. 107 wage-base switch.
+        // All three are PRE-LOOP reads resolved once per run, so the property this test exists to
+        // protect is untouched: the count is still flat in headcount, which is what the assertion
+        // above enforces. This second bound is only a tightness ratchet.
+        counter.Count.Should().BeLessThanOrEqualTo(16);
 
         // Value invariance: KSA Saudi GOSI EE = 9% + 0.75% = 9.75% of covered wage (12,000) = 1,170.
         await using (var check = _fx.CreateDb())

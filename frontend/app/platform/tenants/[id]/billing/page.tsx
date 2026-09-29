@@ -689,11 +689,11 @@ function InvoiceDetailPanel({ tenantId, invoice, currency }: {
               <table className="w-full text-xs">
                 <thead>
                   <tr className="text-[10px] text-slate-600 uppercase">
-                    <th className="text-left pb-1 font-medium">Description</th>
-                    <th className="text-right pb-1 font-medium pr-2">Qty</th>
-                    <th className="text-right pb-1 font-medium pr-2">Unit</th>
-                    <th className="text-right pb-1 font-medium pr-2">Disc</th>
-                    <th className="text-right pb-1 font-medium">Total</th>
+                    <th className="text-start pb-1 font-medium">Description</th>
+                    <th className="text-end pb-1 font-medium pe-2">Qty</th>
+                    <th className="text-end pb-1 font-medium pe-2">Unit</th>
+                    <th className="text-end pb-1 font-medium pe-2">Disc</th>
+                    <th className="text-end pb-1 font-medium">Total</th>
                     {isDraft && <th className="pb-1 w-12" aria-label="Actions" />}
                   </tr>
                 </thead>
@@ -701,12 +701,12 @@ function InvoiceDetailPanel({ tenantId, invoice, currency }: {
                   {lines.map(l => (
                     <tr key={l.id}>
                       <td className="py-1 text-slate-300">{l.description}</td>
-                      <td className="py-1 text-right pr-2 text-slate-500 tabular-nums">{l.quantity}</td>
-                      <td className="py-1 text-right pr-2 text-slate-400 tabular-nums">{fmtAmount(l.unitPrice, currency)}</td>
-                      <td className="py-1 text-right pr-2 text-slate-600 tabular-nums">{l.discountAmount > 0 ? `-${fmtAmount(l.discountAmount, currency)}` : '—'}</td>
-                      <td className="py-1 text-right text-white font-medium tabular-nums">{fmtAmount(l.lineTotal, currency)}</td>
+                      <td className="py-1 text-end pe-2 text-slate-500 tabular-nums">{l.quantity}</td>
+                      <td className="py-1 text-end pe-2 text-slate-400 tabular-nums">{fmtAmount(l.unitPrice, currency)}</td>
+                      <td className="py-1 text-end pe-2 text-slate-600 tabular-nums">{l.discountAmount > 0 ? `-${fmtAmount(l.discountAmount, currency)}` : '—'}</td>
+                      <td className="py-1 text-end text-white font-medium tabular-nums">{fmtAmount(l.lineTotal, currency)}</td>
                       {isDraft && (
-                        <td className="py-1 pl-2">
+                        <td className="py-1 ps-2">
                           <div className="flex items-center gap-1">
                             <button type="button" title="Edit line"
                               onClick={() => {
@@ -732,8 +732,8 @@ function InvoiceDetailPanel({ tenantId, invoice, currency }: {
                 </tbody>
                 <tfoot className="border-t border-white/[0.06]">
                   <tr>
-                    <td colSpan={isDraft ? 5 : 4} className="pt-1.5 text-right text-slate-500 pr-2">Total</td>
-                    <td className="pt-1.5 text-right text-emerald-400 font-bold tabular-nums">{fmtAmount(invoice.amount, currency)}</td>
+                    <td colSpan={isDraft ? 5 : 4} className="pt-1.5 text-end text-slate-500 pe-2">Total</td>
+                    <td className="pt-1.5 text-end text-emerald-400 font-bold tabular-nums">{fmtAmount(invoice.amount, currency)}</td>
                     {isDraft && <td />}
                   </tr>
                 </tfoot>
@@ -779,10 +779,10 @@ function InvoiceDetailPanel({ tenantId, invoice, currency }: {
                 <table className="w-full text-xs mb-2">
                   <thead>
                     <tr className="text-[10px] text-slate-600 uppercase">
-                      <th className="text-left pb-1 font-medium">Date</th>
-                      <th className="text-left pb-1 font-medium">Method</th>
-                      <th className="text-left pb-1 font-medium">Status</th>
-                      <th className="text-right pb-1 font-medium">Amount</th>
+                      <th className="text-start pb-1 font-medium">Date</th>
+                      <th className="text-start pb-1 font-medium">Method</th>
+                      <th className="text-start pb-1 font-medium">Status</th>
+                      <th className="text-end pb-1 font-medium">Amount</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/[0.04]">
@@ -798,7 +798,7 @@ function InvoiceDetailPanel({ tenantId, invoice, currency }: {
                             'text-slate-400 border-slate-700/30 bg-slate-900/20'
                           }`}>{p.status}</span>
                         </td>
-                        <td className={`py-1 text-right tabular-nums font-medium ${p.status === 'Completed' ? 'text-emerald-400' : 'text-slate-500'}`}>
+                        <td className={`py-1 text-end tabular-nums font-medium ${p.status === 'Completed' ? 'text-emerald-400' : 'text-slate-500'}`}>
                           {fmtAmount(p.amount, p.currencyCode)}
                         </td>
                       </tr>
@@ -977,7 +977,7 @@ export default function TenantBillingPage() {
               <thead>
                 <tr className="border-b border-white/[0.06]">
                   {['Invoice #', 'Period', 'Amount', 'Status', 'Issued', 'Due', 'Payment', 'Actions'].map(h => (
-                    <th key={h} className="px-4 py-3 text-left text-[10px] font-semibold text-slate-600 uppercase tracking-widest whitespace-nowrap">{h}</th>
+                    <th key={h} className="px-4 py-3 text-start text-[10px] font-semibold text-slate-600 uppercase tracking-widest whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
               </thead>

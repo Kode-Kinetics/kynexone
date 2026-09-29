@@ -15,7 +15,8 @@ import { attendanceApi, dashboardApi } from '@/api/services';
 import { AttendanceSelfieModal } from '@/features/attendance/AttendanceSelfieModal';
 import { AttendanceCard } from '@/features/dashboard/EmployeeDashboard';
 import { getDeviceInfo } from '@/utils/device';
-import { navigateTo, isManagerUser, type AppRoute } from '@/navigation/routes';
+import { formatRiyadhBusinessDate } from '@/utils/businessDate';
+import { navigateTo, type AppRoute } from '@/navigation/routes';
 import { useTheme } from '@/theme/ThemeProvider';
 import {
   EmployeeAvatar,
@@ -90,7 +91,7 @@ export default function ManagerDashboardScreen({ navigation }: Props) {
 
   const firstName = user?.fullName?.split(' ')[0] ?? 'Manager';
   const go = (route: AppRoute, params?: Record<string, unknown>) =>
-    navigateTo(navigation, route, isManagerUser(user), params);
+    navigateTo(navigation, route, user, params);
   const team = dashboard?.teamSummary;
   const pendingCount = dashboard?.pendingApprovalsCount ?? 0;
 
@@ -168,11 +169,7 @@ export default function ManagerDashboardScreen({ navigation }: Props) {
         <ScreenHero
           eyebrow="Manager workspace"
           title={`Lead with clarity, ${firstName}`}
-          subtitle={new Date().toLocaleDateString('en-US', {
-            weekday: 'long',
-            month: 'long',
-            day: 'numeric',
-          })}
+          subtitle={formatRiyadhBusinessDate()}
           actions={
             <View style={styles.heroActions}>
               <MotionPressable

@@ -32,26 +32,37 @@ public class PlatformLifecycleInvoiceTests : PlatformTestBase
         return t;
     }
 
-    // ── Restore ──────────────────────────────────────────────────────────────
+    // ── Restore (fail-closed) ───────────────────────────────────────────────
+    // Deleted-tenant restoration is deliberately disabled pending credential re-provisioning
+    // controls. These tests pin the contract: 409 with a stable error code and ZERO mutation.
+
+    private static void AssertConflict(IActionResult result, string errorCode)
+    {
+        var conflict = result.Should().BeOfType<ConflictObjectResult>().Subject;
+        JsonSerializer.Serialize(conflict.Value).Should().Contain(errorCode);
+    }
 
     [Fact]
-    public async Task RestoreTenant_ReactivatesAndRestoresSlug()
+    public async Task RestoreTenant_OnSoftDeletedTenant_FailsClosed_WithZeroMutation()
     {
         await using var db = CreateDb();
         var t = await SeedSoftDeleted(db, "acme");
+        var originalSlug = t.Slug;
         var controller = CreateController(db);
 
         var result = await controller.RestoreTenant(t.Id, CancellationToken.None);
 
-        result.Should().BeOfType<OkObjectResult>();
+        AssertConflict(result, "tenant_restore_disabled");
+        db.ChangeTracker.Clear();
         var stored = await db.Tenants.FindAsync(t.Id);
-        stored!.IsActive.Should().BeTrue();
-        stored.Slug.Should().Be("acme");
-        (await db.TenantSubscriptions.FirstAsync(s => s.TenantId == t.Id)).Status.Should().Be("Active");
+        stored!.IsActive.Should().BeFalse();
+        stored.Slug.Should().Be(originalSlug);
+        (await db.TenantSubscriptions.FirstAsync(s => s.TenantId == t.Id)).Status.Should().Be("Cancelled");
+        (await db.AdminAuditLogs.CountAsync()).Should().Be(0);
     }
 
     [Fact]
-    public async Task RestoreTenant_OnActiveTenant_Returns400()
+    public async Task RestoreTenant_OnActiveTenant_FailsClosedWith409()
     {
         await using var db = CreateDb();
         var t = await SeedTenant(db, "live");
@@ -59,26 +70,30 @@ public class PlatformLifecycleInvoiceTests : PlatformTestBase
 
         var result = await controller.RestoreTenant(t.Id, CancellationToken.None);
 
-        result.Should().BeOfType<BadRequestObjectResult>();
+        AssertConflict(result, "tenant_restore_disabled");
+        (await db.Tenants.FindAsync(t.Id))!.Slug.Should().Be("live");
     }
 
     [Fact]
-    public async Task RestoreTenant_WhenOriginalSlugTaken_UsesSuffixedSlug()
+    public async Task RestoreTenant_WhenOriginalSlugTaken_FailsClosed_AndLeavesBothTenantsUntouched()
     {
         await using var db = CreateDb();
-        await SeedTenant(db, "acme");                 // slug now taken by a live tenant
+        var live = await SeedTenant(db, "acme");
         var deleted = await SeedSoftDeleted(db, "acme");
+        var deletedSlug = deleted.Slug;
         var controller = CreateController(db);
 
-        await controller.RestoreTenant(deleted.Id, CancellationToken.None);
+        AssertConflict(await controller.RestoreTenant(deleted.Id, CancellationToken.None), "tenant_restore_disabled");
 
+        db.ChangeTracker.Clear();
         var stored = await db.Tenants.FindAsync(deleted.Id);
-        stored!.IsActive.Should().BeTrue();
-        stored.Slug.Should().StartWith("acme-restored-");
+        stored!.IsActive.Should().BeFalse();
+        stored.Slug.Should().Be(deletedSlug);
+        (await db.Tenants.FindAsync(live.Id))!.Slug.Should().Be("acme");
     }
 
     [Fact]
-    public async Task BulkRestore_RestoresSelected_SkipsActive()
+    public async Task BulkRestore_FailsClosed_WithZeroMutation()
     {
         await using var db = CreateDb();
         var d1 = await SeedSoftDeleted(db, "alpha");
@@ -88,9 +103,11 @@ public class PlatformLifecycleInvoiceTests : PlatformTestBase
         var result = await controller.BulkRestoreTenants(
             new BulkTenantActionRequest(new List<Guid> { d1.Id, live.Id }, null), CancellationToken.None);
 
-        var json = JsonSerializer.Serialize(((OkObjectResult)result).Value);
-        json.Should().Contain("\"succeeded\":1");
-        json.Should().Contain("\"skipped\":1");
+        AssertConflict(result, "bulk_tenant_restore_disabled");
+        db.ChangeTracker.Clear();
+        (await db.Tenants.FindAsync(d1.Id))!.IsActive.Should().BeFalse();
+        (await db.TenantSubscriptions.FirstAsync(s => s.TenantId == d1.Id)).Status.Should().Be("Cancelled");
+        (await db.AdminAuditLogs.CountAsync()).Should().Be(0);
     }
 
     // ── Purge (validation paths; ExecuteDelete itself isn't InMemory-runnable) ─

@@ -2,6 +2,7 @@ import { test as setup, expect, request as pwRequest } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROLES, BASE_URL, storageStatePath, tokenPath, type RoleFixture } from './roles';
+import { MISSING_WORLD } from '../world';
 
 /**
  * WAVE 1 B3 — authenticate every role ONCE, then never again.
@@ -114,8 +115,7 @@ async function login(api: import('@playwright/test').APIRequestContext, role: Ro
     + (resp.status() === 429
       ? 'This is the login rate limiter (10 per 60s). Increase E2E_LOGIN_PACING_MS — do NOT raise '
         + 'RateLimit:LoginPermitLimit, which would weaken a production brute-force control.'
-      : 'Check that the enterprise-group seed ran (SEED_ENTERPRISE_TEST_DATA=true) and, for the '
-        + 'platform operator, that PLATFORM_ADMIN_PASSWORD was supplied.'),
+      : MISSING_WORLD),
   ).toBe(200);
 
   const body = await resp.json();

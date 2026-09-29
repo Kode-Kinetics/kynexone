@@ -71,7 +71,7 @@ function Step1OrgType({ state, update }: { state: WizardState; update: (p: Parti
                 if (opt.value === 'single') update({ numCompanies: 1 });
                 if (opt.value === 'enterprise_holding') update({ numCompanies: Math.max(state.numCompanies, 5) });
               }}
-              className={`flex items-start gap-4 px-5 py-4 rounded-xl border text-left transition-all ${
+              className={`flex items-start gap-4 px-5 py-4 rounded-xl border text-start transition-all ${
                 active
                   ? 'bg-sapphire/10 border-sapphire/50 ring-1 ring-sapphire/30'
                   : 'bg-white/[0.03] border-white/10 hover:border-white/20'
@@ -180,7 +180,7 @@ function Step2Structure({ state, update }: { state: WizardState; update: (p: Par
           onClick={() => update({ needsArabic: !state.needsArabic })}
           className={`h-5 w-9 rounded-full transition-colors relative ${state.needsArabic ? 'bg-sapphire' : 'bg-white/10'}`}
         >
-          <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all ${state.needsArabic ? 'left-4' : 'left-0.5'}`} />
+          <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all ${state.needsArabic ? 'start-4' : 'start-0.5'}`} />
         </button>
         <div>
           <div className="text-sm font-medium text-white flex items-center gap-1.5">
@@ -229,7 +229,7 @@ function Step3Modules({
               type="button"
               disabled={isCore}
               onClick={() => !isCore && toggle(m.key)}
-              className={`flex items-center gap-3 px-4 py-3 rounded-lg border text-left transition-all ${
+              className={`flex items-center gap-3 px-4 py-3 rounded-lg border text-start transition-all ${
                 isSelected
                   ? 'bg-sapphire/10 border-sapphire/40'
                   : 'bg-white/[0.02] border-white/[0.07] hover:border-white/15'
@@ -303,7 +303,7 @@ function Step4Summary({ state, estimate, billing, setBilling }: {
               onClick={() => setBilling(b)}
               className={`px-3 py-1.5 font-medium capitalize transition-colors ${billing === b ? 'bg-sapphire text-white' : 'text-slate-400 hover:text-white'}`}
             >
-              {b}{b === 'annual' && <span className="ml-1 text-emerald-400">-{estimate.annualDiscountPct}%</span>}
+              {b}{b === 'annual' && <span className="ms-1 text-emerald-400">-{estimate.annualDiscountPct}%</span>}
             </button>
           ))}
         </div>
@@ -312,7 +312,7 @@ function Step4Summary({ state, estimate, billing, setBilling }: {
       {/* Recommended plan badge */}
       <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold ${PLAN_BADGE[plan] ?? PLAN_BADGE.Trial}`}>
         Recommended: {plan}
-        {estimate.isEnterpriseRequired && <span className="text-xs font-normal ml-1 opacity-70">· Custom quote required</span>}
+        {estimate.isEnterpriseRequired && <span className="text-xs font-normal ms-1 opacity-70">· Custom quote required</span>}
       </div>
 
       {/* Price headline */}
@@ -321,7 +321,7 @@ function Step4Summary({ state, estimate, billing, setBilling }: {
           <span className="text-3xl font-bold text-white">{fmt(monthly)}</span>
           <span className="text-slate-500 text-sm">/mo</span>
           {billing === 'annual' && (
-            <span className="ml-2 text-xs text-slate-500">billed {fmt(total)}/yr</span>
+            <span className="ms-2 text-xs text-slate-500">billed {fmt(total)}/yr</span>
           )}
         </div>
         {estimate.isEnterpriseRequired && (
@@ -437,7 +437,7 @@ function Step5Contact({ form, setForm }: { form: ContactForm; setForm: (f: Conta
         ] as { key: keyof ContactForm; label: string; placeholder: string; required: boolean }[]).map(f => (
           <div key={f.key} className="space-y-1.5">
             <label className="text-xs font-medium text-slate-400 uppercase tracking-wider">
-              {f.label}{f.required && <span className="text-rose-400 ml-1">*</span>}
+              {f.label}{f.required && <span className="text-rose-400 ms-1">*</span>}
             </label>
             <input
               type={f.key === 'contactEmail' ? 'email' : 'text'}

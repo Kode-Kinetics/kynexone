@@ -1,3 +1,4 @@
+using Zayra.Api.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
@@ -106,6 +107,24 @@ public static class EosbProvisionLedger
     public static string EmployeeRef(int employeeId) => employeeId.ToString();
 
     /// <summary>
+    /// M2 — the driver a CARRIED provision's position is booked against: the same EOSB_PROVISION driver
+    /// (2310 by default, remappable per company) the settlement's relief debit resolves, so a
+    /// consumption keys onto a carried position exactly as it keys onto a C2 accrual. It is resolved
+    /// rather than read from a stored CreditAccount because a carried provision has no GL row to read
+    /// one from.
+    ///
+    /// <para><b>The presentation caveat, stated plainly.</b> Relieving a carried provision emits
+    /// <c>DR 2310</c> with no matching <c>CR 2310</c> anywhere in THIS product's ledger, because the
+    /// opening credit lives in the customer's own migrated trial balance and there is no opening
+    /// trial-balance import to bring it across. The settlement journal still balances line for line —
+    /// the credit is the settlement payable, exactly as before — and the EXPENSE is now right, which is
+    /// the defect this fixes. What a tenant with no opening TB will see is 2310 running negative by the
+    /// carried amount. Booking the opening credit belongs with the rest of the opening trial balance,
+    /// not here, and is called out as outstanding rather than fabricated.</para>
+    /// </summary>
+    public const string ProvisionDriverKey = "EOSB_PROVISION";
+
+    /// <summary>
     /// Outstanding provision positions for the given employees.
     ///
     /// <para>IgnoreQueryFilters is intentional: GL integrity is a SYSTEM read that must see every
@@ -129,8 +148,59 @@ public static class EosbProvisionLedger
                      && refs.Contains(x.SourceEntityRef) && !x.IsReversed)
             .Select(x => new { x.SourceEntityRef, x.CompanyId, x.CreditAccount, x.Currency, x.Amount })
             .ToListAsync(ct);
-        var accruals = accrualRows.Where(r => !string.IsNullOrEmpty(r.CreditAccount)).ToList();
-        if (accruals.Count == 0) return new List<EosbProvisionPosition>();
+        var accruals = accrualRows
+            .Where(r => !string.IsNullOrEmpty(r.CreditAccount))
+            .Select(r => (r.SourceEntityRef, r.CompanyId, r.CreditAccount, r.Currency, r.Amount))
+            .ToList();
+
+        // ── M2: THE CARRIED PROVISION IS PART OF THIS SUB-LEDGER ────────────────────────────────────
+        // The opening-balance import writes EmployeeEosbOpeningBalance — the 2310 provision the customer
+        // brought with them on their own balance sheet — and until this change nothing read it back
+        // here. A migrated leaver's whole gratuity was therefore expensed to 5110 at settlement, on top
+        // of the expense the outgoing system had already recognised over the same years of service: the
+        // same cost booked twice, in two systems, for one employee. It is not a theoretical gap either,
+        // because POD-C2 has not shipped: for a migrated tenant the carried row is the ONLY provision
+        // that exists, so reading FinanceGlEntry alone can only ever answer "nothing was provided".
+        //
+        // It is UNIONED here rather than posted as a journal at import. The carried provision is a fact
+        // about the previous system's ledger, and this product has no opening trial-balance import to
+        // post the matching credit against; inventing an opening-equity journal would put a figure in
+        // the GL that no source document supports. See the caveat on GL presentation in the summary
+        // above ProvisionDriverKey.
+        //
+        // Through ScopedBypass rather than a raw IgnoreQueryFilters: the provision balance is a SYSTEM
+        // integrity read that must see every company's carried rows AND unattributed (CompanyId == null)
+        // ones regardless of the caller's own company claims. TenantWide drops exactly the company
+        // filter and re-applies the tenant itself, so the bypass cannot be widened by forgetting a WHERE.
+        var openingRows = await ScopedBypass.TenantWide(db.EmployeeEosbOpeningBalances, tenantId,
+                "EOSB provision integrity: the carried opening balance must be seen across every company "
+                + "and for unattributed rows, or the provision is understated and the expense books twice.")
+            .AsNoTracking()
+            .Where(x => employeeIds.Contains(x.EmployeeId) && x.AccruedAmount > 0m)
+            .Select(x => new { x.EmployeeId, x.CompanyId, x.AsAtDate, x.AccruedAmount, x.Currency })
+            .ToListAsync(ct);
+
+        if (accruals.Count == 0 && openingRows.Count == 0) return new List<EosbProvisionPosition>();
+
+        if (openingRows.Count > 0)
+        {
+            var accountByCompany = new Dictionary<Guid?, string>();
+            foreach (var companyId in openingRows.Select(r => r.CompanyId).Distinct())
+                accountByCompany[companyId] = GlAccountResolver.AccountLabel(
+                    ProvisionDriverKey, await GlAccountResolver.LoadAsync(db, tenantId, companyId, ct));
+
+            // Several carried rows for ONE employee are re-statements of the same provision at
+            // successive cut dates (a re-migration restates it), not separate liabilities. The most
+            // recently struck row is the position; summing them would overstate the relief and
+            // under-expense the settlement, which is the mirror image of the defect being fixed.
+            foreach (var g in openingRows.GroupBy(r => (r.EmployeeId, r.CompanyId)))
+            {
+                var latest = g.OrderByDescending(r => r.AsAtDate).First();
+                accruals.Add((EmployeeRef(latest.EmployeeId), latest.CompanyId,
+                    accountByCompany[latest.CompanyId],
+                    latest.Currency, Math.Round(latest.AccruedAmount, 2)));
+            }
+        }
 
         // Consumptions: what C1's own settlements have already taken out of the provision.
         // IgnoreQueryFilters is intentional: company filter only — provision consumption must net against

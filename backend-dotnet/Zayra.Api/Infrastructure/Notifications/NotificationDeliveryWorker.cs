@@ -174,6 +174,19 @@ public sealed class NotificationDeliveryWorker : BackgroundService
             return true;
         }
 
+        // ── W2-D (S4): RE-CHECK THE EMPLOYEE'S CATEGORY OPT-OUT AT SEND TIME ──
+        // Selection at enqueue already honours it; this closes the gap for rows that sat in the queue
+        // (quiet-hours deferral, retries) while the employee turned the category off.
+        if (delivery.EmployeeId is { } optEmployeeId
+            && await IsCategoryOptedOutNowAsync(db, delivery, optEmployeeId, ct) is { } optedOutCategory)
+        {
+            Finalize(delivery, DeliveryOutcomes.Suppressed, string.Empty, string.Empty,
+                "employee_opted_out",
+                $"The employee turned off {optedOutCategory} notifications on {delivery.Channel} before it was sent.");
+            await db.SaveChangesAsync(ct);
+            return true;
+        }
+
         var destination = delivery.Channel switch
         {
             NotificationChannels.Email => recipient?.Email ?? NullIfEmpty(delivery.DestinationRaw),
@@ -193,7 +206,8 @@ public sealed class NotificationDeliveryWorker : BackgroundService
         var request = new NotificationDispatchRequest(
             delivery.TenantId, delivery.Channel, delivery.EventCode, destination,
             recipient?.DisplayName ?? string.Empty, delivery.Subject, delivery.Body,
-            delivery.IdempotencyKey, PushTargets: recipient?.PushTargets);
+            delivery.IdempotencyKey, PushTargets: recipient?.PushTargets,
+            EntityName: delivery.EntityName ?? string.Empty, EntityId: delivery.EntityId);
 
         var result = await dispatcher.SendAsync(request, ct);
 
@@ -252,6 +266,21 @@ public sealed class NotificationDeliveryWorker : BackgroundService
     /// window is the queue lifetime rather than forever. Error text is scrubbed of phone numbers
     /// and email addresses — providers echo the destination back inside error strings.
     /// </summary>
+    /// <summary>The opted-out category name, or null when this delivery may go out.</summary>
+    private static async Task<string?> IsCategoryOptedOutNowAsync(ZayraDbContext db, NotificationDelivery delivery,
+        int employeeId, CancellationToken ct)
+    {
+        var category = NotificationCategories.Classify(delivery.EventCode, delivery.EntityName);
+        var key = NotificationCategories.ChannelKeyFor(delivery.Channel);
+        if (category is null || key is null || NotificationCategories.IsMandatory(category)) return null;
+        var off = await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(db.EmployeeNotificationCategoryPreferences,
+                delivery.TenantId, "Delivery worker has no ambient tenant; the delivery's own tenant is re-applied, employee pinned below.")
+            .AsNoTracking()
+            .AnyAsync(p => p.EmployeeId == employeeId
+                && p.Channel == key && p.Category == category && !p.Enabled, ct);
+        return off ? category : null;
+    }
+
     private static void Finalize(NotificationDelivery delivery, string outcome, string providerName,
         string providerReference, string errorCode, string errorMessage)
     {

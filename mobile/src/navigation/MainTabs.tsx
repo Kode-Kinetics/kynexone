@@ -5,7 +5,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '@/auth/authStore';
-import { isManagerUser } from './routes';
+import { deriveMobileAccess, type MobileSurface } from '@/auth/accessPolicy';
 import { LiquidTabBar } from './LiquidTabBar';
 import {
   GlassSurface,
@@ -20,6 +20,7 @@ import ManagerDashboard from '@/features/dashboard/ManagerDashboard';
 import TeamScreen from '@/features/dashboard/TeamScreen';
 import AttendanceHistoryScreen from '@/features/attendance/AttendanceHistoryScreen';
 import AttendanceCorrectionScreen from '@/features/attendance/AttendanceCorrectionScreen';
+import KioskAttendanceScreen from '@/features/attendance/KioskAttendanceScreen';
 import ApplyLeaveScreen from '@/features/leave/ApplyLeaveScreen';
 import OvertimeScreen from '@/features/overtime/OvertimeScreen';
 import ApprovalsScreen from '@/features/approvals/ApprovalsScreen';
@@ -32,44 +33,91 @@ import HRRequestDetailScreen from '@/features/requests/HRRequestDetailScreen';
 import NotificationsScreen from '@/features/notifications/NotificationsScreen';
 import AIAssistantScreen from '@/features/ai-assistant/AIAssistantScreen';
 import SettingsScreen from '@/features/settings/SettingsScreen';
+import SessionScreen from '@/features/settings/SessionScreen';
 import ChangePasswordScreen from '@/features/auth/ChangePasswordScreen';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
-function MoreStack() {
+
+const tabScreenOptions = {
+  headerShown: false,
+  tabBarHideOnKeyboard: true,
+} as const;
+
+const renderTabBar = (props: React.ComponentProps<typeof LiquidTabBar>) => <LiquidTabBar {...props} />;
+
+function useSurface(surface: MobileSurface): boolean {
+  const user = useAuthStore((state) => state.user);
+  return deriveMobileAccess(user).surfaces.has(surface);
+}
+
+function EmployeeHomeStack() {
+  const correction = useSurface('attendanceCorrection');
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="MoreHome" component={MoreHomeScreen} />
-      <Stack.Screen name="Profile" component={ProfileScreen} />
-      <Stack.Screen name="Documents" component={DocumentsScreen} />
-      <Stack.Screen name="HRRequests" component={HRRequestsScreen} />
-      <Stack.Screen name="HRRequestDetail" component={HRRequestDetailScreen} />
-      <Stack.Screen name="Notifications" component={NotificationsScreen} />
-      <Stack.Screen name="AIAssistant" component={AIAssistantScreen} />
-      <Stack.Screen name="Settings" component={SettingsScreen} />
-      <Stack.Screen name="ChangePassword" component={ChangePasswordScreen} />
-      <Stack.Screen name="AttendanceCorrection" component={AttendanceCorrectionScreen} />
-      <Stack.Screen name="ApplyLeave" component={ApplyLeaveScreen} />
-      <Stack.Screen name="Overtime" component={OvertimeScreen} />
+      <Stack.Screen name="Dashboard" component={EmployeeDashboard} />
+      <Stack.Screen name="PayslipDetail" component={PayslipDetailScreen} />
+      {correction && <Stack.Screen name="AttendanceCorrection" component={AttendanceCorrectionScreen} />}
+    </Stack.Navigator>
+  );
+}
+
+function ManagerHomeStack() {
+  return (
+    <Stack.Navigator screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="Dashboard" component={ManagerDashboard} />
+    </Stack.Navigator>
+  );
+}
+
+function PayslipsStack() {
+  return (
+    <Stack.Navigator screenOptions={{ headerShown: false }}>
       <Stack.Screen name="PayslipsList" component={PayslipsScreen} />
       <Stack.Screen name="PayslipDetail" component={PayslipDetailScreen} />
     </Stack.Navigator>
   );
 }
 
+function MoreStack() {
+  const user = useAuthStore((state) => state.user);
+  const surfaces = deriveMobileAccess(user).surfaces;
+  return (
+    <Stack.Navigator screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="MoreHome" component={MoreHomeScreen} />
+      {surfaces.has('profile') && <Stack.Screen name="Profile" component={ProfileScreen} />}
+      {surfaces.has('documents') && <Stack.Screen name="Documents" component={DocumentsScreen} />}
+      {surfaces.has('hrRequests') && <Stack.Screen name="HRRequests" component={HRRequestsScreen} />}
+      {surfaces.has('hrRequests') && <Stack.Screen name="HRRequestDetail" component={HRRequestDetailScreen} />}
+      {surfaces.has('notifications') && <Stack.Screen name="Notifications" component={NotificationsScreen} />}
+      {surfaces.has('aiAssistant') && <Stack.Screen name="AIAssistant" component={AIAssistantScreen} />}
+      {surfaces.has('settings') && <Stack.Screen name="Settings" component={SettingsScreen} />}
+      {surfaces.has('settings') && <Stack.Screen name="ChangePassword" component={ChangePasswordScreen} />}
+      {surfaces.has('attendanceCorrection') && <Stack.Screen name="AttendanceCorrection" component={AttendanceCorrectionScreen} />}
+      {surfaces.has('leave') && <Stack.Screen name="ApplyLeave" component={ApplyLeaveScreen} />}
+      {surfaces.has('overtime') && <Stack.Screen name="Overtime" component={OvertimeScreen} />}
+      {surfaces.has('payslips') && <Stack.Screen name="PayslipsList" component={PayslipsScreen} />}
+      {surfaces.has('payslips') && <Stack.Screen name="PayslipDetail" component={PayslipDetailScreen} />}
+      <Stack.Screen name="Account" component={SessionScreen} />
+    </Stack.Navigator>
+  );
+}
+
 interface MoreItem {
+  surface: MobileSurface;
   icon: React.ComponentProps<typeof Ionicons>['name'];
   label: string;
   subtitle: string;
   screen: string;
   accent: string;
 }
+
 function MoreHomeScreen() {
   const { user, logout } = useAuthStore();
   const navigation = useNavigation<any>();
   const { theme } = useTheme();
   const [loggingOut, setLoggingOut] = useState(false);
-  const manager = isManagerUser(user);
+  const surfaces = deriveMobileAccess(user).surfaces;
 
   const confirmLogout = () => {
     Alert.alert('Sign out', 'End this secure session on this device?', [
@@ -89,75 +137,20 @@ function MoreHomeScreen() {
     ]);
   };
 
-  const items: MoreItem[] = [
-    ...(manager
-      ? [
-          {
-            icon: 'calendar-outline' as const,
-            label: 'Apply Leave',
-            subtitle: 'Request time away',
-            screen: 'ApplyLeave',
-            accent: theme.colors.primary,
-          },
-          {
-            icon: 'wallet-outline' as const,
-            label: 'Payslips',
-            subtitle: 'Salary & statements',
-            screen: 'PayslipsList',
-            accent: theme.colors.success,
-          },
-        ]
-      : []),
-    {
-      icon: 'person-circle-outline',
-      label: 'Profile',
-      subtitle: 'Personal details',
-      screen: 'Profile',
-      accent: theme.colors.primary,
-    },
-    {
-      icon: 'folder-open-outline',
-      label: 'Documents',
-      subtitle: 'Letters & records',
-      screen: 'Documents',
-      accent: theme.colors.violet,
-    },
-    {
-      icon: 'chatbox-ellipses-outline',
-      label: 'HR Requests',
-      subtitle: 'Helpdesk & status',
-      screen: 'HRRequests',
-      accent: theme.colors.warning,
-    },
-    {
-      icon: 'notifications-outline',
-      label: 'Notifications',
-      subtitle: 'Alerts & updates',
-      screen: 'Notifications',
-      accent: theme.colors.danger,
-    },
-    {
-      icon: 'sparkles-outline',
-      label: 'AI Assistant',
-      subtitle: 'Ask workforce questions',
-      screen: 'AIAssistant',
-      accent: theme.colors.cyan,
-    },
-    {
-      icon: 'time-outline',
-      label: 'Overtime',
-      subtitle: 'Submit & track',
-      screen: 'Overtime',
-      accent: theme.colors.violet,
-    },
-    {
-      icon: 'settings-outline',
-      label: 'Settings',
-      subtitle: 'Security & preferences',
-      screen: 'Settings',
-      accent: theme.colors.textSecondary,
-    },
+  // Every tile is gated by the same access policy that registers its route.
+  const candidates: MoreItem[] = [
+    { surface: 'leave', icon: 'calendar-outline', label: 'Apply Leave', subtitle: 'Request time away', screen: 'ApplyLeave', accent: theme.colors.primary },
+    { surface: 'payslips', icon: 'wallet-outline', label: 'Payslips', subtitle: 'Salary & statements', screen: 'PayslipsList', accent: theme.colors.success },
+    { surface: 'profile', icon: 'person-circle-outline', label: 'Profile', subtitle: 'Personal details', screen: 'Profile', accent: theme.colors.primary },
+    { surface: 'documents', icon: 'folder-open-outline', label: 'Documents', subtitle: 'Letters & records', screen: 'Documents', accent: theme.colors.violet },
+    { surface: 'hrRequests', icon: 'chatbox-ellipses-outline', label: 'HR Requests', subtitle: 'Helpdesk & status', screen: 'HRRequests', accent: theme.colors.warning },
+    { surface: 'notifications', icon: 'notifications-outline', label: 'Notifications', subtitle: 'Alerts & updates', screen: 'Notifications', accent: theme.colors.danger },
+    { surface: 'aiAssistant', icon: 'sparkles-outline', label: 'AI Assistant', subtitle: 'Ask workforce questions', screen: 'AIAssistant', accent: theme.colors.cyan },
+    { surface: 'overtime', icon: 'time-outline', label: 'Overtime', subtitle: 'Submit & track', screen: 'Overtime', accent: theme.colors.violet },
+    { surface: 'settings', icon: 'settings-outline', label: 'Settings', subtitle: 'Security & preferences', screen: 'Settings', accent: theme.colors.textSecondary },
+    { surface: 'account', icon: 'id-card-outline', label: 'Account', subtitle: 'Session & access', screen: 'Account', accent: theme.colors.textSecondary },
   ];
+  const items = candidates.filter((item) => surfaces.has(item.surface));
 
   return (
     <View style={[styles.moreRoot, { backgroundColor: theme.colors.canvas }]}>
@@ -257,72 +250,88 @@ function MoreHomeScreen() {
     </View>
   );
 }
+
 function EmployeeTabs() {
+  const user = useAuthStore((state) => state.user);
+  const policy = deriveMobileAccess(user);
+  const s = policy.surfaces;
   return (
-    <Tab.Navigator
-      tabBar={(props) => <LiquidTabBar {...props} />}
-      screenOptions={{
-        headerShown: false,
-        tabBarHideOnKeyboard: true,
-      }}
-    >
-      <Tab.Screen name="Home" component={EmployeeHomeStack} />
-      <Tab.Screen name="Attendance" component={AttendanceHistoryScreen} />
-      <Tab.Screen name="Leave" component={ApplyLeaveScreen} />
-      <Tab.Screen name="Payslips" component={PayslipsStack} />
+    <Tab.Navigator initialRouteName={policy.landing} tabBar={renderTabBar} screenOptions={tabScreenOptions}>
+      {s.has('employeeHome') && <Tab.Screen name="Home" component={EmployeeHomeStack} />}
+      {s.has('attendance') && <Tab.Screen name="Attendance" component={AttendanceHistoryScreen} />}
+      {s.has('leave') && <Tab.Screen name="Leave" component={ApplyLeaveScreen} />}
+      {s.has('payslips') && <Tab.Screen name="Payslips" component={PayslipsStack} />}
       <Tab.Screen name="More" component={MoreStack} />
     </Tab.Navigator>
   );
 }
 
 function ManagerTabs() {
+  const user = useAuthStore((state) => state.user);
+  const policy = deriveMobileAccess(user);
+  const s = policy.surfaces;
   return (
-    <Tab.Navigator
-      tabBar={(props) => <LiquidTabBar {...props} />}
-      screenOptions={{
-        headerShown: false,
-        tabBarHideOnKeyboard: true,
-      }}
-    >
-      <Tab.Screen name="Home" component={ManagerHomeStack} />
-      <Tab.Screen name="Team" component={TeamScreen} />
-      <Tab.Screen name="Approvals" component={ApprovalsScreen} />
-      <Tab.Screen name="Attendance" component={AttendanceHistoryScreen} />
+    <Tab.Navigator initialRouteName={policy.landing} tabBar={renderTabBar} screenOptions={tabScreenOptions}>
+      {s.has('managerHome') && <Tab.Screen name="Home" component={ManagerHomeStack} />}
+      {s.has('team') && <Tab.Screen name="Team" component={TeamScreen} />}
+      {s.has('approvals') && <Tab.Screen name="Approvals" component={ApprovalsScreen} />}
+      {s.has('attendance') && <Tab.Screen name="Attendance" component={AttendanceHistoryScreen} />}
       <Tab.Screen name="More" component={MoreStack} />
     </Tab.Navigator>
   );
 }
-function EmployeeHomeStack() {
+
+function SpecialistTabs() {
+  const user = useAuthStore((state) => state.user);
+  const policy = deriveMobileAccess(user);
+  const s = policy.surfaces;
+  const initialRouteName = s.has('approvals') ? 'Approvals' : s.has('payslips') ? 'Payslips' : s.has('attendance') ? 'Attendance' : 'More';
   return (
-    <Stack.Navigator screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="Dashboard" component={EmployeeDashboard} />
-      <Stack.Screen name="PayslipDetail" component={PayslipDetailScreen} />
-      <Stack.Screen name="AttendanceCorrection" component={AttendanceCorrectionScreen} />
-    </Stack.Navigator>
+    <Tab.Navigator initialRouteName={initialRouteName} tabBar={renderTabBar} screenOptions={tabScreenOptions}>
+      {s.has('approvals') && <Tab.Screen name="Approvals" component={ApprovalsScreen} />}
+      {s.has('payslips') && <Tab.Screen name="Payslips" component={PayslipsStack} />}
+      {s.has('attendance') && <Tab.Screen name="Attendance" component={AttendanceHistoryScreen} />}
+      <Tab.Screen name="More" component={MoreStack} />
+    </Tab.Navigator>
   );
 }
 
-function ManagerHomeStack() {
+function KioskTabs() {
   return (
-    <Stack.Navigator screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="Dashboard" component={ManagerDashboard} />
-    </Stack.Navigator>
+    <Tab.Navigator initialRouteName="Punch" tabBar={renderTabBar} screenOptions={tabScreenOptions}>
+      <Tab.Screen name="Punch" component={KioskAttendanceScreen} />
+      <Tab.Screen name="Attendance" component={AttendanceHistoryScreen} />
+      <Tab.Screen name="Account" component={SessionScreen} />
+    </Tab.Navigator>
   );
 }
 
-function PayslipsStack() {
+function LimitedAccessTabs() {
+  const user = useAuthStore((state) => state.user);
+  const policy = deriveMobileAccess(user);
+  const s = policy.surfaces;
   return (
-    <Stack.Navigator screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="PayslipsList" component={PayslipsScreen} />
-      <Stack.Screen name="PayslipDetail" component={PayslipDetailScreen} />
-    </Stack.Navigator>
+    <Tab.Navigator initialRouteName={policy.landing} tabBar={renderTabBar} screenOptions={tabScreenOptions}>
+      {s.has('team') && <Tab.Screen name="Team" component={TeamScreen} />}
+      {s.has('approvals') && <Tab.Screen name="Approvals" component={ApprovalsScreen} />}
+      {s.has('attendance') && <Tab.Screen name="Attendance" component={AttendanceHistoryScreen} />}
+      <Tab.Screen name="Account" component={SessionScreen} />
+    </Tab.Navigator>
   );
 }
 
 export function MainTabs() {
-  const { user } = useAuthStore();
-  return isManagerUser(user) ? <ManagerTabs /> : <EmployeeTabs />;
+  const user = useAuthStore((state) => state.user);
+  const policy = deriveMobileAccess(user);
+  if (policy.mode === 'KioskOnly' && policy.surfaces.has('kioskPunch')) return <KioskTabs />;
+  if (policy.mode === 'PayrollPortal' || policy.mode === 'FinancePortal'
+    || user?.role === 'PAYROLL' || user?.role === 'FINANCE_APPROVER') return <SpecialistTabs />;
+  if (policy.surfaces.has('managerHome')) return <ManagerTabs />;
+  if (policy.surfaces.has('employeeHome')) return <EmployeeTabs />;
+  if (policy.surfaces.size > 1) return <LimitedAccessTabs />;
+  return <SessionScreen />;
 }
+
 const styles = StyleSheet.create({
   moreRoot: { flex: 1 },
   moreContent: { paddingBottom: 30 },

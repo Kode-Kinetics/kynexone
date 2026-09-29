@@ -35,6 +35,13 @@ import { InfoTip } from '../components/InfoTip';
 import { Modal } from '../components/Modal';
 import { StatusChip } from '../components/StatusChip';
 import { useCompany } from '../contexts/CompanyContext';
+import {
+  COMPANY_COUNTRY_FIX_HREF,
+  COMPANY_COUNTRY_FIX_LOCATION,
+  MISSING_COUNTRY_NOTICE_ID,
+  isEmployeeCreateBlockedByCountry,
+  missingCompanyCountryMessage,
+} from '../lib/employeeCreateGate';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import {
   employeeFieldCatalogApi,
@@ -305,10 +312,30 @@ export function EmployeesPage() {
     [companies, defaultCompany, form.companyId],
   );
   const formCountryCode = normalizeCountryCode(selectedFormCompany?.countryCode);
+  // The employing company IS chosen and still resolves no country. Every identity document, leave
+  // entitlement and statutory requirement is keyed on that country, so the requirement set comes back
+  // EMPTY and the employee cannot be saved — the exact state a tenant whose first company was created
+  // with CountryCode = "" lands in. Kept separate from "no company chosen yet" so the form can name
+  // the cause instead of repeating the generic hint, which never mentioned the country at all.
+  //
+  // ONE predicate, read by BOTH the warning and the Create Employee button (which is disabled on it).
+  // They used to be able to disagree — and did: the warning said "nothing to save here" while the
+  // button stayed enabled, so the click produced a failure instead of the explanation.
+  const formCompanyMissingCountry = isEmployeeCreateBlockedByCountry(Boolean(selectedFormCompany), formCountryCode);
+  const formCompanyName = selectedFormCompany?.tradeName?.trim()
+    || selectedFormCompany?.legalNameEn?.trim()
+    || 'This company';
+  // The one sentence the warning and the disabled button's tooltip both speak (mirrors the server's
+  // HomeJurisdiction.CompanyMessage), so a hovered button never says something the form does not.
+  const formCompanyMissingCountryMessage = missingCompanyCountryMessage(formCompanyName);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
+    // Never leave stale employee rows or counts visible while the new server
+    // result is pending (or after it fails).
+    setEmployees([]);
+    setTotal(0);
     try {
       const res = await employeesApi.list({
         search,
@@ -360,6 +387,10 @@ export function EmployeesPage() {
       });
   }, []);
   useEffect(() => { setPage(1); }, [search, status, readinessFilter, gapTypeFilter, importBatchFilter]);
+  useEffect(() => {
+    setSelectedId(null);
+    setDetail(null);
+  }, [search, status, readinessFilter, gapTypeFilter, importBatchFilter, view]);
 
   // ── Bulk selection: derived state + handlers ────────────────────────────────────────────────
   const clearSelection = useCallback(() => {
@@ -708,6 +739,13 @@ export function EmployeesPage() {
     // Create floor is name-only (server floor). Gender, IDs, and statutory fields are readiness
     // items surfaced on the People list, not create-time gates — "save what I have" never fights
     // the user (§8.6). Required-to-activate is driven by the server policy, not the client.
+    // The employing company has no country: the server refuses this create (400
+    // company_country_missing), so never fire the request. The submit buttons are already disabled on
+    // this predicate — this is the keyboard/programmatic path saying the same thing, not a second rule.
+    if (formCompanyMissingCountry) {
+      setFormError(formCompanyMissingCountryMessage);
+      return;
+    }
     if (!form.englishName.trim()) {
       setFormError('English full name is required.');
       return;
@@ -1146,7 +1184,9 @@ export function EmployeesPage() {
         <div>
           <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">Employee Management</h1>
           <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
-            {view === 'current' ? `${total} employee records` : 'Former employees — retained for statutory audit'}
+            {view === 'current'
+              ? loading ? 'Loading employee records…' : error ? 'Employee records unavailable' : `${total} employee records`
+              : 'Former employees — retained for statutory audit'}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -1197,7 +1237,7 @@ export function EmployeesPage() {
                   Add Employee
                 </button>
                 {atEmployeeLimit && usage && (
-                  <div className="absolute bottom-full left-0 mb-1.5 w-64 rounded-lg bg-slate-800 px-3 py-2 text-xs text-white shadow-lg hidden group-hover:block z-10">
+                  <div className="absolute bottom-full start-0 mb-1.5 w-64 rounded-lg bg-slate-800 px-3 py-2 text-xs text-white shadow-lg hidden group-hover:block z-10">
                     Employee limit reached ({usage.activeEmployees}/{usage.maxEmployees}). Upgrade your plan to add more employees.
                   </div>
                 )}
@@ -1207,8 +1247,8 @@ export function EmployeesPage() {
         </div>
       </div>
 
-      {error && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-300">{error}</p>}
-      {actionNotice && <p className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300">{actionNotice}</p>}
+      {error && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-300">{error}</p>}
+      {actionNotice && <p role="status" aria-live="polite" className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300">{actionNotice}</p>}
       {advisoryWarning && (
         <div className="flex items-start justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
           <span>{advisoryWarning}</span>
@@ -1223,8 +1263,9 @@ export function EmployeesPage() {
         <section className="space-y-4">
           <div className="flex flex-col gap-2 sm:flex-row">
             <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-              <input value={search} onChange={(e) => setSearch(e.target.value)} className="input w-full pl-9" placeholder="Search employee code, name, email" />
+              <Search className="absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <label htmlFor="employee-search" className="sr-only">Search employees</label>
+              <input id="employee-search" type="search" value={search} onChange={(e) => setSearch(e.target.value)} className="input w-full ps-9" placeholder="Search employee code, name, email" />
             </div>
             <select value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)} className="select sm:w-56" aria-label="Status filter">
               {activeStatusFilterOptions.map((item) => <option key={item || 'all'} value={item}>{item || 'All statuses'}</option>)}
@@ -1236,7 +1277,7 @@ export function EmployeesPage() {
               <option value="NeedsAttention">Needs attention</option>
               <option value="Ready">Ready</option>
             </select>
-            <button type="button" onClick={refreshAll} className="btn-secondary">
+            <button type="button" onClick={refreshAll} className="btn-secondary" disabled={loading} aria-busy={loading}>
               <RefreshCw className="h-4 w-4" />
               Refresh
             </button>
@@ -1323,7 +1364,7 @@ export function EmployeesPage() {
               <table className="w-full min-w-[820px] text-sm">
                 <thead>
                   <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                    <th className="w-10 px-4 py-3 text-left">
+                    <th className="w-10 px-4 py-3 text-start">
                       <input
                         ref={selectAllRef}
                         type="checkbox"
@@ -1335,17 +1376,31 @@ export function EmployeesPage() {
                       />
                     </th>
                     {['Employee', 'Department', 'Designation', 'Branch', 'Status', 'Profile'].map((head) => (
-                      <th key={head} className="px-4 py-3 text-left text-xs font-bold uppercase text-slate-400">{head}</th>
+                      <th key={head} className="px-4 py-3 text-start text-xs font-bold uppercase text-slate-400">{head}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
                   {loading && <EmptyRow label="Loading live employees..." />}
-                  {!loading && employees.length === 0 && <EmptyRow label={(readinessFilter || importFilterActive) ? 'No employees match this filter.' : 'No employees found'} />}
+                  {!loading && !error && employees.length === 0 && (
+                    <tr><td colSpan={7} className="px-4 py-14 text-center">
+                      <p className="font-semibold text-slate-700 dark:text-slate-200">{(search || status || readinessFilter || importFilterActive) ? 'No employees match this filter.' : 'No employees yet'}</p>
+                      <p className="mt-1 text-sm text-slate-400">{(search || status || readinessFilter || importFilterActive) ? 'Adjust or clear the filters to see other records.' : 'Create the first employee to begin onboarding.'}</p>
+                      {(search || status || readinessFilter || importFilterActive) ? (
+                        <button type="button" className="btn-secondary mt-4" onClick={() => { setSearch(''); setStatus(''); clearImportFilter(); }}>Clear filters</button>
+                      ) : (
+                        <button type="button" className="btn-primary mt-4" onClick={openCreateEmployee} disabled={atEmployeeLimit}><Plus className="h-4 w-4" />Add Employee</button>
+                      )}
+                    </td></tr>
+                  )}
                   {!loading && employees.map((employee) => {
                     const rowSelected = selectAllMatching || selectedIds.has(employee.id);
                     return (
-                    <tr key={employee.id} onClick={() => openDetail(employee.id)} className={`cursor-pointer hover:bg-slate-50 dark:hover:bg-white/[0.03] ${rowSelected ? 'bg-sapphire/[0.04] dark:bg-sapphire/[0.08]' : ''}`}>
+                    <tr
+                      key={employee.id}
+                      onClick={() => openDetail(employee.id)}
+                      className={`cursor-pointer hover:bg-slate-50 dark:hover:bg-white/[0.03] ${rowSelected ? 'bg-sapphire/[0.04] dark:bg-sapphire/[0.08]' : ''}`}
+                    >
                       <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                         <input
                           type="checkbox"
@@ -1359,7 +1414,14 @@ export function EmployeesPage() {
                         <div className="flex items-center gap-3">
                           <Avatar name={employee.fullName} size="sm" />
                           <div>
-                            <p className="font-semibold text-slate-900 dark:text-white">{employee.fullName}</p>
+                            <button
+                              type="button"
+                              aria-label={`Open profile for ${employee.fullName}`}
+                              onClick={(event) => { event.stopPropagation(); openDetail(employee.id); }}
+                              className="rounded-sm text-start font-semibold text-slate-900 hover:text-sapphire focus:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-white"
+                            >
+                              {employee.fullName}
+                            </button>
                             <p className="text-xs text-slate-400">{employee.employeeCode}</p>
                           </div>
                         </div>
@@ -1416,6 +1478,9 @@ export function EmployeesPage() {
                   <button type="button" onClick={openEdit} className="btn-secondary h-8 shrink-0 px-3 text-xs">
                     <Pencil className="h-3.5 w-3.5" />
                     Edit
+                  </button>
+                  <button type="button" onClick={() => { setSelectedId(null); setDetail(null); }} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10" aria-label="Close employee profile" title="Close profile">
+                    <X className="h-4 w-4" />
                   </button>
                 </div>
                 <div className="mt-4 flex gap-1 overflow-x-auto">
@@ -1480,8 +1545,8 @@ export function EmployeesPage() {
                                   <p className="font-semibold text-slate-800 dark:text-slate-100">
                                     {m.fullName} <span className="text-slate-400">{m.employeeCode}</span>
                                     {m.matchType === 'strong'
-                                      ? <span className="ml-1.5 rounded bg-fuchsia-600/15 px-1.5 py-0.5 text-[10px] font-bold uppercase text-fuchsia-700 dark:text-fuchsia-300">ID match</span>
-                                      : <span className="ml-1.5 rounded bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-700 dark:text-amber-300">name + DOB</span>}
+                                      ? <span className="ms-1.5 rounded bg-fuchsia-600/15 px-1.5 py-0.5 text-[10px] font-bold uppercase text-fuchsia-700 dark:text-fuchsia-300">ID match</span>
+                                      : <span className="ms-1.5 rounded bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-700 dark:text-amber-300">name + DOB</span>}
                                   </p>
                                   <p className="mt-0.5 text-slate-500 dark:text-slate-400">{[m.branch, m.status, m.signals.join(', ')].filter(Boolean).join(' · ')}</p>
                                 </div>
@@ -1710,13 +1775,19 @@ export function EmployeesPage() {
                       {f.sensitive && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-700 dark:bg-amber-500/15 dark:text-amber-400">approval</span>}
                       {editForm[f.key] !== editOriginal[f.key] && <span className="h-1.5 w-1.5 rounded-full bg-sapphire" title="Modified" />}
                     </span>
-                    {f.type === 'select' ? (
+                    {/* A select needs an option list. A non-null assertion here claimed one was always
+                        there; when the field catalogue began reaching this modal, a remote descriptor typed
+                        `select` with no options (the endpoint sends none) made it throw — and because these children are
+                        built during EmployeesPage's own render, the error boundary replaced the WHOLE People
+                        page. An optionless field falls back to a free-text input, which is what it was
+                        before the overlay. employeeFieldCatalog.optionsAwareType stops it upstream too. */}
+                    {f.type === 'select' && f.options && f.options.length > 0 ? (
                       <select id={`edit-field-${f.key}`} value={editForm[f.key] ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, [f.key]: e.target.value }))} className="select mt-1.5 w-full">
                         <option value="">Select</option>
-                        {f.options!.map((o) => <option key={o} value={o}>{o}</option>)}
+                        {f.options.map((o) => <option key={o} value={o}>{o}</option>)}
                       </select>
                     ) : (
-                      <input id={`edit-field-${f.key}`} type={f.type ?? 'text'} value={editForm[f.key] ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, [f.key]: e.target.value }))} className="input mt-1.5 w-full" />
+                      <input id={`edit-field-${f.key}`} type={f.type && f.type !== 'select' ? f.type : 'text'} value={editForm[f.key] ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, [f.key]: e.target.value }))} className="input mt-1.5 w-full" />
                     )}
                   </label>
                   );
@@ -1731,12 +1802,53 @@ export function EmployeesPage() {
       <Modal isOpen={formOpen} title="Add Employee" size="xl" onClose={closeCreateModal} footer={
         <>
           <button type="button" onClick={closeCreateModal} className="btn-secondary">Cancel</button>
-          <button type="button" onClick={() => saveEmployee()} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving...' : 'Create Employee'}</button>
+          {/* Disabled ONLY on the same predicate the warning above renders, and never silently: the
+              tooltip repeats that warning's sentence and aria-describedby points a screen reader at
+              the warning itself, so the reason is never left to be guessed. */}
+          <button
+            type="button"
+            onClick={() => saveEmployee()}
+            disabled={saving || formCompanyMissingCountry}
+            title={formCompanyMissingCountry ? formCompanyMissingCountryMessage : undefined}
+            aria-describedby={formCompanyMissingCountry ? MISSING_COUNTRY_NOTICE_ID : undefined}
+            className="btn-primary disabled:opacity-60"
+          >
+            {saving ? 'Saving...' : 'Create Employee'}
+          </button>
         </>
       }>
         <div className="space-y-3">
           {formError && (
             <p className="rounded-xl bg-red-50 px-3 py-2.5 text-sm text-red-600 ring-1 ring-red-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:bg-red-500/10 dark:text-red-300 dark:ring-red-500/20">{formError}</p>
+          )}
+
+          {/* HOME JURISDICTION BLOCK — exception-first, at the top of the form rather than buried in the
+              Identity section, because it disables the only primary action the form has. The Create
+              Employee button reads the SAME predicate and points here for its reason. */}
+          {formCompanyMissingCountry && (
+            <div id={MISSING_COUNTRY_NOTICE_ID} role="alert" className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-amber-900 dark:border-amber-400/30 dark:bg-amber-500/[0.08] dark:text-amber-200">
+              <p className="flex items-start gap-1.5 text-sm font-bold">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                <span>
+                  {formCompanyName} has no country set — set it in{' '}
+                  <a
+                    href={COMPANY_COUNTRY_FIX_HREF}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-bold underline underline-offset-2 hover:no-underline"
+                  >
+                    {COMPANY_COUNTRY_FIX_LOCATION}
+                  </a>{' '}
+                  before adding employees.
+                </span>
+              </p>
+              <p className="mt-1 text-xs">
+                Identity documents, leave entitlements and statutory rules are all resolved from the employing
+                company’s country. Until it is set there is nothing to require and nothing to save here — so
+                Create Employee stays unavailable. The link opens in a new tab; this form keeps what you have
+                typed.
+              </p>
+            </div>
           )}
 
           {/* Duplicate-person warning (advisory pre-check + authoritative 409 backstop share it).
@@ -1759,8 +1871,8 @@ export function EmployeesPage() {
                           <p className="font-semibold text-slate-800 dark:text-slate-100">
                             {m.fullName} <span className="text-slate-400">{m.employeeCode}</span>
                             {m.matchType === 'strong'
-                              ? <span className="ml-1.5 rounded bg-fuchsia-600/15 px-1.5 py-0.5 text-[10px] font-bold uppercase text-fuchsia-700 dark:text-fuchsia-300">ID match</span>
-                              : <span className="ml-1.5 rounded bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-700 dark:text-amber-300">name + DOB</span>}
+                              ? <span className="ms-1.5 rounded bg-fuchsia-600/15 px-1.5 py-0.5 text-[10px] font-bold uppercase text-fuchsia-700 dark:text-fuchsia-300">ID match</span>
+                              : <span className="ms-1.5 rounded bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-700 dark:text-amber-300">name + DOB</span>}
                           </p>
                           <p className="mt-0.5 text-slate-500 dark:text-slate-400">{[m.branch, m.status, m.signals.join(', ')].filter(Boolean).join(' · ')}</p>
                         </div>
@@ -1777,7 +1889,16 @@ export function EmployeesPage() {
               </ul>
               <div className="mt-2.5 flex items-center justify-end gap-3">
                 <button type="button" onClick={() => setDuplicateWarning([])} className="text-xs font-semibold text-slate-500 underline">Keep editing</button>
-                <button type="button" onClick={() => saveEmployee(true)} disabled={saving} className="btn-primary h-8 px-3 text-xs disabled:opacity-60">
+                {/* Same submit, so the same country block applies — "Create anyway" overrides the
+                    duplicate warning, never the missing-country refusal the server would return. */}
+                <button
+                  type="button"
+                  onClick={() => saveEmployee(true)}
+                  disabled={saving || formCompanyMissingCountry}
+                  title={formCompanyMissingCountry ? formCompanyMissingCountryMessage : undefined}
+                  aria-describedby={formCompanyMissingCountry ? MISSING_COUNTRY_NOTICE_ID : undefined}
+                  className="btn-primary h-8 px-3 text-xs disabled:opacity-60"
+                >
                   {saving ? 'Creating…' : 'Create anyway'}
                 </button>
               </div>
@@ -1785,7 +1906,7 @@ export function EmployeesPage() {
           )}
           <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
           <Section title="Master Profile">
-            <Input label="Employee code" value={form.employeeCode ?? ''} onChange={(v) => setField('employeeCode', v)} placeholder="Leave blank for auto generation" info="Unique staff ID, e.g. KNX-0001. Leave blank and the system generates the next number automatically; tick 'Manual override' to type your own." infoKey="employees.employee_code" />
+            <Input label="Employee code" ltr value={form.employeeCode ?? ''} onChange={(v) => setField('employeeCode', v)} placeholder="Leave blank for auto generation" info="Unique staff ID, e.g. KNX-0001. Leave blank and the system generates the next number automatically; tick 'Manual override' to type your own." infoKey="employees.employee_code" />
             <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
               <input type="checkbox" checked={form.manualEmployeeCode} onChange={(e) => setField('manualEmployeeCode', e.target.checked)} className="h-4 w-4 accent-sapphire" />
               Manual override
@@ -1811,7 +1932,7 @@ export function EmployeesPage() {
               info="Auto-built from the name + the company's email domain. Edit only the part before the @ — the domain is locked to the company. Also links this employee to their self-service (ESS) login."
               infoKey="employees.work_email"
             />
-            <Input label="Mobile number" value={form.mobileNumber ?? ''} onChange={(v) => setField('mobileNumber', v)} info="Personal mobile with country code, e.g. +971 50 123 4567." infoKey="employees.mobile_number" />
+            <Input label="Mobile number" ltr value={form.mobileNumber ?? ''} onChange={(v) => setField('mobileNumber', v)} info="Personal mobile with country code, e.g. +971 50 123 4567." infoKey="employees.mobile_number" />
           </Section>
 
           <Section title="Employment Details">
@@ -1878,10 +1999,10 @@ export function EmployeesPage() {
 
           <Section title="Payroll Profile">
             <Input label="Bank name" value={form.payrollProfile?.bankName ?? ''} onChange={(v) => setPayrollField('bankName', v)} />
-            <Input label="IBAN" value={form.payrollProfile?.iban ?? ''} onChange={(v) => setPayrollField('iban', v)} info="International bank account number for salary transfers, e.g. AE07 0331 2345 6789 0123 456. No spaces needed." infoKey="employees.iban" />
-            <Input label="Account number" value={form.payrollProfile?.accountNumber ?? ''} onChange={(v) => setPayrollField('accountNumber', v)} />
-            <Input label="Bank routing / sort code" value={form.payrollProfile?.bankRoutingCode ?? ''} onChange={(v) => setPayrollField('bankRoutingCode', v)} info="Bank branch routing or sort code required for WPS SIF export (UAE: 6-digit CBQ code; KSA: Mudad bank code)." infoKey="employees.bankRoutingCode" />
-            <Input label="MOL ID / National labour number" value={form.payrollProfile?.molId ?? ''} onChange={(v) => setPayrollField('molId', v)} info="Ministry of Labour employee registration number — required in CBUAE WPS v2 SIF E1EDL20 segment and Saudi Mudad WPS." infoKey="employees.molId" />
+            <Input label="IBAN" ltr value={form.payrollProfile?.iban ?? ''} onChange={(v) => setPayrollField('iban', v)} info="International bank account number for salary transfers, e.g. AE07 0331 2345 6789 0123 456. No spaces needed." infoKey="employees.iban" />
+            <Input label="Account number" ltr value={form.payrollProfile?.accountNumber ?? ''} onChange={(v) => setPayrollField('accountNumber', v)} />
+            <Input label="Bank routing / sort code" ltr value={form.payrollProfile?.bankRoutingCode ?? ''} onChange={(v) => setPayrollField('bankRoutingCode', v)} info="Bank branch routing or sort code required for WPS SIF export (UAE: 6-digit CBQ code; KSA: Mudad bank code)." infoKey="employees.bankRoutingCode" />
+            <Input label="MOL ID / National labour number" ltr value={form.payrollProfile?.molId ?? ''} onChange={(v) => setPayrollField('molId', v)} info="Ministry of Labour employee registration number — required in CBUAE WPS v2 SIF E1EDL20 segment and Saudi Mudad WPS." infoKey="employees.molId" />
             <Select label="Salary currency" value={form.payrollProfile?.salaryCurrency || currencyCode} onChange={(v) => setPayrollField('salaryCurrency', v)} options={SALARY_CURRENCY_OPTIONS} />
             <Select label="Payment method" value={form.payrollProfile?.paymentMethod ?? ''} onChange={(v) => setPayrollField('paymentMethod', v)} options={PAYMENT_METHOD_OPTIONS} info="How salary is disbursed. WPS/BankTransfer require valid bank details before payroll can run." infoKey="employees.payment_method" />
             <Input label="Payroll group" value={form.payrollProfile?.payrollGroup ?? ''} onChange={(v) => setPayrollField('payrollGroup', v)} />
@@ -1907,7 +2028,18 @@ export function EmployeesPage() {
 
           <Section title="Identity & GCC Compliance">
             {(form.complianceRecords ?? []).length === 0 && (
-              <p className="text-xs text-slate-400">Select the employing company and nationality to see the required identity documents.</p>
+              formCompanyMissingCountry ? (
+                // The full explanation is the alert at the top of the form (it is what disables Create
+                // Employee, so it must be seen without scrolling). One wording, stated once.
+                <p className="text-xs text-amber-700 dark:text-amber-300">
+                  No identity documents can be required until {formCompanyName} has a country —{' '}
+                  <a href={`#${MISSING_COUNTRY_NOTICE_ID}`} className="font-semibold underline underline-offset-2">
+                    see the notice at the top of this form
+                  </a>.
+                </p>
+              ) : (
+                <p className="text-xs text-slate-400">Select the employing company and nationality to see the required identity documents.</p>
+              )
             )}
             {(form.complianceRecords ?? []).map((record, index) => {
               const field = formComplianceFields.find((f) => f.fieldKey === record.fieldKey);
@@ -2194,7 +2326,7 @@ function WorkEmailField({
     <label className="block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
       <span className="flex min-w-0 items-center gap-1.5 leading-snug">
         {label}
-        {info && <InfoTip text={info} fieldKey={infoKey} className="ml-1" />}
+        {info && <InfoTip text={info} fieldKey={infoKey} className="ms-1" />}
         {changedFromOriginal && <span className="h-1.5 w-1.5 rounded-full bg-sapphire" title="Modified" />}
       </span>
 
@@ -2277,17 +2409,21 @@ function WorkEmailField({
   );
 }
 
-function Input({ label, value, onChange, required, type = 'text', placeholder, rtl, info, infoKey, action }: { label: string; value: string; onChange: (value: string) => void; required?: boolean; type?: string; placeholder?: string; rtl?: boolean; info?: string; infoKey?: string; action?: React.ReactNode }) {
+// `ltr` marks a field whose CONTENT is an identifier, not prose — an IBAN, an account or
+// routing number, a phone number. Under dir=rtl the bidi algorithm reorders such a mixed
+// letter+digit run and strands the country code at the wrong end; `field-ltr` (see
+// src/styles/index.css) isolates it. It is inert in LTR, so nothing changes in English.
+function Input({ label, value, onChange, required, type = 'text', placeholder, rtl, ltr, info, infoKey, action }: { label: string; value: string; onChange: (value: string) => void; required?: boolean; type?: string; placeholder?: string; rtl?: boolean; ltr?: boolean; info?: string; infoKey?: string; action?: React.ReactNode }) {
   return (
     <label className="block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
-      <span className="flex min-w-0 items-center gap-1.5 leading-snug">{label} {required && <span className="text-red-500">*</span>}{info && <InfoTip text={info} fieldKey={infoKey} className="ml-1" />}</span>
+      <span className="flex min-w-0 items-center gap-1.5 leading-snug">{label} {required && <span className="text-red-500">*</span>}{info && <InfoTip text={info} fieldKey={infoKey} className="ms-1" />}</span>
       {action ? (
         <span className="mt-1.5 flex items-stretch gap-1.5">
-          <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir={rtl ? 'rtl' : undefined} className="input w-full flex-1" />
+          <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir={rtl ? 'rtl' : undefined} className={`input w-full flex-1${ltr ? ' field-ltr' : ''}`} />
           {action}
         </span>
       ) : (
-        <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir={rtl ? 'rtl' : undefined} className="input mt-1.5 w-full" />
+        <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir={rtl ? 'rtl' : undefined} className={`input mt-1.5 w-full${ltr ? ' field-ltr' : ''}`} />
       )}
     </label>
   );
@@ -2296,7 +2432,7 @@ function Input({ label, value, onChange, required, type = 'text', placeholder, r
 function Select({ label, value, onChange, options, required, info, infoKey }: { label: string; value: string; onChange: (value: string) => void; options: string[]; required?: boolean; info?: string; infoKey?: string }) {
   return (
     <label className="block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
-      <span className="flex min-w-0 items-center gap-1.5 leading-snug">{label} {required && <span className="text-red-500">*</span>}{info && <InfoTip text={info} fieldKey={infoKey} className="ml-1" />}</span>
+      <span className="flex min-w-0 items-center gap-1.5 leading-snug">{label} {required && <span className="text-red-500">*</span>}{info && <InfoTip text={info} fieldKey={infoKey} className="ms-1" />}</span>
       <select value={value} onChange={(e) => onChange(e.target.value)} className="select mt-1.5 w-full">
         <option value="">Select</option>
         {options.map((option) => <option key={option} value={option}>{option}</option>)}

@@ -29,6 +29,9 @@ public sealed class LiveQiwaApiAdapter : IQiwaApiAdapter
 
     public string AdapterName => "live";
 
+    /// <summary>The one adapter in the system that really talks to Qiwa.</summary>
+    public bool IsLiveIntegration => true;
+
     public async Task<string?> AcquireAccessTokenAsync(string clientId, string clientSecret, string environment, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(clientId) || string.IsNullOrWhiteSpace(clientSecret))

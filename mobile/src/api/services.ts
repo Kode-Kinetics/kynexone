@@ -8,10 +8,20 @@
 // FeatureUnavailableError and the screen hides/disables the control
 // (see src/config/features.ts).
 
-import { apiGet, apiPost, apiPut, createApiClient, getApiClient, unwrapApiData } from './client';
+import { apiDelete, apiGet, apiPost, apiPut, createPublicAuthClient, getApiClient, unwrapApiData } from './client';
 import { tokenStorage, userStorage, appStorage } from '@/storage';
 import { APP_CONFIG } from '@/config';
 import { FEATURES, FeatureUnavailableError } from '@/config/features';
+import { normalizeAccessMode } from '@/auth/accessPolicy';
+import {
+  normalizeEmail,
+  publicInvitationInput,
+  publicLoginInput,
+  publicResetInput,
+  requireWorkspace,
+} from '@/auth/publicAuthInput';
+import { mapEmployeeProfile } from './profileMapper';
+import { riyadhBusinessDate, riyadhBusinessMonth } from '@/utils/businessDate';
 import type {
   AuthUser,
   AuthTokens,
@@ -117,7 +127,7 @@ function toAuthUser(raw: any): AuthUser {
     fullName: raw.fullName ?? raw.name ?? raw.email ?? 'KynexOne User',
     name: raw.fullName ?? raw.name ?? raw.email ?? 'KynexOne User',
     role: mapRole(roles),
-    accessMode: raw.accessMode ?? 'FULL',
+    accessMode: normalizeAccessMode(raw.accessMode),
     permissions: mapPermissions(raw.permissions),
     isFirstLogin: !!raw.requiresPasswordSetup,
     isActive: true,
@@ -276,29 +286,6 @@ function payslipLines(raw: any): { earnings: PayslipLine[]; deductions: PayslipL
   return {
     earnings: earnings.map((l, i) => ({ ...l, id: `e${i}` })),
     deductions: deductions.map((l, i) => ({ ...l, id: `d${i}` })),
-  };
-}
-
-function mapProfile(raw: any): EmployeeProfile {
-  return {
-    id: String(raw.id ?? raw.employeeId ?? ''),
-    employeeNumber: raw.employeeCode ?? raw.employeeNumber ?? String(raw.id ?? ''),
-    fullName: raw.fullName ?? raw.employeeName ?? '',
-    jobTitle: raw.jobTitle ?? raw.designation ?? '',
-    department: raw.department ?? '',
-    email: raw.workEmail ?? raw.email ?? '',
-    workEmail: raw.workEmail ?? raw.email ?? '',
-    personalEmail: raw.personalEmail || undefined,
-    mobile: raw.mobile ?? raw.mobilePhone ?? raw.phone ?? '',
-    mobilePhone: raw.mobile ?? raw.mobilePhone ?? raw.phone ?? '',
-    currentAddress: raw.currentAddress ?? raw.address ?? undefined,
-    dateOfJoining: raw.joiningDate ?? raw.dateOfJoining,
-    joinDate: raw.joiningDate ?? raw.dateOfJoining,
-    contractType: raw.employmentType ?? raw.contractType,
-    employmentType: raw.employmentType ?? raw.contractType,
-    profilePhotoUrl: raw.profilePhotoUrl || undefined,
-    emergencyContacts: [],
-    identityDocuments: [],
   };
 }
 
@@ -519,29 +506,29 @@ function secretFromProvisioningUri(provisioningUri: string): string {
 // ---- Auth ----
 export const authApi = {
   async login(username: string, password: string, tenantId: string): Promise<LoginOutcome> {
-    const tempClient = createApiClient(tenantId);
-    const res = await tempClient.post('/auth/login', {
-      email: username,
-      password,
-      tenantSlug: tenantId,
-    });
+    const input = publicLoginInput(username, password, tenantId);
+    const res = await createPublicAuthClient().post('/auth/login', input);
     const data = unwrapApiData<any>(res.data);
     if (data?.mfaRequired) {
+      const challengeToken = String(data.challengeToken ?? '');
+      if (!challengeToken) throw new Error('The server returned an invalid MFA challenge.');
       return {
         kind: 'mfaChallenge',
-        challengeToken: String(data.challengeToken ?? ''),
+        challengeToken,
         expiresInSeconds: Number(data.expiresInSeconds ?? 300),
-        tenantId,
-        email: username,
+        tenantId: input.tenantSlug,
+        email: input.email,
       };
     }
     if (data?.mfaEnrollmentRequired) {
+      const enrollmentToken = String(data.enrollmentToken ?? '');
+      if (!enrollmentToken) throw new Error('The server returned an invalid MFA enrollment challenge.');
       return {
         kind: 'mfaEnrollment',
-        enrollmentToken: String(data.enrollmentToken ?? ''),
+        enrollmentToken,
         expiresInSeconds: Number(data.expiresInSeconds ?? 600),
-        tenantId,
-        email: username,
+        tenantId: input.tenantSlug,
+        email: input.email,
         message: data.message,
       };
     }
@@ -553,7 +540,8 @@ export const authApi = {
     totpCode: string,
     tenantId: string
   ): Promise<AuthenticatedSession> {
-    const response = await createApiClient(tenantId).post('/auth/mfa/challenge/verify', {
+    requireWorkspace(tenantId);
+    const response = await createPublicAuthClient().post('/auth/mfa/challenge/verify', {
       challengeToken,
       totpCode,
     });
@@ -564,7 +552,8 @@ export const authApi = {
     enrollmentToken: string,
     tenantId: string
   ): Promise<{ provisioningUri: string; tempSecret: string }> {
-    const response = await createApiClient(tenantId).post('/auth/mfa/enrollment/setup', {
+    requireWorkspace(tenantId);
+    const response = await createPublicAuthClient().post('/auth/mfa/enrollment/setup', {
       enrollmentToken,
     });
     const data = unwrapApiData<any>(response.data);
@@ -582,7 +571,8 @@ export const authApi = {
     totpCode: string,
     tenantId: string
   ): Promise<void> {
-    await createApiClient(tenantId).post('/auth/mfa/enrollment/verify-setup', {
+    requireWorkspace(tenantId);
+    await createPublicAuthClient().post('/auth/mfa/enrollment/verify-setup', {
       enrollmentToken,
       tempSecret,
       totpCode,
@@ -602,36 +592,32 @@ export const authApi = {
     await apiPost('/auth/change-password', { currentPassword: oldPassword, newPassword });
   },
 
-  /** Unauthenticated: uses a throwaway client so it works from the login screen. */
-  async forgotPassword(email: string, tenantSlug?: string): Promise<void> {
-    await createApiClient(tenantSlug ?? '').post('/auth/forgot-password', {
-      email,
-      tenantSlug: tenantSlug || undefined,
+  async forgotPassword(email: string, tenantSlug: string): Promise<void> {
+    const normalizedEmail = normalizeEmail(email);
+    if (!normalizedEmail) throw new Error('Work email is required.');
+    await createPublicAuthClient().post('/auth/forgot-password', {
+      email: normalizedEmail,
+      tenantSlug: requireWorkspace(tenantSlug),
     });
   },
 
-  async resetPassword(email: string, resetToken: string, newPassword: string, tenantSlug?: string): Promise<void> {
-    await createApiClient(tenantSlug ?? '').post('/auth/reset-password', {
-      email,
-      resetToken,
-      newPassword,
-      tenantSlug: tenantSlug || undefined,
-    });
+  async resetPassword(resetToken: string, newPassword: string, tenantSlug: string): Promise<void> {
+    await createPublicAuthClient().post(
+      '/auth/reset-password',
+      publicResetInput(resetToken, newPassword, tenantSlug),
+    );
   },
 
   /** First-time password setup from an invitation (backend: /auth/accept-invitation). */
-  async setupFirstPassword(
-    email: string,
+  async acceptInvitation(
     invitationToken: string,
     newPassword: string,
-    tenantSlug?: string
+    tenantSlug: string,
   ): Promise<void> {
-    await createApiClient(tenantSlug ?? '').post('/auth/accept-invitation', {
-      email,
-      invitationToken,
-      newPassword,
-      tenantSlug: tenantSlug || undefined,
-    });
+    await createPublicAuthClient().post(
+      '/auth/accept-invitation',
+      publicInvitationInput(invitationToken, newPassword, tenantSlug),
+    );
   },
 };
 
@@ -657,8 +643,8 @@ export const deviceApi = {
     });
   },
 
-  async unregister(_deviceId: string): Promise<void> {
-    // Backend exposes registration/update but no unregister action.
+  async unregister(deviceId: string): Promise<void> {
+    await apiDelete(`/mobile/register-device/${encodeURIComponent(deviceId)}`);
   },
 };
 
@@ -680,7 +666,7 @@ async function resolveTodayAttendance(dailyRecord: any | null | undefined): Prom
   }
   const employeeId = await getCurrentEmployeeId();
   if (!employeeId) return fallbackTodayAttendance;
-  const today = new Date().toISOString().slice(0, 10); // server WorkDate is UTC-dated
+  const today = riyadhBusinessDate();
   const raw = await apiGet<BackendPaged<any>>(
     `/attendance/events/raw?from=${today}&to=${today}&employeeId=${employeeId}&pageSize=100`
   );
@@ -737,7 +723,7 @@ export const dashboardApi = {
     // Team counts come from the manager's own scoped team, not /dashboard/summary,
     // which reports tenant-wide headcount.
     const count = (s: string) => team.filter((m) => m.todayStatus === s).length;
-    const monthPrefix = new Date().toISOString().slice(0, 7);
+    const monthPrefix = riyadhBusinessMonth();
     const otMinutes = itemsOf(overtime)
       .filter((r) => String(r.workDate ?? '').startsWith(monthPrefix) && !/reject/i.test(r.status ?? ''))
       .reduce((sum, r) => sum + Number(r.requestedMinutes ?? 0), 0);
@@ -800,6 +786,25 @@ export const attendanceApi = {
         : 'Mobile GPS',
     });
     return { recordId: String(result.id ?? ''), message: `${direction} punch recorded` };
+  },
+
+  /** Kiosk route remains authenticated and is always called for the signed-in employee. */
+  async punchKiosk(payload: MobilePunchPayload): Promise<{ recordId: string; message: string }> {
+    const employeeId = await requireEmployeeId();
+    const direction = payload.punchType === 'CLOCK_OUT' || payload.punchType === 'BREAK_OUT' ? 'Out' : 'In';
+    const result = await apiPost<any>('/attendance/punch/kiosk', {
+      employeeId,
+      punchDirection: direction,
+      locationName: payload.location ? 'KynexOne Kiosk GPS' : 'KynexOne Kiosk',
+      latitude: payload.location?.latitude,
+      longitude: payload.location?.longitude,
+    });
+    return { recordId: String(result.id ?? ''), message: `${direction} punch recorded` };
+  },
+
+  /** Caller-scoped raw events make a just-recorded kiosk punch immediately visible. */
+  async getKioskTodayAttendance(): Promise<TodayAttendance> {
+    return resolveTodayAttendance(null);
   },
 
   async getTodayAttendance(): Promise<TodayAttendance> {
@@ -1071,7 +1076,7 @@ export const payslipApi = {
 export const profileApi = {
   async getProfile(): Promise<EmployeeProfile> {
     const profile = await apiGet<any>('/ess/profile');
-    return mapProfile(profile);
+    return mapEmployeeProfile(profile);
   },
 
   async requestProfileUpdate(changes: Record<string, string | undefined>): Promise<void> {
@@ -1383,7 +1388,7 @@ export const teamApi = {
     }
     const employeeId = await getCurrentEmployeeId();
     if (!employeeId) return [];
-    const today = new Date().toISOString().slice(0, 10);
+    const today = riyadhBusinessDate();
     const [employees, attendance] = await Promise.all([
       apiGet<BackendPaged<any>>('/employees?page=1&pageSize=200'),
       apiGet<BackendPaged<any>>(`/attendance/daily?from=${today}&to=${today}&pageSize=200`).catch(() => null),

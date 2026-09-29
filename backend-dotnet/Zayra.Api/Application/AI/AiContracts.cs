@@ -26,6 +26,21 @@ public sealed record AiUserContext(
     // Non-null when the caller is Manager/Supervisor scoped to a team.
     // BuildContextAsync uses this to restrict employee-specific queries.
     public IReadOnlyList<int>? ScopeEmployeeIds { get; init; }
+
+    /// <summary>
+    /// A stable discriminator over the caller's COMPANY scope, for the answer cache key.
+    ///
+    /// <para>BuildContextAsync queries Employees, attendance and the rest through
+    /// <c>ZayraDbContext</c>, so its answers are company-filtered by the global query filters —
+    /// but the cache key was built from tenant + intent + module + employee + role signature +
+    /// permission signature and no company dimension at all. A group user who switched companies
+    /// and re-asked the same question was handed the first company's answer. Same defect class as
+    /// the dashboard cache key; smaller blast radius only because the question has to match.</para>
+    ///
+    /// <para>Empty means "not supplied" and is its own cache bucket, so an un-threaded caller can
+    /// never share an entry with a company-scoped one.</para>
+    /// </summary>
+    public string CompanyScopeSignature { get; init; } = string.Empty;
 }
 
 public sealed record AiGovernanceDecision(
@@ -62,7 +77,11 @@ public sealed record LlmRequest(
     string Model,
     string SystemPrompt,
     string UserPrompt,
-    int MaxOutputTokens);
+    int MaxOutputTokens,
+    // Ask the provider to constrain output to a single JSON object. Callers that parse the
+    // response (rather than showing it to a human) MUST set this: without it a reasoning model
+    // is free to wrap the object in prose or a markdown fence, which defeats brace-span parsing.
+    bool RequireJson = false);
 
 public sealed record LlmResponse(
     bool Success,

@@ -20,8 +20,9 @@ import { AttendanceSelfieModal } from '@/features/attendance/AttendanceSelfieMod
 import { useAuthStore } from '@/auth/authStore';
 import { attendanceApi, dashboardApi } from '@/api/services';
 import { getDeviceInfo } from '@/utils/device';
-import { daysUntil, formatDate, formatTime } from '@/utils/date';
-import { navigateTo, isManagerUser, type AppRoute } from '@/navigation/routes';
+import { daysUntil, formatTime } from '@/utils/date';
+import { formatRiyadhBusinessDate } from '@/utils/businessDate';
+import { navigateTo, type AppRoute } from '@/navigation/routes';
 import { useTheme } from '@/theme/ThemeProvider';
 import {
   EmployeeAvatar,
@@ -149,7 +150,7 @@ export default function EmployeeDashboardScreen({ navigation }: Props) {
   const firstName = user?.fullName?.split(' ')[0] ?? 'there';
   const greeting = getGreeting();
   const go = (route: AppRoute, params?: Record<string, unknown>) =>
-    navigateTo(navigation, route, isManagerUser(user), params);
+    navigateTo(navigation, route, user, params);
   return (
     <View style={[styles.root, { backgroundColor: theme.colors.canvas }]}>
       <LiquidBackdrop subtle />
@@ -169,7 +170,7 @@ export default function EmployeeDashboardScreen({ navigation }: Props) {
         <ScreenHero
           eyebrow={greeting}
           title={`${firstName}, your day is ready`}
-          subtitle={`${formatDate(new Date().toISOString(), 'date')} · ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}`}
+          subtitle={formatRiyadhBusinessDate()}
           actions={
             <View style={styles.heroActions}>
               <MotionPressable

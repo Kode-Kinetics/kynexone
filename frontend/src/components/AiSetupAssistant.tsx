@@ -1,7 +1,8 @@
 'use client';
 
-import { useRef, useState } from 'react';
-import { AlertTriangle, CheckCircle2, Circle, Database, Download, Eye, FileSpreadsheet, GitBranch, Info, RefreshCw, Rocket, ShieldCheck, Sparkles, Trash2, UploadCloud, Wand2, XCircle } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { AlertTriangle, CheckCircle2, Circle, Database, Download, Eye, FileSpreadsheet, GitBranch, Info, Pencil, RefreshCw, Rocket, ShieldCheck, Sparkles, Trash2, UploadCloud, Wand2, XCircle } from 'lucide-react';
+import { tenantAdminApi } from '../api/intelligence';
 import { orgStructureImportApi, setupAssistantApi, type CompanyProfile, type MigrationImportBatchDto, type OrgStructureImportRequest, type OrgStructureImportResult, type SetupDraft } from '../api/setupAssistant';
 
 const COUNTRIES = [
@@ -11,15 +12,73 @@ const COUNTRIES = [
   { code: 'EG', label: 'Egypt' }, { code: 'IN', label: 'India' }, { code: 'GB', label: 'United Kingdom' }, { code: 'US', label: 'United States' },
 ];
 const SIZES = ['1-50', '51-200', '201-500', '500+'];
+
+// Every option below writes to a column the product already reads. The label is what a business
+// would say about itself; the value is what the entity stores.
+const WORK_PATTERNS: [string, string][] = [
+  ['SingleDayShift', 'One day shift'],
+  ['TwoShifts', 'Two shifts (day + evening)'],
+  ['ContinuousThreeShifts', 'Round the clock (three shifts)'],
+  ['FieldRoster', 'Field crews on a roster'],
+];
+// The REST days, because that is how people describe their week. The working week is the complement.
+const WEEKEND_PATTERNS: [string, string][] = [
+  ['CountryDefault', 'Use the country default'],
+  ['Fri-Sat', 'Friday & Saturday'],
+  ['Sat-Sun', 'Saturday & Sunday'],
+  ['Fri', 'Friday only'],
+  ['Sun', 'Sunday only'],
+];
+const LEAVE_YEAR_BASES: [string, string][] = [
+  ['Calendar', 'Calendar year (1 January)'],
+  ['JoiningDate', "Each employee's joining date"],
+  ['Fiscal', 'Our fiscal year'],
+];
+const WORKFORCE_MIX: [string, string][] = [
+  ['MostlyNational', 'Mostly nationals'],
+  ['Mixed', 'Mixed nationals and expatriates'],
+  ['MostlyExpat', 'Mostly expatriates'],
+];
+const OVERTIME_HANDLING: [string, string][] = [
+  ['PaidOvertime', 'Paid overtime'],
+  ['CompensatoryOff', 'Time off in lieu'],
+  ['NotApplicable', 'We do not pay overtime'],
+];
+const ATTENDANCE_CAPTURE: [string, string][] = [
+  ['BiometricDevice', 'Biometric device'],
+  ['MobileGeofence', 'Mobile app with location'],
+  ['WebCheckIn', 'Web check-in'],
+  ['Manual', 'Entered by hand'],
+];
+const PAY_CYCLES: [string, string][] = [
+  ['Monthly', 'Monthly'],
+  ['SemiMonthly', 'Twice a month'],
+  ['Biweekly', 'Every two weeks'],
+  ['Weekly', 'Weekly'],
+];
+const LANGUAGES: [string, string][] = [
+  ['en', 'English'],
+  ['ar', 'Arabic'],
+  ['bilingual', 'Both (English first, Arabic available)'],
+];
+const TIMEZONES = [
+  '', 'Asia/Riyadh', 'Asia/Dubai', 'Asia/Qatar', 'Asia/Kuwait', 'Asia/Bahrain', 'Asia/Muscat',
+  'Africa/Cairo', 'Asia/Kolkata', 'Europe/London', 'America/New_York', 'UTC',
+];
 const CURRENCIES = ['SAR', 'AED', 'QAR', 'KWD', 'BHD', 'OMR', 'USD', 'EUR', 'GBP', 'INR', 'EGP'];
 
-type SectionKey = 'entity' | 'org' | 'leave' | 'shifts' | 'payroll' | 'governance';
+type SectionKey = 'entity' | 'org' | 'leave' | 'leavePolicies' | 'shifts' | 'attendance' | 'payroll' | 'holidays' | 'governance' | 'localization';
 
 export function AiSetupAssistant() {
-  const [country, setCountry] = useState('SA');
+  // Blank until the workspace answers. These used to be hardcoded 'SA' and 'SAR', which meant the
+  // assistant asked an admin to re-key what the workspace already knew and, worse, quietly priced
+  // the draft in whatever the boxes happened to say. A currency is not visibly wrong on screen —
+  // 3,000 reads the same in riyals and dollars — so it is never pre-filled with a guess.
+  const [country, setCountry] = useState('');
   const [industry, setIndustry] = useState('');
   const [size, setSize] = useState('51-200');
-  const [currency, setCurrency] = useState('SAR');
+  const [currency, setCurrency] = useState('');
+  const [profileSource, setProfileSource] = useState<'loading' | 'workspace' | 'unstated'>('loading');
   const [legalEntityName, setLegalEntityName] = useState('');
   const [branchCity, setBranchCity] = useState('Riyadh');
   const [operatingModel, setOperatingModel] = useState('Functional');
@@ -29,7 +88,23 @@ export function AiSetupAssistant() {
   const [requireCostCenterForPayroll, setRequireCostCenterForPayroll] = useState(true);
   const [requireGradeForApprovalPolicy, setRequireGradeForApprovalPolicy] = useState(true);
   const [notes, setNotes] = useState('');
-  const [sections, setSections] = useState<Record<SectionKey, boolean>>({ entity: true, org: true, leave: true, shifts: true, payroll: true, governance: true });
+  // Operating choices. Each default is the most common answer, never a silent assumption the
+  // draft hides: whatever is selected here is what the generated configuration says.
+  const [workPattern, setWorkPattern] = useState('SingleDayShift');
+  const [weekendPattern, setWeekendPattern] = useState('CountryDefault');
+  const [leaveYearBasis, setLeaveYearBasis] = useState('Calendar');
+  const [probationMonths, setProbationMonths] = useState(3);
+  const [noticePeriodDays, setNoticePeriodDays] = useState(30);
+  const [workforceMix, setWorkforceMix] = useState('Mixed');
+  const [overtimeHandling, setOvertimeHandling] = useState('PaidOvertime');
+  const [attendanceCapture, setAttendanceCapture] = useState('WebCheckIn');
+  const [payCycle, setPayCycle] = useState('Monthly');
+  const [timeZone, setTimeZone] = useState('');
+  const [defaultLanguage, setDefaultLanguage] = useState('en');
+  const [sections, setSections] = useState<Record<SectionKey, boolean>>({
+    entity: true, org: true, leave: true, leavePolicies: true, shifts: true,
+    attendance: true, payroll: true, holidays: true, governance: true, localization: true,
+  });
 
   const [loading, setLoading] = useState(false);
   const [applying, setApplying] = useState(false);
@@ -39,15 +114,41 @@ export function AiSetupAssistant() {
   const [draft, setDraft] = useState<SetupDraft | null>(null);
   const [done, setDone] = useState<{ applied: Record<string, number>; total: number } | null>(null);
 
+  // The workspace's own country and currency. Setup - Localization is where a tenant states these;
+  // reading them here is what stops the draft disagreeing with the rest of the product. An empty
+  // field from the API means "not stated" — it is left empty here too, and the admin is asked.
+  useEffect(() => {
+    let cancelled = false;
+    tenantAdminApi.getLocalization()
+      .then(loc => {
+        if (cancelled) return;
+        const c = (loc?.countryCode ?? '').trim().toUpperCase();
+        const cur = (loc?.currencyCode ?? '').trim().toUpperCase();
+        if (c) setCountry(c);
+        if (cur) setCurrency(cur);
+        setProfileSource(c || cur ? 'workspace' : 'unstated');
+      })
+      .catch(() => { if (!cancelled) setProfileSource('unstated'); });
+    return () => { cancelled = true; };
+  }, []);
+
   const toggle = (k: SectionKey) => setSections(s => ({ ...s, [k]: !s[k] }));
   const selectedCount = Object.values(sections).filter(Boolean).length;
   // Full Record<SectionKey, boolean> literal — an Object.fromEntries shortcut would widen
   // to { [k: string]: boolean } and fail the strict Record<SectionKey, boolean> assignment.
   const setAllSections = (value: boolean) =>
-    setSections({ entity: value, org: value, leave: value, shifts: value, payroll: value, governance: value });
+    setSections({
+      entity: value, org: value, leave: value, leavePolicies: value, shifts: value,
+      attendance: value, payroll: value, holidays: value, governance: value, localization: value,
+    });
+  const sectionCount = 10;
 
   const generate = async () => {
     if (!industry.trim()) { setError('Tell me your industry so the suggestions fit.'); return; }
+    if (!country) { setError('Pick the country this workspace operates in — the statutory defaults, holidays and working week all follow it.'); return; }
+    // Generating without one would price every salary band in a currency nobody chose, and a band
+    // in the wrong currency looks exactly like a band in the right one.
+    if (!currency) { setError('Pick the currency before generating — salary bands are drafted in it, and a wrong currency is not visible on the figures.'); return; }
     setLoading(true); setError(''); setDone(null);
     try {
       const profile: CompanyProfile = {
@@ -62,6 +163,17 @@ export function AiSetupAssistant() {
         requireGradeForApprovalPolicy,
         notes: notes.trim() || undefined,
         sections,
+        workPattern,
+        weekendPattern,
+        leaveYearBasis,
+        probationMonths,
+        noticePeriodDays,
+        workforceMix,
+        overtimeHandling,
+        attendanceCapture,
+        payCycle,
+        timeZone: timeZone || undefined,
+        defaultLanguage,
       };
       const r = await setupAssistantApi.preview(profile);
       setDraft(r.draft); setEngine(r.engine); setGenNotes(r.notes);
@@ -94,6 +206,22 @@ export function AiSetupAssistant() {
     } finally { setApplying(false); }
   };
 
+  /** Edit one row of one draft list in place. The cast is confined here: SetupDraft's list members
+      have no common base, and the alternative is fourteen near-identical setters. */
+  function patch<K extends keyof SetupDraft>(key: K, idx: number, changes: Record<string, unknown>) {
+    setDraft(d => {
+      if (!d) return d;
+      const list = d[key];
+      if (!Array.isArray(list)) return d;
+      return { ...d, [key]: list.map((row, i) => (i === idx ? { ...(row as object), ...changes } : row)) };
+    });
+  }
+
+  /** Edit a single-object draft member (working week, ID rule, attendance, localization…). */
+  function patchOne<K extends keyof SetupDraft>(key: K, changes: Record<string, unknown>) {
+    setDraft(d => (d && d[key] ? { ...d, [key]: { ...(d[key] as object), ...changes } } : d));
+  }
+
   // remove a row from a draft list
   function removeAt<K extends keyof SetupDraft>(key: K, idx: number) {
     setDraft(d => {
@@ -109,7 +237,13 @@ export function AiSetupAssistant() {
       draft.branches.length + draft.costCenters.length + draft.gradePayComponents.length +
       draft.leaveTypes.length + draft.shifts.length + draft.payComponents.length +
       draft.statutoryRules.length + (draft.workingWeek ? 1 : 0) +
-      (draft.employeeIdRule ? 1 : 0) + (draft.hrConfig ? 1 : 0)
+      (draft.employeeIdRule ? 1 : 0) + (draft.hrConfig ? 1 : 0) +
+      draft.leavePolicies.length + (draft.holidayCalendar?.holidays.length ?? 0) +
+      (draft.attendancePolicy ? 1 : 0) +
+      // The multipliers are rows of their own once applied, so they count as items here too —
+      // otherwise the button promises fewer than the apply writes.
+      (draft.overtimePolicy ? 1 + draft.overtimePolicy.multipliers.length : 0) +
+      (draft.localization ? 1 : 0)
     : 0;
 
   if (done) {
@@ -148,8 +282,12 @@ export function AiSetupAssistant() {
         <label className="block">
           <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Country</span>
           <select className="select w-full" value={country} onChange={e => { setCountry(e.target.value); setDraft(null); }}>
+            <option value="">{profileSource === 'loading' ? 'Reading your workspace…' : 'Select a country…'}</option>
             {COUNTRIES.map(c => <option key={c.code} value={c.code}>{c.label}</option>)}
           </select>
+          {profileSource === 'workspace' && country && (
+            <span className="mt-1 block text-[11px] text-slate-400">From your workspace settings.</span>
+          )}
         </label>
         <label className="block">
           <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Industry</span>
@@ -171,9 +309,15 @@ export function AiSetupAssistant() {
         </label>
         <label className="block">
           <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Currency</span>
-          <select className="select w-full" value={currency} onChange={e => setCurrency(e.target.value)}>
+          <select className="select w-full" value={currency} onChange={e => { setCurrency(e.target.value); setDraft(null); }}>
+            <option value="">{profileSource === 'loading' ? 'Reading your workspace…' : 'Select a currency…'}</option>
             {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
+          <span className={`mt-1 block text-[11px] ${currency ? 'text-slate-400' : 'text-amber-600 dark:text-amber-400'}`}>
+            {currency
+              ? (profileSource === 'workspace' ? 'From your workspace settings. Every salary band is drafted in it.' : 'Every salary band is drafted in this currency.')
+              : 'Your workspace has not stated a currency. Set it in Setup \u2192 Localization, or pick one here.'}
+          </span>
         </label>
         <label className="block">
           <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Operating model</span>
@@ -205,6 +349,77 @@ export function AiSetupAssistant() {
             </label>
           ))}
         </div>
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">How do people work?</span>
+          <select className="select w-full" value={workPattern} onChange={e => { setWorkPattern(e.target.value); setDraft(null); }}>
+            {WORK_PATTERNS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+          <span className="mt-1 block text-[11px] text-slate-400">Sets the shifts and the standard working day.</span>
+        </label>
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Weekend (days off)</span>
+          <select className="select w-full" value={weekendPattern} onChange={e => { setWeekendPattern(e.target.value); setDraft(null); }}>
+            {WEEKEND_PATTERNS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+          <span className="mt-1 block text-[11px] text-slate-400">Every leave day and overtime hour is counted against this.</span>
+        </label>
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">How is time recorded?</span>
+          <select className="select w-full" value={attendanceCapture} onChange={e => { setAttendanceCapture(e.target.value); setDraft(null); }}>
+            {ATTENDANCE_CAPTURE.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+          <span className="mt-1 block text-[11px] text-slate-400">Decides the lateness grace the policy can honestly claim.</span>
+        </label>
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Overtime</span>
+          <select className="select w-full" value={overtimeHandling} onChange={e => { setOvertimeHandling(e.target.value); setDraft(null); }}>
+            {OVERTIME_HANDLING.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </label>
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Pay cycle</span>
+          <select className="select w-full" value={payCycle} onChange={e => { setPayCycle(e.target.value); setDraft(null); }}>
+            {PAY_CYCLES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </label>
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Workforce</span>
+          <select className="select w-full" value={workforceMix} onChange={e => { setWorkforceMix(e.target.value); setDraft(null); }}>
+            {WORKFORCE_MIX.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+          <span className="mt-1 block text-[11px] text-slate-400">Expatriate staff carry allowances nationals do not.</span>
+        </label>
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Leave year runs from</span>
+          <select className="select w-full" value={leaveYearBasis} onChange={e => { setLeaveYearBasis(e.target.value); setDraft(null); }}>
+            {LEAVE_YEAR_BASES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </label>
+        <div className="grid grid-cols-2 gap-3">
+          <label className="block">
+            <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Probation (months)</span>
+            <input type="number" min={0} max={24} className="input w-full" value={probationMonths}
+              onChange={e => { setProbationMonths(Math.max(0, Math.min(24, Number(e.target.value) || 0))); setDraft(null); }} />
+          </label>
+          <label className="block">
+            <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Notice (days)</span>
+            <input type="number" min={0} max={365} className="input w-full" value={noticePeriodDays}
+              onChange={e => { setNoticePeriodDays(Math.max(0, Math.min(365, Number(e.target.value) || 0))); setDraft(null); }} />
+          </label>
+        </div>
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Working language</span>
+          <select className="select w-full" value={defaultLanguage} onChange={e => { setDefaultLanguage(e.target.value); setDraft(null); }}>
+            {LANGUAGES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </label>
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Time zone</span>
+          <select className="select w-full" value={timeZone} onChange={e => { setTimeZone(e.target.value); setDraft(null); }}>
+            {TIMEZONES.map(tz => <option key={tz || 'auto'} value={tz}>{tz || 'Match the country'}</option>)}
+          </select>
+          <span className="mt-1 block text-[11px] text-slate-400">Every timestamp in the product is shown in this zone.</span>
+        </label>
         <label className="block sm:col-span-2">
           <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Anything specific? (optional)</span>
           <input className="input w-full" value={notes} onChange={e => setNotes(e.target.value)} placeholder="e.g. we run 24/7 operations with field crews" />
@@ -213,14 +428,20 @@ export function AiSetupAssistant() {
           <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
             <span className="text-xs font-medium text-slate-700 dark:text-slate-300">Sections to include in the draft</span>
             <div className="flex items-center gap-3">
-              <span className="text-xs text-slate-400">{selectedCount} of 6 selected</span>
+              <span className="text-xs text-slate-400">{selectedCount} of {sectionCount} selected</span>
               <button type="button" className="text-[11px] text-sapphire hover:underline dark:text-cyanAccent" onClick={() => setAllSections(true)}>Select all</button>
               <button type="button" className="text-[11px] text-sapphire hover:underline dark:text-cyanAccent" onClick={() => setAllSections(false)}>Clear all</button>
             </div>
           </div>
           <p className="mb-2 text-xs text-slate-400">Pick which parts of the starter configuration the assistant proposes. These are selections, not actions — nothing is generated until you choose Generate draft below.</p>
           <div className="flex flex-wrap gap-2">
-            {([['entity', 'Entity & cost centers'], ['org', 'Org structure'], ['leave', 'Leave types'], ['shifts', 'Shifts & working week'], ['payroll', 'Payroll & statutory'], ['governance', 'Governance & IDs']] as [SectionKey, string][]).map(([k, label]) => (
+            {([
+              ['entity', 'Entity & cost centers'], ['org', 'Org structure'],
+              ['leave', 'Leave types'], ['leavePolicies', 'Leave entitlement'],
+              ['shifts', 'Shifts & working week'], ['attendance', 'Attendance & overtime'],
+              ['payroll', 'Payroll & statutory'], ['holidays', 'Public holidays'],
+              ['governance', 'Governance & IDs'], ['localization', 'Language & time zone'],
+            ] as [SectionKey, string][]).map(([k, label]) => (
               <label key={k}
                 className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-1.5 text-xs transition ${
                   sections[k]
@@ -248,13 +469,17 @@ export function AiSetupAssistant() {
       <div className="flex flex-wrap items-start gap-3">
         <div>
           <button type="button" className={`${draft ? 'btn-secondary' : 'btn-primary'} flex items-center gap-1.5`} onClick={generate}
-            disabled={loading || selectedCount === 0 || !industry.trim()}
-            title={!industry.trim() ? 'Add your industry first.' : selectedCount === 0 ? 'Select at least one section to include.' : undefined}>
+            disabled={loading || selectedCount === 0 || !industry.trim() || !country || !currency}
+            title={!industry.trim() ? 'Add your industry first.' : !country ? 'Pick a country first.' : !currency ? 'Pick a currency first.' : selectedCount === 0 ? 'Select at least one section to include.' : undefined}>
             <Wand2 className="h-4 w-4" />
             {loading ? 'Thinking…' : draft ? 'Regenerate draft' : 'Generate draft'}
           </button>
-          <p className={`mt-1 text-[11px] ${!industry.trim() || selectedCount === 0 ? 'text-rose-500' : 'text-slate-400'}`}>
-            {!industry.trim() ? 'Add your industry first.' : selectedCount === 0 ? 'Select at least one section to include.' : 'Preview only — nothing is written to your workspace yet.'}
+          <p className={`mt-1 text-[11px] ${!industry.trim() || !country || !currency || selectedCount === 0 ? 'text-rose-500' : 'text-slate-400'}`}>
+            {!industry.trim() ? 'Add your industry first.'
+              : !country ? 'Pick a country first.'
+              : !currency ? 'Pick a currency first — salary bands are drafted in it.'
+              : selectedCount === 0 ? 'Select at least one section to include.'
+              : 'Preview only — nothing is written to your workspace yet.'}
           </p>
         </div>
         {draft && (
@@ -298,21 +523,274 @@ export function AiSetupAssistant() {
             )}
           </div>
 
-          <DraftSection title="Branches" rows={draft.branches.map(x => [x.code, `${x.nameEn} · ${x.city}${x.isHeadOffice ? ' · Head office' : ''}`])} onRemove={i => removeAt('branches', i)} />
-          <DraftSection title="Departments" rows={draft.departments.map(x => [x.code, x.nameEn])} onRemove={i => removeAt('departments', i)} />
-          <DraftSection title="Cost Centers" rows={draft.costCenters.map(x => [x.code, `${x.name}${x.departmentCode ? ` · ${x.departmentCode}` : ''}`])} onRemove={i => removeAt('costCenters', i)} />
-          <DraftSection title="Designations" rows={draft.designations.map(x => [x.code, `${x.titleEn}${x.departmentCode ? ` · ${x.departmentCode}` : ''}${x.gradeCode ? ` · ${x.gradeCode}` : ''}${x.isManagerRole ? ' · Manager' : ''}`])} onRemove={i => removeAt('designations', i)} />
-          <DraftSection title="Grades" rows={draft.grades.map(x => [x.code, `${x.name} (L${x.level}) · ${x.currency} ${x.minSalary}-${x.maxSalary}`])} onRemove={i => removeAt('grades', i)} />
-          <DraftSection title="Grade Pay Components" rows={draft.gradePayComponents.map(x => [x.componentCode, `${x.gradeCode} · ${x.componentName} · ${x.calculationType === 'PercentOfBasic' ? `${x.percentage}%` : x.amount}`])} onRemove={i => removeAt('gradePayComponents', i)} />
-          <DraftSection title="Leave Types" rows={draft.leaveTypes.map(x => [x.code, `${x.nameEn} · ${x.isPaid ? 'Paid' : 'Unpaid'} · max ${x.maxConsecutiveDays}d`])} onRemove={i => removeAt('leaveTypes', i)} />
-          <DraftSection title="Shifts" rows={draft.shifts.map(x => [x.code, `${x.name} · ${x.start}–${x.end}`])} onRemove={i => removeAt('shifts', i)} />
+          <DraftSection title="Branches"
+            rows={draft.branches.map((x, i) => ({
+              code: x.code,
+              desc: `${x.nameEn} · ${x.city}${x.isHeadOffice ? ' · Head office' : ''}`,
+              fields: [
+                txt('Name', x.nameEn, v => patch('branches', i, { nameEn: v })),
+                txt('City', x.city, v => patch('branches', i, { city: v })),
+                boolf('Head office', x.isHeadOffice, v => patch('branches', i, { isHeadOffice: v })),
+              ],
+            }))}
+            onRemove={i => removeAt('branches', i)} />
+
+          <DraftSection title="Departments"
+            rows={draft.departments.map((x, i) => ({
+              code: x.code, desc: x.nameEn,
+              fields: [txt('Name', x.nameEn, v => patch('departments', i, { nameEn: v }))],
+            }))}
+            onRemove={i => removeAt('departments', i)} />
+
+          <DraftSection title="Cost Centers"
+            rows={draft.costCenters.map((x, i) => ({
+              code: x.code,
+              desc: `${x.name}${x.departmentCode ? ` · ${x.departmentCode}` : ''}`,
+              fields: [txt('Name', x.name, v => patch('costCenters', i, { name: v }))],
+            }))}
+            onRemove={i => removeAt('costCenters', i)} />
+
+          <DraftSection title="Designations"
+            rows={draft.designations.map((x, i) => ({
+              code: x.code,
+              desc: `${x.titleEn}${x.departmentCode ? ` · ${x.departmentCode}` : ''}${x.gradeCode ? ` · ${x.gradeCode}` : ''}${x.isManagerRole ? ' · Manager' : ''}`,
+              fields: [
+                txt('Title', x.titleEn, v => patch('designations', i, { titleEn: v })),
+                selectf('Grade', x.gradeCode, draft.grades.map(g => g.code), v => patch('designations', i, { gradeCode: v })),
+                boolf('Manager role', x.isManagerRole, v => patch('designations', i, { isManagerRole: v })),
+              ],
+            }))}
+            onRemove={i => removeAt('designations', i)} />
+
+          <DraftSection title="Grades"
+            rows={draft.grades.map((x, i) => ({
+              code: x.code,
+              desc: `${x.name} (L${x.level}) · ${x.currency} ${x.minSalary}-${x.maxSalary}`,
+              // The currency is shown but not editable: it is the workspace's, set once at the top,
+              // and letting a single band drift to another currency is the bug this screen just fixed.
+              fields: [
+                txt('Name', x.name, v => patch('grades', i, { name: v })),
+                numf(`Min (${x.currency})`, x.minSalary, v => patch('grades', i, { minSalary: v })),
+                numf(`Mid (${x.currency})`, x.midSalary, v => patch('grades', i, { midSalary: v })),
+                numf(`Max (${x.currency})`, x.maxSalary, v => patch('grades', i, { maxSalary: v })),
+              ],
+            }))}
+            onRemove={i => removeAt('grades', i)} />
+
+          <DraftSection title="Grade Pay Components"
+            rows={draft.gradePayComponents.map((x, i) => ({
+              code: x.componentCode,
+              desc: `${x.gradeCode} · ${x.componentName} · ${x.calculationType === 'PercentOfBasic' ? `${x.percentage}%` : x.amount}`,
+              fields: [
+                txt('Name', x.componentName, v => patch('gradePayComponents', i, { componentName: v })),
+                ...(x.calculationType === 'PercentOfBasic'
+                  ? [numf('Percent of basic', x.percentage, v => patch('gradePayComponents', i, { percentage: v }), 0, 100)]
+                  : [numf('Amount', x.amount, v => patch('gradePayComponents', i, { amount: v }))]),
+                boolf('Taxable', x.isTaxable, v => patch('gradePayComponents', i, { isTaxable: v })),
+              ],
+            }))}
+            onRemove={i => removeAt('gradePayComponents', i)} />
+
+          <DraftSection title="Leave Types"
+            rows={draft.leaveTypes.map((x, i) => ({
+              code: x.code,
+              desc: `${x.nameEn} · ${x.isPaid ? 'Paid' : 'Unpaid'} · max ${x.maxConsecutiveDays}d`,
+              fields: [
+                txt('Name', x.nameEn, v => patch('leaveTypes', i, { nameEn: v })),
+                numf('Max consecutive days', x.maxConsecutiveDays, v => patch('leaveTypes', i, { maxConsecutiveDays: v }), 0, 365),
+                boolf('Paid', x.isPaid, v => patch('leaveTypes', i, { isPaid: v })),
+                boolf('Attachment required', x.requiresAttachment, v => patch('leaveTypes', i, { requiresAttachment: v })),
+              ],
+            }))}
+            onRemove={i => removeAt('leaveTypes', i)} />
+
+          <DraftSection title="Leave Entitlement"
+            rows={draft.leavePolicies.map((x, i) => ({
+              code: x.leaveTypeCode,
+              desc: `${x.annualEntitlementDays} day(s)/year · ${x.accrualMethod === 'Monthly' ? 'accrues monthly' : 'granted yearly'}` +
+                ` · ${x.payrollImpact === 'Unpaid' ? 'unpaid' : 'full pay'}` +
+                `${x.noticeRequiredDays > 0 ? ` · ${x.noticeRequiredDays}d notice` : ''}` +
+                `${x.appliesOnProbation ? ' · available on probation' : ''}`,
+              fields: [
+                numf('Days per year', x.annualEntitlementDays, v => patch('leavePolicies', i, { annualEntitlementDays: v }), 0, 365, 0.5),
+                selectf('Accrual', x.accrualMethod, ['Yearly', 'Monthly'], v => patch('leavePolicies', i, { accrualMethod: v })),
+                numf('Notice days', x.noticeRequiredDays, v => patch('leavePolicies', i, { noticeRequiredDays: v }), 0, 365),
+                numf('Max per request', x.maximumDaysPerRequest, v => patch('leavePolicies', i, { maximumDaysPerRequest: v }), 0, 365),
+                boolf('Encashable', x.encashmentAllowed, v => patch('leavePolicies', i, { encashmentAllowed: v })),
+                boolf('On probation', x.appliesOnProbation, v => patch('leavePolicies', i, { appliesOnProbation: v })),
+              ],
+            }))}
+            onRemove={i => removeAt('leavePolicies', i)} />
+
+          <DraftSection title="Shifts"
+            rows={draft.shifts.map((x, i) => ({
+              code: x.code,
+              desc: `${x.name} · ${x.start}–${x.end}`,
+              fields: [
+                txt('Name', x.name, v => patch('shifts', i, { name: v })),
+                txt('Start (HH:mm)', x.start, v => patch('shifts', i, { start: v })),
+                txt('End (HH:mm)', x.end, v => patch('shifts', i, { end: v })),
+                numf('Break minutes', x.breakMinutes, v => patch('shifts', i, { breakMinutes: v }), 0, 240),
+              ],
+            }))}
+            onRemove={i => removeAt('shifts', i)} />
+
           {draft.workingWeek && (
-            <DraftSection title="Working Week" rows={[['WEEK', `${draft.workingWeek.workWeek} · starts ${draft.workingWeek.weekStartDay}`]]} onRemove={() => setDraft(d => d ? { ...d, workingWeek: null } : d)} />
+            <DraftSection title="Working Week"
+              rows={[{
+                code: 'WEEK',
+                desc: `${draft.workingWeek.workWeek} · starts ${draft.workingWeek.weekStartDay}`,
+                fields: [
+                  selectf('Working week', draft.workingWeek.workWeek, ['Sun-Thu', 'Mon-Fri', 'Mon-Sat', 'Sat-Thu'], v => patchOne('workingWeek', { workWeek: v })),
+                  selectf('Week starts', draft.workingWeek.weekStartDay, ['Sunday', 'Monday', 'Saturday'], v => patchOne('workingWeek', { weekStartDay: v })),
+                ],
+              }]}
+              onRemove={() => setDraft(d => d ? { ...d, workingWeek: null } : d)} />
           )}
-          <DraftSection title="Payroll Components" rows={draft.payComponents.map(x => [x.code, `${x.name} · ${x.componentType} · ${x.calculationType === 'Percentage' ? `${x.percentage}%` : x.amount}`])} onRemove={i => removeAt('payComponents', i)} />
-          <DraftSection title="Statutory Rules" rows={draft.statutoryRules.map(x => [x.ruleKey, `${x.ruleValue} — ${x.description}`])} onRemove={i => removeAt('statutoryRules', i)} />
-          {draft.employeeIdRule && <DraftSection title="Employee ID Rule" rows={[['ID', `${draft.employeeIdRule.companyPrefix} · pad ${draft.employeeIdRule.paddingLength} · next ${draft.employeeIdRule.nextSequence}`]]} onRemove={() => setDraft(d => d ? { ...d, employeeIdRule: null } : d)} />}
-          {draft.hrConfig && <DraftSection title="HR Governance" rows={[['GOV', `${draft.hrConfig.requireImportPreviewBeforeCommit ? 'Preview required' : 'Direct import'} · ${draft.hrConfig.requireCostCenterForPayroll ? 'Cost center required' : 'Cost center optional'} · ${draft.hrConfig.requireGradeForApprovalPolicy ? 'Grade approval rules' : 'General approval rules'}`]]} onRemove={() => setDraft(d => d ? { ...d, hrConfig: null } : d)} />}
+
+          <DraftSection title="Payroll Components"
+            rows={draft.payComponents.map((x, i) => ({
+              code: x.code,
+              desc: `${x.name} · ${x.componentType} · ${x.calculationType === 'Percentage' ? `${x.percentage}%` : x.amount}`,
+              fields: [
+                txt('Name', x.name, v => patch('payComponents', i, { name: v })),
+                ...(x.calculationType === 'Percentage'
+                  ? [numf('Percentage', x.percentage, v => patch('payComponents', i, { percentage: v }), 0, 100)]
+                  : [numf('Amount', x.amount, v => patch('payComponents', i, { amount: v }))]),
+                boolf('Taxable', x.isTaxable, v => patch('payComponents', i, { isTaxable: v })),
+              ],
+            }))}
+            onRemove={i => removeAt('payComponents', i)} />
+
+          <DraftSection title="Statutory Rules"
+            rows={draft.statutoryRules.map((x, i) => ({
+              code: x.ruleKey,
+              desc: `${x.ruleValue} — ${x.description}`,
+              // The VALUE is editable; the key is not. A renamed key is a rule nothing reads.
+              fields: [txt('Value', x.ruleValue, v => patch('statutoryRules', i, { ruleValue: v }))],
+            }))}
+            onRemove={i => removeAt('statutoryRules', i)} />
+
+          {draft.employeeIdRule && (
+            <DraftSection title="Employee ID Rule"
+              rows={[{
+                code: 'ID',
+                desc: `${draft.employeeIdRule.companyPrefix} · pad ${draft.employeeIdRule.paddingLength} · next ${draft.employeeIdRule.nextSequence}`,
+                fields: [
+                  txt('Prefix', draft.employeeIdRule.companyPrefix, v => patchOne('employeeIdRule', { companyPrefix: v })),
+                  numf('Padding', draft.employeeIdRule.paddingLength, v => patchOne('employeeIdRule', { paddingLength: v }), 1, 12),
+                  numf('Next sequence', draft.employeeIdRule.nextSequence, v => patchOne('employeeIdRule', { nextSequence: v }), 1),
+                  boolf('Allow manual override', draft.employeeIdRule.allowManualOverride, v => patchOne('employeeIdRule', { allowManualOverride: v })),
+                ],
+              }]}
+              onRemove={() => setDraft(d => d ? { ...d, employeeIdRule: null } : d)} />
+          )}
+
+          {draft.attendancePolicy && (
+            <DraftSection title="Attendance Policy"
+              rows={[{
+                code: draft.attendancePolicy.code,
+                desc: `${draft.attendancePolicy.graceMinutes}min grace · late after ${draft.attendancePolicy.lateThresholdMinutes}min` +
+                  ` · ${Math.round(draft.attendancePolicy.standardWorkMinutes / 60 * 10) / 10}h day` +
+                  ` · ${draft.attendancePolicy.breakMinutes}min break` +
+                  ` · rounded to the ${draft.attendancePolicy.roundingRule === 'NearestMinute' ? 'minute' : 'quarter-hour'}`,
+                fields: [
+                  numf('Grace minutes', draft.attendancePolicy.graceMinutes, v => patchOne('attendancePolicy', { graceMinutes: v }), 0, 120),
+                  numf('Late after (min)', draft.attendancePolicy.lateThresholdMinutes, v => patchOne('attendancePolicy', { lateThresholdMinutes: v }), 0, 480),
+                  numf('Standard day (min)', draft.attendancePolicy.standardWorkMinutes, v => patchOne('attendancePolicy', { standardWorkMinutes: v }), 60, 960),
+                  numf('Break (min)', draft.attendancePolicy.breakMinutes, v => patchOne('attendancePolicy', { breakMinutes: v }), 0, 240),
+                  // Only the two the overtime engine can evaluate; a third would be stored and ignored.
+                  selectf('Rounding', draft.attendancePolicy.roundingRule, ['NearestMinute', 'Nearest15'], v => patchOne('attendancePolicy', { roundingRule: v })),
+                ],
+              }]}
+              onRemove={() => setDraft(d => d ? { ...d, attendancePolicy: null } : d)} />
+          )}
+
+          {draft.overtimePolicy && (
+            <DraftSection title="Overtime Policy"
+              rows={[
+                {
+                  code: draft.overtimePolicy.code,
+                  desc: `${draft.overtimePolicy.standardMonthlyHours}h/month basis · min ${draft.overtimePolicy.minimumMinutes}min` +
+                    ` · max ${Math.round(draft.overtimePolicy.maximumMinutesPerDay / 60)}h/day` +
+                    `${draft.overtimePolicy.allowCompOffConversion ? ' · time off in lieu allowed' : ''}`,
+                  fields: [
+                    numf('Monthly hours basis', draft.overtimePolicy.standardMonthlyHours, v => patchOne('overtimePolicy', { standardMonthlyHours: v }), 1, 400),
+                    numf('Minimum minutes', draft.overtimePolicy.minimumMinutes, v => patchOne('overtimePolicy', { minimumMinutes: v }), 0, 480),
+                    numf('Max minutes/day', draft.overtimePolicy.maximumMinutesPerDay, v => patchOne('overtimePolicy', { maximumMinutesPerDay: v }), 0, 960),
+                    boolf('Time off in lieu', draft.overtimePolicy.allowCompOffConversion, v => patchOne('overtimePolicy', { allowCompOffConversion: v })),
+                  ],
+                },
+                ...draft.overtimePolicy.multipliers.map((m, mi) => ({
+                  code: m.dayCategory,
+                  desc: `×${m.multiplier} of the hourly rate`,
+                  // Floored at 1: below that an overtime hour pays less than an ordinary one, and
+                  // the payroll run would floor it at the statutory rate anyway.
+                  fields: [numf('Multiplier', m.multiplier, v => setDraft(d => d?.overtimePolicy
+                    ? { ...d, overtimePolicy: { ...d.overtimePolicy, multipliers: d.overtimePolicy.multipliers.map((x, n) => n === mi ? { ...x, multiplier: v } : x) } }
+                    : d), 1, 5, 0.25)],
+                })),
+              ]}
+              onRemove={i => setDraft(d => {
+                if (!d?.overtimePolicy) return d;
+                if (i === 0) return { ...d, overtimePolicy: null };
+                return { ...d, overtimePolicy: { ...d.overtimePolicy, multipliers: d.overtimePolicy.multipliers.filter((_, n) => n !== i - 1) } };
+              })} />
+          )}
+
+          {draft.holidayCalendar && (
+            <DraftSection title={`Public Holidays ${draft.holidayCalendar.calendarYear}`}
+              rows={draft.holidayCalendar.holidays.map((h, i) => ({
+                code: h.date,
+                desc: `${h.nameEn}${h.nameAr ? ` · ${h.nameAr}` : ''}${h.isOptional ? ' · optional' : ''}`,
+                fields: [
+                  txt('Name', h.nameEn, v => setDraft(d => d?.holidayCalendar
+                    ? { ...d, holidayCalendar: { ...d.holidayCalendar, holidays: d.holidayCalendar.holidays.map((x, n) => n === i ? { ...x, nameEn: v } : x) } } : d)),
+                  txt('Date (YYYY-MM-DD)', h.date, v => setDraft(d => d?.holidayCalendar
+                    ? { ...d, holidayCalendar: { ...d.holidayCalendar, holidays: d.holidayCalendar.holidays.map((x, n) => n === i ? { ...x, date: v } : x) } } : d)),
+                  boolf('Optional', h.isOptional, v => setDraft(d => d?.holidayCalendar
+                    ? { ...d, holidayCalendar: { ...d.holidayCalendar, holidays: d.holidayCalendar.holidays.map((x, n) => n === i ? { ...x, isOptional: v } : x) } } : d)),
+                ],
+              }))}
+              onRemove={i => setDraft(d => d && d.holidayCalendar
+                ? { ...d, holidayCalendar: { ...d.holidayCalendar, holidays: d.holidayCalendar.holidays.filter((_, n) => n !== i) } }
+                : d)} />
+          )}
+
+          {draft.localization && (
+            <DraftSection title="Language & Time Zone"
+              rows={[{
+                code: 'LOCALE',
+                desc: `${draft.localization.defaultLanguage === 'ar' ? 'Arabic' : 'English'} · ${draft.localization.defaultTimezone}` +
+                  ` · ${draft.localization.dateFormat}` +
+                  `${draft.localization.rtlEnabled ? ' · right-to-left supported' : ''}` +
+                  `${draft.localization.hijriDatesEnabled ? ' · Hijri dates shown' : ''}`,
+                fields: [
+                  selectf('Language', draft.localization.defaultLanguage, ['en', 'ar'], v => patchOne('localization', { defaultLanguage: v })),
+                  selectf('Time zone', draft.localization.defaultTimezone, TIMEZONES.filter(Boolean), v => patchOne('localization', { defaultTimezone: v })),
+                  selectf('Date format', draft.localization.dateFormat, ['DD/MM/YYYY', 'MM/DD/YYYY', 'YYYY-MM-DD'], v => patchOne('localization', { dateFormat: v })),
+                  boolf('Right-to-left', draft.localization.rtlEnabled, v => patchOne('localization', { rtlEnabled: v })),
+                  boolf('Show Hijri dates', draft.localization.hijriDatesEnabled, v => patchOne('localization', { hijriDatesEnabled: v })),
+                ],
+              }]}
+              onRemove={() => setDraft(d => d ? { ...d, localization: null } : d)} />
+          )}
+
+          {draft.hrConfig && (
+            <DraftSection title="HR Governance"
+              rows={[{
+                code: 'GOV',
+                desc: `${draft.hrConfig.requireImportPreviewBeforeCommit ? 'Preview required' : 'Direct import'} · ${draft.hrConfig.requireCostCenterForPayroll ? 'Cost center required' : 'Cost center optional'} · ${draft.hrConfig.requireGradeForApprovalPolicy ? 'Grade approval rules' : 'General approval rules'}`,
+                fields: [
+                  boolf('Preview before import', draft.hrConfig.requireImportPreviewBeforeCommit, v => patchOne('hrConfig', { requireImportPreviewBeforeCommit: v })),
+                  boolf('Cost center for payroll', draft.hrConfig.requireCostCenterForPayroll, v => patchOne('hrConfig', { requireCostCenterForPayroll: v })),
+                  boolf('Grade for approval policy', draft.hrConfig.requireGradeForApprovalPolicy, v => patchOne('hrConfig', { requireGradeForApprovalPolicy: v })),
+                  boolf('Dept head approval', draft.hrConfig.useDeptHeadApproval, v => patchOne('hrConfig', { useDeptHeadApproval: v })),
+                  boolf('HR final approval', draft.hrConfig.useHrFinalApproval, v => patchOne('hrConfig', { useHrFinalApproval: v })),
+                ],
+              }]}
+              onRemove={() => setDraft(d => d ? { ...d, hrConfig: null } : d)} />
+          )}
         </div>
       )}
 
@@ -689,7 +1167,7 @@ function FindingGroup({ title, icon, groups, tone }: { title: string; icon: Reac
   return (
     <div className={`mt-3 rounded-lg p-3 ${bg}`}>
       <p className={`flex items-center gap-2 font-semibold ${text}`}>{icon}{title}</p>
-      <div className="mt-2 max-h-56 space-y-2 overflow-auto pr-1">
+      <div className="mt-2 max-h-56 space-y-2 overflow-auto pe-1">
         {entries.slice(0, 8).map(([section, findings]) => (
           <div key={section}>
             <p className="font-semibold capitalize text-slate-800 dark:text-white">{section}</p>
@@ -749,7 +1227,62 @@ function groupFindings(result: OrgStructureImportResult | null, key: 'errors' | 
   }, {});
 }
 
-function DraftSection({ title, rows, onRemove }: { title: string; rows: [string, string][]; onRemove: (idx: number) => void }) {
+/**
+ * One editable value on a draft row. The draft is a PROPOSAL, so every figure in it has to be
+ * changeable before it is written — a starter configuration that can only be accepted or deleted
+ * wholesale forces a customer to apply numbers they disagree with and then go and correct them in
+ * eight different screens.
+ */
+type EditField =
+  | { kind: 'text'; label: string; value: string; onChange: (v: string) => void }
+  | { kind: 'number'; label: string; value: number; onChange: (v: number) => void; min?: number; max?: number; step?: number }
+  | { kind: 'bool'; label: string; value: boolean; onChange: (v: boolean) => void }
+  | { kind: 'select'; label: string; value: string; options: string[]; onChange: (v: string) => void };
+
+type DraftRow = { code: string; desc: string; fields?: EditField[] };
+
+const txt = (label: string, value: string, onChange: (v: string) => void): EditField =>
+  ({ kind: 'text', label, value, onChange });
+const numf = (label: string, value: number, onChange: (v: number) => void, min = 0, max = 1_000_000_000, step = 1): EditField =>
+  ({ kind: 'number', label, value, onChange, min, max, step });
+const boolf = (label: string, value: boolean, onChange: (v: boolean) => void): EditField =>
+  ({ kind: 'bool', label, value, onChange });
+const selectf = (label: string, value: string, options: string[], onChange: (v: string) => void): EditField =>
+  ({ kind: 'select', label, value, options, onChange });
+
+function FieldInput({ field }: { field: EditField }) {
+  const base = 'w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-800 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-100';
+  if (field.kind === 'bool') {
+    return (
+      <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
+        <input type="checkbox" className="h-3.5 w-3.5 accent-sapphire" checked={field.value}
+          onChange={e => field.onChange(e.target.checked)} />
+        {field.label}
+      </label>
+    );
+  }
+  return (
+    <label className="block">
+      <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-slate-400">{field.label}</span>
+      {field.kind === 'select' ? (
+        <select className={base} value={field.value} onChange={e => field.onChange(e.target.value)}>
+          {field.options.map(o => <option key={o} value={o}>{o}</option>)}
+        </select>
+      ) : field.kind === 'number' ? (
+        <input type="number" className={base} value={field.value} min={field.min} max={field.max} step={field.step}
+          // Empty and partial input must not become NaN mid-typing, which would blank the row.
+          onChange={e => field.onChange(Number.isFinite(e.target.valueAsNumber) ? e.target.valueAsNumber : 0)} />
+      ) : (
+        <input type="text" className={base} value={field.value} onChange={e => field.onChange(e.target.value)} />
+      )}
+    </label>
+  );
+}
+
+function DraftSection({ title, rows, onRemove }: { title: string; rows: DraftRow[]; onRemove: (idx: number) => void }) {
+  // Which rows are open for editing. Collapsed by default: 65 rows of input boxes is not a review
+  // screen, it is a form. The summary stays readable and the fields appear on request.
+  const [open, setOpen] = useState<Record<number, boolean>>({});
   if (rows.length === 0) return null;
   return (
     <div className="rounded-xl border border-slate-200 dark:border-white/10">
@@ -758,14 +1291,30 @@ function DraftSection({ title, rows, onRemove }: { title: string; rows: [string,
         <span className="text-xs text-slate-400">{rows.length}</span>
       </div>
       <ul className="divide-y divide-slate-50 dark:divide-white/[0.04]">
-        {rows.map(([code, desc], i) => (
-          <li key={`${code}-${i}`} className="flex items-center gap-3 px-4 py-2 text-sm">
-            <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-xs text-slate-600 dark:bg-white/10 dark:text-slate-300">{code}</span>
-            <span className="text-slate-700 dark:text-slate-200">{desc}</span>
-            <button type="button" aria-label={`Remove ${code}`} onClick={() => onRemove(i)}
-              className="ml-auto grid h-6 w-6 place-items-center rounded text-slate-400 hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-500/10">
-              <Trash2 className="h-3.5 w-3.5" />
-            </button>
+        {rows.map((row, i) => (
+          <li key={`${row.code}-${i}`} className="px-4 py-2 text-sm">
+            <div className="flex items-center gap-3">
+              <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-xs text-slate-600 dark:bg-white/10 dark:text-slate-300">{row.code}</span>
+              <span className="text-slate-700 dark:text-slate-200">{row.desc}</span>
+              <div className="ms-auto flex items-center gap-1">
+                {row.fields && row.fields.length > 0 && (
+                  <button type="button" aria-label={`Edit ${row.code}`} aria-expanded={Boolean(open[i])}
+                    onClick={() => setOpen(o => ({ ...o, [i]: !o[i] }))}
+                    className={`grid h-6 w-6 place-items-center rounded ${open[i] ? 'bg-sapphire/10 text-sapphire dark:bg-cyanAccent/10 dark:text-cyanAccent' : 'text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-white/10'}`}>
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                )}
+                <button type="button" aria-label={`Remove ${row.code}`} onClick={() => onRemove(i)}
+                  className="grid h-6 w-6 place-items-center rounded text-slate-400 hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-500/10">
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+            {open[i] && row.fields && (
+              <div className="mt-2 grid gap-2 rounded-lg bg-slate-50 p-3 dark:bg-white/[0.03] sm:grid-cols-3">
+                {row.fields.map((f, n) => <FieldInput key={n} field={f} />)}
+              </div>
+            )}
           </li>
         ))}
       </ul>

@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Zayra.Api.Application.AI;
 using Zayra.Api.Application.Shifts;
 using Zayra.Api.Infrastructure.AI;
@@ -11,17 +13,46 @@ namespace Zayra.Api.Infrastructure.Shifts;
 /// then deterministic guardrails enforce the hard rules (gender→shift, one shift/day, rest hours,
 /// max consecutive days, weekend/holiday demand) and repair anything the model got wrong. If the
 /// LLM is unavailable or returns garbage, it degrades gracefully to a fully deterministic plan.
+///
+/// <para>Two defects that broke the setup assistant against the same reasoning model applied here
+/// verbatim: the reply is parsed as JSON but no JSON constraint was sent, and there was no timeout,
+/// so an unreachable Ollama host stalled the request for HttpClient's 100s default. A third was
+/// worse: nothing was recorded, so a permanently degraded planner would have looked identical to a
+/// working one from every log, dashboard and usage total. Every exit from the model step now writes
+/// exactly one <see cref="AiCallRecord"/> and names which failure it was.</para>
 /// </summary>
 public sealed class RosterPlannerService : IRosterPlannerService
 {
     private readonly ILlmClient _llm;
     private readonly AiOptions _options;
+    private readonly IAiCallRecorder _recorder;
     private readonly ILogger<RosterPlannerService> _logger;
 
-    public RosterPlannerService(ILlmClient llm, AiOptions options, ILogger<RosterPlannerService> logger)
+    private const string Module = "roster";
+    private const string Intent = "shift_roster_plan";
+
+    /// <summary>How long the planner waits for a model before falling back. Deliberately shorter
+    /// than HttpClient's 100s ceiling so the degrade is ours and explicable rather than a socket
+    /// timeout surfacing as a generic error — and short enough that an HR Manager staring at the
+    /// roster screen is not left waiting on a host that will never answer.</summary>
+    private static readonly TimeSpan LlmBudget = TimeSpan.FromSeconds(75);
+
+    /// <summary>Output budget. Was 4000. A reasoning model (deepseek-v4-pro, the production model)
+    /// spends part of the budget thinking before it emits a token of the answer, and when the
+    /// budget runs out mid-reasoning the provider returns an empty completion — the exact failure
+    /// that made the setup assistant fall back on every single request. A roster is also long:
+    /// employees × days objects. 8000 leaves room for both.</summary>
+    private const int LlmOutputTokens = 8000;
+
+    public RosterPlannerService(
+        ILlmClient llm,
+        AiOptions options,
+        IAiCallRecorder recorder,
+        ILogger<RosterPlannerService> logger)
     {
         _llm = llm;
         _options = options;
+        _recorder = recorder;
         _logger = logger;
     }
 
@@ -30,7 +61,11 @@ public sealed class RosterPlannerService : IRosterPlannerService
         var warnings = new List<string>();
 
         // 1. Ask the LLM for hints (best effort). Map of (employeeId, date) -> shiftCode.
-        var (hints, engine) = await TryLlmPlanAsync(input, ct);
+        var (hints, engine, degradeWarning) = await TryLlmPlanAsync(input, ct);
+
+        // First, so the reader learns WHY the plan is rules-only before reading its caveats.
+        if (!string.IsNullOrEmpty(degradeWarning))
+            warnings.Add(degradeWarning);
 
         // 2. Build the authoritative plan deterministically, seeded by the LLM hints.
         var assignments = BuildDeterministicPlan(input, hints, warnings);
@@ -45,41 +80,142 @@ public sealed class RosterPlannerService : IRosterPlannerService
 
     // ── LLM step ──────────────────────────────────────────────────────────────
 
-    private async Task<(Dictionary<(int, DateOnly), string> Hints, string Engine)> TryLlmPlanAsync(
+    /// <returns>
+    /// The hints, the engine badge, and a human-readable warning when a CONFIGURED provider failed.
+    /// The five outcomes stay distinguishable on purpose: "LLM unavailable" previously covered a
+    /// provider that was up and answering, a provider that was never configured, a host that never
+    /// replied and a reply nobody could parse. That one string cost two days of debugging on the
+    /// setup assistant, because it pointed at infrastructure when the fault was in the request.
+    /// </returns>
+    private async Task<(Dictionary<(int, DateOnly), string> Hints, string Engine, string Warning)> TryLlmPlanAsync(
         RosterPlanInput input, CancellationToken ct)
     {
         var empty = new Dictionary<(int, DateOnly), string>();
+        var summary = DescribeRequest(input);
         var provider = ResolveProvider();
+
         if (provider == "fallback")
-            return (empty, "deterministic (no LLM configured)");
+        {
+            // Recorded even though no call was made: "AI was never asked" and "AI was asked and
+            // failed" must be answerable from the same table, or a misconfigured tenant looks
+            // exactly like a working one.
+            await RecordAsync(input, summary, null, null, 0,
+                "no AI provider configured", CancellationToken.None);
+            return (empty, "deterministic (no AI provider configured)", string.Empty);
+        }
+
+        var request = new LlmRequest(
+            provider, ResolveModel(provider), BuildSystemPrompt(), BuildUserPrompt(input),
+            LlmOutputTokens, RequireJson: true);
+
+        // No timeout at all was the third defect. A linked source keeps caller cancellation
+        // authoritative while capping how long we wait on the provider.
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        budget.CancelAfter(LlmBudget);
+        var timer = Stopwatch.StartNew();
 
         try
         {
-            var model = ResolveModel(provider);
-            var request = new LlmRequest(provider, model, BuildSystemPrompt(), BuildUserPrompt(input), 4000);
-            var response = await _llm.CompleteAsync(request, ct);
+            var response = await _llm.CompleteAsync(request, budget.Token);
+            timer.Stop();
+
+            // Contract: Success==false (which now includes an empty completion, with a reason that
+            // says whether the token budget went on reasoning) means degrade to the rules engine.
             if (!response.Success || string.IsNullOrWhiteSpace(response.Text))
             {
-                _logger.LogWarning("Roster LLM call failed ({Provider}): {Error}", provider, response.Error);
-                return (empty, "deterministic (LLM unavailable)");
+                var reason = $"The AI provider ({provider}) did not return a usable plan: {Truncate(response.Error)}. The roster was planned by the rules engine.";
+                _logger.LogWarning("Roster LLM call failed ({Provider}/{Model}): {Error}", provider, request.Model, response.Error);
+                await RecordAsync(input, summary, request, response, (int)timer.ElapsedMilliseconds,
+                    $"provider returned no usable plan: {Truncate(response.Error)}", CancellationToken.None);
+                return (empty, $"deterministic ({provider} returned no usable plan)", reason);
             }
 
             var parsed = ParseHints(response.Text, input);
             if (parsed.Count == 0)
-                return (empty, "deterministic (LLM returned no usable plan)");
+            {
+                var reason = $"The AI provider ({provider}) replied, but the reply could not be read as roster assignments. The roster was planned by the rules engine.";
+                _logger.LogWarning("Roster LLM reply was unparseable ({Provider}/{Model}), {Length} chars.",
+                    provider, request.Model, response.Text.Length);
+                await RecordAsync(input, summary, request, response, (int)timer.ElapsedMilliseconds,
+                    "reply could not be parsed as roster assignments", CancellationToken.None);
+                return (empty, $"deterministic ({provider} reply unreadable)", reason);
+            }
 
-            return (parsed, $"{provider}+guardrails");
+            await RecordAsync(input, summary, request, response, (int)timer.ElapsedMilliseconds, null, CancellationToken.None);
+            return (parsed, $"{provider}+guardrails", string.Empty);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // The caller gave up (client disconnect / shutdown). That is not a provider failure and
+            // must not be dressed up as a plan — but the call still happened, so it is still recorded.
+            timer.Stop();
+            await RecordAsync(input, summary, request, null, (int)timer.ElapsedMilliseconds,
+                "cancelled by the caller before the provider replied", CancellationToken.None);
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            timer.Stop();
+            var reason = $"The AI provider ({provider}) did not respond within {LlmBudget.TotalSeconds:0}s. The roster was planned by the rules engine.";
+            _logger.LogWarning("Roster LLM call exceeded the {Seconds}s budget ({Provider}).", LlmBudget.TotalSeconds, provider);
+            await RecordAsync(input, summary, request, null, (int)timer.ElapsedMilliseconds,
+                $"timed out after {LlmBudget.TotalSeconds:0}s", CancellationToken.None);
+            return (empty, $"deterministic ({provider} timed out)", reason);
         }
         catch (Exception ex)
         {
+            timer.Stop();
+            var reason = $"The AI provider ({provider}) could not be reached: {Truncate(ex.Message)}. The roster was planned by the rules engine.";
             _logger.LogWarning(ex, "Roster LLM planning threw; using deterministic fallback.");
-            return (empty, "deterministic (LLM error)");
+            await RecordAsync(input, summary, request, null, (int)timer.ElapsedMilliseconds,
+                $"provider call threw: {Truncate(ex.Message)}", CancellationToken.None);
+            return (empty, $"deterministic ({provider} unreachable)", reason);
         }
     }
 
+    /// <summary>
+    /// The usage record's description of the request. Counts only: the prompt itself carries the
+    /// tenant's shift pattern and every selected employee's id, gender and department, none of
+    /// which belongs in an audit row that admins and support can read.
+    /// </summary>
+    private static string DescribeRequest(RosterPlanInput input)
+    {
+        var days = input.DateTo.DayNumber - input.DateFrom.DayNumber + 1;
+        return $"Roster plan: {input.Employees.Count} employee(s), {days} day(s), {input.Shifts.Count} shift(s), " +
+               $"{input.Holidays.Count} holiday(s), {input.Policy.GenderRules.Count} gender rule(s), " +
+               $"min rest {input.Policy.MinRestHours}h, max {input.Policy.MaxConsecutiveDays} consecutive day(s).";
+    }
+
+    private Task RecordAsync(
+        RosterPlanInput input, string summary, LlmRequest? request, LlmResponse? response,
+        int elapsedMs, string? failureReason, CancellationToken ct)
+        => _recorder.RecordAsync(new AiCallRecord(
+            input.Caller.TenantId,
+            input.Caller.UserId,
+            input.Caller.UserRole,
+            Module,
+            Intent,
+            summary,
+            request,
+            response,
+            elapsedMs,
+            failureReason), ct);
+
+    /// <summary>Provider error bodies reach an Admin/HR Manager screen — keep them short and flat.</summary>
+    private static string Truncate(string? value, int max = 180)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return "no detail reported";
+        var flat = Regex.Replace(value.Trim(), @"\s+", " ");
+        return flat.Length <= max ? flat : flat[..max] + "…";
+    }
+
+    // A JSON OBJECT, not a bare array. `format:"json"` (Ollama) and `json_object` (OpenAI) both
+    // constrain the model to a JSON object; asking a json_object-constrained model for a top-level
+    // array gets you an object anyway, with the array buried under a name of its choosing.
+    // ParseHints therefore accepts the wrapper, any single array property, or a bare array.
     private static string BuildSystemPrompt() =>
-        "You are a workforce shift-rostering planner. You output ONLY a JSON array, no prose. " +
-        "Each element is {\"employeeId\": <int>, \"date\": \"yyyy-MM-dd\", \"shiftCode\": \"<code>\"}. " +
+        "You are a workforce shift-rostering planner. You output ONLY a single JSON object, no prose. " +
+        "Schema: {\"assignments\":[{\"employeeId\": <int>, \"date\": \"yyyy-MM-dd\", \"shiftCode\": \"<code>\"}]}. " +
         "Honour every rule you are given: gender→shift restrictions are mandatory, never assign more " +
         "than one shift to a person on a day, leave at least the stated rest hours between an employee's " +
         "consecutive shifts, never exceed the max consecutive working days, do not auto-assign voluntary " +
@@ -94,9 +230,13 @@ public sealed class RosterPlannerService : IRosterPlannerService
         foreach (var s in input.Shifts)
             sb.AppendLine($"- {s.Code} | {s.Name} | {s.Start:HH\\:mm}-{s.End:HH\\:mm}");
         sb.AppendLine();
-        sb.AppendLine("EMPLOYEES (id | name | gender | department):");
+        // Deliberately WITHOUT names. The model answers with employeeId only, and gender and
+        // department are the only attributes the rules key off, so a full staff roster of names
+        // was being sent to an external provider for no gain. AGENTS.md: never send more than the
+        // field the task needs.
+        sb.AppendLine("EMPLOYEES (id | gender | department) — identified by id only:");
         foreach (var e in input.Employees)
-            sb.AppendLine($"- {e.Id} | {e.FullName} | {e.Gender} | {e.Department}");
+            sb.AppendLine($"- {e.Id} | {e.Gender} | {e.Department}");
         sb.AppendLine();
         sb.AppendLine("RULES:");
         foreach (var r in input.Policy.GenderRules)
@@ -112,26 +252,18 @@ public sealed class RosterPlannerService : IRosterPlannerService
         if (input.Holidays.Count > 0)
             sb.AppendLine($"- holidays: {string.Join(", ", input.Holidays.OrderBy(d => d).Select(d => d.ToString("yyyy-MM-dd")))}");
         sb.AppendLine();
-        sb.AppendLine("Return ONLY the JSON array.");
+        sb.AppendLine("Return ONLY the JSON object described in the schema.");
         return sb.ToString();
     }
 
     private sealed record HintDto(int employeeId, string date, string shiftCode);
 
+    private static readonly JsonSerializerOptions HintJsonOptions = new() { PropertyNameCaseInsensitive = true };
+
     private static Dictionary<(int, DateOnly), string> ParseHints(string text, RosterPlanInput input)
     {
         var result = new Dictionary<(int, DateOnly), string>();
-        var start = text.IndexOf('[');
-        var end = text.LastIndexOf(']');
-        if (start < 0 || end <= start) return result;
-        var json = text.Substring(start, end - start + 1);
-
-        List<HintDto>? items;
-        try
-        {
-            items = JsonSerializer.Deserialize<List<HintDto>>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-        }
-        catch { return result; }
+        var items = ExtractHints(text);
         if (items is null) return result;
 
         var validEmployees = input.Employees.Select(e => e.Id).ToHashSet();
@@ -148,6 +280,66 @@ public sealed class RosterPlannerService : IRosterPlannerService
                 : item.shiftCode;
         }
         return result;
+    }
+
+    /// <summary>
+    /// Pulls the assignment list out of whatever shape the model produced: the documented
+    /// {"assignments":[…]} object, an object that named the array something else, or a bare array
+    /// (what an unconstrained model, or a provider without a JSON mode, tends to emit). Returns
+    /// null when nothing in the reply is readable as a list of assignments — the caller reports
+    /// that as "reply unreadable", which is a different fault from "the provider failed".
+    /// </summary>
+    private static List<HintDto>? ExtractHints(string text)
+    {
+        foreach (var json in CandidateSpans(text))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+                JsonElement array;
+                if (root.ValueKind == JsonValueKind.Array) array = root;
+                else if (root.ValueKind != JsonValueKind.Object || !TryFindArray(root, out array)) continue;
+
+                var items = JsonSerializer.Deserialize<List<HintDto>>(array.GetRawText(), HintJsonOptions);
+                if (items is { Count: > 0 }) return items;
+            }
+            catch (JsonException)
+            {
+                // Try the next span rather than giving up: a fenced or prefaced reply often has a
+                // parseable span even when the whole string is not JSON.
+            }
+        }
+        return null;
+    }
+
+    private static IEnumerable<string> CandidateSpans(string text)
+    {
+        var objStart = text.IndexOf('{');
+        var objEnd = text.LastIndexOf('}');
+        if (objStart >= 0 && objEnd > objStart) yield return text.Substring(objStart, objEnd - objStart + 1);
+
+        var arrStart = text.IndexOf('[');
+        var arrEnd = text.LastIndexOf(']');
+        if (arrStart >= 0 && arrEnd > arrStart) yield return text.Substring(arrStart, arrEnd - arrStart + 1);
+    }
+
+    private static bool TryFindArray(JsonElement root, out JsonElement array)
+    {
+        foreach (var property in root.EnumerateObject())
+            if (property.Value.ValueKind == JsonValueKind.Array && property.NameEquals("assignments"))
+            {
+                array = property.Value;
+                return true;
+            }
+        foreach (var property in root.EnumerateObject())
+            if (property.Value.ValueKind == JsonValueKind.Array)
+            {
+                array = property.Value;
+                return true;
+            }
+        array = default;
+        return false;
     }
 
     // ── Deterministic guardrail builder ─────────────────────────────────────────
@@ -302,10 +494,19 @@ public sealed class RosterPlannerService : IRosterPlannerService
         var configured = _options.EffectiveProvider;
         if (configured == "anthropic" && !string.IsNullOrWhiteSpace(_options.AnthropicApiKey)) return "anthropic";
         if (configured == "openai" && !string.IsNullOrWhiteSpace(_options.OpenAIApiKey)) return "openai";
+        // The base-URL check is load-bearing, not defensive tidiness: AI_PROVIDER=ollama with no
+        // OLLAMA_BASE_URL makes LlmClient fall back to http://localhost:11434, which on a hosted
+        // deployment is nothing at all. Trusting the provider name alone would stall the roster
+        // screen until the connect attempt died instead of degrading to the rules engine. Pinned
+        // by RosterPlannerServiceTests.Plan_TreatsOllamaWithoutABaseUrlAsNotConfigured.
         if (configured == "ollama" && !string.IsNullOrWhiteSpace(_options.OllamaBaseUrl)) return "ollama";
-        if (!string.IsNullOrWhiteSpace(_options.AnthropicApiKey)) return "anthropic";
-        if (!string.IsNullOrWhiteSpace(_options.OpenAIApiKey)) return "openai";
-        if (!string.IsNullOrWhiteSpace(_options.OllamaBaseUrl)) return "ollama";
+        // NO CROSS-PROVIDER FALLBACK. If the configured provider is not usable, degrade to the
+        // deterministic path — never quietly send this tenant's data to a different vendor.
+        // This tail used to read "any key will do": AI_PROVIDER=ollama with an unset
+        // OLLAMA_BASE_URL and a stray ANTHROPIC_API_KEY in the environment routed HR data to
+        // Anthropic. No operator chose that, nothing recorded it, and the published privacy
+        // policy names Ollama specifically — so it would also have made that page false.
+        // AGENTS.md: "External AI is an exception, not the default"; no silent cloud fallback.
         return "fallback";
     }
 

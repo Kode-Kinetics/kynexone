@@ -20,6 +20,8 @@ const icons: Record<string, { active: any; inactive: any; label: string }> = {
   Team: { active: 'people', inactive: 'people-outline', label: 'Team' },
   Approvals: { active: 'checkmark-done', inactive: 'checkmark-done-outline', label: 'Approvals' },
   More: { active: 'grid', inactive: 'grid-outline', label: 'More' },
+  Punch: { active: 'finger-print', inactive: 'finger-print-outline', label: 'Punch' },
+  Account: { active: 'person-circle', inactive: 'person-circle-outline', label: 'Account' },
 };
 
 export function LiquidTabBar({ state, descriptors, navigation }: BottomTabBarProps) {

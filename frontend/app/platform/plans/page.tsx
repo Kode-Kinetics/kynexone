@@ -12,11 +12,16 @@ const PLAN_BADGE: Record<string, string> = {
   enterprise: 'bg-amber-900/50 text-amber-300',
 };
 
+/**
+ * Descriptive bullets only. The employee ceiling is deliberately NOT here: these strings said
+ * 20/100/500 while the "Max Employees" row directly above them renders the real limit from the
+ * API (10/50/250), so each card contradicted itself on screen. The API is the single source.
+ */
 const PLAN_FEATURES: Record<string, string[]> = {
-  trial:      ['Up to 20 employees', 'Core HR', 'Basic Reports', '14-day limit'],
-  starter:    ['Up to 100 employees', 'HR + Payroll', 'Feature flags selectable', 'Email support'],
-  growth:     ['Up to 500 employees', 'Full HR suite', 'Workspace Assistant', 'Priority support'],
-  enterprise: ['Unlimited employees', 'All features', 'Dedicated support', 'Custom integrations'],
+  trial:      ['Core HR', 'Basic Reports', '14-day limit'],
+  starter:    ['HR + Payroll', 'Feature flags selectable', 'Email support'],
+  growth:     ['Full HR suite', 'Workspace Assistant', 'Priority support'],
+  enterprise: ['All features', 'Dedicated support', 'Custom integrations'],
 };
 
 export default function PlansPage() {
@@ -117,7 +122,7 @@ export default function PlansPage() {
                         {plan.monthlyPrice > 0 && <span className="text-xs text-slate-600">/mo</span>}
                         <button type="button"
                           onClick={() => { setEditing(plan.name); setPrice(plan.monthlyPrice); }}
-                          className="ml-auto text-slate-600 hover:text-white transition-colors">
+                          className="ms-auto text-slate-600 hover:text-white transition-colors">
                           <Edit3 className="h-3.5 w-3.5" />
                         </button>
                       </div>

@@ -44,7 +44,23 @@ public sealed record MigrationReconciliationDto(
     int ErrorRows,
     string CurrentSection,
     IReadOnlyDictionary<string, int> SectionCounts,
-    IReadOnlyList<string> Errors);
+    IReadOnlyList<string> Errors)
+{
+    /// <summary>
+    /// Control total per section — the money the section carries, so a consultant can tie the preview
+    /// to the figure at the bottom of their source system's report before committing anything. Counts
+    /// alone do not catch a decimal point in the wrong place; a control total does.
+    /// </summary>
+    public IReadOnlyDictionary<string, decimal> SectionTotals { get; init; } =
+        new Dictionary<string, decimal>();
+
+    /// <summary>
+    /// Locked payroll periods that will refuse this package, named individually with the run, the
+    /// period, the entity and what to do about it. Populated by preview so the consultant discovers
+    /// this at 4pm on a Thursday rather than at 11pm on cutover weekend.
+    /// </summary>
+    public IReadOnlyList<object> LockedPeriodRefusals { get; init; } = Array.Empty<object>();
+}
 
 public sealed record MigrationSectionResultDto(string Section, int Received, int Created, int Updated, int Skipped, decimal AmountTotal);
 

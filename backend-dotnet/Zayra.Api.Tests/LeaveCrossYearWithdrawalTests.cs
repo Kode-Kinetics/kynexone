@@ -33,7 +33,7 @@ public class LeaveCrossYearWithdrawalTests
         });
         await db.SaveChangesAsync();
 
-        var submitted = await new LeaveService(db, new ApprovalPolicyService(db)).SubmitRequestAsync(tenantId, new LeaveRequest
+        var submitted = await (await TestApprovalConfig.LeaveServiceAsync(db, tenantId)).SubmitRequestAsync(tenantId, new LeaveRequest
         {
             TenantId = tenantId, EmployeeId = employee.Id, LeaveTypeId = leaveType.Id,
             StartDate = date, EndDate = date, DayType = "Full",
@@ -68,11 +68,17 @@ public class LeaveCrossYearWithdrawalTests
             new EmployeeLeaveBalance { TenantId = tenantId, EmployeeId = employee.Id, LeaveTypeId = leaveType.Id, Year = 2027, Entitled = 5 });
         await db.SaveChangesAsync();
 
-        var service = new LeaveService(db, new ApprovalPolicyService(db));
+        var service = await TestApprovalConfig.LeaveServiceAsync(db, tenantId);
+        // Thu 31 Dec 2026 → Sun 3 Jan 2027 on the platform's Fri–Sat rest week: exactly one working
+        // day on each side of the year boundary (the Thursday in 2026, the Sunday in 2027). It used
+        // to be 31 Dec → 1 Jan, which only produced two days because a request that resolved no
+        // policy was charged every calendar day, Friday included. Now that the no-policy count
+        // honours the tenant's configured working week, that old span is a single Thursday — one
+        // year, one reservation — and would stop exercising the cross-year split this test is for.
         var submitted = await service.SubmitRequestAsync(tenantId, new LeaveRequest
         {
             TenantId = tenantId, EmployeeId = employee.Id, LeaveTypeId = leaveType.Id,
-            StartDate = new DateOnly(2026, 12, 31), EndDate = new DateOnly(2027, 1, 1), DayType = "Full"
+            StartDate = new DateOnly(2026, 12, 31), EndDate = new DateOnly(2027, 1, 3), DayType = "Full"
         }, userId);
 
         var controller = new LeaveRequestsController(db, service, new OwnScope(employee.Id), new NullNotifications())

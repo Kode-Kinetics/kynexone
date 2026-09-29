@@ -6,6 +6,45 @@ namespace Zayra.Api.Tests;
 
 public class IbanValidatorTests
 {
+    private const string ValidSaudiSynthetic = "SA0380000000608010167519";
+
+    [Fact]
+    public void SaudiValidator_AcceptsKnownValid24CharacterSyntheticIban()
+    {
+        ValidSaudiSynthetic.Should().HaveLength(24);
+        IbanValidator.IsValid(ValidSaudiSynthetic).Should().BeTrue();
+        IbanValidator.IsSaudiIban(ValidSaudiSynthetic).Should().BeTrue();
+    }
+
+    [Fact]
+    public void SaudiValidator_RejectsChecksumValidBut22CharacterIban()
+    {
+        var shortSaudi = IbanValidator.WithValidCheckDigits("SA0080000000000000000000"[..22]);
+        shortSaudi.Should().HaveLength(22);
+
+        IbanValidator.IsValid(shortSaudi).Should().BeFalse(
+            "Saudi country length is mandatory even when mod-97 can be made equal to one");
+        IbanValidator.IsSaudiIban(shortSaudi).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("AE070331234567890123456")]
+    [InlineData("SA038000000060801016751")]
+    [InlineData("SA03800000006080101675190")]
+    [InlineData("SA0A80000000608010167519")]
+    [InlineData("SA03AB000000608010167519")]
+    public void SaudiValidator_RejectsWrongCountryLengthOrNumericHeader(string candidate) =>
+        IbanValidator.IsSaudiIban(candidate).Should().BeFalse();
+
+    [Fact]
+    public void SaudiValidator_Rejects24CharacterMod97Failure()
+    {
+        const string wrongChecksum = "SA0480000000608010167519";
+        wrongChecksum.Should().HaveLength(24);
+        IbanValidator.IsValid(wrongChecksum).Should().BeFalse();
+        IbanValidator.IsSaudiIban(wrongChecksum).Should().BeFalse();
+    }
+
     // The IBAN reported from Neon as blocking a payroll run. Confirms the validator is right (the value
     // is genuinely invalid) and that the check-digit fix yields the exact valid IBAN we hand to the user.
     [Fact]

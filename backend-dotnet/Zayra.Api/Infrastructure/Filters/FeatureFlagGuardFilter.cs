@@ -1,129 +1,65 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
-using Zayra.Api.Data;
-using Zayra.Api.Models;
+using Zayra.Api.Infrastructure.Modules;
 
 namespace Zayra.Api.Infrastructure.Filters;
 
 /// <summary>
-/// Blocks access to optional modules when a tenant has that feature explicitly disabled
-/// (IsEnabled = false in tenant_feature_flags).
+/// Blocks access to a module's API when the tenant has that module switched off.
 ///
-/// Default policy: absent flag = allowed (backwards compat for existing tenants).
-/// To restrict a module for a tenant, set IsEnabled = false via the platform admin.
+/// <para>Runs globally (registered in <c>Program.cs</c>) and self-selects by URL prefix. The
+/// prefixes are no longer kept here: they come from <see cref="ModuleCatalog"/>, which is also
+/// what the tenant-facing module API, the notification dispatcher, the dashboard and the frontend
+/// route guard read. Previously this file held two hand-maintained string arrays that had drifted
+/// — seven of the nineteen mapped prefixes matched no controller at all, so the <c>finance</c> and
+/// <c>wps_export</c> flags appeared switchable while gating nothing.</para>
+///
+/// <para>Defaults, stated deliberately because the layers used to disagree:
+/// an unclassified route is <b>allowed</b> (a new controller is never accidentally unreachable in
+/// production; <c>ModuleCatalogCoverageTests</c> is what keeps that set empty), and a module with
+/// no stored row is <b>enabled</b>. Only an explicit, permitted <c>false</c> blocks.</para>
+///
+/// <para>A module the tenant is not permitted to disable is never blocked here even if a stale
+/// <c>false</c> row exists for it — see <see cref="TenantModuleService"/>.</para>
 /// </summary>
 public class FeatureFlagGuardFilter : IAsyncActionFilter
 {
-    // Routes that are always allowed regardless of feature flags (core HR + infra).
-    private static readonly string[] AlwaysAllowedPrefixes =
-    {
-        "/api/auth",
-        "/api/platform",
-        "/api/tenant-admin",
-        "/api/access",
-        "/api/employees",
-        "/api/branches",
-        "/api/departments",
-        "/api/designations",
-        "/api/grades",
-        "/api/cost-centers",
-        "/api/companies",
-        "/api/organization",
-        "/api/dashboard",
-        "/api/leave",
-        "/api/attendance",
-        "/api/approvals",
-        "/api/approval-requests",
-        "/api/approval-workflows",
-        "/api/notifications",
-        "/api/reports",
-        "/api/analytics",
-        "/api/ess",
-        "/api/hr-requests",
-        "/api/audit-logs",
-        "/api/help-text",
-        "/api/localization",
-        "/api/master-data",
-        "/api/setup",
-        "/api/policy-documents",
-        "/api/features",       // read-only tenant feature visibility — must never gate itself
-    };
-
-    // Route-prefix → feature key.  Order matters: first match wins.
-    private static readonly (string Prefix, string FeatureKey)[] RouteFeatureMap =
-    {
-        ("/api/recruitment",    FeatureKeys.Recruitment),
-        ("/api/performance",    FeatureKeys.Performance),
-        ("/api/visa-tracking",  FeatureKeys.Compliance),
-        ("/api/compliance",     FeatureKeys.Compliance),
-        ("/api/contracts",      FeatureKeys.Compliance),
-        ("/api/ai-assistant",   FeatureKeys.AiAssistant),
-        ("/api/ai",             FeatureKeys.AiAssistant),
-        ("/api/loans",          FeatureKeys.Finance),
-        ("/api/advances",       FeatureKeys.Finance),
-        ("/api/bonuses",        FeatureKeys.Finance),
-        ("/api/payroll",        FeatureKeys.Payroll),
-        ("/api/shifts",         FeatureKeys.Shifts),
-        ("/api/overtime",       FeatureKeys.Overtime),
-        ("/api/mobile",              FeatureKeys.MobileApp),
-        ("/api/qiwa",               FeatureKeys.QiwaIntegration),
-        ("/api/saudi-compliance",   FeatureKeys.Compliance),
-        ("/api/gosi",               FeatureKeys.QiwaIntegration),
-        ("/api/wps",                FeatureKeys.WpsExport),
-        ("/api/payslip-templates",  FeatureKeys.PayslipTemplateDesigner),
-    };
-
-    private static readonly TimeSpan FlagCacheTtl = TimeSpan.FromMinutes(2);
-
-    private readonly ZayraDbContext _db;
-    private readonly IMemoryCache _cache;
+    private readonly ITenantModuleService _modules;
     private readonly ILogger<FeatureFlagGuardFilter> _log;
 
-    public FeatureFlagGuardFilter(ZayraDbContext db, IMemoryCache cache, ILogger<FeatureFlagGuardFilter> log)
+    public FeatureFlagGuardFilter(ITenantModuleService modules, ILogger<FeatureFlagGuardFilter> log)
     {
-        _db = db;
-        _cache = cache;
+        _modules = modules;
         _log = log;
     }
 
     /// <summary>
-    /// Call this whenever a tenant feature flag is toggled so cached values are immediately evicted.
+    /// Call this whenever a tenant module is toggled so the cached state is evicted immediately.
+    /// The <paramref name="featureKey"/> is accepted for call-site compatibility; the cache is
+    /// held per tenant, so the whole tenant's state is dropped.
     /// </summary>
     public static void InvalidateCache(IMemoryCache cache, Guid tenantId, string featureKey)
-        => cache.Remove(FlagCacheKey(tenantId, featureKey));
-
-    private static string FlagCacheKey(Guid tenantId, string featureKey) => $"ff:{tenantId}:{featureKey}";
+        => TenantModuleService.Invalidate(cache, tenantId);
 
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
     {
         var path = context.HttpContext.Request.Path.Value ?? string.Empty;
 
-        foreach (var prefix in AlwaysAllowedPrefixes)
+        var module = ModuleCatalog.ResolveApiPath(path);
+        if (module is null)
         {
-            if (path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-            {
-                await next();
-                return;
-            }
+            // Route not classified by the catalog — not a gated module, allow.
+            await next();
+            return;
         }
 
-        string? featureKey = null;
-        foreach (var (prefix, key) in RouteFeatureMap)
+        if (module.Lock == ModuleLock.Core)
         {
-            if (path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-            {
-                featureKey = key;
-                break;
-            }
-        }
-
-        if (featureKey is null)
-        {
-            // Route not mapped — not a gated module, allow.
+            // Core modules are never gated. Resolving them explicitly (rather than through an
+            // allow-list that had to be kept in sync by hand) is what removed the drift.
             await next();
             return;
         }
@@ -136,41 +72,28 @@ public class FeatureFlagGuardFilter : IAsyncActionFilter
             return;
         }
 
-        // Cache feature flags per (tenant, feature) to avoid a DB hit on every request.
-        var cacheKey = FlagCacheKey(tenantId, featureKey);
-        if (!_cache.TryGetValue(cacheKey, out bool? isEnabled))
+        var state = await _modules.GetStateAsync(tenantId, context.HttpContext.RequestAborted);
+        if (state.IsEnabled(module.Key))
         {
-            var flag = await _db.TenantFeatureFlags
-                .AsNoTracking()
-                .Where(f => f.TenantId == tenantId && f.FeatureKey == featureKey)
-                .Select(f => (bool?)f.IsEnabled)
-                .FirstOrDefaultAsync();
-
-            isEnabled = flag; // null = row absent = allowed
-            _cache.Set(cacheKey, isEnabled, FlagCacheTtl);
-        }
-
-        // Absent = allowed. Only block when the flag is explicitly set to false.
-        if (isEnabled == false)
-        {
-            _log.LogWarning(
-                "FeatureFlagGuard blocked request. Tenant={TenantId} Feature={FeatureKey} Path={Path} IP={IP} UserAgent={UserAgent}",
-                tenantId,
-                featureKey,
-                path,
-                context.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
-                context.HttpContext.Request.Headers.UserAgent.ToString());
-
-            context.Result = new ObjectResult(new
-            {
-                error = "feature_not_enabled",
-                feature = featureKey,
-                message = $"The '{featureKey}' module is not enabled for your account. Contact your platform administrator."
-            })
-            { StatusCode = StatusCodes.Status403Forbidden };
+            await next();
             return;
         }
 
-        await next();
+        _log.LogWarning(
+            "FeatureFlagGuard blocked request. Tenant={TenantId} Feature={FeatureKey} Path={Path} IP={IP} UserAgent={UserAgent}",
+            tenantId,
+            module.Key,
+            path,
+            context.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
+            context.HttpContext.Request.Headers.UserAgent.ToString());
+
+        context.Result = new ObjectResult(new
+        {
+            error = "feature_not_enabled",
+            feature = module.Key,
+            message = $"The '{module.LabelEn}' module is not enabled for your account. "
+                      + "An administrator can switch it on under Tenant Admin → Modules."
+        })
+        { StatusCode = StatusCodes.Status403Forbidden };
     }
 }

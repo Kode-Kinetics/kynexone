@@ -41,10 +41,11 @@ import {
   LiquidButton,
   MotionPressable,
 } from '@/components/ui';
+import { normalizeEmail, normalizeWorkspace } from '@/auth/publicAuthInput';
 
 const loginSchema = z.object({
-  tenantId: z.string().trim().min(1, 'Company ID is required'),
-  username: z.string().trim().min(1, 'Email or username is required'),
+  tenantId: z.string().refine((value) => value.trim().length > 0, 'Workspace is required'),
+  username: z.string().refine((value) => value.trim().length > 0, 'Work email is required'),
   password: z.string().min(1, 'Password is required'),
 });
 
@@ -79,19 +80,20 @@ export default function LoginScreen({ navigation, route }: Props) {
   });
 
   const loadRememberedTenant = useCallback(async () => {
+    if (route.params?.tenantId) return;
     const tenant = await appStorage.get<string>('zayra_tenant_id');
-    if (tenant) setValue('tenantId', tenant);
-  }, [setValue]);
+    if (tenant) setValue('tenantId', normalizeWorkspace(tenant));
+  }, [route.params?.tenantId, setValue]);
 
   useEffect(() => {
     void loadRememberedTenant();
   }, [loadRememberedTenant]);
 
   useEffect(() => {
-    if (route.params?.tenantId) setValue('tenantId', route.params.tenantId);
-    if (route.params?.email) setValue('username', route.params.email);
-    if (route.params?.enrollmentComplete) {
-      Alert.alert('MFA enabled', 'Enter your password and authentication code to sign in.');
+    if (route?.params?.tenantId) setValue('tenantId', normalizeWorkspace(route.params.tenantId));
+    if (route?.params?.email) setValue('username', normalizeEmail(route.params.email));
+    if (route?.params?.enrollmentComplete) {
+      Alert.alert('MFA enabled', 'Enter your password and new authentication code to sign in.');
     }
   }, [route.params, setValue]);
 
@@ -209,7 +211,7 @@ export default function LoginScreen({ navigation, route }: Props) {
   const onSubmit = useCallback(
     async (data: LoginFormData) => {
       try {
-        const outcome = await login(data.username, data.password, data.tenantId);
+        const outcome = await login(normalizeEmail(data.username), data.password, normalizeWorkspace(data.tenantId));
         if (outcome.kind === 'mfaChallenge') {
           navigation.navigate('MfaChallenge', outcome);
         } else if (outcome.kind === 'mfaEnrollment') {
@@ -326,7 +328,7 @@ export default function LoginScreen({ navigation, route }: Props) {
                 autoComplete="organization"
                 returnKeyType="next"
                 error={errors.tenantId?.message}
-                accessibilityLabel="Company ID"
+                accessibilityLabel={t('auth.tenantId')}
               />
             )}
           />
@@ -372,6 +374,7 @@ export default function LoginScreen({ navigation, route }: Props) {
                 autoCapitalize="none"
                 autoCorrect={false}
                 autoComplete="current-password"
+                spellCheck={false}
                 secureTextEntry={!showPassword}
                 returnKeyType="done"
                 onSubmitEditing={handleSubmit(onSubmit)}

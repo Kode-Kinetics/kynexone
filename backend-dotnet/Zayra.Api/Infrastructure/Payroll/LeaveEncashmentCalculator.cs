@@ -39,11 +39,23 @@ public sealed record LeaveEncashmentResult(
 ///   earned).</item>
 /// </list>
 ///
-/// <para><b>THE ONE DELIBERATE DIVERGENCE FROM <c>Available</c>.</b> <c>Available</c> does not subtract
-/// <c>Expired</c>. Paying cash for days the tenant has explicitly recorded as LAPSED is an over-payment,
-/// so <see cref="ComputeAsync"/> subtracts it. That is the only difference, it is in the conservative
-/// direction (it can never over-pay relative to what ESS displays), and it is stated here rather than
-/// buried so the two definitions cannot drift for any other reason.</para>
+/// <para><b>NO DIVERGENCE FROM <c>Available</c>. NOT EVEN A CONSERVATIVE ONE.</b> This paragraph used to
+/// record a deliberate divergence: <c>Available</c> did not subtract <c>Expired</c>, so
+/// <see cref="ComputeAsync"/> subtracted it here. Commit <c>16ad1b3</c> then added <c>- Expired</c> to
+/// <see cref="EmployeeLeaveBalance.Available"/> itself and did not delete this paragraph or the line it
+/// justified, so lapsed days were deducted TWICE and every leaver with a non-zero <c>Expired</c> was
+/// UNDER-PAID their Art. 111 settlement. The paragraph written to stop the two definitions drifting is
+/// what concealed the drift, because it reads as a standing justification for a line that had become a
+/// duplicate.</para>
+///
+/// <para>The rule is therefore now absolute and has no exception to remember: the encashable figure is
+/// <see cref="EmployeeLeaveBalance.Available"/>, unmodified. <c>Available</c> already nets off
+/// <c>Expired</c>, so lapsed days are still never paid — they are simply netted off ONCE, in the single
+/// place ESS, the balance screen and the settlement all read. <c>EncashmentControllerTests</c>
+/// .<c>AvailableBalance_SubtractsExpiredAndPendingWithoutDoubleSubtractingEncashmentTransfer</c> pins
+/// that definition; <c>LeaveEncashmentCalculatorTests</c> pins that this calculator does not re-apply any
+/// part of it. If a future change needs a divergence, it must be expressed as a test in both files, not
+/// as a paragraph here.</para>
 ///
 /// <para><b>FAIL-CLOSED ON POLICY.</b> A leave type with NO applicable <c>LeavePolicy</c> encashes
 /// NOTHING and raises a warning. Today's behaviour (encash everything) is only safe because the figure is
@@ -112,9 +124,10 @@ public static class LeaveEncashmentCalculator
             if (!policy.EncashmentAllowed)
                 continue;   // a deliberate policy answer, not a gap — no warning
 
-            // `Available` is the shipped definition (Entitled + Accrued + CarriedForward + ManualAdjustment
-            // − Used − Pending − Encashed); Expired is subtracted here and only here — see the class remarks.
-            var available = Math.Round(b.Available - b.Expired, 2);
+            // THE shipped definition, unmodified: Entitled + Accrued + CarriedForward + ManualAdjustment
+            // − Used − Pending − Encashed − Expired. Expired is inside `Available` (16ad1b3); subtracting
+            // it again here under-paid the leaver. Do not net anything off this line — see class remarks.
+            var available = Math.Round(b.Available, 2);
             if (available <= 0m) continue;
 
             var cap = policy.EncashmentMaxDays > 0m

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { AppLayout } from '@/src/layouts/AppLayout';
+import { ModuleGate } from '@/src/components/ModuleGate';
 import { TenantSettingsProvider } from '@/src/contexts/TenantSettingsContext';
 import { CurrentCompanyProvider } from '@/src/contexts/CompanyContext';
 import { applyTheme, getStoredTheme } from '@/src/utils/theme';
@@ -32,7 +33,9 @@ function Shell({ children }: { children: React.ReactNode }) {
     <TenantSettingsProvider>
       <CurrentCompanyProvider>
         <AppLayout theme={theme} onToggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}>
-          {children}
+          {/* Inside AppLayout so a switched-off module keeps the chrome and the user can navigate
+              away, rather than dropping them on a bare page. */}
+          <ModuleGate>{children}</ModuleGate>
         </AppLayout>
       </CurrentCompanyProvider>
     </TenantSettingsProvider>

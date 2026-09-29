@@ -46,11 +46,13 @@
  *   • no `innerText().length > N` as a "page loaded" proxy — assertions name rendered values
  *   • no `.catch(() => '')`, no swallowed errors, no `expect([200, 4xx]).toContain(status)`
  *
- * DATA. Runs against the IntelliFlow demo tenant (IntelliFlowDemoSeeder, SEED_DEMO_DATA=true). It
- * does not depend on a seeded `Processed` run — no seeder produces one — it CREATES the run through
- * the real Runs tab, which is itself tenant-side mutation coverage that was missing. The period is
- * the first month with no existing run, so the spec is re-runnable and retry-safe against a
- * persistent database.
+ * DATA. Runs against the IntelliFlow tenant that e2e/bootstrap/provision.ts creates through the
+ * platform-admin API — there is no seeder any more (docs/DATA_ENTRY_PATHS.md), so the three personas
+ * above, the employees and their salary structures are all provisioned rather than assumed. It does
+ * not depend on finding a `Processed` run: it CREATES one through the real Runs tab, which is itself
+ * tenant-side mutation coverage that was missing. The period is the first month with no existing run,
+ * so the spec is re-runnable and retry-safe against a persistent database — note the bootstrap
+ * already occupies LAST month with its own locked run.
  */
 import { test, expect, Browser, Locator, Page } from '@playwright/test';
 import {
@@ -99,21 +101,11 @@ async function gotoPayroll(page: Page): Promise<void> {
   });
 }
 
-/**
- * The payroll tab strip. Scoped structurally rather than by class: the Dashboard tab renders
- * quick-action tiles labelled "Approvals", "Validation" and "New Payroll Run" that collide with
- * the tab names, so `getByRole('button', { name: 'Approvals' })` is ambiguous while the dashboard
- * is mounted. "Bank / WPS Files" is a label only the tab strip uses; the innermost <div> that
- * contains it IS the strip.
- */
-const tabStrip = (page: Page): Locator =>
-  content(page)
-    .locator('div')
-    .filter({ has: page.getByRole('button', { name: 'Bank / WPS Files', exact: true }) })
-    .last();
-
+/** Select the semantic payroll tab and verify React committed the new panel. */
 async function openTab(page: Page, label: string): Promise<void> {
-  await tabStrip(page).getByRole('button', { name: label, exact: true }).click();
+  const tab = content(page).getByRole('tab', { name: label, exact: true });
+  await tab.click();
+  await expect(tab).toHaveAttribute('aria-selected', 'true');
 }
 
 /**
@@ -185,8 +177,7 @@ test.describe('Payroll — run to WPS file', () => {
         // The run list is read only once its fetch has actually landed. An empty list and a
         // freshly-mounted-but-unloaded list look identical ("0 payroll runs", no cards), and the
         // difference decides which period is free — reading too early concluded every month was
-        // free and tried to create a run for a month that already had one. The Dashboard tab does
-        // not touch /payroll/runs, so arming this before the tab click cannot catch a stray call.
+        // free and tried to create a run for a month that already had one.
         const runsFetch = admin.waitForResponse(
           (r) => /\/api\/payroll\/runs\?/.test(r.url()) && r.request().method() === 'GET',
           { timeout: 60_000 },
@@ -510,9 +501,12 @@ test.describe('Payroll — run to WPS file', () => {
         expect(new Set(employees).size, 'each payslip must belong to a distinct employee').toBe(
           employeeCount,
         );
+        // A payslip row must NAME the employee. It used to assert the opposite — that every cell matched
+        // the placeholder `Emp #<id>` — which pinned the defect in place: the PDF printed "Aisha Al-Harbi"
+        // while the list the operator reads printed "Emp #4".
         expect(
-          employees.filter((e) => !/^Emp #\d+$/.test(e)),
-          'every payslip row must name the employee it belongs to',
+          employees.filter((e) => e.length === 0 || /^Emp #\d+$/.test(e)),
+          'every payslip row must name the employee it belongs to, not a placeholder code',
         ).toEqual([]);
 
         // The run is Locked, so generation must also publish to ESS — otherwise the employee has
@@ -587,58 +581,29 @@ test.describe('Payroll — run to WPS file', () => {
 
       // ── 7. WPS/SIF: FileGenerated, and the file's total == the run's net-pay total ───────
       await test.step('7. the WPS/SIF file is generated and its total equals the run net pay', async () => {
-        // ─────────────────────────────────────────────────────────────────────────────────────
-        // KNOWN PRODUCT GAP, asserted rather than skipped.
+        // The gap this step used to pin is CLOSED. It previously asserted a 422
+        // `readiness_drift_acknowledgement_required`, because every KSA seed shipped non-Saudi
+        // employees with an IqamaNumber and no IqamaExpiryDate, and GccReadinessFloor makes
+        // IqamaExpiry a fail-closed PAY gate — so the button could not succeed on demo data, and
+        // no API route could set the field either. That tripwire was written to fail the day the
+        // gap closed. It did: the seeders now populate IqamaExpiryDate and
+        // EmployeesController.ApplyChanges gained an `iqamaExpiryDate` case, so no ACTIVE employee
+        // drifts pay-blocked and the operator's own click now completes the export.
         //
-        // `payrollApi.generateWpsFile()` posts to .../wps-file with NO query string, and the
-        // Bank/WPS tab renders no control that could set `acknowledgeReadinessDrift`. The backend
-        // refuses the export whenever an ACTIVE employee has drifted pay-blocked under the current
-        // readiness policy (PayrollController.GenerateWps, §6.6). Every KSA seed in this repo ships
-        // non-Saudi employees with an IqamaNumber and no IqamaExpiryDate, and GccReadinessFloor
-        // makes IqamaExpiry a fail-closed PAY gate — so this button cannot succeed on the shipped
-        // demo data, and no route on the API surface can set IqamaExpiryDate on an existing
-        // employee (EmployeesController.ApplyChanges has no case for it; the service method that
-        // would mirror it, IEmployeeManagementService.UpdateAsync, has no route at all).
-        //
-        // The button is pressed here anyway — it had no coverage whatsoever — and its real outcome
-        // is pinned. When the UI gains the acknowledgement control (or the tenant's employee
-        // records are completed), THIS assertion fails and must be replaced with a click. That is
-        // deliberate: it is the tripwire that says the gap closed.
-        // ─────────────────────────────────────────────────────────────────────────────────────
+        // Asserting the UI path rather than an API call with the acknowledgement flag is the point:
+        // this is the button a payroll officer actually presses.
         const uiAttempt = admin.waitForResponse(
           (r) =>
             r.url().includes(`/api/payroll/payment-batches/${batchId}/wps-file`) &&
             r.request().method() === 'POST',
         );
         await batchCard(admin, batchNumber).getByRole('button', { name: 'Generate WPS/SIF' }).click();
-        const blocked = await uiAttempt;
+        const exported = await uiAttempt;
         expect(
-          blocked.status(),
-          "the UI's Generate WPS/SIF sends no readiness acknowledgement, so the export is refused",
-        ).toBe(422);
-        expect((await blocked.json()).error).toBe('readiness_drift_acknowledgement_required');
-        await expect(
-          content(admin).getByText(/no longer meet the current readiness policy/),
-          'the refusal must be surfaced to the operator, not swallowed',
-        ).toBeVisible();
-        await expect(
-          batchCard(admin, batchNumber),
-          'a refused export must leave the batch in Draft',
-        ).toContainText('Draft');
-
-        // The acknowledged export: the same operator, the same session, the one flag the UI has no
-        // control for. Everything after this point is asserted back in the browser.
-        const adminToken = await apiLogin(
-          request,
-          INTELLIFLOW_ADMIN.email,
-          INTELLIFLOW_ADMIN.password,
-          INTELLIFLOW_SLUG,
-        );
-        const exported = await request.post(
-          `/api/payroll/payment-batches/${batchId}/wps-file?acknowledgeReadinessDrift=true`,
-          { headers: { Authorization: `Bearer ${adminToken}` } },
-        );
-        expect(exported.status(), 'the acknowledged WPS export must succeed').toBe(200);
+          exported.status(),
+          "the operator's own Generate WPS/SIF must complete — a 422 here means an ACTIVE employee "
+            + 'has drifted pay-blocked again (most likely a seed regressing IqamaExpiryDate)',
+        ).toBe(200);
         const file = (await exported.json()) as {
           sifFileName: string;
           employeeCount: number;

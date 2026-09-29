@@ -15,12 +15,17 @@ export type UserRole =
   | 'SUPER_ADMIN';
 
 export type AccessMode =
-  | 'FULL'
-  | 'ESS_ONLY'
-  | 'KIOSK'
-  | 'MOBILE_ONLY'
-  | 'ATTENDANCE_ONLY'
-  | 'READ_ONLY';
+  | 'FullPortal'
+  | 'ESSOnly'
+  | 'ManagerPortal'
+  | 'HRPortal'
+  | 'PayrollPortal'
+  | 'FinancePortal'
+  | 'SupervisorPortal'
+  | 'ReadOnlyAuditor'
+  | 'Mobile'
+  | 'KioskOnly'
+  | 'NoLogin';
 
 export interface Permission {
   module: string;

@@ -1,10 +1,7 @@
 import { APIRequestContext, expect } from '@playwright/test';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import {
-  EVOSTEL_ADMIN,
-  EVOSTEL_SLUG,
-} from './helpers';
+import { EVOSTEL_ADMIN, EVOSTEL_SLUG } from './world';
 import { assertDisposableHost } from './disposable-host.guard';
 
 /**
@@ -16,6 +13,22 @@ import { assertDisposableHost } from './disposable-host.guard';
 // __dirname, not import.meta.url: Playwright transpiles these specs to CommonJS, and
 // import.meta forces ESM semantics, which breaks the whole setup project at load time.
 const OWNERSHIP_FILE = join(__dirname, '.auth', 'fixture-tenant.json');
+
+/**
+ * The URL the suite is ACTUALLY pointed at — resolved exactly as playwright.config.ts resolves
+ * `use.baseURL`, including the localhost default.
+ *
+ * Both call sites below previously read `PLAYWRIGHT_BASE_URL ?? E2E_BASE_URL` with NO default. Run
+ * the documented way (`npx playwright test`, no env exported) that is `undefined`, so
+ * `assertDisposableHost` fail-closed on the very first setup step and the ENTIRE chromium lane —
+ * every browser test in the suite — never ran. A guard that blocks the run it is meant to protect
+ * is not protection; and "0 tests ran" is one CI config away from being read as "nothing broke".
+ *
+ * The safety property is unchanged: the resolved host is still handed to assertDisposableHost,
+ * which still refuses anything that is not loopback or explicitly allowlisted.
+ */
+const RESOLVED_BASE_URL =
+  process.env.PLAYWRIGHT_BASE_URL ?? process.env.E2E_BASE_URL ?? 'http://localhost:5173';
 
 function recordOwnership(tenantId: string, baseUrl: string): void {
   mkdirSync(dirname(OWNERSHIP_FILE), { recursive: true });
@@ -53,9 +66,39 @@ async function findActiveFixture(request: APIRequestContext, headers: Record<str
   return tenants.find((tenant) => tenant.slug === EVOSTEL_SLUG);
 }
 
+/**
+ * `DELETE /api/platform/tenants/{id}` is currently a deliberate stub: PlatformController.DeleteTenant
+ * answers 409 `tenant_delete_disabled` — "temporarily disabled pending an atomic
+ * credential-revocation and recovery workflow" — and the purge endpoint is reached through it.
+ *
+ * That is a product decision, and the fixture must not pretend it is a test failure. But it must not
+ * hide it either: the fixture tenant then SURVIVES the run, which is only acceptable because this
+ * helper refuses to run anywhere but a disposable stack. So the one documented refusal is reported
+ * and tolerated; anything else still fails.
+ */
+async function deleteAndPurge(
+  request: APIRequestContext, headers: Record<string, string>, tenantId: string,
+): Promise<'purged' | 'delete_disabled'> {
+  const deleted = await request.delete(`/api/platform/tenants/${tenantId}?confirm=DELETE`, { headers });
+  if (!deleted.ok()) {
+    const body = await deleted.text();
+    if (deleted.status() === 409 && body.includes('tenant_delete_disabled')) {
+      console.log(
+        `[fixture] Tenant deletion is disabled in this build, so fixture tenant ${tenantId} is left `
+        + 'in place. It lives in a disposable database that dies with the run — this helper refuses '
+        + 'to run against anything else. Re-enable PlatformController.DeleteTenant to restore cleanup.',
+      );
+      return 'delete_disabled';
+    }
+    expect(deleted.ok(), body).toBe(true);
+  }
+  const purged = await request.delete(`/api/platform/tenants/${tenantId}/purge?confirm=PURGE`, { headers });
+  expect(purged.ok(), await purged.text()).toBe(true);
+  return 'purged';
+}
+
 export async function purgeLimitedTenantFixture(request: APIRequestContext, token: string): Promise<void> {
-  const baseUrl = process.env.PLAYWRIGHT_BASE_URL ?? process.env.E2E_BASE_URL;
-  assertDisposableHost(baseUrl, 'purge the E2E tenant fixture');
+  assertDisposableHost(RESOLVED_BASE_URL, 'purge the E2E tenant fixture');
 
   const headers = platformHeaders(token);
   const tenant = await findActiveFixture(request, headers);
@@ -72,27 +115,25 @@ export async function purgeLimitedTenantFixture(request: APIRequestContext, toke
     );
   }
 
-  const deleted = await request.delete(`/api/platform/tenants/${tenant.id}?confirm=DELETE`, { headers });
-  expect(deleted.ok(), await deleted.text()).toBe(true);
-
-  const purged = await request.delete(`/api/platform/tenants/${tenant.id}/purge?confirm=PURGE`, { headers });
-  expect(purged.ok(), await purged.text()).toBe(true);
-  clearOwnership();
+  if (await deleteAndPurge(request, headers, tenant.id) === 'purged') clearOwnership();
 }
 
 export async function provisionLimitedTenantFixture(request: APIRequestContext, token: string): Promise<void> {
-  const baseUrl = process.env.PLAYWRIGHT_BASE_URL ?? process.env.E2E_BASE_URL;
   // Provision deletes-and-purges any pre-existing evostel tenant before creating its own, so the
   // FIRST action of every browser run is a hard-erase. It needs the same guard as teardown.
-  assertDisposableHost(baseUrl, 'provision the E2E tenant fixture');
+  assertDisposableHost(RESOLVED_BASE_URL, 'provision the E2E tenant fixture');
 
   const headers = platformHeaders(token);
   const existing = await findActiveFixture(request, headers);
   if (existing) {
-    const deleted = await request.delete(`/api/platform/tenants/${existing.id}?confirm=DELETE`, { headers });
-    expect(deleted.ok(), await deleted.text()).toBe(true);
-    const purged = await request.delete(`/api/platform/tenants/${existing.id}/purge?confirm=PURGE`, { headers });
-    expect(purged.ok(), await purged.text()).toBe(true);
+    if (await deleteAndPurge(request, headers, existing.id) === 'delete_disabled') {
+      // The slug is occupied and cannot be freed. Re-apply the subscription and feature state this
+      // fixture is FOR, so the lane runs against the shape it expects, and record that this run does
+      // NOT own the tenant so teardown will not try to erase someone else's.
+      recordOwnership(existing.id, RESOLVED_BASE_URL);
+      await applyLimitedState(request, headers, existing.id);
+      return;
+    }
   }
 
   const created = await request.post('/api/platform/tenants', {
@@ -110,12 +151,22 @@ export async function provisionLimitedTenantFixture(request: APIRequestContext, 
       billingCycle: 'Monthly',
       monthlyAmount: 299,
       currencyCode: 'USD',
+      // The tenant's HOME JURISDICTION, required since platform admins state it at creation. It
+      // sets the statutory jurisdiction, the first company's country AND the tenant's timezone —
+      // without it the entity's America/New_York default would decide this fixture's "today".
+      homeCountryCode: 'SA',
     },
   });
   expect(created.status(), await created.text()).toBe(201);
   const { tenantId } = await created.json() as { tenantId: string };
-  recordOwnership(tenantId, baseUrl!);
+  recordOwnership(tenantId, RESOLVED_BASE_URL);
+  await applyLimitedState(request, headers, tenantId);
+}
 
+/** The PastDue subscription and disabled features that make this a LIMITED tenant. */
+async function applyLimitedState(
+  request: APIRequestContext, headers: Record<string, string>, tenantId: string,
+): Promise<void> {
   const subscription = await request.put(`/api/platform/tenants/${tenantId}/subscription`, {
     headers,
     data: {

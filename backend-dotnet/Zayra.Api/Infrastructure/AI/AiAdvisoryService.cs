@@ -58,7 +58,7 @@ public sealed class AiAdvisoryService : IAiAdvisoryService
         var permissionSignature = BuildSignature(permissions);
         var roleSignature = BuildSignature(roles);
         var normalizedQuery = NormalizeQuery(request.Query);
-        var cacheKey = BuildCacheKey(caller.TenantId, governance.Intent, governance.Module, request.EmployeeId, normalizedQuery, roleSignature, permissionSignature);
+        var cacheKey = BuildCacheKey(caller.TenantId, governance.Intent, governance.Module, request.EmployeeId, normalizedQuery, roleSignature, permissionSignature, caller.CompanyScopeSignature);
         var cacheLookup = new AiCacheKey(
             caller.TenantId,
             cacheKey,
@@ -236,10 +236,17 @@ public sealed class AiAdvisoryService : IAiAdvisoryService
         var configured = _options.EffectiveProvider;
         if (configured == "anthropic" && !string.IsNullOrWhiteSpace(_options.AnthropicApiKey)) return "anthropic";
         if (configured == "openai" && !string.IsNullOrWhiteSpace(_options.OpenAIApiKey)) return "openai";
-        if (configured == "ollama") return "ollama";
-        if (!string.IsNullOrWhiteSpace(_options.AnthropicApiKey)) return "anthropic";
-        if (!string.IsNullOrWhiteSpace(_options.OpenAIApiKey)) return "openai";
-        if (!string.IsNullOrWhiteSpace(_options.OllamaBaseUrl)) return "ollama";
+        // Unlike the other two, this must check the base URL. Without it LlmClient falls back
+        // to http://localhost:11434, which on a hosted deployment is nothing — the request
+        // hangs for HttpClient's 100s default instead of degrading to the rules-based path.
+        if (configured == "ollama" && !string.IsNullOrWhiteSpace(_options.OllamaBaseUrl)) return "ollama";
+        // NO CROSS-PROVIDER FALLBACK. If the configured provider is not usable, degrade to the
+        // deterministic path — never quietly send this tenant's data to a different vendor.
+        // This tail used to read "any key will do": AI_PROVIDER=ollama with an unset
+        // OLLAMA_BASE_URL and a stray ANTHROPIC_API_KEY in the environment routed HR data to
+        // Anthropic. No operator chose that, nothing recorded it, and the published privacy
+        // policy names Ollama specifically — so it would also have made that page false.
+        // AGENTS.md: "External AI is an exception, not the default"; no silent cloud fallback.
         return "fallback";
     }
 
@@ -272,7 +279,7 @@ public sealed class AiAdvisoryService : IAiAdvisoryService
         return cleaned.Length == 0 ? string.Empty : string.Join('|', cleaned);
     }
 
-    private string BuildCacheKey(Guid tenantId, string intent, string module, int? employeeId, string normalizedQuery, string roleSignature, string permissionSignature)
+    private string BuildCacheKey(Guid tenantId, string intent, string module, int? employeeId, string normalizedQuery, string roleSignature, string permissionSignature, string companyScopeSignature)
     {
         return _redaction.Hash(string.Join("::", new[]
         {
@@ -282,6 +289,10 @@ public sealed class AiAdvisoryService : IAiAdvisoryService
             employeeId?.ToString() ?? string.Empty,
             roleSignature,
             permissionSignature,
+            // The company dimension. The context this key caches is company-filtered by the
+            // global query filters; without this segment a company switch served the previous
+            // company's answer. See AiUserContext.CompanyScopeSignature.
+            companyScopeSignature,
             normalizedQuery
         }));
     }

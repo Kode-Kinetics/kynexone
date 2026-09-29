@@ -11,7 +11,7 @@
  */
 import { test, expect } from '@playwright/test';
 import {
-  stackDownReason,
+  assertStackReachable,
   newApi,
   tryApiLogin,
   fetchMe,
@@ -24,32 +24,29 @@ import {
   DEFAULT_ADMIN_EMAIL,
   DEFAULT_ADMIN_PASSWORD,
 } from './helpers';
+import { MISSING_WORLD } from '../world';
 
-let skipReason: string | null = null;
 let token: string | null = null;
 
 test.describe('Group→Company: single-company regression', () => {
   test.beforeAll(async () => {
-    skipReason = await stackDownReason();
-    if (skipReason) return;
+    await assertStackReachable();   // hard-fails when the stack is down; never skips
     const api = await newApi();
     try {
       const login = await tryApiLogin(api, DEFAULT_ADMIN_EMAIL, DEFAULT_TENANT_SLUG, DEFAULT_ADMIN_PASSWORD);
+      // FAIL, never skip. This suite is the single-company REGRESSION guard: it is what proves the
+      // group feature did not leak a switcher or a /group nav entry into an ordinary tenant. Skipping
+      // it when the tenant is absent means the regression it guards can ship unnoticed.
       if (!login) {
-        skipReason =
-          `Default single-company tenant login failed (${DEFAULT_ADMIN_EMAIL} / tenant ${DEFAULT_TENANT_SLUG}). ` +
-          `Set E2E_DEFAULT_TENANT_SLUG / E2E_DEFAULT_ADMIN_EMAIL / E2E_DEFAULT_ADMIN_PASSWORD to match your ` +
-          `backend SeedAdmin config. See e2e/group-company/README.md.`;
-        return;
+        throw new Error(
+          `Default single-company tenant login failed (${DEFAULT_ADMIN_EMAIL} / tenant ${DEFAULT_TENANT_SLUG}).\n`
+          + `${MISSING_WORLD}`,
+        );
       }
       token = login.token;
     } finally {
       await api.dispose().catch(() => {});
     }
-  });
-
-  test.beforeEach(() => {
-    test.skip(skipReason !== null, skipReason ?? '');
   });
 
   test('API: /api/auth/me marks the default tenant as SingleCompany with ≤1 company', async () => {

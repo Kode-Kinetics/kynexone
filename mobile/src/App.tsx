@@ -6,7 +6,7 @@ import { RootNavigator } from '@/navigation/RootNavigator';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { ScreenTour, TOUR_MODE, registerBoundaryReset } from '@/dev/ScreenTour';
 import { useAuthStore } from '@/auth/authStore';
-import { isManagerUser, navigateFromRoot } from '@/navigation/routes';
+import { navigateFromRoot } from '@/navigation/routes';
 import { ThemeProvider, useTheme } from '@/theme/ThemeProvider';
 import {
   setupNotificationListeners,
@@ -20,7 +20,7 @@ function openFromNotification(data: Record<string, unknown> | undefined) {
   if (!user) return;
   let attempts = 0;
   const tryNavigate = () => {
-    if (navigateFromRoot(route, isManagerUser(user), params)) return;
+    if (navigateFromRoot(route, user, params)) return;
     if (++attempts < 20) setTimeout(tryNavigate, 250);
   };
   tryNavigate();

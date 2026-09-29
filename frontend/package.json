@@ -13,7 +13,7 @@
   "dependencies": {
     "axios": "latest",
     "lucide-react": "latest",
-    "next": "^15.5.19",
+    "next": "^15.5.25",
     "react": "19.0.0",
     "react-dom": "19.0.0",
     "recharts": "latest"

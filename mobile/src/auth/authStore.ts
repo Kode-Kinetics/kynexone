@@ -13,6 +13,8 @@ import { initApiClient, setSessionExpiredHandler } from '@/api/client';
 import type { AuthTokens, AuthUser } from '@/types';
 import { generateDeviceId } from '@/utils/device';
 import { registerPushToken } from '@/features/notifications/pushNotifications';
+import { deriveMobileAccess, hasEffectivePermission } from './accessPolicy';
+import { normalizeEmail, normalizeWorkspace, requireWorkspace } from './publicAuthInput';
 
 interface AuthState {
   user: AuthUser | null;
@@ -52,7 +54,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         appStorage.get<string>('zayra_tenant_id'),
       ]);
 
-      if (!storedUser || !tenantId) {
+      const normalizedTenant = normalizeWorkspace(tenantId);
+      if (!storedUser || !normalizedTenant) {
+        await clearAllAuthData();
         set({ isInitialized: true, isLoading: false });
         return;
       }
@@ -66,7 +70,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         }
       }
 
-      initApiClient(tenantId);
+      if (normalizedTenant !== tenantId) await appStorage.set('zayra_tenant_id', normalizedTenant);
+      initApiClient(normalizedTenant);
       setSessionExpiredHandler(() => get().handleSessionExpired());
 
       try {
@@ -74,21 +79,24 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         await userStorage.saveUser(freshUser);
         set({
           user: freshUser,
-          tenantId,
+          tenantId: normalizedTenant,
           isAuthenticated: true,
           isInitialized: true,
           isLoading: false,
           sessionExpired: false,
         });
       } catch {
-        // Keep a previously authenticated session usable offline. The first live
-        // request still refreshes or expires it through the API interceptor.
+        // /auth/me is the authoritative role/access graph. Cached permissions
+        // cannot reopen MainTabs when that graph is unavailable or rejected;
+        // an offline mode would need a separate restricted design and TTL.
+        await clearAllAuthData();
         set({
-          user: storedUser,
-          tenantId,
-          isAuthenticated: true,
+          user: null,
+          tenantId: null,
+          isAuthenticated: false,
           isInitialized: true,
           isLoading: false,
+          sessionExpired: true,
         });
       }
     } catch {
@@ -140,9 +148,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   login: async (username, password, tenantId) => {
     set({ isLoading: true, error: null });
     try {
-      const outcome = await authApi.login(username, password, tenantId);
+      const workspace = requireWorkspace(tenantId);
+      const email = normalizeEmail(username);
+      if (!email) throw new Error('Work email is required.');
+      const outcome = await authApi.login(email, password, workspace);
       if (outcome.kind === 'authenticated') {
-        await get().finishLogin(outcome.user, outcome.tokens, tenantId);
+        await get().finishLogin(outcome.user, outcome.tokens, workspace);
       } else {
         set({ isLoading: false });
       }
@@ -156,8 +167,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   completeMfa: async (challengeToken, totpCode, tenantId) => {
     set({ isLoading: true, error: null });
     try {
-      const session = await authApi.verifyMfaChallenge(challengeToken, totpCode, tenantId);
-      await get().finishLogin(session.user, session.tokens, tenantId);
+      const workspace = requireWorkspace(tenantId);
+      const session = await authApi.verifyMfaChallenge(challengeToken, totpCode, workspace);
+      await get().finishLogin(session.user, session.tokens, workspace);
     } catch (error: unknown) {
       set({ isLoading: false, error: extractAuthError(error, 'Invalid or expired authentication code.') });
       throw error;
@@ -208,20 +220,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   hasPermission: (module, action) => {
-    const { user } = get();
-    if (!user) return false;
-    if (user.role === 'SUPER_ADMIN') return true;
-    const modulePerm = user.permissions.find((permission) => permission.module === module);
-    if (!modulePerm) return false;
-    return modulePerm.actions.includes(action) || modulePerm.actions.includes('*');
+    return hasEffectivePermission(get().user, `${module}.${action}`);
   },
 
   canAccess: (module) => {
     const { user } = get();
     if (!user) return false;
-    if (user.role === 'SUPER_ADMIN') return true;
-    if (user.accessMode === 'ATTENDANCE_ONLY') return module === 'attendance';
-    return user.permissions.some((permission) => permission.module === module);
+    if (deriveMobileAccess(user).mode === 'NoLogin') return false;
+    return hasEffectivePermission(user, `${module}.*`);
   },
 }));
 

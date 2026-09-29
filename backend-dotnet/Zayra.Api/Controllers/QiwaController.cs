@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Zayra.Api.Infrastructure.Qiwa;
 
@@ -15,15 +16,61 @@ namespace Zayra.Api.Controllers;
 ///
 /// Real Qiwa API calls are performed by the background QiwaSyncWorker once
 /// credentials are configured and the live adapter is enabled.
+///
+/// <para><b>PRODUCTION CONFIGURATION IS REFUSED, NOT ACCEPTED-AND-IGNORED.</b> Which adapter this
+/// process runs is decided at startup by <c>QIWA_USE_LIVE_ADAPTER</c>, and nothing at runtime reads
+/// the per-tenant <c>Environment</c> column to choose it. So accepting
+/// <c>Environment = "production"</c> with a 200 while the process is running the sandbox simulator
+/// stores configuration that no runtime path applies — the exact silent misconfiguration the F1
+/// convergence removed, and the reason <c>ApprovalPoliciesController</c> answers 410 rather than
+/// pretending. The same doctrine applies here: a request to be live that this process cannot honour
+/// gets <c>501 Not Implemented</c>, a machine-readable code, and a pointer to what would make it
+/// true. Nothing is written.</para>
 /// </summary>
 [ApiController]
 [Route("api/qiwa")]
 [Authorize]
 public class QiwaController : ControllerBase
 {
-    private readonly IQiwaIntegrationService _qiwa;
+    /// <summary>Machine-readable code for "you asked for live Qiwa; this deployment is a simulator".</summary>
+    public const string LiveNotConfiguredCode = "qiwa_live_adapter_not_configured";
 
-    public QiwaController(IQiwaIntegrationService qiwa) => _qiwa = qiwa;
+    public const string LiveNotConfiguredMessage =
+        "This deployment is running the Qiwa SANDBOX SIMULATOR, which makes no network calls and "
+        + "files nothing with Qiwa or MHRSD. Saving a 'production' Qiwa configuration here would be "
+        + "stored but never applied, and the compliance screens would report filings that never "
+        + "happened. Set QIWA_USE_LIVE_ADAPTER=true on the API service and restart it, then save "
+        + "production credentials. Until then, configure the connection as 'sandbox'.";
+
+    private readonly IQiwaIntegrationService _qiwa;
+    private readonly IQiwaApiAdapter _adapter;
+
+    public QiwaController(IQiwaIntegrationService qiwa, IQiwaApiAdapter adapter)
+    {
+        _qiwa = qiwa;
+        _adapter = adapter;
+    }
+
+    /// <summary>
+    /// 501 when the caller asks to be live and this process cannot be. Null when the request is
+    /// honourable. Deliberately NOT a 400: the request is well-formed and would be correct against
+    /// a live deployment — it is this server that does not implement it.
+    /// </summary>
+    private IActionResult? RefuseIfLiveUnsupported(string? environment)
+    {
+        if (!string.Equals(environment?.Trim(), "production", StringComparison.OrdinalIgnoreCase))
+            return null;
+        if (_adapter.IsLiveIntegration) return null;
+
+        return StatusCode(StatusCodes.Status501NotImplemented, new
+        {
+            code = LiveNotConfiguredCode,
+            message = LiveNotConfiguredMessage,
+            replacement = "PUT /api/qiwa/connection with environment='sandbox'",
+            runtimeAdapter = _adapter.AdapterName,
+            filesWithQiwa = false,
+        });
+    }
 
     // ── Connection ────────────────────────────────────────────────────────────
 
@@ -33,9 +80,27 @@ public class QiwaController : ControllerBase
     {
         if (!HasPermission("qiwa.read")) return Forbid();
 
+        // The integration mode of the RUNNING PROCESS, not the stored Environment column. These
+        // two disagreed silently before: a tenant row could say "production" while the process had
+        // only ever run the simulator. The screen needs the truth about what will actually happen.
+        var live = _adapter.IsLiveIntegration;
+        var simulationNotice = live
+            ? null
+            : "Qiwa integration is running in SIMULATION. No employee record is filed with Qiwa or "
+              + "MHRSD, and no request leaves this server. Set QIWA_USE_LIVE_ADAPTER=true and supply "
+              + "live credentials to file for real.";
+
         var connection = await _qiwa.GetConnectionStatusAsync(RequireTenant(), cancellationToken);
         if (connection is null)
-            return Ok(new { status = "Disconnected", configured = false });
+            return Ok(new
+            {
+                status = "Disconnected",
+                configured = false,
+                runtimeAdapter = _adapter.AdapterName,
+                isLiveIntegration = live,
+                filesWithQiwa = live,
+                simulationNotice,
+            });
 
         return Ok(new
         {
@@ -50,7 +115,17 @@ public class QiwaController : ControllerBase
             connection.LastCheckedAtUtc,
             configured = true,
             hasError    = connection.Status is "ConfigurationError" or "ApiError",
-            connection.LastErrorMessage
+            connection.LastErrorMessage,
+            runtimeAdapter = _adapter.AdapterName,
+            isLiveIntegration = live,
+            filesWithQiwa = live,
+            simulationNotice,
+            // Loud, specific case: the tenant believes it is configured for production and the
+            // process cannot honour that. Stored configuration that no runtime path applies.
+            configurationIgnored = !live
+                && string.Equals(connection.Environment, "production", StringComparison.OrdinalIgnoreCase)
+                ? LiveNotConfiguredMessage
+                : null,
         });
     }
 
@@ -65,6 +140,10 @@ public class QiwaController : ControllerBase
 
         if (request.Environment is not ("sandbox" or "production"))
             return BadRequest(new { error = "invalid_environment", message = "Environment must be 'sandbox' or 'production'." });
+
+        // Refuse BEFORE the write. Storing a production connection this process will never honour
+        // is how a customer comes to believe their workforce is filed when it is not.
+        if (RefuseIfLiveUnsupported(request.Environment) is { } refusal) return refusal;
 
         try
         {
@@ -95,6 +174,11 @@ public class QiwaController : ControllerBase
 
         if (request.Environment is not ("sandbox" or "production"))
             return BadRequest(new { error = "invalid_environment", message = "Environment must be 'sandbox' or 'production'." });
+
+        // Same refusal as the connection write, and for the same reason: accepting live credentials
+        // that no runtime path will ever use is worse than refusing them. Note this also avoids
+        // persisting a real production client secret into a deployment that cannot use it.
+        if (RefuseIfLiveUnsupported(request.Environment) is { } refusal) return refusal;
 
         await _qiwa.SaveApiCredentialAsync(
             RequireTenant(), request.ClientId.Trim(), request.ClientSecret, request.Environment.Trim(),
