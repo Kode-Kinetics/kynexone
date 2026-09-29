@@ -131,12 +131,12 @@ public static class TenantProvisioningBundle
     /// copy that could drift away from what provisioning actually writes.</summary>
     internal static readonly (string Country, string RequiredFieldsJson)[] ComplianceSeeds =
     {
-        ("SA", """[{"key":"GosiReference","category":"identity","failClosed":true},{"key":"IqamaNumber","category":"identity","failClosed":true,"appliesWhen":{"nationalityNot":"SA"}},{"key":"doc:Contract","category":"contract","failClosed":false}]"""),
+        ("SA", """[{"key":"GosiReference","category":"identity","failClosed":true,"gate":"pay"},{"key":"IqamaNumber","category":"identity","failClosed":true,"appliesWhen":{"nationalityNot":"SA"}},{"key":"doc:Contract","category":"contract","failClosed":false}]"""),
         ("AE", """[{"key":"EmiratesId","category":"identity","failClosed":true},{"key":"WorkPermitNumber","category":"identity","failClosed":true,"appliesWhen":{"nationalityNot":"AE"}},{"key":"doc:Contract","category":"contract","failClosed":false}]"""),
         ("QA", """[{"key":"Qid","category":"identity","failClosed":true,"appliesWhen":{"nationalityNot":"QA"}},{"key":"doc:Contract","category":"contract","failClosed":false}]"""),
         ("KW", """[{"key":"CivilId","category":"identity","failClosed":true,"appliesWhen":{"nationalityNot":"KW"}},{"key":"doc:Contract","category":"contract","failClosed":false}]"""),
         ("OM", """[{"key":"CivilId","category":"identity","failClosed":true,"appliesWhen":{"nationalityNot":"OM"}},{"key":"doc:Contract","category":"contract","failClosed":false}]"""),
-        ("BH", """[{"key":"CivilId","category":"identity","failClosed":true,"appliesWhen":{"nationalityNot":"BH"}},{"key":"SocialInsuranceReference","category":"identity","failClosed":true},{"key":"doc:Contract","category":"contract","failClosed":false}]"""),
+        ("BH", """[{"key":"CivilId","category":"identity","failClosed":true,"appliesWhen":{"nationalityNot":"BH"}},{"key":"SocialInsuranceReference","category":"identity","failClosed":true,"gate":"pay"},{"key":"doc:Contract","category":"contract","failClosed":false}]"""),
     };
 
     private static async Task<int> InstallComplianceProfilesAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)

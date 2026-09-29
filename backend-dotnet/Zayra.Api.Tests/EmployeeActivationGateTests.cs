@@ -99,8 +99,13 @@ public class EmployeeActivationGateTests
         db.Employees.Add(emp); await db.SaveChangesAsync();
 
         var act = () => Service(db).ChangeStatusAsync(fx.TenantId, emp.Id, Activate(), Ctx(fx.TenantId), CancellationToken.None);
-        (await act.Should().ThrowAsync<EmployeeActivationBlockedException>()).Which.Readiness.Blocking
-            .Should().Contain(i => i.Key == "GosiReference");
+        var readiness = (await act.Should().ThrowAsync<EmployeeActivationBlockedException>()).Which.Readiness;
+        // The Iqama (residence permit) is the ACTIVATION blocker for a non-GCC expat in KSA.
+        readiness.Blocking.Should().Contain(i => i.Key == "IqamaNumber" && i.Gate == "activate");
+        // GOSI moved to the PAY gate (registration happens after hire), so it must no longer block
+        // activation — it blocks payroll instead.
+        readiness.Blocking.Should().NotContain(i => i.Key == "GosiReference");
+        readiness.PayBlocking.Should().Contain(i => i.Key == "GosiReference" && i.Gate == "pay");
         db.ChangeTracker.Clear();
         (await db.Employees.AsNoTracking().SingleAsync(e => e.Id == emp.Id)).Status.Should().Be("Draft", "a blocked activation leaves the record untouched");
     }
@@ -219,12 +224,13 @@ public class EmployeeActivationGateTests
     {
         await using var db = CreateDb();
         var fx = await SeedTenant(db);
-        // Explicit Active KSA expat with NO GOSI/Iqama → downgraded to Draft + warning + createdIncomplete.
+        // Explicit Active KSA expat with NO Iqama → downgraded to Draft + warning + createdIncomplete.
+        // (GOSI is pay-gated now, so the named activation blocker is the Iqama.)
         const string csv = "FullName,CountryCode,Nationality,Status\nBlocked Expat,SA,Indian,Active\n";
         var json = await ImportJson(Controller(db, fx.TenantId), csv);
         (await db.Employees.AsNoTracking().SingleAsync(e => e.TenantId == fx.TenantId)).Status.Should().Be("Draft");
         json.GetProperty("warnings").EnumerateArray().Select(w => w.GetString())
-            .Should().Contain(w => w!.Contains("imported as Draft") && w.Contains("GOSI"));
+            .Should().Contain(w => w!.Contains("imported as Draft") && w.Contains("Iqama"));
         json.GetProperty("createdIncomplete").GetArrayLength().Should().Be(1);
         json.TryGetProperty("importBatchId", out _).Should().BeTrue();
     }
@@ -362,7 +368,11 @@ public class EmployeeActivationGateTests
     {
         await using var db = CreateDb();
         var fx = await SeedTenant(db);
-        // Two KSA expats missing the GOSI/Iqama floor → a per-field summary the modal can render.
+        // Two KSA expats missing the Iqama floor → a per-field summary the modal can render.
+        // NOTE (P1 follow-up, EmployeesController.ImportPreview): the aggregator records
+        // readiness.Blocking + readiness.Recommended only, never readiness.PayBlocking — so a
+        // pay-gated HARD item (GosiReference since the gate move) no longer appears in the preview
+        // at all. That is an EmployeesController change, outside this agent's owned scope.
         const string csv =
             "FullName,CountryCode,Nationality,Status\n" +
             "Expat One,SA,Indian,Active\n" +
@@ -373,7 +383,10 @@ public class EmployeeActivationGateTests
         var gaps = json.GetProperty("fieldGaps");
         gaps.GetArrayLength().Should().BeGreaterThan(0);
         gaps.EnumerateArray().Should().Contain(g =>
-            g.GetProperty("field").GetString() == "GosiReference" && g.GetProperty("rowCount").GetInt32() == 2);
+            g.GetProperty("field").GetString() == "IqamaNumber"
+            && g.GetProperty("kind").GetString() == "blocking"
+            && g.GetProperty("gate").GetString() == "activate"
+            && g.GetProperty("rowCount").GetInt32() == 2);
     }
 
     // ── Stubs ────────────────────────────────────────────────────────────────
