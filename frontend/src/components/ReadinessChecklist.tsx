@@ -8,14 +8,25 @@ import type { ReadinessItem, ReadinessView } from '../api/employees';
 // response and the 422 employee_not_activatable body (both satisfy ReadinessView), so the
 // checklist is the single source of truth — never a hand-rolled red banner (§8.3).
 
+/**
+ * Where a field gap can be closed:
+ *  - `inline`      the save endpoint accepts this key, so the row offers an inline box;
+ *  - `profile`     not a quick fix, but the employee's Edit form carries the field;
+ *  - `unavailable` captured only when the employee is first added — there is no later write path,
+ *                  so the row must NOT send someone to a form that does not have the field.
+ * The old boolean collapsed the last two, and every non-editable row claimed the field was "In
+ * profile" — false for the payroll sub-fields, which no post-create form carries.
+ */
+export type ReadinessFixMode = 'inline' | 'profile' | 'unavailable';
+
 export interface ReadinessChecklistProps {
   readiness: ReadinessView;
   /** Save one inline field gap. Returns ok=false (+message) to surface a non-blocking notice (e.g. 202 approval). */
   onFixField?: (target: string, value: string) => Promise<{ ok: boolean; message?: string }>;
   /** Open the document-upload control pre-set to this documentType. */
   onFixDocument?: (documentType: string) => void;
-  /** Whether an inline field edit can persist (some payroll sub-fields have no post-create edit path). */
-  isFieldEditable?: (target: string) => boolean;
+  /** Where this field gap can be closed. Omitted ⇒ every field target is treated as inline-editable. */
+  fieldFixMode?: (target: string) => ReadinessFixMode;
   /** Show the satisfied ("Complete") items — on in the drawer, off in the compact 422 render. */
   showPresent?: boolean;
   /** Compliance disclaimer is always shown; pass false only where the surrounding surface already shows it. */
@@ -39,13 +50,13 @@ function ItemRow({
   accent,
   onFixField,
   onFixDocument,
-  isFieldEditable,
+  fieldFixMode,
 }: {
   item: ReadinessItem;
   accent: 'rose' | 'amber' | 'slate';
   onFixField?: ReadinessChecklistProps['onFixField'];
   onFixDocument?: ReadinessChecklistProps['onFixDocument'];
-  isFieldEditable?: ReadinessChecklistProps['isFieldEditable'];
+  fieldFixMode?: ReadinessChecklistProps['fieldFixMode'];
 }) {
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState('');
@@ -57,7 +68,9 @@ function ItemRow({
 
   const fieldTarget = item.fix?.kind === 'field' ? item.fix.target : undefined;
   const docType = item.fix?.kind === 'document' ? item.fix.documentType : undefined;
-  const canEditField = fieldTarget !== undefined && (isFieldEditable ? isFieldEditable(fieldTarget) : true) && !!onFixField;
+  const fixMode: ReadinessFixMode | undefined =
+    fieldTarget === undefined ? undefined : fieldFixMode ? fieldFixMode(fieldTarget) : 'inline';
+  const canEditField = fixMode === 'inline' && !!onFixField;
 
   const save = async () => {
     if (!fieldTarget || !onFixField || !value.trim()) return;
@@ -107,8 +120,18 @@ function ItemRow({
             >
               Add
             </button>
-          ) : !canEditField && item.fix?.kind === 'field' ? (
-            <span className="text-[11px] text-slate-400">In profile</span>
+          ) : fixMode === 'unavailable' ? (
+            // No form carries this after the employee is added, so naming one would be a dead end.
+            <span
+              className="text-[11px] text-slate-400"
+              title="This is only captured when an employee is first added, so there is nowhere to change it yet."
+            >
+              Can&apos;t be changed yet
+            </span>
+          ) : fixMode === 'profile' ? (
+            <span className="text-[11px] text-slate-400" title="Open Edit at the top of this profile and add it there.">
+              Add under Edit
+            </span>
           ) : null}
         </div>
       </div>
@@ -160,7 +183,7 @@ function Section({
   emptyHidden?: boolean;
   onFixField?: ReadinessChecklistProps['onFixField'];
   onFixDocument?: ReadinessChecklistProps['onFixDocument'];
-  isFieldEditable?: ReadinessChecklistProps['isFieldEditable'];
+  fieldFixMode?: ReadinessChecklistProps['fieldFixMode'];
 }) {
   if (items.length === 0 && emptyHidden) return null;
   return (
@@ -182,14 +205,14 @@ export function ReadinessChecklist({
   readiness,
   onFixField,
   onFixDocument,
-  isFieldEditable,
+  fieldFixMode,
   showPresent = false,
   showDisclaimer = true,
 }: ReadinessChecklistProps) {
   const { progress } = readiness;
   const remaining = Math.max(0, progress.requiredTotal - progress.present);
   const pct = progress.requiredTotal > 0 ? Math.round((progress.present / progress.requiredTotal) * 100) : 100;
-  const handlers = { onFixField, onFixDocument, isFieldEditable };
+  const handlers = { onFixField, onFixDocument, fieldFixMode };
 
   return (
     <div className="space-y-3">

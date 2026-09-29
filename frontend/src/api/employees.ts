@@ -543,8 +543,18 @@ export interface EmployeeImportResult {
   received: number;
   created: number;
   skipped: number;
+  /** Existing employees (matched by EmployeeCode) that were not overwritten but had missing
+   *  payroll/salary/reporting details filled in. received = created + repaired + skipped (+ failed). */
+  repaired?: number;
+  /** Rows that failed. The import is all-or-nothing, so this is 0 on success. */
+  failed?: number;
+  /** True when this file was already imported under the same import key and nothing was imported again. */
+  replayed?: boolean;
   hierarchyLinked?: number;
   payrollProfilesCreated?: number;
+  payrollProfilesRepaired?: number;
+  salaryAssignmentsRecovered?: number;
+  hierarchyLinksRecovered?: number;
   importBatchId: string;
   errors: string[];
   warnings: string[];
@@ -576,7 +586,7 @@ export interface EmployeeImportPreviewRow {
   row: number;
   employeeCode: string;
   fullName: string;
-  status: string; // "WillCreate" | "Error"
+  status: string; // "WillCreate" | "WillRepair" | "WillFail" | "Error"
   projectedStatus: string; // "Active" | "Draft" | ""
   blocking: string[];
   recommended: string[];
@@ -600,7 +610,11 @@ export interface EmployeeImportFieldGap {
 export interface EmployeeImportPreview {
   received: number;
   wouldCreate: number;
+  /** Existing employees that would only have missing details filled in (never overwritten). */
+  wouldRepair?: number;
   wouldSkip: number;
+  /** Rows holding a value the database cannot store; the import is refused until they are fixed. */
+  wouldFail?: number;
   wouldCreateActive: number;
   wouldCreateDraft: number;
   rows: EmployeeImportPreviewRow[];
@@ -778,9 +792,13 @@ export const employeesApi = {
   importPreview: (csvContent: string) =>
     client.post<EmployeeImportPreview>('/api/employees/import-preview', { csvContent }).then((r) => r.data),
 
-  /** Lenient import: creates everything with a name, records gaps, never silently lands Active. */
-  import: (csvContent: string) =>
-    client.post<EmployeeImportResult>('/api/employees/import', { csvContent }).then((r) => r.data),
+  /**
+   * Lenient, all-or-nothing import: creates everything with a name, records gaps, never silently lands
+   * Active. `importKey` identifies this file: re-sending the same key (a retry after a timeout, a double
+   * click) replays the recorded result instead of importing the file twice.
+   */
+  import: (csvContent: string, importKey?: string) =>
+    client.post<EmployeeImportResult>('/api/employees/import', { csvContent, importKey }).then((r) => r.data),
 
   /** Multi-select activation for the "Needs info" worklist; each id passes the same gate. */
   bulkActivate: (employeeIds: number[], reason?: string) =>
