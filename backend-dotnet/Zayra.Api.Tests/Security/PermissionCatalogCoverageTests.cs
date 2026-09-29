@@ -53,9 +53,7 @@ public class PermissionCatalogCoverageTests
     private static readonly IReadOnlyDictionary<string, string> KnownDeadPermissions =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            // Fixed in PR #136 (fix/settlement-maker-checker-and-dashboard-scope), not merged yet.
-            // REMOVE this entry when #136 lands — KnownDeadPermissionAllowlist_HasNoStaleEntries will fail until you do.
-            ["payroll.review"] = "PayrollController final-settlement review/approve gate — PR #136",
+            // payroll.review was fixed by PR #136 (reconciliation and mismatch report now require payroll.read).
 
             // The ten keys found when this guard was introduced (appraisal.*, sensitive_data.view,
             // ai.policy.ask, policy.documents.read, finance.gl.export, finance.erp.confirm) were fixed by
