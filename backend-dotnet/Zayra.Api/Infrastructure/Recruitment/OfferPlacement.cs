@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Data;
 
 namespace Zayra.Api.Infrastructure.Recruitment;
 
@@ -49,22 +50,27 @@ public static class OfferPlacement
         if (departmentId is not null || !string.IsNullOrWhiteSpace(department))
         {
             var term = department?.Trim() ?? string.Empty;
-            // IgnoreQueryFilters is intentional: master-data resolution must not vary with the caller's
-            // company scope (the same read activation makes); tenant, activity and deletion are explicit.
-            var candidates = await db.Departments.IgnoreQueryFilters().AsNoTracking()
-                .Where(d => d.TenantId == tenantId && d.IsActive && !d.IsDeleted)
+            // Master data is resolved the way activation resolves it: tenant-wide, whatever the
+            // caller's company scope, so the offer and the activation cannot see different records.
+            var departments = ScopedBypass.TenantWide(db.Departments, tenantId,
+                "Offer placement resolves a department the way activation does, independent of the caller's company scope.");
+            var candidates = await departments.AsNoTracking()
+                .Where(d => d.IsActive && !d.IsDeleted)
                 .Where(d => departmentId != null
                     ? d.Id == departmentId
                     : d.NameEn.ToLower() == term.ToLower() || d.Code.ToUpper() == term.ToUpper())
-                .Select(d => new
-                {
-                    d.Id, d.NameEn, d.Code,
-                    CompanyId = db.Branches.IgnoreQueryFilters()
-                        .Where(b => b.TenantId == tenantId && b.Id == d.BranchId)
-                        .Select(b => (Guid?)b.CompanyId)
-                        .FirstOrDefault(),
-                })
+                .Select(d => new { d.Id, d.NameEn, d.Code, d.BranchId })
                 .ToListAsync(ct);
+            var branchIds = candidates.Where(c => c.BranchId != null).Select(c => c.BranchId!.Value).Distinct().ToList();
+            var entityByBranch = branchIds.Count == 0
+                ? new Dictionary<Guid, Guid>()
+                : await ScopedBypass.TenantWide(db.Branches, tenantId,
+                        "The legal entity of each candidate department's branch, whatever the caller's company scope.")
+                    .AsNoTracking()
+                    .Where(b => branchIds.Contains(b.Id))
+                    .ToDictionaryAsync(b => b.Id, b => b.CompanyId, ct);
+            Guid? EntityOf(Guid? branchId) =>
+                branchId is { } b && entityByBranch.TryGetValue(b, out var entity) ? entity : null;
             if (candidates.Count == 0)
                 return departmentId is not null
                     ? Refused("department", "The chosen department is not an active department in your organisation. Pick another one.")
@@ -72,9 +78,9 @@ public static class OfferPlacement
                         $"'{term}' is not one of your organisation's departments. Pick the department from the list, or add it under Setup first.");
 
             var inEntity = companyId is { } offering
-                ? candidates.Where(c => c.CompanyId == offering).ToList()
+                ? candidates.Where(c => EntityOf(c.BranchId) == offering).ToList()
                 : candidates;
-            var entityNeutral = candidates.Where(c => c.CompanyId is null).ToList();
+            var entityNeutral = candidates.Where(c => EntityOf(c.BranchId) is null).ToList();
             var chosen = inEntity.FirstOrDefault() ?? entityNeutral.FirstOrDefault();
             if (chosen is null)
                 return new Result(string.Empty, string.Empty, "department",
@@ -83,9 +89,8 @@ public static class OfferPlacement
 
             // Activation resolves by name or code. A name several departments share would let it pick
             // another entity's record, so a shared name is stored as the chosen record's unique code.
-            var nameIsShared = await db.Departments.IgnoreQueryFilters().AsNoTracking()
-                .CountAsync(d => d.TenantId == tenantId && d.IsActive && !d.IsDeleted
-                    && d.NameEn.ToLower() == chosen.NameEn.ToLower(), ct) > 1;
+            var nameIsShared = await departments.AsNoTracking()
+                .CountAsync(d => d.IsActive && !d.IsDeleted && d.NameEn.ToLower() == chosen.NameEn.ToLower(), ct) > 1;
             departmentName = nameIsShared ? chosen.Code : chosen.NameEn;
         }
 
