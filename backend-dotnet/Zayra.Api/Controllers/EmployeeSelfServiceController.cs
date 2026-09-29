@@ -228,16 +228,7 @@ public class EmployeeSelfServiceController : ControllerBase
 
         await EssAudit(tenantId, employeeId, "ess.dashboard.viewed", "Employee", employeeId.ToString(), cancellationToken);
         return Ok(new ESSDashboardDto(
-            new ESSProfileSummaryDto(
-                employee.Id,
-                employee.EmployeeCode,
-                employee.FullName,
-                employee.JobTitle,
-                employee.Department,
-                string.IsNullOrWhiteSpace(employee.ProfilePhotoUrl)
-                    ? string.Empty
-                    : EmployeePhotoController.PhotoRoute(employee.Id),
-                employee.ProfileCompletenessScore),
+            new ESSProfileSummaryDto(employee.Id, employee.EmployeeCode, employee.FullName, employee.JobTitle, employee.Department, employee.ProfilePhotoUrl, employee.ProfileCompletenessScore),
             attendance,
             leaveBalances.Select(x => new ESSLeaveBalanceDto(x.LeaveTypeId, x.LeaveTypeName, x.Entitled, x.Used, x.Pending, x.Available)).ToList(),
             pendingRequests + pendingLeave,
@@ -262,13 +253,7 @@ public class EmployeeSelfServiceController : ControllerBase
         var employee = await OwnEmployee(tenantId, employeeId, cancellationToken);
         if (employee is null) return NotFound();
         await EssAudit(tenantId, employeeId, "ess.profile.viewed", "Employee", employeeId.ToString(), cancellationToken);
-        var dto = EssEmployeeProfileDto.Project(employee) with
-        {
-            ProfilePhotoUrl = string.IsNullOrWhiteSpace(employee.ProfilePhotoUrl)
-                ? string.Empty
-                : EmployeePhotoController.PhotoRoute(employee.Id)
-        };
-        return Ok(dto);
+        return Ok(EssEmployeeProfileDto.Project(employee));
     }
 
     [HttpPut("profile-change-request")]
