@@ -11,6 +11,7 @@ import { ImportExportToolbar, downloadCsv } from '../components/ImportExportTool
 import { ReadinessBadge, hasExpiringId } from '../components/ReadinessBadge';
 import { ReadinessChecklist } from '../components/ReadinessChecklist';
 import client from '../api/client';
+import { createLatestRequestGate, runLatest } from '../lib/latestRequest';
 
 const employeesImportExport = {
   export: async () => {
@@ -329,31 +330,43 @@ export function EmployeesPage() {
   // HomeJurisdiction.CompanyMessage), so a hovered button never says something the form does not.
   const formCompanyMissingCountryMessage = missingCompanyCountryMessage(formCompanyName);
 
+  // The search box fires a request per keystroke, so responses can arrive out of order. Only the
+  // latest load may write the table: a slower earlier response must never replace the newer one.
+  // `load` also reads the CURRENT query from a ref rather than its own closure, because save and
+  // import handlers call a `load` captured before the user changed a filter; that call must refresh
+  // what is on screen now, not re-run the old query and win the race with it.
+  const employeeLoadGate = useMemo(() => createLatestRequestGate(), []);
+  const employeeQuery = useMemo(
+    () => ({ page, search, status, readinessFilter, gapTypeFilter, importBatchFilter }),
+    [page, search, status, readinessFilter, gapTypeFilter, importBatchFilter],
+  );
+  const employeeQueryRef = useRef(employeeQuery);
+  employeeQueryRef.current = employeeQuery;
   const load = useCallback(async () => {
+    const query = employeeQueryRef.current;
     setLoading(true);
     setError('');
     // Never leave stale employee rows or counts visible while the new server
     // result is pending (or after it fails).
     setEmployees([]);
     setTotal(0);
-    try {
-      const res = await employeesApi.list({
-        search,
-        status,
-        page,
-        pageSize,
-        readiness: readinessFilter || undefined,
-        gapType: gapTypeFilter || undefined,
-        importBatchId: importBatchFilter || undefined,
-      });
-      setEmployees(res.items);
-      setTotal(res.total);
-    } catch {
-      setError('Could not load employees from the API.');
-    } finally {
-      setLoading(false);
-    }
-  }, [page, search, status, readinessFilter, gapTypeFilter, importBatchFilter]);
+    await runLatest(employeeLoadGate, () => employeesApi.list({
+      search: query.search,
+      status: query.status,
+      page: query.page,
+      pageSize,
+      readiness: query.readinessFilter || undefined,
+      gapType: query.gapTypeFilter || undefined,
+      importBatchId: query.importBatchFilter || undefined,
+    }), {
+      onResult: (res) => {
+        setEmployees(res.items);
+        setTotal(res.total);
+      },
+      onError: () => setError('Could not load employees from the API.'),
+      onSettled: () => setLoading(false),
+    });
+  }, [employeeLoadGate]);
 
   const loadLookups = useCallback(async () => {
     const [companyRes, branchRes, deptRes, desigRes, gradeRes, costRes, managerRes] = await Promise.all([
@@ -374,7 +387,7 @@ export function EmployeesPage() {
     setManagerCandidates(managerRes.items);
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, employeeQuery]);
   useEffect(() => { loadLookups().catch(() => setError('Could not load organization setup data.')); }, [loadLookups]);
   useEffect(() => {
     client.get<EmployeeUsageData>('/api/tenant-admin/usage')

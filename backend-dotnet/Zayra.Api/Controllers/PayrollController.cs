@@ -9622,13 +9622,16 @@ public class PayrollController : ControllerBase
         };
 
         var completedSteps = steps.Count(s => s.Complete);
+        var prerequisites = await BuildPaymentPrerequisitesAsync(
+            tenantId, companyId, activeEmployeeQuery, targetYear, targetMonth, targetPeriodEnd, cancellationToken);
+        var isReadyForProcessing = hasComponents && hasStructures && coveragePercent >= 80;
         return Ok(new
         {
             Year = targetYear,
             Month = targetMonth,
             CompanyId = companyId,
             CompletionPercent = Math.Round(completedSteps * 100.0 / steps.Length, 0),
-            IsReadyForProcessing = hasComponents && hasStructures && coveragePercent >= 80,
+            IsReadyForProcessing = isReadyForProcessing,
             TotalActiveEmployees = totalActive,
             EmployeesWithSalary = assignedCount,
             SalaryCoveragePercent = coveragePercent,
@@ -9636,7 +9639,54 @@ public class PayrollController : ControllerBase
             PayrollRunStatus = run?.Status,
             Steps = steps,
             OffCycleRunCount = offCycleRunsForPeriod,   // POD-B2: additional runs in the period, if any
+            // Salary coverage says who CAN be calculated; this says who can actually be PAID. A run can
+            // be processed with gaps here, but its validation will then block approval on them.
+            IsReadyToPay = isReadyForProcessing && totalActive > 0
+                && prerequisites.BlockedEmployees == 0 && prerequisites.CompanyBlocking.Count == 0,
+            PaymentPrerequisites = prerequisites,
         });
+    }
+
+    /// <summary>
+    /// Per-employee payment prerequisites for the period, evaluated before any run exists
+    /// (see <see cref="PayrollPaymentPrerequisites"/>). Every query is tenant-filtered and bounded by
+    /// the same active-employee population the readiness counts use, so its numbers reconcile with
+    /// <c>TotalActiveEmployees</c> and <c>EmployeesWithSalary</c>.
+    /// </summary>
+    private async Task<PayrollPaymentPrerequisitesDto> BuildPaymentPrerequisitesAsync(
+        Guid tenantId, Guid? companyId, IQueryable<Employee> activeEmployeeQuery,
+        int year, int month, DateOnly periodEnd, CancellationToken ct)
+    {
+        var employees = await activeEmployeeQuery.AsNoTracking().OrderBy(e => e.EmployeeCode).ToListAsync(ct);
+        var employeeIds = employees.Select(e => e.Id).ToList();
+
+        var companies = await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted && (!companyId.HasValue || c.Id == companyId))
+            .ToListAsync(ct);
+
+        var withSalary = (await _db.EmployeeSalaryStructures.AsNoTracking()
+            .Where(s => s.TenantId == tenantId && s.IsActive && s.EffectiveDate <= periodEnd && employeeIds.Contains(s.EmployeeId))
+            .Select(s => s.EmployeeId).Distinct().ToListAsync(ct)).ToHashSet();
+
+        var profiles = await _db.EmployeePayrollProfiles.AsNoTracking()
+            .Where(p => p.TenantId == tenantId && !p.IsDeleted && employeeIds.Contains(p.EmployeeId))
+            .ToListAsync(ct);
+
+        // The ONE readiness evaluator's pay-block verdict — the same one the bank file refuses on.
+        var (hardBlocked, driftBlocked) = await ComputePayReadinessAsync(tenantId, employees, ct);
+        var payBlocked = hardBlocked.Concat(driftBlocked).ToHashSet();
+
+        // Attendance is only evidence once the period has begun; before that its absence means nothing.
+        var periodStart = new DateOnly(year, month, 1);
+        HashSet<int>? withAttendance = null;
+        if (periodStart <= DateOnly.FromDateTime(DateTime.UtcNow))
+            withAttendance = (await _db.AttendanceDailyRecords.AsNoTracking()
+                .Where(r => r.TenantId == tenantId && !r.IsDeleted && r.WorkDate >= periodStart && r.WorkDate <= periodEnd
+                         && employeeIds.Contains(r.EmployeeId))
+                .Select(r => r.EmployeeId).Distinct().ToListAsync(ct)).ToHashSet();
+
+        return PayrollPaymentPrerequisites.Evaluate(new PayrollPaymentPrerequisites.Input(
+            employees, companies, withSalary, profiles, payBlocked, withAttendance));
     }
 
     // ── Employee Salary Import / Export ───────────────────────────────────────────
