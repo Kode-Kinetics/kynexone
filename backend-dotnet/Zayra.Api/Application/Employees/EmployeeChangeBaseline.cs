@@ -123,15 +123,28 @@ public static class EmployeeChangeBaseline
         try
         {
             if (EmployeeChangeApplier.Apply(employee, changes).Count > 0) return null;
+            var profile = new EmployeePayrollProfile
+            {
+                BankName = employee.BankName,
+                Iban = employee.BankIban,
+                // The profile-only keys, written the way EmployeeChangeApplier.ApplyPayrollProfileAsync writes them.
+                SocialInsuranceReference = ProfileText(changes, "socialInsuranceReference", trim: false),
+                BankRoutingCode = ProfileText(changes, "bankRoutingCode", trim: true),
+                AccountNumber = ProfileText(changes, "accountNumber", trim: true),
+            };
+            return Capture(employee, profile, changes.Keys);
         }
         catch (Exception ex) when (ex is InvalidOperationException or FormatException)
         {
             return null;
         }
-        var profile = new EmployeePayrollProfile { BankName = employee.BankName, Iban = employee.BankIban };
-        if (changes.TryGetValue("socialInsuranceReference", out var reference))
-            profile.SocialInsuranceReference = reference.ValueKind == JsonValueKind.Null ? string.Empty : reference.GetString() ?? string.Empty;
-        return Capture(employee, profile, changes.Keys);
+    }
+
+    private static string ProfileText(IReadOnlyDictionary<string, JsonElement> changes, string key, bool trim)
+    {
+        if (!changes.TryGetValue(key, out var value) || value.ValueKind == JsonValueKind.Null) return string.Empty;
+        var text = value.GetString() ?? string.Empty;
+        return trim ? text.Trim() : text;
     }
 
     /// <summary>The value on file for one patch key, as <see cref="Capture"/> reads it — the payroll-profile
@@ -237,6 +250,9 @@ public static class EmployeeChangeBaseline
         "bankIban" => p => p.Iban,
         "bankName" => p => p.BankName,
         "socialInsuranceReference" => p => p.SocialInsuranceReference,
+        // Read live by the WPS/SIF line; approval-gated with the IBAN (EmployeeChangeApplier.PayrollProfileKeys).
+        "bankRoutingCode" => p => p.BankRoutingCode,
+        "accountNumber" => p => p.AccountNumber,
         _ => null,
     };
 

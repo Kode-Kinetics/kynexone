@@ -336,6 +336,44 @@ public sealed class EmployeeEffectiveChangePostgresTests(PostgresFixture fx)
         (await verify.EmployeeChangeRequests.SingleAsync(x => x.Id == changeId)).Status.Should().Be(EmployeeChangeStatuses.PendingApproval);
     }
 
+    // ─────────────────────── moving bank on the effective date (#129) ───────────────────────
+
+    [Fact]
+    public async Task FutureDatedIbanAtAnotherBank_ClearsTheOldRoutingAndAccount_AndPayGates()
+    {
+        // The scheduled path goes through the same EmployeeChangeApplier/EmployeeBankProfileSync as an immediate
+        // approval, so a move to another bank on its effective date drops the old bank's routing code and
+        // account number (the WPS/SIF line reads the routing code live) and pay-gates the employee.
+        var clock = new ManualClock(DateTimeOffset.UtcNow);
+        await using var sp = BuildInstance(clock, new RecordingNotifications());
+        var (tenant, employeeId) = await SeedAsync();
+        await using (var db = fx.CreateDb())
+        {
+            (await ProfileAsync(db, tenant, employeeId)).BankRoutingCode = "RJHISARI";
+            await db.SaveChangesAsync();
+        }
+        // OldIban is bank 80; OtherIban is bank 20.
+        EmployeeBankProfileSync.BankIdentifier(OldIban).Should().NotBe(EmployeeBankProfileSync.BankIdentifier(OtherIban));
+        var changeId = await RequestAndApproveAsync(tenant, employeeId, UtcToday.AddDays(1), "bankIban", OtherIban);
+        await using (var db = fx.CreateDb())
+            (await ProfileAsync(db, tenant, employeeId)).BankRoutingCode.Should().Be("RJHISARI", "nothing moves before the date");
+
+        clock.Advance(TimeSpan.FromDays(2));
+        await sp.GetRequiredService<EffectiveChangeScheduler>().EnqueueDueAsync(default);
+        await DrainAsync(sp, tenant);
+
+        await using var verify = fx.CreateDb();
+        (await verify.EmployeeChangeRequests.SingleAsync(x => x.Id == changeId)).Status.Should().Be(EmployeeChangeStatuses.ApprovedApplied);
+        var profile = await ProfileAsync(verify, tenant, employeeId);
+        profile.Iban.Should().Be(OtherIban);
+        profile.BankRoutingCode.Should().BeEmpty("the old bank's routing code does not belong to the new account");
+        profile.AccountNumber.Should().BeEmpty();
+        (await HistoryCountAsync(tenant, employeeId, EmployeeBankProfileSync.RoutingCodeClearedEventType)).Should().Be(1);
+        var readiness = (await new EmployeeActivationGuard(verify).EvaluateEmployeeAsync(tenant, employeeId, default))!.Value.Readiness;
+        readiness.PayBlocking.Should().Contain(i => i.Key == "BankRoutingCode" && i.Gate == "pay",
+            "the employee is held at the pay gate until the new bank's routing code is approved");
+    }
+
     // ─────────────────────── exactly once ───────────────────────
 
     [Fact]
