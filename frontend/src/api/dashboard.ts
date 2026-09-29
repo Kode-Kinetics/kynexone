@@ -25,6 +25,8 @@ export interface PayrollTrend {
   totalNet: number;
   employeeCount: number;
   status: string;
+  /** The run's legal entity; the point is in that company's currency. Absent on older APIs. */
+  companyId?: string | null;
 }
 
 export interface ActivityFeedItem {
@@ -60,6 +62,8 @@ export interface DashboardPayrollSummary {
   status: string;
   payDate?: string | null;
   employerContributions?: number | null;
+  /** The run's legal entity; every amount is in that company's currency. Absent on older APIs. */
+  companyId?: string | null;
 }
 
 export interface NamedValue {
@@ -103,11 +107,12 @@ export interface DashboardKpis {
   qiwaEnabled: boolean;
   /**
    * Live payroll prerequisites for the caller's population, current month (same definitions as
-   * GET /api/payroll/readiness). Undefined from an API that predates them — then "unknown", never 0.
+   * GET /api/payroll/readiness). Null without payroll.read, undefined from an API that predates
+   * them — "unknown" either way, never 0.
    */
-  missingSalaryAssignments?: number;
+  missingSalaryAssignments?: number | null;
   /** Active employees with no IBAN on a live payroll profile. */
-  missingBankDetails?: number;
+  missingBankDetails?: number | null;
 }
 
 export interface HeatmapCell { date: string; rostered: number; attended: number; rate: number | null }

@@ -29,8 +29,9 @@ public class DashboardSalaryReadinessTests
 
     private static DashboardController Ctrl(ZayraDbContext db, Guid tid, IReadOnlyCollection<int>? allowed = null)
     {
+        // F10: payroll readiness counts are payroll information, returned only with payroll.read.
         var user = new ClaimsPrincipal(new ClaimsIdentity(
-            [new Claim("tenant_id", tid.ToString())], "test"));
+            [new Claim("tenant_id", tid.ToString()), new Claim("permission", "payroll.read")], "test"));
         return new DashboardController(
             db,
             new MemoryDistributedCache(Options.Create(new MemoryDistributedCacheOptions())),

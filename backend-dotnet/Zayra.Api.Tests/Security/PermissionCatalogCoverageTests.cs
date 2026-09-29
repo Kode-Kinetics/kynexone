@@ -53,22 +53,11 @@ public class PermissionCatalogCoverageTests
     private static readonly IReadOnlyDictionary<string, string> KnownDeadPermissions =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            // Fixed in PR #136 (fix/settlement-maker-checker-and-dashboard-scope), not merged yet.
-            // REMOVE this entry when #136 lands — KnownDeadPermissionAllowlist_HasNoStaleEntries will fail until you do.
-            ["payroll.review"] = "PayrollController final-settlement review/approve gate — PR #136",
+            // payroll.review was fixed by PR #136 (reconciliation and mismatch report now require payroll.read).
 
-            // Found by this guard when it was introduced (2026-09-29). Outside the GOSI/payroll-statutory scope
-            // of the change that added it, so recorded rather than fixed there. Each 403s for every role today.
-            ["ai.policy.ask"] = "PolicyDocumentController — policy Q&A",
-            ["appraisal.finalize"] = "Performance/ReviewsController — finalize an appraisal",
-            ["appraisal.hr_calibration"] = "Performance/ReviewsController — HR calibration step",
-            ["appraisal.manager_review"] = "Performance/ReviewsController — manager review step",
-            ["appraisal.publish"] = "Performance/ReviewsController — publish results",
-            ["appraisal.view_all"] = "Performance/ReviewsController — view every appraisal",
-            ["finance.erp.confirm"] = "Finance/GlJournalExportsController — confirm ERP posting",
-            ["finance.gl.export"] = "Finance/GlJournalExportsController — export a GL journal",
-            ["policy.documents.read"] = "PolicyDocumentController — read policy documents",
-            ["sensitive_data.view"] = "Performance/ReviewsController — sensitive appraisal fields",
+            // The ten keys found when this guard was introduced (appraisal.*, sensitive_data.view,
+            // ai.policy.ask, policy.documents.read, finance.gl.export, finance.erp.confirm) were fixed by
+            // fix/dead-permission-checks: remapped to existing keys, except finance.erp.confirm, now seeded.
         };
 
     [Fact]

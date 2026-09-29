@@ -24,6 +24,8 @@ import { useCompany } from '../contexts/CompanyContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useWorkforceFindings } from '../hooks/useWorkforceFindings';
+import { usePayrollCompanies } from '../hooks/usePayrollCompanies';
+import { resolvePayrollRunCurrency, resolvePayrollRunsCurrency } from '../lib/payrollCurrency';
 import { useMediaQuery } from '../hooks/useMediaQuery';
 import { useT } from '../hooks/useT';
 import { ErrorBanner } from '../components/ui/ErrorBanner';
@@ -90,7 +92,13 @@ export function DashboardPage() {
   const { companies, selectedCompanyId, isGroupScope, companyVersion } = useCompany();
   const { isFeatureEnabled } = useFeatureFlags();
   const { hasPermission } = useAuth();
+  // F10: payroll figures are for payroll readers only (the API also withholds them), and the reports
+  // link is only offered to someone who can open reports.
+  const canReadPayroll = hasPermission('payroll.read');
+  const canReadReports = hasPermission('reports.read');
   const findings = useWorkforceFindings();
+  // R03: a payroll amount is in its run's company currency, resolved exactly as the payroll workspace does.
+  const payrollCompanies = usePayrollCompanies(canReadPayroll);
 
   const [data, setData] = useState<DashboardFull | null>(null);
   const [loading, setLoading] = useState(true);
@@ -127,13 +135,23 @@ export function DashboardPage() {
   const payrollEnabled = isFeatureEnabled('payroll') || !!data?.overview.payrollSummary || (data?.payrollTrends.some((p) => p.totalNet > 0) ?? false);
   const hour = tenantHour(clock.tz, clock.now);
   // Payroll readiness items link to /payroll, so they are only raised for someone who can open it.
-  const showPayrollAttention = payrollEnabled && hasPermission('payroll.read');
+  const showPayrollAttention = payrollEnabled && canReadPayroll;
   const attention = useMemo(
     () => buildAttention(data, findings.insights, Date.now(), { payroll: showPayrollAttention }),
     [data, findings.insights, showPayrollAttention],
   );
   // Tiles show the last six months; the hero uses the full year.
   const tileData = useMemo(() => (data ? { ...data, trends: data.trends.slice(-6) } : null), [data]);
+
+  const latestRun = data?.overview.payrollSummary ?? null;
+  const runCurrency = latestRun
+    ? resolvePayrollRunCurrency({ companyId: latestRun.companyId ?? null }, payrollCompanies.companies, payrollCompanies.state)
+    : null;
+  const trendCurrency = resolvePayrollRunsCurrency(
+    (data?.payrollTrends ?? []).filter((p) => p.totalNet > 0).map((p) => ({ companyId: p.companyId ?? null })),
+    payrollCompanies.companies, payrollCompanies.state);
+  const payrollCurrency = runCurrency?.status === 'resolved' ? runCurrency.currency : null;
+  const currencyNote = runCurrency?.status === 'unavailable' ? runCurrency.reason : null;
 
   const companyName = isGroupScope
     ? t('All companies')
@@ -163,9 +181,11 @@ export function DashboardPage() {
           <span className="tabular-nums">{asOf ? `${t('Updated')} ${asOf}` : t('Refresh')}</span>
           <span className="sr-only">{t('Refresh dashboard')}</span>
         </button>
-        <Link href="/reports" className="wg-press inline-flex h-10 items-center rounded-xl bg-sapphire px-4 text-[13px] font-semibold text-white hover:bg-blue-700 dark:bg-blue-600">
-          {t('Open reports')}
-        </Link>
+        {canReadReports && (
+          <Link href="/reports" className="wg-press inline-flex h-10 items-center rounded-xl bg-sapphire px-4 text-[13px] font-semibold text-white hover:bg-blue-700 dark:bg-blue-600">
+            {t('Open reports')}
+          </Link>
+        )}
       </div>
     </header>
   );
@@ -179,13 +199,16 @@ export function DashboardPage() {
 
   const attentionEl = data ? <AttentionStrip items={attention} findingsUnavailable={findings.enabled && findings.failed} /> : null;
   const wide = useMediaQuery('(min-width: 1280px)');
-  const heroEl = data ? <PayrollHero data={data} payrollEnabled={payrollEnabled} dense={wide} /> : null;
+  const heroEl = data && canReadPayroll
+    ? <PayrollHero data={data} payrollEnabled={payrollEnabled} dense={wide} currency={payrollCurrency}
+        trendCurrency={trendCurrency.status === 'resolved' ? trendCurrency.currency : null} currencyNote={currencyNote} />
+    : null;
   const kpiEl = tileData ? <KpiRow data={tileData} hour={hour} asOf={asOf} dense={wide} /> : null;
   const heatEl = data ? <AttendanceHeatmap data={data} /> : null;
   const approvalsEl = <ApprovalsTable queue={data?.overview.approvalQueue ?? []} pending={pending} loading={!data && loading} compact={phone} dense={wide} />;
   const expiryEl = data ? <ExpiryTimeline data={data} /> : null;
   const compEl = data ? <Composition data={data} /> : null;
-  const payDeptEl = data ? <PayrollByDepartment data={data} /> : null;
+  const payDeptEl = data && canReadPayroll ? <PayrollByDepartment data={data} currency={payrollCurrency} /> : null;
   const activityEl = data ? <ActivityPanel feed={data.activityFeed ?? []} /> : null;
 
   if (compact) {

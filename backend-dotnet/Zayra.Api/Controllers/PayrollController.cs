@@ -5,6 +5,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Zayra.Api.Application.Attendance;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.CountryPack;
@@ -3366,23 +3367,47 @@ public class PayrollController : ControllerBase
         if (settlementsDisbursed.Count > 0)
         {
             var disbursedIds = settlementsDisbursed.Select(s => s.Id).ToList();
+            // ── F10: CLAIM THE SETTLEMENTS UNDER A ROW LOCK ──────────────────────────────────────────
             // Tracked copies, re-loaded INSIDE the transaction (the snapshot above is AsNoTracking so it
-            // survives a retry). The Approved + PayrollRunId == null predicate is re-applied as a
-            // compare-and-swap: if a concurrent settlement run stamped them first, this one takes none.
-            var settlementsMutable = await _db.EmployeeFinalSettlements
-                .Where(s => s.TenantId == tenantId && disbursedIds.Contains(s.Id)
-                         && s.Status == FinalSettlementStatuses.Approved && s.PayrollRunId == null)
+            // survives a retry), and now LOCKED before they are checked. This used to be a plain read: a
+            // run that read an Approved settlement while an external payment was committing went on to
+            // overwrite the Paid settlement with Disbursing, so the leaver was paid by bank transfer AND by
+            // this run. The run now takes the same locks, in the same order, as recording an external
+            // payment (and offboarding Complete / Cancel): the settlements' offboardings, then the
+            // settlements, each in id order so two runs cannot deadlock either. Whoever locks second waits,
+            // then sees the first one's result: a run that finds a Paid (or another run's) settlement
+            // writes nothing; a payment that finds a Disbursing settlement is refused.
+            var disbursedOffboardingIds = settlementsDisbursed.Select(s => s.OffboardingId).Distinct().ToList();
+            await _db.EmployeeOffboardings
+                .TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+                .Where(o => o.TenantId == tenantId && disbursedOffboardingIds.Contains(o.Id))
+                .OrderBy(o => o.Id)
+                .Select(o => o.Id)
                 .ToListAsync(cancellationToken);
+            var lockedSettlements = await _db.EmployeeFinalSettlements
+                .TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+                .Where(s => s.TenantId == tenantId && disbursedIds.Contains(s.Id))
+                .OrderBy(s => s.Id)
+                .ToListAsync(cancellationToken);
+            // The Approved + PayrollRunId == null predicate, re-checked on the LOCKED rows: a compare-and-swap.
+            var settlementsMutable = lockedSettlements
+                .Where(s => s.Status == FinalSettlementStatuses.Approved && s.PayrollRunId == null)
+                .ToList();
             if (settlementsMutable.Count != settlementsDisbursed.Count)
+            {
+                var lost = lockedSettlements.Where(s => !settlementsMutable.Contains(s)).ToList();
+                var paidOutside = lost.Count(s => s.PaidOutsidePayroll);
                 throw new PayrollProcessAbortException(409, new
                 {
                     error    = "settlement_consumed_concurrently",
                     message  = $"{settlementsDisbursed.Count - settlementsMutable.Count} settlement(s) selected by this " +
-                               "run were disbursed by another payroll run while it was processing. Nothing was written — " +
-                               "re-process this run.",
+                               "run were " + (paidOutside > 0 ? "recorded as paid outside payroll" : "disbursed by another payroll run") +
+                               " (or cancelled) while it was processing. Nothing was written — re-process this run.",
                     expected = settlementsDisbursed.Count,
                     stamped  = settlementsMutable.Count,
+                    settlements = lost.Select(s => new { settlementId = s.Id, s.EmployeeCode, s.Status, s.PaidOutsidePayroll }).ToList(),
                 });
+            }
             foreach (var s in settlementsMutable)
             {
                 Witness(PayrollConsumptionArtifacts.FinalSettlement, s.Id, s.EmployeeId, s.NetPayable, s.Status);
@@ -6775,13 +6800,28 @@ public class PayrollController : ControllerBase
     {
         var tenantId = GetTenantId();
         var runs = await _db.PayrollRuns.AsNoTracking().Where(x => x.TenantId == tenantId).ToListAsync(cancellationToken);
+        var lockedThisYear = runs.Where(x => x.Status == "Locked" && x.Year == DateTime.UtcNow.Year).ToList();
         return Ok(new
         {
             totalRuns = runs.Count,
             lockedRuns = runs.Count(x => x.Status == "Locked"),
             totalEmployeesPaid = runs.Where(x => x.Status == "Locked").Sum(x => x.EmployeeCount),
-            totalGrossYtd = runs.Where(x => x.Status == "Locked" && x.Year == DateTime.UtcNow.Year).Sum(x => x.TotalGrossSalary),
-            totalNetYtd = runs.Where(x => x.Status == "Locked" && x.Year == DateTime.UtcNow.Year).Sum(x => x.TotalNetSalary),
+            // Kept for older clients. In a group whose companies pay in different currencies these two
+            // add SAR to AED; ytdByCompany is what a client labels and totals per currency.
+            totalGrossYtd = lockedThisYear.Sum(x => x.TotalGrossSalary),
+            totalNetYtd = lockedThisYear.Sum(x => x.TotalNetSalary),
+            // R03 — year-to-date per legal entity. A run is paid in its company's currency, so the client
+            // resolves each company's currency and never sums across two.
+            ytdByCompany = lockedThisYear
+                .GroupBy(x => x.CompanyId)
+                .Select(g => new
+                {
+                    companyId = g.Key,
+                    totalGrossYtd = g.Sum(x => x.TotalGrossSalary),
+                    totalNetYtd = g.Sum(x => x.TotalNetSalary),
+                    lockedRuns = g.Count(),
+                })
+                .ToList(),
         });
     }
 
@@ -7892,12 +7932,15 @@ public class PayrollController : ControllerBase
     }
 
     // M1: audit log now captures caller IP and structured metadata
-    private async Task PayrollAudit(string action, string entity, string entityId, object? metadata, CancellationToken ct)
+    private async Task PayrollAudit(string action, string entity, string entityId, object? metadata, CancellationToken ct,
+        Guid? auditId = null)
     {
         var ip = _http.HttpContext?.Connection.RemoteIpAddress?.ToString() ?? "unknown";
         var meta = new { ip, userId = GetUserId()?.ToString(), data = metadata };
         _db.PayrollAuditLogs.Add(new PayrollAuditLog
         {
+            // A caller-chosen id lets a transaction verify its own commit (see MutateSettlementAsync).
+            Id = auditId ?? Guid.NewGuid(),
             TenantId = GetTenantId(),
             Action = action,
             EntityName = entity,
@@ -8141,19 +8184,46 @@ public class PayrollController : ControllerBase
     }
 
     /// <summary>
+    /// F10 — who may read a run's per-employee reconciliation (the mismatch report and the
+    /// month-over-month reconciliation). Both used to require <c>payroll.review</c>, a permission that is
+    /// not in the catalog, so no role — not even Admin — could open them. They are read-only views derived
+    /// from the run's slips and the salary assignments, so they take the permission that already governs
+    /// those reads: <c>payroll.read</c>. The slip, register and salary-assignment GETs carry legacy role
+    /// gates, but the permission-aware role handler admits any caller holding <c>payroll.read</c> to them
+    /// (LegacyRolePermissionResolver maps a Payroll GET to payroll.read), so this grants nobody a figure
+    /// they cannot already read: Admin, HR Director, HR Manager, Payroll Manager, Payroll Officer, Finance
+    /// Approver (who needs the variance to approve a run) and the Auditor.
+    /// </summary>
+    private bool CanReviewRunPayDetail() => HasPermission("payroll.read");
+
+    /// <summary>
+    /// A run's slips, limited to the employees the caller may see. Organization-level callers see the
+    /// whole run (the run itself is already company-filtered); a team- or department-scoped caller — only
+    /// possible through a custom role — sees their own people's rows, and the totals built from them.
+    /// </summary>
+    private async Task<List<PayrollSlip>> VisibleRunSlipsAsync(Guid tenantId, Guid runId, CancellationToken ct)
+    {
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        var query = _db.PayrollSlips.AsNoTracking().Where(x => x.TenantId == tenantId && x.RunId == runId);
+        if (scope.Level != DataScopeLevel.Organization && scope.AllowedEmployeeIds is { } allowed)
+            query = query.Where(x => allowed.Contains(x.EmployeeId));
+        return await query.ToListAsync(ct);
+    }
+
+    /// <summary>
     /// Per-employee reconciliation between contract salary and the processed payroll
     /// slip, plus WPS/GOSI/QIWA readiness flags.  Variance &gt; 5% is flagged as a warning.
     /// </summary>
     [HttpGet("runs/{id:guid}/mismatch-report")]
     public async Task<IActionResult> MismatchReport(Guid id, CancellationToken cancellationToken)
     {
-        if (!HasPermission("payroll.review")) return Forbid();
+        if (!CanReviewRunPayDetail()) return Forbid();
 
         var tenantId = GetTenantId();
         var run = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (run is null) return NotFound();
 
-        var slips = await _db.PayrollSlips.AsNoTracking().Where(x => x.TenantId == tenantId && x.RunId == id).ToListAsync(cancellationToken);
+        var slips = await VisibleRunSlipsAsync(tenantId, id, cancellationToken);
         var salaries = await _db.EmployeeSalaryStructures.AsNoTracking().Where(x => x.TenantId == tenantId).ToListAsync(cancellationToken);
         var profiles = await _db.EmployeePayrollProfiles.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync(cancellationToken);
         var empIds = slips.Select(s => s.EmployeeId).ToList();
@@ -8208,7 +8278,7 @@ public class PayrollController : ControllerBase
     [HttpGet("reports/reconciliation")]
     public async Task<IActionResult> Reconciliation([FromQuery] Guid runId, CancellationToken cancellationToken)
     {
-        if (!HasPermission("payroll.review")) return Forbid();
+        if (!CanReviewRunPayDetail()) return Forbid();
         var tenantId = GetTenantId();
         var run = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == runId, cancellationToken);
         if (run is null) return NotFound();
@@ -8225,8 +8295,8 @@ public class PayrollController : ControllerBase
                      && x.Status != "Voided")
             .FirstOrDefaultAsync(cancellationToken);
 
-        var currentSlips = await _db.PayrollSlips.AsNoTracking().Where(x => x.TenantId == tenantId && x.RunId == runId).ToListAsync(cancellationToken);
-        var priorSlips   = priorRun is not null ? await _db.PayrollSlips.AsNoTracking().Where(x => x.TenantId == tenantId && x.RunId == priorRun.Id).ToListAsync(cancellationToken) : new List<PayrollSlip>();
+        var currentSlips = await VisibleRunSlipsAsync(tenantId, runId, cancellationToken);
+        var priorSlips   = priorRun is not null ? await VisibleRunSlipsAsync(tenantId, priorRun.Id, cancellationToken) : new List<PayrollSlip>();
 
         var currentIds = currentSlips.Select(s => s.EmployeeId).ToHashSet();
         var priorIds   = priorSlips.Select(s => s.EmployeeId).ToHashSet();
@@ -8407,85 +8477,107 @@ public class PayrollController : ControllerBase
                           "explicit other-dues line) before settling.",
             });
 
-        var existing = await _db.EmployeeFinalSettlements
+        var existingStatus = await _db.EmployeeFinalSettlements.AsNoTracking()
             .Where(s => s.TenantId == tenantId && s.OffboardingId == offboarding.Id
                      && s.Status != FinalSettlementStatuses.Cancelled)
+            .Select(s => new { s.Id, s.Status })
             .FirstOrDefaultAsync(cancellationToken);
         // ── GUARD 1: CANNOT SETTLE TWICE ─────────────────────────────────────────────────────────────
         // A Draft/PendingApproval settlement is RE-COMPUTED in place (the operator is still iterating);
         // once it has accrued, it is immutable and must be cancelled (which contras the journal) first.
-        if (existing is not null && FinalSettlementStatuses.HasAccrued(existing.Status))
-            return Conflict(new
-            {
-                error   = "settlement_already_exists",
-                message = $"A settlement for this separation already exists in '{existing.Status}' status and has " +
-                          "posted its accrual journal. Cancel it (which posts the contra) before computing a new one.",
-                settlementId = existing.Id,
-                status       = existing.Status,
-            });
+        // Checked here so an accrued settlement is refused before any computation, and re-checked under
+        // the row lock below, where it cannot race an approval.
+        if (existingStatus is not null && FinalSettlementStatuses.HasAccrued(existingStatus.Status))
+            return SettlementAlreadyAccrued(existingStatus.Id, existingStatus.Status);
 
         var plan = await BuildFinalSettlementPlanAsync(
             tenantId, employee, offboarding, gcc, settlementCompanyId, req, cancellationToken);
 
-        var settlement = existing ?? new EmployeeFinalSettlement
+        // F10 — the write runs under a row lock on the live settlement. Without it, a recompute racing an
+        // approval could rewrite the lines and amounts of a settlement whose accrual had just posted on
+        // the OLD figures, leaving the payable and its journal disagreeing.
+        var auditId = Guid.NewGuid();
+        return await MutateSettlementAsync(tenantId, auditId, async token =>
         {
-            TenantId = tenantId,
-            CompanyId = settlementCompanyId,
-            EmployeeId = employee.Id,
-            OffboardingId = offboarding.Id,
-            CreatedByUserId = GetUserId(),
-            CreatedByName = GetUserName(),
-        };
-        ApplyPlan(settlement, plan);
-        if (existing is null) _db.EmployeeFinalSettlements.Add(settlement);
-        else
-        {
-            _db.FinalSettlementLines.RemoveRange(
-                _db.FinalSettlementLines.Where(l => l.TenantId == tenantId && l.SettlementId == settlement.Id));
-            settlement.UpdatedAtUtc = DateTime.UtcNow;
-        }
-        var lineRows = plan.Lines.Select((l, i) =>
-        {
-            l.TenantId = tenantId;
-            l.SettlementId = settlement.Id;
-            l.SortOrder = i;
-            return l;
-        }).ToList();
-        _db.FinalSettlementLines.AddRange(lineRows);
+            var existing = await _db.EmployeeFinalSettlements
+                .TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+                .Where(s => s.TenantId == tenantId && s.OffboardingId == offboarding.Id
+                         && s.Status != FinalSettlementStatuses.Cancelled)
+                .OrderBy(s => s.Id)
+                .FirstOrDefaultAsync(token);
+            if (existing is not null && FinalSettlementStatuses.HasAccrued(existing.Status))
+                return SettlementAlreadyAccrued(existing.Id, existing.Status);
 
-        // The Draft EOSBCalculation is PROMOTED rather than left dangling: /eosb/calculate upserts one per
-        // (tenant, employee) and nothing has ever advanced its Status, so every tenant carries an
-        // ever-growing pile of Drafts that mean nothing. Linking it makes the settlement the thing that
-        // finally gives that row a lifecycle.
-        var draftEosb = await _db.EOSBCalculations
-            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.Status == "Draft", cancellationToken);
-        if (draftEosb is not null)
-        {
-            settlement.EosbCalculationId = draftEosb.Id;
-            draftEosb.CalculationDate = plan.LastWorkingDay;
-            draftEosb.EligibleSalary = plan.BasicWage;
-            draftEosb.CalculatedAmount = plan.GratuityAmount;
-        }
+            var settlement = existing ?? new EmployeeFinalSettlement
+            {
+                TenantId = tenantId,
+                CompanyId = settlementCompanyId,
+                EmployeeId = employee.Id,
+                OffboardingId = offboarding.Id,
+                CreatedByUserId = GetUserId(),
+                CreatedByName = GetUserName(),
+            };
+            ApplyPlan(settlement, plan);
+            if (existing is null) _db.EmployeeFinalSettlements.Add(settlement);
+            else
+            {
+                _db.FinalSettlementLines.RemoveRange(
+                    _db.FinalSettlementLines.Where(l => l.TenantId == tenantId && l.SettlementId == settlement.Id));
+                settlement.UpdatedAtUtc = DateTime.UtcNow;
+            }
+            var lineRows = plan.Lines.Select((l, i) =>
+            {
+                l.TenantId = tenantId;
+                l.SettlementId = settlement.Id;
+                l.SortOrder = i;
+                return l;
+            }).ToList();
+            _db.FinalSettlementLines.AddRange(lineRows);
 
-        // Every transition routes through POD-A3's hash-chained helper. /eosb/calculate wrote NOTHING to
-        // that chain at all before this pod; a settlement is a payable, so every step of its life is now
-        // tamper-evident with an actor.
-        await PayrollAudit("payroll.final_settlement.drafted", "EmployeeFinalSettlement", settlement.Id.ToString(), new
-        {
-            employeeId = employee.Id, employee.EmployeeCode,
-            offboardingId = offboarding.Id,
-            lastWorkingDay = plan.LastWorkingDay, plan.TerminationReason,
-            gross = plan.GrossPayable, deductions = plan.TotalDeductions, net = plan.NetPayable,
-            gratuity = plan.GratuityAmount, encashment = plan.LeaveEncashmentAmount,
-            noticePay = plan.NoticePayAmount, noticeShortfall = plan.NoticeShortfallDeduction,
-            unpaidWages = plan.UnpaidWagesAmount, wagesPaidByRunId = plan.WagesPaidByRunId,
-            wageBaseDelta = plan.WageBaseDeltaAmount,
-            recomputed = existing is not null,
+            // The Draft EOSBCalculation is PROMOTED rather than left dangling: /eosb/calculate upserts one per
+            // (tenant, employee) and nothing has ever advanced its Status, so every tenant carries an
+            // ever-growing pile of Drafts that mean nothing. Linking it makes the settlement the thing that
+            // finally gives that row a lifecycle.
+            var draftEosb = await _db.EOSBCalculations
+                .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.Status == "Draft", token);
+            if (draftEosb is not null)
+            {
+                settlement.EosbCalculationId = draftEosb.Id;
+                draftEosb.CalculationDate = plan.LastWorkingDay;
+                draftEosb.EligibleSalary = plan.BasicWage;
+                draftEosb.CalculatedAmount = plan.GratuityAmount;
+            }
+
+            // Every transition routes through POD-A3's hash-chained helper. /eosb/calculate wrote NOTHING to
+            // that chain at all before this pod; a settlement is a payable, so every step of its life is now
+            // tamper-evident with an actor. F10: this row is also how approval knows who RECOMPUTED a
+            // settlement — CreatedByUserId keeps the first author, and a recomputer is a maker too.
+            await PayrollAudit(FinalSettlementDraftedAction, "EmployeeFinalSettlement", settlement.Id.ToString(), new
+            {
+                employeeId = employee.Id, employee.EmployeeCode,
+                offboardingId = offboarding.Id,
+                lastWorkingDay = plan.LastWorkingDay, plan.TerminationReason,
+                gross = plan.GrossPayable, deductions = plan.TotalDeductions, net = plan.NetPayable,
+                gratuity = plan.GratuityAmount, encashment = plan.LeaveEncashmentAmount,
+                noticePay = plan.NoticePayAmount, noticeShortfall = plan.NoticeShortfallDeduction,
+                unpaidWages = plan.UnpaidWagesAmount, wagesPaidByRunId = plan.WagesPaidByRunId,
+                wageBaseDelta = plan.WageBaseDeltaAmount,
+                recomputed = existing is not null,
+            }, token, auditId);
+            await _db.SaveChangesAsync(token);
+
+            return Ok(ProjectSettlement(settlement, lineRows, plan));
         }, cancellationToken);
-        await _db.SaveChangesAsync(cancellationToken);
-
-        return Ok(ProjectSettlement(settlement, lineRows, plan));
     }
+
+    private ConflictObjectResult SettlementAlreadyAccrued(Guid settlementId, string status) => Conflict(new
+    {
+        error   = "settlement_already_exists",
+        message = $"A settlement for this separation already exists in '{status}' status and has " +
+                  "posted its accrual journal. Cancel it (which posts the contra) before computing a new one.",
+        settlementId,
+        status,
+    });
 
     /// <summary>POD-C1 — every settlement for the tenant, newest first, with the Art. 88 overdue flag.</summary>
     [HttpGet("final-settlements")]
@@ -8549,25 +8641,30 @@ public class PayrollController : ControllerBase
     public async Task<IActionResult> SubmitFinalSettlement(Guid id, [FromBody] PayrollReasonRequest? req, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
-        var s = await _db.EmployeeFinalSettlements
-            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
-        if (s is null) return NotFound();
-        if (s.Status != FinalSettlementStatuses.Draft)
-            return BadRequest(new
-            {
-                error   = "invalid_transition",
-                message = $"Only a Draft settlement can be submitted for approval (current: '{s.Status}').",
-                status  = s.Status,
-            });
-        s.Status = FinalSettlementStatuses.PendingApproval;
-        s.SubmittedByUserId = GetUserId();
-        s.SubmittedByName = GetUserName();
-        s.SubmittedAtUtc = DateTime.UtcNow;
-        s.UpdatedAtUtc = DateTime.UtcNow;
-        await PayrollAudit("payroll.final_settlement.submitted", "EmployeeFinalSettlement", s.Id.ToString(),
-            new { s.EmployeeId, s.NetPayable, reason = req?.Reason }, cancellationToken);
-        await _db.SaveChangesAsync(cancellationToken);
-        return Ok(new { settlementId = s.Id, status = s.Status });
+        var auditId = Guid.NewGuid();
+        // F10 — under the settlement's row lock, so a submit cannot land after a concurrent approval and
+        // put an Approved settlement back into PendingApproval.
+        return await MutateSettlementAsync(tenantId, auditId, async token =>
+        {
+            var s = await LockSettlementAsync(tenantId, id, token);
+            if (s is null) return NotFound();
+            if (s.Status != FinalSettlementStatuses.Draft)
+                return BadRequest(new
+                {
+                    error   = "invalid_transition",
+                    message = $"Only a Draft settlement can be submitted for approval (current: '{s.Status}').",
+                    status  = s.Status,
+                });
+            s.Status = FinalSettlementStatuses.PendingApproval;
+            s.SubmittedByUserId = GetUserId();
+            s.SubmittedByName = GetUserName();
+            s.SubmittedAtUtc = DateTime.UtcNow;
+            s.UpdatedAtUtc = DateTime.UtcNow;
+            await PayrollAudit(FinalSettlementSubmittedAction, "EmployeeFinalSettlement", s.Id.ToString(),
+                new { s.EmployeeId, s.NetPayable, reason = req?.Reason }, token, auditId);
+            await _db.SaveChangesAsync(token);
+            return Ok(new { settlementId = s.Id, status = s.Status });
+        }, cancellationToken);
     }
 
     /// <summary>
@@ -8581,8 +8678,25 @@ public class PayrollController : ControllerBase
         Guid id, [FromBody] ApproveFinalSettlementRequest req, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
-        var s = await _db.EmployeeFinalSettlements
-            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
+        // F10 — an approval nobody can be named for cannot be checked against the maker, and would be
+        // recorded as approved by nobody. Refused outright.
+        if (GetUserId() is not Guid actorId) return Forbid();
+
+        // F10 — the whole approval runs as one transaction that starts by locking the settlement row.
+        // Two approvers clicking at once used to BOTH pass the post-once check (neither had committed)
+        // and BOTH post the accrual: the payable was booked twice. Now the second waits for the first,
+        // then sees an Approved settlement and is refused.
+        var auditId = Guid.NewGuid();
+        return await MutateSettlementAsync(tenantId, auditId,
+            token => ApproveLockedFinalSettlementAsync(tenantId, id, actorId, req, auditId, token),
+            cancellationToken);
+    }
+
+    private async Task<IActionResult> ApproveLockedFinalSettlementAsync(
+        Guid tenantId, Guid id, Guid actorId, ApproveFinalSettlementRequest req, Guid auditId,
+        CancellationToken cancellationToken)
+    {
+        var s = await LockSettlementAsync(tenantId, id, cancellationToken);
         if (s is null) return NotFound();
         if (s.Status is not (FinalSettlementStatuses.Draft or FinalSettlementStatuses.PendingApproval))
             return BadRequest(new
@@ -8592,14 +8706,20 @@ public class PayrollController : ControllerBase
                 status  = s.Status,
             });
 
-        // Segregation of duties, mirroring the payroll run's own approve gate.
-        var actorId = GetUserId();
-        if (actorId is Guid aid && s.CreatedByUserId == aid && !req.AcknowledgeSelfApproval)
-            return UnprocessableEntity(new
+        // ── F10: MAKER / CHECKER, WITH NO ESCAPE ─────────────────────────────────────────────────────
+        // Approval turns the figures into a booked liability, so it must come from someone who did not
+        // produce them. There used to be an acknowledgeSelfApproval flag that let the creator approve their
+        // own settlement by ticking a box, and the submitter and anyone who RECOMPUTED it were never checked.
+        // A recompute keeps CreatedByUserId, so the audit trail's drafted/submitted rows — written with the
+        // actor on every compute, recompute and submit — are read as well as the row's own stamps.
+        var makerRole = await SettlementMakerRoleAsync(tenantId, s, actorId, cancellationToken);
+        if (makerRole is not null)
+            return Conflict(new
             {
-                error   = "self_approval",
-                message = "The person who computed a settlement should not also approve it. Have a second " +
-                          "approver sign it off, or pass acknowledgeSelfApproval=true to record that you did both.",
+                error   = "segregation_of_duties",
+                message = $"You {makerRole} this settlement, so you cannot also approve it. A different user with " +
+                          "payroll approval rights must approve it.",
+                settlementId = s.Id,
             });
 
         // ── K2: THE TERMINATION REASON IS A LEGAL DETERMINATION, NOT A DEFAULT ───────────────────────
@@ -8788,7 +8908,9 @@ public class PayrollController : ControllerBase
             s.WageBaseAcknowledgedAtUtc = DateTime.UtcNow;
         }
 
-        await PayrollAudit("payroll.final_settlement.approved", "EmployeeFinalSettlement", s.Id.ToString(), new
+        // F10 — the approval's audit names the maker, the submitter and the approver, so the separation
+        // of duties can be read off the tamper-evident chain without joining back to the settlement row.
+        await PayrollAudit(FinalSettlementApprovedAction, "EmployeeFinalSettlement", s.Id.ToString(), new
         {
             s.EmployeeId, s.EmployeeCode, s.TerminationReason, s.LastWorkingDay,
             gross = s.GrossPayable, deductions = s.TotalDeductions, net = s.NetPayable,
@@ -8797,9 +8919,12 @@ public class PayrollController : ControllerBase
             wageBaseDelta = s.WageBaseDeltaAmount,
             wageBaseAcknowledged = req.AcknowledgeWageBaseFloor,
             wagesAcknowledgedUnpaid = s.WagesAcknowledgedUnpaid,
-            selfApproved = actorId is Guid a2 && s.CreatedByUserId == a2,
+            computedByUserId = s.CreatedByUserId,
+            submittedByUserId = s.SubmittedByUserId,
+            approvedByUserId = actorId,
+            approvedByName = s.ApprovedByName,
             reason = req.Reason,
-        }, cancellationToken);
+        }, cancellationToken, auditId);
         await _db.SaveChangesAsync(cancellationToken);
 
         return Ok(new
@@ -8836,8 +8961,20 @@ public class PayrollController : ControllerBase
         if (string.IsNullOrWhiteSpace(req?.Reason))
             return BadRequest(new { error = "reason_required", message = "A reason is required to cancel a settlement." });
 
-        var s = await _db.EmployeeFinalSettlements
-            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
+        // F10 — under the settlement's row lock. A cancel that read the settlement before a concurrent
+        // approval committed found no accrual to contra, then flipped the now-Approved settlement to
+        // Cancelled: a cancelled settlement with a live payable on 2320. Locked, the cancel waits for the
+        // approval and contras what it posted.
+        var auditId = Guid.NewGuid();
+        return await MutateSettlementAsync(tenantId, auditId,
+            token => CancelLockedFinalSettlementAsync(tenantId, id, req, auditId, token),
+            cancellationToken);
+    }
+
+    private async Task<IActionResult> CancelLockedFinalSettlementAsync(
+        Guid tenantId, Guid id, PayrollReasonRequest req, Guid auditId, CancellationToken cancellationToken)
+    {
+        var s = await LockSettlementAsync(tenantId, id, cancellationToken);
         if (s is null) return NotFound();
         if (s.Status == FinalSettlementStatuses.Cancelled)
             return Conflict(new { error = "already_cancelled", message = "This settlement is already cancelled." });
@@ -8911,9 +9048,74 @@ public class PayrollController : ControllerBase
             s.EmployeeId, s.EmployeeCode, priorStatus, reason = req.Reason,
             contraEntries = contras.Count,
             contraAmount = Math.Round(contras.Sum(c => c.Amount), 2),
-        }, cancellationToken);
+        }, cancellationToken, auditId);
         await _db.SaveChangesAsync(cancellationToken);
         return Ok(new { settlementId = s.Id, status = s.Status, reversedEntries = contras.Count });
+    }
+
+    // ── F10: settlement state changes — one locked transaction each, and maker/checker ─────────────
+
+    private const string FinalSettlementDraftedAction = "payroll.final_settlement.drafted";
+    private const string FinalSettlementSubmittedAction = "payroll.final_settlement.submitted";
+    private const string FinalSettlementApprovedAction = "payroll.final_settlement.approved";
+
+    /// <summary>
+    /// Runs one settlement state change as a single transaction under the production retrying strategy.
+    /// The operation starts by locking the settlement row (<see cref="LockSettlementAsync"/>), so
+    /// compute, submit, approve and cancel on the same settlement are serialized: whichever commits
+    /// second re-reads the first one's result and applies its own rules to it. A retry after an
+    /// ambiguous commit is settled by looking for this call's own audit row (<paramref name="auditId"/>),
+    /// the Offboarding controller's pattern, so an approval is never posted twice by a retry either.
+    /// Refusals return without saving; the empty transaction then commits nothing.
+    /// </summary>
+    private async Task<IActionResult> MutateSettlementAsync(
+        Guid tenantId, Guid auditId, Func<CancellationToken, Task<IActionResult>> operation, CancellationToken ct)
+    {
+        if (!_db.Database.IsRelational())
+            return await operation(ct);
+
+        var attempt = 0;
+        var strategy = _db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteInTransactionAsync(
+            async token =>
+            {
+                // A retry starts clean; the first attempt keeps anything the caller already tracks.
+                if (attempt++ > 0) _db.ChangeTracker.Clear();
+                return await operation(token);
+            },
+            async token => await _db.PayrollAuditLogs.AsNoTracking()
+                .AnyAsync(x => x.Id == auditId && x.TenantId == tenantId, token),
+            System.Data.IsolationLevel.ReadCommitted,
+            ct);
+    }
+
+    /// <summary>The settlement, tracked and locked FOR UPDATE until the surrounding transaction ends.</summary>
+    private Task<EmployeeFinalSettlement?> LockSettlementAsync(Guid tenantId, Guid id, CancellationToken ct) =>
+        _db.EmployeeFinalSettlements
+            .TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, ct);
+
+    /// <summary>
+    /// F10 — why <paramref name="actorId"/> may not approve <paramref name="s"/>, or null when they may:
+    /// "calculated" if they computed it (the row's creator, or anyone whose compute/recompute is on the
+    /// audit chain for it), "submitted" if they put it forward for approval.
+    /// </summary>
+    private async Task<string?> SettlementMakerRoleAsync(
+        Guid tenantId, EmployeeFinalSettlement s, Guid actorId, CancellationToken ct)
+    {
+        if (s.CreatedByUserId == actorId) return "calculated";
+        if (s.SubmittedByUserId == actorId) return "submitted";
+        var entityId = s.Id.ToString();
+        var actions = await _db.PayrollAuditLogs.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.EntityName == "EmployeeFinalSettlement" && x.EntityId == entityId
+                     && x.UserId == actorId
+                     && (x.Action == FinalSettlementDraftedAction || x.Action == FinalSettlementSubmittedAction))
+            .Select(x => x.Action)
+            .Distinct()
+            .ToListAsync(ct);
+        return actions.Contains(FinalSettlementDraftedAction) ? "calculated"
+             : actions.Contains(FinalSettlementSubmittedAction) ? "submitted"
+             : null;
     }
 
     // ── POD-C1 internals ─────────────────────────────────────────────────────────────────────────
@@ -10385,8 +10587,6 @@ public record ApproveFinalSettlementRequest(
     /// them to this settlement as an explicit other-dues line.</summary>
     bool AcknowledgeWagesUnpaid = false,
     string? WagesUnpaidReason = null,
-    /// <summary>Records that the same person computed and approved the settlement.</summary>
-    bool AcknowledgeSelfApproval = false,
     /// <summary>GL date for the accrual journal. Defaults to today; the period is guarded for close.</summary>
     DateOnly? AccrualDate = null,
     string? Reason = null);

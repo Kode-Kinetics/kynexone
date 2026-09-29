@@ -2,9 +2,9 @@ import { expect, test } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createLatestRequestGate, runLatest } from '../src/lib/latestRequest';
-import { commonPayrollCurrency, resolvePayrollRunCurrency } from '../src/lib/payrollCurrency';
+import { commonPayrollCurrency, resolvePayrollRunCurrency, resolvePayrollRunsCurrency, totalsByCurrency } from '../src/lib/payrollCurrency';
 import { filterPayrollInsightsForReadiness, paymentReadinessHeadline, type PaymentPrerequisites } from '../src/lib/payrollPrerequisites';
-import { buildAttention } from '../src/components/dashboard/dashboardModel';
+import { buildAttention, fmtMoney } from '../src/components/dashboard/dashboardModel';
 import type { DashboardFull } from '../src/api/dashboard';
 import type { AIInsight } from '../src/api/intelligence';
 import {
@@ -317,6 +317,84 @@ test.describe('browserless employee search race and payroll currency contracts',
     expect(payroll).not.toContain('fmtAmt(overview.totalGrossPayroll, currencyCode)');
     expect(payroll).not.toContain('fmtAmt(m.current, currencyCode)');
     expect(payroll).not.toContain('fmtAmt(slips.reduce((s, x) => s + x.grossSalary, 0), currencyCode)');
+  });
+
+  test('R03: a set of runs has one currency only when every run resolves to it', () => {
+    const companies = [{ id: 'ksa', defaultCurrency: 'SAR' }, { id: 'ksa2', defaultCurrency: 'sar' }, { id: 'uae', defaultCurrency: 'AED' }];
+    expect(resolvePayrollRunsCurrency([{ companyId: 'ksa' }, { companyId: 'ksa2' }], companies, 'loaded'))
+      .toEqual({ status: 'resolved', currency: 'SAR' });
+    const mixed = resolvePayrollRunsCurrency([{ companyId: 'ksa' }, { companyId: 'uae' }], companies, 'loaded');
+    expect(mixed.status).toBe('unavailable');
+    expect(mixed.status === 'unavailable' && mixed.reason).toContain('AED, SAR');
+    expect(resolvePayrollRunsCurrency([{ companyId: 'ksa' }], [], 'loading')).toEqual({ status: 'loading' });
+    expect(resolvePayrollRunsCurrency([{ companyId: 'gone' }, { companyId: 'ksa' }], companies, 'loaded').status).toBe('unavailable');
+    expect(resolvePayrollRunsCurrency([], companies, 'loaded').status).toBe('unavailable');
+  });
+
+  test('R03: totals are kept per currency, never added across currencies', () => {
+    const batches = [
+      { currency: 'SAR', totalAmount: 100 }, { currency: 'sar', totalAmount: 50 },
+      { currency: 'AED', totalAmount: 30 }, { currency: '', totalAmount: 5 },
+    ];
+    expect(totalsByCurrency(batches, (b) => b.currency, (b) => b.totalAmount)).toEqual([
+      { currency: 'SAR', total: 150 }, { currency: 'AED', total: 30 }, { currency: null, total: 5 },
+    ]);
+  });
+
+  test('R03: payment tracking, reports YTD, EOSB history and the home dashboard carry no tenant-default or hard-coded currency', () => {
+    const payroll = read('src/views/PayrollPage.tsx');
+    expect(payroll).not.toContain('fmtAmt(total, currencyCode)');
+    expect(payroll).not.toContain('fmtAmt(summary.totalGrossYtd, currencyCode)');
+    expect(payroll).not.toContain('fmtAmt(summary.totalNetYtd, currencyCode)');
+    expect(payroll).not.toContain('{currencyCode} {(h.eligibleSalary');
+    expect(payroll).not.toContain('{currencyCode} {(h.calculatedAmount');
+    expect(payroll).toContain('const totals = totalsByCurrency(batches, b => b.currency, b => b.totalAmount);');
+    expect(payroll).toContain('const totals = totalsByCurrency(summary.ytdByCompany, row => {');
+
+    // The dashboard's money helper has no currency default, and no dashboard surface spells SAR.
+    expect(fmtMoney(1_500)).toBe('1.5K');
+    expect(fmtMoney(2_400_000, 'AED')).toBe('AED 2.40M');
+    for (const file of ['src/components/dashboard/dashboardModel.ts', 'src/components/dashboard/PayrollHero.tsx',
+      'src/components/dashboard/PayrollByDepartment.tsx', 'src/components/dashboard/charts/Visuals.tsx']) {
+      const code = read(file).split('\n').filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line)).join('\n');
+      expect(code, file).not.toMatch(/\bSAR\b/);
+    }
+    const dashboard = read('src/views/DashboardPage.tsx');
+    expect(dashboard).toContain('resolvePayrollRunCurrency({ companyId: latestRun.companyId ?? null }, payrollCompanies.companies, payrollCompanies.state)');
+    expect(dashboard).toContain('const trendCurrency = resolvePayrollRunsCurrency(');
+  });
+});
+
+// F10 — maker/checker on final settlements, and whose figures the home dashboard shows.
+test.describe('browserless F10 contracts', () => {
+  test('the final-settlement approval has no maker/checker escape hatch', () => {
+    const payroll = read('src/views/PayrollPage.tsx');
+    const api = read('src/api/payroll.ts');
+    expect(payroll).not.toContain('acknowledgeSelfApproval');
+    expect(payroll).not.toContain('Acknowledge maker/checker exception');
+    expect(api).not.toContain('acknowledgeSelfApproval');
+    expect(payroll).toContain('whoever calculated, recalculated or submitted a settlement cannot approve it.');
+  });
+
+  test('payroll figures and the reports link are only offered to someone who can read them', () => {
+    const dashboard = read('src/views/DashboardPage.tsx');
+    expect(dashboard).toContain("const canReadPayroll = hasPermission('payroll.read');");
+    expect(dashboard).toContain("const canReadReports = hasPermission('reports.read');");
+    expect(dashboard).toMatch(/const heroEl = data && canReadPayroll\n/);
+    expect(dashboard).toContain('const payDeptEl = data && canReadPayroll ? <PayrollByDepartment');
+    expect(dashboard).toMatch(/\{canReadReports && \(\n\s+<Link href="\/reports"/);
+    expect(dashboard).toContain('usePayrollCompanies(canReadPayroll)');
+  });
+
+  test('payroll readiness withheld by the API (null) is unknown, never "no gaps"', () => {
+    const data = {
+      overview: { complianceCriticalTotal: 0, alerts: [], approvalQueue: [], pendingApprovals: 0 },
+      kpis: {
+        pendingLeaveRequests: 0, pendingAttendanceCorrections: 0, attendanceExceptions: 0, expiringDocuments: 0,
+        expiredDocuments: 0, missingDocuments: 0, qiwaEnabled: false, missingSalaryAssignments: null, missingBankDetails: null,
+      },
+    } as unknown as DashboardFull;
+    expect(buildAttention(data, [], Date.now(), { payroll: false })).toEqual([]);
   });
 });
 

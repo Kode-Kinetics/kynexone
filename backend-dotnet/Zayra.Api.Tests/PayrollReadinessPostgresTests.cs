@@ -90,7 +90,8 @@ public sealed class PayrollReadinessPostgresTests
             {
                 HttpContext = new DefaultHttpContext
                 {
-                    User = new ClaimsPrincipal(new ClaimsIdentity([new Claim("tenant_id", tenantId.ToString())], "test")),
+                    User = new ClaimsPrincipal(new ClaimsIdentity(
+                        [new Claim("tenant_id", tenantId.ToString()), new Claim("permission", "payroll.read")], "test")),
                 },
             },
         };

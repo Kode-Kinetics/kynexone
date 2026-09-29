@@ -574,13 +574,30 @@ public class GlJournalExportsController : ControllerBase
     private bool HasPermission(string permission) =>
         User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
 
-    // Permission keys are NOT minted by this pod. Reads reuse finance.gl.read; producing an artifact and
-    // attesting an ERP import reuse finance.gl.manage. finance.gl.export / finance.erp.confirm are
-    // recognised if the tenant defines them, so real segregation of duties (the person who exports is not
-    // the person who attests the ERP accepted it) can be turned on without a code change.
+    /// <summary>
+    /// SEGREGATION OF DUTIES. Producing the journal and attesting that the client's ERP accepted it are
+    /// held by different keys, so the person who exports is not, by default, the person who says it was
+    /// posted:
+    /// <list type="bullet">
+    /// <item>read — <c>finance.gl.read</c> (or <c>finance.gl.manage</c>);</item>
+    /// <item>export (maker) — <c>finance.gl.manage</c>: whoever maintains the GL accounts and mappings the
+    /// journal is built from produces the file (Payroll Manager);</item>
+    /// <item>confirm / reject the ERP import (checker) — <see cref="ErpConfirmPermission"/> ONLY
+    /// (Finance Approver). <c>finance.gl.manage</c> no longer satisfies it.</item>
+    /// </list>
+    /// <para>This used to read <c>finance.gl.export || finance.gl.manage</c> and
+    /// <c>finance.erp.confirm || finance.gl.manage</c>, on the stated assumption that a tenant could "define"
+    /// the two narrower keys to turn segregation on. It could not: the catalog is global and seeded, and
+    /// neither key was in it, so both collapsed to <c>finance.gl.manage</c> and the maker could always
+    /// attest their own export. <c>finance.gl.export</c> is dropped (nothing distinguishes it from
+    /// <c>finance.gl.manage</c> in this product); <c>finance.erp.confirm</c> is now a catalog key.</para>
+    /// </summary>
     private bool CanRead() => HasPermission("finance.gl.read") || HasPermission("finance.gl.manage");
-    private bool CanExport() => HasPermission("finance.gl.export") || HasPermission("finance.gl.manage");
-    private bool CanConfirm() => HasPermission("finance.erp.confirm") || HasPermission("finance.gl.manage");
+    private bool CanExport() => HasPermission("finance.gl.manage");
+    private bool CanConfirm() => HasPermission(ErpConfirmPermission);
+
+    /// <summary>Confirm or reject that the client's ERP imported a journal export — the checker key.</summary>
+    public const string ErpConfirmPermission = "finance.erp.confirm";
 
     private string UserName() =>
         User.FindFirst(System.Security.Claims.ClaimTypes.Name)?.Value ?? "Unknown";

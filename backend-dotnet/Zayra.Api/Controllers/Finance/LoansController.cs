@@ -67,11 +67,30 @@ public class LoansController : ControllerBase
 
     // ── Employee Loans ────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// F10 — the loan book is read behind loans.read or loans.write (the Loans page's own navigation rule;
+    /// HR Manager holds loans.write). These GETs had no permission gate, only the employee-scope filter,
+    /// so every organisation-wide reader — Compliance Officer, Recruiter, HR Assistant — read every loan.
+    /// Employees see their own loans through self-service, which does not use these endpoints.
+    /// </summary>
+    internal static IActionResult? LoansReadDenial(ControllerBase controller) =>
+        controller.User.HasPermission("loans.read") || controller.User.HasPermission("loans.write")
+            ? null
+            : controller.StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                error = "loans_read_forbidden",
+                message = "Loans and salary advances are shown to holders of the loans.read or loans.write permission. " +
+                          "Ask an administrator if you need them.",
+                requiredPermissions = new[] { "loans.read", "loans.write" },
+            });
+
     [HttpGet]
+    [HasPermission("loans.read", "loans.write")]
     public async Task<IActionResult> ListLoans(
         [FromQuery] Guid? employeeId, [FromQuery] string? status,
         [FromQuery] int page = 1, [FromQuery] int pageSize = 30, CancellationToken ct = default)
     {
+        if (LoansReadDenial(this) is { } denied) return denied;
         var tid = GetTenantId();
         var scope = await _scopeService.ResolveAsync(User, tid, ct);
         var q = _db.EmployeeLoans.Where(x => x.TenantId == tid && !x.IsDeleted);
@@ -92,8 +111,10 @@ public class LoansController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
+    [HasPermission("loans.read", "loans.write")]
     public async Task<IActionResult> GetLoan(Guid id, CancellationToken ct)
     {
+        if (LoansReadDenial(this) is { } denied) return denied;
         var tid = GetTenantId();
         var loan = await _db.EmployeeLoans.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (loan == null) return NotFound();
@@ -368,9 +389,18 @@ public class LoansController : ControllerBase
     }
 
     [HttpGet("{id:guid}/installments")]
+    [HasPermission("loans.read", "loans.write")]
     public async Task<IActionResult> GetInstallments(Guid id, CancellationToken ct)
     {
+        if (LoansReadDenial(this) is { } denied) return denied;
         var tid = GetTenantId();
+        // Same object-level check as GetLoan: this route had none, so any loan's schedule was readable by id.
+        var loan = await _db.EmployeeLoans.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
+        if (loan == null) return NotFound();
+        var scope = await _scopeService.ResolveAsync(User, tid, ct);
+        if (!scope.IsUnrestricted && !(loan.EmployeeIntId.HasValue && scope.CanAccessEmployee(loan.EmployeeIntId.Value)))
+            return Forbid();
         return Ok(await _db.LoanInstallments.Where(x => x.LoanId == id && x.TenantId == tid)
             .OrderBy(x => x.InstallmentNumber).ToListAsync(ct));
     }

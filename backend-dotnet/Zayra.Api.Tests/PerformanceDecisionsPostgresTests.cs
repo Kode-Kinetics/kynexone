@@ -547,8 +547,6 @@ public sealed class PerformanceDecisionsPostgresTests
             new(ClaimTypes.Role, "Admin"),
             new("permission", "employees.read"),
             new("permission", "employees.write"),
-            new("permission", "appraisal.publish"),
-            new("permission", "appraisal.finalize"),
             new("permission", "performance.approve"),
             new("FullName", "HR Admin"),
         };
