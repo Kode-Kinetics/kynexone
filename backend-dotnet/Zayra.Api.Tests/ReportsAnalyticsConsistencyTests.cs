@@ -112,6 +112,95 @@ public sealed class ReportsAnalyticsConsistencyTests
         Assert.Contains("250000", shown);
     }
 
+    /// <summary>Each KPI section, the fields it carries, and the data permission that reveals it.</summary>
+    public static TheoryData<string, string[], string> GatedSections => new()
+    {
+        { "leave", ["pendingLeave", "onLeaveToday"], "leave.read" },
+        { "attendance", ["presentToday", "lateToday"], "attendance.read" },
+        { "overtime", ["pendingOT"], "overtime.read" },
+        { "payroll", ["lastRunYear", "lastRunMonth", "lastRunStatus", "totalNetSalary"], "payroll.read" },
+        { "compliance", ["visasExpiring", "passportsExpiring"], "compliance.read" },
+        { "recruitment", ["openPositions", "pendingApplications"], "recruitment.read" },
+        { "financial", ["activeLoans", "outstandingLoanBalance"], "loans.read" },
+    };
+
+    [Theory]
+    [MemberData(nameof(GatedSections))]
+    public async Task Kpis_WithholdEachSection_FromACallerWithoutItsPermission_KeepingTheFieldsAsNull(
+        string section, string[] fields, string permission)
+    {
+        await using var db = Db();
+        var tid = await SeedEverySectionAsync(db);
+
+        // Only the base employee reader: every gated section is withheld.
+        var bare = Ok(await Analytics(db, tid, "reports.read", "employees.read").GetKPIs(default));
+        foreach (var field in fields)
+        {
+            // Present (the shape is unchanged for the page), and null — not zero, which is a claim.
+            Assert.True(bare.GetProperty(section).TryGetProperty(field, out var value), $"{section}.{field} must stay in the response");
+            Assert.Equal(JsonValueKind.Null, value.ValueKind);
+        }
+        var withheld = bare.GetProperty("withheld").EnumerateArray()
+            .Single(w => w.GetProperty("section").GetString() == section);
+        Assert.Contains(permission, withheld.GetProperty("requiredPermissions").EnumerateArray().Select(p => p.GetString()));
+        Assert.Equal(fields, withheld.GetProperty("fields").EnumerateArray().Select(f => f.GetString()));
+        // Headcount is the endpoint's own permission, so it is always shown.
+        Assert.Equal(JsonValueKind.Number, bare.GetProperty("headcount").GetProperty("totalActive").ValueKind);
+
+        // With the permission, the section is shown and not listed as withheld.
+        var granted = Ok(await Analytics(db, tid, "reports.read", "employees.read", permission).GetKPIs(default));
+        Assert.NotEqual(JsonValueKind.Null, granted.GetProperty(section).GetProperty(fields[0]).ValueKind);
+        Assert.DoesNotContain(granted.GetProperty("withheld").EnumerateArray(), w => w.GetProperty("section").GetString() == section);
+    }
+
+    [Fact]
+    public async Task Kpis_ShowComplianceCounts_ToAHolderOfEmployeesDocuments()
+    {
+        // HR Manager holds employees.documents rather than compliance.read; the compliance reports accept
+        // either, and so does this section.
+        await using var db = Db();
+        var tid = await SeedEverySectionAsync(db);
+
+        var json = Ok(await Analytics(db, tid, "reports.read", "employees.read", "employees.documents").GetKPIs(default));
+
+        Assert.Equal(1, json.GetProperty("compliance").GetProperty("visasExpiring").GetInt32());
+    }
+
+    [Fact]
+    public async Task Kpis_WithEveryPermission_WithholdNothing()
+    {
+        await using var db = Db();
+        var tid = await SeedEverySectionAsync(db);
+
+        var json = Ok(await Analytics(db, tid, [.. FullReader, "compliance.read", "recruitment.read", "loans.read"]).GetKPIs(default));
+
+        Assert.Empty(json.GetProperty("withheld").EnumerateArray());
+        Assert.Equal(1, json.GetProperty("financial").GetProperty("activeLoans").GetInt32());
+        Assert.Equal(1500m, json.GetProperty("financial").GetProperty("outstandingLoanBalance").GetDecimal());
+        Assert.Equal(1, json.GetProperty("recruitment").GetProperty("openPositions").GetInt32());
+    }
+
+    /// <summary>One non-zero figure in every KPI section, so "withheld" can never be confused with "none".</summary>
+    private static async Task<Guid> SeedEverySectionAsync(ZayraDbContext db)
+    {
+        var tid = await SeedTenantAsync(db);
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var employee = Emp(tid, "E-ALL", "Active", DateTime.UtcNow.AddYears(-1));
+        db.Employees.Add(employee);
+        await db.SaveChangesAsync();
+        db.LeaveRequests.Add(new LeaveRequest { TenantId = tid, EmployeeId = employee.Id, EmployeeName = "E-ALL", LeaveTypeName = "Annual", StartDate = today, EndDate = today, TotalDays = 1, Status = "Approved" });
+        db.AttendanceDailyRecords.Add(Day(tid, employee.Id, today, AttendanceStatuses.Present));
+        db.OvertimeRequests.Add(new OvertimeRequest { TenantId = tid, EmployeeId = employee.Id, EmployeeName = "E-ALL", WorkDate = today, RequestedMinutes = 60, Status = "Pending" });
+        db.PayrollRuns.Add(new PayrollRun { TenantId = tid, Year = 2026, Month = 8, Status = "Locked", TotalNetSalary = 250000 });
+        db.VisaRecords.Add(new VisaRecord { TenantId = tid, EmployeeId = employee.PublicId, EmployeeName = "E-ALL", VisaType = "Residence", VisaNumber = "V-1", ExpiryDate = today.AddDays(10), Status = "Active" });
+        db.PassportRecords.Add(new PassportRecord { TenantId = tid, EmployeeId = employee.PublicId, EmployeeName = "E-ALL", PassportNumber = "P-1", ExpiryDate = today.AddDays(10), Status = "Active" });
+        db.JobOpenings.Add(new JobOpening { TenantId = tid, JobCode = "JOB-1", Title = "Engineer", Status = "Open" });
+        db.JobApplications.Add(new JobApplication { TenantId = tid, JobTitle = "Engineer", CandidateName = "Cand", Stage = "Screening", Status = "Active" });
+        db.EmployeeLoans.Add(new EmployeeLoan { TenantId = tid, EmployeeName = "E-ALL", LoanNumber = "LN-1", Status = "Active", OutstandingBalance = 1500 });
+        await db.SaveChangesAsync();
+        return tid;
+    }
+
     [Fact]
     public async Task LeaveTrend_WithoutLeaveRead_IsRefusedWithAReason()
     {
