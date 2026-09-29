@@ -35,7 +35,7 @@ export function resolvePayrollRunCurrency(
   if (companiesState === 'failed') {
     return {
       status: 'unavailable',
-      reason: "The employing company's currency could not be loaded, so these amounts are shown without a currency. Reload before approving.",
+      reason: "The employing company's currency could not be loaded, so these amounts are shown without a currency.",
     };
   }
 

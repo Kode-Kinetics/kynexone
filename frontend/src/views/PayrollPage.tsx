@@ -223,7 +223,9 @@ function PrerequisiteRow({ label, count, nextAction, danger, action }: {
   return (
     <li className="flex flex-wrap items-center gap-x-3 gap-y-1 px-5 py-2.5">
       <span className={`w-12 shrink-0 text-sm font-semibold tabular-nums ${danger ? 'text-rose-700 dark:text-rose-300' : 'text-amber-700 dark:text-amber-300'}`}>
-        {count !== undefined ? count.toLocaleString('en-US') : 'Company'}
+        {count !== undefined
+          ? count.toLocaleString('en-US')
+          : <Building2 className="h-4 w-4" aria-label="Company setting" />}
       </span>
       <span className="min-w-0 flex-1 text-sm text-slate-800 dark:text-slate-100">
         {label}
