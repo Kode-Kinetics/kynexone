@@ -59,11 +59,11 @@ Legend — **Actor**: `SU` scoped user · `GU` group user · `SW` system worker 
 
 | Line | Method | Actor | Why filter insufficient | Tenant | Company | Permission | Tests |
 |---|---|---|---|---|---|---|---|
-| 107 | `Create` | SU/GU | Duplicate-export probe must see a live group-level export to supersede it | `TenantId == tid` | `ScopeError(companyId)` → `CanAccessCompany`; null ⇒ group-level only | `finance.gl.export` \| `finance.gl.manage` | `CrossCompanyAccessTests`, `ReportExportScopeTests` |
+| 107 | `Create` | SU/GU | Duplicate-export probe must see a live group-level export to supersede it | `TenantId == tid` | `ScopeError(companyId)` → `CanAccessCompany`; null ⇒ group-level only | `finance.gl.manage` (maker) | `CrossCompanyAccessTests`, `ReportExportScopeTests` |
 | 143 | `List` | SU/GU | Export list spans entities by design | `TenantId == tid` | **Explicitly re-applied**: `AccessibleCompanyIds` for non-group callers | `finance.gl.read` \| `finance.gl.manage` | as above |
 | 167 | `Get` | SU/GU | Stored export lines are read frozen, as emitted | `TenantId == tid` | `ScopeError(export.CompanyId)` before read | `finance.gl.read` | as above |
-| 275 | `Confirm` | SU/GU | Confirmation must cover every entry the file carried | `TenantId == tid` | `ScopeError` after `LoadAsync` | `finance.erp.confirm` \| `finance.gl.manage` | as above |
-| 354 | `Reject` | SU/GU | As above | `TenantId == tid` | `ScopeError` after `LoadAsync` | `finance.erp.confirm` \| `finance.gl.manage` | as above |
+| 275 | `Confirm` | SU/GU | Confirmation must cover every entry the file carried | `TenantId == tid` | `ScopeError` after `LoadAsync` | `finance.erp.confirm` only (checker; `finance.gl.manage` no longer suffices) | as above, `GlJournalExportPermissionTests` |
+| 354 | `Reject` | SU/GU | As above | `TenantId == tid` | `ScopeError` after `LoadAsync` | `finance.erp.confirm` only (checker) | as above, `GlJournalExportPermissionTests` |
 | 391 | `LoadAsync` | SU/GU | Single-export lookup by id; caller scope-checks the result | `TenantId == tid` | Caller applies `ScopeError` | inherited from caller | as above |
 
 > **Verified:** every one of these six is preceded by an explicit permission check (`CanRead` /
