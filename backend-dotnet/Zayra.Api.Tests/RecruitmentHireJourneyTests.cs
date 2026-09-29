@@ -112,6 +112,7 @@ public sealed class RecruitmentHireJourneyTests
         // The rejection's remedy is a revised offer. Generating one deleted every Draft offer on the
         // application, including the rejected one its approval rows still point at.
         var seeded = await SeedAsync(offerStatus: "Draft");
+        await SeedOfferPlacementAsync(seeded.TenantId);
         await using (var db = _fixture.CreateDb())
         {
             db.OfferApprovals.Add(Approval(seeded, 1, "Rejected"));
@@ -266,6 +267,7 @@ public sealed class RecruitmentHireJourneyTests
     public async Task GeneratedOffer_NamesTheLegalEntitysCurrency_NotAHardCodedAed()
     {
         var seeded = await SeedAsync(offerStatus: null, companyCurrency: "SAR");
+        await SeedOfferPlacementAsync(seeded.TenantId);
 
         await using (var db = _fixture.CreateDb())
             (await Applications(db, seeded.TenantId, Guid.NewGuid()).GenerateOffer(
@@ -311,6 +313,16 @@ public sealed class RecruitmentHireJourneyTests
     }
 
     // ── Seeding ───────────────────────────────────────────────────────────────
+
+    /// <summary>The department and designation the seeded offer names. Generating an offer now resolves
+    /// both against the organisation's records (OfferPlacement), so they have to exist.</summary>
+    private async Task SeedOfferPlacementAsync(Guid tenantId)
+    {
+        await using var db = _fixture.CreateDb();
+        db.Departments.Add(new Department { TenantId = tenantId, Code = "PPL", NameEn = "People", IsActive = true });
+        db.Designations.Add(new Designation { TenantId = tenantId, Code = "HRL", TitleEn = "Enterprise HR Lead", IsActive = true });
+        await db.SaveChangesAsync();
+    }
 
     private async Task<Seeded> SeedAsync(string? offerStatus, string? companyCurrency = null, bool companyActive = true)
     {
