@@ -37,7 +37,8 @@ public class EmployeeModuleTests
         var draft = Assert.IsType<EmployeeDraftDto>(Assert.IsType<CreatedResult>(draftResult.Result).Value);
         await controller.SubmitDraft(draft.Id, CancellationToken.None);
 
-        var approval = await controller.ApproveDraft(draft.Id, CancellationToken.None);
+        // Maker-checker: the HR user who prepared the draft cannot activate it; a second one does.
+        var approval = await CreateController(db, tenantId).ApproveDraft(draft.Id, CancellationToken.None);
 
         var profile = Assert.IsType<EmployeeDetailDto>(Assert.IsType<OkObjectResult>(approval.Result).Value);
         Assert.Equal("Active", profile.Status);
