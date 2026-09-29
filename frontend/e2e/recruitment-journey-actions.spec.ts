@@ -3,6 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   HIRE_THROUGH_OFFER_HINT,
+  OFFER_NEXT_ACTION_TEXT,
+  canRequestApproval,
+  offerNextAction,
   assessmentScoreLabel,
   assessmentScoreMax,
   canRecordAssessmentResult,
@@ -46,10 +49,42 @@ test.describe('Recruitment — hire journey actions', () => {
     }
 
     const source = recruitmentPage();
-    expect(source).toContain("{canSendOffer(offer.status) && (");
+    // The drawer's Send also waits for the API's verdict for this user (approval, maker-checker).
+    expect(source).toContain('{canSendOffer(offer.status) && approvalContext?.canSend && (');
     expect(source).toContain('{canSendOffer(o.status) && (');
     // The Offers tab surfaces a refusal (e.g. "an approver rejected this offer") instead of swallowing it.
     expect(source).toMatch(/try \{ await offersApi\.send\(id\); load\(\); \} catch \(e\) \{ notifyApiError\(e\); \}/);
+  });
+
+  test('an offer shows the one approval step the signed-in user can take', () => {
+    const ctx = (over: Partial<{ canSend: boolean; required: boolean; myPendingStepId: string | null }> = {}) =>
+      ({ canSend: false, required: true, myPendingStepId: null, ...over });
+
+    // Approval is on by default: a fresh draft asks for an approver, not a Send.
+    expect(offerNextAction('Draft', ctx(), [])).toBe('request-approval');
+    // The named approver decides; everyone else waits.
+    expect(offerNextAction('PendingApproval', ctx({ myPendingStepId: 'step-1' }), [{ status: 'Pending' }])).toBe('decide');
+    expect(offerNextAction('PendingApproval', ctx(), [{ status: 'Pending' }])).toBe('awaiting-approval');
+    // Approved, and this user may send it (the API has already excluded the approver).
+    expect(offerNextAction('Approved', ctx({ canSend: true }), [{ status: 'Approved' }])).toBe('send');
+    // A rejection is final for this offer: the way forward is a revised offer.
+    expect(offerNextAction('Draft', ctx(), [{ status: 'Rejected' }])).toBe('rejected');
+    // A tenant that switched approval off sends a draft straight away.
+    expect(offerNextAction('Draft', ctx({ required: false, canSend: true }), [])).toBe('send');
+    // Nothing to do once it has gone.
+    expect(offerNextAction('Sent', ctx(), [{ status: 'Approved' }])).toBeNull();
+    expect(offerNextAction('Draft', null, [])).toBeNull();
+
+    expect(canRequestApproval('Draft', [])).toBe(true);
+    expect(canRequestApproval('PendingApproval', [{ status: 'Pending' }])).toBe(true);
+    expect(canRequestApproval('Draft', [{ status: 'Rejected' }])).toBe(false);
+    expect(canRequestApproval('Approved', [{ status: 'Approved' }])).toBe(false);
+    expect(OFFER_NEXT_ACTION_TEXT['request-approval']).toMatch(/did not write it/);
+
+    const source = recruitmentPage();
+    expect(source).toContain('function OfferApprovalPanel(');
+    expect(source).toContain('onContext={setApprovalContext}');
+    expect(source).toContain('offersApi.decideApproval(offerId, context.myPendingStepId');
   });
 
   test('an assessment result can be recorded once sent, and only while it has no score', () => {

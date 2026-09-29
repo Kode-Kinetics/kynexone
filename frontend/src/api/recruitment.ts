@@ -302,10 +302,26 @@ export interface OfferApproval {
   offerLetterId: string;
   stepOrder: number;
   approverName: string;
+  approverUserId: string | null;
   approverRole: string;
   status: string;
   comments: string;
   decidedAtUtc: string | null;
+}
+
+/** What the signed-in user can do next with an offer, from the same rules the API enforces. */
+export interface OfferApprovalContext {
+  required: boolean;
+  isAuthor: boolean;
+  canSend: boolean;
+  sendBlockedReason: string | null;
+  myPendingStepId: string | null;
+}
+
+export interface OfferApproverOption {
+  userId: string;
+  name: string;
+  email: string;
 }
 
 export interface OnboardingChecklist {
@@ -417,7 +433,16 @@ export const offersApi = {
     client.get<{ total: number; items: OfferLetter[] }>('/api/recruitment/offers', { params: { applicationId, status } }).then(r => r.data),
 
   get: (id: string) =>
-    client.get<{ offer: OfferLetter; approvals: OfferApproval[] }>(`/api/recruitment/offers/${id}`).then(r => r.data),
+    client.get<{ offer: OfferLetter; approvals: OfferApproval[]; approval: OfferApprovalContext }>(`/api/recruitment/offers/${id}`).then(r => r.data),
+
+  approverOptions: (id: string) =>
+    client.get<OfferApproverOption[]>(`/api/recruitment/offers/${id}/approver-options`).then(r => r.data),
+
+  requestApproval: (id: string, body: { approverUserId: string; approverName: string; approverRole?: string }) =>
+    client.post<OfferApproval>(`/api/recruitment/offers/${id}/approvals`, body).then(r => r.data),
+
+  decideApproval: (id: string, approvalId: string, body: { decision: 'Approved' | 'Rejected'; comments?: string }) =>
+    client.patch<OfferApproval>(`/api/recruitment/offers/${id}/approvals/${approvalId}/decide`, body).then(r => r.data),
 
   create: (body: { applicationId: string; offeredJobTitle: string; offeredDepartment?: string; startDate: string; basicSalary: number; housingAllowance: number; transportAllowance: number; otherAllowances: number; probationMonths: number; contentHtml?: string; responseDeadline?: string }) =>
     client.post<OfferLetter>('/api/recruitment/offers', body).then(r => r.data),
