@@ -235,11 +235,21 @@ public sealed class RecruitmentOfferMakerCheckerTests
     public async Task AHire_CannotBeActivatedInADifferentLegalEntityFromTheOffer()
     {
         // Company A made the offer. Its department name matches a department that hangs off a
-        // branch of Company B, so activation resolved the hire into B.
+        // branch of Company B, so activation resolved the hire into B. The offer is seeded as sent:
+        // this is the activation-side backstop, whatever path produced the offer.
         var w = await SeedWorldAsync(policy: "false", companyCurrency: "SAR", departmentInOtherEntity: true);
-        var offerId = await GenerateAsync(w, w.Author, department: "Operations");
+        var offerId = Guid.NewGuid();
         await using (var db = _fixture.CreateDb())
-            (await Applications(db, w.TenantId, w.Author).SendOffer(offerId, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        {
+            db.OfferLetters.Add(new OfferLetter
+            {
+                Id = offerId, TenantId = w.TenantId, CompanyId = w.CompanyId, ApplicationId = w.ApplicationId,
+                CandidateName = "Noura Al Mansoori", OfferedJobTitle = "Enterprise HR Lead", OfferedDepartment = "Operations",
+                StartDate = DateOnly.FromDateTime(DateTime.UtcNow.AddMonths(1)), BasicSalary = 20_000, GrossSalary = 26_500,
+                ProbationMonths = 3, ContentHtml = "<p>Offer</p>", Status = "Sent", SentAtUtc = DateTime.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
         await using (var db = _fixture.CreateDb())
             (await Applications(db, w.TenantId, w.OtherHr).AcceptOffer(offerId, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
         Guid draftId;
