@@ -3363,23 +3363,47 @@ public class PayrollController : ControllerBase
         if (settlementsDisbursed.Count > 0)
         {
             var disbursedIds = settlementsDisbursed.Select(s => s.Id).ToList();
+            // ── F10: CLAIM THE SETTLEMENTS UNDER A ROW LOCK ──────────────────────────────────────────
             // Tracked copies, re-loaded INSIDE the transaction (the snapshot above is AsNoTracking so it
-            // survives a retry). The Approved + PayrollRunId == null predicate is re-applied as a
-            // compare-and-swap: if a concurrent settlement run stamped them first, this one takes none.
-            var settlementsMutable = await _db.EmployeeFinalSettlements
-                .Where(s => s.TenantId == tenantId && disbursedIds.Contains(s.Id)
-                         && s.Status == FinalSettlementStatuses.Approved && s.PayrollRunId == null)
+            // survives a retry), and now LOCKED before they are checked. This used to be a plain read: a
+            // run that read an Approved settlement while an external payment was committing went on to
+            // overwrite the Paid settlement with Disbursing, so the leaver was paid by bank transfer AND by
+            // this run. The run now takes the same locks, in the same order, as recording an external
+            // payment (and offboarding Complete / Cancel): the settlements' offboardings, then the
+            // settlements, each in id order so two runs cannot deadlock either. Whoever locks second waits,
+            // then sees the first one's result: a run that finds a Paid (or another run's) settlement
+            // writes nothing; a payment that finds a Disbursing settlement is refused.
+            var disbursedOffboardingIds = settlementsDisbursed.Select(s => s.OffboardingId).Distinct().ToList();
+            await _db.EmployeeOffboardings
+                .TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+                .Where(o => o.TenantId == tenantId && disbursedOffboardingIds.Contains(o.Id))
+                .OrderBy(o => o.Id)
+                .Select(o => o.Id)
                 .ToListAsync(cancellationToken);
+            var lockedSettlements = await _db.EmployeeFinalSettlements
+                .TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+                .Where(s => s.TenantId == tenantId && disbursedIds.Contains(s.Id))
+                .OrderBy(s => s.Id)
+                .ToListAsync(cancellationToken);
+            // The Approved + PayrollRunId == null predicate, re-checked on the LOCKED rows: a compare-and-swap.
+            var settlementsMutable = lockedSettlements
+                .Where(s => s.Status == FinalSettlementStatuses.Approved && s.PayrollRunId == null)
+                .ToList();
             if (settlementsMutable.Count != settlementsDisbursed.Count)
+            {
+                var lost = lockedSettlements.Where(s => !settlementsMutable.Contains(s)).ToList();
+                var paidOutside = lost.Count(s => s.PaidOutsidePayroll);
                 throw new PayrollProcessAbortException(409, new
                 {
                     error    = "settlement_consumed_concurrently",
                     message  = $"{settlementsDisbursed.Count - settlementsMutable.Count} settlement(s) selected by this " +
-                               "run were disbursed by another payroll run while it was processing. Nothing was written — " +
-                               "re-process this run.",
+                               "run were " + (paidOutside > 0 ? "recorded as paid outside payroll" : "disbursed by another payroll run") +
+                               " (or cancelled) while it was processing. Nothing was written — re-process this run.",
                     expected = settlementsDisbursed.Count,
                     stamped  = settlementsMutable.Count,
+                    settlements = lost.Select(s => new { settlementId = s.Id, s.EmployeeCode, s.Status, s.PaidOutsidePayroll }).ToList(),
                 });
+            }
             foreach (var s in settlementsMutable)
             {
                 Witness(PayrollConsumptionArtifacts.FinalSettlement, s.Id, s.EmployeeId, s.NetPayable, s.Status);
