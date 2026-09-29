@@ -483,7 +483,8 @@ public class LeaverLifecycleS2Tests
     /// <summary>Approved settlement + its live accrual, exactly as PayrollController.ApproveFinalSettlement
     /// leaves them: 2320 credited at the GROSS of the earning lines.</summary>
     private static async Task<EmployeeFinalSettlement> SeedApprovedSettlementAsync(
-        ZayraDbContext db, LeaverFixture fx, decimal gross = 60_000m, decimal deductions = 1_000m)
+        ZayraDbContext db, LeaverFixture fx, decimal gross = 60_000m, decimal deductions = 1_000m,
+        Guid? approvedBy = null, bool recordApprover = true)
     {
         var settlement = new EmployeeFinalSettlement
         {
@@ -496,6 +497,11 @@ public class LeaverLifecycleS2Tests
             TerminationReason = "Resignation", Currency = "SAR",
             GrossPayable = gross, TotalDeductions = deductions, NetPayable = gross - deductions,
             Status = FinalSettlementStatuses.Approved,
+            // ApproveFinalSettlement always stamps the approver; a different finance user from the
+            // tests' actor unless a test says otherwise.
+            ApprovedByUserId = recordApprover ? approvedBy ?? Guid.NewGuid() : null,
+            ApprovedByName = recordApprover ? "Finance Approver" : null,
+            ApprovedAtUtc = recordApprover ? DateTime.UtcNow : null,
             GlPostedAtUtc = DateTime.UtcNow, GlPeriod = "2026-09",
         };
         db.EmployeeFinalSettlements.Add(settlement);
@@ -658,6 +664,74 @@ public class LeaverLifecycleS2Tests
 
         Assert.Contains("gl_period_closed",
             Json(Assert.IsType<UnprocessableEntityObjectResult>(result).Value));
+    }
+
+    /// <summary>
+    /// F10 — segregation of duties on the money. The person who approved a settlement cannot also be
+    /// the one who asserts it was paid: that single user would both sign off the amount and evidence
+    /// its disbursement, and the discharge journal would close the payable on their word alone.
+    /// </summary>
+    [Fact]
+    public async Task ExternalSettlementPayment_ApproverCannotRecordTheirOwnPayment()
+    {
+        await using var db = CreateDb();
+        var fx = await SeedLeaverAsync(db);
+        var settlement = await SeedApprovedSettlementAsync(db, fx, approvedBy: fx.ActorId);
+
+        var result = await Controller(db, fx.TenantId, fx.ActorId).RecordExternalSettlementPayment(
+            fx.Offboarding.Id,
+            new ExternalSettlementPaymentRequest("BankTransfer", "TRF-SOD-1", settlement.NetPayable, null),
+            CancellationToken.None);
+
+        Assert.Contains("segregation_of_duties", Json(Assert.IsType<ConflictObjectResult>(result).Value));
+        var stored = await db.EmployeeFinalSettlements.AsNoTracking().SingleAsync();
+        Assert.Equal(FinalSettlementStatuses.Approved, stored.Status);
+        Assert.False(stored.PaidOutsidePayroll);
+        Assert.False(await db.FinanceGlEntries.AnyAsync(x => x.EventType == GlEventTypes.SettlementExternalPayment));
+        Assert.False((await db.EmployeeOffboardings.AsNoTracking().SingleAsync()).FinalSettlementDone);
+    }
+
+    /// <summary>
+    /// F10 — an Approved settlement with no recorded approver cannot prove the check above, so it is
+    /// refused rather than assumed independent.
+    /// </summary>
+    [Fact]
+    public async Task ExternalSettlementPayment_WithNoRecordedApprover_IsRefused()
+    {
+        await using var db = CreateDb();
+        var fx = await SeedLeaverAsync(db);
+        var settlement = await SeedApprovedSettlementAsync(db, fx, recordApprover: false);
+
+        var result = await Controller(db, fx.TenantId, fx.ActorId).RecordExternalSettlementPayment(
+            fx.Offboarding.Id,
+            new ExternalSettlementPaymentRequest("BankTransfer", "TRF-SOD-2", settlement.NetPayable, null),
+            CancellationToken.None);
+
+        Assert.Contains("settlement_approver_unknown", Json(Assert.IsType<ConflictObjectResult>(result).Value));
+        Assert.Equal(FinalSettlementStatuses.Approved,
+            (await db.EmployeeFinalSettlements.AsNoTracking().SingleAsync()).Status);
+        Assert.False(await db.FinanceGlEntries.AnyAsync(x => x.EventType == GlEventTypes.SettlementExternalPayment));
+    }
+
+    /// <summary>A payment can only be recorded against a live separation, not a closed or withdrawn one.</summary>
+    [Theory]
+    [InlineData("Completed")]
+    [InlineData("Cancelled")]
+    public async Task ExternalSettlementPayment_OutsideAnInProgressOffboarding_IsRefused(string state)
+    {
+        await using var db = CreateDb();
+        var fx = await SeedLeaverAsync(db);
+        var settlement = await SeedApprovedSettlementAsync(db, fx);
+        fx.Offboarding.Status = state;
+        await db.SaveChangesAsync();
+
+        var result = await Controller(db, fx.TenantId, fx.ActorId).RecordExternalSettlementPayment(
+            fx.Offboarding.Id,
+            new ExternalSettlementPaymentRequest("BankTransfer", "TRF-LATE", settlement.NetPayable, null),
+            CancellationToken.None);
+
+        Assert.Contains("offboarding_not_in_progress", Json(Assert.IsType<ConflictObjectResult>(result).Value));
+        Assert.False(await db.FinanceGlEntries.AnyAsync(x => x.EventType == GlEventTypes.SettlementExternalPayment));
     }
 
     // ── Access revocation ────────────────────────────────────────────────────────────────────────

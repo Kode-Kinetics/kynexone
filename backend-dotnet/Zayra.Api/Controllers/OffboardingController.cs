@@ -731,6 +731,14 @@ public class OffboardingController : ControllerBase
     {
         var off = await Find(id, ct);
         if (off is null) return NotFound();
+        if (off.Status != "InProgress")
+            return Conflict(new
+            {
+                error   = "offboarding_not_in_progress",
+                message = $"A settlement payment can only be recorded while the offboarding is in progress (current: '{off.Status}').",
+            });
+        var actorId = this.GetUserId();
+        if (actorId is null) return Forbid();
 
         if (!Infrastructure.Payroll.FinalSettlementExternalDischarge.TryNormalizeMethod(req.Method, out var method))
             return BadRequest(new
@@ -758,6 +766,31 @@ public class OffboardingController : ControllerBase
                 message = "There is no live final settlement for this offboarding. Compute and approve the "
                         + "settlement first — the amount paid has to be the one the system determined.",
             });
+
+        // ── F10 — SEGREGATION OF DUTIES ON THE DISBURSEMENT ─────────────────────────────────────────
+        // The approver signs off the amount; recording the payment asserts the money left the bank and
+        // posts the journal that closes the payable. One person doing both is a single point of
+        // control over the whole liability, so the recorder must be someone else — and an Approved
+        // settlement with no recorded approver cannot prove that, so it is refused rather than assumed.
+        // (A settlement that is not Approved falls through to the discharge's own status refusal.)
+        if (settlement.Status == FinalSettlementStatuses.Approved)
+        {
+            if (settlement.ApprovedByUserId is null)
+                return Conflict(new
+                {
+                    error   = "settlement_approver_unknown",
+                    message = "This settlement has no recorded approver, so an independent payment check cannot be "
+                            + "shown. Cancel it, recompute it and have it approved through the settlement workflow "
+                            + "before recording the payment.",
+                });
+            if (settlement.ApprovedByUserId == actorId)
+                return Conflict(new
+                {
+                    error   = "segregation_of_duties",
+                    message = "You approved this settlement, so you cannot also record its payment. A different "
+                            + "finance user with payroll approval rights must record the disbursement.",
+                });
+        }
 
         var paidOn = req.PaidOn ?? DateOnly.FromDateTime(DateTime.UtcNow);
         // The amount is CONFIRMED against the settlement, never taken from the caller: a settlement
