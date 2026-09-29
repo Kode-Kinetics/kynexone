@@ -21,6 +21,7 @@ import {
   type PayrollRunPopulation, type PayrollValidationOverrideReport, type AuditIntegrityReport,
 } from '../api/payroll';
 import { identityAuditApi } from '../api/identity';
+import { formatCalendarDate } from '../lib/calendarDate';
 import client, { notifyApiError } from '../api/client';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { InfoTip } from '../components/InfoTip';
@@ -47,8 +48,7 @@ const salaryStructuresImportExport = {
 // ── Shared helpers ──────────────────────────────────────────────────────────────
 
 function fmtDate(s: string | null | undefined) {
-  if (!s) return '—';
-  return new Date(s).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' });
+  return formatCalendarDate(s, 'en-US');
 }
 
 function fmtAmt(n: number, currency = 'USD') {
