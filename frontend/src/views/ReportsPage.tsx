@@ -45,14 +45,18 @@ const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function fmt(n: number) { return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function fmt(n: number | null | undefined) {
+  return n == null ? 'Restricted' : n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
 
-function KpiCard({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
+/** A null value is a figure the server withheld because the caller lacks that data permission — never a zero. */
+function KpiCard({ label, value, sub }: { label: string; value: string | number | null | undefined; sub?: string }) {
+  const withheld = value == null;
   return (
     <div className="surface p-4">
       <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">{label}</p>
-      <p className="mt-1 text-2xl font-bold text-slate-900 dark:text-white">{value}</p>
-      {sub && <p className="mt-0.5 text-xs text-slate-400">{sub}</p>}
+      <p className={`mt-1 font-bold ${withheld ? 'text-sm text-slate-400' : 'text-2xl text-slate-900 dark:text-white'}`}>{withheld ? 'Restricted' : value}</p>
+      {withheld ? <p className="mt-0.5 text-xs text-slate-400">Needs access to this data</p> : sub && <p className="mt-0.5 text-xs text-slate-400">{sub}</p>}
     </div>
   );
 }
