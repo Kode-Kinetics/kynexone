@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { formatCalendarDate } from '../lib/calendarDate';
 import { UserMinus, X, CheckCircle2, Star, Undo2, AlertTriangle, ShieldOff, Search, Loader2 } from 'lucide-react';
 import {
   offboardingApi, SEPARATION_TYPE_FALLBACK,
@@ -21,7 +22,7 @@ const EXIT_REASONS = ['Compensation', 'Career Growth', 'Management', 'Work-Life 
 const OFFBOARDABLE_STATUSES = new Set(['Active', 'Suspended']);
 
 function daysBetween(from: Date, to: Date) { return Math.ceil((to.getTime() - from.getTime()) / 86400000); }
-function fmtDate(s: string | null) { return s ? new Date(s).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'; }
+function fmtDate(s: string | null) { return formatCalendarDate(s, 'en-GB'); }
 function addDays(iso: string, days: number) {
   const d = new Date(`${iso}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + days);
