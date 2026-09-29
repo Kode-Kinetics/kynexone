@@ -22,7 +22,6 @@ import {
 } from '../api/payroll';
 import { identityAuditApi } from '../api/identity';
 import { formatCalendarDate } from '../lib/calendarDate';
-import { commonPayrollCurrency, resolvePayrollRunCurrency, type CompaniesLoadState } from '../lib/payrollCurrency';
 import { commonPayrollCurrency, resolvePayrollRunCurrency, totalsByCurrency, type CompaniesLoadState } from '../lib/payrollCurrency';
 import { usePayrollCompanies } from '../hooks/usePayrollCompanies';
 import { filterPayrollInsightsForReadiness, paymentReadinessHeadline, prerequisiteLabel, type PaymentPrerequisites, type PayrollReadinessWithPrerequisites } from '../lib/payrollPrerequisites';
