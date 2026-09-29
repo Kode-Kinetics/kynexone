@@ -6,7 +6,7 @@ export default defineConfig({
   // is the RTL ratchet: it reads app/ and src/ and fails on a physical direction utility
   // that is not on its documented allow-list.
 
-  testMatch: /(ui-truthfulness-state|rtl-logical-properties|employee-create-country-gate|toast-context-stability|calendar-date|recruitment-journey-actions)\.spec\.ts/,
+  testMatch: /(ui-truthfulness-state|rtl-logical-properties|employee-create-country-gate|toast-context-stability|calendar-date|recruitment-journey-actions|new-hire-review)\.spec\.ts/,
   fullyParallel: false,
   retries: 0,
   workers: 1,
