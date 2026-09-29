@@ -356,7 +356,10 @@ public sealed class ReportExportTests
     {
         var tenantId = Guid.NewGuid();
         db.Tenants.Add(new Tenant { Id = tenantId, Name = "Schedule Tenant", Slug = $"sched-{Guid.NewGuid():N}" });
-        db.Permissions.Add(new Permission { Id = SchedulePermissionId, Key = "reports.schedule", Module = "Reports" });
+        db.Permissions.AddRange(
+            new Permission { Id = SchedulePermissionId, Key = "reports.schedule", Module = "Reports" },
+            // The headcount report's data. The worker now re-checks it against the owner on every run.
+            new Permission { Id = EmployeesReadPermissionId, Key = "employees.read", Module = "Employees" });
         db.Employees.Add(new Employee
         {
             TenantId = tenantId, EmployeeCode = "E-1", FullName = "Engineer", Department = "Engineering",
@@ -365,6 +368,15 @@ public sealed class ReportExportTests
         await db.SaveChangesAsync();
 
         var ownerId = await AddScheduleHolderAsync(db, tenantId, "owner@example.com");
+        // Scheduled reports are only mailed to active tenant users who could open them: the recipient
+        // shares the owner's role.
+        var recipientId = Guid.NewGuid();
+        db.Users.Add(new User
+        {
+            Id = recipientId, TenantId = tenantId, Email = "recipient@example.com", NormalizedEmail = "RECIPIENT@EXAMPLE.COM",
+            FullName = "Recipient", PasswordHash = "hash", IsActive = true, IsGroupScope = true,
+        });
+        db.UserRoles.Add(new UserRole { UserId = recipientId, RoleId = (await db.UserRoles.FirstAsync(x => x.UserId == ownerId)).RoleId });
         db.ReportSchedules.Add(new ReportSchedule
         {
             TenantId = tenantId, CreatedBy = ownerId, ReportKey = "hr.headcount", ReportName = "Headcount",
@@ -377,6 +389,7 @@ public sealed class ReportExportTests
     }
 
     private static readonly Guid SchedulePermissionId = Guid.NewGuid();
+    private static readonly Guid EmployeesReadPermissionId = Guid.NewGuid();
 
     private static async Task<Guid> AddScheduleHolderAsync(ZayraDbContext db, Guid tenantId, string email)
     {
@@ -389,7 +402,9 @@ public sealed class ReportExportTests
         });
         db.Roles.Add(new Role { Id = roleId, TenantId = tenantId, Name = $"Analyst {roleId:N}", NormalizedName = $"ANALYST {roleId:N}" });
         db.UserRoles.Add(new UserRole { UserId = userId, RoleId = roleId });
-        db.RolePermissions.Add(new RolePermission { RoleId = roleId, PermissionId = SchedulePermissionId });
+        db.RolePermissions.AddRange(
+            new RolePermission { RoleId = roleId, PermissionId = SchedulePermissionId },
+            new RolePermission { RoleId = roleId, PermissionId = EmployeesReadPermissionId });
         await db.SaveChangesAsync();
         return userId;
     }
