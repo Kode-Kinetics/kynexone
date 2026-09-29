@@ -329,6 +329,8 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.IEmployeeActivatio
 // Duplicate-person detection — the ONE authoritative, server-side detector shared by the pre-create
 // check, the create commit backstop, and (via the preloaded-dictionary matcher) the bulk importer.
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.IEmployeeDuplicateDetector, Zayra.Api.Infrastructure.Employees.EmployeeDuplicateDetector>();
+// Maker-checker on new-hire drafts: who made a hire and so may not activate it.
+builder.Services.AddScoped<Zayra.Api.Application.Employees.IDraftHireMakers, Zayra.Api.Infrastructure.Employees.DraftHireMakers>();
 // Phase 2 rate resolvers: bounded statutory-override precedence + non-statutory company rate precedence.
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.IStatutoryRateResolver, Zayra.Api.Infrastructure.Payroll.StatutoryRateResolver>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.ICompanyRatePolicyResolver, Zayra.Api.Infrastructure.Payroll.CompanyRatePolicyResolver>();

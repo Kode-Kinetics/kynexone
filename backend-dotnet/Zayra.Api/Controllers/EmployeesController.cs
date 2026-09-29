@@ -47,7 +47,9 @@ public class EmployeesController : ControllerBase
         // social-insurance enrolment every contribution is filed against — so it takes the same maker-checker
         // route. It became writable through PUT when EmployeeChangeApplier gained its payroll-profile key;
         // without this entry that write would have skipped the approval gosiReference always required.
-        "socialInsuranceReference"
+        "socialInsuranceReference",
+        // Where the WPS/SIF line pays: the bank's routing code and the account number (payroll profile).
+        "bankRoutingCode", "accountNumber"
     };
 
     private readonly ZayraDbContext _db;
@@ -64,8 +66,9 @@ public class EmployeesController : ControllerBase
     private readonly IEstablishmentGuard _establishmentGuard;
     private readonly IEmployeeActivationGuard _activationGuard;
     private readonly IEmployeeDuplicateDetector _duplicateDetector;
+    private readonly IDraftHireMakers _draftHireMakers;
 
-    public EmployeesController(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IHijriDateService hijri, IDataScopeService scopeService, ILetterService letters, IApprovalWorkflowService? approvalWorkflow = null, ILogger<EmployeesController>? logger = null, IEstablishmentGuard? establishmentGuard = null, IEmployeeActivationGuard? activationGuard = null, IEmployeeDuplicateDetector? duplicateDetector = null, IHrLetterIssuer? letterIssuer = null)
+    public EmployeesController(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IHijriDateService hijri, IDataScopeService scopeService, ILetterService letters, IApprovalWorkflowService? approvalWorkflow = null, ILogger<EmployeesController>? logger = null, IEstablishmentGuard? establishmentGuard = null, IEmployeeActivationGuard? activationGuard = null, IEmployeeDuplicateDetector? duplicateDetector = null, IHrLetterIssuer? letterIssuer = null, IDraftHireMakers? draftHireMakers = null)
     {
         _db = db;
         _passwordHasher = passwordHasher;
@@ -87,6 +90,9 @@ public class EmployeesController : ControllerBase
         _establishmentGuard = establishmentGuard ?? new EstablishmentGuardService(db);
         _activationGuard = activationGuard ?? new EmployeeActivationGuard(db);
         _duplicateDetector = duplicateDetector ?? new EmployeeDuplicateDetector(db);
+        // Who made a hire (maker-checker on drafts). Recruitment registers a wider implementation that
+        // adds the offer's sender and acceptor; the fallback is the employee module's own view.
+        _draftHireMakers = draftHireMakers ?? new DraftHireMakers(db);
     }
 
     [HttpGet]
@@ -769,6 +775,9 @@ public class EmployeesController : ControllerBase
             // Rows matched to an existing employee, and the subset where something was actually filled in.
             var repairExistingCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var repairedTouchedCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            // Existing-employee rows whose approval-gated values were left unapplied, and separated employees skipped.
+            var approvalRequired = new List<(int Row, string EmployeeCode, IReadOnlyList<string> Fields)>();
+            var skippedSeparated = 0;
 
             // ── WORK-EMAIL derivation/uniqueness (accept-never-block) ─────────────────────────────────────
             // Existing tenant work emails keyed by the LOGIN normalization (AuthService.Normalize) + a cumulative
@@ -909,11 +918,28 @@ public class EmployeesController : ControllerBase
                     { skipped++; skippedDupCode++; errors.Add($"Row {rowNum}: EmployeeCode '{code}' is duplicated within the import file; row skipped."); continue; }
                     if (existingEmployeesByCode.TryGetValue(code, out var existingEmployee))
                     {
-                        // REPAIR, NEVER OVERWRITE (see EmployeeImportRepairPlan): the row may only fill what the existing
-                        // employee is missing. A row with nothing left to fill is the ordinary duplicate skip.
+                        // A separated employee is never changed by an import (see EmployeeImportRepairPlan.IsSeparated).
+                        if (EmployeeImportRepairPlan.IsSeparated(existingEmployee))
+                        {
+                            skipped++; skippedDupCode++; skippedSeparated++;
+                            errors.Add($"Row {rowNum}: EmployeeCode '{code}' belongs to a separated employee ({existingEmployee.Status}) — an import never changes a separated employee.");
+                            continue;
+                        }
+                        // Approval-gated values in the row (bank, IBAN, account, routing, MOL ID, payment method,
+                        // social insurance, GOSI, salary) are NEVER applied to an existing employee — named here so
+                        // the operator knows to submit them through the employee's profile, where they need approval.
+                        var gatedNotApplied = EmployeeImportRepairPlan.ApprovalGatedValuesNotApplied(existingEmployee, row, repairLookups);
+                        if (gatedNotApplied.Count > 0)
+                        {
+                            approvalRequired.Add((rowNum, code, gatedNotApplied));
+                            warnings.Add($"Row {rowNum}: EmployeeCode '{code}' already exists — {string.Join(", ", gatedNotApplied)} in this row were NOT applied. "
+                                         + "An existing employee's bank, payroll-identity and salary details change only through an approved change: edit the employee.");
+                        }
+                        // REPAIR, NEVER OVERWRITE (see EmployeeImportRepairPlan): the row may only fill NON-sensitive
+                        // details the existing employee is missing. A row with nothing left to fill is the ordinary skip.
                         var rowJoining = ParseImportJoiningDate(row);
                         if (!EmployeeImportRepairPlan.NeedsRepair(existingEmployee, row, repairLookups,
-                                ParseImportSalary(row).CanAssign, rowJoining.Supplied && !rowJoining.Unparsed ? rowJoining.Value : null))
+                                rowJoining.Supplied && !rowJoining.Unparsed ? rowJoining.Value : null))
                         { skipped++; skippedDupCode++; errors.Add($"Row {rowNum}: EmployeeCode '{code}' already exists."); continue; }
                         repairExistingCodes.Add(code);
                         batchCodes[code] = existingEmployee;
@@ -1149,25 +1175,8 @@ public class EmployeesController : ControllerBase
                 if (await PersistAsync("positions") is { } positionSaveError) return positionSaveError;
             }
 
-            // A repair row never touches bank details that are waiting for a checker (including an approved change
-            // whose effective date has not arrived): the pending approval stays the only way they change.
-            var repairEmployeeIds = batchPayroll.Where(kv => repairExistingCodes.Contains(kv.Key)).Select(kv => kv.Value.emp.Id).ToArray();
-            var pendingBankEmployeeIds = repairEmployeeIds.Length == 0
-                ? new HashSet<int>()
-                : (await _db.EmployeeChangeRequests.AsNoTracking()
-                    .Where(x => x.TenantId == tenantId && repairEmployeeIds.Contains(x.EmployeeId)
-                        && x.AppliedAtUtc == null
-                        && (x.Status == "PendingApproval" || x.Status == "ApprovedPendingEffectiveDate"))
-                    .Select(x => new { x.EmployeeId, x.SensitiveFields })
-                    .ToListAsync(ct))
-                    .Where(x => x.SensitiveFields.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
-                        .Any(k => k.Equals("bankIban", StringComparison.OrdinalIgnoreCase)
-                               || k.Equals("bankName", StringComparison.OrdinalIgnoreCase)
-                               || k.Equals("wpsBankDetails", StringComparison.OrdinalIgnoreCase)))
-                    .Select(x => x.EmployeeId).ToHashSet();
-
             // ── Pass 1b: payroll profiles + salary structures ────────────────────────
-            int payrollProfilesCreated = 0, payrollProfilesRepaired = 0, salaryAssignmentsRecovered = 0, hierarchyLinksRecovered = 0;
+            int payrollProfilesCreated = 0, payrollProfilesRepaired = 0, hierarchyLinksRecovered = 0;
             var payrollArtifactsChanged = false;
             var stagedPayrollEntities = new List<object>();
             // EF queries cannot see Added entities until SaveChanges: reuse each structure staged in this import so
@@ -1177,7 +1186,57 @@ public class EmployeesController : ControllerBase
             var tenantCurrency = await _db.ResolveTenantCurrencyAsync(tenantId, ct);
             foreach (var (payrollCode, (emp, rowData)) in batchPayroll)
             {
-                var isRepair = repairExistingCodes.Contains(payrollCode);
+                if (repairExistingCodes.Contains(payrollCode))
+                {
+                    // REPAIR: fills only the NON-sensitive payroll columns an existing employee is missing — payroll
+                    // group, salary-structure reference, currency — creating the profile (with NO bank details) when
+                    // there is none. Bank, IBAN, account, routing, MOL ID, payment method, social insurance and salary
+                    // are approval-gated for an existing employee and were reported, not applied, in Pass 1.
+                    var repairGroup = rowData.GetValueOrDefault("PayrollGroup", string.Empty).Trim();
+                    var repairStructure = rowData.GetValueOrDefault("SalaryStructureCode", string.Empty).Trim();
+                    var repairCurrency = rowData.GetValueOrDefault("Currency", string.Empty).Trim().ToUpperInvariant();
+                    repairLookups.ProfilesByEmployee.TryGetValue(emp.Id, out var existingProfile);
+                    if (existingProfile is null)
+                    {
+                        if (repairGroup.Length == 0 && repairStructure.Length == 0 && repairCurrency.Length == 0) continue;
+                        existingProfile = new EmployeePayrollProfile
+                        {
+                            TenantId = tenantId, EmployeeId = emp.Id,
+                            SalaryCurrency = repairCurrency.Length > 0 ? repairCurrency : tenantCurrency,
+                            PayrollGroup = repairGroup, SalaryStructureReference = repairStructure,
+                            WpsEligible = true, EosbEligible = true, CreatedBy = GetUserId()
+                        };
+                        _db.EmployeePayrollProfiles.Add(existingProfile);
+                        repairLookups.ProfilesByEmployee[emp.Id] = existingProfile;
+                        stagedPayrollEntities.Add(existingProfile);
+                        payrollProfilesCreated++;
+                        payrollArtifactsChanged = true;
+                        repairedTouchedCodes.Add(payrollCode);
+                        continue;
+                    }
+                    var repairedAny = false;
+                    string FillBlank(string target, string source)
+                    {
+                        if (!string.IsNullOrWhiteSpace(target) || source.Length == 0) return target;
+                        repairedAny = true;
+                        return source;
+                    }
+                    existingProfile.PayrollGroup = FillBlank(existingProfile.PayrollGroup, repairGroup);
+                    existingProfile.SalaryStructureReference = FillBlank(existingProfile.SalaryStructureReference, repairStructure);
+                    existingProfile.SalaryCurrency = FillBlank(existingProfile.SalaryCurrency, repairCurrency);
+                    if (repairedAny)
+                    {
+                        existingProfile.UpdatedAtUtc = DateTime.UtcNow;
+                        existingProfile.UpdatedBy = GetUserId();
+                        stagedPayrollEntities.Add(existingProfile);
+                        payrollProfilesRepaired++;
+                        payrollArtifactsChanged = true;
+                        repairedTouchedCodes.Add(payrollCode);
+                    }
+                    continue;
+                }
+
+                // ── A NEW employee: initial data entry, the same as POST /api/employees (bank and salary included). ──
                 var ibanRaw = rowData.GetValueOrDefault("IBAN", string.Empty).Trim();
                 if (!string.IsNullOrWhiteSpace(ibanRaw) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(ibanRaw))
                     warnings.Add($"Employee {emp.EmployeeCode}: IBAN '{ibanRaw}' fails country format/length or the ISO 13616 mod-97 checksum — imported, but it must be corrected before this employee can be included in a payroll run.");
@@ -1190,26 +1249,6 @@ public class EmployeesController : ControllerBase
                 var socialInsuranceRaw = rowData.GetValueOrDefault("SocialInsuranceReference", string.Empty).Trim();
                 var structureCodeRaw = rowData.GetValueOrDefault("SalaryStructureCode", string.Empty).Trim();
                 var currencyRaw = rowData.GetValueOrDefault("Currency", string.Empty).Trim();
-                if (isRepair)
-                {
-                    // APPROVED BANK DETAILS WIN. An employee's applied bank values (reached through maker-checker)
-                    // outrank whatever the file proposes; a file IBAN that disagrees also loses its account/routing.
-                    if (!string.IsNullOrWhiteSpace(emp.BankIban))
-                    {
-                        if (!string.Equals(emp.BankIban.Replace(" ", ""), ibanRaw.Replace(" ", ""), StringComparison.OrdinalIgnoreCase))
-                        { accountRaw = string.Empty; routingRaw = string.Empty; }
-                        ibanRaw = emp.BankIban;
-                    }
-                    if (!string.IsNullOrWhiteSpace(emp.BankName)) bankNameRaw = emp.BankName;
-                    if (pendingBankEmployeeIds.Contains(emp.Id))
-                    {
-                        ibanRaw = emp.BankIban ?? string.Empty;
-                        bankNameRaw = emp.BankName ?? string.Empty;
-                        accountRaw = string.Empty;
-                        routingRaw = string.Empty;
-                        warnings.Add($"Employee {emp.EmployeeCode}: a bank change is awaiting approval or its effective date, so the import left the bank details alone and filled only other missing payroll fields. Complete that approval before payroll.");
-                    }
-                }
                 var currency = string.IsNullOrWhiteSpace(currencyRaw)
                     ? defaultCompany is null && string.Equals(tenantCurrency, "USD", StringComparison.OrdinalIgnoreCase) ? "SAR" : tenantCurrency
                     : currencyRaw.ToUpperInvariant();
@@ -1230,8 +1269,8 @@ public class EmployeesController : ControllerBase
                                   !string.IsNullOrEmpty(currencyRaw) || !string.IsNullOrEmpty(structureCodeRaw) ||
                                   salary.Gross > 0;
 
-                repairLookups.ProfilesByEmployee.TryGetValue(emp.Id, out var payrollProfile);
-                if (hasPayroll && payrollProfile is null)
+                EmployeePayrollProfile? payrollProfile = null;
+                if (hasPayroll)
                 {
                     payrollProfile = new EmployeePayrollProfile
                     {
@@ -1248,78 +1287,26 @@ public class EmployeesController : ControllerBase
                     stagedPayrollEntities.Add(payrollProfile);
                     payrollProfilesCreated++;
                     payrollArtifactsChanged = true;
-                    if (isRepair) repairedTouchedCodes.Add(payrollCode);
                 }
-                else if (isRepair && payrollProfile is not null)
-                {
-                    // Fill ONLY blank columns; a value already on the profile is never replaced by the file.
-                    var profileChanged = false;
-                    string Fill(string target, string source)
-                    {
-                        if (!string.IsNullOrWhiteSpace(target) || string.IsNullOrWhiteSpace(source)) return target;
-                        profileChanged = true;
-                        return source;
-                    }
-                    payrollProfile.BankName = Fill(payrollProfile.BankName, bankNameRaw);
-                    payrollProfile.Iban = Fill(payrollProfile.Iban, ibanRaw);
-                    payrollProfile.AccountNumber = Fill(payrollProfile.AccountNumber, accountRaw);
-                    payrollProfile.BankRoutingCode = Fill(payrollProfile.BankRoutingCode, routingRaw);
-                    payrollProfile.PayrollGroup = Fill(payrollProfile.PayrollGroup, payrollGroupRaw);
-                    payrollProfile.SalaryStructureReference = Fill(payrollProfile.SalaryStructureReference, structureCodeRaw);
-                    payrollProfile.SocialInsuranceReference = Fill(payrollProfile.SocialInsuranceReference, socialInsuranceRaw);
-                    payrollProfile.MolId = Fill(payrollProfile.MolId, molIdRaw);
-                    payrollProfile.SalaryCurrency = Fill(payrollProfile.SalaryCurrency, currency);
-                    if (profileChanged)
-                    {
-                        payrollProfile.UpdatedAtUtc = DateTime.UtcNow;
-                        payrollProfile.UpdatedBy = GetUserId();
-                        stagedPayrollEntities.Add(payrollProfile);
-                        payrollProfilesRepaired++;
-                        payrollArtifactsChanged = true;
-                        repairedTouchedCodes.Add(payrollCode);
-                    }
-                }
-
                 // ── ONE SET OF BANK DETAILS, IN BOTH HOMES ──────────────────────────────────────────────
                 // The WPS/SIF export pays from the payroll profile; the employee record, its readiness snapshot
                 // and the People list read Employee.BankName/BankIban. The import used to write the Employee copy
                 // only when a salary structure was ALSO created, so every row whose salary was held, under review
                 // or absent carried bank details in the profile and none on the employee. A NEW employee now gets
-                // exactly the profile's values; an existing one only has BLANK columns filled (never an approved
-                // value replaced, never one waiting for approval).
+                // exactly the profile's values.
                 if (payrollProfile is not null)
                 {
-                    if (!isRepair)
-                    {
-                        emp.BankName = payrollProfile.BankName;
-                        emp.BankIban = payrollProfile.Iban;
-                    }
-                    else if (!pendingBankEmployeeIds.Contains(emp.Id))
-                    {
-                        var employeeBankRepaired = false;
-                        if (string.IsNullOrWhiteSpace(emp.BankIban) && !string.IsNullOrWhiteSpace(payrollProfile.Iban))
-                        { emp.BankIban = payrollProfile.Iban; employeeBankRepaired = true; }
-                        if (string.IsNullOrWhiteSpace(emp.BankName) && !string.IsNullOrWhiteSpace(payrollProfile.BankName))
-                        { emp.BankName = payrollProfile.BankName; employeeBankRepaired = true; }
-                        if (employeeBankRepaired)
-                        {
-                            emp.UpdatedAtUtc = DateTime.UtcNow;
-                            payrollArtifactsChanged = true;
-                            repairedTouchedCodes.Add(payrollCode);
-                        }
-                    }
+                    emp.BankName = payrollProfile.BankName;
+                    emp.BankIban = payrollProfile.Iban;
                 }
 
-                // Never a second active structure: a repair row only fills a MISSING one (and says nothing about
-                // the salary cells of an employee who already has a salary).
-                if (repairLookups.ActiveSalaryEmployeeIds.Contains(emp.Id)) continue;
-                // Every discard path below records a TYPED gap as well as a warning (new rows), so the withheld
-                // salary is visible on the employee's readiness checklist and in the import summary.
+                // Every discard path below records a TYPED gap as well as a warning, so the withheld salary is
+                // visible on the employee's readiness checklist and in the import summary.
                 var structureGap = SalaryStructureGap(salary, emp.JoiningDate != default);
                 if (structureGap is not null)
                 {
                     warnings.Add($"Employee {emp.EmployeeCode}: {structureGap.Detail}");
-                    if (!isRepair) gapsByCode[payrollCode].Add(structureGap);
+                    gapsByCode[payrollCode].Add(structureGap);
                     continue;
                 }
                 if (!salary.CanAssign) continue;                                   // no salary in the file
@@ -1339,13 +1326,7 @@ public class EmployeesController : ControllerBase
                 };
                 _db.EmployeeSalaryStructures.Add(assignment);
                 stagedPayrollEntities.Add(assignment);
-                repairLookups.ActiveSalaryEmployeeIds.Add(emp.Id);
                 payrollArtifactsChanged = true;
-                if (isRepair)
-                {
-                    salaryAssignmentsRecovered++;
-                    repairedTouchedCodes.Add(payrollCode);
-                }
                 if (emp.Salary is null or 0m) emp.Salary = salary.Gross;
                 if (string.IsNullOrWhiteSpace(emp.PayrollProfileCode) && !string.IsNullOrWhiteSpace(payrollGroupRaw)) emp.PayrollProfileCode = payrollGroupRaw;
             }
@@ -1590,6 +1571,14 @@ public class EmployeesController : ControllerBase
                 replayed = false,
                 skippedNoName,
                 skippedDupCode,
+                // Existing employees in a separated status: never changed by an import (included in skippedDupCode).
+                skippedSeparated,
+                // Existing-employee rows carrying approval-gated values (bank, IBAN, account, routing, MOL ID, payment
+                // method, social insurance, GOSI, salary) that were NOT applied — change them through the employee,
+                // where they go to approval.
+                approvalRequiredCount = approvalRequired.Count,
+                approvalRequired = approvalRequired.Take(100)
+                    .Select(a => new { row = a.Row, employeeCode = a.EmployeeCode, fields = a.Fields }).ToList(),
                 incompleteDraft = createdIncomplete.Count,
                 managersUnresolved,
                 newDepartments,
@@ -1599,7 +1588,6 @@ public class EmployeesController : ControllerBase
                 hierarchyLinked,
                 payrollProfilesCreated,
                 payrollProfilesRepaired,
-                salaryAssignmentsRecovered,
                 hierarchyLinksRecovered,
                 importBatchId,
                 errors = allErrors,
@@ -2199,6 +2187,8 @@ public class EmployeesController : ControllerBase
         var previewRows = new List<object>();
         var seen = new HashSet<string>();
         int wouldCreate = 0, wouldRepair = 0, wouldSkip = 0, wouldFail = 0, wouldCreateActive = 0, wouldCreateDraft = 0;
+        // Existing-employee rows whose approval-gated values would be left unapplied (see Import).
+        int wouldNeedApproval = 0;
         int activeSeatsProjected = 0; // Active-landing rows counted against the active-seat budget (P1-4).
         // Dry-run readiness projection (§7.1): per non-error row, the landing state it WOULD get
         // (Active vs Draft) + why. Persists nothing. Policy per (company, country, nationality).
@@ -2251,13 +2241,26 @@ public class EmployeesController : ControllerBase
                     rowErrors.Add($"Duplicate EmployeeCode '{code}'");
                 else if (existingEmployeesByCode.TryGetValue(code, out var candidate))
                 {
-                    if (EmployeeImportRepairPlan.NeedsRepair(candidate, row, repairLookups, salary.CanAssign,
-                            joining.Supplied && !joining.Unparsed ? joining.Value : null))
+                    // The SAME decisions as the commit (see Import): separated employees are never touched,
+                    // approval-gated values are named and never applied, and only non-sensitive gaps are filled.
+                    if (EmployeeImportRepairPlan.IsSeparated(candidate))
+                        rowErrors.Add($"EmployeeCode '{code}' belongs to a separated employee ({candidate.Status}) — an import never changes a separated employee");
+                    else
                     {
-                        repairTarget = candidate;
-                        rowWarnings.Add("This employee already exists and will not be overwritten — only details they are missing (payroll profile fields, salary, reporting lines, an unknown joining date) will be filled in.");
+                        var gatedNotApplied = EmployeeImportRepairPlan.ApprovalGatedValuesNotApplied(candidate, row, repairLookups);
+                        if (gatedNotApplied.Count > 0)
+                        {
+                            wouldNeedApproval++;
+                            rowWarnings.Add($"{string.Join(", ", gatedNotApplied)} will NOT be applied to this existing employee — bank, payroll-identity and salary details change only through an approved change: edit the employee.");
+                        }
+                        if (EmployeeImportRepairPlan.NeedsRepair(candidate, row, repairLookups,
+                                joining.Supplied && !joining.Unparsed ? joining.Value : null))
+                        {
+                            repairTarget = candidate;
+                            rowWarnings.Add("This employee already exists and will not be overwritten — only missing non-sensitive details (payroll group, salary-structure reference, currency, reporting lines, an unknown joining date) will be filled in.");
+                        }
+                        else rowErrors.Add($"Duplicate EmployeeCode '{code}'");
                     }
-                    else rowErrors.Add($"Duplicate EmployeeCode '{code}'");
                 }
                 else if (takenCodes.Contains(code))
                     rowErrors.Add($"Duplicate EmployeeCode '{code}'");
@@ -2469,8 +2472,6 @@ public class EmployeesController : ControllerBase
             else if (!hasErrors && repairTarget is not null)
             {
                 projectedStatus = repairTarget.Status;
-                if (salary.Errors.Count > 0 && !repairLookups.ActiveSalaryEmployeeIds.Contains(repairTarget.Id))
-                    rowWarnings.Add(SalaryStructureGap(salary, true)!.Detail);
             }
 
             if (hasErrors) { status = "Error"; wouldSkip++; }
@@ -2526,6 +2527,7 @@ public class EmployeesController : ControllerBase
             wouldSkip,
             // Rows holding a value the database cannot store. The commit refuses the WHOLE file while any remain.
             wouldFail,
+            wouldNeedApproval,
             wouldCreateActive,
             wouldCreateDraft,
             fieldGaps,
@@ -2927,7 +2929,7 @@ public class EmployeesController : ControllerBase
             .Where(d => d.Id == draftId).Select(d => new { d.Status, d.CreatedByUserId })
             .SingleOrDefaultAsync(cancellationToken);
         if (draft is null) return NotFound();
-        if (await MakerCheckerRefusalAsync(tenantId, draftId, draft.CreatedByUserId, cancellationToken) is { } refusal) return refusal;
+        if (await MakerCheckerRefusalAsync(tenantId, draftId, cancellationToken) is { } refusal) return refusal;
         if (!EmployeeDraftStatuses.IsOpen(draft.Status)) return await DraftClosedConflictAsync(tenantId, draftId, draft.Status, cancellationToken);
 
         var moved = await TransitionDraftAsync(tenantId, draftId, EmployeeDraftStatuses.Open,
@@ -2972,6 +2974,8 @@ public class EmployeesController : ControllerBase
     [HasPermission("employees.write")]
     public async Task<ActionResult<EmployeeDraftDto>> CreateDraft(EmployeeDraftRequest request, CancellationToken cancellationToken)
     {
+        if (await DraftManagerRefusalAsync(RequireTenant(), request.ManagerEmployeeId, cancellationToken) is { } managerRefusal)
+            return managerRefusal;
         var draft = ApplyDraft(new EmployeeDraft { TenantId = RequireTenant(), CreatedByUserId = GetUserId() }, request);
         draft.ProfileCompletenessScore = CalculateCompleteness(draft, 0);
         _db.EmployeeDrafts.Add(draft);
@@ -2985,15 +2989,22 @@ public class EmployeesController : ControllerBase
     public async Task<ActionResult<EmployeeDraftDto>> UpdateDraft(Guid draftId, EmployeeDraftRequest request, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
-        var draft = await VisibleDrafts(tenantId).FirstOrDefaultAsync(x => x.Id == draftId, cancellationToken);
-        if (draft is null) return NotFound();
-        if (!EmployeeDraftStatuses.IsOpen(draft.Status)) return await DraftClosedConflictAsync(tenantId, draftId, draft.Status, cancellationToken);
-        ApplyDraft(draft, request);
-        var docs = await _db.EmployeeDocuments.CountAsync(x => x.TenantId == tenantId && x.DraftId == draftId, cancellationToken);
-        draft.ProfileCompletenessScore = CalculateCompleteness(draft, docs);
-        await _db.SaveChangesAsync(cancellationToken);
-        await Audit("employee.draft_updated", "EmployeeDraft", draft.Id.ToString(), cancellationToken);
-        return Ok(EmployeeDraftDto.Project(draft, CanViewSensitive()));
+        EmployeeDraft? saved = null;
+        var refusal = await ChangeOpenDraftAsync(tenantId, draftId, EmployeeDraftAuditActions.Updated, async (draft, ct) =>
+        {
+            if (request.ManagerEmployeeId is { } managerId && managerId != draft.ManagerEmployeeId
+                && await DraftManagerRefusalAsync(tenantId, managerId, ct) is { } managerRefusal)
+                return managerRefusal;
+            ApplyDraft(draft, request);
+            var docs = await ScopedBypass.TenantWide(_db.EmployeeDocuments, tenantId,
+                    "A draft's documents carry no company until activation; the draft's visibility was checked under its lock.")
+                .CountAsync(x => x.DraftId == draftId && !x.IsDeleted, ct);
+            draft.ProfileCompletenessScore = CalculateCompleteness(draft, docs);
+            saved = draft;
+            return null;
+        }, cancellationToken);
+        if (refusal is not null) return (ActionResult)refusal;
+        return Ok(EmployeeDraftDto.Project(saved!, CanViewSensitive()));
     }
 
     [HttpPost("drafts/{draftId:guid}/documents")]
@@ -3034,9 +3045,14 @@ public class EmployeesController : ControllerBase
             IsRequired = request.IsRequired,
             ExpiryDate = request.ExpiryDate
         };
-        _db.EmployeeDocuments.Add(document);
-        await _db.SaveChangesAsync(cancellationToken);
-        await Audit("employee.document_uploaded", "EmployeeDraft", draftId.ToString(), cancellationToken);
+        // Attaching a document changes the hire: it is saved with the audit row that makes its author
+        // one of the hire's makers, under the draft's lock.
+        var refusal = await ChangeOpenDraftAsync(tenantId, draftId, EmployeeDraftAuditActions.DocumentAttached, (_, _) =>
+        {
+            _db.EmployeeDocuments.Add(document);
+            return Task.FromResult<IActionResult?>(null);
+        }, cancellationToken);
+        if (refusal is not null) return (ActionResult)refusal;
         return Created($"/api/employees/documents/{document.Id}", EmployeeDocumentDto.Project(document));
     }
 
@@ -3062,10 +3078,13 @@ public class EmployeesController : ControllerBase
             IsRequired = request.IsRequired,
             ExpiryDate = request.ExpiryDate
         };
-        _db.EmployeeDocuments.Add(document);
-        await _db.SaveChangesAsync(cancellationToken);
-        await Notify("Document uploaded", $"{request.DocumentType} was uploaded for draft {draftId}.", "EmployeeDraft", draftId.ToString(), cancellationToken);
-        await Audit("employee.document_file_uploaded", "EmployeeDraft", draftId.ToString(), cancellationToken);
+        var refusal = await ChangeOpenDraftAsync(tenantId, draftId, EmployeeDraftAuditActions.DocumentUploaded, (_, _) =>
+        {
+            _db.EmployeeDocuments.Add(document);
+            return Task.FromResult<IActionResult?>(null);
+        }, cancellationToken);
+        if (refusal is not null) return (ActionResult)refusal;
+        await NotifyBestEffortAsync("Document uploaded", $"{request.DocumentType} was uploaded for draft {draftId}.", draftId, cancellationToken);
         return Created($"/api/employees/documents/{document.Id}", EmployeeDocumentDto.Project(document));
     }
 
@@ -3073,12 +3092,19 @@ public class EmployeesController : ControllerBase
     public async Task<IActionResult> DownloadDocument(Guid documentId, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
-        var document = await _db.EmployeeDocuments.FirstOrDefaultAsync(x => x.Id == documentId && x.TenantId == tenantId && !x.IsDeleted, cancellationToken);
+        // Loaded tenant-wide, then authorized below by whoever the document belongs to. The company
+        // filter cannot decide this: a draft's documents have no company until the hire is activated,
+        // so under that filter a company-scoped checker got 404 for a document the draft review had
+        // just listed.
+        var document = await ScopedBypass.TenantWide(_db.EmployeeDocuments, tenantId,
+                "A draft's documents carry no company until activation; access is decided below by employee or draft scope.")
+            .FirstOrDefaultAsync(x => x.Id == documentId && !x.IsDeleted, cancellationToken);
         if (document is null) return NotFound();
 
-        // Enforce access: unrestricted roles pass; otherwise caller must be in scope for this employee.
         if (document.EmployeeId.HasValue)
         {
+            // The company rule the filter used to apply, then the caller's data scope for this employee.
+            if (!this.GetEntityScope().CanAccessCompany(document.CompanyId)) return NotFound();
             var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
             if (!scope.IsUnrestricted && !scope.AllowedEmployeeIds!.Contains(document.EmployeeId.Value))
                 return Forbid();
@@ -3087,11 +3113,12 @@ public class EmployeesController : ControllerBase
         {
             // A draft's documents follow the draft's visibility: its maker, a checker whose legal
             // entities include the accepted offer's application, or group scope.
-            var draftExists = await _db.EmployeeDrafts.AsNoTracking()
-                .AnyAsync(x => x.Id == document.DraftId.Value && x.TenantId == tenantId, cancellationToken);
-            if (!draftExists) return NotFound();
             if (!await VisibleDrafts(tenantId).AnyAsync(x => x.Id == document.DraftId.Value, cancellationToken))
-                return Forbid();
+                return NotFound();
+        }
+        else if (!this.GetEntityScope().CanAccessCompany(document.CompanyId))
+        {
+            return NotFound();
         }
 
         byte[] contents;
@@ -3171,7 +3198,7 @@ public class EmployeesController : ControllerBase
             .Select(x => new { x.CreatedByUserId, x.Status })
             .SingleOrDefaultAsync(cancellationToken);
         if (preflight is null) return NotFound();
-        if (await MakerCheckerRefusalAsync(tenantId, draftId, preflight.CreatedByUserId, cancellationToken) is { } refusal)
+        if (await MakerCheckerRefusalAsync(tenantId, draftId, cancellationToken) is { } refusal)
             return refusal;
         if (!EmployeeDraftStatuses.IsOpen(preflight.Status))
             return await DraftClosedConflictAsync(tenantId, draftId, preflight.Status, cancellationToken);
@@ -3204,9 +3231,9 @@ public class EmployeesController : ControllerBase
                 .TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.Id == draftId && x.TenantId == tenantId, ct)
                 ?? throw new DraftApprovalNotFoundException();
-            // Re-checked under the lock, because the preflight read is advisory. Maker-checker: the
-            // person who made the draft (or accepted the offer that made it) never activates it.
-            if (actorId is null || draft.CreatedByUserId == actorId)
+            // Re-checked under the lock, because the preflight read is advisory: an edit committed in
+            // between makes its editor a maker. No maker of the hire ever activates it.
+            if (actorId is null || (await _draftHireMakers.MakersAsync(tenantId, draftId, ct)).Contains(actorId.Value))
                 throw new DraftApprovalMakerCheckerException();
             if (!entityScope.IsGroupLevel)
             {
@@ -3231,6 +3258,14 @@ public class EmployeesController : ControllerBase
             var placement = await ResolveDraftPlacementAsync(tenantId, draft, problems: null, ct);
             if (!entityScope.IsGroupLevel && !entityScope.CanAccessCompany(placement.CompanyId))
                 throw new DraftApprovalForbiddenException();
+            // The draft's manager is checked again here, under the lock and against the approver's own
+            // scope: a draft saved before this rule, or by another path, may name anyone.
+            if (await DraftManagerRejectionAsync(tenantId, draft.ManagerEmployeeId, ct) is { } managerRejection)
+            {
+                if (managerRejection.OutOfScope) throw new DraftApprovalForbiddenException();
+                throw new DraftApprovalValidationException(
+                    managerRejection.Message + " Change the draft's manager, then approve it.");
+            }
 
             var employee = EmployeeFromDraft(draft, tenantId, placement, approvedAtUtc);
             employee.EmployeeCode = await GenerateEmployeeCode(tenantId, ct);
@@ -4851,30 +4886,92 @@ public class EmployeesController : ControllerBase
             || applications.Any(a => a.OnboardingDraftId == d.Id));
     }
 
-    private const string MakerCheckerError = "draft_maker_checker";
-
-    private ObjectResult MakerCheckerForbidden(bool edited = false) => StatusCode(StatusCodes.Status403Forbidden, new
+    private ObjectResult MakerCheckerForbidden() => StatusCode(StatusCodes.Status403Forbidden, new
     {
-        error = MakerCheckerError,
-        message = edited
-            ? "You changed this draft, so another HR approver has to approve or reject it."
-            : "You created this draft (or accepted the offer behind it), so another HR approver has to approve or reject it.",
+        error = DraftMakerChecker.Error,
+        message = DraftMakerChecker.Message,
     });
 
-    /// <summary>Maker-checker for a draft decision. The makers are whoever created the draft (for an
-    /// accepted offer, whoever accepted it) and whoever has since changed its content: a checker who
-    /// edits the hire's terms cannot then approve their own edit.</summary>
-    private async Task<ObjectResult?> MakerCheckerRefusalAsync(Guid tenantId, Guid draftId, Guid? createdByUserId, CancellationToken ct)
+    /// <summary>Maker-checker for a draft decision: no maker of the hire (<see cref="IDraftHireMakers"/>)
+    /// may approve or reject it, and neither may an anonymous caller.</summary>
+    private async Task<ObjectResult?> MakerCheckerRefusalAsync(Guid tenantId, Guid draftId, CancellationToken ct)
     {
         var actorId = GetUserId();
-        if (actorId is null || createdByUserId == actorId) return MakerCheckerForbidden();
-        var entityId = draftId.ToString();
-        var edited = await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId,
-                "The caller's own edit rows for this draft, whichever company they were stamped with.")
-            .AsNoTracking()
-            .AnyAsync(a => a.EntityName == "EmployeeDraft" && a.EntityId == entityId
-                && a.Action == "employee.draft_updated" && a.UserId == actorId, ct);
-        return edited ? MakerCheckerForbidden(edited: true) : null;
+        if (actorId is null) return MakerCheckerForbidden();
+        var makers = await _draftHireMakers.MakersAsync(tenantId, draftId, ct);
+        return makers.Contains(actorId.Value) ? MakerCheckerForbidden() : null;
+    }
+
+    /// <summary>
+    /// One change to an open draft, as a single unit. The draft row is locked, so the change cannot land
+    /// on a draft an approval is activating; not-found and closed are decided under that lock; and the
+    /// change is saved in the same transaction as the audit row that records who made it. That row is
+    /// what makes its author a maker of the hire (<see cref="IDraftHireMakers"/>), so the two can never
+    /// be split. Returns the refusal, or null when the change was saved.
+    /// </summary>
+    private async Task<IActionResult?> ChangeOpenDraftAsync(
+        Guid tenantId, Guid draftId, string auditAction,
+        Func<EmployeeDraft, CancellationToken, Task<IActionResult?>> change, CancellationToken cancellationToken)
+    {
+        var auditId = Guid.NewGuid();
+        var context = Context() with { TenantId = tenantId };
+        IActionResult? refusal = null;
+
+        async Task<bool> OnceAsync(CancellationToken ct)
+        {
+            _db.ChangeTracker.Clear();
+            refusal = null;
+            var draft = await VisibleDrafts(tenantId).TagWith(RowLockingInterceptor.ForUpdateTag)
+                .FirstOrDefaultAsync(d => d.Id == draftId, ct);
+            if (draft is null) { refusal = NotFound(); return false; }
+            if (!EmployeeDraftStatuses.IsOpen(draft.Status))
+            {
+                refusal = await DraftClosedConflictAsync(tenantId, draftId, draft.Status, ct);
+                return false;
+            }
+            refusal = await change(draft, ct);
+            if (refusal is not null) return false;
+            _db.AuditLogs.Add(AuthAuditEntry.Create(auditId, DateTime.UtcNow, auditAction, "EmployeeDraft", draftId.ToString(), context));
+            await _db.SaveChangesAsync(ct);
+            return true;
+        }
+
+        if (!_db.Database.IsRelational())
+        {
+            await OnceAsync(cancellationToken);
+            return refusal;
+        }
+        await _db.Database.CreateExecutionStrategy().ExecuteInTransactionAsync(
+            OnceAsync,
+            async ct => await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId,
+                    "Commit verification of this command's own audit row by its server-generated id.")
+                .AsNoTracking().AnyAsync(a => a.Id == auditId, ct),
+            IsolationLevel.ReadCommitted,
+            cancellationToken);
+        return refusal;
+    }
+
+    /// <summary>
+    /// A draft's manager must be a live employee of this tenant that the caller can see: the same rule
+    /// every other manager write enforces (<see cref="EmployeeChangeApplier.ValidateManagerChangeAsync"/>).
+    /// The draft has no employee id yet, so self-management and reporting cycles cannot arise.
+    /// </summary>
+    private async Task<ObjectResult?> DraftManagerRefusalAsync(Guid tenantId, int? managerId, CancellationToken ct)
+    {
+        var rejection = await DraftManagerRejectionAsync(tenantId, managerId, ct);
+        if (rejection is null) return null;
+        var body = new { error = "invalid_manager", message = rejection.Message + " The draft was not saved." };
+        return rejection.OutOfScope ? StatusCode(StatusCodes.Status403Forbidden, body) : UnprocessableEntity(body);
+    }
+
+    private async Task<EmployeeChangeApplier.ManagerChangeRejection?> DraftManagerRejectionAsync(Guid tenantId, int? managerId, CancellationToken ct)
+    {
+        if (managerId is null) return null;
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        return await EmployeeChangeApplier.ValidateManagerChangeAsync(
+            _db, new Employee { TenantId = tenantId },
+            new Dictionary<string, JsonElement> { ["managerEmployeeId"] = JsonSerializer.SerializeToElement(managerId.Value) },
+            scope.CanAccessEmployee, ct);
     }
 
     private async Task<string> CurrentDraftStatusAsync(Guid tenantId, Guid draftId, CancellationToken ct) =>
@@ -5058,7 +5155,6 @@ public class EmployeesController : ControllerBase
         var actorId = GetUserId();
         var canApprovePermission = User.HasPermission("employees.approve");
         var draftIds = drafts.Select(d => d.Id).ToList();
-        var entityIds = draftIds.Select(id => id.ToString()).ToList();
 
         var origins = await ScopedBypass.TenantWide(_db.JobApplications, tenantId,
                 "The job application behind each draft the caller can already see (visibility was decided by VisibleDrafts).")
@@ -5068,17 +5164,7 @@ public class EmployeesController : ControllerBase
             .ToListAsync(ct);
         var originByDraft = origins.GroupBy(o => o.DraftId).ToDictionary(g => g.Key, g => g.First());
 
-        var editedByMe = new HashSet<string>();
-        if (actorId is not null)
-        {
-            editedByMe = (await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId,
-                    "The caller's own edit rows on drafts they can already see, whichever company they were stamped with.")
-                .AsNoTracking()
-                .Where(a => a.EntityName == "EmployeeDraft" && a.EntityId != null
-                    && entityIds.Contains(a.EntityId) && a.Action == "employee.draft_updated" && a.UserId == actorId)
-                .Select(a => a.EntityId!)
-                .ToListAsync(ct)).ToHashSet();
-        }
+        var makers = await _draftHireMakers.MakersAsync(tenantId, draftIds, ct);
 
         var decisions = await LoadDraftDecisionsAsync(tenantId, drafts, ct);
         var userIds = drafts.Where(d => d.CreatedByUserId.HasValue).Select(d => d.CreatedByUserId!.Value)
@@ -5096,12 +5182,11 @@ public class EmployeesController : ControllerBase
         return drafts.Select(d =>
         {
             var isMine = actorId is not null && d.CreatedByUserId == actorId;
-            var edited = editedByMe.Contains(d.Id.ToString());
+            var isMaker = actorId is not null && makers.TryGetValue(d.Id, out var draftMakers) && draftMakers.Contains(actorId.Value);
             var open = EmployeeDraftStatuses.IsOpen(d.Status);
             string? blocked = !open ? null
-                : !canApprovePermission ? "You don't have permission to approve new hires."
-                : isMine ? "You created this draft (or accepted the offer behind it), so another HR approver has to approve it."
-                : edited ? "You changed this draft, so another HR approver has to approve it."
+                : !canApprovePermission ? "You don't have permission to approve new hires (employees.approve)."
+                : isMaker ? DraftMakerChecker.Message
                 : null;
             originByDraft.TryGetValue(d.Id, out var origin);
             decisions.TryGetValue(d.Id, out var decision);
@@ -5275,6 +5360,9 @@ public class EmployeesController : ControllerBase
         var problems = new List<EmployeeDraftActivationProblem>();
         var advisories = new List<string>();
         var placement = await ResolveDraftPlacementAsync(tenantId, draft, problems, ct);
+        if (await DraftManagerRejectionAsync(tenantId, draft.ManagerEmployeeId, ct) is { } managerRejection)
+            problems.Add(new EmployeeDraftActivationProblem("manager", "Manager", managerRejection.Message,
+                "Pick a current employee you can see as the manager, or clear it."));
 
         string? companyName = null;
         if (placement.CompanyId is { } companyId)
@@ -5659,6 +5747,9 @@ public class EmployeesController : ControllerBase
         // field the readiness checklist told the user to fix "in profile". Applied by
         // EmployeeChangeApplier.ApplyPayrollProfileAsync, which every apply path runs.
         "socialInsuranceReference",
+        // Payroll-profile bank columns the WPS/SIF export reads; approval-gated (SensitiveFields) and applied by
+        // EmployeeChangeApplier.ApplyPayrollProfileAsync.
+        "bankRoutingCode", "accountNumber",
     };
 
     /// <summary>

@@ -15,7 +15,7 @@ public sealed class EmployeeImportRetryRecoveryPostgresTests
     public EmployeeImportRetryRecoveryPostgresTests(PostgresFixture fixture) => _fixture = fixture;
 
     [Fact]
-    public async Task RetryExistingCodes_RepairsOnlyMissingPayrollAndHierarchy_WithoutDuplicatingPeople()
+    public async Task RetryExistingCodes_RepairsOnlyMissingNonSensitiveDetails_WithoutDuplicatingPeople()
     {
         await using var db = _fixture.CreateDb();
         var tenant = await PostgresFixture.SeedMinimalTenant(db);
@@ -71,17 +71,30 @@ public sealed class EmployeeImportRetryRecoveryPostgresTests
         Assert.Equal(0, previewJson.GetProperty("wouldSkip").GetInt32());
         Assert.All(previewJson.GetProperty("rows").EnumerateArray(),
             row => Assert.Equal("WillRepair", row.GetProperty("status").GetString()));
+        // Bank name, IBAN, MOL ID and salary are approval-gated for an EXISTING employee: named, never applied.
+        Assert.Equal(2, previewJson.GetProperty("wouldNeedApproval").GetInt32());
 
         var result = Assert.IsType<OkObjectResult>(
             await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None));
         var json = JsonSerializer.SerializeToElement(result.Value);
         Assert.Equal(0, json.GetProperty("created").GetInt32());
         Assert.Equal(2, json.GetProperty("repaired").GetInt32());
+        Assert.Equal(2, json.GetProperty("approvalRequiredCount").GetInt32());
         db.ChangeTracker.Clear();
         Assert.Equal(2, await db.Employees.CountAsync(e => e.TenantId == tenant));
-        Assert.Equal(2, await db.EmployeePayrollProfiles.CountAsync(p => p.TenantId == tenant));
-        Assert.Equal(2, await db.EmployeeSalaryStructures.CountAsync(s => s.TenantId == tenant && s.IsActive));
-        Assert.Equal(1, await db.SalaryStructures.CountAsync(s => s.TenantId == tenant));
+        // The missing profiles are recreated with the NON-sensitive currency only — no bank, no MOL ID.
+        var profiles = await db.EmployeePayrollProfiles.Where(p => p.TenantId == tenant).ToListAsync();
+        Assert.Equal(2, profiles.Count);
+        Assert.All(profiles, p =>
+        {
+            Assert.Equal("SAR", p.SalaryCurrency);
+            Assert.Equal(string.Empty, p.Iban);
+            Assert.Equal(string.Empty, p.BankName);
+            Assert.Equal(string.Empty, p.MolId);
+        });
+        // An existing employee's salary is Payroll's to set, never an import's.
+        Assert.Equal(0, await db.EmployeeSalaryStructures.CountAsync(s => s.TenantId == tenant));
+        Assert.Equal(0, await db.SalaryStructures.CountAsync(s => s.TenantId == tenant));
 
         var managerReloaded = await db.Employees.SingleAsync(e => e.TenantId == tenant && e.EmployeeCode == "RR001");
         var workerReloaded = await db.Employees.SingleAsync(e => e.TenantId == tenant && e.EmployeeCode == "RR002");
@@ -102,7 +115,6 @@ public sealed class EmployeeImportRetryRecoveryPostgresTests
         db.ChangeTracker.Clear();
         Assert.Equal(2, await db.Employees.CountAsync(e => e.TenantId == tenant));
         Assert.Equal(2, await db.EmployeePayrollProfiles.CountAsync(p => p.TenantId == tenant));
-        Assert.Equal(2, await db.EmployeeSalaryStructures.CountAsync(s => s.TenantId == tenant));
-        Assert.Equal(1, await db.SalaryStructures.CountAsync(s => s.TenantId == tenant));
+        Assert.Equal(0, await db.EmployeeSalaryStructures.CountAsync(s => s.TenantId == tenant));
     }
 }

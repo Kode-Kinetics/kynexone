@@ -126,7 +126,9 @@ public sealed class EmployeeDraftLifecyclePostgresTests
         {
             var result = await Employees(db, seeded.TenantId, seeded.Maker).ApproveDraft(seeded.DraftId, CancellationToken.None);
             (result.Result as IStatusCodeActionResult)?.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
-            JsonSerializer.Serialize((result.Result as ObjectResult)?.Value).Should().Contain("another");
+            // The refusal names what is needed, so a single-HR tenant knows how to finish the hire.
+            JsonSerializer.Serialize((result.Result as ObjectResult)?.Value)
+                .Should().Contain("A second user with employees.approve must activate this hire");
         }
 
         await using var verify = _fixture.CreateDb();
@@ -246,7 +248,7 @@ public sealed class EmployeeDraftLifecyclePostgresTests
 
         list.Items.Select(i => i.Id).Should().BeEquivalentTo(new[] { mine, inMyCompany });
         list.Items.Single(i => i.Id == inMyCompany).Source.Should().Be("Recruitment");
-        list.Items.Single(i => i.Id == mine).ApproveBlockedReason.Should().Contain("another HR approver");
+        list.Items.Single(i => i.Id == mine).ApproveBlockedReason.Should().Contain("A second user with employees.approve must activate this hire");
 
         await using (var db = _fixture.CreateDb())
             (await Employees(db, seeded.TenantId, scopedUser, companies: new[] { seeded.CompanyId })
@@ -394,7 +396,7 @@ public sealed class EmployeeDraftLifecyclePostgresTests
         {
             var result = await Employees(db, seeded.TenantId, seeded.Checker).ApproveDraft(seeded.DraftId, CancellationToken.None);
             (result.Result as IStatusCodeActionResult)?.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
-            JsonSerializer.Serialize((result.Result as ObjectResult)?.Value).Should().Contain("You changed this draft");
+            JsonSerializer.Serialize((result.Result as ObjectResult)?.Value).Should().Contain("changed the draft").And.Contain("A second user with employees.approve must activate this hire");
         }
         await using (var db = _fixture.CreateDb())
             (await Employees(db, seeded.TenantId, Guid.NewGuid()).ApproveDraft(seeded.DraftId, CancellationToken.None))
@@ -468,7 +470,234 @@ public sealed class EmployeeDraftLifecyclePostgresTests
         }
     }
 
+    // ── Under production query filters (an HttpContext accessor) ─────────────
+    // _fixture.CreateDb() has no request principal, so the DbContext runs in system scope with every
+    // tenant and company filter OFF. These run the same calls the way production does.
+
+    [Fact]
+    public async Task UnderProductionFilters_ACompanyScopedChecker_CanDownloadTheAcceptedOfferDraftsDocument()
+    {
+        // EmployeeDocument is company-scoped and a draft's documents have no company until activation,
+        // so the filtered load 404'd before the draft's visibility was ever checked, while the review
+        // screen (which counts through a tenant-wide read) told the same checker there was a document.
+        var seeded = await SeedAsync("PendingHrApproval");
+        var offerDraft = await AddDraftAsync(seeded.TenantId, "PendingHrApproval", Guid.NewGuid(), name: "Offer In My Company", applicationCompanyId: seeded.CompanyId);
+        var documentId = await AddDraftDocumentRowAsync(seeded.TenantId, offerDraft);
+
+        var accessor = new HttpContextAccessor();
+        await using var scopedDb = _fixture.CreateDbWithAccessor(accessor);
+        var checker = Employees(scopedDb, seeded.TenantId, Guid.NewGuid(), companies: new[] { seeded.CompanyId });
+        accessor.HttpContext = checker.HttpContext;
+
+        Ok(await checker.GetDraft(offerDraft, CancellationToken.None)).DocumentCount.Should().Be(1);
+        (await checker.DownloadDocument(documentId, CancellationToken.None)).Should().BeOfType<FileContentResult>();
+    }
+
+    [Fact]
+    public async Task UnderProductionFilters_ADraftDocumentOutsideTheCheckersScope_IsStillRefused()
+    {
+        var seeded = await SeedAsync("PendingHrApproval");
+        var otherCompany = await AddCompanyAsync(seeded.TenantId, "Other Co");
+        var elsewhere = await AddDraftAsync(seeded.TenantId, "PendingHrApproval", Guid.NewGuid(), name: "Offer Elsewhere", applicationCompanyId: otherCompany);
+        var documentId = await AddDraftDocumentRowAsync(seeded.TenantId, elsewhere);
+
+        var accessor = new HttpContextAccessor();
+        await using var scopedDb = _fixture.CreateDbWithAccessor(accessor);
+        var checker = Employees(scopedDb, seeded.TenantId, Guid.NewGuid(), companies: new[] { seeded.CompanyId });
+        accessor.HttpContext = checker.HttpContext;
+
+        (await checker.DownloadDocument(documentId, CancellationToken.None)).Should().NotBeOfType<FileContentResult>();
+    }
+
+    [Fact]
+    public async Task UnderProductionFilters_ACompanyScopedChecker_ListsReviewsAndApprovesTheOffer()
+    {
+        var seeded = await SeedAsync("PendingHrApproval");
+        var inMyCompany = await AddDraftAsync(seeded.TenantId, "PendingHrApproval", Guid.NewGuid(), name: "Offer In My Company", applicationCompanyId: seeded.CompanyId);
+        var accessor = new HttpContextAccessor();
+        await using var scopedDb = _fixture.CreateDbWithAccessor(accessor);
+        var checker = Employees(scopedDb, seeded.TenantId, Guid.NewGuid(), companies: new[] { seeded.CompanyId });
+        accessor.HttpContext = checker.HttpContext;
+
+        Ok(await checker.ListDrafts(status: "all", cancellationToken: CancellationToken.None)).Items.Select(i => i.Id)
+            .Should().Contain(inMyCompany).And.NotContain(seeded.DraftId, "a manual draft by someone else needs group scope");
+        var review = Ok(await checker.GetDraft(inMyCompany, CancellationToken.None));
+        review.ActivationCheck!.Problems.Should().BeEmpty(string.Join(" | ", review.ActivationCheck.Problems.Select(p => p.Reason)));
+        (await checker.ApproveDraft(inMyCompany, CancellationToken.None)).Result.Should().BeOfType<OkObjectResult>();
+    }
+
+    // ── A draft's manager is a real, reachable employee ──────────────────────
+
+    [Fact]
+    public async Task ADraftCannotNameAManagerFromAnotherTenant_OrOneThatDoesNotExist()
+    {
+        var seeded = await SeedAsync("Draft");
+        var other = await SeedAsync("Draft");
+        var foreignManager = await AddEmployeeAsync(other.TenantId, "FOREIGN-1");
+
+        await using (var db = _fixture.CreateDb())
+        {
+            var created = await Employees(db, seeded.TenantId, seeded.Maker).CreateDraft(
+                EmptyDraftRequest() with { EnglishName = "Cross Tenant Manager", ManagerEmployeeId = foreignManager }, CancellationToken.None);
+            JsonSerializer.Serialize((created.Result as ObjectResult)?.Value).Should().Contain("invalid_manager");
+            created.Result.Should().BeOfType<UnprocessableEntityObjectResult>();
+        }
+        await using (var db = _fixture.CreateDb())
+            (await Employees(db, seeded.TenantId, seeded.Maker).UpdateDraft(seeded.DraftId,
+                EmptyDraftRequest() with { ManagerEmployeeId = int.MaxValue - 7 }, CancellationToken.None))
+                .Result.Should().BeOfType<UnprocessableEntityObjectResult>();
+
+        await using var verify = _fixture.CreateDb();
+        (await verify.EmployeeDrafts.AsNoTracking().SingleAsync(x => x.Id == seeded.DraftId)).ManagerEmployeeId.Should().BeNull();
+        (await verify.EmployeeDrafts.AsNoTracking().CountAsync(x => x.TenantId == seeded.TenantId)).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ApprovalRefusesADraftWhoseManagerIsNotAnEmployeeOfThisTenant()
+    {
+        // A draft written before the check (or by another path) that names another tenant's employee.
+        var seeded = await SeedAsync("PendingHrApproval");
+        var other = await SeedAsync("Draft");
+        var foreignManager = await AddEmployeeAsync(other.TenantId, "FOREIGN-2");
+        await using (var db = _fixture.CreateDb())
+        {
+            var draft = await db.EmployeeDrafts.SingleAsync(x => x.Id == seeded.DraftId);
+            draft.ManagerEmployeeId = foreignManager;
+            await db.SaveChangesAsync();
+        }
+
+        await using (var db = _fixture.CreateDb())
+        {
+            var result = await Employees(db, seeded.TenantId, seeded.Checker).ApproveDraft(seeded.DraftId, CancellationToken.None);
+            result.Result.Should().BeOfType<UnprocessableEntityObjectResult>();
+        }
+        await using var verify = _fixture.CreateDb();
+        (await CountEmployeesAsync(verify, seeded.TenantId)).Should().Be(0);
+    }
+
+    // ── Every edit is recorded with the edit, and counts as making the hire ──
+
+    [Fact]
+    public async Task AnEditIsNeverSavedWithoutTheAuditRowThatMakesItsEditorAMaker()
+    {
+        // The editor rule reads employee.draft_updated. It used to be written by a second, separate save
+        // after the edit committed: if that write failed, the edit stood with no record of who made it,
+        // and its editor could then approve it.
+        var seeded = await SeedAsync("PendingHrApproval");
+        await using (var db = _fixture.CreateDb())
+        {
+            try
+            {
+                await Employees(db, seeded.TenantId, seeded.Checker, auditService: new FailingAuditService())
+                    .UpdateDraft(seeded.DraftId, EmptyDraftRequest() with { Salary = 99_000m }, CancellationToken.None);
+            }
+            catch (InvalidOperationException) { /* the old path surfaced the failed audit write */ }
+        }
+
+        await using var verify = _fixture.CreateDb();
+        var salary = (await verify.EmployeeDrafts.AsNoTracking().SingleAsync(x => x.Id == seeded.DraftId)).Salary;
+        var audited = await verify.AuditLogs.IgnoreQueryFilters().AsNoTracking()
+            .AnyAsync(a => a.TenantId == seeded.TenantId && a.EntityId == seeded.DraftId.ToString()
+                && a.Action == "employee.draft_updated" && a.UserId == seeded.Checker);
+        (salary == 99_000m).Should().Be(audited, "an edit and the record of who made it are saved together or not at all");
+    }
+
+    [Fact]
+    public async Task ACheckerWhoAttachedADocument_CannotApproveTheHire()
+    {
+        var seeded = await SeedAsync("PendingHrApproval");
+        await using (var db = _fixture.CreateDb())
+            (await Employees(db, seeded.TenantId, seeded.Checker).AddDraftDocument(seeded.DraftId,
+                new Zayra.Api.Controllers.EmployeeDocumentRequest("Passport", "passport.pdf", "application/pdf", "tests/passport.pdf", true, null),
+                CancellationToken.None)).Result.Should().BeOfType<CreatedResult>();
+
+        await using (var db = _fixture.CreateDb())
+        {
+            var result = await Employees(db, seeded.TenantId, seeded.Checker).ApproveDraft(seeded.DraftId, CancellationToken.None);
+            (result.Result as IStatusCodeActionResult)?.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
+        }
+        await using var verify = _fixture.CreateDb();
+        (await CountEmployeesAsync(verify, seeded.TenantId)).Should().Be(0);
+    }
+
+    // ── The hire-makers seam ─────────────────────────────────────────────────
+
+    [Fact]
+    public async Task AnyoneTheHireMakersSeamNames_CannotApproveOrRejectTheDraft_AndTheListSaysWhy()
+    {
+        // Recruitment plugs in here: the person who SENT the accepted offer made the hire too, though
+        // they neither created nor edited the draft.
+        var seeded = await SeedAsync("PendingHrApproval");
+        var sender = Guid.NewGuid();
+        var makers = new FixedHireMakers(sender);
+
+        await using (var db = _fixture.CreateDb())
+        {
+            var approval = await Employees(db, seeded.TenantId, sender, hireMakers: makers).ApproveDraft(seeded.DraftId, CancellationToken.None);
+            (approval.Result as IStatusCodeActionResult)?.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
+        }
+        await using (var db = _fixture.CreateDb())
+            ((await Employees(db, seeded.TenantId, sender, hireMakers: makers)
+                    .RejectDraft(seeded.DraftId, new EmployeeDraftDecisionRequest("Not this quarter"), CancellationToken.None))
+                as IStatusCodeActionResult)!.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
+        await using (var db = _fixture.CreateDb())
+        {
+            var row = Ok(await Employees(db, seeded.TenantId, sender, hireMakers: makers).ListDrafts(cancellationToken: CancellationToken.None))
+                .Items.Single(i => i.Id == seeded.DraftId);
+            row.CanApprove.Should().BeFalse();
+            row.ApproveBlockedReason.Should().Contain("A second user with employees.approve must activate this hire");
+        }
+
+        await using (var db = _fixture.CreateDb())
+            (await Employees(db, seeded.TenantId, seeded.Checker, hireMakers: makers).ApproveDraft(seeded.DraftId, CancellationToken.None))
+                .Result.Should().BeOfType<OkObjectResult>("someone who did not make the hire activates it");
+    }
+
+    /// <summary>Names one fixed user as the maker of every draft: a stand-in for the offer sender recruitment adds.</summary>
+    private sealed class FixedHireMakers(Guid extra) : IDraftHireMakers
+    {
+        public async Task<IReadOnlyDictionary<Guid, IReadOnlySet<Guid>>> MakersAsync(
+            Guid tenantId, IReadOnlyCollection<Guid> draftIds, CancellationToken ct)
+        {
+            await Task.CompletedTask;
+            return draftIds.ToDictionary(id => id, _ => (IReadOnlySet<Guid>)new HashSet<Guid> { extra });
+        }
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
+
+    private async Task<Guid> AddDraftDocumentRowAsync(Guid tenantId, Guid draftId)
+    {
+        await using var db = _fixture.CreateDb();
+        var doc = new EmployeeDocument
+        {
+            TenantId = tenantId, DraftId = draftId, DocumentType = "Passport",
+            FileName = "passport.pdf", ContentType = "application/pdf", StorageUrl = "tests/file",
+        };
+        db.EmployeeDocuments.Add(doc);
+        await db.SaveChangesAsync();
+        return doc.Id;
+    }
+
+    private async Task<int> AddEmployeeAsync(Guid tenantId, string code)
+    {
+        await using var db = _fixture.CreateDb();
+        var employee = new Employee
+        {
+            TenantId = tenantId, EmployeeCode = code, FullName = "Manager " + code, Status = EmployeeStatuses.Active,
+            JoiningDate = DateTime.UtcNow.Date.AddYears(-2),
+        };
+        db.Employees.Add(employee);
+        await db.SaveChangesAsync();
+        return employee.Id;
+    }
+
+    private sealed class FailingAuditService : Zayra.Api.Application.Auth.IAuditService
+    {
+        public Task WriteAsync(string action, string entityName, string? entityId, Zayra.Api.Application.Auth.RequestContext context,
+            string? metadata, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("audit store unavailable");
+    }
 
     private static T Ok<T>(ActionResult<T> result) =>
         (T)result.Result.Should().BeOfType<OkObjectResult>().Subject.Value!;
@@ -633,12 +862,14 @@ public sealed class EmployeeDraftLifecyclePostgresTests
 
     private static EmployeesController Employees(
         ZayraDbContext db, Guid tenantId, Guid userId, string role = "HR Manager", Guid[]? companies = null,
-        bool canApprove = true)
+        bool canApprove = true, Zayra.Api.Application.Auth.IAuditService? auditService = null,
+        IDraftHireMakers? hireMakers = null)
     {
-        var audit = new AuditService(db);
+        var audit = auditService ?? new AuditService(db);
         var controller = new EmployeesController(
             db, new Pbkdf2PasswordHasher(), audit, new LifecycleNullDocuments(), new LifecycleNullNotifications(),
-            new LifecycleHijri(), new Zayra.Api.Infrastructure.Common.DataScopeService(db), new LifecycleNullLetters());
+            new LifecycleHijri(), new Zayra.Api.Infrastructure.Common.DataScopeService(db), new LifecycleNullLetters(),
+            draftHireMakers: hireMakers);
         var claims = new List<Claim>
         {
             new("tenant_id", tenantId.ToString()),

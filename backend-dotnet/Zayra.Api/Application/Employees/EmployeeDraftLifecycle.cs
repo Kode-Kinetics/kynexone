@@ -58,6 +58,44 @@ public static class EmployeeDraftAuditActions
     public const string Cancelled = "employee.draft_cancelled";
 
     public static readonly string[] Decisions = { Activated, Rejected, Cancelled };
+
+    public const string Updated = "employee.draft_updated";
+    public const string DocumentAttached = "employee.document_uploaded";
+    public const string DocumentUploaded = "employee.document_file_uploaded";
+
+    /// <summary>Changes to a draft's content. Whoever made one is a maker of the hire. Each is written
+    /// in the same save as the change it records.</summary>
+    public static readonly string[] Edits = { Updated, DocumentAttached, DocumentUploaded };
+}
+
+/// <summary>
+/// Who made a hire, and so may not approve or reject its draft (maker-checker). The default
+/// (<c>Infrastructure.Employees.DraftHireMakers</c>) is the draft's creator plus everyone who has changed
+/// it. Recruitment extends it with the people who sent and accepted the offer behind an accepted-offer
+/// draft, once both stacks are on main.
+/// </summary>
+public interface IDraftHireMakers
+{
+    /// <summary>For each draft id asked about: the users who made that hire. Every id is present.</summary>
+    Task<IReadOnlyDictionary<Guid, IReadOnlySet<Guid>>> MakersAsync(
+        Guid tenantId, IReadOnlyCollection<Guid> draftIds, CancellationToken ct);
+}
+
+public static class DraftHireMakersExtensions
+{
+    public static async Task<IReadOnlySet<Guid>> MakersAsync(this IDraftHireMakers makers, Guid tenantId, Guid draftId, CancellationToken ct)
+        => (await makers.MakersAsync(tenantId, new[] { draftId }, ct))[draftId];
+}
+
+/// <summary>The one wording for a maker-checker refusal on a hire. It names what is needed, so a tenant
+/// with a single HR user knows how to finish the hire.</summary>
+public static class DraftMakerChecker
+{
+    public const string Error = "draft_maker_checker";
+
+    public const string Message =
+        "You made this hire (you created or changed the draft, or sent or accepted the offer behind it). "
+        + "A second user with employees.approve must activate this hire.";
 }
 
 public sealed record EmployeeDraftDecisionRequest(string? Reason);
