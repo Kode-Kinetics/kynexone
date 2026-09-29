@@ -285,4 +285,18 @@ public class PayrollSlip : ITenantOwned, ICompanyScopedOperational
     /// <summary>This slip pays the employee's LAST wage month. Emitted exactly once per offboarding; the
     /// POD-C1 settlement pipeline reads it as the handoff that the wage side is done.</summary>
     public bool IsFinalWageMonth { get; set; }
+
+    // ── F02: THE STATUTORY CALCULATION EXPLANATION ────────────────────────────────────────────────
+    // Which GOSI cohort and which rate basis produced this slip's statutory lines, frozen at Process.
+    // NULL on every slip processed before F02 and on slips the pack did not explain (non-KSA packs).
+
+    /// <summary><c>Unknown</c> | <c>PreJuly2024</c> | <c>NewEntrant</c> (<see cref="Zayra.Api.Application.CountryPack.GosiCohorts"/>)
+    /// for a Saudi national on a KSA run; null when no cohort applies (expatriate, GCC national, other
+    /// packs). The payroll validator judges THIS value — the cohort the lines were actually computed on —
+    /// not the employee's current record, so a date recorded after Process is only honoured by re-processing.</summary>
+    public string? GosiCohort { get; set; }
+
+    /// <summary>Plain-language statement of the rate basis behind the statutory lines — cohort, the
+    /// rates applied, and "unverified" / "not modelled" when that is the truth.</summary>
+    public string? StatutoryBasis { get; set; }
 }

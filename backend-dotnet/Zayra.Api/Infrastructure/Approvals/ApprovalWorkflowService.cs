@@ -703,6 +703,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
                 case "iqamaNumber": employee.IqamaNumber = value.GetString() ?? employee.IqamaNumber; break;
                 case "muqeemNumber": employee.MuqeemNumber = value.GetString() ?? employee.MuqeemNumber; break;
                 case "gosiReference": employee.GosiReference = value.GetString() ?? employee.GosiReference; break;
+                // F02 — same key, same column as EmployeesController.ApplyChanges (the Approvals-screen path).
+                case "gosiFirstRegisteredOn": employee.GosiFirstRegisteredOn = ReadDateOnly(value); break;
                 case "qiwaContractNumber": employee.QiwaContractNumber = value.GetString() ?? employee.QiwaContractNumber; break;
                 case "emiratesId": employee.EmiratesId = value.GetString() ?? employee.EmiratesId; break;
                 case "laborCardNumber": employee.LaborCardNumber = value.GetString() ?? employee.LaborCardNumber; break;
