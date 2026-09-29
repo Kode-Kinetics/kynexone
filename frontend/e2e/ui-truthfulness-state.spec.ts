@@ -3,6 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createLatestRequestGate, runLatest } from '../src/lib/latestRequest';
 import { commonPayrollCurrency, resolvePayrollRunCurrency } from '../src/lib/payrollCurrency';
+import { filterPayrollInsightsForReadiness, paymentReadinessHeadline, type PaymentPrerequisites } from '../src/lib/payrollPrerequisites';
+import { buildAttention } from '../src/components/dashboard/dashboardModel';
+import type { DashboardFull } from '../src/api/dashboard';
+import type { AIInsight } from '../src/api/intelligence';
 import {
   ATTENDANCE_DOMAINS,
   attendanceErrorSummary,
@@ -282,5 +286,97 @@ test.describe('browserless employee search race and payroll currency contracts',
     expect(payroll).toContain('Approval is unavailable until the currency is confirmed.');
     expect(payroll).not.toContain('fmtAmt(selectedRun.totalGrossSalary, currencyCode)');
     expect(payroll).not.toContain('fmtAmt(overview.totalGrossPayroll, currencyCode)');
+  });
+});
+
+// F06 / I01 — payment readiness is not salary coverage.
+test.describe('browserless payroll payment-readiness contracts', () => {
+  const prerequisites = (over: Partial<PaymentPrerequisites> = {}): PaymentPrerequisites => ({
+    evaluatedEmployees: 250,
+    blockedEmployees: 0,
+    employeesWithRecommendations: 0,
+    attendanceChecked: true,
+    companyBlocking: [],
+    companyRecommended: [],
+    blocking: [],
+    recommended: [],
+    employees: [],
+    employeesTruncated: false,
+    ...over,
+  });
+
+  test('100% salary coverage with no bank details reads as blocked, not ready', () => {
+    const headline = paymentReadinessHeadline(prerequisites({
+      blockedEmployees: 250,
+      blocking: [{ code: 'MISSING_PAYROLL_PROFILE', label: 'No payroll profile — no bank IBAN or MOL ID on file', nextAction: 'Open the employee and add their payroll and bank details', count: 250 }],
+    }));
+    expect(headline.tone).toBe('blocked');
+    expect(headline.tone === 'blocked' && headline.title).toBe('250 of 250 active employees cannot be paid yet');
+    expect(headline.tone === 'blocked' && headline.detail).toContain('Salary coverage alone does not make payroll ready to pay');
+  });
+
+  test('recommendations never make payroll read as blocked, and a company blocker always does', () => {
+    const recommendedOnly = paymentReadinessHeadline(prerequisites({
+      employeesWithRecommendations: 250,
+      recommended: [{ code: 'WARN_NO_ATTENDANCE', label: 'No attendance recorded in this period', nextAction: 'Process attendance', count: 250 }],
+    }));
+    expect(recommendedOnly.tone).toBe('attention');
+    expect(recommendedOnly.tone === 'attention' && recommendedOnly.detail).toContain('do not block approval');
+
+    const companyBlocked = paymentReadinessHeadline(prerequisites({
+      companyBlocking: [{ companyId: 'ksa', companyName: 'KSA Co', code: 'COMPANY_CURRENCY_MISSING', label: 'The company has no currency', nextAction: 'Set it' }],
+    }));
+    expect(companyBlocked.tone).toBe('blocked');
+
+    expect(paymentReadinessHeadline(prerequisites()).tone).toBe('clear');
+    expect(paymentReadinessHeadline(prerequisites({ evaluatedEmployees: 0 })).tone).toBe('empty');
+    // An API that predates the field makes no claim either way.
+    expect(paymentReadinessHeadline(undefined).tone).toBe('unknown');
+  });
+
+  test('a stale salary insight is retired only by tenant-wide live coverage', () => {
+    const insights = [{ insightType: 'MissingSalarySetup' }, { insightType: 'PayrollVariance' }];
+    const full = { companyId: null, totalActiveEmployees: 250, employeesWithSalary: 250, salaryCoveragePercent: 100 };
+    expect(filterPayrollInsightsForReadiness(insights, full)).toEqual([{ insightType: 'PayrollVariance' }]);
+    // One fully covered company says nothing about the tenant's other companies.
+    expect(filterPayrollInsightsForReadiness(insights, { ...full, companyId: 'ksa' })).toHaveLength(2);
+    expect(filterPayrollInsightsForReadiness(insights, { ...full, employeesWithSalary: 249, salaryCoveragePercent: 99.6 })).toHaveLength(2);
+    expect(filterPayrollInsightsForReadiness(insights, null)).toHaveLength(2);
+  });
+
+  test('the dashboard raises live payroll gaps and drops the stale salary insight they replace', () => {
+    const data = {
+      summary: { totalEmployees: 250, activeEmployees: 250, presentToday: 0, onLeave: 0, absent: 0, overtimeHours: 0, churnRisk: 0 },
+      trends: [], payrollTrends: [], activityFeed: [],
+      overview: { pendingApprovals: 0, approvalQueue: [], payrollSummary: null, payrollByEntity: [], workforceMix: [], headcountByDepartment: [], alerts: [], openLeaveRequests: 0, newJoinersThisMonth: 0 },
+      kpis: { pendingLeaveRequests: 0, pendingAttendanceCorrections: 0, attendanceExceptions: 0, expiringDocuments: 0, expiredDocuments: 0, missingDocuments: 0, qiwaEnabled: true, missingSalaryAssignments: 0, missingBankDetails: 250 },
+    } as unknown as DashboardFull;
+    const staleInsight = {
+      id: 'i1', tenantId: 't', module: 'Payroll', insightType: 'MissingSalarySetup', severity: 'Critical', employeeId: null, employeeName: '',
+      title: '250 employee(s) without salary assignment', summary: '250 of 250 active employees have no salary', dataJson: '{}', generatedBy: 'rules',
+      isAcknowledged: false, createdAtUtc: '2026-09-26T01:25:56Z',
+    } as unknown as AIInsight;
+
+    const items = buildAttention(data, [staleInsight]);
+    expect(items.map((i) => i.id)).toEqual(['payroll-bank-missing']);
+    expect(items[0].title).toBe('250 employees without bank details');
+    expect(items[0].to).toBe('/payroll');
+
+    // Someone who cannot open payroll is not sent there.
+    expect(buildAttention(data, [], Date.now(), { payroll: false })).toEqual([]);
+
+    // An API without the live fields keeps the insight — nothing is claimed that was not measured.
+    const legacy = { ...data, kpis: { ...data.kpis, missingSalaryAssignments: undefined, missingBankDetails: undefined } } as DashboardFull;
+    expect(buildAttention(legacy, [staleInsight]).map((i) => i.id)).toEqual(['insight-MissingSalarySetup-i1']);
+  });
+
+  test('the payroll dashboard shows payment readiness ahead of the totals, with blocking and recommended apart', () => {
+    const payroll = read('src/views/PayrollPage.tsx');
+    expect(payroll).toContain('<PaymentPrerequisitesPanel prerequisites={readiness.paymentPrerequisites} onNavigate={onNavigate} />');
+    expect(payroll.indexOf('<PaymentPrerequisitesPanel')).toBeLessThan(payroll.indexOf('<KpiCard label="Gross Payroll"'));
+    expect(payroll).toContain('>Blocks payment</p>');
+    expect(payroll).toContain('>Recommended — does not block approval</p>');
+    expect(payroll).toContain('href={`/people?employeeId=${e.employeeId}`}');
+    expect(payroll).toContain('const visibleInsights = filterPayrollInsightsForReadiness(insights, readiness);');
   });
 });
