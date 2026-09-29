@@ -9,6 +9,7 @@ import {
 } from '../src/lib/attendanceLoadState';
 import { LOGIN_CAPABILITIES, LOGIN_PREVIEW_DISCLOSURE } from '../src/lib/loginCapabilities';
 import { payrollInsightEmptyCopy, payrollInsightState, payrollPeriodState } from '../src/lib/payrollInsightState';
+import { requestFailureReason } from '../src/lib/requestFailure';
 
 const read = (relative: string) => fs.readFileSync(path.join(process.cwd(), relative), 'utf8');
 
@@ -137,5 +138,30 @@ test.describe('browserless UI truthfulness contracts', () => {
     expect(tabs).toContain('role="tablist"');
     expect(tabs).toContain("event.key === 'Home'");
     expect(tabs).toContain('role="tabpanel"');
+  });
+
+  test('request failures name their cause instead of reading as empty data', () => {
+    expect(requestFailureReason({ isAxiosError: true, response: { status: 403, data: { message: 'Forbidden' } } })).toContain('do not have permission');
+    expect(requestFailureReason({ isAxiosError: true })).toContain('could not be reached');
+    expect(requestFailureReason({ isAxiosError: true, response: { status: 500, data: { message: 'Report store offline' } } })).toBe('Report store offline');
+    expect(requestFailureReason({ isAxiosError: true, response: { status: 502 } })).toContain('HTTP 502');
+    expect(requestFailureReason(new SyntaxError('Unexpected token'))).not.toContain('could not be reached');
+  });
+
+  test('offboarding and reports never swallow a load or action failure', () => {
+    // F04/F05: each of these rendered an outage as "No offboardings yet", "0 reports",
+    // "No saved reports", "No schedules configured" or "No executions yet", or did nothing.
+    for (const file of ['src/views/OffboardingPage.tsx', 'src/views/ReportsPage.tsx']) {
+      const source = read(file);
+      expect(source, file).not.toMatch(/catch\s*\{\s*\/\*\*\/\s*\}/);
+      expect(source, file).not.toMatch(/\.catch\(\(\)\s*=>\s*\{\s*\}\)/);
+    }
+    const offboarding = read('src/views/OffboardingPage.tsx');
+    expect(offboarding).toContain(') : listUnavailable ? (');
+    expect(offboarding).toContain('This does not mean there are no separations in progress.');
+    const reports = read('src/views/ReportsPage.tsx');
+    for (const what of ['The report catalog', 'Saved reports', 'Scheduled reports', 'Execution history']) {
+      expect(reports).toContain(`<LoadFailure what="${what}"`);
+    }
   });
 });
