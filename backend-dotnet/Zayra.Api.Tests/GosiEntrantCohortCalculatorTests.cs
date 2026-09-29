@@ -57,6 +57,23 @@ public class GosiEntrantCohortCalculatorTests
     }
 
     [Fact]
+    public async Task TheBasisIsGregorianIso_WhateverTheServerCulture()
+    {
+        // ar-SA formats dates on the Umm al-Qura calendar by default; a frozen payslip explanation must not.
+        var prior = System.Globalization.CultureInfo.CurrentCulture;
+        try
+        {
+            System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("ar-SA");
+            var r = await new KsaDeductionCalculator(Rules()).CalculateAsync(Saudi(new DateOnly(2016, 5, 10)));
+            r.Basis.Should().Contain("first registered 2016-05-10").And.Contain("for 2026-09").And.Contain("9% employee");
+        }
+        finally
+        {
+            System.Globalization.CultureInfo.CurrentCulture = prior;
+        }
+    }
+
+    [Fact]
     public async Task NoNewEntrantRateIsInvented_TheExtensionPointIsEmpty()
     {
         // The day the official schedule is supplied, this is the test that changes — together with the

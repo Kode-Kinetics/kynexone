@@ -69,7 +69,7 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
                 {
                     Basis = $"GCC national ({home}): insured under {home}'s own scheme, collected by GOSI. " +
                             $"{home} rates are not configured ('{RuleKeys.GosiGccEmployeeRate(home)}' / " +
-                            $"'{RuleKeys.GosiGccEmployerRate(home)}'), so no contribution was computed for {eff:yyyy-MM}.",
+                            $"'{RuleKeys.GosiGccEmployerRate(home)}'), so no contribution was computed for {Month(eff)}.",
                 };
 
             decimal gccEmpAmt = Math.Round(coveredWage * gccEmp.Value, 2);
@@ -95,7 +95,7 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
             {
                 Basis = $"GCC national ({home}): insured under {home}'s own scheme, collected by GOSI — employee " +
                         $"{Pct(gccEmp.Value)}, employer {Pct(erRateApplied)} (capped at the Saudi employer rate; any " +
-                        $"excess is borne by the employee), occupational hazards {Pct(gccOhRate)} employer, for {eff:yyyy-MM}. " +
+                        $"excess is borne by the employee), occupational hazards {Pct(gccOhRate)} employer, for {Month(eff)}. " +
                         "No Saudi cohort applies.",
             };
         }
@@ -148,7 +148,7 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
                 SocialInsuranceCohort = annuities.Cohort,
                 Basis = SaudiBasis(annuities, input.SocialInsuranceFirstRegisteredOn,
                     $"annuities {Pct(empAnnuity)} employee / {Pct(erAnnuity)} employer, SANED {Pct(sanedRate)} each side, " +
-                    $"occupational hazards {Pct(ohRate)} employer, for {eff:yyyy-MM}"),
+                    $"occupational hazards {Pct(ohRate)} employer, for {Month(eff)}"),
             };
         }
         else
@@ -163,7 +163,7 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
 
             return new(empTotal, erTotal, lines)
             {
-                Basis = $"Non-Saudi: occupational hazards {Pct(ohRate)} employer only, for {eff:yyyy-MM}; no annuities " +
+                Basis = $"Non-Saudi: occupational hazards {Pct(ohRate)} employer only, for {Month(eff)}; no annuities " +
                         "or SANED, and no Saudi cohort applies.",
             };
         }
@@ -175,7 +175,7 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
     /// </summary>
     internal static string SaudiBasis(GosiAnnuityRates annuities, DateOnly? firstRegisteredOn, string rates)
     {
-        var since = firstRegisteredOn is DateOnly d ? $"first registered {d:yyyy-MM-dd}, " : string.Empty;
+        var since = firstRegisteredOn is DateOnly d ? $"first registered {Day(d)}, " : string.Empty;
         return annuities.Status switch
         {
             GosiCohortRateStatus.CohortSchedule when annuities.Cohort == GosiCohorts.PreJuly2024 =>
@@ -186,7 +186,7 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
             GosiCohortRateStatus.NewEntrantScheduleNotModelled =>
                 $"GOSI cohort: new entrant ({since}on or after 3 July 2024). Rate basis: NOT MODELLED — the new-entrant " +
                 $"schedule is not in this product, so the pre-3-July-2024 schedule was applied ({rates}) and is wrong " +
-                "for this person. Blocked from approval.",
+                "for this person. Payroll validation blocks approval of a run that computes GOSI for them.",
             _ =>
                 "GOSI cohort: unverified — no GOSI first-registration date on record. Rate basis: pre-3-July-2024 " +
                 $"schedule ASSUMED — {rates}. Record the first-registration date to verify it.",
@@ -196,6 +196,11 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
     /// <summary>A decimal fraction as a percentage for a sentence: 0.09 → "9%", 0.0075 → "0.75%".</summary>
     private static string Pct(decimal fraction) =>
         (fraction * 100m).ToString("0.####", System.Globalization.CultureInfo.InvariantCulture) + "%";
+
+    // Gregorian ISO dates whatever the server culture: under ar-SA the default calendar is Umm al-Qura,
+    // and a frozen payslip explanation must not change meaning with the host's locale.
+    private static string Month(DateOnly d) => d.ToString("yyyy-MM", System.Globalization.CultureInfo.InvariantCulture);
+    private static string Day(DateOnly d) => d.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
 
     // S1/A4 — the local IsSaudiNational is GONE. Classification is now derived exclusively by
     // GosiCalculationService.DeriveClassification, the same function PayrollValidationEngine uses, so

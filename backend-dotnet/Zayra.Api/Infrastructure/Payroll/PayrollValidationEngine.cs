@@ -338,7 +338,7 @@ public static class PayrollValidationEngine
                         if (slip.GosiCohort == GosiCohorts.NewEntrant)
                             Err(GosiNewEntrantScheduleNotModelled,
                                 $"Employee {slip.EmployeeCode} ({emp.FullName}) first registered with GOSI on " +
-                                $"{(recordedOn is DateOnly d ? d.ToString("yyyy-MM-dd") : "a date on or after 3 July 2024")}, " +
+                                $"{(recordedOn is DateOnly d ? IsoDate(d) : "a date on or after 3 July 2024")}, " +
                                 "so they are a NEW ENTRANT on the separate new-entrant contribution schedule that " +
                                 "applies from 3 July 2024. That schedule is not modelled in this product yet, so the " +
                                 "GOSI on this payslip was computed on the pre-3-July-2024 schedule and is wrong for " +
@@ -353,7 +353,7 @@ public static class PayrollValidationEngine
                                 recordedOn is DateOnly since
                                     ? $"Employee {slip.EmployeeCode} ({emp.FullName}): GOSI cohort not recorded, " +
                                       "contribution basis unverified. This payslip was computed before the GOSI " +
-                                      $"first-registration date ({since:yyyy-MM-dd}) was on record, so its GOSI used " +
+                                      $"first-registration date ({IsoDate(since)}) was on record, so its GOSI used " +
                                       "the pre-3-July-2024 schedule without checking that it applies. Next action: " +
                                       "reopen this run and process it again (re-process), so the contribution is " +
                                       "computed on the recorded cohort."
@@ -592,6 +592,9 @@ public static class PayrollValidationEngine
     }
 
     private static bool IsGosiEeCode(string code) => IsGosiEmployeeCode(code);
+
+    /// <summary>F02 — a Gregorian ISO date whatever the server culture (ar-SA defaults to Umm al-Qura).</summary>
+    private static string IsoDate(DateOnly d) => d.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
 
     /// <summary>
     /// Employee-side GOSI component codes (GOSI-ANN-EE, GOSI-SANED-EE, …). Public so the callers that
