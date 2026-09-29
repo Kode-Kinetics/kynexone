@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.DataProtection;
 using System.ComponentModel.DataAnnotations;
 using System.Data;
 using System.Security.Cryptography;
@@ -4294,6 +4295,14 @@ public class EmployeesController : ControllerBase
         var changes = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.ProposedChangesJson) ?? new();
         var priorDeptId = employee.DepartmentId;
         var priorDesigId = employee.DesignationId;
+        // Same re-check as the Approval Center: a change the effective-date job returned for review is refused
+        // if a value moved after the re-review was raised. A change never returned for review passes through.
+        var baselineKeys = HttpContext?.RequestServices?.GetService(typeof(IDataProtectionProvider)) as IDataProtectionProvider;
+        var review = await EmployeeChangeBaseline.CheckUnchangedSinceReviewAsync(_db,
+            baselineKeys is null ? null : EmployeeChangeBaseline.CreateProtector(baselineKeys), tenantId, change.Id, employee,
+            changes.Keys, cancellationToken);
+        if (!review.Unchanged)
+            return UnprocessableEntity(new { error = "changed_since_review", message = review.Refusal(DashboardController.FormatChangedFields) });
         // managerEmployeeId is not a sensitive key, so a change request only carries one if it was stored by an
         // older build; it is still checked here, because every apply path goes through the same rules.
         if (await EmployeeChangeApplier.ValidateManagerChangeAsync(_db, employee, changes, null, cancellationToken) is { } managerRejection)
@@ -4303,16 +4312,15 @@ public class EmployeesController : ControllerBase
             // The payload was validated against EditableEmployeeFields when the change was REQUESTED, so an
             // unknown key here is a stored patch from an older build. Refusing would strand an approved
             // change with no operator remedy, so it is logged loudly instead of dropped in silence.
-            var unknownApproved = ApplyChanges(employee, changes);
+            // ONE apply sequence for every approval path (EmployeeChangeApplier.ApplyApprovedChangeAsync):
+            // employee columns, payroll-profile keys, org ids, and the approved bank field(s) mirrored onto
+            // the payroll profile so an IBAN fixed via the checklist actually reaches the WPS run (Δ13 / P1-1).
+            var unknownApproved = await EmployeeChangeApplier.ApplyApprovedChangeAsync(
+                _db, tenantId, employee, changes, approverId, cancellationToken);
             if (unknownApproved.Count > 0)
                 _logger?.LogWarning(
                     "Approved employee change {ChangeId} for employee {EmployeeId} carried unrecognised field(s) {UnknownFields}; those values were NOT applied.",
                     change.Id, employee.Id, string.Join(", ", unknownApproved));
-            await EmployeeChangeApplier.ApplyPayrollProfileAsync(_db, employee, changes, approverId, cancellationToken);
-            await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, changes.Keys, cancellationToken);
-            // Keep the payroll profile's bank columns in step with the employee scalar so an IBAN fixed
-            // via the checklist actually reaches the WPS/payroll run (Δ13 / P1-1).
-            await EmployeeBankProfileSync.SyncAsync(_db, employee, changes.Keys, cancellationToken);
             employee.UpdatedAtUtc = DateTime.UtcNow;
             change.Status = "ApprovedApplied";
             change.ApprovedByUserId = approverId;

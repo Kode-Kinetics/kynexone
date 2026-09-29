@@ -149,6 +149,32 @@ public static class EmployeeChangeApplier
     }
 
     /// <summary>
+    /// Applies an APPROVED change set — every step, in one order, for every approval path: the sensitive-change
+    /// approve endpoint, the Approval Center decide, and the effective-date job that applies a future-dated
+    /// approval when its day arrives. Returns the keys <see cref="Apply"/> did not recognise.
+    ///
+    /// <para>The steps: the employee's own columns (<see cref="Apply"/>), the keys stored on the payroll
+    /// profile (<see cref="ApplyPayrollProfileAsync"/>), free-text department/designation/branch resolved to
+    /// ids (<see cref="EmployeeOrgFieldResolver"/>, throws <see cref="InvalidOperationException"/> when a name
+    /// does not resolve), and the approved bank field(s) mirrored onto the payroll profile WPS pays from
+    /// (<see cref="EmployeeBankProfileSync"/>). It used to be written out at each call site; a path that
+    /// forgot the last step paid the old IBAN.</para>
+    ///
+    /// <para>Stages writes only — the caller validates first (manager, establishment) and persists in its
+    /// own unit of work.</para>
+    /// </summary>
+    public static async Task<IReadOnlyList<string>> ApplyApprovedChangeAsync(
+        ZayraDbContext db, Guid tenantId, Employee employee, IReadOnlyDictionary<string, JsonElement> changes,
+        Guid? actorUserId, CancellationToken ct)
+    {
+        var unknown = Apply(employee, changes);
+        await ApplyPayrollProfileAsync(db, employee, changes, actorUserId, ct);
+        await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(db, tenantId, employee, changes.Keys, ct);
+        await EmployeeBankProfileSync.SyncAsync(db, employee, changes.Keys, ct);
+        return unknown;
+    }
+
+    /// <summary>
     /// Writes the <c>payrollProfile.*</c> keys of the same patch onto the employee's payroll profile,
     /// creating the row when the employee has none — unlike <see cref="EmployeeBankProfileSync"/>, which
     /// mirrors a value that also lives on the Employee scalar and can therefore skip a missing row. These
