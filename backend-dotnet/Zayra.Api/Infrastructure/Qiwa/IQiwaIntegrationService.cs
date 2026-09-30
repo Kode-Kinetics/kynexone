@@ -99,13 +99,16 @@ public record QiwaReadinessSummary(
     IReadOnlyList<QiwaReadinessReport> BlockedEmployees
 );
 
+/// <param name="LastSuccessfulSync">The last run the LIVE adapter filed with Qiwa. Never a simulation.</param>
+/// <param name="LastSimulatedSync">The last run the sandbox simulator completed. Nothing was filed.</param>
 public record QiwaComplianceSummary(
     string ConnectionStatus,
     DateTime? LastConnectedAt,
     double ReadinessPercent,
     int EmployeesBlocked,
     int FailedSyncCount,
-    DateTime? LastSuccessfulSync
+    DateTime? LastSuccessfulSync,
+    DateTime? LastSimulatedSync = null
 );
 
 /// <summary>Result of a bulk-sync enqueue request.</summary>

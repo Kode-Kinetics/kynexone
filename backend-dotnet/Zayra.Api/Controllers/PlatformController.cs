@@ -367,15 +367,59 @@ public class PlatformController : ControllerBase
             redisStatus = "error";
         }
 
+        // Name and host only — for platform operators, so a test run (or an operator) can tell WHICH
+        // database this API is attached to. See DatabaseIdentity for what is deliberately left out.
+        var dbIdentity = Zayra.Api.Infrastructure.Operations.DatabaseIdentity.Describe(_db.Database);
+        // F09: outbound integrations, from the SAME evidence /health/ready and /health/telemetry
+        // use, so the three can never disagree. Aggregates only — no tenant, recipient or message.
+        object email, qiwa, deliveries;
+        if (dbOk)
+        {
+            var smtpMode = await Zayra.Api.Infrastructure.Operations.ProductionReadinessEvidence.SmtpDependencyAsync(_db, _config, ct);
+            var queues = await Zayra.Api.Infrastructure.Operations.ProductionReadinessEvidence.BuildQueueHealthAsync(_db, ct);
+            email = new { status = smtpMode.Mode, smtpMode.Configured, smtpMode.Simulated, detail = smtpMode.Detail };
+            deliveries = new
+            {
+                status = queues.NotificationsDeadLetter + queues.NotificationsFailed + queues.NotificationsNotConfigured
+                         + queues.ReportsDeadLetter > 0 ? "attention" : "ok",
+                queued = queues.NotificationsQueued,
+                retrying = queues.NotificationsRetrying,
+                failed = queues.NotificationsFailed,
+                deadLetter = queues.NotificationsDeadLetter,
+                notConfigured = queues.NotificationsNotConfigured,
+                captured = queues.NotificationsCaptured,
+                reportsFailed24h = queues.ReportsFailed24h,
+                reportsNotConfigured24h = queues.ReportsNotConfigured24h,
+                reportsDeadLetter = queues.ReportsDeadLetter,
+                qiwaDeadLetter = queues.QiwaDeadLetter,
+            };
+        }
+        else
+        {
+            email = new { status = "unknown", configured = false, simulated = false, detail = "Database unreachable." };
+            deliveries = new { status = "unknown" };
+        }
+        var qiwaMode = Zayra.Api.Infrastructure.Operations.ProductionReadinessEvidence.QiwaDependency(_config);
+        qiwa = new { status = qiwaMode.Mode, qiwaMode.Configured, qiwaMode.Simulated, detail = qiwaMode.Detail };
+
         return Ok(new
         {
             status = dbOk ? "healthy" : "degraded",
             components = new
             {
-                database = new { status = dbOk ? "ok" : "error" },
-                smtp     = new { status = smtpConfigured ? "configured" : "not_configured" },
+                database = new { status = dbOk ? "ok" : "error", name = dbIdentity.Name, host = dbIdentity.Host },
+                // Kept for the existing dashboard row. "capture" is its own answer: a server in test
+                // delivery mode is not an SMTP server that is configured.
+                smtp     = new
+                {
+                    status = EmailTransportPolicy.From(_config).IsCapture ? "capture"
+                        : smtpConfigured ? "configured" : "not_configured",
+                },
                 redis    = new { status = redisStatus },
                 jobs     = new { status = "unknown" },
+                email,
+                qiwa,
+                deliveries,
             },
             version     = "1.0.0",
             environment = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production",
@@ -2177,8 +2221,11 @@ public class PlatformController : ControllerBase
         {
             try
             {
-                await _emailService.SendAsync(user.TenantId, user.Email, user.FullName, "Your KynexOne password reset (admin-initiated)", html, cancellationToken: ct);
-                emailSent = true;
+                // F09: captured by test delivery mode is not sent; only a relay's acceptance is.
+                var delivery = await _emailService.DeliverAsync(user.TenantId, user.Email, user.FullName,
+                    "Your KynexOne password reset (admin-initiated)", html, cancellationToken: ct);
+                emailSent = delivery.ReachedARelay;
+                smtpConfigured = delivery.Status != EmailDeliveryStatus.NotConfigured;
             }
             catch (Exception ex)
             {
@@ -2222,9 +2269,9 @@ public class PlatformController : ControllerBase
             emailSent,
             smtpConfigured,
             message = emailSent
-                ? $"Password reset email sent to {user.Email}. Link expires in 1 hour."
+                ? $"Password reset email accepted by the mail server for {user.Email}. Link expires in 1 hour."
                 : smtpConfigured
-                    ? "SMTP is configured but the email could not be delivered — check server logs."
+                    ? "The email was not sent: the relay refused it, or this server is in test delivery mode — check server logs."
                     : maySeeLink
                         ? "SMTP is not configured for this platform, so no email was sent. Copy the reset link below and give it to the user directly — it can be used once and expires in 1 hour."
                         : "SMTP is not configured for this platform, so no email was sent. Ask a platform Owner or Admin to issue the reset link.",
@@ -3073,13 +3120,29 @@ public class PlatformController : ControllerBase
             """;
 
         var attachment = new EmailAttachment(fileName, pdfBytes, "application/pdf");
-        await _emailService.SendPlatformAsync(
+        var delivery = await _emailService.DeliverPlatformAsync(
             toEmail,
             tenant?.Name ?? toEmail,
             $"Invoice {invoice.InvoiceNumber} — {amountFmt} due {dueDateFmt}",
             htmlBody,
             [attachment],
             ct);
+
+        // F09: only a relay's acceptance moves the invoice to Sent. Test capture mode (or a relay
+        // that vanished between the check above and this call) leaves it where it was, and the 409
+        // keeps an older client from rendering its "Sent ✓" toast.
+        if (!delivery.ReachedARelay)
+            return Conflict(new
+            {
+                sent = false,
+                captured = delivery.Status == EmailDeliveryStatus.Captured,
+                smtpRequired = delivery.Status == EmailDeliveryStatus.NotConfigured,
+                billingEmail = toEmail,
+                invoiceNumber = invoice.InvoiceNumber,
+                message = delivery.Status == EmailDeliveryStatus.Captured
+                    ? "This server is in test delivery mode: the invoice email was captured and not sent. The invoice status is unchanged."
+                    : "SMTP is not configured on this platform, so the invoice was not sent. Download the PDF and send it manually.",
+            });
 
         invoice.Status = InvoiceStatuses.Sent;
         invoice.UpdatedAtUtc = DateTime.UtcNow;
@@ -3911,7 +3974,7 @@ public class PlatformController : ControllerBase
 
         try
         {
-            await _emailService.SendPlatformAsync(
+            var delivery = await _emailService.DeliverPlatformAsync(
                 to,
                 "KynexOne Platform Admin",
                 "KynexOne — SMTP test message",
@@ -3930,6 +3993,19 @@ public class PlatformController : ControllerBase
                  {System.Net.WebUtility.HtmlEncode(smtp.Host)} and a DKIM record from your provider.</p>
                  """,
                 cancellationToken: ct);
+
+            // F09: a test that was captured proves nothing about the relay, so it must not say so.
+            if (!delivery.ReachedARelay)
+                return Ok(new
+                {
+                    sent = false,
+                    captured = delivery.Status == EmailDeliveryStatus.Captured,
+                    to,
+                    host = smtp.Host,
+                    port = smtp.Port,
+                    provider = smtp.ProviderKey,
+                    message = delivery.Detail + " The relay was not contacted, so this test proves nothing about it.",
+                });
 
             _log.LogInformation("Platform SMTP test sent on port {Port}.", smtp.Port);
 

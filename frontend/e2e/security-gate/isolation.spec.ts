@@ -14,6 +14,9 @@ import { collectAllPages, pageItems, pageTotal } from '../paging';
  * Nothing here skips. If the stack is down, the setup project has already failed.
  */
 
+// Every direct-API caller below records the persona it acts as (e2e/identity/actor.ts).
+import { stampActor } from '../identity/actor';
+
 const tokenFor = (key: string): string => {
   const p = tokenPath(key);
   if (!fs.existsSync(p)) {
@@ -27,6 +30,8 @@ const tokenFor = (key: string): string => {
 
 /** A direct-API caller carrying a role's real bearer token. */
 async function apiAs(key: string, extraHeaders: Record<string, string> = {}): Promise<APIRequestContext> {
+  const role = roleByKey(key);
+  stampActor({ email: role.email, tenantSlug: role.tenantSlug, via: `security-gate role '${key}'` });
   return pwRequest.newContext({
     baseURL: BASE_URL,
     timeout: 30_000,

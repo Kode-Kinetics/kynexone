@@ -36,12 +36,51 @@ public static class DeliveryOutcomes
     /// <summary>Provider outcome genuinely indeterminate. TERMINAL for SMS/WhatsApp — retrying bills and delivers twice.</summary>
     public const string Unknown = "unknown";
 
+    /// <summary>
+    /// F09 — every retry was spent on a failure that looked transient. Distinct from
+    /// <see cref="Failed"/> (a permanent refusal on the first try) because the fix differs: a dead
+    /// letter usually means the relay or provider was down, and it can be requeued once it is back.
+    /// </summary>
+    public const string DeadLetter = "dead_letter";
+
+    /// <summary>
+    /// F09 — test delivery mode kept the message inside the server. Nobody received it. Never a
+    /// success, never an error: a durable fact about a non-production environment.
+    /// </summary>
+    public const string Captured = "captured";
+
     public static bool IsTerminal(string outcome) =>
-        outcome is Sent or Failed or NotConfigured or Suppressed or NoContact or Unknown;
+        outcome is Sent or Failed or NotConfigured or Suppressed or NoContact or Unknown or DeadLetter or Captured;
 
     /// <summary>Outcomes an admin must be told about — the reach did not happen.</summary>
     public static bool NeedsAttention(string outcome) =>
-        outcome is Failed or NotConfigured or NoContact or Unknown;
+        outcome is Failed or NotConfigured or NoContact or Unknown or DeadLetter;
+
+    /// <summary>The problem outcomes as a list, for query predicates that cannot call a method.</summary>
+    public static readonly string[] Problems = [Failed, NotConfigured, NoContact, Unknown, DeadLetter];
+
+    /// <summary>
+    /// The one plain-language label for an outcome, so no screen or export invents its own. "sent"
+    /// on email is ACCEPTED BY THE MAIL SERVER: a 250 from a relay is all SMTP can report, and
+    /// calling it "delivered" would claim an inbox we never saw.
+    /// </summary>
+    public static string Describe(string channel, string outcome, int attemptCount = 0, int maxAttempts = 0) => outcome switch
+    {
+        Queued when attemptCount > 0 => $"Retrying (attempt {attemptCount + 1} of {Math.Max(maxAttempts, attemptCount + 1)})",
+        Queued => "Queued",
+        Sending => "Sending",
+        Sent when channel.Equals(NotificationChannels.Email, StringComparison.OrdinalIgnoreCase) => "Accepted by mail server",
+        Sent when channel.Equals(NotificationChannels.InApp, StringComparison.OrdinalIgnoreCase) => "In the app",
+        Sent => "Accepted by provider",
+        Failed => "Failed",
+        DeadLetter => $"Gave up after {attemptCount} attempts",
+        NotConfigured => $"Not sent: {channel} is not set up",
+        Suppressed => "Not sent: blocked by policy",
+        NoContact => $"Not sent: no {channel} contact on file",
+        Unknown => "Unconfirmed: the provider did not say",
+        Captured => "Captured by test mode, not sent",
+        _ => outcome,
+    };
 }
 
 public static class NotificationAudiences
@@ -107,6 +146,10 @@ public sealed record ChannelDispatchResult(
     public static ChannelDispatchResult NoContact(string channel) =>
         new(DeliveryOutcomes.NoContact, string.Empty, string.Empty, "no_contact",
             $"No {channel} contact on file for this recipient.", false);
+
+    /// <summary>F09 — test delivery mode kept the message. Terminal; nobody received it.</summary>
+    public static ChannelDispatchResult Captured(string provider, string reason) =>
+        new(DeliveryOutcomes.Captured, provider, string.Empty, "captured_test_mode", reason, false);
 }
 
 /// <summary>

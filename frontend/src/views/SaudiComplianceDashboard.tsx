@@ -12,6 +12,7 @@ import { pluralize } from '../lib/plural';
 import {
   READINESS_UNKNOWN_LABEL, formatReadinessPercent, readinessCaption, readinessToneClass,
 } from '../lib/complianceDisplay';
+import { qiwaConnectionLabel, qiwaModeLabel } from '../lib/integrationDeliveryState';
 import { SaudiComplianceConfig } from './SaudiComplianceConfig';
 import { NitaqatPanel } from './NitaqatPanel';
 
@@ -60,8 +61,14 @@ interface QiwaSection {
   /** null when there are no active employees: readiness is undefined, not 0% and not 100%. */
   readinessPercent: number | null;
   failedSyncCount: number;
+  /** The last run the LIVE adapter filed with Qiwa. Never a simulation. */
   lastSuccessfulSync: string | null;
   blockedEmployees: BlockedEmployee[];
+  /** F09. Absent on an older API, which reads as "not known to be live". */
+  isLiveIntegration?: boolean;
+  integrationMode?: string;
+  /** The last sandbox-simulator run. Nothing was filed. */
+  lastSimulatedSync?: string | null;
 }
 
 interface WpsSection {
@@ -130,6 +137,8 @@ function fmtDateTime(s: string | null): string {
 function ConnectionBadge({ status }: { status: string }) {
   const map: Record<string, string> = {
     Connected:          'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400',
+    // Amber, not green: a simulator completing is not a connection to Qiwa.
+    Simulated:          'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400',
     Disconnected:       'bg-slate-100 text-slate-600 dark:bg-slate-500/20 dark:text-slate-300',
     NotConfigured:      'bg-slate-100 text-slate-600 dark:bg-slate-500/20 dark:text-slate-300',
     Error:              'bg-rose-100 text-rose-700 dark:bg-rose-500/20 dark:text-rose-400',
@@ -138,7 +147,7 @@ function ConnectionBadge({ status }: { status: string }) {
   };
   return (
     <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${map[status] ?? 'bg-slate-100 text-slate-600'}`}>
-      {status}
+      {qiwaConnectionLabel(status)}
     </span>
   );
 }
@@ -434,6 +443,15 @@ function QiwaCard({ qiwa }: { qiwa: QiwaSection }) {
           <p className="text-xs text-slate-400 italic">QIWA module is not enabled for this tenant.</p>
         ) : (
           <>
+            {qiwa.isLiveIntegration !== true && (
+              <p
+                data-testid="qiwa-simulation-notice"
+                className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/20"
+              >
+                <strong>{qiwaModeLabel(qiwa.isLiveIntegration)}.</strong> This server runs the Qiwa simulator.
+                Sync results are practice runs: no employee record has been sent to Qiwa or MHRSD.
+              </p>
+            )}
             <dl className="grid grid-cols-2 gap-2 text-xs">
               <div>
                 <dt className="text-slate-400">Credentials</dt>
@@ -454,9 +472,18 @@ function QiwaCard({ qiwa }: { qiwa: QiwaSection }) {
                 </dd>
               </div>
               <div>
-                <dt className="text-slate-400">Last sync</dt>
-                <dd className="text-slate-600 dark:text-slate-300">{fmtDate(qiwa.lastSuccessfulSync)}</dd>
+                {/* Only the live adapter's filings count here. "—" means nothing has been filed. */}
+                <dt className="text-slate-400">Last filed with Qiwa</dt>
+                <dd className="text-slate-600 dark:text-slate-300" data-testid="qiwa-last-filed">{fmtDate(qiwa.lastSuccessfulSync)}</dd>
               </div>
+              {qiwa.lastSimulatedSync && (
+                <div className="col-span-2">
+                  <dt className="text-slate-400">Last simulated run</dt>
+                  <dd className="text-amber-700 dark:text-amber-400">
+                    {fmtDate(qiwa.lastSimulatedSync)} · {qiwaModeLabel(false)}, nothing filed
+                  </dd>
+                </div>
+              )}
             </dl>
 
             <div className="space-y-1">
