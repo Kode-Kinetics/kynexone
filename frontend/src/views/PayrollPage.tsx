@@ -31,6 +31,7 @@ import { ImportExportToolbar, downloadCsv } from '../components/ImportExportTool
 import { InfoTip } from '../components/InfoTip';
 import { GosiBasisNote } from '../components/GosiCohortPanel';
 import { useAuth } from '../contexts/AuthContext';
+import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
 import { SaudiBankExportGate } from '../components/payroll/SaudiBankExportGate';
@@ -466,16 +467,32 @@ function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOver
 // ── AI Insights Panel ─────────────────────────────────────────────────────────
 
 function AiInsightsPanel({ readiness }: { readiness: PayrollReadiness | null }) {
+  // This panel is ADVISORY and nobody asked for it — it fetches on mount, beside whatever payroll work
+  // the operator is actually doing. /api/ai/insights requires `ai.insights_view`, which the HR Manager
+  // and Finance Approver bundles do not hold, so for them it 403'd and the shared client's global
+  // interceptor raised a red "Access Denied" toast over a payroll screen where the action had SUCCEEDED
+  // — a completed payroll run reading as a permission failure. An evidence run caught it on 5 of 15
+  // steps, once directly over a screen correctly showing 14 published payslips.
+  //
+  // Gated the way useWorkforceFindings already gates the same endpoint, rather than by suppressing the
+  // toast: a user-initiated action that is refused must still say so. Nobody's permissions are widened;
+  // the panel simply does not ask a question it is not allowed to ask, and renders nothing — NOT the
+  // amber "insight status is unavailable" alert, which would trade a false alarm for a persistent one.
+  const { hasPermission } = useAuth();
+  const { isFeatureEnabled } = useFeatureFlags();
+  const enabled = isFeatureEnabled('ai_assistant') && hasPermission('ai.insights_view');
+
   const [insights, setInsights] = useState<AIInsight[]>([]);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
+    if (!enabled) { setLoading(false); return; }
     client.get<{ items: AIInsight[] }>('/api/ai/insights', { params: { acknowledged: false, pageSize: 5 } })
       .then(r => setInsights(r.data.items))
       .catch(() => { setInsights([]); setFailed(true); })
       .finally(() => setLoading(false));
-  }, []);
+  }, [enabled]);
 
   const severityStyle: Record<string, string> = {
     Critical: 'border-rose-200 bg-rose-50 dark:border-rose-500/20 dark:bg-rose-500/5',
@@ -490,6 +507,9 @@ function AiInsightsPanel({ readiness }: { readiness: PayrollReadiness | null }) 
 
   // A salary-gap insight the live readiness has already disproved is history, not a current finding.
   const visibleInsights = filterPayrollInsightsForReadiness(insights, readiness);
+  // Nothing was asked and nothing is claimed: an advisory source this caller cannot read shows no panel
+  // at all, so it never reads as either an alarm or an all-clear.
+  if (!enabled) return null;
   const state = payrollInsightState(loading, failed, visibleInsights.length);
   if (state === 'loading') return <div className="surface h-16 animate-pulse" aria-label="Loading payroll insights" />;
   if (state === 'empty' || state === 'unavailable') return (

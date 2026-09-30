@@ -38,6 +38,11 @@ public class TerminateSeparationLifecycleTests
             TenantId = tenantId, EmployeeCode = "E-100", FullName = "Ahmed Al-Rashidi",
             Department = "Finance", Designation = "Analyst",
             Status = EmployeeStatuses.Active, Nationality = "SAU",
+            // A Saudi national with the identity the KSA floor requires to activate. These tests are
+            // about separation and reactivation, not about statutory readiness — and reactivation from
+            // Terminated is a gated transition, so an employee with no jurisdiction at all (which is what
+            // a blank country now means) would be refused for a reason none of them is asserting.
+            CountryCode = "SA", IdNumber = "1000000001",
             JoiningDate = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc),
         };
         db.Employees.Add(emp);

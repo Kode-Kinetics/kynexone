@@ -140,4 +140,30 @@ public static class HomeJurisdiction
         return $"{name} has no home country set — a platform administrator must set it on the tenant "
              + $"before statutory rules, leave entitlements and identity documents can be resolved.";
     }
+
+    /// <summary>
+    /// The country ONE EMPLOYEE RECORD is governed by: <b>an explicitly stated country wins, otherwise
+    /// the EMPLOYING COMPANY's country</b>. This is the rule <c>GET /api/employees/field-catalog</c>
+    /// already publishes in as many words ("Explicit countryCode wins, else the company's country") and
+    /// the ONE place it is implemented, so no write path can hold a different opinion.
+    ///
+    /// <para><b>Why it exists.</b> The create path used to take the employee's country solely from the
+    /// first <c>complianceRecords</c> entry. Omit that entry and the employee was stored with
+    /// <c>CountryCode = ""</c>; <c>GccReadinessFloor.Resolve("")</c> returns an EMPTY requirement list, so
+    /// a non-GCC expat with no Iqama and no GOSI reference activated into a Saudi legal entity with no
+    /// statutory floor applied at all. Two <c>POST /api/employees</c> calls differing only in that entry
+    /// produced a 422 and an Active employee.</para>
+    ///
+    /// <para><b>A stated-but-unrecognised country is never overwritten.</b> Free text such as "UAE" is
+    /// neither ISO-2 nor ISO-3, so it normalises to nothing — but silently replacing it with the company's
+    /// country would substitute a jurisdiction the operator did not state. It is returned as given
+    /// (upper-cased), and the readiness gate refuses the activation saying the country is not recognised.
+    /// The fix is the country code itself, and the operator is told so.</para>
+    /// </summary>
+    public static string DeriveEmployeeCountry(string? statedCountryCode, string? companyCountryCode)
+    {
+        var stated = (statedCountryCode ?? string.Empty).Trim();
+        if (stated.Length > 0) return Normalize(stated) ?? stated.ToUpperInvariant();
+        return Normalize(companyCountryCode) ?? string.Empty;
+    }
 }

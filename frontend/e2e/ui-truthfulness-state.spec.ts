@@ -69,6 +69,27 @@ test.describe('browserless UI truthfulness contracts', () => {
     expect(payrollPage).toContain('Empty totals do not indicate a completed or healthy payroll');
   });
 
+  // An evidence run recorded this on 5 of 15 payroll steps: the advisory insights panel fetches
+  // /api/ai/insights on mount, that endpoint requires `ai.insights_view`, and the HR Manager and
+  // Finance Approver bundles do not hold it — so the shared client's global interceptor raised a red
+  // "Access Denied" toast over screens where the payroll action had SUCCEEDED. One sat directly over a
+  // screen correctly showing 14 published payslips. A completed action must never read as a refusal.
+  test('an advisory panel nobody asked for degrades silently, and refusals users cause still speak', () => {
+    const payrollPage = read('src/views/PayrollPage.tsx');
+    expect(payrollPage, 'the panel must check the permission the endpoint enforces')
+      .toContain("hasPermission('ai.insights_view')");
+    expect(payrollPage, 'and must not issue the request it knows will be refused')
+      .toContain('if (!enabled) { setLoading(false); return; }');
+    expect(payrollPage, "rendering nothing — NOT the amber 'unavailable' alert, which would trade a "
+      + 'transient false alarm for a permanent one')
+      .toContain('if (!enabled) return null;');
+
+    // The fix must be the call site, never the toast: a user-initiated action that is refused has to
+    // keep saying why. If this disappears, access denials have gone silent product-wide.
+    const client = read('src/api/client.ts');
+    expect(client).toContain("window.dispatchEvent(new CustomEvent('zayra:access-denied'");
+  });
+
   test('pre-auth preview and capability claims are qualified', () => {
     expect(LOGIN_PREVIEW_DISCLOSURE).toContain('Illustrative sample data');
     expect(LOGIN_CAPABILITIES.find((item) => item.includes('Qiwa'))).toContain('integration-ready');

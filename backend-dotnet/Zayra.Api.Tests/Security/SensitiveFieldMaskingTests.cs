@@ -629,7 +629,11 @@ public class SensitiveFieldMaskingTests
             WorkEmail: "test@company.com", Phone: "+971500000", Gender: "Male",
             DateOfBirth: new DateOnly(1990, 1, 1), MaritalStatus: "Single",
             EmergencyContactName: "Contact", EmergencyContactPhone: "+97150001",
-            Nationality: "UAE", CountryCode: "UAE",
+            // "UAE" is free text — neither ISO-2 nor ISO-3 — so it normalises to nothing and the employee
+            // this draft becomes would have no identifiable jurisdiction, which now refuses activation.
+            // These tests are about response masking, so the fixture states a real country and holds the
+            // Emirates ID that country's floor requires.
+            Nationality: "Emirati", CountryCode: "AE",
             Department: "Engineering", Designation: "Engineer", Branch: "Dubai", WorkLocation: "HQ",
             ManagerEmployeeId: null,
             JoiningDate: DateTime.UtcNow.Date,
@@ -647,7 +651,7 @@ public class SensitiveFieldMaskingTests
             VisaIssueDate: null, VisaNumber: null, VisaExpiryDate: null,
             IqamaNumber: "200000001", MuqeemNumber: null,
             GosiReference: null, QiwaContractNumber: null,
-            EmiratesId: null, LaborCardNumber: null, VisaFileNumber: null,
+            EmiratesId: "784-1990-1111111-1", LaborCardNumber: null, VisaFileNumber: null,
             Qid: null, WorkPermitNumber: null, WorkPermitIssueDate: null,
             CivilId: null, ResidencyNumber: null, ResidencyIssueDate: null);
 

@@ -41,7 +41,32 @@ public sealed class EmployeeReadinessPolicyResolver : IEmployeeReadinessPolicyRe
     public async Task<ResolvedReadinessPolicy> ResolveAsync(
         Guid tenantId, Guid? companyId, string? countryCode, string? nationality, CancellationToken ct = default)
     {
-        var iso2 = (CountryCodeStandard.NormalizeToIso2(countryCode) ?? countryCode ?? string.Empty).Trim().ToUpperInvariant();
+        // ── JURISDICTION DERIVATION (the ONE enforcement-side implementation) ───────────────────────
+        // An explicitly stated country wins; a BLANK one falls back to the EMPLOYING COMPANY's country
+        // (HomeJurisdiction.DeriveEmployeeCountry — the rule the field-catalog endpoint publishes).
+        // Doing it HERE, rather than only on the write paths, is deliberate: every gate, badge, catalog,
+        // import preview and import commit reaches its requirements through this one method, so the floor
+        // now applies to a legacy row that was already persisted with a blank country — not only to rows
+        // created from today on. Without it, an employee attached to a Saudi legal entity but stored with
+        // CountryCode "" resolved an EMPTY requirement list and activated with no Iqama and no GOSI.
+        // One extra query, only when nothing was stated.
+        var stated = (countryCode ?? string.Empty).Trim();
+        string? companyCountry = null;
+        if (stated.Length == 0 && companyId is Guid jurisdictionCompanyId)
+        {
+            // ScopedBypass, not a raw IgnoreQueryFilters: same SYSTEM-read rationale as the profile query
+            // below — the gate and the nightly sweep run with no user scope, so the ambient COMPANY filter
+            // resolves to an empty scope and would hide the very company being asked about. The helper
+            // names the actor and re-applies the tenant predicate, so no other tenant's row can be read.
+            companyCountry = await Infrastructure.Data.ScopedBypass
+                .TenantWide(_db.Companies, tenantId, "Employee jurisdiction: the EMPLOYING company's own country, which keys every statutory requirement. Resolved by the activation gate and the nightly sweep, which run with NO user scope, so the ambient company filter would resolve to an empty scope and hide the very company being asked about. Tenant scope is re-applied by the helper; nothing is written.")
+                .AsNoTracking()
+                .Where(c => c.Id == jurisdictionCompanyId && !c.IsDeleted)
+                .Select(c => c.CountryCode)
+                .FirstOrDefaultAsync(ct);
+        }
+        var derived = HomeJurisdiction.DeriveEmployeeCountry(stated, companyCountry);
+        var iso2 = (CountryCodeStandard.NormalizeToIso2(derived) ?? derived).Trim().ToUpperInvariant();
         var nat = GccReadinessFloor.NormalizeNationality(nationality);
         var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
         var sources = new List<string>();

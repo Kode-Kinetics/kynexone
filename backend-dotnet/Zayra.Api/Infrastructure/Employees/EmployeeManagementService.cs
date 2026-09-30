@@ -136,6 +136,9 @@ public class EmployeeManagementService : IEmployeeManagementService
         // Employees must always resolve to a legal entity: operational company scoping
         // treats null CompanyId as invisible to scoped users, so default it here.
         employee.CompanyId ??= await ResolveDefaultCompanyId(tenantId, cancellationToken);
+        // GOVERNING JURISDICTION — explicit countryCode wins, else the employing company's. Same ordering
+        // rationale as the work email below: it is resolved once the legal entity is final.
+        await DeriveEmployeeCountryAsync(employee, tenantId, cancellationToken);
         // AUTO-DERIVE WORK EMAIL (server-authoritative) — runs AFTER CompanyId is finalized so it uses the
         // EMPLOYING company's domain (multi-company req). Sets employee.WorkEmail; may throw
         // WorkEmailConflictException for a user-supplied duplicate (the one deliberate stop). Audited post-persist.
@@ -209,6 +212,10 @@ public class EmployeeManagementService : IEmployeeManagementService
         var priorDepartmentId = employee.DepartmentId;
         var priorDesignationId = employee.DesignationId;
         await ApplyEmployee(employee, request, tenantId, cancellationToken);
+        // GOVERNING JURISDICTION against the (possibly reassigned) EMPLOYING company — a stated country is
+        // kept, a blank one adopts the company's, so editing a record heals a country left blank by an
+        // earlier create or import.
+        await DeriveEmployeeCountryAsync(employee, tenantId, cancellationToken);
         // AUTO-DERIVE / VALIDATE WORK EMAIL against the (possibly reassigned) EMPLOYING company's domain, and
         // run the login-identity rename guard (keeps a linked User in sync; blocks a rename that would collide
         // with another login). Throws before any persist on a user-supplied duplicate / rename collision.
@@ -1337,7 +1344,42 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.ShiftPolicyCode = Clean(request.ShiftPolicyCode);
         employee.LeavePolicyCode = Clean(request.LeavePolicyCode);
         employee.AttendancePolicyCode = Clean(request.AttendancePolicyCode);
+        // The STATED country only. Falling back to the employing company's country is deliberately NOT
+        // done here: CompanyId is finalized by the caller (CreateAsync defaults it moments later), so the
+        // fallback would read the wrong company or none. Both callers run DeriveEmployeeCountryAsync once
+        // the legal entity is settled.
         employee.CountryCode = request.ComplianceRecords?.FirstOrDefault()?.CountryCode ?? employee.CountryCode;
+    }
+
+    /// <summary>
+    /// Stamp the employee's governing jurisdiction: an explicitly stated country wins, otherwise the
+    /// EMPLOYING COMPANY's — the rule <c>GET /api/employees/field-catalog</c> publishes, implemented once
+    /// in <see cref="HomeJurisdiction.DeriveEmployeeCountry"/>.
+    ///
+    /// <para>Runs AFTER <c>CompanyId</c> is final, for the same reason work-email derivation does: the
+    /// country must come from the legal entity the employee actually ends up under. Before this existed the
+    /// country came solely from the first <c>complianceRecords</c> entry, so omitting that entry stored a
+    /// blank country, resolved an EMPTY statutory floor, and activated a non-GCC expat into a Saudi entity
+    /// with no Iqama and no GOSI reference.</para>
+    ///
+    /// <para>On update it is self-healing and non-destructive: a record that already states a country keeps
+    /// it (normalised), and only a blank one adopts the company's.</para>
+    /// </summary>
+    private async Task DeriveEmployeeCountryAsync(Employee employee, Guid tenantId, CancellationToken cancellationToken)
+    {
+        var stated = (employee.CountryCode ?? string.Empty).Trim();
+        string? companyCountry = null;
+        if (stated.Length == 0 && employee.CompanyId is Guid companyId)
+            // ScopedBypass, not a raw IgnoreQueryFilters: a company-scoped operator creating a hire under
+            // one of their own companies must still have that company's country read back. The helper
+            // names the actor and re-applies the tenant predicate; nothing is written.
+            companyCountry = await Infrastructure.Data.ScopedBypass
+                .TenantWide(_db.Companies, tenantId, "Employee jurisdiction: the EMPLOYING company's own country, which keys every statutory requirement. Resolved by the activation gate and the nightly sweep, which run with NO user scope, so the ambient company filter would resolve to an empty scope and hide the very company being asked about. Tenant scope is re-applied by the helper; nothing is written.")
+                .AsNoTracking()
+                .Where(c => c.Id == companyId && !c.IsDeleted)
+                .Select(c => c.CountryCode)
+                .FirstOrDefaultAsync(cancellationToken);
+        employee.CountryCode = HomeJurisdiction.DeriveEmployeeCountry(stated, companyCountry);
     }
 
     /// <summary>Carries what happened during work-email resolution so the caller can audit it AFTER the

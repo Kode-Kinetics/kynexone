@@ -255,6 +255,11 @@ public sealed class RecruitmentOfferMakerCheckerTests
         Guid draftId;
         await using (var db = _fixture.CreateDb())
             draftId = (await db.JobApplications.AsNoTracking().SingleAsync(x => x.Id == w.ApplicationId)).OnboardingDraftId!.Value;
+        // The hire resolves into the OTHER (UAE) entity — that is the conflict under test. Give the
+        // draft that jurisdiction's identity (see DraftStatutoryIdentity) so activation reaches the
+        // entity check instead of being held one step earlier at the readiness gate.
+        await using (var db = _fixture.CreateDb())
+            await DraftStatutoryIdentity.ApplyAsync(db, draftId, "AE");
 
         await using (var db = _fixture.CreateDb())
         {
