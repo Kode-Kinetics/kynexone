@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import { resolveTarget } from './e2e/identity/env';
 
 /**
  * WAVE 1 B3 — the Chrome role and isolation security gate.
@@ -28,12 +29,16 @@ export default defineConfig({
   // `forbidOnly` stops a stray `test.only` from silently shrinking the gate to one test in CI.
   forbidOnly: !!process.env.CI,
 
-  reporter: process.env.CI ? [['list'], ['html', { open: 'never' }]] : [['list']],
+  reporter: process.env.CI
+    ? [['list'], ['html', { open: 'never' }], ['./e2e/identity/actor-reporter.ts']]
+    : [['list'], ['./e2e/identity/actor-reporter.ts']],
   timeout: 90_000,
   expect: { timeout: 15_000 },
 
   use: {
-    baseURL: process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:5173',
+    // Same resolution as every other config (e2e/identity/env.ts). This file used to ignore the
+    // E2E_BASE_URL alias that roles.ts honoured, so the two could point at different stacks.
+    baseURL: resolveTarget().baseUrl,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: process.env.CI ? 'retain-on-failure' : 'off',

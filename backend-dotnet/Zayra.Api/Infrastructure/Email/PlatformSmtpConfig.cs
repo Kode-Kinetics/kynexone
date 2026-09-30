@@ -121,6 +121,23 @@ public static class PlatformSmtpConfig
         return Build(saved, protection, config, log);
     }
 
+    /// <summary>
+    /// "Is there a platform relay?" without decrypting anything — the question readiness asks on
+    /// every probe. Uses the same saved-then-environment resolution as <see cref="Build"/>, so the
+    /// readiness answer and the relay <see cref="SmtpEmailService"/> actually uses cannot disagree.
+    /// </summary>
+    public static async Task<bool> HasUsableRelayAsync(ZayraDbContext db, IConfiguration config, CancellationToken ct)
+    {
+        var saved = await db.PlatformConfigEntries
+            .AsNoTracking()
+            .Where(e => e.Key == KeyHost || e.Key == KeyFromAddress)
+            .ToDictionaryAsync(e => e.Key, e => e.Value, ct);
+        string Resolve(string key, string configKey) =>
+            saved.TryGetValue(key, out var v) && !string.IsNullOrWhiteSpace(v) ? v : config[configKey] ?? string.Empty;
+        return !string.IsNullOrWhiteSpace(Resolve(KeyHost, "Smtp:Host"))
+               && !string.IsNullOrWhiteSpace(Resolve(KeyFromAddress, "Smtp:FromEmail"));
+    }
+
     /// <summary>Pure projection over an already-loaded key/value map — kept separate so it is testable.</summary>
     public static PlatformSmtpSettings Build(
         IReadOnlyDictionary<string, string> saved,

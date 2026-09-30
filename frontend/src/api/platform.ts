@@ -446,13 +446,41 @@ export interface PlatformTeamMember {
   updatedAtUtc: string | null;
 }
 
+/** How an outbound integration is wired. `simulated` means results never reach the real service. */
+export interface PlatformIntegrationMode {
+  status: string;
+  configured: boolean;
+  simulated: boolean;
+  detail?: string | null;
+}
+
+/** Aggregate delivery ledger counts (no tenant, recipient or message). */
+export interface PlatformDeliveryCounts {
+  status: 'ok' | 'attention' | 'unknown';
+  queued?: number;
+  retrying?: number;
+  failed?: number;
+  deadLetter?: number;
+  notConfigured?: number;
+  captured?: number;
+  reportsFailed24h?: number;
+  reportsNotConfigured24h?: number;
+  reportsDeadLetter?: number;
+  qiwaDeadLetter?: number;
+}
+
 export interface PlatformHealthStatus {
   status: 'healthy' | 'degraded' | 'error';
   components: {
-    database: { status: 'ok' | 'error' | 'unknown' };
-    smtp:     { status: 'configured' | 'not_configured' | 'unknown' };
+    // name/host: which database this API is attached to (never port, user or password).
+    database: { status: 'ok' | 'error' | 'unknown'; name?: string | null; host?: string | null };
+    smtp:     { status: 'configured' | 'not_configured' | 'capture' | 'unknown' };
     redis:    { status: 'ok' | 'error' | 'unknown' | 'not_configured' | 'disconnected' };
     jobs:     { status: 'ok' | 'error' | 'unknown' };
+    // F09 — absent on an API older than the integration-honesty change.
+    email?: PlatformIntegrationMode;
+    qiwa?: PlatformIntegrationMode;
+    deliveries?: PlatformDeliveryCounts;
   };
   version: string;
   environment: string;

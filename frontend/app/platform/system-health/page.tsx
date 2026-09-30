@@ -2,8 +2,9 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { RefreshCw, CheckCircle, XCircle, AlertTriangle, Circle, Database, Server, Activity } from 'lucide-react';
-import { platformApi, type PlatformDiagnostics } from '@/src/api/platform';
+import { RefreshCw, CheckCircle, XCircle, AlertTriangle, Circle, Database, Server, Activity, Send } from 'lucide-react';
+import { platformApi, type PlatformDiagnostics, type PlatformHealthStatus } from '@/src/api/platform';
+import { deliveryAttentionSummary, emailModeLabel, qiwaModeLabel } from '@/src/lib/integrationDeliveryState';
 
 type VersionData = { version: string; environment: string; deployedAt?: string; migrations?: number };
 
@@ -62,6 +63,8 @@ export default function SystemHealthPage() {
   const router = useRouter();
   const [diag, setDiag]       = useState<PlatformDiagnostics | null>(null);
   const [ver, setVer]         = useState<VersionData | null>(null);
+  const [health, setHealth]   = useState<PlatformHealthStatus | null>(null);
+  const [healthFailed, setHealthFailed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState('');
   const [lastChecked, setLastChecked] = useState<Date | null>(null);
@@ -86,7 +89,20 @@ export default function SystemHealthPage() {
     } catch {
       setError('Failed to reach diagnostics endpoints. The API may be down.');
     } finally { setLoading(false); }
+    // Separate call and separate failure: an unreachable health endpoint must read as
+    // "unavailable", never as "no undelivered messages".
+    try {
+      setHealth(await platformApi.getHealth());
+      setHealthFailed(false);
+    } catch {
+      setHealth(null);
+      setHealthFailed(true);
+    }
   }, []);
+
+  const email = health?.components.email;
+  const qiwa = health?.components.qiwa;
+  const deliveries = health?.components.deliveries;
 
   const overallOk = diag?.databaseOk !== false && !error;
 
@@ -230,9 +246,50 @@ export default function SystemHealthPage() {
             </Card>
           )}
 
+          {/* Outbound integrations (F09). A healthy worker is not proof anything reached anyone:
+              this card says how email and Qiwa are wired and what did NOT get delivered. */}
+          <Card
+            title="Outbound delivery"
+            icon={<Send className="h-3.5 w-3.5" />}
+            status={healthFailed ? 'error' : deliveries?.status === 'attention' || email?.simulated || qiwa?.simulated ? 'warn' : health ? 'ok' : undefined}
+          >
+            {healthFailed ? (
+              <p className="text-xs text-rose-400" data-testid="delivery-health-unavailable">
+                Delivery status is unavailable: the health endpoint did not answer. This does not mean nothing failed.
+              </p>
+            ) : !health ? (
+              <p className="text-xs text-slate-500">Checking…</p>
+            ) : (
+              <div data-testid="delivery-health">
+                <InfoRow
+                  label="Email"
+                  value={<span className={email?.simulated || !email?.configured ? 'text-amber-400' : ''}>{emailModeLabel(email?.status)}</span>}
+                />
+                <InfoRow
+                  label="Qiwa"
+                  value={<span className={qiwa?.simulated ? 'text-amber-400' : ''}>{qiwa ? qiwaModeLabel(!qiwa.simulated && qiwa.configured) : 'Not reported'}</span>}
+                />
+                {deliveries && deliveries.status !== 'unknown' && (
+                  <>
+                    <InfoRow label="Queued / retrying" value={`${deliveries.queued ?? 0} / ${deliveries.retrying ?? 0}`} mono />
+                    <InfoRow label="Gave up after retries" value={deliveries.deadLetter ?? 0} mono />
+                    <InfoRow label="Failed" value={deliveries.failed ?? 0} mono />
+                    <InfoRow label="Not sent (not set up)" value={deliveries.notConfigured ?? 0} mono />
+                    <InfoRow label="Captured by test mode" value={deliveries.captured ?? 0} mono />
+                  </>
+                )}
+                <p className={`mt-2 text-[11px] ${deliveries?.status === 'attention' ? 'text-amber-400' : 'text-slate-500'}`}>
+                  {deliveries ? deliveryAttentionSummary(deliveries) : 'This server does not report delivery counts yet.'}
+                </p>
+                {(email?.detail || qiwa?.detail) && (
+                  <p className="mt-1 text-[11px] text-slate-500">{[email?.detail, qiwa?.detail].filter(Boolean).join(' ')}</p>
+                )}
+              </div>
+            )}
+          </Card>
+
           {/* Planned / future services — greyed out placeholders */}
           {[
-            { key: 'smtp',    label: 'Email (SMTP)' },
             { key: 'redis',   label: 'Cache (Redis)' },
             { key: 'jobs',    label: 'Background Jobs' },
           ].map(c => (

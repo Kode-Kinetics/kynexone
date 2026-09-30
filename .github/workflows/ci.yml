@@ -98,6 +98,13 @@ jobs:
         run: npx tsc --noEmit
         working-directory: frontend
 
+      # No browser, no stack. Includes the e2e preflight's refusal logic and the identity contract:
+      # the role matrix is generated from backend AuthSeeder.cs and the separation-of-duties policy is
+      # checked against it here, so a seeding change that breaks either fails on the PR (F07).
+      - name: Browserless contracts (preflight rules, identity contract, UI truthfulness, RTL)
+        run: npx playwright test -c e2e/playwright.browserless.config.ts
+        working-directory: frontend
+
   # ── Security gate: secret scan ────────────────────────────────────────────────
   # Blocks any commit that introduces a hardcoded secret (JWT key, DB password, cloud
   # token) from reaching the deploy step. Scans the full history on push.
@@ -188,7 +195,19 @@ jobs:
   chrome-security-gate:
     name: Chrome Security Gate (roles + isolation)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 30 → 40: the gate now signs in the whole system-role catalog (18 roles, paced under the login
+    # limiter) and the bootstrap verifies every persona after provisioning.
+    timeout-minutes: 40
+    # THE E2E TARGET CONTRACT (frontend/e2e/identity/env.ts), declared ONCE for every step. The
+    # preflight proves the running stack matches it — URLs, build commit, database — before the
+    # bootstrap writes anything and before any suite runs (register item F07).
+    env:
+      PLAYWRIGHT_BASE_URL: 'http://localhost:5173'
+      E2E_API_BASE_URL: 'http://localhost:5117'
+      E2E_EXPECTED_COMMIT: ${{ github.sha }}
+      E2E_EXPECTED_DATABASE: 'zayra'
+      # Baked into the frontend build and served at /build-info.
+      BUILD_COMMIT: ${{ github.sha }}
     services:
       postgres:
         image: postgres:16-alpine
@@ -214,8 +233,10 @@ jobs:
         working-directory: frontend
         run: npx playwright install --with-deps chromium
 
+      # SourceRevisionId is baked into the assembly and reported by /health/live as `commit`, so the
+      # preflight can prove the API under test is this build and not a leftover one.
       - name: Build backend
-        run: dotnet build backend-dotnet/Zayra.Api/Zayra.Api.csproj -c Release
+        run: dotnet build backend-dotnet/Zayra.Api/Zayra.Api.csproj -c Release -p:SourceRevisionId=${{ github.sha }}
 
       # ── Fixture credentials ────────────────────────────────────────────────────────────────────
       # GENERATED PER RUN, never committed. The database is ephemeral and dies with the runner, so
@@ -224,11 +245,17 @@ jobs:
       # GITHUB_ENV so the backend (which bootstraps the platform owner from them), the bootstrap
       # step and the spec step all see the SAME values: a mismatch would show up as "wrong password"
       # against a world that was provisioned correctly.
+      #
+      # The platform owner's EMAIL is generated too, and written here ONLY (no step sets it again).
+      # It used to be the literal admin@platform.local on three separate steps, and the test code
+      # defaulted to the same literal — so a process that never received it still "matched". That is
+      # the F07 failure mode; with a per-run address, anything not reading this contract gets a 401.
       - name: Generate per-run fixture credentials
         run: |
           set -euo pipefail
           gen() { echo "Ci$(openssl rand -hex 12)!aA9"; }
           {
+            echo "PLATFORM_ADMIN_EMAIL=e2e-platform-$(openssl rand -hex 4)@example.com"
             echo "PLATFORM_ADMIN_PASSWORD=$(gen)"
             echo "E2E_GROUP_PASSWORD=$(gen)"
             echo "E2E_INTELLIFLOW_PASSWORD=$(gen)"
@@ -243,14 +270,19 @@ jobs:
           Jwt__TenantAudience: 'kynexone-tenant'
           Jwt__PlatformAudience: 'kynexone-platform'
           Jwt__SigningKey: 'CI_ONLY_EPHEMERAL_SIGNING_KEY_NOT_A_PRODUCTION_SECRET_0123456789'
+          # Safe test delivery (F09): CI never sends email. Messages are captured in-process and as
+          # .eml files, so no gate can reach a real person whatever relay a fixture saves.
+          Email__DeliveryMode: 'capture'
+          Email__CaptureDirectory: '/tmp/kynexone-captured-mail'
           # SeedAdmin__* and SEED_ENTERPRISE_TEST_DATA used to live here. Both are gone: every
           # demo/fixture seeder was deleted (docs/DATA_ENTRY_PATHS.md) and
           # Zayra.Api.Tests/Security/NoSideDoorDataTests.cs fails the build if one returns. Leaving
           # the variables set would have been worse than useless — they would read as though this job
           # still seeds a tenant, while the gate silently authenticated against an empty database.
           # PLATFORM_ADMIN_* is the ONE sanctioned bootstrap: PlatformOwnerBootstrap creates the first
-          # platform operator, and that operator then creates the whole fixture world over HTTP.
-          PLATFORM_ADMIN_EMAIL: 'admin@platform.local'
+          # platform operator, and that operator then creates the whole fixture world over HTTP. Both
+          # values come from GITHUB_ENV (generated above) — deliberately NOT restated here, because a
+          # step-level value would silently override the one every other step reads.
           # Higher than the production default ONLY on this disposable stack: the bootstrap
           # authenticates ~12 fixture accounts in a few seconds to provision through their own APIs.
           # The gate's OWN logins are still paced under the production limit by the setup project —
@@ -320,22 +352,28 @@ jobs:
           tail -60 /tmp/fe.log
           exit 1
 
+      # FIRST Playwright step, before anything writes (F07). Fails the job, naming every failed check,
+      # unless: the env contract is complete; both hosts are disposable; the API and the frontend are
+      # this commit's builds and the frontend proxies to the same API and database; that database is
+      # the expected, non-production one; and the platform owner this job generated authenticates.
+      - name: E2E preflight — target, build, database and platform identity
+        working-directory: frontend
+        run: npx playwright test -c e2e/preflight/playwright.preflight.config.ts
+
       # Migrations leave an EMPTY database. Nothing the gate logs in as exists until this runs, and
       # it must run AFTER the schema and BEFORE any spec. It talks to the API directly rather than
       # through the frontend proxy, so a frontend problem cannot masquerade as a provisioning one.
-      - name: Provision the e2e fixture world (platform-admin API only)
+      # It re-runs the target preflight, provisions, then runs the WORLD preflight: every tenant,
+      # legal entity and employee link exists and every persona signs in with exactly its declared
+      # role, scope and AuthSeeder permissions. The verified world is recorded for the gate below.
+      - name: Provision and verify the e2e fixture world (platform-admin API only)
         working-directory: frontend
-        env:
-          E2E_API_BASE_URL: 'http://localhost:5117'
-          PLAYWRIGHT_BASE_URL: 'http://localhost:5173'
-          PLATFORM_ADMIN_EMAIL: 'admin@platform.local'
         run: npx playwright test -c e2e/bootstrap/playwright.bootstrap.config.ts
 
+      # Its global setup is the LANE preflight: it refuses to start unless the stack is still the one
+      # the world preflight verified (same URLs, builds, database, tenant ids, personas).
       - name: Run the Chrome security gate
         working-directory: frontend
-        env:
-          PLAYWRIGHT_BASE_URL: 'http://localhost:5173'
-          PLATFORM_ADMIN_EMAIL: 'admin@platform.local'
         run: npx playwright test --config=playwright.security.config.ts
 
       - name: Upload failure evidence
@@ -709,6 +747,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [backend-tests, frontend-build]
+    # THE E2E TARGET CONTRACT (frontend/e2e/identity/env.ts), declared ONCE for every step; see the
+    # same block in chrome-security-gate. BUILD_COMMIT also reaches `docker compose --build`, which
+    # bakes it into both images so the preflight can prove they are this commit's.
+    env:
+      PLAYWRIGHT_BASE_URL: 'http://127.0.0.1:5173'
+      E2E_API_BASE_URL: 'http://127.0.0.1:5117'
+      E2E_EXPECTED_COMMIT: ${{ github.sha }}
+      E2E_EXPECTED_DATABASE: 'zayra'
+      BUILD_COMMIT: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
 
@@ -726,13 +773,16 @@ jobs:
 
       # ── Fixture credentials ────────────────────────────────────────────────────────────────────
       # Generated per run and exported to every later step; see the same step in chrome-security-gate
-      # for why they are not committed. PLATFORM_ADMIN_PASSWORD also reaches the compose stack, which
-      # is what lets PlatformOwnerBootstrap create the one operator the bootstrap then works as.
+      # for why they are not committed, and why the platform owner's EMAIL is generated too.
+      # PLATFORM_ADMIN_EMAIL/PASSWORD also reach the compose stack (docker-compose.yml passes them to
+      # the backend), which is what lets PlatformOwnerBootstrap create the one operator the bootstrap
+      # then works as.
       - name: Generate per-run fixture credentials
         run: |
           set -euo pipefail
           gen() { echo "Ci$(openssl rand -hex 12)!aA9"; }
           {
+            echo "PLATFORM_ADMIN_EMAIL=e2e-platform-$(openssl rand -hex 4)@example.com"
             echo "PLATFORM_ADMIN_PASSWORD=$(gen)"
             echo "E2E_GROUP_PASSWORD=$(gen)"
             echo "E2E_INTELLIFLOW_PASSWORD=$(gen)"
@@ -745,7 +795,7 @@ jobs:
           # SEED_DEMO_DATA / SEED_ENTERPRISE_TEST_DATA are deliberately absent: the seeders they
           # switched on were deleted (docs/DATA_ENTRY_PATHS.md) and NoSideDoorDataTests fails the
           # build if one returns. The fixture world is provisioned two steps below, over HTTP.
-          PLATFORM_ADMIN_EMAIL: 'admin@platform.local'
+          # PLATFORM_ADMIN_EMAIL/PASSWORD come from GITHUB_ENV (generated above), never restated here.
           # Browser setup authenticates twelve distinct personas, and the bootstrap authenticates as
           # every tenant administrator to provision through the tenant API. This override is isolated
           # to the disposable CI stack; docker-compose and deployed environments retain the default.
@@ -769,34 +819,28 @@ jobs:
           docker compose -p zayra-browser-ci logs --no-color --tail=200
           exit 1
 
+      # FIRST Playwright step, before anything writes (F07); see the same step in chrome-security-gate.
+      - name: E2E preflight — target, build, database and platform identity
+        working-directory: frontend
+        run: npx playwright test -c e2e/preflight/playwright.preflight.config.ts
+
       # The stack is up and its database is EMPTY. Provision the fixture world before any spec —
       # tenants, companies, users and their entity scope, employees, salaries, leave, attendance and
-      # a locked payroll run — entirely through /api/platform/** and the tenants' own APIs.
-      - name: Provision the e2e fixture world (platform-admin API only)
+      # a locked payroll run — entirely through /api/platform/** and the tenants' own APIs. Bracketed
+      # by the target preflight and the WORLD preflight, which verifies every persona and records it.
+      - name: Provision and verify the e2e fixture world (platform-admin API only)
         working-directory: frontend
-        env:
-          E2E_API_BASE_URL: http://127.0.0.1:5117
-          PLAYWRIGHT_BASE_URL: http://127.0.0.1:5173
-          PLATFORM_ADMIN_EMAIL: 'admin@platform.local'
         run: npx playwright test -c e2e/bootstrap/playwright.bootstrap.config.ts
 
+      # The admin identity, password and employee floor come from e2e/world.ts. The E2E_DEFAULT_* and
+      # E2E_MIN_EMPLOYEES overrides this step used to pass were a second declaration of the same
+      # facts; they are retired and the preflight refuses them if set.
       - name: Run client-pilot browser gate
         working-directory: frontend
-        env:
-          PLAYWRIGHT_BASE_URL: http://127.0.0.1:5173
-          E2E_DEFAULT_TENANT_SLUG: intelliflow
-          E2E_DEFAULT_ADMIN_EMAIL: admin@intelliflow.com
-          # The password is the generated one from GITHUB_ENV, not a literal. It was hard-coded here
-          # AND in e2e/helpers.ts, so the two could disagree with nothing to catch it.
-          E2E_DEFAULT_ADMIN_PASSWORD: ${{ env.E2E_INTELLIFLOW_PASSWORD }}
-          E2E_MIN_EMPLOYEES: '12'
         run: npx playwright test --project=tenant-pilot
 
       - name: Run complete enterprise browser and authorization gate
         working-directory: frontend
-        env:
-          PLAYWRIGHT_BASE_URL: http://127.0.0.1:5173
-          PLATFORM_ADMIN_EMAIL: 'admin@platform.local'
         run: npx playwright test --project=chromium
 
       - name: Upload browser evidence

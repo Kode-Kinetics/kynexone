@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import { reportsApi, analyticsApi } from '../api/reports';
+import { reportRunStatusLabel, reportRunStatusTone } from '../lib/integrationDeliveryState';
 
 const ReportsHeadcountTrendChart = dynamic(
   () => import('../components/charts/reports/ReportsHeadcountTrendChart').then((m) => m.ReportsHeadcountTrendChart),
@@ -794,7 +795,14 @@ function ExecutionHistoryTab() {
   }, [page]);
   useEffect(() => { load(); }, [load]);
 
-  const statusColor = (s: string) => s === 'Success' ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : s === 'Failed' ? 'bg-red-500/10 text-red-500' : 'bg-amber-500/10 text-amber-600';
+  // F09: "NotConfigured" and "Captured" are not failures and not successes — nobody received the
+  // report. The label says which, instead of the raw status.
+  const statusColor = (s: string) => {
+    const tone = reportRunStatusTone(s);
+    return tone === 'ok' ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+      : tone === 'error' ? 'bg-red-500/10 text-red-500'
+      : 'bg-amber-500/10 text-amber-600';
+  };
 
   return (
     <div className="space-y-4">
@@ -823,7 +831,12 @@ function ExecutionHistoryTab() {
                 <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{log.runByName}</td>
                 <td className="px-4 py-3 text-slate-500 text-xs whitespace-nowrap">{new Date(log.createdAtUtc).toLocaleString()}</td>
                 <td className="px-4 py-3">
-                  <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${statusColor(log.status)}`}>{log.status}</span>
+                  <span
+                    title={log.errorMessage ?? undefined}
+                    className={`rounded-full px-2 py-0.5 text-xs font-semibold ${statusColor(log.status)}`}
+                  >
+                    {reportRunStatusLabel(log.status)}
+                  </span>
                 </td>
               </tr>
             ))}
