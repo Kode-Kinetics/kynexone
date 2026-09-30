@@ -228,15 +228,23 @@ public class CrossTenantControllerTests
     private static LoansController LoanCtrl(ZayraDbContext db, Guid tenantId)
     {
         var c = new LoansController(db, new DataScopeService(db));
-        c.ControllerContext = new ControllerContext { HttpContext = BuildHttpContext(tenantId, "Admin") };
+        c.ControllerContext = new ControllerContext { HttpContext = WithLoansRead(BuildHttpContext(tenantId, "Admin")) };
         return c;
     }
 
     private static AdvancesController AdvanceCtrl(ZayraDbContext db, Guid tenantId)
     {
         var c = new AdvancesController(db, new DataScopeService(db));
-        c.ControllerContext = new ControllerContext { HttpContext = BuildHttpContext(tenantId, "Admin") };
+        c.ControllerContext = new ControllerContext { HttpContext = WithLoansRead(BuildHttpContext(tenantId, "Admin")) };
         return c;
+    }
+
+    // An Admin's token carries loans.read, which the loan and advance reads now require (F10); without it
+    // the permission gate would answer before the tenant check this suite exists to prove.
+    private static HttpContext WithLoansRead(HttpContext ctx)
+    {
+        ctx.User.AddIdentity(new ClaimsIdentity(new[] { new Claim("permission", "loans.read") }, "test"));
+        return ctx;
     }
 
     private static PayrollController PayrollCtrl(ZayraDbContext db, Guid tenantId)

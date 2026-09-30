@@ -10,7 +10,8 @@ export interface EstablishmentRow {
   gap: number;
   openRequisitionHeadcount: number;
   monthlyBudgetAmount: number;
-  currentMonthlySpend: number;
+  /** Null when withheld: the caller lacks payroll.read and employees.sensitive (#131). Never read as 0. */
+  currentMonthlySpend: number | null;
 }
 
 export interface HeadcountCheckResult {

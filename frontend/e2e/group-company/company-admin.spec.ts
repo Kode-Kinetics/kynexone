@@ -107,7 +107,9 @@ test.describe('Group→Company: company admin (ALM-DAIRY-KSA)', () => {
     const api = await newApi();
     try {
       const { token } = await apiLogin(api, COMPANY_ADMIN, ALMARAI.slug);
-      const resp = await api.get('/api/employees?page=1&pageSize=200', {
+      // One page is enough here: the only passing answer is an empty list, so any row on page 1
+      // already fails. pageSize is 100 because that is the API's cap; asking for 200 got 100.
+      const resp = await api.get('/api/employees?page=1&pageSize=100', {
         headers: { Authorization: `Bearer ${token}`, 'X-Company-Id': bakeryId! },
       });
 

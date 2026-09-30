@@ -1,4 +1,5 @@
 import client from './client';
+import { fetchAllPages } from '../lib/paging';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -127,6 +128,10 @@ export const hrLettersApi = {
 
   requests: (params: { status?: string; page?: number; pageSize?: number } = {}) =>
     client.get<Paged<DocumentRequest>>('/api/hr-letters/requests', { params: { status: 'Pending', page: 1, pageSize: 25, ...params } }).then((r) => r.data),
+
+  /** The whole request queue for a status, page by page (the queue used to stop at 25). */
+  allRequests: (params: { status?: string } = {}) =>
+    fetchAllPages((page, pageSize) => hrLettersApi.requests({ ...params, page, pageSize })),
 
   issueForRequest: (id: string, body?: { letterType?: string; language?: string }) =>
     downloadPdf(`/api/hr-letters/requests/${id}/issue`, 'post', body ?? {}),

@@ -483,7 +483,8 @@ public class LeaverLifecycleS2Tests
     /// <summary>Approved settlement + its live accrual, exactly as PayrollController.ApproveFinalSettlement
     /// leaves them: 2320 credited at the GROSS of the earning lines.</summary>
     private static async Task<EmployeeFinalSettlement> SeedApprovedSettlementAsync(
-        ZayraDbContext db, LeaverFixture fx, decimal gross = 60_000m, decimal deductions = 1_000m)
+        ZayraDbContext db, LeaverFixture fx, decimal gross = 60_000m, decimal deductions = 1_000m,
+        Guid? approvedBy = null, bool recordApprover = true)
     {
         var settlement = new EmployeeFinalSettlement
         {
@@ -496,6 +497,11 @@ public class LeaverLifecycleS2Tests
             TerminationReason = "Resignation", Currency = "SAR",
             GrossPayable = gross, TotalDeductions = deductions, NetPayable = gross - deductions,
             Status = FinalSettlementStatuses.Approved,
+            // ApproveFinalSettlement always stamps the approver; a different finance user from the
+            // tests' actor unless a test says otherwise.
+            ApprovedByUserId = recordApprover ? approvedBy ?? Guid.NewGuid() : null,
+            ApprovedByName = recordApprover ? "Finance Approver" : null,
+            ApprovedAtUtc = recordApprover ? DateTime.UtcNow : null,
             GlPostedAtUtc = DateTime.UtcNow, GlPeriod = "2026-09",
         };
         db.EmployeeFinalSettlements.Add(settlement);
@@ -622,7 +628,9 @@ public class LeaverLifecycleS2Tests
 
         // A settlement that recovers employee debt belongs on the run, whose deduction lines relieve the
         // control accounts. Paying it here would be a double recovery.
-        settlement.PlannedLoanRecovery = 3_000m;
+        // Re-read: each recording starts from a clean change tracker, so the seeded instance is detached.
+        var tracked = await db.EmployeeFinalSettlements.SingleAsync(x => x.Id == settlement.Id);
+        tracked.PlannedLoanRecovery = 3_000m;
         await db.SaveChangesAsync();
         var withDebt = await controller.RecordExternalSettlementPayment(
             fx.Offboarding.Id, new ExternalSettlementPaymentRequest("Cheque", "CHQ-9", settlement.NetPayable, null),
@@ -658,6 +666,74 @@ public class LeaverLifecycleS2Tests
 
         Assert.Contains("gl_period_closed",
             Json(Assert.IsType<UnprocessableEntityObjectResult>(result).Value));
+    }
+
+    /// <summary>
+    /// F10 — segregation of duties on the money. The person who approved a settlement cannot also be
+    /// the one who asserts it was paid: that single user would both sign off the amount and evidence
+    /// its disbursement, and the discharge journal would close the payable on their word alone.
+    /// </summary>
+    [Fact]
+    public async Task ExternalSettlementPayment_ApproverCannotRecordTheirOwnPayment()
+    {
+        await using var db = CreateDb();
+        var fx = await SeedLeaverAsync(db);
+        var settlement = await SeedApprovedSettlementAsync(db, fx, approvedBy: fx.ActorId);
+
+        var result = await Controller(db, fx.TenantId, fx.ActorId).RecordExternalSettlementPayment(
+            fx.Offboarding.Id,
+            new ExternalSettlementPaymentRequest("BankTransfer", "TRF-SOD-1", settlement.NetPayable, null),
+            CancellationToken.None);
+
+        Assert.Contains("segregation_of_duties", Json(Assert.IsType<ConflictObjectResult>(result).Value));
+        var stored = await db.EmployeeFinalSettlements.AsNoTracking().SingleAsync();
+        Assert.Equal(FinalSettlementStatuses.Approved, stored.Status);
+        Assert.False(stored.PaidOutsidePayroll);
+        Assert.False(await db.FinanceGlEntries.AnyAsync(x => x.EventType == GlEventTypes.SettlementExternalPayment));
+        Assert.False((await db.EmployeeOffboardings.AsNoTracking().SingleAsync()).FinalSettlementDone);
+    }
+
+    /// <summary>
+    /// F10 — an Approved settlement with no recorded approver cannot prove the check above, so it is
+    /// refused rather than assumed independent.
+    /// </summary>
+    [Fact]
+    public async Task ExternalSettlementPayment_WithNoRecordedApprover_IsRefused()
+    {
+        await using var db = CreateDb();
+        var fx = await SeedLeaverAsync(db);
+        var settlement = await SeedApprovedSettlementAsync(db, fx, recordApprover: false);
+
+        var result = await Controller(db, fx.TenantId, fx.ActorId).RecordExternalSettlementPayment(
+            fx.Offboarding.Id,
+            new ExternalSettlementPaymentRequest("BankTransfer", "TRF-SOD-2", settlement.NetPayable, null),
+            CancellationToken.None);
+
+        Assert.Contains("settlement_approver_unknown", Json(Assert.IsType<ConflictObjectResult>(result).Value));
+        Assert.Equal(FinalSettlementStatuses.Approved,
+            (await db.EmployeeFinalSettlements.AsNoTracking().SingleAsync()).Status);
+        Assert.False(await db.FinanceGlEntries.AnyAsync(x => x.EventType == GlEventTypes.SettlementExternalPayment));
+    }
+
+    /// <summary>A payment can only be recorded against a live separation, not a closed or withdrawn one.</summary>
+    [Theory]
+    [InlineData("Completed")]
+    [InlineData("Cancelled")]
+    public async Task ExternalSettlementPayment_OutsideAnInProgressOffboarding_IsRefused(string state)
+    {
+        await using var db = CreateDb();
+        var fx = await SeedLeaverAsync(db);
+        var settlement = await SeedApprovedSettlementAsync(db, fx);
+        fx.Offboarding.Status = state;
+        await db.SaveChangesAsync();
+
+        var result = await Controller(db, fx.TenantId, fx.ActorId).RecordExternalSettlementPayment(
+            fx.Offboarding.Id,
+            new ExternalSettlementPaymentRequest("BankTransfer", "TRF-LATE", settlement.NetPayable, null),
+            CancellationToken.None);
+
+        Assert.Contains("offboarding_not_in_progress", Json(Assert.IsType<ConflictObjectResult>(result).Value));
+        Assert.False(await db.FinanceGlEntries.AnyAsync(x => x.EventType == GlEventTypes.SettlementExternalPayment));
     }
 
     // ── Access revocation ────────────────────────────────────────────────────────────────────────
@@ -794,6 +870,97 @@ public class LeaverLifecycleS2Tests
         await Assert.ThrowsAsync<UnauthorizedAccessException>(() => auth.LoginAsync(
             new Zayra.Api.Application.Auth.LoginRequest("departing@kynexone.local", "CorrectPassword1!", "kynexone"),
             new Zayra.Api.Application.Auth.RequestContext("127.0.0.1", "tests"), CancellationToken.None));
+    }
+
+    // ── R04 — a withdrawn resignation withdraws its own backfill, and only that ─────────────────────
+
+    /// <summary>
+    /// R04. Submitting a requisition under a seeded workflow makes it <c>PendingApproval</c> and opens a
+    /// shared ApprovalRequest. Rescinding the resignation used to skip <c>PendingApproval</c> entirely
+    /// (it only knew Draft/Pending/Submitted), and even when it did withdraw a requisition it left the
+    /// ApprovalRequest Pending — so an approver could still approve hiring a replacement for someone who
+    /// is staying. Approved or converted recruitment is real work in flight and is never touched, and an
+    /// approval that belongs to another tenant or another entity is never closed through this link.
+    /// </summary>
+    [Theory]
+    [InlineData("PendingApproval", true, true)]
+    [InlineData("Submitted", true, true)]
+    [InlineData("Draft", true, true)]
+    [InlineData("Approved", true, true)]
+    [InlineData("Converted", true, true)]
+    [InlineData("PendingApproval", false, true)]
+    [InlineData("PendingApproval", true, false)]
+    public async Task Rescind_WithdrawsOnlyItsOwnBackfill_AndClosesItsPendingApproval(
+        string requisitionStatus, bool approvalInSameTenant, bool approvalForThisRequisition)
+    {
+        await using var db = CreateDb();
+        var fx = await SeedLeaverAsync(db);
+        var requisition = new ManpowerRequisition
+        {
+            TenantId = fx.TenantId, RequisitionNumber = "MRQ-2026-0042", Status = requisitionStatus,
+        };
+        var approval = new ApprovalRequest
+        {
+            TenantId = approvalInSameTenant ? fx.TenantId : Guid.NewGuid(),
+            EntityName = nameof(ManpowerRequisition),
+            EntityId = approvalForThisRequisition ? requisition.Id.ToString() : Guid.NewGuid().ToString(),
+            Status = "Pending", CurrentApproverName = "Hiring Approver", CurrentQueue = "HR Manager",
+        };
+        requisition.ApprovalRequestId = approval.Id;
+        fx.Offboarding.BackfillRequisitionId = requisition.Id;
+        db.AddRange(requisition, approval);
+        await db.SaveChangesAsync();
+
+        var response = Assert.IsType<OkObjectResult>(await Controller(db, fx.TenantId, fx.ActorId).Cancel(
+            fx.Offboarding.Id, new CancelOffboardingRequest("Resignation withdrawn"), CancellationToken.None));
+
+        var withdraw = requisitionStatus is "Draft" or "Submitted" or "PendingApproval";
+        Assert.Equal(withdraw, JsonSerializer.SerializeToElement(response.Value).GetProperty("backfillWithdrawn").GetBoolean());
+        Assert.Equal(withdraw ? "Cancelled" : requisitionStatus,
+            (await db.ManpowerRequisitions.AsNoTracking().SingleAsync(x => x.Id == requisition.Id)).Status);
+
+        var saved = await db.ApprovalRequests.AsNoTracking().SingleAsync(x => x.Id == approval.Id);
+        var closeApproval = withdraw && approvalInSameTenant && approvalForThisRequisition;
+        Assert.Equal(closeApproval ? "Cancelled" : "Pending", saved.Status);
+        if (closeApproval)
+        {
+            Assert.NotNull(saved.CompletedAtUtc);
+            Assert.Equal(string.Empty, saved.CurrentQueue);   // gone from the approver's queue
+            Assert.Null(saved.CurrentApproverUserId);
+            var audit = await db.AuditLogs.AsNoTracking().SingleAsync(a => a.Action == "offboarding.rescinded");
+            Assert.Contains(approval.Id.ToString(), audit.Metadata);
+        }
+    }
+
+    /// <summary>R04 — other recruitment in the tenant, and its approvals, are not this rescind's business.</summary>
+    [Fact]
+    public async Task Rescind_LeavesUnrelatedRecruitmentAndApprovalsUntouched()
+    {
+        await using var db = CreateDb();
+        var fx = await SeedLeaverAsync(db);
+        var own = new ManpowerRequisition { TenantId = fx.TenantId, RequisitionNumber = "MRQ-OWN", Status = "PendingApproval" };
+        var ownApproval = new ApprovalRequest
+        {
+            TenantId = fx.TenantId, EntityName = nameof(ManpowerRequisition), EntityId = own.Id.ToString(), Status = "Pending",
+        };
+        own.ApprovalRequestId = ownApproval.Id;
+        var unrelated = new ManpowerRequisition { TenantId = fx.TenantId, RequisitionNumber = "MRQ-OTHER", Status = "PendingApproval" };
+        var unrelatedApproval = new ApprovalRequest
+        {
+            TenantId = fx.TenantId, EntityName = nameof(ManpowerRequisition), EntityId = unrelated.Id.ToString(), Status = "Pending",
+        };
+        unrelated.ApprovalRequestId = unrelatedApproval.Id;
+        fx.Offboarding.BackfillRequisitionId = own.Id;
+        db.AddRange(own, ownApproval, unrelated, unrelatedApproval);
+        await db.SaveChangesAsync();
+
+        Assert.IsType<OkObjectResult>(await Controller(db, fx.TenantId, fx.ActorId).Cancel(
+            fx.Offboarding.Id, new CancelOffboardingRequest("Resignation withdrawn"), CancellationToken.None));
+
+        Assert.Equal("Cancelled", (await db.ManpowerRequisitions.AsNoTracking().SingleAsync(x => x.Id == own.Id)).Status);
+        Assert.Equal("Cancelled", (await db.ApprovalRequests.AsNoTracking().SingleAsync(x => x.Id == ownApproval.Id)).Status);
+        Assert.Equal("PendingApproval", (await db.ManpowerRequisitions.AsNoTracking().SingleAsync(x => x.Id == unrelated.Id)).Status);
+        Assert.Equal("Pending", (await db.ApprovalRequests.AsNoTracking().SingleAsync(x => x.Id == unrelatedApproval.Id)).Status);
     }
 }
 

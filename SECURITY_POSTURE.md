@@ -108,7 +108,7 @@ be authored against the built asset hashes to avoid breaking the app).
 1. Replace placeholder secrets (JWT signing key, admin password) with vault/env-managed
    strong values; persist DataProtection keys.
 2. Add DB foreign keys on key business relationships (integrity is app-level today — see
-   DATABASE_CONNECTIVITY_AUDIT.md).
+   docs/DATABASE_CONNECTIVITY_AUDIT.md).
 3. Negative cross-tenant isolation test with a second tenant.
 4. Author a Content-Security-Policy for the SPA.
 5. Move schema management from `EnsureCreated` to versioned EF migrations.

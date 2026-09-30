@@ -121,6 +121,8 @@ public class ReportExportScopeTests
             new Claim("permission", "employees.read"),
             new Claim("permission", "employees.write"),
             new Claim("permission", "reports.read"),
+            // The payroll register's data permission; reports.read alone no longer reaches payroll.
+            new Claim("permission", "payroll.read"),
             new Claim(EntityScopeContext.V2ClaimType, JsonSerializer.Serialize(new { v = 2, m = "companies", c = new[] { companyId } })),
         }, "Test"));
 

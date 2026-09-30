@@ -82,9 +82,53 @@ export const CONTRACT_TYPE_OPTIONS = ['Unlimited', 'Fixed-Term', 'Temporary'];
 export const PAYMENT_METHOD_OPTIONS = ['BankTransfer', 'Cash', 'Cheque', 'WPS'];
 export const SALARY_CURRENCY_OPTIONS = ['USD', 'GBP', 'EUR', 'AED', 'SAR', 'QAR', 'KWD', 'BHD', 'OMR'];
 
+// ── Which edits need approval (the "approval" badge) ─────────────────────────────────────────────
+/**
+ * SOURCE OF TRUTH: `EmployeesController.SensitiveFields`
+ * (backend-dotnet/Zayra.Api/Controllers/EmployeesController.cs:37-45). `PUT /api/employees/{id}`
+ * writes every OTHER key immediately (200); only these route to the Approval Center (202). The badge
+ * has to PREDICT what the server will do, so this is a MIRROR of that set — never a local opinion,
+ * and never a per-section default.
+ *
+ * It used to be both. `complianceEditFieldsForCountry` stamped `sensitive: true` on every statutory
+ * input, promising approval for six keys the server writes on the spot (`idNumber`, `sponsorName`
+ * and the four card `*ExpiryDate` columns); meanwhile the remote overlay's `r.sensitive ?? ...`
+ * DEMOTED `dateOfBirth` and `bankName` whenever the registry answered, so the same field's badge
+ * changed meaning between online and offline mode. `requiresApproval` unions this mirror with a
+ * server-supplied flag and never downgrades: when the field-catalog endpoint starts publishing
+ * `sensitive` for every field its answer simply adds to this, and this mirror can then be deleted
+ * without touching a single call site.
+ *
+ * Keys are compared case-insensitively, exactly as the backend `HashSet` does.
+ */
+const APPROVAL_REQUIRED_EDIT_KEYS = new Set<string>([
+  'salary', 'bankname', 'bankiban', 'wpsbankdetails',
+  'passportnumber', 'passportissuedate', 'passportexpirydate',
+  'visanumber', 'visaissuedate', 'visaexpirydate', 'visafilenumber',
+  'dateofbirth', 'iqamanumber', 'muqeemnumber', 'gosireference', 'qiwacontractnumber',
+  'emiratesid', 'laborcardnumber', 'qid', 'civilid',
+  'residencynumber', 'residencyissuedate', 'workpermitnumber', 'workpermitissuedate',
+  'medicalinformation', 'disciplinaryrecords', 'terminationreason',
+  // The GPSSA/GRSIA/PIFSS/SPF/SIO counterpart of gosiReference — approval-gated server-side too.
+  'socialinsurancereference',
+  // Where the WPS/SIF line pays — approval-gated server-side with the IBAN.
+  'bankroutingcode', 'accountnumber',
+]);
+
+/** True when saving this edit key submits a change request instead of writing immediately. */
+export function requiresApproval(key: string, serverFlag?: boolean): boolean {
+  return APPROVAL_REQUIRED_EDIT_KEYS.has(key.toLowerCase()) || serverFlag === true;
+}
+
+/** Stamp the approval flag onto a field, keeping any server-supplied `sensitive: true`. */
+function withApprovalFlag(field: EmployeeEditField): EmployeeEditField {
+  return { ...field, sensitive: requiresApproval(field.key, field.sensitive) };
+}
+
 /**
  * Base (non-statutory) editable fields. Every key maps to a server ApplyChanges case, so no dead
- * inputs are rendered. Sensitive fields route to the Approval Center (202) server-side.
+ * inputs are rendered. Whether a save needs approval is NOT declared here — it is stamped from
+ * `APPROVAL_REQUIRED_EDIT_KEYS` above, so the badge cannot drift field-by-field.
  */
 export const BASE_EDIT_FIELDS: EmployeeEditField[] = [
   { section: 'Personal', key: 'englishName', label: 'English full name' },
@@ -93,7 +137,7 @@ export const BASE_EDIT_FIELDS: EmployeeEditField[] = [
   { section: 'Personal', key: 'gender', label: 'Gender', type: 'select', options: GENDER_OPTIONS },
   { section: 'Personal', key: 'nationality', label: 'Nationality' },
   { section: 'Personal', key: 'maritalStatus', label: 'Marital status', type: 'select', options: MARITAL_STATUS_OPTIONS },
-  { section: 'Personal', key: 'dateOfBirth', label: 'Date of birth', type: 'date', sensitive: true },
+  { section: 'Personal', key: 'dateOfBirth', label: 'Date of birth', type: 'date' },
   { section: 'Personal', key: 'personalEmail', label: 'Personal email', type: 'email' },
   { section: 'Personal', key: 'workEmail', label: 'Work email', type: 'email' },
   { section: 'Personal', key: 'phone', label: 'Mobile number' },
@@ -109,9 +153,9 @@ export const BASE_EDIT_FIELDS: EmployeeEditField[] = [
   { section: 'Employment', key: 'costCenter', label: 'Cost center' },
   { section: 'Employment', key: 'joiningDate', label: 'Joining date', type: 'date' },
   { section: 'Employment', key: 'managerEmployeeId', label: 'Manager employee ID', type: 'number' },
-  { section: 'Payroll & Banking', key: 'salary', label: 'Salary', type: 'number', sensitive: true },
-  { section: 'Payroll & Banking', key: 'bankName', label: 'Bank name', sensitive: true },
-  { section: 'Payroll & Banking', key: 'bankIban', label: 'IBAN', sensitive: true },
+  { section: 'Payroll & Banking', key: 'salary', label: 'Salary', type: 'number' },
+  { section: 'Payroll & Banking', key: 'bankName', label: 'Bank name' },
+  { section: 'Payroll & Banking', key: 'bankIban', label: 'IBAN' },
 ];
 
 // Passport is common to every GCC jurisdiction.
@@ -231,15 +275,17 @@ export function complianceRecordsForCountry(
 export function complianceEditFieldsForCountry(catalog: ResolvedFieldCatalog, countryCode?: string): EmployeeEditField[] {
   return complianceProfileForCountry(catalog, countryCode).flatMap((field) => {
     const fields: EmployeeEditField[] = [];
-    if (field.entityKey) fields.push({ section: 'Compliance Documents', key: field.entityKey, label: field.fieldLabel, sensitive: true });
-    if (field.expiryEntityKey) fields.push({ section: 'Compliance Documents', key: field.expiryEntityKey, label: `${field.fieldLabel} expiry`, type: 'date', sensitive: true });
+    // Sensitivity is per KEY, never per section: the card NUMBER needs approval while its expiry
+    // column is written immediately, so both go through the same mirror as every other field.
+    if (field.entityKey) fields.push(withApprovalFlag({ section: 'Compliance Documents', key: field.entityKey, label: field.fieldLabel }));
+    if (field.expiryEntityKey) fields.push(withApprovalFlag({ section: 'Compliance Documents', key: field.expiryEntityKey, label: `${field.fieldLabel} expiry`, type: 'date' }));
     return fields;
   });
 }
 
 /** The complete edit-modal field list for a country (base fields + statutory fields). */
 export function editFieldsForCountry(catalog: ResolvedFieldCatalog, countryCode?: string): EmployeeEditField[] {
-  return [...catalog.editFields, ...complianceEditFieldsForCountry(catalog, countryCode)];
+  return [...catalog.editFields.map(withApprovalFlag), ...complianceEditFieldsForCountry(catalog, countryCode)];
 }
 
 /**
@@ -465,7 +511,9 @@ export function resolveFieldCatalog(remote: RemoteFieldDescriptor[] | null | und
       label: r.label ?? field.label,
       type: optionsAwareType(r.inputType, field.type, options),
       options,
-      sensitive: r.sensitive ?? field.sensitive,
+      // Union, not override: a registry that omits (or denies) the flag must never DOWNGRADE a field
+      // the server will in fact route to approval. See `requiresApproval` / SensitiveFields above.
+      sensitive: requiresApproval(field.key, r.sensitive ?? field.sensitive),
     };
   });
 

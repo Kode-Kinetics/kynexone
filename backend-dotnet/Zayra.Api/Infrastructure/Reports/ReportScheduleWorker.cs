@@ -136,7 +136,7 @@ public sealed class ReportScheduleWorker : BackgroundService
 
             try
             {
-                var employeeIds = await ResolveCurrentScopeAsync(db, schedule, ct);
+                var reportScope = await ResolveCurrentScopeAsync(db, schedule, ct);
                 var filters = string.IsNullOrWhiteSpace(schedule.FiltersJson)
                     ? null
                     : JsonSerializer.Deserialize<ReportFilters>(schedule.FiltersJson);
@@ -145,14 +145,25 @@ public sealed class ReportScheduleWorker : BackgroundService
                 // would make the worker unconstructable in it for no gain.
                 var controller = new ReportsController(db, dataScope);
                 var data = await controller.ExecuteReportDataAsync(
-                    schedule.TenantId, new RunReportRequest(schedule.ReportKey, filters), employeeIds, ct)
+                    schedule.TenantId, new RunReportRequest(schedule.ReportKey, filters), reportScope, ct)
                     ?? throw new InvalidOperationException("The scheduled report key is no longer supported.");
                 var json = JsonSerializer.SerializeToElement(data);
                 var artifact = BuildArtifact(schedule, json);
 
+                // Each recipient must still be somebody who could open this report by hand, over every
+                // company it covers. Anyone who no longer is — left, demoted, narrowed, or never a user
+                // of this organisation — is skipped, and the log says who and why.
+                var audience = await ReportAudience.EvaluateRecipientsAsync(db, schedule.TenantId, schedule.ReportKey,
+                    ReportSchedulePolicy.ParseRecipients(schedule.Recipients), reportScope.CompanyIds, ct);
+                var refused = audience.Where(a => a.Refusal is not null).ToList();
+                var allowed = audience.Where(a => a.Refusal is null).Select(a => a.Email).ToList();
+                if (allowed.Count == 0)
+                    throw new InvalidOperationException(
+                        "No recipient may receive this report: " + ReportAudience.Describe(refused) + ".");
+
                 if (!await email.IsConfiguredAsync(schedule.TenantId, ct))
                     throw new InvalidOperationException("Tenant SMTP is not configured; scheduled report delivery failed closed.");
-                foreach (var recipient in ReportSchedulePolicy.ParseRecipients(schedule.Recipients))
+                foreach (var recipient in allowed)
                 {
                     await email.SendAsync(schedule.TenantId, recipient, recipient,
                         $"Scheduled report: {schedule.ReportName}",
@@ -162,6 +173,9 @@ public sealed class ReportScheduleWorker : BackgroundService
 
                 execution.Status = "Success";
                 execution.RowCount = json.ValueKind == JsonValueKind.Array ? json.GetArrayLength() : 1;
+                if (refused.Count > 0)
+                    execution.ErrorMessage = Truncate(
+                        $"Delivered to {allowed.Count} of {audience.Count} recipients. Not sent to: {ReportAudience.Describe(refused)}.");
                 await ClearFailureAsync(db, schedule, ct);
             }
             catch (Exception ex)
@@ -197,40 +211,62 @@ public sealed class ReportScheduleWorker : BackgroundService
         tracked.OwnerInvalidatedAtUtc = null;
     }
 
-    private static async Task<IReadOnlyCollection<int>?> ResolveCurrentScopeAsync(
+    /// <summary>
+    /// Re-derives, on every run, what the schedule's OWNER may see today — not what they could see when
+    /// they created it — and fails closed (an <see cref="UnauthorizedAccessException"/>, which marks the
+    /// schedule as needing a new owner) the moment the report is no longer theirs to read.
+    ///
+    /// <para>This worker has no HTTP user, so the database's company filter is open for it: the scope
+    /// returned here is the ONLY restriction the report runs under, and it must carry the companies as
+    /// well as the employees.</para>
+    /// </summary>
+    private static async Task<ReportDataScope> ResolveCurrentScopeAsync(
         ZayraDbContext db, ReportSchedule schedule, CancellationToken ct)
     {
         if (schedule.CreatedBy is not Guid creatorId)
             throw new UnauthorizedAccessException("Schedule has no accountable creator.");
-        var user = await ScopedBypass.TenantWide(db.Users, schedule.TenantId,
-                "Scheduled report revalidates its creator inside the owning tenant.").AsNoTracking()
-            .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
-            .Include(x => x.PermissionOverrides)
-            .Include(x => x.EmployeeUserAccounts)
-            .Include(x => x.EntityAccesses)
-            .FirstOrDefaultAsync(x => x.Id == creatorId && x.TenantId == schedule.TenantId && x.IsActive && !x.IsDeleted, ct)
+        var user = await ReportAudience.ActiveUsers(db, schedule.TenantId)
+            .FirstOrDefaultAsync(x => x.Id == creatorId, ct)
             ?? throw new UnauthorizedAccessException("Schedule creator is inactive or missing.");
-        if (!AuthService.GetPermissions(user).Contains("reports.schedule", StringComparer.OrdinalIgnoreCase))
+        var access = ReportAudience.AccessOf(user, await ReportAudience.ActiveCompanyIdsAsync(db, schedule.TenantId, ct));
+        if (!access.Has("reports.schedule"))
             throw new UnauthorizedAccessException("Schedule creator no longer has reports.schedule permission.");
 
-        var activeCompanyIds = await ScopedBypass.TenantWide(db.Companies, schedule.TenantId,
-                "Scheduled report resolves active legal entities inside its tenant.").AsNoTracking()
-            .Where(x => x.IsActive && !x.IsDeleted)
-            .Select(x => x.Id).ToListAsync(ct);
-        var grants = user.EntityAccesses.Where(x => x.IsActive)
-            .Select(x => new EntityAccessGrant(x.CompanyId, x.Role, x.GrantMode)).ToList();
-        var descriptor = EntityScopeClaims.Resolve(user.IsGroupScope, grants, activeCompanyIds);
-        if (descriptor.Mode == EntityScopeModes.Group) return null;
-        if (descriptor.Mode != EntityScopeModes.Companies || descriptor.CompanyIds.Count == 0)
+        // Not an owner problem: the report itself is gone, and no new owner would change that.
+        if (!ReportAccessPolicy.IsKnown(schedule.ReportKey))
+            throw new InvalidOperationException("The scheduled report key is no longer supported.");
+        // The same data rule as the interactive endpoints. A demoted owner's schedule stops here.
+        if (!ReportAccessPolicy.CanAccess(schedule.ReportKey, access.Has, access.InRole))
+            throw new UnauthorizedAccessException(
+                ReportAccessPolicy.ThirdPartyDenialMessage("The schedule's owner", schedule.ReportKey));
+        // Interactively, a team-scoped user gets their team's rows. A delivery has no team to cut to and
+        // was served organisation-wide, i.e. more than the owner could open by hand; refuse it instead.
+        if (!ReportAccessPolicy.GrantsOrganisationScope(access.Has))
+            throw new UnauthorizedAccessException(
+                "The schedule's owner can only see their own team's records, but a scheduled report is " +
+                "delivered organisation-wide, so it no longer runs.");
+        if (access.SeesNothing)
             throw new UnauthorizedAccessException("Schedule creator has no active legal-entity scope.");
+        if (ReportAccessPolicy.ScopeDenial(schedule.ReportKey, organisationLevel: true, access.GroupLevel) is { } scopeDenial)
+            throw new UnauthorizedAccessException(scopeDenial);
+
+        // Identity-document numbers are never emailed, whoever the owner is: an attachment leaves the
+        // product, and recipients may not hold employees.sensitive even when the owner does.
+        const bool canSeeSensitive = false;
+        if (access.GroupLevel) return new ReportDataScope(null, null, canSeeSensitive);
+
         // Employee has a legacy nullable TenantId and cannot use ScopedBypass.TenantWide's
         // non-nullable type guard. System context already bypasses filters; the explicit
         // non-null tenant predicate below is the surviving tenant boundary.
-        return await db.Employees.AsNoTracking()
+        var companyIds = access.CompanyIds.ToList();
+        var employeeIds = await db.Employees.AsNoTracking()
             .Where(x => x.TenantId == schedule.TenantId && !x.IsDeleted
-                        && x.CompanyId != null && descriptor.CompanyIds.Contains(x.CompanyId.Value))
+                        && x.CompanyId != null && companyIds.Contains(x.CompanyId.Value))
             .Select(x => x.Id).ToListAsync(ct);
+        return new ReportDataScope(employeeIds, companyIds, canSeeSensitive);
     }
+
+    private static string Truncate(string message) => message.Length <= 1000 ? message : message[..1000];
 
     private static async Task<bool> TryClaimAsync(ZayraDbContext db, ReportSchedule item, DateTime now, CancellationToken ct)
     {
@@ -347,7 +383,7 @@ public sealed class ReportScheduleWorker : BackgroundService
             ? $"Scheduled report stopped: {schedule.ReportName}"
             : $"Scheduled report failed: {schedule.ReportName}";
         var message = ownerProblem
-            ? $"\"{schedule.ReportName}\" can no longer run: {reason} It will keep failing until somebody with reports.schedule recreates or takes over the schedule."
+            ? $"\"{schedule.ReportName}\" can no longer run: {reason} It will keep failing until somebody with reports.schedule recreates it; an administrator can pause or delete this one."
             : $"\"{schedule.ReportName}\" did not deliver: {reason}";
 
         foreach (var userId in recipients)

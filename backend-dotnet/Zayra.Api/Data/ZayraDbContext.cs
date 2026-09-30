@@ -2493,6 +2493,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.FullHousingAllowance).HasPrecision(12, 2);
             entity.Property(x => x.FullTransportAllowance).HasPrecision(12, 2);
             entity.Property(x => x.ArrearsAmount).HasPrecision(12, 2);
+            // F02 — the statutory calculation explanation (cohort + rate basis). Nullable: every slip
+            // processed before F02 keeps NULL, which validation and reconciliation read as "unknown".
+            entity.Property(x => x.GosiCohort).HasMaxLength(40);
+            entity.Property(x => x.StatutoryBasis).HasMaxLength(1000);
             entity.HasIndex(x => new { x.TenantId, x.RunId, x.EmployeeId }).IsUnique();
         });
 

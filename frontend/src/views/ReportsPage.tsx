@@ -1,7 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { notifyApiError } from '../api/client';
+import { requestFailureReason } from '../lib/requestFailure';
 import { useSearchParams } from 'next/navigation';
 import {
   AlertTriangle, BarChart2, BookOpen, Clock, Download, Play, Plus, RefreshCw, Save, Trash2, ToggleLeft, ToggleRight,
@@ -44,14 +45,18 @@ const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function fmt(n: number) { return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function fmt(n: number | null | undefined) {
+  return n == null ? 'Restricted' : n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
 
-function KpiCard({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
+/** A null value is a figure the server withheld because the caller lacks that data permission — never a zero. */
+function KpiCard({ label, value, sub }: { label: string; value: string | number | null | undefined; sub?: string }) {
+  const withheld = value == null;
   return (
     <div className="surface p-4">
       <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">{label}</p>
-      <p className="mt-1 text-2xl font-bold text-slate-900 dark:text-white">{value}</p>
-      {sub && <p className="mt-0.5 text-xs text-slate-400">{sub}</p>}
+      <p className={`mt-1 font-bold ${withheld ? 'text-sm text-slate-400' : 'text-2xl text-slate-900 dark:text-white'}`}>{withheld ? 'Restricted' : value}</p>
+      {withheld ? <p className="mt-0.5 text-xs text-slate-400">Needs access to this data</p> : sub && <p className="mt-0.5 text-xs text-slate-400">{sub}</p>}
     </div>
   );
 }
@@ -69,12 +74,33 @@ function FormField({ label, required, children }: { label: string; required?: bo
 
 function FormError({ error }: { error: string }) {
   if (!error) return null;
-  return <p className="mb-3 rounded-lg bg-red-50 px-3 py-2.5 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-400">{error}</p>;
+  return <p role="alert" className="mb-3 rounded-lg bg-red-50 px-3 py-2.5 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-400">{error}</p>;
+}
+
+/** Shown in place of a list whose load failed, so an outage never reads as "nothing here". */
+function LoadFailure({ what, reason, onRetry }: { what: string; reason: string; onRetry: () => void }) {
+  return (
+    <div role="alert" className="flex flex-col items-center gap-2 py-10 text-center">
+      <AlertTriangle className="h-5 w-5 text-amber-500" aria-hidden="true" />
+      <p className="text-sm font-medium text-slate-700 dark:text-slate-200">{what} could not be loaded. {reason}</p>
+      <button type="button" onClick={onRetry} className="btn-secondary h-7 px-2 text-xs"><RefreshCw className="h-3 w-3" /> Retry</button>
+    </div>
+  );
 }
 
 const CHART_COLORS = ['#2F6BFF', '#00C896', '#5EEBFF', '#F59E0B', '#EF4444', '#8B5CF6'];
 
 // ── Analytics Dashboard ───────────────────────────────────────────────────────
+
+const ANALYTICS_SOURCE_LABELS = {
+  kpis: 'KPI summary',
+  headcount: 'Headcount trend',
+  payroll: 'Payroll trend',
+  attendance: 'Attendance trend',
+  leave: 'Leave trend',
+} as const;
+
+type AnalyticsSource = keyof typeof ANALYTICS_SOURCE_LABELS;
 
 function AnalyticsDashboard() {
   const [kpis, setKpis] = useState<AnalyticsKPIs | null>(null);
@@ -83,36 +109,66 @@ function AnalyticsDashboard() {
   const [attendanceTrend, setAttendanceTrend] = useState<{ date: string; present: number; absent: number; late: number }[]>([]);
   const [leaveTrend, setLeaveTrend] = useState<{ period: string; totalRequests: number; totalDays: number }[]>([]);
   const [loading, setLoading] = useState(true);
+  const [failedSources, setFailedSources] = useState<Set<AnalyticsSource>>(new Set());
+  const [loadedSources, setLoadedSources] = useState<Set<AnalyticsSource>>(new Set());
+  const requestIdRef = useRef(0);
+  const mountedRef = useRef(true);
 
   useEffect(() => {
-    const load = async () => {
-      setLoading(true);
-      try {
-        const [k, hc, pr, at, lv] = await Promise.allSettled([
-          analyticsApi.kpis(),
-          analyticsApi.headcountTrend(6),
-          analyticsApi.payrollTrend(6),
-          analyticsApi.attendanceTrend(30),
-          analyticsApi.leaveTrend(6),
-        ]);
-        if (k.status === 'fulfilled') setKpis(k.value as AnalyticsKPIs);
-        if (hc.status === 'fulfilled') setHeadcountTrend(hc.value as { period: string; headcount: number }[]);
-        if (pr.status === 'fulfilled') setPayrollTrend(pr.value as { period: string; TotalNetSalary: number; TotalGrossSalary: number }[]);
-        if (at.status === 'fulfilled') setAttendanceTrend(at.value as { date: string; present: number; absent: number; late: number }[]);
-        if (lv.status === 'fulfilled') setLeaveTrend(lv.value as { period: string; totalRequests: number; totalDays: number }[]);
-      } finally {
-        setLoading(false);
-      }
-    };
-    load();
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
   }, []);
+
+  const load = useCallback(async () => {
+    const requestId = ++requestIdRef.current;
+    setLoading(true);
+    const [k, hc, pr, at, lv] = await Promise.allSettled([
+      analyticsApi.kpis(),
+      analyticsApi.headcountTrend(6),
+      analyticsApi.payrollTrend(6),
+      analyticsApi.attendanceTrend(30),
+      analyticsApi.leaveTrend(6),
+    ]);
+    if (!mountedRef.current || requestIdRef.current !== requestId) return;
+
+    const failed = new Set<AnalyticsSource>();
+    const loaded = new Set<AnalyticsSource>();
+
+    if (k.status === 'fulfilled') { setKpis(k.value as AnalyticsKPIs); loaded.add('kpis'); } else { failed.add('kpis'); }
+    if (hc.status === 'fulfilled') { setHeadcountTrend(hc.value as { period: string; headcount: number }[]); loaded.add('headcount'); } else { failed.add('headcount'); }
+    if (pr.status === 'fulfilled') { setPayrollTrend(pr.value as { period: string; TotalNetSalary: number; TotalGrossSalary: number }[]); loaded.add('payroll'); } else { failed.add('payroll'); }
+    if (at.status === 'fulfilled') { setAttendanceTrend(at.value as { date: string; present: number; absent: number; late: number }[]); loaded.add('attendance'); } else { failed.add('attendance'); }
+    if (lv.status === 'fulfilled') { setLeaveTrend(lv.value as { period: string; totalRequests: number; totalDays: number }[]); loaded.add('leave'); } else { failed.add('leave'); }
+
+    setFailedSources(failed);
+    setLoadedSources((prev) => new Set([...prev, ...loaded]));
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
 
   if (loading) return <div className="flex justify-center py-24"><div className="h-8 w-8 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></div>;
 
+  const failedCount = failedSources.size;
+  const allFailed = failedCount === Object.keys(ANALYTICS_SOURCE_LABELS).length;
+
   return (
     <div className="space-y-6">
+      {failedCount > 0 && (
+        <div role="alert" className="flex items-center justify-between gap-3 rounded-lg bg-red-50 px-3 py-2.5 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-400">
+          <span>
+            {allFailed ? 'Analytics data could not be loaded.' : `Some analytics data could not be loaded: ${[...failedSources].map((s) => ANALYTICS_SOURCE_LABELS[s]).join(', ')}.`}
+          </span>
+          <button type="button" onClick={load} className="btn-secondary h-7 px-2 text-xs shrink-0">
+            <RefreshCw className="h-3 w-3" /> Retry
+          </button>
+        </div>
+      )}
+
       {/* KPI Section */}
-      {kpis && (
+      {failedSources.has('kpis') ? (
+        <div className="surface p-4 text-sm text-slate-400">KPI summary unavailable</div>
+      ) : kpis && (
         <>
           <div>
             <h3 className="mb-3 text-sm font-bold uppercase tracking-wide text-slate-400">Workforce</h3>
@@ -156,33 +212,49 @@ function AnalyticsDashboard() {
 
       {/* Charts */}
       <div className="grid gap-4 lg:grid-cols-2">
-        {headcountTrend.length > 0 && (
-          <div className="surface p-4">
-            <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">Headcount Trend</h3>
+        <div className="surface p-4">
+          <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">Headcount Trend</h3>
+          {failedSources.has('headcount') ? (
+            <p className="text-sm text-slate-400">Unavailable</p>
+          ) : loadedSources.has('headcount') && headcountTrend.length === 0 ? (
+            <p className="text-sm text-slate-400">No data for this period</p>
+          ) : headcountTrend.length > 0 ? (
             <ReportsHeadcountTrendChart data={headcountTrend} />
-          </div>
-        )}
+          ) : null}
+        </div>
 
-        {payrollTrend.length > 0 && (
-          <div className="surface p-4">
-            <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">Payroll Trend (Net Salary)</h3>
+        <div className="surface p-4">
+          <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">Payroll Trend (Net Salary)</h3>
+          {failedSources.has('payroll') ? (
+            <p className="text-sm text-slate-400">Unavailable</p>
+          ) : loadedSources.has('payroll') && payrollTrend.length === 0 ? (
+            <p className="text-sm text-slate-400">No data for this period</p>
+          ) : payrollTrend.length > 0 ? (
             <ReportsPayrollTrendChart data={payrollTrend} />
-          </div>
-        )}
+          ) : null}
+        </div>
 
-        {attendanceTrend.length > 0 && (
-          <div className="surface p-4">
-            <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">Attendance (Last 30 Days)</h3>
+        <div className="surface p-4">
+          <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">Attendance (Last 30 Days)</h3>
+          {failedSources.has('attendance') ? (
+            <p className="text-sm text-slate-400">Unavailable</p>
+          ) : loadedSources.has('attendance') && attendanceTrend.length === 0 ? (
+            <p className="text-sm text-slate-400">No data for this period</p>
+          ) : attendanceTrend.length > 0 ? (
             <ReportsAttendanceTrendChart data={attendanceTrend} />
-          </div>
-        )}
+          ) : null}
+        </div>
 
-        {leaveTrend.length > 0 && (
-          <div className="surface p-4">
-            <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">Leave Taken (Days)</h3>
+        <div className="surface p-4">
+          <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">Leave Taken (Days)</h3>
+          {failedSources.has('leave') ? (
+            <p className="text-sm text-slate-400">Unavailable</p>
+          ) : loadedSources.has('leave') && leaveTrend.length === 0 ? (
+            <p className="text-sm text-slate-400">No data for this period</p>
+          ) : leaveTrend.length > 0 ? (
             <ReportsLeaveTrendChart data={leaveTrend} />
-          </div>
-        )}
+          ) : null}
+        </div>
       </div>
     </div>
   );
@@ -206,11 +278,21 @@ function ReportLibrary() {
   const [saveName, setSaveName] = useState('');
   const [saveShared, setSaveShared] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const [catalogError, setCatalogError] = useState('');
+  const loadSeq = useRef(0);
 
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setLoading(true);
-    try { setCatalog(await reportsApi.catalog()); } catch { /**/ }
-    finally { setLoading(false); }
+    try {
+      const c = await reportsApi.catalog();
+      if (seq === loadSeq.current) { setCatalog(c); setCatalogError(''); }
+    } catch (e) {
+      if (seq === loadSeq.current) setCatalogError(requestFailureReason(e));
+    } finally {
+      if (seq === loadSeq.current) setLoading(false);
+    }
   }, []);
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
@@ -237,11 +319,11 @@ function ReportLibrary() {
 
   const saveReport = async () => {
     if (!selectedReport || !saveName.trim()) return;
-    setSaving(true);
+    setSaving(true); setSaveError('');
     try {
       await reportsApi.save({ reportKey: selectedReport.key, name: saveName, category: selectedReport.category, filters, isShared: saveShared });
       setSaveModal(false);
-    } catch { /**/ }
+    } catch (e) { setSaveError(`The report was not saved. ${requestFailureReason(e)}`); }
     finally { setSaving(false); }
   };
 
@@ -272,12 +354,14 @@ function ReportLibrary() {
           <option value="">All Categories</option>
           {CATEGORIES.map((c) => <option key={c}>{c}</option>)}
         </select>
-        <span className="text-xs text-slate-400">{displayed.length} reports</span>
+        {!catalogError && <span className="text-xs text-slate-400">{displayed.length} reports</span>}
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {loading ? (
           <div className="col-span-3 flex justify-center py-12"><div className="h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></div>
+        ) : catalogError ? (
+          <div className="col-span-3"><LoadFailure what="The report catalog" reason={catalogError} onRetry={load} /></div>
         ) : displayed.map((r) => (
           <button
             key={r.key}
@@ -312,7 +396,7 @@ function ReportLibrary() {
                   <button type="button" onClick={() => exportReport('xlsx')} disabled={exporting !== null} className="btn-secondary h-8 px-3 text-sm disabled:opacity-60">
                     {exporting === 'xlsx' ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />} Excel
                   </button>
-                  <button type="button" onClick={() => { setSaveName(selectedReport.name); setSaveShared(false); setSaveModal(true); }} className="btn-secondary h-8 px-3 text-sm">
+                  <button type="button" onClick={() => { setSaveName(selectedReport.name); setSaveShared(false); setSaveError(''); setSaveModal(true); }} className="btn-secondary h-8 px-3 text-sm">
                     <Save className="h-3.5 w-3.5" /> Save
                   </button>
                 </>
@@ -390,6 +474,7 @@ function ReportLibrary() {
       <Modal isOpen={saveModal} title="Save Report" onClose={() => setSaveModal(false)}
         footer={<><button type="button" onClick={() => setSaveModal(false)} className="btn-secondary">Cancel</button><button type="button" onClick={saveReport} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Save'}</button></>}>
         <div className="space-y-3">
+          <FormError error={saveError} />
           <FormField label="Report Name" required><input value={saveName} onChange={(e) => setSaveName(e.target.value)} className="input w-full" placeholder="My Report" autoFocus /></FormField>
           <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
             <input type="checkbox" checked={saveShared} onChange={(e) => setSaveShared(e.target.checked)} className="h-4 w-4 accent-sapphire" title="Share with team" /> Share with team
@@ -407,21 +492,34 @@ function SavedReportsTab() {
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState<string | null>(null);
   const [result, setResult] = useState<{ report: SavedReport; data: ReportResult } | null>(null);
+  const [loadError, setLoadError] = useState('');
+  const [runError, setRunError] = useState('');
+  const loadSeq = useRef(0);
 
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setLoading(true);
-    try { setItems(await reportsApi.listSaved()); } catch { /**/ }
-    finally { setLoading(false); }
+    try {
+      const saved = await reportsApi.listSaved();
+      if (seq === loadSeq.current) { setItems(saved); setLoadError(''); }
+    } catch (e) {
+      if (seq === loadSeq.current) setLoadError(requestFailureReason(e));
+    } finally {
+      if (seq === loadSeq.current) setLoading(false);
+    }
   }, []);
   useEffect(() => { load(); }, [load]);
 
   const runSaved = async (r: SavedReport) => {
-    setRunning(r.id);
+    setRunning(r.id); setRunError('');
     try {
       const filters = r.filtersJson ? JSON.parse(r.filtersJson) : {};
       const data = await reportsApi.run(r.reportKey, filters);
       setResult({ report: r, data });
-    } catch { /**/ }
+    } catch (e) {
+      setResult(null);
+      setRunError(`“${r.name}” could not be run. ${requestFailureReason(e)}`);
+    }
     finally { setRunning(null); }
   };
 
@@ -434,6 +532,7 @@ function SavedReportsTab() {
 
   return (
     <div className="space-y-4">
+      <FormError error={runError} />
       <div className="surface overflow-hidden">
         <table className="w-full text-sm">
           <thead>
@@ -446,6 +545,8 @@ function SavedReportsTab() {
           <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
             {loading ? (
               <tr><td colSpan={6} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
+            ) : loadError ? (
+              <tr><td colSpan={6}><LoadFailure what="Saved reports" reason={loadError} onRetry={load} /></td></tr>
             ) : items.length === 0 ? (
               <tr><td colSpan={6} className="py-12 text-center text-slate-400">No saved reports. Run a report and click Save.</td></tr>
             ) : items.map((r) => (
@@ -509,14 +610,21 @@ function ScheduledReportsTab() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [toggling, setToggling] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState('');
+  const [catalogError, setCatalogError] = useState('');
+  const [actionError, setActionError] = useState('');
+  const loadSeq = useRef(0);
 
+  // Schedules and the catalog load independently: a catalog outage must not hide the schedules,
+  // and a schedules outage must not read as "No schedules configured".
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setLoading(true);
-    try {
-      const [s, c] = await Promise.all([reportsApi.listSchedules(), reportsApi.catalog()]);
-      setItems(s); setCatalog(c);
-    } catch { /**/ }
-    finally { setLoading(false); }
+    const [s, c] = await Promise.allSettled([reportsApi.listSchedules(), reportsApi.catalog()]);
+    if (seq !== loadSeq.current) return;
+    if (s.status === 'fulfilled') { setItems(s.value); setLoadError(''); } else setLoadError(requestFailureReason(s.reason));
+    if (c.status === 'fulfilled') { setCatalog(c.value); setCatalogError(''); } else setCatalogError(requestFailureReason(c.reason));
+    setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -528,9 +636,10 @@ function ScheduledReportsTab() {
     finally { setSaving(false); }
   };
 
-  const toggle = async (id: string) => {
-    setToggling(id);
-    try { await reportsApi.toggleSchedule(id); load(); } catch { /**/ }
+  const toggle = async (s: ReportSchedule) => {
+    setToggling(s.id); setActionError('');
+    try { await reportsApi.toggleSchedule(s.id); load(); }
+    catch (e) { setActionError(`“${s.reportName}” was not ${s.isActive ? 'paused' : 'resumed'}. ${requestFailureReason(e)}`); }
     finally { setToggling(null); }
   };
 
@@ -547,11 +656,18 @@ function ScheduledReportsTab() {
   return (
     <>
       <div className="space-y-4">
-        <div className="flex justify-end">
-          <button type="button" onClick={() => { setForm({ reportKey: catalog[0]?.key ?? '', reportName: catalog[0]?.name ?? '', category: catalog[0]?.category ?? '', frequency: 'Daily', deliveryMethod: 'Email', recipients: '', exportFormat: 'xlsx' }); setError(''); setCreateModal(true); }} className="btn-primary">
+        <div className="flex items-center justify-end gap-3">
+          {!loading && catalogError && (
+            <p role="alert" className="text-sm text-amber-700 dark:text-amber-300">
+              New schedules need the report catalog, which could not be loaded. {catalogError}{' '}
+              <button type="button" onClick={load} className="font-semibold underline">Retry</button>
+            </p>
+          )}
+          <button type="button" disabled={!!catalogError} onClick={() => { setForm({ reportKey: catalog[0]?.key ?? '', reportName: catalog[0]?.name ?? '', category: catalog[0]?.category ?? '', frequency: 'Daily', deliveryMethod: 'Email', recipients: '', exportFormat: 'xlsx' }); setError(''); setCreateModal(true); }} className="btn-primary shrink-0 disabled:opacity-60">
             <Plus className="h-4 w-4" /> New Schedule
           </button>
         </div>
+        <FormError error={actionError} />
         <div className="surface overflow-hidden">
           <table className="w-full text-sm">
             <thead>
@@ -564,6 +680,8 @@ function ScheduledReportsTab() {
             <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
               {loading ? (
                 <tr><td colSpan={9} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
+              ) : loadError ? (
+                <tr><td colSpan={9}><LoadFailure what="Scheduled reports" reason={loadError} onRetry={load} /></td></tr>
               ) : items.length === 0 ? (
                 <tr><td colSpan={9} className="py-12 text-center text-slate-400">No schedules configured</td></tr>
               ) : items.map((s) => (
@@ -593,7 +711,7 @@ function ScheduledReportsTab() {
                     )}
                   </td>
                   <td className="px-4 py-3">
-                    <button type="button" onClick={() => toggle(s.id)} disabled={toggling === s.id} aria-label="Toggle schedule" className="text-slate-400 hover:text-sapphire disabled:opacity-50 transition">
+                    <button type="button" onClick={() => toggle(s)} disabled={toggling === s.id} aria-label="Toggle schedule" className="text-slate-400 hover:text-sapphire disabled:opacity-50 transition">
                       {s.isActive ? <ToggleRight className="h-5 w-5 text-emerald-500" /> : <ToggleLeft className="h-5 w-5" />}
                     </button>
                   </td>
@@ -659,11 +777,20 @@ function ExecutionHistoryTab() {
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
   const pageSize = 20;
+  const [loadError, setLoadError] = useState('');
+  const loadSeq = useRef(0);
 
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setLoading(true);
-    try { const r = await reportsApi.executions({ page, pageSize }); setItems(r.items); setTotal(r.total); } catch { /**/ }
-    finally { setLoading(false); }
+    try {
+      const r = await reportsApi.executions({ page, pageSize });
+      if (seq === loadSeq.current) { setItems(r.items); setTotal(r.total); setLoadError(''); }
+    } catch (e) {
+      if (seq === loadSeq.current) setLoadError(requestFailureReason(e));
+    } finally {
+      if (seq === loadSeq.current) setLoading(false);
+    }
   }, [page]);
   useEffect(() => { load(); }, [load]);
 
@@ -683,6 +810,8 @@ function ExecutionHistoryTab() {
           <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
             {loading ? (
               <tr><td colSpan={7} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
+            ) : loadError ? (
+              <tr><td colSpan={7}><LoadFailure what="Execution history" reason={loadError} onRetry={load} /></td></tr>
             ) : items.length === 0 ? (
               <tr><td colSpan={7} className="py-12 text-center text-slate-400">No executions yet</td></tr>
             ) : items.map((log) => (

@@ -60,21 +60,26 @@ public sealed record StatutoryDeductionInput(
     /// dimension the system is structurally incapable of expressing "this employee is on the new
     /// scheme and this one is not", whatever rows you put in StatutoryRule.</para>
     ///
-    /// <para>This is the contract half of the fix, added now because retrofitting it across six packs
-    /// is far worse than across three. The LADDER itself is not implemented — the exact step years and
-    /// terminal rate need a current GOSI circular ([COUNSEL]) — and the run raises
-    /// WARN_GOSI_ENTRANT_COHORT_NOT_MODELLED so the gap is loud rather than silent.</para>
-    ///
-    /// <para><see cref="SocialInsuranceFirstRegisteredOn"/> has NO column to populate it from yet: the
-    /// schema change (a nullable date on EmployeePayrollProfile, beside the existing
-    /// SocialInsuranceReference) is deliberately left to a stream that is not also rewriting the money
-    /// path, because a model-snapshot change collides with every other branch in flight. It is always
-    /// null today, and the packs must treat null as "unknown", never as "new entrant".</para>
+    /// <para>F02 — <see cref="SocialInsuranceFirstRegisteredOn"/> is now populated from
+    /// <c>Employee.GosiFirstRegisteredOn</c>. The KSA pack resolves the person's cohort from it
+    /// (<see cref="GosiCohorts"/>) and looks the annuities rates up by cohort AND period
+    /// (<c>KsaGosiCohortSchedule</c>). The new-entrant schedule itself is still not implemented — its
+    /// rates and step dates need the official source ([SME]) — so a new entrant is computed on the
+    /// pre-reform schedule, the payslip says so, and the validator BLOCKS that person. Packs must treat
+    /// null as "unknown", never as "new entrant".</para>
     /// </summary>
     public DateOnly? DateOfBirth { get; init; }
 
     /// <inheritdoc cref="DateOfBirth"/>
     public DateOnly? SocialInsuranceFirstRegisteredOn { get; init; }
+
+    /// <summary>
+    /// F02 — a cohort to use VERBATIM instead of resolving one from
+    /// <see cref="SocialInsuranceFirstRegisteredOn"/>. Set only by reconstruction paths (GOSI
+    /// reconciliation), which must recompute a slip on the cohort it was PROCESSED on — frozen on
+    /// <c>PayrollSlip.GosiCohort</c> — not on whatever the employee record says today. Null on the run path.
+    /// </summary>
+    public string? SocialInsuranceCohort { get; init; }
 }
 
 public sealed record StatutoryDeductionLine(string Code, string Label, decimal EmployeeAmount, decimal EmployerAmount);
@@ -82,7 +87,21 @@ public sealed record StatutoryDeductionLine(string Code, string Label, decimal E
 public sealed record StatutoryDeductionResult(
     decimal TotalEmployeeDeduction,
     decimal TotalEmployerContribution,
-    IReadOnlyList<StatutoryDeductionLine> Lines);
+    IReadOnlyList<StatutoryDeductionLine> Lines)
+{
+    /// <summary>
+    /// F02 — the person-level cohort the lines were computed on (<see cref="GosiCohorts"/>), or null when
+    /// no cohort applies (an expatriate, a GCC national, a pack without a cohort dimension). Frozen on the
+    /// payslip so validation and reconciliation judge what was actually computed.
+    /// </summary>
+    public string? SocialInsuranceCohort { get; init; }
+
+    /// <summary>
+    /// F02 — the calculation explanation for these lines in plain language: which cohort, which rates,
+    /// and "unverified" / "not modelled" when that is the truth. Null when the pack gives none.
+    /// </summary>
+    public string? Basis { get; init; }
+}
 
 // ── End of service ───────────────────────────────────────────────────────────
 // Service dates (not pre-computed years) are required because proration and
