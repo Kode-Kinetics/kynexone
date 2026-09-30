@@ -99,6 +99,71 @@ public static class LegacyRolePermissionResolver
         "Locations", "Companies", "Organization", "Grades", "Branches", "Departments", "Designations", "CostCenters", "Positions"
     };
 
+    private const string PerformanceReviewer = "performance.write";
+    private const string PerformanceApprover = "performance.approve";
+    private const string PerformanceSetup = "performance.cycle_manage";
+
+    /// <summary>
+    /// The appraisal cycle, action by action. The role gates on these controllers name an audience: HR, or HR
+    /// plus the line manager. But the pipeline enforces the PERMISSION (the roles handler above lets it satisfy
+    /// the role requirement, and the result handler refuses without it), so the permission is the real gate.
+    /// Inferring it from the action name put launching a cycle, calibrating and deciding an appeal on
+    /// <c>performance.write</c>, the key a line manager needs to review their own reports, and put approving a
+    /// report's goal on <c>performance.approve</c>, the key that signs off ratings. So each action names the tier
+    /// of the audience its gate names:
+    /// <list type="bullet">
+    /// <item><c>performance.write</c>: the line manager's steps (the gate names Manager). Each action also
+    /// limits the caller to their own reporting line by data scope.</item>
+    /// <item><c>performance.approve</c>: HR's decisions (calibration, score overrides, publishing, appeals, PIP
+    /// outcomes, probation decisions, recommendation decisions) and the HR queues behind them.</item>
+    /// <item><c>performance.cycle_manage</c>: HR's set-up (cycles, scorecard templates, competencies, opening a
+    /// probation review).</item>
+    /// </list>
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, string> PerformanceActions =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Goals.Create"] = PerformanceReviewer,
+            ["Goals.Update"] = PerformanceReviewer,
+            ["Goals.Delete"] = PerformanceReviewer,
+            ["Goals.Approve"] = PerformanceReviewer,
+            ["PIP.Create"] = PerformanceReviewer,
+            ["PIP.Update"] = PerformanceReviewer,
+            ["PIP.AddCheckIn"] = PerformanceReviewer,
+            ["Probation.ManagerReview"] = PerformanceReviewer,
+            ["Recommendations.CreateIncrement"] = PerformanceReviewer,
+            ["Recommendations.CreatePromotion"] = PerformanceReviewer,
+            ["Recommendations.CreateBonus"] = PerformanceReviewer,
+
+            ["Calibration.GetBoard"] = PerformanceApprover,
+            ["Calibration.AdjustScore"] = PerformanceApprover,
+            ["Reviews.OverrideScore"] = PerformanceApprover,
+            ["Reviews.Publish"] = PerformanceApprover,
+            ["Reviews.ListAppeals"] = PerformanceApprover,
+            ["Reviews.RespondToAppeal"] = PerformanceApprover,
+            ["Reviews.ComputeAttendance"] = PerformanceApprover,
+            ["PIP.UpdateStatus"] = PerformanceApprover,
+            ["PIP.TerminationQueue"] = PerformanceApprover,
+            ["Probation.HrDecision"] = PerformanceApprover,
+            ["Recommendations.ApproveIncrement"] = PerformanceApprover,
+            ["Recommendations.ApprovePromotion"] = PerformanceApprover,
+            ["Recommendations.ApproveBonus"] = PerformanceApprover,
+            ["Recommendations.ImplementationQueue"] = PerformanceApprover,
+
+            ["Cycles.Create"] = PerformanceSetup,
+            ["Cycles.Update"] = PerformanceSetup,
+            ["Cycles.Launch"] = PerformanceSetup,
+            ["Cycles.Advance"] = PerformanceSetup,
+            ["Cycles.Close"] = PerformanceSetup,
+            ["ScorecardTemplates.Create"] = PerformanceSetup,
+            ["ScorecardTemplates.Update"] = PerformanceSetup,
+            ["ScorecardTemplates.Delete"] = PerformanceSetup,
+            ["Competencies.Create"] = PerformanceSetup,
+            ["Competencies.Update"] = PerformanceSetup,
+            ["Competencies.Delete"] = PerformanceSetup,
+            ["Probation.Create"] = PerformanceSetup,
+        };
+
     public static string? Resolve(HttpContext context)
     {
         var endpoint = context.GetEndpoint();
@@ -120,6 +185,9 @@ public static class LegacyRolePermissionResolver
 
     public static string? Resolve(string controller, string action, IReadOnlyList<string> httpMethods)
     {
+        if (PerformanceActions.TryGetValue($"{controller}.{action}", out var performanceTier))
+            return performanceTier;
+
         ModulePermissions? module = null;
         if (OrganizationControllers.Contains(controller))
             module = new("organization.read", "organization.write", Delete: "organization.delete", Manage: "organization.write", Export: "organization.read", Import: "organization.write");

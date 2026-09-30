@@ -31,6 +31,7 @@ import {
   FileSpreadsheet,
 } from 'lucide-react';
 import type { NavGroup } from '../types/ui';
+import { PERFORMANCE_MODULE_PERMISSIONS } from '../lib/performanceAccess';
 
 export const navigationGroups: NavGroup[] = [
   {
@@ -65,7 +66,8 @@ export const navigationGroups: NavGroup[] = [
       { label: 'Benefits', icon: HeartPulse, path: '/benefits', requiredPermissions: ['employees.write'] },
       { label: 'Recruitment', icon: BriefcaseBusiness, path: '/recruitment', requiredPermissions: ['recruitment.read', 'recruitment.write'], requiredFeatureKey: 'recruitment' },
       { label: 'Offboarding', icon: UserMinus, path: '/offboarding', requiredPermissions: ['employees.read', 'employees.write'] },
-      { label: 'Performance', icon: BarChart3, path: '/performance', requiredPermissions: ['performance.read', 'performance.write'], requiredFeatureKey: 'performance' },
+      // Any performance key opens it; the page then shows each audience its own tabs (lib/performanceAccess).
+      { label: 'Performance', icon: BarChart3, path: '/performance', requiredPermissions: PERFORMANCE_MODULE_PERMISSIONS, requiredFeatureKey: 'performance' },
       { label: 'Compliance', icon: ShieldCheck, path: '/compliance', requiredPermissions: ['compliance.read', 'compliance.write'], requiredFeatureKey: 'compliance' },
     ],
   },

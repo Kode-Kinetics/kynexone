@@ -19,15 +19,18 @@ namespace Zayra.Api.Controllers.Performance;
 /// and <see cref="Dashboard"/> returns the last 20 <c>PerformanceAuditLog</c> rows verbatim. Any
 /// authenticated employee could read all of it for the whole tenant.</para>
 ///
-/// <para>The gate is <c>performance.read</c> — the same permission the Next.js route already
-/// requires to render the page (<c>frontend/app/(dashboard)/performance/page.tsx</c>), so no caller
-/// who can reach this screen today loses access. The tenant/company SCOPE gap is a separate,
+/// <para>The gate is <c>performance.approve</c>, the HR tier that calibrates and publishes ratings. It was
+/// <c>performance.read</c>, but line managers and employees now hold that key so they can open the
+/// Performance module for their own team and their own review, and nothing here is limited to the
+/// caller's data scope: a line manager or an employee would have read the whole tenant's named low
+/// performers. Every seeded role that held <c>performance.read</c> before (Admin, HR Director) also holds
+/// <c>performance.approve</c>, so none of them loses access. The tenant/company SCOPE gap is a separate,
 /// larger defect and is reported rather than changed here.</para>
 /// </summary>
 [ApiController]
 [Route("api/performance/analytics")]
 [Authorize]
-[HasPermission("performance.read")]
+[HasPermission("performance.approve")]
 public class AnalyticsController : ControllerBase
 {
     private readonly ZayraDbContext _db;
