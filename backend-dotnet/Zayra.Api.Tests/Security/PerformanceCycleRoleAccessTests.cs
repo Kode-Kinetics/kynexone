@@ -280,6 +280,114 @@ public class PerformanceCycleRoleAccessTests
             "goals are set by the line manager or HR; the employee records progress against them");
     }
 
+    // ── A self-assessment is the employee's own ────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("HR Manager")]
+    [InlineData("HR Director")]
+    [InlineData("Admin")]
+    public async Task AnOrganisationWideCaller_CannotSelfAssessOnSomeoneElsesBehalf(string role)
+    {
+        // The data scope used to be the whole check: an organisation-wide caller passed it for any employee,
+        // so HR could submit (and overwrite) the report's self-assessment and move the review on.
+        var (db, tenantId) = await NewTenantAsync("perf-self-proxy");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Active", reviewStatus: "SelfAssessmentDue");
+        var hrEmployeeId = await SeedColleagueWithReviewAsync(db, tenantId, w, "Hana HR");
+        var hr = await LinkedCallerAsync(db, tenantId, role, hrEmployeeId);
+
+        var result = await Reviews(db, hr).SubmitSelfAssessment(w.ReportReviewId,
+            new SelfAssessmentRequest("Written by HR", 99m, 99m, 99m, null), Ct);
+
+        StatusOf(result).Should().Be(403);
+        var body = System.Text.Json.JsonSerializer.SerializeToElement(((ObjectResult)result).Value);
+        body.GetProperty("error").GetString().Should().Be("self_assessment_by_employee_only");
+        body.GetProperty("message").GetString().Should().Contain("Only the employee");
+        var review = await ReviewOf(db, w.ReportReviewId);
+        review.Status.Should().Be("SelfAssessmentDue");
+        review.SelfAssessmentNotes.Should().BeNullOrEmpty();
+    }
+
+    [Fact]
+    public async Task AnHrCaller_StillSelfAssessesTheirOwnReview()
+    {
+        // HR are employees too. Their organisation-wide scope carries no caller employee id, so the check
+        // has to find their own record from the account link rather than from the scope.
+        var (db, tenantId) = await NewTenantAsync("perf-self-hr-own");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Active", reviewStatus: "SelfAssessmentDue");
+        var hrEmployeeId = await SeedColleagueWithReviewAsync(db, tenantId, w, "Hana HR");
+        var hr = await LinkedCallerAsync(db, tenantId, "HR Manager", hrEmployeeId);
+        var ownReviewId = (await db.AppraisalReviews.AsNoTracking().SingleAsync(r => r.EmployeeId == hrEmployeeId)).Id;
+
+        (await SelfAssess(db, hr, ownReviewId)).Should().Be(200);
+        (await ReviewOf(db, ownReviewId)).Status.Should().Be("SelfAssessmentSubmitted");
+    }
+
+    [Fact]
+    public async Task AnOrganisationWideCallerWithNoEmployeeRecord_CannotSelfAssessAnyReview()
+    {
+        var (db, tenantId) = await NewTenantAsync("perf-self-unlinked");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Active", reviewStatus: "SelfAssessmentDue");
+        var admin = await CallerAsync(db, tenantId, "Admin");
+
+        (await SelfAssess(db, admin, w.ReportReviewId)).Should().Be(403);
+        (await ReviewOf(db, w.ReportReviewId)).Status.Should().Be("SelfAssessmentDue");
+    }
+
+    [Fact]
+    public async Task ALineManager_CannotSelfAssessForTheirReport()
+    {
+        var (db, tenantId) = await NewTenantAsync("perf-self-mgr");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Active", reviewStatus: "SelfAssessmentDue");
+        var manager = await ManagerAsync(db, tenantId, w);
+
+        (await SelfAssess(db, manager, w.ReportReviewId)).Should().Be(403);
+        (await ReviewOf(db, w.ReportReviewId)).Status.Should().Be("SelfAssessmentDue");
+    }
+
+    // ── My Reviews is the caller's own; Team and HR views still list others ────────────────────
+
+    [Fact]
+    public async Task MyReviews_ListsOnlyTheCallersOwnReviews_ForEveryAudience()
+    {
+        var (db, tenantId) = await NewTenantAsync("perf-mine");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Active", reviewStatus: "SelfAssessmentDue");
+        var hrEmployeeId = await SeedColleagueWithReviewAsync(db, tenantId, w, "Hana HR");
+        var managerReviewId = await SeedReviewAsync(db, tenantId, w, w.ManagerId);
+
+        var hr = await LinkedCallerAsync(db, tenantId, "HR Manager", hrEmployeeId);
+        (await ListedEmployeeIds(db, hr, view: "mine")).Should().Equal(new[] { hrEmployeeId },
+            "HR's My Reviews is HR's own review, not the whole organisation's");
+
+        var manager = await ManagerAsync(db, tenantId, w);
+        (await ListedEmployeeIds(db, manager, view: "mine")).Should().Equal(new[] { w.ManagerId },
+            "a manager's My Reviews is their own review, not their report's");
+        managerReviewId.Should().NotBeEmpty();
+
+        var employee = await EmployeeAsync(db, tenantId, w);
+        (await ListedEmployeeIds(db, employee, view: "mine")).Should().Equal(new[] { w.ReportId });
+
+        var unlinkedAdmin = await CallerAsync(db, tenantId, "Admin");
+        (await ListedEmployeeIds(db, unlinkedAdmin, view: "mine")).Should().BeEmpty(
+            "a caller with no employee record has no reviews of their own");
+    }
+
+    [Fact]
+    public async Task TheTeamAndHrViews_StillListTheReviewsInTheCallersScope()
+    {
+        var (db, tenantId) = await NewTenantAsync("perf-team-view");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Active", reviewStatus: "SelfAssessmentDue");
+        var hrEmployeeId = await SeedColleagueWithReviewAsync(db, tenantId, w, "Hana HR");
+        await SeedReviewAsync(db, tenantId, w, w.ManagerId);
+
+        var manager = await ManagerAsync(db, tenantId, w);
+        (await ListedEmployeeIds(db, manager, view: null)).Should().BeEquivalentTo(new[] { w.ManagerId, w.ReportId },
+            "Team Reviews lists the manager's reporting line (the scope has always included their own record)");
+
+        var hr = await LinkedCallerAsync(db, tenantId, "HR Manager", hrEmployeeId);
+        (await ListedEmployeeIds(db, hr, view: null)).Should().BeEquivalentTo(
+            new[] { w.ManagerId, w.ReportId, w.OutsiderId, hrEmployeeId }, "HR's views list the organisation");
+    }
+
     // ── Analytics are tenant-wide, so they stay with HR ────────────────────────────────────────
 
     [Theory]
@@ -440,6 +548,39 @@ public class PerformanceCycleRoleAccessTests
         db.EmployeeGoals.Add(goal);
         await db.SaveChangesAsync();
         return goal.Id;
+    }
+
+    /// <summary>A colleague outside the manager's line (for example an HR employee) with their own review in the cycle.</summary>
+    private static async Task<int> SeedColleagueWithReviewAsync(ZayraDbContext db, Guid tenantId, World w, string name)
+    {
+        var colleague = NewEmployee(tenantId, name);
+        db.Employees.Add(colleague);
+        await db.SaveChangesAsync();
+        await SeedReviewAsync(db, tenantId, w, colleague.Id);
+        return colleague.Id;
+    }
+
+    private static async Task<Guid> SeedReviewAsync(ZayraDbContext db, Guid tenantId, World w, int employeeId)
+    {
+        var cycle = await db.PerformanceCycles.AsNoTracking().SingleAsync(c => c.Id == w.CycleId);
+        var employee = await db.Employees.AsNoTracking().SingleAsync(e => e.Id == employeeId);
+        var review = new AppraisalReview
+        {
+            TenantId = tenantId, CycleId = cycle.Id, CycleName = cycle.Name,
+            ScorecardTemplateId = cycle.DefaultScorecardTemplateId!.Value,
+            EmployeeId = employeeId, EmployeeName = employee.FullName, Status = "SelfAssessmentDue",
+        };
+        db.AppraisalReviews.Add(review);
+        await db.SaveChangesAsync();
+        return review.Id;
+    }
+
+    /// <summary>The employees whose reviews the list returns, for the given view.</summary>
+    private static async Task<int[]> ListedEmployeeIds(ZayraDbContext db, ClaimsPrincipal caller, string? view)
+    {
+        var listed = (OkObjectResult)await Reviews(db, caller).List(null, null, null, null, view, 1, 50, Ct);
+        var items = (IEnumerable<AppraisalReview>)listed.Value!.GetType().GetProperty("items")!.GetValue(listed.Value)!;
+        return items.Select(r => r.EmployeeId).ToArray();
     }
 
     /// <summary>The seeded role's real bundle, signed in as the employee record the user account is linked to.</summary>

@@ -431,7 +431,7 @@ function MyReviewsTab() {
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<AppraisalReview | null>(null);
 
-  const load = () => { setLoading(true); reviewsApi.list().then(r => { setReviews(r.items); setLoading(false); }).catch(() => setLoading(false)); };
+  const load = () => { setLoading(true); reviewsApi.list({ view: 'mine' }).then(r => { setReviews(r.items); setLoading(false); }).catch(() => setLoading(false)); };
   useEffect(load, []);
 
   const acknowledge = async (id: string) => {
