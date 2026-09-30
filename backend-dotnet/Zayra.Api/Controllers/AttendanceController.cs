@@ -48,6 +48,8 @@ public class AttendanceController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
     public async Task<PagedResult<AttendanceDeviceDto>> Devices([FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var result = await _attendance.GetDevicesAsync(RequireTenant(), page, pageSize, ct);
         return new PagedResult<AttendanceDeviceDto>(result.Items.Select(AttendanceDeviceDto.Project).ToList(), result.Total, result.Page, result.PageSize);
     }
@@ -158,6 +160,8 @@ public class AttendanceController : ControllerBase
     [AllowEntityReturn("Flat entity — no navigation properties. Fields include GPS coordinates and IP address (operational punch verification data), PhotoReference (storage reference, not biometric data), and RawPayloadJson (device payload). No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public async Task<PagedResult<AttendanceRawEvent>> Raw([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, [FromQuery] int? employeeId, [FromQuery] bool? processed, [FromQuery] int page = 1, [FromQuery] int pageSize = 50, CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
         var (singleId, setFilter) = scope.Constrain(employeeId);
         // This service takes a single employeeId (no set-filter overload). For a scoped caller
@@ -171,6 +175,8 @@ public class AttendanceController : ControllerBase
     [HttpGet("daily")]
     public async Task<PagedResult<AttendanceDailyDto>> Daily([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, [FromQuery] int? employeeId, [FromQuery] string? status, [FromQuery] int page = 1, [FromQuery] int pageSize = 50, CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
         var (singleId, setFilter) = scope.Constrain(employeeId);
         return await _attendance.GetDailyAsync(RequireTenant(), from, to, singleId, status, page, pageSize, ct, setFilter);
@@ -292,6 +298,8 @@ public class AttendanceController : ControllerBase
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: WorkDate, RequestType, correction timestamps, free-text Reason, Status. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public async Task<PagedResult<AttendanceRegularizationRequest>> MyRegularization([FromQuery] int? employeeId, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
         var (singleId, setFilter) = scope.Constrain(employeeId);
         return await _attendance.GetRegularizationAsync(RequireTenant(), singleId, null, page, pageSize, ct, setFilter);
@@ -302,6 +310,8 @@ public class AttendanceController : ControllerBase
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: WorkDate, RequestType, correction timestamps, free-text Reason, Status. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public async Task<PagedResult<AttendanceRegularizationRequest>> PendingRegularization([FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
         var (_, setFilter) = scope.Constrain(null);
         return await _attendance.GetRegularizationAsync(RequireTenant(), null, "PendingApproval", page, pageSize, ct, setFilter);

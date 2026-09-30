@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Leave;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
@@ -25,10 +26,14 @@ public class CompOffController : ControllerBase
     public async Task<IActionResult> List(
         [FromQuery] int? employeeId,
         [FromQuery] string? status,
+        [FromQuery] Guid? companyId,
+        [FromQuery] Guid? branchId,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 25,
         CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
@@ -37,6 +42,8 @@ public class CompOffController : ControllerBase
         var query = _db.CompOffCredits.Where(c => c.TenantId == tenantId);
         if (!scope.IsUnrestricted)
             query = query.Where(c => scope.AllowedEmployeeIds!.Contains(c.EmployeeId));
+        var group = await LeaveGroupFilter.EmployeeIdsAsync(_db, tenantId.Value, companyId, branchId, ct);
+        if (group is not null) query = query.Where(c => group.Contains(c.EmployeeId));
         if (employeeId.HasValue) query = query.Where(c => c.EmployeeId == employeeId.Value);
         if (!string.IsNullOrWhiteSpace(status)) query = query.Where(c => c.Status == status);
 

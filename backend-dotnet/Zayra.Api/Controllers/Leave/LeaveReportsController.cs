@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Leave;
 using Zayra.Api.Data;
 
 namespace Zayra.Api.Controllers.Leave;
@@ -30,14 +31,7 @@ public class LeaveReportsController : ControllerBase
         var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
         var allowedIds = scope.IsUnrestricted ? null : scope.AllowedEmployeeIds!.ToList();
 
-        List<int>? companyFilterIds = null;
-        if (companyId.HasValue || branchId.HasValue)
-        {
-            var empQ = _db.Employees.Where(e => e.TenantId == tenantId && !e.IsDeleted);
-            if (companyId.HasValue) empQ = empQ.Where(e => e.CompanyId == companyId);
-            if (branchId.HasValue)  empQ = empQ.Where(e => e.BranchId  == branchId);
-            companyFilterIds = await empQ.Select(e => e.Id).ToListAsync(ct);
-        }
+        var companyFilterIds = await LeaveGroupFilter.EmployeeIdsAsync(_db, tenantId.Value, companyId, branchId, ct);
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var pendingStatuses = new[] { "Submitted", "PendingManagerApproval", "PendingHRApproval" };
@@ -85,7 +79,8 @@ public class LeaveReportsController : ControllerBase
     }
 
     [HttpGet("balance-summary")]
-    public async Task<IActionResult> BalanceSummary([FromQuery] int? year, CancellationToken ct)
+    public async Task<IActionResult> BalanceSummary(
+        [FromQuery] int? year, [FromQuery] Guid? companyId, [FromQuery] Guid? branchId, CancellationToken ct = default)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
@@ -96,6 +91,8 @@ public class LeaveReportsController : ControllerBase
         var query = _db.EmployeeLeaveBalances.Where(b => b.TenantId == tenantId && b.Year == year);
         if (!scope.IsUnrestricted)
             query = query.Where(b => scope.AllowedEmployeeIds!.Contains(b.EmployeeId));
+        var group = await LeaveGroupFilter.EmployeeIdsAsync(_db, tenantId.Value, companyId, branchId, ct);
+        if (group is not null) query = query.Where(b => group.Contains(b.EmployeeId));
 
         var balances = await query.OrderBy(b => b.EmployeeName).ThenBy(b => b.LeaveTypeName).ToListAsync(ct);
 
@@ -114,6 +111,8 @@ public class LeaveReportsController : ControllerBase
         [FromQuery] DateOnly? fromDate,
         [FromQuery] DateOnly? toDate,
         [FromQuery] string? departmentName,
+        [FromQuery] Guid? companyId,
+        [FromQuery] Guid? branchId,
         CancellationToken ct = default)
     {
         var tenantId = this.GetTenantId();
@@ -129,6 +128,8 @@ public class LeaveReportsController : ControllerBase
 
         if (!scope.IsUnrestricted)
             query = query.Where(r => scope.AllowedEmployeeIds!.Contains(r.EmployeeId));
+        var group = await LeaveGroupFilter.EmployeeIdsAsync(_db, tenantId.Value, companyId, branchId, ct);
+        if (group is not null) query = query.Where(r => group.Contains(r.EmployeeId));
         if (!string.IsNullOrWhiteSpace(departmentName))
             query = query.Where(r => r.DepartmentName == departmentName);
 
@@ -143,7 +144,8 @@ public class LeaveReportsController : ControllerBase
     }
 
     [HttpGet("on-leave-today")]
-    public async Task<IActionResult> OnLeaveToday(CancellationToken ct)
+    public async Task<IActionResult> OnLeaveToday(
+        [FromQuery] Guid? companyId, [FromQuery] Guid? branchId, CancellationToken ct = default)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
@@ -156,6 +158,8 @@ public class LeaveReportsController : ControllerBase
 
         if (!scope.IsUnrestricted)
             query = query.Where(r => scope.AllowedEmployeeIds!.Contains(r.EmployeeId));
+        var group = await LeaveGroupFilter.EmployeeIdsAsync(_db, tenantId.Value, companyId, branchId, ct);
+        if (group is not null) query = query.Where(r => group.Contains(r.EmployeeId));
 
         var onLeave = await query
             .OrderBy(r => r.DepartmentName).ThenBy(r => r.EmployeeName)
@@ -166,7 +170,8 @@ public class LeaveReportsController : ControllerBase
     }
 
     [HttpGet("pending-approvals")]
-    public async Task<IActionResult> PendingApprovals(CancellationToken ct)
+    public async Task<IActionResult> PendingApprovals(
+        [FromQuery] Guid? companyId, [FromQuery] Guid? branchId, CancellationToken ct = default)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
@@ -177,6 +182,8 @@ public class LeaveReportsController : ControllerBase
         var query = _db.LeaveRequests.Where(r => r.TenantId == tenantId && pendingStatuses.Contains(r.Status));
         if (!scope.IsUnrestricted)
             query = query.Where(r => scope.AllowedEmployeeIds!.Contains(r.EmployeeId));
+        var group = await LeaveGroupFilter.EmployeeIdsAsync(_db, tenantId.Value, companyId, branchId, ct);
+        if (group is not null) query = query.Where(r => group.Contains(r.EmployeeId));
 
         var pending = await query
             .OrderBy(r => r.SubmittedAtUtc)
@@ -244,7 +251,8 @@ public class LeaveReportsController : ControllerBase
     // Salary-linked liability data — restricted to HR/Finance/Payroll roles only
     [HttpGet("liability")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer,Payroll Manager,Finance Approver,Auditor")]
-    public async Task<IActionResult> Liability([FromQuery] int? year, CancellationToken ct)
+    public async Task<IActionResult> Liability(
+        [FromQuery] int? year, [FromQuery] Guid? companyId, [FromQuery] Guid? branchId, CancellationToken ct = default)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
@@ -255,6 +263,8 @@ public class LeaveReportsController : ControllerBase
         var query = _db.EmployeeLeaveBalances.Where(b => b.TenantId == tenantId && b.Year == year);
         if (!scope.IsUnrestricted)
             query = query.Where(b => scope.AllowedEmployeeIds!.Contains(b.EmployeeId));
+        var group = await LeaveGroupFilter.EmployeeIdsAsync(_db, tenantId.Value, companyId, branchId, ct);
+        if (group is not null) query = query.Where(b => group.Contains(b.EmployeeId));
 
         var balances = (await query.ToListAsync(ct)).Where(b => b.Available > 0).ToList();
 

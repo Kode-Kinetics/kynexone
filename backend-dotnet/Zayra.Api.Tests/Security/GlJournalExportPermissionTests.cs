@@ -91,7 +91,107 @@ public class GlJournalExportPermissionTests
         }
     }
 
+    // ── Maker-checker by identity, not only by key ─────────────────────────────────────────────
+    //
+    // The keys keep the seeded roles apart, but Admin holds both, and a tenant can give one role both. The
+    // person who exported a journal must never be the one who attests the ERP took it (or refused it), so
+    // the check is on WHO exported, whatever keys the caller holds. Same rule, code and wording style as the
+    // settlement approve/pay checks (#124, #136).
+
+    [Theory]
+    [InlineData("confirm")]
+    [InlineData("reject")]
+    public async Task TheAdminWhoExported_CannotDecideTheErpOutcome_OfTheirOwnExport(string step)
+    {
+        var (db, tenantId) = await NewTenantAsync("gl-sod-admin");
+        SeedLedger(db, tenantId);
+        var admin = await CallerAsync(db, tenantId, "Admin");
+        StatusOf(await Controller(db, admin).Create(Period, null, null, null, false, false, "generic-csv", CancellationToken.None))
+            .Should().Be(201);
+        db.ChangeTracker.Clear();
+        var exportId = (await db.GlJournalExports.AsNoTracking().SingleAsync()).Id;
+
+        var result = await Decide(db, admin, exportId, step);
+
+        AssertSegregationRefusal(result, step);
+        await AssertNothingDecidedAsync(db, exportId);
+        await AssertRefusalAuditedAsync(db, exportId, step, admin);
+    }
+
+    [Theory]
+    [InlineData("confirm")]
+    [InlineData("reject")]
+    public async Task ARoleGrantedBothKeys_StillNeedsASecondPerson(string step)
+    {
+        // A tenant admin gives Payroll Manager the checker key as well. The key check now passes for every
+        // Payroll Manager, so only the identity check stands between the exporter and their own attestation.
+        var (db, tenantId) = await NewTenantAsync("gl-sod-granted");
+        await GrantAsync(db, tenantId, "Payroll Manager", GlJournalExportsController.ErpConfirmPermission);
+        SeedLedger(db, tenantId);
+        var maker = await CallerAsync(db, tenantId, "Payroll Manager");
+        StatusOf(await Controller(db, maker).Create(Period, null, null, null, false, false, "generic-csv", CancellationToken.None))
+            .Should().Be(201);
+        db.ChangeTracker.Clear();
+        var exportId = (await db.GlJournalExports.AsNoTracking().SingleAsync()).Id;
+
+        AssertSegregationRefusal(await Decide(db, maker, exportId, step), step);
+        await AssertNothingDecidedAsync(db, exportId);
+
+        var colleague = await CallerAsync(db, tenantId, "Payroll Manager");
+        StatusOf(await Decide(db, colleague, exportId, step)).Should().Be(200,
+            "a different person holding the checker key decides the outcome");
+        (await db.GlJournalExports.AsNoTracking().SingleAsync(x => x.Id == exportId)).Status.Should().Be(
+            step == "confirm" ? GlJournalExportStatuses.Confirmed : GlJournalExportStatuses.Rejected);
+    }
+
+    [Fact]
+    public async Task ACheckerWithNoUserId_IsRefused_BecauseTheyCannotBeCheckedAgainstTheMaker()
+    {
+        var (db, tenantId) = await NewTenantAsync("gl-sod-anon");
+        var exportId = await ExportAsPayrollManagerAsync(db, tenantId);
+        var approver = await CallerAsync(db, tenantId, "Finance Approver");
+        var anonymous = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(
+            approver.Claims.Where(c => c.Type != System.Security.Claims.ClaimTypes.NameIdentifier), "Test"));
+
+        StatusOf(await Decide(db, anonymous, exportId, "confirm")).Should().Be(403);
+        await AssertNothingDecidedAsync(db, exportId);
+    }
+
     // ── Harness ────────────────────────────────────────────────────────────────────────────────
+
+    private static Task<IActionResult> Decide(ZayraDbContext db, System.Security.Claims.ClaimsPrincipal caller, Guid exportId, string step) =>
+        step == "confirm"
+            ? Controller(db, caller).Confirm(exportId, new ErpImportConfirmationRequest("ERP-DOC-2001"), CancellationToken.None)
+            : Controller(db, caller).Reject(exportId, new ErpImportRejectionRequest("ERP refused: period closed"), CancellationToken.None);
+
+    private static void AssertSegregationRefusal(IActionResult result, string step)
+    {
+        StatusOf(result).Should().Be(409, $"the exporter must not {step} their own journal");
+        var body = System.Text.Json.JsonSerializer.SerializeToElement(((ObjectResult)result).Value);
+        body.GetProperty("error").GetString().Should().Be("segregation_of_duties");
+        body.GetProperty("message").GetString().Should().StartWith("You exported this journal, so you cannot also");
+    }
+
+    private static async Task AssertNothingDecidedAsync(ZayraDbContext db, Guid exportId)
+    {
+        db.ChangeTracker.Clear();
+        var export = await db.GlJournalExports.AsNoTracking().SingleAsync(x => x.Id == exportId);
+        export.Status.Should().Be(GlJournalExportStatuses.Exported);
+        export.ConfirmedByUserId.Should().BeNull();
+        export.RejectionReason.Should().BeNull();
+        (await db.FinanceGlEntries.AsNoTracking().AllAsync(e => e.ErpPostingStatus == ErpPostingStatuses.Exported))
+            .Should().BeTrue("a refused decision must not stamp the ledger");
+    }
+
+    private static async Task AssertRefusalAuditedAsync(
+        ZayraDbContext db, Guid exportId, string step, System.Security.Claims.ClaimsPrincipal caller)
+    {
+        var callerId = Guid.Parse(caller.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)!.Value);
+        var audit = await db.AuditLogs.AsNoTracking()
+            .SingleAsync(a => a.EntityId == exportId.ToString() && a.Action == $"finance.gl.journal_export.erp_{step}_refused");
+        audit.UserId.Should().Be(callerId, "the refusal names who tried");
+        audit.Metadata.Should().Contain("segregation_of_duties");
+    }
 
     private static GlJournalExportsController Controller(ZayraDbContext db, System.Security.Claims.ClaimsPrincipal caller)
     {

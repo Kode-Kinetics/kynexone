@@ -30,6 +30,8 @@ public class LeavePoliciesController : ControllerBase
         [FromQuery] int pageSize = 25,
         CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 

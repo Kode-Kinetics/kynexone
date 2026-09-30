@@ -1,12 +1,11 @@
 /**
  * Reading paged API lists without silently dropping rows.
  *
- * Most list endpoints clamp `pageSize` to 1..100 (EmployeesController, OrganizationSetupService,
- * AccessController, …) and answer a larger request with 100 rows and a `total` above 100, not an
- * error. Others (payroll slips and payslips, overtime requests) apply no cap, so a screen asking
- * for 200 simply stopped at 200. Either way a screen that took one page as "the list" lost every
- * row past it with nothing on screen to say so: a payroll register missing its 201st employee, a
- * lookup without its 101st company.
+ * List endpoints clamp `pageSize` to 1..100 (a few history lists to 1..200) and answer a larger
+ * request with 100 rows and a `total` above 100, not an error. Payroll slips and payslips and
+ * overtime requests used to apply no cap, so a screen asking for 200 simply stopped at 200. Either
+ * way a screen that took one page as "the list" lost every row past it with nothing on screen to
+ * say so: a payroll register missing its 201st employee, a lookup without its 101st company.
  *
  * A screen that needs the whole list pages through it with `fetchAllPages`. A history list that
  * can grow without bound shows one page at a time and says how many rows exist

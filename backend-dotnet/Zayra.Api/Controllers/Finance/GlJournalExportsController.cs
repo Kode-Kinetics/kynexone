@@ -279,6 +279,7 @@ public class GlJournalExportsController : ControllerBase
         // caller read or re-confirm exactly the rows the flag exists to restrict — via the artifact
         // instead of the query. Re-checking here closes that indirect route.
         if (UnattributedScopeError(export.IncludeUnattributed) is { } unattributedErr) return unattributedErr;
+        if (await ExporterRefusalAsync(export, "confirm", ct) is { } makerChecker) return makerChecker;
 
         var reference = (req.ErpDocumentNumber ?? string.Empty).Trim();
         if (reference.Length == 0)
@@ -388,6 +389,7 @@ public class GlJournalExportsController : ControllerBase
         // caller read or re-confirm exactly the rows the flag exists to restrict — via the artifact
         // instead of the query. Re-checking here closes that indirect route.
         if (UnattributedScopeError(export.IncludeUnattributed) is { } unattributedErr) return unattributedErr;
+        if (await ExporterRefusalAsync(export, "reject", ct) is { } makerChecker) return makerChecker;
 
         var reason = (req.Reason ?? string.Empty).Trim();
         if (reason.Length == 0)
@@ -598,6 +600,41 @@ public class GlJournalExportsController : ControllerBase
 
     /// <summary>Confirm or reject that the client's ERP imported a journal export — the checker key.</summary>
     public const string ErpConfirmPermission = "finance.erp.confirm";
+
+    /// <summary>
+    /// MAKER / CHECKER BY IDENTITY. The keys above keep the seeded maker and checker roles apart, but Admin
+    /// holds both, and a tenant can grant one role both. So the person who EXPORTED a journal may not confirm
+    /// or reject its ERP posting, whatever keys they hold: that attestation is the second pair of eyes on the
+    /// file they produced. The same rule, code and wording as the settlement approve/pay checks.
+    ///
+    /// <para>A caller with no user id cannot be checked against the exporter, so they are refused outright
+    /// (as a settlement approval with no user id is). The refusal is audited; nothing else is written.</para>
+    /// </summary>
+    private async Task<IActionResult?> ExporterRefusalAsync(GlJournalExport export, string step, CancellationToken ct)
+    {
+        if (this.GetUserId() is not Guid actorId) return Forbid();
+        if (export.ExportedByUserId != actorId) return null;
+
+        WriteAudit($"finance.gl.journal_export.erp_{step}_refused", "GlJournalExport", export.Id.ToString(), export.CompanyId, new
+        {
+            error = "segregation_of_duties",
+            exportedByUserId = export.ExportedByUserId,
+            exportedByName = export.ExportedByName,
+            export.FileHash,
+        });
+        await _db.SaveChangesAsync(ct);
+
+        return Conflict(new
+        {
+            error = "segregation_of_duties",
+            message = step == "confirm"
+                ? "You exported this journal, so you cannot also confirm that the ERP posted it. A different user " +
+                  "with ERP confirmation rights must confirm it."
+                : "You exported this journal, so you cannot also record that the ERP rejected it. A different user " +
+                  "with ERP confirmation rights must record the rejection.",
+            exportId = export.Id,
+        });
+    }
 
     private string UserName() =>
         User.FindFirst(System.Security.Claims.ClaimTypes.Name)?.Value ?? "Unknown";

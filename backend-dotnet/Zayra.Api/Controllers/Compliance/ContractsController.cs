@@ -107,6 +107,8 @@ public class ContractsController : ControllerBase
         [FromQuery] int pageSize = 20,
         CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tid = GetTenantId();
         var q = _db.EmployeeContracts.Where(x => x.TenantId == tid && !x.IsDeleted);
 

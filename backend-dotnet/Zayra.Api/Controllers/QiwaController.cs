@@ -332,6 +332,7 @@ public class QiwaController : ControllerBase
     {
         if (!HasPermission("qiwa.read")) return Forbid();
 
+        page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
         var logs = await _qiwa.GetSyncLogsAsync(RequireTenant(), employeeId, page, pageSize, cancellationToken);
         // F09: a simulator run reads "Simulated", with its label, including rows written before the
