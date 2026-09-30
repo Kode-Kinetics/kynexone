@@ -134,6 +134,25 @@ public class ListPageSizeClampTests
         "HrLetters.Register", "HrLetters.Requests", "Platform.ListLoginActivity", "Platform.AllInvoices", "Timesheets.Inbox",
     };
 
+    /// <summary>
+    /// The registers someone works an expiry queue from. They are named rather than left to the sweep below
+    /// because they are the ones a reader asks about: if one is renamed, moved or given a different paging
+    /// parameter, the sweep would stop covering it and stay green. This fails instead.
+    /// </summary>
+    [Theory]
+    [InlineData("VisaTracking", "List")]
+    [InlineData("VisaTracking", "ListPassports")]
+    [InlineData("VisaTracking", "ListWorkPermits")]
+    [InlineData("VisaTracking", "ListRenewals")]
+    [InlineData("Contracts", "List")]
+    public void TheComplianceRegisters_AreCoveredByTheSweep(string controller, string action)
+    {
+        PagedActions()
+            .Select(a => $"{a.Controller.Name[..^"Controller".Length]}.{a.Method.Name}")
+            .Should().Contain($"{controller}.{action}",
+                "a compliance register that stops taking a pageSize is no longer clamped by the guard below");
+    }
+
     [Fact]
     public void EveryListEndpoint_ClampsPageSizeAndPage()
     {
