@@ -1848,7 +1848,9 @@
         "Step R1 (refusal-incomplete-employee): identical employee WITH a compliance record naming SA → HTTP 422 employee_not_activatable, blocking IqamaNumber, pay-blocking GosiReference.",
         "Step R1b (this tripwire): identical employee WITHOUT it → countryCode \"\", HTTP 200, Active.",
         "Zayra.Api.Tests/EmployeeActivationGateTests.cs sets CountryCode = \"SA\" directly on its fixture entities, so it covers the gate but never the derivation — the blind spot."
-      ]
+      ],
+      "resolvedBy": "PR #162",
+      "resolvedNote": "Fixed after this run. The observation above is left exactly as recorded on build 64bab568c9ce72665c605ef39da7467d15ac2d82 and has not been rewritten."
     },
     {
       "severity": "P2",
@@ -1858,7 +1860,10 @@
         "5 such 403s across steps: prerequisites, validation, finance-approval, payslips, reconciliation",
         "Visible in img/11-payslips.jpg — the toast sits over a screen that correctly shows 14 payslips, all published to ESS.",
         "Affects the HR Manager and Finance Approver personas; the Admin persona holds the permission and sees no toast."
-      ]
+      ],
+      "resolvedBy": "PR #162",
+      "resolvedNote": "Fixed after this run. The observation above is left exactly as recorded on build 64bab568c9ce72665c605ef39da7467d15ac2d82 and has not been rewritten."
     }
-  ]
+  ],
+  "defectsResolvedNote": "Both defects below were FIXED in PR #162 (the KSA activation floor is bypassed for an employee created without a country; the background AI-insights 403 raising an \"Access Denied\" toast). This bundle is the unaltered record of the run it describes, made on build 64bab568c9ce72665c605ef39da7467d15ac2d82, which predates that fix — the images, the step table and the observations below have deliberately NOT been re-recorded or edited, because a record that is rewritten after the fact stops being evidence. Read them as what was true on that build. The spec has since changed: the R1b tripwire step is gone and its case is folded into R1, which now makes both create calls and asserts the same 422 for each, so a fresh run records 14 steps and neither defect."
 }

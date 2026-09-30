@@ -210,25 +210,40 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
         maskExtra: (page) => [page.locator('main table tbody tr td:nth-child(1)')],
       });
 
-      // ── R1. Incomplete data is still refused ────────────────────────────────────────────────
+      // ── R1. Incomplete data is still refused — however the request states the country ───────
       // A KSA expat with no GOSI reference and no Iqama number cannot lawfully be paid, so the
       // product must not let them into a payroll population. Employees are BORN Draft (the create
       // request has no status field), and activation is the gate: POST {id}/activate raises
       // EmployeeActivationBlockedException, which the controller turns into a structured 422.
+      //
+      // TWO CALLS, ONE OUTCOME. The first states the country on a compliance record; the second
+      // omits it entirely and lets the employing company's country decide. An earlier recording of
+      // this story found that the second call ACTIVATED — CountryCode was taken only from the first
+      // compliance record, so omitting it stored a blank country, and GccReadinessFloor.Resolve("")
+      // returns an EMPTY requirement list, which the gate read as "nothing is required" rather than
+      // "nothing was checked". That was recorded as a separate R1b tripwire step asserting the wrong
+      // behaviour, written to go red the day the gap closed. It has: the country is now derived
+      // (explicit wins, else the employing company's) and an unidentifiable jurisdiction blocks
+      // activation outright, so the case is folded in here, where it belongs — one refusal, proved
+      // to hold whether or not the request happens to name the country. Two employees are created
+      // and BOTH stay Draft.
       let refusedEmployeeId: number | null = null;
-      let bypassedEmployeeId: number | null = null;
+      let derivedCountryEmployeeId: number | null = null;
       await evidence.step({
         id: 'refusal-incomplete-employee',
         actor: admin.persona,
-        action: 'REFUSAL — try to activate a KSA expat who has no GOSI reference and no Iqama number',
+        action:
+          'REFUSAL — try to activate a KSA expat who has no GOSI reference and no Iqama number, '
+          + 'twice: once stating the country, once leaving it to the employing company',
         expected:
-          'The activation is refused with a structured 422 naming the missing statutory data, and the '
-          + 'employee stays Draft. An employee who cannot lawfully be paid must never join a payroll '
-          + 'population.',
+          'Both activations are refused with the same structured 422 naming the missing statutory '
+          + 'data, and both employees stay Draft. An employee who cannot lawfully be paid must never '
+          + 'join a payroll population — and whether the create request happened to name the country '
+          + 'must make no difference, because the employing legal entity already decides it.',
         record: { type: 'Employee (Draft, refused activation)', id: null },
         noCaptureReason:
           'Deliberately so: this refusal was driven through the API, so there is no '
-          + 'screen of it to photograph; the 422 body recorded below is the whole of the evidence. A '
+          + 'screen of it to photograph; the 422 bodies recorded below are the whole of the evidence. A '
           + 'picture of the employee list here would show a screen that has nothing to do with the '
           + 'refusal, which is exactly the substitution this harness exists to prevent. The UI path '
           + 'for the same refusal is listed under Not run.',
@@ -299,6 +314,65 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
             + `${blocking.map((b) => b.key).join(', ')}. Pay-blocking: `
             + `${payBlocking.map((b) => b.key).join(', ')}.`,
           );
+
+          // ── The same employee, with the country left unstated ──────────────────────────────
+          // Identical in every other respect: same KSA legal entity, same Indian nationality, same
+          // absent Iqama and GOSI reference. complianceRecords is omitted, which is the whole
+          // difference — and must make no difference, because the employing company is Saudi.
+          const derivedCreated = await ctx.api('POST', '/api/employees', {
+            token: admin.token,
+            data: {
+              employeeCode: `EV-DERIVED-${Date.now().toString().slice(-8)}`,
+              manualEmployeeCode: true,
+              englishName: 'Evidence Derived-Country Case',
+              gender: 'Male',
+              nationality: 'Indian',
+              companyId: company.id,
+              joiningDate: new Date().toISOString(),
+              // complianceRecords deliberately omitted — the country must come from the company.
+            },
+          });
+          expect(derivedCreated.status, 'the Draft employee must be created so activation has something to refuse')
+            .toBe(201);
+          derivedCountryEmployeeId = Number(derivedCreated.json.id);
+          expect(
+            String(derivedCreated.json.countryCode ?? ''),
+            'an employee attached to a Saudi legal entity is governed by Saudi law whether or not the '
+            + 'request said so: the country is derived from the employing company',
+          ).toBe('SA');
+
+          const activateDerived = await ctx.api('POST', `/api/employees/${derivedCountryEmployeeId}/activate`, {
+            token: admin.token,
+            data: {
+              status: 'Active',
+              effectiveDate: new Date().toISOString().slice(0, 10),
+              reason: 'evidence harness: activation with incomplete statutory data and no stated country',
+            },
+            recordId: String(derivedCountryEmployeeId),
+          });
+          expect(
+            activateDerived.status,
+            'the SAME refusal as above. A 2xx here would mean omitting one optional field from the '
+            + 'create request removes the KSA statutory floor entirely — which is the defect this '
+            + 'story found, and the reason the case is recorded here.',
+          ).toBe(422);
+          expect(activateDerived.json?.error, 'the refusal must be the structured activation gate').toBe(
+            'employee_not_activatable',
+          );
+          const derivedBlocking: Array<{ key: string }> = activateDerived.json?.blocking ?? [];
+          expect(
+            derivedBlocking.map((b) => b.key),
+            'and it must block on the same statutory field as the call that named the country',
+          ).toContain('IqamaNumber');
+          ctx.note(
+            `Draft employee #${derivedCountryEmployeeId} — same KSA legal entity, same Indian `
+            + `nationality, same absent Iqama and GOSI reference, but created WITHOUT any `
+            + `complianceRecords — was stored with countryCode `
+            + `"${String(derivedCreated.json.countryCode ?? '')}" (derived from the employing company) `
+            + `and its activation was refused with HTTP ${activateDerived.status} `
+            + `employee_not_activatable, blocking ${derivedBlocking.map((b) => b.key).join(', ')}. `
+            + `The two calls differ only by that omitted field and reach the same refusal.`,
+          );
         },
         persisted: async (ctx) => {
           const row = await ctx.api('GET', `/api/employees/${refusedEmployeeId}`, {
@@ -309,9 +383,31 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
             String(row.json.status ?? ''),
             'a refused activation must leave the employee exactly where it was',
           ).toBe('Draft');
-          return { employeeId: refusedEmployeeId, status: row.json.status, activated: false };
+          const derivedRow = await ctx.api('GET', `/api/employees/${derivedCountryEmployeeId}`, {
+            token: admin.token, recordId: String(derivedCountryEmployeeId),
+          });
+          expect(derivedRow.status, 'the second refused employee must still be readable').toBe(200);
+          expect(
+            String(derivedRow.json.status ?? ''),
+            'neither refused activation may leave an employee occupying an active seat',
+          ).toBe('Draft');
+          expect(
+            String(derivedRow.json.countryCode ?? ''),
+            'and the derived country must be what was persisted, not a blank left for the gate to miss',
+          ).toBe('SA');
+          return {
+            employeeId: refusedEmployeeId,
+            status: row.json.status,
+            activated: false,
+            employeeIdWithNoStatedCountry: derivedCountryEmployeeId,
+            statusWithNoStatedCountry: derivedRow.json.status,
+            countryCodeWithNoStatedCountry: derivedRow.json.countryCode,
+            activatedWithNoStatedCountry: false,
+          };
         },
-        persistedVia: 'fresh GET of the employee — a refused activation must leave it Draft',
+        persistedVia:
+          'fresh GETs of both employees — a refused activation must leave each one Draft, and the '
+          + "employee created without a stated country must hold the employing company's country",
       });
 
       // ── 2. Create the run ───────────────────────────────────────────────────────────────────
@@ -978,126 +1074,22 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
           'fresh GETs of the run, its salary slips, the bank payment lines and the reconciliation report',
       });
 
-      // ── R1b. DEFECT TRIPWIRE — the same refusal, bypassed ───────────────────────────────────
-      // Placed AFTER the payroll story, not beside R1, for a boring but necessary reason: this step
-      // succeeds in ACTIVATING an employee, and an active employee joins the tenant's payroll
-      // population. Run before the payroll run is created, it changed the headcount the whole story
-      // reconciles against — and an employee with no salary structure and no IBAN would have taken
-      // the bank export down with it. The defect is about activation, not about payroll, so it is
-      // recorded where it cannot contaminate the money.
+      // ── R1b. RETIRED — the bypass this story found is closed, and the case lives in R1 ──────
+      // An earlier recording of this journey found that the SAME incomplete KSA expat, created
+      // without a complianceRecords entry naming the country, was stored with countryCode "" and
+      // ACTIVATED with HTTP 200 while the identical request that named SA was refused 422. It was
+      // recorded here as a deliberate tripwire asserting that wrong behaviour, with the instruction
+      // to delete the step and fold the case into R1 the day it started failing with 422.
       //
-      // Found by this run, not looked for. R1 above only refuses because the create request carried
-      // a compliance record naming SA. Send the IDENTICAL employee — same KSA legal entity, same
-      // Indian nationality, same absent Iqama and GOSI — WITHOUT that record, and `CountryCode`
-      // stays empty (EmployeeManagementService line ~1340 sets it only from a compliance record and
-      // never falls back to the company's country). GccReadinessFloor.Resolve("") then returns an
-      // EMPTY requirement list, so the activation floor does not exist and the employee activates.
+      // That day came. The country is now derived on every write path — explicit countryCode wins,
+      // else the employing company's — and a jurisdiction that cannot be identified blocks
+      // activation instead of resolving to an empty requirement list. So R1 above now makes BOTH
+      // calls and asserts the SAME 422 for each, which is stronger evidence than a separate step
+      // could be: the two requests differ by one omitted field and reach one outcome.
       //
-      // EmployeeActivationGateTests constructs its fixtures with CountryCode = "SA" set directly on
-      // the entity, so it exercises the gate but never the derivation — which is why this has held
-      // green. GET /api/employees/field-catalog documents the intended rule in as many words:
-      // "Explicit countryCode wins, else the company's country."
-      //
-      // This step asserts the CURRENT, WRONG behaviour deliberately, in the house tripwire style: it
-      // is written to go RED the day the gap closes, so nobody has to remember to come back. When it
-      // fails with 422, the defect is fixed — delete this step and fold the case into R1.
-      await evidence.step({
-        id: 'defect-activation-floor-bypassed-without-country',
-        actor: admin.persona,
-        action:
-          'DEFECT TRIPWIRE — the same incomplete KSA expat, created without a country, activates anyway',
-        expected:
-          'SHOULD be the same 422 as R1: the employee is attached to a KSA legal entity, so the KSA '
-          + 'floor should apply. It does NOT. This step records the product as it is today — an HTTP '
-          + '200 activation — and is written to FAIL the day the gap is closed.',
-        record: { type: 'Employee (Draft, wrongly activatable)', id: null },
-        noCaptureReason:
-          'Driven through the API, like R1, so there is no screen of it. The two API '
-          + 'calls below, differing only in the absent complianceRecords, are the whole of the evidence.',
-        act: async (ctx) => {
-          const company = await ksaCompany(ctx, admin.token);
-          const created = await ctx.api('POST', '/api/employees', {
-            token: admin.token,
-            data: {
-              employeeCode: `EV-BYPASS-${Date.now().toString().slice(-8)}`,
-              manualEmployeeCode: true,
-              englishName: 'Evidence Bypass Case',
-              gender: 'Male',
-              nationality: 'Indian',
-              companyId: company.id,
-              joiningDate: new Date().toISOString(),
-              // complianceRecords deliberately omitted — that is the whole difference from R1.
-            },
-          });
-          expect(created.status).toBe(201);
-          const id = Number(created.json.id);
-          ctx.setRecordId(String(id));
-          expect(
-            String(created.json.countryCode ?? ''),
-            'THE DEFECT: an employee attached to a KSA legal entity is stored with NO country, so no '
-            + 'jurisdiction floor can resolve for them',
-          ).toBe('');
-
-          const activate = await ctx.api('POST', `/api/employees/${id}/activate`, {
-            token: admin.token,
-            data: {
-              status: 'Active',
-              effectiveDate: new Date().toISOString().slice(0, 10),
-              reason: 'evidence harness: tripwire for the bypassed activation floor',
-            },
-            recordId: String(id),
-          });
-          expect(
-            activate.status,
-            'TRIPWIRE: this records the CURRENT behaviour. When this line starts failing with 422, the '
-            + 'activation floor has been fixed to fall back to the company country — delete this step '
-            + 'and fold the case into R1.',
-          ).toBe(200);
-          ctx.note(
-            `Employee #${id} — same KSA legal entity, same Indian nationality, same absent Iqama and `
-            + `GOSI reference as R1 — was stored with an EMPTY countryCode and ACTIVATED with HTTP `
-            + `${activate.status}. R1's 422 differs only by a complianceRecords entry naming SA.`,
-          );
-          bypassedEmployeeId = id;
-        },
-        persisted: async (ctx) => {
-          const row = await ctx.api('GET', `/api/employees/${bypassedEmployeeId}`, {
-            token: admin.token, recordId: String(bypassedEmployeeId),
-          });
-          return {
-            employeeId: bypassedEmployeeId,
-            status: row.json.status,
-            countryCode: row.json.countryCode,
-            iqamaNumber: row.json.iqamaNumber,
-            gosiReference: row.json.gosiReference,
-            activatedDespiteMissingStatutoryData: row.json.status === 'Active',
-          };
-        },
-        persistedVia:
-          'fresh GET of the employee — it is ACTIVE with no country, no Iqama and no GOSI reference',
-      });
-
-      evidence.defect(
-        'P1',
-        'The KSA statutory activation floor is bypassed for any employee created without a country',
-        'POST /api/employees sets Employee.CountryCode ONLY from the first complianceRecords entry '
-        + '(EmployeeManagementService.CreateAsync) and never falls back to the country of the company '
-        + 'the employee is attached to. GccReadinessFloor.Resolve("") returns an empty requirement '
-        + 'list, so EnsureActivatable finds nothing to enforce and a non-GCC expat with no Iqama '
-        + 'number and no GOSI reference is activated into a Saudi legal entity with HTTP 200. '
-        + 'GET /api/employees/field-catalog states the intended rule — "Explicit countryCode wins, '
-        + 'else the company\'s country" — so the derivation is specified and simply absent on this '
-        + 'path. An employee activated this way occupies an active seat and is a candidate for a '
-        + 'payroll population while being unpayable under KSA rules.',
-        [
-          'Step R1 (refusal-incomplete-employee): identical employee WITH a compliance record naming '
-          + 'SA → HTTP 422 employee_not_activatable, blocking IqamaNumber, pay-blocking GosiReference.',
-          'Step R1b (this tripwire): identical employee WITHOUT it → countryCode "", HTTP 200, Active.',
-          'Zayra.Api.Tests/EmployeeActivationGateTests.cs sets CountryCode = "SA" directly on its '
-          + 'fixture entities, so it covers the gate but never the derivation — the blind spot.',
-        ],
-      );
-
+      // The P1 defect record that accompanied this step is gone with it. A bundle must report what
+      // the run observed, and a run of this spec no longer observes it. The P2 record below is
+      // conditional on the run actually seeing 403s, so it retires itself the same way.
 
       // ── What the run SAW but did not assert ─────────────────────────────────────────────────
       // The harness records every /api call each step makes, including the ones the spec never
