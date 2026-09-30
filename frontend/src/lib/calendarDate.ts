@@ -25,6 +25,35 @@ export function parseCalendarDate(value: string): Date {
     : new Date(Number.NaN);
 }
 
+const MS_PER_DAY = 86_400_000;
+
+/** The local calendar day a Date falls on, as a whole-day count: subtracting two gives days apart. */
+function localDayNumber(date: Date): number {
+  return Math.round(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / MS_PER_DAY);
+}
+
+/**
+ * Whole calendar days from `from` to `to` (each a `YYYY-MM-DD` or a Date): 0 for the same day,
+ * negative when `to` is earlier. Counted day to day, never from the clock time, so it cannot
+ * shift with the viewer's timezone or the hour it is read. Null when either side is not a date.
+ */
+export function calendarDaysBetween(from: string | Date, to: string | Date): number | null {
+  const start = typeof from === 'string' ? parseCalendarDate(from) : from;
+  const end = typeof to === 'string' ? parseCalendarDate(to) : to;
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+  return localDayNumber(end) - localDayNumber(start);
+}
+
+/**
+ * Days left until a calendar date, counted from the viewer's today: 1 the day before, 0 on the day,
+ * negative once it has passed. `new Date('YYYY-MM-DD')` is UTC midnight, which in the Americas is
+ * the previous evening, so a countdown built on it ran a day short there from late afternoon on.
+ */
+export function daysUntilCalendarDate(value: string | null | undefined, now: Date = new Date()): number | null {
+  if (!value) return null;
+  return calendarDaysBetween(now, value);
+}
+
 const DEFAULT_OPTIONS: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short', year: 'numeric' };
 
 /**
