@@ -13,6 +13,7 @@ import { ReadinessChecklist, type ReadinessFixMode } from '../components/Readine
 import { GosiCohortPanel } from '../components/GosiCohortPanel';
 import client from '../api/client';
 import { createLatestRequestGate, runLatest } from '../lib/latestRequest';
+import { createUrlSeed } from '../lib/urlSeed';
 
 const employeesImportExport = {
   export: async () => {
@@ -241,7 +242,9 @@ export function EmployeesPage() {
   const [employees, setEmployees] = useState<EmployeeListItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
-  const [search, setSearch] = useState('');
+  // `?search=` seeds the box on load and when navigation changes it; it never overwrites typing.
+  const [searchSeed] = useState(createUrlSeed);
+  const [search, setSearch] = useState(() => searchParams?.get('search') ?? '');
   const [status, setStatus] = useState<StatusFilter>('');
   // Server-side readiness worklist filter (paginates correctly across ALL pages, not just the
   // loaded page). "Needs info" = the worklist the import results view deep-links into.
@@ -555,11 +558,11 @@ export function EmployeesPage() {
     }
   };
   useEffect(() => {
-    const searchFromUrl = searchParams?.get('search') ?? null;
-    if (searchFromUrl !== null && searchFromUrl !== search) {
-      setSearch(searchFromUrl);
-    }
-  }, [search, searchParams]);
+    // Keyed on the URL only. It used to depend on `search` and re-apply the URL value whenever the
+    // box differed from it, which replaced every keystroke with the URL's search.
+    const seeded = searchSeed.take(searchParams?.get('search') ?? null);
+    if (seeded !== undefined) setSearch(seeded);
+  }, [searchParams, searchSeed]);
   useEffect(() => {
     const employeeId = searchParams?.get('employeeId') ?? null;
     if (!employeeId) return;
