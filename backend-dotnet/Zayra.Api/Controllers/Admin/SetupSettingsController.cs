@@ -170,11 +170,14 @@ public class SetupSettingsController : ControllerBase
 
         try
         {
-            await email.SendAsync(GetTenantId(), to, "KynexOne Admin", "KynexOne — SMTP test",
+            var delivery = await email.DeliverAsync(GetTenantId(), to, "KynexOne Admin", "KynexOne — SMTP test",
                 "<p>This is a test message confirming your KynexOne SMTP settings are working.</p>"
                 + "<p>If you received this, outbound email (payslips, alerts, letters) is configured correctly.</p>",
                 null, ct);
-            return Ok(new { ok = true, message = $"Test email sent to {to}. Check that inbox to confirm delivery." });
+            // F09: only a relay's acceptance is a passed test; a captured message proves nothing.
+            return delivery.ReachedARelay
+                ? Ok(new { ok = true, message = $"Test email accepted by the mail server for {to}. Check that inbox to confirm it arrived." })
+                : Ok(new { ok = false, captured = delivery.Status == EmailDeliveryStatus.Captured, message = delivery.Detail });
         }
         catch (Exception ex)
         {

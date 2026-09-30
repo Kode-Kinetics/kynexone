@@ -158,10 +158,51 @@ public static class QiwaSyncLogStatuses
 {
     public const string Pending    = "Pending";
     public const string Processing = "Processing";
+    /// <summary>The LIVE adapter's request was acknowledged by Qiwa. Nothing else may write it.</summary>
     public const string Success    = "Success";
     public const string Failed     = "Failed";
     public const string Skipped    = "Skipped";
     public const string DeadLetter = "DeadLetter";
+
+    /// <summary>
+    /// F09 — the attempt completed against the SANDBOX SIMULATOR. No request reached Qiwa. It used
+    /// to be written as <see cref="Success"/>, so the sync-log API and the dashboard's "last sync"
+    /// date presented a simulation as a filing.
+    /// </summary>
+    public const string Simulated  = "Simulated";
+
+    /// <summary>What every screen calls a simulated result.</summary>
+    public const string SimulatedLabel = "Simulated (sandbox)";
+
+    /// <summary>
+    /// Rows written before F09 say "Success" but carry the simulator's envelope; this marker in
+    /// the stored response is how they are recognised (see SandboxQiwaApiAdapter.SimulationMarker).
+    /// </summary>
+    public const string LegacySimulationMarker = "\"simulated\":true";
+
+    /// <summary>True for a log that records a simulator run, including pre-F09 "Success" rows.</summary>
+    public static bool IsSimulated(string? status, string? responsePayloadJson) =>
+        string.Equals(status, Simulated, StringComparison.OrdinalIgnoreCase)
+        || (string.Equals(status, Success, StringComparison.OrdinalIgnoreCase)
+            && responsePayloadJson is not null
+            && responsePayloadJson.Contains(LegacySimulationMarker, StringComparison.Ordinal));
+
+    /// <summary>The status a reader should see: a legacy simulated "Success" reads as Simulated.</summary>
+    public static string Normalise(string status, string? responsePayloadJson) =>
+        IsSimulated(status, responsePayloadJson) ? Simulated : status;
+
+    /// <summary>One plain-language label per status.</summary>
+    public static string Describe(string status, string? responsePayloadJson) => Normalise(status, responsePayloadJson) switch
+    {
+        Simulated => SimulatedLabel,
+        Success => "Filed with Qiwa",
+        Pending => "Waiting to send",
+        Processing => "Sending to Qiwa",
+        Failed => "Failed, will retry",
+        DeadLetter => "Gave up: needs attention",
+        Skipped => "Skipped",
+        var other => other,
+    };
 }
 
 // ── Qiwa API credentials (encrypted at rest) ──────────────────────────────────
