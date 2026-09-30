@@ -130,7 +130,8 @@ jobs:
 
   # ── Security gate: dependency vulnerability scan ──────────────────────────────
   # Fails the build on any known-High/Critical vulnerable NuGet or npm package so a
-  # vulnerable dependency bump cannot auto-deploy.
+  # vulnerable dependency bump cannot auto-deploy. Covers all three shipped dependency
+  # trees: backend-dotnet/Zayra.Api (NuGet), frontend/ and mobile/ (npm).
   dependency-scan:
     name: Dependency Vulnerability Scan
     runs-on: ubuntu-latest
@@ -168,7 +169,9 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: |
+            frontend/package-lock.json
+            mobile/package-lock.json
 
       # Runtime transitive overrides are pinned to patched postcss/sharp/nanoid releases.
       # Keep this fail-closed so a future lockfile change cannot quietly reintroduce a
@@ -176,6 +179,42 @@ jobs:
       - name: npm audit (frontend; fail on High/Critical)
         run: npm audit --omit=dev --audit-level=high
         working-directory: frontend
+
+      # mobile/ has its own package.json and package-lock.json and is built into binaries
+      # that land on real devices, but until now no workflow audited it — `npm audit`
+      # appeared exactly once in .github/workflows, above, pinned to frontend. mobile was
+      # unaffected by the axios advisories only because it already happened to resolve
+      # 1.20.0. That was luck, not a control.
+      #
+      # Threshold is High/Critical, matching the frontend gate, rather than Moderate.
+      # mobile currently carries 16 Moderate findings and every one of them is a transitive
+      # of Expo or react-navigation that only clears on a breaking major bump
+      # (decode-uri-component -> query-string -> @react-navigation/*, and
+      # uuid -> xcode -> @expo/config-plugins -> expo). Gating on Moderate would block every
+      # merge on an upgrade that is the owner's call and is not scheduled. Gating on
+      # High/Critical passes today and still fails closed the moment a High lands: the same
+      # command against a lockfile pinned to axios 1.19.0 exits 1, and against mobile's own
+      # lockfile at --audit-level=moderate it also exits 1, so the exit path is live and it
+      # is only the threshold holding it open.
+      - name: npm audit (mobile; fail on High/Critical)
+        run: npm audit --omit=dev --audit-level=high
+        working-directory: mobile
+
+      # Advisory only; never fails the build. Both gates above run --omit=dev, which means a
+      # dev-chain advisory is currently invisible to CI — the three that prompted this change
+      # (browserslist High, baseline-browser-mapping Moderate, postcss-selector-parser Low)
+      # were found by hand, not by a job. Build tooling still executes on developer and CI
+      # machines, so those findings deserve to be seen on the day they land even though they
+      # should not be able to block a merge. The PR describing this step explains why the
+      # gates themselves stay --omit=dev.
+      - name: npm audit including dev dependencies (advisory, non-blocking)
+        if: always()
+        run: |
+          for dir in frontend mobile; do
+            echo "::group::npm audit (dev dependencies included) — $dir"
+            (cd "$dir" && npm audit) || true
+            echo "::endgroup::"
+          done
 
   # ── G5: schema safety gates ───────────────────────────────────────────────────
   # Wave 0 proved these by hand: model/migration drift, a fresh deployment from zero, an
