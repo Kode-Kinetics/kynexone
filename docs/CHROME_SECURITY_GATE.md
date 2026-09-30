@@ -175,8 +175,12 @@ the frontend proxies to the same API and database; that database (from the authe
 `/api/platform/health`) is not `kynexone_clean` / `neondb` nor on a Neon/Render host; the platform owner
 authenticates. **world** (after the bootstrap) — every tenant, legal entity and employee link exists; the
 live role catalog equals `AuthSeeder.cs`; every persona signs in with exactly its role, scope and catalog
-permissions; writes `e2e/.auth/preflight.json`. **lane** (every browser config's global setup) — target
-again, plus the world record must describe this exact stack (URLs, builds, database, tenant ids).
+permissions; writes `e2e/.auth/preflight.json` (0600, gitignored) holding only the EXPECTED world
+computed from env and the checkout plus the local verification time — no server data is written.
+**lane** (every browser config's global setup) — target again; the recomputed expected world must equal
+the recorded one; and, live, every declared tenant still exists and predates the verification, its legal
+entities are intact and its role catalog is still AuthSeeder's. Each lane's setup project also checks
+every persona session it mints against the same contract.
 
 The role matrix (`security-gate/full-role-matrix.spec.ts`) is generated from `AuthSeeder.cs` by
 `e2e/identity/role-catalog.ts`; `e2e/identity/role-policy.ts` holds the separation-of-duties rules,

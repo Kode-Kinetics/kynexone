@@ -2,9 +2,8 @@ import { test as setup, expect, request as pwRequest } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROLES, BASE_URL, storageStatePath, tokenPath, type RoleFixture } from './roles';
-import { MISSING_WORLD, personaForLogin, tenantBySlug } from '../world';
-import { expectedPermissions, loadRoleCatalog } from '../identity/role-catalog';
-import { checkPersonaSession } from '../preflight/rules';
+import { MISSING_WORLD } from '../world';
+import { sessionMismatches } from '../identity/verify-session';
 import { stampActor } from '../identity/actor';
 
 /**
@@ -138,30 +137,8 @@ async function login(api: import('@playwright/test').APIRequestContext, role: Ro
  * assertion prove the wrong thing.
  */
 function verifyPersona(role: RoleFixture, user: any) {
-  const persona = personaForLogin(role.email, role.tenantSlug);
-  expect(persona, `${role.key} <${role.email}> is not a persona in e2e/world.ts`).toBeTruthy();
-  const catalog = loadRoleCatalog();
-  const findings = checkPersonaSession({
-    key: persona!.key,
-    email: persona!.email,
-    tenantSlug: persona!.tenantSlug!,
-    role: persona!.role!,
-    scope: persona!.scope === 'companies' ? 'companies' : 'group',
-    companyCodes: persona!.companyCodes,
-    employeeLinked: persona!.employeeLinked,
-    tenantCompanyCodes: tenantBySlug(persona!.tenantSlug!).companies.map((c) => c.code),
-    expectedPermissions: expectedPermissions(catalog, [persona!.role!]),
-  }, {
-    status: 200,
-    tenantSlug: user.tenantSlug,
-    roles: user.roles,
-    permissions: user.permissions,
-    companyCodes: (user.companies ?? []).map((c: any) => String(c.code)),
-    isGroupScope: user.isGroupScope,
-    employeeId: user.employeeId ?? null,
-  });
   expect(
-    findings.filter((f) => !f.ok).map((f) => `${f.check}: ${f.detail}`),
+    sessionMismatches(role.email, role.tenantSlug!, user),
     `${role.key} signed in, but not as the persona e2e/world.ts declares`,
   ).toEqual([]);
 }

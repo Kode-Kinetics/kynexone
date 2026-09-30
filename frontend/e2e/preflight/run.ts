@@ -17,20 +17,32 @@
  *           role, scope, employee link and catalog permissions. Writes e2e/.auth/preflight.json.
  *
  *   lane    The globalSetup of every browser lane. Everything in `target` (so a lane can never start
- *           against a different stack), the old readiness floor, and a match against the `world`
- *           record: same URLs, same builds, same database, same tenant ids. Persona logins are not
- *           repeated here — the record proves them for this exact world, and the lanes' own setup
- *           projects sign every persona in again anyway.
+ *           against a different stack), the old readiness floor, a match against the `world` record,
+ *           and a LIVE re-check of the world itself: every declared tenant still exists and was not
+ *           re-created after the world was verified, every legal entity exists, and the live role
+ *           catalog is still AuthSeeder's. Persona logins are not repeated here; each lane's own setup
+ *           project verifies every persona it signs in against the same contract, at the moment it
+ *           signs in.
+ *
+ * ── What the record holds, and why only that ─────────────────────────────────────────────────
+ * The record is the EXPECTED world, computed from the environment and this checkout alone (URLs,
+ * expected commit and database, platform email, the declared tenants and personas, a hash of
+ * AuthSeeder.cs) plus the local time the world passed. Nothing a server returned is written to disk.
+ * The lane recomputes the expected world and compares; the live stack is then checked against the
+ * same expectations directly, so a lane still cannot run against a world other than the one verified.
  *
  * Decision logic lives in ./rules.ts (pure, unit-tested); this file only gathers observations.
  */
 import { execSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { E2E_ENV, isCi, resolveTarget, type Env } from '../identity/env';
-import { expectedPermissions, loadRoleCatalog, type RoleCatalog } from '../identity/role-catalog';
+import { AUTH_SEEDER_PATH, expectedPermissions, loadRoleCatalog, type RoleCatalog } from '../identity/role-catalog';
 import {
-  PERSONAS, PLATFORM_EMAIL, PLATFORM_PASSWORD, TENANTS, WORLD_MANIFEST, type Persona, type WorldManifest,
+  PERSONAS, PLATFORM_EMAIL, PLATFORM_PASSWORD, TENANTS, WORLD_MANIFEST,
+  type FixtureTenant, type Persona, type WorldManifest,
 } from '../world';
 import {
   checkBuild, checkDatabase, checkEnvironment, checkPersonaSession, checkTargetUrl, databaseHostAllowlistFrom,
@@ -42,18 +54,34 @@ export type Phase = 'target' | 'world' | 'lane';
 /** Written by the `world` phase; read by every `lane` phase. Gitignored with the rest of e2e/.auth. */
 export const PREFLIGHT_RECORD = 'e2e/.auth/preflight.json';
 
-export interface PreflightRecord {
-  phase: 'world';
-  verifiedAtUtc: string;
+/**
+ * The world a run EXPECTS — every field comes from the environment or the checkout, never from a
+ * server response. Both the `world` phase (which records it) and the `lane` phase (which recomputes it)
+ * build it the same way, so the comparison says whether the lane is set up for the world that passed.
+ */
+export interface ExpectedWorld {
   baseUrl: string;
   apiBaseUrl: string;
-  apiCommit: string | null;
-  frontendCommit: string | null;
-  database: DatabaseIdentity | null;
+  expectedCommit: string | null;
+  expectedDatabase: string | null;
   platformEmail: string;
-  tenants: Record<string, string>;
+  /** `<slug>: <company codes>` for every declared tenant. */
+  tenants: string[];
+  /** Keys of every persona the bootstrap provisions. */
   personas: string[];
+  /** sha256 of the AuthSeeder.cs the role matrix is generated from. */
+  authSeederSha256: string;
 }
+
+export interface PreflightRecord {
+  phase: 'world';
+  /** This machine's clock when every world check passed. */
+  verifiedAtUtc: string;
+  expected: ExpectedWorld;
+}
+
+/** How far the API's clock may run ahead of this one before a tenant counts as created after verification. */
+const CLOCK_TOLERANCE_MS = 120_000;
 
 interface Response {
   status: number;
@@ -98,6 +126,41 @@ function gitHead(): string | null {
   } catch {
     return null;
   }
+}
+
+/** The commit the stack must have been built from: E2E_EXPECTED_COMMIT, else (locally) this checkout's HEAD. */
+function expectedCommitFrom(env: Env): string | null {
+  return env[E2E_ENV.expectedCommit]?.trim() || (isCi(env) ? null : gitHead());
+}
+
+/** The expected world, from the environment and the checkout only. See {@link ExpectedWorld}. */
+export function expectedWorld(env: Env = process.env): ExpectedWorld {
+  const { baseUrl, apiBaseUrl } = resolveTarget(env);
+  let authSeederSha256 = 'unreadable';
+  try {
+    authSeederSha256 = createHash('sha256').update(readFileSync(AUTH_SEEDER_PATH)).digest('hex');
+  } catch { /* reported by the catalog check */ }
+  return {
+    baseUrl,
+    apiBaseUrl,
+    expectedCommit: expectedCommitFrom(env),
+    expectedDatabase: env[E2E_ENV.expectedDatabase]?.trim() || null,
+    platformEmail: PLATFORM_EMAIL,
+    tenants: TENANTS.map((t) => `${t.slug}: ${t.companies.map((c) => c.code).join(', ')}`),
+    personas: bootstrapPersonas().map((p) => p.key).sort(),
+    authSeederSha256,
+  };
+}
+
+/** Field-by-field differences between two expected worlds, for a message a person can act on. */
+function expectedWorldDiff(recorded: ExpectedWorld, current: ExpectedWorld): string[] {
+  const out: string[] = [];
+  for (const key of Object.keys(current) as Array<keyof ExpectedWorld>) {
+    const a = JSON.stringify(recorded?.[key] ?? null);
+    const b = JSON.stringify(current[key]);
+    if (a !== b) out.push(`${key}: verified ${a.slice(0, 120)} → now ${b.slice(0, 120)}`);
+  }
+  return out;
 }
 
 interface TargetContext {
@@ -169,14 +232,12 @@ async function checkTarget(env: Env): Promise<TargetContext> {
       `GET ${baseUrl}/api/auth/me → ${describe(me)}; must be 401. ${baseUrl} may be an unrelated server or a broken proxy.`));
 
   // 4. The build.
-  const inCi = isCi(env);
-  const expectedCommit = env[E2E_ENV.expectedCommit]?.trim() || (inCi ? null : gitHead());
   f.push(...checkBuild({
     apiCommit: ctx.apiCommit,
     frontendCommit: ctx.frontendCommit,
-    expectedCommit,
+    expectedCommit: expectedCommitFrom(env),
     allowUnverified: !!env[E2E_ENV.allowUnverifiedBuild]?.trim(),
-    inCi,
+    inCi: isCi(env),
   }));
 
   // 5. The platform owner authenticates against THIS API — the F07 check.
@@ -242,54 +303,110 @@ async function readManifest(): Promise<WorldManifest | null> {
   try { return JSON.parse(await readFile(WORLD_MANIFEST, 'utf8')) as WorldManifest; } catch { return null; }
 }
 
-async function tenantIds(ctx: TargetContext, f: Finding[]): Promise<Record<string, string>> {
-  const ids: Record<string, string> = {};
+interface LiveTenant { id: string; createdAtUtc: string | null }
+
+async function liveTenants(ctx: TargetContext, f: Finding[]): Promise<Record<string, LiveTenant>> {
+  const found: Record<string, LiveTenant> = {};
   const res = await http('GET', `${ctx.apiBaseUrl}/api/platform/tenants`, { token: ctx.platformToken! });
   const rows: any[] = Array.isArray(res.json) ? res.json : res.json?.items ?? [];
   if (res.status !== 200) {
     f.push(fail('declared tenants exist', `GET /api/platform/tenants → ${describe(res)}`));
-    return ids;
+    return found;
   }
   for (const tenant of TENANTS) {
     const row = rows.find((t) => t.slug === tenant.slug);
-    if (row) ids[tenant.slug] = String(row.id);
+    if (row) found[tenant.slug] = { id: String(row.id), createdAtUtc: row.createdAtUtc ?? null };
   }
-  const missing = TENANTS.filter((t) => !ids[t.slug]).map((t) => t.slug);
+  const missing = TENANTS.filter((t) => !found[t.slug]).map((t) => t.slug);
   f.push(missing.length
     ? fail('declared tenants exist', `missing: ${missing.join(', ')}. Run the bootstrap.`)
     : pass('declared tenants exist', TENANTS.map((t) => t.slug).join(', ')));
-  return ids;
+  return found;
 }
 
-async function checkWorld(ctx: TargetContext, env: Env): Promise<PreflightRecord | null> {
+/** A UTC timestamp from the API; one without a zone designator is UTC (the field says so). */
+const utcMillis = (value: string | null): number => {
+  if (!value) return Number.NaN;
+  return Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(value) ? value : `${value}Z`);
+};
+
+function loadCatalog(f: Finding[]): RoleCatalog | null {
+  try {
+    const catalog = loadRoleCatalog();
+    f.push(pass('role catalog generated from AuthSeeder.cs', `${catalog.roles.length} roles, ${catalog.permissions.length} permissions`));
+    return catalog;
+  } catch (error) {
+    f.push(fail('role catalog generated from AuthSeeder.cs', error instanceof Error ? error.message : String(error)));
+    return null;
+  }
+}
+
+/**
+ * What the tenant administrator can see the API actually installed — the legal entities and the live
+ * role catalog — compared with the declarations they must match. Run by `world` and again, live, by
+ * every `lane`.
+ */
+async function checkTenantInstall(
+  ctx: TargetContext, tenant: FixtureTenant, token: string, catalog: RoleCatalog, f: Finding[],
+): Promise<void> {
+  const declaredCodes = tenant.companies.map((c) => c.code);
+  const companies = await http('GET', `${ctx.apiBaseUrl}/api/companies?page=1&pageSize=100`, { token });
+  const rows: any[] = Array.isArray(companies.json) ? companies.json : companies.json?.items ?? [];
+  const codes = rows.map((c) => String(c.legalNameEn ?? c.LegalNameEn ?? '')).sort();
+  const missing = declaredCodes.filter((c) => !codes.includes(c));
+  const extra = codes.filter((c) => !declaredCodes.includes(c));
+  f.push(companies.status === 200 && !missing.length && !extra.length
+    ? pass(`tenant ${tenant.slug}: legal entities`, codes.join(', '))
+    : fail(`tenant ${tenant.slug}: legal entities`,
+      companies.status !== 200 ? describe(companies)
+        : `${missing.length ? `missing [${missing.join(', ')}] ` : ''}${extra.length ? `undeclared [${extra.join(', ')}]` : ''}`));
+
+  const roles = await http('GET', `${ctx.apiBaseUrl}/api/access/roles`, { token });
+  const live: any[] = Array.isArray(roles.json) ? roles.json : [];
+  const drift: string[] = [];
+  for (const role of catalog.roles) {
+    const row = live.find((r) => r.name === role.name && r.isSystem !== false);
+    if (!row) { drift.push(`${role.name} not installed`); continue; }
+    const perms = [...new Set<string>(row.permissions ?? [])].sort();
+    const missingP = role.permissions.filter((p) => !perms.includes(p));
+    const extraP = perms.filter((p) => !role.permissions.includes(p));
+    if (missingP.length || extraP.length) {
+      drift.push(`${role.name}: ${missingP.length ? `missing [${missingP.join(', ')}] ` : ''}${extraP.length ? `extra [${extraP.join(', ')}]` : ''}`);
+    }
+  }
+  for (const row of live.filter((r) => r.isSystem === true)) {
+    if (!catalog.roles.some((role) => role.name === row.name)) drift.push(`${row.name} is a system role AuthSeeder does not define`);
+  }
+  f.push(roles.status === 200 && !drift.length
+    ? pass(`tenant ${tenant.slug}: live role catalog is AuthSeeder's`, `${catalog.roles.length} roles match`)
+    : fail(`tenant ${tenant.slug}: live role catalog is AuthSeeder's`,
+      roles.status !== 200 ? describe(roles) : `${drift.join('; ')}. The API or its database is not this checkout's.`));
+}
+
+const tokenOf = (res: Response): string | undefined => res.json?.accessToken ?? res.json?.token;
+
+async function checkWorld(ctx: TargetContext, env: Env): Promise<boolean> {
   const f = ctx.findings;
   const manifest = await readManifest();
   if (!manifest) {
     f.push(fail('the bootstrap recorded this world', `${WORLD_MANIFEST} does not exist. Run the bootstrap first.`));
-    return null;
+    return false;
   }
   f.push(manifest.baseUrl.replace(/\/+$/, '') === ctx.baseUrl
     ? pass('the bootstrap recorded this world', `${WORLD_MANIFEST} for ${manifest.baseUrl}`)
     : fail('the bootstrap recorded this world', `${WORLD_MANIFEST} was written for ${manifest.baseUrl}, not ${ctx.baseUrl}`));
 
-  const ids = await tenantIds(ctx, f);
+  const tenants = await liveTenants(ctx, f);
   for (const t of manifest.tenants) {
-    if (ids[t.slug] && ids[t.slug] !== t.tenantId) {
+    if (tenants[t.slug] && tenants[t.slug].id !== t.tenantId) {
       f.push(fail(`tenant ${t.slug} is the provisioned one`,
-        `the API has ${t.slug}=${ids[t.slug]}, the bootstrap recorded ${t.tenantId}: this is a different database`));
+        `the API has ${t.slug}=${tenants[t.slug].id}, the bootstrap recorded ${t.tenantId}: this is a different database`));
     }
   }
 
-  let catalog: RoleCatalog;
-  try {
-    catalog = loadRoleCatalog();
-    f.push(pass('role catalog generated from AuthSeeder.cs', `${catalog.roles.length} roles, ${catalog.permissions.length} permissions`));
-  } catch (error) {
-    f.push(fail('role catalog generated from AuthSeeder.cs', error instanceof Error ? error.message : String(error)));
-    return null;
-  }
+  const catalog = loadCatalog(f);
+  if (!catalog) return false;
 
-  const verified: string[] = [];
   for (const tenant of TENANTS) {
     const personas = bootstrapPersonas().filter((p) => p.tenantSlug === tenant.slug);
     const declaredCodes = tenant.companies.map((c) => c.code);
@@ -297,7 +414,7 @@ async function checkWorld(ctx: TargetContext, env: Env): Promise<PreflightRecord
       const res = await login(ctx.apiBaseUrl, persona, env);
       const user = res.json?.user ?? {};
       const session = {
-        status: res.status === 200 && !(res.json?.accessToken ?? res.json?.token) ? 0 : res.status,
+        status: res.status === 200 && !tokenOf(res) ? 0 : res.status,
         body: res.status === 200 ? 'no access token (MFA or password-setup challenge?)' : describe(res),
         tenantSlug: user.tenantSlug,
         roles: user.roles,
@@ -313,70 +430,22 @@ async function checkWorld(ctx: TargetContext, env: Env): Promise<PreflightRecord
         f.push(fail(`persona ${persona.email}: role exists in AuthSeeder`, error instanceof Error ? error.message : String(error)));
         continue;
       }
-      const results = checkPersonaSession({
+      f.push(...checkPersonaSession({
         key: persona.key, email: persona.email, tenantSlug: tenant.slug, role: persona.role!,
         scope: persona.scope === 'companies' ? 'companies' : 'group', companyCodes: persona.companyCodes,
         employeeLinked: persona.employeeLinked, tenantCompanyCodes: declaredCodes, expectedPermissions: expected,
-      }, session);
-      f.push(...results);
-      if (results.every((r) => r.ok)) verified.push(persona.key);
+      }, session));
 
-      // The tenant administrator can read what the API actually installed: the legal entities and
-      // the live role catalog. Both are compared with the declarations they must match.
-      const token = res.json?.accessToken ?? res.json?.token;
-      if (persona.email === tenant.admin.email && token) {
-        const companies = await http('GET', `${ctx.apiBaseUrl}/api/companies?page=1&pageSize=100`, { token });
-        const rows: any[] = Array.isArray(companies.json) ? companies.json : companies.json?.items ?? [];
-        const codes = rows.map((c) => String(c.legalNameEn ?? c.LegalNameEn ?? '')).sort();
-        const missing = declaredCodes.filter((c) => !codes.includes(c));
-        const extra = codes.filter((c) => !declaredCodes.includes(c));
-        f.push(companies.status === 200 && !missing.length && !extra.length
-          ? pass(`tenant ${tenant.slug}: legal entities`, codes.join(', '))
-          : fail(`tenant ${tenant.slug}: legal entities`,
-            companies.status !== 200 ? describe(companies)
-              : `${missing.length ? `missing [${missing.join(', ')}] ` : ''}${extra.length ? `undeclared [${extra.join(', ')}]` : ''}`));
-
-        const roles = await http('GET', `${ctx.apiBaseUrl}/api/access/roles`, { token });
-        const live: any[] = Array.isArray(roles.json) ? roles.json : [];
-        const drift: string[] = [];
-        for (const role of catalog.roles) {
-          const row = live.find((r) => r.name === role.name && r.isSystem !== false);
-          if (!row) { drift.push(`${role.name} not installed`); continue; }
-          const perms = [...new Set<string>(row.permissions ?? [])].sort();
-          const missingP = role.permissions.filter((p) => !perms.includes(p));
-          const extraP = perms.filter((p) => !role.permissions.includes(p));
-          if (missingP.length || extraP.length) {
-            drift.push(`${role.name}: ${missingP.length ? `missing [${missingP.join(', ')}] ` : ''}${extraP.length ? `extra [${extraP.join(', ')}]` : ''}`);
-          }
-        }
-        for (const row of live.filter((r) => r.isSystem === true)) {
-          if (!catalog.roles.some((role) => role.name === row.name)) drift.push(`${row.name} is a system role AuthSeeder does not define`);
-        }
-        f.push(roles.status === 200 && !drift.length
-          ? pass(`tenant ${tenant.slug}: live role catalog is AuthSeeder's`, `${catalog.roles.length} roles match`)
-          : fail(`tenant ${tenant.slug}: live role catalog is AuthSeeder's`,
-            roles.status !== 200 ? describe(roles) : `${drift.join('; ')}. The API or its database is not this checkout's.`));
-      }
+      const token = tokenOf(res);
+      if (persona.email === tenant.admin.email && token) await checkTenantInstall(ctx, tenant, token, catalog, f);
     }
   }
-
-  return {
-    phase: 'world',
-    verifiedAtUtc: new Date().toISOString(),
-    baseUrl: ctx.baseUrl,
-    apiBaseUrl: ctx.apiBaseUrl,
-    apiCommit: ctx.apiCommit,
-    frontendCommit: ctx.frontendCommit,
-    database: ctx.database,
-    platformEmail: PLATFORM_EMAIL,
-    tenants: ids,
-    personas: verified,
-  };
+  return true;
 }
 
 // ── Lane ──────────────────────────────────────────────────────────────────────────────────────
 
-async function checkLane(ctx: TargetContext): Promise<void> {
+async function checkLane(ctx: TargetContext, env: Env): Promise<void> {
   const f = ctx.findings;
   f.push((ctx.activeTenants ?? 0) >= 1
     ? pass('the database is provisioned', `${ctx.activeTenants} active tenant(s)`)
@@ -384,35 +453,52 @@ async function checkLane(ctx: TargetContext): Promise<void> {
 
   let record: PreflightRecord | null = null;
   try { record = JSON.parse(await readFile(PREFLIGHT_RECORD, 'utf8')) as PreflightRecord; } catch { /* missing */ }
-  if (!record || record.phase !== 'world') {
+  if (!record || record.phase !== 'world' || !record.expected) {
     f.push(fail('this world passed the world preflight',
       `${PREFLIGHT_RECORD} does not exist. The bootstrap writes it after verifying every persona; run\n`
       + '      npx playwright test -c e2e/bootstrap/playwright.bootstrap.config.ts\n'
       + '      (or, for an already-provisioned stack, E2E_PREFLIGHT_PHASE=world npx playwright test -c e2e/preflight/playwright.preflight.config.ts).'));
     return;
   }
-  const mismatches: string[] = [];
-  if (record.baseUrl !== ctx.baseUrl) mismatches.push(`frontend ${record.baseUrl} → ${ctx.baseUrl}`);
-  if (record.apiBaseUrl !== ctx.apiBaseUrl) mismatches.push(`API ${record.apiBaseUrl} → ${ctx.apiBaseUrl}`);
-  if ((record.apiCommit ?? '') !== (ctx.apiCommit ?? '')) mismatches.push(`API build ${record.apiCommit} → ${ctx.apiCommit}`);
-  if ((record.frontendCommit ?? '') !== (ctx.frontendCommit ?? '')) mismatches.push(`frontend build ${record.frontendCommit} → ${ctx.frontendCommit}`);
-  if (JSON.stringify(record.database) !== JSON.stringify(ctx.database)) {
-    mismatches.push(`database ${record.database?.name}@${record.database?.host} → ${ctx.database?.name}@${ctx.database?.host}`);
-  }
-  if (record.platformEmail !== PLATFORM_EMAIL) mismatches.push(`platform owner ${record.platformEmail} → ${PLATFORM_EMAIL}`);
-  if (ctx.platformToken) {
-    const ids = await tenantIds(ctx, f);
-    for (const [slug, id] of Object.entries(record.tenants)) {
-      if (ids[slug] !== id) mismatches.push(`tenant ${slug} ${id} → ${ids[slug] ?? 'absent'}`);
-    }
-  }
-  const unverified = bootstrapPersonas().map((p) => p.key).filter((k) => !record!.personas.includes(k));
-  if (unverified.length) mismatches.push(`personas not verified: ${unverified.join(', ')}`);
-  f.push(mismatches.length
+
+  // 1. The lane is set up for the same world that passed: same URLs, expected build and database,
+  //    platform owner, tenants, personas and role catalog source.
+  const diff = expectedWorldDiff(record.expected, expectedWorld(env));
+  f.push(diff.length
     ? fail('this world passed the world preflight',
-      `${PREFLIGHT_RECORD} (verified ${record.verifiedAtUtc}) describes a different world: ${mismatches.join('; ')}`)
+      `${PREFLIGHT_RECORD} (verified ${record.verifiedAtUtc}) was verified for a different world:\n      ${diff.join('\n      ')}`)
     : pass('this world passed the world preflight',
-      `verified ${record.verifiedAtUtc}: ${record.personas.length} personas across ${Object.keys(record.tenants).length} tenants`));
+      `verified ${record.verifiedAtUtc}: ${record.expected.personas.length} personas across ${record.expected.tenants.length} tenants`));
+  if (diff.length || !ctx.platformToken) return;
+
+  // 2. And the live stack still IS that world. The target checks above already proved the URLs, the
+  //    builds, the database and the platform owner live; here the tenants must still exist and must
+  //    predate the verification (a database re-provisioned since would show newer tenants), and each
+  //    tenant's legal entities and role catalog are re-read from the API.
+  const verifiedAt = Date.parse(record.verifiedAtUtc);
+  const tenants = await liveTenants(ctx, f);
+  const recreated = Object.entries(tenants)
+    .filter(([, t]) => !(utcMillis(t.createdAtUtc) <= verifiedAt + CLOCK_TOLERANCE_MS))
+    .map(([slug, t]) => `${slug} (created ${t.createdAtUtc ?? 'at an unknown time'})`);
+  f.push(recreated.length
+    ? fail('tenants predate the verification',
+      `${recreated.join(', ')} after the world was verified at ${record.verifiedAtUtc}: this database was `
+      + 're-provisioned since. Run the world preflight again.')
+    : pass('tenants predate the verification', `all ${Object.keys(tenants).length} created before ${record.verifiedAtUtc}`));
+
+  const catalog = loadCatalog(f);
+  if (!catalog) return;
+  for (const tenant of TENANTS) {
+    if (!tenants[tenant.slug]) continue; // already reported
+    const admin = PERSONAS.find((p) => p.tenantSlug === tenant.slug && p.email === tenant.admin.email)!;
+    const res = await login(ctx.apiBaseUrl, admin, env);
+    const token = tokenOf(res);
+    if (res.status !== 200 || !token) {
+      f.push(fail(`tenant ${tenant.slug}: administrator signs in`, describe(res)));
+      continue;
+    }
+    await checkTenantInstall(ctx, tenant, token, catalog, f);
+  }
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────────────────────
@@ -421,9 +507,9 @@ export async function runPreflight(phase: Phase, env: Env = process.env): Promis
   const ctx = await checkTarget(env);
   const targetOk = ctx.findings.every((x) => x.ok);
 
-  let record: PreflightRecord | null = null;
-  if (targetOk && phase === 'world') record = await checkWorld(ctx, env);
-  if (targetOk && phase === 'lane') await checkLane(ctx);
+  let worldChecked = false;
+  if (targetOk && phase === 'world') worldChecked = await checkWorld(ctx, env);
+  if (targetOk && phase === 'lane') await checkLane(ctx, env);
 
   const { ok, report } = formatFindings(phase, ctx.findings);
   console.log(report);
@@ -432,10 +518,17 @@ export async function runPreflight(phase: Phase, env: Env = process.env): Promis
       `${report}\nThis is a FAILURE, not a skip: a run against the wrong world must never be able to go green.`,
     );
   }
-  if (record) {
-    await mkdir(dirname(PREFLIGHT_RECORD), { recursive: true });
-    await writeFile(PREFLIGHT_RECORD, JSON.stringify(record, null, 2), { mode: 0o600 });
-    console.log(`[preflight] World verified and recorded in ${PREFLIGHT_RECORD}.`);
-  }
+  if (!worldChecked) return null;
+
+  // Only locally computed values are recorded — the expected world and this machine's clock. Every
+  // check that looked at the live stack has already passed above, or this line is never reached.
+  const record: PreflightRecord = {
+    phase: 'world',
+    verifiedAtUtc: new Date().toISOString(),
+    expected: expectedWorld(env),
+  };
+  await mkdir(dirname(PREFLIGHT_RECORD), { recursive: true });
+  await writeFile(PREFLIGHT_RECORD, JSON.stringify(record, null, 2), { mode: 0o600 });
+  console.log(`[preflight] World verified and recorded in ${PREFLIGHT_RECORD}.`);
   return record;
 }
