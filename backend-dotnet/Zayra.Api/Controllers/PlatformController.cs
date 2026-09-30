@@ -1176,6 +1176,15 @@ public class PlatformController : ControllerBase
         return await CreateTenantCore(req, name, slug, homeCountry, ct);
     }
 
+    /// <summary>
+    /// The currency a tenant in <paramref name="homeCountry"/> pays its staff in, from the one country
+    /// list the product knows. A recognised country missing from that list keeps the previous entity
+    /// default (USD), which Setup → Companies and tenant settings can correct.
+    /// </summary>
+    internal static string HomeCurrencyFor(string homeCountry) =>
+        IsoReference.Countries.FirstOrDefault(c => string.Equals(c.Code, homeCountry, StringComparison.OrdinalIgnoreCase))?.Currency
+        ?? "USD";
+
     /// <param name="homeCountry">Canonical ISO-2, already validated by <see cref="CreateTenant"/>.</param>
     private async Task<IActionResult> CreateTenantCore(
         CreateTenantRequest req,
@@ -1184,6 +1193,13 @@ public class PlatformController : ControllerBase
         string homeCountry,
         CancellationToken ct)
     {
+        // The tenant's OPERATING currency — the one its payroll, bank files, GL and leave encashment
+        // are denominated in — follows its home jurisdiction. It used to be left to the entity
+        // defaults, so the localization row and the first company were born USD whatever the country,
+        // and a Saudi tenant's payroll approval then labelled a SAR run as "USD". The request's
+        // CurrencyCode is NOT used for this: on the platform form it is the subscription's BILLING
+        // currency (beside Monthly Amount, pre-filled USD), which says nothing about how staff are paid.
+        var operatingCurrency = HomeCurrencyFor(homeCountry);
 
         var tenant = new Tenant
         {
@@ -1208,6 +1224,7 @@ public class PlatformController : ControllerBase
         {
             TenantId = tenant.Id,
             CountryCode = homeCountry,
+            CurrencyCode = operatingCurrency,
             DefaultTimezone = HomeJurisdiction.TimeZoneFor(homeCountry),
         });
 
@@ -1224,6 +1241,7 @@ public class PlatformController : ControllerBase
             LegalNameEn = name,
             TradeName = name,
             CountryCode = homeCountry,
+            DefaultCurrency = operatingCurrency,
             IsActive = true,
         });
         await _db.SaveChangesAsync(ct);
@@ -1275,7 +1293,8 @@ public class PlatformController : ControllerBase
             BillingEmail = req.BillingEmail ?? req.AdminEmail.Trim().ToLowerInvariant(),
             BillingCycle = req.BillingCycle ?? "Monthly",
             MonthlyAmount = req.MonthlyAmount ?? 0,
-            CurrencyCode = req.CurrencyCode ?? "USD",
+            // Billing currency: what the platform admin stated, else the tenant's own currency.
+            CurrencyCode = string.IsNullOrWhiteSpace(req.CurrencyCode) ? operatingCurrency : req.CurrencyCode.Trim().ToUpperInvariant(),
             ExpiresAtUtc = req.ExpiresAtUtc
         });
 
@@ -1294,6 +1313,7 @@ public class PlatformController : ControllerBase
                 // The stated home jurisdiction is part of the tenant's creation record: it decided
                 // which statutory defaults were seeded, so it has to be auditable alongside them.
                 homeCountryCode = homeCountry,
+                operatingCurrency,
                 maxUsers = req.MaxUsers ?? SubscriptionTiers.GetDefaults(plan).MaxUsers,
                 maxEmployees = req.MaxEmployees ?? SubscriptionTiers.GetDefaults(plan).MaxEmployees
             }),
@@ -3613,6 +3633,8 @@ public class PlatformController : ControllerBase
         {
             TenantId = tenant.Id,
             CountryCode = homeCountry,
+            // Same operating-currency rule as CreateTenant (see CreateTenantCore).
+            CurrencyCode = HomeCurrencyFor(homeCountry),
         });
 
         var adminRole = await _authSeeder.EnsureTenantRolesAsync(tenant.Id, ct);

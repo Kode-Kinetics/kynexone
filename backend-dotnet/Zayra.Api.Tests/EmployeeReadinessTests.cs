@@ -212,11 +212,15 @@ public sealed class EmployeeReadinessSnapshotBuilder
     public string VisaNumber = "";
     public DateOnly? VisaExpiryDate;
     public IReadOnlyList<DocumentPresence> Documents = System.Array.Empty<DocumentPresence>();
+    // Every real employee has a joining date; an unknown one is an activation blocker of its own
+    // (EmployeeReadinessEvaluator.IntegrityBlockers), which is not what these tests are about.
+    public DateTime JoiningDate = new(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
     public EmployeeReadinessSnapshot Build() => new()
     {
         CountryCode = CountryCode,
         Nationality = Nationality,
+        JoiningDate = JoiningDate,
         BankIban = BankIban,
         VisaNumber = VisaNumber,
         VisaExpiryDate = VisaExpiryDate,

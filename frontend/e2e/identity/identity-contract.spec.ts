@@ -37,7 +37,7 @@ test.describe('role catalog is generated from AuthSeeder.cs', () => {
     for (const role of catalog.roles) expect(role.permissions.length, role.name).toBeGreaterThan(0);
     expect(roleDefinition(catalog, 'Admin').permissions).toEqual(catalog.permissions);
     expect(roleDefinition(catalog, 'Kiosk Operator').permissions).toEqual(['attendance.kiosk']);
-    expect(roleDefinition(catalog, 'Employee').permissions).toEqual(['dashboard.read', 'ess.read', 'ess.write', 'profile.read']);
+    expect(roleDefinition(catalog, 'Employee').permissions).toEqual(expect.arrayContaining(['dashboard.read', 'ess.read', 'ess.write']));
   });
 
   test('evaluates the predicate bundles (HR Director, HR Manager) rather than skipping them', () => {

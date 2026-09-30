@@ -47,4 +47,5 @@ public record OfferLetterTemplateData(
     decimal TransportAllowance,
     decimal OtherAllowances,
     decimal GrossSalary,
-    int ProbationMonths);
+    int ProbationMonths,
+    string? CurrencyCode = null);

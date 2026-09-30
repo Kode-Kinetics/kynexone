@@ -22,6 +22,7 @@ import {
   Locator,
 } from '@playwright/test';
 import { platformSetupToken, tenantSetupSession } from '../helpers';
+import { collectAllPages, pageTotal } from '../paging';
 import {
   ALMARAI_COMPANY_CODES, ALMARAI_SLUG, GROUP_PASSWORD, INTELLIFLOW_ADMIN, INTELLIFLOW_SLUG,
   MISSING_WORLD, TATA_COMPANY_CODES, TATA_SLUG,
@@ -231,18 +232,29 @@ export function companyIdByCode(companies: any[], code: string): string | null {
   return null;
 }
 
-/** GET /api/employees (large page), normalized. Optionally scoped via X-Company-Id. */
+/**
+ * GET /api/employees, every page, normalized. Optionally scoped via X-Company-Id.
+ * The API caps a page at 100 rows, so one `pageSize=200` request stopped at row 100: a scope leak
+ * past that row was invisible to every assertion built on this. `status` is the first non-2xx
+ * page's status, or the last page's status if every page succeeded.
+ */
 export async function fetchEmployees(
   api: APIRequestContext,
   token: string,
   companyId?: string,
 ): Promise<{ status: number; items: any[] }> {
-  const resp = await api.get('/api/employees?page=1&pageSize=200', {
-    headers: authHeaders(token, companyId),
+  let status = 0;
+  const items = await collectAllPages(async (page, pageSize) => {
+    const resp = await api.get(`/api/employees?page=${page}&pageSize=${pageSize}`, {
+      headers: authHeaders(token, companyId),
+    });
+    status = resp.status();
+    if (!resp.ok()) return { items: [], total: 0 };
+    let json: any = null;
+    try { json = await resp.json(); } catch { /* ignore */ }
+    return { items: listItems(json), total: pageTotal(json) };
   });
-  let json: any = null;
-  try { json = await resp.json(); } catch { /* ignore */ }
-  return { status: resp.status(), items: listItems(json) };
+  return { status, items };
 }
 
 export function employeeCodes(items: any[]): string[] {

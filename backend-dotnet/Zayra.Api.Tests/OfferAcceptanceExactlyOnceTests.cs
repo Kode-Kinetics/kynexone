@@ -1,8 +1,10 @@
+using System.Data.Common;
 using System.Security.Claims;
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Zayra.Api.Application.Recruitment;
 using Zayra.Api.Controllers.Recruitment;
 using Zayra.Api.Data;
@@ -79,6 +81,36 @@ public sealed class OfferAcceptanceExactlyOnceTests
     }
 
     [Fact]
+    public async Task AcceptanceThatLosesToAWinnerCommittingBetweenItsReads_IsTheIdempotentReplay()
+    {
+        // The flake behind ConcurrentAcceptance: the loser read the offer (still Sent), the winner
+        // committed, then the loser read the application (now Hired) and reported
+        // InvalidApplicationState, a 409, instead of returning the winner's draft. Made
+        // deterministic: the winner runs to completion right before the loser's second read.
+        var seeded = await SeedOfferAsync();
+        OfferAcceptanceResult? winner = null;
+        var pause = new RunBeforeSecondRead(async () =>
+        {
+            await using var winnerDb = _fixture.CreateDb();
+            winner = await new RecruitmentService(winnerDb).AcceptOfferAsync(
+                seeded.TenantId, seeded.OfferId, Guid.NewGuid(), "Winner", CancellationToken.None);
+        });
+        await using var loserDb = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseNpgsql(_fixture.ConnectionString, o => o.EnableRetryOnFailure(5, TimeSpan.FromSeconds(5), null))
+            .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance, pause)
+            .Options);
+
+        var loser = await new RecruitmentService(loserDb).AcceptOfferAsync(
+            seeded.TenantId, seeded.OfferId, Guid.NewGuid(), "Loser", CancellationToken.None);
+
+        pause.Fired.Should().BeTrue();
+        winner!.Outcome.Should().Be(OfferAcceptanceOutcome.Accepted);
+        loser.Outcome.Should().Be(OfferAcceptanceOutcome.AlreadyAccepted, loser.Message);
+        loser.OnboardingDraftId.Should().Be(winner.OnboardingDraftId);
+        await AssertExactlyOnceAsync(seeded);
+    }
+
+    [Fact]
     public async Task SecondSentOfferForSameApplication_CannotCreateAnotherDraftOrConsumeAnotherSeat()
     {
         var seeded = await SeedOfferAsync();
@@ -151,6 +183,54 @@ public sealed class OfferAcceptanceExactlyOnceTests
     }
 
     [Fact]
+    public async Task BothSendEndpoints_RefuseDraftOfferWithApprovalHistory()
+    {
+        // A rejected approval step returns the offer to Draft. Draft used to be sendable, so the
+        // rejection could be bypassed by pressing Send.
+        var seeded = await SeedOfferAsync();
+        await using (var seedDb = _fixture.CreateDb())
+        {
+            var offer = await seedDb.OfferLetters.SingleAsync(x => x.Id == seeded.OfferId);
+            offer.Status = "Draft";
+            offer.SentAtUtc = null;
+            seedDb.OfferApprovals.Add(new OfferApproval
+            {
+                TenantId = seeded.TenantId,
+                OfferLetterId = seeded.OfferId,
+                ApplicationId = seeded.ApplicationId,
+                StepOrder = 1,
+                ApproverName = "Finance",
+                ApproverRole = "Finance Approver",
+                Status = "Rejected",
+                DecidedAtUtc = DateTime.UtcNow,
+            });
+            await seedDb.SaveChangesAsync();
+        }
+
+        await using (var offerDb = _fixture.CreateDb())
+        {
+            var controller = new OffersController(
+                offerDb, new AcceptanceNullLetters(), new RecruitmentService(offerDb));
+            SetPrincipal(controller, seeded.TenantId, Guid.NewGuid());
+            var result = await controller.Send(seeded.OfferId, CancellationToken.None);
+            result.Should().BeOfType<ConflictObjectResult>();
+        }
+
+        await using (var appDb = _fixture.CreateDb())
+        {
+            var controller = new ApplicationsController(
+                appDb, new RecruitmentService(appDb), new AcceptanceNullNotifications());
+            SetPrincipal(controller, seeded.TenantId, Guid.NewGuid());
+            var result = await controller.SendOffer(seeded.OfferId, CancellationToken.None);
+            result.Should().BeOfType<ConflictObjectResult>();
+        }
+
+        await using var verify = _fixture.CreateDb();
+        (await verify.OfferLetters.AsNoTracking().SingleAsync(x => x.Id == seeded.OfferId))
+            .Status.Should().Be("Draft", "a refused send must not change the offer");
+    }
+
+    [Fact]
     public async Task DecideApproval_InvalidDecision_IsRejectedAndLeavesPendingRowsUnchanged()
     {
         var seeded = await SeedOfferAsync();
@@ -203,6 +283,15 @@ public sealed class OfferAcceptanceExactlyOnceTests
         opening.FilledCount.Should().Be(expectedEffects);
         (await verify.EmployeeDrafts.CountAsync(x => x.TenantId == seeded.TenantId))
             .Should().Be(expectedEffects);
+        if (expectedEffects == 1)
+        {
+            // Acceptance is the submission: the draft lands where HR approval picks it up.
+            var draft = await verify.EmployeeDrafts.AsNoTracking()
+                .SingleAsync(x => x.TenantId == seeded.TenantId);
+            draft.Status.Should().Be("PendingHrApproval");
+            draft.CurrentStep.Should().Be("HrApproval");
+            draft.SubmittedAtUtc.Should().NotBeNull();
+        }
         (await verify.ApplicationEvents.CountAsync(x =>
                 x.TenantId == seeded.TenantId
                 && x.ApplicationId == seeded.ApplicationId
@@ -317,4 +406,22 @@ file sealed class AcceptanceNullLetters : ILetterService
 
     public Task<byte[]> GenerateOfferLetterAsync(OfferLetterData data, CancellationToken ct = default) =>
         Task.FromResult(Array.Empty<byte>());
+}
+
+/// <summary>Runs a hook once, just before the context's second query: the point at which the losing
+/// acceptance has read part of the state it decides on.</summary>
+file sealed class RunBeforeSecondRead : DbCommandInterceptor
+{
+    private readonly Func<Task> _hook;
+    private int _reads;
+    public RunBeforeSecondRead(Func<Task> hook) => _hook = hook;
+    public bool Fired => Volatile.Read(ref _reads) >= 2;
+
+    public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+        DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result,
+        CancellationToken cancellationToken = default)
+    {
+        if (Interlocked.Increment(ref _reads) == 2) await _hook();
+        return result;
+    }
 }

@@ -21,12 +21,19 @@ import {
   type PayrollRunPopulation, type PayrollValidationOverrideReport, type AuditIntegrityReport,
 } from '../api/payroll';
 import { identityAuditApi } from '../api/identity';
+import { formatCalendarDate } from '../lib/calendarDate';
+import { requestFailureReason } from '../lib/requestFailure';
+import { commonPayrollCurrency, resolvePayrollRunCurrency, totalsByCurrency, type CompaniesLoadState } from '../lib/payrollCurrency';
+import { usePayrollCompanies } from '../hooks/usePayrollCompanies';
+import { filterPayrollInsightsForReadiness, paymentReadinessHeadline, prerequisiteLabel, type PaymentPrerequisites, type PayrollReadinessWithPrerequisites } from '../lib/payrollPrerequisites';
 import client, { notifyApiError } from '../api/client';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { InfoTip } from '../components/InfoTip';
+import { GosiBasisNote } from '../components/GosiCohortPanel';
 import { useAuth } from '../contexts/AuthContext';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
+import { SaudiBankExportGate } from '../components/payroll/SaudiBankExportGate';
 import { payrollInsightEmptyCopy, payrollInsightState, payrollPeriodState } from '../lib/payrollInsightState';
 
 // ── Payroll import/export helpers ───────────────────────────────────────────────
@@ -47,8 +54,7 @@ const salaryStructuresImportExport = {
 // ── Shared helpers ──────────────────────────────────────────────────────────────
 
 function fmtDate(s: string | null | undefined) {
-  if (!s) return '—';
-  return new Date(s).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' });
+  return formatCalendarDate(s, 'en-US');
 }
 
 function fmtAmt(n: number, currency = 'USD') {
@@ -210,10 +216,141 @@ function PayrollSetupWizard({ readiness, onNavigate }: { readiness: PayrollReadi
   );
 }
 
+// ── Payment prerequisites (who can actually be paid) ──────────────────────────
+// Salary coverage says who can be CALCULATED. This panel says who can be PAID, per employee, before a
+// run exists — the same gaps the run validation will later raise. Blocking gaps and recommendations
+// are separate lists; nothing here is inferred on the client.
+
+function PrerequisiteRow({ label, count, nextAction, danger, action }: {
+  label: string; count?: number; nextAction: string; danger: boolean; action?: { label: string; onClick: () => void };
+}) {
+  return (
+    <li className="flex flex-wrap items-center gap-x-3 gap-y-1 px-5 py-2.5">
+      <span className={`w-12 shrink-0 text-sm font-semibold tabular-nums ${danger ? 'text-rose-700 dark:text-rose-300' : 'text-amber-700 dark:text-amber-300'}`}>
+        {count !== undefined
+          ? count.toLocaleString('en-US')
+          : <Building2 className="h-4 w-4" aria-label="Company setting" />}
+      </span>
+      <span className="min-w-0 flex-1 text-sm text-slate-800 dark:text-slate-100">
+        {label}
+        <span className="block text-xs text-slate-500 dark:text-slate-400">Next: {nextAction}</span>
+      </span>
+      {action && (
+        <button type="button" onClick={action.onClick} className={btn.sm}>{action.label} <ChevronRight className="h-3 w-3" /></button>
+      )}
+    </li>
+  );
+}
+
+function PaymentPrerequisitesPanel({ prerequisites, onNavigate }: { prerequisites: PaymentPrerequisites; onNavigate: (t: Tab) => void }) {
+  const headline = paymentReadinessHeadline(prerequisites);
+  if (headline.tone === 'unknown' || headline.tone === 'empty') return null;
+  const tone = {
+    blocked: { box: 'border-rose-200 dark:border-rose-500/30', icon: 'text-rose-600 dark:text-rose-400' },
+    attention: { box: 'border-amber-200 dark:border-amber-500/30', icon: 'text-amber-600 dark:text-amber-400' },
+    clear: { box: 'border-emerald-200 dark:border-emerald-500/30', icon: 'text-emerald-600 dark:text-emerald-400' },
+  }[headline.tone];
+  // Salary gaps are fixed on a payroll tab; every other gap lives on the employee record.
+  const salaryAction = { label: 'Assign salaries', onClick: () => onNavigate('employee-salary') };
+  const hasBlocking = prerequisites.companyBlocking.length > 0 || prerequisites.blocking.length > 0;
+  const hasRecommended = prerequisites.companyRecommended.length > 0 || prerequisites.recommended.length > 0;
+  const listed = prerequisites.employees.length;
+
+  return (
+    <section aria-label="Payment readiness" className={`surface overflow-hidden border ${tone.box}`}>
+      <div className="flex items-start gap-3 border-b border-slate-100 px-5 py-4 dark:border-white/10">
+        {headline.tone === 'clear'
+          ? <CheckCircle2 className={`mt-0.5 h-5 w-5 shrink-0 ${tone.icon}`} />
+          : <AlertTriangle className={`mt-0.5 h-5 w-5 shrink-0 ${tone.icon}`} />}
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{headline.title}</h3>
+          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{headline.detail}</p>
+          <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
+            Checked for {prerequisites.evaluatedEmployees.toLocaleString('en-US')} active employees against salary assignments, payroll profiles and IBANs, statutory readiness and nationality
+            {prerequisites.attendanceChecked ? ', and attendance for this period' : ' (attendance is checked once the period starts)'} — the rules the run validation applies. One employee can have more than one gap.
+          </p>
+        </div>
+      </div>
+
+      {hasBlocking && (
+        <div>
+          <p className="bg-rose-50 px-5 py-2 text-xs font-semibold uppercase tracking-wide text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">Blocks payment</p>
+          <ul className="divide-y divide-slate-100 dark:divide-white/5">
+            {prerequisites.companyBlocking.map(c => (
+              <PrerequisiteRow key={`c-${c.companyId ?? 'none'}-${c.code}`} danger label={c.companyName ? `${c.companyName}: ${c.label}` : c.label} nextAction={c.nextAction} />
+            ))}
+            {prerequisites.blocking.map(b => (
+              <PrerequisiteRow key={b.code} danger label={b.label} count={b.count} nextAction={b.nextAction}
+                action={b.code === 'MISSING_SALARY_STRUCTURE' ? salaryAction : undefined} />
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {hasRecommended && (
+        <div>
+          <p className="bg-amber-50 px-5 py-2 text-xs font-semibold uppercase tracking-wide text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">Recommended — does not block approval</p>
+          <ul className="divide-y divide-slate-100 dark:divide-white/5">
+            {prerequisites.companyRecommended.map(c => (
+              <PrerequisiteRow key={`c-${c.companyId ?? 'none'}-${c.code}`} danger={false} label={c.companyName ? `${c.companyName}: ${c.label}` : c.label} nextAction={c.nextAction} />
+            ))}
+            {prerequisites.recommended.map(r => (
+              <PrerequisiteRow key={r.code} danger={false} label={r.label} count={r.count} nextAction={r.nextAction} />
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {listed > 0 && (
+        <details className="border-t border-slate-100 dark:border-white/10">
+          <summary className="cursor-pointer px-5 py-3 text-xs font-medium text-sapphire dark:text-cyanAccent">
+            Show each employee ({listed.toLocaleString('en-US')}{prerequisites.employeesTruncated ? ', the first 500 — the counts above include everyone' : ''})
+          </summary>
+          <div className="max-h-96 overflow-auto">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-slate-50 text-slate-500 dark:bg-slate-900 dark:text-slate-400">
+                <tr>
+                  <th scope="col" className="px-5 py-2 text-start font-medium">Employee</th>
+                  <th scope="col" className="px-3 py-2 text-start font-medium">Blocks payment</th>
+                  <th scope="col" className="px-3 py-2 text-start font-medium">Recommended</th>
+                  <th scope="col" className="px-5 py-2 text-end font-medium">Next action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-white/5">
+                {prerequisites.employees.map(e => (
+                  <tr key={e.employeeId}>
+                    <td className="px-5 py-2">
+                      <span className="font-mono text-slate-500 dark:text-slate-400">{e.employeeCode}</span>{' '}
+                      <span className="text-slate-800 dark:text-slate-100">{e.employeeName}</span>
+                    </td>
+                    <td className="px-3 py-2 text-rose-700 dark:text-rose-300">{e.blocking.map(code => prerequisiteLabel(prerequisites, code)).join('; ') || '—'}</td>
+                    <td className="px-3 py-2 text-amber-700 dark:text-amber-300">{e.recommended.map(code => prerequisiteLabel(prerequisites, code)).join('; ') || '—'}</td>
+                    <td className="px-5 py-2 text-end">
+                      {e.blocking.length === 1 && e.blocking[0] === 'MISSING_SALARY_STRUCTURE' ? (
+                        <button type="button" onClick={salaryAction.onClick} className="font-medium text-sapphire hover:underline dark:text-cyanAccent">Assign salary</button>
+                      ) : (
+                        <Link href={`/people?employeeId=${e.employeeId}`} className="font-medium text-sapphire hover:underline dark:text-cyanAccent">
+                          Open {e.employeeCode}
+                        </Link>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      )}
+    </section>
+  );
+}
+
 // ── Company Bird's-Eye Table ───────────────────────────────────────────────────
 
 function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOverview; onDrillDown: (company: PayrollCompanySummary) => void }) {
-  const { currencyCode } = useTenantSettings();
+  // Group totals add every company's run together, so they only have one currency when every
+  // company with a run pays in the same one. A mixed group is read per company row instead.
+  const groupCurrency = commonPayrollCurrency(overview.companies.filter((company) => company.hasPayrollRun));
   return (
     <div className="surface overflow-hidden">
       <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5 dark:border-white/10">
@@ -307,8 +444,16 @@ function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOver
         <div className="border-t border-slate-100 bg-slate-50 px-5 py-3 dark:border-white/5 dark:bg-white/3">
           <div className="flex items-center gap-8 text-xs">
             <span className="text-slate-500 dark:text-slate-400">Group totals:</span>
-            <span className="font-semibold text-slate-800 dark:text-white">Gross: {fmtAmt(overview.totalGrossPayroll, currencyCode)}</span>
-            <span className="font-semibold text-emerald-600 dark:text-emerald-400">Net: {fmtAmt(overview.totalNetPayroll, currencyCode)}</span>
+            {groupCurrency ? (
+              <>
+                <span className="font-semibold text-slate-800 dark:text-white">Gross: {fmtAmt(overview.totalGrossPayroll, groupCurrency)}</span>
+                <span className="font-semibold text-emerald-600 dark:text-emerald-400">Net: {fmtAmt(overview.totalNetPayroll, groupCurrency)}</span>
+              </>
+            ) : overview.companies.some((company) => company.hasPayrollRun) ? (
+              <span className="font-semibold text-amber-700 dark:text-amber-300">Companies pay in different currencies — read the totals per company above</span>
+            ) : (
+              <span className="text-slate-500 dark:text-slate-400">No payroll run in this period</span>
+            )}
             {overview.totalValidationErrors > 0 && <span className="font-semibold text-rose-600 dark:text-rose-400">{overview.totalValidationErrors} errors</span>}
             {overview.totalPendingApprovals > 0 && <span className="font-semibold text-amber-600 dark:text-amber-400">{overview.totalPendingApprovals} pending approvals</span>}
           </div>
@@ -320,7 +465,7 @@ function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOver
 
 // ── AI Insights Panel ─────────────────────────────────────────────────────────
 
-function AiInsightsPanel() {
+function AiInsightsPanel({ readiness }: { readiness: PayrollReadiness | null }) {
   const [insights, setInsights] = useState<AIInsight[]>([]);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
@@ -343,7 +488,9 @@ function AiInsightsPanel() {
     Info: 'text-blue-600 dark:text-blue-400',
   };
 
-  const state = payrollInsightState(loading, failed, insights.length);
+  // A salary-gap insight the live readiness has already disproved is history, not a current finding.
+  const visibleInsights = filterPayrollInsightsForReadiness(insights, readiness);
+  const state = payrollInsightState(loading, failed, visibleInsights.length);
   if (state === 'loading') return <div className="surface h-16 animate-pulse" aria-label="Loading payroll insights" />;
   if (state === 'empty' || state === 'unavailable') return (
     <div role={state === 'unavailable' ? 'alert' : 'status'} className={`surface flex items-center gap-3 p-5 ${state === 'unavailable' ? 'border-amber-300 dark:border-amber-500/30' : ''}`}>
@@ -357,10 +504,10 @@ function AiInsightsPanel() {
       <div className="flex items-center gap-2 border-b border-slate-100 px-5 py-3.5 dark:border-white/10">
         <Lightbulb className="h-4 w-4 text-sapphire dark:text-cyanAccent" />
         <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Insights</h3>
-        <span className="ms-auto rounded-full bg-rose-100 px-2 py-0.5 text-xs font-semibold text-rose-600 dark:bg-rose-500/20 dark:text-rose-400">{insights.length} active</span>
+        <span className="ms-auto rounded-full bg-rose-100 px-2 py-0.5 text-xs font-semibold text-rose-600 dark:bg-rose-500/20 dark:text-rose-400">{visibleInsights.length} active</span>
       </div>
       <div className="divide-y divide-slate-100 dark:divide-white/5">
-        {insights.map(ins => (
+        {visibleInsights.map(ins => (
           <div key={ins.id} className={`mx-4 my-2 rounded-xl border p-3.5 ${severityStyle[ins.severity] ?? severityStyle.Info}`}>
             <div className="flex items-start gap-3">
               <AlertTriangle className={`mt-0.5 h-4 w-4 shrink-0 ${severityIcon[ins.severity] ?? severityIcon.Info}`} />
@@ -384,13 +531,12 @@ function AiInsightsPanel() {
 
 function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
   const now = new Date();
-  const { currencyCode } = useTenantSettings();
   const [selectedCompanyId, setSelectedCompanyId] = useState<string>('all');
   const [selectedYear, setSelectedYear] = useState(now.getFullYear());
   const [selectedMonth, setSelectedMonth] = useState(now.getMonth() + 1);
   const [companies, setCompanies] = useState<PayrollCompany[]>([]);
   const [overview, setOverview] = useState<PayrollOverview | null>(null);
-  const [readiness, setReadiness] = useState<PayrollReadiness | null>(null);
+  const [readiness, setReadiness] = useState<PayrollReadinessWithPrerequisites | null>(null);
   const [drillDown, setDrillDown] = useState<PayrollCompanySummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [summary, setSummary] = useState<PayrollSummary | null>(null);
@@ -420,6 +566,13 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
   const isNotConfigured = !loading && readiness && readiness.completionPercent < 30;
   const hasPayrollRun = overview?.companies.some((company) => company.hasPayrollRun) ?? false;
   const periodState = payrollPeriodState(hasPayrollRun, overview !== null);
+  // The KPI cards add up every company in scope; label them only with a currency they all share.
+  const overviewCurrency = overview
+    ? selectedCompanyId === 'all'
+      ? commonPayrollCurrency(overview.companies.filter((company) => company.hasPayrollRun))
+      : commonPayrollCurrency(overview.companies.filter((company) => company.companyId === selectedCompanyId))
+    : null;
+  const overviewAmount = (value: number) => overviewCurrency ? fmtAmt(value, overviewCurrency) : 'Mixed currencies';
 
   const years = Array.from({ length: 3 }, (_, i) => now.getFullYear() - i);
 
@@ -482,12 +635,17 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
         </div>
       )}
 
+      {/* ── Who can actually be paid (exceptions first) ── */}
+      {!loading && readiness?.paymentPrerequisites && (
+        <PaymentPrerequisitesPanel prerequisites={readiness.paymentPrerequisites} onNavigate={onNavigate} />
+      )}
+
       {/* ── Summary KPIs ── */}
       {!loading && overview && (
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <KpiCard label="Active Employees" value={overview.totalActiveEmployees.toLocaleString()} icon={Users} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
-          <KpiCard label="Gross Payroll" value={periodState === 'no-run' ? 'No run' : fmtAmt(overview.totalGrossPayroll, currencyCode)} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
-          <KpiCard label="Net Payroll" value={periodState === 'no-run' ? 'No run' : fmtAmt(overview.totalNetPayroll, currencyCode)} icon={TrendingUp} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
+          <KpiCard label="Gross Payroll" value={periodState === 'no-run' ? 'No run' : overviewAmount(overview.totalGrossPayroll)} sub={periodState !== 'no-run' && !overviewCurrency ? 'See each company below' : undefined} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
+          <KpiCard label="Net Payroll" value={periodState === 'no-run' ? 'No run' : overviewAmount(overview.totalNetPayroll)} sub={periodState !== 'no-run' && !overviewCurrency ? 'See each company below' : undefined} icon={TrendingUp} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
           <KpiCard label="Locked Runs YTD" value={summary?.lockedRuns ?? '—'} icon={Lock} color="bg-violet-100 text-violet-600 dark:bg-violet-500/20 dark:text-violet-400" />
         </div>
       )}
@@ -499,7 +657,7 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
       )}
 
       {/* ── Insights Panel ── */}
-      <AiInsightsPanel />
+      <AiInsightsPanel readiness={readiness} />
 
       {/* ── Drill-down panel (when a company row is clicked) ── */}
       {drillDown && (
@@ -793,7 +951,11 @@ function SalaryStructuresTab() {
           entityName="Salary Structures"
           onExport={salaryStructuresImportExport.export}
           onDownloadTemplate={salaryStructuresImportExport.template}
-          onImport={salaryStructuresImportExport.import}
+          onImport={async (csv) => {
+            const result = await salaryStructuresImportExport.import(csv);
+            load(); // Refresh separately: a list error must not reclassify a committed import.
+            return result;
+          }}
         />
         <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> New Structure</button>
       </div>
@@ -998,6 +1160,7 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [slips, setSlips] = useState<PayrollSlip[]>([]);
   const [slipsLoading, setSlipsLoading] = useState(false);
+  const [slipsError, setSlipsError] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   // Monotonic counter: only the response matching the latest fetch ID is applied.
   // Prevents stale responses from a slow previous fetch overwriting current slips.
@@ -1015,7 +1178,7 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
 
   const load = () => {
     setLoading(true);
-    payrollApi.listRuns({ pageSize: 50 }).then(r => { setRuns(r.items); setTotal(r.total); }).catch(() => {}).finally(() => setLoading(false));
+    payrollApi.listAllRuns().then(all => { setRuns(all); setTotal(all.length); }).catch(() => {}).finally(() => setLoading(false));
   };
   useEffect(() => {
     load();
@@ -1033,11 +1196,13 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
   const openSlips = (run: PayrollRun) => {
     setSelectedRunId(run.id);
     setSlips([]);
+    setSlipsError('');
     setSlipsLoading(true);
     const seq = ++slipsFetchSeq.current;
-    payrollApi.slips(run.id, { pageSize: 200 })
-      .then(r => { if (slipsFetchSeq.current === seq) setSlips(r.items); })
-      .catch(() => {})
+    // Every slip, page by page: one page of 200 left a larger run's register silently short.
+    payrollApi.allSlips(run.id)
+      .then(all => { if (slipsFetchSeq.current === seq) setSlips(all); })
+      .catch(e => { if (slipsFetchSeq.current === seq) setSlipsError(`Slips could not be loaded. ${requestFailureReason(e)}`); })
       .finally(() => { if (slipsFetchSeq.current === seq) setSlipsLoading(false); });
   };
 
@@ -1212,7 +1377,8 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
-                      {slips.length === 0 && <tr><td colSpan={9} className="py-10 text-center text-sm text-slate-400">No slips. Click Process to generate.</td></tr>}
+                      {slipsError && <tr><td colSpan={9} role="alert" className="py-10 text-center text-sm text-rose-600 dark:text-rose-400">{slipsError}</td></tr>}
+                      {!slipsError && slips.length === 0 && <tr><td colSpan={9} className="py-10 text-center text-sm text-slate-400">No slips. Click Process to generate.</td></tr>}
                       {slips.map(s => (
                         <tr key={s.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                           <td className="px-3 py-2.5">
@@ -1243,6 +1409,8 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
                             {s.employeeStatutoryTotal > 0 && (
                               <p className="text-[10px] leading-tight text-rose-400">of which GOSI {fmt(s.employeeStatutoryTotal)}</p>
                             )}
+                            {/* F02 — which cohort and rate basis produced the statutory lines, read off the slip. */}
+                            {s.statutoryBasis && <GosiBasisNote cohort={s.gosiCohort} basis={s.statutoryBasis} />}
                           </td>
                           {/* Unbracketed: a slice of the cell to its left, not a further subtraction. */}
                           <td className="px-3 py-2.5 text-end text-amber-600 dark:text-amber-400">{s.loanDeductions > 0 ? fmt(s.loanDeductions) : '—'}</td>
@@ -1479,6 +1647,10 @@ function ChainVerifier({ title, description, allowedRoles, verify }: {
 /** Mirrors PayrollValidationOverridePolicy.MinimumReasonLength. "ok" is not accountability. */
 const MIN_OVERRIDE_REASON = 10;
 
+/** F02 — PayrollValidationEngine.GosiCohortNotRecorded / GosiNewEntrantScheduleNotModelled. */
+const GOSI_COHORT_NOT_RECORDED = 'GOSI_COHORT_NOT_RECORDED';
+const GOSI_NEW_ENTRANT_BLOCKED = 'GOSI_NEW_ENTRANT_SCHEDULE_NOT_MODELLED';
+
 function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
   const [runId, setRunId] = useState(selectedRunId ?? '');
   const [runs, setRuns] = useState<PayrollRun[]>([]);
@@ -1488,7 +1660,7 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
   const [overridableCodes, setOverridableCodes] = useState<string[]>([]);
   const [overriding, setOverriding] = useState<PayrollValidationResult | null>(null);
 
-  useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
+  useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
 
   useEffect(() => {
     if (!runId) { setResults([]); setError(''); return; }
@@ -1523,6 +1695,13 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
 
   const warnings = results.filter(r => r.severity === 'Warning');
   const errors = results.filter(r => r.severity === 'Error');
+  // F02 — the GOSI entrant cohort is judged per employee; group it so it reads as one decision, not N rows.
+  const cohortNotRecorded = results.filter(r => r.code === GOSI_COHORT_NOT_RECORDED);
+  const cohortBlocked = results.filter(r => r.code === GOSI_NEW_ENTRANT_BLOCKED);
+  const [cohortOnly, setCohortOnly] = useState(false);
+  const shown = cohortOnly && cohortBlocked.length + cohortNotRecorded.length > 0
+    ? [...cohortBlocked, ...cohortNotRecorded]
+    : results;
 
   return (
     <div className="space-y-4">
@@ -1546,6 +1725,31 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
         </div>
       )}
 
+      {(cohortNotRecorded.length > 0 || cohortBlocked.length > 0) && (
+        <div className="surface space-y-2 px-5 py-4" data-testid="gosi-cohort-findings">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-semibold text-slate-900 dark:text-white">GOSI cohort — checked per employee</p>
+            <button type="button" className={`${btn.sm} h-7 px-2 text-xs`} onClick={() => setCohortOnly(v => !v)} aria-pressed={cohortOnly}>
+              {cohortOnly ? 'Show all findings' : 'Show only these employees'}
+            </button>
+          </div>
+          {cohortBlocked.length > 0 && (
+            <p className="text-sm text-rose-700 dark:text-rose-400">
+              {cohortBlocked.length} employee{cohortBlocked.length === 1 ? '' : 's'} first registered with GOSI on or after
+              3 July 2024. The new-entrant schedule is not modelled yet, so their GOSI on this run is wrong and approval
+              is blocked. Correct the date if it is wrong, or reopen the run and exclude them.
+            </p>
+          )}
+          {cohortNotRecorded.length > 0 && (
+            <p className="text-sm text-amber-700 dark:text-amber-400">
+              {cohortNotRecorded.length} employee{cohortNotRecorded.length === 1 ? ' has' : 's have'} no GOSI
+              first-registration date, so their contribution basis is unverified (computed on the pre-3-July-2024
+              schedule). Record each date on the employee&apos;s Payroll tab (approval required); runs processed afterwards use it.
+            </p>
+          )}
+        </div>
+      )}
+
       {results.length === 0 && !loading ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <CheckCircle2 className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
@@ -1555,7 +1759,7 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
         </div>
       ) : (
         <div className="surface divide-y divide-slate-100 dark:divide-white/5">
-          {results.map(r => (
+          {shown.map(r => (
             <div key={r.id} className="flex items-start gap-3 px-5 py-4">
               <div className={`mt-0.5 h-2 w-2 shrink-0 rounded-full ${r.severity === 'Error' ? 'bg-rose-500' : r.severity === 'Warning' ? 'bg-amber-500' : 'bg-sky-400'}`} />
               <div className="min-w-0 flex-1">
@@ -1732,6 +1936,57 @@ function AcknowledgementPanel({
   );
 }
 
+// ── Run currency ──────────────────────────────────────────────────────────────
+// A run is denominated in its employing company's currency, never the tenant display default. Every
+// view that prints one run's amounts resolves it here; until it is confirmed the amounts carry no
+// currency label (and the approval view withholds approval).
+
+function useRunCurrency(run: PayrollRun | undefined) {
+  const { companies, state: companiesState, retry } = usePayrollCompanies();
+  const resolution = resolvePayrollRunCurrency(run, companies, companiesState);
+  const amount = (n: number) => resolution.status === 'resolved'
+    ? fmtAmt(n, resolution.currency)
+    : unconfirmedAmount(n);
+  return { resolution, companiesState, companies, amount, retry };
+}
+
+const unconfirmedAmount = (n: number) =>
+  `${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (currency not confirmed)`;
+
+/**
+ * R03 — amounts in several currencies, one line per currency. Used where a total spans runs or batches
+ * of different companies; the amounts are never added across currencies.
+ */
+function perCurrency(totals: Array<{ currency: string | null; total: number }>) {
+  return totals.map(t => t.currency ? fmtAmt(t.total, t.currency) : unconfirmedAmount(t.total)).join(' · ');
+}
+
+function RunCurrencyNotice({ resolution, companiesState, onRetry, blocksApproval }: {
+  resolution: ReturnType<typeof useRunCurrency>['resolution'];
+  companiesState: CompaniesLoadState;
+  onRetry: () => void;
+  blocksApproval?: boolean;
+}) {
+  if (resolution.status === 'loading') return (
+    <p className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+      Confirming the employing company's currency…
+    </p>
+  );
+  if (resolution.status !== 'unavailable') return null;
+  return (
+    <div role="alert" className="flex flex-wrap items-start gap-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700 dark:border-rose-400/20 dark:bg-rose-500/10 dark:text-rose-400">
+      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+      <span className="min-w-0 flex-1">{resolution.reason}{blocksApproval ? ' Approval is unavailable until the currency is confirmed.' : ''}</span>
+      {companiesState === 'failed' && (
+        <button type="button" className={btn.sm} onClick={onRetry}>
+          <RefreshCw className="h-3.5 w-3.5" /> Retry
+        </button>
+      )}
+    </div>
+  );
+}
+
 function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
   selectedRunId?: string;
   isAdmin: boolean;
@@ -1742,7 +1997,6 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
   const [runId, setRunId] = useState(selectedRunId ?? '');
   const [approvals, setApprovals] = useState<PayrollApproval[]>([]);
   const [notes, setNotes] = useState('');
-  const { currencyCode } = useTenantSettings();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -1759,7 +2013,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
   const [ackOverridden, setAckOverridden] = useState(false);
 
   const refreshRuns = () =>
-    payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {});
+    payrollApi.listAllRuns().then(setRuns).catch(() => {});
 
   const refreshGate = React.useCallback((id: string) => {
     if (!id) { setPopulation(null); setOverrideReport(null); return; }
@@ -1789,13 +2043,16 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
   }, [runId, refreshGate]);
 
   const selectedRun = runs.find(r => r.id === runId);
+  // Until the run's currency is confirmed its amounts carry no currency label and approval is withheld.
+  const { resolution: runCurrency, companiesState, amount: runAmount, retry: retryRunCurrency } = useRunCurrency(selectedRun);
+  const currencyConfirmed = runCurrency.status === 'resolved';
 
   const excludedCount = population?.excludedCount ?? 0;
   const overriddenCount = overrideReport?.overrides.length ?? 0;
   const needsExcludedAck = excludedCount > 0;
   const needsOverriddenAck = overriddenCount > 0;
   const gateSatisfied =
-    (!needsExcludedAck || ackExcluded) && (!needsOverriddenAck || ackOverridden) && !gateLoading && !gateError;
+    (!needsExcludedAck || ackExcluded) && (!needsOverriddenAck || ackOverridden) && !gateLoading && !gateError && currencyConfirmed;
 
   const handleApprove = async () => {
     if (!runId) return;
@@ -1883,11 +2140,16 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
         <div className="surface p-5 space-y-4">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <p className="text-sm font-semibold text-slate-900 dark:text-white">Payroll Run — {MONTHS[selectedRun.month - 1]} {selectedRun.year}</p>
-              <p className="text-xs text-slate-400">{selectedRun.employeeCount} employees · Gross {fmtAmt(selectedRun.totalGrossSalary, currencyCode)} · Net {fmtAmt(selectedRun.totalNetSalary, currencyCode)}</p>
+              <p className="text-sm font-semibold text-slate-900 dark:text-white">
+                Payroll Run — {MONTHS[selectedRun.month - 1]} {selectedRun.year}
+                {runCurrency.status === 'resolved' && runCurrency.companyName ? ` · ${runCurrency.companyName}` : ''}
+              </p>
+              <p className="text-xs text-slate-400">{selectedRun.employeeCount} employees · Gross {runAmount(selectedRun.totalGrossSalary)} · Net {runAmount(selectedRun.totalNetSalary)}</p>
             </div>
             <StatusBadge status={selectedRun.status} />
           </div>
+
+          <RunCurrencyNotice resolution={runCurrency} companiesState={companiesState} onRetry={retryRunCurrency} blocksApproval />
 
           {canApproveStep1 && !canFinanceApproveDirectly && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700 dark:border-amber-400/20 dark:bg-amber-500/10 dark:text-amber-400">
@@ -1951,7 +2213,9 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
                   className={btn.primary}
                   onClick={handleApprove}
                   disabled={saving || !gateSatisfied}
-                  title={gateSatisfied ? undefined : 'Acknowledge the exclusions and overrides above before approving.'}
+                  title={gateSatisfied ? undefined : !currencyConfirmed
+                    ? "The run's currency must be confirmed before it can be approved."
+                    : 'Acknowledge the exclusions and overrides above before approving.'}
                 >
                   <CheckCircle2 className="h-4 w-4" />
                   {saving ? 'Saving…' : canFinanceApproveDirectly || canApproveStep2 ? 'Approve — Final' : 'Approve → Send to Finance'}
@@ -2004,18 +2268,23 @@ function PayslipsTab() {
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [runId, setRunId] = useState('');
   const [payslips, setPayslips] = useState<Payslip[]>([]);
+  const [listError, setListError] = useState('');
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [downloadingBundle, setDownloadingBundle] = useState(false);
   const [error, setError] = useState('');
 
-  useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
+  useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
 
   const loadPayslips = () => {
     if (!runId) return;
     setLoading(true);
-    payrollApi.listPayslips(runId, { pageSize: 200 }).then(r => setPayslips(r.items)).catch(() => {}).finally(() => setLoading(false));
+    setListError('');
+    payrollApi.allPayslips(runId)
+      .then(setPayslips)
+      .catch(e => { setPayslips([]); setListError(`Payslips could not be loaded. ${requestFailureReason(e)}`); })
+      .finally(() => setLoading(false));
   };
   useEffect(() => { if (runId) loadPayslips(); }, [runId]);
 
@@ -2079,7 +2348,12 @@ function PayslipsTab() {
         </div>
       )}
 
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : payslips.length === 0 && runId ? (
+      {loading ? <p className="text-sm text-slate-400">Loading…</p> : listError ? (
+        <div role="alert" className="surface flex items-start gap-2 p-4 text-sm text-rose-700 dark:text-rose-400">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{listError}</span>
+        </div>
+      ) : payslips.length === 0 && runId ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <FileText className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
           <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No payslips yet — click Generate to create payslips for this run</p>
@@ -2148,22 +2422,32 @@ function BankWpsTab() {
   const [creating, setCreating] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState('WPS');
   const [error, setError] = useState('');
+  const openBatchIdRef = useRef<string | null>(null);
+  const currentRunRef = useRef(runId);
+  currentRunRef.current = runId;
 
-  useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
+  useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
 
   useEffect(() => {
-    if (!runId) { setBatches([]); return; }
+    let cancelled = false;
+    openBatchIdRef.current = null;
+    setBatches([]); setSelectedBatch(null); setRecords([]);
+    if (!runId) return;
     setError('');
-    payrollApi.listPaymentBatches(runId).then(setBatches).catch(() => {});
+    payrollApi.listPaymentBatches(runId).then(rows => { if (!cancelled) setBatches(rows); }).catch(() => {});
+    return () => { cancelled = true; };
   }, [runId]);
 
   const selectedRun = runs.find(r => r.id === runId);
   // Backend (C5 control) only allows payment batches for Locked runs — finance must lock first.
   const runIsLocked = selectedRun?.status === 'Locked';
+  const hasExistingBatch = batches.some(b => b.wpsStatus !== 'Voided');
 
   const openBatch = (batch: PayrollPaymentBatch) => {
-    setSelectedBatch(batch);
-    payrollApi.paymentRecords(batch.id).then(setRecords).catch(() => {});
+    openBatchIdRef.current = batch.id;
+    setSelectedBatch(batch); setRecords([]);
+    payrollApi.paymentRecords(batch.id)
+      .then(rows => { if (openBatchIdRef.current === batch.id) setRecords(rows); }).catch(() => {});
   };
 
   const createBatch = async () => {
@@ -2172,9 +2456,9 @@ function BankWpsTab() {
     setError('');
     try {
       const batch = await payrollApi.createPaymentBatch(runId, paymentMethod);
+      if (currentRunRef.current !== runId) return;
       setBatches(b => [batch, ...b]);
-      setSelectedBatch(batch);
-      payrollApi.paymentRecords(batch.id).then(setRecords).catch(() => {});
+      openBatch(batch);
     } catch (e) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
       setError(msg ?? 'Could not create payment batch. The payroll run must be Locked first (Approvals tab → Lock Run).');
@@ -2206,8 +2490,8 @@ function BankWpsTab() {
             <select aria-label="Payment method" className={`${sel} w-40`} value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)}>
               {['WPS', 'BankTransfer', 'Cash'].map(m => <option key={m}>{m}</option>)}
             </select>
-            <button type="button" className={btn.primary} onClick={createBatch} disabled={creating || !runIsLocked}>
-              {creating ? 'Creating…' : 'Create Payment Batch'}
+            <button type="button" className={btn.primary} onClick={createBatch} disabled={creating || !runIsLocked || hasExistingBatch}>
+              {creating ? 'Creating…' : hasExistingBatch ? 'Payment Batch Created' : 'Create Payment Batch'}
             </button>
           </>
         )}
@@ -2288,6 +2572,7 @@ function BankWpsTab() {
           )}
         </div>
       </div>
+      {selectedBatch && <SaudiBankExportGate key={selectedBatch.id} batchId={selectedBatch.id} employeeIds={records.map(r => r.employeeId)} />}
     </div>
   );
 }
@@ -2302,7 +2587,6 @@ function PaymentTrackingTab() {
   const [wpsSaving, setWpsSaving] = useState<string | null>(null);
   const [financeSaving, setFinanceSaving] = useState<string | null>(null);
   const [financeForms, setFinanceForms] = useState<Record<string, FinanceActionForm>>({});
-  const { currencyCode } = useTenantSettings();
 
   const loadBatches = () => {
     setLoading(true);
@@ -2311,7 +2595,10 @@ function PaymentTrackingTab() {
 
   useEffect(() => { loadBatches(); }, []);
 
-  const total = batches.reduce((sum, b) => sum + b.totalAmount, 0);
+  // R03 — each batch is labelled with its OWN currency (the same one its row shows), never the tenant
+  // default, and batches in different currencies are totalled per currency rather than added together.
+  const totals = totalsByCurrency(batches, b => b.currency, b => b.totalAmount);
+  const totalLabel = totals.length === 1 && totals[0].currency ? fmtAmt(totals[0].total, totals[0].currency) : 'Mixed currencies';
   const fileGenerated = batches.filter(b => b.status === 'FileGenerated').length;
   const allowedWpsNext = (status: string) => {
     switch (status) {
@@ -2371,7 +2658,7 @@ function PaymentTrackingTab() {
         <div className="grid grid-cols-3 gap-4">
           <KpiCard label="Total Batches" value={batches.length} icon={WalletCards} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
           <KpiCard label="WPS Files Generated" value={fileGenerated} icon={CheckCircle2} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
-          <KpiCard label="Total Amount" value={fmtAmt(total, currencyCode)} icon={TrendingUp} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
+          <KpiCard label="Total Amount" value={totalLabel} sub={totalLabel === 'Mixed currencies' ? perCurrency(totals) : undefined} icon={TrendingUp} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
         </div>
       )}
       {loading ? <p className="text-sm text-slate-400">Loading…</p> : batches.length === 0 ? (
@@ -2477,10 +2764,27 @@ function ReportsTab() {
   const [slips, setSlips] = useState<PayrollSlip[]>([]);
   const [summary, setSummary] = useState<PayrollSummary | null>(null);
   const [loading, setLoading] = useState(false);
-  const { currencyCode } = useTenantSettings();
+  const registerCurrency = useRunCurrency(runs.find(r => r.id === runId));
+
+  // R03 — year to date is per legal entity: each company's locked runs are labelled with that company's
+  // currency and currencies are never added together. An API without the per-company breakdown gets its
+  // figure shown unlabelled rather than with the tenant default.
+  const ytd = (pick: (row: { totalGrossYtd: number; totalNetYtd: number }) => number): { value: string; sub?: string } => {
+    if (!summary) return { value: '' };
+    if (!summary.ytdByCompany) return { value: unconfirmedAmount(pick(summary)) };
+    if (summary.ytdByCompany.length === 0) return { value: 'None yet', sub: 'No locked run this year' };
+    const totals = totalsByCurrency(summary.ytdByCompany, row => {
+      const resolved = resolvePayrollRunCurrency({ companyId: row.companyId }, registerCurrency.companies, registerCurrency.companiesState);
+      return resolved.status === 'resolved' ? resolved.currency : null;
+    }, pick);
+    if (totals.length === 1) return { value: totals[0].currency ? fmtAmt(totals[0].total, totals[0].currency) : unconfirmedAmount(totals[0].total) };
+    return { value: 'Mixed currencies', sub: perCurrency(totals) };
+  };
+  const grossYtd = ytd(row => row.totalGrossYtd);
+  const netYtd = ytd(row => row.totalNetYtd);
 
   useEffect(() => {
-    payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {});
+    payrollApi.listAllRuns().then(setRuns).catch(() => {});
     payrollApi.reportSummary().then(setSummary).catch(() => {});
   }, []);
 
@@ -2498,8 +2802,8 @@ function ReportsTab() {
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
           <KpiCard label="Total Runs" value={summary.totalRuns} icon={FileText} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
           <KpiCard label="Locked Runs" value={summary.lockedRuns} icon={Lock} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
-          <KpiCard label="Gross YTD" value={fmtAmt(summary.totalGrossYtd, currencyCode)} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
-          <KpiCard label="Net YTD" value={fmtAmt(summary.totalNetYtd, currencyCode)} icon={TrendingUp} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
+          <KpiCard label="Gross YTD" value={grossYtd.value} sub={grossYtd.sub} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
+          <KpiCard label="Net YTD" value={netYtd.value} sub={netYtd.sub} icon={TrendingUp} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
         </div>
       )}
 
@@ -2519,9 +2823,10 @@ function ReportsTab() {
           <>
             <div className="mt-4 rounded-lg bg-slate-50 px-4 py-3 dark:bg-white/5">
               <p className="text-sm text-slate-600 dark:text-slate-400">
-                {slips.length} employees · Gross {fmtAmt(slips.reduce((s, x) => s + x.grossSalary, 0), currencyCode)} · Net {fmtAmt(slips.reduce((s, x) => s + x.netSalary, 0), currencyCode)}
+                {slips.length} employees · Gross {registerCurrency.amount(slips.reduce((s, x) => s + x.grossSalary, 0))} · Net {registerCurrency.amount(slips.reduce((s, x) => s + x.netSalary, 0))}
               </p>
             </div>
+            <RunCurrencyNotice resolution={registerCurrency.resolution} companiesState={registerCurrency.companiesState} onRetry={registerCurrency.retry} />
             <div className="mt-4 overflow-x-auto">
               <table className="w-full min-w-[640px] text-sm">
                 <thead>
@@ -2589,7 +2894,7 @@ function AIValidationTab() {
   const [result, setResult] = useState<{ advisoryOnly: boolean; warnings: PayrollValidationResult[]; summary: string } | null>(null);
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
+  useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
 
   const runAI = async () => {
     if (!runId) return;
@@ -2671,11 +2976,12 @@ function EOSBTab() {
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState<unknown[]>([]);
   const [error, setError] = useState('');
-  const { currencyCode } = useTenantSettings();
+  // The history is fetched for the employee just calculated, so it shares that calculation's currency.
+  const historyCurrency = typeof result?.currency === 'string' ? result.currency : '';
 
   const calculate = async () => {
     if (!employeeId) return;
-    setLoading(true); setError(''); setResult(null);
+    setLoading(true); setError(''); setResult(null); setHistory([]);
     try {
       const res = await payrollApi.calculateEosb(Number(employeeId), asOfDate);
       setResult(res as Record<string, unknown>);
@@ -2691,8 +2997,8 @@ function EOSBTab() {
       <div className="surface p-4 space-y-3">
         <p className="text-sm font-semibold text-slate-800 dark:text-white">EOSB / Gratuity Calculator</p>
         <p className="text-xs text-slate-500 dark:text-slate-400">
-          Calculates End-of-Service Benefit per UAE Labour Law (21 days/year for first 5 years, 30 days/year thereafter).
-          Rates are configurable in Setup → GCC Settings.
+          Calculates End-of-Service Benefit under the rules of the employee’s employing-company country.
+          Statutory rates and wage-basis rules come from that country pack and your tenant settings (Setup → GCC Settings).
         </p>
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -2742,8 +3048,10 @@ function EOSBTab() {
               {(history as Array<Record<string, unknown>>).map((h, i) => (
                 <tr key={i} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                   <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{h.calculationDate as string}</td>
-                  <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{currencyCode} {(h.eligibleSalary as number).toLocaleString()}</td>
-                  <td className="px-4 py-2.5 font-medium text-sapphire dark:text-cyanAccent">{currencyCode} {(h.calculatedAmount as number).toLocaleString()}</td>
+                  {/* R03 — this employee's own calculations, in the currency the server just computed
+                      their EOSB in (their salary's, i.e. their employing company's), not the tenant default. */}
+                  <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{historyCurrency} {(h.eligibleSalary as number).toLocaleString()}</td>
+                  <td className="px-4 py-2.5 font-medium text-sapphire dark:text-cyanAccent">{historyCurrency} {(h.calculatedAmount as number).toLocaleString()}</td>
                   <td className="px-4 py-2.5"><StatusBadge status={h.status as string} /></td>
                 </tr>
               ))}
@@ -2763,7 +3071,7 @@ function GlJournalTab({ selectedRunId }: { selectedRunId?: string }) {
   const [journal, setJournal] = useState<PayrollGLJournal | null>(null);
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
+  useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
   useEffect(() => { if (selectedRunId) setRunId(selectedRunId); }, [selectedRunId]);
 
   const load = async () => {
@@ -2863,15 +3171,31 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
   const [runId, setRunId] = useState(selectedRunId ?? '');
   const [report, setReport] = useState<PayrollReconciliation | null>(null);
   const [loading, setLoading] = useState(false);
-  const { currencyCode } = useTenantSettings();
+  const [error, setError] = useState('');
+  const runCurrency = useRunCurrency(runs.find(r => r.id === runId));
 
-  useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
+  useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
   useEffect(() => { if (selectedRunId) setRunId(selectedRunId); }, [selectedRunId]);
 
   const load = async () => {
     if (!runId) return;
     setLoading(true);
-    payrollApi.reconciliation(runId).then(r => setReport(r)).catch(() => {}).finally(() => setLoading(false));
+    setError('');
+    try {
+      setReport(await payrollApi.reconciliation(runId));
+    } catch (e: unknown) {
+      // A failed reconciliation used to leave the previous report (or nothing) on screen, silently.
+      setReport(null);
+      const response = (e as { response?: { status?: number; data?: { message?: string; error?: string } } })?.response;
+      setError(
+        response?.data?.message
+        ?? (response?.status === 403
+          ? 'You do not have permission to run payroll reconciliation.'
+          : 'Payroll reconciliation could not be loaded. Try again.'),
+      );
+    } finally {
+      setLoading(false);
+    }
   };
 
   const fmt = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2 });
@@ -2894,6 +3218,14 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
         </button>
       </div>
 
+      {error && (
+        <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300">
+          {error}
+        </div>
+      )}
+
+      {report && <RunCurrencyNotice resolution={runCurrency.resolution} companiesState={runCurrency.companiesState} onRetry={runCurrency.retry} />}
+
       {report && (
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -2908,9 +3240,9 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
               {[{ label: 'Gross', prior: report.priorTotalGross, current: report.currentTotalGross }, { label: 'Net', prior: report.priorTotalNet, current: report.currentTotalNet }].map(m => (
                 <div key={m.label} className="p-4">
                   <p className="text-xs text-slate-400">Total {m.label}</p>
-                  <p className="text-lg font-bold text-slate-900 dark:text-white">{fmtAmt(m.current, currencyCode)}</p>
+                  <p className="text-lg font-bold text-slate-900 dark:text-white">{runCurrency.amount(m.current)}</p>
                   <p className={`text-xs ${m.current >= m.prior ? 'text-emerald-500' : 'text-rose-500'}`}>
-                    {m.current >= m.prior ? '+' : ''}{fmtAmt(m.current - m.prior, currencyCode)} vs {report.priorPeriod ?? 'prior period'}
+                    {m.current >= m.prior ? '+' : ''}{runCurrency.amount(m.current - m.prior)} vs {report.priorPeriod ?? 'prior period'}
                   </p>
                 </div>
               ))}
@@ -2970,7 +3302,7 @@ function FinalSettlementTab() {
   const [actionSaving, setActionSaving] = useState<string | null>(null);
   const [actionForms, setActionForms] = useState<Record<string, {
     reason: string; accrualDate: string; acknowledgeWageBaseFloor: boolean;
-    acknowledgeWagesUnpaid: boolean; wagesUnpaidReason: string; acknowledgeSelfApproval: boolean;
+    acknowledgeWagesUnpaid: boolean; wagesUnpaidReason: string;
   }>>({});
 
   const loadSettlements = () => payrollApi.listFinalSettlements().then(r => {
@@ -2981,7 +3313,7 @@ function FinalSettlementTab() {
   const defaultActionForm = {
     reason: '', accrualDate: new Date().toISOString().slice(0, 10),
     acknowledgeWageBaseFloor: false, acknowledgeWagesUnpaid: false,
-    wagesUnpaidReason: '', acknowledgeSelfApproval: false,
+    wagesUnpaidReason: '',
   };
   const actionForm = (id: string) => actionForms[id] ?? defaultActionForm;
   const setActionForm = (id: string, patch: Partial<typeof defaultActionForm>) =>
@@ -2999,7 +3331,6 @@ function FinalSettlementTab() {
         acknowledgeWageBaseFloor: af.acknowledgeWageBaseFloor,
         acknowledgeWagesUnpaid: af.acknowledgeWagesUnpaid,
         wagesUnpaidReason: af.wagesUnpaidReason || undefined,
-        acknowledgeSelfApproval: af.acknowledgeSelfApproval,
         accrualDate: af.accrualDate || undefined,
         reason: af.reason || undefined,
       });
@@ -3029,6 +3360,9 @@ function FinalSettlementTab() {
         <p className="text-sm font-semibold text-slate-800 dark:text-white">Final Settlement Lifecycle</p>
         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
           Calculate and save a Draft payable, submit it, approve the GL accrual, disburse it through an off-cycle payroll run, then settle the accepted payment batch.
+        </p>
+        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+          Approval needs a second person: whoever calculated, recalculated or submitted a settlement cannot approve it.
         </p>
         <p className="mt-2 text-sm font-semibold text-sapphire dark:text-cyanAccent">Outstanding approved/disbursing payable: {outstandingTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
       </div>
@@ -3130,7 +3464,6 @@ function FinalSettlementTab() {
                     {(s.status === 'Draft' || s.status === 'PendingApproval') && <>
                       <div className="flex flex-wrap gap-3 text-xs text-slate-600 dark:text-slate-300">
                         <label><input type="checkbox" checked={af.acknowledgeWageBaseFloor} onChange={e => setActionForm(s.id, { acknowledgeWageBaseFloor: e.target.checked })} /> Accept flagged wage-base floor</label>
-                        <label><input type="checkbox" checked={af.acknowledgeSelfApproval} onChange={e => setActionForm(s.id, { acknowledgeSelfApproval: e.target.checked })} /> Acknowledge maker/checker exception</label>
                         <label><input type="checkbox" checked={af.acknowledgeWagesUnpaid} onChange={e => setActionForm(s.id, { acknowledgeWagesUnpaid: e.target.checked })} /> Add acknowledged unpaid wages</label>
                       </div>
                       {af.acknowledgeWagesUnpaid && <input className={inp} aria-label={`Unpaid wages reason for ${s.employeeName}`} placeholder="Required unpaid-wages justification" value={af.wagesUnpaidReason} onChange={e => setActionForm(s.id, { wagesUnpaidReason: e.target.value })} />}

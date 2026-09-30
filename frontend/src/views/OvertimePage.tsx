@@ -6,6 +6,9 @@ import { EmployeePicker } from '../components/EmployeePicker';
 import type { SelectedEmployee } from '../components/EmployeePicker';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useEffect, useState } from 'react';
+import { usePagedList } from '../hooks/usePagedList';
+import { ListWindowFooter } from '../components/ListWindowFooter';
+import { requestFailureReason } from '../lib/requestFailure';
 import {
   AlertTriangle, BarChart2, Calculator, CheckCircle2, Clock3, FileClock,
   Layers3, Plus, RefreshCw, Settings, TimerReset, TrendingUp,
@@ -363,22 +366,20 @@ function OTRequestsTable({ requests, onApprove, onReject, showActions }: {
 // ── My OT Tab ───────────────────────────────────────────────────────────────────
 
 function MyOTTab({ selfEmployeeId, isEmployee }: { selfEmployeeId?: number; isEmployee?: boolean }) {
-  const [requests, setRequests] = useState<OvertimeRequest[]>([]);
-  const [loading, setLoading] = useState(true);
   const [empId, setEmpId] = useState(selfEmployeeId ? String(selfEmployeeId) : '');
   const [myOtFilterEmp, setMyOtFilterEmp] = useState<SelectedEmployee | null>(null);
   const [statusFilter, setStatusFilter] = useState('');
 
   useEffect(() => { if (myOtFilterEmp) setEmpId(String(myOtFilterEmp.id)); }, [myOtFilterEmp]);
 
-  const load = () => {
-    setLoading(true);
-    const eid = (isEmployee && selfEmployeeId) ? selfEmployeeId : (empId ? Number(empId) : undefined);
-    overtimeApi.requests({ employeeId: eid, status: statusFilter || undefined, pageSize: 100 })
-      .then(r => { setRequests(r.items); setLoading(false); })
-      .catch(() => setLoading(false));
-  };
-  useEffect(load, [statusFilter]);
+  // One page at a time with the server's total: this used to take the first 100 as "the" list.
+  const eid = (isEmployee && selfEmployeeId) ? selfEmployeeId : (empId ? Number(empId) : undefined);
+  const list = usePagedList<OvertimeRequest>((page, pageSize) =>
+    overtimeApi.requests({ employeeId: eid, status: statusFilter || undefined, page, pageSize }));
+  const { items: requests, loading, reload } = list;
+  const load = () => { void reload(); };
+  useEffect(() => { void reload(); }, [statusFilter, reload]);
+  const count = list.total ?? requests.length;
 
   return (
     <div className="space-y-4">
@@ -389,10 +390,12 @@ function MyOTTab({ selfEmployeeId, isEmployee }: { selfEmployeeId?: number; isEm
           {['PendingManager', 'PendingHR', 'Approved', 'Rejected'].map(s => <option key={s} value={s}>{s.replace(/([A-Z])/g, ' $1').trim()}</option>)}
         </select>
         {!isEmployee && <button type="button" className={btn.primary} onClick={load}>Search</button>}
-        <p className="ms-auto text-sm text-slate-400">{requests.length} request{requests.length !== 1 ? 's' : ''}</p>
+        <p className="ms-auto text-sm text-slate-400">{count} request{count !== 1 ? 's' : ''}</p>
       </div>
+      {list.error != null && <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">Overtime requests could not be loaded. {requestFailureReason(list.error)}</p>}
       <div className="surface overflow-hidden">
         {loading ? <p className="p-8 text-center text-sm text-slate-400">Loading…</p> : <OTRequestsTable requests={requests} />}
+        <ListWindowFooter shown={requests.length} total={list.total} noun="requests" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
       </div>
     </div>
   );
@@ -401,8 +404,6 @@ function MyOTTab({ selfEmployeeId, isEmployee }: { selfEmployeeId?: number; isEm
 // ── Team OT Tab ─────────────────────────────────────────────────────────────────
 
 function TeamOTTab() {
-  const [requests, setRequests] = useState<OvertimeRequest[]>([]);
-  const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
   // Attendance-derived overtime is now capped by the same policy a hand-keyed request obeys. What
   // the policy will not pay is worked time, so it is shown to the person who ran the detection
@@ -421,13 +422,13 @@ function TeamOTTab() {
     }
   };
 
-  const load = () => {
-    setLoading(true);
-    overtimeApi.requests({ status: statusFilter || undefined, pageSize: 200 })
-      .then(r => { setRequests(r.items); setLoading(false); })
-      .catch(() => setLoading(false));
-  };
-  useEffect(load, [statusFilter]);
+  // One page at a time with the server's total: this used to take the first 200 as "the" list.
+  const list = usePagedList<OvertimeRequest>((page, pageSize) =>
+    overtimeApi.requests({ status: statusFilter || undefined, page, pageSize }));
+  const { items: requests, loading, reload } = list;
+  const load = () => { void reload(); };
+  useEffect(() => { void reload(); }, [statusFilter, reload]);
+  const count = list.total ?? requests.length;
 
   const approve = async (r: OvertimeRequest) => {
     try { await overtimeApi.approve(r.id, r.requestedMinutes, 'Approved'); load(); } catch { alert('Approval failed.'); }
@@ -448,8 +449,9 @@ function TeamOTTab() {
         <button type="button" className={btn.ghost} onClick={detect}>
           <RefreshCw className="h-4 w-4" /> Detect from Attendance
         </button>
-        <p className="ms-auto text-sm text-slate-400">{requests.length} request{requests.length !== 1 ? 's' : ''}</p>
+        <p className="ms-auto text-sm text-slate-400">{count} request{count !== 1 ? 's' : ''}</p>
       </div>
+      {list.error != null && <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">Overtime requests could not be loaded. {requestFailureReason(list.error)}</p>}
       {detectError && (
         <div className="surface border-s-4 border-s-rose-500 p-4 text-sm text-rose-600 dark:text-rose-400">{detectError}</div>
       )}
@@ -477,6 +479,7 @@ function TeamOTTab() {
       )}
       <div className="surface overflow-hidden">
         {loading ? <p className="p-8 text-center text-sm text-slate-400">Loading…</p> : <OTRequestsTable requests={requests} onApprove={approve} onReject={reject} showActions />}
+        <ListWindowFooter shown={requests.length} total={list.total} noun="requests" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
       </div>
     </div>
   );
@@ -499,15 +502,15 @@ function ApprovalsTab({ isAdmin, isHRManager, isManager }: { isAdmin: boolean; i
     setLoading(true);
     try {
       if (isAdmin) {
+        // The whole queue, page by page: an approver must see every pending request, not the first 100.
         const [r1, r2] = await Promise.all([
-          overtimeApi.requests({ status: 'PendingManager', pageSize: 100 }),
-          overtimeApi.requests({ status: 'PendingHR', pageSize: 100 }),
+          overtimeApi.allRequests({ status: 'PendingManager' }),
+          overtimeApi.allRequests({ status: 'PendingHR' }),
         ]);
-        setRequests([...r1.items, ...r2.items].sort((a, b) => (a.workDate < b.workDate ? 1 : -1)));
+        setRequests([...r1, ...r2].sort((a, b) => (a.workDate < b.workDate ? 1 : -1)));
       } else {
         const status = isHRManager ? 'PendingHR' : 'PendingManager';
-        const r = await overtimeApi.requests({ status, pageSize: 100 });
-        setRequests(r.items);
+        setRequests(await overtimeApi.allRequests({ status }));
       }
     } catch { /* ignore */ }
     setLoading(false);

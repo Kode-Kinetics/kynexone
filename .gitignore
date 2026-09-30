@@ -34,3 +34,7 @@ docker-compose.override.yml
 
 # Wave-1 git worktrees — same class of problem as .claude/worktrees
 .wave1/
+
+# Destructive one-off SQL kept locally (e.g. database/DANGER_truncate_all_tenant_data.sql).
+# A hard-coded truncate list must never be committed where anyone can run it.
+database/DANGER_*

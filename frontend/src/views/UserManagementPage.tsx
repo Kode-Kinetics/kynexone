@@ -503,13 +503,13 @@ function UserAccessModal({ user, roles, allPermissions, onClose }: {
   }, [user.id]);
   useEffect(() => { reload(); }, [reload]);
   const reloadCompanyAccess = useCallback(async () => {
-    const [grants, companyPage] = await Promise.all([
+    const [grants, allCompanies] = await Promise.all([
       entityGrantsApi.list(user.id),
-      companiesApi.list(1, 200),
+      companiesApi.listAll(),
     ]);
     setCompanyGrants(grants);
-    setCompanies(companyPage.items);
-    if (!grantCompanyId && companyPage.items.length > 0) setGrantCompanyId(companyPage.items[0].id);
+    setCompanies(allCompanies);
+    if (!grantCompanyId && allCompanies.length > 0) setGrantCompanyId(allCompanies[0].id);
   }, [grantCompanyId, user.id]);
   useEffect(() => { reloadCompanyAccess().catch(() => {}); }, [reloadCompanyAccess]);
   // Reset pending bulk confirmations whenever the filter changes so a confirm always reflects the current scope.
@@ -1470,11 +1470,11 @@ function PermissionGrantorsTab() {
     setLoading(true);
     Promise.all([
       grantorsApi.list(),
-      usersApi.list({ pageSize: 100 }),
+      usersApi.listAll(),
       rolesApi.permissions(),
     ]).then(([g, u, p]) => {
       setGrantors(g);
-      setUsers(u.items);
+      setUsers(u);
       setPermissions(p);
     }).catch(() => {}).finally(() => setLoading(false));
   };

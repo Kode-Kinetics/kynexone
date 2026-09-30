@@ -27,6 +27,7 @@
 import { writeFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { assertDisposableHost } from '../disposable-host.guard';
+import { collectAllPages, pageItems, pageTotal } from '../paging';
 import {
   PLATFORM_EMAIL, PLATFORM_PASSWORD, TENANTS, WORLD_MANIFEST,
   type FixtureCompany, type FixtureTenant, type FixtureUser, type WorldManifest,
@@ -96,10 +97,26 @@ function expectOk<T>(res: Res<T>, what: string, accept: number[] = [200, 201, 20
   return res;
 }
 
-const items = (body: any): any[] =>
-  Array.isArray(body) ? body
-    : Array.isArray(body?.items) ? body.items
-      : Array.isArray(body?.Items) ? body.Items : [];
+const items = pageItems;
+
+/**
+ * Every employee the caller can see, across all pages. The API caps `pageSize` at 100, so the
+ * `pageSize=200` requests this replaced silently stopped at employee 100. A failed page throws:
+ * an empty list here would make later steps skip employees without saying so.
+ */
+async function allEmployees(
+  token: string, opts: { companyId?: string; search?: string } = {},
+): Promise<any[]> {
+  return collectAllPages(async (page, pageSize) => {
+    const qs = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+    if (opts.search) qs.set('search', opts.search);
+    const res = expectOk(
+      await call('GET', `/api/employees?${qs.toString()}`, { token, companyId: opts.companyId }),
+      `list employees (page ${page})`,
+    );
+    return { items: pageItems(res.body), total: pageTotal(res.body) };
+  });
+}
 
 // ── Authentication ────────────────────────────────────────────────────────────────────────────
 
@@ -467,11 +484,8 @@ async function ensureEmployees(
   let created = 0;
   for (const company of companies) {
     const { departmentId, designationId } = await ensureOrgUnits(adminToken, company);
-    const existing = await call(
-      `GET`, `/api/employees?page=1&pageSize=200&search=${encodeURIComponent(`${company.code}-E`)}`,
-      { token: adminToken, companyId: company.id },
-    );
-    const have = new Set(items(existing.body).map((e: any) => String(e.employeeCode ?? e.EmployeeCode ?? '')));
+    const existing = await allEmployees(adminToken, { companyId: company.id, search: `${company.code}-E` });
+    const have = new Set(existing.map((e: any) => String(e.employeeCode ?? e.EmployeeCode ?? '')));
 
     // The first employee of each company is everyone else's reporting manager. Not decoration: the
     // leave approval route resolves its FIRST step from the reporting line, so an employee with no
@@ -603,10 +617,7 @@ const idRecord = (fieldKey: string, fieldLabel: string, fieldValue: string) => {
  * ending up with zero Active employees is the failure this whole bootstrap exists to prevent.
  */
 async function activateEmployees(adminToken: string, slug: string, floor: number): Promise<number> {
-  const list = expectOk(
-    await call('GET', '/api/employees?page=1&pageSize=200', { token: adminToken }), 'list employees',
-  );
-  const rows = items(list.body);
+  const rows = await allEmployees(adminToken);
   const blocked: string[] = [];
   let active = 0;
 
@@ -665,9 +676,7 @@ async function ensureEmployeePortalLogins(
   const logins = fixture.employeePortalLogins ?? [];
   if (logins.length === 0) return 0;
 
-  const employees = items((await call(
-    'GET', '/api/employees?page=1&pageSize=200', { token: adminToken, companyId: companies[0].id },
-  )).body);
+  const employees = await allEmployees(adminToken, { companyId: companies[0].id });
 
   let linked = 0;
   for (const [index, email] of logins.entries()) {
@@ -812,9 +821,8 @@ async function ensureLeaveAndAttendance(
   if (!annual) return 'no leave types provisioned';
 
   const company = companies[0];
-  const active = items((await call(
-    'GET', '/api/employees?page=1&pageSize=200', { token: adminToken, companyId: company.id },
-  )).body).filter((e: any) => String(e.status ?? e.Status) === 'Active');
+  const active = (await allEmployees(adminToken, { companyId: company.id }))
+    .filter((e: any) => String(e.status ?? e.Status) === 'Active');
   if (active.length === 0) return 'no active employees to give leave or attendance to';
   // Leave for a handful; ATTENDANCE FOR EVERYONE. Timesheet submission validates logged hours
   // against recorded attendance and refuses `over_allocated` for a day with none, so punching only
@@ -1015,9 +1023,8 @@ async function ensureEmployeeDocuments(
   adminToken: string, companies: Array<{ code: string; id: string }>,
 ): Promise<string> {
   const company = companies[0];
-  const active = items((await call(
-    'GET', '/api/employees?page=1&pageSize=200', { token: adminToken, companyId: company.id },
-  )).body).filter((e: any) => String(e.status ?? e.Status) === 'Active');
+  const active = (await allEmployees(adminToken, { companyId: company.id }))
+    .filter((e: any) => String(e.status ?? e.Status) === 'Active');
   if (active.length === 0) return 'no active employees to document';
 
   // Stable order, so which two people carry the gap does not move between runs and the demo script
@@ -1118,9 +1125,7 @@ async function ensureSalaries(
       structureId = created.body.id ?? created.body.Id;
     }
 
-    const employees = items((await call(
-      'GET', '/api/employees?page=1&pageSize=200', { token: adminToken, companyId: company.id },
-    )).body);
+    const employees = await allEmployees(adminToken, { companyId: company.id });
     for (const employee of employees) {
       const id = employee.id ?? employee.Id;
       if (assigned.has(String(id))) continue;

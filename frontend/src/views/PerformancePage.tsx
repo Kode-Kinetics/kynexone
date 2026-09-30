@@ -4,6 +4,10 @@ import { InfoTip } from '../components/InfoTip';
 import { EmployeeSearchSelect } from '../components/EmployeeSearchSelect';
 import type { EmployeeSelection } from '../components/EmployeeSearchSelect';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
+import { useAuth } from '../contexts/AuthContext';
+import { formatCalendarDate } from '../lib/calendarDate';
+import { canOpenPerformanceTab, landingPerformanceTab, performanceCapabilities } from '../lib/performanceAccess';
+import type { PerformanceTab } from '../lib/performanceAccess';
 import { useEffect, useState } from 'react';
 import {
   Activity, AlertTriangle, BarChart2, CheckCircle, ChevronRight,
@@ -23,8 +27,7 @@ import type {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function fmtDate(s: string | null | undefined) {
-  if (!s) return '—';
-  return new Date(s).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' });
+  return formatCalendarDate(s, 'en-US');
 }
 
 function fmtCurrency(n: number) {
@@ -122,6 +125,12 @@ const btn = {
 };
 
 // ── Overview Tab ──────────────────────────────────────────────────────────────
+
+/** What the signed-in user may do here, from their effective permissions (see lib/performanceAccess). */
+function usePerformanceCapabilities() {
+  const { hasPermission } = useAuth();
+  return performanceCapabilities(hasPermission);
+}
 
 function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
   const [dash, setDash] = useState<Awaited<ReturnType<typeof analyticsApi.dashboard>> | null>(null);
@@ -316,12 +325,13 @@ function CreateCycleModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
 // ── Cycles Tab ────────────────────────────────────────────────────────────────
 
 function CyclesTab() {
+  const can = usePerformanceCapabilities();
   const [cycles, setCycles] = useState<PerformanceCycle[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [launching, setLaunching] = useState<string | null>(null);
 
-  const load = () => { setLoading(true); cyclesApi.list().then(r => { setCycles(r.items); setLoading(false); }).catch(() => setLoading(false)); };
+  const load = () => { setLoading(true); cyclesApi.listAll().then(all => { setCycles(all); setLoading(false); }).catch(() => setLoading(false)); };
   useEffect(load, []);
 
   const launch = async (id: string) => {
@@ -338,7 +348,9 @@ function CyclesTab() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <p className="text-sm text-slate-500 dark:text-slate-400">{cycles.length} cycle{cycles.length !== 1 ? 's' : ''}</p>
-        <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> New Cycle</button>
+        {can.setUpCycles && (
+          <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> New Cycle</button>
+        )}
       </div>
 
       {loading ? <p className="text-sm text-slate-400">Loading…</p> : cycles.length === 0 ? (
@@ -357,12 +369,12 @@ function CyclesTab() {
               </div>
               <div className="ms-4 flex shrink-0 items-center gap-3">
                 {statusBadge(c.status)}
-                {c.status === 'Draft' && (
+                {c.status === 'Draft' && can.setUpCycles && (
                   <button type="button" onClick={() => launch(c.id)} disabled={launching === c.id} className={btn.primary}>
                     {launching === c.id ? 'Launching…' : 'Launch'}
                   </button>
                 )}
-                {['Active', 'InReview', 'Calibration', 'FinalApproval'].includes(c.status) && (
+                {['Active', 'InReview', 'Calibration', 'FinalApproval'].includes(c.status) && can.setUpCycles && (
                   <button type="button" onClick={() => advance(c.id)} className={btn.ghost}>Advance</button>
                 )}
               </div>
@@ -466,6 +478,7 @@ function MyReviewsTab() {
 // ── Manager Review Modal ──────────────────────────────────────────────────────
 
 function ManagerReviewModal({ review, onClose, onSaved }: { review: AppraisalReview; onClose: () => void; onSaved: () => void }) {
+  const can = usePerformanceCapabilities();
   const [form, setForm] = useState({
     kpiScore: String(review.kpiScore || ''), competencyScore: String(review.competencyScore || ''),
     attendanceScore: String(review.attendanceScore || ''), productivityScore: String(review.productivityScore || ''),
@@ -506,7 +519,9 @@ function ManagerReviewModal({ review, onClose, onSaved }: { review: AppraisalRev
           <Field label="Attendance Score (0–100)">
             <div className="flex gap-2">
               <input type="number" min={0} max={100} className={inp} value={form.attendanceScore} onChange={e => set('attendanceScore', e.target.value)} />
-              <button type="button" onClick={autoAttendance} className={btn.ghost} title="Auto-compute from attendance records"><Zap className="h-4 w-4" /></button>
+              {can.decideRatings && (
+                <button type="button" onClick={autoAttendance} className={btn.ghost} title="Auto-compute from attendance records"><Zap className="h-4 w-4" /></button>
+              )}
             </div>
           </Field>
         </div>
@@ -623,6 +638,7 @@ function OpenAppealsPanel({ onResolved }: { onResolved: () => void }) {
 }
 
 function TeamReviewsTab() {
+  const can = usePerformanceCapabilities();
   const [reviews, setReviews] = useState<AppraisalReview[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
@@ -640,7 +656,7 @@ function TeamReviewsTab() {
 
   return (
     <div className="space-y-4">
-      <OpenAppealsPanel onResolved={load} />
+      {can.decideRatings && <OpenAppealsPanel onResolved={load} />}
       <div className="flex items-center gap-3">
         <select className={`${sel} w-56`} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
           <option value="">All Statuses</option>
@@ -667,10 +683,10 @@ function TeamReviewsTab() {
               </div>
               <div className="ms-4 flex shrink-0 items-center gap-3">
                 {statusBadge(r.status)}
-                {['SelfAssessmentSubmitted', 'ManagerReview'].includes(r.status) && (
+                {['SelfAssessmentSubmitted', 'ManagerReview'].includes(r.status) && can.writeReviews && (
                   <button type="button" className={btn.primary} onClick={() => setSelected(r)}>Review</button>
                 )}
-                {r.status === 'FinalApproval' && (
+                {r.status === 'FinalApproval' && can.decideRatings && (
                   <button type="button" className={btn.primary} onClick={() => publish(r.id)}>Publish</button>
                 )}
               </div>
@@ -699,6 +715,8 @@ function CreateGoalModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
   const save = async () => {
     if (!selectedEmployee) { setError('Please select an employee.'); return; }
     if (!form.title || !form.targetValue) { setError('Title and Target Value are required.'); return; }
+    const weight = Number(form.weight);
+    if (!(weight > 0 && weight <= 100)) { setError('Weight is this goal\'s share of the scorecard: enter a percentage above 0 and up to 100.'); return; }
     setSaving(true); setError('');
     try {
       await goalsApi.create({
@@ -707,11 +725,11 @@ function CreateGoalModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
         kpiType: form.kpiType, measurementUnit: form.measurementUnit,
         baselineValue: Number(form.baselineValue),
         targetValue: Number(form.targetValue), actualValue: Number(form.actualValue),
-        weight: Number(form.weight), priority: form.priority,
+        weight, priority: form.priority,
         startDate: form.startDate || undefined, dueDate: form.dueDate || undefined,
       });
       onSaved();
-    } catch { setError('Failed to create goal.'); setSaving(false); }
+    } catch (e) { setError(goalApiMessage(e, 'Failed to create goal.')); setSaving(false); }
   };
 
   return (
@@ -760,6 +778,11 @@ function CreateGoalModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
   );
 }
 
+/** The server's reason for refusing a goal action, so the user sees why rather than "failed". */
+function goalApiMessage(e: unknown, fallback: string) {
+  return (e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? fallback;
+}
+
 const PRIORITY_BADGE: Record<string, string> = {
   High: 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400',
   Medium: 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400',
@@ -767,6 +790,14 @@ const PRIORITY_BADGE: Record<string, string> = {
 };
 
 function GoalsTab() {
+  // Setting and approving goals is the reviewer tier (performance.write): the line manager for their own
+  // reports, or HR. The server also checks the reporting line, and a refusal is shown with its reason.
+  // An employee sees their own goals and records progress on the active ones.
+  const can = usePerformanceCapabilities();
+  const canApproveGoals = can.writeReviews;
+  const [approvingId, setApprovingId] = useState<string | null>(null);
+  const [goalActionError, setGoalActionError] = useState('');
+  const [progressError, setProgressError] = useState('');
   const [goals, setGoals] = useState<EmployeeGoal[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
@@ -783,10 +814,20 @@ function GoalsTab() {
   };
   useEffect(load, [statusFilter]);
 
+  // A goal is agreed before it is measured: approving a draft makes it Active, which is what opens
+  // progress updates. The server refuses progress on anything that is not Active.
+  const approveGoal = async (id: string) => {
+    setApprovingId(id); setGoalActionError('');
+    try { await goalsApi.approve(id); load(); }
+    catch (e) { setGoalActionError(goalApiMessage(e, 'The goal could not be approved. Check that you approve for this employee.')); }
+    finally { setApprovingId(null); }
+  };
+
   const updateProgress = async () => {
     if (!progressGoal || !progressVal) return;
+    setProgressError('');
     try { await goalsApi.updateProgress(progressGoal.id, Number(progressVal), progressNotes); setProgressGoal(null); load(); }
-    catch { alert('Update failed.'); }
+    catch (e) { setProgressError(goalApiMessage(e, 'Progress could not be saved.')); }
   };
 
   const confirmDelete = async () => {
@@ -805,8 +846,11 @@ function GoalsTab() {
           {['Draft', 'Active', 'Completed', 'OnHold', 'Cancelled'].map(s => <option key={s}>{s}</option>)}
         </select>
         <p className="flex-1 text-sm text-slate-500 dark:text-slate-400">{goals.length} goal{goals.length !== 1 ? 's' : ''}</p>
-        <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> Add Goal</button>
+        {can.writeReviews && (
+          <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> Add Goal</button>
+        )}
       </div>
+      {goalActionError && <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">{goalActionError}</p>}
 
       {loading ? <p className="text-sm text-slate-400">Loading…</p> : goals.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
@@ -834,14 +878,24 @@ function GoalsTab() {
                 <div className="flex shrink-0 items-center gap-2">
                   <span className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium ${PRIORITY_BADGE[g.priority] ?? PRIORITY_BADGE.Medium}`}>{g.priority}</span>
                   {statusBadge(g.status)}
-                  {g.status === 'Active' && (
-                    <button type="button" className={btn.ghost} onClick={() => { setProgressGoal(g); setProgressVal(String(g.actualValue)); setProgressNotes(''); }}>Update</button>
+                  {g.status === 'Draft' && canApproveGoals && (
+                    <button type="button" className={btn.primary} disabled={approvingId !== null} onClick={() => approveGoal(g.id)}>
+                      {approvingId === g.id ? 'Approving…' : 'Approve goal'}
+                    </button>
                   )}
-                  {!g.managerApproved && (
+                  {g.status === 'Active' && (
+                    <button type="button" className={btn.ghost} onClick={() => { setProgressGoal(g); setProgressVal(String(g.actualValue)); setProgressNotes(''); setProgressError(''); }}>Update progress</button>
+                  )}
+                  {!g.managerApproved && can.writeReviews && (
                     <button type="button" className="rounded px-2 py-1 text-xs text-rose-600 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-900/20" onClick={() => setDeleteId(g.id)}>Delete</button>
                   )}
                 </div>
               </div>
+              {g.status === 'Draft' && (
+                <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                  Next step: {canApproveGoals ? 'approve this goal to make it active' : 'the employee\'s manager or HR approves this goal'} — progress can be recorded once it is active.
+                </p>
+              )}
             </div>
           ))}
         </div>
@@ -855,6 +909,7 @@ function GoalsTab() {
               <input type="number" title="New Actual Value" className={inp} value={progressVal} onChange={e => setProgressVal(e.target.value)} />
             </Field>
             <Field label="Notes"><textarea className={inp} value={progressNotes} onChange={e => setProgressNotes(e.target.value)} /></Field>
+            {progressError && <p role="alert" className="text-xs text-rose-600 dark:text-rose-400">{progressError}</p>}
             <div className="flex justify-end gap-2">
               <button type="button" className={btn.ghost} onClick={() => setProgressGoal(null)}>Cancel</button>
               <button type="button" className={btn.primary} onClick={updateProgress}>Save Progress</button>
@@ -1027,7 +1082,7 @@ function CalibrationTab() {
   const [adjustment, setAdjustment] = useState('');
   const [adjustReason, setAdjustReason] = useState('');
 
-  useEffect(() => { cyclesApi.list({ status: 'Calibration' }).then(r => { setCycles(r.items); if (r.items.length > 0) setSelectedCycle(r.items[0].id); }).catch(() => {}); }, []);
+  useEffect(() => { cyclesApi.listAll({ status: 'Calibration' }).then(all => { setCycles(all); if (all.length > 0) setSelectedCycle(all[0].id); }).catch(() => {}); }, []);
 
   useEffect(() => {
     if (!selectedCycle) return;
@@ -1270,6 +1325,7 @@ function CreatePIPModal({ onClose, onSaved }: { onClose: () => void; onSaved: ()
 }
 
 function PIPProbationTab() {
+  const can = usePerformanceCapabilities();
   const [subTab, setSubTab] = useState<'pip' | 'probation'>('pip');
   const [pips, setPips] = useState<PerformanceImprovementPlan[]>([]);
   const [probations, setProbations] = useState<ProbationReview[]>([]);
@@ -1290,7 +1346,10 @@ function PIPProbationTab() {
     Promise.all([
       pipApi.list().then(setPips),
       probationApi.list().then(setProbations),
-      pipApi.terminationQueue().then(r => setTerminationQueue(r.items)).catch(() => setTerminationQueue([])),
+      // HR's queue (performance.approve): a line manager is not asked for it.
+      can.decideRatings
+        ? pipApi.terminationQueue().then(r => setTerminationQueue(r.items)).catch(() => setTerminationQueue([]))
+        : Promise.resolve(setTerminationQueue([])),
     ]).finally(() => setLoading(false));
   };
   useEffect(load, []);
@@ -1362,7 +1421,9 @@ function PIPProbationTab() {
             </div>
           )}
           <div className="flex justify-end">
-            <button type="button" className={btn.primary} onClick={() => setShowCreatePIP(true)}><Plus className="h-4 w-4" /> New PIP</button>
+            {can.writeReviews && (
+              <button type="button" className={btn.primary} onClick={() => setShowCreatePIP(true)}><Plus className="h-4 w-4" /> New PIP</button>
+            )}
           </div>
           {loading ? <p className="text-sm text-slate-400">Loading…</p> : pips.length === 0 ? (
             <div className="surface flex flex-col items-center py-16 text-center">
@@ -1383,7 +1444,7 @@ function PIPProbationTab() {
                   </div>
                   <div className="ms-4 flex shrink-0 items-center gap-3">
                     {statusBadge(p.status)}
-                    {p.status === 'Active' && (
+                    {p.status === 'Active' && can.decideRatings && (
                       <button type="button" className={btn.ghost} onClick={() => { setStatusModal({ id: p.id, name: p.employeeName }); setNewStatus('Improved'); setStatusNotes(''); }}>Update Status</button>
                     )}
                   </div>
@@ -1413,7 +1474,7 @@ function PIPProbationTab() {
                   </div>
                   <div className="ms-4 flex shrink-0 items-center gap-2">
                     {statusBadge(p.status)}
-                    {p.status === 'ManagerReviewed' && (
+                    {p.status === 'ManagerReviewed' && can.decideRatings && (
                       <div className="flex gap-1">
                         {['Confirmed', 'Extended', 'Terminated'].map(d => (
                           <button key={d} type="button"
@@ -1507,7 +1568,7 @@ function AnalyticsTab() {
   const [analytics, setAnalytics] = useState<CycleAnalytics | null>(null);
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => { cyclesApi.list().then(r => { setCycles(r.items); if (r.items.length > 0) setSelectedCycle(r.items[0].id); }).catch(() => {}); }, []);
+  useEffect(() => { cyclesApi.listAll().then(all => { setCycles(all); if (all.length > 0) setSelectedCycle(all[0].id); }).catch(() => {}); }, []);
   useEffect(() => {
     if (!selectedCycle) return;
     setLoading(true);
@@ -1709,7 +1770,7 @@ function FeedbackTab() {
 
 // ── Root Page ─────────────────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'cycles' | 'my-reviews' | 'team-reviews' | 'goals' | 'templates' | 'calibration' | 'recommendations' | 'pip' | 'analytics' | 'feedback';
+type Tab = PerformanceTab;
 
 const TABS: { id: Tab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'overview', label: 'Overview', icon: Activity },
@@ -1726,7 +1787,15 @@ const TABS: { id: Tab; label: string; icon: React.ComponentType<{ className?: st
 ];
 
 export function PerformancePage({ initialTab }: { initialTab?: Tab } = {}) {
-  const [tab, setTab] = useState<Tab>(initialTab ?? 'overview');
+  const { hasPermission } = useAuth();
+  // Each tab shows only for the keys its API calls need (lib/performanceAccess): an employee lands on their own
+  // review and a line manager on their team, and neither is shown HR's calibration or tenant-wide analytics.
+  const tabs = TABS.filter(t => canOpenPerformanceTab(t.id, hasPermission));
+  const [chosen, setChosen] = useState<Tab | null>(null);
+  const tab = chosen && canOpenPerformanceTab(chosen, hasPermission)
+    ? chosen
+    : landingPerformanceTab(hasPermission, initialTab);
+  const setTab = (next: Tab) => setChosen(next);
 
   return (
     <div className="space-y-5 p-4 sm:p-6">
@@ -1740,7 +1809,7 @@ export function PerformancePage({ initialTab }: { initialTab?: Tab } = {}) {
       {/* Tab bar — scrollable on mobile */}
       <div className="overflow-x-auto">
         <div className="flex w-max gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1 dark:border-white/10 dark:bg-white/[0.03]">
-          {TABS.map(t => (
+          {tabs.map(t => (
             <button
               key={t.id}
               type="button"
