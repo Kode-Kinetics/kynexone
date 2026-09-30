@@ -17,6 +17,7 @@ import { LOGIN_CAPABILITIES, LOGIN_PREVIEW_DISCLOSURE } from '../src/lib/loginCa
 import { payrollInsightEmptyCopy, payrollInsightState, payrollPeriodState } from '../src/lib/payrollInsightState';
 import { requestFailureReason } from '../src/lib/requestFailure';
 import { createUrlSeed } from '../src/lib/urlSeed';
+import { spendUtilisation, totalSpend } from '../src/lib/establishmentSpend';
 
 const read = (relative: string) => fs.readFileSync(path.join(process.cwd(), relative), 'utf8');
 
@@ -526,5 +527,39 @@ test.describe('browserless payroll payment-readiness contracts', () => {
     expect(payroll).toContain('>Recommended — does not block approval</p>');
     expect(payroll).toContain('href={`/people?employeeId=${e.employeeId}`}');
     expect(payroll).toContain('const visibleInsights = filterPayrollInsightsForReadiness(insights, readiness);');
+  });
+});
+
+test.describe('browserless withheld establishment spend contracts', () => {
+  test('withheld spend (null) is restricted, never 0 or 0%', () => {
+    // Control: the pre-fix rollup added null as 0 and divided it by the budget.
+    const withheldRows = [{ spend: null as number | null, budget: 50000 }, { spend: null as number | null, budget: 20000 }];
+    const naiveSpend = withheldRows.reduce((s, r) => s + (r.spend as unknown as number), 0);
+    expect(naiveSpend).toBe(0);
+    expect(Math.round((naiveSpend / 70000) * 100)).toBe(0);
+
+    expect(totalSpend(withheldRows.map((r) => r.spend))).toBeNull();
+    expect(spendUtilisation(null, 50000)).toEqual({ state: 'restricted' });
+    expect(spendUtilisation(undefined, 50000)).toEqual({ state: 'restricted' });
+    expect(spendUtilisation(null, 0)).toEqual({ state: 'restricted' });
+  });
+
+  test('a real zero is still zero, and one withheld row withholds the group total', () => {
+    expect(totalSpend([0, 0])).toBe(0);
+    expect(spendUtilisation(0, 50000)).toEqual({ state: 'known', percent: 0 });
+    expect(totalSpend([12000, 30000])).toBe(42000);
+    expect(spendUtilisation(42000, 40000)).toEqual({ state: 'known', percent: 105 });
+    expect(spendUtilisation(42000, 0)).toEqual({ state: 'no-budget' });
+    expect(totalSpend([12000, null])).toBeNull();
+  });
+
+  test('the establishment panel renders spend and utilisation through the withheld-aware helpers', () => {
+    const panel = read('src/components/EstablishmentPanel.tsx');
+    expect(panel).toContain('spend: totalSpend(gr.map(r => r.currentMonthlySpend)),');
+    expect(panel).toContain('const u = spendUtilisation(tot.spend, tot.budget);');
+    expect(panel).toContain('const u = spendUtilisation(r.currentMonthlySpend, r.monthlyBudgetAmount);');
+    expect(panel).toContain("r.currentMonthlySpend === null ? SPEND_RESTRICTED_LABEL");
+    expect(panel).not.toMatch(/s \+ r\.currentMonthlySpend/);
+    expect(read('src/api/planning.ts')).toContain('currentMonthlySpend: number | null;');
   });
 });
