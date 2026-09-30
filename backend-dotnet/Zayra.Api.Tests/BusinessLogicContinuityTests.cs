@@ -280,28 +280,115 @@ public class BusinessLogicContinuityTests
             TenantId = tenantId, EmployeeId = emp.Id, SalaryStructureId = Guid.NewGuid(),
             BasicSalary = 6000m, EffectiveDate = DateOnly.FromDateTime(DateTime.Today.AddMonths(-3)), IsActive = true
         });
-        db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
+
+        // No GCCComplianceSetting/CountryPayrollRule is seeded for this tenant, so
+        // CalculateWorkingDaysAsync resolves rest days via the platform's Fri/Sat GCC fallback
+        // (WorkWeekService, no company/country match). The two request days must therefore both
+        // fall Sun–Thu, or TotalDays comes back 0 and the approval-time deduction guard
+        // (`request.TotalDays > 0`, LeaveService.cs) never creates a LeavePayrollImpact row at
+        // all — which is what made this test fail before Cancel on a run whose "+4 days" landed
+        // on a Friday/Saturday. Search forward from tomorrow for the next pair of consecutive
+        // non-Fri/Sat days instead of a fixed offset, so the scenario holds on every run date.
+        var (start, end) = NextTwoConsecutiveWorkingWeekdays(DateOnly.FromDateTime(DateTime.Today.AddDays(1)));
+
+        // A balance row is needed for whichever calendar year(s) the request actually falls in;
+        // near year-end the two working days can straddle Dec 31 → Jan 1.
+        foreach (var year in new[] { start.Year, end.Year }.Distinct())
         {
-            TenantId = tenantId, EmployeeId = emp.Id, LeaveTypeId = lt.Id,
-            LeaveTypeName = lt.NameEn, EmployeeName = emp.FullName,
-            Year = DateTime.UtcNow.Year, Entitled = 30, Accrued = 30
-        });
+            db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
+            {
+                TenantId = tenantId, EmployeeId = emp.Id, LeaveTypeId = lt.Id,
+                LeaveTypeName = lt.NameEn, EmployeeName = emp.FullName,
+                Year = year, Entitled = 30, Accrued = 30
+            });
+        }
         await db.SaveChangesAsync();
 
         var svc = await TestApprovalConfig.LeaveServiceAsync(db, tenantId);
-        var start = DateOnly.FromDateTime(DateTime.Today.AddDays(4));
         var submitted = await svc.SubmitRequestAsync(tenantId, new LeaveRequest
         {
             TenantId = tenantId, EmployeeId = emp.Id, EmployeeName = emp.FullName, LeaveTypeId = lt.Id,
-            StartDate = start, EndDate = start.AddDays(1), DayType = "Full",
+            StartDate = start, EndDate = end, DayType = "Full",
         }, CancellationToken.None);
         await svc.ApproveRequestAsync(tenantId, submitted.Id, Guid.NewGuid(), "Manager", null, CancellationToken.None);
-        (await db.LeavePayrollImpacts.AnyAsync(x => x.LeaveRequestId == submitted.Id)).Should().BeTrue();
+        (await db.LeavePayrollImpacts.AnyAsync(x => x.LeaveRequestId == submitted.Id)).Should().BeTrue(
+            "two working (non-weekend) unpaid-leave days must produce a nonzero pending deduction on approval");
 
         await svc.CancelRequestAsync(tenantId, submitted.Id, "Manager", "Plans changed", CancellationToken.None);
 
         (await db.LeavePayrollImpacts.AnyAsync(x => x.LeaveRequestId == submitted.Id && x.Status != "Processed"))
             .Should().BeFalse("cancelling an unprocessed unpaid leave must remove its pending deduction");
+    }
+
+    /// <summary>
+    /// Companion to the test above: the same unconfigured tenant, but the request is entirely
+    /// Friday–Saturday. With no GCCComplianceSetting/CountryPayrollRule seeded, the fallback
+    /// treats Fri/Sat as rest days, so CalculateWorkingDaysAsync returns 0 and the
+    /// `request.TotalDays > 0` guard in ApproveRequestAsync must skip creating any
+    /// LeavePayrollImpact — no deduction is invented for days the tenant doesn't work.
+    /// </summary>
+    [Fact]
+    public async Task UnpaidLeave_ForWeekendOnlyDates_ProducesNoPendingDeduction()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+
+        var lt = new LeaveType { TenantId = tenantId, Code = "LWOP", NameEn = "Leave Without Pay", IsPaid = false, IsActive = true };
+        var emp = new Employee
+        {
+            TenantId = tenantId, EmployeeCode = "EMP-LWOP-3", FullName = "Sara Al-Harbi",
+            Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-1)
+        };
+        db.LeaveTypes.Add(lt); db.Employees.Add(emp);
+        db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
+        {
+            TenantId = tenantId, EmployeeId = emp.Id, SalaryStructureId = Guid.NewGuid(),
+            BasicSalary = 6000m, EffectiveDate = DateOnly.FromDateTime(DateTime.Today.AddMonths(-3)), IsActive = true
+        });
+
+        var friday = NextWeekday(DateOnly.FromDateTime(DateTime.Today.AddDays(1)), DayOfWeek.Friday);
+        var saturday = friday.AddDays(1);
+        foreach (var year in new[] { friday.Year, saturday.Year }.Distinct())
+        {
+            db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
+            {
+                TenantId = tenantId, EmployeeId = emp.Id, LeaveTypeId = lt.Id,
+                LeaveTypeName = lt.NameEn, EmployeeName = emp.FullName,
+                Year = year, Entitled = 30, Accrued = 30
+            });
+        }
+        await db.SaveChangesAsync();
+
+        var svc = await TestApprovalConfig.LeaveServiceAsync(db, tenantId);
+        var submitted = await svc.SubmitRequestAsync(tenantId, new LeaveRequest
+        {
+            TenantId = tenantId, EmployeeId = emp.Id, EmployeeName = emp.FullName, LeaveTypeId = lt.Id,
+            StartDate = friday, EndDate = saturday, DayType = "Full",
+        }, CancellationToken.None);
+        await svc.ApproveRequestAsync(tenantId, submitted.Id, Guid.NewGuid(), "Manager", null, CancellationToken.None);
+
+        (await db.LeavePayrollImpacts.AnyAsync(x => x.LeaveRequestId == submitted.Id)).Should().BeFalse(
+            "a Fri/Sat-only request has zero working days under the GCC weekend fallback, so no deduction should exist");
+    }
+
+    private static (DateOnly Start, DateOnly End) NextTwoConsecutiveWorkingWeekdays(DateOnly from)
+    {
+        var d = from;
+        while (true)
+        {
+            var next = d.AddDays(1);
+            var dIsRest = d.DayOfWeek is DayOfWeek.Friday or DayOfWeek.Saturday;
+            var nextIsRest = next.DayOfWeek is DayOfWeek.Friday or DayOfWeek.Saturday;
+            if (!dIsRest && !nextIsRest) return (d, next);
+            d = d.AddDays(1);
+        }
+    }
+
+    private static DateOnly NextWeekday(DateOnly from, DayOfWeek target)
+    {
+        var d = from;
+        while (d.DayOfWeek != target) d = d.AddDays(1);
+        return d;
     }
 
     // ─────────────────────────────────────────────────────────────────────────

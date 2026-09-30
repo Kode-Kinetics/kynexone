@@ -47,6 +47,14 @@ public class SecurityAuditBatch2Tests
             ], "Test"))
         };
 
+    // Loan and advance reads now require loans.read or loans.write (F10). The IDOR tests give the scoped
+    // attacker that permission so the object-level scope check — not the new gate — is what refuses them.
+    private static DefaultHttpContext WithLoansRead(DefaultHttpContext ctx)
+    {
+        ctx.User.AddIdentity(new ClaimsIdentity(new[] { new Claim("permission", "loans.read") }, "Test"));
+        return ctx;
+    }
+
     private static Employee SeedEmployee(ZayraDbContext db, Guid tenantId, int? id = null, string code = "EMP")
     {
         var emp = new Employee
@@ -289,7 +297,7 @@ public class SecurityAuditBatch2Tests
         db.SaveChanges();
 
         var controller = new LoansController(db, new Zayra.Api.Infrastructure.Common.DataScopeService(db))
-        { ControllerContext = new ControllerContext { HttpContext = EssContext(tenant, attacker.Id) } };
+        { ControllerContext = new ControllerContext { HttpContext = WithLoansRead(EssContext(tenant, attacker.Id)) } };
 
         var result = await controller.GetLoan(loan.Id, CancellationToken.None);
         result.Should().BeOfType<ForbidResult>(
@@ -312,7 +320,7 @@ public class SecurityAuditBatch2Tests
         db.SaveChanges();
 
         var controller = new AdvancesController(db, new Zayra.Api.Infrastructure.Common.DataScopeService(db))
-        { ControllerContext = new ControllerContext { HttpContext = EssContext(tenant, attacker.Id) } };
+        { ControllerContext = new ControllerContext { HttpContext = WithLoansRead(EssContext(tenant, attacker.Id)) } };
 
         var result = await controller.Get(adv.Id, CancellationToken.None);
         result.Should().BeOfType<ForbidResult>("advance detail must be scope-checked");

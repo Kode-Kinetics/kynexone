@@ -11,6 +11,9 @@ import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useLocale } from '../contexts/LocaleContext';
 import { Modal } from './Modal';
+import {
+  SPEND_RESTRICTED_LABEL, SPEND_RESTRICTED_REASON, isSpendWithheld, spendUtilisation, totalSpend, type Utilisation,
+} from '../lib/establishmentSpend';
 
 const NONE = '__none__';
 const ESTABLISHMENT_WRITE = 'organization.establishment.write';
@@ -98,7 +101,7 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
       // Read-only consumers (e.g. Recruitment) don't fetch the catalog — levels
       // are derived from the matrix cells instead (see activeLevels).
       readOnly ? Promise.resolve([] as StaffingLevelDto[]) : establishmentApi.levels().catch(() => [] as StaffingLevelDto[]),
-      costCentersApi.list().then(r => r.items).catch(() => []),
+      costCentersApi.listAll().catch(() => [] as CostCenterDto[]),
     ])
       .then(([matrix, lvls, cc]) => { setRows(matrix); setLevels(lvls); setCostCenters(cc); })
       .catch(() => {}).finally(() => setLoading(false));
@@ -272,9 +275,13 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
   };
 
   const money = (n: number) => `${currencyCode} ${Math.round(n).toLocaleString()}`;
-  const utilization = (spend: number, budget: number) => budget > 0 ? Math.round((spend / budget) * 100) : null;
-  const utilTone = (u: number | null) =>
-    u === null ? 'text-slate-400' : u > 100 ? 'text-rose-600 dark:text-rose-400' : u > 85 ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400';
+  // Spend is null when the server withheld it (#131): shown as Restricted, never as 0 or 0%.
+  const spendText = (spend: number | null) => (spend === null ? SPEND_RESTRICTED_LABEL : money(spend));
+  const utilTone = (u: Utilisation) =>
+    u.state !== 'known' ? 'text-slate-400' : u.percent > 100 ? 'text-rose-600 dark:text-rose-400' : u.percent > 85 ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400';
+  const utilText = (u: Utilisation, noBudget: string) =>
+    u.state === 'restricted' ? SPEND_RESTRICTED_LABEL : u.state === 'no-budget' ? noBudget : `${u.percent}%`;
+  const spendWithheld = rows.some(r => isSpendWithheld(r.currentMonthlySpend));
   const gapTone = (approved: number, gap: number) =>
     approved <= 0 ? 'text-slate-400' : gap > 0 ? 'text-amber-600 dark:text-amber-400' : gap < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400';
 
@@ -295,7 +302,7 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
     approved: gr.reduce((s, r) => s + r.approvedHeadcount, 0),
     current: gr.reduce((s, r) => s + r.currentHeadcount, 0),
     budget: gr.reduce((s, r) => s + r.monthlyBudgetAmount, 0),
-    spend: gr.reduce((s, r) => s + r.currentMonthlySpend, 0),
+    spend: totalSpend(gr.map(r => r.currentMonthlySpend)),
     pipeline: gr.reduce((s, r) => s + r.openRequisitionHeadcount, 0),
   });
 
@@ -310,6 +317,12 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
           ? <>Headcount &amp; budget per cost centre (configured in <span className="font-medium">Company Setup → Cost Centres &amp; Budget</span>). <span className="font-medium">Current</span> &amp; <span className="font-medium">Spend</span> are live from active employees.</>
           : <>Plan each cost centre&apos;s departments: set <span className="font-medium">approved headcount</span> and <span className="font-medium">monthly budget</span>, and assign departments to cost centres. Expand a department to set <span className="font-medium">per-level staffing budgets</span> — {t('levels without a budget are uncontrolled ("—"), an explicit 0 freezes the level, and the total approved headcount never hard-blocks — only level budgets do.')}</>}
       </p>
+
+      {spendWithheld && (
+        <p role="note" className="text-xs text-slate-500 dark:text-slate-400">
+          Spend and utilisation are restricted. {SPEND_RESTRICTED_REASON} Headcount and budgets are unaffected.
+        </p>
+      )}
 
       {/* ── Enforcement mode (tenant-wide; changes are audited with a reason) ── */}
       {!readOnly && hrConfig && (
@@ -337,7 +350,7 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {groups.map(g => {
           const tot = rollup(g.rows);
-          const u = utilization(tot.spend, tot.budget);
+          const u = spendUtilisation(tot.spend, tot.budget);
           const deptCount = g.rows.length;
           return (
             <div key={g.id ?? NONE} className="surface p-4">
@@ -357,9 +370,9 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
                 <span className="text-slate-400">Gap</span>
                 <span className={`text-end font-medium ${gapTone(tot.approved, tot.approved - tot.current)}`}>{tot.approved > 0 ? (tot.approved - tot.current > 0 ? `+${tot.approved - tot.current}` : tot.approved - tot.current) : '—'}</span>
                 <span className="text-slate-400">Budget / Spend</span>
-                <span className="text-end font-medium text-slate-700 dark:text-slate-200">{tot.budget > 0 ? `${money(tot.spend)} / ${money(tot.budget)}` : money(tot.spend)}</span>
+                <span className="text-end font-medium text-slate-700 dark:text-slate-200" title={tot.spend === null ? SPEND_RESTRICTED_REASON : undefined}>{tot.budget > 0 ? `${spendText(tot.spend)} / ${money(tot.budget)}` : spendText(tot.spend)}</span>
                 <span className="text-slate-400">Utilisation</span>
-                <span className={`text-end font-semibold ${utilTone(u)}`}>{u === null ? '— no budget' : `${u}%`}</span>
+                <span className={`text-end font-semibold ${utilTone(u)}`} title={u.state === 'restricted' ? SPEND_RESTRICTED_REASON : undefined}>{utilText(u, '— no budget')}</span>
               </div>
             </div>
           );
@@ -406,7 +419,7 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
                 {g.rows.map(r => {
                   const e = editFor(r);
                   const dirty = isDirty(r);
-                  const u = utilization(r.currentMonthlySpend, r.monthlyBudgetAmount);
+                  const u = spendUtilisation(r.currentMonthlySpend, r.monthlyBudgetAmount);
                   const isExpanded = !!expanded[r.departmentId];
                   const allocated = allocatedInEdit(r);
                   const unallocated = e.approved - allocated;
@@ -458,8 +471,10 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
                                 <input type="number" min={0} aria-label={`Monthly budget for ${r.departmentName}`} className="input w-24 text-sm" value={e.budget}
                                   onChange={ev => setEdit(r, { budget: Math.max(0, parseFloat(ev.target.value || '0')) })} /></div>}
                         </td>
-                        <td className="px-4 py-2 text-slate-600 dark:text-slate-300">{r.currentMonthlySpend > 0 ? money(r.currentMonthlySpend) : '—'}</td>
-                        <td className={`px-4 py-2 text-center font-semibold ${utilTone(u)}`}>{u === null ? '—' : `${u}%`}</td>
+                        <td className="px-4 py-2 text-slate-600 dark:text-slate-300" title={r.currentMonthlySpend === null ? SPEND_RESTRICTED_REASON : undefined}>
+                          {r.currentMonthlySpend === null ? SPEND_RESTRICTED_LABEL : r.currentMonthlySpend > 0 ? money(r.currentMonthlySpend) : '—'}
+                        </td>
+                        <td className={`px-4 py-2 text-center font-semibold ${utilTone(u)}`} title={u.state === 'restricted' ? SPEND_RESTRICTED_REASON : undefined}>{utilText(u, '—')}</td>
                         {!readOnly && (
                           <td className="px-4 py-2 text-end">
                             {savedId === r.departmentId

@@ -76,15 +76,19 @@ export interface ReportExecutionLog {
   durationMs: number;
 }
 
+/**
+ * Figures the caller lacks the data permission for come back null (the server withholds them rather
+ * than sending zero), so every count is nullable and must render as restricted, not as 0.
+ */
 export interface AnalyticsKPIs {
-  headcount: { totalActive: number; newThisMonth: number; exitsThisMonth: number };
-  leave: { pendingLeave: number; onLeaveToday: number };
-  attendance: { presentToday: number; lateToday: number };
-  overtime: { pendingOT: number };
-  payroll: { lastRunYear?: number; lastRunMonth?: number; lastRunStatus?: string; totalNetSalary?: number };
-  compliance: { visasExpiring: number; passportsExpiring: number };
-  recruitment: { openPositions: number; pendingApplications: number };
-  financial: { activeLoans: number; outstandingLoanBalance: number };
+  headcount: { totalActive: number | null; newThisMonth: number | null; exitsThisMonth: number | null };
+  leave: { pendingLeave: number | null; onLeaveToday: number | null };
+  attendance: { presentToday: number | null; lateToday: number | null };
+  overtime: { pendingOT: number | null };
+  payroll: { lastRunYear?: number | null; lastRunMonth?: number | null; lastRunStatus?: string | null; totalNetSalary?: number | null };
+  compliance: { visasExpiring: number | null; passportsExpiring: number | null };
+  recruitment: { openPositions: number | null; pendingApplications: number | null };
+  financial: { activeLoans: number | null; outstandingLoanBalance: number | null };
   generatedAt: string;
 }
 

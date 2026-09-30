@@ -605,6 +605,51 @@ public sealed class IntegrationDeliveryHonestyTests
         live.ActionItems.Should().NotContain(a => a.Id == "qiwa_simulated");
     }
 
+    // ── Logs carry identifiers, never recipients ───────────────────────────────────────────────
+
+    [Fact]
+    public async Task No_email_log_line_carries_the_recipient_masked_or_not()
+    {
+        var to = $"private.person-{Guid.NewGuid():N}@customer.example";
+        var logger = new ListLogger<SmtpEmailService>();
+
+        // Not configured.
+        await using (var db = InMemory())
+        {
+            var smtp = new SmtpEmailService(db, DataProtectionProvider.Create("f09"), Config(), logger);
+            (await smtp.DeliverAsync(Guid.NewGuid(), to, "Private Person", "Payslip for Private Person", "<p>x</p>"))
+                .Status.Should().Be(EmailDeliveryStatus.NotConfigured);
+        }
+        // Captured, both by capture mode and by the permitted-recipient list.
+        await using (var db = InMemory())
+        {
+            var smtp = new SmtpEmailService(db, DataProtectionProvider.Create("f09"),
+                Config(new Dictionary<string, string?> { [EmailTransportPolicy.ModeKey] = "capture" }), logger);
+            await smtp.DeliverAsync(Guid.NewGuid(), to, "Private Person", "Payslip for Private Person", "<p>x</p>");
+        }
+        await using (var db = InMemory())
+        {
+            db.PlatformConfigEntries.AddRange(
+                new PlatformConfigEntry { Key = PlatformSmtpConfig.KeyHost, Value = "127.0.0.1" },
+                new PlatformConfigEntry { Key = PlatformSmtpConfig.KeyFromAddress, Value = "noreply@example.test" });
+            await db.SaveChangesAsync();
+            var smtp = new SmtpEmailService(db, DataProtectionProvider.Create("f09"),
+                Config(new Dictionary<string, string?> { [EmailTransportPolicy.AllowedRecipientsKey] = "@qa.example.test" }), logger);
+            await smtp.DeliverAsync(Guid.NewGuid(), to, "Private Person", "Payslip for Private Person", "<p>x</p>");
+        }
+
+        logger.Lines.Should().HaveCountGreaterThanOrEqualTo(3);
+        var localPart = to[..to.IndexOf('@')];
+        foreach (var line in logger.Lines)
+        {
+            line.Should().NotContain("customer.example").And.NotContain(localPart[..6])
+                .And.NotContain("Private Person").And.NotContain("•", "a masked address is still an address");
+        }
+        logger.Lines.Should().Contain(l => l.Contains("outcome not_configured"));
+        logger.Lines.Should().Contain(l => l.Contains("reason capture_mode"));
+        logger.Lines.Should().Contain(l => l.Contains("reason not_on_allow_list"));
+    }
+
     // ── Harness ────────────────────────────────────────────────────────────────────────────────
 
     private static ZayraDbContext InMemory(string? name = null) => new(new DbContextOptionsBuilder<ZayraDbContext>()
@@ -626,12 +671,18 @@ public sealed class IntegrationDeliveryHonestyTests
         return services.BuildServiceProvider();
     }
 
+    /// <summary>
+    /// The owner and every possible recipient are active users in one role holding reports.schedule
+    /// and employees.read, because main only mails a scheduled report to somebody who could open it
+    /// by hand (ReportAudience). These tests are about what happens AFTER that check.
+    /// </summary>
     private static async Task SeedScheduleAsync(ZayraDbContext db, string frequency)
     {
         var tenantId = Guid.NewGuid();
         var userId = Guid.NewGuid();
         var roleId = Guid.NewGuid();
         var permissionId = Guid.NewGuid();
+        var employeeReadPermissionId = Guid.NewGuid();
         db.Tenants.Add(new Tenant { Id = tenantId, Name = "Reports Tenant", Slug = $"reports-{Guid.NewGuid():N}" });
         db.Users.Add(new User
         {
@@ -639,9 +690,23 @@ public sealed class IntegrationDeliveryHonestyTests
             FullName = "Report Owner", PasswordHash = "hash", IsActive = true, IsGroupScope = true,
         });
         db.Roles.Add(new Role { Id = roleId, TenantId = tenantId, Name = "Analyst", NormalizedName = "ANALYST" });
-        db.Permissions.Add(new Permission { Id = permissionId, Key = "reports.schedule", Module = "Reports" });
+        db.Permissions.AddRange(
+            new Permission { Id = permissionId, Key = "reports.schedule", Module = "Reports" },
+            new Permission { Id = employeeReadPermissionId, Key = "employees.read", Module = "Employees" });
         db.UserRoles.Add(new UserRole { UserId = userId, RoleId = roleId });
-        db.RolePermissions.Add(new RolePermission { RoleId = roleId, PermissionId = permissionId });
+        db.RolePermissions.AddRange(
+            new RolePermission { RoleId = roleId, PermissionId = permissionId },
+            new RolePermission { RoleId = roleId, PermissionId = employeeReadPermissionId });
+        foreach (var colleague in new[] { "recipient@example.test", "first@example.test", "second@example.test" })
+        {
+            var colleagueId = Guid.NewGuid();
+            db.Users.Add(new User
+            {
+                Id = colleagueId, TenantId = tenantId, Email = colleague, NormalizedEmail = colleague.ToUpperInvariant(),
+                FullName = "Report Recipient", PasswordHash = "hash", IsActive = true, IsGroupScope = true,
+            });
+            db.UserRoles.Add(new UserRole { UserId = colleagueId, RoleId = roleId });
+        }
         db.Employees.Add(new Employee
         {
             Id = 1, TenantId = tenantId, EmployeeCode = "E-1", FullName = "Engineer", Department = "Engineering",
@@ -749,6 +814,16 @@ public sealed class IntegrationDeliveryHonestyTests
             IReadOnlyList<EmailAttachment>? attachments = null, CancellationToken cancellationToken = default)
             => throw new InvalidOperationException("must not be called when unconfigured");
         public Task<bool> IsConfiguredAsync(CancellationToken cancellationToken = default) => Task.FromResult(false);
+    }
+
+    private sealed class ListLogger<T> : Microsoft.Extensions.Logging.ILogger<T>
+    {
+        public List<string> Lines { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId,
+            TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            => Lines.Add(formatter(state, exception));
     }
 
     /// <summary>Accepts every recipient except one, which the relay refuses mid-run.</summary>

@@ -152,7 +152,8 @@ public class EmployeeReadinessJurisdictionTests
 
         policy.Sources.Should().Contain("tenant", "the SA tenant-default profile is still a layer");
         policy.Sources.Should().Contain("gcc-setting", "the SA settings row is still a layer");
-        policy.Items.Should().Contain(i => i.Key == "GosiReference" && i.FailClosed && i.Gate == "activate");
+        policy.Items.Should().Contain(i => i.Key == "GosiReference" && i.FailClosed && i.Gate == "pay",
+            "GOSI still fails closed, but enrolment is post-hire so it gates pay, not activation");
         policy.Items.Should().Contain(i => i.Key == "IqamaNumber" && i.FailClosed && i.Gate == "activate",
             "an expat in KSA still needs an Iqama");
         policy.Items.Should().Contain(i => i.Key == "BankIban" && i.Gate == "activate",
@@ -175,18 +176,20 @@ public class EmployeeReadinessJurisdictionTests
     }
 
     [Fact]
-    public async Task SaudiEmployee_MissingGosi_IsStillBlocked()
+    public async Task SaudiEmployee_MissingGosi_IsPayBlockedNotActivationBlocked()
     {
         await using var db = NewDb();
         var tenantId = Guid.NewGuid();
         SeedProvisionedTenantDefaults(db, tenantId, editedCountry: "AE");
         var policy = await Resolver(db).ResolveAsync(tenantId, companyId: null, "SA", "Saudi");
 
-        var snapshot = new EmployeeReadinessSnapshot { CountryCode = "SA", Nationality = "SA", IdNumber = "1234567890" };
+        var snapshot = new EmployeeReadinessSnapshot { CountryCode = "SA", Nationality = "SA", IdNumber = "1234567890", JoiningDate = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc) };
         var readiness = new EmployeeReadinessEvaluator(db).Evaluate(snapshot, policy);
 
-        readiness.IsBlocked.Should().BeTrue("a missing RELEVANT identifier must still fail closed");
-        readiness.Blocking.Should().Contain(i => i.Key == "GosiReference");
+        readiness.IsBlocked.Should().BeFalse("GOSI enrolment is issued after the hire, so it cannot gate activation");
+        readiness.Blocking.Should().NotContain(i => i.Key == "GosiReference");
+        readiness.PayBlocking.Should().Contain(i => i.Key == "GosiReference",
+            "a missing RELEVANT identifier must still fail closed — at the pay gate, where contributions are computed");
     }
 
     [Fact]
@@ -203,6 +206,7 @@ public class EmployeeReadinessJurisdictionTests
             Nationality = "SA",
             IdNumber = "1234567890",          // Hawiyya — the host-national identity card
             GosiReference = "GOSI-99887766",
+            JoiningDate = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
         };
         var readiness = new EmployeeReadinessEvaluator(db).Evaluate(snapshot, policy);
 

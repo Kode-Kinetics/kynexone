@@ -219,8 +219,12 @@ public static class ProductionReadinessEvidence
         var now = DateTime.UtcNow;
         var since = now.AddHours(-24);
         var maxReportAttempts = ReportSchedulePolicy.MaxDeliveryAttempts;
-        // Readiness is polled continuously by the load balancer. Keep the independent queue
-        // counters in one database command so the health probe does not compete with user requests.
+        // An approved employee change still waiting a full day after its effective date — in every
+        // timezone, since no zone is a day behind UTC-yesterday — means the effective-change scheduler or
+        // job is not running (or a bank change is deferred behind a payroll run with no payment batch).
+        var employeeChangeOverdueBefore = DateOnly.FromDateTime(now).AddDays(-1);
+        // Readiness is polled continuously by the load balancer. Keep the independent queue counters in
+        // one database command so the health probe does not compete with user requests.
         var counts = await db.Tenants.AsNoTracking()
             .Select(_ => new
             {
@@ -238,6 +242,9 @@ public static class ProductionReadinessEvidence
                 ReportsNotConfigured = db.ReportExecutionLogs.Count(x => x.Status == ReportSchedulePolicy.StatusNotConfigured && x.CreatedAtUtc >= since),
                 ReportsDeadLetter = db.ReportSchedules.Count(x => x.IsActive && !x.IsDeleted && x.ConsecutiveFailureCount >= maxReportAttempts),
                 ComplianceDue = db.ComplianceReminders.Count(x => x.Status == "Pending" && x.ScheduledAtUtc != null && x.ScheduledAtUtc <= now),
+                EmployeeChangesOverdue = db.EmployeeChangeRequests.Count(x =>
+                    x.Status == Zayra.Api.Application.Employees.EmployeeChangeStatuses.ApprovedPendingEffectiveDate
+                    && x.AppliedAtUtc == null && x.EffectiveDate < employeeChangeOverdueBefore),
             })
             .FirstOrDefaultAsync(ct);
 
@@ -250,6 +257,7 @@ public static class ProductionReadinessEvidence
             counts?.ReportsDue ?? 0,
             counts?.ReportsFailed ?? 0,
             counts?.ComplianceDue ?? 0,
+            counts?.EmployeeChangesOverdue ?? 0,
             counts?.NotificationsDeadLetter ?? 0,
             counts?.NotificationsNotConfigured ?? 0,
             counts?.NotificationsRetrying ?? 0,
@@ -441,6 +449,10 @@ public sealed record QueueHealthEvidence(
     int ReportsDue,
     int ReportsFailed24h,
     int ComplianceRemindersDue,
+    // Approved employee changes more than a day past their effective date and still not applied.
+    // Informational (never gates readiness): non-zero means the effective-change job is not running, or a
+    // bank change is deferred behind a payroll run that has no payment batch yet.
+    int EmployeeChangesOverdue = 0,
     int NotificationsDeadLetter = 0,
     int NotificationsNotConfigured = 0,
     int NotificationsRetrying = 0,

@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using MimeKit;
-using Zayra.Api.Infrastructure.Notifications;
 
 namespace Zayra.Api.Infrastructure.Email;
 
@@ -136,7 +135,18 @@ public sealed record CapturedEmail(
     string Subject,
     string HtmlBody,
     IReadOnlyList<string> AttachmentNames,
-    string Reason);
+    string Reason)
+{
+    /// <summary>Non-personal handle: the only thing about a capture that is ever logged, and the .eml file name.</summary>
+    public Guid Id { get; init; } = Guid.NewGuid();
+}
+
+/// <summary>Why a message was captured, as a code safe for logs. The human sentence stays on the record.</summary>
+public static class EmailCaptureReasons
+{
+    public const string CaptureMode = "capture_mode";
+    public const string NotOnAllowList = "not_on_allow_list";
+}
 
 /// <summary>
 /// Where test delivery mode puts messages. Process-wide and bounded (the newest
@@ -162,14 +172,17 @@ public static class EmailCaptureSink
         while (Messages.TryDequeue(out _)) { }
     }
 
-    internal static async Task RecordAsync(CapturedEmail message, string fromAddress, string? directory, ILogger log,
-        IReadOnlyList<EmailAttachment>? attachments, CancellationToken ct)
+    internal static async Task RecordAsync(CapturedEmail message, string reasonCode, string fromAddress, string? directory,
+        ILogger log, IReadOnlyList<EmailAttachment>? attachments, CancellationToken ct)
     {
         Messages.Enqueue(message);
         while (Messages.Count > Capacity && Messages.TryDequeue(out _)) { }
 
-        log.LogInformation("Email to {To} captured, not sent: {Reason}",
-            NotificationBodyPolicy.MaskEmail(message.To), message.Reason);
+        // No recipient, masked or not, and no subject: logs are the hardest place to purge PII from.
+        // The capture id, its scope and a reason code are enough to find the record; the record
+        // (in-process, or the .eml named after the id) holds the rest.
+        log.LogInformation("Email {CaptureId} captured, not sent (scope {Scope}, reason {ReasonCode}, outcome captured).",
+            message.Id, message.Platform ? "platform" : message.TenantId?.ToString() ?? "ambient", reasonCode);
 
         if (directory is null) return;
         try
@@ -184,7 +197,7 @@ public static class EmailCaptureSink
             foreach (var att in attachments ?? [])
                 body.Attachments.Add(att.FileName, att.Data, ContentType.Parse(att.ContentType));
             mime.Body = body.ToMessageBody();
-            var file = Path.Combine(directory, $"{message.CapturedAtUtc:yyyyMMddTHHmmssfff}-{Guid.NewGuid():N}.eml");
+            var file = Path.Combine(directory, $"{message.CapturedAtUtc:yyyyMMddTHHmmssfff}-{message.Id:N}.eml");
             await mime.WriteToAsync(file, ct);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

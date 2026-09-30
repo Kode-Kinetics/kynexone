@@ -9,11 +9,39 @@ using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Performance;
 
+/// <summary>
+/// Appraisal reviews.
+///
+/// <para>PERMISSION TIERS. The appraisal is gated on the two catalog keys that already describe it, and
+/// they stay separate so the person who writes a review is not automatically the person who signs off
+/// the rating:</para>
+/// <list type="bullet">
+/// <item><see cref="ReviewerPermission"/> (<c>performance.write</c>, "create and update performance
+/// reviews") — the manager review. A holder may review only an employee they are the resolved APPRAISAL
+/// approver for, unless they also hold the approver tier or an organisation-wide scope.</item>
+/// <item><see cref="RatingApproverPermission"/> (<c>performance.approve</c>, "approve performance ratings")
+/// — HR calibration (override-score), publishing the result, and reading the manager's and HR's notes and
+/// anonymous 360 feedback that a calibration is judged on.</item>
+/// </list>
+/// <para>These endpoints used to ALSO accept <c>appraisal.manager_review</c>, <c>appraisal.view_all</c>,
+/// <c>appraisal.hr_calibration</c>, <c>appraisal.finalize</c>, <c>appraisal.publish</c> and
+/// <c>sensitive_data.view</c>. None of them was ever in the permission catalog, so no role, override or
+/// Admin backfill could hold one: the alternatives were dead, and the redaction below was unconditional —
+/// not even Admin could read a review's notes. Calibration, finalisation and publication are one HR step
+/// in this product (same role gate, same actor, no workflow hand-off between them), so they share the
+/// approver key rather than minting three keys that would always be granted together.</para>
+/// </summary>
 [ApiController]
 [Route("api/performance/reviews")]
 [Authorize]
 public class ReviewsController : ControllerBase
 {
+    /// <summary>Writes the manager review (for the caller's own resolved reports unless they hold the approver tier).</summary>
+    public const string ReviewerPermission = "performance.write";
+
+    /// <summary>Calibrates, publishes, and reads the confidential notes a rating is judged on.</summary>
+    public const string RatingApproverPermission = "performance.approve";
+
     private readonly ZayraDbContext _db;
     private readonly IPerformanceService _svc;
     private readonly IDataScopeService _scopeService;
@@ -103,14 +131,24 @@ public class ReviewsController : ControllerBase
             .Where(a => a.TenantId == tenantId && a.ReviewId == id)
             .FirstOrDefaultAsync(ct);
 
-        // GAP 7: redact sensitive notes for callers without sensitive_data.view
-        var canViewSensitive = HasPermission("sensitive_data.view");
+        // GAP 7: the manager's and HR's notes, and anonymous 360 feedback, are for the rating approver
+        // tier only. Everyone else gets the review with the notes blanked and anonymous entries removed.
+        var canViewSensitive = HasPermission(RatingApproverPermission);
         if (!canViewSensitive)
         {
             review.ManagerNotes = string.Empty;
             review.HrNotes = string.Empty;
             // Only show non-anonymous feedback entries to callers without sensitive access
             feedback360 = feedback360.Where(f => !f.IsAnonymous).ToList();
+        }
+        // Anonymous means anonymous to EVERY reader, including the approver tier that may now see the
+        // entry's content: the same rule FeedbackController.List360 applies. Before this branch was
+        // reachable it did not matter that the raw rows carried the author; now it would. (AsNoTracking
+        // rows — nothing here is written back.)
+        foreach (var anonymous in feedback360.Where(f => f.IsAnonymous))
+        {
+            anonymous.ReviewerName = "Anonymous";
+            anonymous.ReviewerEmployeeId = 0;
         }
 
         return Ok(new { review, template, breakdown, competencies, goals, feedback360, auditLog, calibration, appeal });
@@ -191,8 +229,7 @@ public class ReviewsController : ControllerBase
     public async Task<IActionResult> SubmitManagerReview(
         Guid id, [FromBody] ManagerReviewRequest req, CancellationToken ct)
     {
-        if (!HasPermission("appraisal.manager_review") && !HasPermission("appraisal.view_all") &&
-            !HasPermission("performance.write"))
+        if (!HasPermission(ReviewerPermission))
             return Forbid();
 
         var tenantId = this.GetTenantId()!.Value;
@@ -209,7 +246,7 @@ public class ReviewsController : ControllerBase
         var resolvedApprovers = await _hierarchyService.ResolveWorkflowApproversAsync(tenantId, review.EmployeeId, "APPRAISAL", ct);
         var callerIsResolvedApprover = scope.CallerEmployeeId.HasValue
             && resolvedApprovers.Approvers.Any(a => a.EmployeeId == scope.CallerEmployeeId.Value);
-        var hasOverride = scope.IsUnrestricted || HasPermission("appraisal.view_all") || HasPermission("performance.approve");
+        var hasOverride = scope.IsUnrestricted || HasPermission(RatingApproverPermission);
         if (!callerIsResolvedApprover && !hasOverride)
             return Forbid();
         var reviewer = callerIsResolvedApprover
@@ -281,8 +318,7 @@ public class ReviewsController : ControllerBase
     public async Task<IActionResult> OverrideScore(
         Guid id, [FromBody] ScoreOverrideRequest req, CancellationToken ct)
     {
-        if (!HasPermission("appraisal.hr_calibration") && !HasPermission("appraisal.finalize") &&
-            !HasPermission("performance.approve"))
+        if (!HasPermission(RatingApproverPermission))
             return Forbid();
         var tenantId = this.GetTenantId()!.Value;
         var userId   = this.GetUserId();
@@ -318,7 +354,7 @@ public class ReviewsController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager,HR Director")]
     public async Task<IActionResult> Publish(Guid id, CancellationToken ct)
     {
-        if (!HasPermission("appraisal.publish") && !HasPermission("performance.approve"))
+        if (!HasPermission(RatingApproverPermission))
             return Forbid();
         var tenantId = this.GetTenantId()!.Value;
         var userId   = this.GetUserId();

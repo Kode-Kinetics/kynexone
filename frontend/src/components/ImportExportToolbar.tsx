@@ -33,6 +33,15 @@ export interface ImportResult {
   importBatchId?: string;
   hierarchyLinked?: number;
   payrollProfilesCreated?: number;
+  /** Existing employees (matched by code) that only had missing details filled in — never overwritten. */
+  repaired?: number;
+  /** Rows that failed. The employee import is all-or-nothing, so this is 0 whenever the import succeeded. */
+  failed?: number;
+  /** The same file was already imported under the same import key; nothing was imported again. */
+  replayed?: boolean;
+  /** Existing-employee rows whose bank / payroll-identity / salary values were NOT applied (need approval). */
+  approvalRequiredCount?: number;
+  approvalRequired?: Array<{ row: number; employeeCode: string; fields: string[] }>;
   /** Rows created but not activatable (imported as Draft, need completion before going Active). */
   createdIncomplete?: Array<{ employeeId: number; employeeCode: string; name: string; blockingCount: number; gaps?: ImportGap[] }>;
   // ── Countable org-skeleton summary (accept-never-block). All optional; the summary line
@@ -122,6 +131,7 @@ function buildSummaryLine(result: ImportResult, agg: { counts: Map<string, numbe
     ?? ((agg.counts.get('dup:strong') ?? 0) + (agg.counts.get('dup:possible') ?? 0));
 
   const parts: string[] = [`Imported ${imported}/${receivedTotal}`];
+  if ((result.repaired ?? 0) > 0) parts.push(`${result.repaired} existing ${result.repaired === 1 ? 'employee' : 'employees'} completed`);
   if (result.skipped > 0) {
     const noName = result.skippedNoName;
     const dup = result.skippedDupCode;
@@ -144,7 +154,7 @@ export interface ImportPreviewRow {
   row: number;
   fullName: string;
   employeeCode?: string;
-  status: string; // "WillCreate" | "Error"
+  status: string; // "WillCreate" | "WillRepair" | "WillFail" | "Error"
   projectedStatus?: string; // "Active" | "Draft" | ""
   blocking?: string[];
   recommended?: string[];
@@ -164,7 +174,13 @@ export interface ImportFieldGap {
 export interface ImportPreview {
   received: number;
   wouldCreate: number;
+  /** Existing employees that would only have missing details filled in. */
+  wouldRepair?: number;
   wouldSkip: number;
+  /** Rows holding a value that cannot be stored — the import is refused while any remain. */
+  wouldFail?: number;
+  /** Existing employees whose bank / payroll-identity / salary values in the file would NOT be applied. */
+  wouldNeedApproval?: number;
   wouldCreateActive?: number;
   wouldCreateDraft?: number;
   rows: ImportPreviewRow[];
@@ -203,7 +219,11 @@ export interface ImportExportToolbarProps {
   entityName: string;
   onExport: () => Promise<void>;
   onDownloadTemplate: () => Promise<void>;
-  onImport: (csvContent: string) => Promise<ImportResult>;
+  /**
+   * `importKey` identifies one selected file. An importer that forwards it lets the server replay a
+   * re-sent submission (a retry after a timeout) instead of importing the same file twice.
+   */
+  onImport: (csvContent: string, importKey?: string) => Promise<ImportResult>;
   /**
    * Opt-in: when provided, importing runs a pre-commit dry-run and a persistent results view
    * instead of the 5-second toast. Importers that omit this keep the original toast flow.
@@ -275,6 +295,21 @@ function extractImportError(data: unknown, entityName: string): string {
   return `Failed to import ${entityName}.`;
 }
 
+/** One key per selected file (see onImport). */
+function newImportKey(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  // RFC 4122 v4 shape from Math.random — only for runtimes without crypto.randomUUID.
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
+
+/** True when the request never got an answer (network drop / timeout): the import may have landed. */
+function noServerAnswer(err: unknown): boolean {
+  return !(err as { response?: unknown })?.response;
+}
+
 function LandingPill({ status }: { status?: string }) {
   const active = status?.toLowerCase() === 'active';
   const draft = status?.toLowerCase() === 'draft';
@@ -304,6 +339,7 @@ export function ImportExportToolbar({
   // Dry-run + persistent-results state (only used when onPreview is provided).
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [pendingCsv, setPendingCsv] = useState<string | null>(null);
+  const [pendingKey, setPendingKey] = useState<string | null>(null);
   const [result, setResult] = useState<ImportResult | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -334,16 +370,18 @@ export function ImportExportToolbar({
     }
   };
 
-  const runToastImport = async (csvContent: string) => {
+  const runToastImport = async (csvContent: string, importKey: string) => {
     setImporting(true);
     try {
-      const res = await onImport(csvContent);
+      const res = await onImport(csvContent, importKey);
       const warnings = res.warnings ?? [];
       const warningTail =
         warnings.length > 0
           ? ` ${warnings.length} warning${warnings.length > 1 ? 's' : ''}: ${warnings.slice(0, 2).join('; ')}${warnings.length > 2 ? ' …' : ''}`
           : '';
-      if (res.errors.length > 0) {
+      if (res.replayed) {
+        showToast({ type: 'success', message: 'This file was already imported — nothing was imported again.' });
+      } else if (res.errors.length > 0) {
         showToast({
           type: 'error',
           message: `Imported: Created ${res.created}, Skipped ${res.skipped}. Errors: ${res.errors.slice(0, 3).join('; ')}${res.errors.length > 3 ? ' …' : ''}`,
@@ -368,8 +406,9 @@ export function ImportExportToolbar({
     if (!file) return;
     const csvContent = await file.text();
 
+    const importKey = newImportKey();
     if (!onPreview) {
-      await runToastImport(csvContent);
+      await runToastImport(csvContent, importKey);
       return;
     }
 
@@ -378,6 +417,7 @@ export function ImportExportToolbar({
     setPreview(null);
     setResult(null);
     setPendingCsv(csvContent);
+    setPendingKey(importKey);
     try {
       setPreview(await onPreview(csvContent));
     } catch (err) {
@@ -393,15 +433,23 @@ export function ImportExportToolbar({
     if (!pendingCsv) return;
     setImporting(true);
     try {
-      const res = await onImport(pendingCsv);
+      const res = await onImport(pendingCsv, pendingKey ?? undefined);
       setResult(res);
       setPreview(null);
       setPendingCsv(null);
+      setPendingKey(null);
     } catch (err) {
-      const data = (err as { response?: { data?: unknown } })?.response?.data;
-      showToast({ type: 'error', message: extractImportError(data, entityName) });
-      setPreview(null);
-      setPendingCsv(null);
+      if (noServerAnswer(err)) {
+        // The import may have landed before the connection dropped. Keep this preview (and its key) open:
+        // confirming again is safe — the server replays a completed import instead of repeating it.
+        showToast({ type: 'error', message: 'No answer from the server. Press Confirm import again — this file will not be imported twice.' });
+      } else {
+        const data = (err as { response?: { data?: unknown } })?.response?.data;
+        showToast({ type: 'error', message: extractImportError(data, entityName) });
+        setPreview(null);
+        setPendingCsv(null);
+        setPendingKey(null);
+      }
     } finally {
       setImporting(false);
     }
@@ -410,6 +458,7 @@ export function ImportExportToolbar({
   const cancelPreview = () => {
     setPreview(null);
     setPendingCsv(null);
+    setPendingKey(null);
   };
 
   const downloadPreviewReport = () => {
@@ -419,7 +468,10 @@ export function ImportExportToolbar({
       r.row,
       r.fullName,
       r.employeeCode ?? '',
-      r.status === 'Error' ? 'Rejected' : r.projectedStatus || 'Draft',
+      r.status === 'Error' ? 'Rejected'
+        : r.status === 'WillFail' ? 'Refused (fix this row)'
+        : r.status === 'WillRepair' ? 'Existing — fill missing details'
+        : r.projectedStatus || 'Draft',
       [...(r.errors ?? []), ...(r.blocking ?? [])].join('; '),
     ].map(csvCell).join(','));
     downloadCsv([header.join(','), ...lines].join('\n'), 'import-preview.csv');
@@ -519,7 +571,7 @@ export function ImportExportToolbar({
                 <Download className="h-3.5 w-3.5" />
                 Download preview
               </button>
-              <button type="button" className="btn-primary disabled:opacity-60" onClick={confirmImport} disabled={importing || !preview}>
+              <button type="button" className="btn-primary disabled:opacity-60" onClick={confirmImport} disabled={importing || !preview || (preview?.wouldFail ?? 0) > 0}>
                 {importing ? 'Importing…' : `Confirm import`}
               </button>
             </>
@@ -533,8 +585,24 @@ export function ImportExportToolbar({
                 <span className="rounded-md bg-slate-100 px-2 py-1 font-semibold text-slate-600 dark:bg-white/10 dark:text-slate-300">{preview.received} rows</span>
                 <span className="rounded-md bg-emeraldZ/10 px-2 py-1 font-semibold text-emerald-700 ring-1 ring-emeraldZ/20 dark:text-emerald-300">{preview.wouldCreateActive ?? 0} Active</span>
                 <span className="rounded-md bg-amber-400/15 px-2 py-1 font-semibold text-amber-700 ring-1 ring-amber-400/25 dark:text-amber-300">{preview.wouldCreateDraft ?? 0} inactive · needs info</span>
+                {(preview.wouldRepair ?? 0) > 0 && <span className="rounded-md bg-sky-500/10 px-2 py-1 font-semibold text-sky-700 ring-1 ring-sky-500/20 dark:text-sky-300">{preview.wouldRepair} existing · fill missing details</span>}
                 {preview.wouldSkip > 0 && <span className="rounded-md bg-rose-500/10 px-2 py-1 font-semibold text-rose-700 ring-1 ring-rose-500/20 dark:text-rose-300">{preview.wouldSkip} rejected</span>}
+                {(preview.wouldFail ?? 0) > 0 && <span className="rounded-md bg-rose-500/10 px-2 py-1 font-semibold text-rose-700 ring-1 ring-rose-500/20 dark:text-rose-300">{preview.wouldFail} to fix before importing</span>}
+                {(preview.wouldNeedApproval ?? 0) > 0 && <span className="rounded-md bg-amber-400/15 px-2 py-1 font-semibold text-amber-800 ring-1 ring-amber-400/25 dark:text-amber-300">{preview.wouldNeedApproval} existing · bank/salary need approval</span>}
               </div>
+              {(preview.wouldFail ?? 0) > 0 && (
+                <div className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300" role="alert">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                  <span>
+                    <strong>{preview.wouldFail} {preview.wouldFail === 1 ? 'row holds' : 'rows hold'} a value that cannot be saved</strong> (see the rows marked Refused). The import is all-or-nothing, so nothing will be imported until the file is corrected.
+                  </span>
+                </div>
+              )}
+              {(preview.wouldRepair ?? 0) > 0 && (
+                <p className="text-xs text-slate-600 dark:text-slate-300">
+                  Employees that already exist are never overwritten. Only missing non-sensitive details — payroll group, salary-structure reference, currency, a manager, an unknown joining date — are filled in. Their bank, payroll-identity and salary details are never changed by an import: edit the employee (it goes to approval).
+                </p>
+              )}
               {(preview.wouldCreateDraft ?? 0) > 0 ? (
                 <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300" role="status">
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
@@ -585,9 +653,15 @@ export function ImportExportToolbar({
                       <tr key={r.row}>
                         <td className="px-3 py-2 text-slate-400">{r.row}</td>
                         <td className="px-3 py-2 text-slate-700 dark:text-slate-200">{r.fullName || <span className="text-slate-400">(no name)</span>}</td>
-                        <td className="px-3 py-2">{r.status === 'Error' ? <span className="text-xs font-semibold text-rose-600">Rejected</span> : <LandingPill status={r.projectedStatus} />}</td>
+                        <td className="px-3 py-2">
+                          {r.status === 'Error' ? <span className="text-xs font-semibold text-rose-600">Rejected</span>
+                            : r.status === 'WillFail' ? <span className="text-xs font-semibold text-rose-600">Refused</span>
+                            : r.status === 'WillRepair' ? <span className="inline-flex rounded-full bg-sky-500/10 px-2 py-0.5 text-[11px] font-semibold text-sky-700 ring-1 ring-sky-500/20 dark:text-sky-300">Existing · fill missing</span>
+                            : <LandingPill status={r.projectedStatus} />}
+                        </td>
                         <td className="px-3 py-2 text-xs text-slate-500 dark:text-slate-400">
-                          {[...(r.errors ?? []), ...(r.blocking ?? [])].join(', ') || (r.status === 'Error' ? '' : 'Complete')}
+                          {[...(r.errors ?? []), ...(r.blocking ?? [])].join(', ')
+                            || (r.status === 'Error' ? '' : r.status === 'WillRepair' ? 'Existing employee — only missing details are filled in' : 'Complete')}
                         </td>
                       </tr>
                     ))}
@@ -631,11 +705,18 @@ export function ImportExportToolbar({
             <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700 dark:bg-white/[0.04] dark:text-slate-200">
               {buildSummaryLine(result, aggregateGaps(result))}
             </p>
+            {result.replayed && (
+              <p className="text-xs text-slate-600 dark:text-slate-300" role="status">
+                This file was already imported — nothing was imported again. The counts are from that import.
+              </p>
+            )}
 
             <div className="flex flex-wrap gap-2 text-xs">
               <span className="inline-flex items-center gap-1 rounded-md bg-emeraldZ/10 px-2 py-1 font-semibold text-emerald-700 ring-1 ring-emeraldZ/20 dark:text-emerald-300">
                 <CheckCircle2 className="h-3.5 w-3.5" /> {result.imported ?? result.created} created
               </span>
+              {(result.repaired ?? 0) > 0 && <span className="rounded-md bg-sky-500/10 px-2 py-1 font-semibold text-sky-700 ring-1 ring-sky-500/20 dark:text-sky-300">{result.repaired} existing completed</span>}
+              {(result.approvalRequiredCount ?? 0) > 0 && <span className="rounded-md bg-amber-400/15 px-2 py-1 font-semibold text-amber-800 ring-1 ring-amber-400/25 dark:text-amber-300">{result.approvalRequiredCount} existing · bank/salary not applied</span>}
               {result.skipped > 0 && <span className="rounded-md bg-rose-500/10 px-2 py-1 font-semibold text-rose-700 ring-1 ring-rose-500/20 dark:text-rose-300">{result.skipped} skipped</span>}
               {incompleteCount > 0 && <span className="rounded-md bg-amber-400/15 px-2 py-1 font-semibold text-amber-700 ring-1 ring-amber-400/25 dark:text-amber-300">{incompleteCount} inactive · needs info</span>}
               {(result.possibleDuplicates ?? 0) > 0 && <span className="inline-flex items-center gap-1 rounded-md bg-fuchsia-500/10 px-2 py-1 font-semibold text-fuchsia-700 ring-1 ring-fuchsia-500/20 dark:text-fuchsia-300"><Users className="h-3.5 w-3.5" /> {result.possibleDuplicates} possible {result.possibleDuplicates === 1 ? 'duplicate' : 'duplicates'}</span>}

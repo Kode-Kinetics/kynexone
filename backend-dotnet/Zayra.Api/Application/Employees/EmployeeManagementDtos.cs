@@ -208,6 +208,11 @@ public record EmployeeDetailDto
     public string IqamaNumber { get; init; } = string.Empty;
     public string MuqeemNumber { get; init; } = string.Empty;
     public string GosiReference { get; init; } = string.Empty;
+    /// <summary>F02 — the GOSI first-registration date (sensitive; null when unknown or masked).</summary>
+    public DateOnly? GosiFirstRegisteredOn { get; init; }
+    /// <summary>F02 — the cohort that date places the person in: Unknown | PreJuly2024 | NewEntrant.
+    /// Null when masked, so a caller without sensitive access never sees "Unknown" for a recorded date.</summary>
+    public string? GosiCohort { get; init; }
     public string QiwaContractNumber { get; init; } = string.Empty;
     public string EmiratesId { get; init; } = string.Empty;
     public string LaborCardNumber { get; init; } = string.Empty;
@@ -331,6 +336,10 @@ public record EmployeeDetailDto
             VisaFileNumber                = includeSensitive ? e.VisaFileNumber : string.Empty,
             MuqeemNumber                  = includeSensitive ? e.MuqeemNumber : string.Empty,
             GosiReference                 = includeSensitive ? e.GosiReference : string.Empty,
+            GosiFirstRegisteredOn         = includeSensitive ? e.GosiFirstRegisteredOn : null,
+            GosiCohort                    = includeSensitive
+                ? Zayra.Api.Application.CountryPack.GosiCohorts.Resolve(e.GosiFirstRegisteredOn)
+                : null,
             QiwaContractNumber            = includeSensitive ? e.QiwaContractNumber : string.Empty,
             EmiratesId                    = includeSensitive ? e.EmiratesId : string.Empty,
             LaborCardNumber               = includeSensitive ? e.LaborCardNumber : string.Empty,

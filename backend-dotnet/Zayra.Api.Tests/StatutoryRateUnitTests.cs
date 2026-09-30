@@ -358,7 +358,6 @@ public class StatutoryRateUnitTests
         new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
         new Claim(ClaimTypes.Role, "Admin"),
         new Claim("permission", "payroll.rates.statutory_override"),
-        new Claim("permission", "payroll.manage"),
     }, "Test"));
 
     private static StatutoryRulesController StatutoryRulesControllerFor(ZayraDbContext db) =>

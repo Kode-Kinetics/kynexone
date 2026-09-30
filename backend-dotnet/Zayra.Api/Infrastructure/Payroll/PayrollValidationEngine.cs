@@ -1,3 +1,4 @@
+using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Payroll;
@@ -12,7 +13,8 @@ namespace Zayra.Api.Infrastructure.Payroll;
 /// Rules:
 ///   1  Missing salary structure OR missing payroll profile for any active employee
 ///   2  GOSI: Saudi/GCC employee must have non-zero GOSI employee deductions;
-///            expat must have zero; 45,000 SAR covered-wage ceiling flagged
+///            expat must have zero; 45,000 SAR covered-wage ceiling flagged;
+///            Saudi national's GOSI entrant cohort: unknown → Warning, new entrant → Error (F02)
 ///   3  Net salary not negative; not zero when gross > 0
 ///   4  Duplicate employee entry in run
 ///   5  WPS readiness: IBAN present + valid Saudi format (24 characters total) and mod-97;
@@ -32,6 +34,13 @@ public static class PayrollValidationEngine
     /// one ceiling in the system rather than a third store of it.
     /// </summary>
     private const decimal DefaultGosiCoveredWageCeiling = 45_000m;
+
+    /// <summary>F02 — a Saudi national's slip was computed with no known GOSI cohort (Warning).</summary>
+    public const string GosiCohortNotRecorded = "GOSI_COHORT_NOT_RECORDED";
+
+    /// <summary>F02 — a Saudi national is a post-3-July-2024 new entrant and that schedule is not modelled
+    /// (Error; published as non-overridable in <see cref="PayrollValidationOverridePolicy"/>).</summary>
+    public const string GosiNewEntrantScheduleNotModelled = "GOSI_NEW_ENTRANT_SCHEDULE_NOT_MODELLED";
     private const int GosiRateStalenessThresholdMonths = 18;
 
     public static List<PayrollValidationResult> Run(PayrollValidationContext ctx)
@@ -105,28 +114,12 @@ public static class PayrollValidationEngine
         // For a Regular run IncludesRecurringPay is always true, so nothing about an existing run changes.
         var paysRecurring = ctx.Run.IncludesRecurringPay;
 
-        // ── S1/A3: the entrant-cohort dimension does not exist, and that is now SAID ─────────
-        // Since 3 July 2024 the Saudi schedule depends on WHEN THE INDIVIDUAL first registered, not
-        // only on the period: first-time entrants to the insured labour market are on a separate,
-        // rising ladder while existing subscribers stay on 9%/9%. Every rate lookup in this product
-        // is keyed by period alone, and EmployeePayrollProfile has no first-registration date, so no
-        // configuration can express the split — it is a schema change, not a rate change.
-        //
-        // This fires once per KSA run rather than per employee, and is suppressible: a customer who
-        // has confirmed they employ no post-3-July-2024 first-time entrant should not be nagged.
-        if (isKsa && paysRecurring && !ctx.EntrantCohortSchemeAcknowledged)
-            Warn("WARN_GOSI_ENTRANT_COHORT_NOT_MODELLED",
-                "This run assumes EVERY insured person is on the pre-3-July-2024 GOSI schedule (9% / 9% " +
-                "annuities). Saudi Arabia introduced a separate scheme for FIRST-TIME entrants to the insured " +
-                "labour market on 3 July 2024, whose contribution rate steps up year by year, and this product " +
-                "has no cohort dimension: the rate is looked up by period, never by person, and there is no " +
-                "first-registration date on the employee record to look one up with. If any employee in this " +
-                "run first registered with GOSI on or after 3 July 2024, their contribution is UNDER-STATED and " +
-                "will be collected later as back-contributions with a surcharge. Confirm with GOSI, and set the " +
-                "statutory rule 'gosi.new_entrant_scheme_acknowledged' to true once you have established that " +
-                "your population is entirely pre-3-July-2024 (or once the cohort schema lands). [COUNSEL] for " +
-                "the exact ladder. The same defect applies to UAE nationals under Decree-Law 57/2023.");
-
+        // ── F02: the entrant cohort is judged PER EMPLOYEE, inside Rule 2 below ─────────────────────
+        // This used to be ONE run-wide WARN_GOSI_ENTRANT_COHORT_NOT_MODELLED that assumed every insured
+        // person was on the pre-3-July-2024 schedule, named nobody, blocked nothing, and could be silenced
+        // for the whole population by one tenant flag (gosi.new_entrant_scheme_acknowledged, no longer
+        // read). The cohort is now a person-level fact (Employee.GosiFirstRegisteredOn), each slip records
+        // the cohort it was computed on (PayrollSlip.GosiCohort), and Rule 2 raises a finding per person.
 
         // ── Rule 1: Missing salary structure / payroll profile ────────────────
         foreach (var emp in ctx.ActiveEmployees)
@@ -331,6 +324,49 @@ public static class PayrollValidationEngine
                     // periodGosiEe > 0 with zero on THIS run needs no result: the period obligation is
                     // demonstrably met, and SUPPLEMENTAL_STATUTORY_BASE already tells the preparer the
                     // per-run figure is a period delta.
+
+                    // ── F02: the GOSI entrant cohort, per employee ────────────────────────────────────
+                    // Saudi nationals only: the cohort split is an annuities fact, and a GCC national is
+                    // insured under their home state's scheme (above), not the Saudi branches. Judged on the
+                    // cohort the slip was COMPUTED on — not the employee's current record — so a date
+                    // recorded after Process is honoured by re-processing, never by re-validating a slip
+                    // whose figures predate it. A run that computed no GOSI for this person (a supplemental
+                    // run outside the GOSI base) has no rate to be wrong about.
+                    if (classification == GosiClassifications.Saudi && (paysRecurring || hasGosiEe))
+                    {
+                        var recordedOn = emp.GosiFirstRegisteredOn;
+                        if (slip.GosiCohort == GosiCohorts.NewEntrant)
+                            Err(GosiNewEntrantScheduleNotModelled,
+                                $"Employee {slip.EmployeeCode} ({emp.FullName}) first registered with GOSI on " +
+                                $"{(recordedOn is DateOnly d ? IsoDate(d) : "a date on or after 3 July 2024")}, " +
+                                "so they are a NEW ENTRANT on the separate new-entrant contribution schedule that " +
+                                "applies from 3 July 2024. That schedule is not modelled in this product yet, so the " +
+                                "GOSI on this payslip was computed on the pre-3-July-2024 schedule and is wrong for " +
+                                "this person. This blocks approval and locking, and cannot be overridden. Next " +
+                                "action: if the first-registration date is wrong, correct it on the employee record " +
+                                "(the change needs approval), then reopen this run and process it again; if it is " +
+                                "right, reopen the run, exclude this employee, process it again, and calculate their " +
+                                "GOSI outside the system until the new-entrant schedule is modelled.",
+                                slip.EmployeeId);
+                        else if (slip.GosiCohort != GosiCohorts.PreJuly2024)
+                            Warn(GosiCohortNotRecorded,
+                                recordedOn is DateOnly since
+                                    ? $"Employee {slip.EmployeeCode} ({emp.FullName}): GOSI cohort not recorded, " +
+                                      "contribution basis unverified. This payslip was computed before the GOSI " +
+                                      $"first-registration date ({IsoDate(since)}) was on record, so its GOSI used " +
+                                      "the pre-3-July-2024 schedule without checking that it applies. Next action: " +
+                                      "reopen this run and process it again (re-process), so the contribution is " +
+                                      "computed on the recorded cohort."
+                                    : $"Employee {slip.EmployeeCode} ({emp.FullName}): GOSI cohort not recorded, " +
+                                      "contribution basis unverified. There is no GOSI first-registration date on the " +
+                                      "employee record, so this payslip's GOSI was computed on the pre-3-July-2024 " +
+                                      "schedule without knowing whether that is this person's schedule. If they first " +
+                                      "registered with GOSI on or after 3 July 2024 the contribution is wrong and GOSI " +
+                                      "will correct it later with a surcharge. Next action: record the employee's GOSI " +
+                                      "first-registration date from their GOSI record (the change needs approval); the " +
+                                      "next run picks it up, or reopen this run and process it again (re-process).",
+                                slip.EmployeeId);
+                    }
 
                     // 45 k ceiling warning
                     var coveredWage = slip.BasicSalary + slip.HousingAllowance;
@@ -557,6 +593,9 @@ public static class PayrollValidationEngine
 
     private static bool IsGosiEeCode(string code) => IsGosiEmployeeCode(code);
 
+    /// <summary>F02 — a Gregorian ISO date whatever the server culture (ar-SA defaults to Umm al-Qura).</summary>
+    private static string IsoDate(DateOnly d) => d.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+
     /// <summary>
     /// Employee-side GOSI component codes (GOSI-ANN-EE, GOSI-SANED-EE, …). Public so the callers that
     /// build <see cref="PayrollValidationContext.PriorPeriodGosiEeByEmployee"/> classify sibling-run
@@ -648,14 +687,6 @@ public sealed record PayrollValidationContext(
     /// has not been updated behaves exactly as before.
     /// </summary>
     public decimal GosiCoveredWageCeiling { get; init; }
-
-    /// <summary>
-    /// S1/A3 — true when the tenant has acknowledged the post-3-July-2024 GOSI new-entrant scheme,
-    /// which suppresses WARN_GOSI_ENTRANT_COHORT_NOT_MODELLED. Driven by the statutory rule
-    /// <c>gosi.new_entrant_scheme_acknowledged</c>. Defaults to false: the gap is real and the
-    /// default must be to say so.
-    /// </summary>
-    public bool EntrantCohortSchemeAcknowledged { get; init; }
 
     /// <summary>
     /// S1/A3 (corollary) — the age at which GOSI annuities and SANED cease. Zero disables the check.
