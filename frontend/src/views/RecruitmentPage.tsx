@@ -807,7 +807,7 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
 
   const load = () => {
     setLoading(true);
-    openingsApi.list().then(r => { setItems(r.items); }).catch(() => {}).finally(() => setLoading(false));
+    openingsApi.listAll().then(setItems).catch(() => {}).finally(() => setLoading(false));
   };
 
   useEffect(() => { load(); }, []);
@@ -1241,9 +1241,9 @@ function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => 
   useEffect(() => { load(); }, [opening.id]);
 
   const openAddModal = async () => {
-    const res = await candidatesApi.list({ status: 'Active' }).catch(() => ({ items: [] as Candidate[] }));
-    setCandidates(res.items);
-    setSelectedCandidateId(res.items[0]?.id ?? '');
+    const all = await candidatesApi.listAll({ status: 'Active' }).catch(() => [] as Candidate[]);
+    setCandidates(all);
+    setSelectedCandidateId(all[0]?.id ?? '');
     setAddModalOpen(true);
   };
 
@@ -1667,7 +1667,7 @@ function InterviewsTab() {
   };
 
   const loadApps = async () => {
-    try { const r = await applicationsApi.list({ pageSize: 100 }); setApplications(r.items); } catch {}
+    try { setApplications(await applicationsApi.listAll()); } catch {}
   };
 
   useEffect(() => { load(); }, [statusFilter]);
@@ -1930,8 +1930,8 @@ function AssessmentsTab() {
 
   const openAssign = async () => {
     try {
-      const [appsRes, tmplRes] = await Promise.all([applicationsApi.list({ pageSize: 100 }), assessmentsApi.listTemplates()]);
-      setApplications(appsRes.items);
+      const [appsRes, tmplRes] = await Promise.all([applicationsApi.listAll(), assessmentsApi.listTemplates()]);
+      setApplications(appsRes);
       setTemplates(tmplRes);
     } catch {}
     setShowAssign(true);
@@ -1957,8 +1957,7 @@ function AssessmentsTab() {
         audience: templateForm.audience.trim(),
       });
       setTemplates(prev => [...prev.filter(t => t.id !== created.id), created]);
-      const appsRes = await applicationsApi.list({ pageSize: 100 });
-      setApplications(appsRes.items);
+      setApplications(await applicationsApi.listAll());
       setAssignForm(f => ({ ...f, templateId: created.id }));
       setTemplateForm({
         code: '', title: '', description: '', assessmentType: 'Technical',
@@ -2213,7 +2212,7 @@ function OffersTab() {
   useEffect(() => { load(); }, [statusFilter]);
 
   const openCreate = async () => {
-    try { const r = await applicationsApi.list({ pageSize: 100 }); setApplications(r.items); } catch {}
+    try { setApplications(await applicationsApi.listAll()); } catch {}
     setShowCreate(true);
   };
 

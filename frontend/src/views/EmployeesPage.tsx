@@ -13,6 +13,7 @@ import { ReadinessChecklist, type ReadinessFixMode } from '../components/Readine
 import { GosiCohortPanel } from '../components/GosiCohortPanel';
 import client from '../api/client';
 import { createLatestRequestGate, runLatest } from '../lib/latestRequest';
+import { createUrlSeed } from '../lib/urlSeed';
 
 const employeesImportExport = {
   export: async () => {
@@ -241,7 +242,9 @@ export function EmployeesPage() {
   const [employees, setEmployees] = useState<EmployeeListItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
-  const [search, setSearch] = useState('');
+  // `?search=` seeds the box on load and when navigation changes it; it never overwrites typing.
+  const [searchSeed] = useState(createUrlSeed);
+  const [search, setSearch] = useState(() => searchParams?.get('search') ?? '');
   const [status, setStatus] = useState<StatusFilter>('');
   // Server-side readiness worklist filter (paginates correctly across ALL pages, not just the
   // loaded page). "Needs info" = the worklist the import results view deep-links into.
@@ -402,22 +405,24 @@ export function EmployeesPage() {
   }, [employeeLoadGate]);
 
   const loadLookups = useCallback(async () => {
+    // Every row of each lookup, page by page. One page of 100 left the 101st department,
+    // designation or active manager missing from the form's selects with nothing to say so.
     const [companyRes, branchRes, deptRes, desigRes, gradeRes, costRes, managerRes] = await Promise.all([
-      companiesApi.list(1, 100),
-      branchesApi.list(undefined, 1, 100),
-      departmentsApi.list(undefined, 1, 100),
-      designationsApi.list(undefined, 1, 100),
-      gradesApi.list(1, 100),
-      costCentersApi.list(undefined, 1, 100),
-      employeesApi.list({ status: 'Active', page: 1, pageSize: 100 }),
+      companiesApi.listAll(),
+      branchesApi.listAll(),
+      departmentsApi.listAll(),
+      designationsApi.listAll(),
+      gradesApi.listAll(),
+      costCentersApi.listAll(),
+      employeesApi.listAll({ status: 'Active' }),
     ]);
-    setCompanies(companyRes.items);
-    setBranches(branchRes.items);
-    setDepartments(deptRes.items);
-    setDesignations(desigRes.items);
-    setGrades(gradeRes.items);
-    setCostCenters(costRes.items);
-    setManagerCandidates(managerRes.items);
+    setCompanies(companyRes);
+    setBranches(branchRes);
+    setDepartments(deptRes);
+    setDesignations(desigRes);
+    setGrades(gradeRes);
+    setCostCenters(costRes);
+    setManagerCandidates(managerRes);
   }, []);
 
   useEffect(() => { load(); }, [load, employeeQuery]);
@@ -555,11 +560,11 @@ export function EmployeesPage() {
     }
   };
   useEffect(() => {
-    const searchFromUrl = searchParams?.get('search') ?? null;
-    if (searchFromUrl !== null && searchFromUrl !== search) {
-      setSearch(searchFromUrl);
-    }
-  }, [search, searchParams]);
+    // Keyed on the URL only. It used to depend on `search` and re-apply the URL value whenever the
+    // box differed from it, which replaced every keystroke with the URL's search.
+    const seeded = searchSeed.take(searchParams?.get('search') ?? null);
+    if (seeded !== undefined) setSearch(seeded);
+  }, [searchParams, searchSeed]);
   useEffect(() => {
     const employeeId = searchParams?.get('employeeId') ?? null;
     if (!employeeId) return;

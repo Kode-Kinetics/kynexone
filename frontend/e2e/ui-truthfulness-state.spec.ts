@@ -16,6 +16,8 @@ import {
 import { LOGIN_CAPABILITIES, LOGIN_PREVIEW_DISCLOSURE } from '../src/lib/loginCapabilities';
 import { payrollInsightEmptyCopy, payrollInsightState, payrollPeriodState } from '../src/lib/payrollInsightState';
 import { requestFailureReason } from '../src/lib/requestFailure';
+import { createUrlSeed } from '../src/lib/urlSeed';
+import { spendUtilisation, totalSpend } from '../src/lib/establishmentSpend';
 
 const read = (relative: string) => fs.readFileSync(path.join(process.cwd(), relative), 'utf8');
 
@@ -267,6 +269,44 @@ test.describe('browserless employee search race and payroll currency contracts',
     expect(read('src/components/EmployeePicker.tsx')).toContain('{!value && open && results.length > 0 && (');
   });
 
+  test('People ?search= seeds the box; typing afterwards is never overwritten by the URL', () => {
+    // Control: the pre-fix effect re-applied the URL whenever the box differed from it.
+    const naive = { box: 'ali' };
+    const naiveEffect = (url: string | null) => { if (url !== null && url !== naive.box) naive.box = url; };
+    naive.box = 'alic'; // the user types one more letter
+    naiveEffect('ali'); // `search` changed, so the effect ran again
+    expect(naive.box).toBe('ali');
+
+    const seed = createUrlSeed();
+    const people = { box: 'ali' }; // the box starts from the URL
+    const effect = (url: string | null) => { const v = seed.take(url); if (v !== undefined) people.box = v; };
+    effect('ali');
+    expect(people.box).toBe('ali');
+    people.box = 'alice';
+    effect('ali'); // re-render, or the page adding ?employeeId= beside the same search
+    effect('ali');
+    expect(people.box).toBe('alice');
+    people.box = '';
+    effect('ali');
+    expect(people.box).toBe(''); // a cleared box stays cleared
+    effect('bob'); // navigation to a different search
+    expect(people.box).toBe('bob');
+    effect(null); // navigation without the parameter leaves what is there
+    expect(people.box).toBe('bob');
+    people.box = 'x';
+    effect('bob'); // following a search link again seeds it again
+    expect(people.box).toBe('bob');
+  });
+
+  test('the People page seeds search from the URL without keying that effect on the typed value', () => {
+    const people = read('src/views/EmployeesPage.tsx');
+    expect(people).toContain("const [search, setSearch] = useState(() => searchParams?.get('search') ?? '');");
+    expect(people).toMatch(/const seeded = searchSeed\.take\(searchParams\?\.get\('search'\) \?\? null\);\n\s+if \(seeded !== undefined\) setSearch\(seeded\);\n\s+\}, \[searchParams, searchSeed\]\);/);
+    expect(people).not.toContain('searchFromUrl !== search');
+    // #128's gate still decides which employee load may write the table.
+    expect(people).toContain('await runLatest(employeeLoadGate, () => employeesApi.list({');
+  });
+
   test('R03: a run is shown in its employing company\'s currency, never the tenant default', () => {
     const companies = [
       { id: 'ksa', name: 'Evostel Certification KSA', tradeName: '', defaultCurrency: 'sar' },
@@ -487,5 +527,39 @@ test.describe('browserless payroll payment-readiness contracts', () => {
     expect(payroll).toContain('>Recommended — does not block approval</p>');
     expect(payroll).toContain('href={`/people?employeeId=${e.employeeId}`}');
     expect(payroll).toContain('const visibleInsights = filterPayrollInsightsForReadiness(insights, readiness);');
+  });
+});
+
+test.describe('browserless withheld establishment spend contracts', () => {
+  test('withheld spend (null) is restricted, never 0 or 0%', () => {
+    // Control: the pre-fix rollup added null as 0 and divided it by the budget.
+    const withheldRows = [{ spend: null as number | null, budget: 50000 }, { spend: null as number | null, budget: 20000 }];
+    const naiveSpend = withheldRows.reduce((s, r) => s + (r.spend as unknown as number), 0);
+    expect(naiveSpend).toBe(0);
+    expect(Math.round((naiveSpend / 70000) * 100)).toBe(0);
+
+    expect(totalSpend(withheldRows.map((r) => r.spend))).toBeNull();
+    expect(spendUtilisation(null, 50000)).toEqual({ state: 'restricted' });
+    expect(spendUtilisation(undefined, 50000)).toEqual({ state: 'restricted' });
+    expect(spendUtilisation(null, 0)).toEqual({ state: 'restricted' });
+  });
+
+  test('a real zero is still zero, and one withheld row withholds the group total', () => {
+    expect(totalSpend([0, 0])).toBe(0);
+    expect(spendUtilisation(0, 50000)).toEqual({ state: 'known', percent: 0 });
+    expect(totalSpend([12000, 30000])).toBe(42000);
+    expect(spendUtilisation(42000, 40000)).toEqual({ state: 'known', percent: 105 });
+    expect(spendUtilisation(42000, 0)).toEqual({ state: 'no-budget' });
+    expect(totalSpend([12000, null])).toBeNull();
+  });
+
+  test('the establishment panel renders spend and utilisation through the withheld-aware helpers', () => {
+    const panel = read('src/components/EstablishmentPanel.tsx');
+    expect(panel).toContain('spend: totalSpend(gr.map(r => r.currentMonthlySpend)),');
+    expect(panel).toContain('const u = spendUtilisation(tot.spend, tot.budget);');
+    expect(panel).toContain('const u = spendUtilisation(r.currentMonthlySpend, r.monthlyBudgetAmount);');
+    expect(panel).toContain("r.currentMonthlySpend === null ? SPEND_RESTRICTED_LABEL");
+    expect(panel).not.toMatch(/s \+ r\.currentMonthlySpend/);
+    expect(read('src/api/planning.ts')).toContain('currentMonthlySpend: number | null;');
   });
 });

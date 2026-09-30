@@ -246,7 +246,7 @@ export function AttendancePage() {
         attendanceApi.daily({ from: filterDate, to: filterDate, status: statusFilter || undefined, pageSize: 50 }),
         attendanceApi.events.raw({ from: filterDate, to: filterDate, pageSize: 50 }),
         attendanceApi.devices.list({ pageSize: 50 }),
-        employeesApi.list({ pageSize: 100 }),
+        employeesApi.listAll(),
         attendanceApi.regularization.mine({ pageSize: 25 }),
         attendanceApi.regularization.pending({ pageSize: 25 }),
         attendanceApi.reports.payrollSummary(filterDate, filterDate),
@@ -258,7 +258,7 @@ export function AttendancePage() {
     if (day.status === 'fulfilled') setDaily(day.value.items); else failures.daily = 'failed';
     if (raw.status === 'fulfilled') setRawEvents(raw.value.items); else failures.raw = 'failed';
     if (devicePage.status === 'fulfilled') setDevices(devicePage.value.items); else failures.devices = 'failed';
-    if (employeePage.status === 'fulfilled') setEmployees(employeePage.value.items); else failures.employees = 'failed';
+    if (employeePage.status === 'fulfilled') setEmployees(employeePage.value); else failures.employees = 'failed';
     if (regPage.status === 'fulfilled') setRegularizations(regPage.value.items); else failures.regularizations = 'failed';
     if (pendingPage.status === 'fulfilled') setPendingRegularizations(pendingPage.value.items); else failures.pendingRegularizations = 'failed';
     if (payroll.status === 'fulfilled') setPayrollSummary(payroll.value); else failures.payrollSummary = 'failed';

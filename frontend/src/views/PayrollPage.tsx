@@ -22,6 +22,7 @@ import {
 } from '../api/payroll';
 import { identityAuditApi } from '../api/identity';
 import { formatCalendarDate } from '../lib/calendarDate';
+import { requestFailureReason } from '../lib/requestFailure';
 import { commonPayrollCurrency, resolvePayrollRunCurrency, totalsByCurrency, type CompaniesLoadState } from '../lib/payrollCurrency';
 import { usePayrollCompanies } from '../hooks/usePayrollCompanies';
 import { filterPayrollInsightsForReadiness, paymentReadinessHeadline, prerequisiteLabel, type PaymentPrerequisites, type PayrollReadinessWithPrerequisites } from '../lib/payrollPrerequisites';
@@ -1159,6 +1160,7 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [slips, setSlips] = useState<PayrollSlip[]>([]);
   const [slipsLoading, setSlipsLoading] = useState(false);
+  const [slipsError, setSlipsError] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   // Monotonic counter: only the response matching the latest fetch ID is applied.
   // Prevents stale responses from a slow previous fetch overwriting current slips.
@@ -1176,7 +1178,7 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
 
   const load = () => {
     setLoading(true);
-    payrollApi.listRuns({ pageSize: 50 }).then(r => { setRuns(r.items); setTotal(r.total); }).catch(() => {}).finally(() => setLoading(false));
+    payrollApi.listAllRuns().then(all => { setRuns(all); setTotal(all.length); }).catch(() => {}).finally(() => setLoading(false));
   };
   useEffect(() => {
     load();
@@ -1194,11 +1196,13 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
   const openSlips = (run: PayrollRun) => {
     setSelectedRunId(run.id);
     setSlips([]);
+    setSlipsError('');
     setSlipsLoading(true);
     const seq = ++slipsFetchSeq.current;
-    payrollApi.slips(run.id, { pageSize: 200 })
-      .then(r => { if (slipsFetchSeq.current === seq) setSlips(r.items); })
-      .catch(() => {})
+    // Every slip, page by page: one page of 200 left a larger run's register silently short.
+    payrollApi.allSlips(run.id)
+      .then(all => { if (slipsFetchSeq.current === seq) setSlips(all); })
+      .catch(e => { if (slipsFetchSeq.current === seq) setSlipsError(`Slips could not be loaded. ${requestFailureReason(e)}`); })
       .finally(() => { if (slipsFetchSeq.current === seq) setSlipsLoading(false); });
   };
 
@@ -1373,7 +1377,8 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
-                      {slips.length === 0 && <tr><td colSpan={9} className="py-10 text-center text-sm text-slate-400">No slips. Click Process to generate.</td></tr>}
+                      {slipsError && <tr><td colSpan={9} role="alert" className="py-10 text-center text-sm text-rose-600 dark:text-rose-400">{slipsError}</td></tr>}
+                      {!slipsError && slips.length === 0 && <tr><td colSpan={9} className="py-10 text-center text-sm text-slate-400">No slips. Click Process to generate.</td></tr>}
                       {slips.map(s => (
                         <tr key={s.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                           <td className="px-3 py-2.5">
@@ -1655,7 +1660,7 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
   const [overridableCodes, setOverridableCodes] = useState<string[]>([]);
   const [overriding, setOverriding] = useState<PayrollValidationResult | null>(null);
 
-  useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
+  useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
 
   useEffect(() => {
     if (!runId) { setResults([]); setError(''); return; }
@@ -2008,7 +2013,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
   const [ackOverridden, setAckOverridden] = useState(false);
 
   const refreshRuns = () =>
-    payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {});
+    payrollApi.listAllRuns().then(setRuns).catch(() => {});
 
   const refreshGate = React.useCallback((id: string) => {
     if (!id) { setPopulation(null); setOverrideReport(null); return; }
@@ -2263,18 +2268,23 @@ function PayslipsTab() {
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [runId, setRunId] = useState('');
   const [payslips, setPayslips] = useState<Payslip[]>([]);
+  const [listError, setListError] = useState('');
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [downloadingBundle, setDownloadingBundle] = useState(false);
   const [error, setError] = useState('');
 
-  useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
+  useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
 
   const loadPayslips = () => {
     if (!runId) return;
     setLoading(true);
-    payrollApi.listPayslips(runId, { pageSize: 200 }).then(r => setPayslips(r.items)).catch(() => {}).finally(() => setLoading(false));
+    setListError('');
+    payrollApi.allPayslips(runId)
+      .then(setPayslips)
+      .catch(e => { setPayslips([]); setListError(`Payslips could not be loaded. ${requestFailureReason(e)}`); })
+      .finally(() => setLoading(false));
   };
   useEffect(() => { if (runId) loadPayslips(); }, [runId]);
 
@@ -2338,7 +2348,12 @@ function PayslipsTab() {
         </div>
       )}
 
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : payslips.length === 0 && runId ? (
+      {loading ? <p className="text-sm text-slate-400">Loading…</p> : listError ? (
+        <div role="alert" className="surface flex items-start gap-2 p-4 text-sm text-rose-700 dark:text-rose-400">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{listError}</span>
+        </div>
+      ) : payslips.length === 0 && runId ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <FileText className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
           <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No payslips yet — click Generate to create payslips for this run</p>
@@ -2411,7 +2426,7 @@ function BankWpsTab() {
   const currentRunRef = useRef(runId);
   currentRunRef.current = runId;
 
-  useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
+  useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -2769,7 +2784,7 @@ function ReportsTab() {
   const netYtd = ytd(row => row.totalNetYtd);
 
   useEffect(() => {
-    payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {});
+    payrollApi.listAllRuns().then(setRuns).catch(() => {});
     payrollApi.reportSummary().then(setSummary).catch(() => {});
   }, []);
 
@@ -2879,7 +2894,7 @@ function AIValidationTab() {
   const [result, setResult] = useState<{ advisoryOnly: boolean; warnings: PayrollValidationResult[]; summary: string } | null>(null);
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
+  useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
 
   const runAI = async () => {
     if (!runId) return;
@@ -3056,7 +3071,7 @@ function GlJournalTab({ selectedRunId }: { selectedRunId?: string }) {
   const [journal, setJournal] = useState<PayrollGLJournal | null>(null);
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
+  useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
   useEffect(() => { if (selectedRunId) setRunId(selectedRunId); }, [selectedRunId]);
 
   const load = async () => {
@@ -3159,7 +3174,7 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
   const [error, setError] = useState('');
   const runCurrency = useRunCurrency(runs.find(r => r.id === runId));
 
-  useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
+  useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
   useEffect(() => { if (selectedRunId) setRunId(selectedRunId); }, [selectedRunId]);
 
   const load = async () => {

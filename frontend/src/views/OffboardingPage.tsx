@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { formatCalendarDate } from '../lib/calendarDate';
+import { calendarDaysBetween, daysUntilCalendarDate, formatCalendarDate } from '../lib/calendarDate';
 import { UserMinus, X, CheckCircle2, Star, Undo2, AlertTriangle, ShieldOff, Search, Loader2 } from 'lucide-react';
 import {
   offboardingApi, SEPARATION_TYPE_FALLBACK,
@@ -21,7 +21,6 @@ const EXIT_REASONS = ['Compensation', 'Career Growth', 'Management', 'Work-Life 
  */
 const OFFBOARDABLE_STATUSES = new Set(['Active', 'Suspended']);
 
-function daysBetween(from: Date, to: Date) { return Math.ceil((to.getTime() - from.getTime()) / 86400000); }
 function fmtDate(s: string | null) { return formatCalendarDate(s, 'en-GB'); }
 function addDays(iso: string, days: number) {
   const d = new Date(`${iso}T00:00:00Z`);
@@ -172,7 +171,7 @@ function OffboardingCard({ o, onChange }: { o: Offboarding; onChange: () => void
   ];
   const done = checklist.filter(([k]) => o[k] === true).length + (o.accessRevoked ? 1 : 0);
   const isProgress = o.status === 'InProgress';
-  const daysLeft = isProgress ? daysBetween(new Date(), new Date(o.lastWorkingDay)) : null;
+  const daysLeft = isProgress ? daysUntilCalendarDate(o.lastWorkingDay) : null;
 
   const run = async (fn: () => Promise<unknown>, fallback: string) => {
     setBusy(true); setError('');
@@ -436,7 +435,7 @@ function InitiateModal({ onClose, onDone }: { onClose: () => void; onDone: () =>
   const selectedType = types.find(t => t.code === form.separationType) ?? types[0];
   const forfeits = selectedType?.forfeitsEndOfServiceAward === true;
   const weekend = weekendName(lwd);
-  const servedDays = form.noticeDate && lwd ? daysBetween(new Date(`${form.noticeDate}T00:00:00Z`), new Date(`${lwd}T00:00:00Z`)) : 0;
+  const servedDays = form.noticeDate && lwd ? calendarDaysBetween(form.noticeDate, lwd) ?? 0 : 0;
   const shortfall = Math.max(0, (Number(form.noticePeriodDays) || 0) - servedDays);
 
   const submit = async () => {

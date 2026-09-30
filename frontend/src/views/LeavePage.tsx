@@ -28,6 +28,7 @@ import client from '../api/client';
 import { companiesApi, branchesApi } from '../api/organization';
 import type { CompanyDto, BranchDto } from '../api/organization';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
+import { calendarDaysBetween, formatCalendarDate } from '../lib/calendarDate';
 import { payrollApi } from '../api/payroll';
 import type { PayrollRun } from '../api/payroll';
 import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
@@ -62,29 +63,18 @@ const leaveRequestsImportExport = {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function fmtDate(s: string | null | undefined) {
-  if (!s) return '—';
-  // DateOnly values are calendar facts, not UTC instants. `new Date('2026-08-24')`
-  // parses as UTC midnight and displays Aug 23 west of UTC. Construct a local calendar
-  // date from its components so leave dates round-trip in every browser timezone.
-  const calendar = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
-  const value = calendar
-    ? new Date(Number(calendar[1]), Number(calendar[2]) - 1, Number(calendar[3]))
-    : new Date(s);
-  return value.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' });
-}
+// DateOnly values are calendar facts, not UTC instants: `new Date('2026-08-24')` parses as UTC
+// midnight and displays Aug 23 west of UTC. The shared helper builds the local calendar day instead.
+function fmtDate(s: string | null | undefined) { return formatCalendarDate(s, 'en-US'); }
 
 function fmtAmt(n: number) {
   return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+/** Calendar days a request spans, both ends included. */
 function daysBetween(start: string, end: string) {
-  const toDayNumber = (value: string) => {
-    const [year, month, day] = value.split('-').map(Number);
-    return Date.UTC(year, month - 1, day) / 86400000;
-  };
-  const d = Math.ceil(toDayNumber(end) - toDayNumber(start)) + 1;
-  return Math.max(0, d);
+  const apart = calendarDaysBetween(start, end);
+  return apart === null ? 0 : Math.max(0, apart + 1);
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -771,7 +761,8 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 
   const load = () => {
     setLoading(true);
-    leaveRequestsApi.list({ status: 'PendingManagerApproval', ...groupFilter }).then(r => { setRequests(r.items); setLoading(false); }).catch(() => setLoading(false));
+    // The whole queue: an approver used to see only the first 25 pending requests.
+    leaveRequestsApi.listAll({ status: 'PendingManagerApproval', ...groupFilter }).then(all => { setRequests(all); setLoading(false); }).catch(() => setLoading(false));
   };
   useEffect(load, [groupFilter.companyId, groupFilter.branchId]);
 
@@ -1589,8 +1580,8 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
   useEffect(() => { load(); leaveTypesApi.list().then(setLeaveTypes).catch(() => {}); }, [groupFilter.companyId, groupFilter.branchId]);
   useEffect(() => {
     if (!canPayrollApprove) return;
-    payrollApi.listRuns({ status: 'Draft', pageSize: 100 })
-      .then(r => setPayrollRuns(r.items))
+    payrollApi.listAllRuns({ status: 'Draft' })
+      .then(setPayrollRuns)
       .catch(() => setPayrollRuns([]));
   }, [canPayrollApprove]);
 
@@ -2008,13 +1999,13 @@ export function LeavePage() {
 
   useEffect(() => {
     if (isAdmin) {
-      companiesApi.list(1, 100).then(r => setCompanies(r.items)).catch(() => {});
+      companiesApi.listAll().then(setCompanies).catch(() => {});
     }
   }, [isAdmin]);
 
   useEffect(() => {
     if (companyId) {
-      branchesApi.list(companyId, 1, 100).then(r => setBranches(r.items)).catch(() => {});
+      branchesApi.listAll(companyId).then(setBranches).catch(() => {});
     } else {
       setBranches([]);
       setBranchId('');

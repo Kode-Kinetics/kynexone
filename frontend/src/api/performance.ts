@@ -1,4 +1,5 @@
 import client from './client';
+import { fetchAllPages } from '../lib/paging';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -317,6 +318,10 @@ export interface CycleAnalytics {
 export const cyclesApi = {
   list: (params: { status?: string; type?: string } = {}) =>
     client.get<{ items: PerformanceCycle[]; total: number }>('/api/performance/cycles', { params }).then(r => r.data),
+  /** Every matching cycle (newest first), page by page, for the cycle list and pickers. */
+  listAll: (params: { status?: string; type?: string } = {}) =>
+    fetchAllPages((page, pageSize) =>
+      client.get<{ items: PerformanceCycle[]; total: number }>('/api/performance/cycles', { params: { ...params, page, pageSize } }).then(r => r.data)),
 
   stats: () =>
     client.get<PerformanceDashboardStats>('/api/performance/cycles/stats').then(r => r.data),

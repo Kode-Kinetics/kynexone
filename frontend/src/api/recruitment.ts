@@ -1,4 +1,5 @@
 import client from './client';
+import { fetchAllPages } from '../lib/paging';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -197,6 +198,9 @@ export const requisitionsApi = {
 export const openingsApi = {
   list: (params: { status?: string; page?: number } = {}) =>
     client.get<{ items: JobOpening[]; total: number }>('/api/recruitment/openings', { params }).then(r => r.data),
+  listAll: (params: { status?: string } = {}) =>
+    fetchAllPages((page, pageSize) =>
+      client.get<{ items: JobOpening[]; total: number }>('/api/recruitment/openings', { params: { ...params, page, pageSize } }).then(r => r.data)),
 
   get: (id: string) =>
     client.get<{ opening: JobOpening; stageCounts: { stage: string; count: number }[] }>(`/api/recruitment/openings/${id}`).then(r => r.data),
@@ -217,6 +221,8 @@ export const openingsApi = {
 export const candidatesApi = {
   list: (params: { search?: string; status?: string; page?: number; pageSize?: number } = {}) =>
     client.get<{ items: Candidate[]; total: number }>('/api/recruitment/candidates', { params }).then(r => r.data),
+  listAll: (params: { search?: string; status?: string } = {}) =>
+    fetchAllPages((page, pageSize) => candidatesApi.list({ ...params, page, pageSize })),
 
   create: (body: {
     firstName: string; lastName: string; email: string; phone: string;
@@ -511,6 +517,10 @@ export const recruitmentReportsApi = {
 export const applicationsApi = {
   list: (params: { jobOpeningId?: string; stage?: string; status?: string; page?: number; pageSize?: number } = {}) =>
     client.get<{ items: JobApplication[]; total: number }>('/api/recruitment/applications', { params }).then(r => r.data),
+
+  /** Every application, page by page, for the pickers that choose one to schedule or offer. */
+  listAll: (params: { jobOpeningId?: string; stage?: string; status?: string } = {}) =>
+    fetchAllPages((page, pageSize) => applicationsApi.list({ ...params, page, pageSize })),
 
   kanban: (jobOpeningId: string) =>
     client.get<{ stages: KanbanStage[]; rejected: JobApplication[] }>(`/api/recruitment/applications/kanban/${jobOpeningId}`).then(r => r.data),

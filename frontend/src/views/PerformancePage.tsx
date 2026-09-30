@@ -331,7 +331,7 @@ function CyclesTab() {
   const [showCreate, setShowCreate] = useState(false);
   const [launching, setLaunching] = useState<string | null>(null);
 
-  const load = () => { setLoading(true); cyclesApi.list().then(r => { setCycles(r.items); setLoading(false); }).catch(() => setLoading(false)); };
+  const load = () => { setLoading(true); cyclesApi.listAll().then(all => { setCycles(all); setLoading(false); }).catch(() => setLoading(false)); };
   useEffect(load, []);
 
   const launch = async (id: string) => {
@@ -1082,7 +1082,7 @@ function CalibrationTab() {
   const [adjustment, setAdjustment] = useState('');
   const [adjustReason, setAdjustReason] = useState('');
 
-  useEffect(() => { cyclesApi.list({ status: 'Calibration' }).then(r => { setCycles(r.items); if (r.items.length > 0) setSelectedCycle(r.items[0].id); }).catch(() => {}); }, []);
+  useEffect(() => { cyclesApi.listAll({ status: 'Calibration' }).then(all => { setCycles(all); if (all.length > 0) setSelectedCycle(all[0].id); }).catch(() => {}); }, []);
 
   useEffect(() => {
     if (!selectedCycle) return;
@@ -1568,7 +1568,7 @@ function AnalyticsTab() {
   const [analytics, setAnalytics] = useState<CycleAnalytics | null>(null);
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => { cyclesApi.list().then(r => { setCycles(r.items); if (r.items.length > 0) setSelectedCycle(r.items[0].id); }).catch(() => {}); }, []);
+  useEffect(() => { cyclesApi.listAll().then(all => { setCycles(all); if (all.length > 0) setSelectedCycle(all[0].id); }).catch(() => {}); }, []);
   useEffect(() => {
     if (!selectedCycle) return;
     setLoading(true);

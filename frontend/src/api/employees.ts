@@ -1,4 +1,5 @@
 import client from './client';
+import { fetchAllPages } from '../lib/paging';
 import type { PagedResult } from './organization';
 
 export interface OrgChartNodeDto {
@@ -753,6 +754,10 @@ export const employeesApi = {
     client.get<PagedResult<EmployeeListItem>>('/api/employees', {
       params: { page: 1, pageSize: 25, ...params },
     }).then((r) => r.data),
+
+  /** Every matching employee, page by page, for a list that must be complete (e.g. a select). */
+  listAll: (params: { search?: string; status?: string; department?: string } = {}) =>
+    fetchAllPages((page, pageSize) => employeesApi.list({ ...params, page, pageSize })),
 
   /** Read-only Ex-Employees registry: terminated / archived / offboarded / soft-deleted staff. */
   listExEmployees: (params: { search?: string; status?: string; page?: number; pageSize?: number } = {}) =>

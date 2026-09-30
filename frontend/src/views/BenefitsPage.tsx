@@ -97,7 +97,7 @@ export function BenefitsPage() {
 
   useEffect(() => { void load(); }, [load, companyVersion]);
   useEffect(() => {
-    gradesApi.list(1, 200).then((r) => setGrades(r.items ?? [])).catch(() => setGrades([]));
+    gradesApi.listAll().then(setGrades).catch(() => setGrades([]));
   }, []);
 
   const companyName = useCallback((id: string | null) =>
