@@ -1,0 +1,192 @@
+name: Acceptance Evidence
+
+# ON DEMAND ONLY, and in a workflow of its own.
+#
+# Two deliberate choices:
+#
+#  1. `workflow_dispatch` and nothing else. This lane produces an EVIDENCE BUNDLE — a record of one
+#     payroll story with screenshots — and evidence is something you ask for when you need it, not
+#     something every pull request pays for. The regression coverage of the same path already runs
+#     on every PR as `payroll-run-to-wps.spec.ts` inside Browser Pilot.
+#
+#  2. A separate file rather than a job in ci.yml. main's ruleset names its required checks, and a
+#     job added to the CI workflow reads like a gate whether or not it is one. Keeping this lane out
+#     of that workflow makes "not a required check" a fact about where it lives, not a promise in a
+#     comment. It also stays out of ci.yml's concurrency group, so a dispatched evidence run can
+#     never cancel a merge run parked on the production approval.
+#
+# What it does NOT do: touch anything deployed. The stack is a disposable docker-compose project on
+# the runner, and the e2e preflight (frontend/e2e/preflight/) refuses every production host and
+# database name before a single credential leaves the process.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag or SHA to build the stack from and record evidence about'
+        required: false
+        default: ''
+
+# One evidence run at a time per ref. A second dispatch waits rather than racing the first for the
+# same ports; it never cancels, because a half-recorded bundle is worse than a slow one.
+concurrency:
+  group: acceptance-evidence-${{ github.event.inputs.ref || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  payroll-journey-evidence:
+    name: Payroll journey — evidence bundle (on demand, not a required check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # The same target contract every other browser lane declares (frontend/e2e/identity/env.ts). The
+    # preflight proves the running stack matches it before anything writes.
+    env:
+      PLAYWRIGHT_BASE_URL: 'http://127.0.0.1:5173'
+      E2E_API_BASE_URL: 'http://127.0.0.1:5117'
+      E2E_EXPECTED_DATABASE: 'zayra'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      # The commit the stack is BUILT from and the commit the preflight demands must be the same
+      # one, and it must be the checked-out ref rather than github.sha — a dispatch against another
+      # branch has a github.sha of the workflow file's commit, and the preflight would correctly
+      # refuse the mismatch.
+      - name: Resolve the commit under test
+        run: |
+          set -euo pipefail
+          SHA=$(git rev-parse HEAD)
+          echo "BUILD_COMMIT=$SHA" >> "$GITHUB_ENV"
+          echo "E2E_EXPECTED_COMMIT=$SHA" >> "$GITHUB_ENV"
+          echo "Recording evidence about $SHA"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install browser test dependencies
+        working-directory: frontend
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      # Generated per run and never committed; see the same step in ci.yml for why, including why
+      # the platform owner's address is generated too.
+      - name: Generate per-run fixture credentials
+        run: |
+          set -euo pipefail
+          gen() { echo "Ci$(openssl rand -hex 12)!aA9"; }
+          {
+            echo "PLATFORM_ADMIN_EMAIL=e2e-platform-$(openssl rand -hex 4)@example.com"
+            echo "PLATFORM_ADMIN_PASSWORD=$(gen)"
+            echo "E2E_GROUP_PASSWORD=$(gen)"
+            echo "E2E_INTELLIFLOW_PASSWORD=$(gen)"
+            echo "E2E_RASALMANAR_PASSWORD=$(gen)"
+            echo "E2E_EVOSTEL_PASSWORD=$(gen)"
+          } >> "$GITHUB_ENV"
+
+      - name: Start a disposable stack (EMPTY database)
+        env:
+          LOGIN_PERMIT_LIMIT: '200'
+          PLATFORM_LOGIN_PERMIT_LIMIT: '50'
+          JWT_SIGNING_KEY: 'CI_ONLY_EVIDENCE_LANE_SIGNING_KEY_64_CHARS_MINIMUM_12345678901234567890'
+        run: docker compose -p kynexone-evidence-ci up -d --build
+
+      - name: Wait for API and UI readiness
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 120); do
+            api=$(curl -s -o /tmp/api-ready.json -w '%{http_code}' http://127.0.0.1:5117/health/ready || true)
+            ui=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5173/login || true)
+            if [ "$api" = 200 ] && [ "$ui" = 200 ]; then cat /tmp/api-ready.json; exit 0; fi
+            sleep 2
+          done
+          docker compose -p kynexone-evidence-ci logs --no-color --tail=200
+          exit 1
+
+      # F07: before anything writes. Disposable hosts, the expected build on both halves, a
+      # non-production database, and the platform owner this job generated.
+      - name: E2E preflight — target, build, database and platform identity
+        working-directory: frontend
+        run: npx playwright test -c e2e/preflight/playwright.preflight.config.ts
+
+      - name: Provision and verify the e2e fixture world (platform-admin API only)
+        working-directory: frontend
+        run: npx playwright test -c e2e/bootstrap/playwright.bootstrap.config.ts
+
+      # The bundle is written to a run-specific directory rather than over the committed one, so a
+      # dispatch cannot leave the repository dirty and a reviewer always knows which copy they have.
+      - name: Record the payroll journey
+        working-directory: frontend
+        env:
+          E2E_EVIDENCE_DIR: '../evidence-out/payroll-journey'
+          E2E_EVIDENCE_ORIGINALS_DIR: 'test-results/evidence-originals'
+        run: npx playwright test -c e2e/evidence/playwright.evidence.config.ts
+
+      # The REDACTED bundle. Personal data is masked in both the images and the manifest text.
+      - name: Upload the evidence bundle (redacted — shareable)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: payroll-journey-evidence
+          path: evidence-out/**
+          retention-days: 30
+          if-no-files-found: error
+
+      # The UNREDACTED originals, kept separately and for a short time, for whoever has to verify a
+      # redaction against what was actually on screen. Deliberately a different artifact so it is a
+      # decision to download it.
+      - name: Upload the unredacted originals (verification only)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: payroll-journey-evidence-ORIGINALS-unredacted
+          path: frontend/test-results/evidence-originals/**
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Summarise the bundle in the run summary
+        if: always()
+        run: |
+          set -euo pipefail
+          M=evidence-out/payroll-journey/manifest.json
+          if [ ! -f "$M" ]; then
+            echo "No manifest was produced — the run failed before the harness could write one." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python3 - "$M" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, sys
+          m = json.load(open(sys.argv[1]))
+          s = m['summary']
+          print(f"## {m['story']}\n")
+          print(f"Build under test: `{m['expectedCommit']}` · database `{m['expectedDatabase']}`\n")
+          print(f"**{s['steps']} steps — {s['passed']} passed, {s['failed']} failed.** "
+                f"{s['captured']} with a settled-state image, {s['noCapture']} explicitly NO CAPTURE. "
+                f"{s['stepsWithPersistenceReRead']} re-read the record after the write.\n")
+          print("| # | Step | Actor | Outcome | Image |")
+          print("|---|------|-------|---------|-------|")
+          for st in m['steps']:
+              cap = st['capture']
+              img = cap.get('shareablePath') if cap['status'] == 'captured' else '**NO CAPTURE**'
+              print(f"| {st['ord']} | {st['action']} | {st['actor']['name']} "
+                    f"| {'pass' if st['outcome'] == 'pass' else '**FAIL**'} | {img} |")
+          if m.get('defects'):
+              print("\n### Defects observed\n")
+              for d in m['defects']:
+                  print(f"- **{d['severity']} — {d['title']}**")
+          if m.get('notRun'):
+              print("\n### Not run\n")
+              for n in m['notRun']:
+                  print(f"- **{n['area']}** — {n['reason']}")
+          PY
+
+      - name: Capture stack logs on failure
+        if: failure()
+        run: docker compose -p kynexone-evidence-ci logs --no-color --tail=300
+
+      - name: Remove the disposable stack
+        if: always()
+        run: docker compose -p kynexone-evidence-ci down -v
