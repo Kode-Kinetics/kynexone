@@ -1,4 +1,5 @@
 import client from './client';
+import { fetchAllPages } from '../lib/paging';
 import type { PagedResult } from './organization';
 
 export interface SalaryStructure {
@@ -521,6 +522,10 @@ export const payrollApi = {
   listRuns: (params: { status?: string; page?: number; pageSize?: number } = {}) =>
     client.get<PagedResult<PayrollRun>>('/api/payroll/runs', { params }).then((r) => r.data),
 
+  /** Every run (newest first), page by page: run pickers and the run list must reach older runs too. */
+  listAllRuns: (params: { status?: string } = {}) =>
+    fetchAllPages((page, pageSize) => payrollApi.listRuns({ ...params, page, pageSize })),
+
   createRun: (year: number, month: number, companyId?: string) =>
     client.post<PayrollRun>('/api/payroll/runs', { year, month, companyId }).then((r) => r.data),
 
@@ -635,6 +640,10 @@ export const payrollApi = {
   slips: (runId: string, params: { page?: number; pageSize?: number } = {}) =>
     client.get<PagedResult<PayrollSlip>>(`/api/payroll/runs/${runId}/slips`, { params }).then((r) => r.data),
 
+  /** Every slip in the run. The register used to request one page of 200 and stop there. */
+  allSlips: (runId: string) =>
+    fetchAllPages((page, pageSize) => payrollApi.slips(runId, { page, pageSize })),
+
   validateRun: (id: string) =>
     client.post<PayrollValidationResult[]>(`/api/payroll/runs/${id}/validate`).then((r) => r.data),
 
@@ -649,6 +658,9 @@ export const payrollApi = {
 
   listPayslips: (runId: string, params: { page?: number; pageSize?: number } = {}) =>
     client.get<PagedResult<Payslip>>(`/api/payroll/runs/${runId}/payslips`, { params }).then((r) => r.data),
+
+  allPayslips: (runId: string) =>
+    fetchAllPages((page, pageSize) => payrollApi.listPayslips(runId, { page, pageSize })),
 
   downloadSlipPdf: (payslipId: string, filename?: string) =>
     client.get(`/api/payroll/slips/${payslipId}/pdf`, { responseType: 'blob' }).then((r) => {

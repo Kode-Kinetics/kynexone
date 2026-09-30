@@ -1,4 +1,5 @@
 import client from './client';
+import { fetchAllPages } from '../lib/paging';
 import type { PagedResult } from './organization';
 
 export interface OvertimePolicy {
@@ -144,6 +145,10 @@ export const overtimeApi = {
 
   requests: (params: { status?: string; employeeId?: number; page?: number; pageSize?: number } = {}) =>
     client.get<PagedResult<OvertimeRequest>>('/api/overtime/requests', { params }).then((r) => r.data),
+
+  /** Every matching request, page by page: an approval queue must show all of its work. */
+  allRequests: (params: { status?: string; employeeId?: number } = {}) =>
+    fetchAllPages((page, pageSize) => overtimeApi.requests({ ...params, page, pageSize })),
 
   createRequest: (payload: {
     employeeId: number;

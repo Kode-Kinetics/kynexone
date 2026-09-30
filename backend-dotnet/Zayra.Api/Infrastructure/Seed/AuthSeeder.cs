@@ -149,10 +149,14 @@ public class AuthSeeder : IAuthSeeder
         // role-name [Authorize(Roles="...HR Manager...")] gates; the bundle simply had no payroll/loan
         // WRITE keys. Higher-tier run lifecycle (payroll.lock / payroll.run_delete) is deliberately
         // NOT granted here, preserving HR Manager's current exclusion from lock/void/send-back/delete.
+        // performance.* is the whole appraisal cycle HR Manager is named on (cycles, scorecards, calibration,
+        // publishing, appeals). Without it the role could open none of it: every role gate on those endpoints
+        // is enforced as its performance.* permission (LegacyRolePermissionResolver).
         await EnsureRole(tenantId, "HR Manager", "HR operations manager", permissions.Where(x =>
             x.Key.StartsWith("employees.") || x.Key.StartsWith("attendance.") || x.Key.StartsWith("leave.") ||
             x.Key.StartsWith("overtime.") || x.Key.StartsWith("dashboard.") || x.Key.StartsWith("organization.") ||
             x.Key.StartsWith("approvals.") || x.Key.StartsWith("notifications.") || x.Key.StartsWith("localization.") ||
+            x.Key.StartsWith("performance.") ||
             x.Key is "audit.read" or "manager.read" or "manager.approve" or "reports.read" or "qiwa.read" or
             "payroll.read" or "payroll.write" or "payroll.approve" or "loans.write"
         ).ToList(), 3, true, cancellationToken);
@@ -206,10 +210,15 @@ public class AuthSeeder : IAuthSeeder
         // Level 9 — Manager: team management and approvals
         // approvals.write reconciles Manager's existing role-name reach to POST /approval-requests and
         // POST /approval-workflows/requests (starting an approval request) into the permission model.
+        // performance.read/write is the reviewer tier: set and agree goals, write the manager review, run a
+        // PIP check-in, raise a recommendation, always within the manager's own reporting line (data scope,
+        // plus the resolved appraisal/KPI approver check). NOT performance.approve or performance.cycle_manage:
+        // a line manager does not calibrate, finalise or publish the ratings they wrote.
         await EnsureRole(tenantId, "Manager", "People manager with team oversight and approval authority", Ps(new[] {
             "dashboard.read", "employees.read", "approvals.read", "approvals.write", "approvals.decide", "notifications.read",
             "manager.read", "manager.approve", "ess.read", "ess.write", "leave.read", "leave.approve",
-            "attendance.read", "overtime.read", "overtime.approve", "profile.read"
+            "attendance.read", "overtime.read", "overtime.approve", "profile.read",
+            "performance.read", "performance.write"
         }), 9, true, cancellationToken);
 
         // Level 10 — Supervisor: front-line supervision
@@ -243,8 +252,11 @@ public class AuthSeeder : IAuthSeeder
         }), 14, true, cancellationToken);
 
         // Level 15 — Employee: self-service only
+        // performance.read opens the Performance module, where the employee self-assesses, acknowledges or
+        // appeals their own review and records progress on their own goals. Every list there is limited to
+        // their own record by data scope. No performance.write: goals are set by the line manager or HR.
         await EnsureRole(tenantId, "Employee", "Employee self-service user", Ps(new[] {
-            "dashboard.read", "profile.read", "ess.read", "ess.write"
+            "dashboard.read", "profile.read", "ess.read", "ess.write", "performance.read"
         }), 15, true, cancellationToken);
 
         // Establishment matrix: seed the default staffing-level catalog here so EVERY tenant

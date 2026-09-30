@@ -330,7 +330,9 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.IEmployeeActivatio
 // check, the create commit backstop, and (via the preloaded-dictionary matcher) the bulk importer.
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.IEmployeeDuplicateDetector, Zayra.Api.Infrastructure.Employees.EmployeeDuplicateDetector>();
 // Maker-checker on new-hire drafts: who made a hire and so may not activate it.
-builder.Services.AddScoped<Zayra.Api.Application.Employees.IDraftHireMakers, Zayra.Api.Infrastructure.Employees.DraftHireMakers>();
+// The recruitment-aware set: the draft's creator and editors, plus the sender and acceptor of the
+// accepted offer behind it.
+builder.Services.AddScoped<Zayra.Api.Application.Employees.IDraftHireMakers, Zayra.Api.Infrastructure.Recruitment.OfferDraftHireMakers>();
 // Phase 2 rate resolvers: bounded statutory-override precedence + non-statutory company rate precedence.
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.IStatutoryRateResolver, Zayra.Api.Infrastructure.Payroll.StatutoryRateResolver>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.ICompanyRatePolicyResolver, Zayra.Api.Infrastructure.Payroll.CompanyRatePolicyResolver>();

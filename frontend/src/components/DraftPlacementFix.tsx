@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { employeeDraftsApi } from '../api/employeeDrafts';
 import { branchesApi, departmentsApi, designationsApi } from '../api/organization';
-import type { PagedResult } from '../api/organization';
 import { draftRequestFailureReason } from '../lib/newHireReview';
 
 type Option = { value: string; label: string };
@@ -12,18 +11,16 @@ type Field = 'department' | 'designation' | 'branch';
 
 const LABELS: Record<Field, string> = { department: 'Department', designation: 'Designation', branch: 'Branch' };
 
-/** Reads every page of an organisation list (bounded), keeping only active records. */
-async function loadAll<T extends { isActive?: boolean }>(
-  fetchPage: (page: number) => Promise<PagedResult<T>>,
-  toOption: (item: T) => Option,
-): Promise<Option[]> {
-  const options: Option[] = [];
-  for (let page = 1; page <= 20; page++) {
-    const res = await fetchPage(page);
-    for (const item of res.items) if (item.isActive !== false) options.push(toOption(item));
-    if (page * res.pageSize >= res.total || res.items.length === 0) break;
-  }
-  return options.sort((a, b) => a.label.localeCompare(b.label));
+/**
+ * The active records of an organisation list as sorted options. The list itself is read in full by
+ * `listAll` (src/lib/paging.ts), which fails rather than stopping at a page cap: this used to stop
+ * silently after 20 pages.
+ */
+function activeOptions<T extends { isActive?: boolean }>(items: T[], toOption: (item: T) => Option): Option[] {
+  return items
+    .filter((item) => item.isActive !== false)
+    .map(toOption)
+    .sort((a, b) => a.label.localeCompare(b.label));
 }
 
 interface DraftPlacementFixProps {
@@ -52,11 +49,18 @@ export function DraftPlacementFix({ draftId, current, problemFields, isMaker, on
     let cancelled = false;
     setLoadError('');
     Promise.all([
-      loadAll((p) => departmentsApi.list(undefined, p, 100), (d) => ({ value: d.nameEn, label: d.nameEn })),
-      loadAll((p) => designationsApi.list(undefined, p, 100), (d) => ({ value: d.titleEn, label: d.titleEn })),
-      loadAll((p) => branchesApi.list(undefined, p, 100), (b) => ({ value: b.nameEn, label: b.nameEn })),
+      departmentsApi.listAll(),
+      designationsApi.listAll(),
+      branchesApi.listAll(),
     ])
-      .then(([department, designation, branch]) => { if (!cancelled) setOptions({ department, designation, branch }); })
+      .then(([departments, designations, branches]) => {
+        if (cancelled) return;
+        setOptions({
+          department: activeOptions(departments, (d) => ({ value: d.nameEn, label: d.nameEn })),
+          designation: activeOptions(designations, (d) => ({ value: d.titleEn, label: d.titleEn })),
+          branch: activeOptions(branches, (b) => ({ value: b.nameEn, label: b.nameEn })),
+        });
+      })
       .catch((err) => { if (!cancelled) setLoadError(draftRequestFailureReason(err)); });
     return () => { cancelled = true; };
   }, []);

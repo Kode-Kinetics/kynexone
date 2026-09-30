@@ -28,6 +28,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { ErrorBanner } from '../components/ui/ErrorBanner';
 import { Modal } from '../components/Modal';
 import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
+import { ListWindowFooter } from '../components/ListWindowFooter';
+import { usePagedList } from '../hooks/usePagedList';
 import { useAppToast } from '../components/ui/AppToast';
 
 // ── Dates ────────────────────────────────────────────────────────────────────────────────────
@@ -224,8 +226,8 @@ function MyWeekTab() {
 
   useEffect(() => {
     costCentersApi
-      .list(undefined, 1, 200)
-      .then((r) => setCostCentres(r.items.filter((c) => c.isActive)))
+      .listAll()
+      .then((all) => setCostCentres(all.filter((c) => c.isActive)))
       .catch(() => setCostCentres([]));
   }, []);
 
@@ -740,26 +742,23 @@ function ApprovalsTab() {
 // ══ Register ═══════════════════════════════════════════════════════════════════════════════════
 
 function RegisterTab() {
-  const [rows, setRows] = useState<TimesheetSummary[]>([]);
   const [status, setStatus] = useState('');
   const [search, setSearch] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [errorDismissed, setErrorDismissed] = useState(false);
 
-  const load = useCallback(() => {
-    setLoading(true);
-    setError(null);
-    timesheetsApi
-      .list({ status: status || undefined, search: search.trim() || undefined, pageSize: 100 })
-      .then((r) => setRows(r.items))
-      .catch((err) => setError(parseApiErrorForTimesheets(err, 'Timesheets could not be loaded.').message))
-      .finally(() => setLoading(false));
-  }, [status, search]);
+  // One page at a time with the server's total: the register used to show the first 100 as if
+  // they were every timesheet. Later pages are one click away and the count is the server's.
+  const list = usePagedList<TimesheetSummary>((page, pageSize) =>
+    timesheetsApi.list({ status: status || undefined, search: search.trim() || undefined, page, pageSize }));
+  const { items: rows, loading, reload } = list;
+  const error = list.error != null && !errorDismissed
+    ? parseApiErrorForTimesheets(list.error, 'Timesheets could not be loaded.').message
+    : null;
 
   useEffect(() => {
-    const t = setTimeout(load, 250);
+    const t = setTimeout(() => { setErrorDismissed(false); void reload(); }, 250);
     return () => clearTimeout(t);
-  }, [load]);
+  }, [status, search, reload]);
 
   return (
     <div className="space-y-4">
@@ -779,7 +778,7 @@ function RegisterTab() {
         />
       </div>
 
-      {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
+      {error && <ErrorBanner message={error} onDismiss={() => setErrorDismissed(true)} />}
       {loading && <div className="surface"><Spinner label="Loading timesheets…" /></div>}
       {!loading && !error && rows.length === 0 && (
         <Empty icon={FileClock} title="No timesheets match" hint="Try clearing the filters." />
@@ -810,6 +809,7 @@ function RegisterTab() {
               </tbody>
             </table>
           </div>
+          <ListWindowFooter shown={rows.length} total={list.total} noun="timesheets" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
         </div>
       )}
     </div>
