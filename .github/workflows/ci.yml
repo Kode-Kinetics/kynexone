@@ -1030,6 +1030,7 @@ jobs:
           # — see docs/REPOSITORY_AND_DEPLOYMENT_GOVERNANCE.md, "Known gap: image is built, not deployed".
           digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE:${{ github.sha }}" 2>/dev/null || echo "unknown")
           echo "Image digest: $digest"
+          echo "IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
           {
             echo "### Image"
             echo ""
@@ -1038,6 +1039,43 @@ jobs:
             echo "| Tag | \`$IMAGE:${{ github.sha }}\` |"
             echo "| Digest | \`$digest\` |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # ── F11: record what this candidate IS, while the facts are still in hand ──────────────
+      # The register's failure mode was that acceptance evidence spanned different source trees and
+      # nobody could show that a client-facing build contained a given fix. This is the record that
+      # closes that: source commit, image digest, assembly informational version, the migration set
+      # the build carries, the NAMES of every switch that gates customer-visible behaviour, and what
+      # CI concluded about this exact sha. Config names only — scripts/release_manifest.py refuses to
+      # emit a document containing a credential rather than emitting a suspect one.
+      #
+      # This step is run here and not in deploy-backend because the digest exists only here, and
+      # because a manifest must describe a candidate whether or not anyone ever approves its deploy.
+      - name: Record the candidate manifest (F11)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ./scripts/release_manifest.py --self-test
+          ./scripts/release_manifest.py \
+            --commit "${{ github.sha }}" \
+            --image-ref "$IMAGE:${{ github.sha }}" \
+            --image-digest "$IMAGE_DIGEST" \
+            --out release-manifest.json
+          {
+            echo ""
+            echo "### Candidate manifest (F11)"
+            echo ""
+            echo '```json'
+            cat release-manifest.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the candidate manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest-${{ github.sha }}
+          path: release-manifest.json
+          retention-days: 90
 
   # ── Deploy: trigger Render redeploy after tests + security gates + migrations pass (main only) ──
   deploy-backend:
@@ -1048,6 +1086,15 @@ jobs:
     # WAVE 1 A4 — protected environment: production deploys require explicit approval.
     environment: production
     steps:
+      # This job used to run without a checkout: it only POSTed a webhook and polled a URL. The
+      # parity gate at the end of the job needs the repository — for the script itself, and for the
+      # history. fetch-depth:0 is deliberate: with a shallow clone, `git merge-base --is-ancestor`
+      # cannot tell which tier is ahead, and the gate would have to report "distance unknown" in
+      # exactly the situation it exists to describe.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       # Rollback anchor. Captured BEFORE the new release goes out, because after it lands the
       # question "what was running a minute ago?" has no answer anywhere else — Render builds from
       # the branch, so there is no image digest to roll back to on its side.
@@ -1121,6 +1168,55 @@ jobs:
           echo "::error::Timed out after 15m. Production is NOT running $EXPECTED (last seen: '${got:-unreachable}'). Previous commit was ${PREVIOUS_COMMIT:-unknown}. See docs/DEPLOY_ROLLBACK_RUNBOOK.md."
           exit 1
 
+      # ── F11: the two tiers must be ONE candidate, not two ─────────────────────────────────
+      # The step above proves the BACKEND is this commit. It says nothing about the UI in front of
+      # it, and the UI deploys by different rules: Vercel auto-deploys every push to main while
+      # Render waits for a reviewer. A merge therefore puts new UI in front of the older API,
+      # silently, with every signal green — the 2026-09-23 split-brain. Nothing compared them until
+      # this step, so no deploy has ever been able to state which pair of builds a customer got.
+      #
+      # It runs AFTER the backend is verified, with a wait: at this moment Vercel may still be
+      # building the same sha, and a tier mid-build is not a mismatch yet. After the wait it is.
+      #
+      # FAILS CLOSED on a missing URL. A parity check that looks at one tier is not a parity check,
+      # and a gate that turns itself off when its configuration is absent is a gate that is off.
+      - name: Gate — the deployed tiers are one candidate (F11 parity)
+        env:
+          API_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          FRONTEND_URL: ${{ vars.PRODUCTION_FRONTEND_URL }}
+        run: |
+          set -euo pipefail
+          ./scripts/check_deployment_parity.py --self-test
+          if [ -z "${FRONTEND_URL:-}" ]; then
+            echo "::error::vars.PRODUCTION_FRONTEND_URL is not set, so frontend/backend parity cannot be"
+            echo "::error::proved and this deploy cannot be shown to be one candidate. Set it once:"
+            echo "::error::  gh variable set PRODUCTION_FRONTEND_URL --body https://<the production frontend>"
+            exit 1
+          fi
+          ./scripts/check_deployment_parity.py \
+            --frontend "$FRONTEND_URL" \
+            --api "$API_URL" \
+            --candidate "${{ github.sha }}" \
+            --wait-seconds 300 \
+            --json parity.json
+          {
+            echo ""
+            echo "### Deployment parity (F11)"
+            echo ""
+            echo '```'
+            python3 -c 'import json;print(json.load(open("parity.json"))["report"])'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the parity result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-parity-${{ github.sha }}
+          path: parity.json
+          retention-days: 90
+          if-no-files-found: ignore
+
   # The human half of the 2026-08-26 incident: migrate-backend showed `cancelled`, which reads like
   # `skipped`, so four consecutive merges silently failed to ship and nobody noticed. A merge that
   # does not reach production is now a red run, deliberately — a benign-looking terminal state is
@@ -1137,7 +1233,7 @@ jobs:
           d='${{ needs.deploy-backend.result }}'
           echo "migrate-backend=$m  deploy-backend=$d"
           if [ "$m" != "success" ] || [ "$d" != "success" ]; then
-            echo "::error::main merged but production did NOT ship (migrate=$m, deploy=$d). Production is now BEHIND main. See docs/DEPLOY_ROLLBACK_RUNBOOK.md."
+            echo "::error::main merged but production did NOT ship (migrate=$m, deploy=$d). Production is now BEHIND main — and Vercel has already published this commit's frontend, so the two tiers are now a split-brain until the backend catches up or the frontend alias is rolled back. deploy-backend also fails when its F11 parity gate finds the tiers on different commits; read that job's log to tell the two apart. See docs/DEPLOY_ROLLBACK_RUNBOOK.md and docs/RELEASE_CANDIDATE_AND_PARITY.md."
             exit 1
           fi
           echo "Production is running this commit."

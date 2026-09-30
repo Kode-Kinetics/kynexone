@@ -68,6 +68,13 @@ production secrets must be present (they already are on the service).
 
 ## Rollback procedure
 
+> **This covers the backend only.** The frontend deploys by different rules — Vercel auto-deploys
+> every push to `main` while this pipeline waits for an approval — so a backend rollback can leave
+> the UI ahead of the API. Before rolling anything back, run
+> `./scripts/check_deployment_parity.py` to see which tier is ahead and by how much, and read
+> [`RELEASE_CANDIDATE_AND_PARITY.md`](RELEASE_CANDIDATE_AND_PARITY.md) for the two-tier procedure
+> and the split-brain remedy (roll the Vercel alias, do not rebuild).
+
 ### 1. Roll back the code (no schema change involved)
 - Render dashboard → the web service → **Manual Deploy → Deploy a previous, known-good image**.
 - Confirm `/health/ready` returns `{ "status": "ready", "pendingMigrations": 0 }` before re-enabling traffic.
