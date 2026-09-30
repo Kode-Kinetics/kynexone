@@ -378,6 +378,16 @@ export class EvidenceRecorder {
 
     if (spec.page && browserListener) spec.page.off('response', browserListener);
 
+    // A step that WAS going to be photographed but failed first has no image and no reason for it,
+    // and "no reason recorded" reads like the harness forgot. Say what actually happened, so the
+    // failed step's row in the index is as legible as a passing one's.
+    if (failure && spec.page && capture.status === 'no capture' && !capture.reason) {
+      capture.reason =
+        'The step failed before a settled screen could be captured. Either the action itself failed, '
+        + 'or the screen never settled and the harness refused to photograph work in progress. The '
+        + 'failure is recorded in full below.';
+    }
+
     const record: StepRecord = {
       ord,
       id: spec.id,

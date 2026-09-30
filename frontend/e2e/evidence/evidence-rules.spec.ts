@@ -170,6 +170,24 @@ test('a failed step keeps its evidence in the index rather than being dropped', 
   expect(index).toContain('the screen never settled, so nothing was captured');
 });
 
+test('a step that never reached a capture still explains the missing image', () => {
+  // "no reason recorded" reads like the harness forgot. A step that failed before it could be
+  // photographed must say so, or a reader cannot tell a refusal apart from an oversight.
+  const index = renderIndex(
+    runWith([step({
+      outcome: 'fail',
+      failure: 'the action threw before the screen settled',
+      capture: {
+        status: 'no capture',
+        reason: 'The step failed before a settled screen could be captured.',
+      },
+    })]),
+    true,
+  );
+  expect(index).not.toContain('no reason recorded');
+  expect(index).toContain('The step failed before a settled screen could be captured.');
+});
+
 test('the index says whether the copy is redacted, so the two copies cannot be confused', () => {
   expect(renderIndex(runWith([step({})]), true)).toContain('**redacted** in this copy');
   expect(renderIndex(runWith([step({})]), false)).toContain('UNREDACTED');
