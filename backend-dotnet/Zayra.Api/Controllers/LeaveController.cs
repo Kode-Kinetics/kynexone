@@ -34,6 +34,8 @@ public class LeaveController : ControllerBase
         [FromQuery] int pageSize = 25,
         CancellationToken cancellationToken = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tenantId = GetTenantId();
         var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
         var (singleId, setFilter) = scope.Constrain(employeeId);

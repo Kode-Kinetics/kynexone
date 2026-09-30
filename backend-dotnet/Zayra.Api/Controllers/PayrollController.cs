@@ -488,6 +488,8 @@ public class PayrollController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> ListRuns([FromQuery] Guid? companyId, [FromQuery] string? status, [FromQuery] string? runType, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tenantId = GetTenantId();
         var query = _db.PayrollRuns.Where(r => r.TenantId == tenantId);
         if (companyId.HasValue) query = query.Where(r => r.CompanyId == companyId);
@@ -3798,6 +3800,8 @@ public class PayrollController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> Slips(Guid id, [FromQuery] int page = 1, [FromQuery] int pageSize = 50, CancellationToken cancellationToken = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tenantId = GetTenantId();
         var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
         var query = _db.PayrollSlips.Where(s => s.RunId == id && s.TenantId == tenantId);
@@ -6639,6 +6643,8 @@ public class PayrollController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> ListPayslips(Guid id, [FromQuery] int page = 1, [FromQuery] int pageSize = 50, CancellationToken cancellationToken = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tenantId = GetTenantId();
         var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
         var query = _db.Payslips.Where(x => x.TenantId == tenantId && x.PayrollRunId == id);

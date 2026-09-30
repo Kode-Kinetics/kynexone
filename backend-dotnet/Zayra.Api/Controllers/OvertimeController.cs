@@ -103,6 +103,8 @@ public class OvertimeController : ControllerBase
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: EmployeeId, EmployeeName, WorkDate, start/end times, requested/approved minutes, Reason, Status. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public async Task<ActionResult<PagedResult<OvertimeRequest>>> Requests([FromQuery] string? status, [FromQuery] int? employeeId, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tenantId = RequireTenant();
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         var (singleId, setFilter) = scope.Constrain(employeeId);
@@ -420,6 +422,7 @@ public class OvertimeController : ControllerBase
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: OvertimeRequestId, EmployeeId, ApprovedHours, HourlyRate (derived from salary for computation), Multiplier, Amount, CalculationJson. Scope-filtered to caller's accessible employees. No bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public async Task<ActionResult<IReadOnlyCollection<OvertimeCalculation>>> Calculations([FromQuery] int? employeeId, [FromQuery] int pageSize = 100, CancellationToken ct = default)
     {
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tenantId = RequireTenant();
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         var (singleId, setFilter) = scope.Constrain(employeeId);

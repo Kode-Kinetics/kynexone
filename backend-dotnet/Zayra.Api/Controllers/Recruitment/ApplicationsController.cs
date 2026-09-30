@@ -36,6 +36,8 @@ public class ApplicationsController : ControllerBase
         [FromQuery] int pageSize = 50,
         CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tenantId = this.GetTenantId()!.Value;
         var query = _db.JobApplications.Where(a => a.TenantId == tenantId);
         if (jobOpeningId.HasValue) query = query.Where(a => a.JobOpeningId == jobOpeningId.Value);

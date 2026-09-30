@@ -65,6 +65,8 @@ public class ReviewsController : ControllerBase
         [FromQuery] int pageSize = 50,
         CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tenantId = this.GetTenantId()!.Value;
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         var query = _db.AppraisalReviews.Where(r => r.TenantId == tenantId);
