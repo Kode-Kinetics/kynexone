@@ -3,9 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
-using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
-using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Infrastructure.Pricing;
 using Zayra.Api.Models;
 
@@ -229,10 +227,9 @@ public class PricingController : ControllerBase
         _db.PricingQuotes.Add(quote);
         await _db.SaveChangesAsync(ct);
 
-        // Requester-supplied values are scrubbed and the address masked: this endpoint is anonymous,
-        // so a raw CR/LF in a company name would otherwise write forged lines into the log.
-        _log.LogInformation("PricingQuote submitted. Id={Id} Company={Company} Email={Email}",
-            quote.Id, LogSafe.Text(quote.CompanyName), NotificationBodyPolicy.MaskEmail(quote.ContactEmail));
+        // The id only. Every other field is anonymous requester input (contact details included), and
+        // the id is enough to find the record at /platform/pricing.
+        _log.LogInformation("PricingQuote {Id} submitted.", quote.Id);
 
         // Tell sales off the request thread. The quote is already saved; this never waits on SMTP,
         // never throws, and never changes what the requester sees.

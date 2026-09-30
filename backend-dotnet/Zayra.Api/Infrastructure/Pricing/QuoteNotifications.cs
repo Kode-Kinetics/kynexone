@@ -5,7 +5,6 @@ using System.Threading.Channels;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using MimeKit;
-using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Email;
 using Zayra.Api.Models;
@@ -23,8 +22,8 @@ namespace Zayra.Api.Infrastructure.Pricing;
 //   2. The endpoint cannot be used as a mail cannon. The recipient comes from platform config only,
 //      one address and never anything the requester sent. A global budget caps sends per window
 //      whatever the number of source IPs, and the next mail reports how many were held back.
-//   3. Requester text cannot reach mail headers or logs raw. Every field is HTML-encoded and
-//      capped, control characters are stripped from the subject, and logs carry the quote id.
+//   3. Requester text cannot reach mail headers or logs. Every field is HTML-encoded and capped,
+//      control characters are stripped from the subject, and logs carry the quote id only.
 //
 // Best-effort by design. The quote row is the durable record, visible at /platform/pricing. A
 // notification lost to a restart, a full queue or an exhausted budget is logged with the quote id
@@ -355,9 +354,10 @@ public sealed class QuoteNotificationWorker : BackgroundService
         }
         catch (Exception ex)
         {
-            // The exception type and message only. Relay errors can echo addresses and server banners.
-            _log.LogError("PricingQuote {Id} was saved but the sales notification failed: {Error}: {Message}",
-                quoteId, ex.GetType().Name, LogSafe.Text(ex.Message));
+            // The quote id and exception type only. A relay's error message can echo mail addresses
+            // and server banners, so it is not logged.
+            _log.LogError("PricingQuote {Id} was saved but the sales notification failed: {Error}.",
+                quoteId, ex.GetType().Name);
             return QuoteNotificationOutcome.Failed;
         }
     }
