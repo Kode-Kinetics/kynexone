@@ -94,9 +94,10 @@ public class EmployeesController : ControllerBase
         _establishmentGuard = establishmentGuard ?? new EstablishmentGuardService(db);
         _activationGuard = activationGuard ?? new EmployeeActivationGuard(db);
         _duplicateDetector = duplicateDetector ?? new EmployeeDuplicateDetector(db);
-        // Who made a hire (maker-checker on drafts). Recruitment registers a wider implementation that
-        // adds the offer's sender and acceptor; the fallback is the employee module's own view.
-        _draftHireMakers = draftHireMakers ?? new DraftHireMakers(db);
+        // Who made a hire (maker-checker on drafts): the draft's creator and editors plus, for an accepted
+        // offer, its sender and acceptor. The fallback is the same set Program.cs registers, so a
+        // hand-constructed controller cannot quietly apply a narrower rule.
+        _draftHireMakers = draftHireMakers ?? new Zayra.Api.Infrastructure.Recruitment.OfferDraftHireMakers(db);
     }
 
     [HttpGet]
