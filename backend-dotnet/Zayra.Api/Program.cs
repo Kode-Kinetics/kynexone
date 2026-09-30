@@ -770,8 +770,10 @@ app.MapGet("/health/live", () => Results.Ok(new
     utc = DateTime.UtcNow,
     service = "zayra-api",
     // Deployed-commit marker for deploy verification. Render injects RENDER_GIT_COMMIT into
-    // the running instance, so this reflects exactly which commit is live (falls back to "local").
-    commit = Environment.GetEnvironmentVariable("RENDER_GIT_COMMIT") ?? "local"
+    // the running instance, so this reflects exactly which commit is live. Off Render it is the
+    // commit baked into the build (SourceRevisionId), which the e2e preflight compares with the
+    // commit under test; "local" only when neither is known. See BuildInfo.
+    commit = BuildInfo.Commit
 })).AllowAnonymous();
 
 app.MapGet("/health/ready", async (ZayraDbContext db, IConfiguration config, ILoggerFactory lf, CancellationToken ct) =>

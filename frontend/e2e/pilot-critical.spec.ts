@@ -1,13 +1,16 @@
 import { expect, test } from '@playwright/test';
 import { mainContentLength, mainText, crashIndicators, expectNonEmptyList } from './helpers';
-import { INTELLIFLOW_ADMIN, INTELLIFLOW_SLUG } from './world';
+import { INTELLIFLOW_ADMIN, INTELLIFLOW_SLUG, tenantBySlug } from './world';
+import { stampActor } from './identity/actor';
 
-// Defaults come from e2e/world.ts — the declaration e2e/bootstrap/provision.ts builds the tenant
-// from — rather than literals, so this lane cannot be pointed at an account nothing created.
-const TENANT_SLUG = process.env.E2E_DEFAULT_TENANT_SLUG ?? INTELLIFLOW_SLUG;
-const ADMIN_EMAIL = process.env.E2E_DEFAULT_ADMIN_EMAIL ?? INTELLIFLOW_ADMIN.email;
-const ADMIN_PASSWORD = process.env.E2E_DEFAULT_ADMIN_PASSWORD ?? INTELLIFLOW_ADMIN.password;
-const EXPECTED_MIN_EMPLOYEES = Number(process.env.E2E_MIN_EMPLOYEES ?? '1');
+// Every value comes from e2e/world.ts — the declaration e2e/bootstrap/provision.ts builds the tenant
+// from and the preflight verifies. The E2E_DEFAULT_TENANT_SLUG / _ADMIN_EMAIL / _ADMIN_PASSWORD and
+// E2E_MIN_EMPLOYEES overrides are retired (F07): each let this lane act as, or count against, a
+// different world from the one the run provisioned, and the preflight now refuses them if set.
+const TENANT_SLUG = INTELLIFLOW_SLUG;
+const ADMIN_EMAIL = INTELLIFLOW_ADMIN.email;
+const ADMIN_PASSWORD = INTELLIFLOW_ADMIN.password;
+const EXPECTED_MIN_EMPLOYEES = tenantBySlug(INTELLIFLOW_SLUG).minActiveEmployees;
 
 /**
  * The three screens the pilot feared would be empty. A route that loads but shows zero rows is the
@@ -59,6 +62,7 @@ test.describe('client-pilot critical tenant lane', () => {
       }
     });
 
+    stampActor({ email: ADMIN_EMAIL, tenantSlug: TENANT_SLUG, via: 'tenant login form' });
     await page.goto('/login');
     await page.locator('#li-em, input[type="email"]').first().fill(ADMIN_EMAIL);
     await page.locator('#li-pw, input[type="password"]').first().fill(ADMIN_PASSWORD);
@@ -122,6 +126,7 @@ test.describe('client-pilot critical tenant lane', () => {
   test('a slow leave API is waited for, not reported as a blank module', async ({ page }) => {
     test.setTimeout(90_000);
 
+    stampActor({ email: ADMIN_EMAIL, tenantSlug: TENANT_SLUG, via: 'tenant login form' });
     await page.goto('/login');
     await page.locator('#li-em, input[type="email"]').first().fill(ADMIN_EMAIL);
     await page.locator('#li-pw, input[type="password"]').first().fill(ADMIN_PASSWORD);
