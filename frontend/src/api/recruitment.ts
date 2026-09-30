@@ -434,6 +434,9 @@ export const assessmentsApi = {
     client.patch<CandidateAssessment>(`/api/recruitment/assessments/${id}/result`, { scoreObtained }).then(r => r.data),
 };
 
+export interface OfferPlacementOption { id: string; name: string; code: string }
+export interface OfferPlacementOptions { departments: OfferPlacementOption[]; designations: OfferPlacementOption[] }
+
 export const offersApi = {
   list: (applicationId?: string, status?: string) =>
     client.get<{ total: number; items: OfferLetter[] }>('/api/recruitment/offers', { params: { applicationId, status } }).then(r => r.data),
@@ -450,8 +453,12 @@ export const offersApi = {
   decideApproval: (id: string, approvalId: string, body: { decision: 'Approved' | 'Rejected'; comments?: string }) =>
     client.patch<OfferApproval>(`/api/recruitment/offers/${id}/approvals/${approvalId}/decide`, body).then(r => r.data),
 
-  create: (body: { applicationId: string; offeredJobTitle: string; offeredDepartment?: string; startDate: string; basicSalary: number; housingAllowance: number; transportAllowance: number; otherAllowances: number; probationMonths: number; contentHtml?: string; responseDeadline?: string }) =>
+  create: (body: { applicationId: string; offeredJobTitle: string; offeredDepartment?: string; startDate: string; basicSalary: number; housingAllowance: number; transportAllowance: number; otherAllowances: number; probationMonths: number; contentHtml?: string; responseDeadline?: string; departmentId?: string; designationId?: string }) =>
     client.post<OfferLetter>('/api/recruitment/offers', body).then(r => r.data),
+
+  /** The active departments and designations an offer can name: the records activation matches. */
+  placementOptions: () =>
+    client.get<OfferPlacementOptions>('/api/recruitment/offers/placement-options').then(r => r.data),
 
   send: (id: string) =>
     client.patch<OfferLetter>(`/api/recruitment/offers/${id}/send`, {}).then(r => r.data),
@@ -548,8 +555,9 @@ export const applicationsApi = {
   recordFeedback: (interviewId: string, body: { overallRating: number; recommendation: string; feedbackNotes: string }) =>
     client.post<InterviewSchedule>(`/api/recruitment/applications/interviews/${interviewId}/feedback`, body).then(r => r.data),
 
+  /** Department and designation default to the job opening's when left out; an id wins over a name. */
   generateOffer: (id: string, body: {
-    department: string; startDate: string; basicSalary: number;
+    department?: string; departmentId?: string; designationId?: string; startDate: string; basicSalary: number;
     housingAllowance: number; transportAllowance: number; otherAllowances: number; probationMonths: number;
   }) => client.post<OfferLetter>(`/api/recruitment/applications/${id}/offer`, body).then(r => r.data),
 

@@ -40,11 +40,12 @@ import type {
   CandidateAssessment, AssessmentTemplate, OnboardingChecklist, OnboardingChecklistTemplateTask, OnboardingTask,
   OfferApproval, OfferApprovalContext, OfferApproverOption,
 } from '../api/recruitment';
+import { OfferPlacementFields } from '../components/OfferPlacementFields';
 import { StatusChip } from '../components/StatusChip';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import {
   HIRE_THROUGH_OFFER_HINT, assessmentScoreLabel, assessmentScoreMax, canRecordAssessmentResult,
-  canSendOffer, nextPipelineStage, parseAssessmentScore,
+  canSendOffer, nextPipelineStage, offerCreationFailure, parseAssessmentScore,
   OFFER_NEXT_ACTION_TEXT, canRequestApproval, offerNextAction,
 } from '../lib/recruitmentJourney';
 
@@ -893,7 +894,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
   const [detail, setDetail] = useState<ApplicationDetail | null>(null);
   const [tab, setTab] = useState<'timeline' | 'interviews' | 'offer'>('timeline');
   const [acting, setActing] = useState('');
-  const [offerForm, setOfferForm] = useState({ department: '', startDate: '', basicSalary: '', housingAllowance: '', transportAllowance: '', otherAllowances: '', probationMonths: 3 });
+  const [offerForm, setOfferForm] = useState({ departmentId: '', designationId: '', startDate: '', basicSalary: '', housingAllowance: '', transportAllowance: '', otherAllowances: '', probationMonths: 3 });
   const [interviewForm, setInterviewForm] = useState({ interviewType: 'HR Screening', interviewerNames: '', scheduledAt: '', durationMinutes: 60, mode: 'Video', meetingLink: '', location: '' });
   const [noteText, setNoteText] = useState('');
   const [rejectReason, setRejectReason] = useState('');
@@ -950,8 +951,10 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
   const doGenerateOffer = async () => {
     setActing('offer');
     try {
+      // Department and designation are record ids; left empty, the API uses the job opening's.
       await applicationsApi.generateOffer(id, {
-        department: offerForm.department,
+        departmentId: offerForm.departmentId || undefined,
+        designationId: offerForm.designationId || undefined,
         startDate: offerForm.startDate,
         basicSalary: Number(offerForm.basicSalary),
         housingAllowance: Number(offerForm.housingAllowance),
@@ -1190,7 +1193,12 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                   <div className="rounded-lg border border-dashed border-slate-200 p-4 dark:border-white/10">
                     <p className="mb-3 text-xs font-semibold text-slate-700 dark:text-slate-300">Generate Offer Letter</p>
                     <div className="space-y-2">
-                      <input className="input w-full" placeholder="Department" value={offerForm.department} onChange={e => setOfferForm(f => ({ ...f, department: e.target.value }))} />
+                      <OfferPlacementFields
+                        idPrefix={`drawer-offer-${id}`}
+                        openingDefaults
+                        value={{ departmentId: offerForm.departmentId, designationId: offerForm.designationId }}
+                        onChange={v => setOfferForm(f => ({ ...f, ...v }))}
+                      />
                       <input type="date" className="input w-full" value={offerForm.startDate} onChange={e => setOfferForm(f => ({ ...f, startDate: e.target.value }))} aria-label="Start date" />
                       <div className="grid grid-cols-2 gap-2">
                         <input type="number" className="input w-full" placeholder={`Basic Salary (${currencyCode})`} value={offerForm.basicSalary} onChange={e => setOfferForm(f => ({ ...f, basicSalary: e.target.value }))} aria-label="Basic salary" />
@@ -2194,11 +2202,12 @@ function OffersTab() {
   const [statusFilter, setStatusFilter] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [applications, setApplications] = useState<JobApplication[]>([]);
-  const [offerForm, setOfferForm] = useState({
-    applicationId: '', offeredJobTitle: '', offeredDepartment: '', startDate: '',
+  const emptyOfferForm = {
+    applicationId: '', offeredJobTitle: '', offeredDepartment: '', designationId: '', departmentId: '', startDate: '',
     basicSalary: 0, housingAllowance: 0, transportAllowance: 0, otherAllowances: 0,
     probationMonths: 3, responseDeadline: '',
-  });
+  };
+  const [offerForm, setOfferForm] = useState(emptyOfferForm);
   const [offerSaving, setOfferSaving] = useState(false);
   const [offerError, setOfferError] = useState('');
   const [actioning, setActioning] = useState<string | null>(null);
@@ -2217,16 +2226,22 @@ function OffersTab() {
   };
 
   const submitOffer = async () => {
-    if (!offerForm.applicationId || !offerForm.offeredJobTitle || !offerForm.startDate) {
-      setOfferError('Application, job title and start date are required.'); return;
+    if (!offerForm.applicationId || !offerForm.designationId || !offerForm.startDate) {
+      setOfferError('Application, designation and start date are required.'); return;
     }
     setOfferSaving(true); setOfferError('');
     try {
-      await offersApi.create({ ...offerForm, basicSalary: Number(offerForm.basicSalary), housingAllowance: Number(offerForm.housingAllowance), transportAllowance: Number(offerForm.transportAllowance), otherAllowances: Number(offerForm.otherAllowances), probationMonths: Number(offerForm.probationMonths) });
+      await offersApi.create({
+        ...offerForm,
+        departmentId: offerForm.departmentId || undefined,
+        basicSalary: Number(offerForm.basicSalary), housingAllowance: Number(offerForm.housingAllowance),
+        transportAllowance: Number(offerForm.transportAllowance), otherAllowances: Number(offerForm.otherAllowances),
+        probationMonths: Number(offerForm.probationMonths),
+      });
       setShowCreate(false);
-      setOfferForm({ applicationId: '', offeredJobTitle: '', offeredDepartment: '', startDate: '', basicSalary: 0, housingAllowance: 0, transportAllowance: 0, otherAllowances: 0, probationMonths: 3, responseDeadline: '' });
+      setOfferForm(emptyOfferForm);
       load();
-    } catch { setOfferError('Failed to create offer.'); }
+    } catch (e) { setOfferError(offerCreationFailure(e)); }
     finally { setOfferSaving(false); }
   };
 
@@ -2282,15 +2297,13 @@ function OffersTab() {
                 {applications.map(a => <option key={a.id} value={a.id}>{a.candidateName} — {a.jobTitle}</option>)}
               </select>
             </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Offered Job Title *</label>
-              <input placeholder="e.g. Senior Software Engineer" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
-                value={offerForm.offeredJobTitle} onChange={e => setOfferForm(f => ({ ...f, offeredJobTitle: e.target.value }))} />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Department</label>
-              <input placeholder="e.g. Engineering" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
-                value={offerForm.offeredDepartment} onChange={e => setOfferForm(f => ({ ...f, offeredDepartment: e.target.value }))} />
+            <div className="col-span-2">
+              <OfferPlacementFields
+                idPrefix="offers-tab-new"
+                openingDefaults={false}
+                value={{ departmentId: offerForm.departmentId, designationId: offerForm.designationId }}
+                onChange={(v, names) => setOfferForm(f => ({ ...f, ...v, offeredJobTitle: names.designation, offeredDepartment: names.department }))}
+              />
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Start Date *</label>
