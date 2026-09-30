@@ -2,6 +2,7 @@ using System.Text;
 using System.Net;
 using System.Security.Claims;
 using System.Threading.RateLimiting;
+using Zayra.Api.Infrastructure.Observability;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
@@ -384,6 +385,11 @@ builder.Services.AddScoped<ILeaveService, LeaveService>();
 // WAVE 1 B1 — THE authoritative entity-scope resolver. Registered before every consumer so that
 // controllers, authorization helpers and ZayraDbContext all read one decision per request instead of
 // three independent ones that disagreed on strict mode and on the X-Company-Id switcher.
+// WAVE 1 G3 — provider-neutral OpenTelemetry. Registers instrumentation always, and an OTLP exporter
+// only when Observability:OtlpEndpoint names one: an exporter pointed at nothing retries forever on a
+// background thread and adds latency to the requests you are trying to observe.
+builder.Services.AddZayraObservability(builder.Configuration, builder.Environment);
+
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Scope.IRequestEntityScopeResolver,
                            Zayra.Api.Infrastructure.Scope.RequestEntityScopeResolver>();
 builder.Services.AddScoped<IDataScopeService, DataScopeService>();
@@ -707,7 +713,20 @@ var app = builder.Build();
 if (trustForwardedHeaders)
     app.UseForwardedHeaders();
 
-// Global exception handler — must be the outermost middleware.
+// WAVE 1 G3 — the correlation id is established FIRST, ahead of everything that can produce a
+// response on its own. It used to sit below UseCors/UseRateLimiter, which meant the two responses a
+// support engineer is most likely to be asked about carried no X-Correlation-ID at all: the rate
+// limiter's 429 ("why does it say too many requests?") and a rejected CORS preflight both short-
+// circuit the pipeline before the middleware would have run. It is placed above UseExceptionHandler
+// too, so the "Unhandled exception" log line written by the handler below is inside the correlation
+// log scope — a 500 is the other call support actually gets.
+//
+// Safe to sit outside the exception handler: this middleware cannot throw. Sanitize is a pure string
+// check, Items/SetTag/BeginScope do not throw, and Response.OnStarting only throws once the response
+// has started, which cannot have happened at the top of the pipeline.
+app.UseMiddleware<Zayra.Api.Infrastructure.Observability.CorrelationIdMiddleware>();
+
+// Global exception handler — the outermost middleware that produces a response.
 // Converts unhandled exceptions into structured JSON so clients always get a typed error body
 // instead of an empty 500. InvalidOperationException (the service-layer sentinel for bad state)
 // maps to 400; authorization failures map to 403; everything else is 500 with a traceId.

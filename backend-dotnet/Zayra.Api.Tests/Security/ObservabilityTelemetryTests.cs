@@ -1,0 +1,466 @@
+using System.Diagnostics;
+using FluentAssertions;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
+using OpenTelemetry.Instrumentation.AspNetCore;
+using OpenTelemetry.Instrumentation.Http;
+using Zayra.Api.Infrastructure.Observability;
+
+namespace Zayra.Api.Tests.Security;
+
+/// <summary>
+/// WAVE 1 G3 — telemetry is a place PII goes to leak, and it is the easiest place to leak it from.
+///
+/// <para>Spans, metric labels and log scopes are shipped to third-party backends, retained for months,
+/// and read by people who would never be granted access to the payroll database. The existing
+/// PII-logging lint covers structured logs; these tests extend the same discipline to trace attributes,
+/// metric labels and the correlation id — the three surfaces G3 introduces.</para>
+/// </summary>
+public class ObservabilityTelemetryTests
+{
+    // ── Correlation id: untrusted input that ends up in log files and dashboards ─────────────────
+
+    [Theory]
+    [InlineData("abc-123_XYZ", "abc-123_XYZ")]
+    [InlineData("  spaced  ", "spaced")]
+    [InlineData("0123456789abcdef0123456789abcdef", "0123456789abcdef0123456789abcdef")]
+    public void AWellFormedCorrelationIdIsAccepted(string raw, string expected)
+        => CorrelationIdMiddleware.Sanitize(raw).Should().Be(expected);
+
+    [Theory]
+    // Log injection: a newline forges log lines downstream.
+    [InlineData("abc\ndef")]
+    [InlineData("abc\r\nPOST /admin")]
+    // Control characters corrupt log parsers and terminal output: NUL truncates C-style consumers,
+    // ESC opens an ANSI escape sequence that rewrites a support engineer's terminal.
+    // These MUST stay as \u escapes and never be re-typed as raw bytes. A literal 0x00 in the source
+    // makes git classify this file as binary, and a binary file shows as 0 additions / 0 deletions on
+    // a pull request -- which is how this entire PII guard suite once shipped invisible to review.
+    [InlineData("abc\u0000def")]
+    [InlineData("abc\u001b[31m")]
+    // Markup and separators that break dashboards and CSV exports.
+    [InlineData("<script>alert(1)</script>")]
+    [InlineData("a,b;c|d")]
+    // Oversized: this value is attached to EVERY log record of the request.
+    [InlineData("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void AHostileCorrelationIdIsRejectedOutright(string raw)
+    {
+        // Rejected, not escaped-and-kept: a caller does not get to choose what goes in the log line.
+        CorrelationIdMiddleware.Sanitize(raw).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task TheResponseCarriesACorrelationIdEvenWhenTheCallerSentNone()
+    {
+        var ctx = new DefaultHttpContext();
+        var middleware = new CorrelationIdMiddleware(_ => Task.CompletedTask, NullLogger());
+
+        await middleware.InvokeAsync(ctx);
+        // OnStarting callbacks do not fire on a bare DefaultHttpContext, so assert the value the
+        // middleware resolved and stored — that is what both the header and the log scope use.
+        ctx.CorrelationId().Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Fact]
+    public async Task ACallerSuppliedCorrelationIdIsHonoured_SoOneIdSpansFrontendAndBackend()
+    {
+        var ctx = new DefaultHttpContext();
+        ctx.Request.Headers[CorrelationIdMiddleware.HeaderName] = "front-end-req-42";
+        var middleware = new CorrelationIdMiddleware(_ => Task.CompletedTask, NullLogger());
+
+        await middleware.InvokeAsync(ctx);
+
+        ctx.CorrelationId().Should().Be("front-end-req-42");
+    }
+
+    [Fact]
+    public async Task AHostileCorrelationIdIsReplaced_NotPropagated()
+    {
+        var ctx = new DefaultHttpContext();
+        ctx.Request.Headers[CorrelationIdMiddleware.HeaderName] = "evil\nInjected: yes";
+        var middleware = new CorrelationIdMiddleware(_ => Task.CompletedTask, NullLogger());
+
+        await middleware.InvokeAsync(ctx);
+
+        var resolved = ctx.CorrelationId();
+        resolved.Should().NotBeNull();
+        resolved.Should().NotContain("\n");
+        resolved.Should().NotContain("Injected");
+    }
+
+    // ── Cardinality: the difference between a span attribute and a metric label ──────────────────
+
+    [Fact]
+    public void NoIdentifierIsEverPermittedAsAMetricLabel()
+    {
+        // A tenant id on a span is one searchable field. The same id as a metric label multiplies every
+        // time series by the tenant count and takes the metrics backend down.
+        foreach (var forbidden in ZayraTelemetry.MetricLabels.Forbidden)
+            ZayraTelemetry.MetricLabels.Allowed.Should().NotContain(
+                forbidden,
+                $"'{forbidden}' is unbounded in production — one time series per tenant/employee/request");
+    }
+
+    [Fact]
+    public void TheAllowedMetricLabelSetIsSmallAndBounded()
+    {
+        ZayraTelemetry.MetricLabels.Allowed.Should().OnlyHaveUniqueItems();
+        ZayraTelemetry.MetricLabels.Allowed.Length.Should().BeLessThanOrEqualTo(8,
+            "every additional label multiplies the time-series count");
+    }
+
+    [Fact]
+    public void FailureCategoriesAreAClosedVocabulary_NotFreeText()
+    {
+        // A raw exception message as a label is both unbounded AND one string interpolation away from
+        // carrying an IBAN.
+        var categories = typeof(ZayraTelemetry.Failure)
+            .GetFields()
+            .Where(f => f.IsLiteral)
+            .Select(f => (string)f.GetRawConstantValue()!)
+            .ToList();
+
+        categories.Should().NotBeEmpty();
+        categories.Should().OnlyHaveUniqueItems();
+        categories.Should().OnlyContain(c => c == c.ToLowerInvariant() && !c.Contains(' '));
+    }
+
+    // ── Span attributes must name records, never people ──────────────────────────────────────────
+
+    [Fact]
+    public void NoSpanAttributeNamesAPersonOrACredential()
+    {
+        var attributes = typeof(ZayraTelemetry.Attr)
+            .GetFields()
+            .Where(f => f.IsLiteral)
+            .Select(f => (string)f.GetRawConstantValue()!)
+            .ToList();
+
+        string[] forbidden =
+        [
+            "salary", "iban", "bank", "email", "phone", "name", "national", "iqama",
+            "passport", "token", "password", "secret", "address", "document", "body",
+        ];
+
+        foreach (var attr in attributes)
+            foreach (var word in forbidden)
+                attr.ToLowerInvariant().Should().NotContain(
+                    word,
+                    $"span attribute '{attr}' names something that must never be exported to a telemetry backend");
+    }
+
+    [Fact]
+    public void StartOperationTagsTheSpanWithoutRequiringAListener()
+    {
+        // With no listener the SDK returns null. Callers must tolerate that — it is the normal state in
+        // production when no collector is configured, and code that assumes a span will NRE there.
+        var activity = ZayraTelemetry.StartOperation("payroll", "run");
+        if (activity is null) return;
+
+        using (activity)
+        {
+            activity.GetTagItem(ZayraTelemetry.Attr.Module).Should().Be("payroll");
+            activity.GetTagItem(ZayraTelemetry.Attr.Operation).Should().Be("run");
+        }
+    }
+
+    [Fact]
+    public void UnconfiguredObservabilityRegistersNoExporter_AndDoesNotThrow()
+    {
+        // An OTLP exporter pointed at nothing retries on a background thread and adds latency to the
+        // requests it is meant to observe. Unconfigured must be a genuine no-op.
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        var config = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>())   // no Observability:* at all
+            .Build();
+
+        var act = () => services.AddZayraObservability(config, new _TestHostEnvironment("Development"));
+
+        act.Should().NotThrow();
+    }
+
+    // ── An exception message is PII on this product ─────────────────────────────────────────────
+
+    /// <summary>
+    /// The exact shape of what this codebase interpolates into exception messages:
+    /// EmployeeManagementService throws <c>$"IBAN '{cleanIban}' is invalid…"</c> and
+    /// <c>$"Salary package {grossSalary:N2} is below grade {grade.Code} minimum…"</c>. Neither may
+    /// ever reach a telemetry backend.
+    /// </summary>
+    private const string LeakedIban = "SA0380000000608010167519";
+
+    private static InvalidOperationException RealisticPiiException() => new(
+        $"IBAN '{LeakedIban}' is invalid — it fails the ISO 13616 mod-97 checksum. "
+        + "Enter a correct IBAN before saving.");
+
+    /// <summary>Builds the REAL production observability registration and hands back its DI container.</summary>
+    private static ServiceProvider BuildConfiguredObservability()
+    {
+        var services = new ServiceCollection();
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>())
+            .Build();
+        services.AddSingleton<IConfiguration>(config);
+        services.AddZayraObservability(config, new _TestHostEnvironment("Production"));
+        return services.BuildServiceProvider();
+    }
+
+    /// <summary>Everything a collector would actually receive for a span: its tags and its event tags.</summary>
+    private static string WhatTheCollectorWouldSee(Activity activity) =>
+        string.Join("\n",
+            activity.TagObjects.Select(t => $"{t.Key}={t.Value}")
+                .Concat(activity.Events.SelectMany(e =>
+                    new[] { $"event:{e.Name}" }.Concat(e.Tags.Select(t => $"{t.Key}={t.Value}")))));
+
+    [Fact]
+    public void NeitherInstrumentationRecordsExceptionMessages()
+    {
+        using var sp = BuildConfiguredObservability();
+
+        sp.GetRequiredService<IOptionsMonitor<AspNetCoreTraceInstrumentationOptions>>()
+            .Get(Options.DefaultName).RecordException
+            .Should().BeFalse(
+                "RecordException attaches exception.message and exception.stacktrace verbatim, and on "
+                + "this product an exception message carries an IBAN or a salary package");
+
+        sp.GetRequiredService<IOptionsMonitor<HttpClientTraceInstrumentationOptions>>()
+            .Get(Options.DefaultName).RecordException
+            .Should().BeFalse(
+                "an outbound call to a bank, GOSI or Qiwa fails with a message that quotes the request");
+    }
+
+    [Fact]
+    public void APiiBearingExceptionMessageNeverLandsOnASpan()
+    {
+        using var sp = BuildConfiguredObservability();
+        var options = sp.GetRequiredService<IOptionsMonitor<AspNetCoreTraceInstrumentationOptions>>()
+            .Get(Options.DefaultName);
+
+        options.EnrichWithException.Should().NotBeNull(
+            "dropping the message is only defensible because the exception TYPE replaces it — "
+            + "the WorkerHeartbeatReporter pattern");
+
+        using var span = new Activity("POST /api/employees").Start();
+        options.EnrichWithException!(span, RealisticPiiException());
+
+        // What survives: the class of the failure, which is what an on-call engineer triages on.
+        span.GetTagItem(ZayraTelemetry.Attr.ExceptionType).Should().Be("InvalidOperationException");
+
+        // What does not survive: any part of the message.
+        var exported = WhatTheCollectorWouldSee(span);
+        exported.Should().NotContain(LeakedIban, "an IBAN must never be exported to a telemetry backend");
+        exported.Should().NotContain("mod-97", "no part of the operator-authored message may survive");
+        span.Events.Should().BeEmpty("the `exception` event is the thing that carries exception.message");
+    }
+
+    [Fact]
+    public void TheSameCheckAppliesToOutboundHttpSpans()
+    {
+        using var sp = BuildConfiguredObservability();
+        var options = sp.GetRequiredService<IOptionsMonitor<HttpClientTraceInstrumentationOptions>>()
+            .Get(Options.DefaultName);
+
+        options.EnrichWithException.Should().NotBeNull();
+
+        using var span = new Activity("POST /wps/upload").Start();
+        options.EnrichWithException!(span, RealisticPiiException());
+
+        span.GetTagItem(ZayraTelemetry.Attr.ExceptionType).Should().Be("InvalidOperationException");
+        WhatTheCollectorWouldSee(span).Should().NotContain(LeakedIban);
+    }
+
+    [Fact]
+    public void TheSettingThisReplacedWouldHaveExportedTheIban()
+    {
+        // The counter-example that makes the two tests above load-bearing rather than decorative.
+        // This is exactly what RecordException = true asks the SDK to do, applied to the message
+        // EmployeeManagementService throws today. If this ever stops leaking, the SDK's behaviour has
+        // changed and the pinned-version rationale in Zayra.Api.csproj needs re-reading.
+        using var leaky = new Activity("POST /api/employees").Start();
+        leaky.AddException(RealisticPiiException());
+
+        WhatTheCollectorWouldSee(leaky).Should().Contain(LeakedIban);
+    }
+
+    // ── The OTLP endpoint must be reachable, not merely parseable ────────────────────────────────
+
+    [Theory]
+    // The trap: this PARSES as an absolute Uri — scheme "localhost", path "4317" — and is the single
+    // most common way a person writes an OTLP endpoint.
+    [InlineData("localhost:4317")]
+    [InlineData("collector:4317")]
+    [InlineData("otel-collector.internal:4318")]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("not a uri at all")]
+    [InlineData("/relative/path")]
+    public void AnEndpointThatIsNotHttpOrHttpsIsRefused(string endpoint)
+        => ObservabilityRegistration.IsUsableOtlpEndpoint(endpoint).Should().BeFalse(
+            "an exporter pointed at an unreachable endpoint retries on a background thread forever "
+            + "and adds latency to the requests it is meant to observe; degrading to the documented "
+            + "no-op is the safe direction");
+
+    [Theory]
+    [InlineData("http://localhost:4317")]
+    [InlineData("https://otlp.example.com:4318")]
+    [InlineData("http://otel-collector:4317/v1/traces")]
+    public void AnHttpOrHttpsEndpointIsAccepted(string endpoint)
+        => ObservabilityRegistration.IsUsableOtlpEndpoint(endpoint).Should().BeTrue();
+
+    // ── The correlation id has to reach an actual log line ───────────────────────────────────────
+
+    [Fact]
+    public async Task TheCorrelationIdReachesALogLineWrittenByDownstreamCode()
+    {
+        // END TO END, and deliberately so. There are two independent ways this silently produces
+        // nothing, and only reading the emitted text catches both:
+        //   1. IncludeScopes defaults to FALSE, so BeginScope is discarded before it reaches a line;
+        //   2. even with scopes on, a scope object is rendered with ToString(), so passing a raw
+        //      Dictionary<string, object> prints "System.Collections.Generic.Dictionary`2[...]" and
+        //      the id still never appears.
+        // Asserting that the middleware calls BeginScope would have passed under both. So: real
+        // appsettings.json, real console provider, real middleware, real downstream log call, and an
+        // assertion against the bytes the provider actually wrote.
+        var config = new ConfigurationBuilder()
+            .AddJsonFile(Path.Combine(FindApiRoot(), "appsettings.json"), optional: false)
+            .Build();
+
+        var original = Console.Out;
+        var captured = new StringWriter();
+        try
+        {
+            Console.SetOut(captured);
+            var services = new ServiceCollection();
+            services.AddLogging(b =>
+            {
+                b.AddConfiguration(config.GetSection("Logging"));
+                b.AddConsole();
+            });
+            using (var sp = services.BuildServiceProvider())
+            {
+                var factory = sp.GetRequiredService<ILoggerFactory>();
+                var downstream = factory.CreateLogger("SomeControllerDeepInThePipeline");
+
+                var ctx = new DefaultHttpContext();
+                ctx.Request.Headers[CorrelationIdMiddleware.HeaderName] = "corr-proof-0123456789";
+
+                var middleware = new CorrelationIdMiddleware(
+                    _ =>
+                    {
+                        downstream.LogError("a failure a support engineer will be asked about");
+                        return Task.CompletedTask;
+                    },
+                    sp.GetRequiredService<ILogger<CorrelationIdMiddleware>>());
+
+                await middleware.InvokeAsync(ctx);
+            }   // disposing the provider drains the console writer queue
+        }
+        finally
+        {
+            Console.SetOut(original);
+        }
+
+        captured.ToString().Should().Contain("corr-proof-0123456789",
+            "the PR claims the correlation id is what a support engineer pastes into a log query — "
+            + "which requires both Logging:Console:IncludeScopes in appsettings.json AND a scope "
+            + "object that renders to something other than its own type name");
+    }
+
+    [Fact]
+    public void TheShippedConfigurationTurnsScopesOn()
+    {
+        // Belt to the braces above: assert the bound option itself, so a regression names the knob.
+        var config = new ConfigurationBuilder()
+            .AddJsonFile(Path.Combine(FindApiRoot(), "appsettings.json"), optional: false)
+            .Build();
+
+        var services = new ServiceCollection();
+        services.AddLogging(b =>
+        {
+            b.AddConfiguration(config.GetSection("Logging"));
+            b.AddConsole();
+        });
+        using var sp = services.BuildServiceProvider();
+
+        sp.GetRequiredService<IOptionsMonitor<Microsoft.Extensions.Logging.Console.SimpleConsoleFormatterOptions>>()
+            .CurrentValue.IncludeScopes
+            .Should().BeTrue("Logging:Console:FormatterOptions:IncludeScopes governs whether "
+                             + "BeginScope reaches the log line");
+    }
+
+    // ── Ratchets: the two things a future edit would silently undo ───────────────────────────────
+
+    [Fact]
+    public void EveryOpenTelemetryPackageIsPinnedToAnExactVersion()
+    {
+        // A floating "1.*" makes `dotnet restore` an unreviewed change to redaction behaviour. The
+        // only thing keeping employee search terms out of exported spans is OTel's default url.query
+        // redaction, and GAP-G3-1 already documents a bump that REMOVED a redaction switch.
+        var csproj = File.ReadAllText(Path.Combine(FindApiRoot(), "Zayra.Api.csproj"));
+
+        var references = System.Text.RegularExpressions.Regex
+            .Matches(csproj, "<PackageReference\\s+Include=\"(OpenTelemetry[^\"]*)\"\\s+Version=\"([^\"]+)\"")
+            .ToList();
+
+        references.Should().HaveCountGreaterThanOrEqualTo(5,
+            "the guard must actually be reading the package list");
+
+        var floating = references
+            .Where(m => !System.Text.RegularExpressions.Regex.IsMatch(m.Groups[2].Value, "^[0-9]+\\.[0-9]+\\.[0-9]+$"))
+            .Select(m => $"{m.Groups[1].Value} = {m.Groups[2].Value}")
+            .ToList();
+
+        floating.Should().BeEmpty(
+            "OpenTelemetry versions must be exact, not ranges: " + string.Join(", ", floating));
+    }
+
+    [Fact]
+    public void TheCorrelationIdIsEstablishedBeforeAnythingThatCanShortCircuitTheRequest()
+    {
+        // A rate-limited 429 is the single most common thing support is asked about, and it never
+        // reaches the middleware pipeline below the limiter. If the correlation middleware sits after
+        // UseRateLimiter, the response a customer is complaining about carries no X-Correlation-ID.
+        var program = File.ReadAllText(Path.Combine(FindApiRoot(), "Program.cs"));
+
+        var correlation = program.IndexOf(
+            "app.UseMiddleware<Zayra.Api.Infrastructure.Observability.CorrelationIdMiddleware>",
+            StringComparison.Ordinal);
+        var rateLimiter = program.IndexOf("app.UseRateLimiter()", StringComparison.Ordinal);
+        var cors = program.IndexOf("app.UseCors(", StringComparison.Ordinal);
+
+        correlation.Should().BeGreaterThan(-1);
+        rateLimiter.Should().BeGreaterThan(-1);
+        cors.Should().BeGreaterThan(-1);
+
+        correlation.Should().BeLessThan(rateLimiter, "a 429 must carry a correlation id");
+        correlation.Should().BeLessThan(cors, "a rejected CORS preflight must carry a correlation id");
+    }
+
+    private static string FindApiRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !Directory.Exists(Path.Combine(dir.FullName, "Zayra.Api", "Controllers")))
+            dir = dir.Parent;
+        dir.Should().NotBeNull("the test must be able to locate the Zayra.Api source tree");
+        return Path.Combine(dir!.FullName, "Zayra.Api");
+    }
+
+    private static ILogger<CorrelationIdMiddleware> NullLogger() =>
+        Microsoft.Extensions.Logging.Abstractions.NullLogger<CorrelationIdMiddleware>.Instance;
+}
+
+file sealed class _TestHostEnvironment : IHostEnvironment
+{
+    public _TestHostEnvironment(string name) => EnvironmentName = name;
+    public string EnvironmentName { get; set; }
+    public string ApplicationName { get; set; } = "tests";
+    public string ContentRootPath { get; set; } = AppContext.BaseDirectory;
+    public Microsoft.Extensions.FileProviders.IFileProvider ContentRootFileProvider { get; set; } =
+        new Microsoft.Extensions.FileProviders.NullFileProvider();
+}
