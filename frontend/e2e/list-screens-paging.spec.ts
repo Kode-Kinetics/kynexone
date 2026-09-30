@@ -213,3 +213,18 @@ test.describe('recruitment lists page with the server total', () => {
     expect(rec).toContain("openingsApi.list({ status: 'Open', pageSize: 5 })");
   });
 });
+
+test.describe('AI assistant lists say when they are a window', () => {
+  test('insights and the query log page with Load more; the capped risk table says it is the top slice', () => {
+    const ai = read('src/views/AIAssistantPage.tsx');
+    expect(ai).not.toContain('{ page: 1 }');
+    expect(ai).toContain('aiAssistantApi.listInsights({ page, pageSize })');
+    expect(ai).toContain('aiAssistantApi.queryHistory({ page, pageSize })');
+    expect(ai).toContain('total={insightList.total} noun="insights"');
+    expect(ai).toContain('total={historyList.total} noun="queries"');
+    // The risk endpoint returns at most 100 rows and no total (AIAssistantController.RiskScores).
+    expect(read('../backend-dotnet/Zayra.Api/Controllers/AIAssistantController.cs')).toMatch(/OrderByDescending\(r => r\.ChurnRiskScore\)\s*\.Take\(100\)/);
+    expect(ai).toContain('const RISK_SCORE_LIMIT = 100;');
+    expect(ai).toContain('riskScores.length >= RISK_SCORE_LIMIT');
+  });
+});

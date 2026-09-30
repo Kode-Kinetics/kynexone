@@ -10,6 +10,9 @@ import {
   type AIHRQueryLog,
 } from '../api/intelligence';
 import { PolicyDocumentManager } from '../components/PolicyDocumentManager';
+import { ListWindowFooter } from '../components/ListWindowFooter';
+import { usePagedList } from '../hooks/usePagedList';
+import { requestFailureReason } from '../lib/requestFailure';
 
 type Tab = 'assistant' | 'insights' | 'risk' | 'history' | 'policy-docs';
 
@@ -34,6 +37,12 @@ const RISK_COLORS: Record<string, string> = {
   Critical: 'bg-red-100 text-red-700',
 };
 
+/**
+ * The risk-score endpoint returns at most this many rows, highest churn risk first, and no total
+ * (AIAssistantController.RiskScores). A full table is therefore labelled as the top slice.
+ */
+const RISK_SCORE_LIMIT = 100;
+
 const SUGGESTIONS = [
   'How many employees are currently active?',
   'Who is on leave today?',
@@ -53,9 +62,15 @@ export default function AIAssistantPage() {
     },
   ]);
   const [loading, setLoading] = useState(false);
-  const [insights, setInsights] = useState<AIInsight[]>([]);
+  // Insights and the query log load one page at a time with the server's total: both used to show
+  // the server's first 20 rows as the whole list.
+  const insightList = usePagedList<AIInsight>((page, pageSize) => aiAssistantApi.listInsights({ page, pageSize }));
+  const historyList = usePagedList<AIHRQueryLog>((page, pageSize) => aiAssistantApi.queryHistory({ page, pageSize }));
+  const insights = insightList.items;
+  const history = historyList.items;
+  // Acknowledged in this session: kept beside the loaded pages so acknowledging one does not reload them.
+  const [acknowledgedIds, setAcknowledgedIds] = useState<ReadonlySet<string>>(new Set());
   const [riskScores, setRiskScores] = useState<EmployeeRiskScore[]>([]);
-  const [history, setHistory] = useState<AIHRQueryLog[]>([]);
   const [computing, setComputing] = useState(false);
   const [providerStatus, setProviderStatus] = useState<AIProviderStatus | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -74,11 +89,9 @@ export default function AIAssistantPage() {
     if (tab === 'history') loadHistory();
   }, [tab]);
 
-  async function loadInsights() {
-    try {
-      const r = await aiAssistantApi.listInsights({ page: 1 });
-      setInsights(r.items);
-    } catch {}
+  function loadInsights() {
+    setAcknowledgedIds(new Set());
+    void insightList.reload();
   }
 
   async function loadRiskScores() {
@@ -88,11 +101,8 @@ export default function AIAssistantPage() {
     } catch {}
   }
 
-  async function loadHistory() {
-    try {
-      const r = await aiAssistantApi.queryHistory({ page: 1 });
-      setHistory(r.items);
-    } catch {}
+  function loadHistory() {
+    void historyList.reload();
   }
 
   async function sendQuery(text: string) {
@@ -126,7 +136,7 @@ export default function AIAssistantPage() {
   async function acknowledgeInsight(id: string) {
     try {
       await aiAssistantApi.acknowledgeInsight(id);
-      setInsights(prev => prev.map(i => i.id === id ? { ...i, isAcknowledged: true } : i));
+      setAcknowledgedIds(prev => new Set(prev).add(id));
     } catch {}
   }
 
@@ -289,13 +299,18 @@ export default function AIAssistantPage() {
             <h2 className="text-lg font-semibold text-gray-900">Insights</h2>
             <button onClick={loadInsights} className="text-sm text-sapphire hover:underline">Refresh</button>
           </div>
-          {insights.length === 0 ? (
+          {insightList.error != null && (
+            <p role="alert" className="text-sm text-rose-600">Insights could not be loaded. {requestFailureReason(insightList.error)}</p>
+          )}
+          {insightList.loading ? (
+            <p className="py-8 text-center text-sm text-gray-400">Loading…</p>
+          ) : insightList.error != null && insights.length === 0 ? null : insights.length === 0 ? (
             <div className="text-center py-16 bg-white rounded-xl border border-gray-200">
               <p className="text-gray-500 text-sm">No insights available. Insights are generated automatically as your modules accumulate data.</p>
             </div>
           ) : (
             <div className="space-y-3">
-              {insights.map(insight => (
+              {insights.map(i => ({ ...i, isAcknowledged: i.isAcknowledged || acknowledgedIds.has(i.id) })).map(insight => (
                 <div key={insight.id} className={`rounded-xl border p-4 ${SEVERITY_COLORS[insight.severity] || SEVERITY_COLORS.Info}`}>
                   <div className="flex items-start justify-between gap-4">
                     <div className="flex-1">
@@ -321,6 +336,7 @@ export default function AIAssistantPage() {
               ))}
             </div>
           )}
+          <ListWindowFooter shown={insights.length} total={insightList.total} noun="insights" loadingMore={insightList.loadingMore} onLoadMore={() => void insightList.loadMore()} />
         </div>
       )}
 
@@ -331,6 +347,11 @@ export default function AIAssistantPage() {
             <div>
               <h2 className="text-lg font-semibold text-gray-900">Employee Risk Scores</h2>
               <p className="text-xs text-amber-600">Advisory only — all scores are heuristic estimates, not final assessments</p>
+              {riskScores.length >= RISK_SCORE_LIMIT && (
+                <p role="status" className="text-xs text-gray-500">
+                  Showing the {RISK_SCORE_LIMIT} highest churn-risk scores. Employees ranked below them are not listed here.
+                </p>
+              )}
             </div>
             <button
               onClick={computeRisk}
@@ -412,7 +433,12 @@ export default function AIAssistantPage() {
       {tab === 'history' && (
         <div className="space-y-4">
           <h2 className="text-lg font-semibold text-gray-900">Assistant Query Log</h2>
-          {history.length === 0 ? (
+          {historyList.error != null && (
+            <p role="alert" className="text-sm text-rose-600">The query log could not be loaded. {requestFailureReason(historyList.error)}</p>
+          )}
+          {historyList.loading ? (
+            <p className="py-8 text-center text-sm text-gray-400">Loading…</p>
+          ) : historyList.error != null && history.length === 0 ? null : history.length === 0 ? (
             <div className="text-center py-16 bg-white rounded-xl border border-gray-200">
               <p className="text-gray-500 text-sm">No queries logged yet. Use the assistant to get started.</p>
             </div>
@@ -452,6 +478,7 @@ export default function AIAssistantPage() {
                   ))}
                 </tbody>
               </table>
+              <ListWindowFooter shown={history.length} total={historyList.total} noun="queries" loadingMore={historyList.loadingMore} onLoadMore={() => void historyList.loadMore()} />
             </div>
           )}
         </div>
