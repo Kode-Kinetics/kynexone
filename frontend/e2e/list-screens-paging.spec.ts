@@ -169,7 +169,9 @@ test.describe('performance goals and reviews page with the server total', () => 
     const perf = read('src/views/PerformancePage.tsx');
     for (const call of [
       'goalsApi.list({ status: statusFilter || undefined, page, pageSize })',
-      'reviewsApi.list({ page, pageSize })',
+      // My Reviews pages AND stays the caller's own: without view: 'mine' an HR user would page
+      // through every review in the organisation under a tab that claims to be theirs.
+      "reviewsApi.list({ view: 'mine', page, pageSize })",
       'reviewsApi.list({ status: statusFilter || undefined, page, pageSize })',
     ]) expect(perf).toContain(call);
     expect(perf).toContain('total={list.total} noun="goals"');
