@@ -1,4 +1,7 @@
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
@@ -55,20 +58,39 @@ public class ReviewsController : ControllerBase
         _hierarchyService = hierarchyService;
     }
 
+    /// <summary>
+    /// The reviews in the caller's data scope (Team Reviews for a line manager, the organisation for HR), or,
+    /// with <c>view=mine</c>, only the caller's OWN reviews (My Reviews). The scope includes other people for
+    /// managers and HR, so "My Reviews" cannot be the unfiltered list: it showed HR everyone's review with a
+    /// Start Assessment button on each.
+    /// </summary>
     [HttpGet]
     public async Task<IActionResult> List(
         [FromQuery] Guid? cycleId,
         [FromQuery] int? employeeId,
         [FromQuery] string? status,
         [FromQuery] string? department,
+        [FromQuery] string? view = null,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 50,
         CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+        var mine = string.Equals(view, MineView, StringComparison.OrdinalIgnoreCase);
+        if (!mine && !string.IsNullOrWhiteSpace(view))
+            return BadRequest(new { error = "invalid_view", message = $"view must be '{MineView}' or omitted." });
+
         var tenantId = this.GetTenantId()!.Value;
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         var query = _db.AppraisalReviews.Where(r => r.TenantId == tenantId);
-        if (!scope.IsUnrestricted)
+        if (mine)
+        {
+            // Own reviews only, whatever the scope. A caller with no employee record has none.
+            var own = await OwnEmployeeIdAsync(scope, tenantId, ct);
+            query = own is int self ? query.Where(r => r.EmployeeId == self) : query.Where(_ => false);
+        }
+        else if (!scope.IsUnrestricted)
             query = query.Where(r => scope.AllowedEmployeeIds!.Contains(r.EmployeeId));
         if (cycleId.HasValue)    query = query.Where(r => r.CycleId == cycleId.Value);
         if (employeeId.HasValue) query = query.Where(r => r.EmployeeId == employeeId.Value);
@@ -165,16 +187,21 @@ public class ReviewsController : ControllerBase
         var review = await _db.AppraisalReviews
             .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (review is null) return NotFound();
+
+        // A self-assessment is the employee's own account of their year, so only that employee submits it.
+        // This used to be a data-scope check, which an organisation-wide caller (HR, Admin) passes for every
+        // employee: HR could submit, or overwrite, anyone's self-assessment and move their review on.
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        if (await OwnEmployeeIdAsync(scope, tenantId, ct) != review.EmployeeId)
+            return StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                error = "self_assessment_by_employee_only",
+                message = "Only the employee this review is about can submit its self-assessment. HR and managers " +
+                          "can read the review, but not submit the self-assessment on the employee's behalf.",
+            });
+
         if (review.Status != "SelfAssessmentDue")
             return BadRequest(new { message = "Review is not in Self-Assessment stage." });
-
-        // GAP 5: employee can only submit their own self-assessment
-        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
-        if (!scope.IsUnrestricted)
-        {
-            if (scope.CallerEmployeeId is null || scope.CallerEmployeeId != review.EmployeeId)
-                return Forbid();
-        }
 
         // GAP 6: cycle must be open for self-assessment
         var cycle = await _db.PerformanceCycles.AsNoTracking()
@@ -388,6 +415,12 @@ public class ReviewsController : ControllerBase
 
     // ── Employee acknowledgement ────────────────────────────────────────────────
 
+    /// <summary>
+    /// The employee's record that they were shown their result. Only they can give it: the same rule, and the
+    /// same defect, as <see cref="SubmitSelfAssessment"/>. The check used to be the data scope, which an
+    /// organisation-wide caller (HR, Admin) passes for every employee — so HR could acknowledge on someone's
+    /// behalf, destroying the only evidence this endpoint exists to capture.
+    /// </summary>
     [HttpPost("{id:guid}/acknowledge")]
     public async Task<IActionResult> Acknowledge(Guid id, CancellationToken ct)
     {
@@ -397,9 +430,13 @@ public class ReviewsController : ControllerBase
             .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (review is null) return NotFound();
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
-        if (!scope.CanAccessEmployee(review.EmployeeId)
-            || (!scope.IsUnrestricted && scope.CallerEmployeeId != review.EmployeeId))
-            return Forbid();
+        if (await OwnEmployeeIdAsync(scope, tenantId, ct) != review.EmployeeId)
+            return StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                error = "acknowledge_by_employee_only",
+                message = "Only the employee this review is about can acknowledge it. Acknowledgement is their " +
+                          "record that the result was shown to them, so it cannot be given on their behalf.",
+            });
         if (review.Status != "Published")
             return BadRequest(new { message = "Review must be Published before acknowledgement." });
 
@@ -414,6 +451,12 @@ public class ReviewsController : ControllerBase
 
     // ── Appeal ─────────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// The employee's own challenge to their rating, so only they may raise it — the same rule as
+    /// <see cref="Acknowledge"/>. An appeal also blocks their increment, promotion and bonus until it is
+    /// decided (<c>RecommendationsController</c>), so an appeal raised "for" someone by an organisation-wide
+    /// caller froze their compensation and left HR deciding an appeal HR itself had submitted.
+    /// </summary>
     [HttpPost("{id:guid}/appeal")]
     public async Task<IActionResult> SubmitAppeal(Guid id, [FromBody] AppealRequest req, CancellationToken ct)
     {
@@ -423,9 +466,13 @@ public class ReviewsController : ControllerBase
             .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (review is null) return NotFound();
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
-        if (!scope.CanAccessEmployee(review.EmployeeId)
-            || (!scope.IsUnrestricted && scope.CallerEmployeeId != review.EmployeeId))
-            return Forbid();
+        if (await OwnEmployeeIdAsync(scope, tenantId, ct) != review.EmployeeId)
+            return StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                error = "appeal_by_employee_only",
+                message = "Only the employee this review is about can appeal it. HR decide appeals; they do not " +
+                          "raise them on an employee's behalf.",
+            });
         if (review.Status is not ("Published" or "Acknowledged"))
             return BadRequest(new { message = "Appeals can only be submitted after results are published." });
         if (string.IsNullOrWhiteSpace(req.AppealReason))
@@ -584,6 +631,29 @@ public class ReviewsController : ControllerBase
 
     private bool HasPermission(string permission) =>
         User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>The <c>view</c> value for My Reviews: the caller's own reviews only.</summary>
+    public const string MineView = "mine";
+
+    /// <summary>
+    /// The caller's OWN employee record, whatever their data scope. A scoped caller's scope already names it.
+    /// An organisation-wide scope (HR, Admin) does not, so it is read the way <c>DataScopeService</c>
+    /// reads it for everyone else: the <c>employee_id</c> claim, then a work or personal email that matches
+    /// exactly one employee in the tenant. Null when the account is not linked to an employee.
+    /// </summary>
+    private async Task<int?> OwnEmployeeIdAsync(DataScope scope, Guid tenantId, CancellationToken ct)
+    {
+        if (scope.CallerEmployeeId is int self) return self;
+        if (int.TryParse(User.FindFirstValue("employee_id"), out var linked)) return linked;
+
+        var email = User.FindFirstValue(JwtRegisteredClaimNames.Email) ?? User.FindFirstValue(ClaimTypes.Email);
+        if (string.IsNullOrWhiteSpace(email)) return null;
+        var normalised = email.Trim().ToLowerInvariant();
+        var matches = await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && !e.IsDeleted && (e.WorkEmail == normalised || e.PersonalEmail == normalised))
+            .Select(e => e.Id).Take(2).ToListAsync(ct);
+        return matches.Count == 1 ? matches[0] : null;
+    }
 }
 
 // ── DTOs ───────────────────────────────────────────────────────────────────────

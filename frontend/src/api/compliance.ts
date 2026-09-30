@@ -1,4 +1,5 @@
 import client from './client';
+import { fetchAllPages } from '../lib/paging';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -167,7 +168,11 @@ export const complianceContractsApi = {
     client.post<ContractTemplate>('/api/compliance/contracts/templates', body).then(r => r.data),
 
   list: (params: { employeeId?: string; status?: string; page?: number; pageSize?: number } = {}) =>
-    client.get<{ total: number; items: EmployeeContract[] }>('/api/compliance/contracts', { params }).then(r => r.data),
+    client.get<{ total: number; page: number; items: EmployeeContract[] }>('/api/compliance/contracts', { params }).then(r => r.data),
+
+  /** Every matching contract, page by page: the register is acted on row by row (activate, expire). */
+  listAll: (params: { employeeId?: string; status?: string } = {}) =>
+    fetchAllPages((page, pageSize) => complianceContractsApi.list({ ...params, page, pageSize })),
 
   get: (id: string) =>
     client.get<EmployeeContract>(`/api/compliance/contracts/${id}`).then(r => r.data),
@@ -183,8 +188,12 @@ export const complianceContractsApi = {
 };
 
 export const complianceVisaApi = {
-  list: (params: { employeeId?: string; status?: string; countryCode?: string; expiringInDays?: number; page?: number } = {}) =>
-    client.get<{ total: number; items: VisaRecord[] }>('/api/compliance/visa-tracking', { params }).then(r => r.data),
+  list: (params: { employeeId?: string; status?: string; countryCode?: string; expiringInDays?: number; page?: number; pageSize?: number } = {}) =>
+    client.get<{ total: number; page: number; items: VisaRecord[] }>('/api/compliance/visa-tracking', { params }).then(r => r.data),
+
+  /** Every matching visa / iqama record, soonest expiry first, page by page (the server default page is 20). */
+  listAll: (params: { employeeId?: string; status?: string; countryCode?: string; expiringInDays?: number } = {}) =>
+    fetchAllPages((page, pageSize) => complianceVisaApi.list({ ...params, page, pageSize })),
 
   get: (id: string) =>
     client.get<VisaRecord>(`/api/compliance/visa-tracking/${id}`).then(r => r.data),
@@ -197,24 +206,36 @@ export const complianceVisaApi = {
 };
 
 export const compliancePassportsApi = {
-  list: (params: { employeeId?: string; status?: string; expiringInDays?: number; page?: number } = {}) =>
-    client.get<{ total: number; items: PassportRecord[] }>('/api/compliance/passports', { params }).then(r => r.data),
+  list: (params: { employeeId?: string; status?: string; expiringInDays?: number; page?: number; pageSize?: number } = {}) =>
+    client.get<{ total: number; page: number; items: PassportRecord[] }>('/api/compliance/passports', { params }).then(r => r.data),
+
+  /** Every matching passport, soonest expiry first, page by page. */
+  listAll: (params: { employeeId?: string; status?: string; expiringInDays?: number } = {}) =>
+    fetchAllPages((page, pageSize) => compliancePassportsApi.list({ ...params, page, pageSize })),
 
   create: (body: { employeeId: string; passportNumber: string; nationality?: string; issuingCountry?: string; dateOfBirth: string; issueDate: string; expiryDate: string; placeOfIssue?: string; isHeldByCompany?: boolean; fileUrl?: string }) =>
     client.post<PassportRecord>('/api/compliance/passports', body).then(r => r.data),
 };
 
 export const complianceWorkPermitsApi = {
-  list: (params: { employeeId?: string; status?: string; expiringInDays?: number; page?: number } = {}) =>
-    client.get<{ total: number; items: WorkPermitRecord[] }>('/api/compliance/work-permits', { params }).then(r => r.data),
+  list: (params: { employeeId?: string; status?: string; expiringInDays?: number; page?: number; pageSize?: number } = {}) =>
+    client.get<{ total: number; page: number; items: WorkPermitRecord[] }>('/api/compliance/work-permits', { params }).then(r => r.data),
+
+  /** Every matching work permit, soonest expiry first, page by page. */
+  listAll: (params: { employeeId?: string; status?: string; expiringInDays?: number } = {}) =>
+    fetchAllPages((page, pageSize) => complianceWorkPermitsApi.list({ ...params, page, pageSize })),
 
   create: (body: { employeeId: string; permitNumber: string; countryCode: string; permitType: string; issueDate: string; expiryDate: string; issuingAuthority?: string; fileUrl?: string }) =>
     client.post<WorkPermitRecord>('/api/compliance/work-permits', body).then(r => r.data),
 };
 
 export const complianceRenewalsApi = {
-  list: (params: { employeeId?: string; status?: string; page?: number } = {}) =>
-    client.get<{ total: number; items: ComplianceRenewal[] }>('/api/compliance/renewals', { params }).then(r => r.data),
+  list: (params: { employeeId?: string; status?: string; page?: number; pageSize?: number } = {}) =>
+    client.get<{ total: number; page: number; items: ComplianceRenewal[] }>('/api/compliance/renewals', { params }).then(r => r.data),
+
+  /** Every matching renewal, soonest expiry first, page by page: each one is a task someone acts on. */
+  listAll: (params: { employeeId?: string; status?: string } = {}) =>
+    fetchAllPages((page, pageSize) => complianceRenewalsApi.list({ ...params, page, pageSize })),
 
   create: (body: { employeeId: string; documentType: string; documentNumber?: string; expiryDate: string; assignedToName?: string; notes?: string }) =>
     client.post<ComplianceRenewal>('/api/compliance/renewals', body).then(r => r.data),

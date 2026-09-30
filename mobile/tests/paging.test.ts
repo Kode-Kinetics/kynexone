@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { API_MAX_PAGE_SIZE, fetchAllPages } from '../src/api/paging.ts';
+
+// services.ts imports React Native modules, so its request URLs are checked as source.
+const services = fs.readFileSync(new URL('../src/api/services.ts', import.meta.url), 'utf8');
 
 /** Clamps pageSize like EmployeeManagementService and echoes page like PagedResult. */
 function clampingServer(rowCount: number, cap = 100) {
@@ -56,4 +60,32 @@ test('a newest-first list stops once a page reaches rows the caller does not nee
   );
   assert.deepEqual(calls, [1, 2]);
   assert.equal(all.filter((r) => r.workDate.startsWith('2026-09')).length, 150);
+});
+
+test('a request that reads one fixed-size page is for a list known to fit in it', () => {
+  // A literal pageSize reads that page and nothing more. Each one must be a list bounded by what it
+  // asks for; anything else pages through fetchAllPages. My overtime history used to be one of
+  // these (`page=1&pageSize=50`) and stopped at its 50th request.
+  const singlePage = [...services.matchAll(/`([^`]*pageSize=\d+[^`]*)`/g)].map((m) => m[1]);
+  assert.deepEqual(singlePage, [
+    // One employee's raw punches for one day.
+    '/attendance/events/raw?from=${today}&to=${today}&employeeId=${employeeId}&pageSize=100',
+    // One employee's attendance days for one calendar month (at most 31 rows).
+    '/attendance/daily?from=${from}&to=${to}&employeeId=${employeeId}&page=1&pageSize=62',
+  ]);
+});
+
+test('my overtime history reads every page of my requests', () => {
+  const start = services.indexOf('async getMyOTRequests');
+  assert.ok(start > 0);
+  const body = services.slice(start, services.indexOf('\n  },', start));
+  assert.match(body, /fetchAllPages<any>\(\(page, pageSize\) =>/);
+  assert.match(body, /\/overtime\/requests\?employeeId=\$\{employeeId\}&page=\$\{page\}&pageSize=\$\{pageSize\}/);
+});
+
+test('an employee with 130 overtime requests sees all 130, not the first page', async () => {
+  // The shape getMyOTRequests now reads: 100-row pages until the server total is reached.
+  const server = clampingServer(130);
+  assert.equal((await server.fetchPage(1, 50)).items.length, 50);
+  assert.equal((await fetchAllPages(server.fetchPage)).length, 130);
 });

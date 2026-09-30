@@ -280,6 +280,292 @@ public class PerformanceCycleRoleAccessTests
             "goals are set by the line manager or HR; the employee records progress against them");
     }
 
+    // ── Goal approval: the resolved KPI approver, or the HR tier by permission, never a role name ──
+
+    [Fact]
+    public async Task HrDirector_ApprovesAGoal_ByTheApproverTier_NotByRoleName()
+    {
+        // Approve used to skip the approver check only for the role NAMES Admin and HR Manager. HR Director holds
+        // the same performance keys and an organisation-wide scope, but was held to "be the report's KPI
+        // approver", which HR never is, so every HR Director approval was refused.
+        var (db, tenantId) = await NewTenantAsync("perf-goal-hrd");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Active", reviewStatus: "SelfAssessmentDue");
+        var goalId = await SeedGoalAsync(db, tenantId, w.ReportId);
+        var hrDirector = await CallerAsync(db, tenantId, "HR Director");
+
+        (await ApproveGoal(db, hrDirector, goalId)).Should().Be(200);
+        (await db.EmployeeGoals.AsNoTracking().SingleAsync(g => g.Id == goalId)).Status.Should().Be("Active");
+    }
+
+    [Fact]
+    public async Task AnHrManagerWithoutTheApproverTier_AndACompanyBoundScope_MustBeTheResolvedApprover()
+    {
+        // The role name used to be enough. With the approver tier denied and a scope bound to one company (so
+        // not organisation-wide), an HR Manager is held to the same rule as the manager review: approve only
+        // as the report's resolved KPI approver.
+        var (db, tenantId) = await NewTenantAsync("perf-goal-hrm-bound");
+        var companyId = Guid.NewGuid();
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Active", reviewStatus: "SelfAssessmentDue");
+        var hrEmployeeId = await SeedColleagueWithReviewAsync(db, tenantId, w, "Hana HR");
+        foreach (var e in await db.Employees.Where(e => e.TenantId == tenantId).ToListAsync()) e.CompanyId = companyId;
+        await db.SaveChangesAsync();
+        var goalId = await SeedGoalAsync(db, tenantId, w.ReportId);
+
+        var bound = CompanyBound(await LinkedCallerAsync(db, tenantId, "HR Manager", hrEmployeeId), companyId);
+        var withoutApprove = new ClaimsPrincipal(new ClaimsIdentity(
+            bound.Claims.Where(c => !(c.Type == "permission" && c.Value == "performance.approve")), "Test"));
+        withoutApprove.IsInRole("HR Manager").Should().BeTrue();
+
+        (await ApproveGoal(db, withoutApprove, goalId)).Should().Be(403,
+            "HR Manager is not the report's KPI approver, has no organisation-wide scope and no approver tier");
+        (await db.EmployeeGoals.AsNoTracking().SingleAsync(g => g.Id == goalId)).Status.Should().Be("Draft");
+
+        (await ApproveGoal(db, bound, goalId)).Should().Be(200, "the approver tier is what lets HR approve any goal in scope");
+        (await db.EmployeeGoals.AsNoTracking().SingleAsync(g => g.Id == goalId)).Status.Should().Be("Active");
+    }
+
+    [Fact]
+    public async Task AManager_ApprovesUpToTwoLevelsDown_ButNotFurther_ThoughTheirScopeIsTheWholeTree()
+    {
+        // The KPI approvers are the direct and second-level managers. A manager's data scope is their whole
+        // reporting tree, so the scope alone would let them approve three levels down; the approver rule does not.
+        var (db, tenantId) = await NewTenantAsync("perf-goal-levels");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Active", reviewStatus: "SelfAssessmentDue");
+        var second = NewEmployee(tenantId, "Sami Second");
+        second.ManagerEmployeeId = w.ReportId;
+        db.Employees.Add(second);
+        await db.SaveChangesAsync();
+        var third = NewEmployee(tenantId, "Tariq Third");
+        third.ManagerEmployeeId = second.Id;
+        db.Employees.Add(third);
+        await db.SaveChangesAsync();
+        var secondGoal = await SeedGoalAsync(db, tenantId, second.Id);
+        var thirdGoal = await SeedGoalAsync(db, tenantId, third.Id);
+        var manager = await ManagerAsync(db, tenantId, w);
+
+        (await ApproveGoal(db, manager, secondGoal)).Should().Be(200, "the manager is this employee's second-level manager");
+        (await ApproveGoal(db, manager, thirdGoal)).Should().Be(403, "three levels down, the manager is not a KPI approver");
+        (await db.EmployeeGoals.AsNoTracking().SingleAsync(g => g.Id == thirdGoal)).Status.Should().Be("Draft");
+    }
+
+    // ── A self-assessment is the employee's own ────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("HR Manager")]
+    [InlineData("HR Director")]
+    [InlineData("Admin")]
+    public async Task AnOrganisationWideCaller_CannotSelfAssessOnSomeoneElsesBehalf(string role)
+    {
+        // The data scope used to be the whole check: an organisation-wide caller passed it for any employee,
+        // so HR could submit (and overwrite) the report's self-assessment and move the review on.
+        var (db, tenantId) = await NewTenantAsync("perf-self-proxy");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Active", reviewStatus: "SelfAssessmentDue");
+        var hrEmployeeId = await SeedColleagueWithReviewAsync(db, tenantId, w, "Hana HR");
+        var hr = await LinkedCallerAsync(db, tenantId, role, hrEmployeeId);
+
+        var result = await Reviews(db, hr).SubmitSelfAssessment(w.ReportReviewId,
+            new SelfAssessmentRequest("Written by HR", 99m, 99m, 99m, null), Ct);
+
+        StatusOf(result).Should().Be(403);
+        var body = System.Text.Json.JsonSerializer.SerializeToElement(((ObjectResult)result).Value);
+        body.GetProperty("error").GetString().Should().Be("self_assessment_by_employee_only");
+        body.GetProperty("message").GetString().Should().Contain("Only the employee");
+        var review = await ReviewOf(db, w.ReportReviewId);
+        review.Status.Should().Be("SelfAssessmentDue");
+        review.SelfAssessmentNotes.Should().BeNullOrEmpty();
+    }
+
+    [Fact]
+    public async Task AnHrCaller_StillSelfAssessesTheirOwnReview()
+    {
+        // HR are employees too. Their organisation-wide scope carries no caller employee id, so the check
+        // has to find their own record from the account link rather than from the scope.
+        var (db, tenantId) = await NewTenantAsync("perf-self-hr-own");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Active", reviewStatus: "SelfAssessmentDue");
+        var hrEmployeeId = await SeedColleagueWithReviewAsync(db, tenantId, w, "Hana HR");
+        var hr = await LinkedCallerAsync(db, tenantId, "HR Manager", hrEmployeeId);
+        var ownReviewId = (await db.AppraisalReviews.AsNoTracking().SingleAsync(r => r.EmployeeId == hrEmployeeId)).Id;
+
+        (await SelfAssess(db, hr, ownReviewId)).Should().Be(200);
+        (await ReviewOf(db, ownReviewId)).Status.Should().Be("SelfAssessmentSubmitted");
+    }
+
+    [Fact]
+    public async Task AnOrganisationWideCallerWithNoEmployeeRecord_CannotSelfAssessAnyReview()
+    {
+        var (db, tenantId) = await NewTenantAsync("perf-self-unlinked");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Active", reviewStatus: "SelfAssessmentDue");
+        var admin = await CallerAsync(db, tenantId, "Admin");
+
+        (await SelfAssess(db, admin, w.ReportReviewId)).Should().Be(403);
+        (await ReviewOf(db, w.ReportReviewId)).Status.Should().Be("SelfAssessmentDue");
+    }
+
+    [Fact]
+    public async Task ALineManager_CannotSelfAssessForTheirReport()
+    {
+        var (db, tenantId) = await NewTenantAsync("perf-self-mgr");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Active", reviewStatus: "SelfAssessmentDue");
+        var manager = await ManagerAsync(db, tenantId, w);
+
+        (await SelfAssess(db, manager, w.ReportReviewId)).Should().Be(403);
+        (await ReviewOf(db, w.ReportReviewId)).Status.Should().Be("SelfAssessmentDue");
+    }
+
+    // ── Acknowledging a result, and appealing it, are the employee's own acts ──────────────────
+
+    [Theory]
+    [InlineData("HR Manager")]
+    [InlineData("HR Director")]
+    [InlineData("Admin")]
+    public async Task AnOrganisationWideCaller_CannotAcknowledgeSomeoneElsesReview(string role)
+    {
+        // Same defect shape as the self-assessment: the check was the data scope, which an organisation-wide
+        // caller passes for everyone. Acknowledgement is the employee's record that they were shown the result,
+        // so HR recording it for them destroys the only evidence the endpoint exists to capture.
+        var (db, tenantId) = await NewTenantAsync("perf-ack-proxy");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Published", reviewStatus: "Published");
+        var hrEmployeeId = await SeedColleagueWithReviewAsync(db, tenantId, w, "Hana HR");
+        var hr = await LinkedCallerAsync(db, tenantId, role, hrEmployeeId);
+
+        var result = await Reviews(db, hr).Acknowledge(w.ReportReviewId, Ct);
+
+        AssertRefusal(result, "acknowledge_by_employee_only", "Only the employee");
+        var review = await ReviewOf(db, w.ReportReviewId);
+        review.Status.Should().Be("Published");
+        review.AcknowledgedAt.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("HR Manager")]
+    [InlineData("HR Director")]
+    [InlineData("Admin")]
+    public async Task AnOrganisationWideCaller_CannotAppealSomeoneElsesReview(string role)
+    {
+        // An appeal is the employee's own challenge to their rating, and it BLOCKS their compensation until it
+        // is decided (RecommendationsController). HR raising one "for" someone freezes their increment, and HR
+        // then decides the appeal they themselves submitted.
+        var (db, tenantId) = await NewTenantAsync("perf-appeal-proxy");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Published", reviewStatus: "Published");
+        var hrEmployeeId = await SeedColleagueWithReviewAsync(db, tenantId, w, "Hana HR");
+        var hr = await LinkedCallerAsync(db, tenantId, role, hrEmployeeId);
+
+        var result = await Reviews(db, hr).SubmitAppeal(w.ReportReviewId,
+            new AppealRequest("The rating is too low", "Filed by HR"), Ct);
+
+        AssertRefusal(result, "appeal_by_employee_only", "Only the employee");
+        var review = await ReviewOf(db, w.ReportReviewId);
+        review.Status.Should().Be("Published");
+        review.IsAppealed.Should().BeFalse();
+        (await db.AppraisalAppeals.AsNoTracking().AnyAsync()).Should().BeFalse("a refused appeal must not be filed");
+    }
+
+    [Fact]
+    public async Task AnHrCaller_StillAcknowledgesAndAppealsTheirOwnReview()
+    {
+        // The boundary this must not break: HR are employees with reviews of their own. Their organisation-wide
+        // scope carries no caller employee id, so their own record is found from the account link.
+        var (db, tenantId) = await NewTenantAsync("perf-ack-hr-own");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Published", reviewStatus: "Published");
+        var hrEmployeeId = await SeedColleagueWithReviewAsync(db, tenantId, w, "Hana HR", reviewStatus: "Published");
+        var hr = await LinkedCallerAsync(db, tenantId, "HR Manager", hrEmployeeId);
+        var ownReviewId = (await db.AppraisalReviews.AsNoTracking().SingleAsync(r => r.EmployeeId == hrEmployeeId)).Id;
+
+        (await Acknowledge(db, hr, ownReviewId)).Should().Be(200);
+        (await ReviewOf(db, ownReviewId)).Status.Should().Be("Acknowledged");
+
+        (await Appeal(db, hr, ownReviewId)).Should().Be(201);
+        (await ReviewOf(db, ownReviewId)).Status.Should().Be("Appealed");
+    }
+
+    [Fact]
+    public async Task TheEmployee_StillAcknowledgesAndAppealsTheirOwnResult()
+    {
+        var (db, tenantId) = await NewTenantAsync("perf-ack-employee");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Published", reviewStatus: "Published");
+        var employee = await EmployeeAsync(db, tenantId, w);
+
+        (await Acknowledge(db, employee, w.ReportReviewId)).Should().Be(200);
+        (await Appeal(db, employee, w.ReportReviewId)).Should().Be(201);
+        (await ReviewOf(db, w.ReportReviewId)).IsAppealed.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ACallerWithNoEmployeeRecord_CanNeitherAcknowledgeNorAppealAnyReview()
+    {
+        var (db, tenantId) = await NewTenantAsync("perf-ack-unlinked");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Published", reviewStatus: "Published");
+        var admin = await CallerAsync(db, tenantId, "Admin");
+
+        (await Acknowledge(db, admin, w.ReportReviewId)).Should().Be(403);
+        (await Appeal(db, admin, w.ReportReviewId)).Should().Be(403);
+        var review = await ReviewOf(db, w.ReportReviewId);
+        review.Status.Should().Be("Published");
+        review.IsAppealed.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task HrStillDecidesAnAppealOnSomeoneElsesReview()
+    {
+        // The rule is about the two acts that are the employee's own. Everything HR legitimately does on another
+        // employee's review — deciding their appeal, calibrating, publishing — is untouched.
+        var (db, tenantId) = await NewTenantAsync("perf-appeal-decide");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Published", reviewStatus: "Appealed");
+        var hr = await CallerAsync(db, tenantId, "HR Manager");
+
+        var status = await Gate<ReviewsController>(hr, nameof(ReviewsController.RespondToAppeal),
+            () => Reviews(db, hr).RespondToAppeal(w.AppealId!.Value,
+                new AppealResponseRequest("Rejected", "The rating was calibrated against the whole department."), Ct));
+
+        status.Should().Be(200);
+        (await db.AppraisalAppeals.AsNoTracking().SingleAsync()).Status.Should().Be("Rejected");
+        (await ReviewOf(db, w.ReportReviewId)).Status.Should().Be("Published", "a rejected appeal restores the published result");
+    }
+
+    // ── My Reviews is the caller's own; Team and HR views still list others ────────────────────
+
+    [Fact]
+    public async Task MyReviews_ListsOnlyTheCallersOwnReviews_ForEveryAudience()
+    {
+        var (db, tenantId) = await NewTenantAsync("perf-mine");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Active", reviewStatus: "SelfAssessmentDue");
+        var hrEmployeeId = await SeedColleagueWithReviewAsync(db, tenantId, w, "Hana HR");
+        var managerReviewId = await SeedReviewAsync(db, tenantId, w, w.ManagerId);
+
+        var hr = await LinkedCallerAsync(db, tenantId, "HR Manager", hrEmployeeId);
+        (await ListedEmployeeIds(db, hr, view: "mine")).Should().Equal(new[] { hrEmployeeId },
+            "HR's My Reviews is HR's own review, not the whole organisation's");
+
+        var manager = await ManagerAsync(db, tenantId, w);
+        (await ListedEmployeeIds(db, manager, view: "mine")).Should().Equal(new[] { w.ManagerId },
+            "a manager's My Reviews is their own review, not their report's");
+        managerReviewId.Should().NotBeEmpty();
+
+        var employee = await EmployeeAsync(db, tenantId, w);
+        (await ListedEmployeeIds(db, employee, view: "mine")).Should().Equal(new[] { w.ReportId });
+
+        var unlinkedAdmin = await CallerAsync(db, tenantId, "Admin");
+        (await ListedEmployeeIds(db, unlinkedAdmin, view: "mine")).Should().BeEmpty(
+            "a caller with no employee record has no reviews of their own");
+    }
+
+    [Fact]
+    public async Task TheTeamAndHrViews_StillListTheReviewsInTheCallersScope()
+    {
+        var (db, tenantId) = await NewTenantAsync("perf-team-view");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Active", reviewStatus: "SelfAssessmentDue");
+        var hrEmployeeId = await SeedColleagueWithReviewAsync(db, tenantId, w, "Hana HR");
+        await SeedReviewAsync(db, tenantId, w, w.ManagerId);
+
+        var manager = await ManagerAsync(db, tenantId, w);
+        (await ListedEmployeeIds(db, manager, view: null)).Should().BeEquivalentTo(new[] { w.ManagerId, w.ReportId },
+            "Team Reviews lists the manager's reporting line (the scope has always included their own record)");
+
+        var hr = await LinkedCallerAsync(db, tenantId, "HR Manager", hrEmployeeId);
+        (await ListedEmployeeIds(db, hr, view: null)).Should().BeEquivalentTo(
+            new[] { w.ManagerId, w.ReportId, w.OutsiderId, hrEmployeeId }, "HR's views list the organisation");
+    }
+
     // ── Analytics are tenant-wide, so they stay with HR ────────────────────────────────────────
 
     [Theory]
@@ -440,6 +726,67 @@ public class PerformanceCycleRoleAccessTests
         db.EmployeeGoals.Add(goal);
         await db.SaveChangesAsync();
         return goal.Id;
+    }
+
+    /// <summary>A colleague outside the manager's line (for example an HR employee) with their own review in the cycle.</summary>
+    private static async Task<int> SeedColleagueWithReviewAsync(
+        ZayraDbContext db, Guid tenantId, World w, string name, string reviewStatus = "SelfAssessmentDue")
+    {
+        var colleague = NewEmployee(tenantId, name);
+        db.Employees.Add(colleague);
+        await db.SaveChangesAsync();
+        await SeedReviewAsync(db, tenantId, w, colleague.Id, reviewStatus);
+        return colleague.Id;
+    }
+
+    private static async Task<Guid> SeedReviewAsync(
+        ZayraDbContext db, Guid tenantId, World w, int employeeId, string reviewStatus = "SelfAssessmentDue")
+    {
+        var cycle = await db.PerformanceCycles.AsNoTracking().SingleAsync(c => c.Id == w.CycleId);
+        var employee = await db.Employees.AsNoTracking().SingleAsync(e => e.Id == employeeId);
+        var review = new AppraisalReview
+        {
+            TenantId = tenantId, CycleId = cycle.Id, CycleName = cycle.Name,
+            ScorecardTemplateId = cycle.DefaultScorecardTemplateId!.Value,
+            EmployeeId = employeeId, EmployeeName = employee.FullName, Status = reviewStatus,
+        };
+        db.AppraisalReviews.Add(review);
+        await db.SaveChangesAsync();
+        return review.Id;
+    }
+
+    /// <summary>A 403 carrying the named reason code, with nothing written.</summary>
+    private static void AssertRefusal(IActionResult result, string error, string messageStartsWith)
+    {
+        StatusOf(result).Should().Be(403);
+        var body = System.Text.Json.JsonSerializer.SerializeToElement(((ObjectResult)result).Value);
+        body.GetProperty("error").GetString().Should().Be(error);
+        body.GetProperty("message").GetString().Should().Contain(messageStartsWith);
+    }
+
+    private static Task<int> Acknowledge(ZayraDbContext db, ClaimsPrincipal caller, Guid reviewId) =>
+        Gate<ReviewsController>(caller, nameof(ReviewsController.Acknowledge),
+            () => Reviews(db, caller).Acknowledge(reviewId, Ct));
+
+    private static Task<int> Appeal(ZayraDbContext db, ClaimsPrincipal caller, Guid reviewId) =>
+        Gate<ReviewsController>(caller, nameof(ReviewsController.SubmitAppeal),
+            () => Reviews(db, caller).SubmitAppeal(reviewId,
+                new AppealRequest("The KPI target moved mid-year", "I hit the revised target"), Ct));
+
+    /// <summary>The same caller, bound to one company instead of the whole group (a v2 entity-scope claim).</summary>
+    private static ClaimsPrincipal CompanyBound(ClaimsPrincipal caller, Guid companyId) =>
+        new(new ClaimsIdentity(
+            caller.Claims.Where(c => c.Type != "is_group_scope").Append(new Claim(
+                Zayra.Api.Application.Common.EntityScopeContext.V2ClaimType,
+                System.Text.Json.JsonSerializer.Serialize(new { v = 2, m = "companies", c = new[] { companyId } }))),
+            "Test"));
+
+    /// <summary>The employees whose reviews the list returns, for the given view.</summary>
+    private static async Task<int[]> ListedEmployeeIds(ZayraDbContext db, ClaimsPrincipal caller, string? view)
+    {
+        var listed = (OkObjectResult)await Reviews(db, caller).List(null, null, null, null, view, 1, 50, Ct);
+        var items = (IEnumerable<AppraisalReview>)listed.Value!.GetType().GetProperty("items")!.GetValue(listed.Value)!;
+        return items.Select(r => r.EmployeeId).ToArray();
     }
 
     /// <summary>The seeded role's real bundle, signed in as the employee record the user account is linked to.</summary>

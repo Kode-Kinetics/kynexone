@@ -25,6 +25,8 @@ public class CandidatesController : ControllerBase
         [FromQuery] int pageSize = 25,
         CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tenantId = this.GetTenantId()!.Value;
         var query = _db.Candidates.Where(c => c.TenantId == tenantId);
         if (!string.IsNullOrWhiteSpace(status)) query = query.Where(c => c.Status == status);

@@ -367,7 +367,8 @@ export const templatesApi = {
 };
 
 export const goalsApi = {
-  list: (params: { employeeId?: number; cycleId?: string; status?: string; category?: string } = {}) =>
+  /** One page of goals (the server's default page is 50) with the total across all pages. */
+  list: (params: { employeeId?: number; cycleId?: string; status?: string; category?: string; page?: number; pageSize?: number } = {}) =>
     client.get<{ items: EmployeeGoal[]; total: number }>('/api/performance/goals', { params }).then(r => r.data),
 
   get: (id: string) =>
@@ -391,7 +392,10 @@ export const goalsApi = {
 };
 
 export const reviewsApi = {
-  list: (params: { cycleId?: string; employeeId?: number; status?: string; department?: string } = {}) =>
+  /** One page of reviews (the server's default page is 50) with the total across all pages.
+   *  `view: 'mine'` is My Reviews: only the caller's own reviews. Without it, every review in the
+   *  caller's scope (a manager's reporting line, or the organisation for HR). */
+  list: (params: { cycleId?: string; employeeId?: number; status?: string; department?: string; view?: 'mine'; page?: number; pageSize?: number } = {}) =>
     client.get<{ items: AppraisalReview[]; total: number }>('/api/performance/reviews', { params }).then(r => r.data),
 
   get: (id: string) =>

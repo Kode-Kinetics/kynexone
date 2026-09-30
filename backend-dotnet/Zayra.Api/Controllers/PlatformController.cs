@@ -2602,6 +2602,8 @@ public class PlatformController : ControllerBase
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin, PlatformRoles.Support, PlatformRoles.Auditor)]
     public async Task<IActionResult> GetAuditLogs([FromQuery] Guid? tenantId, [FromQuery] int page = 1, [FromQuery] int pageSize = 50, CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var q = _db.AdminAuditLogs.AsNoTracking().AsQueryable();
 
         if (tenantId.HasValue) q = q.Where(l => l.TenantId == tenantId.Value);
@@ -2827,6 +2829,8 @@ public class PlatformController : ControllerBase
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin, PlatformRoles.Support, PlatformRoles.Auditor)]
     public async Task<IActionResult> ListSupportSessions([FromQuery] Guid? tenantId, [FromQuery] bool activeOnly = false, [FromQuery] int page = 1, [FromQuery] int pageSize = 50, CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var q = _db.PlatformSupportSessions.AsNoTracking().AsQueryable();
         if (tenantId.HasValue) q = q.Where(s => s.TenantId == tenantId.Value);
         if (activeOnly) q = q.Where(s => s.EndedAtUtc == null && s.ExpiresAtUtc > DateTime.UtcNow);
@@ -4131,7 +4135,8 @@ public class PlatformController : ControllerBase
         [FromQuery] int pageSize = 50,
         CancellationToken ct = default)
     {
-        if (pageSize > 200) pageSize = 200;
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 200);
 
         // Build tenant name lookup
         var tenants = await _db.Tenants.AsNoTracking()

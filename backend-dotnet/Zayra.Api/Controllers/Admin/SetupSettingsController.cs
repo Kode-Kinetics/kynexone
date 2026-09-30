@@ -436,6 +436,8 @@ public class SetupSettingsController : ControllerBase
         [FromQuery] string? entityType, [FromQuery] DateTime? from, [FromQuery] DateTime? to,
         [FromQuery] int page = 1, [FromQuery] int pageSize = 50, CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tid = GetTenantId();
         var q = _db.AdminAuditLogs.Where(x => x.TenantId == tid);
         if (!string.IsNullOrEmpty(entityType)) q = q.Where(x => x.EntityType == entityType);

@@ -155,9 +155,11 @@ public class AccessController : ControllerBase
     [HttpGet("users")]
     public async Task<ActionResult<PagedResult<UserListDto>>> ListUsers([FromQuery] string? search, [FromQuery] string? status, [FromQuery] string? role, [FromQuery] int page = 1, [FromQuery] int pageSize = 30, CancellationToken cancellationToken = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tenantId = GetTenantId();
         if (tenantId is null) return Unauthorized();
-        var result = await _accessManagement.ListUsersAsync(tenantId.Value, new UserListQuery(search, status, role, page, Math.Clamp(pageSize, 1, 100)), this.GetEntityScope(), cancellationToken);
+        var result = await _accessManagement.ListUsersAsync(tenantId.Value, new UserListQuery(search, status, role, page, pageSize), this.GetEntityScope(), cancellationToken);
         return Ok(result);
     }
 

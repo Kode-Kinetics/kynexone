@@ -65,6 +65,8 @@ public class OffersController : ControllerBase
         [FromQuery] int pageSize = 20,
         CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tid = GetTenantId();
         var q = _db.OfferLetters.Where(x => x.TenantId == tid);
 
