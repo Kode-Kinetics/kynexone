@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { Search, X, User } from 'lucide-react';
 import { employeesApi } from '../api/employees';
 import type { EmployeeListItem } from '../api/employees';
+import { createLatestRequestGate, runLatest } from '../lib/latestRequest';
 
 export interface SelectedEmployee {
   id: number;
@@ -29,21 +30,27 @@ export function EmployeePicker({ value, onChange, readOnly = false, placeholder 
   const [loading, setLoading] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Debounce spaces requests out but does not order their responses. Only the latest search may
+  // write results or open the dropdown; typing, picking or clearing retires every older request,
+  // so a slow response can never reopen the list after a pick and swap the selected employee.
+  const searchGate = useMemo(() => createLatestRequestGate(), []);
 
   const search = useCallback((q: string) => {
-    if (q.trim().length < 1) { setResults([]); setOpen(false); return; }
+    if (q.trim().length < 1) { searchGate.invalidate(); setResults([]); setOpen(false); setLoading(false); return; }
     setLoading(true);
-    employeesApi.list({ search: q, pageSize: 8, status: 'Active' })
-      .then(r => { setResults(r.items); setOpen(true); })
-      .catch(() => setResults([]))
-      .finally(() => setLoading(false));
-  }, []);
+    void runLatest(searchGate, () => employeesApi.list({ search: q, pageSize: 8, status: 'Active' }), {
+      onResult: r => { setResults(r.items); setOpen(true); },
+      onError: () => setResults([]),
+      onSettled: () => setLoading(false),
+    });
+  }, [searchGate]);
 
   useEffect(() => {
+    searchGate.invalidate();
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => search(query), 250);
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
-  }, [query, search]);
+  }, [query, search, searchGate]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -55,12 +62,13 @@ export function EmployeePicker({ value, onChange, readOnly = false, placeholder 
   }, []);
 
   const select = (emp: EmployeeListItem) => {
+    searchGate.invalidate();
     onChange({ id: emp.id, fullName: emp.fullName, department: emp.department, designation: emp.designation, employeeCode: emp.employeeCode });
     setQuery('');
     setOpen(false);
   };
 
-  const clear = () => { onChange(null); setQuery(''); setResults([]); };
+  const clear = () => { searchGate.invalidate(); onChange(null); setQuery(''); setResults([]); };
 
   const inputCls = 'w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-sapphire focus:outline-none focus:ring-2 focus:ring-sapphire/20 dark:border-white/10 dark:bg-white/[0.04] dark:text-white dark:placeholder:text-slate-500';
 
@@ -110,7 +118,7 @@ export function EmployeePicker({ value, onChange, readOnly = false, placeholder 
       )}
 
       {/* Dropdown */}
-      {open && results.length > 0 && (
+      {!value && open && results.length > 0 && (
         <div className="absolute z-50 mt-1 w-full overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg dark:border-white/10 dark:bg-slate-800">
           {results.map(emp => (
             <button
@@ -131,7 +139,7 @@ export function EmployeePicker({ value, onChange, readOnly = false, placeholder 
         </div>
       )}
 
-      {open && !loading && results.length === 0 && query.length >= 1 && (
+      {!value && open && !loading && results.length === 0 && query.length >= 1 && (
         <div className="absolute z-50 mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-500 shadow-lg dark:border-white/10 dark:bg-slate-800 dark:text-slate-400">
           No employees found for &ldquo;{query}&rdquo;
         </div>

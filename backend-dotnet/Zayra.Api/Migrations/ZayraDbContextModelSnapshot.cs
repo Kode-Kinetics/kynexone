@@ -7725,6 +7725,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("gender");
 
+                    b.Property<DateOnly?>("GosiFirstRegisteredOn")
+                        .HasColumnType("date")
+                        .HasColumnName("gosi_first_registered_on");
+
                     b.Property<string>("GosiReference")
                         .IsRequired()
                         .HasColumnType("text")
@@ -19806,6 +19810,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("character varying(20)")
                         .HasColumnName("gosi_base_policy");
 
+                    b.Property<string>("GosiCohort")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("gosi_cohort");
+
                     b.Property<decimal>("GrossSalary")
                         .HasPrecision(12, 2)
                         .HasColumnType("numeric(12,2)")
@@ -19874,6 +19883,11 @@ namespace Zayra.Api.Migrations
                         .HasMaxLength(40)
                         .HasColumnType("character varying(40)")
                         .HasColumnName("status");
+
+                    b.Property<string>("StatutoryBasis")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("statutory_basis");
 
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid")

@@ -222,7 +222,7 @@ public sealed class EmployeeReadinessPolicyResolver : IEmployeeReadinessPolicyRe
                 if (string.IsNullOrWhiteSpace(key)) continue;
                 var category = GetStr(item, "category") ?? "identity";
                 var failClosed = item.TryGetProperty("failClosed", out var fc) && fc.ValueKind == JsonValueKind.True;
-                var gate = GetStr(item, "gate") ?? "activate";
+                var gate = GetStr(item, "gate") ?? DefaultGateFor(key);
                 var requireVerified = item.TryGetProperty("requireVerified", out var rv) && rv.ValueKind == JsonValueKind.True;
                 AppliesWhen? when = null;
                 if (item.TryGetProperty("appliesWhen", out var aw) && aw.ValueKind == JsonValueKind.Object)
@@ -239,6 +239,28 @@ public sealed class EmployeeReadinessPolicyResolver : IEmployeeReadinessPolicyRe
         catch { /* malformed profile JSON — validated on write; contribute nothing rather than crash */ }
         return results;
     }
+
+    /// <summary>
+    /// Social-insurance enrolment references — issued by the authority AFTER the hire exists — gate PAY,
+    /// not activation (see <see cref="GccReadinessFloor"/>). A config row that states no "gate" means
+    /// "the default gate", and for these keys that default is now "pay".
+    ///
+    /// <para>WHY HERE, AND NOT A BACKFILL. Every tenant provisioned so far holds a tenant-default profile
+    /// row seeded as <c>{"key":"GosiReference",...,"failClosed":true}</c> (SA) and
+    /// <c>{"key":"SocialInsuranceReference",...}</c> (BH) with NO gate property. ParseProfile used to read a
+    /// missing gate as "activate", and the strictest-wins merge then re-upgraded the floor's pay gate — so
+    /// moving the floor alone would have been inert on every existing tenant. Treating an OMITTED gate for
+    /// these two keys as "pay" fixes those stored rows in place, with no data migration. A row that says
+    /// <c>"gate":"activate"</c> explicitly is a deliberate tenant choice and is still honoured
+    /// (config may tighten, never loosen). No UI writes these rows; an admin-API write that omits the gate gets
+    /// the same default, which is what an omitted gate means.</para>
+    /// </summary>
+    internal static string DefaultGateFor(string key) =>
+        key.Trim() is var k
+        && (string.Equals(k, "GosiReference", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(k, "SocialInsuranceReference", StringComparison.OrdinalIgnoreCase))
+            ? "pay"
+            : "activate";
 
     private static string? GetStr(JsonElement el, string prop)
         => el.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;

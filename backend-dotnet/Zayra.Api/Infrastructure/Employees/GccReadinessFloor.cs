@@ -87,7 +87,13 @@ public static class GccReadinessFloor
         switch (iso2)
         {
             case "SA":
-                items.Add(Req("GosiReference", "identity", true, "activate", iso2));                          // all residents (nationals full, expats OH)
+                // PAY-gated, not activate-gated. GOSI registration happens AFTER hire in Saudi practice —
+                // the employer enrols the new joiner and the authority issues the reference once the
+                // contract exists. Requiring it to ACTIVATE makes a clean import produce permanently
+                // unactivatable employees (you cannot get the number until you have hired them). It is a
+                // social-insurance / payroll reference, so it gates PAY, not activation: still FailClosed
+                // (hard), just enforced where contributions are actually computed.
+                items.Add(Req("GosiReference", "identity", true, "pay", iso2));                               // all residents (nationals full, expats OH)
                 items.Add(Req("IdNumber", "identity", true, "activate", iso2, nationality: "SA"));            // National ID (Hawiyya) — host national
                 items.Add(Req("IqamaNumber", "identity", true, "activate", iso2, nonGccExpat: true));         // residence permit — non-GCC expat
                 items.Add(Req("IqamaExpiry", "identity", true, "pay", iso2, nonGccExpat: true));
@@ -95,7 +101,7 @@ public static class GccReadinessFloor
             case "AE":
                 items.Add(Req("EmiratesId", "identity", true, "activate", iso2));                             // all residents
                 items.Add(Req("EmiratesIdExpiry", "identity", true, "pay", iso2));
-                items.Add(Req("SocialInsuranceReference", "identity", true, "activate", iso2, nationality: "AE")); // GPSSA — Emirati nationals
+                items.Add(Req("SocialInsuranceReference", "identity", true, "pay", iso2, nationality: "AE"));      // GPSSA — Emirati nationals (pay-gated, see SA/GOSI note)
                 items.Add(Req("WorkPermitNumber", "identity", true, "activate", iso2, nonGccExpat: true));    // MOHRE work permit / labour card
                 items.Add(Req("VisaExpiryDate", "identity", true, "pay", iso2, nonGccExpat: true));           // residence visa
                 items.Add(Req("MolId", "payroll", false, "pay", iso2));
@@ -103,22 +109,22 @@ public static class GccReadinessFloor
             case "QA":
                 items.Add(Req("Qid", "identity", true, "activate", iso2));                                    // QID — all residents (nationals hold a QID too)
                 items.Add(Req("QidExpiry", "identity", true, "pay", iso2));
-                items.Add(Req("SocialInsuranceReference", "identity", true, "activate", iso2, nationality: "QA")); // GRSIA — Qatari nationals
+                items.Add(Req("SocialInsuranceReference", "identity", true, "pay", iso2, nationality: "QA"));      // GRSIA — Qatari nationals (pay-gated, see SA/GOSI note)
                 break;
             case "KW":
                 items.Add(Req("CivilId", "identity", true, "activate", iso2));                                // Kuwait Civil ID — all residents
                 items.Add(Req("CivilIdExpiry", "identity", true, "pay", iso2));
-                items.Add(Req("SocialInsuranceReference", "identity", true, "activate", iso2, nationality: "KW")); // PIFSS — Kuwaiti nationals
+                items.Add(Req("SocialInsuranceReference", "identity", true, "pay", iso2, nationality: "KW"));      // PIFSS — Kuwaiti nationals (pay-gated, see SA/GOSI note)
                 break;
             case "OM":
                 items.Add(Req("CivilId", "identity", true, "activate", iso2));                                // Oman Resident Card / Civil ID — all residents
                 items.Add(Req("CivilIdExpiry", "identity", true, "pay", iso2));
-                items.Add(Req("SocialInsuranceReference", "identity", true, "activate", iso2, nationality: "OM")); // SPF (PASI legacy) — Omani nationals
+                items.Add(Req("SocialInsuranceReference", "identity", true, "pay", iso2, nationality: "OM"));      // SPF (PASI legacy) — Omani nationals (pay-gated, see SA/GOSI note)
                 break;
             case "BH":
                 items.Add(Req("CivilId", "identity", true, "activate", iso2));                                // Bahrain CPR — all residents
                 items.Add(Req("CivilIdExpiry", "identity", true, "pay", iso2));
-                items.Add(Req("SocialInsuranceReference", "identity", true, "activate", iso2));               // SIO (GOSI-BH legacy) — all residents
+                items.Add(Req("SocialInsuranceReference", "identity", true, "pay", iso2));                    // SIO (GOSI-BH legacy) — all residents (pay-gated, see SA/GOSI note)
                 break;
         }
         return items;

@@ -1713,7 +1713,7 @@ public class AuthService : IAuthService
         };
     }
 
-    private static IReadOnlyCollection<string> GetRoles(User user)
+    public static IReadOnlyCollection<string> GetRoles(User user)
     {
         return user.UserRoles
             .Where(x => x.Role is { IsActive: true, IsDeleted: false })

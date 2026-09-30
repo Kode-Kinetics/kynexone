@@ -154,9 +154,10 @@ public sealed class ReportScheduleWorker : BackgroundService
                 RunByName = "Scheduled report worker"
             };
 
+            var deliveryStarted = false;
             try
             {
-                var employeeIds = await ResolveCurrentScopeAsync(db, schedule, ct);
+                var reportScope = await ResolveCurrentScopeAsync(db, schedule, ct);
                 var filters = string.IsNullOrWhiteSpace(schedule.FiltersJson)
                     ? null
                     : JsonSerializer.Deserialize<ReportFilters>(schedule.FiltersJson);
@@ -165,17 +166,32 @@ public sealed class ReportScheduleWorker : BackgroundService
                 // would make the worker unconstructable in it for no gain.
                 var controller = new ReportsController(db, dataScope);
                 var data = await controller.ExecuteReportDataAsync(
-                    schedule.TenantId, new RunReportRequest(schedule.ReportKey, filters), employeeIds, ct)
+                    schedule.TenantId, new RunReportRequest(schedule.ReportKey, filters), reportScope, ct)
                     ?? throw new InvalidOperationException("The scheduled report key is no longer supported.");
                 var json = JsonSerializer.SerializeToElement(data);
                 var artifact = BuildArtifact(schedule, json);
                 execution.RowCount = json.ValueKind == JsonValueKind.Array ? json.GetArrayLength() : 1;
 
+                // Each recipient must still be somebody who could open this report by hand, over every
+                // company it covers. Anyone who no longer is — left, demoted, narrowed, or never a user
+                // of this organisation — is skipped, and the log says who and why.
+                var audience = await ReportAudience.EvaluateRecipientsAsync(db, schedule.TenantId, schedule.ReportKey,
+                    ReportSchedulePolicy.ParseRecipients(schedule.Recipients), reportScope.CompanyIds, ct);
+                var refused = audience.Where(a => a.Refusal is not null).ToList();
+                var allowed = audience.Where(a => a.Refusal is null).Select(a => a.Email).ToList();
+                if (allowed.Count == 0)
+                    throw new InvalidOperationException(
+                        "No recipient may receive this report: " + ReportAudience.Describe(refused) + ".");
+
                 // F09: each recipient's outcome is REPORTED, not assumed. "Success" means every
-                // recipient was accepted by a relay — nothing weaker.
-                var outcome = await DeliverToRecipientsAsync(email, schedule, artifact, ct);
+                // permitted recipient was accepted by a relay — nothing weaker.
+                deliveryStarted = true;
+                var outcome = await DeliverToRecipientsAsync(email, schedule, allowed, artifact, ct);
                 execution.Status = outcome.Status;
-                execution.ErrorMessage = outcome.Message;
+                execution.ErrorMessage = refused.Count == 0
+                    ? outcome.Message
+                    : Truncate($"{outcome.Message ?? $"Accepted by the mail server for {allowed.Count} of {audience.Count} recipients."} "
+                               + $"Not sent to: {ReportAudience.Describe(refused)}.");
 
                 if (outcome.Status is ReportSchedulePolicy.StatusSuccess or ReportSchedulePolicy.StatusCaptured)
                 {
@@ -193,14 +209,16 @@ public sealed class ReportScheduleWorker : BackgroundService
             catch (Exception ex)
             {
                 execution.Status = ReportSchedulePolicy.StatusFailed;
-                var reason = Trim(ex.Message);
+                var reason = Truncate(ex.Message);
                 execution.ErrorMessage = reason;
                 _log.LogError(ex, "Scheduled report {ScheduleId} failed for tenant {TenantId}.", schedule.Id, schedule.TenantId);
-                // Reaching here means nothing went out for this run (see DeliverToRecipientsAsync),
-                // so a retry cannot duplicate. A missing or unauthorised owner is not retried: no
-                // amount of waiting fixes it.
+                // Only a relay failure is retried. Reaching here from the delivery step means nothing
+                // went out for this run (see DeliverToRecipientsAsync), so a retry cannot duplicate.
+                // Refusals before delivery — an owner who lost access, a retired report key, nobody
+                // left who may receive it — are not transient, and waiting does not fix them.
                 var ownerProblem = ex is UnauthorizedAccessException;
-                await SurfaceFailureAsync(db, notifications, schedule, reason, ownerProblem, retry: !ownerProblem, ct);
+                await SurfaceFailureAsync(db, notifications, schedule, reason, ownerProblem,
+                    retry: deliveryStarted && !ownerProblem, ct);
             }
 
             sw.Stop();
@@ -211,8 +229,6 @@ public sealed class ReportScheduleWorker : BackgroundService
         }
     }
 
-    private static string Trim(string value) => value.Length <= 1000 ? value : value[..1000];
-
     /// <summary>
     /// Sends the artifact to every recipient and reports what actually happened.
     ///
@@ -222,9 +238,9 @@ public sealed class ReportScheduleWorker : BackgroundService
     /// retried, because a retry would send the report again to everyone who already has it.</para>
     /// </summary>
     private static async Task<(string Status, string? Message)> DeliverToRecipientsAsync(
-        IEmailService email, ReportSchedule schedule, EmailAttachment artifact, CancellationToken ct)
+        IEmailService email, ReportSchedule schedule, IReadOnlyList<string> recipients, EmailAttachment artifact,
+        CancellationToken ct)
     {
-        var recipients = ReportSchedulePolicy.ParseRecipients(schedule.Recipients);
         var accepted = 0;
         var captured = 0;
         var failures = new List<string>();
@@ -267,7 +283,7 @@ public sealed class ReportScheduleWorker : BackgroundService
         }
 
         if (failures.Count > 0)
-            return (ReportSchedulePolicy.StatusFailed, Trim(
+            return (ReportSchedulePolicy.StatusFailed, Truncate(
                 $"Accepted by the mail server for {accepted} of {recipients.Count} recipient(s); not sent to "
                 + $"{string.Join("; ", failures)}. Not retried automatically, so nobody receives it twice."));
 
@@ -305,40 +321,62 @@ public sealed class ReportScheduleWorker : BackgroundService
         tracked.OwnerInvalidatedAtUtc = null;
     }
 
-    private static async Task<IReadOnlyCollection<int>?> ResolveCurrentScopeAsync(
+    /// <summary>
+    /// Re-derives, on every run, what the schedule's OWNER may see today — not what they could see when
+    /// they created it — and fails closed (an <see cref="UnauthorizedAccessException"/>, which marks the
+    /// schedule as needing a new owner) the moment the report is no longer theirs to read.
+    ///
+    /// <para>This worker has no HTTP user, so the database's company filter is open for it: the scope
+    /// returned here is the ONLY restriction the report runs under, and it must carry the companies as
+    /// well as the employees.</para>
+    /// </summary>
+    private static async Task<ReportDataScope> ResolveCurrentScopeAsync(
         ZayraDbContext db, ReportSchedule schedule, CancellationToken ct)
     {
         if (schedule.CreatedBy is not Guid creatorId)
             throw new UnauthorizedAccessException("Schedule has no accountable creator.");
-        var user = await ScopedBypass.TenantWide(db.Users, schedule.TenantId,
-                "Scheduled report revalidates its creator inside the owning tenant.").AsNoTracking()
-            .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
-            .Include(x => x.PermissionOverrides)
-            .Include(x => x.EmployeeUserAccounts)
-            .Include(x => x.EntityAccesses)
-            .FirstOrDefaultAsync(x => x.Id == creatorId && x.TenantId == schedule.TenantId && x.IsActive && !x.IsDeleted, ct)
+        var user = await ReportAudience.ActiveUsers(db, schedule.TenantId)
+            .FirstOrDefaultAsync(x => x.Id == creatorId, ct)
             ?? throw new UnauthorizedAccessException("Schedule creator is inactive or missing.");
-        if (!AuthService.GetPermissions(user).Contains("reports.schedule", StringComparer.OrdinalIgnoreCase))
+        var access = ReportAudience.AccessOf(user, await ReportAudience.ActiveCompanyIdsAsync(db, schedule.TenantId, ct));
+        if (!access.Has("reports.schedule"))
             throw new UnauthorizedAccessException("Schedule creator no longer has reports.schedule permission.");
 
-        var activeCompanyIds = await ScopedBypass.TenantWide(db.Companies, schedule.TenantId,
-                "Scheduled report resolves active legal entities inside its tenant.").AsNoTracking()
-            .Where(x => x.IsActive && !x.IsDeleted)
-            .Select(x => x.Id).ToListAsync(ct);
-        var grants = user.EntityAccesses.Where(x => x.IsActive)
-            .Select(x => new EntityAccessGrant(x.CompanyId, x.Role, x.GrantMode)).ToList();
-        var descriptor = EntityScopeClaims.Resolve(user.IsGroupScope, grants, activeCompanyIds);
-        if (descriptor.Mode == EntityScopeModes.Group) return null;
-        if (descriptor.Mode != EntityScopeModes.Companies || descriptor.CompanyIds.Count == 0)
+        // Not an owner problem: the report itself is gone, and no new owner would change that.
+        if (!ReportAccessPolicy.IsKnown(schedule.ReportKey))
+            throw new InvalidOperationException("The scheduled report key is no longer supported.");
+        // The same data rule as the interactive endpoints. A demoted owner's schedule stops here.
+        if (!ReportAccessPolicy.CanAccess(schedule.ReportKey, access.Has, access.InRole))
+            throw new UnauthorizedAccessException(
+                ReportAccessPolicy.ThirdPartyDenialMessage("The schedule's owner", schedule.ReportKey));
+        // Interactively, a team-scoped user gets their team's rows. A delivery has no team to cut to and
+        // was served organisation-wide, i.e. more than the owner could open by hand; refuse it instead.
+        if (!ReportAccessPolicy.GrantsOrganisationScope(access.Has))
+            throw new UnauthorizedAccessException(
+                "The schedule's owner can only see their own team's records, but a scheduled report is " +
+                "delivered organisation-wide, so it no longer runs.");
+        if (access.SeesNothing)
             throw new UnauthorizedAccessException("Schedule creator has no active legal-entity scope.");
+        if (ReportAccessPolicy.ScopeDenial(schedule.ReportKey, organisationLevel: true, access.GroupLevel) is { } scopeDenial)
+            throw new UnauthorizedAccessException(scopeDenial);
+
+        // Identity-document numbers are never emailed, whoever the owner is: an attachment leaves the
+        // product, and recipients may not hold employees.sensitive even when the owner does.
+        const bool canSeeSensitive = false;
+        if (access.GroupLevel) return new ReportDataScope(null, null, canSeeSensitive);
+
         // Employee has a legacy nullable TenantId and cannot use ScopedBypass.TenantWide's
         // non-nullable type guard. System context already bypasses filters; the explicit
         // non-null tenant predicate below is the surviving tenant boundary.
-        return await db.Employees.AsNoTracking()
+        var companyIds = access.CompanyIds.ToList();
+        var employeeIds = await db.Employees.AsNoTracking()
             .Where(x => x.TenantId == schedule.TenantId && !x.IsDeleted
-                        && x.CompanyId != null && descriptor.CompanyIds.Contains(x.CompanyId.Value))
+                        && x.CompanyId != null && companyIds.Contains(x.CompanyId.Value))
             .Select(x => x.Id).ToListAsync(ct);
+        return new ReportDataScope(employeeIds, companyIds, canSeeSensitive);
     }
+
+    private static string Truncate(string message) => message.Length <= 1000 ? message : message[..1000];
 
     private static async Task<bool> TryClaimAsync(ZayraDbContext db, ReportSchedule item, DateTime now, CancellationToken ct)
     {
@@ -426,7 +464,7 @@ public sealed class ReportScheduleWorker : BackgroundService
         ZayraDbContext db, INotificationService notifications, ReportSchedule schedule,
         string reason, bool ownerProblem, bool retry, CancellationToken ct)
     {
-        reason = Trim(reason);
+        reason = Truncate(reason);
         var wasHealthy = schedule.ConsecutiveFailureCount == 0;
 
         var tracked = await db.ReportSchedules
@@ -446,12 +484,12 @@ public sealed class ReportScheduleWorker : BackgroundService
                 var wait = ReportSchedulePolicy.RetryBackoff[Math.Min(attempts - 1, ReportSchedulePolicy.RetryBackoff.Length - 1)];
                 var retryAt = DateTime.UtcNow.Add(wait);
                 if (tracked.NextRunAtUtc is null || retryAt < tracked.NextRunAtUtc) tracked.NextRunAtUtc = retryAt;
-                tracked.LastFailureReason = Trim(
+                tracked.LastFailureReason = Truncate(
                     $"{reason} Retrying at {retryAt:HH:mm} UTC (attempt {attempts + 1} of {ReportSchedulePolicy.MaxDeliveryAttempts}).");
             }
             else
             {
-                tracked.LastFailureReason = Trim(
+                tracked.LastFailureReason = Truncate(
                     $"Gave up after {attempts} attempts. Last error: {reason} The next attempt is the next scheduled run.");
             }
             reason = tracked.LastFailureReason;
@@ -481,7 +519,7 @@ public sealed class ReportScheduleWorker : BackgroundService
             ? $"Scheduled report stopped: {schedule.ReportName}"
             : $"Scheduled report failed: {schedule.ReportName}";
         var message = ownerProblem
-            ? $"\"{schedule.ReportName}\" can no longer run: {reason} It will keep failing until somebody with reports.schedule recreates or takes over the schedule."
+            ? $"\"{schedule.ReportName}\" can no longer run: {reason} It will keep failing until somebody with reports.schedule recreates it; an administrator can pause or delete this one."
             : $"\"{schedule.ReportName}\" did not deliver: {reason}";
 
         foreach (var userId in recipients)

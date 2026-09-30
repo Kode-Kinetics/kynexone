@@ -626,12 +626,18 @@ public sealed class IntegrationDeliveryHonestyTests
         return services.BuildServiceProvider();
     }
 
+    /// <summary>
+    /// The owner and every possible recipient are active users in one role holding reports.schedule
+    /// and employees.read, because main only mails a scheduled report to somebody who could open it
+    /// by hand (ReportAudience). These tests are about what happens AFTER that check.
+    /// </summary>
     private static async Task SeedScheduleAsync(ZayraDbContext db, string frequency)
     {
         var tenantId = Guid.NewGuid();
         var userId = Guid.NewGuid();
         var roleId = Guid.NewGuid();
         var permissionId = Guid.NewGuid();
+        var employeeReadPermissionId = Guid.NewGuid();
         db.Tenants.Add(new Tenant { Id = tenantId, Name = "Reports Tenant", Slug = $"reports-{Guid.NewGuid():N}" });
         db.Users.Add(new User
         {
@@ -639,9 +645,23 @@ public sealed class IntegrationDeliveryHonestyTests
             FullName = "Report Owner", PasswordHash = "hash", IsActive = true, IsGroupScope = true,
         });
         db.Roles.Add(new Role { Id = roleId, TenantId = tenantId, Name = "Analyst", NormalizedName = "ANALYST" });
-        db.Permissions.Add(new Permission { Id = permissionId, Key = "reports.schedule", Module = "Reports" });
+        db.Permissions.AddRange(
+            new Permission { Id = permissionId, Key = "reports.schedule", Module = "Reports" },
+            new Permission { Id = employeeReadPermissionId, Key = "employees.read", Module = "Employees" });
         db.UserRoles.Add(new UserRole { UserId = userId, RoleId = roleId });
-        db.RolePermissions.Add(new RolePermission { RoleId = roleId, PermissionId = permissionId });
+        db.RolePermissions.AddRange(
+            new RolePermission { RoleId = roleId, PermissionId = permissionId },
+            new RolePermission { RoleId = roleId, PermissionId = employeeReadPermissionId });
+        foreach (var colleague in new[] { "recipient@example.test", "first@example.test", "second@example.test" })
+        {
+            var colleagueId = Guid.NewGuid();
+            db.Users.Add(new User
+            {
+                Id = colleagueId, TenantId = tenantId, Email = colleague, NormalizedEmail = colleague.ToUpperInvariant(),
+                FullName = "Report Recipient", PasswordHash = "hash", IsActive = true, IsGroupScope = true,
+            });
+            db.UserRoles.Add(new UserRole { UserId = colleagueId, RoleId = roleId });
+        }
         db.Employees.Add(new Employee
         {
             Id = 1, TenantId = tenantId, EmployeeCode = "E-1", FullName = "Engineer", Department = "Engineering",

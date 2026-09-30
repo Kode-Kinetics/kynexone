@@ -178,7 +178,11 @@ public class SyntheticWorkforcePlanningSimulationTests
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
-        var principal = Principal(tenantId, "reports.read", "reports.schedule");
+        // payroll.read: the scheduled report is the payroll summary, and scheduling is refused to anyone
+        // who could not open it by hand.
+        var principal = Principal(tenantId, "reports.read", "reports.schedule", "payroll.read");
+        // The recipient must be a tenant user who could open the payroll summary themselves.
+        await ReportDataAuthorizationTests.AddUserAsync(db, tenantId, "finance@example.test", "Payroll Officer", "employees.read", "payroll.read");
         var reports = new ReportsController(db, new DataScopeService(db))
         {
             ControllerContext = Context(principal)

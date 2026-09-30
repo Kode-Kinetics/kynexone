@@ -26,11 +26,28 @@ public class EmployeeImportAcceptNeverBlockTests
     private static ZayraDbContext CreateDb() =>
         new(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
 
+    /// <summary>The jurisdiction every CSV in this suite imports into. A real (non-GCC) country with a
+    /// tenant-default readiness profile, so the rows resolve to a NON-EMPTY policy. Country-less rows
+    /// used to resolve to ZERO requirements and were scored "Ready", 100, zero blockers — the evaluator
+    /// now reports that case honestly as NeedsAttention ("no readiness policy"), so a fixture that means
+    /// "readiness-clean" has to actually have a policy to be clean against.</summary>
+    private const string ImportCountry = "IN";
+
     private static async Task<Guid> SeedTenant(ZayraDbContext db)
     {
         var id = Guid.NewGuid();
         db.Tenants.Add(new Tenant { Id = id, Name = "Zayra", Slug = $"z-{id:N}" });
         db.TenantSubscriptions.Add(new TenantSubscription { TenantId = id, MaxEmployees = 1000, Plan = "Enterprise", Status = "Active" });
+        // A minimal tenant-default readiness profile: a name is the only statutory requirement, so a
+        // complete row is genuinely Ready and the ONLY imperfection left for these tests is the
+        // advisory import gap each one is actually about.
+        db.CompanyComplianceProfiles.Add(new CompanyComplianceProfile
+        {
+            TenantId = id, CompanyId = null, CountryCode = ImportCountry,
+            Jurisdiction = string.Empty, CompliancePack = string.Empty,
+            EffectiveFrom = new DateOnly(2020, 1, 1), Status = CompanyPolicyStatuses.Active,
+            RequiredFieldsJson = """[{"key":"FullName","category":"personal","failClosed":true}]""",
+        });
         await db.SaveChangesAsync();
         return id;
     }
@@ -215,10 +232,10 @@ public class EmployeeImportAcceptNeverBlockTests
         var tenantId = await SeedTenant(db);
         var ctrl = ImportController(db, tenantId);
 
-        // No country/policy tenant: the only imperfection is an unknown department (advisory org gap).
+        // The only imperfection is an unknown department (advisory org gap).
         var csv =
-            "EmployeeCode,FullName,Department,JoiningDate\n" +
-            "E1,Alice,Ghost Dept,2024-01-01\n";
+            $"EmployeeCode,FullName,Department,JoiningDate,CountryCode\n" +
+            $"E1,Alice,Ghost Dept,2024-01-01,{ImportCountry}\n";
         await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
 
         var e1 = await db.Employees.SingleAsync(e => e.TenantId == tenantId && e.EmployeeCode == "E1");
@@ -245,8 +262,8 @@ public class EmployeeImportAcceptNeverBlockTests
         var tenantId = await SeedTenant(db);
         var ctrl = ImportController(db, tenantId);
         var csv =
-            "EmployeeCode,FullName,Department,JoiningDate\n" +
-            "E1,Alice,Ghost Dept,2024-01-01\n";
+            $"EmployeeCode,FullName,Department,JoiningDate,CountryCode\n" +
+            $"E1,Alice,Ghost Dept,2024-01-01,{ImportCountry}\n";
         await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
 
         var e1 = await db.Employees.SingleAsync(e => e.TenantId == tenantId && e.EmployeeCode == "E1");
@@ -273,10 +290,10 @@ public class EmployeeImportAcceptNeverBlockTests
         var ctrl = ImportController(db, tenantId);
 
         // 30 people with an unknown-department gap → all NeedsAttention; 2 clean → Ready.
-        var sb = new System.Text.StringBuilder("EmployeeCode,FullName,Department,JoiningDate\n");
-        for (int i = 1; i <= 30; i++) sb.Append($"G{i},Person {i},Ghost Dept,2024-01-01\n");
-        sb.Append("C1,Clean One,,2024-01-01\n");
-        sb.Append("C2,Clean Two,,2024-01-01\n");
+        var sb = new System.Text.StringBuilder("EmployeeCode,FullName,Department,JoiningDate,CountryCode\n");
+        for (int i = 1; i <= 30; i++) sb.Append($"G{i},Person {i},Ghost Dept,2024-01-01,{ImportCountry}\n");
+        sb.Append($"C1,Clean One,,2024-01-01,{ImportCountry}\n");
+        sb.Append($"C2,Clean Two,,2024-01-01,{ImportCountry}\n");
         var import = Payload(await ctrl.Import(new EmployeesController.ImportEmployeesRequest(sb.ToString()), CancellationToken.None));
         var batchId = (Guid)import.GetType().GetProperty("importBatchId")!.GetValue(import)!;
 
