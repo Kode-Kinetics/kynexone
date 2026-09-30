@@ -412,6 +412,116 @@ public class PerformanceCycleRoleAccessTests
         (await ReviewOf(db, w.ReportReviewId)).Status.Should().Be("SelfAssessmentDue");
     }
 
+    // ── Acknowledging a result, and appealing it, are the employee's own acts ──────────────────
+
+    [Theory]
+    [InlineData("HR Manager")]
+    [InlineData("HR Director")]
+    [InlineData("Admin")]
+    public async Task AnOrganisationWideCaller_CannotAcknowledgeSomeoneElsesReview(string role)
+    {
+        // Same defect shape as the self-assessment: the check was the data scope, which an organisation-wide
+        // caller passes for everyone. Acknowledgement is the employee's record that they were shown the result,
+        // so HR recording it for them destroys the only evidence the endpoint exists to capture.
+        var (db, tenantId) = await NewTenantAsync("perf-ack-proxy");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Published", reviewStatus: "Published");
+        var hrEmployeeId = await SeedColleagueWithReviewAsync(db, tenantId, w, "Hana HR");
+        var hr = await LinkedCallerAsync(db, tenantId, role, hrEmployeeId);
+
+        var result = await Reviews(db, hr).Acknowledge(w.ReportReviewId, Ct);
+
+        AssertRefusal(result, "acknowledge_by_employee_only", "Only the employee");
+        var review = await ReviewOf(db, w.ReportReviewId);
+        review.Status.Should().Be("Published");
+        review.AcknowledgedAt.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("HR Manager")]
+    [InlineData("HR Director")]
+    [InlineData("Admin")]
+    public async Task AnOrganisationWideCaller_CannotAppealSomeoneElsesReview(string role)
+    {
+        // An appeal is the employee's own challenge to their rating, and it BLOCKS their compensation until it
+        // is decided (RecommendationsController). HR raising one "for" someone freezes their increment, and HR
+        // then decides the appeal they themselves submitted.
+        var (db, tenantId) = await NewTenantAsync("perf-appeal-proxy");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Published", reviewStatus: "Published");
+        var hrEmployeeId = await SeedColleagueWithReviewAsync(db, tenantId, w, "Hana HR");
+        var hr = await LinkedCallerAsync(db, tenantId, role, hrEmployeeId);
+
+        var result = await Reviews(db, hr).SubmitAppeal(w.ReportReviewId,
+            new AppealRequest("The rating is too low", "Filed by HR"), Ct);
+
+        AssertRefusal(result, "appeal_by_employee_only", "Only the employee");
+        var review = await ReviewOf(db, w.ReportReviewId);
+        review.Status.Should().Be("Published");
+        review.IsAppealed.Should().BeFalse();
+        (await db.AppraisalAppeals.AsNoTracking().AnyAsync()).Should().BeFalse("a refused appeal must not be filed");
+    }
+
+    [Fact]
+    public async Task AnHrCaller_StillAcknowledgesAndAppealsTheirOwnReview()
+    {
+        // The boundary this must not break: HR are employees with reviews of their own. Their organisation-wide
+        // scope carries no caller employee id, so their own record is found from the account link.
+        var (db, tenantId) = await NewTenantAsync("perf-ack-hr-own");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Published", reviewStatus: "Published");
+        var hrEmployeeId = await SeedColleagueWithReviewAsync(db, tenantId, w, "Hana HR", reviewStatus: "Published");
+        var hr = await LinkedCallerAsync(db, tenantId, "HR Manager", hrEmployeeId);
+        var ownReviewId = (await db.AppraisalReviews.AsNoTracking().SingleAsync(r => r.EmployeeId == hrEmployeeId)).Id;
+
+        (await Acknowledge(db, hr, ownReviewId)).Should().Be(200);
+        (await ReviewOf(db, ownReviewId)).Status.Should().Be("Acknowledged");
+
+        (await Appeal(db, hr, ownReviewId)).Should().Be(201);
+        (await ReviewOf(db, ownReviewId)).Status.Should().Be("Appealed");
+    }
+
+    [Fact]
+    public async Task TheEmployee_StillAcknowledgesAndAppealsTheirOwnResult()
+    {
+        var (db, tenantId) = await NewTenantAsync("perf-ack-employee");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Published", reviewStatus: "Published");
+        var employee = await EmployeeAsync(db, tenantId, w);
+
+        (await Acknowledge(db, employee, w.ReportReviewId)).Should().Be(200);
+        (await Appeal(db, employee, w.ReportReviewId)).Should().Be(201);
+        (await ReviewOf(db, w.ReportReviewId)).IsAppealed.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ACallerWithNoEmployeeRecord_CanNeitherAcknowledgeNorAppealAnyReview()
+    {
+        var (db, tenantId) = await NewTenantAsync("perf-ack-unlinked");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Published", reviewStatus: "Published");
+        var admin = await CallerAsync(db, tenantId, "Admin");
+
+        (await Acknowledge(db, admin, w.ReportReviewId)).Should().Be(403);
+        (await Appeal(db, admin, w.ReportReviewId)).Should().Be(403);
+        var review = await ReviewOf(db, w.ReportReviewId);
+        review.Status.Should().Be("Published");
+        review.IsAppealed.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task HrStillDecidesAnAppealOnSomeoneElsesReview()
+    {
+        // The rule is about the two acts that are the employee's own. Everything HR legitimately does on another
+        // employee's review — deciding their appeal, calibrating, publishing — is untouched.
+        var (db, tenantId) = await NewTenantAsync("perf-appeal-decide");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Published", reviewStatus: "Appealed");
+        var hr = await CallerAsync(db, tenantId, "HR Manager");
+
+        var status = await Gate<ReviewsController>(hr, nameof(ReviewsController.RespondToAppeal),
+            () => Reviews(db, hr).RespondToAppeal(w.AppealId!.Value,
+                new AppealResponseRequest("Rejected", "The rating was calibrated against the whole department."), Ct));
+
+        status.Should().Be(200);
+        (await db.AppraisalAppeals.AsNoTracking().SingleAsync()).Status.Should().Be("Rejected");
+        (await ReviewOf(db, w.ReportReviewId)).Status.Should().Be("Published", "a rejected appeal restores the published result");
+    }
+
     // ── My Reviews is the caller's own; Team and HR views still list others ────────────────────
 
     [Fact]
@@ -619,16 +729,18 @@ public class PerformanceCycleRoleAccessTests
     }
 
     /// <summary>A colleague outside the manager's line (for example an HR employee) with their own review in the cycle.</summary>
-    private static async Task<int> SeedColleagueWithReviewAsync(ZayraDbContext db, Guid tenantId, World w, string name)
+    private static async Task<int> SeedColleagueWithReviewAsync(
+        ZayraDbContext db, Guid tenantId, World w, string name, string reviewStatus = "SelfAssessmentDue")
     {
         var colleague = NewEmployee(tenantId, name);
         db.Employees.Add(colleague);
         await db.SaveChangesAsync();
-        await SeedReviewAsync(db, tenantId, w, colleague.Id);
+        await SeedReviewAsync(db, tenantId, w, colleague.Id, reviewStatus);
         return colleague.Id;
     }
 
-    private static async Task<Guid> SeedReviewAsync(ZayraDbContext db, Guid tenantId, World w, int employeeId)
+    private static async Task<Guid> SeedReviewAsync(
+        ZayraDbContext db, Guid tenantId, World w, int employeeId, string reviewStatus = "SelfAssessmentDue")
     {
         var cycle = await db.PerformanceCycles.AsNoTracking().SingleAsync(c => c.Id == w.CycleId);
         var employee = await db.Employees.AsNoTracking().SingleAsync(e => e.Id == employeeId);
@@ -636,12 +748,30 @@ public class PerformanceCycleRoleAccessTests
         {
             TenantId = tenantId, CycleId = cycle.Id, CycleName = cycle.Name,
             ScorecardTemplateId = cycle.DefaultScorecardTemplateId!.Value,
-            EmployeeId = employeeId, EmployeeName = employee.FullName, Status = "SelfAssessmentDue",
+            EmployeeId = employeeId, EmployeeName = employee.FullName, Status = reviewStatus,
         };
         db.AppraisalReviews.Add(review);
         await db.SaveChangesAsync();
         return review.Id;
     }
+
+    /// <summary>A 403 carrying the named reason code, with nothing written.</summary>
+    private static void AssertRefusal(IActionResult result, string error, string messageStartsWith)
+    {
+        StatusOf(result).Should().Be(403);
+        var body = System.Text.Json.JsonSerializer.SerializeToElement(((ObjectResult)result).Value);
+        body.GetProperty("error").GetString().Should().Be(error);
+        body.GetProperty("message").GetString().Should().Contain(messageStartsWith);
+    }
+
+    private static Task<int> Acknowledge(ZayraDbContext db, ClaimsPrincipal caller, Guid reviewId) =>
+        Gate<ReviewsController>(caller, nameof(ReviewsController.Acknowledge),
+            () => Reviews(db, caller).Acknowledge(reviewId, Ct));
+
+    private static Task<int> Appeal(ZayraDbContext db, ClaimsPrincipal caller, Guid reviewId) =>
+        Gate<ReviewsController>(caller, nameof(ReviewsController.SubmitAppeal),
+            () => Reviews(db, caller).SubmitAppeal(reviewId,
+                new AppealRequest("The KPI target moved mid-year", "I hit the revised target"), Ct));
 
     /// <summary>The same caller, bound to one company instead of the whole group (a v2 entity-scope claim).</summary>
     private static ClaimsPrincipal CompanyBound(ClaimsPrincipal caller, Guid companyId) =>

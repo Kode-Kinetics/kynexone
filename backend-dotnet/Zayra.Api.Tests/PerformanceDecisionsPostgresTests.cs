@@ -109,9 +109,8 @@ public sealed class PerformanceDecisionsPostgresTests
         var admin = Guid.NewGuid();
 
         var reviews = NewReviews(db, tenantId, admin);
-        var appeal = ((CreatedResult)await reviews.SubmitAppeal(review.Id,
-            new AppealRequest("Rating does not reflect the year", "Evidence attached"), default))
-            .Value.Should().BeOfType<AppraisalAppeal>().Subject;
+        var appeal = await AppealAsEmployee(db, tenantId, employee, review,
+            new AppealRequest("Rating does not reflect the year", "Evidence attached"));
 
         // THE FREEZE, measured: while the appeal is open no compensation can be raised.
         var recs = NewRecommendations(db, tenantId, admin);
@@ -143,9 +142,8 @@ public sealed class PerformanceDecisionsPostgresTests
         var admin = Guid.NewGuid();
         var reviews = NewReviews(db, tenantId, admin);
 
-        var appeal = ((CreatedResult)await reviews.SubmitAppeal(review.Id,
-            new AppealRequest("KPI score omits Q3 delivery", null), default))
-            .Value.Should().BeOfType<AppraisalAppeal>().Subject;
+        var appeal = await AppealAsEmployee(db, tenantId, employee, review,
+            new AppealRequest("KPI score omits Q3 delivery", null));
 
         var responded = (OkObjectResult)await reviews.RespondToAppeal(appeal.Id,
             new AppealResponseRequest("Upheld", "Q3 delivery was omitted; the score is withdrawn for revision."), default);
@@ -180,10 +178,9 @@ public sealed class PerformanceDecisionsPostgresTests
     public async Task AppealDecision_WithoutRecordedReasoning_IsRefused()
     {
         await using var db = _fx.CreateDb();
-        var (tenantId, _, review) = await SeedPublishedReview(db);
+        var (tenantId, employee, review) = await SeedPublishedReview(db);
         var reviews = NewReviews(db, tenantId, Guid.NewGuid());
-        var appeal = ((CreatedResult)await reviews.SubmitAppeal(review.Id, new AppealRequest("Unfair", null), default))
-            .Value.Should().BeOfType<AppraisalAppeal>().Subject;
+        var appeal = await AppealAsEmployee(db, tenantId, employee, review, new AppealRequest("Unfair", null));
 
         (await reviews.RespondToAppeal(appeal.Id, new AppealResponseRequest("Rejected", "   "), default))
             .Should().BeOfType<BadRequestObjectResult>();
@@ -195,9 +192,9 @@ public sealed class PerformanceDecisionsPostgresTests
     public async Task OpenAppeals_AreReachable_SoTheResolutionPathHasAnEntryPoint()
     {
         await using var db = _fx.CreateDb();
-        var (tenantId, _, review) = await SeedPublishedReview(db);
+        var (tenantId, employee, review) = await SeedPublishedReview(db);
         var reviews = NewReviews(db, tenantId, Guid.NewGuid());
-        await reviews.SubmitAppeal(review.Id, new AppealRequest("Under-rated", null), default);
+        await AppealAsEmployee(db, tenantId, employee, review, new AppealRequest("Under-rated", null));
 
         var listed = ((OkObjectResult)await reviews.ListAppeals(null, default)).Value
             .Should().BeAssignableTo<List<AppraisalAppeal>>().Subject;
@@ -501,6 +498,27 @@ public sealed class PerformanceDecisionsPostgresTests
         db.PerformanceImprovementPlans.Add(pip);
         await db.SaveChangesAsync();
         return (tenantId, employee, pip);
+    }
+
+    /// <summary>
+    /// The employee raises their own appeal — the only caller <c>SubmitAppeal</c> accepts. These tests are about
+    /// what an appeal DECISION does to the review and to compensation; raising one as HR was a fixture shortcut.
+    /// </summary>
+    private static async Task<AppraisalAppeal> AppealAsEmployee(
+        ZayraDbContext db, Guid tenantId, Employee employee, AppraisalReview review, AppealRequest req)
+    {
+        var c = new ReviewsController(db, new PerformanceService(db), new DataScopeService(db),
+            new Zayra.Api.Infrastructure.Organization.HrmHierarchyService(
+                db, new Zayra.Api.Infrastructure.Audit.AuditService(db)));
+        Bind(c, new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim("tenant_id", tenantId.ToString()),
+            new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+            new Claim("employee_id", employee.Id.ToString()),
+            new Claim("FullName", employee.FullName),
+        }, "test")));
+        return ((CreatedResult)await c.SubmitAppeal(review.Id, req, default))
+            .Value.Should().BeOfType<AppraisalAppeal>().Subject;
     }
 
     private static ReviewsController NewReviews(ZayraDbContext db, Guid tenantId, Guid userId)

@@ -415,6 +415,12 @@ public class ReviewsController : ControllerBase
 
     // ── Employee acknowledgement ────────────────────────────────────────────────
 
+    /// <summary>
+    /// The employee's record that they were shown their result. Only they can give it: the same rule, and the
+    /// same defect, as <see cref="SubmitSelfAssessment"/>. The check used to be the data scope, which an
+    /// organisation-wide caller (HR, Admin) passes for every employee — so HR could acknowledge on someone's
+    /// behalf, destroying the only evidence this endpoint exists to capture.
+    /// </summary>
     [HttpPost("{id:guid}/acknowledge")]
     public async Task<IActionResult> Acknowledge(Guid id, CancellationToken ct)
     {
@@ -424,9 +430,13 @@ public class ReviewsController : ControllerBase
             .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (review is null) return NotFound();
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
-        if (!scope.CanAccessEmployee(review.EmployeeId)
-            || (!scope.IsUnrestricted && scope.CallerEmployeeId != review.EmployeeId))
-            return Forbid();
+        if (await OwnEmployeeIdAsync(scope, tenantId, ct) != review.EmployeeId)
+            return StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                error = "acknowledge_by_employee_only",
+                message = "Only the employee this review is about can acknowledge it. Acknowledgement is their " +
+                          "record that the result was shown to them, so it cannot be given on their behalf.",
+            });
         if (review.Status != "Published")
             return BadRequest(new { message = "Review must be Published before acknowledgement." });
 
@@ -441,6 +451,12 @@ public class ReviewsController : ControllerBase
 
     // ── Appeal ─────────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// The employee's own challenge to their rating, so only they may raise it — the same rule as
+    /// <see cref="Acknowledge"/>. An appeal also blocks their increment, promotion and bonus until it is
+    /// decided (<c>RecommendationsController</c>), so an appeal raised "for" someone by an organisation-wide
+    /// caller froze their compensation and left HR deciding an appeal HR itself had submitted.
+    /// </summary>
     [HttpPost("{id:guid}/appeal")]
     public async Task<IActionResult> SubmitAppeal(Guid id, [FromBody] AppealRequest req, CancellationToken ct)
     {
@@ -450,9 +466,13 @@ public class ReviewsController : ControllerBase
             .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (review is null) return NotFound();
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
-        if (!scope.CanAccessEmployee(review.EmployeeId)
-            || (!scope.IsUnrestricted && scope.CallerEmployeeId != review.EmployeeId))
-            return Forbid();
+        if (await OwnEmployeeIdAsync(scope, tenantId, ct) != review.EmployeeId)
+            return StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                error = "appeal_by_employee_only",
+                message = "Only the employee this review is about can appeal it. HR decide appeals; they do not " +
+                          "raise them on an employee's behalf.",
+            });
         if (review.Status is not ("Published" or "Acknowledged"))
             return BadRequest(new { message = "Appeals can only be submitted after results are published." });
         if (string.IsNullOrWhiteSpace(req.AppealReason))
