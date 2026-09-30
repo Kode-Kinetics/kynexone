@@ -6,6 +6,7 @@ import client from '../src/api/client';
 import {
   complianceContractsApi, compliancePassportsApi, complianceRenewalsApi, complianceVisaApi, complianceWorkPermitsApi,
 } from '../src/api/compliance';
+import { isSaudiCompany, selectSaudiCompany } from '../src/lib/saudiCompany';
 
 /**
  * List screens that showed the server's first page (its default size, 20–50 rows) as the whole
@@ -90,5 +91,29 @@ test.describe('compliance expiry registers read every row', () => {
     expect(page).toContain("pageWindowText(alerts.length, alertsTotal, 'expirations')");
     // The passport KPIs drill down to a tab that renders the passport register, not a blank page.
     expect(page).toContain("(tab === 'visa' || tab === 'passports') && <VisaPassportTab");
+  });
+});
+
+test.describe('Saudi settings name the Saudi company they edit', () => {
+  test('Saudi companies are recognised by any of their country spellings', () => {
+    expect(['SA', 'sau', 'KSA', ' SA '].every((countryCode) => isSaudiCompany({ countryCode }))).toBe(true);
+    expect(['AE', 'ARE', '', null].some((countryCode) => isSaudiCompany({ countryCode }))).toBe(false);
+  });
+
+  test('the selected company is kept while it exists, else the first Saudi company, else none', () => {
+    const saudi = [{ id: 'riyadh' }, { id: 'jeddah' }];
+    expect(selectSaudiCompany(saudi, 'jeddah')).toBe('jeddah');
+    expect(selectSaudiCompany(saudi, '')).toBe('riyadh');
+    expect(selectSaudiCompany(saudi, 'dubai')).toBe('riyadh');
+    expect(selectSaudiCompany([], 'dubai')).toBe('');
+  });
+
+  test('the config screen reads every company and keeps the Saudi ones, instead of "the" first company', () => {
+    const config = read('src/views/SaudiComplianceConfig.tsx');
+    expect(config).not.toContain('companiesApi.list(1, 1)');
+    expect(config).toContain('companiesApi.listAll()');
+    expect(config).toContain('.filter(isSaudiCompany)');
+    expect(config).toContain('<CompanyScope ');
+    expect(read('src/views/NitaqatPanel.tsx')).toContain("import { isSaudiCompany } from '../lib/saudiCompany';");
   });
 });
