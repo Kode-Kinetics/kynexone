@@ -41,7 +41,7 @@
  */
 import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { join } from 'node:path';
 import { test, type APIRequestContext, type Page } from '@playwright/test';
 import type { Persona } from '../world';
 import { piiLocator, redactDeep, redactText, tagPii, untagPii } from './mask';
@@ -618,5 +618,3 @@ export function bundlePaths(): { bundleDir: string; originalsDir: string } {
     || join('test-results', 'evidence-originals');
   return { bundleDir, originalsDir };
 }
-
-export const relativeToRepo = (p: string): string => relative(join('..'), p);
