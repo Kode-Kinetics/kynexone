@@ -405,22 +405,24 @@ export function EmployeesPage() {
   }, [employeeLoadGate]);
 
   const loadLookups = useCallback(async () => {
+    // Every row of each lookup, page by page. One page of 100 left the 101st department,
+    // designation or active manager missing from the form's selects with nothing to say so.
     const [companyRes, branchRes, deptRes, desigRes, gradeRes, costRes, managerRes] = await Promise.all([
-      companiesApi.list(1, 100),
-      branchesApi.list(undefined, 1, 100),
-      departmentsApi.list(undefined, 1, 100),
-      designationsApi.list(undefined, 1, 100),
-      gradesApi.list(1, 100),
-      costCentersApi.list(undefined, 1, 100),
-      employeesApi.list({ status: 'Active', page: 1, pageSize: 100 }),
+      companiesApi.listAll(),
+      branchesApi.listAll(),
+      departmentsApi.listAll(),
+      designationsApi.listAll(),
+      gradesApi.listAll(),
+      costCentersApi.listAll(),
+      employeesApi.listAll({ status: 'Active' }),
     ]);
-    setCompanies(companyRes.items);
-    setBranches(branchRes.items);
-    setDepartments(deptRes.items);
-    setDesignations(desigRes.items);
-    setGrades(gradeRes.items);
-    setCostCenters(costRes.items);
-    setManagerCandidates(managerRes.items);
+    setCompanies(companyRes);
+    setBranches(branchRes);
+    setDepartments(deptRes);
+    setDesignations(desigRes);
+    setGrades(gradeRes);
+    setCostCenters(costRes);
+    setManagerCandidates(managerRes);
   }, []);
 
   useEffect(() => { load(); }, [load, employeeQuery]);

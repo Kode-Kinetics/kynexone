@@ -761,7 +761,8 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 
   const load = () => {
     setLoading(true);
-    leaveRequestsApi.list({ status: 'PendingManagerApproval', ...groupFilter }).then(r => { setRequests(r.items); setLoading(false); }).catch(() => setLoading(false));
+    // The whole queue: an approver used to see only the first 25 pending requests.
+    leaveRequestsApi.listAll({ status: 'PendingManagerApproval', ...groupFilter }).then(all => { setRequests(all); setLoading(false); }).catch(() => setLoading(false));
   };
   useEffect(load, [groupFilter.companyId, groupFilter.branchId]);
 
@@ -1579,8 +1580,8 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
   useEffect(() => { load(); leaveTypesApi.list().then(setLeaveTypes).catch(() => {}); }, [groupFilter.companyId, groupFilter.branchId]);
   useEffect(() => {
     if (!canPayrollApprove) return;
-    payrollApi.listRuns({ status: 'Draft', pageSize: 100 })
-      .then(r => setPayrollRuns(r.items))
+    payrollApi.listAllRuns({ status: 'Draft' })
+      .then(setPayrollRuns)
       .catch(() => setPayrollRuns([]));
   }, [canPayrollApprove]);
 
@@ -1998,13 +1999,13 @@ export function LeavePage() {
 
   useEffect(() => {
     if (isAdmin) {
-      companiesApi.list(1, 100).then(r => setCompanies(r.items)).catch(() => {});
+      companiesApi.listAll().then(setCompanies).catch(() => {});
     }
   }, [isAdmin]);
 
   useEffect(() => {
     if (companyId) {
-      branchesApi.list(companyId, 1, 100).then(r => setBranches(r.items)).catch(() => {});
+      branchesApi.listAll(companyId).then(setBranches).catch(() => {});
     } else {
       setBranches([]);
       setBranchId('');

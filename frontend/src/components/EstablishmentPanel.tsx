@@ -101,7 +101,7 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
       // Read-only consumers (e.g. Recruitment) don't fetch the catalog — levels
       // are derived from the matrix cells instead (see activeLevels).
       readOnly ? Promise.resolve([] as StaffingLevelDto[]) : establishmentApi.levels().catch(() => [] as StaffingLevelDto[]),
-      costCentersApi.list().then(r => r.items).catch(() => []),
+      costCentersApi.listAll().catch(() => [] as CostCenterDto[]),
     ])
       .then(([matrix, lvls, cc]) => { setRows(matrix); setLevels(lvls); setCostCenters(cc); })
       .catch(() => {}).finally(() => setLoading(false));

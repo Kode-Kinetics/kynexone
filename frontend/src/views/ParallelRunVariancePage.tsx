@@ -108,8 +108,8 @@ export function ParallelRunVariancePage() {
   useEffect(() => {
     let cancelled = false;
     payrollApi
-      .listRuns({ pageSize: 100 })
-      .then((r) => { if (!cancelled) setRuns(r.items); })
+      .listAllRuns()
+      .then((all) => { if (!cancelled) setRuns(all); })
       .catch((e) => { if (!cancelled) setRunsError(errorMessage(e)); });
     return () => { cancelled = true; };
   }, []);

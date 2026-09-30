@@ -125,7 +125,7 @@ function CompaniesTab() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    try { const r = await companiesApi.list(); setItems(r.items); } catch { /**/ }
+    try { setItems(await companiesApi.listAll()); } catch { /**/ }
     finally { setLoading(false); }
   }, []);
 
@@ -455,7 +455,7 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    try { const r = await branchesApi.list(filterCompany || undefined); setItems(r.items); } catch { /**/ }
+    try { setItems(await branchesApi.listAll(filterCompany || undefined)); } catch { /**/ }
     finally { setLoading(false); }
   }, [filterCompany]);
 
@@ -606,7 +606,7 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    try { const r = await departmentsApi.list(); setItems(r.items); } catch { /**/ }
+    try { setItems(await departmentsApi.listAll()); } catch { /**/ }
     finally { setLoading(false); }
   }, []);
 
@@ -730,7 +730,7 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    try { const r = await designationsApi.list(); setItems(r.items); } catch { /**/ }
+    try { setItems(await designationsApi.listAll()); } catch { /**/ }
     finally { setLoading(false); }
   }, []);
 
@@ -870,7 +870,7 @@ function GradesTab() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    try { const r = await gradesApi.list(); setItems(r.items); } catch { /**/ }
+    try { setItems(await gradesApi.listAll()); } catch { /**/ }
     finally { setLoading(false); }
   }, []);
 
@@ -1022,7 +1022,7 @@ function CostCentersTab({ companies }: { companies: CompanyDto[] }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    try { const r = await costCentersApi.list(); setItems(r.items); } catch { /**/ }
+    try { setItems(await costCentersApi.listAll()); } catch { /**/ }
     finally { setLoading(false); }
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -2260,9 +2260,9 @@ export function SetupPage() {
   const [costCenters, setCostCenters] = useState<CostCenterDto[]>([]);
 
   useEffect(() => {
-    companiesApi.list(1, 100).then((r) => setCompanies(r.items)).catch(() => {});
-    gradesApi.list(1, 100).then((r) => setGrades(r.items)).catch(() => {});
-    costCentersApi.list(undefined, 1, 100).then((r) => setCostCenters(r.items)).catch(() => {});
+    companiesApi.listAll().then(setCompanies).catch(() => {});
+    gradesApi.listAll().then(setGrades).catch(() => {});
+    costCentersApi.listAll().then(setCostCenters).catch(() => {});
   }, []);
 
   return (
