@@ -881,13 +881,19 @@ export default function TenantBillingPage() {
     setSending(inv.id);
     try {
       const r = await platformApi.sendInvoiceEmail(id, inv.id);
-      if (r.smtpRequired) {
-        toast(inv.id, 'SMTP not configured — download PDF and email manually.', false);
+      if (r.smtpRequired || r.sent === false) {
+        toast(inv.id, r.message ?? 'SMTP not configured — download PDF and email manually.', false);
       } else {
-        toast(inv.id, `Sent to ${r.billingEmail} ✓`, true);
+        // "Accepted by the mail server" is what SMTP can confirm; inbox delivery is not observable.
+        toast(inv.id, `Accepted by the mail server for ${r.billingEmail}`, true);
         await load();
       }
-    } catch { toast(inv.id, 'Failed to send email.', false); }
+    } catch (e) {
+      // The API answers 400 (no relay) or 409 (test capture mode) with a message saying why
+      // nothing was sent. Show it rather than a generic failure.
+      const data = (e as { response?: { data?: { message?: string } } })?.response?.data;
+      toast(inv.id, data?.message ?? 'Failed to send email.', false);
+    }
     finally { setSending(null); }
   }
 
