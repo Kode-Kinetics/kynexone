@@ -338,6 +338,10 @@ def test_evidence(repo: str, commit: str, offline: bool) -> dict[str, Any]:
         "requiredChecksSource": "declared in scripts/release_manifest.py (ruleset 'main-protection')",
         "allRequiredChecksPassed": all(c["conclusion"] == "success" for c in required),
         "requiredChecks": required,
+        "recordedWhile": "complete" if all(c["status"] == "completed" for c in required) else
+                         "IN PROGRESS — a check that had not finished when this manifest was written "
+                         "is recorded as it stood, not as a pass. Re-run the generator on this commit "
+                         "for the settled picture.",
         "otherChecks": others,
         "workflowRuns": workflow_runs,
     }
