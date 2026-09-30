@@ -454,6 +454,12 @@ builder.Services.AddHostedService<AiInsightEngine>();
 // thread is what makes "a notification can never fail OR HANG a payroll operation" true.
 builder.Services.AddHostedService<NotificationDeliveryWorker>();
 builder.Services.AddHostedService<ComplianceReminderWorker>();
+// Public pricing-quote requests are announced to sales off the request thread: a bounded queue,
+// a global send budget, a fixed recipient from platform config, and the platform relay only.
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Pricing.QuoteNotificationQueue>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Pricing.QuoteNotificationBudget>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Pricing.QuoteNotificationSender>();
+builder.Services.AddHostedService<Zayra.Api.Infrastructure.Pricing.QuoteNotificationWorker>();
 
 // F3 — durable background jobs (job store + per-item checkpoints + leased, fenced worker). Runs on
 // every instance: claims are FOR UPDATE SKIP LOCKED with a lease token, so old and new instances share
