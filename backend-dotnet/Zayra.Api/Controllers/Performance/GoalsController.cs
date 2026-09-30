@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
@@ -210,13 +211,24 @@ public class GoalsController : ControllerBase
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         if (!scope.CanAccessEmployee(goal.EmployeeId))
             return Forbid();
-        if (!User.IsInRole("Admin") && !User.IsInRole("HR Manager"))
+        // The same rule as the manager review (ReviewsController.SubmitManagerReview): the caller must be one of
+        // the employee's resolved KPI approvers (their direct or second-level manager), unless they hold the
+        // rating approver tier or an organisation-wide scope. This used to be skipped for the role NAMES Admin
+        // and HR Manager, so a role name outranked a per-user Deny and a company boundary, while HR Director,
+        // which holds the same keys, was held to "be the report's manager" and refused every time.
+        var hasOverride = scope.IsUnrestricted || HasPermission(ReviewsController.RatingApproverPermission);
+        if (!hasOverride)
         {
-            if (scope.CallerEmployeeId is not int callerEmployeeId)
-                return Forbid();
-            var approvers = await _hierarchyService.ResolveWorkflowApproversAsync(tenantId, goal.EmployeeId, "KPI", ct);
-            if (approvers.Approvers.All(a => a.EmployeeId != callerEmployeeId))
-                return Forbid();
+            var isResolvedApprover = scope.CallerEmployeeId is int callerEmployeeId
+                && (await _hierarchyService.ResolveWorkflowApproversAsync(tenantId, goal.EmployeeId, "KPI", ct))
+                    .Approvers.Any(a => a.EmployeeId == callerEmployeeId);
+            if (!isResolvedApprover)
+                return StatusCode(StatusCodes.Status403Forbidden, new
+                {
+                    error = "not_goal_approver",
+                    message = "Only this employee's line manager or second-level manager can approve their goal, " +
+                              "or HR staff who approve performance ratings.",
+                });
         }
         if (goal.IsDeleted) return NotFound();
         // R05: approval used to set ManagerApproved and leave the goal in Draft, and the screen only
@@ -237,6 +249,9 @@ public class GoalsController : ControllerBase
         await _db.SaveChangesAsync(ct);
         return Ok(goal);
     }
+
+    private bool HasPermission(string permission) =>
+        User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>A goal's weight is its share of the employee's scorecard, in percent.</summary>
     private BadRequestObjectResult? WeightRefusal(decimal weight) =>

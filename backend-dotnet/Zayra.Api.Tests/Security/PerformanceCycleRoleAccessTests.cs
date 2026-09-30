@@ -280,6 +280,74 @@ public class PerformanceCycleRoleAccessTests
             "goals are set by the line manager or HR; the employee records progress against them");
     }
 
+    // ── Goal approval: the resolved KPI approver, or the HR tier by permission, never a role name ──
+
+    [Fact]
+    public async Task HrDirector_ApprovesAGoal_ByTheApproverTier_NotByRoleName()
+    {
+        // Approve used to skip the approver check only for the role NAMES Admin and HR Manager. HR Director holds
+        // the same performance keys and an organisation-wide scope, but was held to "be the report's KPI
+        // approver", which HR never is, so every HR Director approval was refused.
+        var (db, tenantId) = await NewTenantAsync("perf-goal-hrd");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Active", reviewStatus: "SelfAssessmentDue");
+        var goalId = await SeedGoalAsync(db, tenantId, w.ReportId);
+        var hrDirector = await CallerAsync(db, tenantId, "HR Director");
+
+        (await ApproveGoal(db, hrDirector, goalId)).Should().Be(200);
+        (await db.EmployeeGoals.AsNoTracking().SingleAsync(g => g.Id == goalId)).Status.Should().Be("Active");
+    }
+
+    [Fact]
+    public async Task AnHrManagerWithoutTheApproverTier_AndACompanyBoundScope_MustBeTheResolvedApprover()
+    {
+        // The role name used to be enough. With the approver tier denied and a scope bound to one company (so
+        // not organisation-wide), an HR Manager is held to the same rule as the manager review: approve only
+        // as the report's resolved KPI approver.
+        var (db, tenantId) = await NewTenantAsync("perf-goal-hrm-bound");
+        var companyId = Guid.NewGuid();
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Active", reviewStatus: "SelfAssessmentDue");
+        var hrEmployeeId = await SeedColleagueWithReviewAsync(db, tenantId, w, "Hana HR");
+        foreach (var e in await db.Employees.Where(e => e.TenantId == tenantId).ToListAsync()) e.CompanyId = companyId;
+        await db.SaveChangesAsync();
+        var goalId = await SeedGoalAsync(db, tenantId, w.ReportId);
+
+        var bound = CompanyBound(await LinkedCallerAsync(db, tenantId, "HR Manager", hrEmployeeId), companyId);
+        var withoutApprove = new ClaimsPrincipal(new ClaimsIdentity(
+            bound.Claims.Where(c => !(c.Type == "permission" && c.Value == "performance.approve")), "Test"));
+        withoutApprove.IsInRole("HR Manager").Should().BeTrue();
+
+        (await ApproveGoal(db, withoutApprove, goalId)).Should().Be(403,
+            "HR Manager is not the report's KPI approver, has no organisation-wide scope and no approver tier");
+        (await db.EmployeeGoals.AsNoTracking().SingleAsync(g => g.Id == goalId)).Status.Should().Be("Draft");
+
+        (await ApproveGoal(db, bound, goalId)).Should().Be(200, "the approver tier is what lets HR approve any goal in scope");
+        (await db.EmployeeGoals.AsNoTracking().SingleAsync(g => g.Id == goalId)).Status.Should().Be("Active");
+    }
+
+    [Fact]
+    public async Task AManager_ApprovesUpToTwoLevelsDown_ButNotFurther_ThoughTheirScopeIsTheWholeTree()
+    {
+        // The KPI approvers are the direct and second-level managers. A manager's data scope is their whole
+        // reporting tree, so the scope alone would let them approve three levels down; the approver rule does not.
+        var (db, tenantId) = await NewTenantAsync("perf-goal-levels");
+        var w = await SeedAsync(db, tenantId, cycleStatus: "Active", reviewStatus: "SelfAssessmentDue");
+        var second = NewEmployee(tenantId, "Sami Second");
+        second.ManagerEmployeeId = w.ReportId;
+        db.Employees.Add(second);
+        await db.SaveChangesAsync();
+        var third = NewEmployee(tenantId, "Tariq Third");
+        third.ManagerEmployeeId = second.Id;
+        db.Employees.Add(third);
+        await db.SaveChangesAsync();
+        var secondGoal = await SeedGoalAsync(db, tenantId, second.Id);
+        var thirdGoal = await SeedGoalAsync(db, tenantId, third.Id);
+        var manager = await ManagerAsync(db, tenantId, w);
+
+        (await ApproveGoal(db, manager, secondGoal)).Should().Be(200, "the manager is this employee's second-level manager");
+        (await ApproveGoal(db, manager, thirdGoal)).Should().Be(403, "three levels down, the manager is not a KPI approver");
+        (await db.EmployeeGoals.AsNoTracking().SingleAsync(g => g.Id == thirdGoal)).Status.Should().Be("Draft");
+    }
+
     // ── A self-assessment is the employee's own ────────────────────────────────────────────────
 
     [Theory]
@@ -574,6 +642,14 @@ public class PerformanceCycleRoleAccessTests
         await db.SaveChangesAsync();
         return review.Id;
     }
+
+    /// <summary>The same caller, bound to one company instead of the whole group (a v2 entity-scope claim).</summary>
+    private static ClaimsPrincipal CompanyBound(ClaimsPrincipal caller, Guid companyId) =>
+        new(new ClaimsIdentity(
+            caller.Claims.Where(c => c.Type != "is_group_scope").Append(new Claim(
+                Zayra.Api.Application.Common.EntityScopeContext.V2ClaimType,
+                System.Text.Json.JsonSerializer.Serialize(new { v = 2, m = "companies", c = new[] { companyId } }))),
+            "Test"));
 
     /// <summary>The employees whose reviews the list returns, for the given view.</summary>
     private static async Task<int[]> ListedEmployeeIds(ZayraDbContext db, ClaimsPrincipal caller, string? view)
