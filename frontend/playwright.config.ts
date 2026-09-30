@@ -11,7 +11,15 @@ export default defineConfig({
   // fail-never-skip setup. Left in scope here it would run nine extra logins on top of this suite's
   // own — tripping the API's 10-per-60s limiter — and would run the gate specs with retries:1, which
   // is precisely the retry-hides-a-flaky-authorization-bug behaviour that config exists to forbid.
-  testIgnore: /security-gate\//,
+  // e2e/evidence/ is excluded for the same reason and one more. It has its OWN config
+  // (e2e/evidence/playwright.evidence.config.ts) with retries:0, because an evidence bundle that
+  // passed on the second attempt has not recorded anything — and this config sets retries:1, so a
+  // failed evidence run here silently overwrites its own bundle with the retry. It also MUTATES the
+  // shared IntelliFlow payroll state: it creates, processes, approves, locks and bank-exports a run.
+  // Collected here it sorts before gosi-filing.spec.ts in a single-worker lane, and that spec's
+  // "the seeded period ties out" assertions then measure a tenant the evidence run has moved. Both
+  // failures showed up together on the first CI run of this branch; this is their single cause.
+  testIgnore: [/security-gate\//, /evidence\//],
   fullyParallel: false,
   // A stray `test.only` would otherwise shrink this 130-test lane to ONE test in CI, silently.
   // playwright.security.config.ts has had this; this config did not — the same "a guard exists in
@@ -55,7 +63,13 @@ export default defineConfig({
       // Without repeating it here the browser-pilot lane collects the 14 security-gate specs,
       // which depend on fixtures only the dedicated chrome-security-gate job provisions, and they
       // fail in milliseconds. Keep these two lists in sync.
-      testIgnore: [/auth\.setup\.ts/, /fixture\.teardown\.ts/, /pilot-critical\.spec\.ts/, /security-gate\//],
+      testIgnore: [
+        /auth\.setup\.ts/, /fixture\.teardown\.ts/, /pilot-critical\.spec\.ts/, /security-gate\//,
+        // …and e2e/evidence/, which is exactly the bug this comment warns about happening again:
+        // the root testIgnore above stops applying here, so without this line the evidence lane's
+        // payroll story is collected into THIS project, with retries:1, ahead of gosi-filing.
+        /evidence\//,
+      ],
     },
     // ── Mobile web ────────────────────────────────────────────────────────────────────────────
     // COST/VALUE (assessed 2026-09-17): all three projects were Desktop Chrome, so the responsive
