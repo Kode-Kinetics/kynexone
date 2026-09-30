@@ -6,6 +6,9 @@ import client from '../src/api/client';
 import {
   complianceContractsApi, compliancePassportsApi, complianceRenewalsApi, complianceVisaApi, complianceWorkPermitsApi,
 } from '../src/api/compliance';
+import {
+  absenceApi, compOffApi, encashmentApi, leaveAIApi, leaveBalancesApi, leaveRequestsApi,
+} from '../src/api/leave';
 import { isSaudiCompany, selectSaudiCompany } from '../src/lib/saudiCompany';
 
 /**
@@ -115,5 +118,47 @@ test.describe('Saudi settings name the Saudi company they edit', () => {
     expect(config).toContain('.filter(isSaudiCompany)');
     expect(config).toContain('<CompanyScope ');
     expect(read('src/views/NitaqatPanel.tsx')).toContain("import { isSaudiCompany } from '../lib/saudiCompany';");
+  });
+});
+
+test.describe('leave history lists show one page at a time and say how many there are', () => {
+  test('the leave list endpoints hand the screen the server total, not only the rows', async () => {
+    const n = 130;
+    serve({
+      '/api/leave/balances': rows(n, 'bal'), '/api/leave/requests': rows(n, 'req'), '/api/leave/encashment': rows(n, 'enc'),
+      '/api/leave/compoff': rows(n, 'co'), '/api/leave/absences': rows(n, 'abs'), '/api/leave/ai-insights': rows(n, 'ins'),
+    }, 25);
+    const pagers = {
+      balances: (page: number, pageSize: number) => leaveBalancesApi.list({ year: 2026, page, pageSize }),
+      requests: (page: number, pageSize: number) => leaveRequestsApi.list({ page, pageSize }),
+      encashment: (page: number, pageSize: number) => encashmentApi.list({ page, pageSize }),
+      compOff: (page: number, pageSize: number) => compOffApi.list({ page, pageSize }),
+      absences: (page: number, pageSize: number) => absenceApi.list({ page, pageSize }),
+      insights: (page: number, pageSize: number) => leaveAIApi.list({ page, pageSize }),
+    };
+    for (const [name, fetchPage] of Object.entries(pagers)) {
+      const first = await fetchPage(1, 100);
+      const second = await fetchPage(2, 100);
+      expect([name, first.items.length, first.total, second.items.length]).toEqual([name, 100, n, 30]);
+    }
+  });
+
+  test('balances, request history, encashment, comp-off, absences and insights page with Load more', () => {
+    const leave = read('src/views/LeavePage.tsx');
+    for (const call of [
+      'leaveBalancesApi.list({ employeeId: empId ? Number(empId) : undefined, year, ...groupFilter, page, pageSize })',
+      'leaveRequestsApi.list({ status: statusFilter || undefined, page, pageSize })',
+      'encashmentApi.list({ ...groupFilter, page, pageSize })',
+      'compOffApi.list({ ...groupFilter, page, pageSize })',
+      'absenceApi.list({ ...groupFilter, page, pageSize })',
+      'leaveAIApi.list({ page, pageSize })',
+    ]) expect(leave).toContain(call);
+    for (const noun of ['balances', 'requests', 'encashment requests', 'credits', 'absence records', 'insights']) {
+      expect(leave).toContain(`total={list.total} noun="${noun}"`);
+    }
+    // Counts above the lists come from the server total, not the rows on screen.
+    for (const count of ['balances', 'requests', 'credits', 'absences']) expect(leave).toContain(`list.total ?? ${count}.length`);
+    // The dashboard preview asks for the six rows it shows and counts from the total.
+    expect(leave).toContain("leaveRequestsApi.list({ status: 'PendingManagerApproval', ...groupFilter, pageSize: 6 })");
   });
 });

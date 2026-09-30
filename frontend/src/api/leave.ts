@@ -326,9 +326,13 @@ export const leavePoliciesApi = {
     client.delete(`/api/leave/policies/${id}`).then(r => r.data),
 };
 
+// The list endpoints below are paged (the server's default page is 25–50 rows) and send a `total`.
+// They return the page WITH its total: they used to return only `items`, which left a screen no way
+// to know that the rows it showed were the first page of a longer list.
+
 export const leaveBalancesApi = {
-  list: (params: { employeeId?: number; leaveTypeId?: string; year?: number; companyId?: string; branchId?: string } = {}) =>
-    client.get<PagedResult<EmployeeLeaveBalance>>('/api/leave/balances', { params }).then(r => r.data.items ?? []),
+  list: (params: { employeeId?: number; leaveTypeId?: string; year?: number; companyId?: string; branchId?: string; page?: number; pageSize?: number } = {}) =>
+    client.get<PagedResult<EmployeeLeaveBalance>>('/api/leave/balances', { params }).then(r => r.data),
   forEmployee: (employeeId: number, year?: number) =>
     client.get<EmployeeLeaveBalance[]>(`/api/leave/balances/employee/${employeeId}`, { params: { year } }).then(r => r.data),
   adjust: (body: { employeeId: number; leaveTypeId: string; year: number; amount: number; reason: string }) =>
@@ -340,7 +344,7 @@ export const leaveBalancesApi = {
 };
 
 export const leaveRequestsApi = {
-  list: (params: { status?: string; employeeId?: number; leaveTypeId?: string; fromDate?: string; toDate?: string; departmentName?: string; companyId?: string; branchId?: string } = {}) =>
+  list: (params: { status?: string; employeeId?: number; leaveTypeId?: string; fromDate?: string; toDate?: string; departmentName?: string; companyId?: string; branchId?: string; page?: number; pageSize?: number } = {}) =>
     client.get<{ items: LeaveRequest[]; total: number }>('/api/leave/requests', { params }).then(r => r.data),
   /** Every matching request, page by page: an approval queue must show all of its work. */
   listAll: (params: { status?: string; employeeId?: number; companyId?: string; branchId?: string } = {}) =>
@@ -394,8 +398,8 @@ export const holidayCalendarApi = {
 };
 
 export const encashmentApi = {
-  list: (params: { status?: string; employeeId?: number; companyId?: string; branchId?: string } = {}) =>
-    client.get<PagedResult<LeaveEncashmentRequest>>('/api/leave/encashment', { params }).then(r => r.data.items ?? []),
+  list: (params: { status?: string; employeeId?: number; companyId?: string; branchId?: string; page?: number; pageSize?: number } = {}) =>
+    client.get<PagedResult<LeaveEncashmentRequest>>('/api/leave/encashment', { params }).then(r => r.data),
   create: (body: { employeeId: number; leaveTypeId: string; year: number; daysToEncash: number; reason: string }) =>
     client.post<LeaveEncashmentRequest>('/api/leave/encashment', body).then(r => r.data),
   hrApprove: (id: string, notes?: string) =>
@@ -409,8 +413,8 @@ export const encashmentApi = {
 };
 
 export const compOffApi = {
-  list: (params: { employeeId?: number; status?: string; companyId?: string; branchId?: string } = {}) =>
-    client.get<PagedResult<CompOffCredit>>('/api/leave/compoff', { params }).then(r => r.data.items ?? []),
+  list: (params: { employeeId?: number; status?: string; companyId?: string; branchId?: string; page?: number; pageSize?: number } = {}) =>
+    client.get<PagedResult<CompOffCredit>>('/api/leave/compoff', { params }).then(r => r.data),
   create: (body: { employeeId: number; workedDate: string; workType: string; hoursWorked: number; daysEarned: number; expiryDate?: string }) =>
     client.post<CompOffCredit>('/api/leave/compoff', body).then(r => r.data),
   approve: (id: string, notes?: string) =>
@@ -420,8 +424,8 @@ export const compOffApi = {
 };
 
 export const absenceApi = {
-  list: (params: { employeeId?: number; from?: string; to?: string; type?: string; companyId?: string; branchId?: string } = {}) =>
-    client.get<PagedResult<AbsenceRecord>>('/api/leave/absences', { params }).then(r => r.data.items ?? []),
+  list: (params: { employeeId?: number; from?: string; to?: string; type?: string; companyId?: string; branchId?: string; page?: number; pageSize?: number } = {}) =>
+    client.get<PagedResult<AbsenceRecord>>('/api/leave/absences', { params }).then(r => r.data),
   record: (body: { employeeId: number; absenceDate: string; absenceType: string; payrollImpact?: string }) =>
     client.post<AbsenceRecord>('/api/leave/absences', body).then(r => r.data),
   listRegularizations: (params: { status?: string } = {}) =>
@@ -483,8 +487,8 @@ export const leaveReportsApi = {
 };
 
 export const leaveAIApi = {
-  list: (params: { type?: string; severity?: string; acknowledged?: boolean } = {}) =>
-    client.get<PagedResult<LeaveAIInsight>>('/api/leave/ai-insights', { params }).then(r => r.data.items ?? []),
+  list: (params: { type?: string; severity?: string; acknowledged?: boolean; page?: number; pageSize?: number } = {}) =>
+    client.get<PagedResult<LeaveAIInsight>>('/api/leave/ai-insights', { params }).then(r => r.data),
   generate: () =>
     client.post('/api/leave/ai-insights/generate').then(r => r.data),
   acknowledge: (id: string) =>

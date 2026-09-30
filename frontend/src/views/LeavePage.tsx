@@ -32,6 +32,9 @@ import { calendarDaysBetween, formatCalendarDate } from '../lib/calendarDate';
 import { payrollApi } from '../api/payroll';
 import type { PayrollRun } from '../api/payroll';
 import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
+import { usePagedList } from '../hooks/usePagedList';
+import { ListWindowFooter } from '../components/ListWindowFooter';
+import { requestFailureReason } from '../lib/requestFailure';
 
 // ── Leave import/export helpers ───────────────────────────────────────────────
 
@@ -238,10 +241,16 @@ function GroupContextBar({
 
 // ── Dashboard Tab ─────────────────────────────────────────────────────────────
 
+/** A list that failed to load says so, instead of rendering as "No … records". */
+function LoadFailure({ what, error }: { what: string; error: unknown }) {
+  return <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">{what} could not be loaded. {requestFailureReason(error)}</p>;
+}
+
 function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab) => void; groupFilter?: GroupFilter }) {
   const [dash, setDash] = useState<LeaveDashboard | null>(null);
   const [onLeave, setOnLeave] = useState<LeaveCalendarEntry[]>([]);
   const [pending, setPending] = useState<LeaveRequest[]>([]);
+  const [pendingTotal, setPendingTotal] = useState<number | null>(null);
   // Whether each list has ANSWERED yet — not whether it came back empty. Both start `[]`, so
   // without this the screen said "No employees on leave today." and showed a hard 0 while the
   // requests were still outstanding: a stated fact the product did not yet have, and the exact
@@ -260,8 +269,9 @@ function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab)
       // `finally`, not `then`: a failed call has also stopped loading. It degrades to the empty
       // statement rather than spinning forever, which is what the KPI fallback already assumed.
       .finally(() => setOnLeaveLoaded(true));
-    leaveRequestsApi.list({ status: 'PendingManagerApproval', ...groupFilter })
-      .then(r => setPending(Array.isArray(r?.items) ? r.items.slice(0, 6) : []))
+    // A six-row preview beside "View all"; the count comes from the server total, not the rows shown.
+    leaveRequestsApi.list({ status: 'PendingManagerApproval', ...groupFilter, pageSize: 6 })
+      .then(r => { setPending(Array.isArray(r?.items) ? r.items.slice(0, 6) : []); setPendingTotal(typeof r?.total === 'number' ? r.total : null); })
       .catch(() => {})
       .finally(() => setPendingLoaded(true));
   }, [groupFilter.companyId, groupFilter.branchId]);
@@ -270,7 +280,7 @@ function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab)
     <div className="space-y-6">
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <KpiCard label="On Leave Today" value={dash?.onLeaveToday ?? (onLeaveLoaded ? onLeave.length : '—')} icon={Users} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
-        <KpiCard label="Pending Approvals" value={dash?.pendingApprovals ?? (pendingLoaded ? pending.length : '—')} icon={Clock} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
+        <KpiCard label="Pending Approvals" value={dash?.pendingApprovals ?? (pendingLoaded ? (pendingTotal ?? pending.length) : '—')} icon={Clock} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
         <KpiCard label="Unauthorized Absences" value={dash?.unauthorizedAbsences ?? '—'} icon={AlertTriangle} color="bg-rose-100 text-rose-600 dark:bg-rose-500/20 dark:text-rose-400" />
         <KpiCard label="Pending Encashments" value={dash?.pendingEncashments ?? '—'} icon={TrendingUp} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
       </div>
@@ -356,8 +366,6 @@ function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab)
 // ── Balance Tab ───────────────────────────────────────────────────────────────
 
 function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: number; groupFilter?: GroupFilter }) {
-  const [balances, setBalances] = useState<EmployeeLeaveBalance[]>([]);
-  const [loading, setLoading] = useState(true);
   const [empId, setEmpId] = useState(selfEmployeeId ? String(selfEmployeeId) : '');
   const [balancePickedEmp, setBalancePickedEmp] = useState<SelectedEmployee | null>(null);
   const [year, setYear] = useState(new Date().getFullYear());
@@ -369,12 +377,13 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
   const [adjAmount, setAdjAmount] = useState('');
   const [adjReason, setAdjReason] = useState('');
 
-  const load = () => {
-    setLoading(true);
-    leaveBalancesApi.list({ employeeId: empId ? Number(empId) : undefined, year, ...groupFilter })
-      .then(setBalances).catch(() => {}).finally(() => setLoading(false));
-  };
-  useEffect(load, [year, groupFilter.companyId, groupFilter.branchId]);
+  // One page at a time with the server's total: this used to show the first 50 balances as all of them.
+  const list = usePagedList<EmployeeLeaveBalance>((page, pageSize) =>
+    leaveBalancesApi.list({ employeeId: empId ? Number(empId) : undefined, year, ...groupFilter, page, pageSize }));
+  const { items: balances, loading } = list;
+  const load = () => { void list.reload(); };
+  useEffect(load, [year, groupFilter.companyId, groupFilter.branchId, list.reload]);
+  const balanceCount = list.total ?? balances.length;
 
   const adjust = async () => {
     if (!adjustModal || !adjReason) return;
@@ -396,10 +405,11 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
           {[year - 1, year, year + 1].map(y => <option key={y} value={y}>{y}</option>)}
         </select>
         {!selfEmployeeId && <button type="button" className={btn.primary} onClick={load}>Search</button>}
-        <p className="ms-auto text-sm text-slate-400">{balances.length} balance{balances.length !== 1 ? 's' : ''}</p>
+        <p className="ms-auto text-sm text-slate-400">{balanceCount} balance{balanceCount !== 1 ? 's' : ''}</p>
       </div>
 
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : balances.length === 0 ? (
+      {list.error != null && <LoadFailure what="Leave balances" error={list.error} />}
+      {loading ? <p className="text-sm text-slate-400">Loading…</p> : list.error != null && balances.length === 0 ? null : balances.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <BarChart2 className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
           <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No balance records found</p>
@@ -448,6 +458,7 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
           })}
         </div>
       )}
+      <ListWindowFooter shown={balances.length} total={list.total} noun="balances" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
 
       {adjustModal && (
         <Modal title={`Adjust Balance — ${adjustModal.leaveTypeName} (${adjustModal.employeeName})`} onClose={() => setAdjustModal(null)}>
@@ -510,8 +521,9 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
 
   useEffect(() => {
     if (!form.employeeId || !form.leaveTypeId) { setBalance(null); return; }
-    leaveBalancesApi.list({ employeeId: Number(form.employeeId), leaveTypeId: form.leaveTypeId, year: new Date().getFullYear() })
-      .then(bs => setBalance(bs[0] ?? null)).catch(() => setBalance(null));
+    // One employee, one leave type, one year: a single balance row.
+    leaveBalancesApi.list({ employeeId: Number(form.employeeId), leaveTypeId: form.leaveTypeId, year: new Date().getFullYear(), pageSize: 1 })
+      .then(r => setBalance(r.items[0] ?? null)).catch(() => setBalance(null));
   }, [form.employeeId, form.leaveTypeId]);
 
   const requestedDays = form.startDate && form.endDate ? daysBetween(form.startDate, form.endDate) : 0;
@@ -661,17 +673,17 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
 // ── My Requests Tab ───────────────────────────────────────────────────────────
 
 function MyRequestsTab() {
-  const [requests, setRequests] = useState<LeaveRequest[]>([]);
-  const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
   const [cancelModal, setCancelModal] = useState<LeaveRequest | null>(null);
   const [cancelReason, setCancelReason] = useState('');
 
-  const load = () => {
-    setLoading(true);
-    leaveRequestsApi.list({ status: statusFilter || undefined }).then(r => { setRequests(r.items); setLoading(false); }).catch(() => setLoading(false));
-  };
-  useEffect(load, [statusFilter]);
+  // Request history, one page at a time with the server's total (it used to be the first 25, unmarked).
+  const list = usePagedList<LeaveRequest>((page, pageSize) =>
+    leaveRequestsApi.list({ status: statusFilter || undefined, page, pageSize }));
+  const { items: requests, loading } = list;
+  const load = () => { void list.reload(); };
+  useEffect(load, [statusFilter, list.reload]);
+  const requestCount = list.total ?? requests.length;
 
   const withdraw = async (id: string) => { try { await leaveRequestsApi.withdraw(id); load(); } catch { alert('Withdrawal failed.'); } };
   const cancel = async () => {
@@ -688,7 +700,7 @@ function MyRequestsTab() {
             <option key={s} value={s}>{s.replace(/([A-Z])/g, ' $1').trim()}</option>
           ))}
         </select>
-        <p className="text-sm text-slate-400">{requests.length} request{requests.length !== 1 ? 's' : ''}</p>
+        <p className="text-sm text-slate-400">{requestCount} request{requestCount !== 1 ? 's' : ''}</p>
         <div className="ms-auto">
           <ImportExportToolbar
             entityName="Leave Requests"
@@ -699,7 +711,8 @@ function MyRequestsTab() {
         </div>
       </div>
 
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : requests.length === 0 ? (
+      {list.error != null && <LoadFailure what="Leave requests" error={list.error} />}
+      {loading ? <p className="text-sm text-slate-400">Loading…</p> : list.error != null && requests.length === 0 ? null : requests.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <FileText className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
           <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No leave requests</p>
@@ -732,6 +745,7 @@ function MyRequestsTab() {
           ))}
         </div>
       )}
+      <ListWindowFooter shown={requests.length} total={list.total} noun="requests" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
 
       {cancelModal && (
         <Modal title="Cancel Leave Request" onClose={() => setCancelModal(null)}>
@@ -1557,10 +1571,8 @@ function HolidayCalendarTab() {
 
 function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
   const { user } = useAuth();
-  const [requests, setRequests] = useState<LeaveEncashmentRequest[]>([]);
   const [payrollRuns, setPayrollRuns] = useState<PayrollRun[]>([]);
   const [selectedRun, setSelectedRun] = useState<Record<string, string>>({});
-  const [loading, setLoading] = useState(true);
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [encashPickedEmp, setEncashPickedEmp] = useState<SelectedEmployee | null>(null);
@@ -1576,8 +1588,12 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
     if (encashPickedEmp) setForm(f => ({ ...f, employeeId: String(encashPickedEmp.id), employeeName: encashPickedEmp.fullName }));
   }, [encashPickedEmp]);
 
-  const load = () => { setLoading(true); encashmentApi.list(groupFilter).then(setRequests).catch(() => {}).finally(() => setLoading(false)); };
+  // One page at a time with the server's total: this used to show the first 25 requests as all of them.
+  const list = usePagedList<LeaveEncashmentRequest>((page, pageSize) => encashmentApi.list({ ...groupFilter, page, pageSize }));
+  const { items: requests, loading } = list;
+  const load = () => { void list.reload(); };
   useEffect(() => { load(); leaveTypesApi.list().then(setLeaveTypes).catch(() => {}); }, [groupFilter.companyId, groupFilter.branchId]);
+  const encashmentCount = list.total ?? requests.length;
   useEffect(() => {
     if (!canPayrollApprove) return;
     payrollApi.listAllRuns({ status: 'Draft' })
@@ -1612,8 +1628,12 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end"><button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> Request Encashment</button></div>
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : requests.length === 0 ? (
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm text-slate-400">{loading ? '' : `${encashmentCount} encashment request${encashmentCount !== 1 ? 's' : ''}`}</p>
+        <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> Request Encashment</button>
+      </div>
+      {list.error != null && <LoadFailure what="Encashment requests" error={list.error} />}
+      {loading ? <p className="text-sm text-slate-400">Loading…</p> : list.error != null && requests.length === 0 ? null : requests.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <TrendingUp className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
           <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No encashment requests</p>
@@ -1663,6 +1683,7 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
           ))}
         </div>
       )}
+      <ListWindowFooter shown={requests.length} total={list.total} noun="encashment requests" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
       {showCreate && (
         <Modal title="Leave Encashment Request" onClose={() => setShowCreate(false)}>
           <div className="space-y-4">
@@ -1697,8 +1718,6 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 // ── Comp-Off Tab ──────────────────────────────────────────────────────────────
 
 function CompOffTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
-  const [credits, setCredits] = useState<CompOffCredit[]>([]);
-  const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [compOffPickedEmp, setCompOffPickedEmp] = useState<SelectedEmployee | null>(null);
   const [form, setForm] = useState({ employeeId: '', employeeName: '', workedDate: '', workType: 'HolidayWork', hoursWorked: '', daysEarned: '', expiryDate: '' });
@@ -1709,8 +1728,12 @@ function CompOffTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
     if (compOffPickedEmp) setForm(f => ({ ...f, employeeId: String(compOffPickedEmp.id), employeeName: compOffPickedEmp.fullName }));
   }, [compOffPickedEmp]);
 
-  const load = () => { setLoading(true); compOffApi.list(groupFilter).then(setCredits).catch(() => {}).finally(() => setLoading(false)); };
-  useEffect(load, [groupFilter.companyId, groupFilter.branchId]);
+  // One page at a time with the server's total: this used to show the first 25 credits as all of them.
+  const list = usePagedList<CompOffCredit>((page, pageSize) => compOffApi.list({ ...groupFilter, page, pageSize }));
+  const { items: credits, loading } = list;
+  const load = () => { void list.reload(); };
+  useEffect(load, [groupFilter.companyId, groupFilter.branchId, list.reload]);
+  const creditCount = list.total ?? credits.length;
 
   const create = async () => {
     if (!form.employeeId || !form.workedDate || !form.daysEarned) return;
@@ -1724,8 +1747,12 @@ function CompOffTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end"><button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> Add Comp-Off Credit</button></div>
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : credits.length === 0 ? (
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm text-slate-400">{loading ? '' : `${creditCount} comp-off credit${creditCount !== 1 ? 's' : ''}`}</p>
+        <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> Add Comp-Off Credit</button>
+      </div>
+      {list.error != null && <LoadFailure what="Comp-off credits" error={list.error} />}
+      {loading ? <p className="text-sm text-slate-400">Loading…</p> : list.error != null && credits.length === 0 ? null : credits.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <Star className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
           <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No comp-off credits</p>
@@ -1747,6 +1774,7 @@ function CompOffTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
           ))}
         </div>
       )}
+      <ListWindowFooter shown={credits.length} total={list.total} noun="credits" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
       {showCreate && (
         <Modal title="Create Comp-Off Credit" onClose={() => setShowCreate(false)}>
           <div className="space-y-4">
@@ -1778,13 +1806,15 @@ function CompOffTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 // ── Absences Tab ──────────────────────────────────────────────────────────────
 
 function AbsencesTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
-  const [absences, setAbsences] = useState<AbsenceRecord[]>([]);
-  const [loading, setLoading] = useState(true);
   const [regModal, setRegModal] = useState<AbsenceRecord | null>(null);
   const [regReason, setRegReason] = useState('');
 
-  const load = () => { setLoading(true); absenceApi.list(groupFilter).then(setAbsences).catch(() => {}).finally(() => setLoading(false)); };
-  useEffect(load, [groupFilter.companyId, groupFilter.branchId]);
+  // One page at a time with the server's total: the count above the list used to be the first 25.
+  const list = usePagedList<AbsenceRecord>((page, pageSize) => absenceApi.list({ ...groupFilter, page, pageSize }));
+  const { items: absences, loading } = list;
+  const load = () => { void list.reload(); };
+  useEffect(load, [groupFilter.companyId, groupFilter.branchId, list.reload]);
+  const absenceCount = list.total ?? absences.length;
 
   const regularize = async () => {
     if (!regModal || !regReason) return;
@@ -1794,8 +1824,9 @@ function AbsencesTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-slate-500 dark:text-slate-400">{absences.length} absence record{absences.length !== 1 ? 's' : ''}</p>
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : absences.length === 0 ? (
+      <p className="text-sm text-slate-500 dark:text-slate-400">{absenceCount} absence record{absenceCount !== 1 ? 's' : ''}</p>
+      {list.error != null && <LoadFailure what="Absence records" error={list.error} />}
+      {loading ? <p className="text-sm text-slate-400">Loading…</p> : list.error != null && absences.length === 0 ? null : absences.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <Shield className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
           <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No absence records</p>
@@ -1820,6 +1851,7 @@ function AbsencesTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
           ))}
         </div>
       )}
+      <ListWindowFooter shown={absences.length} total={list.total} noun="absence records" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
       {regModal && (
         <Modal title={`Regularize Absence — ${regModal.employeeName}`} onClose={() => setRegModal(null)}>
           <div className="space-y-4">
@@ -1900,12 +1932,13 @@ function ReportsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 // ── AI Insights Tab ───────────────────────────────────────────────────────────
 
 function AIInsightsTab() {
-  const [insights, setInsights] = useState<LeaveAIInsight[]>([]);
-  const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
 
-  const load = () => { setLoading(true); leaveAIApi.list().then(setInsights).catch(() => {}).finally(() => setLoading(false)); };
-  useEffect(load, []);
+  // Newest first, one page at a time with the server's total (it used to be the first 25, unmarked).
+  const list = usePagedList<LeaveAIInsight>((page, pageSize) => leaveAIApi.list({ page, pageSize }));
+  const { items: insights, loading } = list;
+  const load = () => { void list.reload(); };
+  useEffect(load, [list.reload]);
 
   const generate = async () => { setGenerating(true); try { await leaveAIApi.generate(); load(); } catch { alert('Generation failed.'); } setGenerating(false); };
   const ack = async (id: string) => { try { await leaveAIApi.acknowledge(id); load(); } catch { alert('Failed.'); } };
@@ -1930,7 +1963,8 @@ function AIInsightsTab() {
         <button type="button" className={btn.primary} onClick={generate} disabled={generating}><Zap className="h-4 w-4" />{generating ? 'Generating…' : 'Generate Insights'}</button>
       </div>
 
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : insights.length === 0 ? (
+      {list.error != null && <LoadFailure what="Leave insights" error={list.error} />}
+      {loading ? <p className="text-sm text-slate-400">Loading…</p> : list.error != null && insights.length === 0 ? null : insights.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <Zap className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
           <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No insights yet</p>
@@ -1957,6 +1991,7 @@ function AIInsightsTab() {
           ))}
         </div>
       )}
+      <ListWindowFooter shown={insights.length} total={list.total} noun="insights" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
     </div>
   );
 }
