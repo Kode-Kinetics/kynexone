@@ -952,13 +952,17 @@ export const overtimeApi = {
     return mapOvertimeRequest(result);
   },
 
-  /** GET /overtime/requests is scoped server-side; for an employee it returns only their own. */
+  /**
+   * GET /overtime/requests is scoped server-side; for an employee it returns only their own.
+   * Every page of the employee's history: this used to read one page of 50 and show it as the
+   * whole history, so the 51st request and everything older simply was not there.
+   */
   async getMyOTRequests(): Promise<OvertimeRequest[]> {
     const employeeId = await requireEmployeeId();
-    const result = await apiGet<BackendPaged<any>>(
-      `/overtime/requests?employeeId=${employeeId}&page=1&pageSize=50`
+    const rows = await fetchAllPages<any>((page, pageSize) =>
+      apiGet<BackendPaged<any>>(`/overtime/requests?employeeId=${employeeId}&page=${page}&pageSize=${pageSize}`)
     );
-    return itemsOf(result).map(mapOvertimeRequest);
+    return rows.map(mapOvertimeRequest);
   },
 };
 

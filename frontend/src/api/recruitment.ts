@@ -196,7 +196,7 @@ export const requisitionsApi = {
 };
 
 export const openingsApi = {
-  list: (params: { status?: string; page?: number } = {}) =>
+  list: (params: { status?: string; page?: number; pageSize?: number } = {}) =>
     client.get<{ items: JobOpening[]; total: number }>('/api/recruitment/openings', { params }).then(r => r.data),
   listAll: (params: { status?: string } = {}) =>
     fetchAllPages((page, pageSize) =>
@@ -375,8 +375,8 @@ export interface OnboardingChecklistTemplateTask {
 // ── Extended API Clients ───────────────────────────────────────────────────────
 
 export const workforcePlanningApi = {
-  list: (year?: number, status?: string) =>
-    client.get<{ total: number; items: WorkforcePlan[] }>('/api/recruitment/workforce-planning', { params: { year, status } }).then(r => r.data),
+  list: (year?: number, status?: string, page?: number, pageSize?: number) =>
+    client.get<{ total: number; items: WorkforcePlan[] }>('/api/recruitment/workforce-planning', { params: { year, status, page, pageSize } }).then(r => r.data),
 
   get: (id: string) =>
     client.get<WorkforcePlan>(`/api/recruitment/workforce-planning/${id}`).then(r => r.data),
@@ -392,8 +392,8 @@ export const workforcePlanningApi = {
 };
 
 export const interviewsApi = {
-  list: (applicationId?: string, status?: string, page = 1) =>
-    client.get<{ total: number; items: InterviewSchedule[] }>('/api/recruitment/interviews', { params: { applicationId, status, page } }).then(r => r.data),
+  list: (applicationId?: string, status?: string, page = 1, pageSize?: number) =>
+    client.get<{ total: number; items: InterviewSchedule[] }>('/api/recruitment/interviews', { params: { applicationId, status, page, pageSize } }).then(r => r.data),
 
   get: (id: string) =>
     client.get<{ interview: InterviewSchedule; feedbacks: InterviewFeedback[] }>(`/api/recruitment/interviews/${id}`).then(r => r.data),
@@ -424,8 +424,8 @@ export const assessmentsApi = {
   createTemplate: (body: { code: string; title: string; description?: string; assessmentType: string; durationMinutes: number; passingScore: number; isRandomized: boolean; audience?: string }) =>
     client.post<AssessmentTemplate>('/api/recruitment/assessments/templates', body).then(r => r.data),
 
-  list: (applicationId?: string, status?: string) =>
-    client.get<{ total: number; items: CandidateAssessment[] }>('/api/recruitment/assessments', { params: { applicationId, status } }).then(r => r.data),
+  list: (applicationId?: string, status?: string, page?: number, pageSize?: number) =>
+    client.get<{ total: number; items: CandidateAssessment[] }>('/api/recruitment/assessments', { params: { applicationId, status, page, pageSize } }).then(r => r.data),
 
   send: (body: { applicationId: string; templateId: string; expiryDays?: number }) =>
     client.post<CandidateAssessment>('/api/recruitment/assessments/send', body).then(r => r.data),
@@ -438,8 +438,8 @@ export interface OfferPlacementOption { id: string; name: string; code: string }
 export interface OfferPlacementOptions { departments: OfferPlacementOption[]; designations: OfferPlacementOption[] }
 
 export const offersApi = {
-  list: (applicationId?: string, status?: string) =>
-    client.get<{ total: number; items: OfferLetter[] }>('/api/recruitment/offers', { params: { applicationId, status } }).then(r => r.data),
+  list: (applicationId?: string, status?: string, page?: number, pageSize?: number) =>
+    client.get<{ total: number; items: OfferLetter[] }>('/api/recruitment/offers', { params: { applicationId, status, page, pageSize } }).then(r => r.data),
 
   get: (id: string) =>
     client.get<{ offer: OfferLetter; approvals: OfferApproval[]; approval: OfferApprovalContext }>(`/api/recruitment/offers/${id}`).then(r => r.data),
@@ -491,7 +491,7 @@ export const onboardingApi = {
   createBulk: (body: { checklistId?: string; employeeId?: string; applicationId?: string; startDate?: string; tasks?: unknown[] }) =>
     client.post<{ count: number; tasks: OnboardingTask[] }>('/api/recruitment/onboarding/tasks/bulk', body).then(r => r.data),
 
-  listTasks: (params: { employeeId?: string; applicationId?: string; status?: string; page?: number } = {}) =>
+  listTasks: (params: { employeeId?: string; applicationId?: string; status?: string; page?: number; pageSize?: number } = {}) =>
     client.get<{ total: number; items: OnboardingTask[] }>('/api/recruitment/onboarding/tasks', { params }).then(r => r.data),
 
   createTask: (body: { taskTitle: string; taskDescription?: string; category?: string; checklistId?: string; employeeId?: string; applicationId?: string; assignedToName?: string; dueDate?: string; isMandatory: boolean }) =>

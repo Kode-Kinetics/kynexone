@@ -9,6 +9,9 @@ import { formatCalendarDate } from '../lib/calendarDate';
 import { canOpenPerformanceTab, landingPerformanceTab, performanceCapabilities } from '../lib/performanceAccess';
 import type { PerformanceTab } from '../lib/performanceAccess';
 import { useEffect, useState } from 'react';
+import { usePagedList } from '../hooks/usePagedList';
+import { ListWindowFooter } from '../components/ListWindowFooter';
+import { requestFailureReason } from '../lib/requestFailure';
 import {
   Activity, AlertTriangle, BarChart2, CheckCircle, ChevronRight,
   ClipboardList, Clock, FileText, Plus, Settings, Star,
@@ -123,6 +126,11 @@ const btn = {
   ghost: 'inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/5',
   danger: 'inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-4 py-2 text-sm font-medium text-white hover:bg-rose-700 disabled:opacity-50',
 };
+
+/** A list that failed to load says so, instead of rendering as "No … found". */
+function LoadFailure({ what, error }: { what: string; error: unknown }) {
+  return <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">{what} could not be loaded. {requestFailureReason(error)}</p>;
+}
 
 // ── Overview Tab ──────────────────────────────────────────────────────────────
 
@@ -427,12 +435,15 @@ function SelfAssessmentModal({ review, onClose, onSaved }: { review: AppraisalRe
 }
 
 function MyReviewsTab() {
-  const [reviews, setReviews] = useState<AppraisalReview[]>([]);
-  const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<AppraisalReview | null>(null);
 
-  const load = () => { setLoading(true); reviewsApi.list({ view: 'mine' }).then(r => { setReviews(r.items); setLoading(false); }).catch(() => setLoading(false)); };
-  useEffect(load, []);
+  // One page at a time with the server's total: this used to show the first 50 as every review.
+  // view: 'mine' keeps My Reviews to the caller's own reviews; without it HR would see everyone's.
+  const list = usePagedList<AppraisalReview>((page, pageSize) => reviewsApi.list({ view: 'mine', page, pageSize }));
+  const { items: reviews, loading } = list;
+  const load = () => { void list.reload(); };
+  useEffect(load, [list.reload]);
+  const reviewCount = list.total ?? reviews.length;
 
   const acknowledge = async (id: string) => {
     try { await reviewsApi.acknowledge(id); load(); } catch { alert('Failed to acknowledge.'); }
@@ -440,8 +451,9 @@ function MyReviewsTab() {
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-slate-500 dark:text-slate-400">{reviews.length} review record{reviews.length !== 1 ? 's' : ''}</p>
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : reviews.length === 0 ? (
+      <p className="text-sm text-slate-500 dark:text-slate-400">{reviewCount} review record{reviewCount !== 1 ? 's' : ''}</p>
+      {list.error != null && <LoadFailure what="Reviews" error={list.error} />}
+      {loading ? <p className="text-sm text-slate-400">Loading…</p> : list.error != null && reviews.length === 0 ? null : reviews.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <ClipboardList className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
           <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No reviews assigned</p>
@@ -470,6 +482,7 @@ function MyReviewsTab() {
           ))}
         </div>
       )}
+      <ListWindowFooter shown={reviews.length} total={list.total} noun="reviews" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
       {selected && <SelfAssessmentModal review={selected} onClose={() => setSelected(null)} onSaved={() => { setSelected(null); load(); }} />}
     </div>
   );
@@ -639,16 +652,16 @@ function OpenAppealsPanel({ onResolved }: { onResolved: () => void }) {
 
 function TeamReviewsTab() {
   const can = usePerformanceCapabilities();
-  const [reviews, setReviews] = useState<AppraisalReview[]>([]);
-  const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
   const [selected, setSelected] = useState<AppraisalReview | null>(null);
 
-  const load = () => {
-    setLoading(true);
-    reviewsApi.list({ status: statusFilter || undefined }).then(r => { setReviews(r.items); setLoading(false); }).catch(() => setLoading(false));
-  };
-  useEffect(load, [statusFilter]);
+  // One page at a time with the server's total: this used to show the first 50 as every review.
+  const list = usePagedList<AppraisalReview>((page, pageSize) =>
+    reviewsApi.list({ status: statusFilter || undefined, page, pageSize }));
+  const { items: reviews, loading } = list;
+  const load = () => { void list.reload(); };
+  useEffect(load, [statusFilter, list.reload]);
+  const reviewCount = list.total ?? reviews.length;
 
   const publish = async (id: string) => {
     try { await reviewsApi.publish(id); load(); } catch { alert('Publish failed.'); }
@@ -664,10 +677,11 @@ function TeamReviewsTab() {
             <option key={s} value={s}>{s}</option>
           ))}
         </select>
-        <p className="text-sm text-slate-500 dark:text-slate-400">{reviews.length} review{reviews.length !== 1 ? 's' : ''}</p>
+        <p className="text-sm text-slate-500 dark:text-slate-400">{reviewCount} review{reviewCount !== 1 ? 's' : ''}</p>
       </div>
 
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : reviews.length === 0 ? (
+      {list.error != null && <LoadFailure what="Reviews" error={list.error} />}
+      {loading ? <p className="text-sm text-slate-400">Loading…</p> : list.error != null && reviews.length === 0 ? null : reviews.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <Users className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
           <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No reviews match the filter</p>
@@ -694,6 +708,7 @@ function TeamReviewsTab() {
           ))}
         </div>
       )}
+      <ListWindowFooter shown={reviews.length} total={list.total} noun="reviews" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
       {selected && <ManagerReviewModal review={selected} onClose={() => setSelected(null)} onSaved={() => { setSelected(null); load(); }} />}
     </div>
   );
@@ -798,8 +813,6 @@ function GoalsTab() {
   const [approvingId, setApprovingId] = useState<string | null>(null);
   const [goalActionError, setGoalActionError] = useState('');
   const [progressError, setProgressError] = useState('');
-  const [goals, setGoals] = useState<EmployeeGoal[]>([]);
-  const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [statusFilter, setStatusFilter] = useState('');
   const [progressGoal, setProgressGoal] = useState<EmployeeGoal | null>(null);
@@ -808,11 +821,13 @@ function GoalsTab() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  const load = () => {
-    setLoading(true);
-    goalsApi.list({ status: statusFilter || undefined }).then(r => { setGoals(r.items); setLoading(false); }).catch(() => setLoading(false));
-  };
-  useEffect(load, [statusFilter]);
+  // One page at a time with the server's total: this used to show the first 50 as every goal.
+  const list = usePagedList<EmployeeGoal>((page, pageSize) =>
+    goalsApi.list({ status: statusFilter || undefined, page, pageSize }));
+  const { items: goals, loading } = list;
+  const load = () => { void list.reload(); };
+  useEffect(load, [statusFilter, list.reload]);
+  const goalCount = list.total ?? goals.length;
 
   // A goal is agreed before it is measured: approving a draft makes it Active, which is what opens
   // progress updates. The server refuses progress on anything that is not Active.
@@ -845,14 +860,15 @@ function GoalsTab() {
           <option value="">All Statuses</option>
           {['Draft', 'Active', 'Completed', 'OnHold', 'Cancelled'].map(s => <option key={s}>{s}</option>)}
         </select>
-        <p className="flex-1 text-sm text-slate-500 dark:text-slate-400">{goals.length} goal{goals.length !== 1 ? 's' : ''}</p>
+        <p className="flex-1 text-sm text-slate-500 dark:text-slate-400">{goalCount} goal{goalCount !== 1 ? 's' : ''}</p>
         {can.writeReviews && (
           <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> Add Goal</button>
         )}
       </div>
       {goalActionError && <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">{goalActionError}</p>}
 
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : goals.length === 0 ? (
+      {list.error != null && <LoadFailure what="Goals" error={list.error} />}
+      {loading ? <p className="text-sm text-slate-400">Loading…</p> : list.error != null && goals.length === 0 ? null : goals.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <Target className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
           <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No goals found</p>
@@ -900,6 +916,7 @@ function GoalsTab() {
           ))}
         </div>
       )}
+      <ListWindowFooter shown={goals.length} total={list.total} noun="goals" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
 
       {showCreate && <CreateGoalModal onClose={() => setShowCreate(false)} onSaved={() => { setShowCreate(false); load(); }} />}
       {progressGoal && (

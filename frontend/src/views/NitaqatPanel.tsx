@@ -12,6 +12,7 @@ import {
   type NitaqatStandingResponse, type NitaqatTrendResponse,
 } from '../api/nitaqat';
 import { companiesApi, type CompanyDto } from '../api/organization';
+import { isSaudiCompany } from '../lib/saudiCompany';
 
 const NitaqatTrendChart = dynamic(
   () => import('../components/charts/compliance/NitaqatTrendChart').then((m) => m.NitaqatTrendChart),
@@ -25,9 +26,6 @@ const NitaqatTrendChart = dynamic(
 //  that produced it and its verification status. A band gates work-visa issuance
 //  and Iqama transfer, so a reader who cannot audit it will still act on it.
 // ─────────────────────────────────────────────────────────────────────────────
-
-const isSaudiCompany = (c: CompanyDto) =>
-  c.countryCode?.toUpperCase() === 'SA' || c.countryCode?.toUpperCase() === 'SAU';
 
 function BandChip({ band, large = false }: { band: string; large?: boolean }) {
   const s = bandStyle(band);

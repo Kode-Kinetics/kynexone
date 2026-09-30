@@ -42,6 +42,9 @@ import type {
 } from '../api/recruitment';
 import { OfferPlacementFields } from '../components/OfferPlacementFields';
 import { StatusChip } from '../components/StatusChip';
+import { ListWindowFooter } from '../components/ListWindowFooter';
+import { usePagedList } from '../hooks/usePagedList';
+import { requestFailureReason } from '../lib/requestFailure';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import {
   HIRE_THROUGH_OFFER_HINT, assessmentScoreLabel, assessmentScoreMax, canRecordAssessmentResult,
@@ -236,6 +239,18 @@ function KpiCard({ label, value, sub, icon: Icon, color }: {
   );
 }
 
+/** A list that failed to load says so, instead of rendering as "No … found". */
+function LoadFailure({ what, error }: { what: string; error: unknown }) {
+  return <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">{what} could not be loaded. {requestFailureReason(error)}</p>;
+}
+
+/** "340 tasks", from the server total rather than the rows on screen. */
+function ListCount({ loading, total, shown, noun }: { loading: boolean; total: number | null; shown: number; noun: string }) {
+  if (loading) return null;
+  const n = total ?? shown;
+  return <span className="text-sm text-slate-500 dark:text-slate-400">{n.toLocaleString('en-US')} {noun}{n === 1 ? '' : 's'}</span>;
+}
+
 // ── Overview Tab ───────────────────────────────────────────────────────────────
 
 function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
@@ -246,7 +261,8 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
   useEffect(() => {
     openingsApi.stats().then(setStats).catch(() => {});
     requisitionsApi.stats().then(setReqStats).catch(() => {});
-    openingsApi.list({ status: 'Open' }).then(r => setRecentOpenings(r.items.slice(0, 5))).catch(() => {});
+    // A five-row preview beside "View all".
+    openingsApi.list({ status: 'Open', pageSize: 5 }).then(r => setRecentOpenings(r.items.slice(0, 5))).catch(() => {});
   }, []);
 
   return (
@@ -451,23 +467,19 @@ function CreateReqModal({ onClose, onSaved }: CreateReqModalProps) {
 // ── Requisitions Tab ───────────────────────────────────────────────────────────
 
 function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerRequisition) => void }) {
-  const [items, setItems] = useState<ManpowerRequisition[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
   const [acting, setActing] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const r = await requisitionsApi.list({ status: statusFilter || undefined });
-      setItems(r.items); setTotal(r.total);
-    } catch { /**/ }
-    finally { setLoading(false); }
-  }, [statusFilter]);
+  // One page at a time with the server's total. The count already came from the total, but the
+  // table stopped at the server's first 25 with no way to reach the rest.
+  const list = usePagedList<ManpowerRequisition>((page, pageSize) =>
+    requisitionsApi.list({ status: statusFilter || undefined, page, pageSize }));
+  const { items, loading } = list;
+  const total = list.total ?? items.length;
+  const load = useCallback(() => { void list.reload(); }, [list.reload]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [statusFilter, load]);
 
   const submit = async (id: string) => {
     setActing(id);
@@ -502,6 +514,7 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
         </button>
       </div>
 
+      {list.error != null && <LoadFailure what="Requisitions" error={list.error} />}
       <div className="overflow-hidden rounded-xl border border-slate-200 dark:border-white/10">
         <table className="min-w-full text-sm">
           <thead className="border-b border-slate-200 bg-slate-50 dark:border-white/10 dark:bg-white/[0.03]">
@@ -513,7 +526,7 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-white/[0.06]">
             {loading && <tr><td colSpan={7} className="py-10 text-center"><div className="mx-auto h-5 w-5 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>}
-            {!loading && items.length === 0 && <tr><td colSpan={7} className="py-10 text-center text-sm text-slate-400 dark:text-slate-500">No requisitions found.</td></tr>}
+            {!loading && list.error == null && items.length === 0 && <tr><td colSpan={7} className="py-10 text-center text-sm text-slate-400 dark:text-slate-500">No requisitions found.</td></tr>}
             {!loading && items.map(r => (
               <tr key={r.id} className="hover:bg-slate-50/60 dark:hover:bg-white/[0.02]">
                 <td className="px-4 py-3 font-mono text-xs text-slate-600 dark:text-slate-400">{r.requisitionNumber}</td>
@@ -551,6 +564,7 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
             ))}
           </tbody>
         </table>
+        <ListWindowFooter shown={items.length} total={list.total} noun="requisitions" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
       </div>
 
       {createOpen && <CreateReqModal onClose={() => setCreateOpen(false)} onSaved={() => { setCreateOpen(false); load(); }} />}
@@ -1443,24 +1457,26 @@ function AddCandidateModal({ onClose, onSaved }: { onClose: () => void; onSaved:
 // ── Candidates Tab ─────────────────────────────────────────────────────────────
 
 function CandidatesTab() {
-  const [items, setItems] = useState<Candidate[]>([]);
-  const [total, setTotal] = useState(0);
   const [search, setSearch] = useState('');
-  const [loading, setLoading] = useState(true);
   const [addOpen, setAddOpen] = useState(false);
   const searchRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const load = (q = search) => {
-    setLoading(true);
-    candidatesApi.list({ search: q || undefined }).then(r => { setItems(r.items); setTotal(r.total); }).catch(() => {}).finally(() => setLoading(false));
-  };
+  // One page at a time with the server's total. The count was right, but the table stopped at the
+  // first 25 candidates with no way to reach the rest. The hook's latest-request gate also keeps a
+  // slow earlier search from replacing the results of a later one.
+  const list = usePagedList<Candidate>((page, pageSize) =>
+    candidatesApi.list({ search: search || undefined, page, pageSize }));
+  const { items, loading } = list;
+  const total = list.total ?? items.length;
+  const load = () => { void list.reload(); };
 
   useEffect(() => { load(); }, []);
 
   const onSearch = (q: string) => {
     setSearch(q);
     if (searchRef.current) clearTimeout(searchRef.current);
-    searchRef.current = setTimeout(() => load(q), 300);
+    // Runs after the re-render, so the reload reads the new search term.
+    searchRef.current = setTimeout(() => load(), 300);
   };
 
   return (
@@ -1484,7 +1500,7 @@ function CandidatesTab() {
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-white/[0.06]">
             {loading && <tr><td colSpan={7} className="py-10 text-center"><div className="mx-auto h-5 w-5 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>}
-            {!loading && items.length === 0 && <tr><td colSpan={7} className="py-10 text-center text-sm text-slate-400 dark:text-slate-500">No candidates yet. Add your first candidate to the talent pool.</td></tr>}
+            {!loading && list.error == null && items.length === 0 && <tr><td colSpan={7} className="py-10 text-center text-sm text-slate-400 dark:text-slate-500">No candidates yet. Add your first candidate to the talent pool.</td></tr>}
             {!loading && items.map(c => (
               <tr key={c.id} className="hover:bg-slate-50/60 dark:hover:bg-white/[0.02]">
                 <td className="px-4 py-3">
@@ -1512,7 +1528,9 @@ function CandidatesTab() {
             ))}
           </tbody>
         </table>
+        <ListWindowFooter shown={items.length} total={list.total} noun="candidates" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
       </div>
+      {list.error != null && <LoadFailure what="Candidates" error={list.error} />}
 
       {addOpen && <AddCandidateModal onClose={() => setAddOpen(false)} onSaved={() => { setAddOpen(false); load(); }} />}
     </div>
@@ -1522,17 +1540,17 @@ function CandidatesTab() {
 // ── Workforce Planning Tab ────────────────────────────────────────────────────
 
 function WorkforcePlanningTab() {
-  const [plans, setPlans] = useState<WorkforcePlan[]>([]);
   const [summary, setSummary] = useState<{ totalPlans: number; totalGap: number; totalBudget: number; approved: number } | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState({ planName: '', planYear: new Date().getFullYear(), departmentName: '', currentHeadcount: 0, plannedHeadcount: 0, budgetAllocated: 0, currencyCode: 'USD', notes: '' });
   const [saving, setSaving] = useState(false);
 
+  // Plans one page at a time with the server's total (the table used to stop at the first 20).
+  const list = usePagedList<WorkforcePlan>((page, pageSize) => workforcePlanningApi.list(undefined, undefined, page, pageSize));
+  const plans = list.items;
   const load = async () => {
-    try {
-      const [r, s] = await Promise.all([workforcePlanningApi.list(), workforcePlanningApi.summary()]);
-      setPlans(r.items); setSummary(s);
-    } catch {}
+    void list.reload();
+    try { setSummary(await workforcePlanningApi.summary()); } catch {}
   };
 
   useEffect(() => { load(); }, []);
@@ -1612,7 +1630,8 @@ function WorkforcePlanningTab() {
           </div>
         )}
 
-        {plans.length === 0 ? (
+        {list.error != null && <LoadFailure what="Workforce plans" error={list.error} />}
+        {list.loading ? <p className="py-8 text-center text-sm text-slate-400">Loading…</p> : list.error != null && plans.length === 0 ? null : plans.length === 0 ? (
           <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">No workforce plans found. Create the first plan.</p>
         ) : (
           <div className="overflow-x-auto">
@@ -1642,6 +1661,7 @@ function WorkforcePlanningTab() {
             </table>
           </div>
         )}
+        <ListWindowFooter shown={plans.length} total={list.total} noun="plans" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
       </div>
     </div>
   );
@@ -1650,8 +1670,6 @@ function WorkforcePlanningTab() {
 // ── Interviews Tab ────────────────────────────────────────────────────────────
 
 function InterviewsTab() {
-  const [interviews, setInterviews] = useState<ExtInterviewSchedule[]>([]);
-  const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
   const [showSchedule, setShowSchedule] = useState(false);
   const [applications, setApplications] = useState<JobApplication[]>([]);
@@ -1669,10 +1687,11 @@ function InterviewsTab() {
     overallRating: 4, recommendation: 'Hire', feedbackNotes: '',
   });
 
-  const load = async () => {
-    setLoading(true);
-    try { const r = await interviewsApi.list(undefined, statusFilter || undefined); setInterviews(r.items); } catch {} finally { setLoading(false); }
-  };
+  // One page at a time with the server's total: this used to show the first 20 interviews as all of them.
+  const list = usePagedList<ExtInterviewSchedule>((page, pageSize) =>
+    interviewsApi.list(undefined, statusFilter || undefined, page, pageSize));
+  const { items: interviews, loading } = list;
+  const load = () => list.reload();
 
   const loadApps = async () => {
     try { setApplications(await applicationsApi.listAll()); } catch {}
@@ -1741,6 +1760,7 @@ function InterviewsTab() {
           <option value="">All Statuses</option>
           {['Scheduled', 'Completed', 'Cancelled', 'NoShow'].map(s => <option key={s}>{s}</option>)}
         </select>
+        <ListCount loading={loading} total={list.total} shown={interviews.length} noun="interview" />
         <button type="button" onClick={openSchedule} className="ms-auto flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-sm font-medium text-white hover:bg-sapphire/90">
           <Calendar className="h-3.5 w-3.5" />Schedule Interview
         </button>
@@ -1812,7 +1832,8 @@ function InterviewsTab() {
         </div>
       )}
 
-      {loading ? <p className="text-center text-sm text-slate-400 py-8">Loading…</p> : interviews.length === 0 ? (
+      {list.error != null && <LoadFailure what="Interviews" error={list.error} />}
+      {loading ? <p className="text-center text-sm text-slate-400 py-8">Loading…</p> : list.error != null && interviews.length === 0 ? null : interviews.length === 0 ? (
         <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">No interviews found. Schedule the first one above.</p>
       ) : (
         <div className="space-y-2">
@@ -1902,6 +1923,7 @@ function InterviewsTab() {
           ))}
         </div>
       )}
+      <ListWindowFooter shown={interviews.length} total={list.total} noun="interviews" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
     </div>
   );
 }
@@ -1909,8 +1931,6 @@ function InterviewsTab() {
 // ── Assessments Tab ───────────────────────────────────────────────────────────
 
 function AssessmentsTab() {
-  const [assessments, setAssessments] = useState<CandidateAssessment[]>([]);
-  const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
   const [showAssign, setShowAssign] = useState(false);
   const [applications, setApplications] = useState<JobApplication[]>([]);
@@ -1929,10 +1949,11 @@ function AssessmentsTab() {
   const [scoreInput, setScoreInput] = useState<Record<string, string>>({});
   const [scoreError, setScoreError] = useState<Record<string, string>>({});
 
-  const load = async () => {
-    setLoading(true);
-    try { const r = await assessmentsApi.list(undefined, statusFilter || undefined); setAssessments(r.items); } catch {} finally { setLoading(false); }
-  };
+  // One page at a time with the server's total: this used to show the first 20 assessments as all of them.
+  const list = usePagedList<CandidateAssessment>((page, pageSize) =>
+    assessmentsApi.list(undefined, statusFilter || undefined, page, pageSize));
+  const { items: assessments, loading } = list;
+  const load = () => list.reload();
 
   useEffect(() => { load(); }, [statusFilter]);
 
@@ -2020,6 +2041,7 @@ function AssessmentsTab() {
           <option value="">All Statuses</option>
           {['Pending', 'Sent', 'InProgress', 'Completed', 'Expired'].map(s => <option key={s}>{s}</option>)}
         </select>
+        <ListCount loading={loading} total={list.total} shown={assessments.length} noun="assessment" />
         <div className="ms-auto flex items-center gap-2">
           <button type="button" onClick={() => { setTemplateError(''); setShowTemplateCreate(v => !v); }}
             className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:text-slate-200 dark:hover:bg-white/10">
@@ -2138,7 +2160,8 @@ function AssessmentsTab() {
         </div>
       )}
 
-      {loading ? <p className="text-center text-sm text-slate-400 py-8">Loading…</p> : assessments.length === 0 ? (
+      {list.error != null && <LoadFailure what="Assessments" error={list.error} />}
+      {loading ? <p className="text-center text-sm text-slate-400 py-8">Loading…</p> : list.error != null && assessments.length === 0 ? null : assessments.length === 0 ? (
         <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">No assessments found. Assign one above.</p>
       ) : (
         <div className="surface overflow-x-auto">
@@ -2189,6 +2212,7 @@ function AssessmentsTab() {
           </table>
         </div>
       )}
+      <ListWindowFooter shown={assessments.length} total={list.total} noun="assessments" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
     </div>
   );
 }
@@ -2197,8 +2221,6 @@ function AssessmentsTab() {
 
 function OffersTab() {
   const { currencyCode } = useTenantSettings();
-  const [offers, setOffers] = useState<OfferLetter[]>([]);
-  const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [applications, setApplications] = useState<JobApplication[]>([]);
@@ -2213,10 +2235,12 @@ function OffersTab() {
   const [actioning, setActioning] = useState<string | null>(null);
   const [approvalOpen, setApprovalOpen] = useState<string | null>(null);
 
-  const load = async () => {
-    setLoading(true);
-    try { const r = await offersApi.list(undefined, statusFilter || undefined); setOffers(r.items); } catch {} finally { setLoading(false); }
-  };
+  // One page at a time with the server's total: this used to show the first 20 offers as all of them,
+  // so an offer waiting for approval past row 20 could not be found here.
+  const list = usePagedList<OfferLetter>((page, pageSize) =>
+    offersApi.list(undefined, statusFilter || undefined, page, pageSize));
+  const { items: offers, loading } = list;
+  const load = () => list.reload();
 
   useEffect(() => { load(); }, [statusFilter]);
 
@@ -2277,6 +2301,7 @@ function OffersTab() {
           <option value="">All Statuses</option>
           {['Draft', 'PendingApproval', 'Approved', 'Sent', 'Accepted', 'Declined', 'Expired'].map(s => <option key={s}>{s}</option>)}
         </select>
+        <ListCount loading={loading} total={list.total} shown={offers.length} noun="offer" />
         <button type="button" onClick={openCreate} className="ms-auto flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-sm font-medium text-white hover:bg-sapphire/90">
           <FileText className="h-3.5 w-3.5" />Create Offer
         </button>
@@ -2339,7 +2364,8 @@ function OffersTab() {
         </div>
       )}
 
-      {loading ? <p className="text-center text-sm text-slate-400 py-8">Loading…</p> : offers.length === 0 ? (
+      {list.error != null && <LoadFailure what="Offers" error={list.error} />}
+      {loading ? <p className="text-center text-sm text-slate-400 py-8">Loading…</p> : list.error != null && offers.length === 0 ? null : offers.length === 0 ? (
         <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">No offers found. Create one above.</p>
       ) : (
         <div className="space-y-2">
@@ -2389,6 +2415,7 @@ function OffersTab() {
           ))}
         </div>
       )}
+      <ListWindowFooter shown={offers.length} total={list.total} noun="offers" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
     </div>
   );
 }
@@ -2396,12 +2423,10 @@ function OffersTab() {
 // ── Onboarding Tab ────────────────────────────────────────────────────────────
 
 function OnboardingTab() {
-  const [tasks, setTasks] = useState<OnboardingTask[]>([]);
   const [checklists, setChecklists] = useState<OnboardingChecklist[]>([]);
   const [selectedChecklistId, setSelectedChecklistId] = useState('');
   const [templateTasks, setTemplateTasks] = useState<OnboardingChecklistTemplateTask[]>([]);
   const [summary, setSummary] = useState<{ total: number; pending: number; completed: number; blocked: number; completionPct: number } | null>(null);
-  const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
   const [showAdd, setShowAdd] = useState(false);
   const [showTemplate, setShowTemplate] = useState(false);
@@ -2418,15 +2443,14 @@ function OnboardingTab() {
   const [taskError, setTaskError] = useState('');
   const [updatingStatus, setUpdatingStatus] = useState<string | null>(null);
 
+  // Tasks one page at a time with the server's total. The summary above said "Total: 340" while the
+  // list below stopped at the first 30, with nothing to reach the rest.
+  const list = usePagedList<OnboardingTask>((page, pageSize) =>
+    onboardingApi.listTasks({ status: statusFilter || undefined, page, pageSize }));
+  const { items: tasks, loading } = list;
   const load = async () => {
-    setLoading(true);
-    try {
-      const [r, s] = await Promise.all([
-        onboardingApi.listTasks({ status: statusFilter || undefined }),
-        onboardingApi.summary(),
-      ]);
-      setTasks(r.items); setSummary(s);
-    } catch {} finally { setLoading(false); }
+    void list.reload();
+    try { setSummary(await onboardingApi.summary()); } catch {}
   };
 
   useEffect(() => { load(); }, [statusFilter]);
@@ -2644,6 +2668,7 @@ function OnboardingTab() {
           <option value="">All Statuses</option>
           {['Pending', 'InProgress', 'Completed', 'Blocked', 'Skipped'].map(s => <option key={s}>{s}</option>)}
         </select>
+        <ListCount loading={loading} total={list.total} shown={tasks.length} noun="task" />
         <button type="button" onClick={() => setShowAdd(true)} className="ms-auto flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-sm font-medium text-white hover:bg-sapphire/90">
           <Plus className="h-3.5 w-3.5" />Add Task
         </button>
@@ -2700,7 +2725,8 @@ function OnboardingTab() {
         </div>
       )}
 
-      {loading ? <p className="text-center text-sm text-slate-400 py-8">Loading…</p> : tasks.length === 0 ? (
+      {list.error != null && <LoadFailure what="Onboarding tasks" error={list.error} />}
+      {loading ? <p className="text-center text-sm text-slate-400 py-8">Loading…</p> : list.error != null && tasks.length === 0 ? null : tasks.length === 0 ? (
         <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">No onboarding tasks found. Add the first task above.</p>
       ) : (
         <div className="space-y-2">
@@ -2731,6 +2757,7 @@ function OnboardingTab() {
           ))}
         </div>
       )}
+      <ListWindowFooter shown={tasks.length} total={list.total} noun="tasks" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
     </div>
   );
 }

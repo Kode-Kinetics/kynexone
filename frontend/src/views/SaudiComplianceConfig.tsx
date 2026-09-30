@@ -11,6 +11,8 @@ import { gccSettingsApi } from '../api/setup';
 import { financeRatesApi, type StatutoryRateRow } from '../api/financeRates';
 import type { CompanyDto, CompanyRequest } from '../api/organization';
 import type { GCCComplianceSetting } from '../api/setup';
+import { isSaudiCompany, selectSaudiCompany } from '../lib/saudiCompany';
+import { requestFailureReason } from '../lib/requestFailure';
 
 function toRequest(c: CompanyDto, patch: Partial<CompanyRequest>): CompanyRequest {
   return {
@@ -928,23 +930,89 @@ const navItems: { id: ConfigSection; label: string; icon: React.ElementType; des
   { id: 'documents', label: 'Document Tracking', icon: FileText,   desc: 'Visa, Iqama, Emirates ID expiry alerts' },
 ];
 
+// GOSI and WPS employer IDs are saved on a company. This screen used to ask for one company (page 1,
+// one row) and edit whichever came back first, so in a multi-company tenant it could show, and
+// overwrite, a UAE company's IDs while every Saudi entity past the first was unreachable. It now
+// reads every company, keeps the Saudi ones, and names the one being edited.
+function CompanyScope({ companies, allCount, companyId, onChange, error }: {
+  companies: CompanyDto[] | null;
+  allCount: number;
+  companyId: string;
+  onChange: (id: string) => void;
+  error: unknown;
+}) {
+  if (error != null) {
+    return (
+      <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300">
+        Companies could not be loaded, so there is no company to save these settings on. {requestFailureReason(error)}
+      </p>
+    );
+  }
+  if (companies === null) return <p className="text-sm text-slate-400">Loading companies…</p>;
+  if (companies.length === 0) {
+    return (
+      <div role="status" className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+        <p className="font-semibold">No Saudi company</p>
+        <p className="mt-0.5 text-xs">
+          GOSI and WPS employer IDs belong to a company registered in Saudi Arabia.
+          {allCount > 0 ? ` None of your ${allCount} ${allCount === 1 ? 'company has' : 'companies have'} the country set to SA.` : ''}
+          {' '}Set the country on the company under Companies, then return here.
+        </p>
+      </div>
+    );
+  }
+  const name = (c: CompanyDto) => c.tradeName || c.legalNameEn;
+  if (companies.length === 1) {
+    return <p className="text-sm text-slate-500 dark:text-slate-400">Settings for <strong className="text-slate-800 dark:text-slate-100">{name(companies[0])}</strong>, your Saudi company.</p>;
+  }
+  return (
+    <label className="flex flex-wrap items-center gap-2 text-sm">
+      <span className="font-semibold text-slate-700 dark:text-slate-300">Company</span>
+      <select
+        value={companyId}
+        onChange={(e) => onChange(e.target.value)}
+        className="input w-72"
+        title="Saudi company whose settings are shown"
+      >
+        {companies.map((c) => <option key={c.id} value={c.id}>{name(c)}</option>)}
+      </select>
+      <span className="text-xs text-slate-400">{companies.length} Saudi companies. Employer IDs are saved on the company selected here.</span>
+    </label>
+  );
+}
+
 export function SaudiComplianceConfig() {
   const [active, setActive] = useState<ConfigSection>('qiwa');
-  const [company, setCompany] = useState<CompanyDto | null>(null);
+  const [companies, setCompanies] = useState<CompanyDto[] | null>(null);
+  const [allCompanyCount, setAllCompanyCount] = useState(0);
+  const [companiesError, setCompaniesError] = useState<unknown>(null);
+  const [companyId, setCompanyId] = useState('');
   const [gcc, setGcc] = useState<GCCComplianceSetting | null>(null);
+  const company = companies?.find(c => c.id === companyId) ?? null;
 
   const load = useCallback(async () => {
-    try {
-      const [compResult, gccResult] = await Promise.all([
-        companiesApi.list(1, 1),
-        gccSettingsApi.list('SA'),
-      ]);
-      if (compResult.items.length > 0) setCompany(compResult.items[0]);
-      if (gccResult.length > 0) setGcc(gccResult[0]);
-    } catch { /**/ }
+    const [compResult, gccResult] = await Promise.allSettled([
+      companiesApi.listAll(),
+      gccSettingsApi.list('SA'),
+    ]);
+    if (compResult.status === 'fulfilled') {
+      const saudi = compResult.value.filter(isSaudiCompany);
+      setAllCompanyCount(compResult.value.length);
+      setCompanies(saudi);
+      setCompaniesError(null);
+      setCompanyId(prev => selectSaudiCompany(saudi, prev));
+    } else {
+      setCompanies([]);
+      setCompaniesError(compResult.reason);
+    }
+    if (gccResult.status === 'fulfilled' && gccResult.value.length > 0) setGcc(gccResult.value[0]);
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  const updateCompany = useCallback((updated: CompanyDto) => {
+    setCompanies(list => list?.map(c => (c.id === updated.id ? updated : c)) ?? list);
+  }, []);
 
   return (
     <div className="flex gap-5">
@@ -974,10 +1042,13 @@ export function SaudiComplianceConfig() {
       </nav>
 
       {/* Panel */}
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 space-y-4">
+        {(active === 'gosi' || active === 'wps') && (
+          <CompanyScope companies={companies} allCount={allCompanyCount} companyId={companyId} onChange={setCompanyId} error={companiesError} />
+        )}
         {active === 'qiwa'      && <QiwaPanel />}
-        {active === 'gosi'      && <GosiPanel company={company} onCompanyUpdate={setCompany} />}
-        {active === 'wps'       && <WpsPanel company={company} onCompanyUpdate={setCompany} gcc={gcc} onGccUpdate={setGcc} />}
+        {active === 'gosi'      && <GosiPanel company={company} onCompanyUpdate={updateCompany} />}
+        {active === 'wps'       && <WpsPanel company={company} onCompanyUpdate={updateCompany} gcc={gcc} onGccUpdate={setGcc} />}
         {active === 'labor'     && <LaborPanel gcc={gcc} onGccUpdate={setGcc} />}
         {active === 'documents' && <DocumentTrackingPanel gcc={gcc} onGccUpdate={setGcc} />}
       </div>
