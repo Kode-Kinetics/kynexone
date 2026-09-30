@@ -605,6 +605,51 @@ public sealed class IntegrationDeliveryHonestyTests
         live.ActionItems.Should().NotContain(a => a.Id == "qiwa_simulated");
     }
 
+    // ── Logs carry identifiers, never recipients ───────────────────────────────────────────────
+
+    [Fact]
+    public async Task No_email_log_line_carries_the_recipient_masked_or_not()
+    {
+        var to = $"private.person-{Guid.NewGuid():N}@customer.example";
+        var logger = new ListLogger<SmtpEmailService>();
+
+        // Not configured.
+        await using (var db = InMemory())
+        {
+            var smtp = new SmtpEmailService(db, DataProtectionProvider.Create("f09"), Config(), logger);
+            (await smtp.DeliverAsync(Guid.NewGuid(), to, "Private Person", "Payslip for Private Person", "<p>x</p>"))
+                .Status.Should().Be(EmailDeliveryStatus.NotConfigured);
+        }
+        // Captured, both by capture mode and by the permitted-recipient list.
+        await using (var db = InMemory())
+        {
+            var smtp = new SmtpEmailService(db, DataProtectionProvider.Create("f09"),
+                Config(new Dictionary<string, string?> { [EmailTransportPolicy.ModeKey] = "capture" }), logger);
+            await smtp.DeliverAsync(Guid.NewGuid(), to, "Private Person", "Payslip for Private Person", "<p>x</p>");
+        }
+        await using (var db = InMemory())
+        {
+            db.PlatformConfigEntries.AddRange(
+                new PlatformConfigEntry { Key = PlatformSmtpConfig.KeyHost, Value = "127.0.0.1" },
+                new PlatformConfigEntry { Key = PlatformSmtpConfig.KeyFromAddress, Value = "noreply@example.test" });
+            await db.SaveChangesAsync();
+            var smtp = new SmtpEmailService(db, DataProtectionProvider.Create("f09"),
+                Config(new Dictionary<string, string?> { [EmailTransportPolicy.AllowedRecipientsKey] = "@qa.example.test" }), logger);
+            await smtp.DeliverAsync(Guid.NewGuid(), to, "Private Person", "Payslip for Private Person", "<p>x</p>");
+        }
+
+        logger.Lines.Should().HaveCountGreaterThanOrEqualTo(3);
+        var localPart = to[..to.IndexOf('@')];
+        foreach (var line in logger.Lines)
+        {
+            line.Should().NotContain("customer.example").And.NotContain(localPart[..6])
+                .And.NotContain("Private Person").And.NotContain("•", "a masked address is still an address");
+        }
+        logger.Lines.Should().Contain(l => l.Contains("outcome not_configured"));
+        logger.Lines.Should().Contain(l => l.Contains("reason capture_mode"));
+        logger.Lines.Should().Contain(l => l.Contains("reason not_on_allow_list"));
+    }
+
     // ── Harness ────────────────────────────────────────────────────────────────────────────────
 
     private static ZayraDbContext InMemory(string? name = null) => new(new DbContextOptionsBuilder<ZayraDbContext>()
@@ -769,6 +814,16 @@ public sealed class IntegrationDeliveryHonestyTests
             IReadOnlyList<EmailAttachment>? attachments = null, CancellationToken cancellationToken = default)
             => throw new InvalidOperationException("must not be called when unconfigured");
         public Task<bool> IsConfiguredAsync(CancellationToken cancellationToken = default) => Task.FromResult(false);
+    }
+
+    private sealed class ListLogger<T> : Microsoft.Extensions.Logging.ILogger<T>
+    {
+        public List<string> Lines { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId,
+            TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            => Lines.Add(formatter(state, exception));
     }
 
     /// <summary>Accepts every recipient except one, which the relay refuses mid-run.</summary>
