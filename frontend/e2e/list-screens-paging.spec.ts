@@ -9,6 +9,7 @@ import {
 import {
   absenceApi, compOffApi, encashmentApi, leaveAIApi, leaveBalancesApi, leaveRequestsApi,
 } from '../src/api/leave';
+import { assessmentsApi, interviewsApi, offersApi, workforcePlanningApi } from '../src/api/recruitment';
 import { isSaudiCompany, selectSaudiCompany } from '../src/lib/saudiCompany';
 
 /**
@@ -175,5 +176,40 @@ test.describe('performance goals and reviews page with the server total', () => 
     expect(perf.match(/total=\{list\.total\} noun="reviews"/g)).toHaveLength(2);
     expect(perf).toContain('list.total ?? goals.length');
     expect(perf.match(/list\.total \?\? reviews\.length/g)).toHaveLength(2);
+  });
+});
+
+test.describe('recruitment lists page with the server total', () => {
+  test('interviews, assessments, offers and workforce plans pass the page they want', async () => {
+    const calls = serve({
+      '/api/recruitment/interviews': rows(130, 'iv'), '/api/recruitment/assessments': rows(130, 'as'),
+      '/api/recruitment/offers': rows(130, 'of'), '/api/recruitment/workforce-planning': rows(130, 'wp'),
+    });
+    const second = await Promise.all([
+      interviewsApi.list(undefined, 'Scheduled', 2, 100),
+      assessmentsApi.list(undefined, 'Sent', 2, 100),
+      offersApi.list(undefined, 'PendingApproval', 2, 100),
+      workforcePlanningApi.list(undefined, undefined, 2, 100),
+    ]);
+    expect(second.map((r) => [r.items.length, r.total])).toEqual([[30, 130], [30, 130], [30, 130], [30, 130]]);
+    expect(calls.every((c) => c.params.page === 2 && c.params.pageSize === 100)).toBe(true);
+  });
+
+  test('requisitions, candidates, interviews, assessments, offers, onboarding tasks and plans show Load more', () => {
+    const rec = read('src/views/RecruitmentPage.tsx');
+    for (const call of [
+      'requisitionsApi.list({ status: statusFilter || undefined, page, pageSize })',
+      'candidatesApi.list({ search: search || undefined, page, pageSize })',
+      'workforcePlanningApi.list(undefined, undefined, page, pageSize)',
+      'interviewsApi.list(undefined, statusFilter || undefined, page, pageSize)',
+      'assessmentsApi.list(undefined, statusFilter || undefined, page, pageSize)',
+      'offersApi.list(undefined, statusFilter || undefined, page, pageSize)',
+      'onboardingApi.listTasks({ status: statusFilter || undefined, page, pageSize })',
+    ]) expect(rec).toContain(call);
+    for (const noun of ['requisitions', 'candidates', 'plans', 'interviews', 'assessments', 'offers', 'tasks']) {
+      expect(rec).toContain(`total={list.total} noun="${noun}"`);
+    }
+    // The overview asks for the five openings it previews.
+    expect(rec).toContain("openingsApi.list({ status: 'Open', pageSize: 5 })");
   });
 });
