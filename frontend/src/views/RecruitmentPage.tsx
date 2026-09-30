@@ -37,10 +37,132 @@ import type {
   ApplicationDetail, KanbanStage, OfferLetter,
   RecruitmentStats, RequisitionStats,
   WorkforcePlan, InterviewSchedule as ExtInterviewSchedule,
-  CandidateAssessment, OnboardingChecklist, OnboardingChecklistTemplateTask, OnboardingTask,
+  CandidateAssessment, AssessmentTemplate, OnboardingChecklist, OnboardingChecklistTemplateTask, OnboardingTask,
+  OfferApproval, OfferApprovalContext, OfferApproverOption,
 } from '../api/recruitment';
 import { StatusChip } from '../components/StatusChip';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
+import {
+  HIRE_THROUGH_OFFER_HINT, assessmentScoreLabel, assessmentScoreMax, canRecordAssessmentResult,
+  canSendOffer, nextPipelineStage, parseAssessmentScore,
+  OFFER_NEXT_ACTION_TEXT, canRequestApproval, offerNextAction,
+} from '../lib/recruitmentJourney';
+
+// ── Offer approval ────────────────────────────────────────────────────────────
+
+/**
+ * Approval for one offer: who has to approve it, what they decided, and the signed-in user's next
+ * step. Every rule comes from GET /api/recruitment/offers/{id} (OfferRules on the API); this only
+ * presents it. `onContext` hands the rules to the parent so its Send button agrees.
+ */
+function OfferApprovalPanel({ offerId, onChanged, onContext }: {
+  offerId: string;
+  onChanged: () => void;
+  onContext?: (context: OfferApprovalContext | null) => void;
+}) {
+  const [data, setData] = useState<{ offer: OfferLetter; approvals: OfferApproval[]; approval: OfferApprovalContext } | null>(null);
+  const [options, setOptions] = useState<OfferApproverOption[] | null>(null);
+  const [approverId, setApproverId] = useState('');
+  const [comment, setComment] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      const next = await offersApi.get(offerId);
+      setData(next);
+      onContext?.(next.approval);
+    } catch (e) { notifyApiError(e); }
+  }, [offerId, onContext]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const offer = data?.offer;
+  const approvals = data?.approvals ?? [];
+  const context = data?.approval ?? null;
+  const next = offer ? offerNextAction(offer.status, context, approvals) : null;
+  const showRequest = !!offer && !!context && !context.myPendingStepId && !context.canSend
+    && canRequestApproval(offer.status, approvals) && (context.required || approvals.length > 0);
+
+  useEffect(() => {
+    if (!showRequest || options !== null) return;
+    // Only HR Managers and Admins may configure approval; anyone else simply sees no picker.
+    offersApi.approverOptions(offerId).then(setOptions).catch(() => setOptions([]));
+  }, [showRequest, options, offerId]);
+
+  if (!offer || !context) return null;
+  if (!context.required && approvals.length === 0 && !showRequest) return null;
+
+  const requestApproval = async () => {
+    const approver = options?.find(o => o.userId === approverId);
+    if (!approver) { setError('Choose who approves this offer.'); return; }
+    setBusy(true); setError('');
+    try {
+      await offersApi.requestApproval(offerId, { approverUserId: approver.userId, approverName: approver.name });
+      setApproverId(''); setOptions(null);
+      await load(); onChanged();
+    } catch (e) { notifyApiError(e); } finally { setBusy(false); }
+  };
+
+  const decide = async (decision: 'Approved' | 'Rejected') => {
+    if (!context.myPendingStepId) return;
+    if (decision === 'Rejected' && !comment.trim()) { setError('Say why you are rejecting this offer.'); return; }
+    setBusy(true); setError('');
+    try {
+      await offersApi.decideApproval(offerId, context.myPendingStepId, { decision, comments: comment.trim() || undefined });
+      setComment('');
+      await load(); onChanged();
+    } catch (e) { notifyApiError(e); } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="mt-3 space-y-2 rounded-lg border border-slate-200 p-3 dark:border-white/10">
+      <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">Approval</p>
+      {next
+        ? <p className="text-xs text-slate-600 dark:text-slate-300">{OFFER_NEXT_ACTION_TEXT[next]}</p>
+        : context.sendBlockedReason && <p className="text-xs text-amber-700 dark:text-amber-400">{context.sendBlockedReason}</p>}
+      {approvals.length > 0 && (
+        <ul className="space-y-1">
+          {approvals.map(a => (
+            <li key={a.id} className="flex items-center justify-between gap-2 text-xs text-slate-600 dark:text-slate-400">
+              <span>{a.stepOrder}. {a.approverName || 'Approver'}{a.comments ? ` · ${a.comments}` : ''}</span>
+              <span className="font-medium">{a.status}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {context.myPendingStepId && offer.status === 'PendingApproval' && (
+        <div className="space-y-2">
+          <textarea aria-label="Approval comment" rows={2} value={comment} onChange={e => setComment(e.target.value)}
+            placeholder="Comment (required to reject)"
+            className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs dark:border-white/10 dark:bg-white/5" />
+          <div className="flex gap-2">
+            <button type="button" disabled={busy} onClick={() => decide('Approved')}
+              className="rounded-lg bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">Approve offer</button>
+            <button type="button" disabled={busy} onClick={() => decide('Rejected')}
+              className="rounded-lg border border-rose-200 px-2.5 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-500/30 dark:text-rose-400">Reject offer</button>
+          </div>
+        </div>
+      )}
+      {showRequest && options !== null && (
+        options.length === 0
+          ? <p className="text-xs text-slate-500 dark:text-slate-400">No one else can approve this offer yet: it needs an active HR Manager or Admin who did not write it.</p>
+          : (
+            <div className="flex flex-wrap items-center gap-2">
+              <select aria-label="Offer approver" value={approverId} onChange={e => setApproverId(e.target.value)}
+                className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs dark:border-white/10 dark:bg-white/5">
+                <option value="">Choose approver…</option>
+                {options.map(o => <option key={o.userId} value={o.userId}>{o.name || o.email}</option>)}
+              </select>
+              <button type="button" disabled={busy || !approverId} onClick={requestApproval}
+                className="rounded-lg bg-sapphire px-2.5 py-1 text-xs font-medium text-white hover:bg-sapphire/90 disabled:opacity-50">Request approval</button>
+            </div>
+          )
+      )}
+      {error && <p className="text-xs text-rose-500">{error}</p>}
+    </div>
+  );
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -700,7 +822,11 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
             entityName="Job Openings"
             onExport={jobOpeningsImportExport.export}
             onDownloadTemplate={jobOpeningsImportExport.template}
-            onImport={jobOpeningsImportExport.import}
+            onImport={async (csv) => {
+              const result = await jobOpeningsImportExport.import(csv);
+              load(); // Update the visible list after the committed import.
+              return result;
+            }}
           />
           <button type="button" className="btn-secondary flex items-center gap-1.5 text-sm" onClick={() => setAiOpen(true)} disabled={items.length === 0}>
             <Sparkles className="h-3.5 w-3.5" />AI Tools
@@ -771,6 +897,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
   const [interviewForm, setInterviewForm] = useState({ interviewType: 'HR Screening', interviewerNames: '', scheduledAt: '', durationMinutes: 60, mode: 'Video', meetingLink: '', location: '' });
   const [noteText, setNoteText] = useState('');
   const [rejectReason, setRejectReason] = useState('');
+  const [approvalContext, setApprovalContext] = useState<OfferApprovalContext | null>(null);
 
   const load = () => {
     applicationsApi.get(id).then(setDetail).catch(() => {});
@@ -780,11 +907,8 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
   const app = detail?.application;
   if (!app) return null;
 
-  const nextStage = (() => {
-    const stages = ['Applied', 'Screening', 'Assessment', 'Interview', 'Offer', 'Hired'];
-    const idx = stages.indexOf(app.stage);
-    return idx >= 0 && idx < stages.length - 1 ? stages[idx + 1] : null;
-  })();
+  // Offer -> Hired is not a stage move: accepting the offer hires and creates the employee record.
+  const nextStage = nextPipelineStage(app.stage);
 
   const doAdvance = async () => {
     setActing('advance');
@@ -900,6 +1024,12 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
               <button type="button" disabled={!!acting} onClick={doAdvance}
                 className="flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-xs font-semibold text-white hover:bg-sapphire/90 disabled:opacity-50">
                 <ArrowRight className="h-3.5 w-3.5" />Move to {nextStage}
+              </button>
+            )}
+            {!nextStage && app.stage === 'Offer' && (
+              <button type="button" onClick={() => setTab('offer')}
+                className="text-start text-xs text-slate-600 underline-offset-2 hover:underline dark:text-slate-300">
+                {HIRE_THROUGH_OFFER_HINT}
               </button>
             )}
             <div className="flex items-center gap-1.5 rounded-lg border border-rose-200 px-2 py-1 dark:border-rose-500/30">
@@ -1033,7 +1163,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                       className="flex items-center gap-1 rounded-lg bg-slate-100 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-200 disabled:opacity-50 dark:bg-white/10 dark:text-slate-300">
                       <FileText className="h-3.5 w-3.5" />{acting === 'preview' ? 'Opening…' : 'Preview'}
                     </button>
-                    {offer.status === 'Draft' && (
+                    {canSendOffer(offer.status) && approvalContext?.canSend && (
                       <button type="button" disabled={acting === 'send'} onClick={() => offerAction('send')}
                         className="flex items-center gap-1 rounded-lg bg-sapphire px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-sapphire/90 disabled:opacity-50">
                         <Send className="h-3.5 w-3.5" />Send to Candidate
@@ -1052,6 +1182,8 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                       </>
                     )}
                   </div>
+                  <OfferApprovalPanel key={`${offer.id}:${offer.status}`} offerId={offer.id}
+                    onChanged={() => { load(); onRefresh(); }} onContext={setApprovalContext} />
                 </div>
               ) : (
                 app.stage === 'Offer' && app.status === 'Active' ? (
@@ -1522,6 +1654,12 @@ function InterviewsTab() {
   const [schedSaving, setSchedSaving] = useState(false);
   const [schedError, setSchedError] = useState('');
   const [cancelling, setCancelling] = useState<string | null>(null);
+  const [completingId, setCompletingId] = useState<string | null>(null);
+  const [completionSaving, setCompletionSaving] = useState(false);
+  const [completionError, setCompletionError] = useState('');
+  const [completionForm, setCompletionForm] = useState({
+    overallRating: 4, recommendation: 'Hire', feedbackNotes: '',
+  });
 
   const load = async () => {
     setLoading(true);
@@ -1553,6 +1691,30 @@ function InterviewsTab() {
   const cancelInterview = async (id: string) => {
     setCancelling(id);
     try { await interviewsApi.cancel(id); load(); } catch (e) { notifyApiError(e); } finally { setCancelling(null); }
+  };
+
+  const completeInterview = async (id: string) => {
+    const rating = Number(completionForm.overallRating);
+    if (!Number.isFinite(rating) || rating < 1 || rating > 5) {
+      setCompletionError('Overall rating must be between 1 and 5.'); return;
+    }
+    if (!completionForm.recommendation) { setCompletionError('Recommendation is required.'); return; }
+    setCompletionSaving(true); setCompletionError('');
+    try {
+      await interviewsApi.complete(id, {
+        overallRating: rating,
+        recommendation: completionForm.recommendation,
+        feedbackNotes: completionForm.feedbackNotes.trim(),
+      });
+      setCompletingId(null);
+      setCompletionForm({ overallRating: 4, recommendation: 'Hire', feedbackNotes: '' });
+      load();
+    } catch (e) {
+      setCompletionError('Failed to complete interview.');
+      notifyApiError(e);
+    } finally {
+      setCompletionSaving(false);
+    }
   };
 
   const MODE_ICON: Record<string, string> = { InPerson: '🏢', Video: '📹', Phone: '📞' };
@@ -1676,13 +1838,58 @@ function InterviewsTab() {
                     </div>
                   )}
                   {iv.status === 'Scheduled' && (
-                    <button type="button" onClick={() => cancelInterview(iv.id)} disabled={cancelling === iv.id}
-                      className="rounded-lg border border-rose-200 px-2.5 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-500/30 dark:text-rose-400 dark:hover:bg-rose-500/10">
-                      {cancelling === iv.id ? '…' : 'Cancel'}
-                    </button>
+                    <>
+                      <button type="button" onClick={() => { setCompletionError(''); setCompletingId(iv.id); }}
+                        className="rounded-lg bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-700">
+                        Complete
+                      </button>
+                      <button type="button" onClick={() => cancelInterview(iv.id)} disabled={cancelling === iv.id}
+                        className="rounded-lg border border-rose-200 px-2.5 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-500/30 dark:text-rose-400 dark:hover:bg-rose-500/10">
+                        {cancelling === iv.id ? '…' : 'Cancel'}
+                      </button>
+                    </>
                   )}
                 </div>
               </div>
+              {completingId === iv.id && (
+                <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50/60 p-3 dark:border-emerald-500/20 dark:bg-emerald-500/5">
+                  <p className="mb-2 text-xs font-semibold text-slate-700 dark:text-slate-200">Complete Interview & Record Outcome</p>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
+                      Overall rating
+                      <select aria-label="Interview overall rating" value={completionForm.overallRating}
+                        onChange={e => setCompletionForm(f => ({ ...f, overallRating: Number(e.target.value) }))}
+                        className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-white/10 dark:bg-white/5">
+                        {[1, 2, 3, 4, 5].map(r => <option key={r} value={r}>{r} / 5</option>)}
+                      </select>
+                    </label>
+                    <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
+                      Recommendation
+                      <select aria-label="Interview recommendation" value={completionForm.recommendation}
+                        onChange={e => setCompletionForm(f => ({ ...f, recommendation: e.target.value }))}
+                        className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-white/10 dark:bg-white/5">
+                        {['StrongHire', 'Hire', 'Hold', 'Reject'].map(r => <option key={r} value={r}>{r.replace(/([A-Z])/g, ' $1').trim()}</option>)}
+                      </select>
+                    </label>
+                    <label className="sm:col-span-2 text-xs font-medium text-slate-600 dark:text-slate-400">
+                      Feedback notes
+                      <textarea aria-label="Interview feedback notes" rows={2} value={completionForm.feedbackNotes}
+                        onChange={e => setCompletionForm(f => ({ ...f, feedbackNotes: e.target.value }))}
+                        placeholder="Strengths, concerns, and hiring rationale…"
+                        className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-white/10 dark:bg-white/5" />
+                    </label>
+                  </div>
+                  {completionError && <p className="mt-2 text-xs text-rose-500">{completionError}</p>}
+                  <div className="mt-2 flex gap-2">
+                    <button type="button" disabled={completionSaving} onClick={() => completeInterview(iv.id)}
+                      className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
+                      {completionSaving ? 'Saving…' : 'Complete Interview'}
+                    </button>
+                    <button type="button" onClick={() => setCompletingId(null)}
+                      className="px-2 py-1.5 text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400">Cancel</button>
+                  </div>
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -1699,12 +1906,20 @@ function AssessmentsTab() {
   const [statusFilter, setStatusFilter] = useState('');
   const [showAssign, setShowAssign] = useState(false);
   const [applications, setApplications] = useState<JobApplication[]>([]);
-  const [templates, setTemplates] = useState<{ id: string; title: string; assessmentType: string; durationMinutes: number }[]>([]);
+  const [templates, setTemplates] = useState<AssessmentTemplate[]>([]);
   const [assignForm, setAssignForm] = useState({ applicationId: '', templateId: '', expiryDays: 7 });
   const [assignSaving, setAssignSaving] = useState(false);
   const [assignError, setAssignError] = useState('');
+  const [showTemplateCreate, setShowTemplateCreate] = useState(false);
+  const [templateSaving, setTemplateSaving] = useState(false);
+  const [templateError, setTemplateError] = useState('');
+  const [templateForm, setTemplateForm] = useState({
+    code: '', title: '', description: '', assessmentType: 'Technical',
+    durationMinutes: 60, passingScore: 70, isRandomized: false, audience: '',
+  });
   const [recording, setRecording] = useState<string | null>(null);
   const [scoreInput, setScoreInput] = useState<Record<string, string>>({});
+  const [scoreError, setScoreError] = useState<Record<string, string>>({});
 
   const load = async () => {
     setLoading(true);
@@ -1722,6 +1937,43 @@ function AssessmentsTab() {
     setShowAssign(true);
   };
 
+  const createTemplate = async () => {
+    const code = templateForm.code.trim();
+    const title = templateForm.title.trim();
+    const durationMinutes = Number(templateForm.durationMinutes);
+    const passingScore = Number(templateForm.passingScore);
+    if (!code || !title) { setTemplateError('Code and title are required.'); return; }
+    if (!Number.isFinite(durationMinutes) || durationMinutes < 1) { setTemplateError('Duration must be at least 1 minute.'); return; }
+    if (!Number.isFinite(passingScore) || passingScore < 0 || passingScore > 100) { setTemplateError('Passing score must be between 0 and 100.'); return; }
+    setTemplateSaving(true); setTemplateError('');
+    try {
+      const created = await assessmentsApi.createTemplate({
+        code, title,
+        description: templateForm.description.trim(),
+        assessmentType: templateForm.assessmentType,
+        durationMinutes,
+        passingScore,
+        isRandomized: templateForm.isRandomized,
+        audience: templateForm.audience.trim(),
+      });
+      setTemplates(prev => [...prev.filter(t => t.id !== created.id), created]);
+      const appsRes = await applicationsApi.list({ pageSize: 100 });
+      setApplications(appsRes.items);
+      setAssignForm(f => ({ ...f, templateId: created.id }));
+      setTemplateForm({
+        code: '', title: '', description: '', assessmentType: 'Technical',
+        durationMinutes: 60, passingScore: 70, isRandomized: false, audience: '',
+      });
+      setShowTemplateCreate(false);
+      setShowAssign(true);
+    } catch (e) {
+      setTemplateError('Failed to create assessment template.');
+      notifyApiError(e);
+    } finally {
+      setTemplateSaving(false);
+    }
+  };
+
   const submitAssign = async () => {
     if (!assignForm.applicationId || !assignForm.templateId) { setAssignError('Application and template are required.'); return; }
     setAssignSaving(true); setAssignError('');
@@ -1734,12 +1986,16 @@ function AssessmentsTab() {
     finally { setAssignSaving(false); }
   };
 
-  const recordResult = async (id: string) => {
-    const raw = scoreInput[id];
-    const score = Number(raw);
-    if (!raw || isNaN(score) || score < 0 || score > 100) return;
-    setRecording(id);
-    try { await assessmentsApi.recordResult(id, score); load(); } catch {} finally { setRecording(null); }
+  const recordResult = async (a: CandidateAssessment) => {
+    // Raw marks when the template has a question bank, a percentage when it does not.
+    const score = parseAssessmentScore(scoreInput[a.id], a.totalMarks);
+    if (score == null) {
+      setScoreError(s => ({ ...s, [a.id]: `Enter a whole number from 0 to ${assessmentScoreMax(a.totalMarks)}.` }));
+      return;
+    }
+    setScoreError(s => ({ ...s, [a.id]: '' }));
+    setRecording(a.id);
+    try { await assessmentsApi.recordResult(a.id, score); load(); } catch (e) { notifyApiError(e); } finally { setRecording(null); }
   };
 
   const STATUS_COLORS: Record<string, string> = {
@@ -1757,10 +2013,83 @@ function AssessmentsTab() {
           <option value="">All Statuses</option>
           {['Pending', 'Sent', 'InProgress', 'Completed', 'Expired'].map(s => <option key={s}>{s}</option>)}
         </select>
-        <button type="button" onClick={openAssign} className="ms-auto flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-sm font-medium text-white hover:bg-sapphire/90">
-          <ClipboardList className="h-3.5 w-3.5" />Assign Assessment
-        </button>
+        <div className="ms-auto flex items-center gap-2">
+          <button type="button" onClick={() => { setTemplateError(''); setShowTemplateCreate(v => !v); }}
+            className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:text-slate-200 dark:hover:bg-white/10">
+            <Plus className="h-3.5 w-3.5" />New Template
+          </button>
+          <button type="button" onClick={openAssign} className="flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-sm font-medium text-white hover:bg-sapphire/90">
+            <ClipboardList className="h-3.5 w-3.5" />Assign Assessment
+          </button>
+        </div>
       </div>
+
+      {showTemplateCreate && (
+        <div className="rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/[0.03] p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <h4 className="text-sm font-semibold text-slate-800 dark:text-white">Create Assessment Template</h4>
+              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Create a reusable assessment before assigning it to a candidate.</p>
+            </div>
+            <button type="button" aria-label="Close template form" title="Close" onClick={() => setShowTemplateCreate(false)} className="text-slate-400 hover:text-slate-600">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
+              Code *
+              <input aria-label="Assessment template code" value={templateForm.code} onChange={e => setTemplateForm(f => ({ ...f, code: e.target.value }))}
+                placeholder="e.g. INT-TECH-01" className="mt-1 w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm text-slate-800 dark:text-slate-200" />
+            </label>
+            <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
+              Title *
+              <input aria-label="Assessment template title" value={templateForm.title} onChange={e => setTemplateForm(f => ({ ...f, title: e.target.value }))}
+                placeholder="e.g. Integration Engineering Assessment" className="mt-1 w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm text-slate-800 dark:text-slate-200" />
+            </label>
+            <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
+              Type
+              <select aria-label="Assessment type" value={templateForm.assessmentType} onChange={e => setTemplateForm(f => ({ ...f, assessmentType: e.target.value }))}
+                className="mt-1 w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm text-slate-800 dark:text-slate-200">
+                {['Technical', 'Aptitude', 'Behavioral', 'Language', 'Other'].map(x => <option key={x} value={x}>{x}</option>)}
+              </select>
+            </label>
+            <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
+              Audience
+              <input aria-label="Assessment audience" value={templateForm.audience} onChange={e => setTemplateForm(f => ({ ...f, audience: e.target.value }))}
+                placeholder="e.g. Engineering" className="mt-1 w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm text-slate-800 dark:text-slate-200" />
+            </label>
+            <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
+              Duration (minutes)
+              <input aria-label="Assessment duration in minutes" type="number" min={1} value={templateForm.durationMinutes}
+                onChange={e => setTemplateForm(f => ({ ...f, durationMinutes: Number(e.target.value) }))}
+                className="mt-1 w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm text-slate-800 dark:text-slate-200" />
+            </label>
+            <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
+              Passing score (%)
+              <input aria-label="Assessment passing score" type="number" min={0} max={100} value={templateForm.passingScore}
+                onChange={e => setTemplateForm(f => ({ ...f, passingScore: Number(e.target.value) }))}
+                className="mt-1 w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm text-slate-800 dark:text-slate-200" />
+            </label>
+            <label className="md:col-span-2 text-xs font-medium text-slate-600 dark:text-slate-400">
+              Description
+              <textarea aria-label="Assessment template description" value={templateForm.description} onChange={e => setTemplateForm(f => ({ ...f, description: e.target.value }))}
+                placeholder="What this assessment measures…" rows={2} className="mt-1 w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm text-slate-800 dark:text-slate-200" />
+            </label>
+            <label className="md:col-span-2 flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-400">
+              <input type="checkbox" checked={templateForm.isRandomized} onChange={e => setTemplateForm(f => ({ ...f, isRandomized: e.target.checked }))} />
+              Randomize questions when supported by the template
+            </label>
+          </div>
+          {templateError && <p className="text-xs text-rose-500">{templateError}</p>}
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={createTemplate} disabled={templateSaving}
+              className="rounded-lg bg-sapphire px-4 py-1.5 text-xs font-medium text-white hover:bg-sapphire/90 disabled:opacity-50">
+              {templateSaving ? 'Creating…' : 'Create Template'}
+            </button>
+            <button type="button" onClick={() => setShowTemplateCreate(false)} className="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400">Cancel</button>
+          </div>
+        </div>
+      )}
 
       {showAssign && (
         <div className="rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/[0.03] p-4 space-y-3">
@@ -1830,15 +2159,20 @@ function AssessmentsTab() {
                     {a.passed == null && <span className="text-xs text-slate-400">—</span>}
                   </td>
                   <td className="p-3">
-                    {a.status === 'Completed' && a.scorePercentage == null && (
-                      <div className="flex items-center gap-1">
-                        <input type="number" min={0} max={100} title="Score (0–100)" placeholder="Score 0–100"
-                          className="w-24 rounded-md border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-2 py-1 text-xs text-slate-800 dark:text-slate-200"
-                          value={scoreInput[a.id] ?? ''} onChange={e => setScoreInput(s => ({ ...s, [a.id]: e.target.value }))} />
-                        <button type="button" onClick={() => recordResult(a.id)} disabled={recording === a.id}
-                          className="rounded-md bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
-                          {recording === a.id ? '…' : 'Save'}
-                        </button>
+                    {canRecordAssessmentResult(a) && (
+                      <div>
+                        <div className="flex items-center gap-1">
+                          <input type="number" min={0} max={assessmentScoreMax(a.totalMarks)} step={1}
+                            aria-label={`${a.templateName} result: ${assessmentScoreLabel(a.totalMarks)}`}
+                            title={assessmentScoreLabel(a.totalMarks)} placeholder={assessmentScoreLabel(a.totalMarks)}
+                            className="w-32 rounded-md border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-2 py-1 text-xs text-slate-800 dark:text-slate-200"
+                            value={scoreInput[a.id] ?? ''} onChange={e => setScoreInput(s => ({ ...s, [a.id]: e.target.value }))} />
+                          <button type="button" onClick={() => recordResult(a)} disabled={recording === a.id}
+                            className="rounded-md bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
+                            {recording === a.id ? '…' : 'Record result'}
+                          </button>
+                        </div>
+                        {scoreError[a.id] && <p className="mt-1 text-xs text-rose-500">{scoreError[a.id]}</p>}
                       </div>
                     )}
                   </td>
@@ -1869,6 +2203,7 @@ function OffersTab() {
   const [offerSaving, setOfferSaving] = useState(false);
   const [offerError, setOfferError] = useState('');
   const [actioning, setActioning] = useState<string | null>(null);
+  const [approvalOpen, setApprovalOpen] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -1898,7 +2233,7 @@ function OffersTab() {
 
   const sendOffer = async (id: string) => {
     setActioning(id);
-    try { await offersApi.send(id); load(); } catch {} finally { setActioning(null); }
+    try { await offersApi.send(id); load(); } catch (e) { notifyApiError(e); } finally { setActioning(null); }
   };
 
   const acceptOffer = async (id: string) => {
@@ -2009,7 +2344,13 @@ function OffersTab() {
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[o.status] ?? ''}`}>{o.status}</span>
-                  {o.status === 'Draft' && (
+                  {['Draft', 'PendingApproval', 'Approved'].includes(o.status) && (
+                    <button type="button" onClick={() => setApprovalOpen(v => (v === o.id ? null : o.id))}
+                      className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-white/10 dark:text-slate-200">
+                      {approvalOpen === o.id ? 'Hide approval' : 'Approval'}
+                    </button>
+                  )}
+                  {canSendOffer(o.status) && (
                     <button type="button" onClick={() => sendOffer(o.id)} disabled={actioning === o.id}
                       className="rounded-lg bg-sapphire px-2.5 py-1 text-xs font-medium text-white hover:bg-sapphire/90 disabled:opacity-50">
                       {actioning === o.id ? '…' : 'Send'}
@@ -2029,6 +2370,9 @@ function OffersTab() {
                   )}
                 </div>
               </div>
+              {approvalOpen === o.id && (
+                <OfferApprovalPanel key={`${o.id}:${o.status}`} offerId={o.id} onChanged={load} />
+              )}
             </div>
           ))}
         </div>
