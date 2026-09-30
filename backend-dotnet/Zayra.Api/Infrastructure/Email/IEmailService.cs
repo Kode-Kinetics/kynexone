@@ -45,4 +45,29 @@ public interface IEmailService
     /// <inheritdoc cref="SendPlatformAsync"/>
     Task<bool> IsPlatformConfiguredAsync(CancellationToken cancellationToken = default)
         => IsConfiguredAsync(cancellationToken);
+
+    /// <summary>
+    /// F09 — send and SAY WHAT HAPPENED. Any caller that tells a person "sent" or records a status
+    /// uses this, not <c>SendAsync</c>: it separates "accepted by the relay" from "captured by test
+    /// delivery mode" from "no relay at all". A relay failure still throws, with its reason.
+    ///
+    /// <para>The default implementation is the honest reading of the older two-call contract, so
+    /// existing fakes keep compiling and keep meaning what they meant.</para>
+    /// </summary>
+    async Task<EmailDeliveryResult> DeliverAsync(Guid tenantId, string toAddress, string toName, string subject,
+        string htmlBody, IReadOnlyList<EmailAttachment>? attachments = null, CancellationToken cancellationToken = default)
+    {
+        if (!await IsConfiguredAsync(tenantId, cancellationToken)) return EmailDeliveryResult.NoRelay;
+        await SendAsync(tenantId, toAddress, toName, subject, htmlBody, attachments, cancellationToken);
+        return EmailDeliveryResult.Accepted("for this workspace");
+    }
+
+    /// <inheritdoc cref="DeliverAsync"/>
+    async Task<EmailDeliveryResult> DeliverPlatformAsync(string toAddress, string toName, string subject,
+        string htmlBody, IReadOnlyList<EmailAttachment>? attachments = null, CancellationToken cancellationToken = default)
+    {
+        if (!await IsPlatformConfiguredAsync(cancellationToken)) return EmailDeliveryResult.NoRelay;
+        await SendPlatformAsync(toAddress, toName, subject, htmlBody, attachments, cancellationToken);
+        return EmailDeliveryResult.Accepted("for the platform");
+    }
 }

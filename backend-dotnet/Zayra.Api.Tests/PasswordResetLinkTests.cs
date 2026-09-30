@@ -75,7 +75,7 @@ public sealed class PasswordResetLinkTests
 
         // The user has it in their inbox; a second copy in an admin's browser is pure extra exposure.
         body.GetProperty("resetUrl").ValueKind.Should().Be(JsonValueKind.Null);
-        body.GetProperty("message").GetString().Should().Contain("Reset link emailed to");
+        body.GetProperty("message").GetString().Should().Contain("Reset link accepted by the mail server for");
 
         email.Sent.Should().ContainSingle();
         email.Sent[0].To.Should().Be(user.Email);
@@ -308,7 +308,7 @@ public sealed class PasswordResetLinkTests
             .Should().BeOfType<EmployeeLoginInvitationDto>().Subject;
 
         invite.EmailSent.Should().BeTrue();
-        invite.DeliveryMessage.Should().Contain("Invitation emailed to");
+        invite.DeliveryMessage.Should().Contain("Invitation accepted by the mail server for");
         email.Sent.Should().ContainSingle();
         email.Sent[0].Html.Should().Contain("/accept-invitation");
     }

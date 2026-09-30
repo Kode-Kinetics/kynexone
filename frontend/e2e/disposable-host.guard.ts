@@ -16,15 +16,15 @@
  * Deliberately fail-closed — an unparseable or absent base URL is refused, not waved through.
  */
 
+import { PRODUCTION_HOST_SUFFIXES } from './preflight/rules';
+
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '0.0.0.0', 'host.docker.internal']);
 
-/** Hosts that must NEVER be accepted, even if someone adds them to the allowlist by mistake. */
-const NEVER_DESTRUCTIVE = [
-  'onrender.com',
-  'vercel.app',
-  'neon.tech',
-  'kynexone.com',
-];
+/**
+ * Hosts that must NEVER be accepted, even if someone adds them to the allowlist by mistake. One list,
+ * shared with the preflight (e2e/preflight/rules.ts), so the two refusals cannot disagree.
+ */
+const NEVER_DESTRUCTIVE = PRODUCTION_HOST_SUFFIXES;
 
 export function assertDisposableHost(baseUrl: string | undefined, operation: string): void {
   if (!baseUrl || !baseUrl.trim()) {

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Zayra.Api.Infrastructure.Qiwa;
+using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
 
@@ -222,7 +223,23 @@ public class QiwaController : ControllerBase
     public async Task<IActionResult> GetComplianceSummary(CancellationToken cancellationToken)
     {
         if (!HasPermission("qiwa.read")) return Forbid();
-        return Ok(await _qiwa.GetComplianceSummaryAsync(RequireTenant(), cancellationToken));
+        var summary = await _qiwa.GetComplianceSummaryAsync(RequireTenant(), cancellationToken);
+        var live = _adapter.IsLiveIntegration;
+        // F09: the summary carries the mode of the RUNNING process, so a client can never render a
+        // simulator's results without the label.
+        return Ok(new
+        {
+            summary.ConnectionStatus,
+            summary.LastConnectedAt,
+            summary.ReadinessPercent,
+            summary.EmployeesBlocked,
+            summary.FailedSyncCount,
+            summary.LastSuccessfulSync,
+            summary.LastSimulatedSync,
+            runtimeAdapter = _adapter.AdapterName,
+            isLiveIntegration = live,
+            integrationMode = live ? "Live" : QiwaSyncLogStatuses.SimulatedLabel,
+        });
     }
 
     // ── Sync ──────────────────────────────────────────────────────────────────
@@ -318,7 +335,36 @@ public class QiwaController : ControllerBase
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
         var logs = await _qiwa.GetSyncLogsAsync(RequireTenant(), employeeId, page, pageSize, cancellationToken);
-        return Ok(new { page, pageSize, data = logs });
+        // F09: a simulator run reads "Simulated", with its label, including rows written before the
+        // worker stopped calling them "Success". filedWithQiwa is true only for a live acknowledgement.
+        var data = logs.Select(l =>
+        {
+            var simulated = QiwaSyncLogStatuses.IsSimulated(l.Status, l.ResponsePayloadJson);
+            return new
+            {
+                l.Id,
+                l.TenantId,
+                l.EmployeeId,
+                l.Direction,
+                Status = QiwaSyncLogStatuses.Normalise(l.Status, l.ResponsePayloadJson),
+                StatusLabel = QiwaSyncLogStatuses.Describe(l.Status, l.ResponsePayloadJson),
+                Simulated = simulated,
+                FiledWithQiwa = !simulated && l.Status == QiwaSyncLogStatuses.Success,
+                l.TriggerSource,
+                l.RequestPayloadJson,
+                l.ResponsePayloadJson,
+                l.HttpStatusCode,
+                l.ErrorMessage,
+                l.TriggeredBy,
+                l.CreatedAtUtc,
+                l.CompletedAtUtc,
+                l.RetryCount,
+                l.MaxRetries,
+                l.LastRetriedAtUtc,
+                l.DeadLetterReason,
+            };
+        });
+        return Ok(new { page, pageSize, data });
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

@@ -11,6 +11,10 @@ ARG NEXT_PUBLIC_API_URL=http://backend:5117
 ARG NEXT_PUBLIC_API_BASE_URL=http://backend:5117
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
+# The commit this image is built from, served at /build-info so the e2e preflight can refuse a stale
+# image. Empty unless the builder passes it (docker compose forwards BUILD_COMMIT).
+ARG BUILD_COMMIT=
+ENV BUILD_COMMIT=${BUILD_COMMIT}
 # No retry loop: this step no longer reaches the public internet. All six typefaces are
 # vendored as .woff2 in app/fonts and loaded with `next/font/local`, so the build does not
 # fetch from fonts.googleapis.com and cannot fail on it. A failure here is now a real failure —

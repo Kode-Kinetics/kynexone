@@ -17,12 +17,27 @@
  * ── Passwords ─────────────────────────────────────────────────────────────────────────────────
  * Every password comes from the environment. In CI they are GENERATED PER RUN (see ci.yml) and a
  * missing variable is a hard failure — CI must never fall back to a value committed to the repo.
- * Outside CI the historical local-stack defaults are kept so `docker compose up && npx playwright
- * test` still works on a developer machine. These defaults are not secrets: they are only ever
- * valid against a disposable loopback database that this same bootstrap just populated.
+ * Outside CI the historical local-stack defaults are kept for the TENANT fixture accounts so
+ * `docker compose up && npx playwright test` still works on a developer machine: the bootstrap
+ * creates those accounts with the same values the specs use, so they agree by construction, and
+ * the preflight refuses any target that is not a disposable stack.
+ *
+ * The PLATFORM OWNER is different and has no default (register item F07). It is created by the API
+ * process, not by the bootstrap, so the test side can only ever match it by reading the same
+ * PLATFORM_ADMIN_EMAIL / PLATFORM_ADMIN_PASSWORD the API was started with. The 28 Sep run defaulted
+ * the email here, authenticated as an operator the isolated API had never created, and got a 401.
+ * The env contract is e2e/identity/env.ts; e2e/preflight/ verifies it before anything runs.
+ *
+ * ── Personas ──────────────────────────────────────────────────────────────────────────────────
+ * `PERSONAS` at the bottom is the registry every consumer resolves identities through: the
+ * bootstrap provisions `TENANTS`, the preflight logs every persona in and checks its role, scope and
+ * permissions, the security gate's roles.ts references these objects instead of re-spelling
+ * addresses, and e2e/identity/actor.ts stamps the persona behind every login into the test report.
  */
 
-const inCi = !!process.env.CI;
+import { E2E_ENV, isCi, platformIdentityFromEnv } from './identity/env';
+
+const inCi = isCi();
 
 /**
  * A fixture password. Required in CI; falls back to the documented local-stack value elsewhere.
@@ -112,9 +127,13 @@ export interface FixtureTenant {
 
 // ── Platform operator ─────────────────────────────────────────────────────────────────────────
 // Created by PlatformOwnerBootstrap at API boot from PLATFORM_ADMIN_EMAIL/PLATFORM_ADMIN_PASSWORD,
-// then used by the bootstrap to create everything else.
-export const PLATFORM_EMAIL = process.env.PLATFORM_ADMIN_EMAIL ?? 'admin@platform.local';
-export const PLATFORM_PASSWORD = fixturePassword('PLATFORM_ADMIN_PASSWORD', 'YourPassword123!');
+// then used by the bootstrap to create everything else. NO DEFAULT: an empty value here is reported
+// by the preflight as "not set", with the variable names to export — see the header.
+const platformIdentity = platformIdentityFromEnv();
+export const PLATFORM_EMAIL = platformIdentity.email;
+export const PLATFORM_PASSWORD = platformIdentity.password;
+/** Names of the two variables, for messages that tell an operator what to export. */
+export const PLATFORM_ENV = { email: E2E_ENV.platformEmail, password: E2E_ENV.platformPassword } as const;
 
 // ── Passwords, one per tenant ─────────────────────────────────────────────────────────────────
 const INTELLIFLOW_PASSWORD = fixturePassword('E2E_INTELLIFLOW_PASSWORD', 'IntelliFlow@2026!');
@@ -188,25 +207,53 @@ const companyUser = (
   email: companyEmail(role, companyCode, slug), password: GROUP_PASSWORD, role: roleName, fullName, companyCode,
 });
 
+export const ALMARAI_OWNER = groupUser('owner', 'Admin', 'Almarai Group Owner');
+export const ALMARAI_HR = groupUser('hr', 'HR Director', 'Almarai Group HR Director');
+export const ALMARAI_FINANCE = groupUser('finance', 'Finance Approver', 'Almarai Group Finance Approver');
+// 'Compliance Officer', not 'HR Manager': the role is what
+// CompanyComplianceProfilesController authorizes on, and it is the only non-Admin role permitted
+// to AUTHOR a company compliance profile. Given HR Manager, this persona got a 403 from
+// /api/company-compliance-profiles and the compliance suite saw a page with no profile on it.
+export const ALMARAI_COMPLIANCE = groupUser('compliance', 'Compliance Officer', 'Almarai Group Compliance Officer');
+export const ALMARAI_AUDITOR = groupUser('auditor', 'Auditor', 'Almarai Group Auditor');
+// Role-catalog certification personas: one group-scoped holder for each system role the personas
+// above do not already cover, so the security gate's full role matrix (security-gate/
+// full-role-matrix.spec.ts) signs in as a REAL account of every role AuthSeeder installs. Created
+// through the same platform/tenant APIs as every other identity here; no side door.
+export const ALMARAI_PAYROLL_MANAGER = groupUser('payroll.manager', 'Payroll Manager', 'Almarai Payroll Manager');
+export const ALMARAI_HR_OFFICER = groupUser('hr.officer', 'HR Officer', 'Almarai HR Officer');
+export const ALMARAI_RECRUITER = groupUser('recruiter', 'Recruiter', 'Almarai Recruiter');
+export const ALMARAI_HR_ASSISTANT = groupUser('hr.assistant', 'HR Assistant', 'Almarai HR Assistant');
+export const ALMARAI_KIOSK = groupUser('kiosk', 'Kiosk Operator', 'Almarai Kiosk Operator');
+export const ALMARAI_SCOPED_ADMIN: FixtureUser = {
+  ...groupUser('scoped.admin', 'HR Manager', 'Almarai Selected-Companies Admin'),
+  // "2 of 5" — the grant the scoped-user specs prove cannot see the other three.
+  companyCodes: ['ALM-DAIRY-KSA', 'ALM-POULTRY-KSA'],
+};
+export const ALMARAI_DAIRY_ADMIN = companyUser('admin', 'ALM-DAIRY-KSA', 'HR Manager', 'Almarai Dairy Company Admin');
+export const ALMARAI_DAIRY_HR = companyUser('hr', 'ALM-DAIRY-KSA', 'HR Manager', 'Almarai Dairy Company HR');
+export const ALMARAI_BAKERY_HR = companyUser('hr', 'ALM-BAKERY-KSA', 'HR Manager', 'Almarai Bakery Company HR');
+export const ALMARAI_DAIRY_PAYROLL = companyUser('payroll', 'ALM-DAIRY-KSA', 'Payroll Officer', 'Almarai Dairy Payroll Officer');
+
 export const ALMARAI_USERS: FixtureUser[] = [
-  groupUser('hr', 'HR Director', 'Almarai Group HR Director'),
-  groupUser('finance', 'Finance Approver', 'Almarai Group Finance Approver'),
-  // 'Compliance Officer', not 'HR Manager': the role is what
-  // CompanyComplianceProfilesController authorizes on, and it is the only non-Admin role permitted
-  // to AUTHOR a company compliance profile. Given HR Manager, this persona got a 403 from
-  // /api/company-compliance-profiles and the compliance suite saw a page with no profile on it.
-  groupUser('compliance', 'Compliance Officer', 'Almarai Group Compliance Officer'),
-  groupUser('auditor', 'Auditor', 'Almarai Group Auditor'),
-  {
-    ...groupUser('scoped.admin', 'HR Manager', 'Almarai Selected-Companies Admin'),
-    // "2 of 5" — the grant the scoped-user specs prove cannot see the other three.
-    companyCodes: ['ALM-DAIRY-KSA', 'ALM-POULTRY-KSA'],
-  },
-  companyUser('admin', 'ALM-DAIRY-KSA', 'HR Manager', 'Almarai Dairy Company Admin'),
-  companyUser('hr', 'ALM-DAIRY-KSA', 'HR Manager', 'Almarai Dairy Company HR'),
-  companyUser('hr', 'ALM-BAKERY-KSA', 'HR Manager', 'Almarai Bakery Company HR'),
-  companyUser('payroll', 'ALM-DAIRY-KSA', 'Payroll Officer', 'Almarai Dairy Payroll Officer'),
+  ALMARAI_HR,
+  ALMARAI_FINANCE,
+  ALMARAI_COMPLIANCE,
+  ALMARAI_AUDITOR,
+  ALMARAI_PAYROLL_MANAGER,
+  ALMARAI_HR_OFFICER,
+  ALMARAI_RECRUITER,
+  ALMARAI_HR_ASSISTANT,
+  ALMARAI_KIOSK,
+  ALMARAI_SCOPED_ADMIN,
+  ALMARAI_DAIRY_ADMIN,
+  ALMARAI_DAIRY_HR,
+  ALMARAI_BAKERY_HR,
+  ALMARAI_DAIRY_PAYROLL,
 ];
+
+export const TATA_OWNER = groupUser('owner', 'Admin', 'Tata Group Owner', TATA_SLUG);
+export const TATA_COMPLIANCE = groupUser('compliance', 'Compliance Officer', 'Tata Group Compliance Officer', TATA_SLUG);
 
 export const TENANTS: FixtureTenant[] = [
   {
@@ -223,9 +270,9 @@ export const TENANTS: FixtureTenant[] = [
       INTELLIFLOW_HR_DIR, INTELLIFLOW_HR_MGR, INTELLIFLOW_FINANCE, INTELLIFLOW_MANAGER,
       INTELLIFLOW_SUPERVISOR, INTELLIFLOW_EMP1, INTELLIFLOW_EMP2, INTELLIFLOW_AUDITOR,
     ],
-    // pilot-critical.spec.ts asserts E2E_MIN_EMPLOYEES (12 in CI) rendered rows.
     employeesPerCompany: 14,
-    // pilot-critical.spec.ts is run in CI with E2E_MIN_EMPLOYEES=12.
+    // pilot-critical.spec.ts asserts the dashboard counts at least this many employees. It reads the
+    // number from here; the E2E_MIN_EMPLOYEES override that CI used to pass separately is retired.
     minActiveEmployees: 12,
     payroll: true,
     employeePortalLogins: [INTELLIFLOW_EMP1.email, INTELLIFLOW_EMP2.email],
@@ -257,7 +304,7 @@ export const TENANTS: FixtureTenant[] = [
     maxUsers: 100,
     maxEmployees: 500,
     maxCompanies: 0,
-    admin: { ...groupUser('owner', 'Admin', 'Almarai Group Owner') },
+    admin: ALMARAI_OWNER,
     companies: ALMARAI_COMPANY_CODES.map(saCompany),
     users: ALMARAI_USERS,
     employeesPerCompany: 3,
@@ -266,6 +313,9 @@ export const TENANTS: FixtureTenant[] = [
     // so the gap has to be on an activated one, not on a Draft.
     minActiveEmployees: 15,
     payroll: true,
+    // The security tenant's Enterprise modules are switched ON so the role matrix and navigation
+    // assertions measure RBAC, not an unrelated feature-flag denial.
+    features: ['recruitment', 'performance', 'shifts', 'overtime', 'qiwa_integration'],
   },
   {
     slug: TATA_SLUG,
@@ -275,9 +325,9 @@ export const TENANTS: FixtureTenant[] = [
     maxUsers: 100,
     maxEmployees: 500,
     maxCompanies: 0,
-    admin: { ...groupUser('owner', 'Admin', 'Tata Group Owner', TATA_SLUG) },
+    admin: TATA_OWNER,
     companies: TATA_COMPANY_CODES.map((code) => ({ code, countryCode: 'IN', currency: 'INR' })),
-    users: [groupUser('compliance', 'Compliance Officer', 'Tata Group Compliance Officer', TATA_SLUG)],
+    users: [TATA_COMPLIANCE],
     employeesPerCompany: 2,
     // India pack. The group-company compliance spec reads this tenant's PROFILE for the country
     // contrast rather than its headcount, so the floor is modest — but it is not zero, because
@@ -292,6 +342,99 @@ export const tenantBySlug = (slug: string): FixtureTenant => {
   if (!found) throw new Error(`[world] No fixture tenant '${slug}' is declared.`);
   return found;
 };
+
+// ── The persona registry ──────────────────────────────────────────────────────────────────────
+
+export type PersonaScope = 'platform' | 'group' | 'companies';
+
+/**
+ * One identity the suites act as, with everything the preflight needs to verify it and everything a
+ * report needs to say who acted. Derived from `TENANTS` (plus the platform owner), never declared a
+ * second time.
+ */
+export interface Persona {
+  /** `<tenant-slug>|<email>` (or `platform|<email>`), lower-case. Unique. */
+  key: string;
+  label: string;
+  email: string;
+  password: string;
+  /** null for the platform owner, which signs in to the platform audience. */
+  tenantSlug: string | null;
+  /** The tenant role the account holds; null for the platform owner. */
+  role: string | null;
+  scope: PersonaScope;
+  /** The companies a 'companies'-scoped persona is confined to. */
+  companyCodes: string[];
+  /** True when the bootstrap links the login to a real employee record (invitation flow). */
+  employeeLinked: boolean;
+  /** Created by the bootstrap (and so verified by the world preflight), or per run by a lane fixture. */
+  provisionedBy: 'api-boot' | 'bootstrap' | 'lane-fixture';
+}
+
+export const personaKey = (email: string, tenantSlug: string | null): string =>
+  `${(tenantSlug ?? 'platform').toLowerCase()}|${email.toLowerCase()}`;
+
+function toPersona(
+  user: FixtureUser,
+  tenant: { slug: string; employeePortalLogins?: string[]; companies?: FixtureCompany[] },
+  provisionedBy: Persona['provisionedBy'],
+): Persona {
+  const employeeLinked = (tenant.employeePortalLogins ?? []).some((e) => e.toLowerCase() === user.email.toLowerCase());
+  // An employee login is confined to its employee's company: the invitation flow
+  // (AccessManagementService.InviteEmployeeLoginAsync) issues a SelectedCompanies grant for exactly
+  // that company, and the bootstrap links portal logins to the FIRST company's employees.
+  const codes = employeeLinked && tenant.companies?.length
+    ? [tenant.companies[0].code]
+    : user.companyCodes ?? (user.companyCode ? [user.companyCode] : []);
+  return {
+    key: personaKey(user.email, tenant.slug),
+    label: `${user.fullName} (${user.role})`,
+    email: user.email,
+    password: user.password,
+    tenantSlug: tenant.slug,
+    role: user.role,
+    scope: codes.length ? 'companies' : 'group',
+    companyCodes: codes,
+    employeeLinked,
+    provisionedBy,
+  };
+}
+
+/**
+ * The platform owner persona. Its credentials are whatever the environment says (no default); the
+ * preflight refuses to go further until they authenticate against the API under test.
+ */
+export const PLATFORM_PERSONA: Persona = {
+  key: personaKey(PLATFORM_EMAIL, null),
+  label: 'Platform owner',
+  email: PLATFORM_EMAIL,
+  password: PLATFORM_PASSWORD,
+  tenantSlug: null,
+  role: null,
+  scope: 'platform',
+  companyCodes: [],
+  employeeLinked: false,
+  provisionedBy: 'api-boot',
+};
+
+/** Every identity the suites may act as. */
+export const PERSONAS: Persona[] = [
+  PLATFORM_PERSONA,
+  ...TENANTS.flatMap((tenant) => [tenant.admin, ...tenant.users].map((u) => toPersona(u, tenant, 'bootstrap'))),
+  // The limited tenant is created and purged per run by e2e/limited-tenant-fixture.ts.
+  toPersona(EVOSTEL_ADMIN, { slug: EVOSTEL_SLUG }, 'lane-fixture'),
+];
+
+export function personaForLogin(email: string, tenantSlug: string | null): Persona | undefined {
+  const key = personaKey(email, tenantSlug);
+  return PERSONAS.find((p) => p.key === key);
+}
+
+export function personaFor(user: FixtureUser, tenantSlug: string): Persona {
+  const found = personaForLogin(user.email, tenantSlug);
+  if (!found) throw new Error(`[world] ${user.email} is not a persona of '${tenantSlug}'.`);
+  return found;
+}
 
 /**
  * Where the bootstrap records what it provisioned. Its presence is how every spec distinguishes
