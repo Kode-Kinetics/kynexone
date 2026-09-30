@@ -1,5 +1,7 @@
 using System.Globalization;
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -9,6 +11,7 @@ using Microsoft.Extensions.Caching.Memory;
 using Zayra.Api.Application.Attendance;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Modules;
 using Zayra.Api.Models;
 
@@ -59,8 +62,17 @@ public class DashboardController : ControllerBase
     /// Single aggregation endpoint returning all KPIs, queues, trends, activity feed,
     /// and role-scoped operational metrics in one call. No request waterfall.
     ///
-    /// Cached per-tenant for 60 s (non-role-specific parts). Role-scoped KPIs are
-    /// computed fresh per request and appended after cache retrieval.
+    /// <para><b>F10 — whose data.</b> Every figure and list is computed over the caller's data scope
+    /// (<see cref="DashboardView"/>). Organization-level callers (HR, payroll, admins) share one cached
+    /// payload per tenant and company scope, exactly as before. Everyone else — a manager, a department
+    /// head, an employee — used to be served that SAME organization-wide payload: the whole company's
+    /// headcount, approval queue, payroll run, compliance alerts and activity. They now get a payload
+    /// computed over their own population, cached under a key that names that population, so a scoped
+    /// caller can never be handed an organization-wide entry. Payroll figures (the run summary, payroll by
+    /// department, payroll trends, payroll activity and payroll readiness counts) are only returned to
+    /// callers holding <c>payroll.read</c>.</para>
+    ///
+    /// Cached for 60 s. Role-scoped KPIs are computed fresh per request and appended after cache retrieval.
     /// </summary>
     [HttpGet("full")]
     public async Task<IActionResult> Full([FromQuery] int months = 6, CancellationToken cancellationToken = default)
@@ -74,22 +86,14 @@ public class DashboardController : ControllerBase
         // produce the same payload — but used to produce two different keys, which fragmented the
         // cache and let any caller inflate the keyspace at will.
         months = Math.Clamp(months, 1, 12);
+        var view = await ResolveViewAsync(tid, cancellationToken);
 
-        // ── Tenant-scoped (cached) part ───────────────────────────────────────
-        var cacheKey = CacheKey("full", tid, months.ToString());
-        DashboardCachedDto? cached = null;
-        var cachedBytes = await _cache.GetAsync(cacheKey, cancellationToken);
-        if (cachedBytes is not null)
-            cached = JsonSerializer.Deserialize<DashboardCachedDto>(cachedBytes);
-
-        if (cached is null)
-        {
-            cached = await BuildCached(tid, months, cancellationToken);
-            await _cache.SetAsync(cacheKey, JsonSerializer.SerializeToUtf8Bytes(cached), CacheOptions, cancellationToken);
-        }
+        // ── Scope-keyed (cached) part ─────────────────────────────────────────
+        var cached = await GetOrBuildAsync(CacheKey("full", tid, view, months.ToString()),
+            () => BuildCached(tid, months, view, cancellationToken), cancellationToken);
 
         // ── Role-scoped KPIs (always fresh — caller-specific) ─────────────────
-        var kpis = await BuildKpis(tid, cancellationToken);
+        var kpis = await BuildKpis(tid, cancellationToken, view);
 
         // ── Module gate ───────────────────────────────────────────────────────
         // A switched-off module contributes no widget. Applied AFTER the 60 s cache rather than
@@ -106,14 +110,14 @@ public class DashboardController : ControllerBase
         if (!modules.IsEnabled(ModuleKeys.Saudization))
             analytics = analytics with { Nationality = null };
 
-        return Ok(new DashboardFullDto(
+        return Ok(WithoutPayrollUnlessPermitted(view, new DashboardFullDto(
             cached.Summary,
             cached.Trends,
             cached.Overview,
             payrollTrends,
             cached.ActivityFeed,
             kpis,
-            analytics));
+            analytics)));
     }
 
     // ── Backwards-compat individual endpoints ────────────────────────────────
@@ -126,23 +130,10 @@ public class DashboardController : ControllerBase
 
         // W2-D (S8): a data-scoped caller (a manager, a team lead, an employee) sees THEIR population,
         // not tenant-wide headcount. A manager's summary is their team WITHOUT themselves; someone with
-        // no team sees their own record. Scoped results are per-caller, so they bypass the tenant cache.
-        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, cancellationToken);
-        if (!scope.IsUnrestricted)
-        {
-            var population = scope.AllowedEmployeeIds!.ToHashSet();
-            if (scope.CallerEmployeeId is { } self && population.Count > 1) population.Remove(self);
-            return Ok(await BuildSummary(tenantId.Value, cancellationToken, population));
-        }
-
-        var cacheKey = CacheKey("summary", tenantId.Value);
-        var cachedBytes = await _cache.GetAsync(cacheKey, cancellationToken);
-        if (cachedBytes is not null)
-            return Ok(JsonSerializer.Deserialize<DashboardSummaryDto>(cachedBytes));
-
-        var result = await BuildSummary(tenantId.Value, cancellationToken);
-        await _cache.SetAsync(cacheKey, JsonSerializer.SerializeToUtf8Bytes(result), CacheOptions, cancellationToken);
-        return Ok(result);
+        // no team sees their own record. F10: it is the same population every other slice uses.
+        var view = await ResolveViewAsync(tenantId.Value, cancellationToken);
+        return Ok(await GetOrBuildAsync(CacheKey("summary", tenantId.Value, view),
+            () => BuildSummary(tenantId.Value, cancellationToken, view.Population), cancellationToken));
     }
 
     [HttpGet("trends")]
@@ -152,14 +143,9 @@ public class DashboardController : ControllerBase
         months = Math.Clamp(months, 1, 12);
         if (tenantId is null) return Ok(Array.Empty<DashboardTrendDto>());
 
-        var cacheKey = CacheKey("trends", tenantId.Value, months.ToString());
-        var cachedBytes = await _cache.GetAsync(cacheKey, cancellationToken);
-        if (cachedBytes is not null)
-            return Ok(JsonSerializer.Deserialize<List<DashboardTrendDto>>(cachedBytes));
-
-        var result = await BuildTrends(tenantId.Value, months, cancellationToken);
-        await _cache.SetAsync(cacheKey, JsonSerializer.SerializeToUtf8Bytes(result), CacheOptions, cancellationToken);
-        return Ok(result);
+        var view = await ResolveViewAsync(tenantId.Value, cancellationToken);
+        return Ok(await GetOrBuildAsync(CacheKey("trends", tenantId.Value, view, months.ToString()),
+            () => BuildTrends(tenantId.Value, months, cancellationToken, view.Population), cancellationToken));
     }
 
     [HttpGet("overview")]
@@ -171,14 +157,11 @@ public class DashboardController : ControllerBase
                 Array.Empty<NamedValueDto>(), Array.Empty<NamedValueDto>(),
                 Array.Empty<NamedValueDto>(), Array.Empty<DashboardAlertDto>(), 0, 0));
 
-        var cacheKey = CacheKey("overview", tenantId.Value);
-        var cachedBytes = await _cache.GetAsync(cacheKey, cancellationToken);
-        if (cachedBytes is not null)
-            return Ok(JsonSerializer.Deserialize<DashboardOverviewDto>(cachedBytes));
-
-        var result = await BuildOverview(tenantId.Value, cancellationToken);
-        await _cache.SetAsync(cacheKey, JsonSerializer.SerializeToUtf8Bytes(result), CacheOptions, cancellationToken);
-        return Ok(result);
+        var view = await ResolveViewAsync(tenantId.Value, cancellationToken);
+        var overview = await GetOrBuildAsync(CacheKey("overview", tenantId.Value, view),
+            () => BuildOverview(tenantId.Value, cancellationToken, view.Population, view.IncludePayrollInPayload),
+            cancellationToken);
+        return Ok(view.CanReadPayroll ? overview : WithoutPayroll(overview));
     }
 
     [HttpGet("kpis")]
@@ -186,8 +169,86 @@ public class DashboardController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Ok(EmptyKpis(false));
-        return Ok(await BuildKpis(tenantId.Value, ct));
+        return Ok(await BuildKpis(tenantId.Value, ct, await ResolveViewAsync(tenantId.Value, ct)));
     }
+
+    // ── F10: whose data the dashboard is computed over ───────────────────────
+
+    /// <summary>
+    /// The caller's dashboard population, resolved once per request from the data-scope service.
+    /// <para><see cref="Population"/> is null for an organization-level caller: the whole tenant, or —
+    /// for a company-scoped caller — the companies the request's entity scope admits, which the
+    /// <c>ICompanyScopedOperational</c> query filters apply to every query. Otherwise it is the set of
+    /// employees the caller may see, WITHOUT the caller when they have a team (a manager's dashboard is
+    /// their people, not themselves), and just the caller when they have none.</para>
+    /// </summary>
+    internal sealed record DashboardView(DataScopeLevel Level, IReadOnlyList<int>? Population, bool CanReadPayroll)
+    {
+        public bool OrganizationWide => Population is null;
+
+        /// <summary>
+        /// The organization payload is shared by every organization-level caller, so it always carries the
+        /// payroll figures and they are removed per caller afterwards. A scoped payload is built only with
+        /// what this caller may see.
+        /// </summary>
+        public bool IncludePayrollInPayload => OrganizationWide || CanReadPayroll;
+
+        /// <summary>
+        /// The cache-key segment naming this population: "org", or the scope level, a digest of the exact
+        /// employee set, and whether payroll was included. Two callers share an entry only when they
+        /// would be served the same figures.
+        /// </summary>
+        public string CacheSegment
+        {
+            get
+            {
+                if (Population is null) return "org";
+                var digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join(',', Population))));
+                return $"scoped:{Level}:{digest[..32]}:{(CanReadPayroll ? "pay" : "nopay")}";
+            }
+        }
+    }
+
+    private async Task<DashboardView> ResolveViewAsync(Guid tenantId, CancellationToken ct)
+    {
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        var canReadPayroll = User.HasPermission("payroll.read");
+        // Organization level stays on the organization path even when the data-scope service has
+        // materialized it into the company's employee ids: the company query filters already bind it,
+        // and approvals or runs that belong to the company but to no single employee must not vanish.
+        if (scope.IsUnrestricted || scope.Level == DataScopeLevel.Organization)
+            return new DashboardView(DataScopeLevel.Organization, null, canReadPayroll);
+
+        var population = scope.AllowedEmployeeIds!.ToHashSet();
+        if (scope.CallerEmployeeId is { } self && population.Count > 1) population.Remove(self);
+        return new DashboardView(scope.Level, population.OrderBy(id => id).ToList(), canReadPayroll);
+    }
+
+    private async Task<T> GetOrBuildAsync<T>(string cacheKey, Func<Task<T>> build, CancellationToken ct)
+    {
+        var cachedBytes = await _cache.GetAsync(cacheKey, ct);
+        if (cachedBytes is not null && JsonSerializer.Deserialize<T>(cachedBytes) is { } hit)
+            return hit;
+        var built = await build();
+        await _cache.SetAsync(cacheKey, JsonSerializer.SerializeToUtf8Bytes(built), CacheOptions, ct);
+        return built;
+    }
+
+    /// <summary>Payroll figures leave the building only with <c>payroll.read</c>.</summary>
+    private static DashboardFullDto WithoutPayrollUnlessPermitted(DashboardView view, DashboardFullDto full) =>
+        view.CanReadPayroll
+            ? full
+            : full with
+            {
+                Overview = WithoutPayroll(full.Overview),
+                PayrollTrends = Array.Empty<PayrollTrendDto>(),
+                ActivityFeed = full.ActivityFeed.Where(a => a.Module != PayrollActivityModule).ToList(),
+            };
+
+    private static DashboardOverviewDto WithoutPayroll(DashboardOverviewDto overview) =>
+        overview with { PayrollSummary = null, PayrollByEntity = Array.Empty<NamedValueDto>() };
+
+    private const string PayrollActivityModule = "Payroll";
 
     // ── Cache keys ───────────────────────────────────────────────────────────
 
@@ -219,11 +280,14 @@ public class DashboardController : ControllerBase
     /// entry would deserialize with those fields defaulted and serve a wrong "0" for up to 60 s.
     /// v5: approval items gained dueAtUtc/department/detail, payrollSummary gained payDate and
     /// employerContributions, the alert window widened to 90 days, and /full gained `analytics`; a v4
-    /// entry would serve those as null/missing for up to 60 s.</para>
+    /// entry would serve those as null/missing for up to 60 s. v6 (F10): the key names the caller's
+    /// data scope (<see cref="DashboardView.CacheSegment"/>) — a v5 key was shared by every caller in a
+    /// company, which served managers and employees the organization-wide payload — and payroll
+    /// summaries and trend points gained the run's companyId.</para>
     /// </summary>
-    private string CacheKey(string slice, Guid tenantId, string? suffix = null)
+    private string CacheKey(string slice, Guid tenantId, DashboardView view, string? suffix = null)
     {
-        var key = $"dashboard:v5:{slice}:{tenantId}:{this.GetRequestScope().ToCacheDiscriminator()}";
+        var key = $"dashboard:v6:{slice}:{tenantId}:{this.GetRequestScope().ToCacheDiscriminator()}:{view.CacheSegment}";
         return suffix is null ? key : $"{key}:{suffix}";
     }
 
@@ -235,15 +299,18 @@ public class DashboardController : ControllerBase
     /// operations on the same instance. Running them with Task.WhenAll causes
     /// "second operation started on context" errors.
     /// </summary>
-    private async Task<DashboardCachedDto> BuildCached(Guid tenantId, int months, CancellationToken ct)
+    private async Task<DashboardCachedDto> BuildCached(Guid tenantId, int months, DashboardView view, CancellationToken ct)
     {
         months = Math.Clamp(months, 1, 12);
-        var summary       = await BuildSummary(tenantId, ct);
-        var trends        = await BuildTrends(tenantId, months, ct);
-        var overview      = await BuildOverview(tenantId, ct);
-        var payrollTrends = await BuildPayrollTrends(tenantId, months, ct);
-        var activityFeed  = await BuildActivityFeed(tenantId, ct);
-        var analytics     = await BuildAnalytics(tenantId, months, ct);
+        var population    = view.Population;
+        var summary       = await BuildSummary(tenantId, ct, population);
+        var trends        = await BuildTrends(tenantId, months, ct, population);
+        var overview      = await BuildOverview(tenantId, ct, population, view.IncludePayrollInPayload);
+        var payrollTrends = view.IncludePayrollInPayload
+            ? await BuildPayrollTrends(tenantId, months, ct, population)
+            : Array.Empty<PayrollTrendDto>();
+        var activityFeed  = await BuildActivityFeed(tenantId, ct, population);
+        var analytics     = await BuildAnalytics(tenantId, months, ct, population);
         return new DashboardCachedDto(summary, trends, overview, payrollTrends, activityFeed, analytics);
     }
 
@@ -427,8 +494,10 @@ public class DashboardController : ControllerBase
             present, onLeave, absent, overtimeHours, churnRisk, records);
     }
 
-    private async Task<IReadOnlyList<DashboardTrendDto>> BuildTrends(Guid tenantId, int months, CancellationToken ct)
+    private async Task<IReadOnlyList<DashboardTrendDto>> BuildTrends(Guid tenantId, int months, CancellationToken ct,
+        IReadOnlyCollection<int>? population = null)
     {
+        var ids = population?.ToList();
         var today      = DateOnly.FromDateTime(DateTime.UtcNow.Date);
         var firstMonth = new DateOnly(today.Year, today.Month, 1).AddMonths(-(months - 1));
 
@@ -445,8 +514,10 @@ public class DashboardController : ControllerBase
         // AttendanceService.DashboardAsync uses, so the two screens no longer answer differently for
         // the same day. Spelled out inline rather than called as a method because this expression is
         // translated to SQL; the constants translate, a helper call would not.
-        var grouped = await _db.AttendanceRecords
-            .Where(a => a.TenantId == tenantId && a.WorkDate >= firstMonth && a.WorkDate <= today)
+        var records = _db.AttendanceRecords
+            .Where(a => a.TenantId == tenantId && a.WorkDate >= firstMonth && a.WorkDate <= today);
+        if (ids is not null) records = records.Where(a => ids.Contains(a.EmployeeId));
+        var grouped = await records
             .GroupBy(a => new { a.WorkDate.Year, a.WorkDate.Month })
             .Select(g => new
             {
@@ -474,33 +545,58 @@ public class DashboardController : ControllerBase
         }).ToList();
     }
 
-    private async Task<DashboardOverviewDto> BuildOverview(Guid tenantId, CancellationToken ct)
+    /// <param name="population">Null for the organization (see <see cref="DashboardView"/>); otherwise the
+    /// employees every figure is counted over. A scoped approval queue holds only approvals ABOUT those
+    /// employees, so a request with no subject employee (a payroll run, a requisition) is not theirs.</param>
+    /// <param name="includePayroll">False leaves the payroll summary and payroll-by-department empty.</param>
+    private async Task<DashboardOverviewDto> BuildOverview(Guid tenantId, CancellationToken ct,
+        IReadOnlyCollection<int>? population = null, bool includePayroll = true)
     {
         var today      = DateOnly.FromDateTime(DateTime.UtcNow.Date);
         var monthStart = new DateOnly(today.Year, today.Month, 1);
         // Use DateTimeKind.Utc to satisfy Npgsql's strict timestamptz mode.
         var monthStartUtc = monthStart.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+        var ids = population?.ToList();
+
+        var pendingApprovals = _db.ApprovalRequests.Where(a => a.TenantId == tenantId && a.Status == "Pending");
+        var openLeave = _db.LeaveRequests.Where(l => l.TenantId == tenantId
+            && l.Status != "Approved" && l.Status != "Rejected"
+            && l.Status != "Cancelled" && l.Status != "Withdrawn" && l.Status != "Draft");
+        var joiners = _db.Employees.Where(e => e.TenantId == tenantId && e.JoiningDate >= monthStartUtc);
+        var active = _db.Employees.Where(e => e.TenantId == tenantId && e.Status == "Active");
+        if (ids is not null)
+        {
+            pendingApprovals = pendingApprovals.Where(a => a.RequestedForEmployeeId != null && ids.Contains(a.RequestedForEmployeeId.Value));
+            openLeave = openLeave.Where(l => ids.Contains(l.EmployeeId));
+            joiners = joiners.Where(e => ids.Contains(e.Id));
+            active = active.Where(e => ids.Contains(e.Id));
+        }
 
         // Independent scalar counts share one command instead of three serial round-trips.
-        var counts = await _db.Tenants
-            .Where(t => t.Id == tenantId)
-            .Select(_ => new
+        var counts = ids is null
+            ? await _db.Tenants
+                .Where(t => t.Id == tenantId)
+                .Select(_ => new
+                {
+                    PendingApprovals = pendingApprovals.Count(a => true),
+                    OpenLeave = openLeave.Count(l => true),
+                    NewJoiners = joiners.Count(e => true),
+                })
+                .FirstOrDefaultAsync(ct)
+            // A scoped caller is never dependent on a Tenants row (see BuildScopedSummary).
+            : new
             {
-                PendingApprovals = _db.ApprovalRequests.Count(a => a.TenantId == tenantId && a.Status == "Pending"),
-                OpenLeave = _db.LeaveRequests.Count(l => l.TenantId == tenantId
-                    && l.Status != "Approved" && l.Status != "Rejected"
-                    && l.Status != "Cancelled" && l.Status != "Withdrawn" && l.Status != "Draft"),
-                NewJoiners = _db.Employees.Count(e => e.TenantId == tenantId && e.JoiningDate >= monthStartUtc),
-            })
-            .FirstOrDefaultAsync(ct);
+                PendingApprovals = await pendingApprovals.CountAsync(ct),
+                OpenLeave = await openLeave.CountAsync(ct),
+                NewJoiners = await joiners.CountAsync(ct),
+            };
 
         // The subject employee is a LEFT join: an approval whose RequestedForEmployeeId is null, or
         // whose employee the caller cannot see (Employee global filter: company scope, soft delete),
         // keeps its row with null employee fields. The rows are chosen BEFORE the join so the
         // join can never change which approvals appear.
         var approvalRows = await (
-                from a in _db.ApprovalRequests
-                    .Where(a => a.TenantId == tenantId && a.Status == "Pending")
+                from a in pendingApprovals
                     .OrderByDescending(a => a.CreatedAtUtc)
                     .Take(ApprovalQueueSize)
                 join e in _db.Employees.Where(e => e.TenantId == tenantId)
@@ -565,21 +661,24 @@ public class DashboardController : ControllerBase
 
         // Headline payroll period = latest run up to and including the current month.
         // Guards against a stray future-dated run (e.g. a "2099" typo in the year field)
-        // hijacking the dashboard and showing "Jan 2099".
-        var latestRun = await _db.PayrollRuns
+        // hijacking the dashboard and showing "Jan 2099". A scoped caller's is the latest such run
+        // that paid any of their people.
+        var latestRunQuery = _db.PayrollRuns
             .Where(p => p.TenantId == tenantId
-                && (p.Year < today.Year || (p.Year == today.Year && p.Month <= today.Month)))
-            .OrderByDescending(p => p.Year).ThenByDescending(p => p.Month)
-            .FirstOrDefaultAsync(ct);
+                && (p.Year < today.Year || (p.Year == today.Year && p.Month <= today.Month)));
+        if (ids is not null)
+            latestRunQuery = latestRunQuery.Where(p => _db.PayrollSlips.Any(s =>
+                s.TenantId == tenantId && s.RunId == p.Id && ids.Contains(s.EmployeeId)));
+        var latestRun = includePayroll
+            ? await latestRunQuery.OrderByDescending(p => p.Year).ThenByDescending(p => p.Month).FirstOrDefaultAsync(ct)
+            : null;
 
         // Both charts read the same active-employee slice. UNION ALL keeps them to one command.
-        var workforceGroups = await _db.Employees
-            .Where(e => e.TenantId == tenantId && e.Status == "Active")
+        var workforceGroups = await active
             .GroupBy(e => e.EmploymentType)
             .Select(g => new { Kind = "mix", Key = g.Key, Count = g.Count() })
             .Concat(
-                _db.Employees
-                    .Where(e => e.TenantId == tenantId && e.Status == "Active")
+                active
                     .GroupBy(e => e.Department)
                     .Select(g => new { Kind = "department", Key = g.Key, Count = g.Count() }))
             .ToListAsync(ct);
@@ -596,9 +695,8 @@ public class DashboardController : ControllerBase
         var expiryHorizon = today.AddDays(AlertHorizonDays);
         var alertRows =
             from c in _db.EmployeeComplianceRecords
-            join e in _db.Employees on c.EmployeeId equals e.Id
+            join e in active on c.EmployeeId equals e.Id
             where c.TenantId == tenantId && !c.IsDeleted
-                && e.TenantId == tenantId && e.Status == "Active"
                 && c.ExpiryDate != null && c.ExpiryDate >= MinPlausibleExpiry && c.ExpiryDate <= expiryHorizon
                 && ExpiringComplianceKeys.Contains(c.FieldKey.ToLower())
             select new { c, e };
@@ -637,19 +735,44 @@ public class DashboardController : ControllerBase
                         && b.PayrollRunId == runId && b.WpsStatus != WpsStatuses.Voided))
                 .MaxAsync(c => c.ValueDate, ct);
 
-            payrollSummary = new PayrollSummaryDto(
-                new DateOnly(latestRun.Year, latestRun.Month, 1).ToString("MMM yyyy"),
-                latestRun.TotalGrossSalary,
-                latestRun.TotalNetSalary,
-                latestRun.TotalDeductions,
-                latestRun.EmployeeCount,
-                latestRun.Status,
-                valueDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-                // Employer-side statutory cost (GOSI/GPSSA/GRSIA) stored by the payroll engine on the run.
-                latestRun.TotalEmployerStatutoryCost);
+            var periodLabel = new DateOnly(latestRun.Year, latestRun.Month, 1).ToString("MMM yyyy");
+            var payDate = valueDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            var runSlips = _db.PayrollSlips.Where(s => s.TenantId == tenantId && s.RunId == latestRun.Id);
+            if (ids is null)
+            {
+                payrollSummary = new PayrollSummaryDto(
+                    periodLabel,
+                    latestRun.TotalGrossSalary,
+                    latestRun.TotalNetSalary,
+                    latestRun.TotalDeductions,
+                    latestRun.EmployeeCount,
+                    latestRun.Status,
+                    payDate,
+                    // Employer-side statutory cost (GOSI/GPSSA/GRSIA) stored by the payroll engine on the run.
+                    latestRun.TotalEmployerStatutoryCost,
+                    // The run's legal entity: its currency is the company's (see payrollCurrency.ts).
+                    latestRun.CompanyId);
+            }
+            else
+            {
+                // A scoped caller's payroll is their people's slips in that run — never the run's totals.
+                runSlips = runSlips.Where(s => ids.Contains(s.EmployeeId));
+                var own = await runSlips
+                    .Select(s => new { s.GrossSalary, s.NetSalary, s.Deductions, s.EmployerStatutoryTotal })
+                    .ToListAsync(ct);
+                payrollSummary = new PayrollSummaryDto(
+                    periodLabel,
+                    own.Sum(x => x.GrossSalary),
+                    own.Sum(x => x.NetSalary),
+                    own.Sum(x => x.Deductions),
+                    own.Count,
+                    latestRun.Status,
+                    payDate,
+                    own.Sum(x => x.EmployerStatutoryTotal),
+                    latestRun.CompanyId);
+            }
 
-            var rawPayroll = await _db.PayrollSlips
-                .Where(s => s.TenantId == tenantId && s.RunId == latestRun.Id)
+            var rawPayroll = await runSlips
                 .GroupBy(s => s.Department)
                 .Select(g => new { Key = g.Key, Total = g.Sum(x => x.NetSalary) })
                 .OrderByDescending(x => x.Total)
@@ -766,29 +889,33 @@ public class DashboardController : ControllerBase
     /// the summary's Total/Active counts; tables without a CompanyId (AttendanceDailyRecord,
     /// EmployeeLeaveBalance) are admitted only through a visible employee.
     /// </summary>
-    private async Task<DashboardAnalyticsDto> BuildAnalytics(Guid tenantId, int months, CancellationToken ct)
+    private async Task<DashboardAnalyticsDto> BuildAnalytics(Guid tenantId, int months, CancellationToken ct,
+        IReadOnlyCollection<int>? population = null)
     {
+        var ids = population?.ToList();
         var tzId = await _db.TenantLocalizationSettings
             .Where(l => l.TenantId == tenantId)
             .Select(l => l.DefaultTimezone)
             .FirstOrDefaultAsync(ct);
         var localToday = TenantTimeZone.LocalDate(TenantTimeZone.FromId(tzId), DateTime.UtcNow);
 
-        var heatmap     = await BuildAttendanceHeatmap(tenantId, localToday, ct);
-        var leaveUsage  = await BuildLeaveUsage(tenantId, localToday.Year, ct);
-        var nationality = await BuildNationality(tenantId, ct);
-        var headcount   = await BuildHeadcountTrend(tenantId, months, ct);
+        var heatmap     = await BuildAttendanceHeatmap(tenantId, localToday, ct, ids);
+        var leaveUsage  = await BuildLeaveUsage(tenantId, localToday.Year, ct, ids);
+        var nationality = await BuildNationality(tenantId, ct, ids);
+        var headcount   = await BuildHeadcountTrend(tenantId, months, ct, ids);
         return new DashboardAnalyticsDto(heatmap, leaveUsage, nationality, headcount);
     }
 
-    private async Task<AttendanceHeatmapDto> BuildAttendanceHeatmap(Guid tenantId, DateOnly localToday, CancellationToken ct)
+    private async Task<AttendanceHeatmapDto> BuildAttendanceHeatmap(Guid tenantId, DateOnly localToday, CancellationToken ct,
+        List<int>? ids = null)
     {
         var first = localToday.AddDays(-(HeatmapDays - 1));
         var days = Enumerable.Range(0, HeatmapDays).Select(i => first.AddDays(i)).ToList();
         var dayStrings = days.Select(d => d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)).ToList();
 
-        var departments = (await _db.Employees
-                .Where(e => e.TenantId == tenantId && e.Status == "Active")
+        var active = _db.Employees.Where(e => e.TenantId == tenantId && e.Status == "Active");
+        if (ids is not null) active = active.Where(e => ids.Contains(e.Id));
+        var departments = (await active
                 .GroupBy(e => e.Department)
                 .Select(g => new { g.Key, Count = g.Count() })
                 .ToListAsync(ct))
@@ -804,8 +931,8 @@ public class DashboardController : ControllerBase
         // it translates to SQL. The daily table is unique on (tenant, employee, work date).
         var raw = await (
                 from d in _db.AttendanceDailyRecords
-                join e in _db.Employees on d.EmployeeId equals e.Id
-                where d.TenantId == tenantId && e.TenantId == tenantId && e.Status == "Active"
+                join e in active on d.EmployeeId equals e.Id
+                where d.TenantId == tenantId
                     && d.WorkDate >= first && d.WorkDate <= localToday
                 group d by new { e.Department, d.WorkDate } into g
                 select new
@@ -840,7 +967,7 @@ public class DashboardController : ControllerBase
         return new AttendanceHeatmapDto(dayStrings, rows);
     }
 
-    private async Task<LeaveUsageDto> BuildLeaveUsage(Guid tenantId, int year, CancellationToken ct)
+    private async Task<LeaveUsageDto> BuildLeaveUsage(Guid tenantId, int year, CancellationToken ct, List<int>? ids = null)
     {
         var yearStart = new DateOnly(year, 1, 1);
         var yearEnd   = new DateOnly(year, 12, 31);
@@ -848,10 +975,12 @@ public class DashboardController : ControllerBase
         // "Approved" is the one terminal granted state LeaveService writes. LeaveRequest carries its
         // own company filter; the Employee probe additionally applies soft delete and keeps the
         // population identical to the other employee-based figures.
-        var rows = await _db.LeaveRequests
+        var approved = _db.LeaveRequests
             .Where(l => l.TenantId == tenantId && l.Status == "Approved"
                 && l.StartDate <= yearEnd && l.EndDate >= yearStart
-                && _db.Employees.Any(e => e.Id == l.EmployeeId && e.TenantId == tenantId))
+                && _db.Employees.Any(e => e.Id == l.EmployeeId && e.TenantId == tenantId));
+        if (ids is not null) approved = approved.Where(l => ids.Contains(l.EmployeeId));
+        var rows = await approved
             .Select(l => new { l.LeaveTypeName, l.StartDate, l.EndDate, l.TotalDays })
             .ToListAsync(ct);
 
@@ -878,9 +1007,11 @@ public class DashboardController : ControllerBase
         // Entitlement = the year's granted days per EmployeeLeaveBalance, using the model's own
         // definition (Granted = MAX(Entitled, Accrued), plus CarriedForward and ManualAdjustment),
         // spelled inline so it translates. Null when no balance rows exist for the year.
-        var entitlement = await _db.EmployeeLeaveBalances
+        var balances = _db.EmployeeLeaveBalances
             .Where(b => b.TenantId == tenantId && b.Year == year
-                && _db.Employees.Any(e => e.Id == b.EmployeeId && e.TenantId == tenantId))
+                && _db.Employees.Any(e => e.Id == b.EmployeeId && e.TenantId == tenantId));
+        if (ids is not null) balances = balances.Where(b => ids.Contains(b.EmployeeId));
+        var entitlement = await balances
             .GroupBy(_ => 1)
             .Select(g => new
             {
@@ -894,10 +1025,11 @@ public class DashboardController : ControllerBase
             byType);
     }
 
-    private async Task<NationalityMixDto> BuildNationality(Guid tenantId, CancellationToken ct)
+    private async Task<NationalityMixDto> BuildNationality(Guid tenantId, CancellationToken ct, List<int>? ids = null)
     {
-        var groups = await _db.Employees
-            .Where(e => e.TenantId == tenantId && e.Status == "Active")
+        var active = _db.Employees.Where(e => e.TenantId == tenantId && e.Status == "Active");
+        if (ids is not null) active = active.Where(e => ids.Contains(e.Id));
+        var groups = await active
             .GroupBy(e => e.Nationality)
             .Select(g => new { g.Key, Count = g.Count() })
             .ToListAsync(ct);
@@ -911,6 +1043,8 @@ public class DashboardController : ControllerBase
             else nonSaudi += g.Count;
         }
         decimal? pct = saudi + nonSaudi > 0 ? Math.Round(saudi * 100m / (saudi + nonSaudi), 1) : null;
+        // A Nitaqat band is an ESTABLISHMENT's standing; it says nothing about one manager's team.
+        if (ids is not null) return new NationalityMixDto(saudi, nonSaudi, unknown, pct, null);
 
         // Nitaqat band: the codebase STORES one — NitaqatStandingSnapshot.Band, written by
         // NitaqatCalculationService per establishment (company). A band belongs to ONE establishment,
@@ -950,27 +1084,34 @@ public class DashboardController : ControllerBase
     /// <para>The current month reports today's Active employees (who have joined), so the last point
     /// agrees with the Active tile rather than counting leavers still serving notice.</para>
     /// </summary>
-    private async Task<IReadOnlyList<HeadcountTrendPointDto>> BuildHeadcountTrend(Guid tenantId, int months, CancellationToken ct)
+    private async Task<IReadOnlyList<HeadcountTrendPointDto>> BuildHeadcountTrend(Guid tenantId, int months, CancellationToken ct,
+        List<int>? ids = null)
     {
         var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
         var firstMonth = new DateOnly(today.Year, today.Month, 1).AddMonths(-(months - 1));
         var exitStatuses = ExitEmployeeStatuses.Exit;
 
-        var people = await _db.Employees
-            .Where(e => e.TenantId == tenantId && (e.Status == "Active" || exitStatuses.Contains(e.Status)))
+        var peopleQuery = _db.Employees
+            .Where(e => e.TenantId == tenantId && (e.Status == "Active" || exitStatuses.Contains(e.Status)));
+        if (ids is not null) peopleQuery = peopleQuery.Where(e => ids.Contains(e.Id));
+        var people = await peopleQuery
             .Select(e => new { e.Id, e.JoiningDate, e.Status })
             .ToListAsync(ct);
 
-        var offboardingExit = await _db.EmployeeOffboardings
+        var offboardings = _db.EmployeeOffboardings
             .Where(o => o.TenantId == tenantId && o.Status != "Cancelled" && o.LastWorkingDay > MinPlausibleExpiry
-                && _db.Employees.Any(e => e.Id == o.EmployeeId && e.TenantId == tenantId && exitStatuses.Contains(e.Status)))
+                && _db.Employees.Any(e => e.Id == o.EmployeeId && e.TenantId == tenantId && exitStatuses.Contains(e.Status)));
+        if (ids is not null) offboardings = offboardings.Where(o => ids.Contains(o.EmployeeId));
+        var offboardingExit = await offboardings
             .GroupBy(o => o.EmployeeId)
             .Select(g => new { EmployeeId = g.Key, Exit = g.Max(o => o.LastWorkingDay) })
             .ToDictionaryAsync(x => x.EmployeeId, x => x.Exit, ct);
 
-        var historyExit = await _db.EmployeeStatusHistories
+        var histories = _db.EmployeeStatusHistories
             .Where(h => h.TenantId == tenantId && exitStatuses.Contains(h.NewStatus) && h.EffectiveDate > MinPlausibleExpiry
-                && _db.Employees.Any(e => e.Id == h.EmployeeId && e.TenantId == tenantId && exitStatuses.Contains(e.Status)))
+                && _db.Employees.Any(e => e.Id == h.EmployeeId && e.TenantId == tenantId && exitStatuses.Contains(e.Status)));
+        if (ids is not null) histories = histories.Where(h => ids.Contains(h.EmployeeId));
+        var historyExit = await histories
             .GroupBy(h => h.EmployeeId)
             .Select(g => new { EmployeeId = g.Key, Exit = g.Max(h => h.EffectiveDate) })
             .ToDictionaryAsync(x => x.EmployeeId, x => x.Exit, ct);
@@ -1039,17 +1180,35 @@ public class DashboardController : ControllerBase
         "id_number", "national_id",
     ];
 
-    private async Task<IReadOnlyList<PayrollTrendDto>> BuildPayrollTrends(Guid tenantId, int months, CancellationToken ct)
+    private async Task<IReadOnlyList<PayrollTrendDto>> BuildPayrollTrends(Guid tenantId, int months, CancellationToken ct,
+        IReadOnlyCollection<int>? population = null)
     {
         var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
         var minYear  = today.AddMonths(-(months - 1)).Year;
         var minMonth = today.AddMonths(-(months - 1)).Month;
+        var ids = population?.ToList();
 
-        var runs = await _db.PayrollRuns
-            .Where(r => r.TenantId == tenantId
-                && (r.Year > minYear || (r.Year == minYear && r.Month >= minMonth)))
-            .Select(r => new { r.Year, r.Month, r.TotalNetSalary, r.EmployeeCount, r.Status })
-            .ToListAsync(ct);
+        var runs = ids is null
+            ? await _db.PayrollRuns
+                .Where(r => r.TenantId == tenantId
+                    && (r.Year > minYear || (r.Year == minYear && r.Month >= minMonth)))
+                .Select(r => new { r.Year, r.Month, r.TotalNetSalary, r.EmployeeCount, r.Status, r.CompanyId })
+                .ToListAsync(ct)
+            // A scoped caller's trend is their people's net pay in each run, never the run's total.
+            : await (
+                    from slip in _db.PayrollSlips
+                    join r in _db.PayrollRuns on slip.RunId equals r.Id
+                    where slip.TenantId == tenantId && r.TenantId == tenantId && ids.Contains(slip.EmployeeId)
+                        && (r.Year > minYear || (r.Year == minYear && r.Month >= minMonth))
+                    group slip by new { r.Id, r.Year, r.Month, r.Status, r.CompanyId } into g
+                    select new
+                    {
+                        g.Key.Year, g.Key.Month,
+                        TotalNetSalary = g.Sum(x => x.NetSalary),
+                        EmployeeCount = g.Count(),
+                        g.Key.Status, g.Key.CompanyId,
+                    })
+                .ToListAsync(ct);
 
         var firstMonth = new DateOnly(today.Year, today.Month, 1).AddMonths(-(months - 1));
         return Enumerable.Range(0, months).Select(offset =>
@@ -1063,13 +1222,34 @@ public class DashboardController : ControllerBase
                 month.ToString("MMM"),
                 row?.TotalNetSalary ?? 0m,
                 row?.EmployeeCount ?? 0,
-                row?.Status ?? "");
+                row?.Status ?? "",
+                row?.CompanyId);
         }).ToList();
     }
 
-    private async Task<IReadOnlyList<ActivityFeedItemDto>> BuildActivityFeed(Guid tenantId, CancellationToken ct)
+    private async Task<IReadOnlyList<ActivityFeedItemDto>> BuildActivityFeed(Guid tenantId, CancellationToken ct,
+        IReadOnlyCollection<int>? population = null)
     {
         var cutoff = DateTime.UtcNow.AddDays(-7);
+
+        if (population is not null)
+        {
+            // A scoped caller sees only activity that can be tied to one of their people: leave actions,
+            // whose EntityId is the leave request's id. Payroll and attendance audit rows are run- and
+            // process-level (they carry no employee), so they belong to the organization view only.
+            var ids = population.ToList();
+            var ownLeave = await _db.LeaveAuditLogs
+                .Where(l => l.TenantId == tenantId && l.CreatedAtUtc >= cutoff && l.EntityType == nameof(LeaveRequest)
+                    && _db.LeaveRequests.Any(r => r.TenantId == tenantId && ids.Contains(r.EmployeeId)
+                        && r.Id.ToString() == l.EntityId))
+                .OrderByDescending(l => l.CreatedAtUtc)
+                .Take(15)
+                .Select(l => new { l.Action, Actor = l.PerformedByName, l.CreatedAtUtc })
+                .ToListAsync(ct);
+            return ownLeave
+                .Select(x => new ActivityFeedItemDto("Leave", x.Action, string.IsNullOrWhiteSpace(x.Actor) ? "System" : x.Actor, x.CreatedAtUtc))
+                .ToList();
+        }
 
         var payroll = _db.PayrollAuditLogs
             .Where(l => l.TenantId == tenantId && l.CreatedAtUtc >= cutoff)
@@ -1101,7 +1281,7 @@ public class DashboardController : ControllerBase
             .ToList();
     }
 
-    private async Task<DashboardKpisDto> BuildKpis(Guid tenantId, CancellationToken ct)
+    private async Task<DashboardKpisDto> BuildKpis(Guid tenantId, CancellationToken ct, DashboardView view)
     {
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
@@ -1158,6 +1338,27 @@ public class DashboardController : ControllerBase
                 .Distinct()
                 .Count() < QiwaRequiredDocsLower.Length, ct);
 
+        // Payroll prerequisites are LIVE state, read from the same tables payroll readiness reads, for
+        // the caller's own population. The rules-engine "MissingSalarySetup" insight used to be the only
+        // signal: it stays open after HR fixes the assignments (so the dashboard kept saying nobody had a
+        // salary while Payroll showed 100% coverage), and it never covered bank details at all.
+        // Same definitions as GET /api/payroll/readiness for the current month: a salary counts when it
+        // is active and effective by month end; bank details count when a live payroll profile carries
+        // an IBAN (its format is checked there, per employee).
+        // F10: payroll readiness is payroll information, returned only with payroll.read (null = not
+        // yours to see, which the client already reads as "unknown", never as zero).
+        var monthEnd = new DateOnly(today.Year, today.Month, 1).AddMonths(1).AddDays(-1);
+        int? missingSalaryAssignments = null, missingBankDetails = null;
+        if (view.CanReadPayroll)
+        {
+            missingSalaryAssignments = await empQ.CountAsync(e =>
+                !_db.EmployeeSalaryStructures.Any(s => s.TenantId == tenantId
+                    && s.EmployeeId == e.Id && s.IsActive && s.EffectiveDate <= monthEnd), ct);
+            missingBankDetails = await empQ.CountAsync(e =>
+                !_db.EmployeePayrollProfiles.Any(p => p.TenantId == tenantId
+                    && p.EmployeeId == e.Id && !p.IsDeleted && p.Iban != null && p.Iban.Trim() != ""), ct);
+        }
+
         return new DashboardKpisDto(
             counters?.PendingLeave ?? 0,
             counters?.PendingCorrections ?? 0,
@@ -1165,7 +1366,9 @@ public class DashboardController : ControllerBase
             counters?.ExpiringDocuments ?? 0,
             counters?.ExpiredDocuments ?? 0,
             missingDocuments,
-            saudizationEnabled);
+            saudizationEnabled,
+            missingSalaryAssignments,
+            missingBankDetails);
     }
 
     private static DashboardFullDto EmptyFull(DashboardKpisDto kpis) => new(
@@ -1232,7 +1435,9 @@ public record PayrollTrendDto(
     string Month,
     decimal TotalNet,
     int EmployeeCount,
-    string Status);
+    string Status,
+    // Additive (v6). The run's legal entity; the point is in that company's currency.
+    Guid? CompanyId = null);
 
 public record ActivityFeedItemDto(
     string Module,
@@ -1280,7 +1485,9 @@ public record PayrollSummaryDto(
     // Additive (v5). ISO date the bank confirmed payment (value date), null until then.
     string? PayDate = null,
     // Employer-side statutory cost (GOSI etc.) stored on the run.
-    decimal? EmployerContributions = null);
+    decimal? EmployerContributions = null,
+    // Additive (v6). The run's legal entity; every amount above is in that company's currency.
+    Guid? CompanyId = null);
 
 public record NamedValueDto(string Name, decimal Value);
 public record DashboardAlertDto(
@@ -1299,7 +1506,11 @@ public record DashboardKpisDto(
     int ExpiringDocuments,
     int ExpiredDocuments,
     int MissingDocuments,
-    bool QiwaEnabled);
+    bool QiwaEnabled,
+    // Live payroll prerequisites for the caller's population (see BuildKpis). Additive: older
+    // clients ignore them. Null when not computed: no tenant, or (F10) no payroll.read.
+    int? MissingSalaryAssignments = null,
+    int? MissingBankDetails = null);
 
 // ── Analytics (additive, v5) ─────────────────────────────────────────────────
 

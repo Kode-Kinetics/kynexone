@@ -161,6 +161,8 @@ public sealed class DraftApprovalAtomicityTests
 
             var tenantId = Guid.NewGuid();
             var actorId = Guid.NewGuid();
+            // Maker-checker: the draft was prepared by someone other than the approving actor.
+            var makerId = Guid.NewGuid();
             var company = new Company
             {
                 TenantId = tenantId,
@@ -182,7 +184,7 @@ public sealed class DraftApprovalAtomicityTests
             var draft = new EmployeeDraft
             {
                 TenantId = tenantId,
-                CreatedByUserId = actorId,
+                CreatedByUserId = makerId,
                 Status = "PendingHrApproval",
                 CurrentStep = "HrApproval",
                 EnglishName = "Atomic Employee",

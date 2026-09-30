@@ -82,6 +82,7 @@ public class GoalsController : ControllerBase
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         if (!scope.CanAccessEmployee(req.EmployeeId))
             return Forbid();
+        if (WeightRefusal(req.Weight) is { } weightRefusal) return weightRefusal;
         var employee = await _db.Employees.AsNoTracking()
             .FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == req.EmployeeId && !e.IsDeleted, ct);
         if (employee is null) return BadRequest(new { message = "Employee not found." });
@@ -100,6 +101,8 @@ public class GoalsController : ControllerBase
             TargetValue      = req.TargetValue,
             BaselineValue    = req.BaselineValue ?? 0,
             ActualValue      = req.ActualValue,
+            // R05: never copied, so every goal was stored at the entity default of 100%.
+            Weight           = req.Weight,
             Priority         = req.Priority ?? "Medium",
             StartDate        = req.StartDate,
             DueDate          = req.DueDate,
@@ -126,6 +129,7 @@ public class GoalsController : ControllerBase
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         if (!scope.CanAccessEmployee(goal.EmployeeId))
             return Forbid();
+        if (WeightRefusal(req.Weight) is { } weightRefusal) return weightRefusal;
 
         goal.Title           = req.Title;
         goal.Description     = req.Description ?? string.Empty;
@@ -158,6 +162,18 @@ public class GoalsController : ControllerBase
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         if (!scope.CanAccessEmployee(goal.EmployeeId))
             return Forbid();
+        if (goal.IsDeleted) return NotFound();
+        // R05: progress is measured against an agreed goal. A Draft nobody has approved, or a goal
+        // already Completed / OnHold / Cancelled, is not open for progress.
+        if (!goal.ManagerApproved || goal.Status != "Active")
+            return Conflict(new
+            {
+                error = "goal_not_active",
+                message = goal.Status == "Draft"
+                    ? "This goal is still a draft. A manager or HR approver has to approve it before progress can be recorded."
+                    : $"Progress can only be recorded on an active goal (this one is {goal.Status}).",
+                status = goal.Status,
+            });
 
         _db.GoalProgressUpdates.Add(new GoalProgressUpdate
         {
@@ -200,12 +216,35 @@ public class GoalsController : ControllerBase
             if (approvers.Approvers.All(a => a.EmployeeId != callerEmployeeId))
                 return Forbid();
         }
+        if (goal.IsDeleted) return NotFound();
+        // R05: approval used to set ManagerApproved and leave the goal in Draft, and the screen only
+        // offers progress on an Active goal — so no goal could ever be progressed. Approving a Draft
+        // now activates it. Re-approving an active goal is a no-op; a closed goal is not reopened.
+        if (goal.ManagerApproved && goal.Status == "Active") return Ok(goal);
+        if (goal.Status != "Draft")
+            return Conflict(new
+            {
+                error = "goal_not_draft",
+                message = $"Only a draft goal can be approved (this one is {goal.Status}).",
+                status = goal.Status,
+            });
+        goal.Status             = "Active";
         goal.ManagerApproved    = true;
         goal.ApprovedByUserId   = userId;
         goal.UpdatedAtUtc       = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
         return Ok(goal);
     }
+
+    /// <summary>A goal's weight is its share of the employee's scorecard, in percent.</summary>
+    private BadRequestObjectResult? WeightRefusal(decimal weight) =>
+        weight is > 0 and <= 100
+            ? null
+            : BadRequest(new
+            {
+                error = "goal_weight_out_of_range",
+                message = $"A goal's weight is a percentage of the scorecard and must be above 0 and at most 100 (received {weight}).",
+            });
 
     [HttpDelete("{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Manager,Employee")]

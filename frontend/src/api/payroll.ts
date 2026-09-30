@@ -108,6 +108,11 @@ export interface PayrollSlip {
   arrearsAmount?: number | null;
   /** This slip pays the employee's LAST wage month (the POD-C1 settlement handoff). */
   isFinalWageMonth?: boolean;
+  /** F02 — the GOSI cohort the statutory lines were computed on (Unknown | PreJuly2024 | NewEntrant);
+   *  null for non-Saudis, other packs, and slips processed before cohorts existed. */
+  gosiCohort?: string | null;
+  /** F02 — plain-language calculation explanation: cohort, rates applied, "unverified" / "not modelled". */
+  statutoryBasis?: string | null;
 }
 
 export interface PayrollValidationResult {
@@ -403,8 +408,11 @@ export interface PayrollSummary {
   totalRuns: number;
   lockedRuns: number;
   totalEmployeesPaid: number;
+  /** Adds every company's runs together; only meaningful when they share one currency. */
   totalGrossYtd: number;
   totalNetYtd: number;
+  /** Year to date per legal entity (locked runs), for per-currency totals. Absent on older APIs. */
+  ytdByCompany?: Array<{ companyId: string | null; totalGrossYtd: number; totalNetYtd: number; lockedRuns: number }>;
 }
 
 // ── Command Center types ──────────────────────────────────────────────────────
@@ -617,7 +625,6 @@ export const payrollApi = {
     acknowledgeWageBaseFloor?: boolean;
     acknowledgeWagesUnpaid?: boolean;
     wagesUnpaidReason?: string;
-    acknowledgeSelfApproval?: boolean;
     accrualDate?: string;
     reason?: string;
   }) => client.post<{ settlementId: string; status: string }>(`/api/payroll/final-settlements/${id}/approve`, body).then((r) => r.data),

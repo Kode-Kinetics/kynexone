@@ -18,7 +18,7 @@ public class PolicyDocumentController : ControllerBase
     {
         var tid = GetTenantId();
         if (tid is null) return Unauthorized();
-        if (!CanReadPolicyDocuments()) return Forbid();
+        if (!CanUsePolicyAssistant()) return Forbid();
         return Ok(await _svc.ListAsync(tid.Value, ct));
     }
 
@@ -54,19 +54,33 @@ public class PolicyDocumentController : ControllerBase
     {
         var tid = GetTenantId();
         if (tid is null) return Unauthorized();
-        if (!CanAskPolicyAi()) return Forbid();
+        if (!CanUsePolicyAssistant()) return Forbid();
         // Identity is threaded so the AI usage record names who asked, not "System".
         var response = await _svc.AskAsync(tid.Value, GetUserId(), GetUserRole(), request.Question, ct);
         return Ok(response);
     }
 
-    private bool CanReadPolicyDocuments() =>
+    /// <summary>
+    /// Listing the policy documents and asking the policy assistant are one capability: the list IS the
+    /// corpus the assistant answers from, and the product shows both on the Assistant page's Policy
+    /// Documents tab. It is gated on <see cref="AssistantPermission"/> — the key
+    /// <c>LegacyRolePermissionResolver</c> already assigns to this controller for read and write.
+    ///
+    /// <para>The list used to accept <c>policy.documents.read</c> / <c>ai.policy.ask</c> and the ask
+    /// <c>ai.policy.ask</c>. Neither key was ever in the permission catalog, so a tenant could not grant
+    /// policy-document access to anyone outside the three role names below: an Allow override for either
+    /// key is refused, and a custom role holding <c>ai.query</c> could ask the assistant but not see
+    /// which documents it was answering from.</para>
+    ///
+    /// <para>The role-name disjuncts are unchanged, deliberately: HR Manager and HR Officer reach this
+    /// today by role name and their seeded bundles do not hold <c>ai.query</c>.</para>
+    /// </summary>
+    private bool CanUsePolicyAssistant() =>
         User.IsInRole("Admin") || User.IsInRole("HR Manager") || User.IsInRole("HR Officer") ||
-        HasPermission("policy.documents.read") || HasPermission("ai.policy.ask");
+        HasPermission(AssistantPermission);
 
-    private bool CanAskPolicyAi() =>
-        User.IsInRole("Admin") || User.IsInRole("HR Manager") || User.IsInRole("HR Officer") ||
-        HasPermission("ai.query") || HasPermission("ai.policy.ask");
+    /// <summary>"Query the AI HR assistant".</summary>
+    public const string AssistantPermission = "ai.query";
 
     private bool HasPermission(string permission) =>
         User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));

@@ -48,11 +48,14 @@ export function HeroTrend({
   format,
   label,
   height = 150,
+  unit,
 }: {
   points: Array<{ label: string; value: number | null }>;
   format: (v: number) => string;
   label: string;
   height?: number;
+  /** The currency every point is in, named on the hover readout (the axis stays bare). */
+  unit?: string | null;
 }) {
   const [box, W] = useWidth(520);
   const [hover, setHover] = useState<number | null>(null);
@@ -140,7 +143,7 @@ export function HeroTrend({
       {hv != null && (
         <div role="status" className="pointer-events-none absolute top-0 rounded-lg bg-white px-2.5 py-1 text-[12px] font-semibold text-blue-950 shadow-lg transition-transform duration-150"
           ref={(n) => { if (n) { const left = x(hv); const flip = left > W * 0.7; n.style.left = `${left}px`; n.style.transform = flip ? 'translate(calc(-100% - 10px), 0)' : 'translate(10px, 0)'; } }}>
-          {points[hv].label}: <span className="tabular-nums">SAR {format(points[hv].value as number)}</span>
+          {points[hv].label}: <span className="tabular-nums">{unit ? `${unit} ` : ''}{format(points[hv].value as number)}</span>
         </div>
       )}
     </div>

@@ -38,10 +38,12 @@ public class DashboardAnalyticsTests
             db.Tenants.Add(new Tenant { Id = tenantId, Name = "Analytics", Slug = $"analytics-{tenantId:N}" });
             db.SaveChanges();
         }
+        // An HR/payroll administrator: F10 returns payroll figures only with payroll.read.
         var principal = new ClaimsPrincipal(new ClaimsIdentity(new[]
         {
             new Claim("tenant_id", tenantId.ToString()),
             new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+            new Claim("permission", "payroll.read"),
         }, "test"));
         return new DashboardController(db,
             new MemoryDistributedCache(Options.Create(new MemoryDistributedCacheOptions())),

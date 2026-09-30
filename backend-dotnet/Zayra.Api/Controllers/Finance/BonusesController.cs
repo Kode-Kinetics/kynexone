@@ -152,10 +152,27 @@ public class BonusesController : ControllerBase
 
     // ── Bonus Batches ─────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// F10 — bonus batches (group totals and, in the detail, per-employee amounts) are pay data, read behind
+    /// payroll.read like the payroll register. These GETs had no permission gate at all, so any signed-in
+    /// user of the tenant could list every batch's totals. Every role that sees the bonus tab holds it.
+    /// </summary>
+    private IActionResult? BonusReadDenial() =>
+        User.HasPermission("payroll.read")
+            ? null
+            : StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                error = "bonus_read_forbidden",
+                message = "Bonus batches are shown to holders of the payroll.read permission. Ask an administrator if you need them.",
+                requiredPermissions = new[] { "payroll.read" },
+            });
+
     [HttpGet("batches")]
+    [HasPermission("payroll.read")]
     public async Task<IActionResult> ListBatches(
         [FromQuery] string? status, [FromQuery] int page = 1, [FromQuery] int pageSize = 20, CancellationToken ct = default)
     {
+        if (BonusReadDenial() is { } denied) return denied;
         var tid = GetTenantId();
         var q = _db.BonusBatches.Where(x => x.TenantId == tid && !x.IsDeleted);
         if (!string.IsNullOrEmpty(status)) q = q.Where(x => x.Status == status);
@@ -166,8 +183,10 @@ public class BonusesController : ControllerBase
     }
 
     [HttpGet("batches/{id:guid}")]
+    [HasPermission("payroll.read")]
     public async Task<IActionResult> GetBatch(Guid id, CancellationToken ct)
     {
+        if (BonusReadDenial() is { } denied) return denied;
         var tid = GetTenantId();
         var batch = await _db.BonusBatches.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (batch == null) return NotFound();

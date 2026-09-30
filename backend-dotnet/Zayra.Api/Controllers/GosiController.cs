@@ -71,7 +71,7 @@ public class GosiController : ControllerBase
 
     /// <summary>
     /// Creates a tenant-specific GOSI contribution rule override.
-    /// Requires payroll.manage permission.
+    /// Requires payroll.rates.statutory_override.
     /// </summary>
     [HttpPost("contribution-rules")]
     public async Task<IActionResult> CreateContributionRule(
@@ -127,7 +127,12 @@ public class GosiController : ControllerBase
     [HttpDelete("contribution-rules/{id:guid}")]
     public async Task<IActionResult> DeactivateContributionRule(Guid id, CancellationToken ct)
     {
-        if (!HasPermission("payroll.manage")) return Forbid();
+        // Same permission as CreateContributionRule: deactivating a tenant override is the inverse
+        // statutory action (it puts the system-default rate back in force), so it sits at the same
+        // trust tier. This gate named `payroll.manage`, which is not in the permission catalog
+        // (AuthSeeder.EnsurePermissions) and so could be held by no role and no user override — every
+        // caller, Admin included, got 403. PermissionCatalogCoverageTests now fails on that class.
+        if (!HasPermission("payroll.rates.statutory_override")) return Forbid();
 
         var tenantId = GetTenantId();
         // GosiContributionRule has no IsDeleted; the global filter is purely tenant-scoped

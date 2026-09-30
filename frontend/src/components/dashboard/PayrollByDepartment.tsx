@@ -21,7 +21,8 @@ const MONTH_LONG: Record<string, string> = {
   Jul: 'July', Aug: 'August', Sep: 'September', Oct: 'October', Nov: 'November', Dec: 'December',
 };
 
-export function PayrollByDepartment({ data }: { data: DashboardFull }) {
+/** `currency`: the run's company currency (lib/payrollCurrency), or null when not confirmed. */
+export function PayrollByDepartment({ data, currency = null }: { data: DashboardFull; currency?: string | null }) {
   const t = useT();
   const run = data.overview.payrollSummary;
   const rows = [...data.overview.payrollByEntity].filter((r) => r.value > 0).sort((a, b) => b.value - a.value).slice(0, 8);
@@ -35,14 +36,14 @@ export function PayrollByDepartment({ data }: { data: DashboardFull }) {
           <div>
             <h2 id="paydept-heading" className="text-[15px] font-semibold text-slate-900 dark:text-white">{t('Payroll by department')}</h2>
             <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-400">
-              {t('Net pay')}, {MONTH_LONG[run.periodLabel.split(' ')[0]] ?? run.periodLabel} {run.periodLabel.split(' ')[1]} {t('run')}. {rows.length} {rows.length === 1 ? t('department') : t('departments')}, {fmtMoney(total)}.
+              {t('Net pay')}, {MONTH_LONG[run.periodLabel.split(' ')[0]] ?? run.periodLabel} {run.periodLabel.split(' ')[1]} {t('run')}. {rows.length} {rows.length === 1 ? t('department') : t('departments')}, {fmtMoney(total, currency)}.
             </p>
           </div>
           <Link href="/payroll" className="inline-flex shrink-0 items-center gap-1 text-[13px] font-semibold text-sapphire hover:underline dark:text-blue-300">
             {t('Open payroll')} <ArrowRight className="h-3.5 w-3.5" aria-hidden />
           </Link>
         </header>
-        <ul className="flex flex-col gap-2" role="list" aria-label={`${t('Net pay by department')}: ${rows.map((r) => `${r.name} ${fmtMoney(r.value)}`).join(', ')}`}>
+        <ul className="flex flex-col gap-2" role="list" aria-label={`${t('Net pay by department')}: ${rows.map((r) => `${r.name} ${fmtMoney(r.value, currency)}`).join(', ')}`}>
           {rows.map((r) => (
             <li key={r.name} className="grid grid-cols-[minmax(0,9rem)_minmax(0,1fr)_auto] items-center gap-3">
               <span className="truncate text-[13px] text-slate-800 dark:text-slate-200">{r.name}</span>
@@ -50,7 +51,7 @@ export function PayrollByDepartment({ data }: { data: DashboardFull }) {
                 <span className="wg-hbar block h-3 rounded-e-[4px] bg-[color:var(--viz-1)]" ref={(n) => { if (n) n.style.width = `${Math.max(2, (r.value / max) * 100)}%`; }} />
               </span>
               <span className="whitespace-nowrap text-end text-[13px] tabular-nums">
-                <b className="font-semibold text-slate-900 dark:text-white">{fmtMoney(r.value)}</b>
+                <b className="font-semibold text-slate-900 dark:text-white">{fmtMoney(r.value, currency)}</b>
                 <span className="ms-1.5 text-xs text-slate-600 dark:text-slate-400">{Math.round((r.value / total) * 100)}%</span>
               </span>
             </li>

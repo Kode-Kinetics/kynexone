@@ -70,12 +70,13 @@ public class PlanningController : ControllerBase
             .Select(r => new { r.DepartmentId, r.DepartmentName, r.HeadCount })
             .ToListAsync(ct);
 
+        var showSpend = CanSeeSalarySpend(User);
         var rows = depts.Select(d =>
         {
             bool Match(Guid? did, string? dname) => EstablishmentOccupancy.MatchesDepartment(did, dname, d.Id, d.NameEn);
             var deptEmps = emps.Where(e => Match(e.DepartmentId, e.Department)).ToList();
             var current = deptEmps.Count;
-            var spend = deptEmps.Sum(e => e.Salary ?? 0m);
+            decimal? spend = showSpend ? deptEmps.Sum(e => e.Salary ?? 0m) : null;
             var openReq = reqs.Where(r => Match(r.DepartmentId, r.DepartmentName)).Sum(r => r.HeadCount);
             return new EstablishmentRow(
                 d.Id, d.NameEn,
@@ -85,19 +86,44 @@ public class PlanningController : ControllerBase
                 d.ApprovedHeadcount > 0 ? d.ApprovedHeadcount - current : 0,
                 openReq, d.MonthlyBudgetAmount, spend);
         }).ToList();
+        // The response is a bare array, so the "withheld" note travels as a header.
+        if (!showSpend) Response.Headers["X-Withheld-Fields"] = SpendWithheldHeader;
         return Ok(rows);
     }
+
+    /// <summary>
+    /// F10 — "current monthly spend" is the sum of a department's salaries; in a one-person department it
+    /// IS that person's salary. It is shown to holders of payroll.read, or of employees.sensitive (which
+    /// already shows each salary on the employee record), and withheld — null, never zero — from everyone
+    /// else these planning views admit (organization.read / reports.read: Compliance Officer, Recruiter,
+    /// HR Assistant, …). Headcount, budgets and requisitions are unaffected.
+    /// </summary>
+    internal static bool CanSeeSalarySpend(System.Security.Claims.ClaimsPrincipal user) =>
+        user.Claims.Any(c => c.Type == "permission"
+            && (string.Equals(c.Value, "payroll.read", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(c.Value, "employees.sensitive", StringComparison.OrdinalIgnoreCase)));
+
+    internal const string SpendWithheldHeader = "currentMonthlySpend; requires payroll.read or employees.sensitive";
+
+    internal static object SpendWithheldNote(params string[] fields) => new
+    {
+        fields,
+        reason = "Salary spend is shown to holders of the payroll.read or employees.sensitive permission.",
+        requiredPermissions = new[] { "payroll.read", "employees.sensitive" },
+    };
 
     [HttpGet("workforce-summary")]
     public async Task<IActionResult> WorkforceSummary(CancellationToken ct)
     {
         if (!HasAnyPermission("organization.read", "organization.write", "reports.read")) return Forbid();
         var establishment = await BuildEstablishmentRows(ct);
+        var showSpend = CanSeeSalarySpend(User);
         var totalApproved = establishment.Sum(x => x.ApprovedHeadcount);
         var totalCurrent = establishment.Sum(x => x.CurrentHeadcount);
         var totalOpenReq = establishment.Sum(x => x.OpenRequisitionHeadcount);
         var totalBudget = establishment.Sum(x => x.MonthlyBudgetAmount);
-        var totalSpend = establishment.Sum(x => x.CurrentMonthlySpend);
+        // Spend, and everything derived from it, is salary data (see CanSeeSalarySpend).
+        decimal? totalSpend = showSpend ? establishment.Sum(x => x.CurrentMonthlySpend ?? 0m) : null;
         return Ok(new
         {
             totalApprovedHeadcount = totalApproved,
@@ -108,7 +134,12 @@ public class PlanningController : ControllerBase
             monthlyBudgetAmount = totalBudget,
             currentMonthlySpend = totalSpend,
             budgetVariance = totalBudget - totalSpend,
-            overBudgetDepartments = establishment.Count(x => x.MonthlyBudgetAmount > 0 && x.CurrentMonthlySpend > x.MonthlyBudgetAmount),
+            overBudgetDepartments = showSpend
+                ? establishment.Count(x => x.MonthlyBudgetAmount > 0 && x.CurrentMonthlySpend > x.MonthlyBudgetAmount)
+                : (int?)null,
+            withheld = showSpend
+                ? Array.Empty<object>()
+                : new[] { SpendWithheldNote("currentMonthlySpend", "budgetVariance", "overBudgetDepartments") },
             generatedAt = DateTime.UtcNow
         });
     }
@@ -232,12 +263,13 @@ public class PlanningController : ControllerBase
             .Select(r => new { r.DepartmentId, r.DepartmentName, r.HeadCount })
             .ToListAsync(ct);
 
+        var showSpend = CanSeeSalarySpend(User);
         return depts.Select(d =>
         {
             bool Match(Guid? did, string? dname) => EstablishmentOccupancy.MatchesDepartment(did, dname, d.Id, d.NameEn);
             var deptEmps = emps.Where(e => Match(e.DepartmentId, e.Department)).ToList();
             var current = deptEmps.Count;
-            var spend = deptEmps.Sum(e => e.Salary ?? 0m);
+            decimal? spend = showSpend ? deptEmps.Sum(e => e.Salary ?? 0m) : null;
             var openReq = reqs.Where(r => Match(r.DepartmentId, r.DepartmentName)).Sum(r => r.HeadCount);
             return new EstablishmentRow(
                 d.Id, d.NameEn,
@@ -264,7 +296,7 @@ public class PlanningController : ControllerBase
 public record EstablishmentRow(
     Guid DepartmentId, string DepartmentName, Guid? CostCenterId, string CostCenterName,
     int ApprovedHeadcount, int CurrentHeadcount, int Gap, int OpenRequisitionHeadcount,
-    decimal MonthlyBudgetAmount, decimal CurrentMonthlySpend);
+    decimal MonthlyBudgetAmount, decimal? CurrentMonthlySpend);
 
 public record EstablishmentUpdate(int ApprovedHeadcount, decimal MonthlyBudgetAmount, Guid? CostCenterId, string? Reason = null);
 

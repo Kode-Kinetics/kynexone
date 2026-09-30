@@ -219,7 +219,12 @@ public sealed class GosiReconciliationService
                     Nationality:  nationality,
                     ContractType: emp?.ContractType ?? "Indefinite",
                     PeriodYear:   run.Year,
-                    PeriodMonth:  run.Month);
+                    PeriodMonth:  run.Month)
+                {
+                    // F02 — recompute on the cohort the slip was PROCESSED on, never on today's record. A
+                    // slip from before F02 carries null, which is exactly how it was computed (unknown).
+                    SocialInsuranceCohort = slip.GosiCohort ?? GosiCohorts.Unknown,
+                };
                 var expected = await calc.CalculateAsync(input, ct);
                 expectedEe = expected.TotalEmployeeDeduction;
                 expectedEr = expected.TotalEmployerContribution;
@@ -467,7 +472,13 @@ public sealed class GosiReconciliationService
                     EmployeeId: Guid.Empty, CompanyId: company!.Id, Salary: breakdown,
                     Nationality: emp?.Nationality ?? string.Empty,
                     ContractType: emp?.ContractType ?? "Indefinite",
-                    PeriodYear: year, PeriodMonth: month), ct);
+                    PeriodYear: year, PeriodMonth: month)
+                {
+                    // F02 — the period's cohort as its slips froze it (the latest slip wins if a re-process
+                    // between sibling runs changed it; null on pre-F02 slips ⇒ unknown, as computed).
+                    SocialInsuranceCohort = empSlips.Select(s => s.GosiCohort).LastOrDefault(c => c is not null)
+                                            ?? GosiCohorts.Unknown,
+                }, ct);
                 expectedEe  = expected.TotalEmployeeDeduction;
                 expectedEr  = expected.TotalEmployerContribution;
                 coveredWage = breakdown.GosiCoveredWage;

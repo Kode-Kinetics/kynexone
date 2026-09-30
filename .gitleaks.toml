@@ -26,3 +26,22 @@ regexes = [
   '''(?i)(test|example|sample|dummy|placeholder|changeme|fake|invalid)[-_ ]?(audience|signing|jwt|secret|api|access|token|key)''',
   '''MUST_BE_\d+_CHARS''',
 ]
+
+# ── Repo-specific rules ──────────────────────────────────────────────────────────────
+# The default rules recognise a secret by its SHAPE: a known key prefix, or
+# `password = "…"` with enough entropy. A browser script that signs in positionally,
+# `inputs.nth(1).fill('…')`, has neither, so thirteen scripts that signed in to the live
+# pilot passed this scan. These two rules match the CONTEXT instead: automation aimed at
+# a deployed host, or a login call to a deployed host with a password in the same line.
+# Local and CI targets (localhost, 127.0.0.1) are deliberately not matched.
+[[rules]]
+id = "kynexone-deployed-host-browser-script"
+description = "Browser automation aimed at a deployed host; such scripts carry real sign-ins"
+regex = '''(?i)baseURL\s*:\s*['"`]https://[a-z0-9.-]+\.(vercel\.app|onrender\.com)'''
+keywords = ["baseurl"]
+
+[[rules]]
+id = "kynexone-deployed-host-login-with-password"
+description = "A login request to a deployed host with a password on the same line"
+regex = '''(?i)(https://[a-z0-9.-]+\.(vercel\.app|onrender\.com)/api/[a-z0-9/_-]*login[^\n]{0,400}password|password[^\n]{0,400}https://[a-z0-9.-]+\.(vercel\.app|onrender\.com)/api/[a-z0-9/_-]*login)'''
+keywords = ["password"]

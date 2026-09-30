@@ -110,6 +110,18 @@ public class Employee : INullableTenantOwned, ICompanyScopedOperational
     public DateOnly? CivilIdExpiryDate { get; set; }
     public string MuqeemNumber { get; set; } = string.Empty;
     public string GosiReference { get; set; } = string.Empty;
+    /// <summary>
+    /// F02 — the date this person was FIRST registered with GOSI, as shown on their GOSI record. It is the
+    /// person-level fact the Saudi contribution schedule is keyed on since 3 July 2024: first-time entrants
+    /// to the insured labour market on or after that date are on a separate schedule from existing
+    /// subscribers (see <see cref="Zayra.Api.Application.CountryPack.GosiCohorts"/>).
+    ///
+    /// <para>NULL means UNKNOWN and is never defaulted: payroll computes an unknown cohort on the
+    /// pre-3-July-2024 schedule, records that basis as unverified on the payslip, and raises a
+    /// per-employee finding until the date is recorded. It is a sensitive field — written only through the
+    /// approval-gated change path (EmployeesController.SensitiveFields).</para>
+    /// </summary>
+    public DateOnly? GosiFirstRegisteredOn { get; set; }
     public string QiwaContractNumber { get; set; } = string.Empty;
     public string EmiratesId { get; set; } = string.Empty;
     public string LaborCardNumber { get; set; } = string.Empty;
