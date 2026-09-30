@@ -162,3 +162,18 @@ test.describe('leave history lists show one page at a time and say how many ther
     expect(leave).toContain("leaveRequestsApi.list({ status: 'PendingManagerApproval', ...groupFilter, pageSize: 6 })");
   });
 });
+
+test.describe('performance goals and reviews page with the server total', () => {
+  test('goals, my reviews and team reviews page with Load more and count from the total', () => {
+    const perf = read('src/views/PerformancePage.tsx');
+    for (const call of [
+      'goalsApi.list({ status: statusFilter || undefined, page, pageSize })',
+      'reviewsApi.list({ page, pageSize })',
+      'reviewsApi.list({ status: statusFilter || undefined, page, pageSize })',
+    ]) expect(perf).toContain(call);
+    expect(perf).toContain('total={list.total} noun="goals"');
+    expect(perf.match(/total=\{list\.total\} noun="reviews"/g)).toHaveLength(2);
+    expect(perf).toContain('list.total ?? goals.length');
+    expect(perf.match(/list\.total \?\? reviews\.length/g)).toHaveLength(2);
+  });
+});
