@@ -120,6 +120,79 @@ test.describe('no screen reads one oversized page as the whole list', () => {
     expect(offenders).toEqual([]);
   });
 
+  // ── Reading the server's default page as the list ───────────────────────────────────────
+  // The quieter form of the same bug: a screen calls a paged endpoint without saying which page or
+  // how many rows, gets the server's default page (20–50 rows), and shows it as the whole list.
+  // Compliance, Leave, Performance, Recruitment and the assistant all did this until they were fixed
+  // after #152's sweep found them.
+
+  /** Paged API methods, found by reading src/api: a GET typed `{ items, total }` or PagedResult. */
+  function pagedApiMethods(): Map<string, string> {
+    const methods = new Map<string, string>();
+    for (const file of sourceFiles('src/api')) {
+      let obj: string | null = null;
+      let method: string | null = null;
+      let body = '';
+      const flush = () => {
+        if (obj && method && /client\.get</.test(body) && !/fetchAllPages/.test(body)
+          && (/PagedResult</.test(body) || /\bitems:[^;>]*;\s*total\b|\btotal:\s*number;[^>]*\bitems:/.test(body))) {
+          methods.set(`${obj}.${method}`, file);
+        }
+      };
+      for (const line of read(file).split('\n')) {
+        const opened = /^export const (\w+)\s*=\s*\{/.exec(line);
+        const member = /^ {2}(?:async\s+)?(\w+)(?::\s*(?:async\s*)?\(|\s*\()/.exec(line);
+        if (opened) { flush(); obj = opened[1]; method = null; body = ''; }
+        else if (/^\};?/.test(line)) { flush(); obj = null; method = null; body = ''; }
+        else if (obj && member) { flush(); method = member[1]; body = line; }
+        else if (obj && method) body += `\n${line}`;
+      }
+      flush();
+    }
+    return methods;
+  }
+
+  /**
+   * Calls to a paged method that pass neither `pageSize` nor a variable `page`, each with the reason
+   * it is not the bug. Anything else is. An entry that no longer matches a call fails too, so this
+   * list only shrinks.
+   */
+  const DEFAULT_PAGE_BY_DESIGN: Array<{ file: string; call: string; why: string }> = [
+    { file: 'src/views/PerformancePage.tsx', call: 'pipApi.terminationQueue()',
+      why: 'The endpoint returns the whole queue and takes no page (PIPController.TerminationQueue).' },
+  ];
+
+  test('the paged API methods are found (the check below is not vacuous)', () => {
+    const methods = pagedApiMethods();
+    for (const known of ['complianceVisaApi.list', 'leaveBalancesApi.list', 'goalsApi.list', 'interviewsApi.list', 'aiAssistantApi.queryHistory', 'companiesApi.list']) {
+      expect(methods.has(known), known).toBe(true);
+    }
+  });
+
+  test('no list call silently takes the server default page', () => {
+    const methods = [...pagedApiMethods().keys()];
+    const found: Array<{ file: string; call: string; line: number }> = [];
+    for (const file of SOURCE_DIRS.flatMap(sourceFiles).map((f) => f.split(path.sep).join('/'))) {
+      if (file.startsWith('src/api/')) continue;
+      const text = read(file);
+      for (const key of methods) {
+        const re = new RegExp(`\\b${key.replace('.', '\\.')}\\(`, 'g');
+        for (let m = re.exec(text); m; m = re.exec(text)) {
+          let depth = 1;
+          let j = m.index + m[0].length;
+          for (; j < text.length && depth > 0; j++) depth += text[j] === '(' ? 1 : text[j] === ')' ? -1 : 0;
+          const args = text.slice(m.index + m[0].length, j - 1);
+          // `page: 1` alone still means "the default-sized first page".
+          const explicit = /\bpageSize\b/.test(args) || /\bpage\b/.test(args.replace(/\bpage:\s*1\b/g, ''));
+          if (!explicit) found.push({ file, call: `${key}(${args.replace(/\s+/g, ' ').trim()})`, line: text.slice(0, m.index).split('\n').length });
+        }
+      }
+    }
+    const allowed = (f: { file: string; call: string }) => DEFAULT_PAGE_BY_DESIGN.some((a) => a.file === f.file && a.call === f.call);
+    expect(found.filter((f) => !allowed(f)).map((f) => `${f.file}:${f.line} ${f.call}`)).toEqual([]);
+    expect(DEFAULT_PAGE_BY_DESIGN.filter((a) => !found.some((f) => f.file === a.file && f.call === a.call)).map((a) => a.call)).toEqual([]);
+  });
+
   test('the payroll register, payslips, overtime queue and lookups read every page', () => {
     const payroll = read('src/views/PayrollPage.tsx');
     expect(payroll).toContain('payrollApi.allSlips(run.id)');
