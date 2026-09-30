@@ -47,6 +47,11 @@ public sealed class PayrollReadinessPostgresTests
             {
                 TenantId = tenantId, CompanyId = company.Id, EmployeeCode = $"{code}{Guid.NewGuid():N}"[..12], FullName = code,
                 Status = "Active", Nationality = "Saudi", JoiningDate = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+                // These employees now inherit the Saudi company's jurisdiction instead of being stored
+                // with a blank country, so they carry the statutory identity it requires: the national ID
+                // to activate, and the GOSI reference the PAY gate needs. This test is about who cannot be
+                // paid for want of BANK details, so a statutory pay block would confuse what it asserts.
+                CountryCode = "SA", IdNumber = $"10000000{code.Length:00}", GosiReference = $"GOSI-{code}",
             };
             var e1 = Emp("PAID"); var e2 = Emp("BLANK"); var e3 = Emp("NOPROF");
             seed.Employees.AddRange(e1, e2, e3);

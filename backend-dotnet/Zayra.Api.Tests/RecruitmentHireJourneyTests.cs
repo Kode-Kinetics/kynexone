@@ -164,6 +164,11 @@ public sealed class RecruitmentHireJourneyTests
             draftId = (await db.JobApplications.AsNoTracking().SingleAsync(x => x.Id == seeded.ApplicationId))
                 .OnboardingDraftId!.Value;
 
+        // The draft must hold the identity its jurisdiction requires before approval — see
+        // DraftStatutoryIdentity. This test is about the hire journey, not statutory readiness.
+        await using (var db = _fixture.CreateDb())
+            await DraftStatutoryIdentity.ApplyAsync(db, draftId, "AE");
+
         // A different, group-level HR user activates the hire. There is no screen or endpoint that
         // "submits" a recruitment draft, so it has to arrive in a state approval accepts.
         await using (var db = _fixture.CreateDb())

@@ -165,8 +165,13 @@ public sealed class OfferDraftHireMakersTests
         await using (var db = _fixture.CreateDb())
             (await Applications(db, tenantId, acceptor).AcceptOffer(offerId, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
 
-        await using var read = _fixture.CreateDb();
-        var draftId = (await read.JobApplications.AsNoTracking().SingleAsync(a => a.Id == applicationId)).OnboardingDraftId!.Value;
+        Guid draftId;
+        await using (var read = _fixture.CreateDb())
+            draftId = (await read.JobApplications.AsNoTracking().SingleAsync(a => a.Id == applicationId)).OnboardingDraftId!.Value;
+        // The draft must hold the identity its jurisdiction requires before approval — see
+        // DraftStatutoryIdentity. These tests are about who may activate a hire, not about readiness.
+        await using (var db = _fixture.CreateDb())
+            await DraftStatutoryIdentity.ApplyAsync(db, draftId, "SA");
         return new World(tenantId, draftId, sender, acceptor, checker);
     }
 

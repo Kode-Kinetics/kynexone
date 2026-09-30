@@ -1444,6 +1444,12 @@ public class PayrollModuleTests
         {
             TenantId = tenantId, CompanyId = company.Id, EmployeeCode = $"EVO{i:0000}", FullName = $"Employee {i}",
             Status = "Active", Nationality = "Saudi", JoiningDate = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            // PAYABLE means payable under Saudi rules, which is what these tests assert. The employee now
+            // inherits the Saudi company's jurisdiction instead of being stored with a blank country, so
+            // the statutory identity that jurisdiction requires has to be here: the national ID to
+            // activate, and the GOSI reference the PAY gate needs before contributions can be computed.
+            // Without them every one of them is pay-blocked, for a reason none of these tests is about.
+            CountryCode = "SA", IdNumber = $"10000000{i:00}", GosiReference = $"GOSI-{i:0000}",
         }).ToArray();
         db.Employees.AddRange(employees);
         await db.SaveChangesAsync();

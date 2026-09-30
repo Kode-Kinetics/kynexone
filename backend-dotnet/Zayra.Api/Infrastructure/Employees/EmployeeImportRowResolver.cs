@@ -41,6 +41,13 @@ public sealed class ImportLookups
 public sealed class ResolvedImportRow
 {
     public Guid? CompanyId { get; set; }
+
+    /// <summary>The EMPLOYING company's own country, carried so the row builder can derive the employee's
+    /// jurisdiction without a second lookup: an explicit CountryCode column wins, otherwise this
+    /// (<see cref="Zayra.Api.Application.Common.HomeJurisdiction.DeriveEmployeeCountry"/>). A file with no
+    /// CountryCode column used to import every row with a BLANK country, which resolves an EMPTY statutory
+    /// floor — the whole file landed Active with no jurisdiction gate applied.</summary>
+    public string CompanyCountryCode { get; set; } = string.Empty;
     public Guid? BranchId { get; set; }
     public string BranchNameEn { get; set; } = string.Empty;
     public Guid? CostCenterId { get; set; }
@@ -171,6 +178,7 @@ public static class EmployeeImportRowResolver
                 : $"CompanyLegalName '{companyNameRaw}' not found and no company exists to default to — imported without a company.");
         }
         r.CompanyId = company?.Id;
+        r.CompanyCountryCode = company?.CountryCode ?? string.Empty;
 
         // ── Work email (auto-derive when blank / validate against company domain; accept-never-block) ──
         var workEmailRaw = V("WorkEmail");

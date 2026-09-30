@@ -115,6 +115,10 @@ public sealed class OfferPlacementTests
         Guid draftId;
         await using (var db = _fixture.CreateDb())
             draftId = (await db.JobApplications.AsNoTracking().SingleAsync(x => x.Id == seeded.ApplicationId)).OnboardingDraftId!.Value;
+        // The draft must hold the identity its jurisdiction requires before approval — see
+        // DraftStatutoryIdentity. This test is about placement, not statutory readiness.
+        await using (var db = _fixture.CreateDb())
+            await DraftStatutoryIdentity.ApplyAsync(db, draftId, "SA");
         await using (var db = _fixture.CreateDb())
         {
             var approval = await Employees(db, seeded.TenantId, Guid.NewGuid()).ApproveDraft(draftId, CancellationToken.None);
@@ -235,6 +239,9 @@ public sealed class OfferPlacementTests
         Guid draftId;
         await using (var db = _fixture.CreateDb())
             draftId = (await db.JobApplications.AsNoTracking().SingleAsync(x => x.Id == seeded.ApplicationId)).OnboardingDraftId!.Value;
+        // See DraftStatutoryIdentity: this test is about which legal entity the hire lands in.
+        await using (var db = _fixture.CreateDb())
+            await DraftStatutoryIdentity.ApplyAsync(db, draftId, "SA");
         await using (var db = _fixture.CreateDb())
             (await Employees(db, seeded.TenantId, Guid.NewGuid()).ApproveDraft(draftId, CancellationToken.None))
                 .Result.Should().BeOfType<OkObjectResult>();

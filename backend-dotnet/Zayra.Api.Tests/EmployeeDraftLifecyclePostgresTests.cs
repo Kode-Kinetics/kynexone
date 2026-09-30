@@ -746,6 +746,12 @@ public sealed class EmployeeDraftLifecyclePostgresTests
             TenantId = tenantId, CreatedByUserId = maker, Status = status, EnglishName = name,
             PersonalEmail = $"hire-{Guid.NewGuid():N}@example.test", Branch = "Dubai", JoiningDate = DateTime.UtcNow.Date,
             SubmittedAtUtc = status is "PendingHrApproval" or "Submitted" ? DateTime.UtcNow : null,
+            // The UAE statutory floor these tests are NOT about. The draft is attached to a UAE legal
+            // entity, and an employee the draft becomes now inherits that jurisdiction instead of being
+            // stored with a blank country, so the Emirates ID the floor requires has to be on the draft.
+            // These tests are about the lifecycle and who may approve it; an incomplete identity would
+            // refuse the approval for a reason that has nothing to do with what they assert.
+            Nationality = "Emirati", EmiratesId = "784-1990-1234567-1",
         };
         db.EmployeeDrafts.Add(draft);
         if (applicationCompanyId is { } companyId)
@@ -849,6 +855,11 @@ public sealed class EmployeeDraftLifecyclePostgresTests
             Branch = branch.NameEn,
             JoiningDate = DateTime.UtcNow.Date,
             SubmittedAtUtc = status == "PendingHrApproval" ? DateTime.UtcNow.AddHours(-1) : null,
+            // See AddDraftAsync: the employee this draft becomes now inherits the UAE company's country,
+            // so it must hold the Emirates ID that jurisdiction's floor requires to activate. Emirati
+            // nationality keeps the non-GCC-expat work-permit row out, as it would for a real local hire.
+            Nationality = "Emirati",
+            EmiratesId = "784-1990-7654321-2",
         };
         db.AddRange(
             new Tenant { Id = tenantId, Name = "Lifecycle Tenant", Slug = $"lifecycle-{tenantId:N}" },
