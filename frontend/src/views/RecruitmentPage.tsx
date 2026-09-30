@@ -38,6 +38,7 @@ import type {
   RecruitmentStats, RequisitionStats,
   WorkforcePlan, InterviewSchedule as ExtInterviewSchedule,
   CandidateAssessment, AssessmentTemplate, OnboardingChecklist, OnboardingChecklistTemplateTask, OnboardingTask,
+  OfferApproval, OfferApprovalContext, OfferApproverOption,
 } from '../api/recruitment';
 import { OfferPlacementFields } from '../components/OfferPlacementFields';
 import { StatusChip } from '../components/StatusChip';
@@ -45,7 +46,124 @@ import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import {
   HIRE_THROUGH_OFFER_HINT, assessmentScoreLabel, assessmentScoreMax, canRecordAssessmentResult,
   canSendOffer, nextPipelineStage, offerCreationFailure, parseAssessmentScore,
+  OFFER_NEXT_ACTION_TEXT, canRequestApproval, offerNextAction,
 } from '../lib/recruitmentJourney';
+
+// ── Offer approval ────────────────────────────────────────────────────────────
+
+/**
+ * Approval for one offer: who has to approve it, what they decided, and the signed-in user's next
+ * step. Every rule comes from GET /api/recruitment/offers/{id} (OfferRules on the API); this only
+ * presents it. `onContext` hands the rules to the parent so its Send button agrees.
+ */
+function OfferApprovalPanel({ offerId, onChanged, onContext }: {
+  offerId: string;
+  onChanged: () => void;
+  onContext?: (context: OfferApprovalContext | null) => void;
+}) {
+  const [data, setData] = useState<{ offer: OfferLetter; approvals: OfferApproval[]; approval: OfferApprovalContext } | null>(null);
+  const [options, setOptions] = useState<OfferApproverOption[] | null>(null);
+  const [approverId, setApproverId] = useState('');
+  const [comment, setComment] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      const next = await offersApi.get(offerId);
+      setData(next);
+      onContext?.(next.approval);
+    } catch (e) { notifyApiError(e); }
+  }, [offerId, onContext]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const offer = data?.offer;
+  const approvals = data?.approvals ?? [];
+  const context = data?.approval ?? null;
+  const next = offer ? offerNextAction(offer.status, context, approvals) : null;
+  const showRequest = !!offer && !!context && !context.myPendingStepId && !context.canSend
+    && canRequestApproval(offer.status, approvals) && (context.required || approvals.length > 0);
+
+  useEffect(() => {
+    if (!showRequest || options !== null) return;
+    // Only HR Managers and Admins may configure approval; anyone else simply sees no picker.
+    offersApi.approverOptions(offerId).then(setOptions).catch(() => setOptions([]));
+  }, [showRequest, options, offerId]);
+
+  if (!offer || !context) return null;
+  if (!context.required && approvals.length === 0 && !showRequest) return null;
+
+  const requestApproval = async () => {
+    const approver = options?.find(o => o.userId === approverId);
+    if (!approver) { setError('Choose who approves this offer.'); return; }
+    setBusy(true); setError('');
+    try {
+      await offersApi.requestApproval(offerId, { approverUserId: approver.userId, approverName: approver.name });
+      setApproverId(''); setOptions(null);
+      await load(); onChanged();
+    } catch (e) { notifyApiError(e); } finally { setBusy(false); }
+  };
+
+  const decide = async (decision: 'Approved' | 'Rejected') => {
+    if (!context.myPendingStepId) return;
+    if (decision === 'Rejected' && !comment.trim()) { setError('Say why you are rejecting this offer.'); return; }
+    setBusy(true); setError('');
+    try {
+      await offersApi.decideApproval(offerId, context.myPendingStepId, { decision, comments: comment.trim() || undefined });
+      setComment('');
+      await load(); onChanged();
+    } catch (e) { notifyApiError(e); } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="mt-3 space-y-2 rounded-lg border border-slate-200 p-3 dark:border-white/10">
+      <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">Approval</p>
+      {next
+        ? <p className="text-xs text-slate-600 dark:text-slate-300">{OFFER_NEXT_ACTION_TEXT[next]}</p>
+        : context.sendBlockedReason && <p className="text-xs text-amber-700 dark:text-amber-400">{context.sendBlockedReason}</p>}
+      {approvals.length > 0 && (
+        <ul className="space-y-1">
+          {approvals.map(a => (
+            <li key={a.id} className="flex items-center justify-between gap-2 text-xs text-slate-600 dark:text-slate-400">
+              <span>{a.stepOrder}. {a.approverName || 'Approver'}{a.comments ? ` · ${a.comments}` : ''}</span>
+              <span className="font-medium">{a.status}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {context.myPendingStepId && offer.status === 'PendingApproval' && (
+        <div className="space-y-2">
+          <textarea aria-label="Approval comment" rows={2} value={comment} onChange={e => setComment(e.target.value)}
+            placeholder="Comment (required to reject)"
+            className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs dark:border-white/10 dark:bg-white/5" />
+          <div className="flex gap-2">
+            <button type="button" disabled={busy} onClick={() => decide('Approved')}
+              className="rounded-lg bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">Approve offer</button>
+            <button type="button" disabled={busy} onClick={() => decide('Rejected')}
+              className="rounded-lg border border-rose-200 px-2.5 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-500/30 dark:text-rose-400">Reject offer</button>
+          </div>
+        </div>
+      )}
+      {showRequest && options !== null && (
+        options.length === 0
+          ? <p className="text-xs text-slate-500 dark:text-slate-400">No one else can approve this offer yet: it needs an active HR Manager or Admin who did not write it.</p>
+          : (
+            <div className="flex flex-wrap items-center gap-2">
+              <select aria-label="Offer approver" value={approverId} onChange={e => setApproverId(e.target.value)}
+                className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs dark:border-white/10 dark:bg-white/5">
+                <option value="">Choose approver…</option>
+                {options.map(o => <option key={o.userId} value={o.userId}>{o.name || o.email}</option>)}
+              </select>
+              <button type="button" disabled={busy || !approverId} onClick={requestApproval}
+                className="rounded-lg bg-sapphire px-2.5 py-1 text-xs font-medium text-white hover:bg-sapphire/90 disabled:opacity-50">Request approval</button>
+            </div>
+          )
+      )}
+      {error && <p className="text-xs text-rose-500">{error}</p>}
+    </div>
+  );
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -690,7 +808,7 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
 
   const load = () => {
     setLoading(true);
-    openingsApi.list().then(r => { setItems(r.items); }).catch(() => {}).finally(() => setLoading(false));
+    openingsApi.listAll().then(setItems).catch(() => {}).finally(() => setLoading(false));
   };
 
   useEffect(() => { load(); }, []);
@@ -780,6 +898,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
   const [interviewForm, setInterviewForm] = useState({ interviewType: 'HR Screening', interviewerNames: '', scheduledAt: '', durationMinutes: 60, mode: 'Video', meetingLink: '', location: '' });
   const [noteText, setNoteText] = useState('');
   const [rejectReason, setRejectReason] = useState('');
+  const [approvalContext, setApprovalContext] = useState<OfferApprovalContext | null>(null);
 
   const load = () => {
     applicationsApi.get(id).then(setDetail).catch(() => {});
@@ -1047,7 +1166,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                       className="flex items-center gap-1 rounded-lg bg-slate-100 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-200 disabled:opacity-50 dark:bg-white/10 dark:text-slate-300">
                       <FileText className="h-3.5 w-3.5" />{acting === 'preview' ? 'Opening…' : 'Preview'}
                     </button>
-                    {canSendOffer(offer.status) && (
+                    {canSendOffer(offer.status) && approvalContext?.canSend && (
                       <button type="button" disabled={acting === 'send'} onClick={() => offerAction('send')}
                         className="flex items-center gap-1 rounded-lg bg-sapphire px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-sapphire/90 disabled:opacity-50">
                         <Send className="h-3.5 w-3.5" />Send to Candidate
@@ -1066,6 +1185,8 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                       </>
                     )}
                   </div>
+                  <OfferApprovalPanel key={`${offer.id}:${offer.status}`} offerId={offer.id}
+                    onChanged={() => { load(); onRefresh(); }} onContext={setApprovalContext} />
                 </div>
               ) : (
                 app.stage === 'Offer' && app.status === 'Active' ? (
@@ -1128,9 +1249,9 @@ function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => 
   useEffect(() => { load(); }, [opening.id]);
 
   const openAddModal = async () => {
-    const res = await candidatesApi.list({ status: 'Active' }).catch(() => ({ items: [] as Candidate[] }));
-    setCandidates(res.items);
-    setSelectedCandidateId(res.items[0]?.id ?? '');
+    const all = await candidatesApi.listAll({ status: 'Active' }).catch(() => [] as Candidate[]);
+    setCandidates(all);
+    setSelectedCandidateId(all[0]?.id ?? '');
     setAddModalOpen(true);
   };
 
@@ -1554,7 +1675,7 @@ function InterviewsTab() {
   };
 
   const loadApps = async () => {
-    try { const r = await applicationsApi.list({ pageSize: 100 }); setApplications(r.items); } catch {}
+    try { setApplications(await applicationsApi.listAll()); } catch {}
   };
 
   useEffect(() => { load(); }, [statusFilter]);
@@ -1817,8 +1938,8 @@ function AssessmentsTab() {
 
   const openAssign = async () => {
     try {
-      const [appsRes, tmplRes] = await Promise.all([applicationsApi.list({ pageSize: 100 }), assessmentsApi.listTemplates()]);
-      setApplications(appsRes.items);
+      const [appsRes, tmplRes] = await Promise.all([applicationsApi.listAll(), assessmentsApi.listTemplates()]);
+      setApplications(appsRes);
       setTemplates(tmplRes);
     } catch {}
     setShowAssign(true);
@@ -1844,8 +1965,7 @@ function AssessmentsTab() {
         audience: templateForm.audience.trim(),
       });
       setTemplates(prev => [...prev.filter(t => t.id !== created.id), created]);
-      const appsRes = await applicationsApi.list({ pageSize: 100 });
-      setApplications(appsRes.items);
+      setApplications(await applicationsApi.listAll());
       setAssignForm(f => ({ ...f, templateId: created.id }));
       setTemplateForm({
         code: '', title: '', description: '', assessmentType: 'Technical',
@@ -2091,6 +2211,7 @@ function OffersTab() {
   const [offerSaving, setOfferSaving] = useState(false);
   const [offerError, setOfferError] = useState('');
   const [actioning, setActioning] = useState<string | null>(null);
+  const [approvalOpen, setApprovalOpen] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -2100,7 +2221,7 @@ function OffersTab() {
   useEffect(() => { load(); }, [statusFilter]);
 
   const openCreate = async () => {
-    try { const r = await applicationsApi.list({ pageSize: 100 }); setApplications(r.items); } catch {}
+    try { setApplications(await applicationsApi.listAll()); } catch {}
     setShowCreate(true);
   };
 
@@ -2235,6 +2356,12 @@ function OffersTab() {
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[o.status] ?? ''}`}>{o.status}</span>
+                  {['Draft', 'PendingApproval', 'Approved'].includes(o.status) && (
+                    <button type="button" onClick={() => setApprovalOpen(v => (v === o.id ? null : o.id))}
+                      className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-white/10 dark:text-slate-200">
+                      {approvalOpen === o.id ? 'Hide approval' : 'Approval'}
+                    </button>
+                  )}
                   {canSendOffer(o.status) && (
                     <button type="button" onClick={() => sendOffer(o.id)} disabled={actioning === o.id}
                       className="rounded-lg bg-sapphire px-2.5 py-1 text-xs font-medium text-white hover:bg-sapphire/90 disabled:opacity-50">
@@ -2255,6 +2382,9 @@ function OffersTab() {
                   )}
                 </div>
               </div>
+              {approvalOpen === o.id && (
+                <OfferApprovalPanel key={`${o.id}:${o.status}`} offerId={o.id} onChanged={load} />
+              )}
             </div>
           ))}
         </div>

@@ -176,7 +176,12 @@ public record PayrollSlipDto(
     string? ProrationBasis = null,
     decimal? ProrationFactor = null,
     decimal? ArrearsAmount = null,
-    bool IsFinalWageMonth = false)
+    bool IsFinalWageMonth = false,
+    // ── F02: the statutory calculation explanation ──────────────────────────────────────────────
+    // Which GOSI cohort and rate basis produced the statutory lines, read off the persisted slip. Gated
+    // like money: the basis names the person's GOSI first-registration date.
+    string? GosiCohort = null,
+    string? StatutoryBasis = null)
 {
     public static PayrollSlipDto Project(
         PayrollSlip s, bool includeSensitive,
@@ -205,7 +210,9 @@ public record PayrollSlipDto(
         s.PaidFromDate, s.PaidToDate, s.PaidDays, s.ProrationDenominatorDays,
         s.ProrationBasis, s.ProrationFactor,
         includeSensitive ? s.ArrearsAmount : null,
-        s.IsFinalWageMonth);
+        s.IsFinalWageMonth,
+        includeSensitive ? s.GosiCohort : null,
+        includeSensitive ? s.StatutoryBasis : null);
 }
 
 // ── Payslips (formal payslip records) ─────────────────────────────────────────

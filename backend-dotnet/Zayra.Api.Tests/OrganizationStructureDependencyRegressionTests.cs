@@ -88,6 +88,121 @@ public sealed class OrganizationStructureDependencyRegressionTests
         result.Rows.SelectMany(x => x.Errors).Should().Contain(x => x.Contains("Duplicate"));
     }
 
+    // ── Saved records whose keys differ only in letter case ─────────────────────────────
+    // Saved data can hold "Evostel Trading LLC" and "EVOSTEL TRADING LLC", or codes "OPS" and "ops"
+    // (the unique indexes are case-sensitive). Import matches case-insensitively and built its
+    // lookups with ToDictionary, which threw — a 500 on preview or commit, whatever the package held.
+
+    [Fact]
+    public async Task SavedCompaniesWhoseNamesDifferOnlyInCase_DoNotBreakPreviewOrCommit()
+    {
+        await using var harness = await SqliteHarness.CreateAsync();
+        var tenant = await SeedTenantAsync(harness.Db);
+        harness.Db.Companies.Add(Company(tenant, "Evostel Trading LLC"));
+        harness.Db.Companies.Add(Company(tenant, "EVOSTEL TRADING LLC"));
+        await harness.Db.SaveChangesAsync();
+        var controller = CreateController(harness.Db, GroupHr(tenant));
+        var request = Package(departments: "Code,NameEn\nOPS,Operations\n");
+
+        var preview = await controller.Preview(request, CancellationToken.None);
+        var result = ((OkObjectResult)preview.Result!).Value.Should().BeOfType<OrganizationStructureImportResult>().Subject;
+        result.HasBlockingErrors.Should().BeFalse(string.Join(" | ", result.Rows.SelectMany(x => x.Errors)));
+
+        (await controller.Commit(request, CancellationToken.None)).Result.Should().BeOfType<OkObjectResult>();
+        (await harness.Db.Departments.CountAsync(d => d.TenantId == tenant)).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task APackageThatNamesAnAmbiguousSavedCompany_IsBlockedWithARowErrorNotAnException()
+    {
+        await using var harness = await SqliteHarness.CreateAsync();
+        var tenant = await SeedTenantAsync(harness.Db);
+        harness.Db.Companies.Add(Company(tenant, "Evostel Trading LLC"));
+        harness.Db.Companies.Add(Company(tenant, "EVOSTEL TRADING LLC"));
+        await harness.Db.SaveChangesAsync();
+        var controller = CreateController(harness.Db, GroupHr(tenant));
+        var request = Package(departments: "CompanyLegalName,Code,NameEn\nEvostel Trading LLC,OPS,Operations\n");
+
+        var preview = await controller.Preview(request, CancellationToken.None);
+        var result = ((OkObjectResult)preview.Result!).Value.Should().BeOfType<OrganizationStructureImportResult>().Subject;
+        result.HasBlockingErrors.Should().BeTrue();
+        result.Rows.SelectMany(x => x.Errors).Should().Contain(x => x.Contains("more than one saved"));
+
+        (await controller.Commit(request, CancellationToken.None)).Result.Should().BeOfType<UnprocessableEntityObjectResult>();
+        (await harness.Db.Departments.CountAsync(d => d.TenantId == tenant)).Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData("branches")]
+    [InlineData("costCenters")]
+    [InlineData("departments")]
+    [InlineData("employees")]
+    [InlineData("grades")]
+    [InlineData("designations")]
+    [InlineData("positions")]
+    public async Task SavedCodesThatDifferOnlyInCase_DoNotBreakAnUnrelatedCommit(string kind)
+    {
+        await using var harness = await SqliteHarness.CreateAsync();
+        var tenant = await SeedTenantAsync(harness.Db);
+        await SeedCaseVariantPairAsync(harness.Db, tenant, kind);
+        var controller = CreateController(harness.Db, GroupHr(tenant));
+        var request = kind == "grades"
+            ? Package(departments: "Code,NameEn\nNEW,New Department\n")
+            : Package(grades: "Code,Name,MinSalary,MidSalary,MaxSalary,Currency\nG9,Grade 9,5000,7500,10000,SAR\n");
+
+        var preview = await controller.Preview(request, CancellationToken.None);
+        ((OkObjectResult)preview.Result!).Value.Should().BeOfType<OrganizationStructureImportResult>()
+            .Which.HasBlockingErrors.Should().BeFalse();
+        (await controller.Commit(request, CancellationToken.None)).Result.Should().BeOfType<OkObjectResult>();
+    }
+
+    [Fact]
+    public async Task APackageRowThatUpdatesAnAmbiguousSavedCode_IsBlocked()
+    {
+        await using var harness = await SqliteHarness.CreateAsync();
+        var tenant = await SeedTenantAsync(harness.Db);
+        await SeedCaseVariantPairAsync(harness.Db, tenant, "departments");
+        var controller = CreateController(harness.Db, GroupHr(tenant));
+        var request = Package(departments: "Code,NameEn\nOPS,Operations renamed\n");
+
+        var preview = await controller.Preview(request, CancellationToken.None);
+        var result = ((OkObjectResult)preview.Result!).Value.Should().BeOfType<OrganizationStructureImportResult>().Subject;
+        result.HasBlockingErrors.Should().BeTrue();
+        result.Rows.SelectMany(x => x.Errors).Should().Contain(x => x.Contains("more than one saved"));
+        (await controller.Commit(request, CancellationToken.None)).Result.Should().BeOfType<UnprocessableEntityObjectResult>();
+    }
+
+    private static OrganizationStructureImportRequest Package(string? departments = null, string? grades = null) => new(
+        CompaniesCsv: null, BranchesCsv: null, CostCentersCsv: null, DepartmentsCsv: departments,
+        GradesCsv: grades, GradePayComponentsCsv: null, DesignationsCsv: null, PositionsCsv: null);
+
+    private static Zayra.Api.Models.Company Company(Guid tenant, string name) => new()
+    {
+        TenantId = tenant, LegalNameEn = name, CountryCode = "SA", Jurisdiction = "KSA-mainland",
+        RegistrationNumber = $"CR-{Guid.NewGuid():N}", DefaultCurrency = "SAR", IsActive = true,
+    };
+
+    private static async Task SeedCaseVariantPairAsync(ZayraDbContext db, Guid tenant, string kind)
+    {
+        var company = Company(tenant, "Solo Co");
+        db.Companies.Add(company);
+        foreach (var code in new[] { "OPS", "ops" })
+        {
+            switch (kind)
+            {
+                case "branches": db.Branches.Add(new Zayra.Api.Models.Branch { TenantId = tenant, CompanyId = company.Id, Code = code, NameEn = code }); break;
+                case "costCenters": db.CostCenters.Add(new Zayra.Api.Models.CostCenter { TenantId = tenant, CompanyId = company.Id, Code = code, Name = code }); break;
+                case "departments": db.Departments.Add(new Zayra.Api.Models.Department { TenantId = tenant, Code = code, NameEn = code }); break;
+                case "employees": db.Employees.Add(new Zayra.Api.Models.Employee { TenantId = tenant, EmployeeCode = code, FullName = code, Status = "Active", JoiningDate = DateTime.UtcNow.Date }); break;
+                case "grades": db.Grades.Add(new Zayra.Api.Models.Grade { TenantId = tenant, Code = code, Name = code }); break;
+                case "designations": db.Designations.Add(new Zayra.Api.Models.Designation { TenantId = tenant, Code = code, TitleEn = code }); break;
+                case "positions": db.Positions.Add(new Zayra.Api.Models.Position { TenantId = tenant, Code = code, Title = code }); break;
+                default: throw new ArgumentOutOfRangeException(nameof(kind));
+            }
+        }
+        await db.SaveChangesAsync();
+    }
+
     private static async Task<OrganizationStructureImportResult> PreviewAsync(
         Func<OrganizationStructureImportRequest, OrganizationStructureImportRequest> change)
     {

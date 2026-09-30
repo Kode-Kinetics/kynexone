@@ -53,16 +53,27 @@ public static class EmployeeIdentityResolver
         if (employee.TenantId != tenantId || employee.PublicId == Guid.Empty)
             throw new InvalidOperationException("The activated employee identity is invalid for this tenant.");
 
-        var applicationIds = await db.JobApplications
+        var applications = await db.JobApplications
             .Where(x => x.TenantId == tenantId && x.OnboardingDraftId == draftId)
-            .Select(x => x.Id)
+            .Select(x => new { x.Id, x.CompanyId })
             .ToListAsync(cancellationToken);
 
-        if (applicationIds.Count == 0) return 0;
-        if (applicationIds.Count > 1)
+        if (applications.Count == 0) return 0;
+        if (applications.Count > 1)
             throw new InvalidOperationException("Multiple applications reference the same onboarding draft.");
 
-        var applicationId = applicationIds[0];
+        // The hire lands in the legal entity that made the offer. Activation places the employee by
+        // resolving the draft's department and branch, and a department of another entity (or a name
+        // shared with one) moved the hire there — a different employer, currency and payroll. This
+        // runs inside the activation transaction, so refusing here writes nothing.
+        if (applications[0].CompanyId is { } offeringEntity
+            && employee.CompanyId is { } hireEntity
+            && hireEntity != offeringEntity)
+            throw new InvalidOperationException(
+                "This hire would be activated in a different legal entity from the one that made the offer. " +
+                "Change the draft's department or branch to one of the offering entity's, or make the offer from the right entity.");
+
+        var applicationId = applications[0].Id;
         var tasks = await db.OnboardingTasks
             .Where(x => x.TenantId == tenantId && x.ApplicationId == applicationId)
             .ToListAsync(cancellationToken);

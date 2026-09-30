@@ -1,4 +1,5 @@
 import client from './client';
+import { fetchAllPages } from '../lib/paging';
 import type { AuditIntegrityReport } from './payroll';
 
 export type { AuditIntegrityReport } from './payroll';
@@ -180,6 +181,9 @@ export interface PasswordResetLinkResult {
 export const usersApi = {
   list: (params: { search?: string; status?: string; role?: string; page?: number; pageSize?: number } = {}) =>
     client.get<PagedResult<UserListItem>>('/api/access/users', { params }).then(r => r.data),
+
+  listAll: (params: { search?: string; status?: string; role?: string } = {}) =>
+    fetchAllPages((page, pageSize) => usersApi.list({ ...params, page, pageSize })),
 
   get: (userId: string) =>
     client.get<UserListItem>(`/api/access/users/${userId}`).then(r => r.data),

@@ -32,6 +32,43 @@ export function canSendOffer(status: string): boolean {
   return status === 'Draft' || status === 'Approved';
 }
 
+/**
+ * The one next action an offer offers the signed-in user. Offer approval is on unless the tenant
+ * switched it off: an offer needs a named HR Manager or Admin, who did not write it, to approve it
+ * before it is sent, and whoever approved it cannot also send it. `context` comes from
+ * GET /api/recruitment/offers/{id}, which evaluates those rules for the caller.
+ */
+export type OfferNextAction = 'decide' | 'send' | 'request-approval' | 'awaiting-approval' | 'rejected' | null;
+
+export function offerNextAction(
+  status: string,
+  context: { canSend: boolean; required: boolean; myPendingStepId: string | null } | null,
+  approvals: { status: string }[],
+): OfferNextAction {
+  if (!context) return null;
+  if (context.myPendingStepId && status === 'PendingApproval') return 'decide';
+  if (approvals.some(a => a.status === 'Rejected')) return 'rejected';
+  if (!canSendOffer(status) && status !== 'PendingApproval') return null;
+  if (context.canSend) return 'send';
+  if (status === 'PendingApproval' || approvals.some(a => a.status === 'Pending')) return 'awaiting-approval';
+  if (context.required && approvals.length === 0) return 'request-approval';
+  return null;
+}
+
+/** An approver can be added while the offer is being prepared or is already in approval, unless a
+ * step was rejected: then a revised offer is the way forward. */
+export function canRequestApproval(status: string, approvals: { status: string }[]): boolean {
+  return (status === 'Draft' || status === 'PendingApproval') && !approvals.some(a => a.status === 'Rejected');
+}
+
+export const OFFER_NEXT_ACTION_TEXT: Record<Exclude<OfferNextAction, null>, string> = {
+  decide: 'You are an approver on this offer. Approve it, or reject it with a reason.',
+  send: 'Approved and ready to send to the candidate.',
+  'request-approval': 'This offer needs approval before it can be sent. Choose an HR Manager or Admin who did not write it.',
+  'awaiting-approval': 'Waiting for the named approver to decide.',
+  rejected: 'An approver rejected this offer. Generate a revised offer and request approval on that.',
+};
+
 /** An assessment's result can be recorded once it has gone to the candidate and has no score yet. */
 export function canRecordAssessmentResult(a: { status: string; scorePercentage: number | null }): boolean {
   return a.scorePercentage == null && ['Sent', 'InProgress', 'Completed'].includes(a.status);

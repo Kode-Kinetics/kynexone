@@ -1,4 +1,5 @@
 import client from './client';
+import { fetchAllPages } from '../lib/paging';
 import type { PagedResult } from './organization';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -311,8 +312,10 @@ export const leaveTypesApi = {
 };
 
 export const leavePoliciesApi = {
+  /** Every matching policy: the policies screen lists and counts them all (it used to get the first 25). */
   list: (params: { countryCode?: string; status?: string; leaveTypeId?: string } = {}) =>
-    client.get<PagedResult<LeavePolicy>>('/api/leave/policies', { params }).then(r => r.data.items ?? []),
+    fetchAllPages((page, pageSize) =>
+      client.get<PagedResult<LeavePolicy>>('/api/leave/policies', { params: { ...params, page, pageSize } }).then(r => r.data)),
   get: (id: string) =>
     client.get<LeavePolicy>(`/api/leave/policies/${id}`).then(r => r.data),
   create: (body: object) =>
@@ -339,6 +342,10 @@ export const leaveBalancesApi = {
 export const leaveRequestsApi = {
   list: (params: { status?: string; employeeId?: number; leaveTypeId?: string; fromDate?: string; toDate?: string; departmentName?: string; companyId?: string; branchId?: string } = {}) =>
     client.get<{ items: LeaveRequest[]; total: number }>('/api/leave/requests', { params }).then(r => r.data),
+  /** Every matching request, page by page: an approval queue must show all of its work. */
+  listAll: (params: { status?: string; employeeId?: number; companyId?: string; branchId?: string } = {}) =>
+    fetchAllPages((page, pageSize) =>
+      client.get<{ items: LeaveRequest[]; total: number }>('/api/leave/requests', { params: { ...params, page, pageSize } }).then(r => r.data)),
   get: (id: string) =>
     client.get<LeaveRequest>(`/api/leave/requests/${id}`).then(r => r.data),
   create: (body: {

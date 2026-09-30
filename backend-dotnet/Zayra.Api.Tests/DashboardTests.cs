@@ -49,10 +49,12 @@ public class DashboardTests
             });
             db.SaveChanges();
         }
+        // An HR/payroll administrator: F10 returns payroll figures only with payroll.read.
         var claims = new List<Claim>
         {
             new("tenant_id", tenantId.ToString()),
             new(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+            new("permission", "payroll.read"),
         };
         var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, "test"));
         var httpCtx = new DefaultHttpContext { User = principal };

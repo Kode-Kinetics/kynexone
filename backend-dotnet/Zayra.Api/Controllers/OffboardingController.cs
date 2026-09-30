@@ -245,20 +245,105 @@ public class OffboardingController : ControllerBase
         });
     }
 
+    /// <summary>The exit-interview states the workflow knows. Anything else is refused, not stored.</summary>
+    private static readonly string[] ExitInterviewStatuses = ["Pending", "Scheduled", "Completed", "Waived"];
+
+    /// <summary>
+    /// R07 — record the exit interview. It used to store whatever status string it was sent, silently
+    /// ignore an out-of-range rating, let a completed or withdrawn separation be rewritten, accept a
+    /// waiver with no reason, and write no audit row. Now: a closed status vocabulary (matched
+    /// case-insensitively and stored canonically), a 0–5 rating (0 = not captured) that is refused
+    /// rather than ignored, a reason in Notes to waive, edits only while the offboarding is InProgress,
+    /// under a lock on the offboarding row, and an audit row that records the decision but never the
+    /// employee's confidential notes.
+    /// </summary>
     [HttpPatch("{id:guid}/exit-interview")]
     [HasPermission("employees.write")]
     public async Task<IActionResult> ExitInterview(Guid id, [FromBody] ExitInterviewRequest req, CancellationToken ct)
     {
-        var off = await Find(id, ct);
-        if (off is null) return NotFound();
-        off.ExitInterviewStatus = string.IsNullOrWhiteSpace(req.Status) ? off.ExitInterviewStatus : req.Status;
-        off.ExitInterviewDate = req.Date ?? off.ExitInterviewDate;
-        off.ExitReasonCategory = req.ReasonCategory ?? off.ExitReasonCategory;
-        off.ExitInterviewRating = req.Rating is >= 0 and <= 5 ? req.Rating : off.ExitInterviewRating;
-        off.ExitInterviewNotes = req.Notes ?? off.ExitInterviewNotes;
-        off.UpdatedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct);
-        return Ok(off);
+        var tenantId = this.GetTenantId()!.Value;
+        var canonicalStatus = string.IsNullOrWhiteSpace(req.Status)
+            ? null
+            : ExitInterviewStatuses.FirstOrDefault(s => s.Equals(req.Status.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (!string.IsNullOrWhiteSpace(req.Status) && canonicalStatus is null)
+            return BadRequest(new
+            {
+                error = "unknown_exit_interview_status",
+                message = $"'{req.Status}' is not an exit-interview status. Use Pending, Scheduled, Completed or Waived.",
+                allowed = ExitInterviewStatuses,
+            });
+        if (req.Rating is < 0 or > 5)
+            return BadRequest(new
+            {
+                error = "exit_interview_rating_out_of_range",
+                message = $"The rating must be between 1 and 5, or 0 when no rating was given (received {req.Rating}).",
+            });
+
+        var changedAtUtc = DateTime.UtcNow;
+        var auditId = Guid.NewGuid();
+        IActionResult? refusal = null;
+
+        async Task<bool> MutateOnceAsync(CancellationToken token)
+        {
+            _db.ChangeTracker.Clear();
+            // One row, one lock: Complete and Cancel take this same row lock before they change the
+            // offboarding's status, so the InProgress check below cannot race a close or a rescind.
+            var off = await _db.EmployeeOffboardings
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, token);
+            if (off is null)
+            {
+                refusal = NotFound();
+                return false;
+            }
+            if (off.Status != "InProgress")
+            {
+                refusal = Conflict(new
+                {
+                    error = "offboarding_not_active",
+                    message = $"The exit interview can only be recorded while the offboarding is in progress (current: '{off.Status}')."
+                });
+                return false;
+            }
+
+            var status = canonicalStatus ?? off.ExitInterviewStatus;
+            var notes = req.Notes ?? off.ExitInterviewNotes;
+            if (status == "Waived" && string.IsNullOrWhiteSpace(notes))
+            {
+                refusal = BadRequest(new
+                {
+                    error = "exit_interview_waiver_reason_required",
+                    message = "Say why the exit interview is being waived (in Notes) before saving it as Waived."
+                });
+                return false;
+            }
+
+            off.ExitInterviewStatus = status;
+            off.ExitInterviewDate = req.Date ?? off.ExitInterviewDate;
+            off.ExitReasonCategory = req.ReasonCategory?.Trim() ?? off.ExitReasonCategory;
+            off.ExitInterviewRating = req.Rating;
+            off.ExitInterviewNotes = notes;
+            off.UpdatedAtUtc = changedAtUtc;
+            // The decision is audited; the employee's free-text notes are confidential and are not.
+            _db.AuditLogs.Add(CreateOffboardingAudit(auditId, changedAtUtc, "offboarding.exit_interview_updated", off,
+                new
+                {
+                    status,
+                    date = off.ExitInterviewDate,
+                    rating = off.ExitInterviewRating,
+                    hasReasonCategory = !string.IsNullOrWhiteSpace(off.ExitReasonCategory),
+                    hasNotes = !string.IsNullOrWhiteSpace(notes),
+                }));
+            await _db.SaveChangesAsync(token);
+            return true;
+        }
+
+        await ExecuteAtomicMutationAsync(MutateOnceAsync, auditId, "offboarding.exit_interview_updated", tenantId, ct);
+
+        if (refusal is not null) return refusal;
+        var committed = await _db.EmployeeOffboardings.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
+        return committed is null ? NotFound() : Ok(committed);
     }
 
     [HttpPatch("{id:guid}/checklist")]
@@ -644,8 +729,9 @@ public class OffboardingController : ControllerBase
     public async Task<IActionResult> RecordExternalSettlementPayment(
         Guid id, [FromBody] ExternalSettlementPaymentRequest req, CancellationToken ct)
     {
-        var off = await Find(id, ct);
-        if (off is null) return NotFound();
+        var tenantId = this.GetTenantId()!.Value;
+        var actorId = this.GetUserId();
+        if (actorId is null) return Forbid();
 
         if (!Infrastructure.Payroll.FinalSettlementExternalDischarge.TryNormalizeMethod(req.Method, out var method))
             return BadRequest(new
@@ -661,79 +747,166 @@ public class OffboardingController : ControllerBase
                 message = "A bank reference or cheque number is required — it is the evidence that the money moved, "
                         + "and it is what replaces the payroll run's payment batch in the audit trail.",
             });
-
-        var settlement = await _db.EmployeeFinalSettlements
-            .FirstOrDefaultAsync(s => s.TenantId == off.TenantId && s.OffboardingId == off.Id
-                                   && s.EmployeeId == off.EmployeeId
-                                   && s.Status != FinalSettlementStatuses.Cancelled, ct);
-        if (settlement is null)
-            return Conflict(new
-            {
-                error   = "no_settlement",
-                message = "There is no live final settlement for this offboarding. Compute and approve the "
-                        + "settlement first — the amount paid has to be the one the system determined.",
-            });
-
+        var reference = req.Reference.Trim();
         var paidOn = req.PaidOn ?? DateOnly.FromDateTime(DateTime.UtcNow);
-        // The amount is CONFIRMED against the settlement, never taken from the caller: a settlement
-        // recorded as paid for a figure the system did not compute is how an underpayment becomes
-        // evidenced by the employer's own signed record.
-        if (Math.Abs(req.Amount - Math.Round(settlement.NetPayable, 2)) > 0.01m)
-            return UnprocessableEntity(new
-            {
-                error   = "amount_does_not_match_settlement",
-                message = $"The amount paid ({req.Amount:N2}) does not match the settlement's net payable "
-                        + $"({settlement.NetPayable:N2}). Correct the payment record, or cancel and recompute the "
-                        + "settlement if the figure itself is wrong.",
-                netPayable = settlement.NetPayable,
-            });
 
-        var (discharge, refusal) = await Infrastructure.Payroll.FinalSettlementExternalDischarge.StageAsync(
-            _db, settlement, paidOn, method, req.Reference.Trim(), this.GetUserId(), GetActorName(), ct);
-        if (refusal is not null)
-            return UnprocessableEntity(new { error = refusal.Error, message = refusal.Message });
+        // ── ONE LOCKED TRANSACTION, POSTED ONCE ─────────────────────────────────────────────────────
+        // This used to read the settlement without a lock and write in two separate saves, so two
+        // recordings that overlapped each found an Approved, uncleared settlement and each posted the
+        // discharge: the payable was cleared twice and cash credited twice. Now the whole recording is one
+        // transaction that locks the offboarding and then the settlement (the order Complete and Cancel
+        // use), and every check below runs on the locked rows: whichever request commits second waits,
+        // re-reads a Paid settlement and is refused. A retry after an ambiguous commit is settled by this
+        // request's own audit row, so a retry never posts the discharge a second time either.
+        var recordedAtUtc = DateTime.UtcNow;
+        var auditId = Guid.NewGuid();
+        IActionResult? outcome = null;
 
-        settlement.Status = FinalSettlementStatuses.Paid;
-        settlement.PaidAtUtc = DateTime.UtcNow;
-        settlement.PaidOutsidePayroll = true;
-        settlement.ExternalPaymentMethod = method;
-        settlement.ExternalPaymentReference = req.Reference.Trim();
-        settlement.ExternalPaymentDate = paidOn;
-        settlement.ExternalPaymentRecordedByUserId = this.GetUserId();
-        settlement.ExternalPaymentRecordedByName = GetActorName();
-        settlement.UpdatedAtUtc = DateTime.UtcNow;
-
-        off.FinalSettlementDone = true;
-        off.UpdatedAtUtc = DateTime.UtcNow;
-
-        var ctx = new RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(),
-            Request.Headers.UserAgent.ToString(), this.GetUserId(), off.TenantId);
-        await _audit.WriteAsync("payroll.final_settlement.paid_outside_payroll", "EmployeeFinalSettlement",
-            settlement.Id.ToString(), ctx, System.Text.Json.JsonSerializer.Serialize(new
-            {
-                offboardingId = off.Id, settlement.EmployeeId, settlement.EmployeeCode,
-                settlement.NetPayable, settlement.Currency, method, reference = req.Reference.Trim(),
-                paidOn, period = discharge!.Period,
-                payableCleared = discharge.PayableCleared, payableAccount = discharge.PayableAccount,
-            }), ct);
-
-        await _db.SaveChangesAsync(ct);
-
-        return Ok(new
+        async Task<bool> RecordOnceAsync(CancellationToken token)
         {
-            settlementId  = settlement.Id,
-            status        = settlement.Status,
-            paidOutsidePayroll = true,
-            method, reference = settlement.ExternalPaymentReference, paidOn,
-            period        = discharge.Period,
-            payableCleared = discharge.PayableCleared,
-            journal = discharge.Journal.Select(l => new
+            _db.ChangeTracker.Clear();
+            var off = await _db.EmployeeOffboardings
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, token);
+            if (off is null)
             {
-                l.EventType, debit = l.DebitAccount, credit = l.CreditAccount, l.Amount, l.Description,
-            }).ToList(),
-            nextStep = "The payable is discharged. Complete the offboarding to archive the employee.",
-        });
+                outcome = NotFound();
+                return false;
+            }
+            if (off.Status != "InProgress")
+            {
+                outcome = Conflict(new
+                {
+                    error   = "offboarding_not_in_progress",
+                    message = $"A settlement payment can only be recorded while the offboarding is in progress (current: '{off.Status}').",
+                });
+                return false;
+            }
+
+            var settlement = await _db.EmployeeFinalSettlements
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(s => s.TenantId == tenantId && s.OffboardingId == off.Id
+                         && s.EmployeeId == off.EmployeeId
+                         && s.Status != FinalSettlementStatuses.Cancelled)
+                .OrderBy(s => s.Id)
+                .FirstOrDefaultAsync(token);
+            if (settlement is null)
+            {
+                outcome = Conflict(new
+                {
+                    error   = "no_settlement",
+                    message = "There is no live final settlement for this offboarding. Compute and approve the "
+                            + "settlement first — the amount paid has to be the one the system determined.",
+                });
+                return false;
+            }
+
+            // ── F10 — SEGREGATION OF DUTIES ON THE DISBURSEMENT ─────────────────────────────────────
+            // The approver signs off the amount; recording the payment asserts the money left the bank and
+            // posts the journal that closes the payable. One person doing both is a single point of
+            // control over the whole liability, so the recorder must be someone else — and an Approved
+            // settlement with no recorded approver cannot prove that, so it is refused rather than assumed.
+            // (A settlement that is not Approved falls through to the discharge's own status refusal.)
+            if (settlement.Status == FinalSettlementStatuses.Approved)
+            {
+                if (settlement.ApprovedByUserId is null)
+                {
+                    outcome = Conflict(new
+                    {
+                        error   = "settlement_approver_unknown",
+                        message = "This settlement has no recorded approver, so an independent payment check cannot be "
+                                + "shown. Cancel it, recompute it and have it approved through the settlement workflow "
+                                + "before recording the payment.",
+                    });
+                    return false;
+                }
+                if (settlement.ApprovedByUserId == actorId)
+                {
+                    outcome = Conflict(new
+                    {
+                        error   = "segregation_of_duties",
+                        message = "You approved this settlement, so you cannot also record its payment. A different "
+                                + "finance user with payroll approval rights must record the disbursement.",
+                    });
+                    return false;
+                }
+            }
+
+            // The amount is CONFIRMED against the settlement, never taken from the caller: a settlement
+            // recorded as paid for a figure the system did not compute is how an underpayment becomes
+            // evidenced by the employer's own signed record.
+            if (Math.Abs(req.Amount - Math.Round(settlement.NetPayable, 2)) > 0.01m)
+            {
+                outcome = UnprocessableEntity(new
+                {
+                    error   = "amount_does_not_match_settlement",
+                    message = $"The amount paid ({req.Amount:N2}) does not match the settlement's net payable "
+                            + $"({settlement.NetPayable:N2}). Correct the payment record, or cancel and recompute the "
+                            + "settlement if the figure itself is wrong.",
+                    netPayable = settlement.NetPayable,
+                });
+                return false;
+            }
+
+            // Re-checks, on the locked row, that the settlement is still Approved and its payable still
+            // uncleared: the check that refuses the second of two overlapping recordings.
+            var (discharge, refusal) = await Infrastructure.Payroll.FinalSettlementExternalDischarge.StageAsync(
+                _db, settlement, paidOn, method, reference, actorId, GetActorName(), token);
+            if (refusal is not null)
+            {
+                outcome = UnprocessableEntity(new { error = refusal.Error, message = refusal.Message });
+                return false;
+            }
+
+            settlement.Status = FinalSettlementStatuses.Paid;
+            settlement.PaidAtUtc = recordedAtUtc;
+            settlement.PaidOutsidePayroll = true;
+            settlement.ExternalPaymentMethod = method;
+            settlement.ExternalPaymentReference = reference;
+            settlement.ExternalPaymentDate = paidOn;
+            settlement.ExternalPaymentRecordedByUserId = actorId;
+            settlement.ExternalPaymentRecordedByName = GetActorName();
+            settlement.UpdatedAtUtc = recordedAtUtc;
+
+            off.FinalSettlementDone = true;
+            off.UpdatedAtUtc = recordedAtUtc;
+
+            _db.AuditLogs.Add(AuthAuditEntry.Create(
+                auditId, recordedAtUtc, ExternalSettlementPaymentAuditAction, "EmployeeFinalSettlement",
+                settlement.Id.ToString(),
+                new RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(),
+                    Request.Headers.UserAgent.ToString(), actorId, tenantId),
+                System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    offboardingId = off.Id, settlement.EmployeeId, settlement.EmployeeCode,
+                    settlement.NetPayable, settlement.Currency, method, reference,
+                    paidOn, period = discharge!.Period,
+                    payableCleared = discharge.PayableCleared, payableAccount = discharge.PayableAccount,
+                })));
+            await _db.SaveChangesAsync(token);
+
+            outcome = Ok(new
+            {
+                settlementId  = settlement.Id,
+                status        = settlement.Status,
+                paidOutsidePayroll = true,
+                method, reference, paidOn,
+                period        = discharge.Period,
+                payableCleared = discharge.PayableCleared,
+                journal = discharge.Journal.Select(l => new
+                {
+                    l.EventType, debit = l.DebitAccount, credit = l.CreditAccount, l.Amount, l.Description,
+                }).ToList(),
+                nextStep = "The payable is discharged. Complete the offboarding to archive the employee.",
+            });
+            return true;
+        }
+
+        await ExecuteAtomicMutationAsync(RecordOnceAsync, auditId, ExternalSettlementPaymentAuditAction, tenantId, ct);
+        return outcome ?? throw new InvalidOperationException("The settlement payment finished without an outcome.");
     }
+
+    private const string ExternalSettlementPaymentAuditAction = "payroll.final_settlement.paid_outside_payroll";
 
     /// <summary>Rescind a resignation while serving notice — reinstates the employee.</summary>
     [HttpPost("{id:guid}/cancel")]
@@ -819,16 +992,25 @@ public class OffboardingController : ControllerBase
             // re-issued through the invitation workflow so roles, scope and MFA are freshly approved.
             accessReprovisioningRequired = off.AccessRevoked;
 
+            // R04 — withdraw the backfill this separation raised, and only that one, while it is still
+            // awaiting a decision. Submitting under a seeded workflow makes it PendingApproval (a status
+            // this list used to miss) and opens a shared ApprovalRequest, which is closed with it so no
+            // approver can still sign off a replacement for someone who is staying. An approved or
+            // converted requisition is recruitment genuinely in flight and is left alone.
             backfillWithdrawn = false;
+            Guid? backfillApprovalCancelled = null;
             if (off.BackfillRequisitionId is Guid requisitionId)
             {
                 var requisition = await _db.ManpowerRequisitions
                     .TagWith(RowLockingInterceptor.ForUpdateTag)
                     .SingleOrDefaultAsync(x => x.Id == requisitionId && x.TenantId == tenantId, token);
-                if (requisition is not null && requisition.Status is "Draft" or "Pending" or "Submitted")
+                if (requisition is not null && requisition.Status is "Draft" or "Submitted" or "PendingApproval")
                 {
                     requisition.Status = "Cancelled";
                     backfillWithdrawn = true;
+                    if (requisition.ApprovalRequestId is Guid approvalId)
+                        backfillApprovalCancelled = await CancelPendingRequisitionApprovalAsync(
+                            tenantId, approvalId, requisition.Id, cancelledAtUtc, token);
                 }
             }
 
@@ -839,7 +1021,9 @@ public class OffboardingController : ControllerBase
                     reason = off.CancelReason,
                     accessRestored = false,
                     accessReprovisioningRequired,
-                    backfillWithdrawn
+                    backfillWithdrawn,
+                    backfillRequisitionId = backfillWithdrawn ? off.BackfillRequisitionId : null,
+                    backfillApprovalCancelled
                 }));
             await _db.SaveChangesAsync(token);
             return true;
@@ -982,6 +1166,36 @@ public class OffboardingController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
         return Ok(new { offboarding = off, accessRestored, backfillWithdrawn });
+    }
+
+    /// <summary>
+    /// Closes the requisition's own ApprovalRequest if, and only if, it is still Pending and really is
+    /// this tenant's approval for this requisition — the link is a stored id, so it is re-checked
+    /// rather than trusted. Returns the id it closed, or null. The caller owns the save.
+    /// </summary>
+    private async Task<Guid?> CancelPendingRequisitionApprovalAsync(
+        Guid tenantId, Guid approvalId, Guid requisitionId, DateTime cancelledAtUtc, CancellationToken ct)
+    {
+        var entityId = requisitionId.ToString();
+        var approval = await _db.ApprovalRequests
+            .TagWith(RowLockingInterceptor.ForUpdateTag)
+            .SingleOrDefaultAsync(a => a.Id == approvalId && a.TenantId == tenantId
+                && a.EntityName == nameof(ManpowerRequisition) && a.EntityId == entityId
+                && a.Status == "Pending", ct);
+        if (approval is null) return null;
+
+        approval.Status = "Cancelled";
+        approval.CompletedAtUtc = cancelledAtUtc;
+        // Out of every approver's queue: the routing fields are what the Approval Center lists by.
+        approval.CurrentApproverEmployeeId = null;
+        approval.CurrentApproverUserId = null;
+        approval.CurrentApproverName = string.Empty;
+        approval.CurrentApproverRole = string.Empty;
+        approval.CurrentApproverType = string.Empty;
+        approval.CurrentQueue = string.Empty;
+        // A decider who read the Pending version cannot now advance it.
+        approval.DecisionVersion++;
+        return approval.Id;
     }
 
     private async Task<int?> ResolveOffboardingEmployeeIdAsync(
@@ -1213,21 +1427,29 @@ public class OffboardingController : ControllerBase
         string action,
         LockedOffboardingGraph graph,
         object details) =>
+        CreateOffboardingAudit(auditId, createdAtUtc, action, graph.Offboarding, details);
+
+    private AuditLog CreateOffboardingAudit(
+        Guid auditId,
+        DateTime createdAtUtc,
+        string action,
+        EmployeeOffboarding offboarding,
+        object details) =>
         AuthAuditEntry.Create(
             auditId,
             createdAtUtc,
             action,
             "EmployeeOffboarding",
-            graph.Offboarding.Id.ToString(),
+            offboarding.Id.ToString(),
             new RequestContext(
                 HttpContext.Connection.RemoteIpAddress?.ToString(),
                 Request.Headers.UserAgent.ToString(),
                 this.GetUserId(),
-                graph.Offboarding.TenantId),
+                offboarding.TenantId),
             System.Text.Json.JsonSerializer.Serialize(new
             {
-                graph.Offboarding.EmployeeId,
-                graph.Offboarding.EmployeeCode,
+                offboarding.EmployeeId,
+                offboarding.EmployeeCode,
                 details
             }));
 

@@ -13,9 +13,14 @@ public interface IEmployeeManagementService
     /// <summary>People-list search with the server-side readiness / import-gap deep-link filters.</summary>
     Task<PagedResult<EmployeeListItemDto>> SearchAsync(Guid tenantId, string? search, string? status, string? department, string? readiness, Guid? importBatchId, string? gapType, int page, int pageSize, CancellationToken cancellationToken);
     Task<EmployeeDetailDto?> GetAsync(Guid tenantId, int id, bool includeSensitive, RequestContext context, CancellationToken cancellationToken);
-    Task<EmployeeDetailDto> CreateAsync(Guid tenantId, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken);
-    Task<EmployeeDetailDto?> UpdateAsync(Guid tenantId, int id, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken);
-    Task<EmployeeDetailDto?> ChangeStatusAsync(Guid tenantId, int id, EmployeeStatusChangeRequest request, RequestContext context, CancellationToken cancellationToken);
+    /// <param name="includeSensitive">The CALLER's own sensitive-data entitlement (EmployeesController.CanViewSensitive()).
+    /// Defaults to FALSE so a forgotten call site masks rather than leaks: a mutation response must never
+    /// return salary / bank / identity fields the same caller's GET would mask.</param>
+    Task<EmployeeDetailDto> CreateAsync(Guid tenantId, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false);
+    /// <inheritdoc cref="CreateAsync" path="/param[@name='includeSensitive']"/>
+    Task<EmployeeDetailDto?> UpdateAsync(Guid tenantId, int id, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false);
+    /// <inheritdoc cref="CreateAsync" path="/param[@name='includeSensitive']"/>
+    Task<EmployeeDetailDto?> ChangeStatusAsync(Guid tenantId, int id, EmployeeStatusChangeRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false);
     Task<EmployeeDocument> UploadDocumentAsync(Guid tenantId, int employeeId, EmployeeDocumentUploadMetadata request, IFormFile file, RequestContext context, CancellationToken cancellationToken);
     Task<IReadOnlyCollection<EmployeeDocument>> GetDocumentsAsync(Guid tenantId, int employeeId, CancellationToken cancellationToken);
     Task<EmployeeDocument?> UpdateDocumentAsync(Guid tenantId, int employeeId, Guid documentId, UpdateDocumentMetadataRequest request, RequestContext context, CancellationToken cancellationToken);
@@ -25,8 +30,10 @@ public interface IEmployeeManagementService
     Task<DocumentExpiryCheckResult> CheckDocumentExpiryAsync(Guid tenantId, CancellationToken cancellationToken);
     Task<IReadOnlyCollection<EmployeeHistory>> GetHistoryAsync(Guid tenantId, int employeeId, CancellationToken cancellationToken);
     Task<EmployeeTransferRequest?> RequestTransferAsync(Guid tenantId, int employeeId, EmployeeTransferCreateRequest request, RequestContext context, CancellationToken cancellationToken);
-    Task<EmployeeDetailDto?> ActivateAsync(Guid tenantId, int employeeId, EmployeeStatusChangeRequest request, RequestContext context, CancellationToken cancellationToken);
-    Task<EmployeeDetailDto?> TerminateAsync(Guid tenantId, int employeeId, EmployeeStatusChangeRequest request, RequestContext context, CancellationToken cancellationToken);
+    /// <inheritdoc cref="CreateAsync" path="/param[@name='includeSensitive']"/>
+    Task<EmployeeDetailDto?> ActivateAsync(Guid tenantId, int employeeId, EmployeeStatusChangeRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false);
+    /// <inheritdoc cref="CreateAsync" path="/param[@name='includeSensitive']"/>
+    Task<EmployeeDetailDto?> TerminateAsync(Guid tenantId, int employeeId, EmployeeStatusChangeRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false);
     Task<EmployeeHeadcountReportDto> HeadcountAsync(Guid tenantId, CancellationToken cancellationToken);
     Task<IReadOnlyCollection<EmployeeExpiringDocumentDto>> ExpiringDocumentsAsync(Guid tenantId, int days, CancellationToken cancellationToken);
     Task<IReadOnlyCollection<EmployeeMissingDocumentsReportDto>> MissingDocumentsAsync(Guid tenantId, CancellationToken cancellationToken);

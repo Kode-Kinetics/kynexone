@@ -105,7 +105,7 @@ function RequestsTab({ types, onIssued }: { types: LetterTypeInfo[]; onIssued: (
     setLoading(true);
     setError('');
     try {
-      setItems((await hrLettersApi.requests({ status })).items);
+      setItems(await hrLettersApi.allRequests({ status }));
     } catch (e) {
       notifyApiError(e);
       setError('The request queue could not be loaded.');

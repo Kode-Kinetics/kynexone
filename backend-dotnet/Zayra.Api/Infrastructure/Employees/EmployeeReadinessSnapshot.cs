@@ -56,6 +56,9 @@ public sealed record EmployeeReadinessSnapshot
     /// <summary>Honours the exit-cascade flag (EmployeeManagementService sets false on separation).
     /// A false value is a hard pay blocker regardless of any other data.</summary>
     public bool WpsEligible { get; init; } = true;
+    /// <summary>An approved IBAN moved this employee to another bank and the old bank's routing code was cleared
+    /// (EmployeeBankProfileSync). While <see cref="BankRoutingCode"/> is blank, pay is gated.</summary>
+    public bool BankRoutingCodeRequired { get; init; }
 
     // ── Documents (present set) ──────────────────────────────────────────────
     public IReadOnlyList<DocumentPresence> Documents { get; init; } = System.Array.Empty<DocumentPresence>();

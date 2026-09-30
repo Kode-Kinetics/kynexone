@@ -212,6 +212,7 @@ public class EstablishmentController : ControllerBase
             .Select(p => new { p.DepartmentId, p.DesignationId })
             .ToListAsync(ct);
 
+        var showSpend = PlanningController.CanSeeSalarySpend(User);
         var deptNames = depts.Select(d => d.NameEn).ToHashSet();
         var unresolvedDepartmentCount = emps.Count(e => e.DepartmentId == null
             && (string.IsNullOrWhiteSpace(e.Department) || !deptNames.Contains(e.Department)));
@@ -221,7 +222,9 @@ public class EstablishmentController : ControllerBase
             bool Match(Guid? did, string? dname) => EstablishmentOccupancy.MatchesDepartment(did, dname, d.Id, d.NameEn);
             var deptEmps = emps.Where(e => Match(e.DepartmentId, e.Department)).ToList();
             var openReq = reqs.Where(r => Match(r.DepartmentId, r.DepartmentName)).Sum(r => r.HeadCount);
-            var spend = deptEmps.Sum(e => e.Salary ?? 0m);
+            // Salary spend is withheld (null) without payroll.read / employees.sensitive — see
+            // PlanningController.CanSeeSalarySpend: in a one-person department it is that person's salary.
+            decimal? spend = showSpend ? deptEmps.Sum(e => e.Salary ?? 0m) : null;
             var unclassified = deptEmps.Count(e => e.DesignationId == null || !levelByDesignation.ContainsKey(e.DesignationId.Value));
 
             var levelRows = levels.Select(l =>
@@ -275,7 +278,10 @@ public class EstablishmentController : ControllerBase
         {
             enforcementMode = await _guard.GetEnforcementModeAsync(tenantId, ct),
             unresolvedDepartmentCount,
-            departments = rows
+            departments = rows,
+            withheld = showSpend
+                ? Array.Empty<object>()
+                : new[] { PlanningController.SpendWithheldNote("departments[].currentMonthlySpend") },
         });
     }
 

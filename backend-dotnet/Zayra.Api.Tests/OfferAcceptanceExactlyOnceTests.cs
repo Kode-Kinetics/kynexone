@@ -1,8 +1,10 @@
+using System.Data.Common;
 using System.Security.Claims;
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Zayra.Api.Application.Recruitment;
 using Zayra.Api.Controllers.Recruitment;
 using Zayra.Api.Data;
@@ -75,6 +77,36 @@ public sealed class OfferAcceptanceExactlyOnceTests
         results.Should().ContainSingle(x => x.Outcome == OfferAcceptanceOutcome.Accepted);
         results.Should().ContainSingle(x => x.Outcome == OfferAcceptanceOutcome.AlreadyAccepted);
         results.Select(x => x.OnboardingDraftId).Distinct().Should().ContainSingle();
+        await AssertExactlyOnceAsync(seeded);
+    }
+
+    [Fact]
+    public async Task AcceptanceThatLosesToAWinnerCommittingBetweenItsReads_IsTheIdempotentReplay()
+    {
+        // The flake behind ConcurrentAcceptance: the loser read the offer (still Sent), the winner
+        // committed, then the loser read the application (now Hired) and reported
+        // InvalidApplicationState, a 409, instead of returning the winner's draft. Made
+        // deterministic: the winner runs to completion right before the loser's second read.
+        var seeded = await SeedOfferAsync();
+        OfferAcceptanceResult? winner = null;
+        var pause = new RunBeforeSecondRead(async () =>
+        {
+            await using var winnerDb = _fixture.CreateDb();
+            winner = await new RecruitmentService(winnerDb).AcceptOfferAsync(
+                seeded.TenantId, seeded.OfferId, Guid.NewGuid(), "Winner", CancellationToken.None);
+        });
+        await using var loserDb = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseNpgsql(_fixture.ConnectionString, o => o.EnableRetryOnFailure(5, TimeSpan.FromSeconds(5), null))
+            .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance, pause)
+            .Options);
+
+        var loser = await new RecruitmentService(loserDb).AcceptOfferAsync(
+            seeded.TenantId, seeded.OfferId, Guid.NewGuid(), "Loser", CancellationToken.None);
+
+        pause.Fired.Should().BeTrue();
+        winner!.Outcome.Should().Be(OfferAcceptanceOutcome.Accepted);
+        loser.Outcome.Should().Be(OfferAcceptanceOutcome.AlreadyAccepted, loser.Message);
+        loser.OnboardingDraftId.Should().Be(winner.OnboardingDraftId);
         await AssertExactlyOnceAsync(seeded);
     }
 
@@ -374,4 +406,22 @@ file sealed class AcceptanceNullLetters : ILetterService
 
     public Task<byte[]> GenerateOfferLetterAsync(OfferLetterData data, CancellationToken ct = default) =>
         Task.FromResult(Array.Empty<byte>());
+}
+
+/// <summary>Runs a hook once, just before the context's second query: the point at which the losing
+/// acceptance has read part of the state it decides on.</summary>
+file sealed class RunBeforeSecondRead : DbCommandInterceptor
+{
+    private readonly Func<Task> _hook;
+    private int _reads;
+    public RunBeforeSecondRead(Func<Task> hook) => _hook = hook;
+    public bool Fired => Volatile.Read(ref _reads) >= 2;
+
+    public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+        DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result,
+        CancellationToken cancellationToken = default)
+    {
+        if (Interlocked.Increment(ref _reads) == 2) await _hook();
+        return result;
+    }
 }

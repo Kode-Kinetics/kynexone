@@ -591,10 +591,10 @@ export function NitaqatPanel() {
   useEffect(() => {
     let live = true;
     companiesApi
-      .list(1, 100)
-      .then((r) => {
+      .listAll()
+      .then((all) => {
         if (!live) return;
-        const saudi = (r.items ?? []).filter(isSaudiCompany);
+        const saudi = all.filter(isSaudiCompany);
         setCompanies(saudi);
         setCompanyId((prev) => prev || saudi[0]?.id || '');
       })
