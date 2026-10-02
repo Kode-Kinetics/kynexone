@@ -24,5 +24,6 @@ export default defineConfig({
   retries: 0,
   workers: 1,
   reporter: 'list',
-  timeout: 600_000,
+  // Provisioning plus the `target` and `world` preflights (e2e/bootstrap/bootstrap.setup.ts).
+  timeout: 900_000,
 });

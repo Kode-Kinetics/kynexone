@@ -22,6 +22,7 @@ import {
   Locator,
 } from '@playwright/test';
 import { platformSetupToken, tenantSetupSession } from '../helpers';
+import { collectAllPages, pageTotal } from '../paging';
 import {
   ALMARAI_COMPANY_CODES, ALMARAI_SLUG, GROUP_PASSWORD, INTELLIFLOW_ADMIN, INTELLIFLOW_SLUG,
   MISSING_WORLD, TATA_COMPANY_CODES, TATA_SLUG,
@@ -52,17 +53,15 @@ export const empCodePrefix = (companyCode: string): string => `${companyCode}-E`
 /** Sibling (inaccessible) Almarai company codes for the scoped/company users. */
 export const ALMARAI_SIBLING_CODES = ['ALM-BAKERY-KSA', 'ALM-DIST-KSA', 'ALM-UAE-TRD'];
 
-// ── Default single-company tenant (backend appsettings.json → SeedAdmin) ─────
-// Override via env if your local SeedAdmin config differs.
+// ── Default single-company tenant: IntelliFlow, from e2e/world.ts ────────────
 
 // The full E2E setup already authenticates this production-shaped, single-company tenant. Using
-// it as the default keeps the regression deterministic and avoids an extra login outside the
-// production 10/minute budget. Deployments may still override all three values.
-export const DEFAULT_TENANT_SLUG = process.env.E2E_DEFAULT_TENANT_SLUG ?? INTELLIFLOW_SLUG;
-export const DEFAULT_ADMIN_EMAIL = process.env.E2E_DEFAULT_ADMIN_EMAIL ?? INTELLIFLOW_ADMIN.email;
-// Falls back to the WORLD's password, not a literal. The literal here and the literal in
-// e2e/helpers.ts were the same string by coincidence, and CI passed a third copy in ci.yml.
-export const DEFAULT_ADMIN_PASSWORD = process.env.E2E_DEFAULT_ADMIN_PASSWORD ?? INTELLIFLOW_ADMIN.password;
+// it keeps the regression deterministic and avoids an extra login outside the production
+// 10/minute budget. The E2E_DEFAULT_* env overrides are retired (F07): they let this suite act as
+// an account the world does not declare, and the preflight now refuses them if set.
+export const DEFAULT_TENANT_SLUG = INTELLIFLOW_SLUG;
+export const DEFAULT_ADMIN_EMAIL = INTELLIFLOW_ADMIN.email;
+export const DEFAULT_ADMIN_PASSWORD = INTELLIFLOW_ADMIN.password;
 
 // ── Platform admin ───────────────────────────────────────────────────────────
 // From e2e/world.ts. This file used to default to `platform@kynexone.com` while
@@ -233,18 +232,29 @@ export function companyIdByCode(companies: any[], code: string): string | null {
   return null;
 }
 
-/** GET /api/employees (large page), normalized. Optionally scoped via X-Company-Id. */
+/**
+ * GET /api/employees, every page, normalized. Optionally scoped via X-Company-Id.
+ * The API caps a page at 100 rows, so one `pageSize=200` request stopped at row 100: a scope leak
+ * past that row was invisible to every assertion built on this. `status` is the first non-2xx
+ * page's status, or the last page's status if every page succeeded.
+ */
 export async function fetchEmployees(
   api: APIRequestContext,
   token: string,
   companyId?: string,
 ): Promise<{ status: number; items: any[] }> {
-  const resp = await api.get('/api/employees?page=1&pageSize=200', {
-    headers: authHeaders(token, companyId),
+  let status = 0;
+  const items = await collectAllPages(async (page, pageSize) => {
+    const resp = await api.get(`/api/employees?page=${page}&pageSize=${pageSize}`, {
+      headers: authHeaders(token, companyId),
+    });
+    status = resp.status();
+    if (!resp.ok()) return { items: [], total: 0 };
+    let json: any = null;
+    try { json = await resp.json(); } catch { /* ignore */ }
+    return { items: listItems(json), total: pageTotal(json) };
   });
-  let json: any = null;
-  try { json = await resp.json(); } catch { /* ignore */ }
-  return { status: resp.status(), items: listItems(json) };
+  return { status, items };
 }
 
 export function employeeCodes(items: any[]): string[] {

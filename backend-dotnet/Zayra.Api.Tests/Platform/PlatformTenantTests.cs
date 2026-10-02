@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Controllers;   // CreateTenantRequest, SetFeatureFlagRequest (declared in TenantAdminController + PlatformController)
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Models;
@@ -155,6 +156,67 @@ public class PlatformTenantTests : PlatformTestBase
         var result = await controller.CreateTenant(req, CancellationToken.None);
 
         result.Should().BeOfType<BadRequestObjectResult>();
+    }
+
+    // ── Operating currency at tenant birth ─────────────────────────────────────
+    // R03: a Saudi tenant's localization row and first company were born with the entity default
+    // (USD), so payroll approval labelled a SAR run "USD". The operating currency now follows the
+    // home country; the request's CurrencyCode is the subscription's billing currency only.
+
+    private static CreateTenantRequest CurrencyRequest(string slug, string homeCountry, string? billingCurrency) => new(
+        Name:            $"Tenant {slug}",
+        Slug:            slug,
+        AdminEmail:      $"admin@{slug}.test",
+        AdminFullName:   "Tenant Administrator",
+        AdminPassword:   "SecurePass123!",
+        Plan:            "Starter",
+        MaxUsers:        null,
+        MaxEmployees:    null,
+        BillingEmail:    null,
+        BillingCycle:    null,
+        MonthlyAmount:   null,
+        CurrencyCode:    billingCurrency,
+        ExpiresAtUtc:    null,
+        HomeCountryCode: homeCountry);
+
+    [Theory]
+    [InlineData("SA", "SAR")]
+    [InlineData("AE", "AED")]
+    [InlineData("qa", "QAR")]
+    public async Task CreateTenant_BirthsLocalizationCompanyAndSubscriptionInTheHomeCurrency(string homeCountry, string expected)
+    {
+        await using var db = CreateDb();
+        var controller = CreateController(db);
+
+        var result = await controller.CreateTenant(
+            CurrencyRequest($"currency-{expected.ToLowerInvariant()}", homeCountry, billingCurrency: null), CancellationToken.None);
+        result.Should().BeOfType<CreatedAtActionResult>();
+
+        var tenant = db.Tenants.Single();
+        db.TenantLocalizationSettings.IgnoreQueryFilters().Single(x => x.TenantId == tenant.Id).CurrencyCode
+            .Should().Be(expected, "tenant display amounts default to the home currency, not USD");
+        db.Companies.IgnoreQueryFilters().Single(x => x.TenantId == tenant.Id).DefaultCurrency
+            .Should().Be(expected, "payroll, WPS and GL key off the employing company's currency");
+        db.TenantSubscriptions.IgnoreQueryFilters().Single(x => x.TenantId == tenant.Id).CurrencyCode
+            .Should().Be(expected, "with no billing currency stated, billing follows the tenant's own currency");
+    }
+
+    [Fact]
+    public async Task CreateTenant_BillingCurrencyFromThePlatformForm_DoesNotDecideHowStaffArePaid()
+    {
+        await using var db = CreateDb();
+        var controller = CreateController(db);
+
+        // The platform form pre-fills its (billing) Currency field with USD.
+        var result = await controller.CreateTenant(
+            CurrencyRequest("saudi-billed-usd", "SA", billingCurrency: "usd"), CancellationToken.None);
+        result.Should().BeOfType<CreatedAtActionResult>();
+
+        var tenant = db.Tenants.Single();
+        db.Companies.IgnoreQueryFilters().Single(x => x.TenantId == tenant.Id).DefaultCurrency.Should().Be("SAR");
+        db.TenantLocalizationSettings.IgnoreQueryFilters().Single(x => x.TenantId == tenant.Id).CurrencyCode.Should().Be("SAR");
+        db.TenantSubscriptions.IgnoreQueryFilters().Single(x => x.TenantId == tenant.Id).CurrencyCode
+            .Should().Be("USD", "the stated billing currency is kept, normalised");
     }
 
     // ── Feature flags ──────────────────────────────────────────────────────────

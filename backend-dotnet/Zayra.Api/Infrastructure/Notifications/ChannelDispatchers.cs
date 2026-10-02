@@ -124,19 +124,28 @@ public sealed class EmailChannelDispatcher : INotificationChannelDispatcher
         if (string.IsNullOrWhiteSpace(request.Destination))
             return ChannelDispatchResult.NoContact(Channel);
 
-        if (!await IsConfiguredAsync(request.TenantId, ct))
-            return ChannelDispatchResult.NotConfigured(Channel,
-                "No SMTP host configured for this tenant (Settings → Email → Smtp.Host).");
-
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(ProviderBackedDispatcher.SendTimeout + TimeSpan.FromSeconds(20));
 
         try
         {
+            // F09: ONE call that reports what happened. The old check-then-send pair had a gap: if
+            // the relay vanished between the two, SendAsync returned normally and this row said
+            // "sent". DeliverAsync answers NotConfigured / Captured / AcceptedByRelay itself.
             var html = $"<html><body style='font-family:sans-serif'>{request.Body}</body></html>";
-            await _email.SendAsync(request.TenantId, request.Destination, request.RecipientName,
+            var result = await _email.DeliverAsync(request.TenantId, request.Destination, request.RecipientName,
                 request.Subject, html, null, timeout.Token);
-            return ChannelDispatchResult.Sent("smtp");
+            return result.Status switch
+            {
+                EmailDeliveryStatus.NotConfigured => ChannelDispatchResult.NotConfigured(Channel,
+                    "Email is not set up: no SMTP relay for this workspace (Settings → Email) and no platform relay."),
+                EmailDeliveryStatus.Captured => ChannelDispatchResult.Captured("capture", result.Detail),
+                _ => ChannelDispatchResult.Sent("smtp"),
+            };
+        }
+        catch (EmailNotConfiguredException ex)
+        {
+            return ChannelDispatchResult.NotConfigured(Channel, ex.Message);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {

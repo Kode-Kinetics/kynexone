@@ -416,11 +416,22 @@ public class EmployeeDuplicateDetectionTests
         var t = await SeedTenant(db);
         await SeedCompany(db, t, "Acme");
         await SeedEmployee(db, t, "EXIST-1", "Original Person", iqama: "9090909090");
+        // A tenant-default readiness policy for the imported jurisdiction. Without one the row resolves
+        // to ZERO requirements, which the evaluator now reports as NeedsAttention ("no readiness policy")
+        // rather than the old fabricated "Ready"/100 — and that would mask the advisory-gap behaviour tested here.
+        db.CompanyComplianceProfiles.Add(new Zayra.Api.Models.CompanyComplianceProfile
+        {
+            TenantId = t, CompanyId = null, CountryCode = "IN",
+            Jurisdiction = string.Empty, CompliancePack = string.Empty,
+            EffectiveFrom = new DateOnly(2020, 1, 1), Status = Zayra.Api.Models.CompanyPolicyStatuses.Active,
+            RequiredFieldsJson = """[{"key":"FullName","category":"personal","failClosed":true}]""",
+        });
+        await db.SaveChangesAsync();
         var ctrl = ImportController(db, t);
 
         var csv =
-            "EmployeeCode,FullName,IqamaNumber,JoiningDate\n" +
-            "IMP-1,Imported Person,9090909090,2024-01-01\n";
+            "EmployeeCode,FullName,IqamaNumber,JoiningDate,CountryCode\n" +
+            "IMP-1,Imported Person,9090909090,2024-01-01,IN\n";
         var payload = Payload(await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None));
 
         Assert.Equal(1, Prop<int>(payload, "created"));           // never dropped

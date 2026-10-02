@@ -19,6 +19,9 @@ import type {
 } from '../api/compliance';
 import { EmployeeSearchSelect } from '../components/EmployeeSearchSelect';
 import type { EmployeeSelection } from '../components/EmployeeSearchSelect';
+import { useFullList } from '../hooks/useFullList';
+import { pageWindowText } from '../lib/paging';
+import { requestFailureReason } from '../lib/requestFailure';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -38,16 +41,33 @@ function ExpiryBadge({ daysLeft }: { daysLeft: number }) {
   return <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${cls}`}>{label}</span>;
 }
 
+/** A list that failed to load says so; it never renders as an empty (or shorter) register. */
+function ListLoadError({ what, error, onRetry }: { what: string; error: unknown; onRetry: () => void }) {
+  return (
+    <div role="alert" className="surface flex flex-wrap items-center gap-3 border-s-4 border-s-rose-500 p-4 text-sm text-rose-600 dark:text-rose-400">
+      <span>{what} could not be loaded. {requestFailureReason(error)}</span>
+      <button type="button" onClick={onRetry} className="ms-auto rounded-lg border border-slate-200 px-3 py-1 text-xs text-slate-600 dark:border-white/10 dark:text-slate-300">Retry</button>
+    </div>
+  );
+}
+
+function RecordCount({ n, noun }: { n: number; noun: string }) {
+  return <span className="text-sm text-slate-500 dark:text-slate-400">{n.toLocaleString('en-US')} {noun}{n === 1 ? '' : 's'}</span>;
+}
+
 // ── Dashboard Tab ─────────────────────────────────────────────────────────────
 
 function DashboardTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
   const [dashboard, setDashboard] = useState<ComplianceDashboard | null>(null);
   const [alerts, setAlerts] = useState<ExpiryAlert[]>([]);
+  const [alertsTotal, setAlertsTotal] = useState<number | null>(null);
 
   useEffect(() => {
     complianceReportsApi.dashboard().then(setDashboard).catch(() => {});
-    complianceReportsApi.expiryAlerts(90).then(r => setAlerts(r.alerts.slice(0, 8))).catch(() => {});
+    // The first eight are a preview; the header says how many there are, and "View all" lists them.
+    complianceReportsApi.expiryAlerts(90).then(r => { setAlerts(r.alerts.slice(0, 8)); setAlertsTotal(r.total ?? r.alerts.length); }).catch(() => {});
   }, []);
+  const alertsWindow = pageWindowText(alerts.length, alertsTotal, 'expirations');
 
   const kpis = dashboard ? [
     { label: 'Active Contracts', value: dashboard.activeContracts, icon: FileText, color: 'bg-sapphire/10 text-sapphire dark:bg-sapphire/20', tab: 'contracts' as Tab },
@@ -84,7 +104,10 @@ function DashboardTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
       <div className="surface p-5">
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-sm font-semibold text-slate-800 dark:text-white">Upcoming Expirations (90 days)</h3>
-          <button type="button" onClick={() => onNavigate('expiry')} className="text-xs text-sapphire hover:underline dark:text-cyanAccent">View all</button>
+          <div className="flex items-center gap-3">
+            {alertsWindow && <span className="text-xs text-slate-500 dark:text-slate-400">{alertsWindow}</span>}
+            <button type="button" onClick={() => onNavigate('expiry')} className="text-xs text-sapphire hover:underline dark:text-cyanAccent">View all</button>
+          </div>
         </div>
         {alerts.length === 0 ? (
           <p className="text-sm text-slate-400 dark:text-slate-500 py-4 text-center">No upcoming expirations in 90 days.</p>
@@ -112,9 +135,11 @@ function DashboardTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
 // ── Contracts Tab ─────────────────────────────────────────────────────────────
 
 function ContractsTab() {
-  const [contracts, setContracts] = useState<EmployeeContract[]>([]);
-  const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
+  // Every contract, not the server's first 20: an active contract past its end date is acted on
+  // from this register ("Mark expired"), so one on a later page would silently never be.
+  const list = useFullList<EmployeeContract>(() => complianceContractsApi.listAll({ status: statusFilter || undefined }));
+  const { items: contracts, loading } = list;
   const [showCreate, setShowCreate] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState<EmployeeSelection | null>(null);
   const [form, setForm] = useState({ employeeId: '', contractType: 'Employment', startDate: '', basicSalary: '', currencyCode: 'USD', language: 'en' });
@@ -122,12 +147,9 @@ function ContractsTab() {
   const [transitioning, setTransitioning] = useState<string | null>(null);
   const [hrSignatories, setHrSignatories] = useState<Record<string, string>>({});
 
-  const load = async () => {
-    setLoading(true);
-    try { const r = await complianceContractsApi.list({ status: statusFilter || undefined }); setContracts(r.items); } catch {} finally { setLoading(false); }
-  };
+  const load = () => list.reload();
 
-  useEffect(() => { load(); }, [statusFilter]);
+  useEffect(() => { void list.reload(); }, [statusFilter, list.reload]);
 
   const save = async () => {
     if (!form.employeeId || !form.startDate || !form.basicSalary) return;
@@ -169,6 +191,7 @@ function ContractsTab() {
           <option value="">All Statuses</option>
           {['Draft', 'PendingApproval', 'Active', 'Expired', 'Terminated', 'Superseded'].map(s => <option key={s}>{s}</option>)}
         </select>
+        {!loading && list.error == null && <RecordCount n={contracts.length} noun="contract" />}
         <button type="button" onClick={() => setShowCreate(v => !v)}
           className="ms-auto flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-xs font-medium text-white hover:bg-sapphire/90">
           <Plus className="h-3.5 w-3.5" /> New Contract
@@ -219,7 +242,9 @@ function ContractsTab() {
         </div>
       )}
 
-      {loading ? <p className="py-8 text-center text-sm text-slate-400">Loading…</p> : contracts.length === 0 ? (
+      {loading ? <p className="py-8 text-center text-sm text-slate-400">Loading…</p> : list.error != null ? (
+        <ListLoadError what="Contracts" error={list.error} onRetry={load} />
+      ) : contracts.length === 0 ? (
         <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">No contracts found.</p>
       ) : (
         <div className="surface overflow-x-auto">
@@ -269,25 +294,25 @@ function ContractsTab() {
 
 // ── Visa & Passport Tab ───────────────────────────────────────────────────────
 
-function VisaPassportTab() {
-  const [visas, setVisas] = useState<VisaRecord[]>([]);
-  const [passports, setPassports] = useState<PassportRecord[]>([]);
-  const [permits, setPermits] = useState<WorkPermitRecord[]>([]);
-  const [subTab, setSubTab] = useState<'visa' | 'passport' | 'permit'>('visa');
-  const [loading, setLoading] = useState(true);
+function VisaPassportTab({ initialSubTab = 'visa' }: { initialSubTab?: 'visa' | 'passport' | 'permit' }) {
+  const [subTab, setSubTab] = useState<'visa' | 'passport' | 'permit'>(initialSubTab);
   const [expiringFilter, setExpiringFilter] = useState('');
+  const days = expiringFilter ? Number(expiringFilter) : undefined;
 
-  const load = async () => {
-    setLoading(true);
-    try {
-      const days = expiringFilter ? Number(expiringFilter) : undefined;
-      if (subTab === 'visa') { const r = await complianceVisaApi.list({ expiringInDays: days }); setVisas(r.items); }
-      if (subTab === 'passport') { const r = await compliancePassportsApi.list({ expiringInDays: days }); setPassports(r.items); }
-      if (subTab === 'permit') { const r = await complianceWorkPermitsApi.list({ expiringInDays: days }); setPermits(r.items); }
-    } catch {} finally { setLoading(false); }
-  };
+  // Expiry registers are read in full, soonest expiry first. They used to show the server's first
+  // 20 rows with nothing to say more existed, so the 21st iqama due to lapse was simply not there.
+  const visaList = useFullList<VisaRecord>(() => complianceVisaApi.listAll({ expiringInDays: days }));
+  const passportList = useFullList<PassportRecord>(() => compliancePassportsApi.listAll({ expiringInDays: days }));
+  const permitList = useFullList<WorkPermitRecord>(() => complianceWorkPermitsApi.listAll({ expiringInDays: days }));
+  const active = subTab === 'visa' ? visaList : subTab === 'passport' ? passportList : permitList;
+  const { items: visas } = visaList;
+  const { items: passports } = passportList;
+  const { items: permits } = permitList;
+  const loading = active.loading;
+  const load = () => active.reload();
+  const noun = subTab === 'visa' ? 'visa record' : subTab === 'passport' ? 'passport' : 'work permit';
 
-  useEffect(() => { load(); }, [subTab, expiringFilter]);
+  useEffect(() => { void load(); }, [subTab, expiringFilter]);
 
   const STATUS_COLORS: Record<string, string> = {
     Active: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400',
@@ -314,9 +339,12 @@ function VisaPassportTab() {
           <option value="60">Expiring ≤ 60 days</option>
           <option value="90">Expiring ≤ 90 days</option>
         </select>
+        {!loading && active.error == null && <RecordCount n={active.items.length} noun={noun} />}
       </div>
 
-      {loading ? <p className="py-8 text-center text-sm text-slate-400">Loading…</p> : (
+      {loading ? <p className="py-8 text-center text-sm text-slate-400">Loading…</p> : active.error != null ? (
+        <ListLoadError what={subTab === 'visa' ? 'Visa and iqama records' : subTab === 'passport' ? 'Passports' : 'Work permits'} error={active.error} onRetry={load} />
+      ) : (
         <div className="surface overflow-x-auto">
           {subTab === 'visa' && (
             <table className="w-full text-sm">
@@ -404,16 +432,13 @@ function VisaPassportTab() {
 // ── Renewals Tab ──────────────────────────────────────────────────────────────
 
 function RenewalsTab() {
-  const [renewals, setRenewals] = useState<ComplianceRenewal[]>([]);
-  const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
+  // Every renewal is a task someone owns; the queue is read in full, not the server's first 20.
+  const list = useFullList<ComplianceRenewal>(() => complianceRenewalsApi.listAll({ status: statusFilter || undefined }));
+  const { items: renewals, loading } = list;
+  const load = () => list.reload();
 
-  const load = async () => {
-    setLoading(true);
-    try { const r = await complianceRenewalsApi.list({ status: statusFilter || undefined }); setRenewals(r.items); } catch {} finally { setLoading(false); }
-  };
-
-  useEffect(() => { load(); }, [statusFilter]);
+  useEffect(() => { void list.reload(); }, [statusFilter, list.reload]);
 
   const advance = async (id: string, status: string) => {
     try { await complianceRenewalsApi.updateStatus(id, status); load(); } catch (e) { notifyApiError(e); }
@@ -435,9 +460,12 @@ function RenewalsTab() {
           <option value="">All Statuses</option>
           {['Pending', 'InProgress', 'Renewed', 'Overdue', 'Exempted'].map(s => <option key={s}>{s}</option>)}
         </select>
+        {!loading && list.error == null && <RecordCount n={renewals.length} noun="renewal" />}
       </div>
 
-      {loading ? <p className="py-8 text-center text-sm text-slate-400">Loading…</p> : renewals.length === 0 ? (
+      {loading ? <p className="py-8 text-center text-sm text-slate-400">Loading…</p> : list.error != null ? (
+        <ListLoadError what="Renewals" error={list.error} onRetry={load} />
+      ) : renewals.length === 0 ? (
         <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">No renewal records found.</p>
       ) : (
         <div className="space-y-2">
@@ -480,16 +508,14 @@ function RenewalsTab() {
 // ── Expiry Alerts Tab ─────────────────────────────────────────────────────────
 
 function ExpiryAlertsTab() {
-  const [alerts, setAlerts] = useState<ExpiryAlert[]>([]);
-  const [loading, setLoading] = useState(true);
   const [withinDays, setWithinDays] = useState(90);
+  // The endpoint returns every alert in the window. A failed load used to render the green
+  // "No expirations" all-clear; it now says the alerts could not be loaded.
+  const list = useFullList<ExpiryAlert>(() => complianceReportsApi.expiryAlerts(withinDays).then(r => r.alerts));
+  const { items: alerts, loading } = list;
+  const load = () => list.reload();
 
-  const load = async () => {
-    setLoading(true);
-    try { const r = await complianceReportsApi.expiryAlerts(withinDays); setAlerts(r.alerts); } catch {} finally { setLoading(false); }
-  };
-
-  useEffect(() => { load(); }, [withinDays]);
+  useEffect(() => { void list.reload(); }, [withinDays, list.reload]);
 
   const TYPE_ICONS: Record<string, string> = { Visa: '🪪', Passport: '📘', WorkPermit: '🏷', Contract: '📄' };
 
@@ -503,10 +529,12 @@ function ExpiryAlertsTab() {
           <option value={90}>Expiring within 90 days</option>
           <option value={180}>Expiring within 180 days</option>
         </select>
-        <span className="text-sm text-slate-500 dark:text-slate-400">{alerts.length} alert(s)</span>
+        {!loading && list.error == null && <span className="text-sm text-slate-500 dark:text-slate-400">{alerts.length} alert(s)</span>}
       </div>
 
-      {loading ? <p className="py-8 text-center text-sm text-slate-400">Loading…</p> : alerts.length === 0 ? (
+      {loading ? <p className="py-8 text-center text-sm text-slate-400">Loading…</p> : list.error != null ? (
+        <ListLoadError what="Expiry alerts" error={list.error} onRetry={load} />
+      ) : alerts.length === 0 ? (
         <div className="py-12 text-center">
           <CheckCircle className="mx-auto h-10 w-10 text-emerald-400 mb-3" />
           <p className="text-sm font-medium text-slate-800 dark:text-slate-200">No expirations within {withinDays} days</p>
@@ -798,7 +826,7 @@ export default function CompliancePage() {
             type="button"
             onClick={() => setTab(t.id)}
             className={`flex items-center gap-1.5 rounded-lg px-4 py-1.5 text-sm font-medium transition ${
-              tab === t.id
+              tab === t.id || (t.id === 'visa' && tab === 'passports')
                 ? 'bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent'
                 : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
             }`}
@@ -811,7 +839,8 @@ export default function CompliancePage() {
 
       {tab === 'dashboard' && <DashboardTab onNavigate={setTab} />}
       {tab === 'contracts' && <ContractsTab />}
-      {tab === 'visa' && <VisaPassportTab />}
+      {/* The passport KPIs drill down to 'passports', which used to render nothing at all. */}
+      {(tab === 'visa' || tab === 'passports') && <VisaPassportTab key={tab} initialSubTab={tab === 'passports' ? 'passport' : 'visa'} />}
       {tab === 'renewals' && <RenewalsTab />}
       {tab === 'expiry' && <ExpiryAlertsTab />}
       {tab === 'employee-documents' && <EmployeeDocumentsTab />}

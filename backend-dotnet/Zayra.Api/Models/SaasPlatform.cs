@@ -487,4 +487,12 @@ public static class PlatformConfigKeys
 {
     public const string MaintenanceMode    = "maintenance_mode";
     public const string MaintenanceMessage = "maintenance_message";
+
+    /// <summary>
+    /// Where a public pricing-quote request is announced: exactly one address. The public wizard
+    /// tells the buyer "our team will contact you within 1 business day", so a quote that reaches
+    /// nobody is a broken promise. Falls back to Sales:NotificationEmail, then to the platform
+    /// relay's From address. Never taken from the request.
+    /// </summary>
+    public const string SalesNotificationAddress = "sales_notification_address";
 }

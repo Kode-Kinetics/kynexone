@@ -1416,6 +1416,145 @@ public class PayrollModuleTests
         tenantBInsights.Should().BeEmpty("tenant B has no anomalies — no insights must be written for it");
     }
 
+    // ── F06/I01: salary coverage is not payment readiness ────────────────────
+    // QA (Evostel, Sep 2026): 250 active employees at 100% salary coverage read as ready, and the first
+    // validation of the run then raised 250 missing-IBAN errors that block approval. Readiness must
+    // name those gaps per employee before a run exists, separately from recommendations.
+
+    private static async Task<(Guid TenantId, Company Company, Employee[] Employees)> SeedPayableSaudiCompanyAsync(
+        ZayraDbContext db, int employeeCount)
+    {
+        var tenantId = Guid.NewGuid();
+        var company = new Company
+        {
+            TenantId = tenantId, LegalNameEn = "Evostel Certification KSA", CountryCode = "SA",
+            DefaultCurrency = "SAR", WpsEmployerId = "7001234567", IsActive = true,
+        };
+        var structure = new SalaryStructure
+        {
+            TenantId = tenantId, CompanyId = company.Id, Code = "STD", Name = "Standard",
+            Currency = "SAR", EffectiveDate = new DateOnly(2025, 1, 1), IsActive = true,
+        };
+        db.AddRange(company, structure, new SalaryComponent
+        {
+            TenantId = tenantId, Code = "BASIC", Name = "Basic", ComponentType = "Earning",
+            CalculationType = "Fixed", Amount = 5000, IsActive = true,
+        });
+        var employees = Enumerable.Range(1, employeeCount).Select(i => new Employee
+        {
+            TenantId = tenantId, CompanyId = company.Id, EmployeeCode = $"EVO{i:0000}", FullName = $"Employee {i}",
+            Status = "Active", Nationality = "Saudi", JoiningDate = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            // PAYABLE means payable under Saudi rules, which is what these tests assert. The employee now
+            // inherits the Saudi company's jurisdiction instead of being stored with a blank country, so
+            // the statutory identity that jurisdiction requires has to be here: the national ID to
+            // activate, and the GOSI reference the PAY gate needs before contributions can be computed.
+            // Without them every one of them is pay-blocked, for a reason none of these tests is about.
+            CountryCode = "SA", IdNumber = $"10000000{i:00}", GosiReference = $"GOSI-{i:0000}",
+        }).ToArray();
+        db.Employees.AddRange(employees);
+        await db.SaveChangesAsync();
+        db.EmployeeSalaryStructures.AddRange(employees.Select(e => new EmployeeSalaryStructure
+        {
+            TenantId = tenantId, EmployeeId = e.Id, SalaryStructureId = structure.Id,
+            BasicSalary = 5000, Currency = "SAR", EffectiveDate = new DateOnly(2025, 1, 1), IsActive = true,
+        }));
+        await db.SaveChangesAsync();
+        return (tenantId, company, employees);
+    }
+
+    private static T Prop<T>(object body, string name) => (T)body.GetType().GetProperty(name)!.GetValue(body)!;
+
+    [Fact]
+    public async Task Readiness_FullSalaryCoverage_WithoutBankDetails_IsNotReadyToPay()
+    {
+        var db = CreateDb();
+        var (tenantId, company, _) = await SeedPayableSaudiCompanyAsync(db, 3);
+
+        var result = await MakeCtrl(db, tenantId).PayrollReadiness(company.Id, 2025, 7, CancellationToken.None);
+        var body = Assert.IsType<OkObjectResult>(result).Value!;
+
+        Prop<double>(body, "SalaryCoveragePercent").Should().Be(100);
+        Prop<bool>(body, "IsReadyForProcessing").Should().BeTrue("coverage alone still permits processing");
+        Prop<bool>(body, "IsReadyToPay").Should().BeFalse("no employee has bank details, so none can be paid");
+
+        var pre = Prop<Zayra.Api.Infrastructure.Payroll.PayrollPaymentPrerequisitesDto>(body, "PaymentPrerequisites");
+        pre.EvaluatedEmployees.Should().Be(3);
+        pre.BlockedEmployees.Should().Be(3);
+        var blocking = pre.Blocking.Should().ContainSingle().Subject;
+        blocking.Code.Should().Be("MISSING_PAYROLL_PROFILE");
+        blocking.Count.Should().Be(3);
+        blocking.NextAction.Should().NotBeNullOrWhiteSpace();
+        pre.Employees.Select(e => e.EmployeeCode).Should().Equal("EVO0001", "EVO0002", "EVO0003");
+        pre.Employees.Should().OnlyContain(e => e.Blocking.Contains("MISSING_PAYROLL_PROFILE"));
+        // Recommendations never leak into the blocking list, and vice versa.
+        pre.Recommended.Select(r => r.Code).Should().Equal("WARN_NO_ATTENDANCE");
+        pre.Recommended.Should().NotContain(r => pre.Blocking.Any(b => b.Code == r.Code));
+    }
+
+    [Fact]
+    public async Task Readiness_EveryPrerequisiteMet_IsReadyToPay_AndStaysPerEmployeeWhenOneLapses()
+    {
+        var db = CreateDb();
+        var (tenantId, company, employees) = await SeedPayableSaudiCompanyAsync(db, 2);
+        db.EmployeePayrollProfiles.AddRange(employees.Select(e => new EmployeePayrollProfile
+        {
+            TenantId = tenantId, EmployeeId = e.Id, Iban = "SA0380000000608010167519", MolId = $"MOL-{e.Id}", SalaryCurrency = "SAR",
+        }));
+        db.AttendanceDailyRecords.AddRange(employees.Select(e => new AttendanceDailyRecord
+        {
+            TenantId = tenantId, EmployeeId = e.Id, WorkDate = new DateOnly(2025, 7, 1), Status = "Present",
+        }));
+        await db.SaveChangesAsync();
+
+        var ctrl = MakeCtrl(db, tenantId);
+        var ready = Assert.IsType<OkObjectResult>(await ctrl.PayrollReadiness(company.Id, 2025, 7, CancellationToken.None)).Value!;
+        var readyPre = Prop<Zayra.Api.Infrastructure.Payroll.PayrollPaymentPrerequisitesDto>(ready, "PaymentPrerequisites");
+        readyPre.Blocking.Should().BeEmpty();
+        readyPre.Recommended.Should().BeEmpty();
+        readyPre.CompanyBlocking.Should().BeEmpty();
+        Prop<bool>(ready, "IsReadyToPay").Should().BeTrue();
+
+        // One IBAN is blanked and one MOL ID removed: a blocker for one employee, a recommendation for the other.
+        var profiles = db.EmployeePayrollProfiles.OrderBy(p => p.EmployeeId).ToList();
+        profiles[0].Iban = "";
+        profiles[1].MolId = "";
+        await db.SaveChangesAsync();
+
+        var lapsed = Assert.IsType<OkObjectResult>(await ctrl.PayrollReadiness(company.Id, 2025, 7, CancellationToken.None)).Value!;
+        var pre = Prop<Zayra.Api.Infrastructure.Payroll.PayrollPaymentPrerequisitesDto>(lapsed, "PaymentPrerequisites");
+        Prop<bool>(lapsed, "IsReadyToPay").Should().BeFalse();
+        pre.BlockedEmployees.Should().Be(1);
+        pre.Blocking.Should().ContainSingle(b => b.Code == "MISSING_IBAN" && b.Count == 1);
+        pre.Recommended.Should().ContainSingle(r => r.Code == "MISSING_MOL_ID" && r.Count == 1);
+        pre.Employees.Single(e => e.EmployeeId == employees[0].Id).Blocking.Should().Equal("MISSING_IBAN");
+        pre.Employees.Single(e => e.EmployeeId == employees[1].Id).Blocking.Should().BeEmpty();
+        pre.Employees.Single(e => e.EmployeeId == employees[1].Id).Recommended.Should().Equal("MISSING_MOL_ID");
+    }
+
+    [Fact]
+    public async Task Readiness_Prerequisites_NeverCountAnotherTenantsBankDetailsOrAttendance()
+    {
+        var db = CreateDb();
+        var (tenantId, company, employees) = await SeedPayableSaudiCompanyAsync(db, 1);
+        var otherTenant = Guid.NewGuid();
+        // Rows that name tenant A's employee id but belong to tenant B must not satisfy tenant A.
+        db.EmployeePayrollProfiles.Add(new EmployeePayrollProfile
+        {
+            TenantId = otherTenant, EmployeeId = employees[0].Id, Iban = "SA0380000000608010167519", MolId = "X",
+        });
+        db.AttendanceDailyRecords.Add(new AttendanceDailyRecord
+        {
+            TenantId = otherTenant, EmployeeId = employees[0].Id, WorkDate = new DateOnly(2025, 7, 1), Status = "Present",
+        });
+        await db.SaveChangesAsync();
+
+        var body = Assert.IsType<OkObjectResult>(await MakeCtrl(db, tenantId).PayrollReadiness(company.Id, 2025, 7, CancellationToken.None)).Value!;
+        var pre = Prop<Zayra.Api.Infrastructure.Payroll.PayrollPaymentPrerequisitesDto>(body, "PaymentPrerequisites");
+
+        pre.Employees.Single().Blocking.Should().Equal("MISSING_PAYROLL_PROFILE");
+        pre.Employees.Single().Recommended.Should().Equal("WARN_NO_ATTENDANCE");
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     // Calls the internal AnalyzeTenantAsync directly (InternalsVisibleTo in AssemblyInfo.cs),

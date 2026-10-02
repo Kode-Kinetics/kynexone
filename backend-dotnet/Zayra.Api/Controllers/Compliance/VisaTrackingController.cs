@@ -41,6 +41,8 @@ public class VisaTrackingController : ControllerBase
         [FromQuery] int pageSize = 20,
         CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tid = GetTenantId();
         var q = _db.VisaRecords.Where(x => x.TenantId == tid && !x.IsDeleted);
 
@@ -158,6 +160,8 @@ public class VisaTrackingController : ControllerBase
         [FromQuery] int pageSize = 20,
         CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tid = GetTenantId();
         var q = _db.PassportRecords.Where(x => x.TenantId == tid && !x.IsDeleted);
 
@@ -229,6 +233,8 @@ public class VisaTrackingController : ControllerBase
         [FromQuery] int pageSize = 20,
         CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tid = GetTenantId();
         var q = _db.WorkPermitRecords.Where(x => x.TenantId == tid && !x.IsDeleted);
 
@@ -288,6 +294,8 @@ public class VisaTrackingController : ControllerBase
         [FromQuery] int pageSize = 20,
         CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tid = GetTenantId();
         var q = _db.ComplianceRenewals.Where(x => x.TenantId == tid);
 

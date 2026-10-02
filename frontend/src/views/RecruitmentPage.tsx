@@ -37,10 +37,136 @@ import type {
   ApplicationDetail, KanbanStage, OfferLetter,
   RecruitmentStats, RequisitionStats,
   WorkforcePlan, InterviewSchedule as ExtInterviewSchedule,
-  CandidateAssessment, OnboardingChecklist, OnboardingChecklistTemplateTask, OnboardingTask,
+  CandidateAssessment, AssessmentTemplate, OnboardingChecklist, OnboardingChecklistTemplateTask, OnboardingTask,
+  OfferApproval, OfferApprovalContext, OfferApproverOption,
 } from '../api/recruitment';
+import { OfferPlacementFields } from '../components/OfferPlacementFields';
 import { StatusChip } from '../components/StatusChip';
+import { ListWindowFooter } from '../components/ListWindowFooter';
+import { usePagedList } from '../hooks/usePagedList';
+import { requestFailureReason } from '../lib/requestFailure';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
+import {
+  HIRE_THROUGH_OFFER_HINT, assessmentScoreLabel, assessmentScoreMax, canRecordAssessmentResult,
+  canSendOffer, nextPipelineStage, offerCreationFailure, parseAssessmentScore,
+  OFFER_NEXT_ACTION_TEXT, canRequestApproval, offerNextAction,
+} from '../lib/recruitmentJourney';
+
+// ── Offer approval ────────────────────────────────────────────────────────────
+
+/**
+ * Approval for one offer: who has to approve it, what they decided, and the signed-in user's next
+ * step. Every rule comes from GET /api/recruitment/offers/{id} (OfferRules on the API); this only
+ * presents it. `onContext` hands the rules to the parent so its Send button agrees.
+ */
+function OfferApprovalPanel({ offerId, onChanged, onContext }: {
+  offerId: string;
+  onChanged: () => void;
+  onContext?: (context: OfferApprovalContext | null) => void;
+}) {
+  const [data, setData] = useState<{ offer: OfferLetter; approvals: OfferApproval[]; approval: OfferApprovalContext } | null>(null);
+  const [options, setOptions] = useState<OfferApproverOption[] | null>(null);
+  const [approverId, setApproverId] = useState('');
+  const [comment, setComment] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      const next = await offersApi.get(offerId);
+      setData(next);
+      onContext?.(next.approval);
+    } catch (e) { notifyApiError(e); }
+  }, [offerId, onContext]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const offer = data?.offer;
+  const approvals = data?.approvals ?? [];
+  const context = data?.approval ?? null;
+  const next = offer ? offerNextAction(offer.status, context, approvals) : null;
+  const showRequest = !!offer && !!context && !context.myPendingStepId && !context.canSend
+    && canRequestApproval(offer.status, approvals) && (context.required || approvals.length > 0);
+
+  useEffect(() => {
+    if (!showRequest || options !== null) return;
+    // Only HR Managers and Admins may configure approval; anyone else simply sees no picker.
+    offersApi.approverOptions(offerId).then(setOptions).catch(() => setOptions([]));
+  }, [showRequest, options, offerId]);
+
+  if (!offer || !context) return null;
+  if (!context.required && approvals.length === 0 && !showRequest) return null;
+
+  const requestApproval = async () => {
+    const approver = options?.find(o => o.userId === approverId);
+    if (!approver) { setError('Choose who approves this offer.'); return; }
+    setBusy(true); setError('');
+    try {
+      await offersApi.requestApproval(offerId, { approverUserId: approver.userId, approverName: approver.name });
+      setApproverId(''); setOptions(null);
+      await load(); onChanged();
+    } catch (e) { notifyApiError(e); } finally { setBusy(false); }
+  };
+
+  const decide = async (decision: 'Approved' | 'Rejected') => {
+    if (!context.myPendingStepId) return;
+    if (decision === 'Rejected' && !comment.trim()) { setError('Say why you are rejecting this offer.'); return; }
+    setBusy(true); setError('');
+    try {
+      await offersApi.decideApproval(offerId, context.myPendingStepId, { decision, comments: comment.trim() || undefined });
+      setComment('');
+      await load(); onChanged();
+    } catch (e) { notifyApiError(e); } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="mt-3 space-y-2 rounded-lg border border-slate-200 p-3 dark:border-white/10">
+      <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">Approval</p>
+      {next
+        ? <p className="text-xs text-slate-600 dark:text-slate-300">{OFFER_NEXT_ACTION_TEXT[next]}</p>
+        : context.sendBlockedReason && <p className="text-xs text-amber-700 dark:text-amber-400">{context.sendBlockedReason}</p>}
+      {approvals.length > 0 && (
+        <ul className="space-y-1">
+          {approvals.map(a => (
+            <li key={a.id} className="flex items-center justify-between gap-2 text-xs text-slate-600 dark:text-slate-400">
+              <span>{a.stepOrder}. {a.approverName || 'Approver'}{a.comments ? ` · ${a.comments}` : ''}</span>
+              <span className="font-medium">{a.status}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {context.myPendingStepId && offer.status === 'PendingApproval' && (
+        <div className="space-y-2">
+          <textarea aria-label="Approval comment" rows={2} value={comment} onChange={e => setComment(e.target.value)}
+            placeholder="Comment (required to reject)"
+            className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs dark:border-white/10 dark:bg-white/5" />
+          <div className="flex gap-2">
+            <button type="button" disabled={busy} onClick={() => decide('Approved')}
+              className="rounded-lg bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">Approve offer</button>
+            <button type="button" disabled={busy} onClick={() => decide('Rejected')}
+              className="rounded-lg border border-rose-200 px-2.5 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-500/30 dark:text-rose-400">Reject offer</button>
+          </div>
+        </div>
+      )}
+      {showRequest && options !== null && (
+        options.length === 0
+          ? <p className="text-xs text-slate-500 dark:text-slate-400">No one else can approve this offer yet: it needs an active HR Manager or Admin who did not write it.</p>
+          : (
+            <div className="flex flex-wrap items-center gap-2">
+              <select aria-label="Offer approver" value={approverId} onChange={e => setApproverId(e.target.value)}
+                className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs dark:border-white/10 dark:bg-white/5">
+                <option value="">Choose approver…</option>
+                {options.map(o => <option key={o.userId} value={o.userId}>{o.name || o.email}</option>)}
+              </select>
+              <button type="button" disabled={busy || !approverId} onClick={requestApproval}
+                className="rounded-lg bg-sapphire px-2.5 py-1 text-xs font-medium text-white hover:bg-sapphire/90 disabled:opacity-50">Request approval</button>
+            </div>
+          )
+      )}
+      {error && <p className="text-xs text-rose-500">{error}</p>}
+    </div>
+  );
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -113,6 +239,18 @@ function KpiCard({ label, value, sub, icon: Icon, color }: {
   );
 }
 
+/** A list that failed to load says so, instead of rendering as "No … found". */
+function LoadFailure({ what, error }: { what: string; error: unknown }) {
+  return <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">{what} could not be loaded. {requestFailureReason(error)}</p>;
+}
+
+/** "340 tasks", from the server total rather than the rows on screen. */
+function ListCount({ loading, total, shown, noun }: { loading: boolean; total: number | null; shown: number; noun: string }) {
+  if (loading) return null;
+  const n = total ?? shown;
+  return <span className="text-sm text-slate-500 dark:text-slate-400">{n.toLocaleString('en-US')} {noun}{n === 1 ? '' : 's'}</span>;
+}
+
 // ── Overview Tab ───────────────────────────────────────────────────────────────
 
 function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
@@ -123,7 +261,8 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
   useEffect(() => {
     openingsApi.stats().then(setStats).catch(() => {});
     requisitionsApi.stats().then(setReqStats).catch(() => {});
-    openingsApi.list({ status: 'Open' }).then(r => setRecentOpenings(r.items.slice(0, 5))).catch(() => {});
+    // A five-row preview beside "View all".
+    openingsApi.list({ status: 'Open', pageSize: 5 }).then(r => setRecentOpenings(r.items.slice(0, 5))).catch(() => {});
   }, []);
 
   return (
@@ -328,23 +467,19 @@ function CreateReqModal({ onClose, onSaved }: CreateReqModalProps) {
 // ── Requisitions Tab ───────────────────────────────────────────────────────────
 
 function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerRequisition) => void }) {
-  const [items, setItems] = useState<ManpowerRequisition[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
   const [acting, setActing] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const r = await requisitionsApi.list({ status: statusFilter || undefined });
-      setItems(r.items); setTotal(r.total);
-    } catch { /**/ }
-    finally { setLoading(false); }
-  }, [statusFilter]);
+  // One page at a time with the server's total. The count already came from the total, but the
+  // table stopped at the server's first 25 with no way to reach the rest.
+  const list = usePagedList<ManpowerRequisition>((page, pageSize) =>
+    requisitionsApi.list({ status: statusFilter || undefined, page, pageSize }));
+  const { items, loading } = list;
+  const total = list.total ?? items.length;
+  const load = useCallback(() => { void list.reload(); }, [list.reload]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [statusFilter, load]);
 
   const submit = async (id: string) => {
     setActing(id);
@@ -379,6 +514,7 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
         </button>
       </div>
 
+      {list.error != null && <LoadFailure what="Requisitions" error={list.error} />}
       <div className="overflow-hidden rounded-xl border border-slate-200 dark:border-white/10">
         <table className="min-w-full text-sm">
           <thead className="border-b border-slate-200 bg-slate-50 dark:border-white/10 dark:bg-white/[0.03]">
@@ -390,7 +526,7 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-white/[0.06]">
             {loading && <tr><td colSpan={7} className="py-10 text-center"><div className="mx-auto h-5 w-5 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>}
-            {!loading && items.length === 0 && <tr><td colSpan={7} className="py-10 text-center text-sm text-slate-400 dark:text-slate-500">No requisitions found.</td></tr>}
+            {!loading && list.error == null && items.length === 0 && <tr><td colSpan={7} className="py-10 text-center text-sm text-slate-400 dark:text-slate-500">No requisitions found.</td></tr>}
             {!loading && items.map(r => (
               <tr key={r.id} className="hover:bg-slate-50/60 dark:hover:bg-white/[0.02]">
                 <td className="px-4 py-3 font-mono text-xs text-slate-600 dark:text-slate-400">{r.requisitionNumber}</td>
@@ -428,6 +564,7 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
             ))}
           </tbody>
         </table>
+        <ListWindowFooter shown={items.length} total={list.total} noun="requisitions" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
       </div>
 
       {createOpen && <CreateReqModal onClose={() => setCreateOpen(false)} onSaved={() => { setCreateOpen(false); load(); }} />}
@@ -685,7 +822,7 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
 
   const load = () => {
     setLoading(true);
-    openingsApi.list().then(r => { setItems(r.items); }).catch(() => {}).finally(() => setLoading(false));
+    openingsApi.listAll().then(setItems).catch(() => {}).finally(() => setLoading(false));
   };
 
   useEffect(() => { load(); }, []);
@@ -700,7 +837,11 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
             entityName="Job Openings"
             onExport={jobOpeningsImportExport.export}
             onDownloadTemplate={jobOpeningsImportExport.template}
-            onImport={jobOpeningsImportExport.import}
+            onImport={async (csv) => {
+              const result = await jobOpeningsImportExport.import(csv);
+              load(); // Update the visible list after the committed import.
+              return result;
+            }}
           />
           <button type="button" className="btn-secondary flex items-center gap-1.5 text-sm" onClick={() => setAiOpen(true)} disabled={items.length === 0}>
             <Sparkles className="h-3.5 w-3.5" />AI Tools
@@ -767,10 +908,11 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
   const [detail, setDetail] = useState<ApplicationDetail | null>(null);
   const [tab, setTab] = useState<'timeline' | 'interviews' | 'offer'>('timeline');
   const [acting, setActing] = useState('');
-  const [offerForm, setOfferForm] = useState({ department: '', startDate: '', basicSalary: '', housingAllowance: '', transportAllowance: '', otherAllowances: '', probationMonths: 3 });
+  const [offerForm, setOfferForm] = useState({ departmentId: '', designationId: '', startDate: '', basicSalary: '', housingAllowance: '', transportAllowance: '', otherAllowances: '', probationMonths: 3 });
   const [interviewForm, setInterviewForm] = useState({ interviewType: 'HR Screening', interviewerNames: '', scheduledAt: '', durationMinutes: 60, mode: 'Video', meetingLink: '', location: '' });
   const [noteText, setNoteText] = useState('');
   const [rejectReason, setRejectReason] = useState('');
+  const [approvalContext, setApprovalContext] = useState<OfferApprovalContext | null>(null);
 
   const load = () => {
     applicationsApi.get(id).then(setDetail).catch(() => {});
@@ -780,11 +922,8 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
   const app = detail?.application;
   if (!app) return null;
 
-  const nextStage = (() => {
-    const stages = ['Applied', 'Screening', 'Assessment', 'Interview', 'Offer', 'Hired'];
-    const idx = stages.indexOf(app.stage);
-    return idx >= 0 && idx < stages.length - 1 ? stages[idx + 1] : null;
-  })();
+  // Offer -> Hired is not a stage move: accepting the offer hires and creates the employee record.
+  const nextStage = nextPipelineStage(app.stage);
 
   const doAdvance = async () => {
     setActing('advance');
@@ -826,8 +965,10 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
   const doGenerateOffer = async () => {
     setActing('offer');
     try {
+      // Department and designation are record ids; left empty, the API uses the job opening's.
       await applicationsApi.generateOffer(id, {
-        department: offerForm.department,
+        departmentId: offerForm.departmentId || undefined,
+        designationId: offerForm.designationId || undefined,
         startDate: offerForm.startDate,
         basicSalary: Number(offerForm.basicSalary),
         housingAllowance: Number(offerForm.housingAllowance),
@@ -900,6 +1041,12 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
               <button type="button" disabled={!!acting} onClick={doAdvance}
                 className="flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-xs font-semibold text-white hover:bg-sapphire/90 disabled:opacity-50">
                 <ArrowRight className="h-3.5 w-3.5" />Move to {nextStage}
+              </button>
+            )}
+            {!nextStage && app.stage === 'Offer' && (
+              <button type="button" onClick={() => setTab('offer')}
+                className="text-start text-xs text-slate-600 underline-offset-2 hover:underline dark:text-slate-300">
+                {HIRE_THROUGH_OFFER_HINT}
               </button>
             )}
             <div className="flex items-center gap-1.5 rounded-lg border border-rose-200 px-2 py-1 dark:border-rose-500/30">
@@ -1033,7 +1180,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                       className="flex items-center gap-1 rounded-lg bg-slate-100 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-200 disabled:opacity-50 dark:bg-white/10 dark:text-slate-300">
                       <FileText className="h-3.5 w-3.5" />{acting === 'preview' ? 'Opening…' : 'Preview'}
                     </button>
-                    {offer.status === 'Draft' && (
+                    {canSendOffer(offer.status) && approvalContext?.canSend && (
                       <button type="button" disabled={acting === 'send'} onClick={() => offerAction('send')}
                         className="flex items-center gap-1 rounded-lg bg-sapphire px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-sapphire/90 disabled:opacity-50">
                         <Send className="h-3.5 w-3.5" />Send to Candidate
@@ -1052,13 +1199,20 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                       </>
                     )}
                   </div>
+                  <OfferApprovalPanel key={`${offer.id}:${offer.status}`} offerId={offer.id}
+                    onChanged={() => { load(); onRefresh(); }} onContext={setApprovalContext} />
                 </div>
               ) : (
                 app.stage === 'Offer' && app.status === 'Active' ? (
                   <div className="rounded-lg border border-dashed border-slate-200 p-4 dark:border-white/10">
                     <p className="mb-3 text-xs font-semibold text-slate-700 dark:text-slate-300">Generate Offer Letter</p>
                     <div className="space-y-2">
-                      <input className="input w-full" placeholder="Department" value={offerForm.department} onChange={e => setOfferForm(f => ({ ...f, department: e.target.value }))} />
+                      <OfferPlacementFields
+                        idPrefix={`drawer-offer-${id}`}
+                        openingDefaults
+                        value={{ departmentId: offerForm.departmentId, designationId: offerForm.designationId }}
+                        onChange={v => setOfferForm(f => ({ ...f, ...v }))}
+                      />
                       <input type="date" className="input w-full" value={offerForm.startDate} onChange={e => setOfferForm(f => ({ ...f, startDate: e.target.value }))} aria-label="Start date" />
                       <div className="grid grid-cols-2 gap-2">
                         <input type="number" className="input w-full" placeholder={`Basic Salary (${currencyCode})`} value={offerForm.basicSalary} onChange={e => setOfferForm(f => ({ ...f, basicSalary: e.target.value }))} aria-label="Basic salary" />
@@ -1109,9 +1263,9 @@ function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => 
   useEffect(() => { load(); }, [opening.id]);
 
   const openAddModal = async () => {
-    const res = await candidatesApi.list({ status: 'Active' }).catch(() => ({ items: [] as Candidate[] }));
-    setCandidates(res.items);
-    setSelectedCandidateId(res.items[0]?.id ?? '');
+    const all = await candidatesApi.listAll({ status: 'Active' }).catch(() => [] as Candidate[]);
+    setCandidates(all);
+    setSelectedCandidateId(all[0]?.id ?? '');
     setAddModalOpen(true);
   };
 
@@ -1303,24 +1457,26 @@ function AddCandidateModal({ onClose, onSaved }: { onClose: () => void; onSaved:
 // ── Candidates Tab ─────────────────────────────────────────────────────────────
 
 function CandidatesTab() {
-  const [items, setItems] = useState<Candidate[]>([]);
-  const [total, setTotal] = useState(0);
   const [search, setSearch] = useState('');
-  const [loading, setLoading] = useState(true);
   const [addOpen, setAddOpen] = useState(false);
   const searchRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const load = (q = search) => {
-    setLoading(true);
-    candidatesApi.list({ search: q || undefined }).then(r => { setItems(r.items); setTotal(r.total); }).catch(() => {}).finally(() => setLoading(false));
-  };
+  // One page at a time with the server's total. The count was right, but the table stopped at the
+  // first 25 candidates with no way to reach the rest. The hook's latest-request gate also keeps a
+  // slow earlier search from replacing the results of a later one.
+  const list = usePagedList<Candidate>((page, pageSize) =>
+    candidatesApi.list({ search: search || undefined, page, pageSize }));
+  const { items, loading } = list;
+  const total = list.total ?? items.length;
+  const load = () => { void list.reload(); };
 
   useEffect(() => { load(); }, []);
 
   const onSearch = (q: string) => {
     setSearch(q);
     if (searchRef.current) clearTimeout(searchRef.current);
-    searchRef.current = setTimeout(() => load(q), 300);
+    // Runs after the re-render, so the reload reads the new search term.
+    searchRef.current = setTimeout(() => load(), 300);
   };
 
   return (
@@ -1344,7 +1500,7 @@ function CandidatesTab() {
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-white/[0.06]">
             {loading && <tr><td colSpan={7} className="py-10 text-center"><div className="mx-auto h-5 w-5 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>}
-            {!loading && items.length === 0 && <tr><td colSpan={7} className="py-10 text-center text-sm text-slate-400 dark:text-slate-500">No candidates yet. Add your first candidate to the talent pool.</td></tr>}
+            {!loading && list.error == null && items.length === 0 && <tr><td colSpan={7} className="py-10 text-center text-sm text-slate-400 dark:text-slate-500">No candidates yet. Add your first candidate to the talent pool.</td></tr>}
             {!loading && items.map(c => (
               <tr key={c.id} className="hover:bg-slate-50/60 dark:hover:bg-white/[0.02]">
                 <td className="px-4 py-3">
@@ -1372,7 +1528,9 @@ function CandidatesTab() {
             ))}
           </tbody>
         </table>
+        <ListWindowFooter shown={items.length} total={list.total} noun="candidates" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
       </div>
+      {list.error != null && <LoadFailure what="Candidates" error={list.error} />}
 
       {addOpen && <AddCandidateModal onClose={() => setAddOpen(false)} onSaved={() => { setAddOpen(false); load(); }} />}
     </div>
@@ -1382,17 +1540,17 @@ function CandidatesTab() {
 // ── Workforce Planning Tab ────────────────────────────────────────────────────
 
 function WorkforcePlanningTab() {
-  const [plans, setPlans] = useState<WorkforcePlan[]>([]);
   const [summary, setSummary] = useState<{ totalPlans: number; totalGap: number; totalBudget: number; approved: number } | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState({ planName: '', planYear: new Date().getFullYear(), departmentName: '', currentHeadcount: 0, plannedHeadcount: 0, budgetAllocated: 0, currencyCode: 'USD', notes: '' });
   const [saving, setSaving] = useState(false);
 
+  // Plans one page at a time with the server's total (the table used to stop at the first 20).
+  const list = usePagedList<WorkforcePlan>((page, pageSize) => workforcePlanningApi.list(undefined, undefined, page, pageSize));
+  const plans = list.items;
   const load = async () => {
-    try {
-      const [r, s] = await Promise.all([workforcePlanningApi.list(), workforcePlanningApi.summary()]);
-      setPlans(r.items); setSummary(s);
-    } catch {}
+    void list.reload();
+    try { setSummary(await workforcePlanningApi.summary()); } catch {}
   };
 
   useEffect(() => { load(); }, []);
@@ -1472,7 +1630,8 @@ function WorkforcePlanningTab() {
           </div>
         )}
 
-        {plans.length === 0 ? (
+        {list.error != null && <LoadFailure what="Workforce plans" error={list.error} />}
+        {list.loading ? <p className="py-8 text-center text-sm text-slate-400">Loading…</p> : list.error != null && plans.length === 0 ? null : plans.length === 0 ? (
           <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">No workforce plans found. Create the first plan.</p>
         ) : (
           <div className="overflow-x-auto">
@@ -1502,6 +1661,7 @@ function WorkforcePlanningTab() {
             </table>
           </div>
         )}
+        <ListWindowFooter shown={plans.length} total={list.total} noun="plans" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
       </div>
     </div>
   );
@@ -1510,8 +1670,6 @@ function WorkforcePlanningTab() {
 // ── Interviews Tab ────────────────────────────────────────────────────────────
 
 function InterviewsTab() {
-  const [interviews, setInterviews] = useState<ExtInterviewSchedule[]>([]);
-  const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
   const [showSchedule, setShowSchedule] = useState(false);
   const [applications, setApplications] = useState<JobApplication[]>([]);
@@ -1522,14 +1680,21 @@ function InterviewsTab() {
   const [schedSaving, setSchedSaving] = useState(false);
   const [schedError, setSchedError] = useState('');
   const [cancelling, setCancelling] = useState<string | null>(null);
+  const [completingId, setCompletingId] = useState<string | null>(null);
+  const [completionSaving, setCompletionSaving] = useState(false);
+  const [completionError, setCompletionError] = useState('');
+  const [completionForm, setCompletionForm] = useState({
+    overallRating: 4, recommendation: 'Hire', feedbackNotes: '',
+  });
 
-  const load = async () => {
-    setLoading(true);
-    try { const r = await interviewsApi.list(undefined, statusFilter || undefined); setInterviews(r.items); } catch {} finally { setLoading(false); }
-  };
+  // One page at a time with the server's total: this used to show the first 20 interviews as all of them.
+  const list = usePagedList<ExtInterviewSchedule>((page, pageSize) =>
+    interviewsApi.list(undefined, statusFilter || undefined, page, pageSize));
+  const { items: interviews, loading } = list;
+  const load = () => list.reload();
 
   const loadApps = async () => {
-    try { const r = await applicationsApi.list({ pageSize: 100 }); setApplications(r.items); } catch {}
+    try { setApplications(await applicationsApi.listAll()); } catch {}
   };
 
   useEffect(() => { load(); }, [statusFilter]);
@@ -1555,6 +1720,30 @@ function InterviewsTab() {
     try { await interviewsApi.cancel(id); load(); } catch (e) { notifyApiError(e); } finally { setCancelling(null); }
   };
 
+  const completeInterview = async (id: string) => {
+    const rating = Number(completionForm.overallRating);
+    if (!Number.isFinite(rating) || rating < 1 || rating > 5) {
+      setCompletionError('Overall rating must be between 1 and 5.'); return;
+    }
+    if (!completionForm.recommendation) { setCompletionError('Recommendation is required.'); return; }
+    setCompletionSaving(true); setCompletionError('');
+    try {
+      await interviewsApi.complete(id, {
+        overallRating: rating,
+        recommendation: completionForm.recommendation,
+        feedbackNotes: completionForm.feedbackNotes.trim(),
+      });
+      setCompletingId(null);
+      setCompletionForm({ overallRating: 4, recommendation: 'Hire', feedbackNotes: '' });
+      load();
+    } catch (e) {
+      setCompletionError('Failed to complete interview.');
+      notifyApiError(e);
+    } finally {
+      setCompletionSaving(false);
+    }
+  };
+
   const MODE_ICON: Record<string, string> = { InPerson: '🏢', Video: '📹', Phone: '📞' };
   const RECOMMENDATION_COLORS: Record<string, string> = {
     StrongHire: 'text-emerald-600 dark:text-emerald-400',
@@ -1571,6 +1760,7 @@ function InterviewsTab() {
           <option value="">All Statuses</option>
           {['Scheduled', 'Completed', 'Cancelled', 'NoShow'].map(s => <option key={s}>{s}</option>)}
         </select>
+        <ListCount loading={loading} total={list.total} shown={interviews.length} noun="interview" />
         <button type="button" onClick={openSchedule} className="ms-auto flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-sm font-medium text-white hover:bg-sapphire/90">
           <Calendar className="h-3.5 w-3.5" />Schedule Interview
         </button>
@@ -1642,7 +1832,8 @@ function InterviewsTab() {
         </div>
       )}
 
-      {loading ? <p className="text-center text-sm text-slate-400 py-8">Loading…</p> : interviews.length === 0 ? (
+      {list.error != null && <LoadFailure what="Interviews" error={list.error} />}
+      {loading ? <p className="text-center text-sm text-slate-400 py-8">Loading…</p> : list.error != null && interviews.length === 0 ? null : interviews.length === 0 ? (
         <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">No interviews found. Schedule the first one above.</p>
       ) : (
         <div className="space-y-2">
@@ -1676,17 +1867,63 @@ function InterviewsTab() {
                     </div>
                   )}
                   {iv.status === 'Scheduled' && (
-                    <button type="button" onClick={() => cancelInterview(iv.id)} disabled={cancelling === iv.id}
-                      className="rounded-lg border border-rose-200 px-2.5 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-500/30 dark:text-rose-400 dark:hover:bg-rose-500/10">
-                      {cancelling === iv.id ? '…' : 'Cancel'}
-                    </button>
+                    <>
+                      <button type="button" onClick={() => { setCompletionError(''); setCompletingId(iv.id); }}
+                        className="rounded-lg bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-700">
+                        Complete
+                      </button>
+                      <button type="button" onClick={() => cancelInterview(iv.id)} disabled={cancelling === iv.id}
+                        className="rounded-lg border border-rose-200 px-2.5 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-500/30 dark:text-rose-400 dark:hover:bg-rose-500/10">
+                        {cancelling === iv.id ? '…' : 'Cancel'}
+                      </button>
+                    </>
                   )}
                 </div>
               </div>
+              {completingId === iv.id && (
+                <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50/60 p-3 dark:border-emerald-500/20 dark:bg-emerald-500/5">
+                  <p className="mb-2 text-xs font-semibold text-slate-700 dark:text-slate-200">Complete Interview & Record Outcome</p>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
+                      Overall rating
+                      <select aria-label="Interview overall rating" value={completionForm.overallRating}
+                        onChange={e => setCompletionForm(f => ({ ...f, overallRating: Number(e.target.value) }))}
+                        className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-white/10 dark:bg-white/5">
+                        {[1, 2, 3, 4, 5].map(r => <option key={r} value={r}>{r} / 5</option>)}
+                      </select>
+                    </label>
+                    <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
+                      Recommendation
+                      <select aria-label="Interview recommendation" value={completionForm.recommendation}
+                        onChange={e => setCompletionForm(f => ({ ...f, recommendation: e.target.value }))}
+                        className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-white/10 dark:bg-white/5">
+                        {['StrongHire', 'Hire', 'Hold', 'Reject'].map(r => <option key={r} value={r}>{r.replace(/([A-Z])/g, ' $1').trim()}</option>)}
+                      </select>
+                    </label>
+                    <label className="sm:col-span-2 text-xs font-medium text-slate-600 dark:text-slate-400">
+                      Feedback notes
+                      <textarea aria-label="Interview feedback notes" rows={2} value={completionForm.feedbackNotes}
+                        onChange={e => setCompletionForm(f => ({ ...f, feedbackNotes: e.target.value }))}
+                        placeholder="Strengths, concerns, and hiring rationale…"
+                        className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-white/10 dark:bg-white/5" />
+                    </label>
+                  </div>
+                  {completionError && <p className="mt-2 text-xs text-rose-500">{completionError}</p>}
+                  <div className="mt-2 flex gap-2">
+                    <button type="button" disabled={completionSaving} onClick={() => completeInterview(iv.id)}
+                      className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
+                      {completionSaving ? 'Saving…' : 'Complete Interview'}
+                    </button>
+                    <button type="button" onClick={() => setCompletingId(null)}
+                      className="px-2 py-1.5 text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400">Cancel</button>
+                  </div>
+                </div>
+              )}
             </div>
           ))}
         </div>
       )}
+      <ListWindowFooter shown={interviews.length} total={list.total} noun="interviews" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
     </div>
   );
 }
@@ -1694,32 +1931,75 @@ function InterviewsTab() {
 // ── Assessments Tab ───────────────────────────────────────────────────────────
 
 function AssessmentsTab() {
-  const [assessments, setAssessments] = useState<CandidateAssessment[]>([]);
-  const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
   const [showAssign, setShowAssign] = useState(false);
   const [applications, setApplications] = useState<JobApplication[]>([]);
-  const [templates, setTemplates] = useState<{ id: string; title: string; assessmentType: string; durationMinutes: number }[]>([]);
+  const [templates, setTemplates] = useState<AssessmentTemplate[]>([]);
   const [assignForm, setAssignForm] = useState({ applicationId: '', templateId: '', expiryDays: 7 });
   const [assignSaving, setAssignSaving] = useState(false);
   const [assignError, setAssignError] = useState('');
+  const [showTemplateCreate, setShowTemplateCreate] = useState(false);
+  const [templateSaving, setTemplateSaving] = useState(false);
+  const [templateError, setTemplateError] = useState('');
+  const [templateForm, setTemplateForm] = useState({
+    code: '', title: '', description: '', assessmentType: 'Technical',
+    durationMinutes: 60, passingScore: 70, isRandomized: false, audience: '',
+  });
   const [recording, setRecording] = useState<string | null>(null);
   const [scoreInput, setScoreInput] = useState<Record<string, string>>({});
+  const [scoreError, setScoreError] = useState<Record<string, string>>({});
 
-  const load = async () => {
-    setLoading(true);
-    try { const r = await assessmentsApi.list(undefined, statusFilter || undefined); setAssessments(r.items); } catch {} finally { setLoading(false); }
-  };
+  // One page at a time with the server's total: this used to show the first 20 assessments as all of them.
+  const list = usePagedList<CandidateAssessment>((page, pageSize) =>
+    assessmentsApi.list(undefined, statusFilter || undefined, page, pageSize));
+  const { items: assessments, loading } = list;
+  const load = () => list.reload();
 
   useEffect(() => { load(); }, [statusFilter]);
 
   const openAssign = async () => {
     try {
-      const [appsRes, tmplRes] = await Promise.all([applicationsApi.list({ pageSize: 100 }), assessmentsApi.listTemplates()]);
-      setApplications(appsRes.items);
+      const [appsRes, tmplRes] = await Promise.all([applicationsApi.listAll(), assessmentsApi.listTemplates()]);
+      setApplications(appsRes);
       setTemplates(tmplRes);
     } catch {}
     setShowAssign(true);
+  };
+
+  const createTemplate = async () => {
+    const code = templateForm.code.trim();
+    const title = templateForm.title.trim();
+    const durationMinutes = Number(templateForm.durationMinutes);
+    const passingScore = Number(templateForm.passingScore);
+    if (!code || !title) { setTemplateError('Code and title are required.'); return; }
+    if (!Number.isFinite(durationMinutes) || durationMinutes < 1) { setTemplateError('Duration must be at least 1 minute.'); return; }
+    if (!Number.isFinite(passingScore) || passingScore < 0 || passingScore > 100) { setTemplateError('Passing score must be between 0 and 100.'); return; }
+    setTemplateSaving(true); setTemplateError('');
+    try {
+      const created = await assessmentsApi.createTemplate({
+        code, title,
+        description: templateForm.description.trim(),
+        assessmentType: templateForm.assessmentType,
+        durationMinutes,
+        passingScore,
+        isRandomized: templateForm.isRandomized,
+        audience: templateForm.audience.trim(),
+      });
+      setTemplates(prev => [...prev.filter(t => t.id !== created.id), created]);
+      setApplications(await applicationsApi.listAll());
+      setAssignForm(f => ({ ...f, templateId: created.id }));
+      setTemplateForm({
+        code: '', title: '', description: '', assessmentType: 'Technical',
+        durationMinutes: 60, passingScore: 70, isRandomized: false, audience: '',
+      });
+      setShowTemplateCreate(false);
+      setShowAssign(true);
+    } catch (e) {
+      setTemplateError('Failed to create assessment template.');
+      notifyApiError(e);
+    } finally {
+      setTemplateSaving(false);
+    }
   };
 
   const submitAssign = async () => {
@@ -1734,12 +2014,16 @@ function AssessmentsTab() {
     finally { setAssignSaving(false); }
   };
 
-  const recordResult = async (id: string) => {
-    const raw = scoreInput[id];
-    const score = Number(raw);
-    if (!raw || isNaN(score) || score < 0 || score > 100) return;
-    setRecording(id);
-    try { await assessmentsApi.recordResult(id, score); load(); } catch {} finally { setRecording(null); }
+  const recordResult = async (a: CandidateAssessment) => {
+    // Raw marks when the template has a question bank, a percentage when it does not.
+    const score = parseAssessmentScore(scoreInput[a.id], a.totalMarks);
+    if (score == null) {
+      setScoreError(s => ({ ...s, [a.id]: `Enter a whole number from 0 to ${assessmentScoreMax(a.totalMarks)}.` }));
+      return;
+    }
+    setScoreError(s => ({ ...s, [a.id]: '' }));
+    setRecording(a.id);
+    try { await assessmentsApi.recordResult(a.id, score); load(); } catch (e) { notifyApiError(e); } finally { setRecording(null); }
   };
 
   const STATUS_COLORS: Record<string, string> = {
@@ -1757,10 +2041,84 @@ function AssessmentsTab() {
           <option value="">All Statuses</option>
           {['Pending', 'Sent', 'InProgress', 'Completed', 'Expired'].map(s => <option key={s}>{s}</option>)}
         </select>
-        <button type="button" onClick={openAssign} className="ms-auto flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-sm font-medium text-white hover:bg-sapphire/90">
-          <ClipboardList className="h-3.5 w-3.5" />Assign Assessment
-        </button>
+        <ListCount loading={loading} total={list.total} shown={assessments.length} noun="assessment" />
+        <div className="ms-auto flex items-center gap-2">
+          <button type="button" onClick={() => { setTemplateError(''); setShowTemplateCreate(v => !v); }}
+            className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:text-slate-200 dark:hover:bg-white/10">
+            <Plus className="h-3.5 w-3.5" />New Template
+          </button>
+          <button type="button" onClick={openAssign} className="flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-sm font-medium text-white hover:bg-sapphire/90">
+            <ClipboardList className="h-3.5 w-3.5" />Assign Assessment
+          </button>
+        </div>
       </div>
+
+      {showTemplateCreate && (
+        <div className="rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/[0.03] p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <h4 className="text-sm font-semibold text-slate-800 dark:text-white">Create Assessment Template</h4>
+              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Create a reusable assessment before assigning it to a candidate.</p>
+            </div>
+            <button type="button" aria-label="Close template form" title="Close" onClick={() => setShowTemplateCreate(false)} className="text-slate-400 hover:text-slate-600">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
+              Code *
+              <input aria-label="Assessment template code" value={templateForm.code} onChange={e => setTemplateForm(f => ({ ...f, code: e.target.value }))}
+                placeholder="e.g. INT-TECH-01" className="mt-1 w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm text-slate-800 dark:text-slate-200" />
+            </label>
+            <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
+              Title *
+              <input aria-label="Assessment template title" value={templateForm.title} onChange={e => setTemplateForm(f => ({ ...f, title: e.target.value }))}
+                placeholder="e.g. Integration Engineering Assessment" className="mt-1 w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm text-slate-800 dark:text-slate-200" />
+            </label>
+            <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
+              Type
+              <select aria-label="Assessment type" value={templateForm.assessmentType} onChange={e => setTemplateForm(f => ({ ...f, assessmentType: e.target.value }))}
+                className="mt-1 w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm text-slate-800 dark:text-slate-200">
+                {['Technical', 'Aptitude', 'Behavioral', 'Language', 'Other'].map(x => <option key={x} value={x}>{x}</option>)}
+              </select>
+            </label>
+            <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
+              Audience
+              <input aria-label="Assessment audience" value={templateForm.audience} onChange={e => setTemplateForm(f => ({ ...f, audience: e.target.value }))}
+                placeholder="e.g. Engineering" className="mt-1 w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm text-slate-800 dark:text-slate-200" />
+            </label>
+            <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
+              Duration (minutes)
+              <input aria-label="Assessment duration in minutes" type="number" min={1} value={templateForm.durationMinutes}
+                onChange={e => setTemplateForm(f => ({ ...f, durationMinutes: Number(e.target.value) }))}
+                className="mt-1 w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm text-slate-800 dark:text-slate-200" />
+            </label>
+            <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
+              Passing score (%)
+              <input aria-label="Assessment passing score" type="number" min={0} max={100} value={templateForm.passingScore}
+                onChange={e => setTemplateForm(f => ({ ...f, passingScore: Number(e.target.value) }))}
+                className="mt-1 w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm text-slate-800 dark:text-slate-200" />
+            </label>
+            <label className="md:col-span-2 text-xs font-medium text-slate-600 dark:text-slate-400">
+              Description
+              <textarea aria-label="Assessment template description" value={templateForm.description} onChange={e => setTemplateForm(f => ({ ...f, description: e.target.value }))}
+                placeholder="What this assessment measures…" rows={2} className="mt-1 w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm text-slate-800 dark:text-slate-200" />
+            </label>
+            <label className="md:col-span-2 flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-400">
+              <input type="checkbox" checked={templateForm.isRandomized} onChange={e => setTemplateForm(f => ({ ...f, isRandomized: e.target.checked }))} />
+              Randomize questions when supported by the template
+            </label>
+          </div>
+          {templateError && <p className="text-xs text-rose-500">{templateError}</p>}
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={createTemplate} disabled={templateSaving}
+              className="rounded-lg bg-sapphire px-4 py-1.5 text-xs font-medium text-white hover:bg-sapphire/90 disabled:opacity-50">
+              {templateSaving ? 'Creating…' : 'Create Template'}
+            </button>
+            <button type="button" onClick={() => setShowTemplateCreate(false)} className="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400">Cancel</button>
+          </div>
+        </div>
+      )}
 
       {showAssign && (
         <div className="rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/[0.03] p-4 space-y-3">
@@ -1802,7 +2160,8 @@ function AssessmentsTab() {
         </div>
       )}
 
-      {loading ? <p className="text-center text-sm text-slate-400 py-8">Loading…</p> : assessments.length === 0 ? (
+      {list.error != null && <LoadFailure what="Assessments" error={list.error} />}
+      {loading ? <p className="text-center text-sm text-slate-400 py-8">Loading…</p> : list.error != null && assessments.length === 0 ? null : assessments.length === 0 ? (
         <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">No assessments found. Assign one above.</p>
       ) : (
         <div className="surface overflow-x-auto">
@@ -1830,15 +2189,20 @@ function AssessmentsTab() {
                     {a.passed == null && <span className="text-xs text-slate-400">—</span>}
                   </td>
                   <td className="p-3">
-                    {a.status === 'Completed' && a.scorePercentage == null && (
-                      <div className="flex items-center gap-1">
-                        <input type="number" min={0} max={100} title="Score (0–100)" placeholder="Score 0–100"
-                          className="w-24 rounded-md border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-2 py-1 text-xs text-slate-800 dark:text-slate-200"
-                          value={scoreInput[a.id] ?? ''} onChange={e => setScoreInput(s => ({ ...s, [a.id]: e.target.value }))} />
-                        <button type="button" onClick={() => recordResult(a.id)} disabled={recording === a.id}
-                          className="rounded-md bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
-                          {recording === a.id ? '…' : 'Save'}
-                        </button>
+                    {canRecordAssessmentResult(a) && (
+                      <div>
+                        <div className="flex items-center gap-1">
+                          <input type="number" min={0} max={assessmentScoreMax(a.totalMarks)} step={1}
+                            aria-label={`${a.templateName} result: ${assessmentScoreLabel(a.totalMarks)}`}
+                            title={assessmentScoreLabel(a.totalMarks)} placeholder={assessmentScoreLabel(a.totalMarks)}
+                            className="w-32 rounded-md border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-2 py-1 text-xs text-slate-800 dark:text-slate-200"
+                            value={scoreInput[a.id] ?? ''} onChange={e => setScoreInput(s => ({ ...s, [a.id]: e.target.value }))} />
+                          <button type="button" onClick={() => recordResult(a)} disabled={recording === a.id}
+                            className="rounded-md bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
+                            {recording === a.id ? '…' : 'Record result'}
+                          </button>
+                        </div>
+                        {scoreError[a.id] && <p className="mt-1 text-xs text-rose-500">{scoreError[a.id]}</p>}
                       </div>
                     )}
                   </td>
@@ -1848,6 +2212,7 @@ function AssessmentsTab() {
           </table>
         </div>
       )}
+      <ListWindowFooter shown={assessments.length} total={list.total} noun="assessments" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
     </div>
   );
 }
@@ -1856,49 +2221,57 @@ function AssessmentsTab() {
 
 function OffersTab() {
   const { currencyCode } = useTenantSettings();
-  const [offers, setOffers] = useState<OfferLetter[]>([]);
-  const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [applications, setApplications] = useState<JobApplication[]>([]);
-  const [offerForm, setOfferForm] = useState({
-    applicationId: '', offeredJobTitle: '', offeredDepartment: '', startDate: '',
+  const emptyOfferForm = {
+    applicationId: '', offeredJobTitle: '', offeredDepartment: '', designationId: '', departmentId: '', startDate: '',
     basicSalary: 0, housingAllowance: 0, transportAllowance: 0, otherAllowances: 0,
     probationMonths: 3, responseDeadline: '',
-  });
+  };
+  const [offerForm, setOfferForm] = useState(emptyOfferForm);
   const [offerSaving, setOfferSaving] = useState(false);
   const [offerError, setOfferError] = useState('');
   const [actioning, setActioning] = useState<string | null>(null);
+  const [approvalOpen, setApprovalOpen] = useState<string | null>(null);
 
-  const load = async () => {
-    setLoading(true);
-    try { const r = await offersApi.list(undefined, statusFilter || undefined); setOffers(r.items); } catch {} finally { setLoading(false); }
-  };
+  // One page at a time with the server's total: this used to show the first 20 offers as all of them,
+  // so an offer waiting for approval past row 20 could not be found here.
+  const list = usePagedList<OfferLetter>((page, pageSize) =>
+    offersApi.list(undefined, statusFilter || undefined, page, pageSize));
+  const { items: offers, loading } = list;
+  const load = () => list.reload();
 
   useEffect(() => { load(); }, [statusFilter]);
 
   const openCreate = async () => {
-    try { const r = await applicationsApi.list({ pageSize: 100 }); setApplications(r.items); } catch {}
+    try { setApplications(await applicationsApi.listAll()); } catch {}
     setShowCreate(true);
   };
 
   const submitOffer = async () => {
-    if (!offerForm.applicationId || !offerForm.offeredJobTitle || !offerForm.startDate) {
-      setOfferError('Application, job title and start date are required.'); return;
+    if (!offerForm.applicationId || !offerForm.designationId || !offerForm.startDate) {
+      setOfferError('Application, designation and start date are required.'); return;
     }
     setOfferSaving(true); setOfferError('');
     try {
-      await offersApi.create({ ...offerForm, basicSalary: Number(offerForm.basicSalary), housingAllowance: Number(offerForm.housingAllowance), transportAllowance: Number(offerForm.transportAllowance), otherAllowances: Number(offerForm.otherAllowances), probationMonths: Number(offerForm.probationMonths) });
+      await offersApi.create({
+        ...offerForm,
+        departmentId: offerForm.departmentId || undefined,
+        basicSalary: Number(offerForm.basicSalary), housingAllowance: Number(offerForm.housingAllowance),
+        transportAllowance: Number(offerForm.transportAllowance), otherAllowances: Number(offerForm.otherAllowances),
+        probationMonths: Number(offerForm.probationMonths),
+      });
       setShowCreate(false);
-      setOfferForm({ applicationId: '', offeredJobTitle: '', offeredDepartment: '', startDate: '', basicSalary: 0, housingAllowance: 0, transportAllowance: 0, otherAllowances: 0, probationMonths: 3, responseDeadline: '' });
+      setOfferForm(emptyOfferForm);
       load();
-    } catch { setOfferError('Failed to create offer.'); }
+    } catch (e) { setOfferError(offerCreationFailure(e)); }
     finally { setOfferSaving(false); }
   };
 
   const sendOffer = async (id: string) => {
     setActioning(id);
-    try { await offersApi.send(id); load(); } catch {} finally { setActioning(null); }
+    try { await offersApi.send(id); load(); } catch (e) { notifyApiError(e); } finally { setActioning(null); }
   };
 
   const acceptOffer = async (id: string) => {
@@ -1928,6 +2301,7 @@ function OffersTab() {
           <option value="">All Statuses</option>
           {['Draft', 'PendingApproval', 'Approved', 'Sent', 'Accepted', 'Declined', 'Expired'].map(s => <option key={s}>{s}</option>)}
         </select>
+        <ListCount loading={loading} total={list.total} shown={offers.length} noun="offer" />
         <button type="button" onClick={openCreate} className="ms-auto flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-sm font-medium text-white hover:bg-sapphire/90">
           <FileText className="h-3.5 w-3.5" />Create Offer
         </button>
@@ -1948,15 +2322,13 @@ function OffersTab() {
                 {applications.map(a => <option key={a.id} value={a.id}>{a.candidateName} — {a.jobTitle}</option>)}
               </select>
             </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Offered Job Title *</label>
-              <input placeholder="e.g. Senior Software Engineer" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
-                value={offerForm.offeredJobTitle} onChange={e => setOfferForm(f => ({ ...f, offeredJobTitle: e.target.value }))} />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Department</label>
-              <input placeholder="e.g. Engineering" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
-                value={offerForm.offeredDepartment} onChange={e => setOfferForm(f => ({ ...f, offeredDepartment: e.target.value }))} />
+            <div className="col-span-2">
+              <OfferPlacementFields
+                idPrefix="offers-tab-new"
+                openingDefaults={false}
+                value={{ departmentId: offerForm.departmentId, designationId: offerForm.designationId }}
+                onChange={(v, names) => setOfferForm(f => ({ ...f, ...v, offeredJobTitle: names.designation, offeredDepartment: names.department }))}
+              />
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Start Date *</label>
@@ -1992,7 +2364,8 @@ function OffersTab() {
         </div>
       )}
 
-      {loading ? <p className="text-center text-sm text-slate-400 py-8">Loading…</p> : offers.length === 0 ? (
+      {list.error != null && <LoadFailure what="Offers" error={list.error} />}
+      {loading ? <p className="text-center text-sm text-slate-400 py-8">Loading…</p> : list.error != null && offers.length === 0 ? null : offers.length === 0 ? (
         <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">No offers found. Create one above.</p>
       ) : (
         <div className="space-y-2">
@@ -2009,7 +2382,13 @@ function OffersTab() {
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[o.status] ?? ''}`}>{o.status}</span>
-                  {o.status === 'Draft' && (
+                  {['Draft', 'PendingApproval', 'Approved'].includes(o.status) && (
+                    <button type="button" onClick={() => setApprovalOpen(v => (v === o.id ? null : o.id))}
+                      className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-white/10 dark:text-slate-200">
+                      {approvalOpen === o.id ? 'Hide approval' : 'Approval'}
+                    </button>
+                  )}
+                  {canSendOffer(o.status) && (
                     <button type="button" onClick={() => sendOffer(o.id)} disabled={actioning === o.id}
                       className="rounded-lg bg-sapphire px-2.5 py-1 text-xs font-medium text-white hover:bg-sapphire/90 disabled:opacity-50">
                       {actioning === o.id ? '…' : 'Send'}
@@ -2029,10 +2408,14 @@ function OffersTab() {
                   )}
                 </div>
               </div>
+              {approvalOpen === o.id && (
+                <OfferApprovalPanel key={`${o.id}:${o.status}`} offerId={o.id} onChanged={load} />
+              )}
             </div>
           ))}
         </div>
       )}
+      <ListWindowFooter shown={offers.length} total={list.total} noun="offers" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
     </div>
   );
 }
@@ -2040,12 +2423,10 @@ function OffersTab() {
 // ── Onboarding Tab ────────────────────────────────────────────────────────────
 
 function OnboardingTab() {
-  const [tasks, setTasks] = useState<OnboardingTask[]>([]);
   const [checklists, setChecklists] = useState<OnboardingChecklist[]>([]);
   const [selectedChecklistId, setSelectedChecklistId] = useState('');
   const [templateTasks, setTemplateTasks] = useState<OnboardingChecklistTemplateTask[]>([]);
   const [summary, setSummary] = useState<{ total: number; pending: number; completed: number; blocked: number; completionPct: number } | null>(null);
-  const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
   const [showAdd, setShowAdd] = useState(false);
   const [showTemplate, setShowTemplate] = useState(false);
@@ -2062,15 +2443,14 @@ function OnboardingTab() {
   const [taskError, setTaskError] = useState('');
   const [updatingStatus, setUpdatingStatus] = useState<string | null>(null);
 
+  // Tasks one page at a time with the server's total. The summary above said "Total: 340" while the
+  // list below stopped at the first 30, with nothing to reach the rest.
+  const list = usePagedList<OnboardingTask>((page, pageSize) =>
+    onboardingApi.listTasks({ status: statusFilter || undefined, page, pageSize }));
+  const { items: tasks, loading } = list;
   const load = async () => {
-    setLoading(true);
-    try {
-      const [r, s] = await Promise.all([
-        onboardingApi.listTasks({ status: statusFilter || undefined }),
-        onboardingApi.summary(),
-      ]);
-      setTasks(r.items); setSummary(s);
-    } catch {} finally { setLoading(false); }
+    void list.reload();
+    try { setSummary(await onboardingApi.summary()); } catch {}
   };
 
   useEffect(() => { load(); }, [statusFilter]);
@@ -2288,6 +2668,7 @@ function OnboardingTab() {
           <option value="">All Statuses</option>
           {['Pending', 'InProgress', 'Completed', 'Blocked', 'Skipped'].map(s => <option key={s}>{s}</option>)}
         </select>
+        <ListCount loading={loading} total={list.total} shown={tasks.length} noun="task" />
         <button type="button" onClick={() => setShowAdd(true)} className="ms-auto flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-sm font-medium text-white hover:bg-sapphire/90">
           <Plus className="h-3.5 w-3.5" />Add Task
         </button>
@@ -2344,7 +2725,8 @@ function OnboardingTab() {
         </div>
       )}
 
-      {loading ? <p className="text-center text-sm text-slate-400 py-8">Loading…</p> : tasks.length === 0 ? (
+      {list.error != null && <LoadFailure what="Onboarding tasks" error={list.error} />}
+      {loading ? <p className="text-center text-sm text-slate-400 py-8">Loading…</p> : list.error != null && tasks.length === 0 ? null : tasks.length === 0 ? (
         <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">No onboarding tasks found. Add the first task above.</p>
       ) : (
         <div className="space-y-2">
@@ -2375,6 +2757,7 @@ function OnboardingTab() {
           ))}
         </div>
       )}
+      <ListWindowFooter shown={tasks.length} total={list.total} noun="tasks" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
     </div>
   );
 }

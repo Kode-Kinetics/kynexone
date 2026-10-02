@@ -5,6 +5,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Recruitment;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Notifications;
+using Zayra.Api.Infrastructure.Recruitment;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Recruitment;
@@ -35,6 +36,8 @@ public class ApplicationsController : ControllerBase
         [FromQuery] int pageSize = 50,
         CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tenantId = this.GetTenantId()!.Value;
         var query = _db.JobApplications.Where(a => a.TenantId == tenantId);
         if (jobOpeningId.HasValue) query = query.Where(a => a.JobOpeningId == jobOpeningId.Value);
@@ -157,24 +160,20 @@ public class ApplicationsController : ControllerBase
         var nextStage = RecruitmentStages.Next(app.Stage);
         if (nextStage is null) return BadRequest(new { message = "Application is already at the final stage." });
 
+        // Hiring is not a stage move. Accepting the offer marks the application Hired, takes the
+        // seat on the opening and creates the employee draft in one transaction. Moving the card
+        // did only the first two, left no draft to activate, and made the offer unacceptable.
+        if (nextStage == "Hired")
+            return Conflict(new
+            {
+                error = "hire_requires_offer_acceptance",
+                message = "A candidate is hired by accepting their offer, which also creates their employee record. Open the offer and choose Accept."
+            });
+
         var prevStage = app.Stage;
         app.Stage = nextStage;
         app.StageOrder = RecruitmentStages.OrderOf(nextStage);
         app.StageChangedAtUtc = DateTime.UtcNow;
-
-        if (nextStage == "Hired")
-        {
-            app.Status = "Hired";
-            app.HiredAtUtc = DateTime.UtcNow;
-
-            // Increment filled count on the opening
-            var opening = await _db.JobOpenings.FirstOrDefaultAsync(j => j.Id == app.JobOpeningId && j.TenantId == tenantId, ct);
-            if (opening is not null)
-            {
-                opening.FilledCount++;
-                if (opening.FilledCount >= opening.HeadCount) opening.Status = "Closed";
-            }
-        }
 
         await LogEventAsync(tenantId, app.Id, "StageAdvanced", nextStage,
             req.Notes ?? $"Moved from {prevStage} to {nextStage}.", userId, req.PerformedByName ?? "HR", ct);
@@ -302,18 +301,39 @@ public class ApplicationsController : ControllerBase
         if (app is null) return NotFound();
         if (app.Stage != "Offer") return BadRequest(new { message = "Application must be in Offer stage to generate an offer letter." });
 
-        // Remove any previous draft offer
+        // Replace an unsent draft. A draft that went through approval is kept: it is the record of
+        // what an approver rejected, and its approval rows point at it.
         var existing = await _db.OfferLetters
-            .Where(o => o.TenantId == tenantId && o.ApplicationId == id && o.Status == "Draft")
+            .Where(o => o.TenantId == tenantId && o.ApplicationId == id && o.Status == "Draft"
+                && !_db.OfferApprovals.Any(a => a.TenantId == tenantId && a.OfferLetterId == o.Id))
             .ToListAsync(ct);
         _db.OfferLetters.RemoveRange(existing);
 
+        // Place the hire before anything is written: the department and designation must be records
+        // activation can match, or the accepted offer's draft is refused at approval. What HR picked
+        // wins; otherwise the opening's own department and designation; otherwise the advert title.
+        var opening = await _db.JobOpenings.AsNoTracking()
+            .Where(o => o.Id == app.JobOpeningId && o.TenantId == tenantId)
+            .Select(o => new { o.DepartmentId, o.DepartmentName, o.DesignationId })
+            .FirstOrDefaultAsync(ct);
+        var departmentText = string.IsNullOrWhiteSpace(req.Department) ? opening?.DepartmentName : req.Department;
+        var placement = await OfferPlacement.ResolveAsync(_db, tenantId,
+            departmentId: req.DepartmentId ?? (string.IsNullOrWhiteSpace(req.Department) ? opening?.DepartmentId : null),
+            department: departmentText,
+            designationId: req.DesignationId ?? (string.IsNullOrWhiteSpace(req.Designation) ? opening?.DesignationId : null),
+            designation: string.IsNullOrWhiteSpace(req.Designation) ? app.JobTitle : req.Designation,
+            ct,
+            companyId: app.CompanyId);
+        if (!placement.IsResolved)
+            return UnprocessableEntity(new { error = placement.Error, field = placement.Field, message = placement.Message });
+
         var gross = req.BasicSalary + req.HousingAllowance + req.TransportAllowance + req.OtherAllowances;
+        var currency = await OfferRules.ResolveCurrencyAsync(_db, tenantId, app.CompanyId, ct);
         var templateData = new OfferLetterTemplateData(
-            app.CandidateName, app.JobTitle,
-            req.Department, req.StartDate,
+            app.CandidateName, placement.Designation,
+            placement.Department, req.StartDate,
             req.BasicSalary, req.HousingAllowance, req.TransportAllowance, req.OtherAllowances,
-            gross, req.ProbationMonths);
+            gross, req.ProbationMonths, currency);
 
         var offer = new OfferLetter
         {
@@ -321,8 +341,8 @@ public class ApplicationsController : ControllerBase
             CompanyId = app.CompanyId, // inherit legal entity from parent application
             ApplicationId = id,
             CandidateName = app.CandidateName,
-            OfferedJobTitle = app.JobTitle,
-            OfferedDepartment = req.Department,
+            OfferedJobTitle = placement.Designation,
+            OfferedDepartment = placement.Department,
             StartDate = req.StartDate,
             BasicSalary = req.BasicSalary,
             HousingAllowance = req.HousingAllowance,
@@ -338,7 +358,10 @@ public class ApplicationsController : ControllerBase
         app.OfferedSalary = gross;
 
         await LogEventAsync(tenantId, id, "OfferGenerated", "Offer",
-            $"Offer letter generated. Gross salary: {gross:N2} AED/month.", userId, "HR", ct);
+            $"Offer letter generated. Gross salary: {currency} {gross:N2}/month.", userId, "HR", ct);
+        // The offer's author, for maker-checker: OfferLetter has no creator column.
+        _db.RecruitmentAuditLogs.Add(OfferRules.AuditRow(tenantId, offer.Id, OfferRules.CreatedAction, userId, UserName(),
+            new { offer.GrossSalary, offer.StartDate, currency }));
 
         await _db.SaveChangesAsync(ct);
         return Created($"/api/recruitment/offers/{offer.Id}", offer);
@@ -352,10 +375,18 @@ public class ApplicationsController : ControllerBase
         var userId = this.GetUserId();
         var offer = await _db.OfferLetters.FirstOrDefaultAsync(o => o.Id == offerId && o.TenantId == tenantId, ct);
         if (offer is null) return NotFound();
-        if (offer.Status != "Draft") return BadRequest(new { message = "Offer must be in Draft status to send." });
+        var verdict = await OfferRules.EvaluateSendAsync(_db, offer, userId, ct);
+        if (verdict == OfferSendVerdict.InvalidState)
+            return BadRequest(new { message = "Offer must be in Draft or Approved status to send." });
+        if (verdict != OfferSendVerdict.Sendable)
+        {
+            var (error, message) = OfferRules.SendRefusal(verdict);
+            return Conflict(new { error, message });
+        }
 
         offer.Status = "Sent";
         offer.SentAtUtc = DateTime.UtcNow;
+        _db.RecruitmentAuditLogs.Add(OfferRules.AuditRow(tenantId, offer.Id, OfferRules.SentAction, userId, UserName()));
         offer.ResponseDeadline = DateTime.UtcNow.AddDays(7);
 
         await LogEventAsync(tenantId, offer.ApplicationId, "OfferSent", "Offer",
@@ -408,6 +439,14 @@ public class ApplicationsController : ControllerBase
         var userId = this.GetUserId();
         var offer = await _db.OfferLetters.FirstOrDefaultAsync(o => o.Id == offerId && o.TenantId == tenantId, ct);
         if (offer is null) return NotFound();
+        // The same rule as the Offers tab. Declining an Accepted offer left the application Hired and
+        // its employee draft live.
+        if (!OfferRules.CanDecline(offer))
+            return Conflict(new
+            {
+                error = "invalid_offer_state",
+                message = $"{OfferRules.DeclineStateMessage} (current: {offer.Status})"
+            });
 
         offer.Status = "Declined";
         offer.DeclinedAtUtc = DateTime.UtcNow;
@@ -436,6 +475,8 @@ public class ApplicationsController : ControllerBase
     }
 
     // ── Shared helpers ─────────────────────────────────────────────────────────
+
+    private string UserName() => User.FindFirst("name")?.Value ?? User.Identity?.Name ?? "HR";
 
     private Task LogEventAsync(Guid tenantId, Guid applicationId, string eventType, string stage,
         string notes, Guid? userId, string performedByName, CancellationToken ct)
@@ -466,7 +507,11 @@ public record NoteRequest(string Notes, string? PerformedByName);
 
 public record InterviewFeedbackRequest(int OverallRating, string Recommendation, string FeedbackNotes);
 
+/// <summary>Department and designation are resolved against the organisation's records when the offer
+/// is generated (<see cref="Zayra.Api.Infrastructure.Recruitment.OfferPlacement"/>). An id wins over a
+/// name. Left empty, they default to the job opening's department and designation.</summary>
 public record GenerateOfferRequest(
-    string Department, DateOnly StartDate,
+    string? Department, DateOnly StartDate,
     decimal BasicSalary, decimal HousingAllowance, decimal TransportAllowance, decimal OtherAllowances,
-    int ProbationMonths);
+    int ProbationMonths,
+    Guid? DepartmentId = null, Guid? DesignationId = null, string? Designation = null);

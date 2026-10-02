@@ -161,6 +161,8 @@ public sealed class DraftApprovalAtomicityTests
 
             var tenantId = Guid.NewGuid();
             var actorId = Guid.NewGuid();
+            // Maker-checker: the draft was prepared by someone other than the approving actor.
+            var makerId = Guid.NewGuid();
             var company = new Company
             {
                 TenantId = tenantId,
@@ -182,12 +184,17 @@ public sealed class DraftApprovalAtomicityTests
             var draft = new EmployeeDraft
             {
                 TenantId = tenantId,
-                CreatedByUserId = actorId,
+                CreatedByUserId = makerId,
                 Status = "PendingHrApproval",
                 CurrentStep = "HrApproval",
                 EnglishName = "Atomic Employee",
                 WorkEmail = "atomic.employee@example.test",
                 Branch = branch.NameEn,
+                // The employee this draft becomes now inherits the UAE company's country instead of
+                // being stored with a blank one, so it must hold the Emirates ID that jurisdiction's
+                // floor requires. These tests are about approval atomicity, not statutory readiness.
+                Nationality = "Emirati",
+                EmiratesId = "784-1990-2222222-2",
                 JoiningDate = DateTime.UtcNow.Date
             };
             db.AddRange(

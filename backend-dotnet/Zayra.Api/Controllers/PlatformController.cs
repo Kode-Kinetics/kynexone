@@ -367,15 +367,59 @@ public class PlatformController : ControllerBase
             redisStatus = "error";
         }
 
+        // Name and host only — for platform operators, so a test run (or an operator) can tell WHICH
+        // database this API is attached to. See DatabaseIdentity for what is deliberately left out.
+        var dbIdentity = Zayra.Api.Infrastructure.Operations.DatabaseIdentity.Describe(_db.Database);
+        // F09: outbound integrations, from the SAME evidence /health/ready and /health/telemetry
+        // use, so the three can never disagree. Aggregates only — no tenant, recipient or message.
+        object email, qiwa, deliveries;
+        if (dbOk)
+        {
+            var smtpMode = await Zayra.Api.Infrastructure.Operations.ProductionReadinessEvidence.SmtpDependencyAsync(_db, _config, ct);
+            var queues = await Zayra.Api.Infrastructure.Operations.ProductionReadinessEvidence.BuildQueueHealthAsync(_db, ct);
+            email = new { status = smtpMode.Mode, smtpMode.Configured, smtpMode.Simulated, detail = smtpMode.Detail };
+            deliveries = new
+            {
+                status = queues.NotificationsDeadLetter + queues.NotificationsFailed + queues.NotificationsNotConfigured
+                         + queues.ReportsDeadLetter > 0 ? "attention" : "ok",
+                queued = queues.NotificationsQueued,
+                retrying = queues.NotificationsRetrying,
+                failed = queues.NotificationsFailed,
+                deadLetter = queues.NotificationsDeadLetter,
+                notConfigured = queues.NotificationsNotConfigured,
+                captured = queues.NotificationsCaptured,
+                reportsFailed24h = queues.ReportsFailed24h,
+                reportsNotConfigured24h = queues.ReportsNotConfigured24h,
+                reportsDeadLetter = queues.ReportsDeadLetter,
+                qiwaDeadLetter = queues.QiwaDeadLetter,
+            };
+        }
+        else
+        {
+            email = new { status = "unknown", configured = false, simulated = false, detail = "Database unreachable." };
+            deliveries = new { status = "unknown" };
+        }
+        var qiwaMode = Zayra.Api.Infrastructure.Operations.ProductionReadinessEvidence.QiwaDependency(_config);
+        qiwa = new { status = qiwaMode.Mode, qiwaMode.Configured, qiwaMode.Simulated, detail = qiwaMode.Detail };
+
         return Ok(new
         {
             status = dbOk ? "healthy" : "degraded",
             components = new
             {
-                database = new { status = dbOk ? "ok" : "error" },
-                smtp     = new { status = smtpConfigured ? "configured" : "not_configured" },
+                database = new { status = dbOk ? "ok" : "error", name = dbIdentity.Name, host = dbIdentity.Host },
+                // Kept for the existing dashboard row. "capture" is its own answer: a server in test
+                // delivery mode is not an SMTP server that is configured.
+                smtp     = new
+                {
+                    status = EmailTransportPolicy.From(_config).IsCapture ? "capture"
+                        : smtpConfigured ? "configured" : "not_configured",
+                },
                 redis    = new { status = redisStatus },
                 jobs     = new { status = "unknown" },
+                email,
+                qiwa,
+                deliveries,
             },
             version     = "1.0.0",
             environment = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production",
@@ -1172,6 +1216,15 @@ public class PlatformController : ControllerBase
         return await CreateTenantCore(req, name, slug, homeCountry, ct);
     }
 
+    /// <summary>
+    /// The currency a tenant in <paramref name="homeCountry"/> pays its staff in, from the one country
+    /// list the product knows. A recognised country missing from that list keeps the previous entity
+    /// default (USD), which Setup → Companies and tenant settings can correct.
+    /// </summary>
+    internal static string HomeCurrencyFor(string homeCountry) =>
+        IsoReference.Countries.FirstOrDefault(c => string.Equals(c.Code, homeCountry, StringComparison.OrdinalIgnoreCase))?.Currency
+        ?? "USD";
+
     /// <param name="homeCountry">Canonical ISO-2, already validated by <see cref="CreateTenant"/>.</param>
     private async Task<IActionResult> CreateTenantCore(
         CreateTenantRequest req,
@@ -1180,6 +1233,13 @@ public class PlatformController : ControllerBase
         string homeCountry,
         CancellationToken ct)
     {
+        // The tenant's OPERATING currency — the one its payroll, bank files, GL and leave encashment
+        // are denominated in — follows its home jurisdiction. It used to be left to the entity
+        // defaults, so the localization row and the first company were born USD whatever the country,
+        // and a Saudi tenant's payroll approval then labelled a SAR run as "USD". The request's
+        // CurrencyCode is NOT used for this: on the platform form it is the subscription's BILLING
+        // currency (beside Monthly Amount, pre-filled USD), which says nothing about how staff are paid.
+        var operatingCurrency = HomeCurrencyFor(homeCountry);
 
         var tenant = new Tenant
         {
@@ -1204,6 +1264,7 @@ public class PlatformController : ControllerBase
         {
             TenantId = tenant.Id,
             CountryCode = homeCountry,
+            CurrencyCode = operatingCurrency,
             DefaultTimezone = HomeJurisdiction.TimeZoneFor(homeCountry),
         });
 
@@ -1220,6 +1281,7 @@ public class PlatformController : ControllerBase
             LegalNameEn = name,
             TradeName = name,
             CountryCode = homeCountry,
+            DefaultCurrency = operatingCurrency,
             IsActive = true,
         });
         await _db.SaveChangesAsync(ct);
@@ -1271,7 +1333,8 @@ public class PlatformController : ControllerBase
             BillingEmail = req.BillingEmail ?? req.AdminEmail.Trim().ToLowerInvariant(),
             BillingCycle = req.BillingCycle ?? "Monthly",
             MonthlyAmount = req.MonthlyAmount ?? 0,
-            CurrencyCode = req.CurrencyCode ?? "USD",
+            // Billing currency: what the platform admin stated, else the tenant's own currency.
+            CurrencyCode = string.IsNullOrWhiteSpace(req.CurrencyCode) ? operatingCurrency : req.CurrencyCode.Trim().ToUpperInvariant(),
             ExpiresAtUtc = req.ExpiresAtUtc
         });
 
@@ -1290,6 +1353,7 @@ public class PlatformController : ControllerBase
                 // The stated home jurisdiction is part of the tenant's creation record: it decided
                 // which statutory defaults were seeded, so it has to be auditable alongside them.
                 homeCountryCode = homeCountry,
+                operatingCurrency,
                 maxUsers = req.MaxUsers ?? SubscriptionTiers.GetDefaults(plan).MaxUsers,
                 maxEmployees = req.MaxEmployees ?? SubscriptionTiers.GetDefaults(plan).MaxEmployees
             }),
@@ -2157,8 +2221,11 @@ public class PlatformController : ControllerBase
         {
             try
             {
-                await _emailService.SendAsync(user.TenantId, user.Email, user.FullName, "Your KynexOne password reset (admin-initiated)", html, cancellationToken: ct);
-                emailSent = true;
+                // F09: captured by test delivery mode is not sent; only a relay's acceptance is.
+                var delivery = await _emailService.DeliverAsync(user.TenantId, user.Email, user.FullName,
+                    "Your KynexOne password reset (admin-initiated)", html, cancellationToken: ct);
+                emailSent = delivery.ReachedARelay;
+                smtpConfigured = delivery.Status != EmailDeliveryStatus.NotConfigured;
             }
             catch (Exception ex)
             {
@@ -2202,9 +2269,9 @@ public class PlatformController : ControllerBase
             emailSent,
             smtpConfigured,
             message = emailSent
-                ? $"Password reset email sent to {user.Email}. Link expires in 1 hour."
+                ? $"Password reset email accepted by the mail server for {user.Email}. Link expires in 1 hour."
                 : smtpConfigured
-                    ? "SMTP is configured but the email could not be delivered — check server logs."
+                    ? "The email was not sent: the relay refused it, or this server is in test delivery mode — check server logs."
                     : maySeeLink
                         ? "SMTP is not configured for this platform, so no email was sent. Copy the reset link below and give it to the user directly — it can be used once and expires in 1 hour."
                         : "SMTP is not configured for this platform, so no email was sent. Ask a platform Owner or Admin to issue the reset link.",
@@ -2535,6 +2602,8 @@ public class PlatformController : ControllerBase
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin, PlatformRoles.Support, PlatformRoles.Auditor)]
     public async Task<IActionResult> GetAuditLogs([FromQuery] Guid? tenantId, [FromQuery] int page = 1, [FromQuery] int pageSize = 50, CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var q = _db.AdminAuditLogs.AsNoTracking().AsQueryable();
 
         if (tenantId.HasValue) q = q.Where(l => l.TenantId == tenantId.Value);
@@ -2760,6 +2829,8 @@ public class PlatformController : ControllerBase
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin, PlatformRoles.Support, PlatformRoles.Auditor)]
     public async Task<IActionResult> ListSupportSessions([FromQuery] Guid? tenantId, [FromQuery] bool activeOnly = false, [FromQuery] int page = 1, [FromQuery] int pageSize = 50, CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var q = _db.PlatformSupportSessions.AsNoTracking().AsQueryable();
         if (tenantId.HasValue) q = q.Where(s => s.TenantId == tenantId.Value);
         if (activeOnly) q = q.Where(s => s.EndedAtUtc == null && s.ExpiresAtUtc > DateTime.UtcNow);
@@ -3053,13 +3124,29 @@ public class PlatformController : ControllerBase
             """;
 
         var attachment = new EmailAttachment(fileName, pdfBytes, "application/pdf");
-        await _emailService.SendPlatformAsync(
+        var delivery = await _emailService.DeliverPlatformAsync(
             toEmail,
             tenant?.Name ?? toEmail,
             $"Invoice {invoice.InvoiceNumber} — {amountFmt} due {dueDateFmt}",
             htmlBody,
             [attachment],
             ct);
+
+        // F09: only a relay's acceptance moves the invoice to Sent. Test capture mode (or a relay
+        // that vanished between the check above and this call) leaves it where it was, and the 409
+        // keeps an older client from rendering its "Sent ✓" toast.
+        if (!delivery.ReachedARelay)
+            return Conflict(new
+            {
+                sent = false,
+                captured = delivery.Status == EmailDeliveryStatus.Captured,
+                smtpRequired = delivery.Status == EmailDeliveryStatus.NotConfigured,
+                billingEmail = toEmail,
+                invoiceNumber = invoice.InvoiceNumber,
+                message = delivery.Status == EmailDeliveryStatus.Captured
+                    ? "This server is in test delivery mode: the invoice email was captured and not sent. The invoice status is unchanged."
+                    : "SMTP is not configured on this platform, so the invoice was not sent. Download the PDF and send it manually.",
+            });
 
         invoice.Status = InvoiceStatuses.Sent;
         invoice.UpdatedAtUtc = DateTime.UtcNow;
@@ -3609,6 +3696,8 @@ public class PlatformController : ControllerBase
         {
             TenantId = tenant.Id,
             CountryCode = homeCountry,
+            // Same operating-currency rule as CreateTenant (see CreateTenantCore).
+            CurrencyCode = HomeCurrencyFor(homeCountry),
         });
 
         var adminRole = await _authSeeder.EnsureTenantRolesAsync(tenant.Id, ct);
@@ -3889,7 +3978,7 @@ public class PlatformController : ControllerBase
 
         try
         {
-            await _emailService.SendPlatformAsync(
+            var delivery = await _emailService.DeliverPlatformAsync(
                 to,
                 "KynexOne Platform Admin",
                 "KynexOne — SMTP test message",
@@ -3908,6 +3997,19 @@ public class PlatformController : ControllerBase
                  {System.Net.WebUtility.HtmlEncode(smtp.Host)} and a DKIM record from your provider.</p>
                  """,
                 cancellationToken: ct);
+
+            // F09: a test that was captured proves nothing about the relay, so it must not say so.
+            if (!delivery.ReachedARelay)
+                return Ok(new
+                {
+                    sent = false,
+                    captured = delivery.Status == EmailDeliveryStatus.Captured,
+                    to,
+                    host = smtp.Host,
+                    port = smtp.Port,
+                    provider = smtp.ProviderKey,
+                    message = delivery.Detail + " The relay was not contacted, so this test proves nothing about it.",
+                });
 
             _log.LogInformation("Platform SMTP test sent on port {Port}.", smtp.Port);
 
@@ -4033,7 +4135,8 @@ public class PlatformController : ControllerBase
         [FromQuery] int pageSize = 50,
         CancellationToken ct = default)
     {
-        if (pageSize > 200) pageSize = 200;
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 200);
 
         // Build tenant name lookup
         var tenants = await _db.Tenants.AsNoTracking()

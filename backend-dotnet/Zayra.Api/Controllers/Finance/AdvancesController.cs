@@ -77,11 +77,16 @@ public class AdvancesController : ControllerBase
 
     // ── Salary Advances ───────────────────────────────────────────────────────
 
+    // F10 — gated on loans.read or loans.write, as the loan book is (see LoansController.LoansReadDenial).
     [HttpGet]
+    [HasPermission("loans.read", "loans.write")]
     public async Task<IActionResult> List(
         [FromQuery] Guid? employeeId, [FromQuery] string? status,
         [FromQuery] int page = 1, [FromQuery] int pageSize = 30, CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+        if (LoansController.LoansReadDenial(this) is { } denied) return denied;
         var tid = GetTenantId();
         var scope = await _scopeService.ResolveAsync(User, tid, ct);
         var q = _db.SalaryAdvances.Where(x => x.TenantId == tid && !x.IsDeleted);
@@ -102,8 +107,10 @@ public class AdvancesController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
+    [HasPermission("loans.read", "loans.write")]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
+        if (LoansController.LoansReadDenial(this) is { } denied) return denied;
         var tid = GetTenantId();
         var adv = await _db.SalaryAdvances.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (adv == null) return NotFound();

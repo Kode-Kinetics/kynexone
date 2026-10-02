@@ -21,6 +21,7 @@ import {
   requireWorkspace,
 } from '@/auth/publicAuthInput';
 import { mapEmployeeProfile } from './profileMapper';
+import { fetchAllPages } from './paging';
 import { riyadhBusinessDate, riyadhBusinessMonth } from '@/utils/businessDate';
 import type {
   AuthUser,
@@ -715,15 +716,20 @@ export const dashboardApi = {
   },
 
   async getManagerDashboard(): Promise<ManagerDashboard> {
+    const monthPrefix = riyadhBusinessMonth();
     const [overview, team, overtime] = await Promise.all([
       apiGet<any>('/dashboard/overview'),
       teamApi.getTeamMembers(),
-      apiGet<BackendPaged<any>>('/overtime/requests?page=1&pageSize=200').catch(() => null),
+      // Every request this month, page by page (one page of 200 left the rest out of the total).
+      // The API orders by work date, newest first, so paging stops once a page reaches last month.
+      fetchAllPages<any>(
+        (page, pageSize) => apiGet<BackendPaged<any>>(`/overtime/requests?page=${page}&pageSize=${pageSize}`),
+        { enough: (rows) => String(rows[rows.length - 1]?.workDate ?? '') < monthPrefix }
+      ).catch(() => null),
     ]);
     // Team counts come from the manager's own scoped team, not /dashboard/summary,
     // which reports tenant-wide headcount.
     const count = (s: string) => team.filter((m) => m.todayStatus === s).length;
-    const monthPrefix = riyadhBusinessMonth();
     const otMinutes = itemsOf(overtime)
       .filter((r) => String(r.workDate ?? '').startsWith(monthPrefix) && !/reject/i.test(r.status ?? ''))
       .reduce((sum, r) => sum + Number(r.requestedMinutes ?? 0), 0);
@@ -977,13 +983,17 @@ export const overtimeApi = {
     return mapOvertimeRequest(result);
   },
 
-  /** GET /overtime/requests is scoped server-side; for an employee it returns only their own. */
+  /**
+   * GET /overtime/requests is scoped server-side; for an employee it returns only their own.
+   * Every page of the employee's history: this used to read one page of 50 and show it as the
+   * whole history, so the 51st request and everything older simply was not there.
+   */
   async getMyOTRequests(): Promise<OvertimeRequest[]> {
     const employeeId = await requireEmployeeId();
-    const result = await apiGet<BackendPaged<any>>(
-      `/overtime/requests?employeeId=${employeeId}&page=1&pageSize=50`
+    const rows = await fetchAllPages<any>((page, pageSize) =>
+      apiGet<BackendPaged<any>>(`/overtime/requests?employeeId=${employeeId}&page=${page}&pageSize=${pageSize}`)
     );
-    return itemsOf(result).map(mapOvertimeRequest);
+    return rows.map(mapOvertimeRequest);
   },
 };
 
@@ -1229,8 +1239,11 @@ function toApprovalOutcome(r: any, fallbackStatus: string): ApprovalOutcome {
 
 export const approvalsApi = {
   async getPendingApprovals(): Promise<ApprovalItem[]> {
-    const result = await apiGet<BackendPaged<any>>('/approval-requests?status=Pending&page=1&pageSize=50');
-    return itemsOf(result).map(mapApprovalItem);
+    // The whole pending queue, page by page: an approver used to see only the first 50.
+    const pending = await fetchAllPages<any>((page, pageSize) =>
+      apiGet<BackendPaged<any>>(`/approval-requests?status=Pending&page=${page}&pageSize=${pageSize}`)
+    );
+    return pending.map(mapApprovalItem);
   },
 
   async getApprovalHistory(page = 1, pageSize = 20): Promise<PaginatedResponse<ApprovalItem>> {
@@ -1389,9 +1402,13 @@ export const teamApi = {
     const employeeId = await getCurrentEmployeeId();
     if (!employeeId) return [];
     const today = riyadhBusinessDate();
+    // Both lists in full: /employees clamps pageSize to 100, so asking for 200 returned the first
+    // 100 employees and a manager's reports past them never reached the filter below.
     const [employees, attendance] = await Promise.all([
-      apiGet<BackendPaged<any>>('/employees?page=1&pageSize=200'),
-      apiGet<BackendPaged<any>>(`/attendance/daily?from=${today}&to=${today}&pageSize=200`).catch(() => null),
+      fetchAllPages<any>((page, pageSize) => apiGet<BackendPaged<any>>(`/employees?page=${page}&pageSize=${pageSize}`)),
+      fetchAllPages<any>((page, pageSize) =>
+        apiGet<BackendPaged<any>>(`/attendance/daily?from=${today}&to=${today}&page=${page}&pageSize=${pageSize}`)
+      ).catch(() => null),
     ]);
     const byEmployee = new Map(itemsOf(attendance).map((a: any) => [a.employeeId, a]));
     return itemsOf(employees)

@@ -16,11 +16,18 @@ public sealed class SaudiComplianceDashboardService
 {
     private readonly ZayraDbContext _db;
     private readonly GosiReconciliationService _reconciliation;
+    private readonly IQiwaApiAdapter? _qiwaAdapter;
 
-    public SaudiComplianceDashboardService(ZayraDbContext db, GosiReconciliationService reconciliation)
+    /// <param name="qiwaAdapter">
+    /// The adapter this process runs. Optional so direct constructions keep compiling; absent means
+    /// "not known to be live", which is reported as a simulation — the safe reading (F09).
+    /// </param>
+    public SaudiComplianceDashboardService(ZayraDbContext db, GosiReconciliationService reconciliation,
+        IQiwaApiAdapter? qiwaAdapter = null)
     {
         _db = db;
         _reconciliation = reconciliation;
+        _qiwaAdapter = qiwaAdapter;
     }
 
     public async Task<SaudiComplianceDashboard> BuildAsync(Guid tenantId, CancellationToken ct)
@@ -80,18 +87,20 @@ public sealed class SaudiComplianceDashboardService
             .CountAsync(l => l.TenantId == tenantId &&
                              (l.Status == QiwaSyncLogStatuses.Failed || l.Status == QiwaSyncLogStatuses.DeadLetter), ct);
 
-        var lastSuccess = await _db.QiwaSyncLogs
-            .Where(l => l.TenantId == tenantId && l.Status == QiwaSyncLogStatuses.Success)
-            .OrderByDescending(l => l.CompletedAtUtc)
-            .Select(l => l.CompletedAtUtc)
-            .FirstOrDefaultAsync(ct);
+        // F09: "Last sync" used to be the newest "Success" row — under the sandbox adapter, a
+        // simulation. The real filing and the simulator run are now separate fields.
+        var (lastFiled, lastSimulated) = await QiwaIntegrationService.LastRunsAsync(_db, tenantId, ct);
+        var live = _qiwaAdapter?.IsLiveIntegration == true;
 
         return new QiwaDashboardSection(
             featureEnabled, credentialConfigured,
             connection?.Status ?? "NotConfigured",
             connection?.LastConnectedAtUtc,
             total, ready, blocked.Count, percent,
-            failedCount, lastSuccess, blocked);
+            failedCount, lastFiled, blocked,
+            IsLiveIntegration: live,
+            IntegrationMode: live ? "Live" : QiwaSyncLogStatuses.SimulatedLabel,
+            LastSimulatedSync: lastSimulated);
     }
 
     private async Task<WpsDashboardSection> BuildWpsAsync(Guid tenantId, CancellationToken ct)
@@ -391,6 +400,20 @@ public sealed class SaudiComplianceDashboardService
                 "/saudi-compliance?tab=configure&section=qiwa",
                 "compliance.read", true, evaluatedAt));
         }
+        else if (!qiwa.IsLiveIntegration)
+        {
+            // F09: everything looks set up, which is exactly when a simulator is most easily taken
+            // for the real thing. Said as an action item, not only as a badge.
+            items.Add(new(
+                "qiwa_simulated",
+                "High", "QIWA",
+                "QIWA is a simulation on this server: nothing is filed with Qiwa",
+                "This server runs the Qiwa sandbox simulator. Sync results are labelled Simulated (sandbox); no employee record has been sent to Qiwa or MHRSD.",
+                0,
+                "Ask your platform administrator to enable the live Qiwa adapter before relying on QIWA status for an inspection.",
+                "/saudi-compliance?tab=configure&section=qiwa",
+                "compliance.read", false, evaluatedAt));
+        }
 
         if (qiwa.BlockedFromSync > 0)
         {
@@ -560,8 +583,15 @@ public record QiwaDashboardSection(
     /// <summary>null when there are no active employees — readiness is undefined, not 0% or 100%.</summary>
     double? ReadinessPercent,
     int FailedSyncCount,
+    /// <summary>The last run the LIVE adapter filed with Qiwa. Null until something is really filed.</summary>
     DateTime? LastSuccessfulSync,
-    IReadOnlyList<BlockedEmployee> BlockedEmployees);
+    IReadOnlyList<BlockedEmployee> BlockedEmployees,
+    /// <summary>F09 — false whenever this server runs the sandbox simulator.</summary>
+    bool IsLiveIntegration = false,
+    /// <summary>"Live" or "Simulated (sandbox)" — the label every screen shows.</summary>
+    string IntegrationMode = QiwaSyncLogStatuses.SimulatedLabel,
+    /// <summary>The last simulator run. Nothing was filed.</summary>
+    DateTime? LastSimulatedSync = null);
 
 public record BlockedEmployee(int EmployeeId, string EmployeeCode, string FullName, IReadOnlyList<string> MissingFields);
 

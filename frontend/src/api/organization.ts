@@ -1,4 +1,5 @@
 import client from './client';
+import { fetchAllPages } from '../lib/paging';
 
 export interface PagedResult<T> {
   items: T[];
@@ -107,6 +108,8 @@ export function isValidEmailDomain(value: string): boolean {
 export const companiesApi = {
   list: (page = 1, pageSize = 25) =>
     client.get<PagedResult<CompanyDto>>('/api/companies', { params: { page, pageSize } }).then((r) => r.data),
+  /** Every company, page by page (the API serves at most 100 per page). */
+  listAll: () => fetchAllPages((page, pageSize) => companiesApi.list(page, pageSize)),
   get: (id: string) =>
     client.get<CompanyDto>(`/api/companies/${id}`).then((r) => r.data),
   create: (data: CompanyRequest) =>
@@ -157,6 +160,7 @@ export interface BranchRequest {
 export const branchesApi = {
   list: (companyId?: string, page = 1, pageSize = 25) =>
     client.get<PagedResult<BranchDto>>('/api/branches', { params: { companyId, page, pageSize } }).then((r) => r.data),
+  listAll: (companyId?: string) => fetchAllPages((page, pageSize) => branchesApi.list(companyId, page, pageSize)),
   get: (id: string) =>
     client.get<BranchDto>(`/api/branches/${id}`).then((r) => r.data),
   create: (data: BranchRequest) =>
@@ -197,6 +201,7 @@ export interface DepartmentRequest {
 export const departmentsApi = {
   list: (branchId?: string, page = 1, pageSize = 25) =>
     client.get<PagedResult<DepartmentDto>>('/api/departments', { params: { branchId, page, pageSize } }).then((r) => r.data),
+  listAll: (branchId?: string) => fetchAllPages((page, pageSize) => departmentsApi.list(branchId, page, pageSize)),
   get: (id: string) =>
     client.get<DepartmentDto>(`/api/departments/${id}`).then((r) => r.data),
   create: (data: DepartmentRequest) =>
@@ -241,6 +246,7 @@ export interface DesignationRequest {
 export const designationsApi = {
   list: (departmentId?: string, page = 1, pageSize = 25) =>
     client.get<PagedResult<DesignationDto>>('/api/designations', { params: { departmentId, page, pageSize } }).then((r) => r.data),
+  listAll: (departmentId?: string) => fetchAllPages((page, pageSize) => designationsApi.list(departmentId, page, pageSize)),
   get: (id: string) =>
     client.get<DesignationDto>(`/api/designations/${id}`).then((r) => r.data),
   create: (data: DesignationRequest) =>
@@ -299,6 +305,7 @@ export type GradePayScaleComponentRequest = Omit<GradePayScaleComponentDto, 'id'
 export const gradesApi = {
   list: (page = 1, pageSize = 100) =>
     client.get<PagedResult<GradeDto>>('/api/grades', { params: { page, pageSize } }).then((r) => r.data),
+  listAll: () => fetchAllPages((page, pageSize) => gradesApi.list(page, pageSize)),
   get: (id: string) =>
     client.get<GradeDto>(`/api/grades/${id}`).then((r) => r.data),
   create: (data: GradeRequest) =>
@@ -335,6 +342,7 @@ export interface CostCenterRequest {
 export const costCentersApi = {
   list: (companyId?: string, page = 1, pageSize = 100) =>
     client.get<PagedResult<CostCenterDto>>('/api/organization/cost-centers', { params: { companyId, page, pageSize } }).then((r) => r.data),
+  listAll: (companyId?: string) => fetchAllPages((page, pageSize) => costCentersApi.list(companyId, page, pageSize)),
   get: (id: string) =>
     client.get<CostCenterDto>(`/api/cost-centers/${id}`).then((r) => r.data),
   create: (data: CostCenterRequest) =>

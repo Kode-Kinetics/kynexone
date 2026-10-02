@@ -90,7 +90,7 @@ public class OrphanEntityRatchetTests
         "LeaveRequestDate",
 
         // ── Payroll / finance ────────────────────────────────────────────────────────────────
-        "BankTransferFile",
+        // BankTransferFile now has a real consumer: SaudiBankExportService. Remove the orphan allowance.
         "PayrollAllowance",
         "PayrollCycle",
         "PayrollException",

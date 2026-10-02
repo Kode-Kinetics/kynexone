@@ -33,11 +33,16 @@ public class EmployeeModuleTests
         db.Branches.Add(new Branch { TenantId = tenantId, Code = "DXB", NameEn = "Dubai", IsActive = true });
         await db.SaveChangesAsync();
         var controller = CreateController(db, tenantId);
-        var draftResult = await controller.CreateDraft(new EmployeeDraftRequest("Review", "Sara Ahmed", "سارة أحمد", "sara.personal@example.com", "sara@zayra.local", "+9715000000", "Female", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(-30)), "Married", "Ali Ahmed", "+9715111111", "UAE", "UAE", "People", "HR Officer", "Dubai", "Dubai HQ", null, DateTime.UtcNow.Date, "Unlimited", "G5", "HR-001", DateOnly.FromDateTime(DateTime.UtcNow.Date), DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(2)), DateOnly.FromDateTime(DateTime.UtcNow.Date.AddMonths(6)), "MONTHLY", 12000m, "Emirates NBD", "AE000000", "WPS-1", "DAY", "UAE-ANNUAL", "Zayra", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(-1)), "P123", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(5)), DateOnly.FromDateTime(DateTime.UtcNow.Date), "V123", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(2)), null, null, null, null, "784-0000", "LC-1", "VF-1", null, null, null, null, null, null), CancellationToken.None);
+        // Nationality and country are stated as "Emirati"/"AE", not the free text "UAE" this fixture
+        // used to carry: "UAE" is neither ISO-2 nor ISO-3, so it normalises to nothing and the employee
+        // would have no identifiable jurisdiction, which now refuses activation. The draft already
+        // carries the Emirates ID the UAE floor requires.
+        var draftResult = await controller.CreateDraft(new EmployeeDraftRequest("Review", "Sara Ahmed", "سارة أحمد", "sara.personal@example.com", "sara@zayra.local", "+9715000000", "Female", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(-30)), "Married", "Ali Ahmed", "+9715111111", "Emirati", "AE", "People", "HR Officer", "Dubai", "Dubai HQ", null, DateTime.UtcNow.Date, "Unlimited", "G5", "HR-001", DateOnly.FromDateTime(DateTime.UtcNow.Date), DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(2)), DateOnly.FromDateTime(DateTime.UtcNow.Date.AddMonths(6)), "MONTHLY", 12000m, "Emirates NBD", "AE000000", "WPS-1", "DAY", "UAE-ANNUAL", "Zayra", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(-1)), "P123", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(5)), DateOnly.FromDateTime(DateTime.UtcNow.Date), "V123", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(2)), null, null, null, null, "784-0000", "LC-1", "VF-1", null, null, null, null, null, null), CancellationToken.None);
         var draft = Assert.IsType<EmployeeDraftDto>(Assert.IsType<CreatedResult>(draftResult.Result).Value);
         await controller.SubmitDraft(draft.Id, CancellationToken.None);
 
-        var approval = await controller.ApproveDraft(draft.Id, CancellationToken.None);
+        // Maker-checker: the HR user who prepared the draft cannot activate it; a second one does.
+        var approval = await CreateController(db, tenantId).ApproveDraft(draft.Id, CancellationToken.None);
 
         var profile = Assert.IsType<EmployeeDetailDto>(Assert.IsType<OkObjectResult>(approval.Result).Value);
         Assert.Equal("Active", profile.Status);
@@ -244,6 +249,40 @@ public class EmployeeModuleTests
             x.RelationshipType == "SolidLine" &&
             x.IsPrimary &&
             x.IsActive)).Should().BeTrue();
+    }
+
+    /// <summary>R06 (money). The Approval Center is where a bank change is normally approved, and its applier
+    /// did not sync the payroll profile at all — WPS paid the OLD account. The sync must also be FIELD-SCOPED:
+    /// an IBAN-only approval must not copy the employee's (often stale) BankName over the profile's, and vice
+    /// versa. Nothing reaches the profile before approval, or on rejection. (From the parallel WT session.)</summary>
+    [Theory]
+    [InlineData("bankIban", "Approve")]
+    [InlineData("bankName", "Approve")]
+    [InlineData("bankIban", "Reject")]
+    [InlineData("bankName", "Reject")]
+    public async Task ApprovalCenterBankChange_ReachesPayrollProfileOnlyAfterApproval(string field, string decision)
+    {
+        await using var db = CreateDb();
+        var tenant = await SeedTenantAndEmployeeRole(db);
+        var requester = Guid.NewGuid(); var approver = Guid.NewGuid();
+        var employee = new Employee { TenantId = tenant, EmployeeCode = "BANK-JOURNEY", FullName = "Synthetic Bank Journey", Status = "Active", JoiningDate = DateTime.UtcNow.Date, BankName = "Stale display bank", BankIban = "" };
+        db.Employees.Add(employee); await db.SaveChangesAsync();
+        var profile = new EmployeePayrollProfile { TenantId = tenant, EmployeeId = employee.Id, BankName = "Authoritative Bank", Iban = "SA0380000000608010167519", SalaryCurrency = "SAR", AccountNumber = "KEEP-ACCOUNT", MolId = "KEEP-MOL", WpsEligible = false, EosbEligible = false };
+        db.EmployeePayrollProfiles.Add(profile); await db.SaveChangesAsync();
+        var value = field == "bankIban" ? "SA5380000000006080101001" : "Approved New Bank";
+        var controller = CreateController(db, tenant, requester);
+        var result = await controller.UpdateEmployee(employee.Id, new EmployeeUpdateRequest(DateOnly.FromDateTime(DateTime.UtcNow.Date), new() { [field] = System.Text.Json.JsonSerializer.SerializeToElement(value) }), CancellationToken.None);
+        Assert.IsType<AcceptedResult>(result);
+        Assert.Equal("Authoritative Bank", profile.BankName); Assert.Equal("SA0380000000608010167519", profile.Iban);
+        var approval = await db.ApprovalRequests.SingleAsync(x => x.EntityName == nameof(EmployeeChangeRequest));
+        var service = new ApprovalWorkflowService(db, new AuditService(db));
+        await service.DecideAsync(tenant, approval.Id, new Zayra.Api.Application.Approvals.ApprovalDecisionRequest(decision, "Synthetic bank regression"), new Zayra.Api.Application.Auth.RequestContext("127.0.0.1", "tests", approver, tenant, ["HR Manager"], []), CancellationToken.None);
+        db.ChangeTracker.Clear();
+        var saved = await db.EmployeePayrollProfiles.SingleAsync(p => p.TenantId == tenant && p.EmployeeId == employee.Id);
+        Assert.Equal(decision == "Approve" && field == "bankName" ? value : "Authoritative Bank", saved.BankName);
+        Assert.Equal(decision == "Approve" && field == "bankIban" ? value : "SA0380000000608010167519", saved.Iban);
+        Assert.Equal("KEEP-ACCOUNT", saved.AccountNumber); Assert.Equal("KEEP-MOL", saved.MolId);
+        Assert.Equal("SAR", saved.SalaryCurrency); Assert.False(saved.WpsEligible); Assert.False(saved.EosbEligible);
     }
 
     private static ZayraDbContext CreateDb()

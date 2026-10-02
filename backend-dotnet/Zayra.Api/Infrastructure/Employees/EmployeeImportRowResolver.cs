@@ -41,6 +41,13 @@ public sealed class ImportLookups
 public sealed class ResolvedImportRow
 {
     public Guid? CompanyId { get; set; }
+
+    /// <summary>The EMPLOYING company's own country, carried so the row builder can derive the employee's
+    /// jurisdiction without a second lookup: an explicit CountryCode column wins, otherwise this
+    /// (<see cref="Zayra.Api.Application.Common.HomeJurisdiction.DeriveEmployeeCountry"/>). A file with no
+    /// CountryCode column used to import every row with a BLANK country, which resolves an EMPTY statutory
+    /// floor — the whole file landed Active with no jurisdiction gate applied.</summary>
+    public string CompanyCountryCode { get; set; } = string.Empty;
     public Guid? BranchId { get; set; }
     public string BranchNameEn { get; set; } = string.Empty;
     public Guid? CostCenterId { get; set; }
@@ -133,8 +140,14 @@ public static class EmployeeImportRowResolver
 
     public static decimal GrossSalaryFromRow(Dictionary<string, string> row)
     {
+        // InvariantCulture, deliberately: the figures the commit path PERSISTS are parsed with
+        // InvariantCulture (EmployeesController.ParseImportSalary). Parsing the same cells here with the
+        // ambient culture made the grade-band decision (hold / review) and the stored amount disagree
+        // whenever the container's locale used a decimal comma.
         static decimal Amount(Dictionary<string, string> source, string key) =>
-            decimal.TryParse(source.GetValueOrDefault(key, string.Empty), out var value) ? value : 0m;
+            decimal.TryParse(source.GetValueOrDefault(key, string.Empty),
+                System.Globalization.NumberStyles.Number,
+                System.Globalization.CultureInfo.InvariantCulture, out var value) ? value : 0m;
         return Amount(row, "BasicSalary") + Amount(row, "HousingAllowance") + Amount(row, "TransportAllowance")
              + Amount(row, "FoodAllowance") + Amount(row, "MobileAllowance") + Amount(row, "OtherAllowance");
     }
@@ -165,6 +178,7 @@ public static class EmployeeImportRowResolver
                 : $"CompanyLegalName '{companyNameRaw}' not found and no company exists to default to — imported without a company.");
         }
         r.CompanyId = company?.Id;
+        r.CompanyCountryCode = company?.CountryCode ?? string.Empty;
 
         // ── Work email (auto-derive when blank / validate against company domain; accept-never-block) ──
         var workEmailRaw = V("WorkEmail");
@@ -209,12 +223,34 @@ public static class EmployeeImportRowResolver
             }
         }
 
-        // ── Branch: optional; unknown → null + gap + warning.
+        // ── Branch: optional, and NEVER guessed ─────────────────────────────────────────────────────
+        // A blank BranchCode used to silently inherit the company's FIRST branch — an office the file never
+        // named — and, when the company had no branches at all, that same expression returned null and left
+        // the person branch-less with NO gap and NO warning (the gap was guarded on a non-blank code). A
+        // tenant that imports before running org setup (TenantProvisioningBundle seeds zero branches) hit
+        // that second path on every row: a blank Branch column across the whole People list and nothing in
+        // the import summary explaining it. Both paths guessed, which the accept-never-block doctrine
+        // forbids — an uncertain value is flagged, never assumed. Branch is now assigned ONLY from a code
+        // the file actually supplied, and the three not-assigned outcomes are told apart:
+        //   1. code supplied, not found      → org:branch gap + warning (unchanged).
+        //   2. blank code, company HAS branches → org:branch gap + warning: a real per-row uncertainty (we
+        //      could have picked any of N), so the row lands reviewable/deep-linkable and the gap self-heals
+        //      the moment a branch is assigned. Assigning an arbitrary branch instead writes a
+        //      plausible-but-wrong location into payroll/attendance/position-eligibility scope, where
+        //      nothing downstream can tell it from a deliberate choice.
+        //   3. blank code, company has NO branches → WARNING ONLY, with its own tenant-level text. Nothing
+        //      could have been chosen here: the fix is "create the org structure", not "review this person",
+        //      so this is deliberately NOT a per-employee gap — it would mark every imported human
+        //      NeedsAttention for one setup task they cannot resolve on their own record. Same reasoning as
+        //      the cost-center warning below. The operator still sees it in the import summary.
+        // Gap types are a shared contract with the review UI / People-list deep link / self-heal map, so
+        // case 2 reuses `org:branch` and varies only its detail text — no new gap type is introduced.
         var branchCodeRaw = V("BranchCode").ToUpperInvariant();
-        Branch? branch = company is not null
-            ? (!string.IsNullOrWhiteSpace(branchCodeRaw)
-                ? lk.BranchesByCode.GetValueOrDefault((company.Id, branchCodeRaw))
-                : (lk.BranchesByCompany.GetValueOrDefault(company.Id)?.FirstOrDefault()))
+        var companyBranchCount = company is not null
+            ? (lk.BranchesByCompany.GetValueOrDefault(company.Id)?.Count ?? 0)
+            : 0;
+        Branch? branch = company is not null && !string.IsNullOrWhiteSpace(branchCodeRaw)
+            ? lk.BranchesByCode.GetValueOrDefault((company.Id, branchCodeRaw))
             : null;
         if (!string.IsNullOrWhiteSpace(branchCodeRaw) && branch is null)
         {
@@ -226,6 +262,20 @@ public static class EmployeeImportRowResolver
             r.Warnings.Add(company is null
                 ? $"BranchCode '{branchCodeRaw}' supplied but no company could be resolved — imported without a branch."
                 : $"BranchCode '{branchCodeRaw}' not found for company '{company.LegalNameEn}' — imported without a branch.");
+        }
+        else if (string.IsNullOrWhiteSpace(branchCodeRaw) && company is not null && companyBranchCount > 0)
+        {
+            // Case 2 — the file did not say which of the company's branches this person works at.
+            // RawValue stays null: there is no branch code to create, only one to choose.
+            r.Gaps.Add(new ImportGap("org:branch", "org",
+                $"No BranchCode supplied — branch left unassigned ('{company.LegalNameEn}' has {companyBranchCount} branch(es) to choose from).",
+                null));
+            r.Warnings.Add($"No BranchCode supplied for company '{company.LegalNameEn}' — imported without a branch (a branch is no longer assumed); assign the correct branch.");
+        }
+        else if (string.IsNullOrWhiteSpace(branchCodeRaw) && company is not null)
+        {
+            // Case 3 — tenant-level: the company has no branches yet.
+            r.Warnings.Add($"Company '{company.LegalNameEn}' has no branches yet — everyone imported without a branch. Create the company's branches in Organization setup, then assign them.");
         }
         r.BranchId = branch?.Id;
         r.BranchNameEn = branch?.NameEn ?? string.Empty;

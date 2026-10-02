@@ -2,7 +2,9 @@ using System.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Email;
 using Zayra.Api.Infrastructure.Notifications;
+using Zayra.Api.Infrastructure.Reports;
 using Zayra.Api.Infrastructure.Scope;
 using Zayra.Api.Models;
 
@@ -41,7 +43,7 @@ public static class ProductionReadinessEvidence
                 dbProbe,
                 RedisDependency(config),
                 QiwaDependency(config),
-                await SmtpDependencyAsync(db, ct),
+                dbProbe.Healthy ? await SmtpDependencyAsync(db, config, ct) : SmtpNotEvaluated(config),
                 workers),
             tenantCounts?.Total ?? 0,
             tenantCounts?.Active ?? 0,
@@ -186,7 +188,7 @@ public static class ProductionReadinessEvidence
             "ok",
             DateTime.UtcNow,
             new TelemetryWindow("24h", since),
-            new DependencyModes(RedisDependency(config), QiwaDependency(config), await SmtpDependencyAsync(db, ct), workers),
+            new DependencyModes(RedisDependency(config), QiwaDependency(config), await SmtpDependencyAsync(db, config, ct), workers),
             new GovernanceTelemetry(controlledOverrides24h, latestControlledOverrideAtUtc),
             new ReportingTelemetry(
                 reportRuns.Count,
@@ -205,24 +207,44 @@ public static class ProductionReadinessEvidence
             queues);
     }
 
-    private static async Task<QueueHealthEvidence> BuildQueueHealthAsync(ZayraDbContext db, CancellationToken ct)
+    /// <summary>
+    /// Queue and delivery counters, shared by /health/ready, /health/telemetry and the platform
+    /// System Health card so the three can never disagree.
+    /// </summary>
+    public static async Task<QueueHealthEvidence> BuildQueueHealthAsync(ZayraDbContext db, CancellationToken ct)
     {
         // Aggregate operations evidence only: no tenant IDs, recipients, employees, report names,
         // provider messages, or other customer payloads are returned by readiness/telemetry.
         using var systemScope = SystemScopeContext.Begin();
         var now = DateTime.UtcNow;
-        // Readiness is polled continuously by the load balancer. Keep the seven independent queue
-        // counters in one database command so the health probe does not compete with user requests.
+        var since = now.AddHours(-24);
+        var maxReportAttempts = ReportSchedulePolicy.MaxDeliveryAttempts;
+        // An approved employee change still waiting a full day after its effective date — in every
+        // timezone, since no zone is a day behind UTC-yesterday — means the effective-change scheduler or
+        // job is not running (or a bank change is deferred behind a payroll run with no payment batch).
+        var employeeChangeOverdueBefore = DateOnly.FromDateTime(now).AddDays(-1);
+        // Readiness is polled continuously by the load balancer. Keep the independent queue counters in
+        // one database command so the health probe does not compete with user requests.
         var counts = await db.Tenants.AsNoTracking()
             .Select(_ => new
             {
                 QiwaPending = db.QiwaSyncLogs.Count(x => x.Status == QiwaSyncLogStatuses.Pending || x.Status == QiwaSyncLogStatuses.Processing),
                 QiwaDeadLetter = db.QiwaSyncLogs.Count(x => x.Status == QiwaSyncLogStatuses.DeadLetter),
                 NotificationsPending = db.NotificationDeliveries.Count(x => x.Outcome == DeliveryOutcomes.Queued || x.Outcome == DeliveryOutcomes.Sending),
+                // Terminal failures that are NOT dead letters: refused on the first try, or unconfirmed.
                 NotificationsFailed = db.NotificationDeliveries.Count(x => x.Outcome == DeliveryOutcomes.Failed || x.Outcome == DeliveryOutcomes.Unknown),
+                NotificationsDeadLetter = db.NotificationDeliveries.Count(x => x.Outcome == DeliveryOutcomes.DeadLetter),
+                NotificationsNotConfigured = db.NotificationDeliveries.Count(x => x.Outcome == DeliveryOutcomes.NotConfigured),
+                NotificationsRetrying = db.NotificationDeliveries.Count(x => x.Outcome == DeliveryOutcomes.Queued && x.AttemptCount > 0),
+                NotificationsCaptured = db.NotificationDeliveries.Count(x => x.Outcome == DeliveryOutcomes.Captured),
                 ReportsDue = db.ReportSchedules.Count(x => x.IsActive && !x.IsDeleted && (x.NextRunAtUtc == null || x.NextRunAtUtc <= now)),
-                ReportsFailed = db.ReportExecutionLogs.Count(x => x.Status == "Failed" && x.CreatedAtUtc >= now.AddHours(-24)),
+                ReportsFailed = db.ReportExecutionLogs.Count(x => x.Status == ReportSchedulePolicy.StatusFailed && x.CreatedAtUtc >= since),
+                ReportsNotConfigured = db.ReportExecutionLogs.Count(x => x.Status == ReportSchedulePolicy.StatusNotConfigured && x.CreatedAtUtc >= since),
+                ReportsDeadLetter = db.ReportSchedules.Count(x => x.IsActive && !x.IsDeleted && x.ConsecutiveFailureCount >= maxReportAttempts),
                 ComplianceDue = db.ComplianceReminders.Count(x => x.Status == "Pending" && x.ScheduledAtUtc != null && x.ScheduledAtUtc <= now),
+                EmployeeChangesOverdue = db.EmployeeChangeRequests.Count(x =>
+                    x.Status == Zayra.Api.Application.Employees.EmployeeChangeStatuses.ApprovedPendingEffectiveDate
+                    && x.AppliedAtUtc == null && x.EffectiveDate < employeeChangeOverdueBefore),
             })
             .FirstOrDefaultAsync(ct);
 
@@ -234,7 +256,14 @@ public static class ProductionReadinessEvidence
             counts?.NotificationsFailed ?? 0,
             counts?.ReportsDue ?? 0,
             counts?.ReportsFailed ?? 0,
-            counts?.ComplianceDue ?? 0);
+            counts?.ComplianceDue ?? 0,
+            counts?.EmployeeChangesOverdue ?? 0,
+            counts?.NotificationsDeadLetter ?? 0,
+            counts?.NotificationsNotConfigured ?? 0,
+            counts?.NotificationsRetrying ?? 0,
+            counts?.NotificationsCaptured ?? 0,
+            counts?.ReportsNotConfigured ?? 0,
+            counts?.ReportsDeadLetter ?? 0);
     }
 
     private static async Task<DependencyProbe> ProbeDatabaseAsync(ZayraDbContext db, CancellationToken ct)
@@ -266,18 +295,65 @@ public static class ProductionReadinessEvidence
         return new DependencyMode(configured ? "configured" : "fallback_memory", configured);
     }
 
-    private static DependencyMode QiwaDependency(IConfiguration config)
+    /// <summary>The label every surface uses for the sandbox adapter's results. One string, one place.</summary>
+    public const string QiwaSimulatedLabel = "Simulated (sandbox)";
+
+    public static DependencyMode QiwaDependency(IConfiguration config)
     {
         var live = (config["QIWA_USE_LIVE_ADAPTER"] ?? Environment.GetEnvironmentVariable("QIWA_USE_LIVE_ADAPTER"))
             ?.Equals("true", StringComparison.OrdinalIgnoreCase) == true;
-        return new DependencyMode(live ? "live_adapter" : "sandbox_adapter", live);
+        // F09: "sandbox_adapter / configured:false" read like a missing setting, not like a
+        // simulator producing results. It now says what it is.
+        return live
+            ? new DependencyMode("live_adapter", true)
+            : new DependencyMode("sandbox_adapter", false, Simulated: true,
+                Detail: $"{QiwaSimulatedLabel}: this server runs the Qiwa simulator. No request reaches Qiwa and "
+                        + "nothing is filed with MHRSD. Set QIWA_USE_LIVE_ADAPTER=true with live credentials to file for real.");
     }
 
-    private static async Task<DependencyMode> SmtpDependencyAsync(ZayraDbContext db, CancellationToken ct)
+    /// <summary>
+    /// What will actually happen to an email sent from this server right now. F09: this used to ask
+    /// only "does ANY tenant have an Smtp.Host row?", so it reported the platform relay every tenant
+    /// falls back to as not_configured, and one tenant's relay as if it served everyone.
+    /// </summary>
+    public static async Task<DependencyMode> SmtpDependencyAsync(ZayraDbContext db, IConfiguration config, CancellationToken ct)
     {
-        var configured = await db.SystemSettings.AsNoTracking()
-            .AnyAsync(x => x.Category == "Email" && x.SettingKey == "Smtp.Host" && x.SettingValue != "", ct);
-        return new DependencyMode(configured ? "configured" : "not_configured", configured);
+        var policy = EmailTransportPolicy.From(config);
+        if (policy.IsCapture)
+            return new DependencyMode("capture", true, Simulated: true, Detail: policy.Describe());
+
+        var platformRelay = await PlatformSmtpConfig.HasUsableRelayAsync(db, config, ct);
+        int tenantRelays;
+        using (SystemScopeContext.Begin())
+        {
+            // Aggregate only: a count of workspaces with their own relay, never which ones.
+            tenantRelays = await db.SystemSettings.AsNoTracking()
+                .Where(x => x.Category == "Email" && x.SettingKey == "Smtp.Host" && x.SettingValue != "")
+                .Select(x => x.TenantId)
+                .Distinct()
+                .CountAsync(ct);
+        }
+
+        if (platformRelay)
+            return new DependencyMode(policy.HasAllowList ? "permitted_test_delivery" : "configured", true,
+                Detail: policy.HasAllowList
+                    ? policy.Describe()
+                    : $"Platform relay configured; every workspace can send. {tenantRelays} workspace(s) use their own relay.");
+
+        return tenantRelays > 0
+            ? new DependencyMode("tenant_relays_only", true,
+                Detail: $"No platform relay. {tenantRelays} workspace(s) have their own relay; email from every other "
+                        + "workspace ends NotConfigured and is not sent.")
+            : new DependencyMode("not_configured", false,
+                Detail: "No SMTP relay anywhere: every email ends NotConfigured and nothing is sent.");
+    }
+
+    private static DependencyMode SmtpNotEvaluated(IConfiguration config)
+    {
+        var policy = EmailTransportPolicy.From(config);
+        return policy.IsCapture
+            ? new DependencyMode("capture", true, Simulated: true, Detail: policy.Describe())
+            : new DependencyMode("not_evaluated", false, Detail: "The database is unreachable, so relay settings were not read.");
     }
 
     private static double FailureRate(int total, int failed) =>
@@ -309,7 +385,13 @@ public sealed record ReadinessDependencies(
     WorkerFleetReadiness Workers);
 
 public sealed record DependencyProbe(string Status, bool Healthy, long LatencyMs, string? Error);
-public sealed record DependencyMode(string Mode, bool Configured);
+
+/// <summary>
+/// How a dependency is wired. <paramref name="Simulated"/> is true when results are produced
+/// without reaching the real service (the Qiwa sandbox, email capture mode): such results must
+/// never be read as real acknowledgements. <paramref name="Detail"/> says so in one sentence.
+/// </summary>
+public sealed record DependencyMode(string Mode, bool Configured, bool Simulated = false, string? Detail = null);
 
 public sealed record TelemetryEvidence(
     string Status,
@@ -352,6 +434,12 @@ public sealed record WorkerFleetReadiness(
 
 public sealed record WorkerReadiness(string Name, string Status, DateTime? LastSucceededAtUtc, DateTime? UpdatedAtUtc);
 
+/// <summary>
+/// Queue counters. F09 added the six trailing fields: a delivery that gave up after its retries
+/// (dead letter), one that was never attempted because nothing is configured, one waiting on a
+/// retry, one kept by test capture mode, and the scheduled-report equivalents. NotificationsFailed
+/// stays "terminal failure that is not a dead letter" so no row is counted twice.
+/// </summary>
 public sealed record QueueHealthEvidence(
     bool Available,
     int QiwaQueued,
@@ -360,7 +448,17 @@ public sealed record QueueHealthEvidence(
     int NotificationsFailed,
     int ReportsDue,
     int ReportsFailed24h,
-    int ComplianceRemindersDue)
+    int ComplianceRemindersDue,
+    // Approved employee changes more than a day past their effective date and still not applied.
+    // Informational (never gates readiness): non-zero means the effective-change job is not running, or a
+    // bank change is deferred behind a payroll run that has no payment batch yet.
+    int EmployeeChangesOverdue = 0,
+    int NotificationsDeadLetter = 0,
+    int NotificationsNotConfigured = 0,
+    int NotificationsRetrying = 0,
+    int NotificationsCaptured = 0,
+    int ReportsNotConfigured24h = 0,
+    int ReportsDeadLetter = 0)
 {
     public static readonly QueueHealthEvidence Unavailable = new(false, 0, 0, 0, 0, 0, 0, 0);
 }

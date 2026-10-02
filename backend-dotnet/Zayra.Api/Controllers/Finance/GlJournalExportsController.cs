@@ -279,6 +279,7 @@ public class GlJournalExportsController : ControllerBase
         // caller read or re-confirm exactly the rows the flag exists to restrict — via the artifact
         // instead of the query. Re-checking here closes that indirect route.
         if (UnattributedScopeError(export.IncludeUnattributed) is { } unattributedErr) return unattributedErr;
+        if (await ExporterRefusalAsync(export, "confirm", ct) is { } makerChecker) return makerChecker;
 
         var reference = (req.ErpDocumentNumber ?? string.Empty).Trim();
         if (reference.Length == 0)
@@ -388,6 +389,7 @@ public class GlJournalExportsController : ControllerBase
         // caller read or re-confirm exactly the rows the flag exists to restrict — via the artifact
         // instead of the query. Re-checking here closes that indirect route.
         if (UnattributedScopeError(export.IncludeUnattributed) is { } unattributedErr) return unattributedErr;
+        if (await ExporterRefusalAsync(export, "reject", ct) is { } makerChecker) return makerChecker;
 
         var reason = (req.Reason ?? string.Empty).Trim();
         if (reason.Length == 0)
@@ -574,13 +576,65 @@ public class GlJournalExportsController : ControllerBase
     private bool HasPermission(string permission) =>
         User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
 
-    // Permission keys are NOT minted by this pod. Reads reuse finance.gl.read; producing an artifact and
-    // attesting an ERP import reuse finance.gl.manage. finance.gl.export / finance.erp.confirm are
-    // recognised if the tenant defines them, so real segregation of duties (the person who exports is not
-    // the person who attests the ERP accepted it) can be turned on without a code change.
+    /// <summary>
+    /// SEGREGATION OF DUTIES. Producing the journal and attesting that the client's ERP accepted it are
+    /// held by different keys, so the person who exports is not, by default, the person who says it was
+    /// posted:
+    /// <list type="bullet">
+    /// <item>read — <c>finance.gl.read</c> (or <c>finance.gl.manage</c>);</item>
+    /// <item>export (maker) — <c>finance.gl.manage</c>: whoever maintains the GL accounts and mappings the
+    /// journal is built from produces the file (Payroll Manager);</item>
+    /// <item>confirm / reject the ERP import (checker) — <see cref="ErpConfirmPermission"/> ONLY
+    /// (Finance Approver). <c>finance.gl.manage</c> no longer satisfies it.</item>
+    /// </list>
+    /// <para>This used to read <c>finance.gl.export || finance.gl.manage</c> and
+    /// <c>finance.erp.confirm || finance.gl.manage</c>, on the stated assumption that a tenant could "define"
+    /// the two narrower keys to turn segregation on. It could not: the catalog is global and seeded, and
+    /// neither key was in it, so both collapsed to <c>finance.gl.manage</c> and the maker could always
+    /// attest their own export. <c>finance.gl.export</c> is dropped (nothing distinguishes it from
+    /// <c>finance.gl.manage</c> in this product); <c>finance.erp.confirm</c> is now a catalog key.</para>
+    /// </summary>
     private bool CanRead() => HasPermission("finance.gl.read") || HasPermission("finance.gl.manage");
-    private bool CanExport() => HasPermission("finance.gl.export") || HasPermission("finance.gl.manage");
-    private bool CanConfirm() => HasPermission("finance.erp.confirm") || HasPermission("finance.gl.manage");
+    private bool CanExport() => HasPermission("finance.gl.manage");
+    private bool CanConfirm() => HasPermission(ErpConfirmPermission);
+
+    /// <summary>Confirm or reject that the client's ERP imported a journal export — the checker key.</summary>
+    public const string ErpConfirmPermission = "finance.erp.confirm";
+
+    /// <summary>
+    /// MAKER / CHECKER BY IDENTITY. The keys above keep the seeded maker and checker roles apart, but Admin
+    /// holds both, and a tenant can grant one role both. So the person who EXPORTED a journal may not confirm
+    /// or reject its ERP posting, whatever keys they hold: that attestation is the second pair of eyes on the
+    /// file they produced. The same rule, code and wording as the settlement approve/pay checks.
+    ///
+    /// <para>A caller with no user id cannot be checked against the exporter, so they are refused outright
+    /// (as a settlement approval with no user id is). The refusal is audited; nothing else is written.</para>
+    /// </summary>
+    private async Task<IActionResult?> ExporterRefusalAsync(GlJournalExport export, string step, CancellationToken ct)
+    {
+        if (this.GetUserId() is not Guid actorId) return Forbid();
+        if (export.ExportedByUserId != actorId) return null;
+
+        WriteAudit($"finance.gl.journal_export.erp_{step}_refused", "GlJournalExport", export.Id.ToString(), export.CompanyId, new
+        {
+            error = "segregation_of_duties",
+            exportedByUserId = export.ExportedByUserId,
+            exportedByName = export.ExportedByName,
+            export.FileHash,
+        });
+        await _db.SaveChangesAsync(ct);
+
+        return Conflict(new
+        {
+            error = "segregation_of_duties",
+            message = step == "confirm"
+                ? "You exported this journal, so you cannot also confirm that the ERP posted it. A different user " +
+                  "with ERP confirmation rights must confirm it."
+                : "You exported this journal, so you cannot also record that the ERP rejected it. A different user " +
+                  "with ERP confirmation rights must record the rejection.",
+            exportId = export.Id,
+        });
+    }
 
     private string UserName() =>
         User.FindFirst(System.Security.Claims.ClaimTypes.Name)?.Value ?? "Unknown";

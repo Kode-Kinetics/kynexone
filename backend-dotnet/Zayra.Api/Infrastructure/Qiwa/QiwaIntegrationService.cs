@@ -438,11 +438,7 @@ public sealed class QiwaIntegrationService : IQiwaIntegrationService
             .CountAsync(l => l.TenantId == tenantId &&
                              (l.Status == QiwaSyncLogStatuses.Failed || l.Status == QiwaSyncLogStatuses.DeadLetter), ct);
 
-        var lastSuccess = await _db.QiwaSyncLogs
-            .Where(l => l.TenantId == tenantId && l.Status == QiwaSyncLogStatuses.Success)
-            .OrderByDescending(l => l.CompletedAtUtc)
-            .Select(l => l.CompletedAtUtc)
-            .FirstOrDefaultAsync(ct);
+        var (lastFiled, lastSimulated) = await LastRunsAsync(_db, tenantId, ct);
 
         return new QiwaComplianceSummary(
             connection?.Status ?? "NotConfigured",
@@ -450,6 +446,34 @@ public sealed class QiwaIntegrationService : IQiwaIntegrationService
             readiness.ReadinessPercent,
             readiness.BlockedFromSync,
             failedCount,
-            lastSuccess);
+            lastFiled,
+            lastSimulated);
+    }
+
+    /// <summary>
+    /// F09 — the last REAL filing and the last simulator run, kept apart. "Last successful sync"
+    /// used to be the newest "Success" row, which under the sandbox adapter was a simulation: the
+    /// dashboard showed a sync date for a workforce that had never been filed with Qiwa. Pre-F09
+    /// rows are recognised by the simulator's envelope in the stored response.
+    /// </summary>
+    public static async Task<(DateTime? LastFiled, DateTime? LastSimulated)> LastRunsAsync(
+        ZayraDbContext db, Guid tenantId, CancellationToken ct)
+    {
+        var marker = QiwaSyncLogStatuses.LegacySimulationMarker;
+        var lastFiled = await db.QiwaSyncLogs.AsNoTracking()
+            .Where(l => l.TenantId == tenantId && l.Status == QiwaSyncLogStatuses.Success
+                        && (l.ResponsePayloadJson == null || !l.ResponsePayloadJson.Contains(marker)))
+            .OrderByDescending(l => l.CompletedAtUtc)
+            .Select(l => l.CompletedAtUtc)
+            .FirstOrDefaultAsync(ct);
+        var lastSimulated = await db.QiwaSyncLogs.AsNoTracking()
+            .Where(l => l.TenantId == tenantId
+                        && (l.Status == QiwaSyncLogStatuses.Simulated
+                            || (l.Status == QiwaSyncLogStatuses.Success && l.ResponsePayloadJson != null
+                                && l.ResponsePayloadJson.Contains(marker))))
+            .OrderByDescending(l => l.CompletedAtUtc)
+            .Select(l => l.CompletedAtUtc)
+            .FirstOrDefaultAsync(ct);
+        return (lastFiled, lastSimulated);
     }
 }

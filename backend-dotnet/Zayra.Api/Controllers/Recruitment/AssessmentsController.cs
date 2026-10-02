@@ -104,6 +104,8 @@ public class AssessmentsController : ControllerBase
         [FromQuery] int pageSize = 20,
         CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tid = GetTenantId();
         var q = _db.CandidateAssessments.Where(x => x.TenantId == tid);
 
@@ -180,12 +182,22 @@ public class AssessmentsController : ControllerBase
             .FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
         if (assessment == null) return NotFound();
 
+        // Two scales. A template with a question bank has TotalMarks > 0 and HR enters raw marks.
+        // A template without one (TotalMarks 0, or null on older rows) is administered outside the
+        // product and HR enters the percentage. The questionless case used to score 0%, so every
+        // such assessment failed whatever was entered.
+        var totalMarks = assessment.TotalMarks ?? 0;
+        if (totalMarks <= 0 && req.ScoreObtained is < 0 or > 100)
+            return BadRequest(new { message = "Score must be a percentage between 0 and 100 for an assessment without a question bank." });
+        if (totalMarks > 0 && (req.ScoreObtained < 0 || req.ScoreObtained > totalMarks))
+            return BadRequest(new { message = $"Score must be between 0 and {totalMarks} marks." });
+
         assessment.Status = "Completed";
         assessment.CompletedAtUtc = DateTime.UtcNow;
         assessment.ScoreObtained = req.ScoreObtained;
-        assessment.ScorePercentage = assessment.TotalMarks > 0
-            ? (decimal)req.ScoreObtained / assessment.TotalMarks * 100
-            : 0;
+        assessment.ScorePercentage = totalMarks > 0
+            ? (decimal)req.ScoreObtained / totalMarks * 100
+            : req.ScoreObtained;
         assessment.Passed = assessment.ScorePercentage >= (await _db.AssessmentTemplates
             .Where(t => t.Id == assessment.TemplateId).Select(t => (decimal)t.PassingScore).FirstOrDefaultAsync(ct));
 

@@ -83,7 +83,11 @@ public class SetupSettingsController : ControllerBase
     public async Task<IActionResult> GetSystemSettings([FromQuery] string? category, CancellationToken ct)
     {
         var tid = GetTenantId();
-        var q = _db.SystemSettings.AsNoTracking().Where(x => x.TenantId == tid);
+        // Bank-export settings are company-scoped financial facts. They may only be read through
+        // SaudiBankExportsController, which applies payroll permissions AND legal-entity scope.
+        var q = _db.SystemSettings.AsNoTracking().Where(x => x.TenantId == tid
+            && x.Category != Zayra.Api.Infrastructure.Payroll.SaudiBankExports.SaudiBankExportService.SettingsCategory
+            && !x.SettingKey.StartsWith("saudi-bank-export.company."));
         if (!string.IsNullOrEmpty(category)) q = q.Where(x => x.Category == category);
         var settings = await q.OrderBy(x => x.Category).ThenBy(x => x.SettingKey).ToListAsync(ct);
         foreach (var s in settings)
@@ -101,6 +105,10 @@ public class SetupSettingsController : ControllerBase
     {
         var tid = GetTenantId();
         var uid = GetUserId();
+        // Generic settings writes must not bypass the payroll-export company and permission gates.
+        if (string.Equals(req.Category, Zayra.Api.Infrastructure.Payroll.SaudiBankExports.SaudiBankExportService.SettingsCategory, StringComparison.OrdinalIgnoreCase)
+            || req.SettingKey.StartsWith("saudi-bank-export.company.", StringComparison.OrdinalIgnoreCase))
+            return Forbid();
 
         // POD-D5: notification-provider credentials are encrypted at rest with IDataProtection —
         // the same prior art QiwaIntegrationService uses. SystemSetting.IsEncrypted is decorative
@@ -162,11 +170,14 @@ public class SetupSettingsController : ControllerBase
 
         try
         {
-            await email.SendAsync(GetTenantId(), to, "KynexOne Admin", "KynexOne — SMTP test",
+            var delivery = await email.DeliverAsync(GetTenantId(), to, "KynexOne Admin", "KynexOne — SMTP test",
                 "<p>This is a test message confirming your KynexOne SMTP settings are working.</p>"
                 + "<p>If you received this, outbound email (payslips, alerts, letters) is configured correctly.</p>",
                 null, ct);
-            return Ok(new { ok = true, message = $"Test email sent to {to}. Check that inbox to confirm delivery." });
+            // F09: only a relay's acceptance is a passed test; a captured message proves nothing.
+            return delivery.ReachedARelay
+                ? Ok(new { ok = true, message = $"Test email accepted by the mail server for {to}. Check that inbox to confirm it arrived." })
+                : Ok(new { ok = false, captured = delivery.Status == EmailDeliveryStatus.Captured, message = delivery.Detail });
         }
         catch (Exception ex)
         {
@@ -425,6 +436,8 @@ public class SetupSettingsController : ControllerBase
         [FromQuery] string? entityType, [FromQuery] DateTime? from, [FromQuery] DateTime? to,
         [FromQuery] int page = 1, [FromQuery] int pageSize = 50, CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tid = GetTenantId();
         var q = _db.AdminAuditLogs.Where(x => x.TenantId == tid);
         if (!string.IsNullOrEmpty(entityType)) q = q.Where(x => x.EntityType == entityType);

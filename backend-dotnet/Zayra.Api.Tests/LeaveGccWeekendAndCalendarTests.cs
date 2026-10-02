@@ -236,7 +236,7 @@ public class LeaveGccWeekendAndCalendarTests
         await db.SaveChangesAsync();
 
         var controller = NewController(db, tenantId);
-        var result = await controller.List(null, null, null, null, year: 2026, month: 11, CancellationToken.None);
+        var result = await controller.List(null, null, null, null, year: 2026, month: 11, ct: CancellationToken.None);
 
         var names = NamesOf(result);
         names.Should().Contain("Last Day", "30 November is a day of November");
@@ -267,7 +267,7 @@ public class LeaveGccWeekendAndCalendarTests
         db.LeaveRequests.Add(NewApprovedRequest(tenantId, leaveType.Id, 1, "Last Day", lastOfMonth));
         await db.SaveChangesAsync();
 
-        var result = await NewController(db, tenantId).List(null, null, null, null, null, null, CancellationToken.None);
+        var result = await NewController(db, tenantId).List(null, null, null, null, null, null, ct: CancellationToken.None);
 
         NamesOf(result).Should().Contain("Last Day",
             "the last day of the tenant's own month is inside the tenant's own month");

@@ -40,12 +40,78 @@ public class ReportsController : ControllerBase
         Guid.TryParse(User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var id) ? id : null;
     private string GetUserName() => User.FindFirst(System.Security.Claims.ClaimTypes.Name)?.Value ?? "Unknown";
 
+    // ── Data authorization (F10) ──────────────────────────────────────────────
+    //
+    // reports.read / reports.export / reports.schedule authorize the reporting capability. What a report
+    // SHOWS is authorized separately, by ReportAccessPolicy, against the permission that guards the same
+    // data in its own module — payroll.read for the payroll register, loans.read for the loan book. A
+    // refusal is a 403 that says why, never an empty 200 that reads as "there is nothing here".
+
+    /// <summary>
+    /// May the caller see or manage an item (saved report, schedule) for this key? A key the policy does
+    /// not know exposes no data — it can no longer be run — so its rows stay visible and deletable.
+    /// </summary>
+    private bool MayTouchReport(string reportKey) =>
+        !ReportAccessPolicy.IsKnown(reportKey) || ReportAccessPolicy.CanAccess(reportKey, HasPermission, User.IsInRole);
+
+    private IActionResult? DataAccessDenial(string reportKey) =>
+        MayTouchReport(reportKey)
+            ? null
+            : StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                error = "report_data_forbidden",
+                message = ReportAccessPolicy.DenialMessage(reportKey),
+                reportKey,
+                requiredPermissions = ReportAccessPolicy.AcceptedPermissions(reportKey),
+                acceptedRoles = ReportAccessPolicy.AcceptedRoles(reportKey),
+            });
+
+    private ObjectResult ScopeForbidden(string reportKey, string message) =>
+        StatusCode(StatusCodes.Status403Forbidden, new { error = "report_scope_forbidden", message, reportKey });
+
+    /// <summary>A period filter that is present must be a month; it is never silently replaced by "latest".</summary>
+    private IActionResult? InvalidPeriod(ReportFilters? filters) =>
+        ReportPeriod.TryParse(filters?.Period, out _)
+            ? null
+            : BadRequest(new
+            {
+                code = "invalid_period",
+                message = $"Period '{filters!.Period}' is not a month. Use the form YYYY-MM, for example 2026-09.",
+            });
+
+    /// <summary>
+    /// The caller's slice of the tenant for one report: their employee scope, their companies, and whether
+    /// identity numbers are shown. Refuses — with a reason — a report that cannot be cut down to that slice.
+    /// </summary>
+    private async Task<(ReportDataScope? Scope, IActionResult? Denial)> ResolveReportScopeAsync(
+        string reportKey, Guid tid, CancellationToken ct)
+    {
+        var entity = this.GetRequestScope();
+        if (entity.SeesNothing)
+            return (null, ScopeForbidden(reportKey,
+                "Your account has no access to any company, so there is no data this report could show. " +
+                "Ask an administrator to grant you access to a company."));
+
+        var groupLevel = entity.IsGroupLevel || entity.IsSystemScope;
+        var dataScope = await _scopeService.ResolveAsync(User, tid, ct);
+        var denial = ReportAccessPolicy.ScopeDenial(
+            reportKey, organisationLevel: dataScope.Level == DataScopeLevel.Organization, groupLevel);
+        if (denial is not null) return (null, ScopeForbidden(reportKey, denial));
+
+        return (new ReportDataScope(
+            dataScope.IsUnrestricted ? null : dataScope.AllowedEmployeeIds,
+            groupLevel ? null : entity.AuthorizedCompanyIds,
+            HasPermission(ReportAccessPolicy.SensitivePermission)), null);
+    }
+
     // ── Report Catalog ────────────────────────────────────────────────────────
 
     [HttpGet("catalog")]
     public IActionResult GetCatalog()
     {
         if (!HasAnyPermission("reports.read", "reports.schedule", "audit.read")) return Forbid();
+        // Only the reports whose data the caller may read: a catalog entry that 403s when clicked is a
+        // dead end, and listing it tells the caller the report exists over data they cannot see.
         var catalog = new[]
         {
             new { key = "hr.headcount", name = "Headcount Report", category = "HR", description = "Total active employees by department/branch" },
@@ -78,7 +144,9 @@ public class ReportsController : ControllerBase
             new { key = "compliance.document-compliance", name = "Document Compliance", category = "Compliance", description = "Employee document status: verified, pending, rejected, expired, and missing required docs" },
             new { key = "qiwa.readiness", name = "Qiwa Readiness", category = "Compliance", description = "Employees missing Iqama, Work Permit, National ID, or Passport required for Qiwa" },
             new { key = "compliance.saudization", name = "Saudization / Nitaqat Standing", category = "Compliance", description = "Weighted Nitaqat position per Saudi establishment: Saudi units, total units, achieved percentage, band, and hires to the next band" },
-        };
+        }
+            .Where(x => ReportAccessPolicy.CanAccess(x.key, HasPermission, User.IsInRole))
+            .ToArray();
         return Ok(catalog);
     }
 
@@ -90,11 +158,19 @@ public class ReportsController : ControllerBase
         if (!HasPermission("reports.read")) return Forbid();
         var tid = GetTenantId();
         var uid = GetUserId();
-        var scope = await _scopeService.ResolveAsync(User, tid, ct);
-        var employeeIds = scope.IsUnrestricted ? null : scope.AllowedEmployeeIds;
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
-        object? data = await ExecuteReportDataAsync(tid, req, employeeIds, ct);
+        if (!ReportAccessPolicy.IsKnown(req.ReportKey))
+        {
+            await LogReportExecution(tid, uid, req, "Failed", 0, (int)sw.ElapsedMilliseconds, $"Report '{req.ReportKey}' not found.", ct);
+            return NotFound($"Report '{req.ReportKey}' not found.");
+        }
+        if (DataAccessDenial(req.ReportKey) is { } denied) return denied;
+        if (InvalidPeriod(req.Filters) is { } badPeriod) return badPeriod;
+        var (scope, scopeDenial) = await ResolveReportScopeAsync(req.ReportKey, tid, ct);
+        if (scopeDenial is not null) return scopeDenial;
+
+        object? data = await ExecuteReportDataAsync(tid, req, scope!, ct);
 
         if (data == null)
         {
@@ -107,7 +183,13 @@ public class ReportsController : ControllerBase
 
         await LogReportExecution(tid, uid, req, "Success", rowCount, (int)sw.ElapsedMilliseconds, null, ct);
 
-        return Ok(new { reportKey = req.ReportKey, generatedAt = DateTime.UtcNow, rowCount, durationMs = sw.ElapsedMilliseconds, data });
+        return Ok(new
+        {
+            reportKey = req.ReportKey, generatedAt = DateTime.UtcNow, rowCount, durationMs = sw.ElapsedMilliseconds,
+            // Columns shown as "Restricted" for this caller, so a masked value is never mistaken for data.
+            restrictedFields = ReportAccessPolicy.RestrictedFields(req.ReportKey, scope!.CanSeeSensitive),
+            data,
+        });
     }
 
     // ── Export ────────────────────────────────────────────────────────────────
@@ -141,12 +223,21 @@ public class ReportsController : ControllerBase
 
         var tid = GetTenantId();
         var uid = GetUserId();
-        var scope = await _scopeService.ResolveAsync(User, tid, ct);
-        var employeeIds = scope.IsUnrestricted ? null : scope.AllowedEmployeeIds;
         var runRequest = new RunReportRequest(req.ReportKey, req.Filters);
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
-        var data = await ExecuteReportDataAsync(tid, runRequest, employeeIds, ct);
+        if (!ReportAccessPolicy.IsKnown(req.ReportKey))
+        {
+            await LogReportExecution(tid, uid, runRequest, "Failed", 0, (int)sw.ElapsedMilliseconds,
+                $"Report '{req.ReportKey}' not found.", ct, format);
+            return NotFound($"Report '{req.ReportKey}' not found.");
+        }
+        if (DataAccessDenial(req.ReportKey) is { } denied) return denied;
+        if (InvalidPeriod(req.Filters) is { } badPeriod) return badPeriod;
+        var (scope, scopeDenial) = await ResolveReportScopeAsync(req.ReportKey, tid, ct);
+        if (scopeDenial is not null) return scopeDenial;
+
+        var data = await ExecuteReportDataAsync(tid, runRequest, scope!, ct);
         if (data is null)
         {
             await LogReportExecution(tid, uid, runRequest, "Failed", 0, (int)sw.ElapsedMilliseconds,
@@ -169,15 +260,30 @@ public class ReportsController : ControllerBase
         // is truncated at 200 rows — so it is audited with the row count and the scope it ran
         // under, the same way the employee CSV export is.
         Response.Headers["X-Report-Row-Count"] = rowCount.ToString();
+        var restricted = ReportAccessPolicy.RestrictedFields(req.ReportKey, scope!.CanSeeSensitive);
+        if (restricted.Count > 0) Response.Headers["X-Report-Restricted-Fields"] = string.Join(",", restricted);
 
         return format == ReportExportFormats.Xlsx
             ? File(ReportWorkbookWriter.ToXlsx(tables), ReportWorkbookWriter.ContentType, $"{safeKey}-{stamp}.xlsx")
             : File(ReportTabulator.ToCsv(tables), "text/csv", $"{safeKey}-{stamp}.csv");
     }
 
+    /// <summary>
+    /// Runs one report over <paramref name="scope"/>. Shared by the interactive endpoints and the
+    /// scheduled-report worker, which has no HTTP user and therefore no ambient company filter — so every
+    /// arm restricts by the scope explicitly rather than trusting the database filter to do it.
+    /// Authorization is the CALLER's job (data permission, scope denial); this only reads.
+    /// </summary>
     internal async Task<object?> ExecuteReportDataAsync(
-        Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct) =>
-        req.ReportKey switch
+        Guid tid, RunReportRequest req, ReportDataScope scope, CancellationToken ct)
+    {
+        // A key without a policy entry has no data authorization rule, so it does not run at all.
+        if (!ReportAccessPolicy.IsKnown(req.ReportKey)) return null;
+        if (!ReportPeriod.TryParse(req.Filters?.Period, out _))
+            throw new InvalidOperationException(
+                $"Period '{req.Filters!.Period}' is not a month. Use the form YYYY-MM, for example 2026-09.");
+        var employeeIds = scope.EmployeeIds;
+        return req.ReportKey switch
         {
             "hr.headcount" => await RunHrHeadcount(tid, req, employeeIds, ct),
             "hr.new-joiners" => await RunNewJoiners(tid, req, employeeIds, ct),
@@ -194,23 +300,28 @@ public class ReportsController : ControllerBase
             "leave.pending" => await RunPendingLeave(tid, employeeIds, ct),
             "overtime.requests" => await RunOvertimeRequests(tid, req, employeeIds, ct),
             "overtime.approved" => await RunApprovedOvertime(tid, req, employeeIds, ct),
-            "payroll.register" => await RunPayrollRegister(tid, req, employeeIds, ct),
-            "payroll.summary" => await RunPayrollSummary(tid, req, employeeIds, ct),
-            "payroll.slips" => await RunPayrollSlips(tid, req, employeeIds, ct),
-            "recruitment.pipeline" => await RunRecruitmentPipeline(tid, ct),
-            "recruitment.time-to-hire" => await RunRecruitmentTimeToHire(tid, req, ct),
-            "compliance.visa-expiry" => await RunVisaExpiry(tid, req, employeeIds, ct),
-            "compliance.passport-expiry" => await RunPassportExpiry(tid, req, employeeIds, ct),
-            "compliance.contract-expiry" => await RunContractExpiry(tid, req, employeeIds, ct),
+            "payroll.register" => await RunPayrollRegister(tid, req, scope, ct),
+            "payroll.summary" => await RunPayrollSummary(tid, req, scope, ct),
+            "payroll.slips" => await RunPayrollSlips(tid, req, scope, ct),
+            "recruitment.pipeline" => await RunRecruitmentPipeline(tid, scope, ct),
+            "recruitment.time-to-hire" => await RunRecruitmentTimeToHire(tid, req, scope, ct),
+            "compliance.visa-expiry" => await RunVisaExpiry(tid, req, scope, ct),
+            "compliance.passport-expiry" => await RunPassportExpiry(tid, req, scope, ct),
+            "compliance.contract-expiry" => await RunContractExpiry(tid, req, scope, ct),
             "finance.loan-balance" => await RunLoanBalance(tid, employeeIds, ct),
             "finance.advance-report" => await RunAdvanceReport(tid, employeeIds, ct),
-            "finance.bonus-payout" => await RunBonusPayout(tid, req, ct),
+            // Group-only by policy (a batch has no legal entity). Callers refuse a company-scoped request
+            // with a reason first; this is the executor failing closed on its own should one not.
+            "finance.bonus-payout" => scope.CompanyIds is null
+                ? await RunBonusPayout(tid, req, ct)
+                : throw new UnauthorizedAccessException(ReportAccessPolicy.ScopeDenial(req.ReportKey, true, false)),
             "attendance.corrections" => await RunAttendanceCorrections(tid, req, employeeIds, ct),
             "compliance.document-compliance" => await RunDocumentCompliance(tid, req, employeeIds, ct),
             "qiwa.readiness" => await RunQiwaReadiness(tid, req, employeeIds, ct),
-            "compliance.saudization" => await RunSaudizationStanding(tid, ct),
+            "compliance.saudization" => await RunSaudizationStanding(tid, scope, ct),
             _ => null,
         };
+    }
 
     // ── Saudization / Nitaqat ─────────────────────────────────────────────────
 
@@ -221,11 +332,15 @@ public class ReportsController : ControllerBase
     /// omits the establishments it could not compute is the next version of that
     /// problem.
     /// </summary>
-    private async Task<object> RunSaudizationStanding(Guid tid, CancellationToken ct)
+    private async Task<object> RunSaudizationStanding(Guid tid, ReportDataScope scope, CancellationToken ct)
     {
-        var companies = await _db.Companies
+        // Company is tenant-owned with no company filter of its own, so the caller's companies are applied
+        // here: a sibling establishment's standing is not a company-scoped user's to see.
+        var companyQuery = _db.Companies
             .Where(c => c.TenantId == tid && c.IsActive && !c.IsDeleted
-                     && (c.CountryCode == "SA" || c.CountryCode == "SAU"))
+                     && (c.CountryCode == "SA" || c.CountryCode == "SAU"));
+        if (scope.CompanyIds is { } companyIds) companyQuery = companyQuery.Where(c => companyIds.Contains(c.Id));
+        var companies = await companyQuery
             .Select(c => new { c.Id, c.TradeName, c.LegalNameEn })
             .ToListAsync(ct);
 
@@ -378,12 +493,10 @@ public class ReportsController : ControllerBase
             from = DateOnly.FromDateTime(req.Filters.DateFrom.Value);
             to   = DateOnly.FromDateTime(req.Filters.DateTo.Value);
         }
-        else if (!string.IsNullOrEmpty(req.Filters?.Period)
-            && DateOnly.TryParseExact(req.Filters.Period + "-01", "yyyy-MM-dd", null,
-                System.Globalization.DateTimeStyles.None, out var parsed))
+        else if (ReportPeriod.TryParse(req.Filters?.Period, out var parsed) && parsed is { } month)
         {
-            from = parsed;
-            to   = parsed.AddMonths(1).AddDays(-1);
+            from = month;
+            to   = month.AddMonths(1).AddDays(-1);
         }
         else
         {
@@ -514,73 +627,144 @@ public class ReportsController : ControllerBase
 
     // ── Payroll Reports ───────────────────────────────────────────────────────
 
-    private async Task<object> RunPayrollRegister(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
+    private sealed record PayrollRunFacts(string RunType, string Status, string? Currency);
+
+    /// <summary>
+    /// The runs a payroll report covers (see <see cref="PayrollReporting"/>): every reportable run of ONE
+    /// pay period inside the caller's companies — the period asked for, or the latest with a run in scope —
+    /// with each run's type, status and currency.
+    ///
+    /// <para>This replaced three copies of "the latest run in the tenant", which ignored the requested
+    /// period, counted a voided run as the month's payroll, and — in a multi-company tenant — picked one
+    /// company's run arbitrarily. In the scheduled worker, which has no company filter, that was usually a
+    /// SIBLING company's run, filtered down to the owner's employees: an empty register.</para>
+    /// </summary>
+    private async Task<Dictionary<Guid, PayrollRunFacts>> PayrollRunsForPeriodAsync(
+        Guid tid, RunReportRequest req, ReportDataScope scope, CancellationToken ct)
     {
-        var run = await _db.PayrollRuns
-            .Where(x => x.TenantId == tid)
-            .OrderByDescending(x => x.Year).ThenByDescending(x => x.Month)
-            .FirstOrDefaultAsync(ct);
-        if (run == null) return new List<object>();
-        var q = _db.PayrollSlips.Where(x => x.TenantId == tid && x.RunId == run.Id);
-        if (employeeIds is not null) q = q.Where(x => employeeIds.Contains(x.EmployeeId));
-        return await q
-            .Select(x => new { x.EmployeeCode, x.EmployeeName, x.Department, x.BasicSalary, x.GrossSalary, x.Deductions, x.NetSalary, x.Status })
-            .OrderBy(x => x.Department).ThenBy(x => x.EmployeeName).ToListAsync(ct);
+        var runs = PayrollReporting.ReportableRuns(_db.PayrollRuns, tid);
+        if (scope.CompanyIds is { } companyIds)
+            runs = runs.Where(x => x.CompanyId != null && companyIds.Contains(x.CompanyId.Value));
+
+        ReportPeriod.TryParse(req.Filters?.Period, out var requested);
+        int year, month;
+        if (requested is { } asked)
+            (year, month) = (asked.Year, asked.Month);
+        else
+        {
+            var latest = await runs
+                .OrderByDescending(x => x.Year).ThenByDescending(x => x.Month)
+                .Select(x => new { x.Year, x.Month })
+                .FirstOrDefaultAsync(ct);
+            if (latest is null) return new Dictionary<Guid, PayrollRunFacts>();
+            (year, month) = (latest.Year, latest.Month);
+        }
+
+        var period = await runs.Where(x => x.Year == year && x.Month == month)
+            .Select(x => new { x.Id, x.RunType, x.Status, x.CompanyId })
+            .ToListAsync(ct);
+        var currencies = await PayrollReporting.CompanyCurrenciesAsync(_db, tid, period.Select(r => r.CompanyId), ct);
+        return period.ToDictionary(r => r.Id,
+            r => new PayrollRunFacts(r.RunType, r.Status, PayrollReporting.CurrencyOf(r.CompanyId, currencies)));
     }
 
-    private async Task<object> RunPayrollSummary(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
+    private IQueryable<PayrollSlip> SlipsOf(Guid tid, IReadOnlyCollection<Guid> runIds, ReportDataScope scope)
     {
-        var run = await _db.PayrollRuns
-            .Where(x => x.TenantId == tid)
-            .OrderByDescending(x => x.Year).ThenByDescending(x => x.Month)
-            .FirstOrDefaultAsync(ct);
-        if (run == null) return new List<object>();
-        var q = _db.PayrollSlips.Where(x => x.TenantId == tid && x.RunId == run.Id);
-        if (employeeIds is not null) q = q.Where(x => employeeIds.Contains(x.EmployeeId));
-        return await q
-            .GroupBy(x => x.Department)
-            .Select(g => new { Department = g.Key, Headcount = g.Count(), TotalGross = g.Sum(x => x.GrossSalary), TotalNet = g.Sum(x => x.NetSalary), TotalDeductions = g.Sum(x => x.Deductions) })
-            .OrderBy(x => x.Department).ToListAsync(ct);
+        var q = _db.PayrollSlips.Where(x => x.TenantId == tid && runIds.Contains(x.RunId));
+        if (scope.EmployeeIds is { } employeeIds) q = q.Where(x => employeeIds.Contains(x.EmployeeId));
+        return q;
     }
 
-    private async Task<object> RunPayrollSlips(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
+    /// <summary>
+    /// One line per payslip. An employee paid by a Regular and a Supplementary run has two lines — two
+    /// payments — so each line names its run's type and status, and its currency.
+    /// </summary>
+    private async Task<object> RunPayrollRegister(Guid tid, RunReportRequest req, ReportDataScope scope, CancellationToken ct)
     {
-        var runs = _db.PayrollRuns.Where(x => x.TenantId == tid);
-        if (!string.IsNullOrWhiteSpace(req.Filters?.Period)
-            && DateOnly.TryParseExact(req.Filters.Period + "-01", "yyyy-MM-dd", out var period))
-            runs = runs.Where(x => x.Year == period.Year && x.Month == period.Month);
-        var runId = await runs.OrderByDescending(x => x.Year).ThenByDescending(x => x.Month)
-            .Select(x => (Guid?)x.Id).FirstOrDefaultAsync(ct);
-        if (runId is null) return Array.Empty<object>();
+        var runs = await PayrollRunsForPeriodAsync(tid, req, scope, ct);
+        var lines = await SlipsOf(tid, runs.Keys.ToList(), scope)
+            .Select(x => new { x.RunId, x.EmployeeCode, x.EmployeeName, x.Department, x.BasicSalary, x.GrossSalary, x.Deductions, x.NetSalary, x.Status })
+            .ToListAsync(ct);
+        return lines.OrderBy(x => x.Department).ThenBy(x => x.EmployeeName)
+            .Select(x => new
+            {
+                x.EmployeeCode, x.EmployeeName, x.Department, x.BasicSalary, x.GrossSalary, x.Deductions, x.NetSalary, x.Status,
+                RunType = runs[x.RunId].RunType, RunStatus = runs[x.RunId].Status, Currency = runs[x.RunId].Currency,
+            }).ToList();
+    }
 
-        var slips = _db.PayrollSlips.Where(x => x.TenantId == tid && x.RunId == runId.Value);
-        if (employeeIds is not null) slips = slips.Where(x => employeeIds.Contains(x.EmployeeId));
-        return await slips.OrderBy(x => x.Department).ThenBy(x => x.EmployeeName)
+    /// <summary>
+    /// Per department AND currency — amounts are never added across currencies. Headcount is people:
+    /// one employee paid by two runs of the month is one head, not two payslips.
+    /// </summary>
+    private async Task<object> RunPayrollSummary(Guid tid, RunReportRequest req, ReportDataScope scope, CancellationToken ct)
+    {
+        var runs = await PayrollRunsForPeriodAsync(tid, req, scope, ct);
+        var lines = await SlipsOf(tid, runs.Keys.ToList(), scope)
+            .Select(x => new { x.RunId, x.EmployeeId, x.Department, x.GrossSalary, x.NetSalary, x.Deductions })
+            .ToListAsync(ct);
+        return lines
+            .GroupBy(x => new { x.Department, runs[x.RunId].Currency })
+            .Select(g => new
+            {
+                g.Key.Department, g.Key.Currency,
+                Headcount = g.Select(x => x.EmployeeId).Distinct().Count(),
+                TotalGross = g.Sum(x => x.GrossSalary), TotalNet = g.Sum(x => x.NetSalary), TotalDeductions = g.Sum(x => x.Deductions),
+            })
+            .OrderBy(x => x.Department).ThenBy(x => x.Currency).ToList();
+    }
+
+    private async Task<object> RunPayrollSlips(Guid tid, RunReportRequest req, ReportDataScope scope, CancellationToken ct)
+    {
+        var runs = await PayrollRunsForPeriodAsync(tid, req, scope, ct);
+        var lines = await SlipsOf(tid, runs.Keys.ToList(), scope)
+            .Select(x => new
+            {
+                x.RunId, x.EmployeeCode, x.EmployeeName, x.Department, x.BasicSalary,
+                x.HousingAllowance, x.TransportAllowance, x.OtherAllowances,
+                x.GrossSalary, x.Deductions, x.EmployeeStatutoryTotal,
+                x.LoanDeductions, x.NetSalary, x.Status
+            }).ToListAsync(ct);
+        return lines.OrderBy(x => x.Department).ThenBy(x => x.EmployeeName)
             .Select(x => new
             {
                 x.EmployeeCode, x.EmployeeName, x.Department, x.BasicSalary,
                 x.HousingAllowance, x.TransportAllowance, x.OtherAllowances,
                 x.GrossSalary, x.Deductions, x.EmployeeStatutoryTotal,
-                x.LoanDeductions, x.NetSalary, x.Status
-            }).ToListAsync(ct);
+                x.LoanDeductions, x.NetSalary, x.Status,
+                RunType = runs[x.RunId].RunType, RunStatus = runs[x.RunId].Status, Currency = runs[x.RunId].Currency,
+            }).ToList();
     }
 
     // ── Recruitment Reports ───────────────────────────────────────────────────
 
-    private async Task<object> RunRecruitmentPipeline(Guid tid, CancellationToken ct)
+    /// <summary>
+    /// Applications inside the caller's companies. Candidates are not employees, so the employee-id
+    /// scope cannot narrow them; the company does. Explicit because the worker has no company filter.
+    /// A null-company application is visible at group level only, as in the database filter.
+    /// </summary>
+    private IQueryable<JobApplication> ApplicationsInScope(Guid tid, ReportDataScope scope)
     {
-        return await _db.JobApplications.Where(x => x.TenantId == tid)
+        var q = _db.JobApplications.Where(x => x.TenantId == tid);
+        if (scope.CompanyIds is { } companyIds)
+            q = q.Where(x => x.CompanyId != null && companyIds.Contains(x.CompanyId.Value));
+        return q;
+    }
+
+    private async Task<object> RunRecruitmentPipeline(Guid tid, ReportDataScope scope, CancellationToken ct)
+    {
+        return await ApplicationsInScope(tid, scope)
             .GroupBy(x => x.Stage)
             .Select(g => new { Stage = g.Key, Count = g.Count() })
             .OrderBy(x => x.Stage).ToListAsync(ct);
     }
 
-    private async Task<object> RunRecruitmentTimeToHire(Guid tid, RunReportRequest req, CancellationToken ct)
+    private async Task<object> RunRecruitmentTimeToHire(Guid tid, RunReportRequest req, ReportDataScope scope, CancellationToken ct)
     {
         var from = req.Filters?.DateFrom ?? DateTime.UtcNow.AddYears(-1);
         var to = req.Filters?.DateTo ?? DateTime.UtcNow;
-        var hires = await _db.JobApplications
-            .Where(x => x.TenantId == tid && x.Status == "Hired" && x.HiredAtUtc != null
+        var hires = await ApplicationsInScope(tid, scope)
+            .Where(x => x.Status == "Hired" && x.HiredAtUtc != null
                         && x.HiredAtUtc >= from && x.HiredAtUtc <= to)
             .OrderBy(x => x.HiredAtUtc)
             .Select(x => new { x.JobTitle, x.CandidateName, x.AppliedAtUtc, x.HiredAtUtc })
@@ -594,39 +778,71 @@ public class ReportsController : ControllerBase
 
     // ── Compliance Reports ────────────────────────────────────────────────────
 
-    private async Task<object> RunVisaExpiry(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
+    /// <summary>
+    /// The public ids of the employees in scope, for the compliance tables that key an employee by
+    /// <c>Employee.PublicId</c> rather than the int id the scope is expressed in. Null = no restriction.
+    ///
+    /// <para>These three reports used to answer ANY restricted caller — every company-scoped HR user, and
+    /// every scheduled delivery for one — with an empty list, because the ids did not match. An empty
+    /// visa-expiry report reads as "no visa is expiring", which is the most dangerous thing it could say.</para>
+    /// </summary>
+    private async Task<List<Guid>?> EmployeePublicIdsInScopeAsync(Guid tid, ReportDataScope scope, CancellationToken ct)
     {
-        if (employeeIds is not null) return Array.Empty<object>();
+        if (scope.EmployeeIds is not { } employeeIds) return null;
+        return await _db.Employees
+            .Where(e => e.TenantId == tid && employeeIds.Contains(e.Id))
+            .Select(e => e.PublicId)
+            .ToListAsync(ct);
+    }
+
+    private async Task<object> RunVisaExpiry(Guid tid, RunReportRequest req, ReportDataScope scope, CancellationToken ct)
+    {
         var days = req.Filters?.DaysAhead ?? 90;
         var cutoff = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(days));
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        return await _db.VisaRecords
-            .Where(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Active" && x.ExpiryDate <= cutoff)
-            .Select(x => new { x.EmployeeName, x.VisaType, x.VisaNumber, x.ExpiryDate, DaysLeft = (x.ExpiryDate.DayNumber - today.DayNumber) })
+        var showNumbers = scope.CanSeeSensitive;
+        var q = _db.VisaRecords
+            .Where(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Active" && x.ExpiryDate <= cutoff);
+        if (await EmployeePublicIdsInScopeAsync(tid, scope, ct) is { } inScope) q = q.Where(x => inScope.Contains(x.EmployeeId));
+        return await q
+            .Select(x => new
+            {
+                x.EmployeeName, x.VisaType,
+                VisaNumber = showNumbers ? x.VisaNumber : ReportAccessPolicy.RestrictedValue,
+                x.ExpiryDate, DaysLeft = (x.ExpiryDate.DayNumber - today.DayNumber),
+            })
             .OrderBy(x => x.ExpiryDate).ToListAsync(ct);
     }
 
-    private async Task<object> RunPassportExpiry(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
+    private async Task<object> RunPassportExpiry(Guid tid, RunReportRequest req, ReportDataScope scope, CancellationToken ct)
     {
-        if (employeeIds is not null) return Array.Empty<object>();
         var days = req.Filters?.DaysAhead ?? 90;
         var cutoff = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(days));
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        return await _db.PassportRecords
-            .Where(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Active" && x.ExpiryDate <= cutoff)
-            .Select(x => new { x.EmployeeName, x.PassportNumber, x.Nationality, x.ExpiryDate, DaysLeft = (x.ExpiryDate.DayNumber - today.DayNumber) })
+        var showNumbers = scope.CanSeeSensitive;
+        var q = _db.PassportRecords
+            .Where(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Active" && x.ExpiryDate <= cutoff);
+        if (await EmployeePublicIdsInScopeAsync(tid, scope, ct) is { } inScope) q = q.Where(x => inScope.Contains(x.EmployeeId));
+        return await q
+            .Select(x => new
+            {
+                x.EmployeeName,
+                PassportNumber = showNumbers ? x.PassportNumber : ReportAccessPolicy.RestrictedValue,
+                x.Nationality, x.ExpiryDate, DaysLeft = (x.ExpiryDate.DayNumber - today.DayNumber),
+            })
             .OrderBy(x => x.ExpiryDate).ToListAsync(ct);
     }
 
-    private async Task<object> RunContractExpiry(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
+    private async Task<object> RunContractExpiry(Guid tid, RunReportRequest req, ReportDataScope scope, CancellationToken ct)
     {
-        if (employeeIds is not null) return Array.Empty<object>();
         var days = req.Filters?.DaysAhead ?? 90;
         var cutoff = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(days));
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        return await _db.EmployeeContracts
+        var q = _db.EmployeeContracts
             .Where(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Active"
-                && x.EndDate.HasValue && x.EndDate.Value <= cutoff)
+                && x.EndDate.HasValue && x.EndDate.Value <= cutoff);
+        if (await EmployeePublicIdsInScopeAsync(tid, scope, ct) is { } inScope) q = q.Where(x => inScope.Contains(x.EmployeeId));
+        return await q
             .Select(x => new { x.EmployeeName, x.ContractNumber, x.ContractType, ExpiryDate = x.EndDate!.Value, DaysLeft = (x.EndDate!.Value.DayNumber - today.DayNumber) })
             .OrderBy(x => x.ExpiryDate).ToListAsync(ct);
     }
@@ -818,15 +1034,18 @@ public class ReportsController : ControllerBase
         if (!HasPermission("reports.read")) return Forbid();
         var tid = GetTenantId();
         var uid = GetUserId();
-        return Ok(await _db.SavedReports
+        var rows = await _db.SavedReports
             .Where(x => x.TenantId == tid && !x.IsDeleted && (x.IsShared || x.CreatedBy == uid))
-            .OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct));
+            .OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct);
+        // A colleague's shared payroll report is not listed to someone who cannot open it.
+        return Ok(rows.Where(x => MayTouchReport(x.ReportKey)).ToList());
     }
 
     [HttpPost("saved")]
     public async Task<IActionResult> SaveReport([FromBody] SaveReportRequest req, CancellationToken ct)
     {
         if (!HasPermission("reports.read")) return Forbid();
+        if (DataAccessDenial(req.ReportKey) is { } denied) return denied;
         if (req.IsShared && !TryValidateControlledOverride(req.GovernanceOverride, "report.saved.share", out var rejection))
             return rejection!;
         var tid = GetTenantId();
@@ -853,6 +1072,7 @@ public class ReportsController : ControllerBase
         var uid = GetUserId();
         var r = await _db.SavedReports.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (r == null) return NotFound();
+        if (DataAccessDenial(r.ReportKey) is { } denied) return denied;
         if (r.CreatedBy != uid && !User.IsInRole("Admin")) return Forbid();
         if (r.IsShared && !TryValidateControlledOverride(governanceOverride, "report.saved.delete_shared", out var rejection))
             return rejection!;
@@ -871,8 +1091,44 @@ public class ReportsController : ControllerBase
     {
         if (!HasPermission("reports.schedule")) return Forbid();
         var tid = GetTenantId();
-        return Ok(await _db.ReportSchedules.Where(x => x.TenantId == tid && !x.IsDeleted)
-            .OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct));
+        var uid = GetUserId();
+        var isAdmin = User.IsInRole("Admin");
+        var rows = await _db.ReportSchedules.Where(x => x.TenantId == tid && !x.IsDeleted)
+            .Where(x => isAdmin || x.CreatedBy == uid)
+            .OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct);
+        // A schedule is its owner's (an administrator sees them all): it mails the owner's view of the data.
+        return Ok(rows.Where(x => MayTouchReport(x.ReportKey)).ToList());
+    }
+
+    /// <summary>Only a schedule's owner, or an administrator, may pause or delete it.</summary>
+    private IActionResult? NotOwnerDenial(ReportSchedule s) =>
+        s.CreatedBy == GetUserId() || User.IsInRole("Admin")
+            ? null
+            : StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                error = "report_schedule_not_owner",
+                message = "Only the schedule's owner or an administrator can pause or delete it.",
+            });
+
+    /// <summary>
+    /// Every recipient must be an active user of this organisation who could open the report themselves,
+    /// over every company the creator's delivery covers. The worker re-checks this on every run.
+    /// </summary>
+    private async Task<IActionResult?> RecipientDenialAsync(Guid tid, string reportKey, string? recipients, CancellationToken ct)
+    {
+        var entity = this.GetRequestScope();
+        var delivered = entity.IsGroupLevel || entity.IsSystemScope ? null : entity.AuthorizedCompanyIds;
+        var audience = await ReportAudience.EvaluateRecipientsAsync(
+            _db, tid, reportKey, ReportSchedulePolicy.ParseRecipients(recipients), delivered, ct);
+        var refused = audience.Where(a => a.Refusal is not null).ToList();
+        if (refused.Count == 0) return null;
+        return BadRequest(new
+        {
+            code = "recipient_not_allowed",
+            message = "A scheduled report can only be sent to people in this organisation who can open it themselves. " +
+                      "Not allowed: " + ReportAudience.Describe(refused) + ".",
+            recipients = refused.Select(r => new { email = r.Email, reason = r.Refusal }).ToList(),
+        });
     }
 
     [HttpPost("schedules")]
@@ -880,11 +1136,16 @@ public class ReportsController : ControllerBase
     public async Task<IActionResult> CreateSchedule([FromBody] CreateScheduleRequest req, CancellationToken ct)
     {
         if (!HasPermission("reports.schedule")) return Forbid();
+        // The creator becomes the schedule's owner, and the worker re-checks this same rule against the
+        // owner on every run; refusing here just says so before a schedule exists that could never deliver.
+        if (DataAccessDenial(req.ReportKey) is { } denied) return denied;
         if (!ReportSchedulePolicy.TryValidate(req, out var validationError))
             return BadRequest(new { message = validationError });
+        if (InvalidPeriod(req.Filters) is { } badPeriod) return badPeriod;
+        var tid = GetTenantId();
+        if (await RecipientDenialAsync(tid, req.ReportKey, req.Recipients, ct) is { } recipientDenied) return recipientDenied;
         if (!TryValidateControlledOverride(req.GovernanceOverride, "report.schedule.create", out var rejection))
             return rejection!;
-        var tid = GetTenantId();
         var uid = GetUserId();
         var s = new ReportSchedule
         {
@@ -899,7 +1160,7 @@ public class ReportsController : ControllerBase
             NextRunAtUtc = ReportSchedulePolicy.NextRun(DateTime.UtcNow, req.Frequency),
         };
         _db.ReportSchedules.Add(s);
-        AddGovernanceAudit("governance.controlled_override.report_schedule_created", "ReportSchedule", s.Id.ToString(), req.GovernanceOverride!, new { s.ReportKey, s.ReportName, s.Frequency, s.DeliveryMethod, s.ExportFormat });
+        AddGovernanceAudit("governance.controlled_override.report_schedule_created", "ReportSchedule", s.Id.ToString(), req.GovernanceOverride!, new { s.ReportKey, s.ReportName, s.Frequency, s.DeliveryMethod, s.ExportFormat, s.Recipients });
         await _db.SaveChangesAsync(ct);
         return Ok(s);
     }
@@ -914,10 +1175,12 @@ public class ReportsController : ControllerBase
         var tid = GetTenantId();
         var s = await _db.ReportSchedules.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (s == null) return NotFound();
+        if (NotOwnerDenial(s) is { } notOwner) return notOwner;
+        if (DataAccessDenial(s.ReportKey) is { } denied) return denied;
         s.IsActive = !s.IsActive; s.UpdatedAtUtc = DateTime.UtcNow;
         if (s.IsActive && (s.NextRunAtUtc is null || s.NextRunAtUtc <= DateTime.UtcNow))
             s.NextRunAtUtc = ReportSchedulePolicy.NextRun(DateTime.UtcNow, s.Frequency);
-        AddGovernanceAudit("governance.controlled_override.report_schedule_toggled", "ReportSchedule", s.Id.ToString(), governanceOverride!, new { s.ReportKey, s.ReportName, s.IsActive });
+        AddGovernanceAudit("governance.controlled_override.report_schedule_toggled", "ReportSchedule", s.Id.ToString(), governanceOverride!, new { s.ReportKey, s.ReportName, s.IsActive, s.Recipients, owner = s.CreatedBy });
         await _db.SaveChangesAsync(ct);
         return Ok(s);
     }
@@ -932,8 +1195,10 @@ public class ReportsController : ControllerBase
         var tid = GetTenantId();
         var s = await _db.ReportSchedules.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (s == null) return NotFound();
+        if (NotOwnerDenial(s) is { } notOwner) return notOwner;
+        if (DataAccessDenial(s.ReportKey) is { } denied) return denied;
         s.IsDeleted = true; s.UpdatedAtUtc = DateTime.UtcNow;
-        AddGovernanceAudit("governance.controlled_override.report_schedule_deleted", "ReportSchedule", s.Id.ToString(), governanceOverride!, new { s.ReportKey, s.ReportName });
+        AddGovernanceAudit("governance.controlled_override.report_schedule_deleted", "ReportSchedule", s.Id.ToString(), governanceOverride!, new { s.ReportKey, s.ReportName, s.Recipients, owner = s.CreatedBy });
         await _db.SaveChangesAsync(ct);
         return NoContent();
     }
@@ -944,6 +1209,8 @@ public class ReportsController : ControllerBase
     public async Task<IActionResult> GetExecutionHistory(
         [FromQuery] string? reportKey, [FromQuery] int page = 1, [FromQuery] int pageSize = 30, CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         if (!HasAnyPermission("reports.schedule", "audit.read")) return Forbid();
         var tid = GetTenantId();
         var q = _db.ReportExecutionLogs.Where(x => x.TenantId == tid);

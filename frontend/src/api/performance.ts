@@ -1,4 +1,5 @@
 import client from './client';
+import { fetchAllPages } from '../lib/paging';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -317,6 +318,10 @@ export interface CycleAnalytics {
 export const cyclesApi = {
   list: (params: { status?: string; type?: string } = {}) =>
     client.get<{ items: PerformanceCycle[]; total: number }>('/api/performance/cycles', { params }).then(r => r.data),
+  /** Every matching cycle (newest first), page by page, for the cycle list and pickers. */
+  listAll: (params: { status?: string; type?: string } = {}) =>
+    fetchAllPages((page, pageSize) =>
+      client.get<{ items: PerformanceCycle[]; total: number }>('/api/performance/cycles', { params: { ...params, page, pageSize } }).then(r => r.data)),
 
   stats: () =>
     client.get<PerformanceDashboardStats>('/api/performance/cycles/stats').then(r => r.data),
@@ -362,7 +367,8 @@ export const templatesApi = {
 };
 
 export const goalsApi = {
-  list: (params: { employeeId?: number; cycleId?: string; status?: string; category?: string } = {}) =>
+  /** One page of goals (the server's default page is 50) with the total across all pages. */
+  list: (params: { employeeId?: number; cycleId?: string; status?: string; category?: string; page?: number; pageSize?: number } = {}) =>
     client.get<{ items: EmployeeGoal[]; total: number }>('/api/performance/goals', { params }).then(r => r.data),
 
   get: (id: string) =>
@@ -386,7 +392,10 @@ export const goalsApi = {
 };
 
 export const reviewsApi = {
-  list: (params: { cycleId?: string; employeeId?: number; status?: string; department?: string } = {}) =>
+  /** One page of reviews (the server's default page is 50) with the total across all pages.
+   *  `view: 'mine'` is My Reviews: only the caller's own reviews. Without it, every review in the
+   *  caller's scope (a manager's reporting line, or the organisation for HR). */
+  list: (params: { cycleId?: string; employeeId?: number; status?: string; department?: string; view?: 'mine'; page?: number; pageSize?: number } = {}) =>
     client.get<{ items: AppraisalReview[]; total: number }>('/api/performance/reviews', { params }).then(r => r.data),
 
   get: (id: string) =>

@@ -35,6 +35,8 @@ public class LeaveBalancesController : ControllerBase
         [FromQuery] int pageSize = 50,
         CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
@@ -48,14 +50,8 @@ public class LeaveBalancesController : ControllerBase
             query = query.Where(b => scope.AllowedEmployeeIds!.Contains(b.EmployeeId));
         if (employeeId.HasValue) query = query.Where(b => b.EmployeeId == employeeId.Value);
         if (leaveTypeId.HasValue) query = query.Where(b => b.LeaveTypeId == leaveTypeId.Value);
-        if (companyId.HasValue || branchId.HasValue)
-        {
-            var empQ = _db.Employees.Where(e => e.TenantId == tenantId && !e.IsDeleted);
-            if (companyId.HasValue) empQ = empQ.Where(e => e.CompanyId == companyId);
-            if (branchId.HasValue)  empQ = empQ.Where(e => e.BranchId  == branchId);
-            var ids = await empQ.Select(e => e.Id).ToListAsync(ct);
-            query = query.Where(b => ids.Contains(b.EmployeeId));
-        }
+        var group = await LeaveGroupFilter.EmployeeIdsAsync(_db, tenantId.Value, companyId, branchId, ct);
+        if (group is not null) query = query.Where(b => group.Contains(b.EmployeeId));
 
         var total = await query.CountAsync(ct);
         var items = await query

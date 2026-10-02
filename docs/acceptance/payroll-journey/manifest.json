@@ -1,0 +1,1774 @@
+{
+  "harness": "kynexone-evidence-harness",
+  "manifestVersion": 1,
+  "runId": "2026-09-30T19-50-06-091Z",
+  "startedAtUtc": "2026-09-30T19:50:06.091Z",
+  "finishedAtUtc": "2026-09-30T19:51:18.636Z",
+  "story": "prerequisites → run → validation → maker approval → finance approval → lock → payslips → bank file → reconciliation",
+  "baseUrl": "http://127.0.0.1:5173",
+  "apiBaseUrl": "http://127.0.0.1:5117",
+  "expectedCommit": "5c65d6a093fc97d0cbee1c0ed5114982d61904d3",
+  "expectedDatabase": "zayra",
+  "redacted": true,
+  "steps": [
+    {
+      "ord": 1,
+      "id": "prerequisites",
+      "atUtc": "2026-09-30T19:50:53.693Z",
+      "actor": {
+        "name": "IntelliFlow HR Manager",
+        "email": "hr*******@intelliflow.com",
+        "role": "HR Manager",
+        "tenant": "intelliflow",
+        "scope": "group"
+      },
+      "action": "Read the payroll prerequisites for the tenant before opening a run",
+      "record": {
+        "type": "Tenant payroll readiness",
+        "id": "intelliflow"
+      },
+      "expected": "The payroll dashboard states how many ACTIVE employees were checked against salary assignments, payroll profiles, IBANs and statutory readiness, and names every remaining gap.",
+      "observed": "The prerequisites panel reports 14 active employees checked.",
+      "outcome": "pass",
+      "api": [
+        {
+          "method": "GET",
+          "url": "/api/help-texts",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/auth/me",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/notifications",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/tenant-admin/localization",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/features/modules",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/features/disabled-keys",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/companies",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/reports/summary",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/overview?year=2026&month=9",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/readiness?year=2026&month=9",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/readiness?year=2026&month=9",
+          "status": 200,
+          "durationMs": 40,
+          "recordId": null
+        }
+      ],
+      "screenAssertion": {
+        "pattern": "/Checked for \\d+ active employees/",
+        "matched": true
+      },
+      "persisted": {
+        "via": "fresh GET",
+        "values": {
+          "totalActiveEmployees": 14,
+          "employeesWithSalary": 14,
+          "salaryCoveragePercent": 100,
+          "isReadyForProcessing": false
+        }
+      },
+      "capture": {
+        "status": "captured",
+        "shareablePath": "img/01-prerequisites.jpg",
+        "shareableSha256": "0039a41f0875fb5a6079b52d96d7114a929c616243fbda36ea637e423e9ce2dc",
+        "originalSha256": "32e67819ad1f525b2382afeaacf27990044193691c579bff09ec80219864e9d1",
+        "bytes": 105848,
+        "settledAfterMs": 453,
+        "waitedOnRequests": [],
+        "waitedOnIndicators": [],
+        "maskedNodes": 1
+      },
+      "durationMs": 2150
+    },
+    {
+      "ord": 2,
+      "id": "refusal-incomplete-employee",
+      "atUtc": "2026-09-30T19:50:55.843Z",
+      "actor": {
+        "name": "IntelliFlow Administrator",
+        "email": "ad***@intelliflow.com",
+        "role": "Admin",
+        "tenant": "intelliflow",
+        "scope": "group"
+      },
+      "action": "REFUSAL — try to activate a KSA expat who has no GOSI reference and no Iqama number, twice: once stating the country, once leaving it to the employing company",
+      "record": {
+        "type": "Employee (Draft, refused activation)",
+        "id": "44"
+      },
+      "expected": "Both activations are refused with the same structured 422 naming the missing statutory data, and both employees stay Draft. An employee who cannot lawfully be paid must never join a payroll population — and whether the create request happened to name the country must make no difference, because the employing legal entity already decides it.",
+      "observed": "Draft employee #44 (SA, Indian national) created; activation refused with HTTP 422 employee_not_activatable. Activate-blocking: IqamaNumber. Pay-blocking: GosiReference, IqamaExpiry. Draft employee #45 — same KSA legal entity, same Indian nationality, same absent Iqama and GOSI reference, but created WITHOUT any complianceRecords — was stored with countryCode \"SA\" (derived from the employing company) and its activation was refused with HTTP 422 employee_not_activatable, blocking IqamaNumber. The two calls differ only by that omitted field and reach the same refusal.",
+      "outcome": "pass",
+      "api": [
+        {
+          "method": "GET",
+          "url": "/api/companies?page=1&pageSize=10",
+          "status": 200,
+          "durationMs": 20,
+          "recordId": null
+        },
+        {
+          "method": "POST",
+          "url": "/api/employees",
+          "status": 201,
+          "durationMs": 68,
+          "recordId": null
+        },
+        {
+          "method": "POST",
+          "url": "/api/employees/44/activate",
+          "status": 422,
+          "durationMs": 45,
+          "recordId": "44",
+          "detail": "{\"error\":\"employee_not_activatable\",\"employeeId\":44,\"message\":\"Cannot activate this employee — 1 required detail(s) missing.\",\"policy\":{\"countryCode\":\"SA\",\"tier\":\"certified\",\"sources\":[\"floor\",\"tenant\",\"company\"]},\"progr"
+        },
+        {
+          "method": "POST",
+          "url": "/api/employees",
+          "status": 201,
+          "durationMs": 61,
+          "recordId": null
+        },
+        {
+          "method": "POST",
+          "url": "/api/employees/45/activate",
+          "status": 422,
+          "durationMs": 30,
+          "recordId": "45",
+          "detail": "{\"error\":\"employee_not_activatable\",\"employeeId\":45,\"message\":\"Cannot activate this employee — 1 required detail(s) missing.\",\"policy\":{\"countryCode\":\"SA\",\"tier\":\"certified\",\"sources\":[\"floor\",\"tenant\",\"company\"]},\"progr"
+        },
+        {
+          "method": "GET",
+          "url": "/api/employees/44",
+          "status": 200,
+          "durationMs": 31,
+          "recordId": "44"
+        },
+        {
+          "method": "GET",
+          "url": "/api/employees/45",
+          "status": 200,
+          "durationMs": 25,
+          "recordId": "45"
+        }
+      ],
+      "persisted": {
+        "via": "fresh GETs of both employees — a refused activation must leave each one Draft, and the employee created without a stated country must hold the employing company's country",
+        "values": {
+          "employeeId": 44,
+          "status": "Draft",
+          "activated": false,
+          "employeeIdWithNoStatedCountry": 45,
+          "statusWithNoStatedCountry": "Draft",
+          "countryCodeWithNoStatedCountry": "SA",
+          "activatedWithNoStatedCountry": false
+        }
+      },
+      "capture": {
+        "status": "no capture",
+        "reason": "Deliberately so: this refusal was driven through the API, so there is no screen of it to photograph; the 422 bodies recorded below are the whole of the evidence. A picture of the employee list here would show a screen that has nothing to do with the refusal, which is exactly the substitution this harness exists to prevent. The UI path for the same refusal is listed under Not run."
+      },
+      "durationMs": 297
+    },
+    {
+      "ord": 3,
+      "id": "run-created",
+      "atUtc": "2026-09-30T19:50:56.140Z",
+      "actor": {
+        "name": "IntelliFlow Administrator",
+        "email": "ad***@intelliflow.com",
+        "role": "Admin",
+        "tenant": "intelliflow",
+        "scope": "group"
+      },
+      "action": "Create the payroll run for the first period that does not have one",
+      "record": {
+        "type": "PayrollRun",
+        "id": "2dbe8b64-ea51-41f8-a8d8-64981d53d86a"
+      },
+      "expected": "A new run exists in Draft for that period, and the list renders every run the API returned.",
+      "observed": "Run for Sep 2026 created in Draft as 2dbe8b64-ea51-41f8-a8d8-64981d53d86a.",
+      "outcome": "pass",
+      "api": [
+        {
+          "method": "GET",
+          "url": "/api/help-texts",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/auth/me",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/features/disabled-keys",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/tenant-admin/localization",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/features/modules",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/notifications",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/companies",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/ai/insights?acknowledged=false&pageSize=5",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/reports/summary",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/overview?year=2026&month=9",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/readiness?year=2026&month=9",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs?page=1&pageSize=100",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/companies",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "POST",
+          "url": "/api/payroll/runs",
+          "status": 201,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs?page=1&pageSize=100",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs?pageSize=100",
+          "status": 200,
+          "durationMs": 26,
+          "recordId": null
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs?pageSize=100",
+          "status": 200,
+          "durationMs": 18,
+          "recordId": "2dbe8b64-ea51-41f8-a8d8-64981d53d86a"
+        }
+      ],
+      "screenAssertion": {
+        "pattern": "/Draft/",
+        "matched": true
+      },
+      "persisted": {
+        "via": "fresh GET",
+        "values": {
+          "runId": "2dbe8b64-ea51-41f8-a8d8-64981d53d86a",
+          "status": "Draft",
+          "employeeCount": 0
+        }
+      },
+      "capture": {
+        "status": "captured",
+        "shareablePath": "img/03-run-created.jpg",
+        "shareableSha256": "b589ff4cc15e1d5255a3efcf79ed6f9dcaf785807059ce80615894e5012b9a1b",
+        "originalSha256": "b589ff4cc15e1d5255a3efcf79ed6f9dcaf785807059ce80615894e5012b9a1b",
+        "bytes": 64817,
+        "settledAfterMs": 434,
+        "waitedOnRequests": [],
+        "waitedOnIndicators": [],
+        "maskedNodes": 0
+      },
+      "durationMs": 2247
+    },
+    {
+      "ord": 4,
+      "id": "run-processed",
+      "atUtc": "2026-09-30T19:50:58.387Z",
+      "actor": {
+        "name": "IntelliFlow Administrator",
+        "email": "ad***@intelliflow.com",
+        "role": "Admin",
+        "tenant": "intelliflow",
+        "scope": "group"
+      },
+      "action": "Process the run so every employee on it gets a calculated salary slip",
+      "record": {
+        "type": "PayrollRun",
+        "id": "2dbe8b64-ea51-41f8-a8d8-64981d53d86a"
+      },
+      "expected": "The run leaves Draft for Processed and carries a non-zero employee count and net-pay total.",
+      "observed": "14 employees, gross 138250.00, net 119730.47.",
+      "outcome": "pass",
+      "api": [
+        {
+          "method": "POST",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/process",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs?pageSize=100",
+          "status": 200,
+          "durationMs": 19,
+          "recordId": "2dbe8b64-ea51-41f8-a8d8-64981d53d86a"
+        }
+      ],
+      "screenAssertion": {
+        "pattern": "/Processed/",
+        "matched": true
+      },
+      "persisted": {
+        "via": "fresh GET",
+        "values": {
+          "status": "Processed",
+          "employeeCount": 14,
+          "totalGrossSalary": 138250,
+          "totalNetSalary": 119730.47
+        }
+      },
+      "capture": {
+        "status": "captured",
+        "shareablePath": "img/04-run-processed.jpg",
+        "shareableSha256": "2e4508acf0fd1c93420c2c5b79b897f510b7b317a7a5ce6d3a69ad15b9b594d9",
+        "originalSha256": "2e4508acf0fd1c93420c2c5b79b897f510b7b317a7a5ce6d3a69ad15b9b594d9",
+        "bytes": 65204,
+        "settledAfterMs": 435,
+        "waitedOnRequests": [],
+        "waitedOnIndicators": [],
+        "maskedNodes": 0
+      },
+      "durationMs": 1553
+    },
+    {
+      "ord": 5,
+      "id": "validation",
+      "atUtc": "2026-09-30T19:50:59.940Z",
+      "actor": {
+        "name": "IntelliFlow HR Manager",
+        "email": "hr*******@intelliflow.com",
+        "role": "HR Manager",
+        "tenant": "intelliflow",
+        "scope": "group"
+      },
+      "action": "Run payroll validation on the processed run and read every finding",
+      "record": {
+        "type": "PayrollRun",
+        "id": "2dbe8b64-ea51-41f8-a8d8-64981d53d86a"
+      },
+      "expected": "Validation completes with ZERO errors, and every warning it does return is one this story can explain by code — an unexplained warning fails the step rather than being counted and carried into approval.",
+      "observed": "Validation returned 29 finding(s): 0 error(s), 29 warning(s); codes: GOSI_COHORT_NOT_RECORDED, WARN_ARREARS_LOOKBACK_TRUNCATED, WARN_GOSI_RATES_REQUIRE_SIGNOFF.",
+      "outcome": "pass",
+      "api": [
+        {
+          "method": "GET",
+          "url": "/api/help-texts",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/auth/me",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/tenant-admin/localization",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/notifications",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/features/disabled-keys",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/features/modules",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/reports/summary",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/companies",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/overview?year=2026&month=9",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/readiness?year=2026&month=9",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs?page=1&pageSize=100",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/validate",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/validation-overrides",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/validate",
+          "status": 200,
+          "durationMs": 29,
+          "recordId": null
+        },
+        {
+          "method": "POST",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/validate",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/validate",
+          "status": 200,
+          "durationMs": 18,
+          "recordId": null
+        }
+      ],
+      "persisted": {
+        "via": "fresh GET of the saved validation results",
+        "values": {
+          "findings": 14,
+          "errors": 0,
+          "warnings": 14,
+          "warningCodes": [
+            "GOSI_COHORT_NOT_RECORDED"
+          ],
+          "warningsExplained": {
+            "GOSI_COHORT_NOT_RECORDED": "14× — The employee has no GOSI first-registration date, so the engine cannot tell which contribution schedule applies and computes on the pre-3-July-2024 one. It is a WARNING and not an error by design: the pre-2024 schedule is the correct answer for everyone hired before that date, and the date is recorded on the employee's Payroll tab once known. The fixture employees are provisioned without it, so this fires once per employee and is expected here. The related GOSI_NEW_ENTRANT_SCHEDULE_NOT_MODELLED code is an ERROR and would block approval; it does not appear on this run, and the step asserts zero errors."
+          }
+        }
+      },
+      "capture": {
+        "status": "captured",
+        "shareablePath": "img/05-validation.jpg",
+        "shareableSha256": "5af5122c337f45355fd39709476be504cbcb5c853b6a1ab56ea04e979212567a",
+        "originalSha256": "5af5122c337f45355fd39709476be504cbcb5c853b6a1ab56ea04e979212567a",
+        "bytes": 154959,
+        "settledAfterMs": 439,
+        "waitedOnRequests": [],
+        "waitedOnIndicators": [],
+        "maskedNodes": 0
+      },
+      "durationMs": 2078
+    },
+    {
+      "ord": 6,
+      "id": "maker-approval",
+      "atUtc": "2026-09-30T19:51:02.018Z",
+      "actor": {
+        "name": "IntelliFlow HR Manager",
+        "email": "hr*******@intelliflow.com",
+        "role": "HR Manager",
+        "tenant": "intelliflow",
+        "scope": "group"
+      },
+      "action": "The HR Manager (maker) approves the run and sends it to Finance",
+      "record": {
+        "type": "PayrollRun",
+        "id": "2dbe8b64-ea51-41f8-a8d8-64981d53d86a"
+      },
+      "expected": "The run moves to Pending Finance Review, and the approval chain records the maker step. The maker is told, on screen, that their approval is not the final one.",
+      "observed": "Screen and API agree: 14 employees, gross SAR 138,250.00, net SAR 119,730.47. The run is now Pending Finance Review.",
+      "outcome": "pass",
+      "api": [
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs?page=1&pageSize=100",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/companies",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/approvals",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/validation-overrides",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/population",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "POST",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/approve",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs?page=1&pageSize=100",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/validation-overrides",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/approvals",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/population",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs?pageSize=100",
+          "status": 200,
+          "durationMs": 18,
+          "recordId": "2dbe8b64-ea51-41f8-a8d8-64981d53d86a"
+        }
+      ],
+      "screenAssertion": {
+        "pattern": "Awaiting Finance Controller approval.",
+        "matched": true
+      },
+      "persisted": {
+        "via": "fresh GET",
+        "values": {
+          "status": "PendingFinanceReview"
+        }
+      },
+      "capture": {
+        "status": "captured",
+        "shareablePath": "img/06-maker-approval.jpg",
+        "shareableSha256": "961256777aa2d439f35c2822c70c7ef55764dd62f00a2cd7a20e655a09f3408b",
+        "originalSha256": "961256777aa2d439f35c2822c70c7ef55764dd62f00a2cd7a20e655a09f3408b",
+        "bytes": 76441,
+        "settledAfterMs": 431,
+        "waitedOnRequests": [],
+        "waitedOnIndicators": [],
+        "maskedNodes": 0
+      },
+      "durationMs": 1668
+    },
+    {
+      "ord": 7,
+      "id": "refusal-maker-cannot-finalise",
+      "atUtc": "2026-09-30T19:51:03.686Z",
+      "actor": {
+        "name": "IntelliFlow HR Manager",
+        "email": "hr*******@intelliflow.com",
+        "role": "HR Manager",
+        "tenant": "intelliflow",
+        "scope": "group"
+      },
+      "action": "REFUSAL — the maker tries to approve a second time and complete the run alone",
+      "record": {
+        "type": "PayrollRun",
+        "id": "2dbe8b64-ea51-41f8-a8d8-64981d53d86a"
+      },
+      "expected": "No approval control survives on the run the maker already signed, the API refuses a second approval with HTTP 400, and — the part that matters — the run does not move.",
+      "observed": "Three approval controls absent from the maker's card; the API answered HTTP 400: {\"message\":\"You cannot approve this run at its current stage.\"}",
+      "outcome": "pass",
+      "api": [
+        {
+          "method": "POST",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/approve",
+          "status": 400,
+          "durationMs": 20,
+          "recordId": "2dbe8b64-ea51-41f8-a8d8-64981d53d86a",
+          "detail": "{\"message\":\"You cannot approve this run at its current stage.\"}"
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs?pageSize=100",
+          "status": 200,
+          "durationMs": 17,
+          "recordId": "2dbe8b64-ea51-41f8-a8d8-64981d53d86a"
+        }
+      ],
+      "screenAssertion": {
+        "pattern": "Awaiting Finance Controller approval.",
+        "matched": true
+      },
+      "persisted": {
+        "via": "fresh GET",
+        "values": {
+          "status": "PendingFinanceReview",
+          "unchanged": true
+        }
+      },
+      "capture": {
+        "status": "captured",
+        "shareablePath": "img/07-refusal-maker-cannot-finalise.jpg",
+        "shareableSha256": "961256777aa2d439f35c2822c70c7ef55764dd62f00a2cd7a20e655a09f3408b",
+        "originalSha256": "961256777aa2d439f35c2822c70c7ef55764dd62f00a2cd7a20e655a09f3408b",
+        "bytes": 76441,
+        "settledAfterMs": 432,
+        "waitedOnRequests": [],
+        "waitedOnIndicators": [],
+        "maskedNodes": 0,
+        "identicalToStep": "maker-approval"
+      },
+      "durationMs": 1215
+    },
+    {
+      "ord": 8,
+      "id": "finance-approval",
+      "atUtc": "2026-09-30T19:51:04.901Z",
+      "actor": {
+        "name": "IntelliFlow Finance Approver",
+        "email": "fi*****@intelliflow.com",
+        "role": "Finance Approver",
+        "tenant": "intelliflow",
+        "scope": "group"
+      },
+      "action": "The Finance Approver — a different authorised person — gives the final approval",
+      "record": {
+        "type": "PayrollRun",
+        "id": "2dbe8b64-ea51-41f8-a8d8-64981d53d86a"
+      },
+      "expected": "The run reaches Approved, reads as ready to lock, and the approval chain holds BOTH the maker step and the finance step, signed by two different people.",
+      "observed": "Approval chain: FinanceReview → PayrollReview, signed by 2 distinct users.",
+      "outcome": "pass",
+      "api": [
+        {
+          "method": "GET",
+          "url": "/api/help-texts",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/auth/me",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/features/disabled-keys",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/tenant-admin/localization",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/features/modules",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/notifications",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/companies",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/reports/summary",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/overview?year=2026&month=9",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/readiness?year=2026&month=9",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/companies",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs?page=1&pageSize=100",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/approvals",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/population",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/validation-overrides",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "POST",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/approve",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs?page=1&pageSize=100",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/validation-overrides",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/approvals",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/population",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/approvals",
+          "status": 200,
+          "durationMs": 19,
+          "recordId": null
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs?pageSize=100",
+          "status": 200,
+          "durationMs": 18,
+          "recordId": "2dbe8b64-ea51-41f8-a8d8-64981d53d86a"
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/approvals",
+          "status": 200,
+          "durationMs": 15,
+          "recordId": null
+        }
+      ],
+      "screenAssertion": {
+        "pattern": "Payroll run has been approved and is ready to lock.",
+        "matched": true
+      },
+      "persisted": {
+        "via": "fresh GET",
+        "values": {
+          "status": "Approved",
+          "approvalLevels": [
+            "FinanceReview:Approved",
+            "PayrollReview:Approved"
+          ],
+          "distinctApprovers": 2
+        }
+      },
+      "capture": {
+        "status": "captured",
+        "shareablePath": "img/08-finance-approval.jpg",
+        "shareableSha256": "4461543154a2ec450efbf51f35b7412102c40aabb20da75d0d0533dea236c8d0",
+        "originalSha256": "4461543154a2ec450efbf51f35b7412102c40aabb20da75d0d0533dea236c8d0",
+        "bytes": 78997,
+        "settledAfterMs": 428,
+        "waitedOnRequests": [],
+        "waitedOnIndicators": [],
+        "maskedNodes": 0
+      },
+      "durationMs": 2102
+    },
+    {
+      "ord": 9,
+      "id": "refusal-batch-before-lock",
+      "atUtc": "2026-09-30T19:51:07.003Z",
+      "actor": {
+        "name": "IntelliFlow Administrator",
+        "email": "ad***@intelliflow.com",
+        "role": "Admin",
+        "tenant": "intelliflow",
+        "scope": "group"
+      },
+      "action": "REFUSAL — open the bank export while the run is Approved but not yet Locked",
+      "record": {
+        "type": "PayrollRun",
+        "id": "2dbe8b64-ea51-41f8-a8d8-64981d53d86a"
+      },
+      "expected": "Create Payment Batch is disabled, and the screen says why, naming the run's actual current status rather than a generic message. No batch exists.",
+      "observed": "Create Payment Batch is disabled and the screen states \"This run is Approved.\" — the lock, not the approval, is the gate.",
+      "outcome": "pass",
+      "api": [
+        {
+          "method": "GET",
+          "url": "/api/help-texts",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/auth/me",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/features/disabled-keys",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/features/modules",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/tenant-admin/localization",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/notifications",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/companies",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/reports/summary",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/ai/insights?acknowledged=false&pageSize=5",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/overview?year=2026&month=9",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/readiness?year=2026&month=9",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs?page=1&pageSize=100",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/payment-batches?runId=2dbe8b64-ea51-41f8-a8d8-64981d53d86a",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/payment-batches?runId=2dbe8b64-ea51-41f8-a8d8-64981d53d86a",
+          "status": 200,
+          "durationMs": 19,
+          "recordId": null
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs?pageSize=100",
+          "status": 200,
+          "durationMs": 18,
+          "recordId": "2dbe8b64-ea51-41f8-a8d8-64981d53d86a"
+        }
+      ],
+      "screenAssertion": {
+        "pattern": "/A payment batch can only be created once the run is/",
+        "matched": true
+      },
+      "persisted": {
+        "via": "fresh GET of the run's payment batches — none may exist yet",
+        "values": {
+          "paymentBatchesForThisRun": 0,
+          "runStatusAtRefusal": "Approved"
+        }
+      },
+      "capture": {
+        "status": "captured",
+        "shareablePath": "img/09-refusal-batch-before-lock.jpg",
+        "shareableSha256": "c88a338c8f42e751f541de1cc258c6ef27ec8bdfa8a1c2c61a53c93067a35ef0",
+        "originalSha256": "c88a338c8f42e751f541de1cc258c6ef27ec8bdfa8a1c2c61a53c93067a35ef0",
+        "bytes": 68292,
+        "settledAfterMs": 433,
+        "waitedOnRequests": [],
+        "waitedOnIndicators": [],
+        "maskedNodes": 0
+      },
+      "durationMs": 1904
+    },
+    {
+      "ord": 10,
+      "id": "run-locked",
+      "atUtc": "2026-09-30T19:51:08.907Z",
+      "actor": {
+        "name": "IntelliFlow Finance Approver",
+        "email": "fi*****@intelliflow.com",
+        "role": "Finance Approver",
+        "tenant": "intelliflow",
+        "scope": "group"
+      },
+      "action": "The Finance Approver locks the approved run",
+      "record": {
+        "type": "PayrollRun",
+        "id": "2dbe8b64-ea51-41f8-a8d8-64981d53d86a"
+      },
+      "expected": "The run reaches Locked, carries a lock timestamp, and offers no further lifecycle control.",
+      "observed": "The run is Locked and exposes no Lock or Process control.",
+      "outcome": "pass",
+      "api": [
+        {
+          "method": "GET",
+          "url": "/api/payroll/companies",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs?page=1&pageSize=100",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "POST",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/lock",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs?pageSize=100",
+          "status": 200,
+          "durationMs": 17,
+          "recordId": "2dbe8b64-ea51-41f8-a8d8-64981d53d86a"
+        }
+      ],
+      "screenAssertion": {
+        "pattern": "/Locked/",
+        "matched": true
+      },
+      "persisted": {
+        "via": "fresh GET",
+        "values": {
+          "status": "Locked",
+          "lockedAtUtc": "2026-09-30T19:51:09.080149Z"
+        }
+      },
+      "capture": {
+        "status": "captured",
+        "shareablePath": "img/10-run-locked.jpg",
+        "shareableSha256": "a9fae09d6986a11e6f613d86560f6b94415fd9cab1f3f6413ec081170ef300cb",
+        "originalSha256": "a9fae09d6986a11e6f613d86560f6b94415fd9cab1f3f6413ec081170ef300cb",
+        "bytes": 65677,
+        "settledAfterMs": 428,
+        "waitedOnRequests": [],
+        "waitedOnIndicators": [],
+        "maskedNodes": 0
+      },
+      "durationMs": 1429
+    },
+    {
+      "ord": 11,
+      "id": "payslips",
+      "atUtc": "2026-09-30T19:51:10.336Z",
+      "actor": {
+        "name": "IntelliFlow HR Manager",
+        "email": "hr*******@intelliflow.com",
+        "role": "HR Manager",
+        "tenant": "intelliflow",
+        "scope": "group"
+      },
+      "action": "Generate the payslips for the locked run",
+      "record": {
+        "type": "PayrollRun",
+        "id": "2dbe8b64-ea51-41f8-a8d8-64981d53d86a"
+      },
+      "expected": "Exactly 14 payslips, one per distinct employee, each with a real payslip number, and each published to employee self-service (the run is locked, so the month is already being paid).",
+      "observed": "14 payslips, 14 distinct numbers, 14 distinct employees.",
+      "outcome": "pass",
+      "api": [
+        {
+          "method": "GET",
+          "url": "/api/help-texts",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/auth/me",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/features/disabled-keys",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/features/modules",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/notifications",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/tenant-admin/localization",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/companies",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/reports/summary",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/overview?year=2026&month=9",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/readiness?year=2026&month=9",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs?page=1&pageSize=100",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/payslips?page=1&pageSize=100",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "POST",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/payslips/generate",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/payslips?page=1&pageSize=100",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/payslips?page=1&pageSize=200",
+          "status": 200,
+          "durationMs": 20,
+          "recordId": null
+        }
+      ],
+      "screenAssertion": {
+        "pattern": "Total Payslips",
+        "matched": true
+      },
+      "persisted": {
+        "via": "fresh GET",
+        "values": {
+          "payslips": 14,
+          "distinctEmployees": 14,
+          "distinctPayslipNumbers": 14,
+          "publishedToEss": 14
+        }
+      },
+      "capture": {
+        "status": "captured",
+        "shareablePath": "img/11-payslips.jpg",
+        "shareableSha256": "efbdd436c5d1b38837a1c1ea5a142501603347ad0ad4a6b5951f9a7941b70986",
+        "originalSha256": "2aff91e43b7c3305de69113b625c0df5ec6513c148c2351cee1b6f999c288147",
+        "bytes": 101250,
+        "settledAfterMs": 440,
+        "waitedOnRequests": [],
+        "waitedOnIndicators": [],
+        "maskedNodes": 14
+      },
+      "durationMs": 2162
+    },
+    {
+      "ord": 12,
+      "id": "payment-batch",
+      "atUtc": "2026-09-30T19:51:12.498Z",
+      "actor": {
+        "name": "IntelliFlow Administrator",
+        "email": "ad***@intelliflow.com",
+        "role": "Admin",
+        "tenant": "intelliflow",
+        "scope": "group"
+      },
+      "action": "Create the payment batch now that the run is locked",
+      "record": {
+        "type": "PayrollPaymentBatch",
+        "id": "007f022d-07b8-42ad-9ef1-6b8aaf6449d2"
+      },
+      "expected": "The control is enabled, the blocking notice is gone, and the batch's total equals the run's net pay with one payment line per employee.",
+      "observed": "Batch PAY-202609-195113 created in Draft for SAR 119,730.47.",
+      "outcome": "pass",
+      "api": [
+        {
+          "method": "GET",
+          "url": "/api/help-texts",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/auth/me",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/notifications",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/features/modules",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/features/disabled-keys",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/tenant-admin/localization",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/reports/summary",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/companies",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/ai/insights?acknowledged=false&pageSize=5",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/overview?year=2026&month=9",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/readiness?year=2026&month=9",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs?page=1&pageSize=100",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/payment-batches?runId=2dbe8b64-ea51-41f8-a8d8-64981d53d86a",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "POST",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/payment-batches",
+          "status": 201,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/bank-exports/batches/007f022d-07b8-42ad-9ef1-6b8aaf6449d2/availability",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/payment-batches/007f022d-07b8-42ad-9ef1-6b8aaf6449d2/records",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/payment-batches/007f022d-07b8-42ad-9ef1-6b8aaf6449d2/records",
+          "status": 200,
+          "durationMs": 22,
+          "recordId": "007f022d-07b8-42ad-9ef1-6b8aaf6449d2"
+        }
+      ],
+      "screenAssertion": {
+        "pattern": "/Draft/",
+        "matched": true
+      },
+      "persisted": {
+        "via": "fresh GET",
+        "values": {
+          "batchId": "007f022d-07b8-42ad-9ef1-6b8aaf6449d2",
+          "batchNumber": "PAY-202609-195113",
+          "paymentRecords": 14,
+          "sumOfPaymentLines": 119730.47,
+          "recordStatuses": [
+            "Pending"
+          ]
+        }
+      },
+      "capture": {
+        "status": "captured",
+        "shareablePath": "img/12-payment-batch.jpg",
+        "shareableSha256": "b946648899c441961390f2c16360cd86dd61cc60d3ca91b5d2b058bdcde3e776",
+        "originalSha256": "fff3ee37ba30655f8df657f17d4956153983b614651fe31ebcb2669562e51a60",
+        "bytes": 96842,
+        "settledAfterMs": 435,
+        "waitedOnRequests": [],
+        "waitedOnIndicators": [],
+        "maskedNodes": 14
+      },
+      "durationMs": 2228
+    },
+    {
+      "ord": 13,
+      "id": "bank-export-generation-only",
+      "atUtc": "2026-09-30T19:51:14.726Z",
+      "actor": {
+        "name": "IntelliFlow Administrator",
+        "email": "ad***@intelliflow.com",
+        "role": "Admin",
+        "tenant": "intelliflow",
+        "scope": "group"
+      },
+      "action": "Generate the WPS/SIF bank file (generation only — this must not pay anybody)",
+      "record": {
+        "type": "PayrollPaymentBatch",
+        "id": "007f022d-07b8-42ad-9ef1-6b8aaf6449d2"
+      },
+      "expected": "The batch reaches File Generated with a named file, a content hash, one record per employee and a total equal to the run's net pay. The run stays Locked, the batch is not settled, and no payment record says paid.",
+      "observed": "mudad_wps_0000000000_202609.xml: 14 records, total 119730.47, sha256 aae7df796a426369…",
+      "outcome": "pass",
+      "api": [
+        {
+          "method": "POST",
+          "url": "/api/payroll/payment-batches/007f022d-07b8-42ad-9ef1-6b8aaf6449d2/wps-file",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/help-texts",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/auth/me",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/notifications",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/features/modules",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/tenant-admin/localization",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/features/disabled-keys",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/ai/insights?acknowledged=false&pageSize=5",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/companies",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/reports/summary",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/overview?year=2026&month=9",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/readiness?year=2026&month=9",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs?page=1&pageSize=100",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/payment-batches?runId=2dbe8b64-ea51-41f8-a8d8-64981d53d86a",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs?pageSize=100",
+          "status": 200,
+          "durationMs": 19,
+          "recordId": "2dbe8b64-ea51-41f8-a8d8-64981d53d86a"
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/payment-batches?runId=2dbe8b64-ea51-41f8-a8d8-64981d53d86a",
+          "status": 200,
+          "durationMs": 18,
+          "recordId": null
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/payment-batches/007f022d-07b8-42ad-9ef1-6b8aaf6449d2/records",
+          "status": 200,
+          "durationMs": 19,
+          "recordId": null
+        }
+      ],
+      "screenAssertion": {
+        "pattern": "File Generated",
+        "matched": true
+      },
+      "persisted": {
+        "via": "fresh GET of the run, the batch and every payment record — the \"nobody was paid\" check",
+        "values": {
+          "runStatus": "Locked",
+          "batchStatus": "FileGenerated",
+          "batchWpsStatus": "Generated",
+          "paymentRecordStatuses": [
+            "Pending"
+          ],
+          "anyRecordMarkedPaid": false,
+          "settleEndpointCalled": false
+        }
+      },
+      "capture": {
+        "status": "captured",
+        "shareablePath": "img/13-bank-export-generation-only.jpg",
+        "shareableSha256": "65a0d556f1efee86193f4116317b4f2a27513ffe97710f9058372ab3876084ec",
+        "originalSha256": "65a0d556f1efee86193f4116317b4f2a27513ffe97710f9058372ab3876084ec",
+        "bytes": 62567,
+        "settledAfterMs": 447,
+        "waitedOnRequests": [],
+        "waitedOnIndicators": [],
+        "maskedNodes": 0
+      },
+      "durationMs": 2080
+    },
+    {
+      "ord": 14,
+      "id": "reconciliation",
+      "atUtc": "2026-09-30T19:51:16.806Z",
+      "actor": {
+        "name": "IntelliFlow Finance Approver",
+        "email": "fi*****@intelliflow.com",
+        "role": "Finance Approver",
+        "tenant": "intelliflow",
+        "scope": "group"
+      },
+      "action": "Reconcile the displayed totals against the source records",
+      "record": {
+        "type": "PayrollRun",
+        "id": "2dbe8b64-ea51-41f8-a8d8-64981d53d86a"
+      },
+      "expected": "The reconciliation report's current-period gross and net equal the run's own totals, which equal the sum of the per-employee salary slips, which equal the sum of the payment lines, which equal the wage file total.",
+      "observed": "Reconciliation: headcount 14, gross 138250.00, net 119730.47, 0 flagged variance(s).",
+      "outcome": "pass",
+      "api": [
+        {
+          "method": "GET",
+          "url": "/api/help-texts",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/auth/me",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/features/disabled-keys",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/notifications",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/tenant-admin/localization",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/features/modules",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/companies",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/reports/summary",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/overview?year=2026&month=9",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/readiness?year=2026&month=9",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/companies",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs?page=1&pageSize=100",
+          "status": 200,
+          "durationMs": 0
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/reports/reconciliation?runId=2dbe8b64-ea51-41f8-a8d8-64981d53d86a",
+          "status": 200,
+          "durationMs": 71,
+          "recordId": "2dbe8b64-ea51-41f8-a8d8-64981d53d86a"
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs?pageSize=100",
+          "status": 200,
+          "durationMs": 19,
+          "recordId": "2dbe8b64-ea51-41f8-a8d8-64981d53d86a"
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/runs/2dbe8b64-ea51-41f8-a8d8-64981d53d86a/slips?page=1&pageSize=500",
+          "status": 200,
+          "durationMs": 51,
+          "recordId": null
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/payment-batches/007f022d-07b8-42ad-9ef1-6b8aaf6449d2/records",
+          "status": 200,
+          "durationMs": 18,
+          "recordId": null
+        },
+        {
+          "method": "GET",
+          "url": "/api/payroll/reports/reconciliation?runId=2dbe8b64-ea51-41f8-a8d8-64981d53d86a",
+          "status": 200,
+          "durationMs": 19,
+          "recordId": null
+        }
+      ],
+      "screenAssertion": {
+        "pattern": "/Reconciliation|Variance|Headcount/i",
+        "matched": true
+      },
+      "persisted": {
+        "via": "fresh GETs of the run, its salary slips, the bank payment lines and the reconciliation report",
+        "values": {
+          "runTotalNet": 119730.47,
+          "sumOfSalarySlipNet": 119730.47,
+          "sumOfBankPaymentLines": 119730.47,
+          "reconciliationReportNet": 119730.47,
+          "netShownOnApprovalScreen": 119730.47,
+          "allFiveAgree": true
+        }
+      },
+      "capture": {
+        "status": "captured",
+        "shareablePath": "img/14-reconciliation.jpg",
+        "shareableSha256": "9ebb4aceab76c4210c9cf6c4df39e767747742203d627b2f602d7ecee13979b7",
+        "originalSha256": "9ebb4aceab76c4210c9cf6c4df39e767747742203d627b2f602d7ecee13979b7",
+        "bytes": 62485,
+        "settledAfterMs": 435,
+        "waitedOnRequests": [],
+        "waitedOnIndicators": [],
+        "maskedNodes": 0
+      },
+      "durationMs": 1794
+    }
+  ],
+  "summary": {
+    "steps": 14,
+    "passed": 14,
+    "failed": 0,
+    "captured": 13,
+    "noCapture": 1,
+    "stepsWithPersistenceReRead": 14
+  },
+  "notRun": [
+    {
+      "area": "The UI path for the incomplete-data refusal (R1)",
+      "reason": "Not run. R1 was driven through the API, so the bundle has no image of it and does not claim one. Whether the employee form surfaces the same 422 legibly is untested here."
+    },
+    {
+      "area": "Payment settlement (marking employees paid)",
+      "reason": "Deliberately not run. POST /api/payroll/payment-batches/{id}/settle is the endpoint that marks a batch and its records paid; this story stops at file generation, and step 10 records that nothing was marked paid. Settlement has NO evidence here and must not be read as covered."
+    },
+    {
+      "area": "Bank submission and the bank's own response",
+      "reason": "Not run: no bank or WPS endpoint is reachable from a disposable stack. The file is generated and hashed; whether a bank would accept it is untested here."
+    },
+    {
+      "area": "Payroll for the other fixture tenants (Ras Al-Manar, Almarai group, Tata group)",
+      "reason": "Not run. This story is one tenant, IntelliFlow, end to end. Multi-company group payroll is covered by e2e/group-company/ as assertions, not as evidence."
+    }
+  ],
+  "defects": []
+}

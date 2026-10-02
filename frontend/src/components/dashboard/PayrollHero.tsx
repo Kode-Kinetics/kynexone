@@ -39,7 +39,16 @@ const MONTH_LONG: Record<string, string> = {
   Jul: 'July', Aug: 'August', Sep: 'September', Oct: 'October', Nov: 'November', Dec: 'December',
 };
 
-export function PayrollHero({ data, payrollEnabled, dense = false }: { data: DashboardFull; payrollEnabled: boolean; dense?: boolean }) {
+/**
+ * `currency` is the latest run's company currency and `trendCurrency` the one currency every run on the
+ * trend is paid in (lib/payrollCurrency); null when it is not confirmed or the runs are in different
+ * currencies. Amounts are never labelled with a guessed currency, and runs in two currencies are never
+ * drawn on one line or compared as a percentage.
+ */
+export function PayrollHero({ data, payrollEnabled, dense = false, currency = null, trendCurrency = null, currencyNote = null }: {
+  data: DashboardFull; payrollEnabled: boolean; dense?: boolean;
+  currency?: string | null; trendCurrency?: string | null; currencyNote?: string | null;
+}) {
   const t = useT();
   const s = data.summary;
   const o = data.overview;
@@ -48,11 +57,11 @@ export function PayrollHero({ data, payrollEnabled, dense = false }: { data: Das
   const ran = series.filter((p) => p.value != null);
   const prev = ran.length >= 2 ? ran[ran.length - 2] : null;
   const latest = ran.length ? ran[ran.length - 1] : null;
-  const delta = prev && latest && prev.value ? ((latest.value as number) - prev.value) / prev.value * 100 : null;
+  const delta = trendCurrency && prev && latest && prev.value ? ((latest.value as number) - prev.value) / prev.value * 100 : null;
   const step = run ? stepIndex(run.status) : -1;
   const done = step === RUN_STEPS.length - 1;
   const trend = data.analytics?.headcountTrend ?? [];
-  const money = (v: number) => fmtMoney(v);
+  const money = (v: number) => fmtMoney(v, currency);
 
   const side = (
     <div className="flex flex-col gap-2">
@@ -118,6 +127,7 @@ export function PayrollHero({ data, payrollEnabled, dense = false }: { data: Das
                   </span>
                 )}
               </span>
+              {currencyNote && <span className="text-[12px] text-white/80">{currencyNote}</span>}
             </div>
             <dl className="flex gap-6 pb-1">
               {[
@@ -132,12 +142,16 @@ export function PayrollHero({ data, payrollEnabled, dense = false }: { data: Das
               ))}
             </dl>
           </div>
-          {ran.length >= 2 ? (
-            <HeroTrend points={series} format={(v) => fmtMoney(v).replace('SAR ', '')} label={t('Net payroll by month, SAR')} height={dense ? 172 : 190} />
+          {ran.length >= 2 && trendCurrency ? (
+            <HeroTrend points={series} format={(v) => fmtMoney(v)} unit={trendCurrency} label={`${t('Net payroll by month')}, ${trendCurrency}`} height={dense ? 172 : 190} />
           ) : (
             <div className="flex flex-col gap-2 pt-1">
               <GrossSplit net={run.totalNet} deductions={run.totalDeductions} employer={run.employerContributions ?? null} format={money} />
-              <p className="text-[12px] text-white/80">{t('First payroll run on record. The monthly trend appears here from the second run.')}</p>
+              <p className="text-[12px] text-white/80">
+                {ran.length >= 2
+                  ? t('The monthly trend is not drawn: its runs are not all in one confirmed currency.')
+                  : t('First payroll run on record. The monthly trend appears here from the second run.')}
+              </p>
             </div>
           )}
         </div>

@@ -1,4 +1,5 @@
 import client from './client';
+import { fetchAllPages } from '../lib/paging';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -195,8 +196,11 @@ export const requisitionsApi = {
 };
 
 export const openingsApi = {
-  list: (params: { status?: string; page?: number } = {}) =>
+  list: (params: { status?: string; page?: number; pageSize?: number } = {}) =>
     client.get<{ items: JobOpening[]; total: number }>('/api/recruitment/openings', { params }).then(r => r.data),
+  listAll: (params: { status?: string } = {}) =>
+    fetchAllPages((page, pageSize) =>
+      client.get<{ items: JobOpening[]; total: number }>('/api/recruitment/openings', { params: { ...params, page, pageSize } }).then(r => r.data)),
 
   get: (id: string) =>
     client.get<{ opening: JobOpening; stageCounts: { stage: string; count: number }[] }>(`/api/recruitment/openings/${id}`).then(r => r.data),
@@ -217,6 +221,8 @@ export const openingsApi = {
 export const candidatesApi = {
   list: (params: { search?: string; status?: string; page?: number; pageSize?: number } = {}) =>
     client.get<{ items: Candidate[]; total: number }>('/api/recruitment/candidates', { params }).then(r => r.data),
+  listAll: (params: { search?: string; status?: string } = {}) =>
+    fetchAllPages((page, pageSize) => candidatesApi.list({ ...params, page, pageSize })),
 
   create: (body: {
     firstName: string; lastName: string; email: string; phone: string;
@@ -302,10 +308,26 @@ export interface OfferApproval {
   offerLetterId: string;
   stepOrder: number;
   approverName: string;
+  approverUserId: string | null;
   approverRole: string;
   status: string;
   comments: string;
   decidedAtUtc: string | null;
+}
+
+/** What the signed-in user can do next with an offer, from the same rules the API enforces. */
+export interface OfferApprovalContext {
+  required: boolean;
+  isAuthor: boolean;
+  canSend: boolean;
+  sendBlockedReason: string | null;
+  myPendingStepId: string | null;
+}
+
+export interface OfferApproverOption {
+  userId: string;
+  name: string;
+  email: string;
 }
 
 export interface OnboardingChecklist {
@@ -353,8 +375,8 @@ export interface OnboardingChecklistTemplateTask {
 // ── Extended API Clients ───────────────────────────────────────────────────────
 
 export const workforcePlanningApi = {
-  list: (year?: number, status?: string) =>
-    client.get<{ total: number; items: WorkforcePlan[] }>('/api/recruitment/workforce-planning', { params: { year, status } }).then(r => r.data),
+  list: (year?: number, status?: string, page?: number, pageSize?: number) =>
+    client.get<{ total: number; items: WorkforcePlan[] }>('/api/recruitment/workforce-planning', { params: { year, status, page, pageSize } }).then(r => r.data),
 
   get: (id: string) =>
     client.get<WorkforcePlan>(`/api/recruitment/workforce-planning/${id}`).then(r => r.data),
@@ -370,8 +392,8 @@ export const workforcePlanningApi = {
 };
 
 export const interviewsApi = {
-  list: (applicationId?: string, status?: string, page = 1) =>
-    client.get<{ total: number; items: InterviewSchedule[] }>('/api/recruitment/interviews', { params: { applicationId, status, page } }).then(r => r.data),
+  list: (applicationId?: string, status?: string, page = 1, pageSize?: number) =>
+    client.get<{ total: number; items: InterviewSchedule[] }>('/api/recruitment/interviews', { params: { applicationId, status, page, pageSize } }).then(r => r.data),
 
   get: (id: string) =>
     client.get<{ interview: InterviewSchedule; feedbacks: InterviewFeedback[] }>(`/api/recruitment/interviews/${id}`).then(r => r.data),
@@ -402,8 +424,8 @@ export const assessmentsApi = {
   createTemplate: (body: { code: string; title: string; description?: string; assessmentType: string; durationMinutes: number; passingScore: number; isRandomized: boolean; audience?: string }) =>
     client.post<AssessmentTemplate>('/api/recruitment/assessments/templates', body).then(r => r.data),
 
-  list: (applicationId?: string, status?: string) =>
-    client.get<{ total: number; items: CandidateAssessment[] }>('/api/recruitment/assessments', { params: { applicationId, status } }).then(r => r.data),
+  list: (applicationId?: string, status?: string, page?: number, pageSize?: number) =>
+    client.get<{ total: number; items: CandidateAssessment[] }>('/api/recruitment/assessments', { params: { applicationId, status, page, pageSize } }).then(r => r.data),
 
   send: (body: { applicationId: string; templateId: string; expiryDays?: number }) =>
     client.post<CandidateAssessment>('/api/recruitment/assessments/send', body).then(r => r.data),
@@ -412,15 +434,31 @@ export const assessmentsApi = {
     client.patch<CandidateAssessment>(`/api/recruitment/assessments/${id}/result`, { scoreObtained }).then(r => r.data),
 };
 
+export interface OfferPlacementOption { id: string; name: string; code: string }
+export interface OfferPlacementOptions { departments: OfferPlacementOption[]; designations: OfferPlacementOption[] }
+
 export const offersApi = {
-  list: (applicationId?: string, status?: string) =>
-    client.get<{ total: number; items: OfferLetter[] }>('/api/recruitment/offers', { params: { applicationId, status } }).then(r => r.data),
+  list: (applicationId?: string, status?: string, page?: number, pageSize?: number) =>
+    client.get<{ total: number; items: OfferLetter[] }>('/api/recruitment/offers', { params: { applicationId, status, page, pageSize } }).then(r => r.data),
 
   get: (id: string) =>
-    client.get<{ offer: OfferLetter; approvals: OfferApproval[] }>(`/api/recruitment/offers/${id}`).then(r => r.data),
+    client.get<{ offer: OfferLetter; approvals: OfferApproval[]; approval: OfferApprovalContext }>(`/api/recruitment/offers/${id}`).then(r => r.data),
 
-  create: (body: { applicationId: string; offeredJobTitle: string; offeredDepartment?: string; startDate: string; basicSalary: number; housingAllowance: number; transportAllowance: number; otherAllowances: number; probationMonths: number; contentHtml?: string; responseDeadline?: string }) =>
+  approverOptions: (id: string) =>
+    client.get<OfferApproverOption[]>(`/api/recruitment/offers/${id}/approver-options`).then(r => r.data),
+
+  requestApproval: (id: string, body: { approverUserId: string; approverName: string; approverRole?: string }) =>
+    client.post<OfferApproval>(`/api/recruitment/offers/${id}/approvals`, body).then(r => r.data),
+
+  decideApproval: (id: string, approvalId: string, body: { decision: 'Approved' | 'Rejected'; comments?: string }) =>
+    client.patch<OfferApproval>(`/api/recruitment/offers/${id}/approvals/${approvalId}/decide`, body).then(r => r.data),
+
+  create: (body: { applicationId: string; offeredJobTitle: string; offeredDepartment?: string; startDate: string; basicSalary: number; housingAllowance: number; transportAllowance: number; otherAllowances: number; probationMonths: number; contentHtml?: string; responseDeadline?: string; departmentId?: string; designationId?: string }) =>
     client.post<OfferLetter>('/api/recruitment/offers', body).then(r => r.data),
+
+  /** The active departments and designations an offer can name: the records activation matches. */
+  placementOptions: () =>
+    client.get<OfferPlacementOptions>('/api/recruitment/offers/placement-options').then(r => r.data),
 
   send: (id: string) =>
     client.patch<OfferLetter>(`/api/recruitment/offers/${id}/send`, {}).then(r => r.data),
@@ -453,7 +491,7 @@ export const onboardingApi = {
   createBulk: (body: { checklistId?: string; employeeId?: string; applicationId?: string; startDate?: string; tasks?: unknown[] }) =>
     client.post<{ count: number; tasks: OnboardingTask[] }>('/api/recruitment/onboarding/tasks/bulk', body).then(r => r.data),
 
-  listTasks: (params: { employeeId?: string; applicationId?: string; status?: string; page?: number } = {}) =>
+  listTasks: (params: { employeeId?: string; applicationId?: string; status?: string; page?: number; pageSize?: number } = {}) =>
     client.get<{ total: number; items: OnboardingTask[] }>('/api/recruitment/onboarding/tasks', { params }).then(r => r.data),
 
   createTask: (body: { taskTitle: string; taskDescription?: string; category?: string; checklistId?: string; employeeId?: string; applicationId?: string; assignedToName?: string; dueDate?: string; isMandatory: boolean }) =>
@@ -487,6 +525,10 @@ export const applicationsApi = {
   list: (params: { jobOpeningId?: string; stage?: string; status?: string; page?: number; pageSize?: number } = {}) =>
     client.get<{ items: JobApplication[]; total: number }>('/api/recruitment/applications', { params }).then(r => r.data),
 
+  /** Every application, page by page, for the pickers that choose one to schedule or offer. */
+  listAll: (params: { jobOpeningId?: string; stage?: string; status?: string } = {}) =>
+    fetchAllPages((page, pageSize) => applicationsApi.list({ ...params, page, pageSize })),
+
   kanban: (jobOpeningId: string) =>
     client.get<{ stages: KanbanStage[]; rejected: JobApplication[] }>(`/api/recruitment/applications/kanban/${jobOpeningId}`).then(r => r.data),
 
@@ -513,8 +555,9 @@ export const applicationsApi = {
   recordFeedback: (interviewId: string, body: { overallRating: number; recommendation: string; feedbackNotes: string }) =>
     client.post<InterviewSchedule>(`/api/recruitment/applications/interviews/${interviewId}/feedback`, body).then(r => r.data),
 
+  /** Department and designation default to the job opening's when left out; an id wins over a name. */
   generateOffer: (id: string, body: {
-    department: string; startDate: string; basicSalary: number;
+    department?: string; departmentId?: string; designationId?: string; startDate: string; basicSalary: number;
     housingAllowance: number; transportAllowance: number; otherAllowances: number; probationMonths: number;
   }) => client.post<OfferLetter>(`/api/recruitment/applications/${id}/offer`, body).then(r => r.data),
 

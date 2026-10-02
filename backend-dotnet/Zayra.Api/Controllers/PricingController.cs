@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Pricing;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -18,11 +19,13 @@ public class PricingController : ControllerBase
 {
     private readonly ZayraDbContext _db;
     private readonly ILogger<PricingController> _log;
+    private readonly QuoteNotificationQueue _salesNotifications;
 
-    public PricingController(ZayraDbContext db, ILogger<PricingController> log)
+    public PricingController(ZayraDbContext db, ILogger<PricingController> log, QuoteNotificationQueue salesNotifications)
     {
         _db = db;
         _log = log;
+        _salesNotifications = salesNotifications;
     }
 
     // ── GET /api/pricing/modules ── public module list ─────────────────────────
@@ -224,8 +227,14 @@ public class PricingController : ControllerBase
         _db.PricingQuotes.Add(quote);
         await _db.SaveChangesAsync(ct);
 
-        _log.LogInformation("PricingQuote submitted. Id={Id} Company={Company} Email={Email}",
-            quote.Id, quote.CompanyName, quote.ContactEmail);
+        // The id only. Every other field is anonymous requester input (contact details included), and
+        // the id is enough to find the record at /platform/pricing.
+        _log.LogInformation("PricingQuote {Id} submitted.", quote.Id);
+
+        // Tell sales off the request thread. The quote is already saved; this never waits on SMTP,
+        // never throws, and never changes what the requester sees.
+        if (!_salesNotifications.TryEnqueue(quote.Id))
+            _log.LogWarning("PricingQuote {Id} was saved but not announced: the notification queue is full.", quote.Id);
 
         return Ok(new { id = quote.Id, message = "Quote request received. Our team will contact you within 1 business day." });
     }

@@ -329,6 +329,10 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.IEmployeeActivatio
 // Duplicate-person detection — the ONE authoritative, server-side detector shared by the pre-create
 // check, the create commit backstop, and (via the preloaded-dictionary matcher) the bulk importer.
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.IEmployeeDuplicateDetector, Zayra.Api.Infrastructure.Employees.EmployeeDuplicateDetector>();
+// Maker-checker on new-hire drafts: who made a hire and so may not activate it.
+// The recruitment-aware set: the draft's creator and editors, plus the sender and acceptor of the
+// accepted offer behind it.
+builder.Services.AddScoped<Zayra.Api.Application.Employees.IDraftHireMakers, Zayra.Api.Infrastructure.Recruitment.OfferDraftHireMakers>();
 // Phase 2 rate resolvers: bounded statutory-override precedence + non-statutory company rate precedence.
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.IStatutoryRateResolver, Zayra.Api.Infrastructure.Payroll.StatutoryRateResolver>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.ICompanyRatePolicyResolver, Zayra.Api.Infrastructure.Payroll.CompanyRatePolicyResolver>();
@@ -450,6 +454,12 @@ builder.Services.AddHostedService<AiInsightEngine>();
 // thread is what makes "a notification can never fail OR HANG a payroll operation" true.
 builder.Services.AddHostedService<NotificationDeliveryWorker>();
 builder.Services.AddHostedService<ComplianceReminderWorker>();
+// Public pricing-quote requests are announced to sales off the request thread: a bounded queue,
+// a global send budget, a fixed recipient from platform config, and the platform relay only.
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Pricing.QuoteNotificationQueue>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Pricing.QuoteNotificationBudget>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Pricing.QuoteNotificationSender>();
+builder.Services.AddHostedService<Zayra.Api.Infrastructure.Pricing.QuoteNotificationWorker>();
 
 // F3 — durable background jobs (job store + per-item checkpoints + leased, fenced worker). Runs on
 // every instance: claims are FOR UPDATE SKIP LOCKED with a lease token, so old and new instances share
@@ -479,6 +489,19 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Za
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Zayra.Api.Infrastructure.Retention.Rules.ExpiredRefreshTokenRule>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Zayra.Api.Infrastructure.Retention.Rules.SoftDeletedTenantRule>();
 builder.Services.AddHostedService<Zayra.Api.Infrastructure.Retention.DataRetentionScheduler>();
+
+// Approved employee changes with a FUTURE effective date (bank details included) take effect when that date
+// arrives in the tenant's timezone: an hourly scheduler enqueues one `employee.effective-changes` job per
+// tenant with due changes on the F3 queue above, and the job applies each through the same
+// EmployeeChangeApplier path as an immediate approval — or, if the record moved since approval, returns it
+// to the Approval Center. ON by default; EmployeeEffectiveChanges__Enabled=false is the kill switch.
+builder.Services.AddSingleton(TimeProvider.System);
+var effectiveChangeOptions = builder.Configuration.GetSection(Zayra.Api.Infrastructure.Employees.EffectiveChangeOptions.SectionName)
+    .Get<Zayra.Api.Infrastructure.Employees.EffectiveChangeOptions>() ?? new Zayra.Api.Infrastructure.Employees.EffectiveChangeOptions();
+builder.Services.AddSingleton(effectiveChangeOptions);
+builder.Services.AddSingleton(Zayra.Api.Infrastructure.Employees.EffectiveChangeJobHandler.Descriptor);
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.EffectiveChangeJobHandler>();
+builder.Services.AddHostedService<Zayra.Api.Infrastructure.Employees.EffectiveChangeScheduler>();
 
 // HttpClient's default timeout is 100s. Left unset, a slow or wedged model call blocked a
 // user-facing request for a minute and a half before anything degraded. Callers that can fall
@@ -747,8 +770,10 @@ app.MapGet("/health/live", () => Results.Ok(new
     utc = DateTime.UtcNow,
     service = "zayra-api",
     // Deployed-commit marker for deploy verification. Render injects RENDER_GIT_COMMIT into
-    // the running instance, so this reflects exactly which commit is live (falls back to "local").
-    commit = Environment.GetEnvironmentVariable("RENDER_GIT_COMMIT") ?? "local"
+    // the running instance, so this reflects exactly which commit is live. Off Render it is the
+    // commit baked into the build (SourceRevisionId), which the e2e preflight compares with the
+    // commit under test; "local" only when neither is known. See BuildInfo.
+    commit = BuildInfo.Commit
 })).AllowAnonymous();
 
 app.MapGet("/health/ready", async (ZayraDbContext db, IConfiguration config, ILoggerFactory lf, CancellationToken ct) =>

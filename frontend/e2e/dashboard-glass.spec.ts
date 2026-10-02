@@ -22,6 +22,9 @@ const EARLY = new Date('2026-09-22T02:58:00Z'); // 05:58 Riyadh: before the work
 const MIDDAY = new Date('2026-09-22T09:00:00Z'); // 12:00 Riyadh
 const months = ['Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep'];
 const EVIDENCE = process.env.DASHBOARD_EVIDENCE_DIR;
+// The run's legal entity. Payroll amounts are labelled with ITS currency (lib/payrollCurrency),
+// resolved from GET /api/payroll/companies — never a hard-coded SAR.
+const COMPANY = { id: 'c-intelliflow-ksa', name: 'IntelliFlow KSA', tradeName: '', defaultCurrency: 'SAR', wpsEmployerId: '', gosiEmployerId: '' };
 
 function dataset(rich: boolean, now: Date) {
   const ago = (h: number) => new Date(now.getTime() - h * 3.6e6).toISOString();
@@ -35,7 +38,7 @@ function dataset(rich: boolean, now: Date) {
         : [['Annual Leave - Raj Krishnamurthy', 125], ['Annual Leave - Amira Mansour', 100], ['Casual Leave - Sunita Patel', 98]]
       ).map(([t, h], i) => ({ id: `a${i}`, title: t as string, module: String(t).startsWith('Employee') ? 'EmployeeChangeRequest' : 'LeaveRequest', createdAtUtc: ago(h as number),
         ...(rich ? { department: ['Engineering', 'Product', 'Human Resources', 'Engineering', 'Operations'][i], detail: ['12 Oct to 18 Oct', '2 Oct to 6 Oct', '29 Sep', 'IBAN', '20 h, September'][i], dueAtUtc: ago((h as number) - 72) } : {}) })),
-      payrollSummary: rich ? { periodLabel: 'Sep 2026', totalGross: 2030000, totalNet: 1893400, totalDeductions: 136600, employeeCount: 142, status: 'PendingFinanceReview', payDate: null, employerContributions: 212000 } : { periodLabel: 'Sep 2026', totalGross: 205200, totalNet: 194600, totalDeductions: 10600, employeeCount: 12, status: 'Locked' },
+      payrollSummary: rich ? { periodLabel: 'Sep 2026', totalGross: 2030000, totalNet: 1893400, totalDeductions: 136600, employeeCount: 142, status: 'PendingFinanceReview', payDate: null, employerContributions: 212000, companyId: COMPANY.id } : { periodLabel: 'Sep 2026', totalGross: 205200, totalNet: 194600, totalDeductions: 10600, employeeCount: 12, status: 'Locked', companyId: COMPANY.id },
       payrollByEntity: [], workforceMix: [{ name: 'Full-time', value: 12 }],
       headcountByDepartment: rich
         ? [{ name: 'Engineering', value: 46 }, { name: 'Operations', value: 38 }, { name: 'Sales', value: 24 }, { name: 'Product', value: 14 }, { name: 'Human Resources', value: 9 }, { name: 'Finance', value: 7 }, { name: 'Legal', value: 4 }]
@@ -49,7 +52,7 @@ function dataset(rich: boolean, now: Date) {
       ] : [],
       openLeaveRequests: 3, newJoinersThisMonth: rich ? 4 : 0, complianceAlertsTotal: rich ? 5 : 0, complianceCriticalTotal: rich ? 1 : 0,
     },
-    payrollTrends: months.map((m, i) => ({ month: m, totalNet: rich ? [1520000, 1550000, 1580000, 1600000, 1630000, 1660000, 1700000, 1740000, 1780000, 1810000, 1850000, 1893400][i] : [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 194600][i], employeeCount: 12, status: 'Locked' })),
+    payrollTrends: months.map((m, i) => ({ month: m, totalNet: rich ? [1520000, 1550000, 1580000, 1600000, 1630000, 1660000, 1700000, 1740000, 1780000, 1810000, 1850000, 1893400][i] : [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 194600][i], employeeCount: 12, status: 'Locked', companyId: COMPANY.id })),
     analytics: rich ? {
       attendanceHeatmap: {
         days: Array.from({ length: 15 }, (_, i) => new Date(Date.UTC(2026, 8, 8 + i)).toISOString().slice(0, 10)),
@@ -79,7 +82,7 @@ const USER = {
   permissions: ['dashboard.read', 'employees.read', 'attendance.read', 'leave.read', 'approvals.read', 'approvals.decide', 'payroll.read', 'compliance.read', 'reports.read', 'ai.query', 'ai.insights_view'],
 };
 
-async function open(page: Page, opts: { rich?: boolean; now?: Date; theme?: 'light' | 'dark'; tenantTz?: string } = {}) {
+async function open(page: Page, opts: { rich?: boolean; now?: Date; theme?: 'light' | 'dark'; tenantTz?: string; user?: typeof USER } = {}) {
   const now = opts.now ?? EARLY;
   await page.clock.setFixedTime(now);
   await page.addInitScript((th) => {
@@ -91,19 +94,21 @@ async function open(page: Page, opts: { rich?: boolean; now?: Date; theme?: 'lig
   await page.route('**/api/**', (route) => {
     const p = new URL(route.request().url()).pathname;
     const json = (b: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(b) });
-    if (p === '/api/auth/me') return json(USER);
+    if (p === '/api/auth/me') return json(opts.user ?? USER);
     if (p === '/api/features/disabled-keys' || p === '/api/features/modules' || p === '/api/notifications') return json([]);
     // `tenantTz: ''` is the real API answer for a tenant that has stated no zone — see
     // TenantAdminController.UnstatedLocalizationAsync. It must NOT be a US zone, and the header
     // must then follow the viewer's own browser zone.
     if (p === '/api/tenant-admin/localization') return json({ defaultTimezone: opts.tenantTz ?? 'Asia/Riyadh', calendarSystem: 'Gregorian', hijriDatesEnabled: true });
     if (p === '/api/dashboard/full') return json(dataset(!!opts.rich, now));
+    if (p === '/api/payroll/companies') return json([COMPANY]);
     if (p === '/api/ai/status') return json({ enabled: true, provider: 'fixture' });
     return json({ items: [], total: 0 });
   });
   await page.goto('/dashboard');
   await expect(page.getByRole('heading', { name: 'HR Command Center' })).toBeVisible({ timeout: 30_000 });
-  await expect(page.locator('#hero-heading')).toBeVisible({ timeout: 15_000 });
+  if ((opts.user ?? USER).permissions.includes('payroll.read'))
+    await expect(page.locator('#hero-heading')).toBeVisible({ timeout: 15_000 });
 }
 
 async function evidence(page: Page, name: string, fullPage = false) {
@@ -111,6 +116,23 @@ async function evidence(page: Page, name: string, fullPage = false) {
   await page.waitForTimeout(350); // let view transitions (<= 280 ms) settle
   if (EVIDENCE) await page.screenshot({ path: `${EVIDENCE}/${name}.png`, fullPage });
 }
+
+test.describe('HR Command Center: who sees payroll (F10)', () => {
+  test('without payroll.read or reports.read there is no payroll card and no reports link', async ({ page }) => {
+    const manager = { ...USER, roles: ['Manager'], permissions: ['dashboard.read', 'employees.read', 'approvals.read', 'manager.read'] };
+    await open(page, { user: manager });
+    await expect(page.getByRole('region', { name: 'Key metrics' })).toBeVisible();
+    await expect(page.locator('#hero-heading')).toHaveCount(0);
+    await expect(page.locator('#paydept-heading')).toHaveCount(0);
+    await expect(page.getByRole('link', { name: 'Open reports' })).toHaveCount(0);
+  });
+
+  test('a payroll reader sees the run in its company currency', async ({ page }) => {
+    await open(page);
+    await expect(page.locator('section[aria-labelledby="hero-heading"]').getByText('SAR 194.6K').first()).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Open reports' })).toBeVisible();
+  });
+});
 
 test.describe('HR Command Center: data trust', () => {
   test('today is never mixed with history; states are distinct', async ({ page }) => {

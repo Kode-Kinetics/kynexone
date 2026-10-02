@@ -10,6 +10,7 @@ import {
   RASALMANAR_ADMIN, RASALMANAR_SLUG, TATA_SLUG,
 } from './world';
 import { provisionLimitedTenantFixture } from './limited-tenant-fixture';
+import { sessionMismatches } from './identity/verify-session';
 
 /**
  * Authenticate ONCE and persist the session for every spec that needs platform admin.
@@ -89,10 +90,18 @@ setup('authenticate platform admin and provision isolated limited tenant', async
           ? ' — rate limited. Raise E2E_LOGIN_PACING_MS; do NOT raise the API\'s login limit.'
           : ''),
       );
-    const body = await response.json() as { accessToken?: string; token?: string; refreshToken?: string };
+    const body = await response.json() as { accessToken?: string; token?: string; refreshToken?: string; user?: unknown };
     const accessToken = body.accessToken ?? body.token;
     if (!accessToken || !body.refreshToken)
       throw new Error(`Persona setup login returned incomplete tokens for ${persona.email}/${persona.slug}.`);
+    // Every session this lane will reuse is the persona e2e/world.ts declares — role, exact AuthSeeder
+    // permissions, scope, employee link — proven now, from the response already in hand (F07). The
+    // Evostel tenant is created per run by this project, not declared by the bootstrap, so it is exempt.
+    if (persona.slug !== EVOSTEL_SLUG) {
+      const mismatches = sessionMismatches(persona.email, persona.slug, body.user);
+      if (mismatches.length)
+        throw new Error(`Persona ${persona.email}/${persona.slug} signed in, but not as declared:\n  ${mismatches.join('\n  ')}`);
+    }
     sessions[tenantSessionKey(persona.email, persona.slug)] = {
       accessToken,
       refreshToken: body.refreshToken,

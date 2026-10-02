@@ -155,7 +155,7 @@ function PlanBar({ plans, total, loading }: {
 
 function HealthRow({ label, status, loading }: {
   label: string;
-  status: 'ok' | 'error' | 'unknown' | 'configured' | 'not_configured' | 'disconnected';
+  status: 'ok' | 'error' | 'unknown' | 'configured' | 'not_configured' | 'capture' | 'disconnected';
   loading: boolean;
 }) {
   if (loading) return (
@@ -166,13 +166,15 @@ function HealthRow({ label, status, loading }: {
   );
 
   const isOk   = status === 'ok' || status === 'configured';
-  const isWarn  = status === 'not_configured' || status === 'unknown';
+  // A server in test capture mode sends nothing: a warning, never a green "Configured".
+  const isWarn  = status === 'not_configured' || status === 'unknown' || status === 'capture';
   const isError = status === 'error' || status === 'disconnected';
 
   const label2Map: Record<string, string> = {
     ok:             'Healthy',
     configured:     'Configured',
     not_configured: 'Not set',
+    capture:        'Test capture',
     unknown:        'Unknown',
     error:          'Error',
     disconnected:   'Disconnected',

@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import { resolveTarget } from './e2e/identity/env';
 
 export default defineConfig({
   testDir: './e2e',
@@ -10,7 +11,15 @@ export default defineConfig({
   // fail-never-skip setup. Left in scope here it would run nine extra logins on top of this suite's
   // own — tripping the API's 10-per-60s limiter — and would run the gate specs with retries:1, which
   // is precisely the retry-hides-a-flaky-authorization-bug behaviour that config exists to forbid.
-  testIgnore: /security-gate\//,
+  // e2e/evidence/ is excluded for the same reason and one more. It has its OWN config
+  // (e2e/evidence/playwright.evidence.config.ts) with retries:0, because an evidence bundle that
+  // passed on the second attempt has not recorded anything — and this config sets retries:1, so a
+  // failed evidence run here silently overwrites its own bundle with the retry. It also MUTATES the
+  // shared IntelliFlow payroll state: it creates, processes, approves, locks and bank-exports a run.
+  // Collected here it sorts before gosi-filing.spec.ts in a single-worker lane, and that spec's
+  // "the seeded period ties out" assertions then measure a tenant the evidence run has moved. Both
+  // failures showed up together on the first CI run of this branch; this is their single cause.
+  testIgnore: [/security-gate\//, /evidence\//],
   fullyParallel: false,
   // A stray `test.only` would otherwise shrink this 130-test lane to ONE test in CI, silently.
   // playwright.security.config.ts has had this; this config did not — the same "a guard exists in
@@ -21,18 +30,22 @@ export default defineConfig({
   // exactly that reason. Do not raise this.
   retries: 1,
   workers: 1,
-  reporter: 'list',
+  // The actor reporter prints who each test acted as (e2e/identity/actor.ts), so a green line in the
+  // CI log also says under whose session it went green.
+  reporter: [['list'], ['./e2e/identity/actor-reporter.ts']],
   use: {
-    // FRONTEND_PORT=5173 per .env. Accept the established E2E_BASE_URL alias so
-    // isolated audit stacks never fall back to an unrelated service on :5173.
-    baseURL: process.env.PLAYWRIGHT_BASE_URL ?? process.env.E2E_BASE_URL ?? 'http://localhost:5173',
+    // One resolution for every config, helper and the preflight (e2e/identity/env.ts): PLAYWRIGHT_BASE_URL,
+    // then the E2E_BASE_URL alias, then :5173 — which the preflight then has to prove is the right stack.
+    baseURL: resolveTarget().baseUrl,
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },
   projects: [
-    // A tenant-critical smoke lane must remain runnable even when the platform-admin
-    // bootstrap account is intentionally absent or broken. Keeping it independent of
-    // `setup` prevents one platform login from suppressing every tenant browser proof.
+    // Independent of the `setup` project, so a failing platform-UI login (the setup project drives the
+    // platform login FORM) cannot suppress the tenant browser proof. It is NOT independent of the
+    // platform owner itself any more: the world it logs in to only exists because the bootstrap created
+    // it as that owner, and the global preflight (F07) refuses to run any lane unless the owner this
+    // process presents authenticates against this API and the world is the verified one.
     {
       name: 'tenant-pilot',
       testMatch: /pilot-critical\.spec\.ts/,
@@ -50,7 +63,13 @@ export default defineConfig({
       // Without repeating it here the browser-pilot lane collects the 14 security-gate specs,
       // which depend on fixtures only the dedicated chrome-security-gate job provisions, and they
       // fail in milliseconds. Keep these two lists in sync.
-      testIgnore: [/auth\.setup\.ts/, /fixture\.teardown\.ts/, /pilot-critical\.spec\.ts/, /security-gate\//],
+      testIgnore: [
+        /auth\.setup\.ts/, /fixture\.teardown\.ts/, /pilot-critical\.spec\.ts/, /security-gate\//,
+        // …and e2e/evidence/, which is exactly the bug this comment warns about happening again:
+        // the root testIgnore above stops applying here, so without this line the evidence lane's
+        // payroll story is collected into THIS project, with retries:1, ahead of gosi-filing.
+        /evidence\//,
+      ],
     },
     // ── Mobile web ────────────────────────────────────────────────────────────────────────────
     // COST/VALUE (assessed 2026-09-17): all three projects were Desktop Chrome, so the responsive

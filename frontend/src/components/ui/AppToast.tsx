@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, CheckCircle, Info, X, XCircle } from 'lucide-react';
 
 type ToastKind = 'success' | 'error' | 'warning' | 'info';
@@ -125,13 +125,21 @@ export function AppToastProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener('zayra:error', handler);
   }, [showToast]);
 
-  const ctx: AppToastCtx = {
+  const success = useCallback((msg: string, title?: string) => showToast('success', msg, title), [showToast]);
+  const error = useCallback((msg: string, title?: string) => showToast('error', msg, title), [showToast]);
+  const warn = useCallback((msg: string, title?: string) => showToast('warning', msg, title), [showToast]);
+  const info = useCallback((msg: string, title?: string) => showToast('info', msg, title), [showToast]);
+
+  // Keep the context value referentially stable. PermissionGate depends on this object while
+  // reporting access denial; recreating it after each toast state update retriggered the gate,
+  // posted another toast, and could recurse into React's "Maximum update depth exceeded" boundary.
+  const ctx = useMemo<AppToastCtx>(() => ({
     showToast,
-    success: (msg, title) => showToast('success', msg, title),
-    error:   (msg, title) => showToast('error',   msg, title),
-    warn:    (msg, title) => showToast('warning', msg, title),
-    info:    (msg, title) => showToast('info',    msg, title),
-  };
+    success,
+    error,
+    warn,
+    info,
+  }), [showToast, success, error, warn, info]);
 
   return (
     <Ctx.Provider value={ctx}>
