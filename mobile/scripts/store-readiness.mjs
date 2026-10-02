@@ -4,6 +4,7 @@ import path from 'node:path';
 const root = process.cwd();
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const app = JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8')).expo;
+const eas = JSON.parse(fs.readFileSync(path.join(root, 'eas.json'), 'utf8'));
 const failures = [];
 const warnings = [];
 
@@ -26,8 +27,12 @@ for (const asset of [
   if (!asset || !fs.existsSync(path.resolve(root, asset))) failures.push(`Missing release asset: ${asset ?? '<undefined>'}`);
 }
 
-const apiUrl = process.env.EXPO_PUBLIC_API_BASE_URL;
-if (!apiUrl) warnings.push('EXPO_PUBLIC_API_BASE_URL is not set in this shell; EAS profiles do set it.');
+const productionEnv = eas.build?.production?.env ?? {};
+if (productionEnv.EXPO_PUBLIC_APP_ENV !== 'production') {
+  failures.push('EAS production profile must set EXPO_PUBLIC_APP_ENV=production.');
+}
+const apiUrl = process.env.EXPO_PUBLIC_API_BASE_URL || productionEnv.EXPO_PUBLIC_API_BASE_URL;
+if (!apiUrl) failures.push('Production EXPO_PUBLIC_API_BASE_URL is missing from the shell and EAS production profile.');
 else {
   let parsed;
   try { parsed = new URL(apiUrl); } catch { failures.push(`Invalid EXPO_PUBLIC_API_BASE_URL: ${apiUrl}`); }
@@ -37,6 +42,23 @@ else {
 
 const easProjectId = process.env.EXPO_PUBLIC_EAS_PROJECT_ID || app.extra?.eas?.projectId;
 if (!easProjectId) warnings.push('EAS project ID is not set yet; push-token registration remains disabled until EAS initialization.');
+
+if (eas.cli?.appVersionSource !== 'remote') {
+  failures.push('eas.cli.appVersionSource must be remote so EAS owns production build-number increments.');
+}
+
+const infoPlist = fs.readFileSync(path.join(root, 'ios/KynexOne/Info.plist'), 'utf8');
+if (!infoPlist.includes('<string>$(MARKETING_VERSION)</string>')) {
+  failures.push('Info.plist CFBundleShortVersionString must use $(MARKETING_VERSION).');
+}
+if (!infoPlist.includes('<string>$(CURRENT_PROJECT_VERSION)</string>')) {
+  failures.push('Info.plist CFBundleVersion must use $(CURRENT_PROJECT_VERSION).');
+}
+
+const entitlements = fs.readFileSync(path.join(root, 'ios/KynexOne/KynexOne.entitlements'), 'utf8');
+if (!entitlements.includes('<string>$(APS_ENVIRONMENT)</string>')) {
+  failures.push('Push entitlement must use the configuration-specific $(APS_ENVIRONMENT) build setting.');
+}
 
 console.log(`KynexOne Mobile ${pkg.version}`);
 console.log(`iOS: ${app.ios.bundleIdentifier} build ${app.ios.buildNumber}`);

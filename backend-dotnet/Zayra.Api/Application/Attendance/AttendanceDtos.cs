@@ -91,7 +91,18 @@ public record AttendanceRawEventRequest(
     string? VerificationMethod,
     decimal? ConfidenceScore);
 
-public record WebPunchRequest(int EmployeeId, string PunchDirection, string? LocationName, decimal? Latitude, decimal? Longitude);
+public record WebPunchRequest(
+    int EmployeeId,
+    string PunchDirection,
+    string? LocationName,
+    decimal? Latitude,
+    decimal? Longitude,
+    string? PhotoReference = null,
+    string? VerificationMethod = null,
+    decimal? ConfidenceScore = null,
+    decimal? AccuracyMeters = null,
+    bool? LocationMocked = null,
+    bool? ClientBiometricVerified = null);
 
 // ── Device-key-authenticated ingest (generic webhook connector) ──────────────
 public record DeviceIngestPunch(

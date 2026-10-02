@@ -78,6 +78,7 @@ export interface GeoLocation {
   longitude: number;
   accuracy?: number;
   timestamp: number;
+  mocked?: boolean;
 }
 
 export interface MobilePunchPayload {
@@ -86,7 +87,9 @@ export interface MobilePunchPayload {
   location?: GeoLocation;
   workLocationId?: string;
   deviceInfo: DeviceInfo;
-  selfieBase64?: string; // optional, if policy requires
+  selfiePhotoReference?: string; // opaque tenant-scoped storage reference returned by the API
+  deviceFaceVerified?: boolean;
+  faceCapabilityAvailable?: boolean;
   notes?: string;
 }
 
@@ -459,6 +462,13 @@ export interface TeamMember {
 // ---- Dashboard ----
 
 export interface EmployeeDashboard {
+  profile?: {
+    employeeId: string;
+    fullName: string;
+    jobTitle?: string;
+    department?: string;
+    profilePhotoUrl?: string;
+  };
   todayAttendance: TodayAttendance;
   leaveBalances: LeaveBalance[];
   pendingRequestsCount: number;
