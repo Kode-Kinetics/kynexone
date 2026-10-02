@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Attendance;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Leave;
 using Zayra.Api.Data;
 
 namespace Zayra.Api.Controllers.Leave;
@@ -32,6 +33,8 @@ public class LeaveCalendarController : ControllerBase
         [FromQuery] int? employeeId,
         [FromQuery] int? year = null,
         [FromQuery] int? month = null,
+        [FromQuery] Guid? companyId = null,
+        [FromQuery] Guid? branchId = null,
         CancellationToken ct = default)
     {
         var tenantId = this.GetTenantId();
@@ -49,6 +52,8 @@ public class LeaveCalendarController : ControllerBase
 
         if (!scope.IsUnrestricted)
             query = query.Where(r => scope.AllowedEmployeeIds!.Contains(r.EmployeeId));
+        var group = await LeaveGroupFilter.EmployeeIdsAsync(_db, tenantId.Value, companyId, branchId, ct);
+        if (group is not null) query = query.Where(r => group.Contains(r.EmployeeId));
         if (!string.IsNullOrWhiteSpace(departmentName)) query = query.Where(r => r.DepartmentName == departmentName);
         if (employeeId.HasValue) query = query.Where(r => r.EmployeeId == employeeId.Value);
 

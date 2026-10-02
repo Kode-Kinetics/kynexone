@@ -140,6 +140,9 @@ public class RecruitmentCompanyScopeTests
         var cand = MakeCandidate(tenantId, company.Id, "enc@x.com");
         var app = MakeApplication(tenantId, company.Id, opening.Id, cand.Id);
         db.Companies.Add(company); db.JobOpenings.Add(opening); db.Candidates.Add(cand); db.JobApplications.Add(app);
+        // An offer's job title and department are resolved against the organisation's records.
+        db.Departments.Add(new Department { TenantId = tenantId, Code = "TECH", NameEn = "Tech", IsActive = true });
+        db.Designations.Add(new Designation { TenantId = tenantId, Code = "ENG", TitleEn = "Engineer", IsActive = true });
         await db.SaveChangesAsync();
 
         var ctrl = new OffersController(db, new RcNullLetterService(), new RecruitmentService(db));

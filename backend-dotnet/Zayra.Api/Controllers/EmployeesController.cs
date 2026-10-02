@@ -94,15 +94,18 @@ public class EmployeesController : ControllerBase
         _establishmentGuard = establishmentGuard ?? new EstablishmentGuardService(db);
         _activationGuard = activationGuard ?? new EmployeeActivationGuard(db);
         _duplicateDetector = duplicateDetector ?? new EmployeeDuplicateDetector(db);
-        // Who made a hire (maker-checker on drafts). Recruitment registers a wider implementation that
-        // adds the offer's sender and acceptor; the fallback is the employee module's own view.
-        _draftHireMakers = draftHireMakers ?? new DraftHireMakers(db);
+        // Who made a hire (maker-checker on drafts): the draft's creator and editors plus, for an accepted
+        // offer, its sender and acceptor. The fallback is the same set Program.cs registers, so a
+        // hand-constructed controller cannot quietly apply a narrower rule.
+        _draftHireMakers = draftHireMakers ?? new Zayra.Api.Infrastructure.Recruitment.OfferDraftHireMakers(db);
     }
 
     [HttpGet]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer,Manager,Auditor")]
     public async Task<ActionResult<PagedResult<EmployeeListItemDto>>> Search([FromServices] IEmployeeManagementService employeeManagement, [FromQuery] string? search, [FromQuery] string? status, [FromQuery] string? department, [FromQuery] string? readiness = null, [FromQuery] Guid? importBatchId = null, [FromQuery] string? gapType = null, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tenantId = RequireTenant();
         var entityScope = this.GetEntityScope();
         var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
@@ -492,12 +495,16 @@ public class EmployeesController : ControllerBase
         [FromServices] Zayra.Api.Application.CountryPack.ICountryPackResolver? countryPacks = null)
     {
         var tenantId = RequireTenant();
+        // Explicit countryCode wins, else the company's — this endpoint publishes that rule in its own
+        // response, and it is now the SAME helper every write path and the readiness resolver use, so
+        // the documentation and the behaviour cannot drift apart again.
         var iso = (countryCode ?? string.Empty).Trim();
-        if (string.IsNullOrEmpty(iso) && companyId is Guid cid)
-            iso = await _db.Companies.AsNoTracking()
+        var companyCountry = string.IsNullOrEmpty(iso) && companyId is Guid cid
+            ? await _db.Companies.AsNoTracking()
                 .Where(c => c.TenantId == tenantId && c.Id == cid)
-                .Select(c => c.CountryCode).FirstOrDefaultAsync(ct) ?? string.Empty;
-        var iso2 = (Zayra.Api.Application.Common.CountryCodeStandard.NormalizeToIso2(iso) ?? iso).Trim().ToUpperInvariant();
+                .Select(c => c.CountryCode).FirstOrDefaultAsync(ct)
+            : null;
+        var iso2 = HomeJurisdiction.DeriveEmployeeCountry(iso, companyCountry);
 
         // Requiredness/gate from the merged policy (floor ∪ tenant ∪ company ∪ gcc-setting, strictest-wins).
         var policy = await _activationGuard.ResolvePolicyAsync(tenantId, companyId, iso2, nationality, ct);
@@ -1831,7 +1838,11 @@ public class EmployeesController : ControllerBase
             DateOfBirth = ReadCsvDate(row, "DateOfBirth", gaps),
             Nationality = row.GetValueOrDefault("Nationality", string.Empty),
             MaritalStatus = row.GetValueOrDefault("MaritalStatus", string.Empty),
-            CountryCode = row.GetValueOrDefault("CountryCode", string.Empty).Trim().ToUpperInvariant(),
+            // Explicit CountryCode column wins, else the EMPLOYING company's country — the one rule, the
+            // one helper. A blank country resolves an EMPTY statutory floor, so a file without the column
+            // used to import a whole workforce with no jurisdiction gate applied to any of it.
+            CountryCode = HomeJurisdiction.DeriveEmployeeCountry(
+                row.GetValueOrDefault("CountryCode", string.Empty), resolved.CompanyCountryCode),
             Department = deptNameRaw,
             DepartmentId = resolved.DepartmentId,
             Designation = desigTitleRaw,
@@ -5307,12 +5318,22 @@ public class EmployeesController : ControllerBase
                 }
             }
         }
-        return new DraftPlacement(deptId, deptName, desigId, desigTitle, branchId, branchName, companyId);
+        // The employing company's own country, carried with the placement so the employee the draft
+        // becomes can derive its jurisdiction from the legal entity it actually lands in.
+        var companyCountryCode = companyId is Guid placementCompanyId
+            ? await ScopedBypass.TenantWide(_db.Companies, tenantId,
+                    "Draft placement: the country of the legal entity the draft resolved to, which keys every statutory requirement (register section 6).")
+                .AsNoTracking()
+                .Where(x => x.Id == placementCompanyId && !x.IsDeleted)
+                .Select(x => x.CountryCode)
+                .FirstOrDefaultAsync(ct) ?? string.Empty
+            : string.Empty;
+        return new DraftPlacement(deptId, deptName, desigId, desigTitle, branchId, branchName, companyId, companyCountryCode);
     }
 
     private sealed record DraftPlacement(
         Guid? DepartmentId, string DepartmentName, Guid? DesignationId, string DesignationTitle,
-        Guid? BranchId, string BranchName, Guid? CompanyId);
+        Guid? BranchId, string BranchName, Guid? CompanyId, string CompanyCountryCode);
 
     /// <summary>The employee record a draft becomes (without its code, which is allocated under the
     /// tenant lock). Shared by approval and the review screen's activation check.</summary>
@@ -5332,7 +5353,10 @@ public class EmployeesController : ControllerBase
         EmergencyContactName = draft.EmergencyContactName,
         EmergencyContactPhone = draft.EmergencyContactPhone,
         Nationality = draft.Nationality,
-        CountryCode = draft.CountryCode,
+        // The country the draft states wins, else the EMPLOYING company's — the one rule, the one helper.
+        // A draft submitted without a country used to become an employee with a blank one, which resolves
+        // an EMPTY statutory floor and walks straight through the activation gate on approval.
+        CountryCode = HomeJurisdiction.DeriveEmployeeCountry(draft.CountryCode, placement.CompanyCountryCode),
         Department = placement.DepartmentName,
         DepartmentId = placement.DepartmentId,
         Designation = placement.DesignationTitle,

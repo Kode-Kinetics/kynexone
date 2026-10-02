@@ -65,12 +65,21 @@ public sealed class EmployeeReadinessEvaluator : IEmployeeReadinessEvaluator
     /// Real statutory gates remain wherever a policy exists (every GCC country has a code floor).</para>
     ///
     /// <para>Integrity blockers (<see cref="IntegrityBlockers"/>) still apply: a policy-less employee with
-    /// an unknown joining date is Blocked on that date, not on the missing policy.</para>
+    /// an unknown joining date is Blocked on that date, not on the missing policy. So is one whose
+    /// JURISDICTION is unknown (<see cref="UnknownJurisdictionBlocker"/>) — that is a narrower claim than
+    /// this one and the reason it is allowed to block: "we do not know which country's law applies" is not
+    /// the same as "this known country has no rules configured yet". When that blocker has already named
+    /// the country, this method does not repeat it as a second checklist line.</para>
     /// </summary>
     private static EmployeeReadiness NoPolicy(ResolvedReadinessPolicy policy, IReadOnlyList<ReadinessItem> integrityBlockers,
         IReadOnlyList<ReadinessItem> payIntegrityBlockers)
     {
         var country = (policy.CountryCode ?? string.Empty).Trim();
+        var empty = System.Array.Empty<ReadinessItem>();
+        // The jurisdiction blocker already says the country is missing or unrecognised, with the field to
+        // fix. Saying it twice would give the operator two lines for one problem.
+        if (integrityBlockers.Any(i => string.Equals(i.Key, "CountryCode", StringComparison.OrdinalIgnoreCase)))
+            return new EmployeeReadiness("Blocked", 0m, integrityBlockers, payIntegrityBlockers, empty, empty, empty);
         // Three honestly-different causes. "Country not recognised" is its own case because a value like
         // "UAE" is neither ISO-2 nor ISO-3: it normalises to NOTHING, so "no policy for UAE" would send the
         // operator to configure a policy that could never match, when the fix is the country code itself.
@@ -88,7 +97,6 @@ public sealed class EmployeeReadinessEvaluator : IEmployeeReadinessEvaluator
             FixKind: "policy",
             FixTarget: null,
             DocumentType: null);
-        var empty = System.Array.Empty<ReadinessItem>();
         // Score 0, not 100: nothing was checked, so nothing is proven.
         return new EmployeeReadiness(
             integrityBlockers.Count > 0 ? "Blocked" : "NeedsAttention", 0m,
@@ -96,23 +104,80 @@ public sealed class EmployeeReadinessEvaluator : IEmployeeReadinessEvaluator
     }
 
     /// <summary>
-    /// Record-integrity blockers that hold under EVERY policy, including none. Today there is one: an
-    /// unknown joining date (<c>JoiningDate == default</c>). The CSV import leaves the date unset when the
-    /// cell cannot be read rather than inventing one, and every date that hangs off it — the salary
-    /// structure's effective date, the reporting line, probation, end-of-service accrual — would otherwise
-    /// inherit year 1. Such a record must not become Active until someone states the real date.
-    /// No live record is affected: every create path (form, draft approval, offer acceptance, import)
-    /// always sets a joining date; only an unreadable import cell now leaves it unknown.
-    /// Emitted only when violated, so it never changes the score of a record that satisfies it.
+    /// Record-integrity blockers that hold under EVERY policy, including none. There are two: an UNKNOWN
+    /// JURISDICTION (<see cref="UnknownJurisdictionBlocker"/> — the country that keys every statutory
+    /// requirement is blank or unrecognised, so an empty requirement list means "not evaluated", not
+    /// "nothing required"), and an unknown joining date (<c>JoiningDate == default</c>).
+    ///
+    /// <para>On the DATE: the CSV import leaves it unset when the cell cannot be read rather than
+    /// inventing one, and every date that hangs off it — the salary structure's effective date, the
+    /// reporting line, probation, end-of-service accrual — would otherwise inherit year 1. Such a record
+    /// must not become Active until someone states the real date. No live record is affected by that one:
+    /// every create path (form, draft approval, offer acceptance, import) always sets a joining date;
+    /// only an unreadable import cell leaves it unknown.</para>
+    ///
+    /// <para>Each is emitted only when violated, so neither changes the score of a record that satisfies
+    /// it.</para>
     /// </summary>
     private static IReadOnlyList<ReadinessItem> IntegrityBlockers(EmployeeReadinessSnapshot emp, ResolvedReadinessPolicy policy)
     {
-        if (emp.JoiningDate != default) return System.Array.Empty<ReadinessItem>();
-        // A configured policy that already requires JoiningDate reports it through the normal loop.
-        if (policy.Items.Any(i => string.Equals(i.Key, "JoiningDate", StringComparison.OrdinalIgnoreCase)))
-            return System.Array.Empty<ReadinessItem>();
-        var req = new ReadinessRequirement("JoiningDate", "contract", FailClosed: true, Gate: "activate", Source: "integrity");
-        return new[] { ToItem(req, FieldPresence.Missing) };
+        var items = new List<ReadinessItem>();
+        if (UnknownJurisdictionBlocker(policy) is { } jurisdiction) items.Add(jurisdiction);
+        if (emp.JoiningDate == default
+            // A configured policy that already requires JoiningDate reports it through the normal loop.
+            && !policy.Items.Any(i => string.Equals(i.Key, "JoiningDate", StringComparison.OrdinalIgnoreCase)))
+        {
+            var req = new ReadinessRequirement("JoiningDate", "contract", FailClosed: true, Gate: "activate", Source: "integrity");
+            items.Add(ToItem(req, FieldPresence.Missing));
+        }
+        return items.Count == 0 ? System.Array.Empty<ReadinessItem>() : items;
+    }
+
+    /// <summary>
+    /// FAIL CLOSED ON AN UNKNOWN JURISDICTION. Every statutory requirement is keyed on the employee's
+    /// country, and <c>GccReadinessFloor.Resolve</c> answers an unrecognised one with an EMPTY list.
+    /// Read as "nothing is required", that turned the absence of a jurisdiction into a clean bill of
+    /// health: a non-GCC expat with no Iqama and no GOSI reference activated into a Saudi legal entity
+    /// because their country was blank. Per the product invariant — a critical uncertain value is
+    /// flagged or blocked, never guessed — an employee whose country cannot be identified is now
+    /// refused activation and told why.
+    ///
+    /// <para><b>The test is "known", not "GCC".</b> The product supports non-GCC employers (the country
+    /// list spans GB, IN, US, PH… and <c>GccReadinessFloor</c> documents non-GCC countries as carrying an
+    /// empty floor by design, with config profiles alone applying). A UK or Indian entity's employee has
+    /// a KNOWN jurisdiction with no GCC floor, and still activates exactly as before — nothing here
+    /// requires a GCC country. Only a country that is blank, or free text no country list recognises
+    /// (e.g. "UAE", which is neither ISO-2 nor ISO-3), is refused.</para>
+    ///
+    /// <para><b>Reachability.</b> The country is derived before this runs (explicit ⇒ the employing
+    /// company's — <see cref="Application.Common.HomeJurisdiction.DeriveEmployeeCountry"/>), and a create
+    /// under a company with no country is already refused outright (<c>CompanyCountryMissingException</c>).
+    /// So this cannot fire for a record created through a fixed path; it exists to catch rows that were
+    /// persisted blank before the derivation existed, and free text that normalises to nothing.</para>
+    ///
+    /// <para>Distinct from <see cref="NoPolicy"/>, which stays ADVISORY: "no policy configured for GB" is
+    /// a known country nobody has set rules for, and blocking on it would refuse live employees whose
+    /// data never changed. "We do not know which country's law applies" is a different claim.</para>
+    /// </summary>
+    private static ReadinessItem? UnknownJurisdictionBlocker(ResolvedReadinessPolicy policy)
+    {
+        var country = (policy.CountryCode ?? string.Empty).Trim();
+        if (Application.Common.CountryCodeStandard.IsValid(country)) return null;
+        // A policy that already requires CountryCode reports it through the normal loop — no duplicate.
+        if (policy.Items.Any(i => string.Equals(i.Key, "CountryCode", StringComparison.OrdinalIgnoreCase)))
+            return null;
+        return new ReadinessItem(
+            Key: "CountryCode",
+            Label: country.Length == 0
+                ? "Country not set — no statutory requirements can be applied to this employee"
+                : $"Country '{country}' is not recognised — no statutory requirements can be applied to this employee",
+            Category: "personal",
+            Reason: "statutory",
+            Jurisdiction: null,
+            Gate: "activate",
+            FixKind: "field",
+            FixTarget: "CountryCode",
+            DocumentType: null);
     }
 
     /// <summary>

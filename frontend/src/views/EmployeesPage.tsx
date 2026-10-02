@@ -9,9 +9,11 @@ import { useAuth } from '../contexts/AuthContext';
 import { ExEmployeesTable } from './ExEmployeesTable';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { ReadinessBadge, hasExpiringId } from '../components/ReadinessBadge';
-import { ReadinessChecklist } from '../components/ReadinessChecklist';
+import { ReadinessChecklist, type ReadinessFixMode } from '../components/ReadinessChecklist';
+import { GosiCohortPanel } from '../components/GosiCohortPanel';
 import client from '../api/client';
 import { createLatestRequestGate, runLatest } from '../lib/latestRequest';
+import { createUrlSeed } from '../lib/urlSeed';
 
 const employeesImportExport = {
   export: async () => {
@@ -173,23 +175,55 @@ const emptyEmployee = (): EmployeeCreateRequest => ({
 // the catalog — it is resolved server-side and surfaced via the readiness checklist
 // (GET /{id}/readiness); do not reintroduce a client-side required-field gate.
 
-// Fast-fix field targets the PUT /{id} edit endpoint can persist — its ApplyChanges keys, plus the
-// IBAN alias. Payroll sub-fields (MOL ID, routing, payment method), org IDs, and compliance-sourced
-// expiries have no post-create edit path, so their checklist items stay informational rather than
-// exposing a dead input. Requiredness itself is server-policy-driven (the readiness checklist), never
-// this list.
+// Fast-fix field targets — the readiness `fix.target` values that PUT /api/employees/{id} can
+// persist, aliased to the ApplyChanges key wherever the two names differ (readiness calls a card
+// expiry `iqamaExpiry`; the column is `iqamaExpiryDate`, and the IBAN arrives as
+// `payrollProfile.iban`). A target that is NOT here renders as a read-only hint instead of a dead
+// input, so the ONLY reason to leave one out is that no post-create write path exists for it —
+// today that is the payroll sub-fields captured on the add-employee form (MOL ID, routing code,
+// payment method) and the org IDs.
+//
+// Compliance-sourced expiries ARE writable: ApplyChanges accepts iqamaExpiryDate /
+// emiratesIdExpiryDate / qidExpiryDate / civilIdExpiryDate (and idNumber, sponsorName) directly.
+// A note here previously claimed the opposite, which left six fail-closed activation and pay gates
+// across SA/AE/QA/KW/OM/BH with no control to clear them — do not reintroduce that claim without
+// checking EmployeesController.ApplyChanges first.
+//
+// Requiredness itself is server-policy-driven (the readiness checklist), never this list.
 const READINESS_FIELD_EDIT_ALIAS: Record<string, string> = {
   'payrollProfile.iban': 'bankIban',
+  // Card expiries: readiness names them without the `Date` suffix; ApplyChanges expects the column.
+  iqamaExpiry: 'iqamaExpiryDate',
+  emiratesIdExpiry: 'emiratesIdExpiryDate',
+  qidExpiry: 'qidExpiryDate',
+  civilIdExpiry: 'civilIdExpiryDate',
+  // Payroll-profile sub-field the PUT path takes as a flat key.
+  'payrollProfile.socialInsuranceReference': 'socialInsuranceReference',
+  // The routing code the WPS/SIF line carries: an approval-gated edit key (a bank move clears and pay-gates it).
+  'payrollProfile.bankRoutingCode': 'bankRoutingCode',
 };
 const READINESS_EDITABLE_TARGETS = new Set<string>([
   'englishName', 'dateOfBirth', 'nationality', 'gender', 'workEmail', 'phone', 'joiningDate',
   'contractType', 'employmentType', 'iqamaNumber', 'gosiReference', 'emiratesId', 'qid', 'civilId',
+  'idNumber', 'qiwaContractNumber',
   'passportNumber', 'visaNumber', 'workPermitNumber', 'muqeemNumber', 'laborCardNumber',
   'passportExpiryDate', 'visaExpiryDate', 'salary',
 ]);
 function readinessUpdateKey(target: string): string | null {
   if (READINESS_FIELD_EDIT_ALIAS[target]) return READINESS_FIELD_EDIT_ALIAS[target];
   return READINESS_EDITABLE_TARGETS.has(target) ? target : null;
+}
+
+// Fields captured ONLY on the add-employee form: there is no post-create write path, so the
+// checklist must not point at the profile for them (the Edit modal does not carry them either).
+const CREATE_ONLY_READINESS_TARGETS = new Set<string>([
+  'payrollProfile.molId', 'payrollProfile.paymentMethod',
+]);
+
+/** Where this gap can actually be closed — drives the checklist's inline box vs. read-only hint. */
+function readinessFixMode(target: string): ReadinessFixMode {
+  if (readinessUpdateKey(target) !== null) return 'inline';
+  return CREATE_ONLY_READINESS_TARGETS.has(target) ? 'unavailable' : 'profile';
 }
 
 interface EmployeeUsageData {
@@ -208,7 +242,9 @@ export function EmployeesPage() {
   const [employees, setEmployees] = useState<EmployeeListItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
-  const [search, setSearch] = useState('');
+  // `?search=` seeds the box on load and when navigation changes it; it never overwrites typing.
+  const [searchSeed] = useState(createUrlSeed);
+  const [search, setSearch] = useState(() => searchParams?.get('search') ?? '');
   const [status, setStatus] = useState<StatusFilter>('');
   // Server-side readiness worklist filter (paginates correctly across ALL pages, not just the
   // loaded page). "Needs info" = the worklist the import results view deep-links into.
@@ -369,22 +405,24 @@ export function EmployeesPage() {
   }, [employeeLoadGate]);
 
   const loadLookups = useCallback(async () => {
+    // Every row of each lookup, page by page. One page of 100 left the 101st department,
+    // designation or active manager missing from the form's selects with nothing to say so.
     const [companyRes, branchRes, deptRes, desigRes, gradeRes, costRes, managerRes] = await Promise.all([
-      companiesApi.list(1, 100),
-      branchesApi.list(undefined, 1, 100),
-      departmentsApi.list(undefined, 1, 100),
-      designationsApi.list(undefined, 1, 100),
-      gradesApi.list(1, 100),
-      costCentersApi.list(undefined, 1, 100),
-      employeesApi.list({ status: 'Active', page: 1, pageSize: 100 }),
+      companiesApi.listAll(),
+      branchesApi.listAll(),
+      departmentsApi.listAll(),
+      designationsApi.listAll(),
+      gradesApi.listAll(),
+      costCentersApi.listAll(),
+      employeesApi.listAll({ status: 'Active' }),
     ]);
-    setCompanies(companyRes.items);
-    setBranches(branchRes.items);
-    setDepartments(deptRes.items);
-    setDesignations(desigRes.items);
-    setGrades(gradeRes.items);
-    setCostCenters(costRes.items);
-    setManagerCandidates(managerRes.items);
+    setCompanies(companyRes);
+    setBranches(branchRes);
+    setDepartments(deptRes);
+    setDesignations(desigRes);
+    setGrades(gradeRes);
+    setCostCenters(costRes);
+    setManagerCandidates(managerRes);
   }, []);
 
   useEffect(() => { load(); }, [load, employeeQuery]);
@@ -522,11 +560,11 @@ export function EmployeesPage() {
     }
   };
   useEffect(() => {
-    const searchFromUrl = searchParams?.get('search') ?? null;
-    if (searchFromUrl !== null && searchFromUrl !== search) {
-      setSearch(searchFromUrl);
-    }
-  }, [search, searchParams]);
+    // Keyed on the URL only. It used to depend on `search` and re-apply the URL value whenever the
+    // box differed from it, which replaced every keystroke with the URL's search.
+    const seeded = searchSeed.take(searchParams?.get('search') ?? null);
+    if (seeded !== undefined) setSearch(seeded);
+  }, [searchParams, searchSeed]);
   useEffect(() => {
     const employeeId = searchParams?.get('employeeId') ?? null;
     if (!employeeId) return;
@@ -1139,8 +1177,6 @@ export function EmployeesPage() {
     }
   };
 
-  const isFixFieldEditable = (target: string) => readinessUpdateKey(target) !== null;
-
   const handleFixDocument = (documentType: string) => {
     setActiveTab('documents');
     setDocumentType(documentType);
@@ -1229,7 +1265,7 @@ export function EmployeesPage() {
                 entityName="Employees"
                 onExport={employeesImportExport.export}
                 onDownloadTemplate={employeesImportExport.template}
-                onImport={async (csv) => { const r = await employeesApi.import(csv); await load(); return r; }}
+                onImport={async (csv, importKey) => { const r = await employeesApi.import(csv, importKey); await load(); return r; }}
                 onPreview={(csv) => employeesApi.importPreview(csv)}
                 onViewIncomplete={(filter) => {
                   setSearch('');
@@ -1520,7 +1556,7 @@ export function EmployeesPage() {
                       readiness={blockedPanel}
                       onFixField={handleFixField}
                       onFixDocument={handleFixDocument}
-                      isFieldEditable={isFixFieldEditable}
+                      fieldFixMode={readinessFixMode}
                     />
                   </div>
                 ) : readiness ? (
@@ -1530,7 +1566,7 @@ export function EmployeesPage() {
                       readiness={readiness}
                       onFixField={handleFixField}
                       onFixDocument={handleFixDocument}
-                      isFieldEditable={isFixFieldEditable}
+                      fieldFixMode={readinessFixMode}
                       showPresent
                     />
                   </div>
@@ -1621,16 +1657,20 @@ export function EmployeesPage() {
                   ]} />
                 )}
                 {activeTab === 'payroll' && (
-                  <DetailGrid rows={[
-                    ['Bank', detail!.payrollProfile?.bankName],
-                    ['IBAN', detail!.payrollProfile?.iban],
-                    ['Account', detail!.payrollProfile?.accountNumber],
-                    ['Payment method', detail!.payrollProfile?.paymentMethod],
-                    ['Currency', detail!.payrollProfile?.salaryCurrency],
-                    ['Payroll group', detail!.payrollProfile?.payrollGroup],
-                    ['WPS eligible', detail!.payrollProfile?.wpsEligible ? 'Yes' : 'No'],
-                    ['EOSB eligible', detail!.payrollProfile?.eosbEligible ? 'Yes' : 'No'],
-                  ]} />
+                  <>
+                    <DetailGrid rows={[
+                      ['Bank', detail!.payrollProfile?.bankName],
+                      ['IBAN', detail!.payrollProfile?.iban],
+                      ['Account', detail!.payrollProfile?.accountNumber],
+                      ['Payment method', detail!.payrollProfile?.paymentMethod],
+                      ['Currency', detail!.payrollProfile?.salaryCurrency],
+                      ['Payroll group', detail!.payrollProfile?.payrollGroup],
+                      ['WPS eligible', detail!.payrollProfile?.wpsEligible ? 'Yes' : 'No'],
+                      ['EOSB eligible', detail!.payrollProfile?.eosbEligible ? 'Yes' : 'No'],
+                    ]} />
+                    {/* F02 — the statutory fact the Saudi GOSI schedule is keyed on (approval-gated). */}
+                    <GosiCohortPanel key={detail!.id} employee={detail!} />
+                  </>
                 )}
                 {activeTab === 'compliance' && (
                   <div className="space-y-2">

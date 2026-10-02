@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Leave;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
@@ -21,16 +22,36 @@ public class AbsenceController : ControllerBase
         _scopeService = scopeService;
     }
 
+    /// <summary>
+    /// The absence register.
+    ///
+    /// <para>FILTER SPELLINGS. <c>fromDate</c>, <c>toDate</c> and <c>absenceType</c> are canonical — they are
+    /// what every other Leave endpoint calls the same three things. The Absences screen has always sent
+    /// <c>from</c>, <c>to</c> and <c>type</c>, which this action did not declare, and an undeclared query
+    /// parameter is silently dropped rather than refused: those three filters had never once narrowed the
+    /// list. Both spellings are accepted so no caller has to change; the canonical one wins if both are
+    /// sent. New callers should use the canonical names.</para>
+    /// </summary>
     [HttpGet]
     public async Task<IActionResult> List(
         [FromQuery] int? employeeId,
         [FromQuery] DateOnly? fromDate,
         [FromQuery] DateOnly? toDate,
         [FromQuery] string? absenceType,
+        [FromQuery(Name = "from")] DateOnly? fromAlias,
+        [FromQuery(Name = "to")] DateOnly? toAlias,
+        [FromQuery(Name = "type")] string? typeAlias,
+        [FromQuery] Guid? companyId,
+        [FromQuery] Guid? branchId,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 25,
         CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+        var from = fromDate ?? fromAlias;
+        var to = toDate ?? toAlias;
+        var type = string.IsNullOrWhiteSpace(absenceType) ? typeAlias : absenceType;
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
@@ -39,10 +60,12 @@ public class AbsenceController : ControllerBase
         var query = _db.AbsenceRecords.Where(a => a.TenantId == tenantId);
         if (!scope.IsUnrestricted)
             query = query.Where(a => scope.AllowedEmployeeIds!.Contains(a.EmployeeId));
+        var group = await LeaveGroupFilter.EmployeeIdsAsync(_db, tenantId.Value, companyId, branchId, ct);
+        if (group is not null) query = query.Where(a => group.Contains(a.EmployeeId));
         if (employeeId.HasValue) query = query.Where(a => a.EmployeeId == employeeId.Value);
-        if (fromDate.HasValue) query = query.Where(a => a.AbsenceDate >= fromDate.Value);
-        if (toDate.HasValue) query = query.Where(a => a.AbsenceDate <= toDate.Value);
-        if (!string.IsNullOrWhiteSpace(absenceType)) query = query.Where(a => a.AbsenceType == absenceType);
+        if (from.HasValue) query = query.Where(a => a.AbsenceDate >= from.Value);
+        if (to.HasValue) query = query.Where(a => a.AbsenceDate <= to.Value);
+        if (!string.IsNullOrWhiteSpace(type)) query = query.Where(a => a.AbsenceType == type);
 
         var total = await query.CountAsync(ct);
         var items = await query
@@ -98,6 +121,8 @@ public class AbsenceController : ControllerBase
         [FromQuery] int pageSize = 25,
         CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 

@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Leave;
 using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
@@ -29,10 +30,14 @@ public class EncashmentController : ControllerBase
         [FromQuery] string? status,
         [FromQuery] int? employeeId,
         [FromQuery] int? year,
+        [FromQuery] Guid? companyId,
+        [FromQuery] Guid? branchId,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 25,
         CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
@@ -41,6 +46,8 @@ public class EncashmentController : ControllerBase
         var query = _db.LeaveEncashmentRequests.Where(e => e.TenantId == tenantId);
         if (!scope.IsUnrestricted)
             query = query.Where(e => scope.AllowedEmployeeIds!.Contains(e.EmployeeId));
+        var group = await LeaveGroupFilter.EmployeeIdsAsync(_db, tenantId.Value, companyId, branchId, ct);
+        if (group is not null) query = query.Where(e => group.Contains(e.EmployeeId));
         if (!string.IsNullOrWhiteSpace(status)) query = query.Where(e => e.Status == status);
         if (employeeId.HasValue) query = query.Where(e => e.EmployeeId == employeeId.Value);
         if (year.HasValue) query = query.Where(e => e.Year == year.Value);

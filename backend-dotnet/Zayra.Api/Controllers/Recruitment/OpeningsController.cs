@@ -31,6 +31,8 @@ public class OpeningsController : ControllerBase
         [FromQuery] int pageSize = 25,
         CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var tenantId = this.GetTenantId()!.Value;
         var query = _db.JobOpenings.Where(j => j.TenantId == tenantId);
         if (!string.IsNullOrWhiteSpace(status)) query = query.Where(j => j.Status == status);

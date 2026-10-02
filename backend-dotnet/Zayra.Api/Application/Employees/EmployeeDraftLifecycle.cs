@@ -69,10 +69,11 @@ public static class EmployeeDraftAuditActions
 }
 
 /// <summary>
-/// Who made a hire, and so may not approve or reject its draft (maker-checker). The default
-/// (<c>Infrastructure.Employees.DraftHireMakers</c>) is the draft's creator plus everyone who has changed
-/// it. Recruitment extends it with the people who sent and accepted the offer behind an accepted-offer
-/// draft, once both stacks are on main.
+/// Who made a hire, and so may not approve or reject its draft (maker-checker).
+/// <c>Infrastructure.Employees.DraftHireMakers</c> is the employee module's view: the draft's creator
+/// plus everyone who has changed it. What Program.cs registers is
+/// <c>Infrastructure.Recruitment.OfferDraftHireMakers</c>, which adds the sender and acceptor of the
+/// offer behind an accepted-offer draft.
 /// </summary>
 public interface IDraftHireMakers
 {

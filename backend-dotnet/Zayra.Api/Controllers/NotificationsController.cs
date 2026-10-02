@@ -98,10 +98,7 @@ public class NotificationsController : ControllerBase
         if (from is not null) q = q.Where(x => x.CreatedAtUtc >= from.Value);
         if (to is not null) q = q.Where(x => x.CreatedAtUtc <= to.Value);
         if (onlyProblems)
-            q = q.Where(x => x.Outcome == DeliveryOutcomes.Failed
-                || x.Outcome == DeliveryOutcomes.NotConfigured
-                || x.Outcome == DeliveryOutcomes.NoContact
-                || x.Outcome == DeliveryOutcomes.Unknown);
+            q = q.Where(x => DeliveryOutcomes.Problems.Contains(x.Outcome));
 
         var rows = await q
             .OrderByDescending(x => x.CreatedAtUtc)
@@ -115,7 +112,113 @@ public class NotificationsController : ControllerBase
             })
             .ToListAsync(cancellationToken);
 
-        return Ok(rows);
+        // F09: one server-side label per row, so no client invents its own reading of "sent".
+        return Ok(rows.Select(x => new
+        {
+            x.Id, x.EventCode, x.EntityName, x.EntityId, x.Channel, x.Outcome,
+            statusLabel = DeliveryOutcomes.Describe(x.Channel, x.Outcome, x.AttemptCount, x.MaxAttempts),
+            reachedRecipientSystem = x.Outcome == DeliveryOutcomes.Sent,
+            canRequeue = RequeuableOutcomes.Contains(x.Outcome),
+            x.AudienceType, x.EmployeeId, x.Subject, x.DestinationMasked, x.ProviderName, x.ProviderReference,
+            x.ErrorCode, x.ErrorMessage, x.AttemptCount, x.MaxAttempts,
+            x.NextAttemptAtUtc, x.LastAttemptAtUtc, x.CompletedAtUtc, x.CreatedAtUtc,
+        }));
+    }
+
+    /// <summary>
+    /// Outcomes an admin may send again. <c>unknown</c> is deliberately absent: an SMS the provider
+    /// may already have delivered must not be billed and delivered twice by a button.
+    /// </summary>
+    private static readonly string[] RequeuableOutcomes =
+        [DeliveryOutcomes.DeadLetter, DeliveryOutcomes.Failed, DeliveryOutcomes.NotConfigured];
+
+    public sealed record RequeueDeliveriesRequest(IReadOnlyList<Guid>? Ids, string? Outcome, string? Channel);
+
+    /// <summary>
+    /// F09 — put undelivered rows back on the queue once the cause is fixed: the relay is back (dead
+    /// letters), or SMTP has just been set up (not_configured rows, which otherwise stay unsent
+    /// forever). Either explicit ids, or every row with one requeueable outcome (optionally one
+    /// channel). Bounded to 500 rows per call.
+    ///
+    /// <para>The address is re-resolved from the directory at send time, which is also why a row
+    /// for a bare external address cannot be requeued: its destination was purged when it ended.</para>
+    /// </summary>
+    [HttpPost("deliveries/requeue")]
+    [HasPermission("notifications.manage")]
+    public async Task<IActionResult> RequeueDeliveries([FromBody] RequeueDeliveriesRequest request,
+        CancellationToken cancellationToken)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+
+        var byIds = request.Ids is { Count: > 0 };
+        if (!byIds && string.IsNullOrWhiteSpace(request.Outcome))
+            return BadRequest(new { message = "Name the deliveries to requeue: ids, or an outcome such as dead_letter." });
+        if (!byIds && !RequeuableOutcomes.Contains(request.Outcome))
+            return BadRequest(new
+            {
+                message = $"Only {string.Join(", ", RequeuableOutcomes)} deliveries can be requeued.",
+            });
+
+        var q = _db.NotificationDeliveries.Where(x => x.TenantId == tenantId.Value
+                                                      && RequeuableOutcomes.Contains(x.Outcome));
+        if (byIds)
+        {
+            var ids = request.Ids!.Distinct().Take(500).ToList();
+            q = q.Where(x => ids.Contains(x.Id));
+        }
+        else
+        {
+            q = q.Where(x => x.Outcome == request.Outcome);
+            if (!string.IsNullOrWhiteSpace(request.Channel)) q = q.Where(x => x.Channel == request.Channel);
+        }
+
+        var rows = await q.OrderBy(x => x.CreatedAtUtc).Take(500).ToListAsync(cancellationToken);
+        var now = DateTime.UtcNow;
+        var requeued = 0;
+        var skippedNoAddress = 0;
+        foreach (var row in rows)
+        {
+            if (row.UserId is null && row.EmployeeId is null)
+            {
+                skippedNoAddress++;
+                continue;
+            }
+            row.Outcome = DeliveryOutcomes.Queued;
+            row.AttemptCount = 0;
+            row.NextAttemptAtUtc = now;
+            row.CompletedAtUtc = null;
+            row.ErrorCode = string.Empty;
+            row.ErrorMessage = string.Empty;
+            row.LeaseOwner = null;
+            row.LeaseExpiresAtUtc = null;
+            row.LeaseVersion += 1;
+            requeued++;
+        }
+
+        if (requeued > 0)
+        {
+            _db.AuditLogs.Add(new Domain.Entities.AuditLog
+            {
+                TenantId = tenantId.Value,
+                UserId = Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var uid) ? uid : null,
+                Action = "notifications.deliveries_requeued",
+                EntityName = nameof(NotificationDelivery),
+                EntityId = byIds ? "ids" : request.Outcome ?? string.Empty,
+                Metadata = System.Text.Json.JsonSerializer.Serialize(new { requeued, skippedNoAddress, request.Outcome, request.Channel }),
+            });
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+
+        return Ok(new
+        {
+            requeued,
+            skippedNoAddress,
+            message = requeued == 0
+                ? "Nothing was requeued."
+                : $"{requeued} delivery(ies) requeued. They are sent on the next worker pass (within a minute)."
+                  + (skippedNoAddress > 0 ? $" {skippedNoAddress} went to a bare address that is no longer stored and cannot be retried." : string.Empty),
+        });
     }
 
     /// <summary>

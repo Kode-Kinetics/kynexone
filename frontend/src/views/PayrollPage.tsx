@@ -22,13 +22,16 @@ import {
 } from '../api/payroll';
 import { identityAuditApi } from '../api/identity';
 import { formatCalendarDate } from '../lib/calendarDate';
+import { requestFailureReason } from '../lib/requestFailure';
 import { commonPayrollCurrency, resolvePayrollRunCurrency, totalsByCurrency, type CompaniesLoadState } from '../lib/payrollCurrency';
 import { usePayrollCompanies } from '../hooks/usePayrollCompanies';
 import { filterPayrollInsightsForReadiness, paymentReadinessHeadline, prerequisiteLabel, type PaymentPrerequisites, type PayrollReadinessWithPrerequisites } from '../lib/payrollPrerequisites';
 import client, { notifyApiError } from '../api/client';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { InfoTip } from '../components/InfoTip';
+import { GosiBasisNote } from '../components/GosiCohortPanel';
 import { useAuth } from '../contexts/AuthContext';
+import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
 import { SaudiBankExportGate } from '../components/payroll/SaudiBankExportGate';
@@ -464,16 +467,32 @@ function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOver
 // ── AI Insights Panel ─────────────────────────────────────────────────────────
 
 function AiInsightsPanel({ readiness }: { readiness: PayrollReadiness | null }) {
+  // This panel is ADVISORY and nobody asked for it — it fetches on mount, beside whatever payroll work
+  // the operator is actually doing. /api/ai/insights requires `ai.insights_view`, which the HR Manager
+  // and Finance Approver bundles do not hold, so for them it 403'd and the shared client's global
+  // interceptor raised a red "Access Denied" toast over a payroll screen where the action had SUCCEEDED
+  // — a completed payroll run reading as a permission failure. An evidence run caught it on 5 of 15
+  // steps, once directly over a screen correctly showing 14 published payslips.
+  //
+  // Gated the way useWorkforceFindings already gates the same endpoint, rather than by suppressing the
+  // toast: a user-initiated action that is refused must still say so. Nobody's permissions are widened;
+  // the panel simply does not ask a question it is not allowed to ask, and renders nothing — NOT the
+  // amber "insight status is unavailable" alert, which would trade a false alarm for a persistent one.
+  const { hasPermission } = useAuth();
+  const { isFeatureEnabled } = useFeatureFlags();
+  const enabled = isFeatureEnabled('ai_assistant') && hasPermission('ai.insights_view');
+
   const [insights, setInsights] = useState<AIInsight[]>([]);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
+    if (!enabled) { setLoading(false); return; }
     client.get<{ items: AIInsight[] }>('/api/ai/insights', { params: { acknowledged: false, pageSize: 5 } })
       .then(r => setInsights(r.data.items))
       .catch(() => { setInsights([]); setFailed(true); })
       .finally(() => setLoading(false));
-  }, []);
+  }, [enabled]);
 
   const severityStyle: Record<string, string> = {
     Critical: 'border-rose-200 bg-rose-50 dark:border-rose-500/20 dark:bg-rose-500/5',
@@ -488,6 +507,9 @@ function AiInsightsPanel({ readiness }: { readiness: PayrollReadiness | null }) 
 
   // A salary-gap insight the live readiness has already disproved is history, not a current finding.
   const visibleInsights = filterPayrollInsightsForReadiness(insights, readiness);
+  // Nothing was asked and nothing is claimed: an advisory source this caller cannot read shows no panel
+  // at all, so it never reads as either an alarm or an all-clear.
+  if (!enabled) return null;
   const state = payrollInsightState(loading, failed, visibleInsights.length);
   if (state === 'loading') return <div className="surface h-16 animate-pulse" aria-label="Loading payroll insights" />;
   if (state === 'empty' || state === 'unavailable') return (
@@ -1158,6 +1180,7 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [slips, setSlips] = useState<PayrollSlip[]>([]);
   const [slipsLoading, setSlipsLoading] = useState(false);
+  const [slipsError, setSlipsError] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   // Monotonic counter: only the response matching the latest fetch ID is applied.
   // Prevents stale responses from a slow previous fetch overwriting current slips.
@@ -1175,7 +1198,7 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
 
   const load = () => {
     setLoading(true);
-    payrollApi.listRuns({ pageSize: 50 }).then(r => { setRuns(r.items); setTotal(r.total); }).catch(() => {}).finally(() => setLoading(false));
+    payrollApi.listAllRuns().then(all => { setRuns(all); setTotal(all.length); }).catch(() => {}).finally(() => setLoading(false));
   };
   useEffect(() => {
     load();
@@ -1193,11 +1216,13 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
   const openSlips = (run: PayrollRun) => {
     setSelectedRunId(run.id);
     setSlips([]);
+    setSlipsError('');
     setSlipsLoading(true);
     const seq = ++slipsFetchSeq.current;
-    payrollApi.slips(run.id, { pageSize: 200 })
-      .then(r => { if (slipsFetchSeq.current === seq) setSlips(r.items); })
-      .catch(() => {})
+    // Every slip, page by page: one page of 200 left a larger run's register silently short.
+    payrollApi.allSlips(run.id)
+      .then(all => { if (slipsFetchSeq.current === seq) setSlips(all); })
+      .catch(e => { if (slipsFetchSeq.current === seq) setSlipsError(`Slips could not be loaded. ${requestFailureReason(e)}`); })
       .finally(() => { if (slipsFetchSeq.current === seq) setSlipsLoading(false); });
   };
 
@@ -1372,7 +1397,8 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
-                      {slips.length === 0 && <tr><td colSpan={9} className="py-10 text-center text-sm text-slate-400">No slips. Click Process to generate.</td></tr>}
+                      {slipsError && <tr><td colSpan={9} role="alert" className="py-10 text-center text-sm text-rose-600 dark:text-rose-400">{slipsError}</td></tr>}
+                      {!slipsError && slips.length === 0 && <tr><td colSpan={9} className="py-10 text-center text-sm text-slate-400">No slips. Click Process to generate.</td></tr>}
                       {slips.map(s => (
                         <tr key={s.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                           <td className="px-3 py-2.5">
@@ -1403,6 +1429,8 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
                             {s.employeeStatutoryTotal > 0 && (
                               <p className="text-[10px] leading-tight text-rose-400">of which GOSI {fmt(s.employeeStatutoryTotal)}</p>
                             )}
+                            {/* F02 — which cohort and rate basis produced the statutory lines, read off the slip. */}
+                            {s.statutoryBasis && <GosiBasisNote cohort={s.gosiCohort} basis={s.statutoryBasis} />}
                           </td>
                           {/* Unbracketed: a slice of the cell to its left, not a further subtraction. */}
                           <td className="px-3 py-2.5 text-end text-amber-600 dark:text-amber-400">{s.loanDeductions > 0 ? fmt(s.loanDeductions) : '—'}</td>
@@ -1639,6 +1667,10 @@ function ChainVerifier({ title, description, allowedRoles, verify }: {
 /** Mirrors PayrollValidationOverridePolicy.MinimumReasonLength. "ok" is not accountability. */
 const MIN_OVERRIDE_REASON = 10;
 
+/** F02 — PayrollValidationEngine.GosiCohortNotRecorded / GosiNewEntrantScheduleNotModelled. */
+const GOSI_COHORT_NOT_RECORDED = 'GOSI_COHORT_NOT_RECORDED';
+const GOSI_NEW_ENTRANT_BLOCKED = 'GOSI_NEW_ENTRANT_SCHEDULE_NOT_MODELLED';
+
 function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
   const [runId, setRunId] = useState(selectedRunId ?? '');
   const [runs, setRuns] = useState<PayrollRun[]>([]);
@@ -1648,7 +1680,7 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
   const [overridableCodes, setOverridableCodes] = useState<string[]>([]);
   const [overriding, setOverriding] = useState<PayrollValidationResult | null>(null);
 
-  useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
+  useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
 
   useEffect(() => {
     if (!runId) { setResults([]); setError(''); return; }
@@ -1683,6 +1715,13 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
 
   const warnings = results.filter(r => r.severity === 'Warning');
   const errors = results.filter(r => r.severity === 'Error');
+  // F02 — the GOSI entrant cohort is judged per employee; group it so it reads as one decision, not N rows.
+  const cohortNotRecorded = results.filter(r => r.code === GOSI_COHORT_NOT_RECORDED);
+  const cohortBlocked = results.filter(r => r.code === GOSI_NEW_ENTRANT_BLOCKED);
+  const [cohortOnly, setCohortOnly] = useState(false);
+  const shown = cohortOnly && cohortBlocked.length + cohortNotRecorded.length > 0
+    ? [...cohortBlocked, ...cohortNotRecorded]
+    : results;
 
   return (
     <div className="space-y-4">
@@ -1706,6 +1745,31 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
         </div>
       )}
 
+      {(cohortNotRecorded.length > 0 || cohortBlocked.length > 0) && (
+        <div className="surface space-y-2 px-5 py-4" data-testid="gosi-cohort-findings">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-semibold text-slate-900 dark:text-white">GOSI cohort — checked per employee</p>
+            <button type="button" className={`${btn.sm} h-7 px-2 text-xs`} onClick={() => setCohortOnly(v => !v)} aria-pressed={cohortOnly}>
+              {cohortOnly ? 'Show all findings' : 'Show only these employees'}
+            </button>
+          </div>
+          {cohortBlocked.length > 0 && (
+            <p className="text-sm text-rose-700 dark:text-rose-400">
+              {cohortBlocked.length} employee{cohortBlocked.length === 1 ? '' : 's'} first registered with GOSI on or after
+              3 July 2024. The new-entrant schedule is not modelled yet, so their GOSI on this run is wrong and approval
+              is blocked. Correct the date if it is wrong, or reopen the run and exclude them.
+            </p>
+          )}
+          {cohortNotRecorded.length > 0 && (
+            <p className="text-sm text-amber-700 dark:text-amber-400">
+              {cohortNotRecorded.length} employee{cohortNotRecorded.length === 1 ? ' has' : 's have'} no GOSI
+              first-registration date, so their contribution basis is unverified (computed on the pre-3-July-2024
+              schedule). Record each date on the employee&apos;s Payroll tab (approval required); runs processed afterwards use it.
+            </p>
+          )}
+        </div>
+      )}
+
       {results.length === 0 && !loading ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <CheckCircle2 className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
@@ -1715,7 +1779,7 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
         </div>
       ) : (
         <div className="surface divide-y divide-slate-100 dark:divide-white/5">
-          {results.map(r => (
+          {shown.map(r => (
             <div key={r.id} className="flex items-start gap-3 px-5 py-4">
               <div className={`mt-0.5 h-2 w-2 shrink-0 rounded-full ${r.severity === 'Error' ? 'bg-rose-500' : r.severity === 'Warning' ? 'bg-amber-500' : 'bg-sky-400'}`} />
               <div className="min-w-0 flex-1">
@@ -1969,7 +2033,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
   const [ackOverridden, setAckOverridden] = useState(false);
 
   const refreshRuns = () =>
-    payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {});
+    payrollApi.listAllRuns().then(setRuns).catch(() => {});
 
   const refreshGate = React.useCallback((id: string) => {
     if (!id) { setPopulation(null); setOverrideReport(null); return; }
@@ -2224,18 +2288,23 @@ function PayslipsTab() {
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [runId, setRunId] = useState('');
   const [payslips, setPayslips] = useState<Payslip[]>([]);
+  const [listError, setListError] = useState('');
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [downloadingBundle, setDownloadingBundle] = useState(false);
   const [error, setError] = useState('');
 
-  useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
+  useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
 
   const loadPayslips = () => {
     if (!runId) return;
     setLoading(true);
-    payrollApi.listPayslips(runId, { pageSize: 200 }).then(r => setPayslips(r.items)).catch(() => {}).finally(() => setLoading(false));
+    setListError('');
+    payrollApi.allPayslips(runId)
+      .then(setPayslips)
+      .catch(e => { setPayslips([]); setListError(`Payslips could not be loaded. ${requestFailureReason(e)}`); })
+      .finally(() => setLoading(false));
   };
   useEffect(() => { if (runId) loadPayslips(); }, [runId]);
 
@@ -2299,7 +2368,12 @@ function PayslipsTab() {
         </div>
       )}
 
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : payslips.length === 0 && runId ? (
+      {loading ? <p className="text-sm text-slate-400">Loading…</p> : listError ? (
+        <div role="alert" className="surface flex items-start gap-2 p-4 text-sm text-rose-700 dark:text-rose-400">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{listError}</span>
+        </div>
+      ) : payslips.length === 0 && runId ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <FileText className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
           <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No payslips yet — click Generate to create payslips for this run</p>
@@ -2372,7 +2446,7 @@ function BankWpsTab() {
   const currentRunRef = useRef(runId);
   currentRunRef.current = runId;
 
-  useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
+  useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -2730,7 +2804,7 @@ function ReportsTab() {
   const netYtd = ytd(row => row.totalNetYtd);
 
   useEffect(() => {
-    payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {});
+    payrollApi.listAllRuns().then(setRuns).catch(() => {});
     payrollApi.reportSummary().then(setSummary).catch(() => {});
   }, []);
 
@@ -2840,7 +2914,7 @@ function AIValidationTab() {
   const [result, setResult] = useState<{ advisoryOnly: boolean; warnings: PayrollValidationResult[]; summary: string } | null>(null);
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
+  useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
 
   const runAI = async () => {
     if (!runId) return;
@@ -3017,7 +3091,7 @@ function GlJournalTab({ selectedRunId }: { selectedRunId?: string }) {
   const [journal, setJournal] = useState<PayrollGLJournal | null>(null);
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
+  useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
   useEffect(() => { if (selectedRunId) setRunId(selectedRunId); }, [selectedRunId]);
 
   const load = async () => {
@@ -3120,7 +3194,7 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
   const [error, setError] = useState('');
   const runCurrency = useRunCurrency(runs.find(r => r.id === runId));
 
-  useEffect(() => { payrollApi.listRuns({ pageSize: 50 }).then(r => setRuns(r.items)).catch(() => {}); }, []);
+  useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
   useEffect(() => { if (selectedRunId) setRunId(selectedRunId); }, [selectedRunId]);
 
   const load = async () => {

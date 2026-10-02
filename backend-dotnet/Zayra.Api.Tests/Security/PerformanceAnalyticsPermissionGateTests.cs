@@ -22,6 +22,10 @@ namespace Zayra.Api.Tests.Security;
 ///   before the gate -> "Performance AnalyticsController must require the 'performance.read'
 ///                       permission ... Expected collection not to be empty."  Failed: 1
 ///   after the gate  -> Passed: 1
+///
+/// F08 (2026-09-29): the gate moved to <c>performance.approve</c>. Line managers and employees now hold
+/// <c>performance.read</c> so they can open the module for their own team and their own review, and
+/// none of this payload is limited to the caller's data scope.
 /// </summary>
 public sealed class PerformanceAnalyticsPermissionGateTests
 {
@@ -29,7 +33,7 @@ public sealed class PerformanceAnalyticsPermissionGateTests
         typeof(Zayra.Api.Controllers.Performance.AnalyticsController);
 
     [Fact]
-    public void PerformanceAnalyticsController_RequiresPerformanceReadPermission()
+    public void PerformanceAnalyticsController_RequiresTheRatingApproverTier()
     {
         var permissions = Controller
             .GetCustomAttributes<HasPermissionAttribute>(inherit: true)
@@ -37,10 +41,12 @@ public sealed class PerformanceAnalyticsPermissionGateTests
             .ToList();
 
         permissions.Should().NotBeEmpty(
-            "Performance AnalyticsController must require the 'performance.read' permission — it " +
-            "returns named low performers, per-manager bias flags and the raw performance audit " +
-            "feed, and bare [Authorize] lets any authenticated employee read the whole tenant's.");
-        permissions.Should().Contain("performance.read");
+            "Performance AnalyticsController must require a permission — it returns named low " +
+            "performers, per-manager bias flags and the raw performance audit feed, and bare " +
+            "[Authorize] lets any authenticated employee read the whole tenant's.");
+        permissions.Should().Equal(new[] { "performance.approve" },
+            "performance.read is held by line managers and employees, and this payload is tenant-wide, " +
+            "not limited to the caller's team or own record");
     }
 
     [Fact]

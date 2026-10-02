@@ -13,9 +13,20 @@ import {
   regularizationQueueUnavailableMessage,
   unavailableMessage,
 } from '../src/lib/attendanceLoadState';
+import {
+  QIWA_SIMULATED_LABEL,
+  deliveryAttentionSummary,
+  emailModeLabel,
+  qiwaConnectionLabel,
+  qiwaModeLabel,
+  reportRunStatusLabel,
+  reportRunStatusTone,
+} from '../src/lib/integrationDeliveryState';
 import { LOGIN_CAPABILITIES, LOGIN_PREVIEW_DISCLOSURE } from '../src/lib/loginCapabilities';
 import { payrollInsightEmptyCopy, payrollInsightState, payrollPeriodState } from '../src/lib/payrollInsightState';
 import { requestFailureReason } from '../src/lib/requestFailure';
+import { createUrlSeed } from '../src/lib/urlSeed';
+import { spendUtilisation, totalSpend } from '../src/lib/establishmentSpend';
 
 const read = (relative: string) => fs.readFileSync(path.join(process.cwd(), relative), 'utf8');
 
@@ -56,6 +67,27 @@ test.describe('browserless UI truthfulness contracts', () => {
     const payrollPage = read('src/views/PayrollPage.tsx');
     expect(payrollPage).not.toContain('all payroll and HR signals look normal');
     expect(payrollPage).toContain('Empty totals do not indicate a completed or healthy payroll');
+  });
+
+  // An evidence run recorded this on 5 of 15 payroll steps: the advisory insights panel fetches
+  // /api/ai/insights on mount, that endpoint requires `ai.insights_view`, and the HR Manager and
+  // Finance Approver bundles do not hold it — so the shared client's global interceptor raised a red
+  // "Access Denied" toast over screens where the payroll action had SUCCEEDED. One sat directly over a
+  // screen correctly showing 14 published payslips. A completed action must never read as a refusal.
+  test('an advisory panel nobody asked for degrades silently, and refusals users cause still speak', () => {
+    const payrollPage = read('src/views/PayrollPage.tsx');
+    expect(payrollPage, 'the panel must check the permission the endpoint enforces')
+      .toContain("hasPermission('ai.insights_view')");
+    expect(payrollPage, 'and must not issue the request it knows will be refused')
+      .toContain('if (!enabled) { setLoading(false); return; }');
+    expect(payrollPage, "rendering nothing — NOT the amber 'unavailable' alert, which would trade a "
+      + 'transient false alarm for a permanent one')
+      .toContain('if (!enabled) return null;');
+
+    // The fix must be the call site, never the toast: a user-initiated action that is refused has to
+    // keep saying why. If this disappears, access denials have gone silent product-wide.
+    const client = read('src/api/client.ts');
+    expect(client).toContain("window.dispatchEvent(new CustomEvent('zayra:access-denied'");
   });
 
   test('pre-auth preview and capability claims are qualified', () => {
@@ -265,6 +297,44 @@ test.describe('browserless employee search race and payroll currency contracts',
       expect(source, file).not.toMatch(/employeesApi\.list\([^)]*\)\s*\n?\s*\.then/);
     }
     expect(read('src/components/EmployeePicker.tsx')).toContain('{!value && open && results.length > 0 && (');
+  });
+
+  test('People ?search= seeds the box; typing afterwards is never overwritten by the URL', () => {
+    // Control: the pre-fix effect re-applied the URL whenever the box differed from it.
+    const naive = { box: 'ali' };
+    const naiveEffect = (url: string | null) => { if (url !== null && url !== naive.box) naive.box = url; };
+    naive.box = 'alic'; // the user types one more letter
+    naiveEffect('ali'); // `search` changed, so the effect ran again
+    expect(naive.box).toBe('ali');
+
+    const seed = createUrlSeed();
+    const people = { box: 'ali' }; // the box starts from the URL
+    const effect = (url: string | null) => { const v = seed.take(url); if (v !== undefined) people.box = v; };
+    effect('ali');
+    expect(people.box).toBe('ali');
+    people.box = 'alice';
+    effect('ali'); // re-render, or the page adding ?employeeId= beside the same search
+    effect('ali');
+    expect(people.box).toBe('alice');
+    people.box = '';
+    effect('ali');
+    expect(people.box).toBe(''); // a cleared box stays cleared
+    effect('bob'); // navigation to a different search
+    expect(people.box).toBe('bob');
+    effect(null); // navigation without the parameter leaves what is there
+    expect(people.box).toBe('bob');
+    people.box = 'x';
+    effect('bob'); // following a search link again seeds it again
+    expect(people.box).toBe('bob');
+  });
+
+  test('the People page seeds search from the URL without keying that effect on the typed value', () => {
+    const people = read('src/views/EmployeesPage.tsx');
+    expect(people).toContain("const [search, setSearch] = useState(() => searchParams?.get('search') ?? '');");
+    expect(people).toMatch(/const seeded = searchSeed\.take\(searchParams\?\.get\('search'\) \?\? null\);\n\s+if \(seeded !== undefined\) setSearch\(seeded\);\n\s+\}, \[searchParams, searchSeed\]\);/);
+    expect(people).not.toContain('searchFromUrl !== search');
+    // #128's gate still decides which employee load may write the table.
+    expect(people).toContain('await runLatest(employeeLoadGate, () => employeesApi.list({');
   });
 
   test('R03: a run is shown in its employing company\'s currency, never the tenant default', () => {
@@ -487,5 +557,78 @@ test.describe('browserless payroll payment-readiness contracts', () => {
     expect(payroll).toContain('>Recommended — does not block approval</p>');
     expect(payroll).toContain('href={`/people?employeeId=${e.employeeId}`}');
     expect(payroll).toContain('const visibleInsights = filterPayrollInsightsForReadiness(insights, readiness);');
+  });
+});
+
+test.describe('browserless withheld establishment spend contracts', () => {
+  test('withheld spend (null) is restricted, never 0 or 0%', () => {
+    // Control: the pre-fix rollup added null as 0 and divided it by the budget.
+    const withheldRows = [{ spend: null as number | null, budget: 50000 }, { spend: null as number | null, budget: 20000 }];
+    const naiveSpend = withheldRows.reduce((s, r) => s + (r.spend as unknown as number), 0);
+    expect(naiveSpend).toBe(0);
+    expect(Math.round((naiveSpend / 70000) * 100)).toBe(0);
+
+    expect(totalSpend(withheldRows.map((r) => r.spend))).toBeNull();
+    expect(spendUtilisation(null, 50000)).toEqual({ state: 'restricted' });
+    expect(spendUtilisation(undefined, 50000)).toEqual({ state: 'restricted' });
+    expect(spendUtilisation(null, 0)).toEqual({ state: 'restricted' });
+  });
+
+  test('a real zero is still zero, and one withheld row withholds the group total', () => {
+    expect(totalSpend([0, 0])).toBe(0);
+    expect(spendUtilisation(0, 50000)).toEqual({ state: 'known', percent: 0 });
+    expect(totalSpend([12000, 30000])).toBe(42000);
+    expect(spendUtilisation(42000, 40000)).toEqual({ state: 'known', percent: 105 });
+    expect(spendUtilisation(42000, 0)).toEqual({ state: 'no-budget' });
+    expect(totalSpend([12000, null])).toBeNull();
+  });
+
+  test('the establishment panel renders spend and utilisation through the withheld-aware helpers', () => {
+    const panel = read('src/components/EstablishmentPanel.tsx');
+    expect(panel).toContain('spend: totalSpend(gr.map(r => r.currentMonthlySpend)),');
+    expect(panel).toContain('const u = spendUtilisation(tot.spend, tot.budget);');
+    expect(panel).toContain('const u = spendUtilisation(r.currentMonthlySpend, r.monthlyBudgetAmount);');
+    expect(panel).toContain("r.currentMonthlySpend === null ? SPEND_RESTRICTED_LABEL");
+    expect(panel).not.toMatch(/s \+ r\.currentMonthlySpend/);
+    expect(read('src/api/planning.ts')).toContain('currentMonthlySpend: number | null;');
+  });
+});
+
+test.describe('browserless outbound-integration truthfulness contracts', () => {
+  test('outbound integrations never read as delivered or filed when they were not (F09)', () => {
+    // Qiwa: only a positive "live" from the server is Live. Absent (older API) is a simulation.
+    expect(qiwaModeLabel(true)).toBe('Live');
+    expect(qiwaModeLabel(false)).toBe(QIWA_SIMULATED_LABEL);
+    expect(qiwaModeLabel(undefined)).toBe('Simulated (sandbox)');
+    expect(qiwaConnectionLabel('Simulated')).toBe('Simulated (sandbox)');
+
+    // Scheduled reports: SMTP can confirm a relay accepted it, nothing more; not-set-up and captured
+    // are neither success nor failure.
+    expect(reportRunStatusLabel('Success')).toBe('Accepted by mail server');
+    expect(reportRunStatusLabel('NotConfigured')).toContain('not set up');
+    expect(reportRunStatusLabel('Captured')).toContain('not sent');
+    expect(reportRunStatusTone('NotConfigured')).toBe('warn');
+    expect(reportRunStatusTone('Captured')).toBe('warn');
+    expect(emailModeLabel('capture')).toContain('nothing is sent');
+    expect(emailModeLabel('not_configured')).toContain('nothing is sent');
+    expect(emailModeLabel(undefined)).toBe('Not reported');
+
+    // Zero problems is a count, never "all delivered"; a missing payload is "not reported".
+    expect(deliveryAttentionSummary({ deadLetter: 0, failed: 0 })).toBe('No undelivered messages recorded.');
+    expect(deliveryAttentionSummary({ deadLetter: 2, notConfigured: 1 })).toContain('2 gave up after retries');
+    expect(deliveryAttentionSummary(undefined)).toContain('not reported');
+
+    const dashboard = read('src/views/SaudiComplianceDashboard.tsx');
+    expect(dashboard).toContain('qiwa-simulation-notice');
+    expect(dashboard).toContain('Last filed with Qiwa');
+    expect(dashboard).not.toContain('<dt className="text-slate-400">Last sync</dt>');
+    expect(dashboard).toContain('{qiwaConnectionLabel(status)}');
+
+    const health = read('app/platform/system-health/page.tsx');
+    expect(health).toContain('delivery-health-unavailable');
+    expect(health).not.toContain("{ key: 'smtp',    label: 'Email (SMTP)' }");
+
+    const billing = read('app/platform/tenants/[id]/billing/page.tsx');
+    expect(billing).not.toContain('`Sent to ${r.billingEmail} ✓`');
   });
 });

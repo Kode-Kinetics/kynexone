@@ -28,7 +28,8 @@ public static class MissingCountryAudit
         Guid TenantId, string TenantName, Guid? CompanyId, string Subject, string Message);
 
     public readonly record struct AuditSummary(
-        int TenantsVisited, IReadOnlyList<Finding> Findings)
+        int TenantsVisited, IReadOnlyList<Finding> Findings,
+        int EmployeesMissingCountry = 0, int EmployeesMissingCountryUnderACountrylessCompany = 0)
     {
         public int TenantsMissingCountry => Findings.Count(f => f.CompanyId is null);
         public int CompaniesMissingCountry => Findings.Count(f => f.CompanyId is not null);
@@ -53,6 +54,14 @@ public static class MissingCountryAudit
             + "nothing is written.";
 
         var findings = new List<Finding>();
+        // EMPLOYEE rows whose own country column is blank or unrecognised, counted (never listed by name
+        // — this is a boot log, not a personal-data dump). The activation gate no longer trusts that
+        // column: it derives the jurisdiction from the employing company, so most of these are already
+        // governed correctly and need no data change. The split below is what actually matters to an
+        // operator: an employee under a company that ALSO has no country has nothing to derive from, and
+        // is the only one now refused activation outright.
+        var employeesMissingCountry = 0;
+        var employeesWithNothingToDeriveFrom = 0;
         foreach (var tenant in tenants)
         {
             var home = await ScopedBypass.TenantWide(db.TenantLocalizationSettings, tenant.Id, why)
@@ -79,6 +88,26 @@ public static class MissingCountryAudit
                 findings.Add(new Finding(
                     tenant.Id, tenant.Name, company.Id, label, HomeJurisdiction.CompanyMessage(label)));
             }
+
+            var countrylessCompanyIds = companies
+                .Where(c => HomeJurisdiction.IsMissing(c.CountryCode))
+                .Select(c => (Guid?)c.Id)
+                .ToHashSet();
+
+            // NullableTenantWide, not TenantWide: Employee.TenantId is nullable (INullableTenantOwned).
+            var employeeCountries = await ScopedBypass.NullableTenantWide(db.Employees, tenant.Id, why)
+                .AsNoTracking()
+                .Where(e => !e.IsDeleted)
+                .Select(e => new { e.CountryCode, e.CompanyId })
+                .ToListAsync(ct);
+
+            foreach (var employee in employeeCountries)
+            {
+                if (!HomeJurisdiction.IsMissing(employee.CountryCode)) continue;
+                employeesMissingCountry++;
+                if (employee.CompanyId is null || countrylessCompanyIds.Contains(employee.CompanyId))
+                    employeesWithNothingToDeriveFrom++;
+            }
         }
 
         foreach (var finding in findings)
@@ -87,6 +116,15 @@ public static class MissingCountryAudit
                 finding.TenantId, finding.TenantName,
                 finding.CompanyId is Guid cid ? $", company {cid}" : string.Empty,
                 finding.Message);
+
+        if (employeesMissingCountry > 0)
+            logger.LogWarning(
+                "MissingCountryAudit: {Employees} employee record(s) hold no usable country of their own. "
+                + "{Orphans} of them are under a company that has no country either, so nothing can be "
+                + "derived for them and they cannot be activated until one is stated. The rest are "
+                + "governed by their employing company's country and need no data change. Nothing was "
+                + "guessed or written.",
+                employeesMissingCountry, employeesWithNothingToDeriveFrom);
 
         if (findings.Count == 0)
             logger.LogInformation(
@@ -101,6 +139,6 @@ public static class MissingCountryAudit
                 tenants.Count, findings.Count(f => f.CompanyId is null),
                 findings.Count(f => f.CompanyId is not null), HomeJurisdiction.CompanyFixLocation);
 
-        return new AuditSummary(tenants.Count, findings);
+        return new AuditSummary(tenants.Count, findings, employeesMissingCountry, employeesWithNothingToDeriveFrom);
     }
 }

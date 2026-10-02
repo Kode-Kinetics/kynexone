@@ -176,13 +176,16 @@ public class ReadinessGateRegressionTests
     //  (2) A zero-requirement policy: honest, not Ready/100, and not a new block on live data
     // ══════════════════════════════════════════════════════════════════════════════════════════
 
+    /// <summary>
+    /// A KNOWN country with no configured rules. This is the case the no-policy outcome was written for
+    /// and it is unchanged: the answer is honest ("nothing was checked") and ADVISORY. Blocking here
+    /// would refuse live employees whose data never changed — only the absence of a policy was made
+    /// visible. India is a supported, non-GCC jurisdiction: it carries no code floor by design.
+    /// </summary>
     [Theory]
-    // "UAE" looks like a country but is neither ISO-2 nor ISO-3, so it normalises to nothing.
-    [InlineData("", "No readiness policy applies: the employee's country is not set")]
-    [InlineData("   ", "No readiness policy applies: the employee's country is not set")]
-    [InlineData("UAE", "No readiness policy applies: country 'UAE' is not recognised")]
     [InlineData("IN", "No readiness policy configured for IN")]
-    public async Task NoPolicy_IsNeedsAttentionAtScore0_WithANamedRecommendedItem_AndDoesNotBlock(
+    [InlineData("GB", "No readiness policy configured for GB")]
+    public async Task NoPolicyForAKnownCountry_IsNeedsAttentionAtScore0_WithANamedRecommendedItem_AndDoesNotBlock(
         string countryCode, string expectedLabel)
     {
         await using var db = NewDb();
@@ -207,17 +210,75 @@ public class ReadinessGateRegressionTests
         readiness.PayBlocking.Should().BeEmpty();
     }
 
-    [Fact]
-    public async Task NoPolicy_StillActivates_BecauseNothingAboutTheRecordChanged()
+    /// <summary>
+    /// An UNKNOWN jurisdiction is a different claim, and it BLOCKS.
+    ///
+    /// <para>These three inputs used to land in the advisory case above, which is how a non-GCC expat
+    /// with no Iqama and no GOSI reference was activated into a Saudi legal entity: their country was
+    /// blank, the floor resolved to an empty list, and an empty list was read as "nothing is required".
+    /// It means "nothing was checked". Per the product invariant, a critical uncertain value is flagged
+    /// or blocked, never guessed.</para>
+    ///
+    /// <para>The test is KNOWN, not GCC — the case above proves a known non-GCC country still activates.
+    /// "UAE" is here because it looks like a country but is neither ISO-2 nor ISO-3, so it normalises to
+    /// nothing, and the operator must be sent to the country code rather than to a policy screen.</para>
+    ///
+    /// <para>Reachability on live data is narrow: the country is derived from the employing company
+    /// before the gate sees it, and a create under a company with no country is refused outright. This
+    /// catches rows persisted blank before that derivation existed.</para>
+    /// </summary>
+    [Theory]
+    [InlineData("", "Country not set")]
+    [InlineData("   ", "Country not set")]
+    [InlineData("UAE", "Country 'UAE' is not recognised")]
+    public async Task AnUnknownJurisdiction_BlocksActivation_RatherThanResolvingToNoRequirements(
+        string countryCode, string expectedLabelPrefix)
     {
         await using var db = NewDb();
         var tenantId = Guid.NewGuid();
-        var snapshot = new EmployeeReadinessSnapshot { EmployeeId = 4, CountryCode = string.Empty, Nationality = "Indian", JoiningDate = Joined };
+        var policy = await Resolver(db).ResolveAsync(tenantId, companyId: null, countryCode, "Indian");
+        policy.Items.Should().BeEmpty("there is still nothing to resolve — that is the point");
+
+        var readiness = Evaluator(db).Evaluate(
+            new EmployeeReadinessSnapshot { EmployeeId = 3, CountryCode = countryCode, Nationality = "Indian", JoiningDate = Joined },
+            policy);
+
+        readiness.State.Should().Be("Blocked");
+        readiness.Score.Should().Be(0m);
+        var item = readiness.Blocking.Should().ContainSingle().Subject;
+        item.Key.Should().Be("CountryCode");
+        item.Gate.Should().Be("activate");
+        item.Label.Should().StartWith(expectedLabelPrefix, "the refusal must name the actual cause");
+        item.FixTarget.Should().Be("CountryCode", "and point at the field that fixes it");
+        readiness.Recommended.Should().BeEmpty(
+            "the blocker already says the country is missing; a second no-policy line would give the "
+            + "operator two checklist entries for one problem");
+    }
+
+    [Fact]
+    public async Task NoPolicyForAKnownCountry_StillActivates_BecauseNothingAboutTheRecordChanged()
+    {
+        await using var db = NewDb();
+        var tenantId = Guid.NewGuid();
+        var snapshot = new EmployeeReadinessSnapshot { EmployeeId = 4, CountryCode = "IN", Nationality = "Indian", JoiningDate = Joined };
 
         var readiness = await new EmployeeActivationGuard(db).EnsureActivatableAsync(tenantId, null, snapshot, Ctx(tenantId), default);
 
         readiness.State.Should().Be("NeedsAttention");
         readiness.Blocking.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task AnEmployeeWithNoJurisdictionAtAll_IsRefusedByTheGuard()
+    {
+        await using var db = NewDb();
+        var tenantId = Guid.NewGuid();
+        var snapshot = new EmployeeReadinessSnapshot { EmployeeId = 5, CountryCode = string.Empty, Nationality = "Indian", JoiningDate = Joined };
+
+        var act = () => new EmployeeActivationGuard(db).EnsureActivatableAsync(tenantId, null, snapshot, Ctx(tenantId), default);
+
+        (await act.Should().ThrowAsync<EmployeeActivationBlockedException>())
+            .Which.Readiness.Blocking.Should().ContainSingle(i => i.Key == "CountryCode");
     }
 
     [Fact]

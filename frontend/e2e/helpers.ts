@@ -3,6 +3,8 @@ import { readFile } from 'node:fs/promises';
 // Imported (not merely re-exported) because this module's own helpers use them below: a bare
 // `export … from` re-export does not bring the names into local scope.
 import { MISSING_WORLD, PLATFORM_EMAIL, PLATFORM_PASSWORD } from './world';
+import { resolveTarget } from './identity/env';
+import { stampActor } from './identity/actor';
 
 // ── Identities ────────────────────────────────────────────────────────────────
 // Re-exported from e2e/world.ts, which is the ONE declaration of the fixture world and the same
@@ -20,7 +22,7 @@ export {
   ALMARAI_SLUG, TATA_SLUG, GROUP_PASSWORD, groupEmail, companyEmail,
 } from './world';
 
-export const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? process.env.E2E_BASE_URL ?? 'http://localhost:5173';
+export const BASE_URL = resolveTarget().baseUrl;
 
 // Where auth.setup.ts persists the platform-admin session. Reused by every platform spec so the
 // suite authenticates ONCE rather than once per test — see auth.setup.ts for why that matters.
@@ -33,6 +35,8 @@ export const tenantSessionKey = (email: string, slug: string): string =>
   `${slug.toLowerCase()}|${email.toLowerCase()}`;
 
 export async function tenantSetupSession(email: string, slug: string): Promise<TenantSession> {
+  // Every reuse of a setup session is an action AS that persona; record it in the test report.
+  stampActor({ email, tenantSlug: slug, via: 'setup session' });
   let sessions: Record<string, TenantSession>;
   try {
     sessions = JSON.parse(await readFile(TENANT_STATE, 'utf8')) as Record<string, TenantSession>;
@@ -55,6 +59,7 @@ export async function tenantSetupSession(email: string, slug: string): Promise<T
 // ── Platform admin helpers ────────────────────────────────────────────────────
 
 export async function platformLogin(page: Page): Promise<void> {
+  stampActor({ email: PLATFORM_EMAIL, tenantSlug: null, via: 'platform login form' });
   await page.goto('/platform/login');
   await page.locator('#pl-em, input[type="email"]').first().fill(PLATFORM_EMAIL);
   const passwordInput = page.locator('#pl-pw, input[type="password"]').first();
@@ -87,6 +92,7 @@ export async function tenantLoginLive(
   password: string,
   slug: string
 ): Promise<void> {
+  stampActor({ email, tenantSlug: slug, via: 'tenant login form' });
   await page.goto('/login');
   await page.locator('#li-em, input[type="email"]').first().fill(email);
   await page.locator('#li-pw, input[type="password"]').first().fill(password);
@@ -135,6 +141,7 @@ export async function apiLoginLive(
   password: string,
   slug: string
 ): Promise<string> {
+  stampActor({ email, tenantSlug: slug, via: 'tenant login API' });
   const resp = await request.post('/api/auth/login', {
     data: { email, password, tenantSlug: slug },
   });
@@ -155,6 +162,7 @@ export async function apiLogin(
 
 /** Read the one platform session created by the setup project. */
 export async function platformSetupToken(): Promise<string> {
+  stampActor({ email: PLATFORM_EMAIL, tenantSlug: null, via: 'platform setup session' });
   const state = JSON.parse(await readFile(PLATFORM_STATE, 'utf8')) as {
     origins?: Array<{ localStorage?: Array<{ name: string; value: string }> }>;
   };
@@ -177,6 +185,7 @@ export async function apiPlatformLogin(
 export async function apiPlatformFreshLogin(
   request: import('@playwright/test').APIRequestContext
 ): Promise<string> {
+  stampActor({ email: PLATFORM_EMAIL, tenantSlug: null, via: 'platform login API' });
   const resp = await request.post('/api/platform/auth/login', {
     data: { email: PLATFORM_EMAIL, password: PLATFORM_PASSWORD },
   });
