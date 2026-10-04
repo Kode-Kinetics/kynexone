@@ -21,7 +21,7 @@ these two by ID. This gate does the second, and nothing broader:
   * unreadable or error-shaped audit output fails the gate rather than passing it.
 
 USAGE
-    scripts/npm_audit_gate.py --dir mobile --exceptions mobile/npm-audit-exceptions.json
+    scripts/npm_audit_gate.py --dir mobile --exceptions .github/npm-audit-exceptions/mobile.json
     scripts/npm_audit_gate.py --self-test
 """
 from __future__ import annotations

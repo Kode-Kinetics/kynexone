@@ -202,11 +202,11 @@ jobs:
       # touched, and npm's only "fix" downgrades Expo to 44. Plain `npm audit` cannot accept one
       # advisory, so this runs through scripts/npm_audit_gate.py: same High/Critical threshold,
       # plus exceptions matched by GHSA id AND package, each dated and justified in
-      # mobile/npm-audit-exceptions.json, warned on every run, and failing again once expired.
+      # .github/npm-audit-exceptions/mobile.json, warned on every run, and failing again once expired.
       - name: npm audit (mobile; fail on High/Critical)
         run: |
           python3 scripts/npm_audit_gate.py --self-test
-          python3 scripts/npm_audit_gate.py --dir mobile --exceptions mobile/npm-audit-exceptions.json
+          python3 scripts/npm_audit_gate.py --dir mobile --exceptions .github/npm-audit-exceptions/mobile.json
 
       # Advisory only; never fails the build. Both gates above run --omit=dev, which means a
       # dev-chain advisory is currently invisible to CI — the three that prompted this change
