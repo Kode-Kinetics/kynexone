@@ -178,10 +178,12 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
             .ToListAsync(cancellationToken);
+        var summaries = await LoadChangeSummariesAsync(tenantId, approvals, cancellationToken);
+        var otherDeciders = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         var items = new List<ApprovalRequestDto>(approvals.Count);
         foreach (var approval in approvals)
         {
-            items.Add(approval.ToDto(await CanDecideRequestAsync(approval, context, cancellationToken)));
+            items.Add(await ProjectAsync(approval, context, summaries, otherDeciders, cancellationToken));
         }
         return new PagedResult<ApprovalRequestDto>(items, total, page, pageSize);
     }
@@ -197,7 +199,128 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         var request = await _db.ApprovalRequests.AsNoTracking().Include(x => x.Decisions).FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (request is null) return null;
         if (!await CanViewRequestAsync(request, context, cancellationToken)) return null;
-        return request.ToDto(await CanDecideRequestAsync(request, context, cancellationToken));
+        var summaries = await LoadChangeSummariesAsync(tenantId, new[] { request }, cancellationToken);
+        return await ProjectAsync(request, context, summaries, new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase), cancellationToken);
+    }
+
+    /// <summary>
+    /// The requester takes back their own pending employee change. Only the requester may, only while it
+    /// is pending, and only for <see cref="EmployeeChangeRequest"/>: other entities (leave, timesheets,
+    /// offers…) own a state machine of their own and are cancelled from their own screen, so closing the
+    /// approval alone here would strand them. Without this a mistaken or duplicate submission could only
+    /// sit in the queue until someone else rejected it.
+    /// </summary>
+    public async Task<ApprovalRequestDto?> WithdrawAsync(Guid tenantId, Guid approvalRequestId, string? reason, RequestContext context, CancellationToken cancellationToken)
+    {
+        var approval = await _db.ApprovalRequests.Include(x => x.Decisions).FirstOrDefaultAsync(x => x.Id == approvalRequestId && x.TenantId == tenantId, cancellationToken);
+        if (approval is null || !await CanViewRequestAsync(approval, context, cancellationToken)) return null;
+        if (approval.Status != "Pending") throw new InvalidOperationException("Only a pending request can be withdrawn.");
+        if (context.UserId is null || approval.RequestedByUserId != context.UserId)
+            throw new InvalidOperationException("Only the person who requested this can withdraw it.");
+        if (!string.Equals(approval.EntityName, nameof(EmployeeChangeRequest), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("This kind of request is withdrawn from its own screen, not from the Approval Center.");
+
+        var note = string.IsNullOrWhiteSpace(reason) ? "Withdrawn by the requester." : Clean(reason);
+        if (Guid.TryParse(approval.EntityId, out var changeId)
+            && await _db.EmployeeChangeRequests.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == changeId, cancellationToken) is { } change)
+        {
+            if (!string.Equals(change.Status, EmployeeChangeStatuses.PendingApproval, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"This change is already '{change.Status}' and can no longer be withdrawn.");
+            change.Status = EmployeeChangeStatuses.Cancelled;
+            change.RejectionReason = note;
+        }
+        approval.Status = "Cancelled";
+        approval.CompletedAtUtc = DateTime.UtcNow;
+        // Same compare-and-swap as DecideAsync: a withdrawal racing an approval cannot both commit.
+        approval.DecisionVersion++;
+        try
+        {
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException ex)
+        {
+            throw new InvalidOperationException("This request was decided while you were withdrawing it. Refresh to see the outcome.", ex);
+        }
+        await _audit.WriteAsync("approval.request_withdrawn", nameof(ApprovalRequest), approval.Id.ToString(), context,
+            JsonSerializer.Serialize(new { reason = note, stepOrder = approval.CurrentStepOrder }), cancellationToken);
+        return await GetRequestAsync(tenantId, approval.Id, context, cancellationToken);
+    }
+
+    // context is null on the legacy context-less listing: nobody can decide there, and no reason is owed.
+    private async Task<ApprovalRequestDto> ProjectAsync(ApprovalRequest approval, RequestContext? context,
+        IReadOnlyDictionary<string, string?> summaries, Dictionary<string, bool> otherDeciders, CancellationToken cancellationToken)
+    {
+        var canDecide = await CanDecideRequestAsync(approval, context, cancellationToken);
+        var requestedByCaller = context?.UserId is not null && approval.RequestedByUserId == context.UserId;
+        string? blockedReason = null;
+        if (context is not null && !canDecide && approval.Status == "Pending")
+        {
+            if (requestedByCaller)
+            {
+                // Maker-checker is deliberate and stays. What was missing is saying so: the screen showed
+                // "Watching", and a sole administrator had no way to learn that nobody could ever decide.
+                blockedReason = "You requested this, so someone else must approve it (maker-checker).";
+                blockedReason += await AnyoneElseCanDecideAsync(approval, otherDeciders, cancellationToken)
+                    ? $" It is waiting for {OwnerLabel(approval)}."
+                    : $" No other active user can approve it yet: give a colleague the {OwnerLabel(approval)} or Admin role in User Management, or withdraw it.";
+            }
+            else
+            {
+                blockedReason = $"This step is assigned to {OwnerLabel(approval)}, which your access does not cover.";
+            }
+        }
+        var canWithdraw = approval.Status == "Pending" && requestedByCaller
+            && string.Equals(approval.EntityName, nameof(EmployeeChangeRequest), StringComparison.OrdinalIgnoreCase);
+        return approval.ToDto(canDecide, blockedReason, canWithdraw, summaries.GetValueOrDefault(approval.EntityId));
+    }
+
+    private static string OwnerLabel(ApprovalRequest approval) =>
+        new[] { approval.CurrentApproverName, approval.CurrentApproverRole, approval.CurrentQueue }
+            .Select(Clean).FirstOrDefault(x => x.Length > 0) ?? "another approver";
+
+    /// <summary>
+    /// Whether any active user other than the requester holds the routed role or a role carrying
+    /// approvals.override. Role grants only: a hint for the "who can unblock this" sentence, never an
+    /// authorisation decision (that is <see cref="CanDecideRequestAsync"/> alone).
+    /// </summary>
+    private async Task<bool> AnyoneElseCanDecideAsync(ApprovalRequest approval, Dictionary<string, bool> cache, CancellationToken cancellationToken)
+    {
+        if (approval.CurrentApproverUserId is not null)
+            return approval.CurrentApproverUserId != approval.RequestedByUserId;
+        var role = Clean(approval.CurrentApproverRole);
+        var key = $"{role}|{approval.RequestedByUserId}";
+        if (cache.TryGetValue(key, out var known)) return known;
+
+        var normalizedRole = role.ToUpperInvariant();
+        var requester = approval.RequestedByUserId;
+        var tenantId = approval.TenantId;
+        var exists = await (
+            from ur in _db.UserRoles.AsNoTracking()
+            join u in _db.Users.AsNoTracking() on ur.UserId equals u.Id
+            join r in _db.Roles.AsNoTracking() on ur.RoleId equals r.Id
+            where u.TenantId == tenantId && r.TenantId == tenantId && u.IsActive && !u.IsDeleted
+                  && (requester == null || u.Id != requester)
+                  && ((normalizedRole.Length > 0 && r.NormalizedName == normalizedRole)
+                      || _db.RolePermissions.Any(rp => rp.RoleId == r.Id
+                          && _db.Permissions.Any(p => p.Id == rp.PermissionId && p.Key == "approvals.override")))
+            select ur.UserId).AnyAsync(cancellationToken);
+        cache[key] = exists;
+        return exists;
+    }
+
+    /// <summary>"IBAN, passport" for each employee-change approval, keyed by EntityId, in one query.</summary>
+    private async Task<IReadOnlyDictionary<string, string?>> LoadChangeSummariesAsync(Guid tenantId, IReadOnlyCollection<ApprovalRequest> approvals, CancellationToken cancellationToken)
+    {
+        var changeIds = approvals
+            .Where(x => string.Equals(x.EntityName, nameof(EmployeeChangeRequest), StringComparison.OrdinalIgnoreCase))
+            .Select(x => Guid.TryParse(x.EntityId, out var id) ? id : (Guid?)null)
+            .Where(x => x is not null).Select(x => x!.Value).Distinct().ToList();
+        if (changeIds.Count == 0) return new Dictionary<string, string?>();
+        var rows = await _db.EmployeeChangeRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && changeIds.Contains(x.Id))
+            .Select(x => new { x.Id, x.SensitiveFields })
+            .ToListAsync(cancellationToken);
+        return rows.ToDictionary(x => x.Id.ToString(), x => Zayra.Api.Controllers.DashboardController.FormatChangedFields(x.SensitiveFields), StringComparer.OrdinalIgnoreCase);
     }
 
     public async Task<ApprovalRequestDto> CreateRequestAsync(Guid tenantId, CreateApprovalRequest request, RequestContext context, CancellationToken cancellationToken)

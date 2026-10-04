@@ -3535,6 +3535,24 @@ public class EmployeesController : ControllerBase
                     .Where(x => !SensitiveFields.Contains(x.Key))
                     .ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
 
+                // A sensitive value does not change until it is approved, so the form (and the readiness
+                // fast-fix) keeps offering it, and every save used to raise ANOTHER identical approval —
+                // thirteen of them for one admin's own record in production. Resubmitting exactly what is
+                // already waiting now returns the waiting request instead of queueing a copy.
+                if (immediateChanges.Count == 0
+                    && await FindIdenticalPendingChangeAsync(tenantId, employee.Id, sensitiveChanges, cancellationToken) is { } waiting)
+                {
+                    return Accepted(new
+                    {
+                        changeRequestId = waiting.Id,
+                        approvalRequestId = waiting.ApprovalRequestId,
+                        requiresApproval = true,
+                        alreadyPending = true,
+                        sensitiveFields = sensitive,
+                        appliedFields = new List<string>()
+                    });
+                }
+
                 if (immediateChanges.Count > 0)
                 {
                     ApplyChanges(employee, immediateChanges);
@@ -5836,6 +5854,38 @@ public class EmployeesController : ControllerBase
             && char.IsLetter(s[0]) && char.IsLetter(s[1])
             && char.IsDigit(s[2]) && char.IsDigit(s[3]);
     }
+
+    /// <summary>
+    /// The employee's pending change whose proposed values are exactly <paramref name="proposed"/> (same
+    /// keys, same values), with its approval still pending. Null when nothing identical is waiting.
+    /// </summary>
+    private async Task<EmployeeChangeRequest?> FindIdenticalPendingChangeAsync(
+        Guid tenantId, int employeeId, IReadOnlyDictionary<string, JsonElement> proposed, CancellationToken cancellationToken)
+    {
+        var pending = await _db.EmployeeChangeRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId
+                && x.Status == EmployeeChangeStatuses.PendingApproval && x.ApprovalRequestId != null)
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .ToListAsync(cancellationToken);
+        foreach (var change in pending)
+        {
+            Dictionary<string, JsonElement>? stored;
+            try { stored = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.ProposedChangesJson); }
+            catch (JsonException) { continue; }
+            if (stored is null || stored.Count != proposed.Count) continue;
+            var storedByKey = new Dictionary<string, JsonElement>(stored, StringComparer.OrdinalIgnoreCase);
+            if (!proposed.All(p => storedByKey.TryGetValue(p.Key, out var v) && SameJsonValue(v, p.Value))) continue;
+            var approvalPending = await _db.ApprovalRequests.AsNoTracking()
+                .AnyAsync(a => a.TenantId == tenantId && a.Id == change.ApprovalRequestId && a.Status == "Pending", cancellationToken);
+            if (approvalPending) return change;
+        }
+        return null;
+    }
+
+    private static bool SameJsonValue(JsonElement a, JsonElement b) =>
+        a.ValueKind == b.ValueKind && (a.ValueKind == JsonValueKind.String
+            ? string.Equals(a.GetString()?.Trim(), b.GetString()?.Trim(), StringComparison.Ordinal)
+            : a.GetRawText() == b.GetRawText());
 
     private bool CanEditSensitive() => User.IsInRole("Admin") || User.IsInRole("HR Manager") || User.HasClaim("permission", "employees.sensitive");
     private bool CanViewSensitive() => CanEditSensitive() || User.IsInRole("Payroll Officer") || User.HasClaim("permission", "employees.sensitive");

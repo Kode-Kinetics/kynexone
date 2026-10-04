@@ -30,6 +30,12 @@ export interface ApprovalRequest {
   completedAtUtc: string | null;
   decisions: ApprovalDecision[];
   canDecide: boolean;
+  /** Plain-language reason the caller cannot decide a pending request (e.g. they requested it). */
+  decisionBlockedReason?: string | null;
+  /** True when the caller raised this pending employee change and may take it back. */
+  canWithdraw?: boolean;
+  /** What is being approved, e.g. "IBAN, passport". */
+  changeSummary?: string | null;
 }
 
 export interface ApprovalDecision {
@@ -49,4 +55,7 @@ export const approvalsApi = {
 
   decide: (id: string, decision: 'Approve' | 'Reject', comments = '') =>
     client.post<ApprovalRequest>(`/api/approval-requests/${id}/decisions`, { decision, comments }).then((r) => r.data),
+
+  withdraw: (id: string, reason = '') =>
+    client.post<ApprovalRequest>(`/api/approval-requests/${id}/withdraw`, { reason }).then((r) => r.data),
 };
