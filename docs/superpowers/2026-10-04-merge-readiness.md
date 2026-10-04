@@ -55,6 +55,8 @@ Browser plugin not available; regular Playwright used. Browser checks exercise r
 
 ## Release prerequisites and recovery
 
+Subsequent client-scope decision (2026-10-04): unavailable authorised government access is an accepted deferral to client integration, not a blocker for the internal-workflow delivery. The [client-package checklist](../CLIENT_INTEGRATION_PREREQUISITES.md) records required inputs and engineering acceptance. This does not waive live-transaction, customer migration or other deployment gates.
+
 No push, deployment, live government submission or customer database change is part of this local merge. Before rollout, take a tested backup, rehearse against approved customer-shaped staging data, inventory/reconcile legacy payroll-linked/manual-collection loans, configure company policy and HR routes, and verify actual role grants and company scopes. Do not infer historical classifications, forgive debt or fabricate journal evidence.
 
 Live government integration remains **not implemented/enabled**: the provider is disabled. Authorised provider contract, operation/API specifications, sandbox credentials, idempotency/reconciliation evidence and production onboarding are still required. Internal HR approval never issues a visa. This slice covers exit/re-entry policy workflows and notifications, not final exit, renewal, extension or cancellation. See `jawazat-operations.md` and `standalone-loans-operations.md`.

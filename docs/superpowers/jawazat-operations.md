@@ -25,6 +25,10 @@ Example workflow request (illustrative configuration; do not create automaticall
 
 ## Live integration gate
 
+Client scope decision (2026-10-04): live integration is deferred until client onboarding supplies authorised access. It is not a blocker for the internal-workflow delivery, but remains mandatory before any live government transaction. Include the [client integration prerequisites](../CLIENT_INTEGRATION_PREREQUISITES.md) in the client handover package. Provider adapter implementation and acceptance testing remain future engineering work, not a credentials-only switch.
+
+Agreed future setup entry point: **Saudi Compliance Command Center → Configure → Jawazat**, reusing the existing Configure screen. This placement is recorded for the deferred integration; no live Jawazat configuration panel is implemented by this documentation change.
+
 The shipped provider is disabled. Internal approval and provider-unavailable records must never create an issued visa or a charge. Government facts unavailable locally remain Unknown.
 
 Activation requires the customer's authorised provider contract, supported-operation documentation, secure sandbox credentials, authentication and idempotency specifications, reconciliation/status contracts and tested production onboarding. Public Absher/HRSD information is not an API contract. Do not automate portal logins or invent endpoints.
