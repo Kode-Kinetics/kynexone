@@ -39,6 +39,18 @@ Commands run in the isolated worktree; frontend commands run under `frontend/`. 
 
 All pre-merge gates passed. Independent review approves the bounded local merge with no remaining critical/important findings. Production prerequisites below are not waived by this decision.
 
+## Local merge outcome
+
+Feature commit `72dd53d2` was fast-forwarded into local `main`. The merged tree was verified identical to the tested feature tree. The original mixed workspace remains on `fix/accept-postgres-uri-connection-string`; its uncommitted work was not swept into main. The isolated main worktree is `.claude/worktrees/loan-jawazat-merge-20261004`.
+
+Post-merge command:
+
+```sh
+dotnet test backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj --no-build --no-restore --filter 'FullyQualifiedName~Loan|FullyQualifiedName~Jawazat|FullyQualifiedName~PaymentBatchScopeTests|FullyQualifiedName~PayComponentGoldenMasterTests|FullyQualifiedName~FinanceDecisionConcurrencyPostgresTests|FullyQualifiedName~CompanyScopeBootAssertionTests|FullyQualifiedName~TableBudgetRatchetTests' --logger 'trx;LogFileName=merged-main-verification.trx' -v quiet
+```
+
+Result: **253 passed, 0 failed, 0 skipped**, including the corrected permission/company regressions, golden-master payroll and disposable PostgreSQL upgrade rehearsal. Post-merge `npx tsc --noEmit` and all 25 frontend unit checks also passed. This subsequent record-only update changes no executable code.
+
 Browser plugin not available; regular Playwright used. Browser checks exercise rendered Next.js at `http://localhost:5183`, Desktop Chrome 1440×900 and Pixel 7, with intercepted synthetic APIs. They verify meaningful page content, interaction states, console/page errors, responsive width, policy-only updates, retry identity and provider-unavailable state. Worker desktop and HR phone screenshots were visually inspected under `/tmp/kynex-isolated-qa.3y5ZZA/`. These checks do not establish live backend/government connectivity or certify other browsers.
 
 ## Release prerequisites and recovery
