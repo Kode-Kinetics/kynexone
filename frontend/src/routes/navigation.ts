@@ -74,7 +74,7 @@ export const navigationGroups: NavGroup[] = [
   {
     label: 'Insights & Reports',
     items: [
-      { label: 'Assistant', icon: MessageSquareText, path: '/ai-assistant', requiredPermissions: ['ai.query', 'ai.insights_view'], requiredFeatureKey: 'ai_assistant' },
+      { label: 'Kody', icon: MessageSquareText, path: '/ai-assistant', requiredPermissions: ['ai.query', 'ai.insights_view'], requiredFeatureKey: 'ai_assistant' },
       { label: 'Reports & Analytics', icon: Layers3, path: '/reports', requiredPermissions: ['reports.read', 'reports.schedule'] },
     ],
   },
@@ -128,7 +128,7 @@ export const navigationHints: Record<string, string> = {
   '/offboarding': 'Resignations and exits: clearance, final settlement and end of service.',
   '/performance': 'Goals, review cycles and ratings.',
   '/compliance': 'Expiring iqamas, passports and permits, and missing documents.',
-  '/ai-assistant': 'Ask questions about your workforce data in plain language.',
+  '/ai-assistant': 'Ask Kody, your HR assistant, questions about your workforce data.',
   '/reports': 'Standard and custom reports, with scheduled delivery.',
   '/compliance-profiles': 'Country and company rules that compliance checks run against.',
   '/tax-policies': 'Tax and contribution rules applied during payroll.',

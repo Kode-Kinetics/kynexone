@@ -20,7 +20,7 @@ const PLAN_BADGE: Record<string, string> = {
 const PLAN_FEATURES: Record<string, string[]> = {
   trial:      ['Core HR', 'Basic Reports', '14-day limit'],
   starter:    ['HR + Payroll', 'Feature flags selectable', 'Email support'],
-  growth:     ['Full HR suite', 'Workspace Assistant', 'Priority support'],
+  growth:     ['Full HR suite', 'Kody HR Assistant', 'Priority support'],
   enterprise: ['All features', 'Dedicated support', 'Custom integrations'],
 };
 

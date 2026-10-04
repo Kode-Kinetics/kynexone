@@ -611,7 +611,7 @@ export default function TenantAdminPage() {
           {/* AI Usage section */}
           {aiUsage && (
             <div className="bg-white rounded-xl border border-gray-200 p-6">
-              <h2 className="text-lg font-semibold text-gray-900 mb-4">Assistant Usage</h2>
+              <h2 className="text-lg font-semibold text-gray-900 mb-4">Kody Usage</h2>
               <div className="space-y-4">
                 <div>
                   <div className="flex items-center justify-between mb-1.5">

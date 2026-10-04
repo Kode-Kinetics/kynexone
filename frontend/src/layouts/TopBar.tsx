@@ -1,6 +1,6 @@
 'use client';
 
-import { Bell, BellOff, MessageSquareText, CheckCheck, Globe, LogOut, Menu, Moon, Sun, Trash2, UserCircle2, X } from 'lucide-react';
+import { Bell, BellOff, CheckCheck, Globe, LogOut, Menu, Moon, Sun, Trash2, UserCircle2, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Avatar } from '../components/Avatar';
@@ -63,7 +63,6 @@ interface TopBarProps {
   onToggleTheme: () => void;
   onOpenSidebar: () => void;
   onOpenSearch: () => void;
-  onAskKynexOne: () => void;
 }
 
 function timeAgo(utc: string) {
@@ -219,7 +218,7 @@ function NotificationPanel({ onClose, onCountChange }: { onClose: () => void; on
   );
 }
 
-export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch, onAskKynexOne }: TopBarProps) {
+export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch }: TopBarProps) {
   const ThemeIcon = theme === 'dark' ? Sun : Moon;
   const { user, logout } = useAuth();
   const { t } = useLocale();
@@ -289,16 +288,6 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch, onAs
       <CompanySwitcher />
 
       <div className="ms-auto flex shrink-0 items-center gap-1.5">
-        <button
-          type="button"
-          aria-label="Open assistant"
-          onClick={onAskKynexOne}
-          className="flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 sm:px-3 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-slate-300 dark:hover:bg-white/[0.07]"
-        >
-          <MessageSquareText className="h-3.5 w-3.5" />
-          <span className="hidden sm:inline">{t('Assistant')}</span>
-        </button>
-
         <button
           type="button"
           aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
