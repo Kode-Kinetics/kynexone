@@ -451,13 +451,22 @@ COMMENT ON FUNCTION app.partition_headroom() IS
 -- anything, these 75 children would carry it and the proof script would fail.
 -- =============================================================================
 
+-- The window is centred on the current month in every real deployment. The two
+-- gates that byte-diff a fresh build against the committed schema.sql pin it with
+-- app.partition_seed_month (scripts/lib/schema-gate-common.sh), because a window
+-- that follows the calendar makes any fixed snapshot go stale on the 1st of the
+-- next month — which is what happened on 2026-10-01. The ratchets and the RLS
+-- proofs do not pin it: they must keep proving the CURRENT month has a child.
 DO $$
 DECLARE
-    i integer;
+    i        integer;
+    v_anchor date := coalesce(
+        nullif(current_setting('app.partition_seed_month', true), '')::date,
+        now()::date);
 BEGIN
     FOR i IN -11 .. 3 LOOP
         PERFORM app.ensure_partition_month(
-            (date_trunc('month', now()) + make_interval(months => i))::date);
+            (date_trunc('month', v_anchor) + make_interval(months => i))::date);
     END LOOP;
 END
 $$;
