@@ -1071,7 +1071,11 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     // ── Loans, Advances & Bonuses ──────────────────────────────────────────────
     public DbSet<LoanType> LoanTypes => Set<LoanType>();
     public DbSet<LoanPolicy> LoanPolicies => Set<LoanPolicy>();
+    public DbSet<LoanChangeRequest> LoanChangeRequests => Set<LoanChangeRequest>();
     public DbSet<EmployeeLoan> EmployeeLoans => Set<EmployeeLoan>();
+    public DbSet<LoanDisbursementBatch> LoanDisbursementBatches => Set<LoanDisbursementBatch>();
+    public DbSet<LoanDisbursementLine> LoanDisbursementLines => Set<LoanDisbursementLine>();
+    public DbSet<LoanRepayment> LoanRepayments => Set<LoanRepayment>();
     public DbSet<LoanApproval> LoanApprovals => Set<LoanApproval>();
     public DbSet<LoanInstallment> LoanInstallments => Set<LoanInstallment>();
     public DbSet<LoanSettlement> LoanSettlements => Set<LoanSettlement>();
@@ -1451,6 +1455,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         {
             entity.ToTable("hr_requests");
             entity.HasKey(x => x.Id);
+            entity.Property(x => x.WorkflowVersion).IsConcurrencyToken();
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.DueAtUtc });
         });
@@ -3860,6 +3866,12 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.ToTable("loan_policies");
             entity.HasKey(x => x.Id);
             entity.Property(x => x.MaxMultiplierOfSalary).HasPrecision(8, 2);
+            entity.Property(x => x.MaxAmount).HasPrecision(14, 2);
+            entity.Property(x => x.MaxTotalOutstanding).HasPrecision(14, 2);
+            entity.Property(x => x.MaxInstallmentPercentOfSalary).HasPrecision(5, 2);
+            entity.Property(x => x.AdditionalApprovalThreshold).HasPrecision(14, 2);
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.LoanTypeId, x.Version }).IsUnique().HasFilter("company_id IS NOT NULL");
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.LoanTypeId }).IsUnique().HasFilter("company_id IS NOT NULL AND is_active");
             entity.HasIndex(x => new { x.TenantId, x.LoanTypeId });
         });
 
@@ -3872,9 +3884,103 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.InstallmentAmount).HasPrecision(14, 2);
             entity.Property(x => x.TotalRepaid).HasPrecision(14, 2);
             entity.Property(x => x.OutstandingBalance).HasPrecision(14, 2);
+            entity.Property(x => x.RepaymentMethod).HasMaxLength(32).HasDefaultValue("PayrollDeduction");
+            entity.Property(x => x.Currency).HasMaxLength(3);
+            entity.HasAlternateKey(x => new { x.TenantId, x.Id });
             entity.HasIndex(x => new { x.TenantId, x.LoanNumber }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.EmployeeIntId, x.Status });
+        });
+
+        modelBuilder.Entity<LoanDisbursementBatch>(entity =>
+        {
+            entity.ToTable("loan_disbursement_batches", t =>
+            {
+                t.HasCheckConstraint("ck_loan_payment_batch_status", "status IN ('Draft','Approved','PartiallyPaid','Completed','Paid','Cancelled')");
+                t.HasCheckConstraint("ck_loan_payment_batch_amount", "total_amount > 0");
+                t.HasCheckConstraint("ck_loan_payment_batch_paid_evidence", "status <> 'Paid' OR (paid_date IS NOT NULL AND paid_by IS NOT NULL AND payment_reference IS NOT NULL)");
+            });
+            entity.HasKey(x => x.Id);
+            entity.HasAlternateKey(x => new { x.TenantId, x.Id });
+            entity.Property(x => x.TotalAmount).HasPrecision(14, 2);
+            entity.Property(x => x.BatchNumber).HasMaxLength(64);
+            entity.Property(x => x.Currency).HasMaxLength(3);
+            entity.Property(x => x.Status).HasMaxLength(20);
+            entity.Property(x => x.PaymentReference).HasMaxLength(160);
+            entity.Property(x => x.PaymentMethod).HasMaxLength(32);
+            entity.HasIndex(x => new { x.TenantId, x.BatchNumber }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.PaymentReference }).IsUnique()
+                .HasFilter("payment_reference IS NOT NULL");
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Status });
+        });
+
+        modelBuilder.Entity<LoanDisbursementLine>(entity =>
+        {
+            entity.ToTable("loan_disbursement_lines", t =>
+            {
+                t.HasCheckConstraint("ck_loan_payment_line_amount", "amount > 0");
+                t.HasCheckConstraint("ck_loan_payment_line_status", "status IN ('Pending','Paid','Failed','Cancelled','Reversed')");
+                t.HasCheckConstraint("ck_loan_payment_line_evidence", "status NOT IN ('Paid','Reversed') OR (paid_date IS NOT NULL AND paid_by IS NOT NULL AND payment_reference IS NOT NULL AND trim(payment_reference) <> '' AND payment_method IS NOT NULL AND payment_method IN ('BankTransfer','DirectDebit','Cash'))");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Amount).HasPrecision(14, 2);
+            entity.Property(x => x.Iban).HasMaxLength(34);
+            entity.Property(x => x.EmployeeCode).HasMaxLength(100);
+            entity.Property(x => x.BankName).HasMaxLength(250);
+            entity.Property(x => x.EmployeeName).HasMaxLength(250);
+            entity.Property(x => x.Status).HasMaxLength(20);
+            entity.Property(x => x.PaymentReference).HasMaxLength(160);
+            entity.Property(x => x.PaymentMethod).HasMaxLength(32);
+            entity.Property(x => x.FailureReason).HasMaxLength(1000);
+            entity.HasIndex(x => new { x.TenantId, x.GlEntryId }).IsUnique().HasFilter("gl_entry_id IS NOT NULL");
+            entity.HasIndex(x => new { x.TenantId, x.LoanId }).IsUnique().HasFilter("NOT is_cancelled");
+            entity.HasOne<LoanDisbursementBatch>().WithMany().HasForeignKey(x => new { x.TenantId, x.BatchId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<FinanceGlEntry>().WithMany().HasForeignKey(x => new { x.TenantId, x.GlEntryId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<EmployeeLoan>().WithMany().HasForeignKey(x => new { x.TenantId, x.LoanId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<LoanRepayment>(entity =>
+        {
+            entity.ToTable("loan_repayments", t =>
+            {
+                t.HasCheckConstraint("ck_loan_receipt_amount", "amount > 0");
+                t.HasCheckConstraint("ck_loan_receipt_method", "payment_method IN ('BankTransfer','DirectDebit','Cash')");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Amount).HasPrecision(14, 2);
+            entity.Property(x => x.Reference).HasMaxLength(160);
+            entity.Property(x => x.PaymentMethod).HasMaxLength(32);
+            entity.HasIndex(x => new { x.TenantId, x.LoanId, x.Reference }).IsUnique();
+            entity.HasAlternateKey(x => new { x.TenantId, x.LoanId, x.Id });
+            entity.HasIndex(x => new { x.TenantId, x.GlEntryId }).IsUnique().HasFilter("gl_entry_id IS NOT NULL");
+            entity.HasIndex(x => new { x.TenantId, x.ReversalGlEntryId }).IsUnique().HasFilter("reversal_gl_entry_id IS NOT NULL");
+            entity.HasOne<FinanceGlEntry>().WithMany().HasForeignKey(x => new { x.TenantId, x.GlEntryId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<FinanceGlEntry>().WithMany().HasForeignKey(x => new { x.TenantId, x.ReversalGlEntryId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<EmployeeLoan>().WithMany().HasForeignKey(x => new { x.TenantId, x.LoanId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<LoanChangeRequest>(entity =>
+        {
+            entity.ToTable("loan_change_requests");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.ChangeType).HasMaxLength(40);
+            entity.Property(x => x.Status).HasMaxLength(20);
+            entity.Property(x => x.Reason).HasMaxLength(2000);
+            entity.Property(x => x.DecisionReason).HasMaxLength(2000);
+            entity.Property(x => x.Reference).HasMaxLength(160);
+            entity.Property(x => x.OutstandingBalanceAtRequest).HasPrecision(14, 2);
+            entity.HasIndex(x => new { x.TenantId, x.LoanId, x.Status });
+            entity.HasIndex(x => new { x.TenantId, x.LoanId, x.Reference }).IsUnique().HasFilter("reference <> ''");
+            entity.HasOne<LoanRepayment>().WithMany().HasForeignKey(x => new { x.TenantId, x.LoanId, x.RepaymentId })
+                .HasPrincipalKey(x => new { x.TenantId, x.LoanId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<EmployeeLoan>().WithMany().HasForeignKey(x => new { x.TenantId, x.LoanId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<LoanApproval>(entity =>

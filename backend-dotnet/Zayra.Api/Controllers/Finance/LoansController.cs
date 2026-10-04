@@ -8,6 +8,7 @@ using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Finance;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
@@ -17,7 +18,7 @@ namespace Zayra.Api.Controllers.Finance;
 [Authorize]
 [ApiController]
 [Route("api/finance/loans")]
-public class LoansController : ControllerBase
+public partial class LoansController : ControllerBase
 {
     private readonly ZayraDbContext _db;
     private readonly IDataScopeService _scopeService;
@@ -49,6 +50,12 @@ public class LoansController : ControllerBase
     public async Task<IActionResult> CreateLoanType([FromBody] LoanTypeRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
+        if (req.RepaymentFrequency is not ("Monthly" or "Weekly" or "BiWeekly" or "Quarterly"))
+            return BadRequest("Repayment frequency must be Monthly, Weekly, BiWeekly, or Quarterly.");
+        if (!req.IsInterestFree || req.InterestRate != 0)
+            return BadRequest("This workflow supports interest-free loans only.");
+        if (req.MaxInstallments is < 1 or > 600 || req.MinServiceMonths is < 0 or > 600 || req.MaxAmount < 0 || decimal.Round(req.MaxAmount, 2) != req.MaxAmount || req.MaxAmount > 999999999999.99m)
+            return BadRequest("Set 1–600 maximum installments and a nonnegative two-decimal maximum amount.");
         if (await _db.LoanTypes.AnyAsync(x => x.TenantId == tid && x.Code == req.Code && !x.IsDeleted, ct))
             return Conflict("Loan type code already exists.");
         var t = new LoanType
@@ -88,7 +95,7 @@ public class LoansController : ControllerBase
     [HasPermission("loans.read", "loans.write")]
     public async Task<IActionResult> ListLoans(
         [FromQuery] Guid? employeeId, [FromQuery] string? status,
-        [FromQuery] int page = 1, [FromQuery] int pageSize = 30, CancellationToken ct = default)
+        [FromQuery] int page = 1, [FromQuery] int pageSize = 30, CancellationToken ct = default, [FromQuery] bool mine = false)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
@@ -96,12 +103,15 @@ public class LoansController : ControllerBase
         var tid = GetTenantId();
         var scope = await _scopeService.ResolveAsync(User, tid, ct);
         var q = _db.EmployeeLoans.Where(x => x.TenantId == tid && !x.IsDeleted);
-
-        if (!scope.IsUnrestricted)
+        if (mine)
         {
-            var allowedEmployeeIds = scope.AllowedEmployeeIds!.ToArray();
-            q = q.Where(x => x.EmployeeIntId.HasValue && allowedEmployeeIds.Contains(x.EmployeeIntId.Value));
+            var uid = GetUserId();
+            var ownId = await _db.Employees.Where(x => x.TenantId == tid && x.UserAccountId == uid && !x.IsDeleted).Select(x => (int?)x.Id).FirstOrDefaultAsync(ct);
+            // IgnoreQueryFilters: an authenticated employee retains access to their own historical loans after a company transfer.
+            // The server-resolved employee id, tenant and soft-delete predicates constrain this bypass to that owner only.
+            q = ScopedBypass.TenantWide(_db.EmployeeLoans, tid, "Authenticated employee's own loan history across company transfer; employee id is server-resolved.").Where(x => x.TenantId == tid && !x.IsDeleted && ownId.HasValue && x.EmployeeIntId == ownId);
         }
+        q = ApplyLoanEmployeeReadScope(q, scope);
         if (employeeId.HasValue)
             q = q.Where(x => x.EmployeeId == employeeId);
 
@@ -118,62 +128,109 @@ public class LoansController : ControllerBase
     {
         if (LoansReadDenial(this) is { } denied) return denied;
         var tid = GetTenantId();
-        var loan = await _db.EmployeeLoans.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
+        var loan = await FindVisibleLoanForReadAsync(id, ct);
         if (loan == null) return NotFound();
-        // Object-level authorization: a non-org-wide caller (employee/manager) may only read a loan
-        // belonging to an employee in their scope. Without this, the scoped LIST above is trivially
-        // bypassed by hitting the detail route with any loan GUID (IDOR, CWE-639).
-        var scope = await _scopeService.ResolveAsync(User, tid, ct);
-        if (!scope.IsUnrestricted && !(loan.EmployeeIntId.HasValue && scope.CanAccessEmployee(loan.EmployeeIntId.Value)))
-            return Forbid();
-        var installments = await _db.LoanInstallments.Where(x => x.LoanId == id).OrderBy(x => x.InstallmentNumber).ToListAsync(ct);
-        var approvals = await _db.LoanApprovals.Where(x => x.LoanId == id).OrderBy(x => x.StepOrder).ToListAsync(ct);
-        var auditLogs = await _db.LoanAuditLogs.Where(x => x.LoanId == id).OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct);
-        var glEntries = await _db.FinanceGlEntries.Where(x => x.SourceEntityId == id).OrderByDescending(x => x.EntryDate).ToListAsync(ct);
-        return Ok(new { loan = EmployeeLoanDto.Project(loan), installments, approvals, auditLogs, glEntries });
+        // Object-level authorization still constrains ordinary company-scoped employee/manager reads.
+        if (!await CanAccessLoanAsync(loan, ct)) return Forbid();
+        var installments = await _db.LoanInstallments.Where(x => x.LoanId == id && x.TenantId == tid).OrderBy(x => x.InstallmentNumber).ToListAsync(ct);
+        var approvals = await _db.LoanApprovals.Where(x => x.LoanId == id && x.TenantId == tid).OrderBy(x => x.StepOrder).ToListAsync(ct);
+        var auditLogs = await _db.LoanAuditLogs.AsNoTracking().Where(x => x.LoanId == id && x.TenantId == tid).OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct);
+        var ownLoan = await _db.Employees.AnyAsync(x => x.TenantId == tid && x.Id == loan.EmployeeIntId && x.UserAccountId == GetUserId() && !x.IsDeleted, ct);
+        if (!IsHrLoanActor() && !IsFinanceActor() && !ownLoan)
+        {
+            // Salary-bearing lifecycle snapshots are not a team-manager entitlement. Redact a detached view, never stored audit evidence.
+            foreach (var log in auditLogs)
+            {
+                log.OldValuesJson = string.Empty; log.NewValuesJson = string.Empty;
+            }
+        }
+        var receiptIds = _db.LoanRepayments.Where(x => x.TenantId == tid && x.LoanId == id).Select(x => x.Id);
+        var glEntries = IsFinanceActor() ? await _db.FinanceGlEntries.Where(x => x.TenantId == tid && x.SourceModule == "Loan"
+            && (x.SourceEntityId == id || receiptIds.Contains(x.SourceEntityId))).OrderByDescending(x => x.EntryDate).ToListAsync(ct) : new List<FinanceGlEntry>();
+        var receiptQuery = ownLoan
+            ? ScopedBypass.TenantWide(_db.LoanRepayments, tid, "Employee-owned historical loan receipts after company transfer; loan owner is server-verified before this read.")
+            : _db.LoanRepayments.AsQueryable();
+        var repayments = await receiptQuery.AsNoTracking().Where(x => x.TenantId == tid && x.LoanId == id).OrderByDescending(x => x.PaidDate).ToListAsync(ct);
+        var paymentBatchId = await _db.Set<LoanDisbursementLine>().Where(x => x.TenantId == tid && x.LoanId == id && !x.IsCancelled).Select(x => (Guid?)x.BatchId).FirstOrDefaultAsync(ct);
+        return Ok(new { loan = EmployeeLoanDto.Project(loan), installments, approvals, auditLogs, glEntries, repayments, paymentBatchId });
+    }
+
+    // Read-only helper. Never use the owner transfer exception to authorize company-scoped financial mutations.
+    private async Task<EmployeeLoan?> FindVisibleLoanForReadAsync(Guid id, CancellationToken ct)
+    {
+        var tid = GetTenantId();
+        var loan = await _db.EmployeeLoans.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
+        if (loan == null && GetUserId() is { } ownUserId)
+        {
+            var ownEmployeeId = await _db.Employees.Where(x => x.TenantId == tid && x.UserAccountId == ownUserId && !x.IsDeleted).Select(x => (int?)x.Id).FirstOrDefaultAsync(ct);
+            // IgnoreQueryFilters: owner-only historical detail remains available across a legal-entity transfer.
+            // Server-resolved employee identity plus tenant, loan id and soft-delete guards prevent arbitrary cross-company reads.
+            loan = await ScopedBypass.TenantWide(_db.EmployeeLoans, tid, "Owner-only historical loan detail after transfer; tenant and linked employee are server-resolved.").FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid
+                && !x.IsDeleted && ownEmployeeId.HasValue && x.EmployeeIntId == ownEmployeeId, ct);
+        }
+        return loan;
+    }
+
+    private IQueryable<EmployeeLoan> ApplyLoanEmployeeReadScope(IQueryable<EmployeeLoan> query, DataScope employeeScope)
+    {
+        if (employeeScope.IsUnrestricted) return query;
+        var allowed = employeeScope.AllowedEmployeeIds!.ToArray();
+        if (!CanApproveFinance() && !IsHrLoanActor())
+            return query.Where(x => x.EmployeeIntId.HasValue && allowed.Contains(x.EmployeeIntId.Value));
+        var entityScope = this.GetEntityScope();
+        var companies = entityScope.AccessibleCompanyIds.ToArray();
+        var group = entityScope.IsGroupLevel;
+        var tid = GetTenantId();
+        // Only employee id/current company are used to establish a transfer. No foreign-company personnel data is returned.
+        var employeeCompanies = ScopedBypass.NullableTenantWide(_db.Employees, tid,
+            "Original lender retains its transferred employee receivable; read only employee id and current legal entity to establish the transfer.")
+            .Where(e => !e.IsDeleted && e.CompanyId.HasValue).Select(e => new { e.Id, e.CompanyId });
+        return query.Where(x => x.EmployeeIntId.HasValue && (allowed.Contains(x.EmployeeIntId.Value)
+            || (x.CompanyId.HasValue && (group || companies.Contains(x.CompanyId.Value))
+                && employeeCompanies.Any(e => e.Id == x.EmployeeIntId.Value && e.CompanyId != x.CompanyId))));
     }
 
     [HttpPost]
-    public async Task<IActionResult> CreateLoan([FromBody] CreateLoanRequest req, CancellationToken ct)
+    public Task<IActionResult> CreateLoan([FromBody] CreateLoanRequest req, CancellationToken ct) =>
+        FinanceDecisionSerializer.SerializeAsync<IActionResult>(_db, "finance.loan-create", GetTenantId(), GetTenantId(), () => CreateLoanCore(req, ct), ct);
+
+    private async Task<IActionResult> CreateLoanCore(CreateLoanRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
         var uid = GetUserId();
+        if (uid == null) return Unauthorized();
+        if (!IsMoney(req.RequestedAmount) || req.RequestedInstallments < 1 || req.RequestedInstallments > 600 || req.RequestedAmount < req.RequestedInstallments * .01m)
+            return BadRequest("Amount must be positive with at most two decimal places and cover 1–600 installments of at least 0.01 each.");
+        if (!IsRepaymentMethod(req.RepaymentMethod)) return BadRequest("Invalid repayment method.");
+        if (req.EmployeeId == Guid.Empty && !req.EmployeeIntId.HasValue)
+        {
+            var ownId = await _db.Employees.Where(x => x.TenantId == tid && x.UserAccountId == uid && !x.IsDeleted).Select(x => (int?)x.Id).FirstOrDefaultAsync(ct);
+            if (!ownId.HasValue) return BadRequest("No linked employee account was found.");
+            req = req with { EmployeeIntId = ownId };
+        }
         var identity = await _db.ResolveEmployeeAsync(tid, req.EmployeeId, req.EmployeeIntId, ct);
         if (!identity.IsSuccess) return BadRequest(identity.Error);
         var employee = identity.Employee!;
         var scope = await _scopeService.ResolveAsync(User, tid, ct);
         if (!scope.CanAccessEmployee(employee.Id)) return Forbid();
+        if (employee.UserAccountId != uid && !IsHrLoanActor() && !IsFinanceActor()) return Forbid();
 
         var loanType = await _db.LoanTypes.FirstOrDefaultAsync(x => x.Id == req.LoanTypeId && x.TenantId == tid && !x.IsDeleted, ct);
-        if (loanType == null) return NotFound("Loan type not found.");
-        if (req.RequestedAmount > loanType.MaxAmount && loanType.MaxAmount > 0)
-            return BadRequest($"Requested amount exceeds maximum allowed ({loanType.MaxAmount:N2}).");
-        if (req.RequestedInstallments > loanType.MaxInstallments)
-            return BadRequest($"Installments exceed maximum allowed ({loanType.MaxInstallments}).");
+        if (loanType == null || !loanType.IsActive) return NotFound("Loan type not found.");
+        if (loanType.RepaymentFrequency is not ("Monthly" or "Weekly" or "BiWeekly" or "Quarterly"))
+            return BadRequest("This loan type has an unsupported repayment frequency.");
+        if (req.RepaymentMethod == "PayrollDeduction" && loanType.RepaymentFrequency != "Monthly")
+            return BadRequest("Payroll deduction supports monthly loans. Use separate repayments for this frequency.");
+        if (!loanType.IsInterestFree || loanType.InterestRate != 0)
+            return BadRequest("Interest-bearing loans require a configured interest schedule and are not supported by this workflow.");
+        var assessment = await new LoanEligibilityService(_db).EvaluateAsync(tid, employee, loanType,
+            req.RequestedAmount, req.RequestedInstallments, req.RepaymentMethod, ct: ct);
+        var policy = JsonSerializer.Deserialize<LoanPolicy>(assessment.PolicySnapshotJson)!;
+        var exceptionCodes = new[] { "MinService", "Probation", "AmountLimit", "ConcurrentLoans", "Cooldown", "SalaryAffordability", "ContractType" };
+        if (!assessment.Eligible && !(req.RequestPolicyException && policy.AllowExceptions && assessment.Codes.All(exceptionCodes.Contains)))
+            return BadRequest(new { error = "loan_ineligible", assessment.Reasons, assessment.Codes, assessment.MaxAvailableAmount });
 
-        // Policy: check for loan policy and enforce max concurrent loans + cooldown
-        var policy = await _db.Set<LoanPolicy>().FirstOrDefaultAsync(x => x.TenantId == tid && x.LoanTypeId == loanType.Id && x.IsActive, ct);
-        if (policy != null)
-        {
-            var activeCount = await _db.EmployeeLoans.CountAsync(
-                x => x.TenantId == tid && x.EmployeeIntId == employee.Id && !x.IsDeleted
-                     && (x.Status == "Active" || x.Status == "Pending"), ct);
-            if (activeCount >= policy.MaxConcurrentLoans)
-                return BadRequest($"Employee already has {activeCount} active/pending loan(s). Maximum allowed is {policy.MaxConcurrentLoans}.");
-
-            if (policy.CooldownMonthsAfterRepayment > 0)
-            {
-                var cooldownCutoff = DateTime.UtcNow.AddMonths(-policy.CooldownMonthsAfterRepayment);
-                var recentlySettled = await _db.EmployeeLoans.AnyAsync(
-                    x => x.TenantId == tid && x.EmployeeIntId == employee.Id && !x.IsDeleted
-                         && x.Status == "Settled" && x.UpdatedAtUtc > cooldownCutoff, ct);
-                if (recentlySettled)
-                    return BadRequest($"Employee must wait {policy.CooldownMonthsAfterRepayment} month(s) after settling a loan before requesting a new one.");
-            }
-        }
-
-        var count = await _db.EmployeeLoans.CountAsync(x => x.TenantId == tid, ct);
-        var loanNumber = $"LN-{DateTime.UtcNow.Year}-{(count + 1):D5}";
+        var loanNumber = $"LN-{DateTime.UtcNow.Year}-{Guid.NewGuid().ToString("N")[..10].ToUpperInvariant()}";
 
         var loan = new EmployeeLoan
         {
@@ -183,33 +240,26 @@ public class LoansController : ControllerBase
             LoanTypeId = req.LoanTypeId, LoanTypeName = loanType.NameEn, LoanNumber = loanNumber,
             RequestedAmount = req.RequestedAmount, RequestedInstallments = req.RequestedInstallments,
             RepaymentFrequency = loanType.RepaymentFrequency, Notes = req.Notes ?? string.Empty,
-            Status = loanType.RequiresApproval ? "Pending" : "Approved",
-            CreatedBy = uid,
+            Status = "Pending",
+            RepaymentMethod = req.RepaymentMethod,
+            Currency = await GlAccountResolver.ResolveCurrencyAsync(_db, tid, employee.CompanyId, ct),
+            CreatedBy = uid, PolicyId = assessment.PolicyId, PolicyVersion = assessment.PolicyVersion,
+            PolicySnapshotJson = assessment.PolicySnapshotJson, EligibilitySnapshotJson = JsonSerializer.Serialize(assessment),
         };
         _db.EmployeeLoans.Add(loan);
 
-        if (!loanType.RequiresApproval)
-        {
-            loan.ApprovedAmount = req.RequestedAmount;
-            loan.ApprovedInstallments = req.RequestedInstallments;
-            loan.InstallmentAmount = req.RequestedAmount / req.RequestedInstallments;
-            loan.OutstandingBalance = req.RequestedAmount;
-            loan.Status = "Active";
-            GenerateInstallments(tid, loan);
-            // CompanyId is stamped server-side from the employee by ZayraDbContext's company-scope
-            // enforcement on write; resolve it here so the journal is attributed to the right entity.
-            await PostGlEntry(tid, uid, await ResolveLoanCompanyAsync(tid, loan, ct), loan.Id, loan.LoanNumber,
-                "Loan", "Disbursement", "LOAN_RECEIVABLE", "CASH_BANK", loan.ApprovedAmount, null, ct);
-        }
+        _db.LoanApprovals.Add(new LoanApproval { TenantId = tid, LoanId = loan.Id, StepOrder = 1, ApproverRole = "HR Manager" });
+        if (policy.AdditionalApprovalThreshold > 0 && req.RequestedAmount >= policy.AdditionalApprovalThreshold)
+            _db.LoanApprovals.Add(new LoanApproval { TenantId = tid, LoanId = loan.Id, StepOrder = 2, ApproverRole = "HR Director" });
+        await new LoanLifecycleService(_db).RefreshAsync(tid, loan, ct);
 
+        AddLoanAudit(loan.Id, "LoanRequested", new { loan.LoanNumber, loan.RequestedAmount, loan.Status, loan.RepaymentMethod });
         await _db.SaveChangesAsync(ct);
-        await WriteLoanAudit(tid, uid, loan.Id, "LoanRequested", null,
-            JsonSerializer.Serialize(new { loan.LoanNumber, loan.RequestedAmount, loan.Status }), ct);
         return Ok(EmployeeLoanDto.Project(loan));
     }
 
     [HttpPost("{id:guid}/approvals")]
-    [Authorize(Roles = "Admin,HR Manager,Finance,Manager")]
+    [Authorize(Roles = "Admin,HR Manager,HR Director")]
     public Task<IActionResult> AddApprovalStep(Guid id, [FromBody] LoanApprovalRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -220,7 +270,12 @@ public class LoansController : ControllerBase
             _db, FinanceDecisionSerializer.ScopeLoan, tid, id, async () =>
         {
             var loan = await _db.EmployeeLoans.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
-            if (loan == null) return NotFound();
+            if (loan == null || loan.IsDeleted) return NotFound();
+            if (!await CanAccessLoanAsync(loan, ct)) return Forbid();
+            if (!IsHrLoanActor()) return Forbid();
+            if (req.StepOrder < 1 || req.ApproverRole is not ("HR Manager" or "HR Director")) return BadRequest("Loan requests require HR approval roles.");
+            if (await _db.LoanApprovals.AnyAsync(x => x.TenantId == tid && x.LoanId == id && (x.StepOrder >= req.StepOrder || x.Status != "Pending"), ct))
+                return Conflict("Append approval steps in increasing order before any decisions are recorded.");
             // A new Pending step on a decided loan resets the "all steps approved" roll-up that
             // DecideApproval uses, which is the back door around the status guard added there.
             // OffersController.AddApproval refuses the same way.
@@ -236,6 +291,7 @@ public class LoansController : ControllerBase
                 ApproverRole = req.ApproverRole,
             };
             _db.LoanApprovals.Add(step);
+            AddLoanAudit(id, "ApprovalStepAdded", new { step.StepOrder, step.ApproverRole });
             await _db.SaveChangesAsync(ct);
             // SAFE-SERIALIZATION: LoanApproval is a workflow step record — no salary or personal financial data.
             return Ok(step);
@@ -243,7 +299,7 @@ public class LoansController : ControllerBase
     }
 
     [HttpPatch("{id:guid}/approvals/{approvalId:guid}/decide")]
-    [Authorize(Roles = "Admin,HR Manager,Finance,Manager")]
+    [Authorize(Roles = "Admin,HR Manager,HR Director")]
     public Task<IActionResult> DecideApproval(Guid id, Guid approvalId, [FromBody] ApprovalDecisionRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -316,6 +372,38 @@ public class LoansController : ControllerBase
         // Guard postcondition: a passing verdict means both records were found.
         ArgumentNullException.ThrowIfNull(approval);
         ArgumentNullException.ThrowIfNull(loan);
+        if (loan.IsDeleted) return NotFound();
+        if (uid == null) return Unauthorized();
+        if (!await CanAccessLoanAsync(loan, ct)) return Forbid();
+        if (!IsHrLoanActor()) return Forbid();
+        // Legacy pending Finance steps are treated as HR Manager; migration persists the same correction.
+        var requiredRole = approval.ApproverRole is "Finance" or "Finance Approver" or "Manager" ? "HR Manager" : approval.ApproverRole;
+        if (!User.IsInRole("Admin") && !User.IsInRole(requiredRole)) return Forbid();
+        if (req.Decision == "Approved" && await IsLoanBorrowerAsync(loan, uid.Value, ct))
+            return BadRequest("Maker-checker control: borrower cannot approve their own loan.");
+        if (await _db.LoanApprovals.AnyAsync(x => x.TenantId == tid && x.LoanId == id && x.StepOrder < approval.StepOrder && x.Status != "Approved", ct))
+            return Conflict("Earlier approval steps must be approved first.");
+        var amountLimit = loan.ApprovedAmount > 0 ? Math.Min(loan.ApprovedAmount, loan.RequestedAmount) : loan.RequestedAmount;
+        var countLimit = loan.ApprovedInstallments > 0 ? Math.Min(loan.ApprovedInstallments, loan.RequestedInstallments) : loan.RequestedInstallments;
+        var amount = req.ApprovedAmount ?? amountLimit;
+        var installmentCount = req.ApprovedInstallments ?? countLimit;
+        if (req.Decision == "Approved" && (!IsMoney(amount) || amount > amountLimit || installmentCount < 1 || installmentCount > countLimit || amount < installmentCount * .01m))
+            return BadRequest("Approved terms must be positive, within requested terms, and allocate at least 0.01 per installment.");
+        if (req.Decision == "Approved" && req.RepaymentStartDate is { } firstDue
+            && (firstDue < DateOnly.FromDateTime(DateTime.UtcNow) || firstDue > DateOnly.FromDateTime(DateTime.UtcNow).AddYears(5)))
+            return BadRequest("The first repayment date must be today or within the next five years.");
+        if (req.Decision == "Approved")
+        {
+            await new LoanLifecycleService(_db).RefreshAsync(tid, loan, ct);
+            if (loan.ReviewRequired) { await _db.SaveChangesAsync(ct); return Conflict(new { error = "loan_review_required", message = loan.ReviewReason }); }
+            var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == loan.EmployeeIntId && !x.IsDeleted, ct);
+            var type = await _db.LoanTypes.FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == loan.LoanTypeId, ct);
+            if (employee == null || type == null) return Conflict("Employee or loan type requires HR review.");
+            var assessment = await new LoanEligibilityService(_db).EvaluateAsync(tid, employee, type, amount, installmentCount,
+                loan.RepaymentMethod, loan.Id, loan.PolicySnapshotJson, ct);
+            if (!assessment.Eligible) return BadRequest(new { error = "loan_ineligible", assessment.Reasons, assessment.Codes });
+            loan.EligibilitySnapshotJson = JsonSerializer.Serialize(assessment);
+        }
 
         var oldStatus = approval.Status;
         approval.Status = req.Decision; approval.Comments = req.Comments ?? string.Empty;
@@ -328,23 +416,18 @@ public class LoansController : ControllerBase
         }
         else
         {
-            var allApprovals = await _db.LoanApprovals.Where(x => x.LoanId == id).ToListAsync(ct);
+            // Later approvers may reduce but must not silently enlarge previously authorized terms.
+            loan.ApprovedAmount = amount;
+            loan.ApprovedInstallments = installmentCount;
+            if (req.RepaymentStartDate.HasValue) loan.RepaymentStartDate = req.RepaymentStartDate;
+            var allApprovals = await _db.LoanApprovals.Where(x => x.LoanId == id && x.TenantId == tid).ToListAsync(ct);
             if (allApprovals.All(a => a.Status == "Approved"))
             {
-                loan.Status = "Active";
-                loan.ApprovedAmount = req.ApprovedAmount ?? loan.RequestedAmount;
-                loan.ApprovedInstallments = req.ApprovedInstallments ?? loan.RequestedInstallments;
-                loan.InstallmentAmount = loan.ApprovedAmount / loan.ApprovedInstallments;
-                loan.OutstandingBalance = loan.ApprovedAmount;
-                loan.DisbursementDate = DateOnly.FromDateTime(DateTime.UtcNow);
+                loan.Status = "Approved";
+                loan.ApprovedAmount = amount;
+                loan.ApprovedInstallments = installmentCount;
+                loan.InstallmentAmount = decimal.Floor(amount / installmentCount * 100m) / 100m;
                 if (req.RepaymentStartDate.HasValue) loan.RepaymentStartDate = req.RepaymentStartDate;
-                else loan.RepaymentStartDate = DateOnly.FromDateTime(DateTime.UtcNow.AddMonths(1));
-                GenerateInstallments(tid, loan);
-                // POD-B1b — post-once: a second "Approved" decision on an already-fully-approved loan
-                // must not disburse (and expense cash) twice.
-                if (!await DisbursementAlreadyPostedAsync(tid, id, ct))
-                    await PostGlEntry(tid, uid, await ResolveLoanCompanyAsync(tid, loan, ct), loan.Id, loan.LoanNumber,
-                        "Loan", "Disbursement", "LOAN_RECEIVABLE", "CASH_BANK", loan.ApprovedAmount, null, ct);
             }
         }
         loan.UpdatedAtUtc = DateTime.UtcNow; loan.UpdatedBy = uid;
@@ -358,37 +441,8 @@ public class LoansController : ControllerBase
 
     [HttpPatch("{id:guid}/settle")]
     [Authorize(Roles = "Admin,HR Manager,Finance")]
-    public async Task<IActionResult> SettleLoan(Guid id, [FromBody] LoanSettlementRequest req, CancellationToken ct)
-    {
-        var tid = GetTenantId();
-        var uid = GetUserId();
-        var loan = await _db.EmployeeLoans.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
-        if (loan == null) return NotFound();
-        if (loan.Status != "Active") return BadRequest("Only active loans can be settled.");
-
-        var oldBalance = loan.OutstandingBalance;
-        var settlement = new LoanSettlement
-        {
-            TenantId = tid, LoanId = id, SettlementType = req.SettlementType,
-            SettlementAmount = req.SettlementAmount, SettlementDate = req.SettlementDate,
-            Notes = req.Notes ?? string.Empty, ApprovedBy = uid, ApprovedByName = GetUserName(),
-            CreatedBy = uid,
-        };
-        _db.LoanSettlements.Add(settlement);
-        loan.TotalRepaid += req.SettlementAmount;
-        loan.OutstandingBalance = Math.Max(0, loan.OutstandingBalance - req.SettlementAmount);
-        if (loan.OutstandingBalance == 0) loan.Status = "Settled";
-        loan.UpdatedAtUtc = DateTime.UtcNow; loan.UpdatedBy = uid;
-
-        await PostGlEntry(tid, uid, await ResolveLoanCompanyAsync(tid, loan, ct), loan.Id, loan.LoanNumber,
-            "Loan", "Repayment", "CASH_BANK", "LOAN_RECEIVABLE", req.SettlementAmount, null, ct);
-
-        await _db.SaveChangesAsync(ct);
-        await WriteLoanAudit(tid, uid, id, "LoanSettled",
-            JsonSerializer.Serialize(new { Balance = oldBalance }),
-            JsonSerializer.Serialize(new { SettlementAmount = req.SettlementAmount, Type = req.SettlementType, NewBalance = loan.OutstandingBalance }), ct);
-        return Ok(new { loan = EmployeeLoanDto.Project(loan), settlement });
-    }
+    public Task<IActionResult> SettleLoan(Guid id, [FromBody] LoanSettlementRequest req, CancellationToken ct) =>
+        Task.FromResult<IActionResult>(Conflict("Record a repayment with its payment reference through the repayments endpoint. Waivers require a separate write-off workflow."));
 
     [HttpGet("{id:guid}/installments")]
     [HasPermission("loans.read", "loans.write")]
@@ -396,46 +450,18 @@ public class LoansController : ControllerBase
     {
         if (LoansReadDenial(this) is { } denied) return denied;
         var tid = GetTenantId();
-        // Same object-level check as GetLoan: this route had none, so any loan's schedule was readable by id.
-        var loan = await _db.EmployeeLoans.AsNoTracking()
-            .FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
+        // Same permission and object-level checks as GetLoan, including the bounded historical transfer read.
+        var loan = await FindVisibleLoanForReadAsync(id, ct);
         if (loan == null) return NotFound();
-        var scope = await _scopeService.ResolveAsync(User, tid, ct);
-        if (!scope.IsUnrestricted && !(loan.EmployeeIntId.HasValue && scope.CanAccessEmployee(loan.EmployeeIntId.Value)))
-            return Forbid();
+        if (!await CanAccessLoanAsync(loan, ct)) return Forbid();
         return Ok(await _db.LoanInstallments.Where(x => x.LoanId == id && x.TenantId == tid)
             .OrderBy(x => x.InstallmentNumber).ToListAsync(ct));
     }
 
     [HttpPatch("{id:guid}/installments/{installmentId:guid}/pay")]
     [Authorize(Roles = "Admin,Finance,HR Manager")]
-    public async Task<IActionResult> MarkInstallmentPaid(Guid id, Guid installmentId, [FromBody] PayInstallmentRequest req, CancellationToken ct)
-    {
-        var tid = GetTenantId();
-        var uid = GetUserId();
-        var inst = await _db.LoanInstallments.FirstOrDefaultAsync(x => x.Id == installmentId && x.LoanId == id && x.TenantId == tid, ct);
-        if (inst == null) return NotFound();
-        if (inst.Status == "Paid") return BadRequest("Installment already paid.");
-
-        inst.AmountPaid = req.AmountPaid;
-        inst.PaidDate = req.PaidDate;
-        inst.PayrollRunId = req.PayrollRunId;
-        inst.Status = req.AmountPaid >= inst.AmountDue ? "Paid" : "Pending";
-
-        var loan = await _db.EmployeeLoans.FirstAsync(x => x.Id == id && x.TenantId == tid, ct);
-        loan.TotalRepaid += req.AmountPaid;
-        loan.OutstandingBalance = Math.Max(0, loan.OutstandingBalance - req.AmountPaid);
-        if (loan.OutstandingBalance == 0) { loan.Status = "Settled"; }
-        loan.UpdatedAtUtc = DateTime.UtcNow; loan.UpdatedBy = uid;
-
-        await PostGlEntry(tid, uid, await ResolveLoanCompanyAsync(tid, loan, ct), loan.Id, loan.LoanNumber,
-            "Loan", "Repayment", "CASH_BANK", "LOAN_RECEIVABLE", req.AmountPaid, null, ct);
-
-        await _db.SaveChangesAsync(ct);
-        await WriteLoanAudit(tid, uid, id, "InstallmentPaid", null,
-            JsonSerializer.Serialize(new { InstallmentNumber = inst.InstallmentNumber, AmountPaid = req.AmountPaid, inst.PaidDate }), ct);
-        return Ok(new { installment = inst, loan = EmployeeLoanDto.Project(loan) });
-    }
+    public Task<IActionResult> MarkInstallmentPaid(Guid id, Guid installmentId, [FromBody] PayInstallmentRequest req, CancellationToken ct) =>
+        Task.FromResult<IActionResult>(Conflict("Record a repayment with a payment reference through the repayments endpoint. Receipts are allocated to the oldest unpaid installments."));
 
     // ── Audit & Reconciliation Report ────────────────────────────────────────
 
@@ -448,11 +474,15 @@ public class LoansController : ControllerBase
         var tid = GetTenantId();
         var q = _db.EmployeeLoans.Where(x => x.TenantId == tid && !x.IsDeleted);
         if (!string.IsNullOrEmpty(status)) q = q.Where(x => x.Status == status);
+        var scope = await _scopeService.ResolveAsync(User, tid, ct);
+        q = ApplyLoanEmployeeReadScope(q, scope);
 
         var loans = await q.OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct);
 
+        var loanIds = loans.Select(x => x.Id).ToArray();
+        var receiptIds = _db.LoanRepayments.Where(x => x.TenantId == tid && loanIds.Contains(x.LoanId)).Select(x => x.Id);
         var glEntries = await _db.FinanceGlEntries
-            .Where(x => x.TenantId == tid && x.SourceModule == "Loan")
+            .Where(x => x.TenantId == tid && x.SourceModule == "Loan" && (loanIds.Contains(x.SourceEntityId) || receiptIds.Contains(x.SourceEntityId)))
             .ToListAsync(ct);
 
         var summary = new
@@ -463,7 +493,8 @@ public class LoansController : ControllerBase
             ActiveLoans = loans.Count(x => x.Status == "Active"),
             SettledLoans = loans.Count(x => x.Status == "Settled"),
             PendingLoans = loans.Count(x => x.Status == "Pending"),
-            TotalDisbursed = loans.Sum(x => x.ApprovedAmount),
+            ApprovedAwaitingDisbursement = loans.Count(x => x.Status == "Approved"),
+            TotalDisbursed = loans.Where(x => x.DisbursementDate.HasValue || x.Status is "Active" or "Settled" or "Overdue" or "Closed").Sum(x => x.ApprovedAmount),
             TotalOutstanding = loans.Sum(x => x.OutstandingBalance),
             TotalRepaid = loans.Sum(x => x.TotalRepaid),
             GlEntriesCount = glEntries.Count,
@@ -471,8 +502,9 @@ public class LoansController : ControllerBase
             {
                 l.LoanNumber, l.EmployeeName, l.LoanTypeName, l.Status,
                 l.ApprovedAmount, l.TotalRepaid, l.OutstandingBalance,
-                BalanceCheck = Math.Round(l.ApprovedAmount - l.TotalRepaid - l.OutstandingBalance, 2),
-                IsReconciled = Math.Abs(l.ApprovedAmount - l.TotalRepaid - l.OutstandingBalance) < 0.01m,
+                ActualDisbursedAmount = l.DisbursementDate.HasValue || l.Status is "Active" or "Settled" or "Overdue" or "Closed" ? l.ApprovedAmount : 0m,
+                BalanceCheck = Math.Round((l.DisbursementDate.HasValue || l.Status is "Active" or "Settled" or "Overdue" or "Closed" ? l.ApprovedAmount : 0m) - l.TotalRepaid - l.OutstandingBalance, 2),
+                IsReconciled = Math.Abs((l.DisbursementDate.HasValue || l.Status is "Active" or "Settled" or "Overdue" or "Closed" ? l.ApprovedAmount : 0m) - l.TotalRepaid - l.OutstandingBalance) < 0.01m,
             }).ToList(),
         };
         return Ok(summary);
@@ -486,7 +518,9 @@ public class LoansController : ControllerBase
             _db.LoanInstallments.Add(new LoanInstallment
             {
                 TenantId = tid, LoanId = loan.Id, InstallmentNumber = i,
-                DueDate = start.AddMonths(i - 1), AmountDue = loan.InstallmentAmount, Status = "Pending",
+                DueDate = AdvanceDueDate(start, loan.RepaymentFrequency, i - 1),
+                AmountDue = i == loan.ApprovedInstallments ? loan.ApprovedAmount - loan.InstallmentAmount * (i - 1) : loan.InstallmentAmount,
+                Status = "Pending",
             });
         }
     }
@@ -504,12 +538,12 @@ public class LoansController : ControllerBase
     /// </summary>
     private async Task PostGlEntry(Guid tid, Guid? uid, Guid? companyId, Guid entityId, string entityRef,
         string module, string eventType, string debitDriverKey, string creditDriverKey,
-        decimal amount, string? currency, CancellationToken ct)
+        decimal amount, string? currency, CancellationToken ct, DateOnly? entryDate = null)
     {
         var resolvedCurrency = string.IsNullOrWhiteSpace(currency)
             ? await GlAccountResolver.ResolveCurrencyAsync(_db, tid, companyId, ct)
             : currency;
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var today = entryDate ?? DateOnly.FromDateTime(DateTime.UtcNow);
         // POD-B1 (req-4) — no GL posting into a closed period. Single choke point covers every loan
         // disbursement/repayment/settlement post. POD-B1b tightens it from a group-wide close to the
         // loan's OWN company (a group-wide close still blocks — PeriodCloseGuard.cs:31 ORs CompanyId
@@ -597,7 +631,7 @@ public class LoansController : ControllerBase
 }
 
 public record LoanTypeRequest(string Code, string NameEn, string? NameAr, decimal MaxAmount, int MaxInstallments, string RepaymentFrequency, bool IsInterestFree, decimal InterestRate, int MinServiceMonths, bool RequiresApproval);
-public record CreateLoanRequest(Guid EmployeeId, string EmployeeName, Guid LoanTypeId, decimal RequestedAmount, int RequestedInstallments, string? Notes, int? EmployeeIntId = null);
+public record CreateLoanRequest(Guid EmployeeId, string EmployeeName, Guid LoanTypeId, decimal RequestedAmount, int RequestedInstallments, string? Notes, int? EmployeeIntId = null, string RepaymentMethod = "BankTransfer", bool RequestPolicyException = false);
 public record LoanApprovalRequest(int StepOrder, string ApproverRole);
 public record ApprovalDecisionRequest(string Decision, string? Comments, decimal? ApprovedAmount, int? ApprovedInstallments, DateOnly? RepaymentStartDate);
 public record LoanSettlementRequest(string SettlementType, decimal SettlementAmount, DateOnly SettlementDate, string? Notes);

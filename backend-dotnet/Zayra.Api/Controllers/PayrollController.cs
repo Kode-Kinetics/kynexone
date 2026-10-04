@@ -1677,8 +1677,9 @@ public class PayrollController : ControllerBase
             .ToListAsync(cancellationToken);
 
         // COMPLIANCE: Load active loans and salary advances per employee for EMI deduction
+        var loanCompanyId = company.Id;
         var activeLoans = await _db.EmployeeLoans.AsNoTracking()
-            .Where(l => l.TenantId == tenantId && l.Status == "Active" && l.EmployeeIntId != null && employeeIdsForRun.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0
+            .Where(l => l.TenantId == tenantId && l.CompanyId == loanCompanyId && !l.IsDeleted && l.CollectionStatus != "OnHold" && l.RepaymentMethod == "PayrollDeduction" && (l.Status == "Active" || l.Status == "Overdue") && l.EmployeeIntId != null && employeeIdsForRun.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0
                 && (!l.RepaymentStartDate.HasValue || l.RepaymentStartDate.Value <= periodEnd))
             .ToListAsync(cancellationToken);
         var activeAdvances = await _db.SalaryAdvances.AsNoTracking()
@@ -2574,7 +2575,15 @@ public class PayrollController : ControllerBase
                 // inside this transaction (after any final-wage-month EMI has already decremented it) and
                 // against what the settlement can fund, so Σ recovery ≤ the original balance is arithmetic
                 // rather than convention, and there is exactly ONE decrement path.
-                var due = isSettlingEmployee ? l.OutstandingBalance : Math.Min(l.InstallmentAmount, l.OutstandingBalance);
+                // The last installment owns the cent residual from an exact-cent schedule.
+                // Recover it with that installment rather than creating an extra salary deduction.
+                var isFinalInstallment = l.ApprovedInstallments > 0 && l.InstallmentAmount > 0m
+                    // Imported legacy loans can carry stale installment counts. Never use that
+                    // count to accelerate a material balance or change a legacy fractional EMI.
+                    && decimal.Round(l.InstallmentAmount, 2) == l.InstallmentAmount
+                    && l.OutstandingBalance < l.InstallmentAmount + l.ApprovedInstallments * .01m
+                    && l.TotalRepaid >= l.InstallmentAmount * (l.ApprovedInstallments - 1);
+                var due = isSettlingEmployee || isFinalInstallment ? l.OutstandingBalance : Math.Min(l.InstallmentAmount, l.OutstandingBalance);
                 if (due <= 0m) continue;
                 var take = Math.Min(due, debtBudget);
                 if (take > 0m) { loanTakenById[l.Id] = take; loanEmi += take; debtBudget -= take; }
@@ -3268,7 +3277,7 @@ public class PayrollController : ControllerBase
         // employee's balance can be touched by it.
         var runDecrementsDebt = includesRecurringPay || settlementsDisbursed.Count > 0;
         var activeLoansMutable = !runDecrementsDebt ? new List<EmployeeLoan>() : await _db.EmployeeLoans
-            .Where(l => l.TenantId == tenantId && l.Status == "Active" && l.EmployeeIntId != null && employeeIdsForRun.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0
+            .Where(l => l.TenantId == tenantId && l.CompanyId == loanCompanyId && !l.IsDeleted && l.CollectionStatus != "OnHold" && l.RepaymentMethod == "PayrollDeduction" && (l.Status == "Active" || l.Status == "Overdue") && l.EmployeeIntId != null && employeeIdsForRun.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0
                 && (!l.RepaymentStartDate.HasValue || l.RepaymentStartDate.Value <= periodEnd))
             .ToListAsync(cancellationToken);
         var activeAdvMutable = !runDecrementsDebt ? new List<SalaryAdvance>() : await _db.SalaryAdvances
@@ -5904,7 +5913,7 @@ public class PayrollController : ControllerBase
         };
 
         var loans = await _db.EmployeeLoans
-            .Where(l => l.TenantId == tenantId && l.Status == "Active" && l.EmployeeIntId != null
+            .Where(l => l.TenantId == tenantId && l.CompanyId == run.CompanyId && !l.IsDeleted && l.CollectionStatus != "OnHold" && l.RepaymentMethod == "PayrollDeduction" && (l.Status == "Active" || l.Status == "Overdue") && l.EmployeeIntId != null
                      && employeeIds.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0)
             .ToListAsync(ct);
         var advances = await _db.SalaryAdvances
@@ -9441,7 +9450,7 @@ public class PayrollController : ControllerBase
         // ── PLANNED debt recovery. Planned only: the run RE-CAPS against the live balance and is the sole
         //    decrement path, so there is exactly one recovery mechanism and no double-recovery to guard. ─
         var loans = await _db.EmployeeLoans.AsNoTracking()
-            .Where(l => l.TenantId == tenantId && l.Status == "Active"
+            .Where(l => l.TenantId == tenantId && l.CompanyId == companyId && !l.IsDeleted && l.CollectionStatus != "OnHold" && l.RepaymentMethod == "PayrollDeduction" && (l.Status == "Active" || l.Status == "Overdue")
                      && l.EmployeeIntId == employee.Id && l.OutstandingBalance > 0)
             .ToListAsync(ct);
         var advances = await _db.SalaryAdvances.AsNoTracking()

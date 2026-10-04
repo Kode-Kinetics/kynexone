@@ -194,7 +194,7 @@ public class LoanDecisionStateGuardTests
         await db.SaveChangesAsync();
 
         var result = await Loans(db, tenantId).AddApprovalStep(
-            loan.Id, new LoanApprovalRequest(2, "Finance"), CancellationToken.None);
+            loan.Id, new LoanApprovalRequest(2, "HR Director"), CancellationToken.None);
 
         result.Should().BeOfType<ConflictObjectResult>()
             .Which.Value!.ToString().Should().Contain("invalid_loan_state");
@@ -212,7 +212,7 @@ public class LoanDecisionStateGuardTests
         await db.SaveChangesAsync();
 
         var result = await Loans(db, tenantId).AddApprovalStep(
-            loan.Id, new LoanApprovalRequest(1, "Finance"), CancellationToken.None);
+            loan.Id, new LoanApprovalRequest(1, "HR Manager"), CancellationToken.None);
 
         result.Should().BeOfType<OkObjectResult>();
         (await db.LoanApprovals.CountAsync(x => x.LoanId == loan.Id)).Should().Be(1);
@@ -343,6 +343,7 @@ public class LoanDecisionStateGuardTests
         new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
         new Claim(ClaimTypes.Name, "Finance Tester"),
         new Claim(ClaimTypes.Role, "Finance"),
+        new Claim(ClaimTypes.Role, "HR Manager"),
     }, "Test"));
 
     private sealed class UnrestrictedScopeService : IDataScopeService

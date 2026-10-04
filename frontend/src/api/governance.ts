@@ -40,6 +40,7 @@ export interface CompanyComplianceProfile {
   effectiveTo: string | null;
   status: string;
   requiredFieldsJson: string;
+  jawazatPolicyJson?: string;
   notes: string;
 }
 
@@ -75,4 +76,6 @@ export const complianceProfilesApi = {
     client.post<CompanyComplianceProfile>('/api/company-compliance-profiles', input).then((r) => r.data),
   update: (id: string, input: Partial<CompanyComplianceProfile>) =>
     client.put<CompanyComplianceProfile>(`/api/company-compliance-profiles/${id}`, input).then((r) => r.data),
+  updateJawazatPolicy: (id: string, jawazatPolicyJson: string) =>
+    client.patch<CompanyComplianceProfile>(`/api/company-compliance-profiles/${id}/jawazat-policy`, { jawazatPolicyJson }).then((r) => r.data),
 };

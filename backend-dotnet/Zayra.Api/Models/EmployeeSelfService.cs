@@ -107,6 +107,11 @@ public class HRRequest : ITenantOwned
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
     public int EmployeeId { get; set; }
+    /// <summary>Original legal entity for governed requests; legacy ordinary tickets remain unchanged.</summary>
+    public Guid? CompanyId { get; set; }
+    public string? JawazatDataJson { get; set; }
+    public Guid? ApprovalRequestId { get; set; }
+    public int WorkflowVersion { get; set; }
     public Guid? CategoryId { get; set; }
     public string CategoryName { get; set; } = string.Empty;
     public string Subject { get; set; } = string.Empty;

@@ -22,6 +22,7 @@ import type { EmployeeSelection } from '../components/EmployeeSearchSelect';
 import { useFullList } from '../hooks/useFullList';
 import { pageWindowText } from '../lib/paging';
 import { requestFailureReason } from '../lib/requestFailure';
+import { JawazatPanel } from '../components/compliance/JawazatPanel';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -789,9 +790,9 @@ function ComplianceAITab() {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-type Tab = 'dashboard' | 'contracts' | 'visa' | 'passports' | 'renewals' | 'expiry' | 'employee-documents' | 'ai';
+type Tab = 'dashboard' | 'contracts' | 'visa' | 'passports' | 'renewals' | 'expiry' | 'employee-documents' | 'ai' | 'jawazat';
 
-const TAB_KEYS: Tab[] = ['dashboard', 'contracts', 'visa', 'passports', 'renewals', 'expiry', 'employee-documents', 'ai'];
+const TAB_KEYS: Tab[] = ['dashboard', 'contracts', 'visa', 'passports', 'renewals', 'expiry', 'employee-documents', 'ai', 'jawazat'];
 
 export default function CompliancePage() {
   const params = useSearchParams();
@@ -804,6 +805,7 @@ export default function CompliancePage() {
     { id: 'dashboard', label: 'Dashboard', icon: BarChart3 },
     { id: 'contracts', label: 'Contracts', icon: FileText },
     { id: 'visa', label: 'Visa & ID', icon: Globe },
+    { id: 'jawazat', label: 'Jawazat', icon: Globe },
     { id: 'renewals', label: 'Renewals', icon: RefreshCw },
     { id: 'expiry', label: 'Expiry Alerts', icon: AlertTriangle },
     { id: 'employee-documents', label: 'Employee Documents', icon: FileWarning },
@@ -841,6 +843,7 @@ export default function CompliancePage() {
       {tab === 'contracts' && <ContractsTab />}
       {/* The passport KPIs drill down to 'passports', which used to render nothing at all. */}
       {(tab === 'visa' || tab === 'passports') && <VisaPassportTab key={tab} initialSubTab={tab === 'passports' ? 'passport' : 'visa'} />}
+      {tab === 'jawazat' && <JawazatPanel />}
       {tab === 'renewals' && <RenewalsTab />}
       {tab === 'expiry' && <ExpiryAlertsTab />}
       {tab === 'employee-documents' && <EmployeeDocumentsTab />}

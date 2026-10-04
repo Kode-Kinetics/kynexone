@@ -101,7 +101,9 @@ public static class FinanceDecisionSerializer
     public static Task AcquireAsync(
         ZayraDbContext db, string scope, Guid tenantId, Guid aggregateId, CancellationToken ct = default)
     {
-        if (!db.Database.IsRelational()) return Task.CompletedTask;
+        // SQLite is used by the financial integration fixtures. Its transaction already
+        // serializes writers; PostgreSQL additionally needs the aggregate advisory lock.
+        if (!db.Database.IsNpgsql()) return Task.CompletedTask;
         var key = ComputeLockKey(scope, tenantId, aggregateId);
         // Interpolated value binds as a parameter, not as text.
         return db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({key})", ct);

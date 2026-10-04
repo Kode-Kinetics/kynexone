@@ -553,6 +553,7 @@ export function EmployeeSelfServicePage() {
   const ps = dashboard.payrollSnapshot;
   const perf = dashboard.performanceSnapshot;
   const loans = dashboard.loansSummary;
+  const loanGroups = dashboard.loanSummaries ?? (loans ? [loans] : []);
   const nextLeave = dashboard.nextApprovedLeave;
   const totalUpcoming = (nextLeave ? 1 : 0) + dashboard.documentAlerts.length + dashboard.actionItems.length;
 
@@ -698,11 +699,12 @@ export function EmployeeSelfServicePage() {
         <KpiCard
           icon={CreditCard}
           iconBg="bg-rose-500/10 text-rose-600 dark:text-rose-400"
-          label="Loans & OT"
-          value={loans ? formatCurrency(loans.totalOutstanding, loans.currency) : dashboard.overtimeHoursThisMonth > 0 ? `${dashboard.overtimeHoursThisMonth}h OT` : '—'}
-          sub={loans ? `${loans.activeLoanCount} active loan${loans.activeLoanCount !== 1 ? 's' : ''}` : 'No active loans'}
+          label="My Loans"
+          value={loanGroups.length ? loanGroups.map(group => formatCurrency(group.totalOutstanding, group.currency)).join(' · ') : '—'}
+          sub={loanGroups.length ? `${loanGroups.reduce((sum, group) => sum + group.activeLoanCount, 0)} active loans` : 'View applications and loan history'}
           sub2={dashboard.overtimeHoursThisMonth > 0 ? `${dashboard.overtimeHoursThisMonth}h overtime this month` : undefined}
-          emptyText={!loans && dashboard.overtimeHoursThisMonth === 0 ? 'No active loans or overtime this month' : undefined}
+          emptyText={loanGroups.length === 0 && dashboard.overtimeHoursThisMonth === 0 ? 'No active loans or overtime this month' : undefined}
+          onClick={() => router.push('/loans?mine=true')}
         />
       </div>
 
@@ -1024,6 +1026,7 @@ export function EmployeeSelfServicePage() {
             {[
               { icon: CalendarOff, label: 'Request Leave', path: '/leave', bg: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400', border: 'border-emerald-100 dark:border-emerald-500/20' },
               { icon: FileText, label: 'My Payslips', path: '/payroll', bg: 'bg-violet-500/10 text-violet-700 dark:text-violet-400', border: 'border-violet-100 dark:border-violet-500/20' },
+              { icon: FileText, label: 'Jawazat Requests', path: '/ess/jawazat', bg: 'bg-sapphire/10 text-sapphire dark:text-cyanAccent', border: 'border-blue-100 dark:border-blue-500/20' },
             ].map(({ icon: Icon, label, path, bg, border }) => (
               <button
                 key={label}

@@ -158,7 +158,7 @@ public class AuthSeeder : IAuthSeeder
             x.Key.StartsWith("approvals.") || x.Key.StartsWith("notifications.") || x.Key.StartsWith("localization.") ||
             x.Key.StartsWith("performance.") ||
             x.Key is "audit.read" or "manager.read" or "manager.approve" or "reports.read" or "qiwa.read" or
-            "payroll.read" or "payroll.write" or "payroll.approve" or "loans.write"
+            "payroll.read" or "payroll.write" or "payroll.approve" or "loans.read" or "loans.write" or "loans.approve" or "loans.policy_manage"
         ).ToList(), 3, true, cancellationToken);
 
         // Level 4 — Payroll Manager: payroll + finance + employees
@@ -189,6 +189,12 @@ public class AuthSeeder : IAuthSeeder
             "payroll.read", "payroll.write", "loans.read", "approvals.read", "notifications.read", "reports.read"
         }), 6, true, cancellationToken);
 
+        // Standalone loan operator. Assigning the role remains an administrator decision.
+        await EnsureRole(tenantId, "Finance", "Processes separate employee loan payments and receipts", Ps(new[] {
+            "dashboard.read", "employees.read", "loans.read", "loans.write", "loans.approve",
+            "approvals.read", "approvals.decide", "finance.gl.read", "reports.read", "notifications.read"
+        }), 6, true, cancellationToken);
+
         // Level 7 — Finance Approver: finance approvals
         // payroll.lock reconciles the method-level [Authorize(Roles="...Finance Approver")] intent on the
         // run lock/void/send-back endpoints (financial-controller tier) into the effective-permission model.
@@ -217,7 +223,7 @@ public class AuthSeeder : IAuthSeeder
         await EnsureRole(tenantId, "Manager", "People manager with team oversight and approval authority", Ps(new[] {
             "dashboard.read", "employees.read", "approvals.read", "approvals.write", "approvals.decide", "notifications.read",
             "manager.read", "manager.approve", "ess.read", "ess.write", "leave.read", "leave.approve",
-            "attendance.read", "overtime.read", "overtime.approve", "profile.read",
+            "attendance.read", "overtime.read", "overtime.approve", "profile.read", "loans.read",
             "performance.read", "performance.write"
         }), 9, true, cancellationToken);
 
@@ -256,7 +262,7 @@ public class AuthSeeder : IAuthSeeder
         // appeals their own review and records progress on their own goals. Every list there is limited to
         // their own record by data scope. No performance.write: goals are set by the line manager or HR.
         await EnsureRole(tenantId, "Employee", "Employee self-service user", Ps(new[] {
-            "dashboard.read", "profile.read", "ess.read", "ess.write", "performance.read"
+            "dashboard.read", "profile.read", "ess.read", "ess.write", "performance.read", "loans.read"
         }), 15, true, cancellationToken);
 
         // Establishment matrix: seed the default staffing-level catalog here so EVERY tenant

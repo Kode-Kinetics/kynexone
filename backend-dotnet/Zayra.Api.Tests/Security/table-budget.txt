@@ -178,8 +178,12 @@ LeaveRequests
 LeaveTypes
 LoanApprovals
 LoanAuditLogs
+LoanDisbursementBatches
+LoanDisbursementLines
 LoanInstallments
 LoanPolicies
+LoanChangeRequests
+LoanRepayments
 LoanSettlements
 LoanTypes
 Locations

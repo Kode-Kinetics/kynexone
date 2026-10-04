@@ -1,9 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, RefreshCw, ShieldCheck } from 'lucide-react';
 import { complianceProfilesApi, type ComplianceReadiness } from '@/src/api/governance';
 import { useCompany } from '@/src/contexts/CompanyContext';
+import { JawazatPolicyEditor } from '@/src/components/compliance/JawazatPolicyEditor';
 
 /** Per-company compliance readiness. Configurable readiness tooling — NOT legal certification. */
 export default function ComplianceProfilesPage() {
@@ -12,6 +13,7 @@ export default function ComplianceProfilesPage() {
   const [readiness, setReadiness] = useState<ComplianceReadiness | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const loadRevision = useRef(0);
 
   useEffect(() => {
     if (!companyId && (selectedCompanyId || companies.length > 0))
@@ -19,20 +21,24 @@ export default function ComplianceProfilesPage() {
   }, [companies, selectedCompanyId, companyId]);
 
   const load = useCallback(async (id: string) => {
+    const revision = ++loadRevision.current;
     setLoading(true);
     setError(null);
     try {
-      setReadiness(await complianceProfilesApi.readiness(id));
+      const value = await complianceProfilesApi.readiness(id);
+      if (revision === loadRevision.current) setReadiness(value);
     } catch (e: unknown) {
       const status = (e as { response?: { status?: number } })?.response?.status;
-      setError(status === 403 ? 'You do not have access to this company.' : 'Could not load compliance readiness.');
-      setReadiness(null);
+      if (revision === loadRevision.current) {
+        setError(status === 403 ? 'You do not have access to this company.' : 'Could not load compliance readiness.');
+        setReadiness(null);
+      }
     } finally {
-      setLoading(false);
+      if (revision === loadRevision.current) setLoading(false);
     }
   }, []);
 
-  useEffect(() => { if (companyId) void load(companyId); }, [companyId, load]);
+  useEffect(() => { if (companyId) void load(companyId); return () => { loadRevision.current++; }; }, [companyId, load]);
 
   const profile = readiness?.profile ?? null;
   const fields = readiness?.requiredFields ?? [];
@@ -49,7 +55,7 @@ export default function ComplianceProfilesPage() {
           Company{' '}
           <select
             value={companyId}
-            onChange={(e) => setCompanyId(e.target.value)}
+            onChange={(e) => { loadRevision.current++; setReadiness(null); setLoading(true); setCompanyId(e.target.value); }}
             className="ms-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-slate-200"
           >
             {companies.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.code})</option>)}
@@ -128,6 +134,7 @@ export default function ComplianceProfilesPage() {
               </div>
             </div>
           )}
+          {profile && <JawazatPolicyEditor key={profile.id} profile={profile} onSaved={updated => setReadiness(current => current?.profile?.id === updated.id ? { ...current, profile: updated } : current)} />}
         </>
       )}
     </div>

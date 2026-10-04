@@ -7,6 +7,7 @@ using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
+using Zayra.Api.Application.Jawazat;
 
 namespace Zayra.Api.Controllers;
 
@@ -212,6 +213,7 @@ public class CompanyComplianceProfilesController : ControllerBase
         // company-scoped Compliance Officer must not be able to author another company's activation rules.
         // A company-specific profile requires access to that company; a tenant-default row (CompanyId==null)
         // is Admin-only.
+        if (!string.IsNullOrWhiteSpace(req.JawazatPolicyJson) && this.GetUserId() is null) return Unauthorized();
         if (req.CompanyId is Guid cidCreate)
         {
             if (!this.GetEntityScope().CanAccessCompany(cidCreate)) return Forbid();
@@ -231,6 +233,7 @@ public class CompanyComplianceProfilesController : ControllerBase
             EffectiveTo = req.EffectiveTo,
             Status = req.Status ?? CompanyPolicyStatuses.Active,
             RequiredFieldsJson = req.RequiredFieldsJson ?? string.Empty,
+            JawazatPolicyJson = StampJawazatReview(req.JawazatPolicyJson, this.GetUserId()),
             Notes = req.Notes ?? string.Empty,
             CreatedBy = this.GetUserId(),
         };
@@ -247,6 +250,7 @@ public class CompanyComplianceProfilesController : ControllerBase
         if (tenantId is null) return Unauthorized();
         var profile = await _db.CompanyComplianceProfiles.FirstOrDefaultAsync(p => p.TenantId == tenantId && p.Id == id && !p.IsDeleted, ct);
         if (profile is null) return NotFound();
+        if (!string.IsNullOrWhiteSpace(req.JawazatPolicyJson) && this.GetUserId() is null) return Unauthorized();
         // Company-scope enforcement on BOTH the existing target and the requested new target (mirrors
         // CompanyTaxPoliciesController): a scoped user can neither edit a policy outside their scope nor
         // re-point one at a company they cannot access; tenant-default rows (CompanyId==null) stay Admin-only.
@@ -267,14 +271,60 @@ public class CompanyComplianceProfilesController : ControllerBase
         profile.EffectiveTo = req.EffectiveTo;
         profile.Status = req.Status ?? profile.Status;
         profile.RequiredFieldsJson = req.RequiredFieldsJson ?? profile.RequiredFieldsJson;
+        profile.JawazatPolicyJson = req.JawazatPolicyJson is null ? profile.JawazatPolicyJson : StampJawazatReview(req.JawazatPolicyJson, this.GetUserId());
         profile.Notes = req.Notes ?? profile.Notes;
         profile.UpdatedBy = this.GetUserId();
+        profile.UpdatedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
         return Ok(ToDto(profile));
     }
 
+    /// <summary>Updates only Jawazat policy so a stale editor cannot overwrite readiness or lifecycle fields.</summary>
+    [HttpPatch("{id:guid}/jawazat-policy")]
+    [Authorize(Roles = "Admin,Compliance Officer")]
+    public async Task<IActionResult> UpdateJawazatPolicy(Guid id, [FromBody] UpdateJawazatPolicyRequest req, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null || this.GetUserId() is null) return Unauthorized();
+        if (!User.IsInRole("Admin") && !User.IsInRole("Compliance Officer")) return Forbid();
+        var profile = await _db.CompanyComplianceProfiles.FirstOrDefaultAsync(p => p.TenantId == tenantId && p.Id == id && !p.IsDeleted, ct);
+        if (profile is null) return NotFound();
+        if (profile.CompanyId is Guid companyId)
+        {
+            if (!this.GetEntityScope().CanAccessCompany(companyId)) return Forbid();
+        }
+        else if (!User.IsInRole("Admin")) return Forbid();
+        if (CountryCodeStandard.NormalizeToIso2(profile.CountryCode) != "SA")
+            return BadRequest(new { message = "Jawazat policy is only supported for Saudi compliance profiles." });
+        if (string.IsNullOrWhiteSpace(req.JawazatPolicyJson))
+            return BadRequest(new { message = "A typed Jawazat policy object is required." });
+        var error = JawazatPolicyRules.ValidateJson(req.JawazatPolicyJson);
+        if (error is not null) return BadRequest(new { message = error });
+
+        profile.JawazatPolicyJson = StampJawazatReview(req.JawazatPolicyJson, this.GetUserId());
+        profile.UpdatedBy = this.GetUserId();
+        profile.UpdatedAtUtc = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
+        return Ok(ToDto(profile));
+    }
+
+    private static string? StampJawazatReview(string? validatedJson, Guid? userId)
+    {
+        if (string.IsNullOrWhiteSpace(validatedJson)) return validatedJson;
+        // Validation above requires an explicit review when enabling a route. Only afterward do
+        // we record the authenticated actor/time, never a client-provided reviewer impersonation.
+        var policy = JawazatPolicyRules.Parse(validatedJson);
+        return JawazatJson.Serialize(policy with { ReviewedBy = userId!.Value.ToString(), ReviewedAtUtc = DateTime.UtcNow });
+    }
+
     private async Task<string?> ValidateAsync(Guid tenantId, CompanyComplianceProfileRequest req, CancellationToken ct)
     {
+        if (req.Status is not null && req.Status is not (CompanyPolicyStatuses.Active or CompanyPolicyStatuses.Draft or CompanyPolicyStatuses.Archived))
+            return "Status must be Draft, Active or Archived.";
+        var jawazatError = JawazatPolicyRules.ValidateJson(req.JawazatPolicyJson);
+        if (jawazatError is not null) return jawazatError;
+        if (!string.IsNullOrWhiteSpace(req.JawazatPolicyJson) && CountryCodeStandard.NormalizeToIso2(req.CountryCode) != "SA")
+            return "Jawazat policy is only supported for Saudi compliance profiles.";
         if (!CountryCodeStandard.IsValid(req.CountryCode))
             return $"Unrecognized country code '{req.CountryCode}'. Use an ISO 3166-1 code.";
         if (req.EffectiveTo is not null && req.EffectiveTo < req.EffectiveFrom)
@@ -343,6 +393,7 @@ public class CompanyComplianceProfilesController : ControllerBase
         effectiveTo = p.EffectiveTo,
         status = p.Status,
         requiredFieldsJson = p.RequiredFieldsJson,
+        jawazatPolicyJson = p.JawazatPolicyJson,
         notes = p.Notes,
     };
 }
@@ -356,7 +407,10 @@ public record CompanyTaxPolicyRequest(
 
 public record CompanyComplianceProfileRequest(
     Guid? CompanyId, string CountryCode, string? Jurisdiction, string? CompliancePack,
-    DateOnly EffectiveFrom, DateOnly? EffectiveTo, string? Status, string? RequiredFieldsJson, string? Notes);
+    DateOnly EffectiveFrom, DateOnly? EffectiveTo, string? Status, string? RequiredFieldsJson, string? Notes,
+    string? JawazatPolicyJson = null);
+
+public record UpdateJawazatPolicyRequest([property: System.ComponentModel.DataAnnotations.Required] string JawazatPolicyJson);
 
 /// <summary>
 /// Shared required-field readiness math: parses a profile's RequiredFieldsJson

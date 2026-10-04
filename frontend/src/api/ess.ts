@@ -46,6 +46,7 @@ export interface EssDashboard {
     nextInstallmentAmount: number | null;
     nextInstallmentDate: string | null;
   } | null;
+  loanSummaries?: Array<{ totalOutstanding: number; currency: string; activeLoanCount: number; nextInstallmentAmount: number | null; nextInstallmentDate: string | null }>;
   performanceSnapshot: {
     cycleName: string;
     goalsCompleted: number;
