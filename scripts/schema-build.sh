@@ -4,6 +4,8 @@
 #   ./scripts/schema-build.sh --db kynex_fresh
 #   ./scripts/schema-build.sh --db kynex_wrong --swap 020_constraints_a_f.sql,010_platform.sql
 #   ./scripts/schema-build.sh --list            # print the discovered apply order and exit
+#   ./scripts/schema-build.sh --db kynex_drift --seed-month 2026-09-01
+#                                               # pin the partition window (byte-diff gates only)
 #
 # This is the single apply path every schema gate shares, so "the database the ratchets
 # checked" and "the database schema.sql was dumped from" cannot drift apart by having been
@@ -23,17 +25,19 @@
 set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/schema-gate-common.sh"
 
-DB=""; SWAP=""; LIST_ONLY=0; QUIET=0
+DB=""; SWAP=""; LIST_ONLY=0; QUIET=0; SEED_MONTH=
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --db)     DB="$2"; shift 2 ;;
     --swap)   SWAP="$2"; shift 2 ;;   # "A,B" — move A to sit before B, to prove order matters
     --list)   LIST_ONLY=1; shift ;;
     --quiet)  QUIET=1; shift ;;
+    --seed-month) SEED_MONTH="$2"; shift 2 ;;
     *) echo "schema-build.sh: unknown argument '$1'" >&2; exit 2 ;;
   esac
 done
 [[ -n "$DB" || $LIST_ONLY -eq 1 ]] || { echo "schema-build.sh: --db is required" >&2; exit 2; }
+[[ -z "$SEED_MONTH" || "$SEED_MONTH" =~ ^[0-9]{4}-[0-9]{2}-01$ ]] || { echo "schema-build.sh: --seed-month must be YYYY-MM-01" >&2; exit 2; }
 
 # (while-read rather than `mapfile`: macOS ships bash 3.2, and the local entry point must not
 # need a newer shell than the machine has.)
@@ -102,7 +106,11 @@ SQL
 
 for f in "${MIGRATED[@]}"; do
   say "   $(basename "$f")  (kynex_migrator → kynex_owner)"
-  { echo "SET ROLE kynex_owner;"; cat "$f"; } | pg_psql kynex_migrator "$DB" -v ON_ERROR_STOP=1 -q
+  {
+    echo "SET ROLE kynex_owner;"
+    [[ -n "$SEED_MONTH" ]] && echo "SET app.partition_seed_month = '$SEED_MONTH';"
+    cat "$f"
+  } | pg_psql kynex_migrator "$DB" -v ON_ERROR_STOP=1 -q
 done
 
 say "== $DB built =="
