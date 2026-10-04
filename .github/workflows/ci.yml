@@ -196,9 +196,17 @@ jobs:
       # command against a lockfile pinned to axios 1.19.0 exits 1, and against mobile's own
       # lockfile at --audit-level=moderate it also exits 1, so the exit path is live and it
       # is only the threshold holding it open.
+      #
+      # October 2026: two Highs with NO patched release anywhere (braces GHSA-vfj7-8cjw-p6xm,
+      # node-forge GHSA-86w9-cpqp-85rv, both via Expo build tooling) failed every PR whatever it
+      # touched, and npm's only "fix" downgrades Expo to 44. Plain `npm audit` cannot accept one
+      # advisory, so this runs through scripts/npm_audit_gate.py: same High/Critical threshold,
+      # plus exceptions matched by GHSA id AND package, each dated and justified in
+      # .github/npm-audit-exceptions/mobile.json, warned on every run, and failing again once expired.
       - name: npm audit (mobile; fail on High/Critical)
-        run: npm audit --omit=dev --audit-level=high
-        working-directory: mobile
+        run: |
+          python3 scripts/npm_audit_gate.py --self-test
+          python3 scripts/npm_audit_gate.py --dir mobile --exceptions .github/npm-audit-exceptions/mobile.json
 
       # Advisory only; never fails the build. Both gates above run --omit=dev, which means a
       # dev-chain advisory is currently invisible to CI — the three that prompted this change
