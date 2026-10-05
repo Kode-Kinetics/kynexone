@@ -208,6 +208,7 @@ public class AdvancesController : ControllerBase
             _db, FinanceDecisionSerializer.ScopeAdvance, tid, id, async () =>
         {
         var adv = await _db.SalaryAdvances.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
+        var employeeIsDecider = adv is not null && uid.HasValue && await IsAdvanceEmployeeAsync(adv, uid.Value, ct);
 
         // Shared checklist — see ApprovalDecisionGuard. This endpoint IS the decision, so there is
         // no decision vocabulary to validate, and an advance carries no approval step rows.
@@ -228,6 +229,12 @@ public class AdvancesController : ControllerBase
                 adv?.CreatedBy is { } maker && uid.HasValue && maker == uid,
                 null,
                 "Maker-checker control: requester cannot approve their own salary advance."),
+            // The employee the advance pays, whoever raised it — HR may file it for them.
+            SubjectSeparation = new SubjectSeparationRule(
+                employeeIsDecider,
+                null,
+                "Segregation of duties: you cannot approve a salary advance paid to you."),
+            EarlierStepSeparation = EarlierStepRule.None,   // DECLARED ABSENCE: one synthetic step.
         });
         if (!verdict.Passed) return AdvanceApproveRefusal(verdict);
         ArgumentNullException.ThrowIfNull(adv);
@@ -292,6 +299,10 @@ public class AdvancesController : ControllerBase
             ParentStatusesAllowingDecision = new[] { "Pending" },
             Lock = ApprovalLock.None,                 // DECLARED ABSENCE — as in Approve, above.
             MakerChecker = MakerCheckerRule.None,     // DECLARED ABSENCE: a requester may withdraw.
+            // DECLARED ABSENCE: the employee may likewise reject (withdraw) an advance paid to them;
+            // a rejection grants nothing. Approve, above, carries the bar.
+            SubjectSeparation = SubjectSeparationRule.None,
+            EarlierStepSeparation = EarlierStepRule.None,   // DECLARED ABSENCE: one synthetic step.
         });
         if (!verdict.Passed) return AdvanceRejectRefusal(verdict, adv?.Status);
         ArgumentNullException.ThrowIfNull(adv);
@@ -448,7 +459,7 @@ public class AdvancesController : ControllerBase
     {
         ApprovalGuardOutcome.ParentNotFound => NotFound(),
         ApprovalGuardOutcome.ParentStateForbidsDecision => BadRequest("Advance is not in Pending status."),
-        ApprovalGuardOutcome.MakerIsChecker => BadRequest(verdict.Message),
+        ApprovalGuardOutcome.MakerIsChecker or ApprovalGuardOutcome.SubjectIsDecider => BadRequest(verdict.Message),
         _ => throw new InvalidOperationException($"Unhandled approval guard outcome '{verdict.Outcome}'."),
     };
 
@@ -464,6 +475,14 @@ public class AdvancesController : ControllerBase
             }),
         _ => throw new InvalidOperationException($"Unhandled approval guard outcome '{verdict.Outcome}'."),
     };
+
+    private async Task<bool> IsAdvanceEmployeeAsync(SalaryAdvance adv, Guid userId, CancellationToken ct) =>
+        // As LoansController.IsLoanBorrowerAsync: the exclusion must survive a company transfer, and it
+        // returns only a boolean about the authenticated user and the advance already loaded.
+        await Zayra.Api.Infrastructure.Data.ScopedBypass.NullableTenantWide(_db.Employees, adv.TenantId,
+            "Exclude the authenticated employee from approving a salary advance paid to them, even after a legal-entity transfer.")
+            .AnyAsync(x => x.UserAccountId == userId
+                && (x.Id == adv.EmployeeIntId || x.PublicId == adv.EmployeeId), ct);
 
     private async Task WriteAdvanceAudit(Guid tid, Guid? uid, Guid advId, string action, string? oldVal, string newVal, CancellationToken ct)
     {

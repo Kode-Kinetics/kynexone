@@ -237,6 +237,11 @@ public class LeaveRequestsController : ControllerBase
         // F1 — approval CONFIGURATION errors (no applicable workflow / broken workflow) are 422 with a
         // stable code, distinct from ordinary validation failures.
         catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
+        catch (Zayra.Api.Infrastructure.Approvals.ApprovalSeparationException ex)
+        {
+            // Same 400, plus who could act instead — a sole approver barred here must learn nobody else can.
+            return BadRequest(new { message = ex.Message + await UnblockHintAsync(tenantId.Value, leaveRequest, approverId, ct) });
+        }
         catch (InvalidOperationException ex)
         {
             return BadRequest(new { message = ex.Message });
@@ -280,6 +285,11 @@ public class LeaveRequestsController : ControllerBase
         // F1 — approval CONFIGURATION errors (no applicable workflow / broken workflow) are 422 with a
         // stable code, distinct from ordinary validation failures.
         catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
+        catch (Zayra.Api.Infrastructure.Approvals.ApprovalSeparationException ex)
+        {
+            // Same 400, plus who could act instead — a sole approver barred here must learn nobody else can.
+            return BadRequest(new { message = ex.Message + await UnblockHintAsync(tenantId.Value, leaveRequest, approverId, ct) });
+        }
         catch (InvalidOperationException ex)
         {
             return BadRequest(new { message = ex.Message });
@@ -673,6 +683,47 @@ public class LeaveRequestsController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
         return Ok(new { received = rows.Count, created, skipped, errors = errors.Take(30) });
+    }
+
+    /// <summary>
+    /// The "nobody else can decide it yet" sentence for a leave decision refused for separation of duties,
+    /// or empty when someone else can. Excludes the caller, the requester, the leave's own employee and
+    /// whoever approved an earlier step; counts Admin (who may decide any step) and the roles
+    /// <see cref="CanDecideResolvedLeaveStepAsync"/> accepts for the pending step. A hint only.
+    /// </summary>
+    private async Task<string> UnblockHintAsync(Guid tenantId, LeaveRequest leave, Guid callerId, CancellationToken ct)
+    {
+        var steps = await _db.LeaveApprovals.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.LeaveRequestId == leave.Id)
+            .ToListAsync(ct);
+        var pending = steps.Where(a => a.Decision == "Pending").OrderBy(a => a.StepNumber).FirstOrDefault();
+        var excluded = new HashSet<Guid> { callerId };
+        foreach (var approved in steps.Where(a => a.Decision == "Approved" && a.ApproverId is not null)) excluded.Add(approved.ApproverId!.Value);
+        if (await _db.ApprovalRequests.AsNoTracking().Where(a => a.TenantId == tenantId && a.Id == leave.Id)
+                .Select(a => a.RequestedByUserId).FirstOrDefaultAsync(ct) is Guid requester)
+            excluded.Add(requester);
+        foreach (var linked in await Zayra.Api.Infrastructure.Approvals.ApprovalUnblock.SubjectUserIdsAsync(_db, tenantId, leave.EmployeeId, ct))
+            excluded.Add(linked);
+
+        if (pending?.ApproverId is Guid named)
+        {
+            if (!excluded.Contains(named)) return string.Empty;
+            return await Zayra.Api.Infrastructure.Approvals.ApprovalUnblock.AnyOtherUserInRolesAsync(_db, tenantId, new[] { "Admin" }, orOverride: false, excluded, ct)
+                ? string.Empty
+                : Zayra.Api.Infrastructure.Approvals.ApprovalUnblock.NobodyElseSentence("decide",
+                    string.IsNullOrWhiteSpace(pending.ApproverName) ? "the named approver" : pending.ApproverName, null);
+        }
+        var routedRole = pending?.ApproverRole?.Trim() ?? string.Empty;
+        var roles = routedRole.ToUpperInvariant() switch
+        {
+            "" => new[] { "HR Manager" },
+            "HR" or "HRBUSINESSPARTNER" => new[] { "HR Manager", "HR Officer" },
+            "MANAGER" or "DIRECTMANAGER" or "SUPERVISOR" or "DEPARTMENTHEAD" => new[] { "Manager" },
+            _ => new[] { routedRole },
+        };
+        return await Zayra.Api.Infrastructure.Approvals.ApprovalUnblock.AnyOtherUserInRolesAsync(_db, tenantId, roles.Append("Admin").ToArray(), orOverride: false, excluded, ct)
+            ? string.Empty
+            : Zayra.Api.Infrastructure.Approvals.ApprovalUnblock.NobodyElseSentence("decide", null, roles[0]);
     }
 
     private async Task<bool> CanDecideResolvedLeaveStepAsync(Guid tenantId, Guid leaveRequestId, Guid approverId, CancellationToken ct)

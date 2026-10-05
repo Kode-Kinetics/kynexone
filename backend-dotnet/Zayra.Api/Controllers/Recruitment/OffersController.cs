@@ -52,6 +52,8 @@ public class OffersController : ControllerBase
             }),
         ApprovalGuardOutcome.MakerIsChecker =>
             StatusCode(StatusCodes.Status403Forbidden, new { error = "offer_maker_checker", message = verdict.Message }),
+        ApprovalGuardOutcome.DeciderApprovedEarlierStep =>
+            StatusCode(StatusCodes.Status403Forbidden, new { error = "offer_earlier_step_approver", message = verdict.Message }),
         _ => throw new InvalidOperationException($"Unhandled approval guard outcome '{verdict.Outcome}'."),
     };
 
@@ -355,7 +357,9 @@ public class OffersController : ControllerBase
             };
         }
         if (await _db.OfferApprovals.AnyAsync(a => a.TenantId == tid && a.OfferLetterId == id
-                && a.ApproverUserId == req.ApproverUserId && a.Status == "Pending", ct))
+                && a.ApproverUserId == req.ApproverUserId && (a.Status == "Pending" || a.Status == "Approved"), ct))
+            // Approved too: someone who approved a step cannot decide a later one, so naming them again
+            // would add a step nobody can ever decide.
             return Conflict(new { error = "offer_approver_already_named", message = "This person is already an approver on this offer." });
 
         var approverName = string.IsNullOrWhiteSpace(req.ApproverName)
@@ -392,6 +396,8 @@ public class OffersController : ControllerBase
         var offer = await _db.OfferLetters.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
         var decider = GetUserId();
         var author = offer is null ? null : await OfferRules.AuthorAsync(_db, tid, id, ct);
+        var approvedEarlierStep = approval is not null && decider.HasValue && await _db.OfferApprovals.AnyAsync(a =>
+            a.TenantId == tid && a.OfferLetterId == id && a.Id != approvalId && a.Status == "Approved" && a.ApproverUserId == decider, ct);
 
         var verdict = ApprovalDecisionGuard.Evaluate(new ApprovalDecisionSpec
         {
@@ -409,6 +415,14 @@ public class OffersController : ControllerBase
                 author is { } maker && decider.HasValue && maker == decider,
                 new[] { "Approved" },
                 "The person who wrote the offer cannot approve it."),
+            // DECLARED ABSENCE: an offer's subject is a candidate, and a Candidate row carries no user
+            // or employee link to compare the decider with. Matching on e-mail would be a guess.
+            SubjectSeparation = SubjectSeparationRule.None,
+            // A rejected step ends the offer's approval for good (a new offer is generated), so every
+            // approved step on this offer belongs to the same chain.
+            EarlierStepSeparation = new EarlierStepRule(
+                approvedEarlierStep,
+                "You approved an earlier step of this offer, so a different person must approve this one."),
         });
         if (!verdict.Passed) return OfferDecisionRefusal(verdict, approval?.Status, offer?.Status);
 

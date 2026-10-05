@@ -95,6 +95,16 @@ public static class ApprovalDecisionGuard
         if (spec.MakerChecker.IsViolated(spec.Decision))
             return new ApprovalGuardVerdict(ApprovalGuardOutcome.MakerIsChecker, spec.MakerChecker.Message);
 
+        // 8 ─ Is the person deciding the person the record is about? Checked after maker-checker so
+        // every refusal that existed before this step keeps its outcome and its message.
+        if (spec.SubjectSeparation.IsViolated(spec.Decision))
+            return new ApprovalGuardVerdict(ApprovalGuardOutcome.SubjectIsDecider, spec.SubjectSeparation.Message);
+
+        // 9 ─ Did the person deciding already approve an earlier step of the same record? One person
+        // approving every step in turn is one approval wearing several steps' clothes.
+        if (spec.EarlierStepSeparation.DeciderApprovedEarlierStep)
+            return new ApprovalGuardVerdict(ApprovalGuardOutcome.DeciderApprovedEarlierStep, spec.EarlierStepSeparation.Message);
+
         return ApprovalGuardVerdict.Pass;
     }
 
@@ -122,6 +132,8 @@ public enum ApprovalGuardOutcome
     ParentStateForbidsDecision,
     ParentLocked,
     MakerIsChecker,
+    SubjectIsDecider,
+    DeciderApprovedEarlierStep,
 }
 
 /// <param name="Outcome">The first checklist entry that refused.</param>
@@ -167,6 +179,16 @@ public sealed class ApprovalDecisionSpec
 
     /// <summary>The self-approval control, or <see cref="MakerCheckerRule.None"/>.</summary>
     public required MakerCheckerRule MakerChecker { get; init; }
+
+    /// <summary>The bar on the record's subject (the borrower, the advance's employee) deciding it,
+    /// or <see cref="SubjectSeparationRule.None"/>. Separate from <see cref="MakerChecker"/> because
+    /// the subject and the requester are often different people: HR raises a loan for an employee
+    /// who happens to hold the approver role.</summary>
+    public required SubjectSeparationRule SubjectSeparation { get; init; }
+
+    /// <summary>The bar on one person deciding two steps of the same record, or
+    /// <see cref="EarlierStepRule.None"/> for a module whose record has a single step.</summary>
+    public required EarlierStepRule EarlierStepSeparation { get; init; }
 }
 
 /// <param name="Exists">False when the step row could not be loaded for this tenant and parent.</param>
@@ -201,4 +223,40 @@ public readonly record struct MakerCheckerRule(
     public bool IsViolated(string decision)
         => RequesterIsDecider
            && (AppliesToDecisions is not { Count: > 0 } scope || scope.Contains(decision, StringComparer.Ordinal));
+}
+
+/// <summary>
+/// Segregation of duties on the record's subject: the employee a loan or advance is for must not be
+/// the one who decides it, whoever raised it. <see cref="AppliesToDecisions"/> works as it does on
+/// <see cref="MakerCheckerRule"/>, so a module may still let its subject reject (withdraw) a request
+/// that only benefits them.
+/// </summary>
+/// <param name="SubjectIsDecider">True when the caller is the employee the record is about.</param>
+/// <param name="AppliesToDecisions">The decisions the bar covers. Empty means every decision.</param>
+/// <param name="Message">The refusal text.</param>
+public readonly record struct SubjectSeparationRule(
+    bool SubjectIsDecider,
+    IReadOnlyCollection<string>? AppliesToDecisions,
+    string Message)
+{
+    /// <summary>This module's record has no employee subject that could also be a decider. Stated
+    /// out loud for the same reason as <see cref="MakerCheckerRule.None"/>.</summary>
+    public static readonly SubjectSeparationRule None = new(false, null, string.Empty);
+
+    public bool IsViolated(string decision)
+        => SubjectIsDecider
+           && (AppliesToDecisions is not { Count: > 0 } scope || scope.Contains(decision, StringComparer.Ordinal));
+}
+
+/// <summary>
+/// Segregation of duties across steps: whoever approved an earlier step of a record must not also
+/// decide a later one. Only approvals count — a rejection ends the record, so there is no later step.
+/// </summary>
+/// <param name="DeciderApprovedEarlierStep">True when the caller approved another step of this record.</param>
+/// <param name="Message">The refusal text.</param>
+public readonly record struct EarlierStepRule(bool DeciderApprovedEarlierStep, string Message)
+{
+    /// <summary>This module's record has a single step, so there is no earlier one. Stated out loud
+    /// for the same reason as <see cref="MakerCheckerRule.None"/>.</summary>
+    public static readonly EarlierStepRule None = new(false, string.Empty);
 }
