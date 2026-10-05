@@ -271,6 +271,23 @@ public static class PrivilegedMfaPolicy
         return DateTime.SpecifyKind(parsed.UtcDateTime, DateTimeKind.Utc);
     }
 
+    /// <summary>
+    /// When a session issued now should end. A privileged principal still in the grace period (no
+    /// factor yet) gets at most <paramref name="normalLifetime"/> and never beyond the moment
+    /// enforcement starts — or, under break-glass, beyond the end of the window — so no grace-period
+    /// session outlives the rule it was granted under.
+    /// </summary>
+    public static DateTime SessionExpiry(PrivilegedMfaState state, IConfiguration? config, DateTime nowUtc, TimeSpan normalLifetime)
+    {
+        var expiry = nowUtc + normalLifetime;
+        if (state.Status != PrivilegedMfaStatus.GracePeriod) return expiry;
+        if (state.BreakGlassActive && ActiveBreakGlassUntil(config, nowUtc) is { } glassEnds && glassEnds < expiry)
+            expiry = glassEnds;
+        else if (state.EnforceFromUtc is { } enforceFrom && enforceFrom > nowUtc && enforceFrom < expiry)
+            expiry = enforceFrom;
+        return expiry;
+    }
+
     /// <summary>Pure decision, unit-tested directly.</summary>
     public static PrivilegedMfaState Evaluate(
         bool required, bool enrolled, DateTime? enforceFromUtc, DateTime? breakGlassUntilUtc, DateTime nowUtc)

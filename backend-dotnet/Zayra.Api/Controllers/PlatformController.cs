@@ -141,6 +141,7 @@ public class PlatformController : ControllerBase
             return BadRequest(new { message = "Email and password are required." });
 
         PlatformUser authenticatedUser;
+        DateTime? sessionExpiry = null;
 
         // 1. Try DB-based platform user lookup first. Include inactive rows so the bootstrap
         // environment credential can never resurrect a deliberately deactivated owner.
@@ -231,6 +232,8 @@ public class PlatformController : ControllerBase
                 _log.LogWarning(
                     "[MFA-BREAK-GLASS] Platform user {PlatformUserId} signed in without MFA because {Key} is suspending enforcement.",
                     dbUser.Id, PrivilegedMfaPolicy.BreakGlassConfigKey);
+            // A grace-period session never outlives the grace period (min of 8 h and the date).
+            sessionExpiry = PrivilegedMfaPolicy.SessionExpiry(mfaState, _config, DateTime.UtcNow, PlatformSessionLifetime);
 
             // Update last login audit fields
             dbUser.LastLoginAtUtc = DateTime.UtcNow;
@@ -269,7 +272,7 @@ public class PlatformController : ControllerBase
         });
         await _db.SaveChangesAsync(ct);
 
-        return Ok(CreatePlatformToken(authenticatedUser));
+        return Ok(CreatePlatformToken(authenticatedUser, sessionExpiry));
     }
 
     private async Task UpgradePlatformPasswordHashAsync(PlatformUser user, string password, CancellationToken ct)
@@ -493,12 +496,14 @@ public class PlatformController : ControllerBase
         return NoContent();
     }
 
-    private object CreatePlatformToken(PlatformUser user)
+    private static readonly TimeSpan PlatformSessionLifetime = TimeSpan.FromHours(8);
+
+    private object CreatePlatformToken(PlatformUser user, DateTime? expiresAtUtc = null)
     {
         if (!user.UpdatedAtUtc.HasValue)
             throw new InvalidOperationException("Platform user session stamp was not initialized.");
 
-        var expiresAt = DateTime.UtcNow.AddHours(8);
+        var expiresAt = expiresAtUtc ?? DateTime.UtcNow.Add(PlatformSessionLifetime);
         var claims = new List<Claim>
         {
             new(JwtRegisteredClaimNames.Sub, user.Id.ToString()),

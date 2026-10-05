@@ -444,6 +444,8 @@ export interface PlatformTeamMember {
   lastLoginIp: string | null;
   createdAtUtc: string;
   updatedAtUtc: string | null;
+  /** True once the operator has enrolled two-step sign-in. */
+  mfaEnabled?: boolean;
 }
 
 /** How an outbound integration is wired. `simulated` means results never reach the real service. */

@@ -929,6 +929,42 @@ public sealed class PrivilegedMfaEnforcementTests
         http.Response.Headers.CacheControl.ToString().Should().Contain("no-store");
     }
 
+    // ── Grace-period platform sessions ────────────────────────────────────────────────────────
+
+    [Fact]
+    public void GraceSessions_EndNoLaterThanTheEnforcementDate_OrTheBreakGlassWindow()
+    {
+        var eight = TimeSpan.FromHours(8);
+        PrivilegedMfaPolicy.SessionExpiry(PrivilegedMfaPolicy.Evaluate(true, false, Now.AddHours(2), null, Now), null, Now, eight)
+            .Should().Be(Now.AddHours(2));
+        PrivilegedMfaPolicy.SessionExpiry(PrivilegedMfaPolicy.Evaluate(true, false, Now.AddDays(3), null, Now), null, Now, eight)
+            .Should().Be(Now + eight);
+        PrivilegedMfaPolicy.SessionExpiry(PrivilegedMfaPolicy.Evaluate(true, true, Now.AddHours(2), null, Now), null, Now, eight)
+            .Should().Be(Now + eight, "an enrolled operator is not in a grace period");
+
+        var glassEnds = DateTime.SpecifyKind(Now.AddHours(1), DateTimeKind.Utc);
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            [PrivilegedMfaPolicy.BreakGlassConfigKey] = PrivilegedMfaPolicy.FormatDate(glassEnds),
+        }).Build();
+        var glass = PrivilegedMfaPolicy.Evaluate(true, false, Past, PrivilegedMfaPolicy.ActiveBreakGlassUntil(config, Now), Now);
+        PrivilegedMfaPolicy.SessionExpiry(glass, config, Now, eight).Should().BeCloseTo(glassEnds, TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
+    public async Task AnUnenrolledOperatorsToken_ExpiresAtTheEnforcementDate()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        var enforceFrom = DateTime.UtcNow.AddHours(1);
+        await kit.SetPlatformEnforcementDateAsync(enforceFrom);
+        await SeedOperatorAsync(kit, "owner@platform.test");
+
+        await using var db = kit.NewDb();
+        var body = Body(await Platform(kit, db).Login(new PlatformLoginRequest("owner@platform.test", Password), CancellationToken.None));
+        body.GetProperty("expiresAt").GetDateTime().ToUniversalTime().Should().BeCloseTo(enforceFrom, TimeSpan.FromSeconds(5),
+            "a grace-period session must not outlive the grace period");
+    }
+
     // ── TOTP for tests ────────────────────────────────────────────────────────────────────────
 
     private static class Totp
