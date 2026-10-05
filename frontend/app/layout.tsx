@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next';
 import { geist, geistMono, plexArabicFallback } from './fonts/fonts';
 import { Providers } from '@/src/components/Providers';
+import { LOCALE_BOOT } from '@/src/i18n/localeBoot';
 
 import '@/src/styles/index.css';
 
@@ -44,16 +45,10 @@ export const viewport: Viewport = {
  * hydration and only inside AppLayout. That left two holes: every Arabic page rendered
  * one LTR frame before flipping, and routes outside the tenant shell (/login, /platform)
  * never flipped at all — so an Arabic user's sign-in screen was always left-to-right.
- * Reading the same localStorage key the provider owns, in a blocking script, closes both.
- * Keep the rtl map below in step with LOCALE_METADATA in src/i18n/translations.ts — today
- * `ar` is the only right-to-left locale there. The user's own choice wins; without one, the
- * tenant's default language as LocaleProvider last cached it ('kynexone-tenant-locale').
+ * LOCALE_BOOT (src/i18n/localeBoot.ts) reads the same localStorage keys the provider owns,
+ * in a blocking script, which closes both: the user's own choice
+ * (localStorage.getItem('kynexone-locale-choice-v2')), else the tenant's cached default.
  */
-const LOCALE_BOOT = `(function(){try{
-var l=localStorage.getItem('kynexone-locale')||localStorage.getItem('kynexone-tenant-locale')||'en';
-var d={ar:'rtl'}[l]||'ltr';
-document.documentElement.lang=l;document.documentElement.dir=d;
-}catch(e){}})();`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

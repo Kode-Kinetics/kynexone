@@ -37,16 +37,25 @@ const DEFAULTS: TenantSettings = {
 
 interface TenantSettingsContextValue {
   settings: TenantSettings;
+  /**
+   * True once the tenant's localization has been fetched successfully. Until then `settings` are
+   * DEFAULTS, which are placeholders, not the tenant's answer: anything that acts on a tenant
+   * value (LocaleContext applying the default language) must wait for this. A failed fetch leaves
+   * it as it was.
+   */
+  loaded: boolean;
   reload: () => Promise<void>;
 }
 
 const TenantSettingsContext = createContext<TenantSettingsContextValue>({
   settings: DEFAULTS,
+  loaded: false,
   reload: async () => {},
 });
 
 export function TenantSettingsProvider({ children }: { children: React.ReactNode }) {
   const [settings, setSettings] = useState<TenantSettings>(DEFAULTS);
+  const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -64,16 +73,18 @@ export function TenantSettingsProvider({ children }: { children: React.ReactNode
           calendarSystem: data.calendarSystem || DEFAULTS.calendarSystem,
           hijriDatesEnabled: data.hijriDatesEnabled ?? DEFAULTS.hijriDatesEnabled,
         });
+        setLoaded(true);
       }
     } catch {
-      // Fail silently — use defaults. Happens on first load before auth token is set.
+      // Keep what we had (defaults, or the last good load). Happens on first load before the auth
+      // token is set; `loaded` stays as it was, so nothing acts on the placeholders.
     }
   }, []);
 
   useEffect(() => { load(); }, [load]);
 
   return (
-    <TenantSettingsContext.Provider value={{ settings, reload: load }}>
+    <TenantSettingsContext.Provider value={{ settings, loaded, reload: load }}>
       {children}
     </TenantSettingsContext.Provider>
   );
