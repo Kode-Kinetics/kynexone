@@ -105,6 +105,12 @@ jobs:
         run: npx playwright test -c e2e/playwright.browserless.config.ts
         working-directory: frontend
 
+      # Pure-function unit tests (playwright.unit.config.ts: no browser, no stack), then the same
+      # suite under a viewer zone east of Riyadh: calendar dates must not slip a day (lib/format.ts).
+      - name: Frontend unit tests (also under TZ=Asia/Karachi)
+        run: npm run test:unit && npm run test:unit:tz
+        working-directory: frontend
+
   # ── Security gate: secret scan ────────────────────────────────────────────────
   # Blocks any commit that introduces a hardcoded secret (JWT key, DB password, cloud
   # token) from reaching the deploy step. Scans the full history on push.
