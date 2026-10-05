@@ -2156,10 +2156,16 @@ export const LOCALE_DICTS: Record<LocaleCode, Dict> = { en, ar, fr, es };
  * with Latin digits in every language. Without params the raw template is returned, so callers
  * that substitute by hand keep working.
  */
+const NUMBER_FORMATS = new Map<string, Intl.NumberFormat>();
+function formatNumber(locale: LocaleCode, n: number): string {
+  let nf = NUMBER_FORMATS.get(locale);
+  if (!nf) { nf = new Intl.NumberFormat(numberLocale(locale), { maximumFractionDigits: 2 }); NUMBER_FORMATS.set(locale, nf); }
+  return nf.format(n);
+}
+
 export function translate(locale: LocaleCode, key: string, params?: MessageParams): string {
   const template = LOCALE_DICTS[locale]?.[key] ?? LOCALE_DICTS.en[key] ?? key;
   // `params` must be a plain object: `items.map(t)` would otherwise pass the array index here.
   if (!params || typeof params !== 'object') return template;
-  const nf = new Intl.NumberFormat(numberLocale(locale), { maximumFractionDigits: 2 });
-  return formatMessage(template, params, locale, (n) => nf.format(n));
+  return formatMessage(template, params, locale, (n) => formatNumber(locale, n));
 }
