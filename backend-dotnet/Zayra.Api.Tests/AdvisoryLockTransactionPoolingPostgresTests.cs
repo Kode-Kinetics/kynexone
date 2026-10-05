@@ -329,10 +329,13 @@ public sealed partial class AdvisoryLockTransactionPoolingPostgresTests : IClass
                 BeforeKeepalive = () => { pings.Enqueue(Stopwatch.GetTimestamp()); return Task.CompletedTask; },
             },
             CancellationToken.None))!;
+        var acquired = Stopwatch.GetTimestamp();
         await using (lease)
         {
-            // A "section" longer than the idle ceiling, doing no work on the lease connection.
-            await Task.Delay(ceiling + TimeSpan.FromSeconds(2));
+            // A "section" two ceilings long, doing no work on the lease connection. The wait gives
+            // the after-the-ceiling check the same slack the lease itself has (one full ceiling):
+            // a shorter wait re-creates the flake this test was widened to remove.
+            await Task.Delay(ceiling * 2);
             var stamps = pings.ToArray();
             var because = $"pings: {stamps.Length}, lease lost: {lease.IsLost}, largest gap between renewals: "
                 + $"{LargestGapMs(start, stamps):N0} ms against a {ceiling.TotalMilliseconds:N0} ms ceiling. "
@@ -341,7 +344,7 @@ public sealed partial class AdvisoryLockTransactionPoolingPostgresTests : IClass
 
             // The renewals themselves, not only the end state: the lease must still be renewing
             // after the first ceiling window has passed, and no gap may reach the ceiling.
-            stamps.Should().Contain(t => Stopwatch.GetElapsedTime(start, t) > ceiling, because);
+            stamps.Should().Contain(t => Stopwatch.GetElapsedTime(acquired, t) > ceiling, because);
             LargestGapMs(start, stamps).Should().BeLessThan(ceiling.TotalMilliseconds, because);
             (await _fx.GrantedAdvisoryLocksAsync(key)).Should().Be(1, because);
             await lease.EnsureHeldAsync(CancellationToken.None);
