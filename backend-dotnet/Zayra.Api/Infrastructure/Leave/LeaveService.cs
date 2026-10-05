@@ -710,6 +710,7 @@ public class LeaveService : ILeaveService
         var withinStatutory = false;
         var withinPolicy = false;
         request.StatutoryLeaveKind = null;
+        request.SeparateEventReason = string.IsNullOrWhiteSpace(request.SeparateEventReason) ? null : request.SeparateEventReason.Trim();
         if (KsaStatutorySpecialLeave.Classify(leaveType.Code, leaveType.NameEn, leaveType.Category) is { } kind
             && IsKsaCountry(await ResolveEmployeeCountryAsync(tenantId, employee.Id, ct)))
         {
@@ -719,12 +720,30 @@ public class LeaveService : ILeaveService
             {
                 statutoryKind = kind;
                 request.StatutoryLeaveKind = kind.ToString();
+                // A separate-event declaration means something only for the leaves that can genuinely
+                // recur close together (a second death, a second birth, a marriage). For maternity,
+                // iddah and Hajj it is not stored, so it can neither split an event nor mislead an approver.
+                if (!IsDeclarable(kind)) request.SeparateEventReason = null;
+                if (request.SeparateEventReason is { Length: > 1000 })
+                    throw new InvalidOperationException("The reason for a separate event must be 1,000 characters or fewer.");
+                if (request.SeparateEventReason is not null && request.StatutoryEventDate is null)
+                    throw new InvalidOperationException(
+                        "To declare a separate event, give the date of the event (the death, birth or marriage) as well as the reason.");
+                if (request.StatutoryEventDate is { } eventDate && eventDate > request.EndDate)
+                    throw new InvalidOperationException("The event date cannot be after the last day of the leave.");
                 withinStatutory = (KsaStatutorySpecialLeave.IsCalendarSpan(kind) ? calendarDays : workingDays) <= statutorySpan;
                 withinPolicy = effectivePolicy is { AnnualEntitlementDays: > 0m } && workingDays <= effectivePolicy.AnnualEntitlementDays;
                 request.TotalDays = workingDays;
                 await EnforceKsaStatutoryEventLimitsAsync(
                     tenantId, employee, request, kind, statutorySpan, effectivePolicy, approvedOnly: false, ct);
             }
+        }
+
+        if (statutoryKind is null)
+        {
+            // An event date and a separate-event declaration belong to KSA statutory leave only.
+            request.StatutoryEventDate = null;
+            request.SeparateEventReason = null;
         }
 
         if (!withinStatutory && leaveType.MaxConsecutiveDays > 0 && workingDays > leaveType.MaxConsecutiveDays)
@@ -850,6 +869,10 @@ public class LeaveService : ILeaveService
 
         await LogAuditAsync(tenantId, "LeaveRequest", request.Id.ToString(), "Submitted",
             string.Empty, "Submitted", "Leave request submitted", request.EmployeeName, ct);
+        if (statutoryKind is { } declaredKind && IsDeclaredSeparate(request, declaredKind))
+            await LogAuditAsync(tenantId, "LeaveRequest", request.Id.ToString(), "StatutoryEventDeclaredSeparate",
+                string.Empty, $"event_date={request.StatutoryEventDate:yyyy-MM-dd}", request.SeparateEventReason!,
+                request.EmployeeName, ct);
 
         return request;
     }
@@ -1615,13 +1638,13 @@ public class LeaveService : ILeaveService
     /// <summary>
     /// Serialises leave submissions and final approvals for one employee: a transaction-held
     /// <c>pg_advisory_xact_lock</c>, the pattern of #170, released when the surrounding transaction
-    /// ends. A no-op outside PostgreSQL or outside a transaction (the in-memory test provider), where
-    /// there is nothing to race.
+    /// ends. Skipped only for a non-PostgreSQL provider (the in-memory test provider). On PostgreSQL it
+    /// always runs, so a future caller that forgets the transaction is stopped by
+    /// <c>AdvisoryXactLockGuardInterceptor</c> instead of silently serialising nothing.
     /// </summary>
     private async Task LockEmployeeLeaveAsync(Guid tenantId, int employeeId, CancellationToken ct)
     {
-        if (!(_db.Database.ProviderName ?? string.Empty).Contains("Npgsql", StringComparison.OrdinalIgnoreCase)
-            || _db.Database.CurrentTransaction is null)
+        if (!(_db.Database.ProviderName ?? string.Empty).Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
             return;
         var lockIdentity = $"leave-request:{tenantId:N}:{employeeId}";
         await _db.Database.ExecuteSqlInterpolatedAsync(
@@ -1639,15 +1662,20 @@ public class LeaveService : ILeaveService
     /// </summary>
     private async Task<List<LeaveRequest>> SameKindRequestsAsync(
         Guid tenantId, int employeeId, KsaStatutoryLeaveKind kind, Guid excludeRequestId, bool approvedOnly,
-        DateOnly? from, DateOnly? to, CancellationToken ct)
+        DateOnly? from, DateOnly? to, CancellationToken ct, DateOnly? sameEventDate = null)
     {
         var query = _db.LeaveRequests.AsNoTracking()
             .Where(r => r.TenantId == tenantId && r.EmployeeId == employeeId && r.Id != excludeRequestId);
         query = approvedOnly
             ? query.Where(r => ApprovedRequestStatuses.Contains(r.Status))
             : query.Where(r => !InactiveRequestStatuses.Contains(r.Status));
-        if (from is { } f) query = query.Where(r => r.StartDate >= f);
-        if (to is { } t) query = query.Where(r => r.StartDate <= t);
+        // A request that names the same event date is part of the event however far apart the leave is.
+        if (from is { } f && to is { } t)
+            query = sameEventDate is { } ed
+                ? query.Where(r => (r.StartDate >= f && r.StartDate <= t) || r.StatutoryEventDate == ed)
+                : query.Where(r => r.StartDate >= f && r.StartDate <= t);
+        else if (from is { } f2) query = query.Where(r => r.StartDate >= f2);
+        else if (to is { } t2) query = query.Where(r => r.StartDate <= t2);
         var requests = await query.ToListAsync(ct);
         if (requests.Count == 0) return requests;
 
@@ -1708,36 +1736,85 @@ public class LeaveService : ILeaveService
     private sealed record StatutoryEvent(
         List<LeaveRequest> All, HashSet<Guid> SameEvent, decimal StatutoryTotal, decimal PolicyTotal);
 
+    /// <summary>The kinds whose requester may say "this is a different event" — a second death, a
+    /// second birth. Maternity, iddah and Hajj cannot be split into separate events this way.</summary>
+    private static bool IsDeclarable(KsaStatutoryLeaveKind kind) => kind is
+        KsaStatutoryLeaveKind.Bereavement or KsaStatutoryLeaveKind.BereavementSibling
+        or KsaStatutoryLeaveKind.Paternity or KsaStatutoryLeaveKind.Marriage;
+
+    /// <summary>A request whose requester declared it a separate event: a declarable kind, with an
+    /// event date AND a reason.</summary>
+    private static bool IsDeclaredSeparate(LeaveRequest r, KsaStatutoryLeaveKind kind)
+        => IsDeclarable(kind) && r.StatutoryEventDate is not null && !string.IsNullOrWhiteSpace(r.SeparateEventReason);
+
     /// <summary>
     /// Which of the employee's same-kind requests belong to the same statutory EVENT as
     /// <paramref name="subject"/>, and the event's totals including the subject.
     ///
-    /// <para>Every request opens a window: from its first day, as long as the larger of the statutory
-    /// figure and the company policy's entitlement — in calendar days for maternity and iddah, in the
-    /// policy's leave days for the others. Two requests are the same event when their windows overlap,
-    /// in EITHER direction (so a backdated split is caught as surely as a forward one), or when the
-    /// leaves themselves run back to back — one continuous absence is one event. Totals are measured
-    /// twice: in the statute's unit and in the policy's own unit, because the law is a floor and a more
-    /// generous policy is honoured as it counts.</para>
+    /// <para><b>Linking two requests.</b> For bereavement, sibling bereavement, birth and marriage,
+    /// two requests that both carry an event date are the same event exactly when the dates are equal,
+    /// and a request DECLARED separate (event date + reason) links only by its date. Otherwise — and
+    /// always for maternity, iddah and Hajj, whose events cannot be declared apart — the window
+    /// heuristic decides: every request opens a window from its first day, as long as the larger of the
+    /// statutory figure and the policy's entitlement (calendar days for maternity and iddah, the
+    /// policy's leave days otherwise), and two requests whose windows overlap, in EITHER direction, are
+    /// the same event.</para>
+    ///
+    /// <para><b>The event</b> is the connected group around the subject. The lookup is widened until
+    /// the group stops growing, so enforcement sees the same chain the approver's history shows.
+    /// Totals are measured in the statute's unit and in the policy's own unit, because the law is a
+    /// floor and a more generous policy is honoured as it counts.</para>
     /// </summary>
     private async Task<StatutoryEvent> ResolveStatutoryEventAsync(
         Guid tenantId, LeaveRequest subject, KsaStatutoryLeaveKind kind, decimal statutoryDays, LeavePolicy? policy,
         bool approvedOnly, bool wholeHistory, CancellationToken ct)
     {
         var calendar = KsaStatutorySpecialLeave.IsCalendarSpan(kind);
+        var declarable = IsDeclarable(kind);
         var policyDays = policy?.AnnualEntitlementDays ?? 0m;
         var windowLength = (int)Math.Ceiling(Math.Max(statutoryDays, policyDays));
         // A window of N leave days can span at most ~N × 7/5 calendar days plus holidays; 2N + 14 is
-        // a safe calendar bound, and requests that start further away cannot share the event.
+        // a safe calendar bound for one link. The lookup widens by it until the chain stops growing.
         var slack = calendar ? windowLength : windowLength * 2 + 14;
-        var history = await SameKindRequestsAsync(tenantId, subject.EmployeeId, kind, subject.Id, approvedOnly,
-            wholeHistory ? null : subject.StartDate.AddDays(-slack), wholeHistory ? null : subject.EndDate.AddDays(slack), ct);
 
         decimal Calendar(LeaveRequest r) => r.EndDate.DayNumber - r.StartDate.DayNumber + 1;
         decimal Statutory(LeaveRequest r) => calendar ? Calendar(r) : r.TotalDays;
-        var subjectTotals = (Stat: Statutory(subject), Policy: subject.TotalDays);
-        if (history.Count == 0)
-            return new StatutoryEvent(history, new HashSet<Guid>(), subjectTotals.Stat, subjectTotals.Policy);
+
+        var from = subject.StartDate.AddDays(-slack);
+        var to = subject.EndDate.AddDays(slack);
+        while (true)
+        {
+            var history = await SameKindRequestsAsync(tenantId, subject.EmployeeId, kind, subject.Id, approvedOnly,
+                wholeHistory ? null : from, wholeHistory ? null : to, ct,
+                declarable ? subject.StatutoryEventDate : null);
+            var same = await ConnectedEventAsync(tenantId, subject, history, calendar, declarable, kind, windowLength, slack, policy, ct);
+
+            if (!wholeHistory)
+            {
+                var members = history.Where(h => same.Contains(h.Id)).Append(subject).ToList();
+                var needFrom = members.Min(m => m.StartDate).AddDays(-slack);
+                var needTo = members.Max(m => m.EndDate).AddDays(slack);
+                if (needFrom < from || needTo > to)
+                {
+                    from = needFrom < from ? needFrom : from;
+                    to = needTo > to ? needTo : to;
+                    continue;
+                }
+            }
+
+            var inEvent = history.Where(h => same.Contains(h.Id)).ToList();
+            return new StatutoryEvent(history, same,
+                Statutory(subject) + inEvent.Sum(Statutory),
+                subject.TotalDays + inEvent.Sum(r => r.TotalDays));
+        }
+    }
+
+    private async Task<HashSet<Guid>> ConnectedEventAsync(
+        Guid tenantId, LeaveRequest subject, List<LeaveRequest> history, bool calendar, bool declarable,
+        KsaStatutoryLeaveKind kind, int windowLength, int slack, LeavePolicy? policy, CancellationToken ct)
+    {
+        var same = new HashSet<Guid>();
+        if (history.Count == 0) return same;
 
         var rangeStart = history.Select(h => h.StartDate).Append(subject.StartDate).Min();
         var rangeEnd = history.Select(h => h.EndDate).Append(subject.EndDate).Max().AddDays(slack);
@@ -1750,20 +1827,22 @@ public class LeaveService : ILeaveService
             if (windowLength <= 0) return start;
             if (calendar) return start.AddDays(windowLength - 1);
             var counted = 0;
-            var d = start;
-            for (; d <= rangeEnd; d = d.AddDays(1))
+            for (var d = start; d <= rangeEnd; d = d.AddDays(1))
                 if (!nonLeave.Contains(d) && ++counted >= windowLength) return d;
             return rangeEnd;
         }
 
-        // The event is the CONNECTED group around the subject: a request linked to one that is linked to
-        // the subject is the same event too, so 50 + 50 + 1 cannot slip past by touching only the last.
-        var nodes = history.Append(subject).ToList();
-        var windowEnds = nodes.ToDictionary(n => n.Id, n => WindowEnd(n.StartDate));
+        var windowEnds = history.Append(subject).ToDictionary(n => n.Id, n => WindowEnd(n.StartDate));
         bool Linked(LeaveRequest a, LeaveRequest b)
-            => (a.StartDate <= windowEnds[b.Id] && b.StartDate <= windowEnds[a.Id])
-               || a.EndDate.AddDays(1) == b.StartDate || b.EndDate.AddDays(1) == a.StartDate;
-        var same = new HashSet<Guid>();
+        {
+            if (declarable)
+            {
+                if (a.StatutoryEventDate is { } da && b.StatutoryEventDate is { } db) return da == db;
+                if (IsDeclaredSeparate(a, kind) || IsDeclaredSeparate(b, kind)) return false;
+            }
+            return a.StartDate <= windowEnds[b.Id] && b.StartDate <= windowEnds[a.Id];
+        }
+
         var frontier = new Queue<LeaveRequest>();
         frontier.Enqueue(subject);
         while (frontier.Count > 0)
@@ -1776,10 +1855,7 @@ public class LeaveService : ILeaveService
                     frontier.Enqueue(h);
                 }
         }
-        var inEvent = history.Where(h => same.Contains(h.Id)).ToList();
-        return new StatutoryEvent(history, same,
-            subjectTotals.Stat + inEvent.Sum(Statutory),
-            subjectTotals.Policy + inEvent.Sum(r => r.TotalDays));
+        return same;
     }
 
     /// <summary>
@@ -1836,18 +1912,22 @@ public class LeaveService : ILeaveService
             + $"({KsaStatutorySpecialLeave.Citation(kind)})"
             + (policyDays > statutoryDays ? $", or {policyDays:0.##} day(s) under your company policy" : string.Empty)
             + $". This request belongs to the same event as leave from {first:dd MMM yyyy}; together they would be "
-            + $"{(calendar ? ev.StatutoryTotal : ev.PolicyTotal):0.##} day(s).");
+            + $"{(calendar ? ev.StatutoryTotal : ev.PolicyTotal):0.##} day(s)."
+            + (IsDeclarable(kind)
+                ? " If this is a separate event (for example a second bereavement), give the event date and the reason to declare it."
+                : string.Empty));
     }
 
     /// <summary>
-    /// The employee's other pending or approved leave of the same KSA statutory kind as each of
-    /// <paramref name="requestIds"/>, oldest first, each marked whether it falls in the same statutory
-    /// event — shown to the approver beside the request. Requests that are not statutory leave are absent.
+    /// For each of <paramref name="requestIds"/> that is KSA statutory leave: the employee's other
+    /// pending or approved leave of the same kind, oldest first, each marked whether it is the same
+    /// statutory event, plus the request's own event date and any separate-event declaration — what
+    /// the approver sees beside the request. Requests that are not statutory leave are absent.
     /// </summary>
-    public async Task<IReadOnlyDictionary<Guid, IReadOnlyList<StatutoryLeaveHistoryItem>>> GetKsaStatutoryLeaveHistoryAsync(
+    public async Task<IReadOnlyDictionary<Guid, StatutoryLeaveContext>> GetKsaStatutoryLeaveHistoryAsync(
         Guid tenantId, IReadOnlyCollection<Guid> requestIds, CancellationToken ct = default)
     {
-        var result = new Dictionary<Guid, IReadOnlyList<StatutoryLeaveHistoryItem>>();
+        var result = new Dictionary<Guid, StatutoryLeaveContext>();
         if (requestIds.Count == 0) return result;
         var ids = requestIds.Distinct().ToList();
         var requests = await _db.LeaveRequests.AsNoTracking()
@@ -1870,33 +1950,52 @@ public class LeaveService : ILeaveService
                 : null;
             var span = await KsaStatutorySpecialLeave.ResolveFloorForSpanAsync(_rules, kind, request.StartDate, request.EndDate, ct) ?? 0m;
             var ev = await ResolveStatutoryEventAsync(tenantId, request, kind, span, policy, approvedOnly: false, wholeHistory: true, ct);
-            result[request.Id] = ev.All
-                .Select(r => new StatutoryLeaveHistoryItem(
-                    r.Id, KsaStatutorySpecialLeave.Describe(kind), r.LeaveTypeName, r.StartDate, r.EndDate, r.TotalDays,
-                    r.Status, ev.SameEvent.Contains(r.Id)))
-                .ToList();
+            result[request.Id] = new StatutoryLeaveContext(
+                kind.ToString(),
+                ev.All.Select(r => new StatutoryLeaveHistoryItem(
+                        r.Id, kind.ToString(), r.LeaveTypeName, r.StartDate, r.EndDate, r.TotalDays,
+                        r.Status, ev.SameEvent.Contains(r.Id), r.StatutoryEventDate))
+                    .ToList(),
+                request.StatutoryEventDate,
+                IsDeclaredSeparate(request, kind) ? request.SeparateEventReason : null);
         }
         return result;
     }
 
     /// <summary>
-    /// The statutory days per event for each of <paramref name="leaveTypeIds"/> that is a KSA statutory
-    /// special leave, for an employee of a Saudi entity — empty otherwise. Lets a balance screen show
-    /// "Statutory entitlement" instead of a balance that is not where such leave comes from.
+    /// The statutory days per event for every (employee, leave type) pair among the given ones where the
+    /// leave type is a KSA statutory special leave and the employee is on a Saudi entity. Resolved with
+    /// one query for the employees' countries and one for the leave types, however many rows a page has.
     /// </summary>
-    public async Task<IReadOnlyDictionary<Guid, decimal>> GetKsaStatutoryEntitlementsAsync(
-        Guid tenantId, int employeeId, IReadOnlyCollection<Guid> leaveTypeIds, CancellationToken ct = default)
+    public async Task<IReadOnlyDictionary<(int EmployeeId, Guid LeaveTypeId), decimal>> GetKsaStatutoryEntitlementsAsync(
+        Guid tenantId, IReadOnlyCollection<(int EmployeeId, Guid LeaveTypeId)> pairs, CancellationToken ct = default)
     {
-        var result = new Dictionary<Guid, decimal>();
-        if (leaveTypeIds.Count == 0 || !IsKsaCountry(await ResolveEmployeeCountryAsync(tenantId, employeeId, ct)))
-            return result;
-        var ids = leaveTypeIds.Distinct().ToList();
-        var types = await _db.LeaveTypes.AsNoTracking().Where(t => t.TenantId == tenantId && ids.Contains(t.Id)).ToListAsync(ct);
+        var result = new Dictionary<(int, Guid), decimal>();
+        if (pairs.Count == 0) return result;
+        var employeeIds = pairs.Select(p => p.EmployeeId).Distinct().ToList();
+        var typeIds = pairs.Select(p => p.LeaveTypeId).Distinct().ToList();
+
+        var companies = ScopedBypass.TenantWide(_db.Companies, tenantId,
+                "Whether a balance row is Saudi statutory leave depends on the employee's legal entity, not on "
+                + "the caller's company scope. Only country codes are projected.")
+            .AsNoTracking();
+        var saudiEmployees = (await _db.Employees.AsNoTracking()
+                .Where(e => e.TenantId == tenantId && employeeIds.Contains(e.Id))
+                .Join(companies, e => e.CompanyId, c => (Guid?)c.Id, (e, c) => new { e.Id, c.CountryCode })
+                .ToListAsync(ct))
+            .Where(x => IsKsaCountry(x.CountryCode)).Select(x => x.Id).ToHashSet();
+        if (saudiEmployees.Count == 0) return result;
+
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        foreach (var t in types)
+        var figures = new Dictionary<Guid, decimal>();
+        foreach (var t in await _db.LeaveTypes.AsNoTracking().Where(t => t.TenantId == tenantId && typeIds.Contains(t.Id)).ToListAsync(ct))
             if (KsaStatutorySpecialLeave.Classify(t.Code, t.NameEn, t.Category) is { } kind
                 && await KsaStatutorySpecialLeave.ResolveFloorAsync(_rules, kind, today, ct) is { } days)
-                result[t.Id] = days;
+                figures[t.Id] = days;
+
+        foreach (var (employeeId, leaveTypeId) in pairs)
+            if (saudiEmployees.Contains(employeeId) && figures.TryGetValue(leaveTypeId, out var days))
+                result[(employeeId, leaveTypeId)] = days;
         return result;
     }
 

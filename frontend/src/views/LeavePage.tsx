@@ -17,7 +17,7 @@ import {
   leaveCalendarApi, leaveReportsApi, leaveAIApi,
 } from '../api/leave';
 import type {
-  LeaveType, LeavePolicy, EmployeeLeaveBalance, LeaveRequest, StatutoryLeaveHistoryItem,
+  LeaveType, LeavePolicy, EmployeeLeaveBalance, LeaveRequest, StatutoryLeaveContext,
   PublicHolidayCalendar, PublicHoliday, LeaveBlackoutDate,
   LeaveEncashmentRequest, CompOffCredit, AbsenceRecord,
   LeaveCalendarEntry, LeaveAIInsight, LeaveDashboard,
@@ -36,7 +36,7 @@ import { usePagedList } from '../hooks/usePagedList';
 import { ListWindowFooter } from '../components/ListWindowFooter';
 import { requestFailureReason } from '../lib/requestFailure';
 import { StatutoryLeaveHistory } from '../components/StatutoryLeaveHistory';
-import { isSaudiStatutoryLeave } from '../lib/ksaStatutoryLeave';
+import { isSaudiStatutoryLeave, isCalendarSpanLeave, isDeclarableLeave } from '../lib/ksaStatutoryLeave';
 
 // ── Leave import/export helpers ───────────────────────────────────────────────
 
@@ -505,6 +505,7 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
     leaveTypeId: '', startDate: '', endDate: '', dayType: 'Full',
     hoursRequested: '', reason: '', isEmergency: false,
     delegateEmployeeId: '', delegateEmployeeName: '',
+    statutoryEventDate: '', separateEventReason: '',
   });
 
   // Sync picker selection into form fields
@@ -546,6 +547,9 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
   // form green-lights a request the API then rejects. Re-spelling it here is what let them diverge.
   const available = balance ? balance.available : null;
   const selectedType = leaveTypes.find(t => t.id === form.leaveTypeId);
+  // Saudi statutory leave asks for the event's date; bereavement, birth and marriage may also be
+  // declared a separate event from earlier leave of the same kind.
+  const applyKind = selectedType ? isSaudiStatutoryLeave(selectedType.code, selectedType.nameEn, selectedType.category) : null;
 
   const submit = async () => {
     if (!form.employeeId || !form.leaveTypeId || !form.startDate || !form.endDate) {
@@ -561,6 +565,8 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
         reason: form.reason, isEmergency: form.isEmergency,
         delegateEmployeeId: form.delegateEmployeeId ? Number(form.delegateEmployeeId) : undefined,
         delegateEmployeeName: form.delegateEmployeeName,
+        statutoryEventDate: applyKind && form.statutoryEventDate ? form.statutoryEventDate : undefined,
+        separateEventReason: isDeclarableLeave(applyKind) && form.separateEventReason.trim() ? form.separateEventReason.trim() : undefined,
       });
       setSuccess(true);
     } catch (e: unknown) {
@@ -661,6 +667,18 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
           <Field label={`Reason${selectedType?.requiresReason ? ' *' : ''}`}>
             <textarea className={inp} rows={3} value={form.reason} onChange={e => set('reason', e.target.value)} placeholder={selectedType?.requiresReason ? 'Reason is required for this leave type…' : 'Optional reason…'} />
           </Field>
+
+          {applyKind && (
+            <Field label={t('Date of the event (death, birth or marriage)')}>
+              <input type="date" className={inp} value={form.statutoryEventDate} onChange={e => set('statutoryEventDate', e.target.value)} />
+            </Field>
+          )}
+          {isDeclarableLeave(applyKind) && (
+            <Field label={t('Separate event? Say why (for example, a second bereavement)')}>
+              <textarea className={inp} rows={2} value={form.separateEventReason} onChange={e => set('separateEventReason', e.target.value)}
+                placeholder={t('Only if this is a different event from your earlier leave of this kind. The event date is required too.')} />
+            </Field>
+          )}
 
           {selectedType?.requiresAttachment && (
             <div className="rounded-lg border border-dashed border-slate-300 p-4 text-center text-sm text-slate-400 dark:border-white/20">
@@ -794,7 +812,7 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
   const [loading, setLoading] = useState(true);
   const [rejectModal, setRejectModal] = useState<LeaveRequest | null>(null);
   const [rejectReason, setRejectReason] = useState('');
-  const [history, setHistory] = useState<Record<string, StatutoryLeaveHistoryItem[]>>({});
+  const [history, setHistory] = useState<Record<string, StatutoryLeaveContext>>({});
 
   const load = () => {
     setLoading(true);
@@ -838,7 +856,7 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
                     {r.isEmergency && <span className="rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-bold text-rose-600 dark:bg-rose-500/20 dark:text-rose-400">EMERGENCY</span>}
                   </div>
                   {r.reason && <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">"{r.reason}"</p>}
-                  <StatutoryLeaveHistory items={history[r.id]} />
+                  <StatutoryLeaveHistory context={history[r.id]} />
                 </div>
                 <div className="flex shrink-0 flex-col items-end gap-2">
                   <p className="text-xs text-slate-400">Submitted {fmtDate(r.submittedAtUtc)}</p>
@@ -1101,7 +1119,7 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
   // only means something on a Hajj policy, and maternity/iddah are set by law in calendar time.
   const selectedLeaveType = leaveTypes.find(lt => lt.id === form.leaveTypeId);
   const statutoryKind = selectedLeaveType ? isSaudiStatutoryLeave(selectedLeaveType.code, selectedLeaveType.nameEn, selectedLeaveType.category) : null;
-  const calendarSpanOnWorkingDays = (statutoryKind === 'Maternity' || statutoryKind === 'Iddah')
+  const calendarSpanOnWorkingDays = isCalendarSpanLeave(statutoryKind)
     && !(form.weekendsIncluded && form.publicHolidaysIncluded);
 
   const save = async () => {

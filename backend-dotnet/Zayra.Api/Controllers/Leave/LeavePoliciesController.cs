@@ -201,17 +201,35 @@ public class LeavePoliciesController : ControllerBase
                 "Company choice to grant Hajj leave beyond Saudi Labour Law Art. 114 (before two years' service, or more than once).",
                 actor, ct);
 
-        if (Infrastructure.CountryPack.Ksa.KsaStatutorySpecialLeave.Classify(leaveType.Code, leaveType.NameEn, leaveType.Category) is { } kind
-            && Infrastructure.CountryPack.Ksa.KsaStatutorySpecialLeave.NeedsCalendarCounting(kind, policy.WeekendsIncluded && policy.PublicHolidaysIncluded)
+        var kind = Infrastructure.CountryPack.Ksa.KsaStatutorySpecialLeave.Classify(leaveType.Code, leaveType.NameEn, leaveType.Category);
+        var needsReview = kind is { } k
+            && Infrastructure.CountryPack.Ksa.KsaStatutorySpecialLeave.NeedsCalendarCounting(k, policy.WeekendsIncluded && policy.PublicHolidaysIncluded)
             && !string.Equals(policy.Status, "Archived", StringComparison.OrdinalIgnoreCase)
-            && await KsaStatutoryLeavePolicyGuard.ReachAsync(_db, tenantId, policy.CountryCode, policy.CompanyId, ct) != KsaPolicyReach.None)
-            await _leaveService.LogAuditAsync(tenantId, "LeavePolicy", policy.Id.ToString(), "StatutoryReviewNeeded",
+            && await KsaStatutoryLeavePolicyGuard.ReachAsync(_db, tenantId, policy.CountryCode, policy.CompanyId, ct) != KsaPolicyReach.None;
+
+        // One open review item per policy: the latest of Needed / Resolved decides whether one is open,
+        // so re-saving a working-day policy does not pile up duplicate rows, and fixing it closes it.
+        var policyId = policy.Id.ToString();
+        var latest = await _db.LeaveAuditLogs.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.EntityType == "LeavePolicy" && a.EntityId == policyId
+                        && (a.Action == "StatutoryReviewNeeded" || a.Action == "StatutoryReviewResolved"))
+            .OrderByDescending(a => a.CreatedAtUtc)
+            .Select(a => a.Action)
+            .FirstOrDefaultAsync(ct);
+        var open = latest == "StatutoryReviewNeeded";
+
+        if (needsReview && !open)
+            await _leaveService.LogAuditAsync(tenantId, "LeavePolicy", policyId, "StatutoryReviewNeeded",
                 $"annual_entitlement_days={policy.AnnualEntitlementDays:0.##}; maximum_days_per_request={policy.MaximumDaysPerRequest:0.##}; counting=working days",
                 "required: counting=calendar days",
-                $"{Infrastructure.CountryPack.Ksa.KsaStatutorySpecialLeave.Describe(kind)} is set by law in calendar time "
-                + $"({Infrastructure.CountryPack.Ksa.KsaStatutorySpecialLeave.Citation(kind)}). This policy counts working days; it "
+                $"{Infrastructure.CountryPack.Ksa.KsaStatutorySpecialLeave.Describe(kind!.Value)} is set by law in calendar time "
+                + $"({Infrastructure.CountryPack.Ksa.KsaStatutorySpecialLeave.Citation(kind.Value)}). This policy counts working days; it "
                 + "is honoured as it counts, but switch it to calendar days (tick Count Weekends and Count Public Holidays).",
                 actor, ct);
+        else if (!needsReview && open)
+            await _leaveService.LogAuditAsync(tenantId, "LeavePolicy", policyId, "StatutoryReviewResolved",
+                "counting=working days", policy.WeekendsIncluded && policy.PublicHolidaysIncluded ? "counting=calendar days" : "no longer applies to Saudi employees",
+                "The statutory review item for this policy is closed by this save.", actor, ct);
     }
 
     [HttpPut("{id:guid}")]

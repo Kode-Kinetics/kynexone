@@ -195,6 +195,17 @@ public class LeaveRequest : ITenantOwned, ICompanyScopedOperational
     /// so a later change of company or leave-type name cannot change how this request is settled.
     /// </summary>
     public string? StatutoryLeaveKind { get; set; }
+    /// <summary>
+    /// The date of the event a KSA statutory leave is for (the marriage, the death, the birth), when
+    /// the requester gives one. Requests with an event date are grouped into statutory events by it.
+    /// </summary>
+    public DateOnly? StatutoryEventDate { get; set; }
+    /// <summary>
+    /// The requester's reason for declaring this leave a SEPARATE statutory event from earlier leave
+    /// of the same kind (e.g. a second death in the family). Only for bereavement, sibling bereavement,
+    /// birth and marriage leave; shown to the approver beside the history. Null when not declared.
+    /// </summary>
+    public string? SeparateEventReason { get; set; }
 }
 
 public class LeaveApproval : ITenantOwned

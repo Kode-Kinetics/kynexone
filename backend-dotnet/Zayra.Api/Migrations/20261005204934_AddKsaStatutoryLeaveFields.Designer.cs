@@ -14957,6 +14957,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("date")
                         .HasColumnName("return_date");
 
+                    b.Property<string>("SeparateEventReason")
+                        .HasColumnType("text")
+                        .HasColumnName("separate_event_reason");
+
                     b.Property<DateOnly>("StartDate")
                         .HasColumnType("date")
                         .HasColumnName("start_date");
@@ -14965,6 +14969,10 @@ namespace Zayra.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("status");
+
+                    b.Property<DateOnly?>("StatutoryEventDate")
+                        .HasColumnType("date")
+                        .HasColumnName("statutory_event_date");
 
                     b.Property<string>("StatutoryLeaveKind")
                         .HasMaxLength(40)

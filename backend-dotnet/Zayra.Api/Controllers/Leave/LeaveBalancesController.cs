@@ -92,13 +92,11 @@ public class LeaveBalancesController : ControllerBase
     /// </summary>
     private async Task MarkStatutoryEntitlementsAsync(Guid tenantId, IReadOnlyCollection<EmployeeLeaveBalance> balances, CancellationToken ct)
     {
-        foreach (var byEmployee in balances.GroupBy(b => b.EmployeeId))
-        {
-            var figures = await _leaveService.GetKsaStatutoryEntitlementsAsync(
-                tenantId, byEmployee.Key, byEmployee.Select(b => b.LeaveTypeId).ToList(), ct);
-            foreach (var b in byEmployee)
-                if (figures.TryGetValue(b.LeaveTypeId, out var days)) b.StatutoryEntitlementDays = days;
-        }
+        // One lookup for the whole page: countries and leave types are resolved once, not per employee.
+        var figures = await _leaveService.GetKsaStatutoryEntitlementsAsync(
+            tenantId, balances.Select(b => (b.EmployeeId, b.LeaveTypeId)).Distinct().ToList(), ct);
+        foreach (var b in balances)
+            if (figures.TryGetValue((b.EmployeeId, b.LeaveTypeId), out var days)) b.StatutoryEntitlementDays = days;
     }
 
     [HttpPost("adjust")]

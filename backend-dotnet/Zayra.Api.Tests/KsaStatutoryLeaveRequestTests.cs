@@ -62,11 +62,13 @@ public class KsaStatutoryLeaveRequestTests
         return new Fixture(db, tenantId, employee, type, policy, new LeaveService(db, new ApprovalRouter(db)));
     }
 
-    private static Task<LeaveRequest> Submit(Fixture f, DateOnly start, int calendarDays)
+    private static Task<LeaveRequest> Submit(Fixture f, DateOnly start, int calendarDays,
+        DateOnly? eventDate = null, string? separateEventReason = null)
         => f.Service.SubmitRequestAsync(f.TenantId, new LeaveRequest
         {
             EmployeeId = f.Employee.Id, EmployeeName = f.Employee.FullName, LeaveTypeId = f.Type.Id,
             StartDate = start, EndDate = start.AddDays(calendarDays - 1), DayType = "Full", Reason = "Statutory",
+            StatutoryEventDate = eventDate, SeparateEventReason = separateEventReason,
         }, f.Employee.UserAccountId);
 
     // ── Hajj (Art. 114): once in the employee's service, after two years ─────────────────────
@@ -169,7 +171,7 @@ public class KsaStatutoryLeaveRequestTests
         var earlier = await Submit(f, Base, 5);
         var later = await Submit(f, Base.AddDays(30), 5);
 
-        var history = (await f.Service.GetKsaStatutoryLeaveHistoryAsync(f.TenantId, new[] { later.Id }))[later.Id];
+        var history = (await f.Service.GetKsaStatutoryLeaveHistoryAsync(f.TenantId, new[] { later.Id }))[later.Id].History;
 
         history.Should().ContainSingle().Which.RequestId.Should().Be(earlier.Id);
         history[0].StatutoryKind.Should().Contain("Bereavement");
@@ -183,7 +185,7 @@ public class KsaStatutoryLeaveRequestTests
         var earlier = await Submit(f, Base, 2);
         var later = await Submit(f, Base.AddDays(2), 3);
 
-        var history = (await f.Service.GetKsaStatutoryLeaveHistoryAsync(f.TenantId, new[] { later.Id }))[later.Id];
+        var history = (await f.Service.GetKsaStatutoryLeaveHistoryAsync(f.TenantId, new[] { later.Id }))[later.Id].History;
 
         history.Should().ContainSingle(h => h.RequestId == earlier.Id).Which.SameEvent.Should().BeTrue();
     }
@@ -233,15 +235,127 @@ public class KsaStatutoryLeaveRequestTests
     }
 
     [Fact]
-    public async Task ABackdatedBackToBackLeave_IsTheSameEvent()
+    public async Task FullLengthLeavesBackToBack_AreSeparateEvents_AndTheApproverSeesBoth()
     {
-        // 10–14 first, then 5–9 submitted later: one continuous ten-day absence for one marriage.
+        // 10–14 first, then 5–9 submitted later. Each is the full statutory five days and their windows
+        // do not overlap, so they are two events — two marriages, or two deaths, can be that close.
+        // Nothing is hidden: the approver sees the other leave beside the request.
+        var f = await SeedAsync("BEREAVEMENT", "Bereavement Leave", "Bereavement");
+        var first = await Submit(f, Base.AddDays(10), 5);
+
+        var second = await Submit(f, Base.AddDays(5), 5);
+
+        var context = (await f.Service.GetKsaStatutoryLeaveHistoryAsync(f.TenantId, new[] { second.Id }))[second.Id];
+        context.History.Should().ContainSingle(h => h.RequestId == first.Id).Which.SameEvent.Should().BeFalse();
+    }
+
+    // ── Declared separate events (bereavement, sibling bereavement, birth, marriage) ────────
+
+    [Fact]
+    public async Task ANextDaySecondBereavement_WithoutADeclaration_IsRefused()
+    {
+        // 3 days from the 10th; a 5-day request from the 13th starts inside that event's window.
+        var f = await SeedAsync("BEREAVEMENT", "Bereavement Leave", "Bereavement");
+        await Submit(f, Base.AddDays(10), 3);
+
+        var act = () => Submit(f, Base.AddDays(13), 5);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should().Contain("per event").And.Contain("give the event date and the reason");
+    }
+
+    [Fact]
+    public async Task ANextDaySecondBereavement_DeclaredSeparate_IsAccepted_StoredAuditedAndFlagged()
+    {
+        var f = await SeedAsync("BEREAVEMENT", "Bereavement Leave", "Bereavement");
+        await Submit(f, Base.AddDays(10), 3, eventDate: Base.AddDays(9));
+
+        var second = await Submit(f, Base.AddDays(13), 5, eventDate: Base.AddDays(12), separateEventReason: "Grandmother died two days after my father");
+
+        second.TotalDays.Should().Be(5m);
+        var stored = await f.Db.LeaveRequests.AsNoTracking().SingleAsync(r => r.Id == second.Id);
+        (stored.StatutoryEventDate, stored.SeparateEventReason).Should().Be((Base.AddDays(12), "Grandmother died two days after my father"));
+        (await f.Db.LeaveAuditLogs.SingleAsync(a => a.EntityId == second.Id.ToString() && a.Action == "StatutoryEventDeclaredSeparate"))
+            .NewValue.Should().Contain(Base.AddDays(12).ToString("yyyy-MM-dd"));
+        var context = (await f.Service.GetKsaStatutoryLeaveHistoryAsync(f.TenantId, new[] { second.Id }))[second.Id];
+        context.SeparateEventReason.Should().Be("Grandmother died two days after my father");
+        context.StatutoryKind.Should().Be("Bereavement");
+        context.History.Should().ContainSingle().Which.SameEvent.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ADeclarationNeedsAnEventDate()
+    {
+        var f = await SeedAsync("BEREAVEMENT", "Bereavement Leave", "Bereavement");
+
+        var act = () => Submit(f, Base, 3, separateEventReason: "Second death");
+
+        (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("give the date of the event");
+    }
+
+    [Fact]
+    public async Task Maternity_WithADeclaration_IsStillRefused()
+    {
+        // Maternity, iddah and Hajj cannot be split into "separate events".
+        var f = await SeedAsync("MAT", "Maternity Leave", "Parental");
+        await Submit(f, Base, 50, eventDate: Base);
+
+        var act = () => Submit(f, Base.AddDays(50), 50, eventDate: Base.AddDays(49), separateEventReason: "Second birth");
+
+        (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("per event");
+    }
+
+    [Fact]
+    public async Task TheApprovalReCheck_HonoursTheDeclaration()
+    {
+        var f = await SeedAsync("BEREAVEMENT", "Bereavement Leave", "Bereavement");
+        var first = await Submit(f, Base.AddDays(10), 3);
+        await f.Service.ApproveRequestAsync(f.TenantId, first.Id, Guid.NewGuid(), "HR", null);
+        var second = await Submit(f, Base.AddDays(13), 5, eventDate: Base.AddDays(12), separateEventReason: "A second death");
+
+        var approved = await f.Service.ApproveRequestAsync(f.TenantId, second.Id, Guid.NewGuid(), "HR", null);
+
+        approved.Status.Should().Be("Approved");
+    }
+
+    [Fact]
+    public async Task ADeclaredRequest_CannotBeApprovedByTheRequester()
+    {
+        // #168: the subject never decides their own request, declaration or not.
+        var f = await SeedAsync("BEREAVEMENT", "Bereavement Leave", "Bereavement");
+        await Submit(f, Base.AddDays(10), 3);
+        var second = await Submit(f, Base.AddDays(13), 5, eventDate: Base.AddDays(12), separateEventReason: "A second death");
+
+        var self = () => f.Service.ApproveRequestAsync(f.TenantId, second.Id, f.Employee.UserAccountId!.Value, "Employee", null);
+
+        await self.Should().ThrowAsync<Exception>();
+        (await f.Db.LeaveRequests.AsNoTracking().SingleAsync(r => r.Id == second.Id)).Status.Should().NotBe("Approved");
+    }
+
+    [Fact]
+    public async Task RequestsWithTheSameEventDate_AreOneEvent_WhateverTheirDates()
+    {
+        // With event dates given, events group by the date rather than the window heuristic.
         var f = await SeedAsync("MARRIAGE", "Marriage Leave", "Marriage");
-        await Submit(f, Base.AddDays(10), 5);
+        await Submit(f, Base, 3, eventDate: Base);
 
-        var backToBack = () => Submit(f, Base.AddDays(5), 5);
+        var act = () => Submit(f, Base.AddDays(40), 3, eventDate: Base);
 
-        (await backToBack.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("per event");
+        (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("per event");
+    }
+
+    [Fact]
+    public async Task AChainOfLinkedLeave_IsCountedWhole_EvenBeyondTheFirstLookup()
+    {
+        // A–B–C–D–E, each linked to the next, with A further from E than one lookup reaches. Under a
+        // 10-day policy: 2 + 2 + 2 + 2 = 8 already, so a 3-day E makes 11 and must be refused.
+        var f = await SeedAsync("BEREAVEMENT", "Bereavement Leave", "Bereavement", policyDays: 10m);
+        foreach (var offset in new[] { 0, 9, 18, 27 })
+            await Submit(f, Base.AddDays(offset), 2);
+
+        var act = () => Submit(f, Base.AddDays(36), 3);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("per event");
     }
 
     [Fact]

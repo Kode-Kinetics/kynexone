@@ -294,6 +294,52 @@ public class KsaStatutorySpecialLeaveTests
     }
 
     [Fact]
+    public async Task ReSavingAWorkingDayMaternityPolicy_DoesNotDuplicateTheOpenReviewItem_AndFixingItClosesIt()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var mat = await AddMaternityTypeAsync(db, tenantId);
+        var controller = PoliciesController(db, tenantId);
+        var id = ((LeavePolicy)((CreatedResult)await controller.Create(Policy(mat.Id, days: 84m, calendar: false), default)).Value!).Id;
+        UpdateLeavePolicyRequest Update(decimal? days = null, bool? calendar = null) => new(
+            Name: null, CountryCode: null, CompanyId: null, BranchId: null, DepartmentName: null, Grade: null,
+            EmploymentType: null, ContractType: null, Gender: null, AppliesOnProbation: null,
+            AnnualEntitlementDays: days, AccrualMethod: null, CarryForwardMax: null, CarryForwardExpiry: null,
+            EncashmentAllowed: null, EncashmentMaxDays: null, MinimumDaysPerRequest: null,
+            MaximumDaysPerRequest: null, NoticeRequiredDays: null, WeekendsIncluded: calendar,
+            PublicHolidaysIncluded: calendar, PayrollImpact: null, ApprovalWorkflowId: null, Status: null);
+
+        await controller.Update(id, Update(days: 90m), default);
+        await controller.Update(id, Update(days: 95m), default);
+        (await db.LeaveAuditLogs.CountAsync(a => a.EntityId == id.ToString() && a.Action == "StatutoryReviewNeeded")).Should().Be(1);
+
+        await controller.Update(id, Update(calendar: true), default);
+        (await db.LeaveAuditLogs.CountAsync(a => a.EntityId == id.ToString() && a.Action == "StatutoryReviewResolved")).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task StatutoryEntitlements_AreResolvedForAWholePage_SaudiStaffOnly()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var ksa = new Company { TenantId = tenantId, LegalNameEn = "KSA Co", CountryCode = "SA" };
+        var uae = new Company { TenantId = tenantId, LegalNameEn = "UAE Co", CountryCode = "AE" };
+        db.Companies.AddRange(ksa, uae);
+        var saudi = new Employee { TenantId = tenantId, EmployeeCode = "S1", FullName = "S", Status = "Active", CompanyId = ksa.Id };
+        var emirati = new Employee { TenantId = tenantId, EmployeeCode = "U1", FullName = "U", Status = "Active", CompanyId = uae.Id };
+        db.Employees.AddRange(saudi, emirati);
+        var mat = await AddMaternityTypeAsync(db, tenantId);
+        var annual = new LeaveType { TenantId = tenantId, Code = "ANNUAL", NameEn = "Annual Leave", Category = "Annual", IsPaid = true };
+        db.LeaveTypes.Add(annual);
+        await db.SaveChangesAsync();
+
+        var figures = await new LeaveService(db, new ApprovalRouter(db)).GetKsaStatutoryEntitlementsAsync(tenantId,
+            new[] { (saudi.Id, mat.Id), (saudi.Id, annual.Id), (emirati.Id, mat.Id) });
+
+        figures.Should().ContainSingle().Which.Should().Be(new KeyValuePair<(int, Guid), decimal>((saudi.Id, mat.Id), 84m));
+    }
+
+    [Fact]
     public async Task HajjWaiver_IsAudited_OnCreateAndOnEveryToggle()
     {
         await using var db = CreateDb();

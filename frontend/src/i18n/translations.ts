@@ -491,6 +491,18 @@ const en: Dict = {
   '{days} days per event, set by Saudi labour law.': '{days} days per event, set by Saudi labour law.',
   '{days} days per event': '{days} days per event',
   'For employees in Saudi Arabia this leave is set by law in calendar time (maternity: 12 weeks, 84 days). Tick Count Weekends and Count Public Holidays and set at least the statutory days.': 'For employees in Saudi Arabia this leave is set by law in calendar time (maternity: 12 weeks, 84 days). Tick Count Weekends and Count Public Holidays and set at least the statutory days.',
+  'Declared separate event: {date} — {reason}': 'Declared separate event: {date} — {reason}',
+  'Maternity leave': 'Maternity leave',
+  'Leave for the birth of a child': 'Leave for the birth of a child',
+  'Marriage leave': 'Marriage leave',
+  'Bereavement leave': 'Bereavement leave',
+  'Bereavement leave for a brother or sister': 'Bereavement leave for a brother or sister',
+  'Hajj leave': 'Hajj leave',
+  'Iddah leave': 'Iddah leave',
+  'Leave for a non-Muslim widow': 'Leave for a non-Muslim widow',
+  'Date of the event (death, birth or marriage)': 'Date of the event (death, birth or marriage)',
+  'Separate event? Say why (for example, a second bereavement)': 'Separate event? Say why (for example, a second bereavement)',
+  'Only if this is a different event from your earlier leave of this kind. The event date is required too.': 'Only if this is a different event from your earlier leave of this kind. The event date is required too.',
 };
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
@@ -982,6 +994,18 @@ const ar: Dict = {
   '{days} days per event, set by Saudi labour law.': '{days} يوم لكل واقعة، وفق نظام العمل السعودي.',
   '{days} days per event': '{days} يوم لكل واقعة',
   'For employees in Saudi Arabia this leave is set by law in calendar time (maternity: 12 weeks, 84 days). Tick Count Weekends and Count Public Holidays and set at least the statutory days.': 'لموظفي المملكة العربية السعودية تُحتسب هذه الإجازة نظاماً بالأيام التقويمية (إجازة الوضع: 12 أسبوعاً، 84 يوماً). فعّل احتساب عطلات نهاية الأسبوع والعطلات الرسمية وحدد الأيام النظامية على الأقل.',
+  'Declared separate event: {date} — {reason}': 'واقعة منفصلة مُعلنة: {date} — {reason}',
+  'Maternity leave': 'إجازة الوضع',
+  'Leave for the birth of a child': 'إجازة المولود',
+  'Marriage leave': 'إجازة الزواج',
+  'Bereavement leave': 'إجازة الوفاة',
+  'Bereavement leave for a brother or sister': 'إجازة وفاة الأخ أو الأخت',
+  'Hajj leave': 'إجازة الحج',
+  'Iddah leave': 'إجازة العدة',
+  'Leave for a non-Muslim widow': 'إجازة الأرملة غير المسلمة',
+  'Date of the event (death, birth or marriage)': 'تاريخ الواقعة (الوفاة أو الولادة أو الزواج)',
+  'Separate event? Say why (for example, a second bereavement)': 'واقعة منفصلة؟ اذكر السبب (مثلاً: وفاة ثانية)',
+  'Only if this is a different event from your earlier leave of this kind. The event date is required too.': 'فقط إذا كانت واقعة مختلفة عن إجازتك السابقة من هذا النوع. ويلزم أيضاً ذكر تاريخ الواقعة.',
 };
 
 // ── French ────────────────────────────────────────────────────────────────────

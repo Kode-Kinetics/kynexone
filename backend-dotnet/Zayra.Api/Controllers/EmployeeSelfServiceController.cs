@@ -569,9 +569,9 @@ public class EmployeeSelfServiceController : ControllerBase
         Guid tenantId, int employeeId, IReadOnlyCollection<EmployeeLeaveBalance> balances, CancellationToken ct)
     {
         var statutory = await _leaveService.GetKsaStatutoryEntitlementsAsync(
-            tenantId, employeeId, balances.Select(b => b.LeaveTypeId).ToList(), ct);
+            tenantId, balances.Select(b => (employeeId, b.LeaveTypeId)).Distinct().ToList(), ct);
         return balances.Select(x => new ESSLeaveBalanceDto(x.LeaveTypeId, x.LeaveTypeName, x.Entitled, x.Used, x.Pending, x.Available,
-            statutory.TryGetValue(x.LeaveTypeId, out var days) ? days : null)).ToList();
+            statutory.TryGetValue((employeeId, x.LeaveTypeId), out var days) ? days : null)).ToList();
     }
 
     [HttpPost("leave/request")]
@@ -603,6 +603,8 @@ public class EmployeeSelfServiceController : ControllerBase
             EndDate = request.EndDate,
             DayType = request.DayType ?? "Full",
             Reason = request.Reason,
+            StatutoryEventDate = request.StatutoryEventDate,
+            SeparateEventReason = request.SeparateEventReason,
             PayrollImpact = leaveType.IsPaid ? "Full" : "None",
         };
         try
@@ -1478,7 +1480,11 @@ public record ESSDashboardDto(
 public record ProfileChangeRequestDto(Dictionary<string, object?> Changes, string? Reason);
 public record ProfileChangeDecisionDto(string? Notes);
 public record ESSAttendanceRegularizationDto(DateOnly WorkDate, string RequestType, DateTime? RequestedInUtc, DateTime? RequestedOutUtc, string Reason);
-public record ESSLeaveRequestDto(Guid LeaveTypeId, DateOnly StartDate, DateOnly EndDate, string? DayType, string Reason);
+/// <param name="StatutoryEventDate">KSA statutory leave: the date of the event (death, birth, marriage).</param>
+/// <param name="SeparateEventReason">KSA bereavement, birth or marriage leave: why this is a separate event
+/// from earlier leave of the same kind. Requires <paramref name="StatutoryEventDate"/>.</param>
+public record ESSLeaveRequestDto(Guid LeaveTypeId, DateOnly StartDate, DateOnly EndDate, string? DayType, string Reason,
+    DateOnly? StatutoryEventDate = null, string? SeparateEventReason = null);
 public record ESSDocumentUploadDto(string DocumentType, string FileName, string ContentType, string StorageUrl, DateOnly? ExpiryDate, bool IsRequired);
 public record EssLetterTypeDto(string LetterType, string NameEn, string NameAr);
 public record EssDocumentRequestDto(string LetterType, string? Language, string? Purpose, string? AddresseeName);

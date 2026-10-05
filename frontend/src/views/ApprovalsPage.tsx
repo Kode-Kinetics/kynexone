@@ -11,7 +11,7 @@ import { Modal } from '../components/Modal';
 import { StatusChip } from '../components/StatusChip';
 import { StatutoryLeaveHistory } from '../components/StatutoryLeaveHistory';
 import { leaveRequestsApi } from '../api/leave';
-import type { StatutoryLeaveHistoryItem } from '../api/leave';
+import type { StatutoryLeaveContext } from '../api/leave';
 
 const PAGE_SIZE = 25;
 
@@ -61,14 +61,14 @@ export function ApprovalsPage() {
   const [establishmentBlock, setEstablishmentBlock] = useState<{ block: EstablishmentBlockedPayload; employeeName?: string } | null>(null);
   // A Saudi statutory leave (maternity, Hajj, bereavement…) is decided with the employee's earlier
   // leave of the same kind in view.
-  const [statutoryHistory, setStatutoryHistory] = useState<StatutoryLeaveHistoryItem[]>([]);
+  const [statutoryContext, setStatutoryContext] = useState<StatutoryLeaveContext | null>(null);
   useEffect(() => {
-    setStatutoryHistory([]);
+    setStatutoryContext(null);
     if (!selected || selected.entityName !== 'LeaveRequest') return;
     let live = true;
     leaveRequestsApi.statutoryHistory([selected.entityId])
-      .then(h => { if (live) setStatutoryHistory(h[selected.entityId] ?? []); })
-      .catch(() => { if (live) setStatutoryHistory([]); });
+      .then(h => { if (live) setStatutoryContext(h[selected.entityId] ?? null); })
+      .catch(() => { if (live) setStatutoryContext(null); });
     return () => { live = false; };
   }, [selected]);
 
@@ -423,7 +423,7 @@ export function ApprovalsPage() {
                 </div>
               </div>
             </div>
-            <StatutoryLeaveHistory items={statutoryHistory} />
+            <StatutoryLeaveHistory context={statutoryContext} />
             {selected.decisions.length > 0 && (
               <div>
                 <p className="mb-1 text-xs font-bold uppercase tracking-wide text-slate-400 dark:text-slate-500">Decision History</p>
