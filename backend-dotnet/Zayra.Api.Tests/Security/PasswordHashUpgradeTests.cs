@@ -173,6 +173,38 @@ public sealed class PasswordHashUpgradeTests
                 .Should().Be(otherUpgrade, "the winner's upgrade is kept, not overwritten");
     }
 
+    [Fact]
+    public async Task ABusyGateDuringTheRaceRecheck_SurfacesAsRetry_NotAsARejectedPassword()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        var userId = await kit.SeedUserAsync("busy-twin@hardening.local", Legacy.Hash(Password), roleName: null);
+        var otherUpgrade = Current().Hash(Password);
+        using var gate = new PasswordVerificationGate(maxConcurrency: 1, maxWait: TimeSpan.FromSeconds(2));
+        using var release = new ManualResetEventSlim(false);
+        Task? holder = null;
+        // While this login's re-hash holds the only slot: the twin upgrades the row (so the
+        // compare-and-set will miss) and a competing caller queues for the slot, so the re-check
+        // that follows finds the gate busy.
+        var racing = new RacingHasher(async () =>
+        {
+            await using (var other = kit.NewDb())
+                await other.Users.Where(u => u.Id == userId)
+                    .ExecuteUpdateAsync(s => s.SetProperty(u => u.PasswordHash, otherUpgrade));
+            holder = Task.Run(() => gate.RunAsync(() => { release.Wait(); return true; }, CancellationToken.None));
+            await Task.Delay(50);
+        });
+
+        await using var db = kit.NewDb();
+        var act = () => kit.Auth(db, racing, gate: gate).LoginAsync(
+            new LoginRequest("busy-twin@hardening.local", Password, AuthHardeningTestKit.TenantSlug),
+            AuthHardeningTestKit.Ctx, CancellationToken.None);
+
+        await act.Should().ThrowAsync<PasswordVerificationBusyException>(
+            "a correct password that merely met a busy gate must be told to retry (429), not rejected (401)");
+        release.Set();
+        await holder!;
+    }
+
     private sealed class IterationCountingHasher(int iterations) : Pbkdf2PasswordHasher(iterations)
     {
         public long Iterations { get; private set; }

@@ -1339,8 +1339,11 @@ public class AuthService : IAuthService
                 new RequestContext(null, null, user.Id, user.TenantId), null, ct);
             return upgraded;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException and not PasswordVerificationBusyException)
         {
+            // A busy hashing gate is NOT swallowed: after a lost compare-and-set, returning the
+            // superseded hash would make the locked issuance check reject a correct password (401).
+            // Letting it surface gives the client a 429 and a retry instead.
             _log.LogWarning(ex, "Password rehash for user {UserId} failed; the existing hash stays valid.", user.Id);
             return verified;
         }
