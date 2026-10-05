@@ -4437,89 +4437,24 @@ public class EmployeesController : ControllerBase
         catch { /* best-effort badge refresh */ }
     }
 
+    // RETIRED. This applied a sensitive change in one click: it skipped the EMPLOYEE-CHANGE workflow's
+    // two steps (manager, then HR), the separation-of-duties bars (the employee the change is about
+    // could approve their own salary or IBAN), and it left the change's ApprovalRequest open in the
+    // Approval Center. No client calls it. Changes are decided only through ApprovalWorkflowService,
+    // which is the one place those rules live. The permission stays declared so the catalog still
+    // names the action that once used it.
     [HttpPost("changes/{changeId:guid}/approve")]
     [HasPermission("employees.approve")]
     public async Task<IActionResult> ApproveChange(Guid changeId, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
-        var change = await _db.EmployeeChangeRequests.FirstOrDefaultAsync(x => x.Id == changeId && x.TenantId == tenantId, cancellationToken);
-        if (change is null) return NotFound();
-        if (!string.Equals(change.Status, "PendingApproval", StringComparison.OrdinalIgnoreCase))
-            return BadRequest(new { message = "Change request has already been decided." });
-        var approverId = GetUserId();
-        if (approverId is not null && change.RequestedByUserId == approverId)
-            return BadRequest(new { message = "Maker-checker violation: requester cannot approve their own sensitive change." });
-        var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
-        if (change.EffectiveDate > today)
-            return BadRequest(new { message = "Future-dated sensitive changes cannot be applied before their effective date." });
-        var employee = await _db.Employees.FirstOrDefaultAsync(x => x.Id == change.EmployeeId && x.TenantId == tenantId, cancellationToken);
-        if (employee is null) return NotFound();
-        var changes = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.ProposedChangesJson) ?? new();
-        var priorDeptId = employee.DepartmentId;
-        var priorDesigId = employee.DesignationId;
-        // Same re-check as the Approval Center: a change the effective-date job returned for review is refused
-        // if a value moved after the re-review was raised. A change never returned for review passes through.
-        var baselineKeys = HttpContext?.RequestServices?.GetService(typeof(IDataProtectionProvider)) as IDataProtectionProvider;
-        var review = await EmployeeChangeBaseline.CheckUnchangedSinceReviewAsync(_db,
-            baselineKeys is null ? null : EmployeeChangeBaseline.CreateProtector(baselineKeys), tenantId, change.Id, employee,
-            changes.Keys, cancellationToken);
-        if (!review.Unchanged)
-            return UnprocessableEntity(new { error = "changed_since_review", message = review.Refusal(DashboardController.FormatChangedFields) });
-        // managerEmployeeId is not a sensitive key, so a change request only carries one if it was stored by an
-        // older build; it is still checked here, because every apply path goes through the same rules.
-        if (await EmployeeChangeApplier.ValidateManagerChangeAsync(_db, employee, changes, null, cancellationToken) is { } managerRejection)
-            return UnprocessableEntity(new { error = "invalid_manager", message = managerRejection.Message + " The change remains pending." });
-        try
+        if (!await _db.EmployeeChangeRequests.AnyAsync(x => x.Id == changeId && x.TenantId == tenantId, cancellationToken))
+            return NotFound();
+        return StatusCode(StatusCodes.Status410Gone, new
         {
-            // The payload was validated against EditableEmployeeFields when the change was REQUESTED, so an
-            // unknown key here is a stored patch from an older build. Refusing would strand an approved
-            // change with no operator remedy, so it is logged loudly instead of dropped in silence.
-            // ONE apply sequence for every approval path (EmployeeChangeApplier.ApplyApprovedChangeAsync):
-            // employee columns, payroll-profile keys, org ids, and the approved bank field(s) mirrored onto
-            // the payroll profile so an IBAN fixed via the checklist actually reaches the WPS run (Δ13 / P1-1).
-            var unknownApproved = await EmployeeChangeApplier.ApplyApprovedChangeAsync(
-                _db, tenantId, employee, changes, approverId, cancellationToken);
-            if (unknownApproved.Count > 0)
-                _logger?.LogWarning(
-                    "Approved employee change {ChangeId} for employee {EmployeeId} carried unrecognised field(s) {UnknownFields}; those values were NOT applied.",
-                    change.Id, employee.Id, string.Join(", ", unknownApproved));
-            employee.UpdatedAtUtc = DateTime.UtcNow;
-            change.Status = "ApprovedApplied";
-            change.ApprovedByUserId = approverId;
-            change.ApprovedAtUtc = DateTime.UtcNow;
-            change.AppliedAtUtc = DateTime.UtcNow;
-            await AddHistory(employee, "SensitiveChangeApproved", change.EffectiveDate, cancellationToken);
-            // ESTABLISHMENT GUARD (path "approval"): authoritative re-check AT APPLY — the slot may
-            // have been consumed since submission. On a block nothing is persisted (throws before
-            // save / transaction rolls back), so the change request stays PendingApproval and can
-            // be re-approved after a budget raise.
-            if (employee.DepartmentId != priorDeptId || employee.DesignationId != priorDesigId)
-            {
-                await _establishmentGuard.EnforceAndExecuteAsync(tenantId, employee.DepartmentId, employee.DesignationId,
-                    excludeEmployeeId: employee.Id, path: "approval", Context(), async () =>
-                    {
-                        await _db.SaveChangesAsync(cancellationToken);
-                        return true;
-                    }, cancellationToken);
-            }
-            else
-            {
-                await _db.SaveChangesAsync(cancellationToken);
-            }
-            await Audit("employee.change_approved", "EmployeeChangeRequest", change.Id.ToString(), cancellationToken);
-            return Ok(EmployeeDetailDto.Project(employee, CanViewSensitive()));
-        }
-        catch (EstablishmentBudgetExceededException ex)
-        {
-            // Discard the half-applied tracked mutations BEFORE any further write on this context
-            // (Notify saves): the change request must remain PendingApproval untouched.
-            _db.ChangeTracker.Clear();
-            await Notify("Employee change blocked by staffing budget",
-                $"The approved change for {employee.EmployeeCode} could not be applied: {ex.Block.DepartmentName} already has {ex.Block.Current} of {ex.Block.Budgeted} budgeted {ex.Block.LevelNameEn}(s). Raise the budget or amend the change; the request remains pending.",
-                "EmployeeChangeRequest", change.Id.ToString(), cancellationToken);
-            return this.EstablishmentConflict(ex);
-        }
-        catch (InvalidOperationException ex) { return UnprocessableEntity(new { message = ex.Message }); }
+            message = "Approving an employee change here is disabled. Decide it in the Approval Center "
+                      + "(POST /api/approval-requests/{id}/decisions) so every approval step and separation-of-duties rule is enforced."
+        });
     }
 
     private async Task<ApprovalWorkflow> EnsureEmployeeChangeWorkflowAsync(Guid tenantId, CancellationToken cancellationToken)

@@ -360,6 +360,9 @@ public partial class LoansController : ControllerBase
         // inline checks did (a decided step still outranks a missing loan).
         var approval = await _db.LoanApprovals.FirstOrDefaultAsync(x => x.Id == approvalId && x.LoanId == id && x.TenantId == tid, ct);
         var loan = await _db.EmployeeLoans.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
+        var borrowerIsDecider = loan is not null && uid.HasValue && await IsLoanBorrowerAsync(loan, uid.Value, ct);
+        var approvedEarlierStep = approval is not null && uid.HasValue && await _db.LoanApprovals.AnyAsync(x =>
+            x.TenantId == tid && x.LoanId == id && x.Id != approvalId && x.Status == "Approved" && x.ApprovedBy == uid, ct);
 
         var verdict = ApprovalDecisionGuard.Evaluate(new ApprovalDecisionSpec
         {
@@ -378,8 +381,24 @@ public partial class LoansController : ControllerBase
                 loan?.CreatedBy is { } maker && uid.HasValue && maker == uid,
                 new[] { "Approved" },
                 "Maker-checker control: requester cannot approve their own loan."),
+            // The borrower, whoever raised the loan. Approval only, as before this lived in the guard:
+            // a borrower may still reject (withdraw) their own loan, which grants them nothing.
+            SubjectSeparation = new SubjectSeparationRule(
+                borrowerIsDecider,
+                new[] { "Approved" },
+                "Maker-checker control: borrower cannot approve their own loan."),
+            // An Admin satisfies every step's role, so without this one person could approve a
+            // multi-step loan alone. Every decision: there is nothing to withdraw at a later step.
+            EarlierStepSeparation = new EarlierStepRule(
+                approvedEarlierStep,
+                "Maker-checker control: you approved an earlier step of this loan, so a different approver must decide this one."),
         });
-        if (!verdict.Passed) return LoanDecisionRefusal(verdict, loan?.Status);
+        if (!verdict.Passed)
+            return verdict.Outcome is ApprovalGuardOutcome.MakerIsChecker or ApprovalGuardOutcome.SubjectIsDecider
+                    or ApprovalGuardOutcome.DeciderApprovedEarlierStep
+                // Same bare-string 400, plus who could act instead when nobody can.
+                ? BadRequest(verdict.Message + await LoanUnblockHintAsync(tid, loan!, approval!, uid, ct))
+                : LoanDecisionRefusal(verdict, loan?.Status);
 
         // Guard postcondition: a passing verdict means both records were found.
         ArgumentNullException.ThrowIfNull(approval);
@@ -391,8 +410,6 @@ public partial class LoansController : ControllerBase
         // Legacy pending Finance steps are treated as HR Manager; migration persists the same correction.
         var requiredRole = approval.ApproverRole is "Finance" or "Finance Approver" or "Manager" ? "HR Manager" : approval.ApproverRole;
         if (!User.IsInRole("Admin") && !User.IsInRole(requiredRole)) return Forbid();
-        if (req.Decision == "Approved" && await IsLoanBorrowerAsync(loan, uid.Value, ct))
-            return BadRequest("Maker-checker control: borrower cannot approve their own loan.");
         if (await _db.LoanApprovals.AnyAsync(x => x.TenantId == tid && x.LoanId == id && x.StepOrder < approval.StepOrder && x.Status != "Approved", ct))
             return Conflict("Earlier approval steps must be approved first.");
         var amountLimit = loan.ApprovedAmount > 0 ? Math.Min(loan.ApprovedAmount, loan.RequestedAmount) : loan.RequestedAmount;
@@ -626,9 +643,35 @@ public partial class LoansController : ControllerBase
             }),
         ApprovalGuardOutcome.ParentLocked =>
             Conflict(new { error = "locked_by_payroll", message = verdict.Message }),
-        ApprovalGuardOutcome.MakerIsChecker => BadRequest(verdict.Message),
+        ApprovalGuardOutcome.MakerIsChecker or ApprovalGuardOutcome.SubjectIsDecider
+            or ApprovalGuardOutcome.DeciderApprovedEarlierStep => BadRequest(verdict.Message),
         _ => throw new InvalidOperationException($"Unhandled approval guard outcome '{verdict.Outcome}'."),
     };
+
+    /// <summary>
+    /// The "nobody else can decide it yet" sentence for a separation-of-duties refusal, or empty when
+    /// someone else can. Excludes the caller, the loan's maker, the borrower and whoever approved another
+    /// step; counts Admin and the step's role (legacy Finance/Manager steps read as HR Manager, as below).
+    /// A hint only — the checks in DecideApproval decide who may act.
+    /// </summary>
+    private async Task<string> LoanUnblockHintAsync(Guid tid, EmployeeLoan loan, LoanApproval step, Guid? callerId, CancellationToken ct)
+    {
+        var excluded = new HashSet<Guid>();
+        if (callerId is Guid caller) excluded.Add(caller);
+        if (loan.CreatedBy is Guid maker) excluded.Add(maker);
+        foreach (var approver in await _db.LoanApprovals.AsNoTracking()
+                     .Where(x => x.TenantId == tid && x.LoanId == loan.Id && x.Status == "Approved" && x.ApprovedBy != null)
+                     .Select(x => x.ApprovedBy!.Value).ToListAsync(ct))
+            excluded.Add(approver);
+        if (loan.EmployeeIntId is int borrower)
+            foreach (var linked in await Zayra.Api.Infrastructure.Approvals.ApprovalUnblock.SubjectUserIdsAsync(_db, tid, borrower, ct))
+                excluded.Add(linked);
+        var role = step.ApproverRole is "Finance" or "Finance Approver" or "Manager" ? "HR Manager" : step.ApproverRole;
+        return await Zayra.Api.Infrastructure.Approvals.ApprovalUnblock.AnyOtherUserInRolesAsync(
+                _db, tid, new[] { role, "Admin" }, orOverride: false, excluded, ct)
+            ? string.Empty
+            : Zayra.Api.Infrastructure.Approvals.ApprovalUnblock.NobodyElseSentence("decide", null, role);
+    }
 
     private async Task WriteLoanAudit(Guid tid, Guid? uid, Guid loanId, string action, string? oldVal, string newVal, CancellationToken ct)
     {
