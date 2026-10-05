@@ -173,6 +173,35 @@ public sealed class PasswordHashUpgradeTests
                 .Should().Be(otherUpgrade, "the winner's upgrade is kept, not overwritten");
     }
 
+    private sealed class IterationCountingHasher(int iterations) : Pbkdf2PasswordHasher(iterations)
+    {
+        public long Iterations { get; private set; }
+        protected override byte[] Derive(string password, byte[] salt, int iterations, int length)
+        {
+            Iterations += iterations;
+            return base.Derive(password, salt, iterations, length);
+        }
+    }
+
+    [Fact]
+    public void AFailedCheckAgainstALegacyHash_CostsTheSameWorkAsTheDummyPath()
+    {
+        var legacy = Legacy.Hash(Password);
+
+        var failedLegacy = new IterationCountingHasher(Pbkdf2PasswordHasher.CurrentIterations);
+        failedLegacy.Verify("wrong-password", legacy).Should().BeFalse();
+
+        var dummy = new IterationCountingHasher(Pbkdf2PasswordHasher.CurrentIterations);
+        dummy.Verify("wrong-password", Current().Hash("never-disclosed")).Should().BeFalse();
+
+        failedLegacy.Iterations.Should().Be(Pbkdf2PasswordHasher.CurrentIterations)
+            .And.Be(dummy.Iterations, "a miss on an old hash must not answer faster than a miss on a current one");
+
+        var succeeded = new IterationCountingHasher(Pbkdf2PasswordHasher.CurrentIterations);
+        succeeded.Verify(Password, legacy).Should().BeTrue();
+        succeeded.Iterations.Should().Be(100_000, "a success is followed by the re-hash, so it needs no padding");
+    }
+
     [Fact]
     public void ProductionNeverLowersTheWorkFactor()
     {

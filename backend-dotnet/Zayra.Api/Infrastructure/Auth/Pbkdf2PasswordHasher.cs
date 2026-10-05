@@ -66,16 +66,29 @@ public class Pbkdf2PasswordHasher : IPasswordHasher
     public string Hash(string password)
     {
         var salt = RandomNumberGenerator.GetBytes(SaltSize);
-        var hash = Rfc2898DeriveBytes.Pbkdf2(password, salt, _iterations, HashAlgorithmName.SHA256, KeySize);
+        var hash = Derive(password, salt, _iterations, KeySize);
         return $"{Scheme}${_iterations}${Convert.ToBase64String(salt)}${Convert.ToBase64String(hash)}";
     }
 
     public bool Verify(string password, string passwordHash)
     {
         if (!TryParse(passwordHash, out var iterations, out var salt, out var expected)) return false;
-        var actual = Rfc2898DeriveBytes.Pbkdf2(password, salt, iterations, HashAlgorithmName.SHA256, expected.Length);
-        return CryptographicOperations.FixedTimeEquals(actual, expected);
+        var actual = Derive(password, salt, iterations, expected.Length);
+        var ok = CryptographicOperations.FixedTimeEquals(actual, expected);
+        if (!ok && iterations < _iterations)
+        {
+            // A failed check against an old, cheaper hash would answer sooner than a failed check
+            // against a current one (or the dummy hash used for unknown accounts), which tells an
+            // attacker that the account exists and has not signed in since the upgrade. Spend the
+            // difference so every failure costs the current work factor.
+            Derive(password, salt, _iterations - iterations, expected.Length);
+        }
+        return ok;
     }
+
+    /// <summary>The PBKDF2 primitive. Virtual only so tests can count iterations instead of timing them.</summary>
+    protected virtual byte[] Derive(string password, byte[] salt, int iterations, int length)
+        => Rfc2898DeriveBytes.Pbkdf2(password, salt, iterations, HashAlgorithmName.SHA256, length);
 
     /// <summary>
     /// True for a well-formed hash written with fewer iterations than this hasher uses. A malformed
