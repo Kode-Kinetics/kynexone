@@ -46,10 +46,11 @@ export const viewport: Viewport = {
  * never flipped at all — so an Arabic user's sign-in screen was always left-to-right.
  * Reading the same localStorage key the provider owns, in a blocking script, closes both.
  * Keep the rtl map below in step with LOCALE_METADATA in src/i18n/translations.ts — today
- * `ar` is the only right-to-left locale there.
+ * `ar` is the only right-to-left locale there. The user's own choice wins; without one, the
+ * tenant's default language as LocaleProvider last cached it ('kynexone-tenant-locale').
  */
 const LOCALE_BOOT = `(function(){try{
-var l=localStorage.getItem('kynexone-locale')||'en';
+var l=localStorage.getItem('kynexone-locale')||localStorage.getItem('kynexone-tenant-locale')||'en';
 var d={ar:'rtl'}[l]||'ltr';
 document.documentElement.lang=l;document.documentElement.dir=d;
 }catch(e){}})();`;

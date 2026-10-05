@@ -1,4 +1,8 @@
+import { formatMessage, type MessageParams } from './message';
+import { numberLocale } from '../lib/format';
+
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
+export type { MessageParams };
 
 type Dict = Record<string, string>;
 
@@ -1443,15 +1447,32 @@ const es: Dict = {
   'Group': 'Grupo',
 };
 
-export const LOCALE_METADATA: Record<LocaleCode, { label: string; native: string; dir: 'ltr' | 'rtl' }> = {
-  en: { label: 'English',  native: 'English',   dir: 'ltr' },
-  ar: { label: 'Arabic',   native: 'العربية',    dir: 'rtl' },
-  fr: { label: 'French',   native: 'Français',   dir: 'ltr' },
-  es: { label: 'Spanish',  native: 'Español',    dir: 'ltr' },
+/**
+ * `selectable: false` keeps a language's dictionary (and any user who already chose it) working
+ * while hiding it from the language switcher. French and Spanish are hidden (CTO decision,
+ * 2026-10-05): they cover a fraction of the keys and no customer uses them. Do not delete them.
+ */
+export const LOCALE_METADATA: Record<LocaleCode, { label: string; native: string; dir: 'ltr' | 'rtl'; selectable: boolean }> = {
+  en: { label: 'English',  native: 'English',   dir: 'ltr', selectable: true },
+  ar: { label: 'Arabic',   native: 'العربية',    dir: 'rtl', selectable: true },
+  fr: { label: 'French',   native: 'Français',   dir: 'ltr', selectable: false },
+  es: { label: 'Spanish',  native: 'Español',    dir: 'ltr', selectable: false },
 };
 
 export const LOCALE_DICTS: Record<LocaleCode, Dict> = { en, ar, fr, es };
 
-export function translate(locale: LocaleCode, key: string): string {
-  return LOCALE_DICTS[locale]?.[key] ?? LOCALE_DICTS.en[key] ?? key;
+/**
+ * Look a key up for `locale`, falling back to English and then to the key itself.
+ *
+ * With `params`, the template is filled: `{name}` placeholders and ICU plurals
+ * (`{count, plural, one {# day} other {# days}}`, see i18n/message.ts). Numbers are formatted
+ * with Latin digits in every language. Without params the raw template is returned, so callers
+ * that substitute by hand keep working.
+ */
+export function translate(locale: LocaleCode, key: string, params?: MessageParams): string {
+  const template = LOCALE_DICTS[locale]?.[key] ?? LOCALE_DICTS.en[key] ?? key;
+  // `params` must be a plain object: `items.map(t)` would otherwise pass the array index here.
+  if (!params || typeof params !== 'object') return template;
+  const nf = new Intl.NumberFormat(numberLocale(locale), { maximumFractionDigits: 2 });
+  return formatMessage(template, params, locale, (n) => nf.format(n));
 }

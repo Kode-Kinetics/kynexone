@@ -25,8 +25,6 @@ function LanguageSwitcher() {
     return () => document.removeEventListener('mousedown', handler);
   }, [open]);
 
-  const current = LOCALES.find((l) => l.code === locale) ?? LOCALES[0];
-
   return (
     <div ref={ref} className="relative">
       <button
@@ -36,7 +34,8 @@ function LanguageSwitcher() {
         className="flex h-8 items-center gap-1.5 rounded-lg border border-slate-200/80 bg-white/60 px-2.5 text-xs font-semibold text-slate-600 backdrop-blur-sm transition hover:border-slate-300 hover:bg-white/90 dark:border-white/[0.08] dark:bg-white/[0.05] dark:text-slate-300 dark:hover:bg-white/[0.10]"
       >
         <Globe className="h-3.5 w-3.5 text-slate-400 dark:text-slate-500" />
-        <span className="uppercase">{current.code}</span>
+        {/* The active code, even for a hidden language (fr/es) someone chose before it was hidden. */}
+        <span className="uppercase">{locale}</span>
       </button>
 
       {open && (
