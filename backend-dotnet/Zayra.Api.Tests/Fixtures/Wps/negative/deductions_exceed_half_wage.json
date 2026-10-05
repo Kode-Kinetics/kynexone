@@ -4,7 +4,8 @@
     "rows": {
       "0": {
         "net": 3000.0,
-        "slipDeductions": 3750.0
+        "slipDeductions": 3750.0,
+        "debtDeductions": 3400.0
       }
     }
   }

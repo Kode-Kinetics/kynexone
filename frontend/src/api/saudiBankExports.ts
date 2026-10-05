@@ -84,6 +84,19 @@ export interface SaudiBankExportValidation {
   totalAmount: number;
   currency: string;
   formatId: string;
+  /** Employees left out of this bank file (cash/cheque or zero net pay), by name and reason. */
+  exclusions?: SaudiBankExportExclusion[];
+  /** totalAmount reconciles as runNetTotal − excludedTotal. */
+  excludedTotal?: number;
+  runNetTotal?: number;
+}
+
+export interface SaudiBankExportExclusion {
+  employeeId: number;
+  employeeCode: string;
+  amount: number;
+  reasonCode: string;
+  reason: string;
 }
 
 export interface SaudiBankExportArtifact extends SaudiBankExistingExport {

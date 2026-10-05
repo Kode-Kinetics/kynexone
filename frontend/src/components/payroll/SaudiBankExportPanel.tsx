@@ -59,6 +59,7 @@ type Copy = {
   validate: string; validating: string; generate: string; generating: string; download: string; downloading: string;
   needSave: string; needValidate: string; staleValidation: string; blocked: string; busy: string;
   validationOk: string; validationBlocked: (n: number) => string; warnings: string; employees: string; total: string;
+  excludedSummary: (n: number) => string; runNet: string; excludedTitle: string;
   employee: (id: string) => string; field: string; goToField: string;
   artifactTitle: string; artifactId: string; files: string; generatedNote: string; existingDiffers: (ref: string, date: string) => string;
   existingMatches: string; downloadNeedsArtifact: string;
@@ -134,6 +135,9 @@ const EN: Copy = {
   warnings: 'Warnings',
   employees: 'Employees',
   total: 'Total',
+  excludedSummary: (n) => `${n} employee${n === 1 ? '' : 's'} left out of this bank file`,
+  runNet: 'run net pay',
+  excludedTitle: 'Not in this bank file — pay and record these separately',
   employee: (id) => `Employee ${id}`,
   field: 'Field',
   goToField: 'Edit field',
@@ -225,6 +229,9 @@ const AR: Copy = {
   warnings: 'تنبيهات',
   employees: 'الموظفون',
   total: 'الإجمالي',
+  excludedSummary: (n) => `${n} من الموظفين خارج ملف البنك هذا`,
+  runNet: 'صافي رواتب المسير',
+  excludedTitle: 'غير مدرجين في ملف البنك — ادفع لهم وسجّل الدفع بشكل منفصل',
   employee: (id) => `الموظف ${id}`,
   field: 'الحقل',
   goToField: 'تعديل الحقل',
@@ -817,8 +824,26 @@ export function SaudiBankExportPanel({ batchId, employeeIds }: { batchId: string
                 <p className="mt-1 text-xs">
                   {c.employees}: <span className="tabular-nums">{result.employeeCount}</span> · {c.total}: <span className="tabular-nums" dir="ltr">{fmtMoney(result.totalAmount, result.currency)}</span>
                 </p>
+                {(result.exclusions?.length ?? 0) > 0 && (
+                  <p className="mt-1 text-xs">
+                    {c.excludedSummary(result.exclusions!.length)}: <span className="tabular-nums" dir="ltr">{fmtMoney(result.excludedTotal ?? 0, result.currency)}</span>
+                    {' '}({c.runNet}: <span className="tabular-nums" dir="ltr">{fmtMoney(result.runNetTotal ?? 0, result.currency)}</span>)
+                  </p>
+                )}
                 {result.errors.length > 0 && <IssueList issues={result.errors} c={c} onFocusField={focusField} />}
               </Alert>
+              {(result.exclusions?.length ?? 0) > 0 && (
+                <Alert tone="warn">
+                  <p className="font-medium">{c.excludedTitle}</p>
+                  <ul className="mt-1 list-disc space-y-0.5 ps-4 text-xs">
+                    {result.exclusions!.map(x => (
+                      <li key={x.employeeId}>
+                        <span className="font-mono">{x.employeeCode}</span> — <span className="tabular-nums" dir="ltr">{fmtMoney(x.amount, result.currency)}</span> — {x.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </Alert>
+              )}
               {result.warnings.length > 0 && (
                 <Alert tone="warn">
                   <p className="font-medium">{c.warnings} ({result.warnings.length})</p>

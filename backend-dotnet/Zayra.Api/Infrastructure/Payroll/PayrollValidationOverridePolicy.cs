@@ -57,6 +57,10 @@ public static class PayrollValidationOverridePolicy
         // Company country set at the group rather than the entity — a configuration judgement, and the
         // statutory pack guard in Process already refuses to write payslips without a resolvable pack.
         "COUNTRY_CODE_MISSING",
+        // KSA Art. 92/93 debt deductions above half the wage. Art. 93 itself admits exceptions (a court
+        // order; the worker's own request, e.g. a housing loan) — a documentable judgement. The bank
+        // export reads the override and does not re-block the same employee.
+        WageDeductionClassification.DeductionsExceedHalfWageCode,
     };
 
     /// <summary>

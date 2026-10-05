@@ -2,8 +2,8 @@
   "expectedCode": "mol_id_prefix_mismatch",
   "patch": {
     "rows": {
-      "1": {
-        "molId": "1098765432"
+      "0": {
+        "molId": "2098765432"
       }
     }
   }

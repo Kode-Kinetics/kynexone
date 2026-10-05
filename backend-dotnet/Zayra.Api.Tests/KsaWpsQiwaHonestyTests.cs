@@ -48,7 +48,7 @@ public class KsaWpsQiwaHonestyTests
         var rows = doc["rows"]!.AsArray().Select(n => n!.AsObject()).Select(r => new KsaWageFileRow(
             (int)r["employeeRef"]!, (string)r["label"]!, (string?)r["nationality"], (string?)r["molId"], (string?)r["iban"],
             (string?)r["bankBic"], (string?)r["name"], (decimal)r["gross"]!, (decimal)r["basic"]!, (decimal)r["housing"]!,
-            (decimal)r["net"]!, (decimal)r["slipDeductions"]!)).ToList();
+            (decimal)r["net"]!, (decimal)r["slipDeductions"]!, (decimal?)r["debtDeductions"] ?? 0m)).ToList();
         var used = doc["usedReferences"]?.AsArray().Select(x => (string)x!).ToList() ?? new List<string>();
         return (header, rows, used);
     }
@@ -432,7 +432,9 @@ public class KsaWpsQiwaHonestyTests
         new Microsoft.AspNetCore.Http.FormFile(new MemoryStream(bytes), 0, bytes.Length, "file", name)
             { Headers = new HeaderDictionary(), ContentType = contentType };
 
-    private static async Task<(ZayraDbContext Db, Guid Tenant, Guid Batch, PayrollController Ctrl, MemoryDocumentStorage Storage)> SubmittedBatchAsync()
+    /// <summary>A Submitted KSA batch. <c>Ctrl</c> is the maker (it generated the file); <c>Checker</c> is a
+    /// second payroll user, the only one who may record Accepted.</summary>
+    private static async Task<(ZayraDbContext Db, Guid Tenant, Guid Batch, PayrollController Ctrl, MemoryDocumentStorage Storage, PayrollController Checker)> SubmittedBatchAsync()
     {
         var db = NewDb();
         var (tenant, company, batch) = await SeedKsaRegisterBatchAsync(db);
@@ -442,7 +444,7 @@ public class KsaWpsQiwaHonestyTests
         var ctrl = Payroll(db, tenant, storage);
         (await ctrl.GenerateWps(batch, true, false, default)).Should().BeOfType<OkObjectResult>();
         (await ctrl.UpdateWpsStatus(batch, new WpsStatusRequest(WpsStatuses.Submitted, null, "SUB-1"), default)).Should().BeOfType<OkObjectResult>();
-        return (db, tenant, batch, ctrl, storage);
+        return (db, tenant, batch, ctrl, storage, Payroll(db, tenant, storage));
     }
 
     private static Guid EvidenceIdOf(IActionResult upload)
@@ -454,8 +456,8 @@ public class KsaWpsQiwaHonestyTests
     [Fact]
     public async Task Accepted_from_the_dropdown_alone_is_a_400()
     {
-        var (db, _, batch, ctrl, _) = await SubmittedBatchAsync();
-        var res = await ctrl.UpdateWpsStatus(batch, new WpsStatusRequest(WpsStatuses.Accepted, null, "ACK-1"), default);
+        var (db, _, batch, _, _, checker) = await SubmittedBatchAsync();
+        var res = await checker.UpdateWpsStatus(batch, new WpsStatusRequest(WpsStatuses.Accepted, null, "ACK-1"), default);
         res.Should().BeOfType<BadRequestObjectResult>();
         Json(res).Should().Contain("acceptance_evidence_required");
         (await db.PayrollPaymentBatches.AsNoTracking().SingleAsync(b => b.Id == batch)).WpsStatus.Should().Be(WpsStatuses.Submitted);
@@ -464,7 +466,7 @@ public class KsaWpsQiwaHonestyTests
     [Fact]
     public async Task Accepted_with_a_stored_bank_output_file_records_its_server_side_sha256()
     {
-        var (db, _, batch, ctrl, storage) = await SubmittedBatchAsync();
+        var (db, _, batch, ctrl, storage, checker) = await SubmittedBatchAsync();
         var bankFile = Encoding.UTF8.GetBytes("[DEST-ID]\tRJHI\n[FILE-REF]\t2026090101\n-----SIGNATURE-----\n");
 
         var upload = await ctrl.UploadWpsEvidence(batch, new WpsEvidenceUploadForm
@@ -475,8 +477,9 @@ public class KsaWpsQiwaHonestyTests
         Json(upload).Should().Contain(WpsAcceptanceEvidenceService.Sha256Hex(bankFile));
         storage.Objects.Values.Should().ContainSingle().Which.Should().Equal(bankFile, "the bank's bytes are preserved exactly");
 
-        (await ctrl.UpdateWpsStatus(batch, new WpsStatusRequest(WpsStatuses.Accepted, null, "ACK-1", evidenceId), default))
-            .Should().BeOfType<OkObjectResult>();
+        var accepted = await checker.UpdateWpsStatus(batch, new WpsStatusRequest(WpsStatuses.Accepted, null, "ACK-1", evidenceId), default);
+        accepted.Should().BeOfType<OkObjectResult>();
+        Json(accepted).Should().Contain("evidence attached (not verified by Mudad)");
         (await db.PayrollPaymentBatches.AsNoTracking().SingleAsync(b => b.Id == batch)).WpsStatus.Should().Be(WpsStatuses.Accepted);
         db.PayrollAuditLogs.Should().Contain(a => a.Action == "payroll.wps.status_changed" && a.MetadataJson.Contains(evidenceId.ToString()));
         db.PayrollAuditLogs.Should().Contain(a => a.Action == "payroll.wps.evidence_uploaded");
@@ -488,7 +491,7 @@ public class KsaWpsQiwaHonestyTests
     [Fact]
     public async Task A_mudad_screenshot_must_really_be_an_image_or_pdf()
     {
-        var (_, _, batch, ctrl, _) = await SubmittedBatchAsync();
+        var (_, _, batch, ctrl, _, checker) = await SubmittedBatchAsync();
         var notAPng = Encoding.UTF8.GetBytes("this is not a png");
         var bad = await ctrl.UploadWpsEvidence(batch, new WpsEvidenceUploadForm
         {
@@ -502,14 +505,14 @@ public class KsaWpsQiwaHonestyTests
         {
             Kind = WpsEvidenceKinds.MudadComplianceScreenshot, File = FormFile(png, "mudad.png", "image/png"),
         }, default);
-        (await ctrl.UpdateWpsStatus(batch, new WpsStatusRequest(WpsStatuses.Accepted, null, "ACK-2", EvidenceIdOf(ok)), default))
+        (await checker.UpdateWpsStatus(batch, new WpsStatusRequest(WpsStatuses.Accepted, null, "ACK-2", EvidenceIdOf(ok)), default))
             .Should().BeOfType<OkObjectResult>();
     }
 
     [Fact]
     public async Task Tampered_evidence_cannot_be_used_to_accept()
     {
-        var (_, _, batch, ctrl, storage) = await SubmittedBatchAsync();
+        var (_, _, batch, ctrl, storage, checker) = await SubmittedBatchAsync();
         var upload = await ctrl.UploadWpsEvidence(batch, new WpsEvidenceUploadForm
         {
             Kind = WpsEvidenceKinds.BankOutputFile, File = FormFile(Encoding.UTF8.GetBytes("bank-signed-output"), "out.txt", "text/plain"),
@@ -517,7 +520,7 @@ public class KsaWpsQiwaHonestyTests
         var key = storage.Objects.Keys.Single();
         storage.Objects[key] = Encoding.UTF8.GetBytes("edited after upload");
 
-        var res = await ctrl.UpdateWpsStatus(batch, new WpsStatusRequest(WpsStatuses.Accepted, null, "ACK-3", EvidenceIdOf(upload)), default);
+        var res = await checker.UpdateWpsStatus(batch, new WpsStatusRequest(WpsStatuses.Accepted, null, "ACK-3", EvidenceIdOf(upload)), default);
         res.Should().BeOfType<ConflictObjectResult>();
         Json(res).Should().Contain("acceptance_evidence_integrity_failed");
     }
@@ -525,7 +528,7 @@ public class KsaWpsQiwaHonestyTests
     [Fact]
     public async Task Evidence_for_one_batch_cannot_prove_another()
     {
-        var (db, tenant, batch, ctrl, _) = await SubmittedBatchAsync();
+        var (db, tenant, batch, ctrl, _, _) = await SubmittedBatchAsync();
         var bytes = Encoding.UTF8.GetBytes("one month's bank file");
         EvidenceIdOf(await ctrl.UploadWpsEvidence(batch, new WpsEvidenceUploadForm
         {
@@ -711,7 +714,10 @@ internal static class ReferenceBankInstructionValidator
             if (!ids.Add(id)) problems.Add($"duplicate id {id}");
 
             var iban = B("employeeAccountNumber");
-            if (iban.Length != 24 || !iban.StartsWith("SA") || iban != iban.ToUpperInvariant() || !Mod97(iban))
+            // ANB Connect also credits an ANB customer by their 16-digit ANB account number, with ANB's BIC.
+            var anbInternal = iban.Length == 16 && iban.All(char.IsDigit) && B("bicCode").StartsWith("ARNB");
+            if (anbInternal) { }
+            else if (iban.Length != 24 || !iban.StartsWith("SA") || iban != iban.ToUpperInvariant() || !Mod97(iban))
                 problems.Add($"IBAN not a valid upper-case 24-char SA IBAN (mod-97): {iban}");
             else if (!Sarie.TryGetValue(iban.Substring(4, 2), out var sarie) || !B("bicCode").StartsWith(sarie))
                 problems.Add($"bank code / BIC mismatch for {iban}");
@@ -720,7 +726,8 @@ internal static class ReferenceBankInstructionValidator
             var net = D("salaryAmount");
             var basic = D("basicSalary"); var housing = D("housingAllowance"); var other = D("otherEarnings"); var ded = D("salaryDeductions");
             if (net != basic + housing + other - ded) problems.Add($"net != basic + housing + other - deductions for {id}");
-            if (ded > (basic + housing + other) / 2m) problems.Add($"deductions over 50% for {id}");
+            // The Art. 92/93 50% cap applies to DEBT-type deductions only, which the CSV does not itemise
+            // (salaryDeductions also carries GOSI and absence), so it cannot be re-checked from the file.
             total += net;
 
             var name = B("employeeName");

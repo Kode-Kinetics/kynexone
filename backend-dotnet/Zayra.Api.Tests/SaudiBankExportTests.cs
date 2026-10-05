@@ -21,11 +21,9 @@ namespace Zayra.Api.Tests;
 internal static class SaudiBankExportTestData
 {
     public static readonly string IbanA = IbanValidator.WithValidCheckDigits("SA0080000000608010167519");
+    /// <summary>A 16-digit ANB internal account number. ANB Connect credits an ANB customer by it (with
+    /// ANB's BIC) instead of an IBAN; the KSA wage-file rules let it through to ANB's own account rules.</summary>
     public const string AnbInternal = "0108057386290038";
-    /// <summary>An ANB (bank code 30) Saudi IBAN. The KSA wage-file rules require a 24-character SA IBAN
-    /// for every line, so the service fixture pays E2 by IBAN; the pure ANB generator tests still cover
-    /// the 16-digit internal-account form ANB's own layout allows.</summary>
-    public static readonly string IbanAnb = IbanValidator.WithValidCheckDigits("SA0030100000608010167519");
 
     public sealed class FakeAddresses : ISaudiBankEmployeeAddressSource
     {
@@ -104,7 +102,7 @@ internal static class SaudiBankExportTestData
             });
         db.EmployeePayrollProfiles.AddRange(
             new EmployeePayrollProfile { TenantId = tenantId, EmployeeId = e1.Id, Iban = IbanA, SalaryCurrency = "SAR", BankRoutingCode = "RJHISARI" },
-            new EmployeePayrollProfile { TenantId = tenantId, EmployeeId = e2.Id, Iban = IbanAnb, SalaryCurrency = "SAR", BankRoutingCode = "ARNBSARI" });
+            new EmployeePayrollProfile { TenantId = tenantId, EmployeeId = e2.Id, AccountNumber = AnbInternal, SalaryCurrency = "SAR", BankRoutingCode = "ARNBSARI" });
         var batch = new PayrollPaymentBatch
         {
             TenantId = tenantId, PayrollRunId = run.Id, BatchNumber = $"PB-{tag}", PaymentMethod = "WPS",
@@ -113,7 +111,7 @@ internal static class SaudiBankExportTestData
         db.PayrollPaymentBatches.Add(batch);
         db.PayrollPaymentRecords.AddRange(
             new PayrollPaymentRecord { TenantId = tenantId, PaymentBatchId = batch.Id, EmployeeId = e1.Id, Amount = 6300m, Iban = IbanA, Status = "Pending" },
-            new PayrollPaymentRecord { TenantId = tenantId, PaymentBatchId = batch.Id, EmployeeId = e2.Id, Amount = 5250.50m, Iban = IbanAnb, Status = "Pending" });
+            new PayrollPaymentRecord { TenantId = tenantId, PaymentBatchId = batch.Id, EmployeeId = e2.Id, Amount = 5250.50m, Iban = AnbInternal, Status = "Pending" });
         await db.SaveChangesAsync();
         return batch.Id;
     }
@@ -343,7 +341,7 @@ public class SaudiBankExportTests
         var r = await svc.GenerateAsync(tenant, Guid.NewGuid(), batch, SaudiBankExportTestData.Request(), default);
 
         r.Outcome.Should().Be(SaudiBankExportOutcome.Invalid);
-        r.Validation!.Errors.Select(e => e.Code).Should().Contain(new[] { "run_not_locked", "payroll_errors_unresolved", "slip_net_unreconciled" });
+        r.Validation!.Errors.Select(e => e.Code).Should().Contain(new[] { "run_not_locked", "payroll_errors_unresolved", KsaWageFileRules.Codes.DeductionsUnreconciled });
         db.BankTransferFiles.Count().Should().Be(0);
     }
 

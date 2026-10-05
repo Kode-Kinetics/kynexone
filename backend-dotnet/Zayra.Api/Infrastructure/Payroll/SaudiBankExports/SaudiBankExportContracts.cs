@@ -53,13 +53,26 @@ public sealed record SaudiBankExistingExportDto(
 public sealed record SaudiBankExportContextDto(
     Guid CompanyId, string CompanyName, string CountryCode, string RunStatus, SaudiBankExistingExportDto? ExistingExport);
 
+/// <summary>An employee left out of the bank file (cash/cheque or zero net pay), with the amount and why.</summary>
+public sealed record SaudiBankExportExclusionDto(int EmployeeId, string EmployeeCode, decimal Amount, string ReasonCode, string Reason);
+
+/// <summary><see cref="EmployeeCount"/> is the number of lines in the file. <see cref="TotalAmount"/> is the
+/// file total, which reconciles as <see cref="RunNetTotal"/> − <see cref="ExcludedTotal"/>.</summary>
 public sealed record SaudiBankExportValidationDto(
     bool CanExport, IReadOnlyList<SaudiBankExportIssueDto> Errors, IReadOnlyList<SaudiBankExportWarningDto> Warnings,
-    int EmployeeCount, decimal TotalAmount, string Currency, string FormatId);
+    int EmployeeCount, decimal TotalAmount, string Currency, string FormatId)
+{
+    public IReadOnlyList<SaudiBankExportExclusionDto> Exclusions { get; init; } = Array.Empty<SaudiBankExportExclusionDto>();
+    public decimal ExcludedTotal { get; init; }
+    public decimal RunNetTotal { get; init; }
+}
 
 public sealed record SaudiBankExportGeneratedDto(
     Guid Id, string FormatId, IReadOnlyList<SaudiBankExportFileDto> Files, string BatchReference,
-    string PaymentDate, int EmployeeCount, decimal TotalAmount, string DownloadUrl);
+    string PaymentDate, int EmployeeCount, decimal TotalAmount, string DownloadUrl)
+{
+    public IReadOnlyList<SaudiBankExportExclusionDto> Exclusions { get; init; } = Array.Empty<SaudiBankExportExclusionDto>();
+}
 
 /// <summary>
 /// The shared, versioned registry of bank/channel formats. One adapter per bank + channel, reusable by
