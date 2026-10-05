@@ -5563,14 +5563,42 @@ public class PayrollController : ControllerBase
             return Ok(new { batchId, wpsStatus = batch.WpsStatus, route = "non_wps_settlement_bank_transfer" });
         }
 
-        if (latestFile is null)
-            return BadRequest(new { error = "wps_file_missing", message = "A generated WPS file is required before statutory filing status can be changed." });
+        // A frozen ANB Connect bank instruction is the KSA default bank file; it counts as the generated
+        // file for this lifecycle even though the bank-export service deliberately never touches WpsStatus.
+        var hasBankInstruction = await _db.BankTransferFiles.AsNoTracking().AnyAsync(
+            f => f.TenantId == tenantId && f.PaymentBatchId == batchId
+              && f.FileName.StartsWith(Infrastructure.Payroll.SaudiBankExports.SaudiBankExportService.ArtifactPrefix),
+            cancellationToken);
+        if (latestFile is null && !hasBankInstruction)
+            return BadRequest(new { error = "wps_file_missing", message = "Generate the bank payroll file (or the payroll register) for this batch before changing its WPS status." });
+        if (from == WpsStatuses.Draft && hasBankInstruction) from = WpsStatuses.Generated;
 
         if (req.Status is WpsStatuses.Submitted && string.IsNullOrWhiteSpace(req.Reference))
             return BadRequest(new { error = "submission_reference_required", message = "A statutory submission reference is required when marking WPS as Submitted." });
 
         if (req.Status is WpsStatuses.Accepted && string.IsNullOrWhiteSpace(req.Reference))
             return BadRequest(new { error = "acknowledgement_reference_required", message = "An acknowledgement reference is required when marking WPS as Accepted." });
+
+        // ── Accepted needs EVIDENCE, not a dropdown ───────────────────────────────────────────────────
+        // Mudad accepts only the bank-signed WPS file; the product never sees Mudad's verdict. So
+        // "Accepted" is recorded only against stored proof: the bank's output file or a Mudad compliance
+        // screenshot/PDF, re-hashed here so the proof cannot have changed since it was uploaded.
+        Infrastructure.Payroll.WpsEvidenceEnvelope? acceptanceEvidence = null;
+        if (req.Status is WpsStatuses.Accepted)
+        {
+            if (req.EvidenceId is not Guid evidenceId)
+                return BadRequest(new
+                {
+                    error = "acceptance_evidence_required",
+                    message = "Upload the bank's WPS output file or a Mudad compliance screenshot/PDF for this batch, then mark it Accepted. The status alone is not proof.",
+                });
+            var evidence = EvidenceService();
+            acceptanceEvidence = await evidence.FindAsync(tenantId, batchId, evidenceId, cancellationToken);
+            if (acceptanceEvidence is null)
+                return BadRequest(new { error = "acceptance_evidence_not_found", message = "That evidence was not found for this payment batch." });
+            if (await evidence.ReadVerifiedAsync(tenantId, acceptanceEvidence, cancellationToken) is null)
+                return Conflict(new { error = "acceptance_evidence_integrity_failed", message = "The stored evidence file is missing or no longer matches its recorded SHA-256. Upload it again." });
+        }
 
         if (req.Status is WpsStatuses.Rejected && string.IsNullOrWhiteSpace(req.Notes))
             return BadRequest(new { error = "rejection_reason_required", message = "A rejection reason is required when marking WPS as Rejected." });
@@ -5634,30 +5662,136 @@ public class PayrollController : ControllerBase
 
         batch.WpsStatus = req.Status;
         batch.WpsStatusChangedAtUtc = DateTime.UtcNow;
-        latestFile.FilingStatus = req.Status;
+        if (latestFile is not null) latestFile.FilingStatus = req.Status;
         if (req.Status is WpsStatuses.Submitted)
         {
             batch.WpsSubmissionReference = req.Reference;
-            latestFile.SubmissionReference = req.Reference;
-            latestFile.SubmittedAtUtc = DateTime.UtcNow;
+            if (latestFile is not null)
+            {
+                latestFile.SubmissionReference = req.Reference;
+                latestFile.SubmittedAtUtc = DateTime.UtcNow;
+            }
         }
         else if (req.Status is WpsStatuses.Accepted)
         {
             batch.WpsSubmissionReference = req.Reference;
-            latestFile.SubmissionReference = req.Reference;
-            latestFile.AcknowledgedAtUtc = DateTime.UtcNow;
+            if (latestFile is not null)
+            {
+                latestFile.SubmissionReference = req.Reference;
+                latestFile.AcknowledgedAtUtc = DateTime.UtcNow;
+            }
         }
         else if (req.Status is WpsStatuses.Rejected)
         {
             batch.WpsRejectionReason = req.Notes;
-            latestFile.RejectionReason = req.Notes;
-            latestFile.RejectedAtUtc = DateTime.UtcNow;
+            if (latestFile is not null)
+            {
+                latestFile.RejectionReason = req.Notes;
+                latestFile.RejectedAtUtc = DateTime.UtcNow;
+            }
         }
         await PayrollAudit("payroll.wps.status_changed", "PayrollPaymentBatch", batchId.ToString(),
-            new { from, to = req.Status, reference = req.Reference, notes = req.Notes }, cancellationToken);
+            new
+            {
+                from, to = req.Status, reference = req.Reference, notes = req.Notes,
+                evidenceId = acceptanceEvidence?.EvidenceId, evidenceKind = acceptanceEvidence?.Kind,
+                evidenceSha256 = acceptanceEvidence?.Sha256,
+            }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         return Ok(new { batchId, wpsStatus = batch.WpsStatus });
     }
+
+    private Infrastructure.Payroll.WpsAcceptanceEvidenceService EvidenceService() => new(_db, _storage);
+
+    /// <summary>
+    /// Stores proof that Mudad/WPS accepted this batch: the bank's signed WPS output file (kept byte-for-
+    /// byte, never parsed) or a Mudad compliance screenshot/PDF. SHA-256 is computed server-side over the
+    /// bytes received. Requires payroll.export. The id returned is what marking the batch Accepted needs.
+    /// </summary>
+    [HttpPost("payment-batches/{batchId:guid}/wps-evidence")]
+    [Consumes("multipart/form-data")]
+    [RequestSizeLimit(Infrastructure.Payroll.WpsAcceptanceEvidenceService.MaxBytes + Infrastructure.Documents.EssUploadPolicy.MultipartOverheadBytes)]
+    [RequestFormLimits(MultipartBodyLengthLimit = Infrastructure.Payroll.WpsAcceptanceEvidenceService.MaxBytes + Infrastructure.Documents.EssUploadPolicy.MultipartOverheadBytes)]
+    public async Task<IActionResult> UploadWpsEvidence(Guid batchId, [FromForm] WpsEvidenceUploadForm form, CancellationToken cancellationToken)
+    {
+        if (!HasPermission("payroll.export")) return Forbid();
+        var tenantId = GetTenantId();
+        if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, batchId, cancellationToken) is { } batchScopeErr)
+            return batchScopeErr;
+        var batch = await _db.PayrollPaymentBatches.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batchId, cancellationToken);
+        if (batch is null) return NotFound();
+        if (batch.WpsStatus == WpsStatuses.Voided)
+            return UnprocessableEntity(new { error = "run_voided", message = "This payment batch belongs to a voided run; evidence cannot be added." });
+        if (form.File is null) return BadRequest(new { error = "evidence_file_required", message = "Choose the file to upload." });
+        if (form.File.Length > Infrastructure.Payroll.WpsAcceptanceEvidenceService.MaxBytes)
+            return BadRequest(new { error = "evidence_file_too_large", message = "The file exceeds the 10 MB limit." });
+
+        byte[] bytes;
+        await using (var input = form.File.OpenReadStream())
+        using (var buffer = new MemoryStream())
+        {
+            await input.CopyToAsync(buffer, cancellationToken);
+            bytes = buffer.ToArray();
+        }
+
+        Infrastructure.Payroll.WpsEvidenceUploadResult result;
+        try
+        {
+            result = await EvidenceService().StoreAsync(tenantId, batchId, GetUserId(), form.Kind?.Trim(),
+                form.File.FileName, form.File.ContentType, bytes, form.Note, cancellationToken);
+        }
+        catch (InvalidOperationException ex) { return BadRequest(new { error = "evidence_storage_refused", message = ex.Message }); }
+        if (result.Evidence is null)
+            return result.Conflict
+                ? Conflict(new { error = result.Error, message = result.Message })
+                : BadRequest(new { error = result.Error, message = result.Message });
+
+        var e = result.Evidence;
+        await PayrollAudit("payroll.wps.evidence_uploaded", "PayrollPaymentBatch", batchId.ToString(),
+            new { evidenceId = e.EvidenceId, kind = e.Kind, sha256 = e.Sha256, sizeBytes = e.SizeBytes, contentType = e.ContentType },
+            cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+        return Ok(EvidenceDto(e));
+    }
+
+    /// <summary>Acceptance evidence recorded for a batch (metadata only).</summary>
+    [HttpGet("payment-batches/{batchId:guid}/wps-evidence")]
+    public async Task<IActionResult> ListWpsEvidence(Guid batchId, CancellationToken cancellationToken)
+    {
+        if (!HasPermission("payroll.export")) return Forbid();
+        var tenantId = GetTenantId();
+        if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, batchId, cancellationToken) is { } batchScopeErr)
+            return batchScopeErr;
+        var items = await EvidenceService().ListAsync(tenantId, batchId, cancellationToken);
+        return Ok(items.Select(EvidenceDto).ToList());
+    }
+
+    /// <summary>Downloads stored evidence after re-verifying its SHA-256. Always an attachment.</summary>
+    [HttpGet("payment-batches/{batchId:guid}/wps-evidence/{evidenceId:guid}/download")]
+    public async Task<IActionResult> DownloadWpsEvidence(Guid batchId, Guid evidenceId, CancellationToken cancellationToken)
+    {
+        if (!HasPermission("payroll.export")) return Forbid();
+        var tenantId = GetTenantId();
+        if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, batchId, cancellationToken) is { } batchScopeErr)
+            return batchScopeErr;
+        var service = EvidenceService();
+        var env = await service.FindAsync(tenantId, batchId, evidenceId, cancellationToken);
+        if (env is null) return NotFound();
+        var bytes = await service.ReadVerifiedAsync(tenantId, env, cancellationToken);
+        if (bytes is null)
+            return Conflict(new { error = "acceptance_evidence_integrity_failed", message = "The stored evidence file is missing or no longer matches its recorded SHA-256." });
+        await PayrollAudit("payroll.wps.evidence_downloaded", "PayrollPaymentBatch", batchId.ToString(),
+            new { evidenceId, sha256 = env.Sha256 }, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+        Response.Headers["X-Content-Type-Options"] = "nosniff";
+        return File(bytes, "application/octet-stream", env.FileName);
+    }
+
+    private static object EvidenceDto(Infrastructure.Payroll.WpsEvidenceEnvelope e) => new
+    {
+        e.EvidenceId, e.BatchId, e.Kind, kindLabel = Infrastructure.Payroll.WpsEvidenceKinds.Describe(e.Kind),
+        e.Sha256, e.SizeBytes, e.ContentType, e.FileName, e.Note, e.UploadedBy, e.UploadedAtUtc,
+    };
 
     [HttpPost("runs/{id:guid}/erp-posting-status")]
     public async Task<IActionResult> UpdateErpPostingStatus(Guid id, [FromBody] ErpPostingStatusRequest req, CancellationToken cancellationToken)
@@ -6598,6 +6732,14 @@ public class PayrollController : ControllerBase
         // bare status therefore reports "Paid" over money that bounced. The per-employee confirmation
         // coverage rides alongside it so a batch with open returns can never present as terminal-clean.
         var d4BatchIds = batches.Select(b => b.Id).ToList();
+        var evidenceCounts = await EvidenceService().CountByBatchAsync(tenantId, d4BatchIds, cancellationToken);
+        // KSA batches: the bank file is the ANB instruction and the generated XML is an internal register.
+        var batchRunIds = batches.Select(b => b.PayrollRunId).Distinct().ToList();
+        var ksaRunIds = (await (from r in _db.PayrollRuns.AsNoTracking()
+                                join c in _db.Companies.AsNoTracking() on r.CompanyId equals c.Id
+                                where r.TenantId == tenantId && batchRunIds.Contains(r.Id)
+                                      && (c.CountryCode == "SA" || c.CountryCode == "SAU" || c.CountryCode == "KSA")
+                                select r.Id).ToListAsync(cancellationToken)).ToHashSet();
         var d4Records = d4BatchIds.Count == 0
             ? new List<PayrollPaymentRecord>()
             : await _db.PayrollPaymentRecords.AsNoTracking()
@@ -6618,6 +6760,11 @@ public class PayrollController : ControllerBase
                 confirmationCoverage = cov.ConfirmationCoverage,
                 presentsCleanButIsNot = b.WpsStatus is WpsStatuses.Paid or WpsStatuses.Reconciled
                                         && (cov.FailedCount > 0 || cov.UnconfirmedCount > 0),
+                acceptanceEvidenceCount = evidenceCounts.GetValueOrDefault(b.Id),
+                isSaudi = ksaRunIds.Contains(b.PayrollRunId),
+                generatedFileLabel = ksaRunIds.Contains(b.PayrollRunId)
+                    ? Infrastructure.Payroll.WpsConformance.KsaPayrollRegisterLabel
+                    : "WPS/SIF file (not verified with any gateway)",
             };
         }).ToList());
     }
@@ -10615,7 +10762,18 @@ public record EmployeeSalaryStructureRequest(int EmployeeId, Guid SalaryStructur
 // errors. Optional and defaulted, so a run with no overrides (i.e. every run today) is unaffected.
 public record PayrollDecisionRequest(string? Notes, int? ExpectedExcludedCount = null, int? ExpectedOverriddenCount = null);
 public record PayrollPaymentBatchRequest(string? PaymentMethod, string? Currency);
-public record WpsStatusRequest(string Status, string? Notes, string? Reference = null);
+/// <summary><paramref name="EvidenceId"/> is REQUIRED to mark a WPS batch Accepted: the id of evidence
+/// uploaded through POST payment-batches/{id}/wps-evidence (the bank's WPS output file or a Mudad
+/// compliance screenshot/PDF). A status picked from a dropdown is not proof that Mudad accepted anything.</summary>
+public record WpsStatusRequest(string Status, string? Notes, string? Reference = null, Guid? EvidenceId = null);
+
+/// <summary>Multipart body for POST payment-batches/{id}/wps-evidence.</summary>
+public sealed class WpsEvidenceUploadForm
+{
+    public string? Kind { get; set; }
+    public string? Note { get; set; }
+    public IFormFile? File { get; set; }
+}
 public record ErpPostingStatusRequest(string Status, string? Reference = null, string? Notes = null);
 // POD-B1 — settlement / remittance / reversal request bodies.
 public record SettlePaymentBatchRequest(string? Reference = null, DateOnly? PaidDate = null);
