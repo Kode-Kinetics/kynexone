@@ -482,6 +482,15 @@ const en: Dict = {
   'Turning enforcement off disables every level budget in this tenant.': 'Turning enforcement off disables every level budget in this tenant.',
   'Could not save the establishment change.': 'Could not save the establishment change.',
   'Could not change the enforcement mode.': 'Could not change the enforcement mode.',
+  'Earlier statutory leave of this kind': 'Earlier statutory leave of this kind',
+  'Earlier {kind}: {days} day(s), {from} – {to}, approved.': 'Earlier {kind}: {days} day(s), {from} – {to}, approved.',
+  'Earlier {kind}: {days} day(s), {from} – {to}, pending approval.': 'Earlier {kind}: {days} day(s), {from} – {to}, pending approval.',
+  'Earlier {kind}: {days} day(s), {from} – {to}, approved — same event window.': 'Earlier {kind}: {days} day(s), {from} – {to}, approved — same event window.',
+  'Earlier {kind}: {days} day(s), {from} – {to}, pending approval — same event window.': 'Earlier {kind}: {days} day(s), {from} – {to}, pending approval — same event window.',
+  'Statutory entitlement': 'Statutory entitlement',
+  '{days} days per event, set by Saudi labour law.': '{days} days per event, set by Saudi labour law.',
+  '{days} days per event': '{days} days per event',
+  'For employees in Saudi Arabia this leave is set by law in calendar time (maternity: 12 weeks, 84 days). Tick Count Weekends and Count Public Holidays and set at least the statutory days.': 'For employees in Saudi Arabia this leave is set by law in calendar time (maternity: 12 weeks, 84 days). Tick Count Weekends and Count Public Holidays and set at least the statutory days.',
 };
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
@@ -964,6 +973,15 @@ const ar: Dict = {
   'Turning enforcement off disables every level budget in this tenant.': 'إيقاف التطبيق يعطل جميع ميزانيات المستويات لهذا المستأجر.',
   'Could not save the establishment change.': 'تعذر حفظ تغيير الملاك الوظيفي.',
   'Could not change the enforcement mode.': 'تعذر تغيير وضع التطبيق.',
+  'Earlier statutory leave of this kind': 'سابق الإجازات النظامية من هذا النوع',
+  'Earlier {kind}: {days} day(s), {from} – {to}, approved.': '{kind} سابقة: {days} يوم، من {from} إلى {to}، معتمدة.',
+  'Earlier {kind}: {days} day(s), {from} – {to}, pending approval.': '{kind} سابقة: {days} يوم، من {from} إلى {to}، بانتظار الاعتماد.',
+  'Earlier {kind}: {days} day(s), {from} – {to}, approved — same event window.': '{kind} سابقة: {days} يوم، من {from} إلى {to}، معتمدة — ضمن فترة الواقعة نفسها.',
+  'Earlier {kind}: {days} day(s), {from} – {to}, pending approval — same event window.': '{kind} سابقة: {days} يوم، من {from} إلى {to}، بانتظار الاعتماد — ضمن فترة الواقعة نفسها.',
+  'Statutory entitlement': 'الاستحقاق النظامي',
+  '{days} days per event, set by Saudi labour law.': '{days} يوم لكل واقعة، وفق نظام العمل السعودي.',
+  '{days} days per event': '{days} يوم لكل واقعة',
+  'For employees in Saudi Arabia this leave is set by law in calendar time (maternity: 12 weeks, 84 days). Tick Count Weekends and Count Public Holidays and set at least the statutory days.': 'لموظفي المملكة العربية السعودية تُحتسب هذه الإجازة نظاماً بالأيام التقويمية (إجازة الوضع: 12 أسبوعاً، 84 يوماً). فعّل احتساب عطلات نهاية الأسبوع والعطلات الرسمية وحدد الأيام النظامية على الأقل.',
 };
 
 // ── French ────────────────────────────────────────────────────────────────────

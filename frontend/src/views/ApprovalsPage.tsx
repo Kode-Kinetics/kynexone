@@ -9,6 +9,9 @@ import type { EstablishmentBlockedPayload } from '../api/establishment';
 import { EstablishmentBlockedModal } from '../components/EstablishmentBlockedModal';
 import { Modal } from '../components/Modal';
 import { StatusChip } from '../components/StatusChip';
+import { StatutoryLeaveHistory } from '../components/StatutoryLeaveHistory';
+import { leaveRequestsApi } from '../api/leave';
+import type { StatutoryLeaveHistoryItem } from '../api/leave';
 
 const PAGE_SIZE = 25;
 
@@ -56,6 +59,18 @@ export function ApprovalsPage() {
   // Stale-approval path: the establishment guard re-checks at apply time; a slot
   // consumed since submission returns a structured 409 rendered as the popup.
   const [establishmentBlock, setEstablishmentBlock] = useState<{ block: EstablishmentBlockedPayload; employeeName?: string } | null>(null);
+  // A Saudi statutory leave (maternity, Hajj, bereavement…) is decided with the employee's earlier
+  // leave of the same kind in view.
+  const [statutoryHistory, setStatutoryHistory] = useState<StatutoryLeaveHistoryItem[]>([]);
+  useEffect(() => {
+    setStatutoryHistory([]);
+    if (!selected || selected.entityName !== 'LeaveRequest') return;
+    let live = true;
+    leaveRequestsApi.statutoryHistory([selected.entityId])
+      .then(h => { if (live) setStatutoryHistory(h[selected.entityId] ?? []); })
+      .catch(() => { if (live) setStatutoryHistory([]); });
+    return () => { live = false; };
+  }, [selected]);
 
   const loadMetrics = useCallback(async () => {
     const [mine, team, overdue, allPending] = await Promise.all([
@@ -408,6 +423,7 @@ export function ApprovalsPage() {
                 </div>
               </div>
             </div>
+            <StatutoryLeaveHistory items={statutoryHistory} />
             {selected.decisions.length > 0 && (
               <div>
                 <p className="mb-1 text-xs font-bold uppercase tracking-wide text-slate-400 dark:text-slate-500">Decision History</p>

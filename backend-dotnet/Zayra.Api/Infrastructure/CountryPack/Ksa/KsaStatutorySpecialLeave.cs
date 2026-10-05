@@ -235,16 +235,35 @@ public static class KsaStatutorySpecialLeave
     {
         var errors = new List<string>();
         var what = Describe(kind);
-        if (IsCalendarSpan(kind) && !countsCalendarDays)
-            errors.Add($"{what} is counted in calendar days by law ({Citation(kind)}) — switch this policy's counting to calendar days (include weekends and public holidays).");
-        if (entitlementDays < floorDays)
-            errors.Add($"{what} cannot be granted below the statutory {floorDays:0.##} days ({Citation(kind)}); this policy grants {entitlementDays:0.##}.");
-        if (maxPerRequest > 0m && maxPerRequest < floorDays)
-            errors.Add($"{what} cannot be capped below the statutory {floorDays:0.##} days per request ({Citation(kind)}); this policy caps it at {maxPerRequest:0.##}.");
+        var below = entitlementDays < floorDays || (maxPerRequest > 0m && maxPerRequest < floorDays);
+        if (NeedsCalendarCounting(kind, countsCalendarDays))
+        {
+            // A working-day policy at or above the figure grants at least the statute in its own unit
+            // and is honoured as it counts, so it may be saved (with a review prompt to move it to the
+            // calendar). Below the figure it cannot be judged against the law's weeks, so it is refused
+            // with the fix spelled out.
+            if (below)
+                errors.Add($"{what} is {floorDays:0.##} calendar days by law ({Citation(kind)}), and this policy counts working days "
+                    + $"at {entitlementDays:0.##}{(maxPerRequest > 0m ? $" (cap {maxPerRequest:0.##})" : string.Empty)}. To fix it: tick Count Weekends "
+                    + $"and Count Public Holidays and set at least {floorDays:0.##} days — or keep working days and set the entitlement "
+                    + $"and cap to at least {floorDays:0.##}.");
+        }
+        else
+        {
+            if (entitlementDays < floorDays)
+                errors.Add($"{what} cannot be granted below the statutory {floorDays:0.##} days ({Citation(kind)}); this policy grants {entitlementDays:0.##}.");
+            if (maxPerRequest > 0m && maxPerRequest < floorDays)
+                errors.Add($"{what} cannot be capped below the statutory {floorDays:0.##} days per request ({Citation(kind)}); this policy caps it at {maxPerRequest:0.##}.");
+        }
         if (string.Equals(payrollImpact?.Trim(), "Unpaid", StringComparison.OrdinalIgnoreCase))
             errors.Add($"{what} is fully paid by statute ({Citation(kind)}); it cannot be configured as unpaid.");
         return errors;
     }
+
+    /// <summary>True for a maternity or iddah policy that counts working days: lawful when it grants at
+    /// least the statutory figure in its own unit, but HR should move it to calendar counting.</summary>
+    public static bool NeedsCalendarCounting(KsaStatutoryLeaveKind kind, bool countsCalendarDays)
+        => IsCalendarSpan(kind) && !countsCalendarDays;
 
     public static string Describe(KsaStatutoryLeaveKind kind) => kind switch
     {

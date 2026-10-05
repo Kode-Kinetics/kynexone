@@ -74,7 +74,7 @@ public sealed class KsaMaternityFloorMigrationPostgresTests : IAsyncLifetime
         var ksaGenerous = Policy(ksa, ksaType, "SA", 98m, 98m);                // company grants more
         var ksaArchived = Policy(ksa, ksaType, "SA", 70m, 70m, status: "Archived");
         var ksaWorking = Policy(ksa, ksaType, "SA", 70m, 70m, calendar: false); // working days: review, not raise
-        var ksaWorkingGenerous = Policy(ksa, ksaType, "SA", 90m, 0m, calendar: false); // already >= 84: no review row
+        var ksaWorkingGenerous = Policy(ksa, ksaType, "SA", 90m, 0m, calendar: false); // >= 84: not raised, still listed
         var extType = Type(ksa, "MATEXT", "Maternity extension (unpaid)", 30);
         var extPolicy = Policy(ksa, extType, "SA", 30m, 30m);
         var annualType = new LeaveType { TenantId = ksa, Code = "ANNUAL", NameEn = "Annual Leave", Category = "Annual", IsPaid = true, MaxConsecutiveDays = 30 };
@@ -167,8 +167,8 @@ public sealed class KsaMaternityFloorMigrationPostgresTests : IAsyncLifetime
         var review = snap.Audits.Where(a => a.Action == "StatutoryReviewNeeded").ToList();
         review.Select(a => a.EntityId).Should().BeEquivalentTo(new[]
         {
-            ids.KsaSaWorking, ids.MixedSaWorking, ids.MixedNeutral,
-        }.Select(i => i.ToString()), "a durable HR worklist, not only a NOTICE");
+            ids.KsaSaWorking, ids.KsaSaWorkingGenerous, ids.MixedSaWorking, ids.MixedNeutral,
+        }.Select(i => i.ToString()), "a durable HR worklist, not only a NOTICE — every Saudi working-day maternity policy is listed");
         review.Single(a => a.EntityId == ids.KsaSaWorking.ToString()).Reason.Should().Contain("CALENDAR days");
         review.Single(a => a.EntityId == ids.MixedNeutral.ToString()).Reason.Should().Contain("Create a Saudi policy");
 

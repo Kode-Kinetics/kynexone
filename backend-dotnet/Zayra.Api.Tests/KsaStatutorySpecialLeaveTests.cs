@@ -261,19 +261,65 @@ public class KsaStatutorySpecialLeaveTests
     }
 
     [Fact]
-    public async Task SaudiMaternityPolicy_CountedInWorkingDays_IsRefused_EvenAtEightyFourDays()
+    public async Task SaudiMaternityPolicy_OnWorkingDays_BelowEightyFour_IsRefusedWithTheFix()
     {
-        // 84 working days is nearly 17 weeks; the law gives 12 weeks, i.e. 84 CALENDAR days.
+        // 70 working days cannot be judged against the law's 12 weeks; the refusal spells out the fix.
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var mat = await AddMaternityTypeAsync(db, tenantId);
 
-        var refused = await PoliciesController(db, tenantId).Create(Policy(mat.Id, days: 84m, calendar: false), default);
+        var refused = await PoliciesController(db, tenantId).Create(Policy(mat.Id, days: 70m, calendar: false), default);
 
         AssertFloorRefusal(refused);
         var message = (string)((BadRequestObjectResult)refused).Value!.GetType().GetProperty("message")!
             .GetValue(((BadRequestObjectResult)refused).Value)!;
-        message.Should().Contain("counted in calendar days by law").And.Contain("switch this policy's counting to calendar days");
+        message.Should().Contain("84 calendar days by law").And.Contain("tick Count Weekends and Count Public Holidays");
+    }
+
+    [Fact]
+    public async Task SaudiMaternityPolicy_OnWorkingDays_AtEightyFourOrMore_IsSaved_WithAReviewPrompt()
+    {
+        // At or above the figure a working-day policy grants at least the statute in its own unit, so
+        // HR is not stranded: it saves, and a StatutoryReviewNeeded row asks for calendar counting.
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var mat = await AddMaternityTypeAsync(db, tenantId);
+
+        var saved = await PoliciesController(db, tenantId).Create(Policy(mat.Id, days: 84m, calendar: false), default);
+
+        saved.Should().BeOfType<CreatedResult>();
+        var id = ((LeavePolicy)((CreatedResult)saved).Value!).Id.ToString();
+        (await db.LeaveAuditLogs.SingleAsync(a => a.EntityId == id && a.Action == "StatutoryReviewNeeded"))
+            .Reason.Should().Contain("switch it to calendar days");
+    }
+
+    [Fact]
+    public async Task HajjWaiver_IsAudited_OnCreateAndOnEveryToggle()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var hajj = new LeaveType { TenantId = tenantId, Code = "HAJJ", NameEn = "Hajj Leave", Category = "Religious", IsPaid = true, IsActive = true };
+        db.LeaveTypes.Add(hajj);
+        await db.SaveChangesAsync();
+        var controller = PoliciesController(db, tenantId);
+
+        var created = (CreatedResult)await controller.Create(
+            Policy(hajj.Id, days: 10m) with { AllowsHajjBeyondStatutoryEligibility = true }, default);
+        var id = ((LeavePolicy)created.Value!).Id;
+        await controller.Update(id, new UpdateLeavePolicyRequest(
+            Name: null, CountryCode: null, CompanyId: null, BranchId: null, DepartmentName: null, Grade: null,
+            EmploymentType: null, ContractType: null, Gender: null, AppliesOnProbation: null,
+            AnnualEntitlementDays: null, AccrualMethod: null, CarryForwardMax: null, CarryForwardExpiry: null,
+            EncashmentAllowed: null, EncashmentMaxDays: null, MinimumDaysPerRequest: null,
+            MaximumDaysPerRequest: null, NoticeRequiredDays: null, WeekendsIncluded: null,
+            PublicHolidaysIncluded: null, PayrollImpact: null, ApprovalWorkflowId: null, Status: null,
+            AllowsHajjBeyondStatutoryEligibility: false), default);
+
+        var toggles = await db.LeaveAuditLogs.Where(a => a.EntityId == id.ToString() && a.Action == "HajjEligibilityWaiverChanged")
+            .OrderBy(a => a.CreatedAtUtc).ToListAsync();
+        toggles.Select(a => (a.OldValue, a.NewValue)).Should().Equal(
+            ("allows_hajj_beyond_statutory_eligibility=false", "allows_hajj_beyond_statutory_eligibility=true"),
+            ("allows_hajj_beyond_statutory_eligibility=true", "allows_hajj_beyond_statutory_eligibility=false"));
     }
 
     [Fact]
@@ -371,7 +417,7 @@ public class KsaStatutorySpecialLeaveTests
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
         await AddMaternityTypeAsync(db, tenantId);
-        var draft = SetupDraft.Empty() with { LeavePolicies = [DraftPolicy("MAT", 84m, calendar: false)] };
+        var draft = SetupDraft.Empty() with { LeavePolicies = [DraftPolicy("MAT", 70m, calendar: false)] };
 
         var result = await SetupController(db, tenantId).Apply(new ApplySetupRequest(draft, "SA", "SAR"), default);
 

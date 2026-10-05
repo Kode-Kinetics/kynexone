@@ -122,6 +122,7 @@ public class LeavePoliciesController : ControllerBase
         await _leaveService.LogAuditAsync(tenantId.Value, "LeavePolicy", policy.Id.ToString(),
             "Created", string.Empty, policy.Name, "Leave policy created",
             User.Identity?.Name ?? "Admin", ct);
+        await AuditStatutoryChoicesAsync(tenantId.Value, leaveType, policy, waiverBefore: false, ct);
 
         return Created($"/api/leave/policies/{policy.Id}", policy);
     }
@@ -179,6 +180,40 @@ public class LeavePoliciesController : ControllerBase
             });
     }
 
+    /// <summary>
+    /// Two statutory choices are recorded in the leave audit trail on every save:
+    /// <list type="bullet">
+    /// <item>turning the Hajj eligibility waiver on or off (old → new) — it grants leave the statute
+    /// does not, so who chose it and when must be on the record;</item>
+    /// <item>a Saudi maternity or iddah policy saved on WORKING-day counting: lawful when it grants at
+    /// least the statutory figure in its own unit, but the law counts calendar days, so a
+    /// <c>StatutoryReviewNeeded</c> row prompts HR to move it — the same worklist the 2025 data
+    /// correction writes to.</item>
+    /// </list>
+    /// </summary>
+    private async Task AuditStatutoryChoicesAsync(Guid tenantId, LeaveType leaveType, LeavePolicy policy, bool waiverBefore, CancellationToken ct)
+    {
+        var actor = User.Identity?.Name ?? "Admin";
+        if (waiverBefore != policy.AllowsHajjBeyondStatutoryEligibility)
+            await _leaveService.LogAuditAsync(tenantId, "LeavePolicy", policy.Id.ToString(), "HajjEligibilityWaiverChanged",
+                $"allows_hajj_beyond_statutory_eligibility={waiverBefore.ToString().ToLowerInvariant()}",
+                $"allows_hajj_beyond_statutory_eligibility={policy.AllowsHajjBeyondStatutoryEligibility.ToString().ToLowerInvariant()}",
+                "Company choice to grant Hajj leave beyond Saudi Labour Law Art. 114 (before two years' service, or more than once).",
+                actor, ct);
+
+        if (Infrastructure.CountryPack.Ksa.KsaStatutorySpecialLeave.Classify(leaveType.Code, leaveType.NameEn, leaveType.Category) is { } kind
+            && Infrastructure.CountryPack.Ksa.KsaStatutorySpecialLeave.NeedsCalendarCounting(kind, policy.WeekendsIncluded && policy.PublicHolidaysIncluded)
+            && !string.Equals(policy.Status, "Archived", StringComparison.OrdinalIgnoreCase)
+            && await KsaStatutoryLeavePolicyGuard.ReachAsync(_db, tenantId, policy.CountryCode, policy.CompanyId, ct) != KsaPolicyReach.None)
+            await _leaveService.LogAuditAsync(tenantId, "LeavePolicy", policy.Id.ToString(), "StatutoryReviewNeeded",
+                $"annual_entitlement_days={policy.AnnualEntitlementDays:0.##}; maximum_days_per_request={policy.MaximumDaysPerRequest:0.##}; counting=working days",
+                "required: counting=calendar days",
+                $"{Infrastructure.CountryPack.Ksa.KsaStatutorySpecialLeave.Describe(kind)} is set by law in calendar time "
+                + $"({Infrastructure.CountryPack.Ksa.KsaStatutorySpecialLeave.Citation(kind)}). This policy counts working days; it "
+                + "is honoured as it counts, but switch it to calendar days (tick Count Weekends and Count Public Holidays).",
+                actor, ct);
+    }
+
     [HttpPut("{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateLeavePolicyRequest req, CancellationToken ct)
@@ -193,6 +228,7 @@ public class LeavePoliciesController : ControllerBase
         if (RefuseCarryForward(req.CarryForwardMax, req.CarryForwardExpiry) is { } carryForwardRefusal)
             return carryForwardRefusal;
 
+        var waiverBefore = policy.AllowsHajjBeyondStatutoryEligibility;
         if (!string.IsNullOrWhiteSpace(req.Name)) policy.Name = req.Name;
         if (req.CountryCode is not null) policy.CountryCode = req.CountryCode;
         if (req.CompanyId.HasValue) policy.CompanyId = req.CompanyId;
@@ -233,6 +269,8 @@ public class LeavePoliciesController : ControllerBase
         await _leaveService.LogAuditAsync(tenantId.Value, "LeavePolicy", policy.Id.ToString(),
             "Updated", string.Empty, policy.Name, "Leave policy updated",
             User.Identity?.Name ?? "Admin", ct);
+        if (leaveType is not null)
+            await AuditStatutoryChoicesAsync(tenantId.Value, leaveType, policy, waiverBefore, ct);
 
         return Ok(policy);
     }

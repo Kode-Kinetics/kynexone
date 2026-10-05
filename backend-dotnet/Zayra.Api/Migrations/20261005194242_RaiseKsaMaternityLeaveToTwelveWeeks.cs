@@ -32,10 +32,11 @@ namespace Zayra.Api.Migrations
     /// <item><c>leave_audit_logs</c>, action <c>StatutoryFloorRaised</c>: one row per policy or type
     /// raised, with old and new figures.</item>
     /// <item><c>leave_audit_logs</c>, action <c>StatutoryReviewNeeded</c>: one row per policy NOT
-    /// raised but needing a person — (a) a Saudi-only maternity policy counted in WORKING days that
-    /// grants or caps below 84 (84 working days is ~17 weeks, not 12, so the number cannot simply be
-    /// set; HR must switch the counting to calendar days and set 84 — a working-day policy already at
-    /// 84 or more is not listed, since it gives at least the statutory 12 weeks), and (b) a mixed policy that is below 84 calendar days
+    /// raised but needing a person — (a) EVERY Saudi-only maternity policy counted in WORKING days (84
+    /// working days is ~17 weeks, not 12, so the number cannot simply be set; HR is asked to switch the
+    /// counting to calendar days — the reason says plainly that the employee is not short-changed
+    /// meanwhile, because requests are checked against 84 calendar days or the policy's own figure),
+    /// and (b) a mixed policy that is below 84 calendar days
     /// while no compliant Saudi-scoped maternity policy exists for the same type (HR must create one).
     /// These rows are durable and queryable by tenant: <c>WHERE action = 'StatutoryReviewNeeded'</c>.</item>
     /// </list>
@@ -81,11 +82,10 @@ namespace Zayra.Api.Migrations
             + "12 weeks (84 calendar days) fully paid. Raised from below that floor; values at or above it were not changed.";
 
         private const string WorkingDaysReason =
-            "This Saudi maternity policy counts working days and grants fewer than 84. The law gives 12 weeks, i.e. 84 "
-            + "CALENDAR days (Art. 151 as amended from 2025-02-19). Saudi employees are already given that at request "
-            + "time, so nobody is short-changed, but the policy itself misstates the entitlement and cannot be saved "
-            + "again as it is: switch its counting to calendar days (include weekends and public holidays) and set the "
-            + "entitlement and per-request cap to at least 84.";
+            "This Saudi maternity policy counts working days. The law gives 12 weeks, i.e. 84 CALENDAR days (Art. 151 as "
+            + "amended from 2025-02-19). Saudi employees are given at least that at request time, and a working-day figure "
+            + "of 84 or more is honoured as it counts, so nobody is short-changed; but the policy should be moved to "
+            + "calendar counting (tick Count Weekends and Count Public Holidays) with at least 84 days.";
 
         private const string MixedReason =
             "This maternity policy has no country or company and the tenant has Saudi and non-Saudi companies, so it "
@@ -182,7 +182,6 @@ BEGIN
            '{AuditActor}', '{WorkingDaysReason}', now()
       FROM pol p
      WHERE p.reach = 'saudi' AND NOT p.calendar
-       AND (p.days < {FloorDays} OR (p.max_days > 0 AND p.max_days < {FloorDays}))
        AND NOT EXISTS (SELECT 1 FROM leave_audit_logs a
                         WHERE a.tenant_id = p.tenant_id AND a.entity_id = p.id::text
                           AND a.action = 'StatutoryReviewNeeded' AND a.performed_by_name = '{AuditActor}');

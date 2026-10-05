@@ -94,9 +94,37 @@ public class LeaveRequestsController : ControllerBase
 
         // The approver decides a Saudi statutory leave (maternity, Hajj, bereavement…) with the
         // employee's earlier leave of the same kind in view.
-        var statutoryHistory = await _leaveService.GetKsaStatutoryLeaveHistoryAsync(tenantId.Value, id, ct);
+        var statutoryHistory = (await _leaveService.GetKsaStatutoryLeaveHistoryAsync(tenantId.Value, new[] { id }, ct))
+            .GetValueOrDefault(id) ?? Array.Empty<StatutoryLeaveHistoryItem>();
 
         return Ok(new { request, approvals, statutoryHistory });
+    }
+
+    /// <summary>
+    /// The approver's view of KSA statutory leave history for several requests at once (the approvals
+    /// queue): for each request that is statutory leave, the employee's other leave of that kind and
+    /// whether it is the same statutory event. Requests the caller cannot see are omitted.
+    /// </summary>
+    [HttpGet("statutory-history")]
+    public async Task<IActionResult> StatutoryHistory([FromQuery] string? ids, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        var requested = (ids ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(x => Guid.TryParse(x, out var g) ? g : Guid.Empty)
+            .Where(g => g != Guid.Empty).Distinct().Take(200).ToList();
+        if (requested.Count == 0) return Ok(new Dictionary<Guid, IReadOnlyList<StatutoryLeaveHistoryItem>>());
+
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        var visible = (await _db.LeaveRequests.AsNoTracking()
+                .Where(r => r.TenantId == tenantId && requested.Contains(r.Id))
+                .Select(r => new { r.Id, r.EmployeeId })
+                .ToListAsync(ct))
+            .Where(r => scope.CanAccessEmployee(r.EmployeeId))
+            .Select(r => r.Id)
+            .ToList();
+        return Ok(await _leaveService.GetKsaStatutoryLeaveHistoryAsync(tenantId.Value, visible, ct));
     }
 
     [HttpPost]

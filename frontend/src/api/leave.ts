@@ -80,6 +80,12 @@ export interface EmployeeLeaveBalance {
   granted?: number;
   /** THE balance. Always read this rather than recomputing it from the components. */
   available: number;
+  /**
+   * Set for Saudi statutory event leave (maternity, Hajj, marriage…): the statutory days per event.
+   * Such leave is granted by law per event, not drawn from this balance, so show this figure as
+   * "Statutory entitlement" — `available` can read negative while a request is pending.
+   */
+  statutoryEntitlementDays?: number | null;
   createdAtUtc: string;
   updatedAtUtc: string | null;
 }
@@ -345,7 +351,24 @@ export const leaveBalancesApi = {
     client.post('/api/leave/balances/accrue').then(r => r.data),
 };
 
+/** One earlier leave of the same Saudi statutory kind, shown to the approver beside a request. */
+export interface StatutoryLeaveHistoryItem {
+  requestId: string;
+  statutoryKind: string;
+  leaveTypeName: string;
+  startDate: string;
+  endDate: string;
+  totalDays: number;
+  status: string;
+  /** True when it falls in the same statutory event window as the request being decided. */
+  sameEvent: boolean;
+}
+
 export const leaveRequestsApi = {
+  /** For each Saudi statutory leave request among `ids`: the employee's other leave of that kind. */
+  statutoryHistory: (ids: string[]) =>
+    client.get<Record<string, StatutoryLeaveHistoryItem[]>>('/api/leave/requests/statutory-history', { params: { ids: ids.join(',') } })
+      .then(r => r.data),
   list: (params: { status?: string; employeeId?: number; leaveTypeId?: string; fromDate?: string; toDate?: string; departmentName?: string; companyId?: string; branchId?: string; page?: number; pageSize?: number } = {}) =>
     client.get<{ items: LeaveRequest[]; total: number }>('/api/leave/requests', { params }).then(r => r.data),
   /** Every matching request, page by page: an approval queue must show all of its work. */

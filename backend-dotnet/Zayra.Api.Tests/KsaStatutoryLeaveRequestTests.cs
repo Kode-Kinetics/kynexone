@@ -33,7 +33,7 @@ public class KsaStatutoryLeaveRequestTests
 
     private static async Task<Fixture> SeedAsync(
         string code, string name, string category, bool calendarPolicy = true, decimal policyDays = 0m,
-        int serviceYears = 3, bool allowsHajjBeyond = false)
+        int? serviceYears = 3, bool allowsHajjBeyond = false)
     {
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
@@ -42,7 +42,8 @@ public class KsaStatutoryLeaveRequestTests
         var employee = new Employee
         {
             TenantId = tenantId, EmployeeCode = $"E-{Guid.NewGuid():N}", FullName = "Employee", EnglishName = "Employee",
-            Status = "Active", CompanyId = company.Id, JoiningDate = DateTime.UtcNow.AddYears(-serviceYears),
+            Status = "Active", CompanyId = company.Id,
+            JoiningDate = serviceYears is { } y ? DateTime.UtcNow.AddYears(-y) : default,
             UserAccountId = Guid.NewGuid(), Gender = "Female",
         };
         db.Employees.Add(employee);
@@ -157,8 +158,8 @@ public class KsaStatutoryLeaveRequestTests
         var f = await SeedAsync("MARRIAGE", "Marriage Leave", "Marriage");
         await Submit(f, Base, 5);
 
-        (await Submit(f, Base.AddDays(5), 5)).TotalDays.Should().Be(5m,
-            "outside the first leave's window it is a new event; the approver sees the history (below)");
+        (await Submit(f, Base.AddDays(6), 5)).TotalDays.Should().Be(5m,
+            "after the first leave's window, with a day back at work between, it is a new event; the approver sees the history (below)");
     }
 
     [Fact]
@@ -168,20 +169,33 @@ public class KsaStatutoryLeaveRequestTests
         var earlier = await Submit(f, Base, 5);
         var later = await Submit(f, Base.AddDays(30), 5);
 
-        var history = await f.Service.GetKsaStatutoryLeaveHistoryAsync(f.TenantId, later.Id);
+        var history = (await f.Service.GetKsaStatutoryLeaveHistoryAsync(f.TenantId, new[] { later.Id }))[later.Id];
 
         history.Should().ContainSingle().Which.RequestId.Should().Be(earlier.Id);
         history[0].StatutoryKind.Should().Contain("Bereavement");
+        history[0].SameEvent.Should().BeFalse("a month apart is a separate event");
+    }
+
+    [Fact]
+    public async Task TheApproverSeesWhenEarlierLeaveIsTheSameEvent()
+    {
+        var f = await SeedAsync("BEREAVEMENT", "Bereavement Leave", "Bereavement");
+        var earlier = await Submit(f, Base, 2);
+        var later = await Submit(f, Base.AddDays(2), 3);
+
+        var history = (await f.Service.GetKsaStatutoryLeaveHistoryAsync(f.TenantId, new[] { later.Id }))[later.Id];
+
+        history.Should().ContainSingle(h => h.RequestId == earlier.Id).Which.SameEvent.Should().BeTrue();
     }
 
     // ── Calendar counting for maternity and iddah ───────────────────────────────────────────
 
     [Fact]
-    public async Task WorkingDayMaternityPolicy_EightyFourWorkingDays_IsRefused_EightyFourCalendarDays_IsAllowed()
+    public async Task WorkingDayMaternityPolicyOfSeventy_EightyFourWorkingDays_IsRefused_EightyFourCalendarDays_IsAllowed()
     {
-        // The policy counts working days and even says 84. 84 working days is ~117 calendar days —
-        // about 17 weeks — and the statute's 84 is 12 weeks on the calendar.
-        var f = await SeedAsync("MAT", "Maternity Leave", "Parental", calendarPolicy: false, policyDays: 84m);
+        // 84 working days is ~117 calendar days — about 17 weeks. The statute's 84 is 12 weeks on the
+        // calendar, and a 70-working-day policy does not reach 84 working days either.
+        var f = await SeedAsync("MAT", "Maternity Leave", "Parental", calendarPolicy: false, policyDays: 70m);
 
         var seventeenWeeks = () => Submit(f, Base, 117);
         (await seventeenWeeks.Should().ThrowAsync<InvalidOperationException>())
@@ -189,6 +203,118 @@ public class KsaStatutoryLeaveRequestTests
 
         var twelveWeeks = await Submit(f, Base.AddDays(200), 84);
         twelveWeeks.EndDate.DayNumber.Should().Be(twelveWeeks.StartDate.DayNumber + 83);
+    }
+
+    [Fact]
+    public async Task WorkingDayMaternityPolicyOfEightyFour_IsHonouredInItsOwnUnit()
+    {
+        // The law is a floor: a company that grants 84 WORKING days gives more than 12 weeks, and the
+        // request is honoured as the policy counts it.
+        var f = await SeedAsync("MAT", "Maternity Leave", "Parental", calendarPolicy: false, policyDays: 84m);
+
+        var submitted = await Submit(f, Base, 117);
+
+        submitted.TotalDays.Should().BeLessThanOrEqualTo(84m);
+    }
+
+    // ── Same event: backdated splits, and a more generous company policy ──────────────────
+
+    [Fact]
+    public async Task ABackdatedSplit_IsTheSameEvent()
+    {
+        // 10–12 then 7–9: the second starts BEFORE the first, and still shares its event.
+        var f = await SeedAsync("MARRIAGE", "Marriage Leave", "Marriage");
+        await Submit(f, Base.AddDays(10), 3);
+
+        var backdated = () => Submit(f, Base.AddDays(7), 3);
+        (await backdated.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("per event");
+
+        (await Submit(f, Base.AddDays(8), 2)).TotalDays.Should().Be(2m, "3 + 2 is the 5 days the statute gives");
+    }
+
+    [Fact]
+    public async Task ABackdatedBackToBackLeave_IsTheSameEvent()
+    {
+        // 10–14 first, then 5–9 submitted later: one continuous ten-day absence for one marriage.
+        var f = await SeedAsync("MARRIAGE", "Marriage Leave", "Marriage");
+        await Submit(f, Base.AddDays(10), 5);
+
+        var backToBack = () => Submit(f, Base.AddDays(5), 5);
+
+        (await backToBack.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("per event");
+    }
+
+    [Fact]
+    public async Task AMoreGenerousBereavementPolicy_AllowsASplitAboveTheStatute_UpToItsOwnFigure()
+    {
+        var f = await SeedAsync("BEREAVEMENT", "Bereavement Leave", "Bereavement", policyDays: 10m);
+        await Submit(f, Base, 3);
+        (await Submit(f, Base.AddDays(3), 4)).TotalDays.Should().Be(4m, "3 + 4 = 7 is above the statutory 5 but within the policy's 10");
+
+        var over = () => Submit(f, Base.AddDays(7), 4);
+        (await over.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("10 day(s) under your company policy");
+    }
+
+    [Fact]
+    public async Task AMoreGenerousMaternityPolicy_AllowsFiftyPlusFifty_AndRefusesMore()
+    {
+        var f = await SeedAsync("MAT", "Maternity Leave", "Parental", policyDays: 100m);
+        await Submit(f, Base, 50);
+        (await Submit(f, Base.AddDays(50), 50)).TotalDays.Should().Be(50m, "50 + 50 is within the policy's 100 calendar days");
+
+        var over = () => Submit(f, Base.AddDays(100), 1);
+        (await over.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("per event");
+    }
+
+    // ── Hajj: missing joining date; re-checked at final approval ───────────────────────────
+
+    [Fact]
+    public async Task Hajj_WithNoJoiningDate_IsRefused_NotCountedAsZeroYears()
+    {
+        var f = await SeedAsync("HAJJ", "Hajj Leave", "Religious", serviceYears: null);
+
+        var act = () => Submit(f, Base, 10);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should().Contain("Joining date missing — cannot verify Hajj eligibility (Art. 114)");
+    }
+
+    [Fact]
+    public async Task Hajj_IsReCheckedAtFinalApproval_AgainstApprovedHajj()
+    {
+        // A second Hajj request that got past submission — here because the waiver was on at the time
+        // and has since been withdrawn — must still be refused at the final approval.
+        var f = await SeedAsync("HAJJ", "Hajj Leave", "Religious");
+        var first = await Submit(f, Base, 10);
+        await f.Service.ApproveRequestAsync(f.TenantId, first.Id, Guid.NewGuid(), "HR", null);
+        var policy = await f.Db.LeavePolicies.SingleAsync(p => p.Id == f.Policy.Id);
+        policy.AllowsHajjBeyondStatutoryEligibility = true;
+        await f.Db.SaveChangesAsync();
+        var second = await Submit(f, Base.AddDays(400), 10);
+        policy.AllowsHajjBeyondStatutoryEligibility = false;
+        await f.Db.SaveChangesAsync();
+
+        var approve = () => f.Service.ApproveRequestAsync(f.TenantId, second.Id, Guid.NewGuid(), "HR", null);
+
+        (await approve.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("once in an employee's service");
+    }
+
+    [Fact]
+    public async Task Approval_UsesTheKindStampedAtSubmission_NotTheEmployeesCompanyToday()
+    {
+        var f = await SeedAsync("MARRIAGE", "Marriage Leave", "Marriage");
+        var request = await Submit(f, Base, 5);
+        request.StatutoryLeaveKind.Should().Be("Marriage");
+        // The employee moves to a UAE entity before the decision.
+        var uae = new Company { TenantId = f.TenantId, LegalNameEn = "UAE Co", CountryCode = "AE" };
+        f.Db.Companies.Add(uae);
+        var tracked = await f.Db.Employees.SingleAsync(e => e.Id == f.Employee.Id);
+        tracked.CompanyId = uae.Id;
+        await f.Db.SaveChangesAsync();
+
+        await f.Service.ApproveRequestAsync(f.TenantId, request.Id, Guid.NewGuid(), "HR", null);
+
+        (await BalanceAsync(f)).Available.Should().Be(0m, "the statutory grant was booked as stamped at submission");
     }
 
     // ── Ledger: no phantom days after reject, cancel or withdraw ────────────────────────────
@@ -211,6 +337,30 @@ public class KsaStatutoryLeaveRequestTests
         balance.Used.Should().Be(5m);
         balance.Pending.Should().Be(0m);
         balance.Available.Should().Be(0m);
+    }
+
+    [Fact]
+    public async Task AnAccruingBalance_TheGrantLiftsGranted_AndCancellationRestoresItExactly()
+    {
+        // Available is built on Granted = MAX(Entitled, Accrued). With 3 days accrued, the statutory
+        // grant must lift GRANTED to cover the 5 used — and a cancellation must give back exactly that.
+        var f = await SeedAsync("MARRIAGE", "Marriage Leave", "Marriage");
+        f.Db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
+        {
+            TenantId = f.TenantId, EmployeeId = f.Employee.Id, EmployeeName = f.Employee.FullName,
+            LeaveTypeId = f.Type.Id, LeaveTypeName = f.Type.NameEn, Year = Base.Year, Accrued = 3m,
+        });
+        await f.Db.SaveChangesAsync();
+        var request = await Submit(f, Base, 5);
+
+        await f.Service.ApproveRequestAsync(f.TenantId, request.Id, Guid.NewGuid(), "HR", null);
+        var approved = await BalanceAsync(f);
+        (approved.Granted, approved.Used, approved.Available).Should().Be((5m, 5m, 0m));
+
+        await f.Service.CancelRequestAsync(f.TenantId, request.Id, "HR", "Postponed");
+        var cancelled = await BalanceAsync(f);
+        (cancelled.Entitled, cancelled.Accrued, cancelled.Used, cancelled.Available).Should().Be((0m, 3m, 0m, 3m),
+            "the accrued 3 days are untouched and nothing granted for the request remains");
     }
 
     [Fact]

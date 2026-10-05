@@ -14963,6 +14963,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("status");
 
+                    b.Property<string>("StatutoryLeaveKind")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("statutory_leave_kind");
+
                     b.Property<DateTime?>("SubmittedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("submitted_at_utc");

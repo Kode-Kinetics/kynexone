@@ -118,6 +118,15 @@ public class EmployeeLeaveBalance : ITenantOwned
     public decimal Granted => Math.Max(Entitled, Accrued);
 
     /// <summary>
+    /// Not stored. Set by the read endpoints for a KSA statutory event leave (maternity, Hajj,
+    /// marriage…): the statutory days per event. Such leave is not drawn from an accrued balance, so
+    /// <see cref="Available"/> can read negative while a request is pending; screens show this figure
+    /// as "Statutory entitlement" instead of a red balance.
+    /// </summary>
+    [System.ComponentModel.DataAnnotations.Schema.NotMapped]
+    public decimal? StatutoryEntitlementDays { get; set; }
+
+    /// <summary>
     /// THE definition of a leave balance. Every screen, report, sufficiency check and settlement must
     /// read this property rather than re-spell the expression — the re-spelt copies had already drifted
     /// into four different answers for the same employee.
@@ -179,6 +188,13 @@ public class LeaveRequest : ITenantOwned, ICompanyScopedOperational
     public DateTime? SubmittedAtUtc { get; set; }
     public DateTime? DecidedAtUtc { get; set; }
     public DateTime? CancelledAtUtc { get; set; }
+    /// <summary>
+    /// The KSA statutory special leave this request was submitted as (a <c>KsaStatutoryLeaveKind</c>
+    /// name: Maternity, Hajj, Marriage…), or null for any other leave. Stamped at submission, when the
+    /// employee's Saudi entity and the leave type were checked, and read at approval and cancellation
+    /// so a later change of company or leave-type name cannot change how this request is settled.
+    /// </summary>
+    public string? StatutoryLeaveKind { get; set; }
 }
 
 public class LeaveApproval : ITenantOwned

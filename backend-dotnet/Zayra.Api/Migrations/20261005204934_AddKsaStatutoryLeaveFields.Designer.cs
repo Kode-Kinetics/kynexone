@@ -12,8 +12,8 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Migrations
 {
     [DbContext(typeof(ZayraDbContext))]
-    [Migration("20261005204934_AddLeavePolicyHajjEligibilityWaiver")]
-    partial class AddLeavePolicyHajjEligibilityWaiver
+    [Migration("20261005204934_AddKsaStatutoryLeaveFields")]
+    partial class AddKsaStatutoryLeaveFields
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -14965,6 +14965,11 @@ namespace Zayra.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("status");
+
+                    b.Property<string>("StatutoryLeaveKind")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("statutory_leave_kind");
 
                     b.Property<DateTime?>("SubmittedAtUtc")
                         .HasColumnType("timestamp with time zone")
