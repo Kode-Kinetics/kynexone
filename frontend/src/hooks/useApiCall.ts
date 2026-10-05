@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useAppToast } from '@/src/components/ui/AppToast';
 import { useT } from './useT';
 import { describeApiError } from '../lib/apiError';
@@ -22,14 +22,19 @@ export function parseApiError(err: unknown, t?: (key: string, params?: MessagePa
 export function useApiCall() {
   const [error, setError] = useState<string | null>(null);
   const toast = useAppToast();
+  // `t` is read through a ref so `call` keeps depending on `toast` alone: callers put `call` in
+  // effect deps, and a new `call` per language switch would refetch every screen
+  // (e2e/toast-context-stability.spec.ts). The ref always holds the current language's `t`.
   const t = useT();
+  const tRef = useRef(t);
+  useEffect(() => { tRef.current = t; }, [t]);
 
   const call = useCallback(
     async <T>(fn: () => Promise<T>, opts?: { banner?: boolean }): Promise<T | undefined> => {
       try {
         return await fn();
       } catch (e) {
-        const msg = describeApiError(e, t);
+        const msg = describeApiError(e, tRef.current);
         if (opts?.banner) {
           setError(msg);
         } else {
@@ -38,7 +43,7 @@ export function useApiCall() {
         return undefined;
       }
     },
-    [toast, t],
+    [toast],
   );
 
   const clearError = useCallback(() => setError(null), []);
