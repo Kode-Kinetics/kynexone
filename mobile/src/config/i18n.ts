@@ -5,8 +5,10 @@
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
 import { I18nManager } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { STORAGE_KEYS } from '@/config';
 
-const en = {
+export const en = {
   common: {
     loading: 'Loading...',
     error: 'Something went wrong',
@@ -246,10 +248,23 @@ const en = {
     disclaimer: 'AI responses are advisory only and may not reflect the latest data.',
     suggestedQuestions: 'Suggested Questions',
   },
+  settings: {
+    language: 'Language',
+    languageChanged: 'Language changed',
+    changedToEnglish: 'Changed to English',
+    changedToArabic: 'Changed to Arabic',
+    restartTitle: 'Restart to finish',
+    restartBody: 'The layout switches direction the next time KynexOne starts. Close the app completely and open it again.',
+    restartNow: 'Restart now',
+    later: 'Later',
+  },
 };
 
-// Arabic translations
-const ar: typeof en = {
+/** The shape every language must match: same namespaces and keys, string values. */
+export type TranslationResources = typeof en;
+
+// Arabic translations — typed against `en`, so a key missing here fails `tsc`.
+const ar: TranslationResources = {
   common: {
     loading: 'جار التحميل...',
     error: 'حدث خطأ ما',
@@ -489,20 +504,87 @@ const ar: typeof en = {
     disclaimer: 'ردود الذكاء الاصطناعي استشارية فقط.',
     suggestedQuestions: 'أسئلة مقترحة',
   },
+  settings: {
+    language: 'اللغة',
+    languageChanged: 'تم تغيير اللغة',
+    changedToEnglish: 'تم التغيير إلى الإنجليزية',
+    changedToArabic: 'تم التغيير إلى العربية',
+    restartTitle: 'أعد التشغيل للإكمال',
+    restartBody: 'سيتغير اتجاه الواجهة عند تشغيل KynexOne في المرة القادمة. أغلق التطبيق تمامًا ثم افتحه مجددًا.',
+    restartNow: 'إعادة التشغيل الآن',
+    later: 'لاحقًا',
+  },
 };
+
+export type AppLanguage = 'en' | 'ar';
+
+/**
+ * Language at cold start, synchronously. The persisted choice is in AsyncStorage (async), but the
+ * native layout direction is already decided before JS runs: I18nManager.isRTL reflects the last
+ * forceRTL() call, which only takes effect on a restart. Starting from it means the first frame's
+ * text matches the first frame's layout; `restoreLanguage()` then applies the stored choice.
+ */
+function bootLanguage(): AppLanguage {
+  return I18nManager.isRTL ? 'ar' : 'en';
+}
 
 i18n.use(initReactI18next).init({
   compatibilityJSON: 'v3',
   resources: { en: { translation: en }, ar: { translation: ar } },
-  lng: 'en',
+  lng: bootLanguage(),
   fallbackLng: 'en',
   interpolation: { escapeValue: false },
 });
 
-export function setLanguage(lang: 'en' | 'ar') {
-  i18n.changeLanguage(lang);
-  const isRTL = lang === 'ar';
-  I18nManager.forceRTL(isRTL);
+function isLanguage(v: unknown): v is AppLanguage {
+  return v === 'en' || v === 'ar';
 }
+
+async function readStoredLanguage(): Promise<AppLanguage | null> {
+  try {
+    const raw = await AsyncStorage.getItem(STORAGE_KEYS.LANGUAGE);
+    if (raw == null) return null;
+    // appStorage writes JSON ('"ar"'); accept a bare value too.
+    const parsed = raw.startsWith('"') ? JSON.parse(raw) : raw;
+    return isLanguage(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Applies the native direction for `lang`. Returns true when the running layout does not match
+ * yet — RTL is fixed per process, so the user has to restart for it to flip.
+ */
+function applyDirection(lang: AppLanguage): boolean {
+  const rtl = lang === 'ar';
+  I18nManager.allowRTL(rtl);
+  I18nManager.forceRTL(rtl);
+  return I18nManager.isRTL !== rtl;
+}
+
+/** Call once at startup: apply the user's saved language (text now, direction from next start). */
+export async function restoreLanguage(): Promise<void> {
+  const stored = await readStoredLanguage();
+  if (!stored) return;
+  if (i18n.language !== stored) await i18n.changeLanguage(stored);
+  applyDirection(stored);
+}
+
+/**
+ * The user picked a language: translate now, persist the choice, and set the native direction.
+ * Resolves to `{ restartRequired: true }` when the layout direction changes on the next start.
+ */
+export async function setLanguage(lang: AppLanguage): Promise<{ restartRequired: boolean }> {
+  await i18n.changeLanguage(lang);
+  try {
+    await AsyncStorage.setItem(STORAGE_KEYS.LANGUAGE, JSON.stringify(lang));
+  } catch (error) {
+    console.warn('[i18n] Could not persist the language choice:', error);
+  }
+  return { restartRequired: applyDirection(lang) };
+}
+
+void restoreLanguage();
 
 export default i18n;
