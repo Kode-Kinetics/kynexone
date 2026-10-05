@@ -405,6 +405,8 @@ builder.Services.AddScoped<Zayra.Api.Application.Recruitment.IRecruitmentAiServi
 builder.Services.AddScoped<IPolicyDocumentService, PolicyDocumentService>();
 builder.Services.AddScoped<IQiwaIntegrationService, QiwaIntegrationService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Compliance.SaudiComplianceDashboardService>();
+builder.Services.AddSingleton<Zayra.Api.Application.Jawazat.IJawazatProvider, Zayra.Api.Infrastructure.Jawazat.DisabledJawazatProvider>();
+builder.Services.AddScoped<Zayra.Api.Application.Jawazat.IJawazatWorkflowService, Zayra.Api.Infrastructure.Jawazat.JawazatWorkflowService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Compliance.NitaqatCalculationService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Compliance.GosiReadinessReportService>();
 // Nitaqat MHRSD grid loader: the product ships the MECHANISM, not the grid (see
@@ -454,6 +456,7 @@ builder.Services.AddHostedService<AiInsightEngine>();
 // thread is what makes "a notification can never fail OR HANG a payroll operation" true.
 builder.Services.AddHostedService<NotificationDeliveryWorker>();
 builder.Services.AddHostedService<ComplianceReminderWorker>();
+builder.Services.AddHostedService<Zayra.Api.Infrastructure.Finance.LoanLifecycleWorker>();
 // Public pricing-quote requests are announced to sales off the request thread: a bounded queue,
 // a global send budget, a fixed recipient from platform config, and the platform relay only.
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Pricing.QuoteNotificationQueue>();

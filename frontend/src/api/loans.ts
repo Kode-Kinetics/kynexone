@@ -30,6 +30,8 @@ export interface EmployeeLoan {
   approvedInstallments: number;
   installmentAmount: number;
   repaymentFrequency: string;
+  repaymentMethod: LoanRepaymentMethod;
+  currency: string;
   disbursementDate?: string;
   repaymentStartDate?: string;
   totalRepaid: number;
@@ -39,6 +41,13 @@ export interface EmployeeLoan {
   notes: string;
   isLockedByPayroll: boolean;
   createdAtUtc: string;
+  companyId?: string;
+  createdBy?: string;
+  policyId?: string;
+  policyVersion?: number;
+  reviewRequired?: boolean;
+  reviewReason?: string;
+  collectionStatus?: string;
 }
 
 export interface LoanApproval {
@@ -46,10 +55,53 @@ export interface LoanApproval {
   loanId: string;
   stepOrder: number;
   approverRole: string;
+  approverUserId?: string;
   approvedByName: string;
   status: string;
   comments: string;
   decidedAtUtc?: string;
+}
+
+export type LoanRepaymentMethod = 'BankTransfer' | 'DirectDebit' | 'Cash' | 'PayrollDeduction';
+
+export interface LoanRepayment {
+  id: string;
+  amount: number;
+  paidDate: string;
+  reference: string;
+  paymentMethod: string;
+  recordedByName?: string;
+  reversedAtUtc?: string;
+  reversalReason?: string;
+  isReversed?: boolean;
+}
+
+export interface LoanDetail {
+  loan: EmployeeLoan;
+  installments: LoanInstallment[];
+  approvals: LoanApproval[];
+  auditLogs: AuditLogEntry[];
+  glEntries: FinanceGlEntry[];
+  repayments: LoanRepayment[];
+  paymentBatchId?: string;
+}
+
+export interface LoanPaymentBatch {
+  id: string;
+  batchNumber: string;
+  status: 'Draft' | 'Approved' | 'Paid' | 'Cancelled' | 'PartiallyPaid' | 'Completed';
+  totalAmount: number;
+  paidAmount?: number;
+  remainingAmount?: number;
+  cancelledAmount?: number;
+  reversedAmount?: number;
+  currency: string;
+  lines: { id: string; loanId: string; loanNumber: string; employeeName: string; employeeCode?: string; bankName?: string; iban?: string; repaymentStartDate?: string; repaymentFrequency?: string; amount: number; status?: string; paymentReference?: string; paidDate?: string; failureReason?: string }[];
+  createdBy?: string;
+  createdByName?: string;
+  createdAtUtc: string;
+  paidDate?: string;
+  paymentReference?: string;
 }
 
 export interface LoanInstallment {
@@ -206,13 +258,13 @@ export const loanTypesApi = {
 };
 
 export const loansApi = {
-  list: (params: { employeeId?: string; status?: string; page?: number; pageSize?: number } = {}) =>
+  list: (params: { employeeId?: string; mine?: boolean; status?: string; page?: number; pageSize?: number } = {}) =>
     client.get<{ total: number; items: EmployeeLoan[] }>('/api/finance/loans', { params }).then(r => r.data),
 
   get: (id: string) =>
-    client.get<{ loan: EmployeeLoan; installments: LoanInstallment[]; approvals: LoanApproval[]; auditLogs: AuditLogEntry[]; glEntries: FinanceGlEntry[] }>(`/api/finance/loans/${id}`).then(r => r.data),
+    client.get<LoanDetail>(`/api/finance/loans/${id}`).then(r => r.data),
 
-  create: (body: { employeeId?: string; employeeName: string; loanTypeId: string; requestedAmount: number; requestedInstallments: number; notes?: string; employeeIntId?: number }) =>
+  create: (body: { employeeId?: string; employeeName: string; loanTypeId: string; requestedAmount: number; requestedInstallments: number; repaymentMethod: LoanRepaymentMethod; requestPolicyException?: boolean; notes?: string; employeeIntId?: number }) =>
     client.post<EmployeeLoan>('/api/finance/loans', body).then(r => r.data),
 
   settle: (id: string, body: { settlementType: string; settlementAmount: number; settlementDate: string; notes?: string }) =>
@@ -224,8 +276,22 @@ export const loansApi = {
   decide: (loanId: string, approvalId: string, body: { decision: string; comments?: string; approvedAmount?: number; approvedInstallments?: number; repaymentStartDate?: string }) =>
     client.patch(`/api/finance/loans/${loanId}/approvals/${approvalId}/decide`, body).then(r => r.data),
 
+  recordRepayment: (id: string, body: { amount: number; paidDate: string; reference: string; paymentMethod: string }) =>
+    client.post(`/api/finance/loans/${id}/repayments`, body).then(r => r.data),
+
   audit: (params: { status?: string; period?: string } = {}) =>
-    client.get<{ totalLoans: number; activeLoans: number; settledLoans: number; pendingLoans: number; totalDisbursed: number; totalOutstanding: number; totalRepaid: number; reconciliation: { loanNumber: string; employeeName: string; loanTypeName: string; status: string; approvedAmount: number; totalRepaid: number; outstandingBalance: number; isReconciled: boolean }[] }>('/api/finance/loans/audit', { params }).then(r => r.data),
+    client.get<{ totalLoans: number; activeLoans: number; settledLoans: number; pendingLoans: number; totalDisbursed: number; totalOutstanding: number; totalRepaid: number; reconciliation: { loanNumber: string; employeeName: string; loanTypeName: string; status: string; approvedAmount: number; actualDisbursedAmount: number; totalRepaid: number; outstandingBalance: number; isReconciled: boolean }[] }>('/api/finance/loans/audit', { params }).then(r => r.data),
+};
+
+export const loanPaymentBatchesApi = {
+  list: () => client.get<LoanPaymentBatch[]>('/api/finance/loans/payment-batches').then(r => r.data),
+  get: (id: string) => client.get<LoanPaymentBatch>(`/api/finance/loans/payment-batches/${id}`).then(r => r.data),
+  create: (loanIds: string[]) => client.post<LoanPaymentBatch>('/api/finance/loans/payment-batches', { loanIds }).then(r => r.data),
+  approve: (id: string) => client.patch(`/api/finance/loans/payment-batches/${id}/approve`).then(r => r.data),
+  cancel: (id: string) => client.patch(`/api/finance/loans/payment-batches/${id}/cancel`).then(r => r.data),
+  lineOutcome: (id: string, lineId: string, body: { outcome: 'Paid' | 'Failed' | 'Cancelled'; reference?: string; paidDate?: string; paymentMethod?: string; repaymentStartDate?: string; reason?: string }) => client.patch(`/api/finance/loans/payment-batches/${id}/lines/${lineId}/outcome`, body).then(r => r.data),
+  confirmPaid: (id: string, body: { paidDate: string; reference: string; repaymentStartDate?: string }) => client.patch(`/api/finance/loans/payment-batches/${id}/confirm-paid`, body).then(r => r.data),
+  export: (id: string) => client.get<Blob>(`/api/finance/loans/payment-batches/${id}/export`, { responseType: 'blob' }).then(r => r.data),
 };
 
 export const advancePolicyApi = {

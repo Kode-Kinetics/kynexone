@@ -60,6 +60,9 @@ public class RawSqlExecutionRatchetTests
         ["Data/ZayraDbContext.cs"] = 2,
         ["Infrastructure/Auth/AccessManagementService.cs"] = 2,
         ["Infrastructure/Finance/FinanceDecisionSerializer.cs"] = 1,
+        // Parameterized advisory lock only; key includes tenant + canonical employee. No row writes.
+        // Jawazat creation idempotency and company-scope tests cover the governed ticket producer.
+        ["Infrastructure/Jawazat/JawazatWorkflowService.cs"] = 1,
         ["Infrastructure/Organization/EstablishmentGuardService.cs"] = 1,
 
         // ── Real statements. Each one's WHERE clause IS its tenant boundary. ─────────────────

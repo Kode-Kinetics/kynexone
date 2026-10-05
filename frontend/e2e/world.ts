@@ -210,6 +210,7 @@ const companyUser = (
 export const ALMARAI_OWNER = groupUser('owner', 'Admin', 'Almarai Group Owner');
 export const ALMARAI_HR = groupUser('hr', 'HR Director', 'Almarai Group HR Director');
 export const ALMARAI_FINANCE = groupUser('finance', 'Finance Approver', 'Almarai Group Finance Approver');
+export const ALMARAI_LOAN_FINANCE = groupUser('loan.finance', 'Finance', 'Almarai Loan Finance Operator');
 // 'Compliance Officer', not 'HR Manager': the role is what
 // CompanyComplianceProfilesController authorizes on, and it is the only non-Admin role permitted
 // to AUTHOR a company compliance profile. Given HR Manager, this persona got a 403 from
@@ -238,6 +239,7 @@ export const ALMARAI_DAIRY_PAYROLL = companyUser('payroll', 'ALM-DAIRY-KSA', 'Pa
 export const ALMARAI_USERS: FixtureUser[] = [
   ALMARAI_HR,
   ALMARAI_FINANCE,
+  ALMARAI_LOAN_FINANCE,
   ALMARAI_COMPLIANCE,
   ALMARAI_AUDITOR,
   ALMARAI_PAYROLL_MANAGER,

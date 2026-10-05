@@ -139,23 +139,26 @@ public class EmployeeSelfServiceController : ControllerBase
         // ── Enrichment: loans summary ─────────────────────────────────────────
         var activeLoans = await _db.EmployeeLoans.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.EmployeeIntId == employeeId &&
-                        !x.IsDeleted && (x.Status == "Active" || x.Status == "Approved"))
+                        !x.IsDeleted && (x.Status == "Active" || x.Status == "Overdue"))
             .ToListAsync(cancellationToken);
         var activeLoanIds = activeLoans.Select(x => x.Id).ToList();
-        var nextInstallment = activeLoanIds.Count == 0
-            ? null
-            : await _db.LoanInstallments.AsNoTracking()
+        var nextInstallments = await _db.LoanInstallments.AsNoTracking()
                 .Where(x => x.TenantId == tenantId && activeLoanIds.Contains(x.LoanId) &&
-                            x.Status == "Pending" && x.AmountDue > x.AmountPaid)
+                            (x.Status == "Pending" || x.Status == "Overdue") && x.AmountDue > x.AmountPaid)
                 .OrderBy(x => x.DueDate)
-                .FirstOrDefaultAsync(cancellationToken);
+                .ToListAsync(cancellationToken);
         var loanCurrency = await _db.ResolveTenantCurrencyAsync(tenantId, cancellationToken);
-        var loansSummary = new ESSLoansSummaryDto(
-            activeLoans.Sum(x => x.OutstandingBalance),
-            loanCurrency,
-            activeLoans.Count,
-            nextInstallment is null ? null : nextInstallment.AmountDue - nextInstallment.AmountPaid,
-            nextInstallment?.DueDate.ToString("yyyy-MM-dd"));
+        foreach (var loan in activeLoans.Where(x => string.IsNullOrWhiteSpace(x.Currency)))
+            loan.Currency = await Zayra.Api.Infrastructure.Payroll.GlAccountResolver.ResolveCurrencyAsync(_db, tenantId, loan.CompanyId, cancellationToken);
+        var loanSummaries = activeLoans.GroupBy(x => x.Currency ?? loanCurrency).Select(group =>
+        {
+            var ids = group.Select(x => x.Id).ToHashSet();
+            var next = nextInstallments.FirstOrDefault(x => ids.Contains(x.LoanId));
+            return new ESSLoansSummaryDto(group.Sum(x => x.OutstandingBalance), group.Key, group.Count(),
+                next == null ? null : next.AmountDue - next.AmountPaid, next?.DueDate.ToString("yyyy-MM-dd"));
+        }).OrderBy(x => x.Currency).ToList();
+        // Compatibility scalar is supplied only for a single currency; never add unlike currencies.
+        var loansSummary = loanSummaries.Count == 1 ? loanSummaries[0] : null;
 
         // ── Enrichment: performance snapshot ─────────────────────────────────
         ESSPerformanceSnapshotDto? performanceSnapshot = null;
@@ -242,7 +245,7 @@ public class EmployeeSelfServiceController : ControllerBase
             overtimeHoursThisMonth,
             nextApprovedLeave,
             tenureMonths,
-            attendanceSource));
+            attendanceSource, loanSummaries));
     }
 
     [HttpGet("profile")]
@@ -1456,7 +1459,8 @@ public record ESSDashboardDto(
     int TenureMonths,
     // W2-D (S8): "processed" (the daily record), "raw" (derived from today's punches before HR
     // processing; not persisted) or null (no attendance today).
-    string? AttendanceTodaySource = null);
+    string? AttendanceTodaySource = null,
+    IReadOnlyCollection<ESSLoansSummaryDto>? LoanSummaries = null);
 public record ProfileChangeRequestDto(Dictionary<string, object?> Changes, string? Reason);
 public record ProfileChangeDecisionDto(string? Notes);
 public record ESSAttendanceRegularizationDto(DateOnly WorkDate, string RequestType, DateTime? RequestedInUtc, DateTime? RequestedOutUtc, string Reason);

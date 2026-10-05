@@ -116,6 +116,7 @@ public class HRRequestCenterController : ControllerBase
         var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
 
         var query = _db.HRRequests.Where(r => r.TenantId == tenantId);
+        query = ScopeGovernedRequests(query);
         if (!scope.IsUnrestricted)
             query = query.Where(r => scope.AllowedEmployeeIds!.Contains(r.EmployeeId));
         if (employeeId.HasValue) query = query.Where(r => r.EmployeeId == employeeId.Value);
@@ -141,6 +142,9 @@ public class HRRequestCenterController : ControllerBase
         var request = await _db.HRRequests
             .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (request is null) return NotFound();
+
+        if (request.JawazatDataJson is not null && (request.CompanyId is null || !this.GetEntityScope().CanAccessCompany(request.CompanyId)))
+            return Forbid();
 
         var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
         if (!scope.CanAccessEmployee(request.EmployeeId))
@@ -214,6 +218,11 @@ public class HRRequestCenterController : ControllerBase
         if (request is null) return NotFound();
         var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
         if (!scope.CanAccessEmployee(request.EmployeeId)) return Forbid();
+        if (request.JawazatDataJson is not null)
+        {
+            if (request.CompanyId is null || !this.GetEntityScope().CanAccessCompany(request.CompanyId)) return Forbid();
+            return Conflict(new { code = "governed_request", message = "Jawazat request states can only change through their governed workflow." });
+        }
 
         request.Status = req.Status;
         await _db.SaveChangesAsync(ct);
@@ -233,6 +242,8 @@ public class HRRequestCenterController : ControllerBase
         var ticket = await _db.HRRequests
             .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (ticket is null) return NotFound();
+        if (ticket.JawazatDataJson is not null && (ticket.CompanyId is null || !this.GetEntityScope().CanAccessCompany(ticket.CompanyId)))
+            return Forbid();
         var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
         if (!scope.CanAccessEmployee(ticket.EmployeeId)) return Forbid();
 
@@ -251,7 +262,7 @@ public class HRRequestCenterController : ControllerBase
         // A reply from HR moves an Open ticket into "InProgress" so the SLA/response
         // indicators reflect that HR has engaged. (Canonical status token — no space —
         // matching the dashboard count, status filters and badges across the app.)
-        if (ticket.Status == "Open")
+        if (ticket.JawazatDataJson is null && ticket.Status == "Open")
             ticket.Status = "InProgress";
         // Notify the employee in their self-service feed that HR replied.
         _db.EmployeeNotifications.Add(new EmployeeNotification
@@ -277,6 +288,7 @@ public class HRRequestCenterController : ControllerBase
         var allowedIds = scope.IsUnrestricted ? null : scope.AllowedEmployeeIds!.ToList();
 
         var dashboardQuery = _db.HRRequests.Where(r => r.TenantId == tenantId);
+        dashboardQuery = ScopeGovernedRequests(dashboardQuery);
         if (allowedIds is not null) dashboardQuery = dashboardQuery.Where(r => allowedIds.Contains(r.EmployeeId));
         var open = await dashboardQuery.CountAsync(r => r.Status == "Open", ct);
         var inProgress = await dashboardQuery.CountAsync(r => r.Status == "InProgress", ct);
@@ -290,6 +302,14 @@ public class HRRequestCenterController : ControllerBase
             .ToListAsync(ct);
 
         return Ok(new { open, inProgress, resolved, overdue, recentRequests });
+    }
+
+    private IQueryable<HRRequest> ScopeGovernedRequests(IQueryable<HRRequest> query)
+    {
+        var companyScope = this.GetEntityScope();
+        var companies = companyScope.AccessibleCompanyIds;
+        return query.Where(r => r.JawazatDataJson == null || (r.CompanyId != null
+            && (companyScope.IsGroupLevel || companies.Contains(r.CompanyId.Value))));
     }
 }
 

@@ -6,7 +6,8 @@ namespace Zayra.Api.Application.Finance;
 
 /// <summary>
 /// Flat projection of EmployeeLoan. Omits TenantId, IsDeleted, and EF-internal fields
-/// (EmployeeIntId bridge, UpdatedBy/CreatedBy Guids) that must never reach the client.
+/// (EmployeeIntId bridge and UpdatedBy). CreatedBy is exposed only on the scoped loan record
+/// to let the UI suppress self-approval; server-side maker/checker remains authoritative.
 /// All financial amounts are included: access is already owner-scoped in ListLoans /
 /// GetLoan (scope filter + explicit tenantId WHERE clause). No per-field masking needed.
 /// </summary>
@@ -32,7 +33,16 @@ public record EmployeeLoanDto(
     string Notes,
     bool IsLockedByPayroll,
     DateTime CreatedAtUtc,
-    DateTime? UpdatedAtUtc)
+    DateTime? UpdatedAtUtc,
+    string RepaymentMethod,
+    string? Currency,
+    Guid? CompanyId,
+    Guid? CreatedBy,
+    Guid? PolicyId,
+    int? PolicyVersion,
+    bool ReviewRequired,
+    string ReviewReason,
+    string CollectionStatus)
 {
     public static EmployeeLoanDto Project(EmployeeLoan e) => new(
         e.Id, e.EmployeeId, e.EmployeeName,
@@ -44,7 +54,8 @@ public record EmployeeLoanDto(
         e.TotalRepaid, e.OutstandingBalance,
         e.Status, e.RejectionReason, e.Notes,
         e.IsLockedByPayroll,
-        e.CreatedAtUtc, e.UpdatedAtUtc);
+        e.CreatedAtUtc, e.UpdatedAtUtc, e.RepaymentMethod, e.Currency,
+        e.CompanyId, e.CreatedBy, e.PolicyId, e.PolicyVersion, e.ReviewRequired, e.ReviewReason, e.CollectionStatus);
 }
 
 // ── Advances ──────────────────────────────────────────────────────────────────

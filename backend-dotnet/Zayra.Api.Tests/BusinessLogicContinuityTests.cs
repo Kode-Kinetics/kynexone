@@ -396,7 +396,7 @@ public class BusinessLogicContinuityTests
     // ─────────────────────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task Loan_AutoApproved_GeneratesCorrectInstallmentSchedule()
+    public async Task Loan_HrApproved_GeneratesCorrectInstallmentScheduleAfterSeparatePayout()
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
@@ -407,12 +407,13 @@ public class BusinessLogicContinuityTests
             MaxAmount = 50000, MaxInstallments = 24, RequiresApproval = false, IsActive = true
         };
         var empGuid = Guid.NewGuid();
+        var company = new Company { TenantId = tenantId, LegalNameEn = "Loan Co", DefaultCurrency = "SAR", CountryCode = "SAU" };
         var employee = new Employee
         {
-            TenantId = tenantId, PublicId = empGuid, EmployeeCode = "EMP-LOAN-1",
-            FullName = "Noura Al-Ghamdi", EnglishName = "Noura Al-Ghamdi", Status = "Active",
+            TenantId = tenantId, CompanyId = company.Id, PublicId = empGuid, EmployeeCode = "EMP-LOAN-1",
+            FullName = "Noura Al-Ghamdi", EnglishName = "Noura Al-Ghamdi", Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-2),
         };
-        db.AddRange(lt, employee);
+        db.AddRange(company, lt, employee);
         await db.SaveChangesAsync();
 
         var ctrl = CreateLoansController(db, tenantId);
@@ -420,11 +421,15 @@ public class BusinessLogicContinuityTests
             new CreateLoanRequest(empGuid, "Client supplied name is ignored", lt.Id, 12000, 6, "Emergency", employee.Id),
             CancellationToken.None);
 
-        result.Should().BeOfType<OkObjectResult>("auto-approved loan must return 200");
+        result.Should().BeOfType<OkObjectResult>("loan application must return 200 and await HR");
 
         var loans = await db.EmployeeLoans.Where(l => l.TenantId == tenantId).ToListAsync();
         loans.Should().HaveCount(1);
-        loans[0].Status.Should().Be("Active", "no-approval type activates immediately");
+        loans[0].Status.Should().Be("Pending", "all applications require HR approval before bank payout");
+        loans[0].OutstandingBalance.Should().Be(0);
+        (await db.FinanceGlEntries.CountAsync()).Should().Be(0);
+        await DisburseLoan(db, tenantId, loans[0].Id);
+        loans[0].Status.Should().Be("Active");
         loans[0].OutstandingBalance.Should().Be(12000);
         loans[0].EmployeeId.Should().Be(employee.PublicId);
         loans[0].EmployeeIntId.Should().Be(employee.Id);
@@ -442,7 +447,7 @@ public class BusinessLogicContinuityTests
     }
 
     [Fact]
-    public async Task Loan_MarkInstallmentPaid_DecreasesOutstandingBalance()
+    public async Task Loan_StandaloneReceipt_DecreasesOutstandingBalance()
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
@@ -452,12 +457,13 @@ public class BusinessLogicContinuityTests
             TenantId = tenantId, Code = "EMER", NameEn = "Emergency Loan",
             MaxAmount = 20000, MaxInstallments = 12, RequiresApproval = false, IsActive = true
         };
+        var company = new Company { TenantId = tenantId, LegalNameEn = "Receipt Co", DefaultCurrency = "SAR", CountryCode = "SAU" };
         var employee = new Employee
         {
-            TenantId = tenantId, EmployeeCode = "EMP-LOAN-2",
-            FullName = "Mohammed Al-Harbi", EnglishName = "Mohammed Al-Harbi", Status = "Active",
+            TenantId = tenantId, CompanyId = company.Id, EmployeeCode = "EMP-LOAN-2",
+            FullName = "Mohammed Al-Harbi", EnglishName = "Mohammed Al-Harbi", Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-2),
         };
-        db.AddRange(lt, employee);
+        db.AddRange(company, lt, employee);
         await db.SaveChangesAsync();
 
         var ctrl = CreateLoansController(db, tenantId);
@@ -466,11 +472,12 @@ public class BusinessLogicContinuityTests
             CancellationToken.None);
 
         var loan = await db.EmployeeLoans.FirstAsync(l => l.TenantId == tenantId);
+        await DisburseLoan(db, tenantId, loan.Id);
         var inst = await db.LoanInstallments.FirstAsync(i => i.LoanId == loan.Id && i.InstallmentNumber == 1);
 
-        var payResult = await ctrl.MarkInstallmentPaid(
-            loan.Id, inst.Id,
-            new PayInstallmentRequest(2000, DateOnly.FromDateTime(DateTime.Today), null),
+        var payResult = await ctrl.RecordRepayment(
+            loan.Id,
+            new RecordLoanRepaymentRequest(2000, DateOnly.FromDateTime(DateTime.UtcNow), "RECEIPT-1"),
             CancellationToken.None);
 
         payResult.Should().BeOfType<OkObjectResult>();
@@ -828,6 +835,22 @@ public class BusinessLogicContinuityTests
         return ctrl;
     }
 
+    private static async Task DisburseLoan(ZayraDbContext db, Guid tenantId, Guid loanId)
+    {
+        var maker = CreateLoansController(db, tenantId);
+        var approval = await db.LoanApprovals.SingleAsync(x => x.LoanId == loanId);
+        (await maker.DecideApproval(loanId, approval.Id, new Zayra.Api.Controllers.Finance.ApprovalDecisionRequest("Approved", "HR approval", null, null, null), CancellationToken.None))
+            .Should().BeOfType<OkObjectResult>();
+        (await maker.CreatePaymentBatch(new CreateLoanPaymentBatchRequest(new[] { loanId }), CancellationToken.None))
+            .Should().BeOfType<OkObjectResult>();
+        var batch = await db.Set<LoanDisbursementBatch>().SingleAsync(x => x.TenantId == tenantId);
+        var checker = CreateLoansController(db, tenantId);
+        (await checker.ApprovePaymentBatch(batch.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        (await checker.ConfirmPaymentBatchPaid(batch.Id,
+            new ConfirmLoanPaymentRequest("CASH-1", DateOnly.FromDateTime(DateTime.UtcNow), "Cash"), CancellationToken.None))
+            .Should().BeOfType<OkObjectResult>();
+    }
+
     private static OvertimeController CreateOvertimeController(ZayraDbContext db, Guid tenantId, string role = "Admin")
     {
         var ctrl = new OvertimeController(
@@ -885,4 +908,3 @@ file sealed class NullLetterService : ILetterService
     public Task<byte[]> GenerateExperienceLetterAsync(LetterData d, CancellationToken ct) => Task.FromResult(Array.Empty<byte>());
     public Task<byte[]> GenerateOfferLetterAsync(OfferLetterData d, CancellationToken ct) => Task.FromResult(Array.Empty<byte>());
 }
-

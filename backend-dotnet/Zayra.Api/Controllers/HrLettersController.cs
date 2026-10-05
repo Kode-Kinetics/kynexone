@@ -507,6 +507,9 @@ public class HrLettersController : ControllerBase
         var ticket = await _db.HRRequests.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == ticketId, ct);
         if (ticket is null) return;
 
+        if (ticket.JawazatDataJson is not null)
+            throw new InvalidOperationException("A letter request cannot change a governed Jawazat ticket.");
+
         ticket.Status = status;
         _db.HRRequestComments.Add(new HRRequestComment
         {

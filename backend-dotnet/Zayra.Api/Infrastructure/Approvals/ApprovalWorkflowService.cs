@@ -12,6 +12,8 @@ using Zayra.Api.Infrastructure.Organization;
 using Zayra.Api.Infrastructure.Leave;
 using Zayra.Api.Infrastructure.Timesheets;
 using Zayra.Api.Models;
+using Zayra.Api.Application.Jawazat;
+using Zayra.Api.Infrastructure.Jawazat;
 
 namespace Zayra.Api.Infrastructure.Approvals;
 
@@ -26,6 +28,9 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     // Optional so direct constructions keep compiling; without it a future-dated change is still scheduled,
     // but with no baseline, so on its effective date it goes back for review instead of being applied.
     private readonly IDataProtector? _changeBaselineProtector;
+    private readonly IDataScopeService _dataScopes;
+    private readonly IHttpContextAccessor? _http;
+    private readonly Dictionary<RequestContext, DataScope> _jawazatScopes = new();
 
     public ApprovalWorkflowService(ZayraDbContext db, IAuditService audit)
         : this(db, audit, new HrmHierarchyService(db, audit))
@@ -39,7 +44,9 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         IEstablishmentGuard? establishmentGuard = null,
         ILeaveService? leaveService = null,
         IApprovalRouter? router = null,
-        IDataProtectionProvider? dataProtection = null)
+        IDataProtectionProvider? dataProtection = null,
+        IDataScopeService? dataScopes = null,
+        IHttpContextAccessor? http = null)
     {
         _db = db;
         _audit = audit;
@@ -49,6 +56,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         // F1 — ONE router shared by this service and the leave aggregate it delegates to.
         _router = router ?? new ApprovalRouter(db, hierarchy);
         _leaveService = leaveService ?? new LeaveService(db, _router);
+        _http = http;
+        _dataScopes = dataScopes ?? new Zayra.Api.Infrastructure.Common.DataScopeService(db, http: http);
     }
 
     public async Task<PagedResult<ApprovalWorkflowDto>> GetWorkflowsAsync(Guid tenantId, string? entityName, int page, int pageSize, CancellationToken cancellationToken)
@@ -106,6 +115,13 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         var query = _db.ApprovalRequests.AsNoTracking().Include(x => x.Decisions).Where(x => x.TenantId == tenantId);
         if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
         if (!string.IsNullOrWhiteSpace(entityName)) query = query.Where(x => x.EntityName == entityName);
+        // Company query filters do not enforce employee/department visibility. Apply Jawazat's
+        // employee boundary before Count/Skip/Take so excluded titles and totals never leak.
+        var jawazatScope = await ResolveJawazatScopeAsync(tenantId, context, cancellationToken);
+        var jawazatIds = jawazatScope.AllowedEmployeeIds ?? Array.Empty<int>();
+        var jawazatEntity = JawazatConstants.ApprovalEntityName.ToLowerInvariant();
+        query = query.Where(x => x.EntityName.ToLower() != jawazatEntity || (x.RequestedForEmployeeId != null
+            && (jawazatScope.IsUnrestricted || jawazatIds.Contains(x.RequestedForEmployeeId.Value))));
         if (string.IsNullOrWhiteSpace(queue) && context is not null && !CanViewAllApprovalRequests(context))
         {
             queue = "mine";
@@ -191,6 +207,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     public async Task<ApprovalRequestDto?> GetRequestAsync(Guid tenantId, Guid id, CancellationToken cancellationToken)
     {
         var request = await _db.ApprovalRequests.AsNoTracking().Include(x => x.Decisions).FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
+        if (request is not null && JawazatApprovalSync.IsJawazat(request)) return null;
         return request?.ToDto();
     }
 
@@ -326,6 +343,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     public async Task<ApprovalRequestDto> CreateRequestAsync(Guid tenantId, CreateApprovalRequest request, RequestContext context, CancellationToken cancellationToken)
     {
         var entityName = Clean(request.EntityName);
+        if (string.Equals(entityName, JawazatConstants.ApprovalEntityName, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Jawazat approvals are created by the governed Jawazat request workflow, not directly.");
         // A leave approval is the leave aggregate's routing projection (same id, balance reserved in
         // the same transaction). Starting one here would create a second, orphaned projection.
         if (string.Equals(entityName, nameof(LeaveRequest), StringComparison.OrdinalIgnoreCase))
@@ -394,6 +413,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             throw new InvalidOperationException("Decision must be Approve or Reject.");
         if (context.UserId is not null && approval.RequestedByUserId == context.UserId)
             throw new InvalidOperationException("Maker-checker violation: requester cannot approve or reject their own approval request.");
+        await JawazatApprovalSync.ValidateDecisionAsync(_db, approval, context, cancellationToken,
+            JawazatApprovalSync.IsJawazat(approval) ? await ResolveJawazatScopeAsync(tenantId, context, cancellationToken) : null);
         if (string.Equals(approval.EntityName, nameof(LeaveRequest), StringComparison.OrdinalIgnoreCase))
         {
             // LeaveRequest/LeaveApproval/balance is the aggregate of record. ApprovalRequest is
@@ -459,6 +480,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             approval.Status = "Rejected";
             approval.CompletedAtUtc = DateTime.UtcNow;
             await SyncEmployeeChangeDecisionAsync(approval, normalizedDecision, context, Clean(request.Comments), cancellationToken);
+            await JawazatApprovalSync.ApplyAsync(_db, approval, normalizedDecision, context, Clean(request.Comments), cancellationToken,
+                JawazatApprovalSync.IsJawazat(approval) ? await ResolveJawazatScopeAsync(tenantId, context, cancellationToken) : null);
             await TimesheetApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
             await Zayra.Api.Infrastructure.Recruitment.RequisitionApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
         }
@@ -467,6 +490,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             approval.Status = "Approved";
             approval.CompletedAtUtc = DateTime.UtcNow;
             await SyncEmployeeChangeDecisionAsync(approval, normalizedDecision, context, Clean(request.Comments), cancellationToken);
+            await JawazatApprovalSync.ApplyAsync(_db, approval, normalizedDecision, context, Clean(request.Comments), cancellationToken,
+                JawazatApprovalSync.IsJawazat(approval) ? await ResolveJawazatScopeAsync(tenantId, context, cancellationToken) : null);
             // Timesheets: project the decision onto the timesheet and, on approval, write the
             // attendance reconciliation its hours feed — in THIS SaveChanges, so a decision taken
             // in the Approval Center and one taken on the timesheet screen are the same write.
@@ -506,7 +531,9 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         // "Approved" is invalid JSON and would 500 AFTER the decision above already committed).
         await _audit.WriteAsync("approval.request_decided", nameof(ApprovalRequest), approval.Id.ToString(), context,
             JsonSerializer.Serialize(new { decision = normalizedDecision, stepOrder = step.StepOrder, comments = Clean(request.Comments) }), cancellationToken);
-        return (await GetRequestAsync(tenantId, approval.Id, cancellationToken))!;
+        return JawazatApprovalSync.IsJawazat(approval)
+            ? await GetRequestAsync(tenantId, approval.Id, context, cancellationToken)
+            : (await GetRequestAsync(tenantId, approval.Id, cancellationToken))!;
     }
 
     private static void Apply(ApprovalWorkflow workflow, ApprovalWorkflowRequest request, Guid tenantId)
@@ -682,6 +709,12 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     {
         if (context is null || approval.Status != "Pending") return false;
         if (context.UserId is not null && approval.RequestedByUserId == context.UserId) return false;
+        if (JawazatApprovalSync.IsJawazat(approval))
+        {
+            try { await JawazatApprovalSync.ValidateDecisionAsync(_db, approval, context, cancellationToken,
+                await ResolveJawazatScopeAsync(approval.TenantId, context, cancellationToken)); }
+            catch (JawazatException) { return false; }
+        }
 
         var permissions = context.Permissions ?? Array.Empty<string>();
         if (permissions.Any(x => x.Equals("approvals.override", StringComparison.OrdinalIgnoreCase)))
@@ -705,6 +738,12 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
 
     private async Task<bool> CanViewRequestAsync(ApprovalRequest approval, RequestContext context, CancellationToken cancellationToken)
     {
+        if (JawazatApprovalSync.IsJawazat(approval))
+        {
+            var scope = await ResolveJawazatScopeAsync(approval.TenantId, context, cancellationToken);
+            if (approval.RequestedForEmployeeId is not int subject || !scope.CanAccessEmployee(subject)) return false;
+            if (scope.CallerEmployeeId == subject) return true;
+        }
         if (CanViewAllApprovalRequests(context)) return true;
         if (await CanDecideRequestAsync(approval, context, cancellationToken)) return true;
         if (context.UserId is not null && approval.RequestedByUserId == context.UserId) return true;
@@ -713,6 +752,14 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         if (callerEmployeeId is null || approval.RequestedForEmployeeId is null) return false;
         var teamIds = await ResolveTeamEmployeeIdsAsync(approval.TenantId, callerEmployeeId.Value, cancellationToken);
         return teamIds.Contains(approval.RequestedForEmployeeId.Value);
+    }
+
+    private async Task<DataScope> ResolveJawazatScopeAsync(Guid tenantId, RequestContext? context, CancellationToken ct)
+    {
+        if (context is not null && context.TenantId == tenantId && _jawazatScopes.TryGetValue(context, out var cached)) return cached;
+        var scope = await JawazatApprovalAccess.ResolveAsync(_db, tenantId, context, ct, _dataScopes, _http);
+        if (context is not null && context.TenantId == tenantId) _jawazatScopes[context] = scope;
+        return scope;
     }
 
     private static bool CanViewAllApprovalRequests(RequestContext context)

@@ -23,11 +23,28 @@ public class LoanType : ITenantOwned
     public Guid? CreatedBy { get; set; }
 }
 
-public class LoanPolicy : ITenantOwned
+public class LoanPolicy : ITenantOwned, ICompanyScoped
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
     public Guid LoanTypeId { get; set; }
+    public Guid? CompanyId { get; set; }
+    public int Version { get; set; } = 1;
+    public decimal MaxAmount { get; set; }
+    public decimal MaxTotalOutstanding { get; set; }
+    public decimal MaxInstallmentPercentOfSalary { get; set; }
+    public int MinServiceMonths { get; set; }
+    public int MaxInstallments { get; set; } = 600;
+    public bool RequireProbationCompleted { get; set; }
+    public bool BlockDuringNotice { get; set; } = true;
+    public bool BlockOnOverdue { get; set; } = true;
+    public string AllowedEmploymentStatusesJson { get; set; } = "[\"Active\"]";
+    public string AllowedContractTypesJson { get; set; } = "[]";
+    public string AllowedRepaymentMethodsJson { get; set; } = "[\"BankTransfer\",\"DirectDebit\",\"Cash\"]";
+    public string AllowedRepaymentFrequenciesJson { get; set; } = "[\"Monthly\",\"Weekly\",\"BiWeekly\",\"Quarterly\"]";
+    public decimal AdditionalApprovalThreshold { get; set; }
+    public string AdditionalApproverRole { get; set; } = "HR Director";
+    public bool AllowExceptions { get; set; }
     public string PolicyName { get; set; } = string.Empty;
     public int MaxConcurrentLoans { get; set; } = 1;
     public decimal MaxMultiplierOfSalary { get; set; }      // e.g. 3 = max 3x monthly salary
@@ -59,6 +76,8 @@ public class EmployeeLoan : ITenantOwned, ICompanyScopedOperational
     public decimal InstallmentAmount { get; set; }
     public string RepaymentFrequency { get; set; } = "Monthly";
     public DateOnly? DisbursementDate { get; set; }
+    public string RepaymentMethod { get; set; } = "PayrollDeduction";
+    public string? Currency { get; set; }
     public DateOnly? RepaymentStartDate { get; set; }
     public decimal TotalRepaid { get; set; }
     public decimal OutstandingBalance { get; set; }
@@ -71,6 +90,99 @@ public class EmployeeLoan : ITenantOwned, ICompanyScopedOperational
     public Guid? CreatedBy { get; set; }
     public DateTime? UpdatedAtUtc { get; set; }
     public Guid? UpdatedBy { get; set; }
+    public Guid? PolicyId { get; set; }
+    public int? PolicyVersion { get; set; }
+    public string PolicySnapshotJson { get; set; } = "{}";
+    public string EligibilitySnapshotJson { get; set; } = "{}";
+    public string EmploymentSnapshotJson { get; set; } = "{}";
+    public bool ReviewRequired { get; set; }
+    public string ReviewReason { get; set; } = string.Empty;
+    public string CollectionStatus { get; set; } = "Normal";
+}
+
+public class LoanDisbursementBatch : ITenantOwned, ICompanyScopedOperational
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid? CompanyId { get; set; }
+    public string BatchNumber { get; set; } = string.Empty;
+    public string Currency { get; set; } = string.Empty;
+    public decimal TotalAmount { get; set; }
+    public string Status { get; set; } = "Draft";
+    public Guid? CreatedBy { get; set; }
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    public Guid? ApprovedBy { get; set; }
+    public DateTime? ApprovedAtUtc { get; set; }
+    public Guid? PaidBy { get; set; }
+    public DateTime? PaidAtUtc { get; set; }
+    public string? PaymentReference { get; set; }
+    public string? PaymentMethod { get; set; }
+    public DateOnly? PaidDate { get; set; }
+}
+
+public class LoanDisbursementLine : ITenantOwned
+{
+    /// <summary>Immutable accounting evidence for the actual payment, not the current account mapping.</summary>
+    public Guid? GlEntryId { get; set; }
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid BatchId { get; set; }
+    public Guid LoanId { get; set; }
+    public decimal Amount { get; set; }
+    public bool IsCancelled { get; set; }
+    public string EmployeeName { get; set; } = string.Empty;
+    public string EmployeeCode { get; set; } = string.Empty;
+    public string Iban { get; set; } = string.Empty;
+    public string BankName { get; set; } = string.Empty;
+    public string Status { get; set; } = "Pending";
+    public string? PaymentReference { get; set; }
+    public DateOnly? PaidDate { get; set; }
+    public string? PaymentMethod { get; set; }
+    public string? FailureReason { get; set; }
+    public Guid? PaidBy { get; set; }
+}
+
+public class LoanRepayment : ITenantOwned, ICompanyScopedOperational
+{
+    public Guid? GlEntryId { get; set; }
+    public Guid? ReversalGlEntryId { get; set; }
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid? CompanyId { get; set; }
+    public Guid LoanId { get; set; }
+    public decimal Amount { get; set; }
+    public DateOnly PaidDate { get; set; }
+    public string Reference { get; set; } = string.Empty;
+    public string PaymentMethod { get; set; } = string.Empty;
+    public Guid? CreatedBy { get; set; }
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    public bool IsReversed { get; set; }
+    public Guid? ReversedBy { get; set; }
+    public DateTime? ReversedAtUtc { get; set; }
+}
+
+public class LoanChangeRequest : ITenantOwned, ICompanyScopedOperational
+{
+    public string? RequestedRepaymentMethod { get; set; }
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid? CompanyId { get; set; }
+    public Guid LoanId { get; set; }
+    public string ChangeType { get; set; } = string.Empty;
+    public string Status { get; set; } = "Pending";
+    public string Reason { get; set; } = string.Empty;
+    public int? RequestedInstallments { get; set; }
+    public DateOnly? RequestedStartDate { get; set; }
+    public string RequestedExceptionsJson { get; set; } = "[]";
+    public decimal OutstandingBalanceAtRequest { get; set; }
+    public Guid? CreatedBy { get; set; }
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    public Guid? DecidedBy { get; set; }
+    public DateTime? DecidedAtUtc { get; set; }
+    public string DecisionReason { get; set; } = string.Empty;
+    public Guid? RepaymentId { get; set; }
+    public DateOnly? EffectiveDate { get; set; }
+    public string Reference { get; set; } = string.Empty;
 }
 
 public class LoanApproval : ITenantOwned

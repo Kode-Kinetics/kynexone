@@ -141,7 +141,7 @@ public class ApprovalDecisionCharacterisationTests
     }
 
     [Fact]
-    public async Task Loans_DecideApproval_FinalApproval_ActivatesDisbursesAndAudits()
+    public async Task Loans_DecideApproval_FinalApproval_ApprovesWithoutCashAndAudits()
     {
         await using var db = CreateDb();
         var f = await SeedLoanAsync(db, status: "Pending", requestedAmount: 12_000m, requestedInstallments: 6);
@@ -153,18 +153,17 @@ public class ApprovalDecisionCharacterisationTests
 
         Assert.IsType<OkObjectResult>(result);
         var loan = await db.EmployeeLoans.SingleAsync();
-        Assert.Equal("Active", loan.Status);                       // NOT "Approved" — module vocabulary
+        Assert.Equal("Approved", loan.Status);
         Assert.Equal(9_000m, loan.ApprovedAmount);
         Assert.Equal(3, loan.ApprovedInstallments);
         Assert.Equal(3_000m, loan.InstallmentAmount);
-        Assert.Equal(9_000m, loan.OutstandingBalance);
+        Assert.Equal(0m, loan.OutstandingBalance);
         Assert.Equal(new DateOnly(2026, 11, 1), loan.RepaymentStartDate);
-        Assert.NotNull(loan.DisbursementDate);
+        Assert.Null(loan.DisbursementDate);
 
-        Assert.Equal(3, await db.LoanInstallments.CountAsync());
+        Assert.Equal(0, await db.LoanInstallments.CountAsync());
         var gl = await db.FinanceGlEntries.Where(x => x.SourceEntityId == f.LoanId).ToListAsync();
-        Assert.NotEmpty(gl);
-        Assert.All(gl, e => Assert.Equal("Disbursement", e.EventType));
+        Assert.Empty(gl);
 
         var audit = Assert.Single(await db.LoanAuditLogs.ToListAsync());
         Assert.Equal("ApprovalApproved", audit.Action);
@@ -189,7 +188,7 @@ public class ApprovalDecisionCharacterisationTests
         Assert.IsType<OkObjectResult>(result);
         var loan = await db.EmployeeLoans.SingleAsync();
         Assert.Equal("Pending", loan.Status);
-        Assert.Equal(0m, loan.ApprovedAmount);
+        Assert.Equal(loan.RequestedAmount, loan.ApprovedAmount);
         Assert.Empty(await db.LoanInstallments.ToListAsync());
         Assert.Empty(await db.FinanceGlEntries.ToListAsync());
         // The audit row is still written for the individual step decision.
@@ -221,7 +220,7 @@ public class ApprovalDecisionCharacterisationTests
         var f = await SeedLoanAsync(db, status: "Active");
 
         var result = await Loans(db, f.TenantId, Guid.NewGuid())
-            .AddApprovalStep(f.LoanId, new LoanApprovalRequest(2, "Finance"), CancellationToken.None);
+            .AddApprovalStep(f.LoanId, new LoanApprovalRequest(2, "HR Director"), CancellationToken.None);
 
         var conflict = Assert.IsType<ConflictObjectResult>(result);
         Assert.Equal("invalid_loan_state", ErrorCode(conflict.Value));
@@ -235,7 +234,7 @@ public class ApprovalDecisionCharacterisationTests
         var f = await SeedLoanAsync(db, status: "Pending");
 
         var result = await Loans(db, f.TenantId, Guid.NewGuid())
-            .AddApprovalStep(f.LoanId, new LoanApprovalRequest(2, "Finance"), CancellationToken.None);
+            .AddApprovalStep(f.LoanId, new LoanApprovalRequest(2, "HR Director"), CancellationToken.None);
 
         Assert.IsType<OkObjectResult>(result);
         Assert.Equal(2, await db.LoanApprovals.CountAsync());
@@ -590,7 +589,13 @@ public class ApprovalDecisionCharacterisationTests
             TenantId = tenantId, LoanId = loan.Id, StepOrder = 1,
             ApproverRole = "Finance", Status = stepStatus,
         };
-        db.AddRange(loan, approval);
+        var employee = new Employee { TenantId = tenantId, PublicId = loan.EmployeeId, FullName = loan.EmployeeName,
+            Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-2) };
+        db.Employees.Add(employee);
+        await db.SaveChangesAsync();
+        loan.EmployeeIntId = employee.Id;
+        loan.RepaymentMethod = "BankTransfer";
+        db.AddRange(loan, approval, new LoanType { Id = loan.LoanTypeId, TenantId = tenantId, MaxAmount = 50000, MaxInstallments = 24 });
         await db.SaveChangesAsync();
         return new LoanFixture(tenantId, loan.Id, approval.Id);
     }

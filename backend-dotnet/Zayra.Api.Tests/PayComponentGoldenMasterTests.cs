@@ -405,7 +405,7 @@ public class PayComponentGoldenMasterTests
         t.AddOvertime(k5.Id, new DateOnly(2026, 6, 10), hours: 10m, approvedMultiplier: 0m);
         t.AddOvertime(k5.Id, new DateOnly(2026, 6, 11), hours: 4m, approvedMultiplier: 2.0m);
         // K6 loan (EMI 1000 of 3000) + advance (EMI 500 capped at outstanding 400).
-        t.AddLoan(k6.Id, installment: 1_000m, outstanding: 3_000m);
+        t.AddLoan(k6.Id, companyId, installment: 1_000m, outstanding: 3_000m);
         t.AddAdvance(k6.Id, installment: 500m, outstanding: 400m);
         // K8 two bonuses: one folded into GOSI base (gross 2000), one not (gross 1000). GCC 0-tax ⇒ gross==net.
         var btIncluded = t.AddBonusType("ANNUAL", includedInGosi: true);
@@ -604,10 +604,12 @@ internal sealed class GmTenantSeed
         });
     }
 
-    public void AddLoan(int empId, decimal installment, decimal outstanding)
+    public void AddLoan(int empId, Guid companyId, decimal installment, decimal outstanding)
         => Db.EmployeeLoans.Add(new EmployeeLoan
         {
-            TenantId = TenantId, EmployeeIntId = empId, EmployeeName = $"E{empId}",
+            // K6 models debt collected by this payroll company's salary deduction run.
+            TenantId = TenantId, CompanyId = companyId, EmployeeIntId = empId, EmployeeName = $"E{empId}",
+            RepaymentMethod = "PayrollDeduction",
             Status = "Active", InstallmentAmount = installment, OutstandingBalance = outstanding,
             LoanNumber = $"LN-{Guid.NewGuid():N}",
         });

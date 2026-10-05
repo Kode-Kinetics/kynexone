@@ -632,12 +632,34 @@ public class BonusLifecycleGlTests
         db.ChangeTracker.Clear();
 
         var httpCtx = new DefaultHttpContext { User = Principal(tid, "loans.write") };
+        ((ClaimsIdentity)httpCtx.User.Identity!).AddClaim(new Claim(ClaimTypes.Role, "Finance"));
         var loans = new LoansController(db, new _B1bScope())
         { ControllerContext = new ControllerContext { HttpContext = httpCtx } };
 
         (await loans.CreateLoan(
             new CreateLoanRequest(Guid.Empty, emp.FullName, loanType.Id, 12_000m, 12, null, emp.Id),
             CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+
+        (await AllGl(db, tid)).Should().BeEmpty("application approval does not move cash");
+        var approvedLoan = await db.EmployeeLoans.SingleAsync(x => x.TenantId == tid);
+        var hrHttp = new DefaultHttpContext { User = Principal(tid, "loans.approve") };
+        ((ClaimsIdentity)hrHttp.User.Identity!).AddClaim(new Claim(ClaimTypes.Role, "HR Manager"));
+        var hr = new LoansController(db, new _B1bScope()) { ControllerContext = new ControllerContext { HttpContext = hrHttp } };
+        var requestApproval = await db.LoanApprovals.SingleAsync(x => x.LoanId == approvedLoan.Id);
+        (await hr.DecideApproval(approvedLoan.Id, requestApproval.Id,
+            new ApprovalDecisionRequest("Approved", "HR approval", null, null, null), CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        (await loans.CreatePaymentBatch(new CreateLoanPaymentBatchRequest(new[] { approvedLoan.Id }), CancellationToken.None))
+            .Should().BeOfType<OkObjectResult>();
+        var payment = await db.LoanDisbursementBatches.SingleAsync(x => x.TenantId == tid);
+        var checkerHttp = new DefaultHttpContext { User = Principal(tid, "loans.approve") };
+        ((ClaimsIdentity)checkerHttp.User.Identity!).AddClaim(new Claim(ClaimTypes.Role, "Finance"));
+        var checker = new LoansController(db, new _B1bScope())
+        { ControllerContext = new ControllerContext { HttpContext = checkerHttp } };
+        (await checker.ApprovePaymentBatch(payment.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        var confirmation = new ConfirmLoanPaymentRequest("LOAN-PAYMENT-1401", DateOnly.FromDateTime(DateTime.UtcNow), "Cash");
+        (await loans.ConfirmPaymentBatchPaid(payment.Id, confirmation, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        (await loans.ConfirmPaymentBatchPaid(payment.Id, confirmation, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
 
         var gl = await AllGl(db, tid);

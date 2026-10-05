@@ -306,6 +306,13 @@ public class PaymentBatchScopeTests
     /// </summary>
     [Fact]
     public void EveryBatchSpecificRoute_CallsTheSharedCompanyGuard()
+        => AssertBatchRoutesCallCompanyGuard(standaloneLoans: false, minimumRoutes: 9);
+
+    [Fact]
+    public void EveryStandaloneLoanBatchSpecificRoute_CallsTheLoanCompanyGuard()
+        => AssertBatchRoutesCallCompanyGuard(standaloneLoans: true, minimumRoutes: 6);
+
+    private static void AssertBatchRoutesCallCompanyGuard(bool standaloneLoans, int minimumRoutes)
     {
         var controllers = Directory.GetFiles(
             Path.Combine(FindApiRoot(), "Controllers"), "*.cs", SearchOption.AllDirectories);
@@ -317,6 +324,13 @@ public class PaymentBatchScopeTests
         foreach (var file in controllers)
         {
             var lines = File.ReadAllLines(file);
+            // Separate loan disbursements have no PayrollRun: their company-filtered batch and
+            // constituent loans are authorized by CanAccessBatchAsync. Keep scanning the whole
+            // controller tree; only this known aggregate uses the loan guard. A newly introduced
+            // controller still has to satisfy the payroll guard until its ownership is reviewed.
+            var isLoanController = lines.Any(line => line.TrimStart()
+                .StartsWith("public partial class LoansController", StringComparison.Ordinal));
+            if (isLoanController != standaloneLoans) continue;
             for (var i = 0; i < lines.Length; i++)
             {
                 if (!IsBatchSpecificRoute(lines, i)) continue;
@@ -324,21 +338,26 @@ public class PaymentBatchScopeTests
                 var route = lines[i].Trim();
                 checkedRoutes.Add($"{rel} {route}");
                 var body = MethodBodyAfter(lines, i);
-                if (!body.Contains("PaymentBatchScopeErrorAsync") && !body.Contains("BatchScopeErrorAsync"))
+                var guarded = standaloneLoans
+                    ? body.Contains("CanAccessBatchAsync")
+                    : body.Contains("PaymentBatchScopeErrorAsync") || body.Contains("BatchScopeErrorAsync");
+                if (!guarded)
                     missing.Add($"{rel}:{i + 1} {route}");
             }
         }
 
         // Guard the guard: if the scan silently stops matching (a renamed route segment, a reformatted
         // attribute), an empty result would look like success.
-        checkedRoutes.Should().HaveCountGreaterThanOrEqualTo(9,
+        checkedRoutes.Should().HaveCountGreaterThanOrEqualTo(minimumRoutes,
             "the known batch-specific routes must all still be discovered by this scan; found:\n"
             + string.Join('\n', checkedRoutes));
 
+        var ownership = standaloneLoans
+            ? "the company-filtered loan disbursement batch and every constituent loan through CanAccessBatchAsync"
+            : "batch -> run -> PayrollRun.CompanyId through PaymentBatchScopeErrorAsync or BatchScopeErrorAsync";
         missing.Should().BeEmpty(
-            "every batch-specific endpoint must derive the legal entity from batch -> run -> "
-            + "PayrollRun.CompanyId before reading or mutating anything. Missing:\n"
-            + string.Join('\n', missing));
+            "every batch-specific endpoint must authorize " + ownership
+            + " before reading or mutating its payload. Missing:\n" + string.Join('\n', missing));
     }
 
     /// <summary>True when line <paramref name="i"/> begins an action whose route carries a batch id.

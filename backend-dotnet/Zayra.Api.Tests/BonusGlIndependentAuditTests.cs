@@ -120,8 +120,31 @@ public class BonusGlIndependentAuditTests
     private static LoansController Loans(ZayraDbContext db, Guid tid)
     {
         var http = Ctx(tid);
+        ((ClaimsIdentity)http.User.Identity!).AddClaim(new Claim(ClaimTypes.Role, "Finance"));
+        ((ClaimsIdentity)http.User.Identity!).AddClaim(new Claim(ClaimTypes.Role, "HR Manager"));
         return new LoansController(db, new _AudScope())
         { ControllerContext = new ControllerContext { HttpContext = http } };
+    }
+
+    private static async Task<IActionResult> DisburseLoan(
+        ZayraDbContext db, Guid tid, Employee employee, Guid typeId, decimal amount, int installments)
+    {
+        var maker = Loans(db, tid);
+        var created = (await maker.CreateLoan(new CreateLoanRequest(Guid.Empty, employee.FullName,
+            typeId, amount, installments, null, employee.Id), CancellationToken.None))
+            .Should().BeOfType<OkObjectResult>().Subject;
+        var loan = created.Value.Should().BeOfType<Zayra.Api.Application.Finance.EmployeeLoanDto>().Subject;
+        loan.Status.Should().Be("Pending");
+        var approval = await db.LoanApprovals.SingleAsync(x => x.LoanId == loan.Id);
+        (await Loans(db, tid).DecideApproval(loan.Id, approval.Id,
+            new ApprovalDecisionRequest("Approved", "HR approval", null, null, null), CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        (await maker.CreatePaymentBatch(new CreateLoanPaymentBatchRequest(new[] { loan.Id }), CancellationToken.None))
+            .Should().BeOfType<OkObjectResult>();
+        var line = await db.LoanDisbursementLines.SingleAsync(x => x.LoanId == loan.Id);
+        (await Loans(db, tid).ApprovePaymentBatch(line.BatchId, CancellationToken.None))
+            .Should().BeOfType<OkObjectResult>();
+        return await maker.ConfirmPaymentBatchPaid(line.BatchId,
+            new ConfirmLoanPaymentRequest($"BANK-{loan.Id:N}", DateOnly.FromDateTime(DateTime.UtcNow)), CancellationToken.None);
     }
 
     private static AdvancesController Advances(ZayraDbContext db, Guid tid)
@@ -183,7 +206,7 @@ public class BonusGlIndependentAuditTests
         db.EmployeePayrollProfiles.Add(new EmployeePayrollProfile
         {
             TenantId = tid, EmployeeId = e.Id,
-            Iban = "SA4420000001234567891234", MolId = $"MOL-{code}", SalaryCurrency = "SAR",
+            Iban = "SA4420000001234567891234", BankName = "Audit Bank", MolId = $"MOL-{code}", SalaryCurrency = "SAR",
         });
         await db.SaveChangesAsync();
         return e;
@@ -503,12 +526,12 @@ public class BonusGlIndependentAuditTests
             .Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
 
-        // ── LOAN: auto-disbursed on create (RequiresApproval = false). ──
+        // Loans with no application approval still require a separately approved payment batch.
         var loans = Loans(db, tid);
-        (await loans.CreateLoan(new CreateLoanRequest(Guid.Empty, empA.FullName, loanType.Id, 6_000m, 6, null, empA.Id), CancellationToken.None))
+        (await DisburseLoan(db, tid, empA, loanType.Id, 6_000m, 6))
             .Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
-        (await loans.CreateLoan(new CreateLoanRequest(Guid.Empty, empB.FullName, loanType.Id, 8_000m, 8, null, empB.Id), CancellationToken.None))
+        (await DisburseLoan(db, tid, empB, loanType.Id, 8_000m, 8))
             .Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
 
@@ -620,9 +643,8 @@ public class BonusGlIndependentAuditTests
             .Should().ThrowAsync<PeriodClosedException>("company A's period is closed to bonus accrual");
         db.ChangeTracker.Clear();
 
-        await FluentActions.Awaiting(() => loans.CreateLoan(
-                new CreateLoanRequest(Guid.Empty, empA.FullName, loanType.Id, 6_000m, 6, null, empA.Id), CancellationToken.None))
-            .Should().ThrowAsync<PeriodClosedException>("company A's period is closed to loan disbursement");
+        (await DisburseLoan(db, tid, empA, loanType.Id, 6_000m, 6))
+            .Should().BeOfType<UnprocessableEntityObjectResult>("company A's period is closed to loan disbursement");
         db.ChangeTracker.Clear();
 
         await FluentActions.Awaiting(() => advances.Create(
@@ -632,8 +654,8 @@ public class BonusGlIndependentAuditTests
 
         (await Ledger(db, tid)).Should().BeEmpty(
             "the guard throws BEFORE SaveChanges — a closed period must leave no partial journal behind");
-        (await db.EmployeeLoans.IgnoreQueryFilters().CountAsync(x => x.TenantId == tid)).Should().Be(0,
-            "and no operational row may be committed either");
+        (await db.EmployeeLoans.IgnoreQueryFilters().SingleAsync(x => x.TenantId == tid)).Status.Should().Be("Approved",
+            "the approved loan remains awaiting payment when the payment period is closed");
         (await db.SalaryAdvances.IgnoreQueryFilters().CountAsync(x => x.TenantId == tid)).Should().Be(0);
 
         // ── Company B: same period, still open → all three post normally. ──
@@ -641,7 +663,7 @@ public class BonusGlIndependentAuditTests
         (await bonuses.ApproveBatch(batchB.Id, new BatchApproveRequest(null), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>("a per-company close must not freeze the whole group");
         db.ChangeTracker.Clear();
-        (await loans.CreateLoan(new CreateLoanRequest(Guid.Empty, empB.FullName, loanType.Id, 8_000m, 8, null, empB.Id), CancellationToken.None))
+        (await DisburseLoan(db, tid, empB, loanType.Id, 8_000m, 8))
             .Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
         (await advances.Create(new CreateAdvanceRequest(Guid.Empty, empB.FullName, 1_200m, "Installments", 3, null, "rent", empB.Id), CancellationToken.None))
@@ -657,7 +679,7 @@ public class BonusGlIndependentAuditTests
         (await Gl(db, tid).ReopenPeriod(period, coA.Id, new GlPeriodActionRequest("audit correction"), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
-        (await loans.CreateLoan(new CreateLoanRequest(Guid.Empty, empA.FullName, loanType.Id, 6_000m, 6, null, empA.Id), CancellationToken.None))
+        (await DisburseLoan(db, tid, empA, loanType.Id, 6_000m, 6))
             .Should().BeOfType<OkObjectResult>("reopening the period must re-enable posting");
         db.ChangeTracker.Clear();
         (await Ledger(db, tid)).Count(l => l.CompanyId == coA.Id).Should().Be(1);
@@ -693,9 +715,8 @@ public class BonusGlIndependentAuditTests
             .Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
 
-        await FluentActions.Awaiting(() => Loans(db, tid).CreateLoan(
-                new CreateLoanRequest(Guid.Empty, empB.FullName, loanType.Id, 8_000m, 8, null, empB.Id), CancellationToken.None))
-            .Should().ThrowAsync<PeriodClosedException>(
+        (await DisburseLoan(db, tid, empB, loanType.Id, 8_000m, 8))
+            .Should().BeOfType<UnprocessableEntityObjectResult>(
                 "tightening the guard to per-company must NOT weaken a group-wide close");
         db.ChangeTracker.Clear();
 

@@ -158,7 +158,7 @@ public class AuthSeeder : IAuthSeeder
             x.Key.StartsWith("approvals.") || x.Key.StartsWith("notifications.") || x.Key.StartsWith("localization.") ||
             x.Key.StartsWith("performance.") ||
             x.Key is "audit.read" or "manager.read" or "manager.approve" or "reports.read" or "qiwa.read" or
-            "payroll.read" or "payroll.write" or "payroll.approve" or "loans.write"
+            "payroll.read" or "payroll.write" or "payroll.approve" or "loans.read" or "loans.write" or "loans.approve" or "loans.policy_manage"
         ).ToList(), 3, true, cancellationToken);
 
         // Level 4 — Payroll Manager: payroll + finance + employees
@@ -189,7 +189,13 @@ public class AuthSeeder : IAuthSeeder
             "payroll.read", "payroll.write", "loans.read", "approvals.read", "notifications.read", "reports.read"
         }), 6, true, cancellationToken);
 
-        // Level 7 — Finance Approver: finance approvals
+        // Level 7 — standalone loan operator. Assigning the role remains an administrator decision.
+        await EnsureRole(tenantId, "Finance", "Processes separate employee loan payments and receipts", Ps(new[] {
+            "dashboard.read", "employees.read", "loans.read", "loans.write", "loans.approve",
+            "approvals.read", "approvals.decide", "finance.gl.read", "reports.read", "notifications.read"
+        }), 7, true, cancellationToken);
+
+        // Level 8 — Finance Approver: finance approvals
         // payroll.lock reconciles the method-level [Authorize(Roles="...Finance Approver")] intent on the
         // run lock/void/send-back endpoints (financial-controller tier) into the effective-permission model.
         // finance.erp.confirm makes this role the CHECKER of the GL hand-off: Payroll Manager produces the
@@ -199,15 +205,15 @@ public class AuthSeeder : IAuthSeeder
             "dashboard.read", "employees.read", "payroll.read", "payroll.approve", "payroll.lock",
             "loans.read", "loans.approve", "approvals.read", "approvals.decide",
             "finance.gl.read", "payroll.rates.read", "finance.erp.confirm"
-        }), 7, true, cancellationToken);
+        }), 8, true, cancellationToken);
 
-        // Level 8 — Compliance Officer: compliance and contracts
+        // Level 9 — Compliance Officer: compliance and contracts
         await EnsureRole(tenantId, "Compliance Officer", "Manages compliance, contracts and regulatory records", Ps(new[] {
             "dashboard.read", "employees.read", "employees.documents", "organization.read",
             "compliance.read", "compliance.write", "approvals.read", "audit.read", "reports.read", "notifications.read"
-        }), 8, true, cancellationToken);
+        }), 9, true, cancellationToken);
 
-        // Level 9 — Manager: team management and approvals
+        // Level 10 — Manager: team management and approvals
         // approvals.write reconciles Manager's existing role-name reach to POST /approval-requests and
         // POST /approval-workflows/requests (starting an approval request) into the permission model.
         // performance.read/write is the reviewer tier: set and agree goals, write the manager review, run a
@@ -217,47 +223,56 @@ public class AuthSeeder : IAuthSeeder
         await EnsureRole(tenantId, "Manager", "People manager with team oversight and approval authority", Ps(new[] {
             "dashboard.read", "employees.read", "approvals.read", "approvals.write", "approvals.decide", "notifications.read",
             "manager.read", "manager.approve", "ess.read", "ess.write", "leave.read", "leave.approve",
-            "attendance.read", "overtime.read", "overtime.approve", "profile.read",
+            "attendance.read", "overtime.read", "overtime.approve", "profile.read", "loans.read",
             "performance.read", "performance.write"
-        }), 9, true, cancellationToken);
+        }), 10, true, cancellationToken);
 
-        // Level 10 — Supervisor: front-line supervision
+        // Level 11 — Supervisor: front-line supervision
         await EnsureRole(tenantId, "Supervisor", "Front-line supervisor for operational staff", Ps(new[] {
             "dashboard.read", "employees.read", "attendance.read", "attendance.write",
             "manager.read", "manager.approve", "leave.read", "overtime.read", "ess.read", "ess.write", "profile.read"
-        }), 10, true, cancellationToken);
+        }), 11, true, cancellationToken);
 
-        // Level 11 — Recruiter: talent acquisition
+        // Level 12 — Recruiter: talent acquisition
         await EnsureRole(tenantId, "Recruiter", "Recruitment and hiring specialist", Ps(new[] {
             "dashboard.read", "employees.read", "recruitment.read", "recruitment.write",
             "notifications.read", "organization.read", "profile.read"
-        }), 11, true, cancellationToken);
+        }), 12, true, cancellationToken);
 
-        // Level 12 — HR Assistant: limited HR support
+        // Level 13 — HR Assistant: limited HR support
         await EnsureRole(tenantId, "HR Assistant", "Junior HR support with limited write access", Ps(new[] {
             "dashboard.read", "employees.read", "organization.read", "notifications.read",
             "attendance.read", "leave.read", "ess.read", "profile.read", "localization.read"
-        }), 12, true, cancellationToken);
+        }), 13, true, cancellationToken);
 
-        // Level 13 — Auditor: read-only audit
+        // Level 14 — Auditor: read-only audit
         await EnsureRole(tenantId, "Auditor", "Read-only audit and compliance reviewer", Ps(new[] {
             "dashboard.read", "employees.read", "organization.read", "approvals.read",
             "audit.read", "payroll.read", "attendance.read", "leave.read", "compliance.read", "reports.read",
             "qiwa.read"
-        }), 13, true, cancellationToken);
-
-        // Level 14 — Kiosk Operator: attendance kiosk only
-        await EnsureRole(tenantId, "Kiosk Operator", "Restricted to kiosk attendance capture only", Ps(new[] {
-            "attendance.kiosk"
         }), 14, true, cancellationToken);
 
-        // Level 15 — Employee: self-service only
+        // Level 15 — Kiosk Operator: attendance kiosk only
+        await EnsureRole(tenantId, "Kiosk Operator", "Restricted to kiosk attendance capture only", Ps(new[] {
+            "attendance.kiosk"
+        }), 15, true, cancellationToken);
+
+        // Level 16 — Employee: self-service only
         // performance.read opens the Performance module, where the employee self-assesses, acknowledges or
         // appeals their own review and records progress on their own goals. Every list there is limited to
         // their own record by data scope. No performance.write: goals are set by the line manager or HR.
-        await EnsureRole(tenantId, "Employee", "Employee self-service user", Ps(new[] {
-            "dashboard.read", "profile.read", "ess.read", "ess.write", "performance.read"
-        }), 15, true, cancellationToken);
+        var employeeRole = await EnsureRole(tenantId, "Employee", "Employee self-service user", Ps(new[] {
+            "dashboard.read", "profile.read", "ess.read", "ess.write", "performance.read", "loans.self"
+        }), 16, true, cancellationToken);
+        // Repair tenants that booted the original loan-governance branch: loans.read exposes the
+        // company loan book, reports and staff navigation. Employee self-service uses loans.self.
+        var broadLoanReadId = permissions.Single(x => x.Key == "loans.read").Id;
+        var accidentalBroadGrant = employeeRole.RolePermissions.FirstOrDefault(x => x.PermissionId == broadLoanReadId);
+        if (accidentalBroadGrant != null)
+        {
+            employeeRole.RolePermissions.Remove(accidentalBroadGrant);
+            await _db.SaveChangesAsync(cancellationToken);
+        }
 
         // Establishment matrix: seed the default staffing-level catalog here so EVERY tenant
         // provisioning path (platform create/repair, all demo seeders, future ones) gets the
@@ -326,6 +341,7 @@ public class AuthSeeder : IAuthSeeder
             ("payroll.lock", "Payroll", "Lock, void, or send back a payroll run (financial-controller tier)"),
             ("payroll.run_delete", "Payroll", "Hard-delete a payroll run"),
             // Loans & Advances
+            ("loans.self", "Loans", "Read the signed-in employee's own loan and advance records"),
             ("loans.read", "Loans", "Read loan and advance records"),
             ("loans.write", "Loans", "Create loan and advance applications"),
             ("loans.approve", "Loans", "Approve or reject loans and advances"),

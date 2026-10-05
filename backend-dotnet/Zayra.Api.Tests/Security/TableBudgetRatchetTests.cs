@@ -61,8 +61,15 @@ public class TableBudgetRatchetTests
     [Fact]
     public void TheTableCount_IsWhatWeThinkItIs()
     {
-        DeclaredDbSets().Should().HaveCount(323,
-            "the live schema is 323 tables and the approved rebuild target is 76 " +
+        // Separate loan payments require a batch authorization record, frozen payment
+        // instructions, and referenced receipts. Finance owns these monetary records;
+        // retention follows the loan ledger (84 months). Payroll batches cannot carry
+        // them without reintroducing the payroll dependency this workflow removes.
+        // LoanChangeRequest captures maker/checker authorization for policy exceptions,
+        // rescheduling and monetary reversals, not a replacement for the immutable ledger.
+        // HR/Finance own it, with the same 84-month loan-record retention requirement.
+        DeclaredDbSets().Should().HaveCount(327,
+            "the live schema is 327 tables and the approved rebuild target is 76 " +
             "(TARGET_SCHEMA.md). If this number moved, say so in the PR and update it here");
     }
 
