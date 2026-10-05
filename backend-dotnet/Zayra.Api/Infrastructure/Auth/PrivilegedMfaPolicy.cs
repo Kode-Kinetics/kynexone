@@ -282,12 +282,20 @@ public static class PrivilegedMfaPolicy
     {
         var expiry = nowUtc + normalLifetime;
         if (state.Status != PrivilegedMfaStatus.GracePeriod) return expiry;
+        DateTime? cap = null;
         if (state.BreakGlassActive && ActiveBreakGlassUntil(config, nowUtc) is { } glassEnds && glassEnds < expiry)
-            expiry = glassEnds;
+            cap = glassEnds;
         else if (state.EnforceFromUtc is { } enforceFrom && enforceFrom > nowUtc && enforceFrom < expiry)
-            expiry = enforceFrom;
-        return expiry;
+            cap = enforceFrom;
+        if (cap is null) return expiry;
+        // Token validation tolerates JwtClockSkew past `exp`; issue that much earlier so the token is
+        // actually refused AT the cap, not a minute after it.
+        var skewed = cap.Value - JwtClockSkew;
+        return skewed > nowUtc ? skewed : nowUtc;
     }
+
+    /// <summary>The clock skew JWT validation allows (Program.cs TokenValidationParameters).</summary>
+    public static readonly TimeSpan JwtClockSkew = TimeSpan.FromMinutes(1);
 
     /// <summary>Pure decision, unit-tested directly.</summary>
     public static PrivilegedMfaState Evaluate(

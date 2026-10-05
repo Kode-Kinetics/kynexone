@@ -949,7 +949,8 @@ public sealed class PrivilegedMfaEnforcementTests
     {
         var eight = TimeSpan.FromHours(8);
         PrivilegedMfaPolicy.SessionExpiry(PrivilegedMfaPolicy.Evaluate(true, false, Now.AddHours(2), null, Now), null, Now, eight)
-            .Should().Be(Now.AddHours(2));
+            .Should().Be(Now.AddHours(2) - PrivilegedMfaPolicy.JwtClockSkew,
+                "validation tolerates the skew past exp, so the token is issued that much earlier");
         PrivilegedMfaPolicy.SessionExpiry(PrivilegedMfaPolicy.Evaluate(true, false, Now.AddDays(3), null, Now), null, Now, eight)
             .Should().Be(Now + eight);
         PrivilegedMfaPolicy.SessionExpiry(PrivilegedMfaPolicy.Evaluate(true, true, Now.AddHours(2), null, Now), null, Now, eight)
@@ -961,7 +962,10 @@ public sealed class PrivilegedMfaEnforcementTests
             [PrivilegedMfaPolicy.BreakGlassConfigKey] = PrivilegedMfaPolicy.FormatDate(glassEnds),
         }).Build();
         var glass = PrivilegedMfaPolicy.Evaluate(true, false, Past, PrivilegedMfaPolicy.ActiveBreakGlassUntil(config, Now), Now);
-        PrivilegedMfaPolicy.SessionExpiry(glass, config, Now, eight).Should().BeCloseTo(glassEnds, TimeSpan.FromSeconds(1));
+        PrivilegedMfaPolicy.SessionExpiry(glass, config, Now, eight)
+            .Should().BeCloseTo(glassEnds - PrivilegedMfaPolicy.JwtClockSkew, TimeSpan.FromSeconds(1));
+        PrivilegedMfaPolicy.SessionExpiry(PrivilegedMfaPolicy.Evaluate(true, false, Now.AddSeconds(30), null, Now), null, Now, eight)
+            .Should().Be(Now, "a cap closer than the skew issues an already-expired token, never one that outlives it");
     }
 
     [Fact]
@@ -974,8 +978,10 @@ public sealed class PrivilegedMfaEnforcementTests
 
         await using var db = kit.NewDb();
         var body = Body(await Platform(kit, db).Login(new PlatformLoginRequest("owner@platform.test", Password), CancellationToken.None));
-        body.GetProperty("expiresAt").GetDateTime().ToUniversalTime().Should().BeCloseTo(enforceFrom, TimeSpan.FromSeconds(5),
-            "a grace-period session must not outlive the grace period");
+        var expiresAt = body.GetProperty("expiresAt").GetDateTime().ToUniversalTime();
+        expiresAt.Should().BeCloseTo(enforceFrom - PrivilegedMfaPolicy.JwtClockSkew, TimeSpan.FromSeconds(5),
+            "a grace-period session must not outlive the grace period, even with validation's clock skew");
+        (expiresAt + PrivilegedMfaPolicy.JwtClockSkew).Should().BeOnOrBefore(enforceFrom.AddSeconds(1));
     }
 
     // ── TOTP for tests ────────────────────────────────────────────────────────────────────────

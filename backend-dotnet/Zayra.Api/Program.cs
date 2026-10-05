@@ -259,7 +259,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidIssuer = jwtOptions.Issuer,
             ValidAudiences = new[] { jwtOptions.TenantAudience, jwtOptions.PlatformAudience },
             IssuerSigningKey = signingKey,
-            ClockSkew = TimeSpan.FromMinutes(1)
+            ClockSkew = Zayra.Api.Infrastructure.Auth.PrivilegedMfaPolicy.JwtClockSkew
         };
         options.Events = new JwtBearerEvents
         {
