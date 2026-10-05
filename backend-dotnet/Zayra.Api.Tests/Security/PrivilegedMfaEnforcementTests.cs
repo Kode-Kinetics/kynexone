@@ -505,6 +505,50 @@ public sealed class PrivilegedMfaEnforcementTests
                 .PrivilegedMfaEnforceFromUtc.Should().BeNull();
     }
 
+    // ── Enrolment notices ─────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task EnrollingThroughAnEnrolmentToken_EmailsTheAccountOwner()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        await kit.SetPlatformEnforcementDateAsync(Past);
+        await kit.SeedUserAsync("admin@hardening.local", new Pbkdf2PasswordHasher().Hash(Password), "Admin");
+        var token = (await LoginAsync(kit, "admin@hardening.local")).EnrollmentChallenge!.ChallengeToken;
+        var email = new RecordingEmail();
+
+        await using (var db = kit.NewDb())
+        {
+            var mfa = kit.Mfa(db, email);
+            var setup = await mfa.InitiateEnrollmentSetupAsync(token, CancellationToken.None);
+            (await mfa.VerifyEnrollmentSetupAsync(token, new MfaVerifySetupRequest(setup!.TempSecret, "000000"), CancellationToken.None))
+                .Should().BeFalse();
+            email.Sent.Should().BeEmpty("a failed attempt enrols nothing");
+            (await mfa.VerifyEnrollmentSetupAsync(token,
+                new MfaVerifySetupRequest(setup.TempSecret, Totp.Now(setup.TempSecret)), CancellationToken.None)).Should().BeTrue();
+        }
+
+        email.Sent.Should().ContainSingle();
+        email.Sent[0].To.Should().Be("admin@hardening.local");
+        email.Sent[0].TenantId.Should().Be(kit.TenantId, "tenant mail goes through the tenant-explicit relay");
+        email.Sent[0].Subject.Should().Contain("Two-step sign-in was turned on");
+    }
+
+    [Fact]
+    public async Task PlatformEnrolmentThroughAToken_EmailsTheOperator()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        var id = await SeedOperatorAsync(kit, "owner@platform.test");
+        var email = new RecordingEmail();
+        await using var db = kit.NewDb();
+        var mfa = kit.Mfa(db, email);
+        var token = await mfa.CreatePlatformEnrollmentChallengeAsync(id, "127.0.0.1", CancellationToken.None);
+        var setup = await mfa.InitiatePlatformEnrollmentSetupAsync(token, CancellationToken.None);
+        (await mfa.VerifyPlatformEnrollmentSetupAsync(token,
+            new MfaVerifySetupRequest(setup!.TempSecret, Totp.Now(setup.TempSecret)), CancellationToken.None)).Should().NotBeNull();
+
+        email.Sent.Should().ContainSingle().Which.To.Should().Be("owner@platform.test");
+    }
+
     // ── Platform recovery codes ───────────────────────────────────────────────────────────────
 
     /// <summary>Enrols an operator through the real enrolment flow; returns the TOTP secret and codes.</summary>

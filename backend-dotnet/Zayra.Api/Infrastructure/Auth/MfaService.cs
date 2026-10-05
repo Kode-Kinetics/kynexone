@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore.Storage;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Email;
 using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Models;
 
@@ -19,8 +20,14 @@ public class MfaService : IMfaService
     private readonly ITokenService _tokenService;
     private readonly IAuditService _audit;
 
-    public MfaService(ZayraDbContext db, TotpService totp, ITokenService tokenService, IAuditService audit)
+    private readonly IEmailService? _email;
+    private readonly ILogger<MfaService>? _log;
+
+    public MfaService(ZayraDbContext db, TotpService totp, ITokenService tokenService, IAuditService audit,
+        IEmailService? email = null, ILogger<MfaService>? log = null)
     {
+        _email = email;
+        _log = log;
         _db = db;
         _totp = totp;
         _tokenService = tokenService;
@@ -139,6 +146,7 @@ public class MfaService : IMfaService
         var codeValid = _totp.Verify(request.TempSecret, request.TotpCode);
         var encryptedSecret = codeValid ? _totp.EncryptSecret(request.TempSecret) : null;
         var auditId = Guid.NewGuid();
+        (Guid TenantId, string Email, string Name)? recipient = null;
 
         async Task<bool> VerifyOnceAsync(CancellationToken cancellationToken)
         {
@@ -247,10 +255,16 @@ public class MfaService : IMfaService
                 new RequestContext(null, null, graph.Id, graph.TenantId),
                 "{\"via\":\"enrollment_challenge\"}"));
             await _db.SaveChangesAsync(cancellationToken);
+            recipient = (graph.TenantId, graph.Email, graph.FullName);
             return true;
         }
 
-        if (!_db.Database.IsRelational()) return await VerifyOnceAsync(ct);
+        if (!_db.Database.IsRelational())
+        {
+            var enabled = await VerifyOnceAsync(ct);
+            if (enabled) await NotifyFactorEnrolledAsync(recipient, verifiedAtUtc, ct);
+            return enabled;
+        }
         var strategy = _db.Database.CreateExecutionStrategy();
         var succeeded = await strategy.ExecuteInTransactionAsync(
             VerifyOnceAsync,
@@ -259,7 +273,11 @@ public class MfaService : IMfaService
                 .AnyAsync(x => x.Id == auditId, cancellationToken),
             IsolationLevel.ReadCommitted,
             ct);
-        if (succeeded) return true;
+        if (succeeded)
+        {
+            await NotifyFactorEnrolledAsync(recipient, verifiedAtUtc, ct);
+            return true;
+        }
 
         // A successful COMMIT whose acknowledgement was lost is surfaced as default(bool)
         // after verifySucceeded. Reconcile the exact success marker instead of telling the
@@ -862,6 +880,7 @@ public class MfaService : IMfaService
         var codeValid = _totp.Verify(request.TempSecret, request.TotpCode);
         var encryptedSecret = codeValid ? _totp.EncryptSecret(request.TempSecret) : null;
         var auditId = Guid.NewGuid();
+        (string Email, string Name)? recipient = null;
 
         async Task<bool> VerifyOnceAsync(CancellationToken cancellationToken)
         {
@@ -922,6 +941,7 @@ public class MfaService : IMfaService
                 new RequestContext(null, null, null, null),
                 "{\"via\":\"enrollment_challenge\"}"));
             await _db.SaveChangesAsync(cancellationToken);
+            recipient = (pu.Email, pu.FullName);
             return true;
         }
 
@@ -931,11 +951,20 @@ public class MfaService : IMfaService
             _db.PlatformUsers.AsNoTracking().AnyAsync(x => x.Id == envelope.PrincipalId
                 && x.MfaEnabled && x.MfaConfiguredAtUtc == verifiedAtUtc, cancellationToken);
 
-        if (!_db.Database.IsRelational()) return await VerifyOnceAsync(ct) ? recovery.Codes : null;
+        if (!_db.Database.IsRelational())
+        {
+            if (!await VerifyOnceAsync(ct)) return null;
+            await NotifyPlatformFactorEnrolledAsync(recipient, verifiedAtUtc, ct);
+            return recovery.Codes;
+        }
         var strategy = _db.Database.CreateExecutionStrategy();
         var succeeded = await strategy.ExecuteInTransactionAsync(
             VerifyOnceAsync, EnabledByThisCallAsync, IsolationLevel.ReadCommitted, ct);
-        if (succeeded) return recovery.Codes;
+        if (succeeded)
+        {
+            await NotifyPlatformFactorEnrolledAsync(recipient, verifiedAtUtc, ct);
+            return recovery.Codes;
+        }
         _db.ChangeTracker.Clear();
         return codeValid && await EnabledByThisCallAsync(ct) ? recovery.Codes : null;
     }
@@ -986,6 +1015,51 @@ public class MfaService : IMfaService
                 && !x.MfaEnabled && x.MfaSecretEncrypted == null, cancellationToken),
             IsolationLevel.ReadCommitted,
             ct);
+    }
+
+    // ── Enrolment notices ─────────────────────────────────────────────────────
+
+    private static string FactorEnrolledHtml(string name, DateTime atUtc) => $"""
+        <p>Hello {System.Net.WebUtility.HtmlEncode(name)},</p>
+        <p>Two-step sign-in was turned on for your KynexOne account on
+        {atUtc:yyyy-MM-dd HH:mm} UTC. From now on you will be asked for a code from your authenticator app when you sign in.</p>
+        <p><strong>If this was not you</strong>, contact your administrator immediately: someone who knows your
+        password has linked their own authenticator to your account.</p>
+        """;
+
+    /// <summary>
+    /// Best effort, after commit: a factor added through an enrolment token (i.e. right after a password
+    /// sign-in) is exactly what an attacker holding a stolen password would do, so the account owner is
+    /// told. A delivery failure never undoes the enrolment. Logs carry the account id only.
+    /// </summary>
+    private async Task NotifyFactorEnrolledAsync((Guid TenantId, string Email, string Name)? to, DateTime atUtc, CancellationToken ct)
+    {
+        if (_email is null || to is not { } r || string.IsNullOrWhiteSpace(r.Email)) return;
+        try
+        {
+            var result = await _email.DeliverAsync(r.TenantId, r.Email, r.Name,
+                "Two-step sign-in was turned on for your KynexOne account", FactorEnrolledHtml(r.Name, atUtc), cancellationToken: ct);
+            _log?.LogInformation("MFA enrolment notice for a tenant user in tenant {TenantId}: {Outcome}.", r.TenantId, result.Status);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log?.LogWarning(ex, "MFA enrolment notice could not be sent (tenant {TenantId}).", r.TenantId);
+        }
+    }
+
+    private async Task NotifyPlatformFactorEnrolledAsync((string Email, string Name)? to, DateTime atUtc, CancellationToken ct)
+    {
+        if (_email is null || to is not { } r || string.IsNullOrWhiteSpace(r.Email)) return;
+        try
+        {
+            var result = await _email.DeliverPlatformAsync(r.Email, r.Name,
+                "Two-step sign-in was turned on for your KynexOne platform account", FactorEnrolledHtml(r.Name, atUtc), cancellationToken: ct);
+            _log?.LogInformation("MFA enrolment notice for a platform operator: {Outcome}.", result.Status);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log?.LogWarning(ex, "MFA enrolment notice for a platform operator could not be sent.");
+        }
     }
 
     // ── Platform recovery codes ───────────────────────────────────────────────

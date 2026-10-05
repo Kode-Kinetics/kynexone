@@ -84,10 +84,10 @@ internal sealed class AuthHardeningTestKit : IAsyncDisposable
             gate);
     }
 
-    public MfaService Mfa(ZayraDbContext db)
+    public MfaService Mfa(ZayraDbContext db, IEmailService? email = null)
     {
         var tokens = new JwtTokenService(Jwt);
-        return new MfaService(db, Totp, tokens, new AuditService(db));
+        return new MfaService(db, Totp, tokens, new AuditService(db), email);
     }
 
     /// <summary>
@@ -195,4 +195,26 @@ file sealed class NoEmail : IEmailService
         => Task.CompletedTask;
 
     public Task<bool> IsConfiguredAsync(CancellationToken cancellationToken = default) => Task.FromResult(false);
+}
+
+/// <summary>Records every delivery; reports a configured relay so DeliverAsync really sends.</summary>
+internal sealed class RecordingEmail : IEmailService
+{
+    public List<(Guid? TenantId, string To, string Subject)> Sent { get; } = [];
+
+    public Task SendAsync(string toAddress, string toName, string subject, string htmlBody,
+        IReadOnlyList<EmailAttachment>? attachments = null, CancellationToken cancellationToken = default)
+    {
+        Sent.Add((null, toAddress, subject));
+        return Task.CompletedTask;
+    }
+
+    public Task SendAsync(Guid tenantId, string toAddress, string toName, string subject, string htmlBody,
+        IReadOnlyList<EmailAttachment>? attachments = null, CancellationToken cancellationToken = default)
+    {
+        Sent.Add((tenantId, toAddress, subject));
+        return Task.CompletedTask;
+    }
+
+    public Task<bool> IsConfiguredAsync(CancellationToken cancellationToken = default) => Task.FromResult(true);
 }
