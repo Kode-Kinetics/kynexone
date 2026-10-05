@@ -9,8 +9,11 @@
  *                      (LocaleContext.setLocale). Versioned because the old key cannot be trusted.
  *   LEGACY_LOCALE_KEY  'kynexone-locale'. Builds up to Wave 0 wrote it on EVERY mount, so every
  *                      existing user (the Evostel pilot included) has 'en' there without ever
- *                      choosing it. It is ignored: treating it as a choice would stop the tenant's
- *                      default language from ever reaching those users.
+ *                      choosing it; 'en' there is ignored, or the tenant's default language would
+ *                      never reach those users. Those builds never wrote anything else by
+ *                      themselves, so any other supported value was the user's real choice: it is
+ *                      copied to LOCALE_CHOICE_KEY once, when that key is absent (here and in
+ *                      localeResolution.migrateLegacyChoice).
  *   TENANT_LOCALE_KEY  the tenant's default language as LocaleProvider last loaded it, so this
  *                      script can set `dir` before React hydrates. Never a user choice.
  */
@@ -25,7 +28,9 @@ export const TENANT_LOCALE_KEY = 'kynexone-tenant-locale';
  * src/i18n/translations.ts — today `ar` is the only right-to-left locale there.
  */
 export const LOCALE_BOOT = `(function(){try{
-var s=localStorage,l=s.getItem('${LOCALE_CHOICE_KEY}')||s.getItem('${TENANT_LOCALE_KEY}')||'en';
+var s=localStorage,c=s.getItem('${LOCALE_CHOICE_KEY}'),o=s.getItem('${LEGACY_LOCALE_KEY}');
+if(c==null&&o&&/^(ar|fr|es)$/.test(o)){c=o;s.setItem('${LOCALE_CHOICE_KEY}',o);}
+var l=c||s.getItem('${TENANT_LOCALE_KEY}')||'en';
 if(!/^(en|ar|fr|es)$/.test(l))l='en';
 var d={ar:'rtl'}[l]||'ltr';
 document.documentElement.lang=l;document.documentElement.dir=d;

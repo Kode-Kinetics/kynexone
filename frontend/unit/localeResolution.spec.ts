@@ -8,13 +8,17 @@ import { resolveLocale, tenantDefaultLocale } from '../src/i18n/localeResolution
  * hydrated page point in different directions.
  */
 
-const store = (entries: Record<string, string>) => ({ get: (k: string) => entries[k] ?? null });
+/** A fake localStorage; `entries` is mutated, so a test can see what was written. */
+const store = (entries: Record<string, string>) => ({
+  get: (k: string) => entries[k] ?? null,
+  set: (k: string, v: string) => { entries[k] = v; },
+});
 
-/** Runs LOCALE_BOOT against a fake localStorage and <html>; returns what it set. */
+/** Runs LOCALE_BOOT against a fake localStorage (`entries`, mutated) and <html>; returns what it set. */
 function boot(entries: Record<string, string>) {
   const html = { lang: 'en', dir: 'ltr' };
   new Function('localStorage', 'document', LOCALE_BOOT)(
-    { getItem: (k: string) => entries[k] ?? null },
+    { getItem: (k: string) => entries[k] ?? null, setItem: (k: string, v: string) => { entries[k] = v; } },
     { documentElement: html },
   );
   return html;
@@ -27,6 +31,35 @@ test.describe('UI language resolution', () => {
     expect(resolveLocale(s, { loaded: true, defaultLanguage: 'ar' })).toBe('ar');
     // Before paint, with the tenant default cached by an earlier visit.
     expect(boot({ [LEGACY_LOCALE_KEY]: 'en', [TENANT_LOCALE_KEY]: 'ar' })).toEqual({ lang: 'ar', dir: 'rtl' });
+  });
+
+  test('a real legacy Arabic choice survives: legacy ar + tenant en → ar, copied to v2 once', () => {
+    // Old builds wrote only 'en' by themselves, so a legacy 'ar' was the user's own pick.
+    const entries: Record<string, string> = { [LEGACY_LOCALE_KEY]: 'ar' };
+    expect(resolveLocale(store(entries), { loaded: true, defaultLanguage: 'en' })).toBe('ar');
+    expect(entries[LOCALE_CHOICE_KEY]).toBe('ar');
+    // Before paint, too.
+    const early: Record<string, string> = { [LEGACY_LOCALE_KEY]: 'ar', [TENANT_LOCALE_KEY]: 'en' };
+    expect(boot(early)).toEqual({ lang: 'ar', dir: 'rtl' });
+    expect(early[LOCALE_CHOICE_KEY]).toBe('ar');
+  });
+
+  test('legacy en is still not a choice, and is not copied', () => {
+    const entries: Record<string, string> = { [LEGACY_LOCALE_KEY]: 'en' };
+    expect(resolveLocale(store(entries), { loaded: true, defaultLanguage: 'ar' })).toBe('ar');
+    expect(entries[LOCALE_CHOICE_KEY]).toBeUndefined();
+    const early: Record<string, string> = { [LEGACY_LOCALE_KEY]: 'en' };
+    boot(early);
+    expect(early[LOCALE_CHOICE_KEY]).toBeUndefined();
+  });
+
+  test('an existing v2 key wins over the legacy value, and is not overwritten', () => {
+    const entries: Record<string, string> = { [LOCALE_CHOICE_KEY]: 'en', [LEGACY_LOCALE_KEY]: 'ar' };
+    expect(resolveLocale(store(entries), { loaded: true, defaultLanguage: 'ar' })).toBe('en');
+    expect(entries[LOCALE_CHOICE_KEY]).toBe('en');
+    const early: Record<string, string> = { [LOCALE_CHOICE_KEY]: 'en', [LEGACY_LOCALE_KEY]: 'ar' };
+    expect(boot(early)).toEqual({ lang: 'en', dir: 'ltr' });
+    expect(early[LOCALE_CHOICE_KEY]).toBe('en');
   });
 
   test('an explicit choice wins: v2 en + tenant ar → en', () => {
