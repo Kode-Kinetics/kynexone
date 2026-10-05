@@ -312,6 +312,9 @@ builder.Services.AddScoped<IPasswordHasher, Pbkdf2PasswordHasher>();
 // One process-wide bound on concurrent 600k-iteration PBKDF2 work (logins, dummy checks, re-hashes).
 builder.Services.AddSingleton(sp => Zayra.Api.Infrastructure.Auth.PasswordVerificationGate.FromConfiguration(
     sp.GetRequiredService<IConfiguration>()));
+// Per-account attempt and per-address failure budgets, checked before any hashing.
+builder.Services.AddSingleton(sp => Zayra.Api.Infrastructure.Auth.LoginAbuseGuard.FromConfiguration(
+    sp.GetRequiredService<IConfiguration>()));
 builder.Services.AddScoped<ITokenService, JwtTokenService>();
 builder.Services.AddScoped<IAuditService, AuditService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Auth.TotpService>();
@@ -618,13 +621,18 @@ builder.Services.AddScoped<Zayra.Api.Application.CountryPack.ICountryPackResolve
 // Limits are configurable via RateLimit:* in appsettings / env vars.
 // Default policy: login 10 req/60s per IP, refresh 30 req/60s per IP, platform login 5 req/60s per IP.
 var rl = builder.Configuration.GetSection("RateLimit");
+// Partition key: the proxy-asserted client IP when Proxy:ClientIpSecret is configured and presented,
+// otherwise RemoteIpAddress exactly as before (ClientIpResolver).
+var clientIpSecret = builder.Configuration[Zayra.Api.Infrastructure.Http.ClientIpResolver.SecretConfigKey];
+string RateLimitPartitionKey(HttpContext ctx) =>
+    Zayra.Api.Infrastructure.Http.ClientIpResolver.Resolve(ctx, clientIpSecret);
 builder.Services.AddRateLimiter(o =>
 {
     o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 
     o.AddPolicy("auth_login", ctx =>
         RateLimitPartition.GetFixedWindowLimiter(
-            ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            RateLimitPartitionKey(ctx),
             _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit              = rl.GetValue("LoginPermitLimit", 10),
@@ -635,7 +643,7 @@ builder.Services.AddRateLimiter(o =>
 
     o.AddPolicy("auth_refresh", ctx =>
         RateLimitPartition.GetFixedWindowLimiter(
-            ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            RateLimitPartitionKey(ctx),
             _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit              = rl.GetValue("RefreshPermitLimit", 30),
@@ -646,7 +654,7 @@ builder.Services.AddRateLimiter(o =>
 
     o.AddPolicy("platform_login", ctx =>
         RateLimitPartition.GetFixedWindowLimiter(
-            ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            RateLimitPartitionKey(ctx),
             _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit              = rl.GetValue("PlatformLoginPermitLimit", 5),
@@ -661,7 +669,7 @@ builder.Services.AddRateLimiter(o =>
     // could account for the attempt. The credential itself still has an exact five-attempt cap.
     o.AddPolicy("platform_mfa_verify", ctx =>
         RateLimitPartition.GetFixedWindowLimiter(
-            ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            RateLimitPartitionKey(ctx),
             _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit              = rl.GetValue("PlatformMfaVerifyPermitLimit", 10),
@@ -674,7 +682,7 @@ builder.Services.AddRateLimiter(o =>
     // prevent spam / storage-exhaustion since these insert rows without any auth.
     o.AddPolicy("public_write", ctx =>
         RateLimitPartition.GetFixedWindowLimiter(
-            ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            RateLimitPartitionKey(ctx),
             _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit              = rl.GetValue("PublicWritePermitLimit", 5),

@@ -48,6 +48,7 @@ public class PlatformController : ControllerBase
     private readonly IMemoryCache _cache;
     private readonly string _appUrl;
     private readonly PasswordVerificationGate? _passwordGate;
+    private readonly LoginAbuseGuard? _loginAbuse;
 
     /// <summary>
     /// Key read (never written) by the <c>/platform/health</c> distributed-cache probe. Carries the
@@ -68,9 +69,11 @@ public class PlatformController : ControllerBase
         IAccessManagementService accessManagement,
         ILogger<PlatformController> log,
         IMemoryCache cache,
-        PasswordVerificationGate? passwordGate = null)
+        PasswordVerificationGate? passwordGate = null,
+        LoginAbuseGuard? loginAbuse = null)
     {
         _passwordGate = passwordGate;
+        _loginAbuse = loginAbuse;
         _db = db;
         _jwt = jwt.Value;
         _passwordHasher = passwordHasher;
@@ -96,15 +99,34 @@ public class PlatformController : ControllerBase
     [EnableRateLimiting("platform_login")]
     public async Task<IActionResult> Login([FromBody] PlatformLoginRequest req, CancellationToken ct)
     {
+        // Cheap refusals before any hashing (LoginAbuseGuard): per-address failure budget and
+        // per-account attempt budget.
+        var clientIp = _loginAbuse?.ClientIp(HttpContext) ?? HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        if (_loginAbuse is not null)
+        {
+            var now = DateTime.UtcNow;
+            if (_loginAbuse.IsIpBlocked(clientIp, now))
+                return PlatformTooManyAttempts("Too many failed sign-ins from this network. Please wait a few minutes and try again.");
+            if (!_loginAbuse.TryBeginAccountAttempt("platform", "platform", req.Email ?? string.Empty, now))
+                return PlatformTooManyAttempts("Too many sign-in attempts for this account. Please wait a few minutes and try again.");
+        }
         try
         {
-            return await LoginCoreAsync(req, ct);
+            var result = await LoginCoreAsync(req, ct);
+            if (result is UnauthorizedObjectResult or UnauthorizedResult)
+                _loginAbuse?.RecordFailure(clientIp, DateTime.UtcNow);
+            return result;
         }
         catch (PasswordVerificationBusyException ex)
         {
-            Response.Headers.RetryAfter = "2";
-            return StatusCode(StatusCodes.Status429TooManyRequests, new { message = ex.Message });
+            return PlatformTooManyAttempts(ex.Message);
         }
+    }
+
+    private IActionResult PlatformTooManyAttempts(string message)
+    {
+        Response.Headers.RetryAfter = LoginAbuseGuard.JitteredRetryAfterSeconds();
+        return StatusCode(StatusCodes.Status429TooManyRequests, new { message });
     }
 
     /// <summary>Same PBKDF2 work as a real check, so a miss is not distinguishable by timing.</summary>

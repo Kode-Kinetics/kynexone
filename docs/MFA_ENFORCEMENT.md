@@ -66,3 +66,32 @@ recovery codes yet; their lost-device path is the platform reset below.
 
 Every factor change is audited (`auth.mfa.enabled`, `platform.auth.tenant_mfa_disabled`,
 `platform.auth.mfa_reset_by_owner`, `platform.auth.mfa_enabled`, …).
+
+## Sign-in abuse controls
+
+Checked before any password hashing (`LoginAbuseGuard`), on tenant and platform sign-in:
+
+| Control | Default | Config |
+|---|---|---|
+| Attempts per account (tenant + normalised email) | 10 per 15 min → 429 | `Auth__LoginThrottle__AccountAttempts`, `…AccountWindowMinutes` |
+| Failed sign-ins per client IP | 20 per 10 min → 429 | `Auth__LoginThrottle__IpFailures`, `…IpWindowMinutes` |
+| Concurrent PBKDF2 (600k) computations | 1, wait up to 4.5 s → 429 | `Auth__PasswordVerification__MaxConcurrency`, `…MaxWaitMs` |
+
+Every 429 carries a jittered `Retry-After` of 2–6 s. State is in-process (one API instance).
+The per-IP rate limits in `render.yaml` (`RateLimit__LoginPermitLimit`) are unchanged; once real
+client IPs are on (below), 30/min per IP is a reasonable value to set there.
+
+### Real client IP (off by default)
+
+Browsers reach the API through the Vercel proxy, so the API sees Vercel's address and every user
+shares one IP bucket. To partition on the real client IP:
+
+1. Generate a secret: `openssl rand -base64 48`.
+2. Vercel (frontend project, Production): set `PROXY_CLIENT_IP_SECRET` to it and redeploy. The
+   Next.js middleware then forwards `X-KynexOne-Client-IP` and `X-KynexOne-Proxy-Secret` on `/api/*`.
+3. Render (API service): set `Proxy__ClientIpSecret` to the same value in the dashboard (not in
+   `render.yaml` — it is a secret) and deploy.
+4. Check: sign in, then confirm the API's login activity shows your own IP, not Vercel's.
+
+Without a matching secret the headers are ignored and `RemoteIpAddress` is used, as before. To roll
+back, remove either variable. Rotate by setting the new value on Render first, then Vercel.

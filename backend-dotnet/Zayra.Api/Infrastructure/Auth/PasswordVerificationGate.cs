@@ -15,24 +15,25 @@ public sealed class PasswordVerificationBusyException()
 /// other request. Callers wait briefly for a slot; when none frees up they get a 429 instead of
 /// queueing unboundedly. Registered as a singleton; tests construct services without one (no gate).</para>
 ///
-/// Config: <c>Auth:PasswordVerification:MaxConcurrency</c> (default 2) and
-/// <c>Auth:PasswordVerification:MaxWaitMs</c> (default 1500).
+/// Config: <c>Auth:PasswordVerification:MaxConcurrency</c> (default 1 — one PBKDF2 at a time on the
+/// half-CPU Starter instance) and <c>Auth:PasswordVerification:MaxWaitMs</c> (default 4500 — about
+/// eight queued verifications before a 429).
 /// </summary>
 public sealed class PasswordVerificationGate : IDisposable
 {
     private readonly SemaphoreSlim _slots;
     private readonly TimeSpan _maxWait;
 
-    public PasswordVerificationGate(int maxConcurrency = 2, TimeSpan? maxWait = null)
+    public PasswordVerificationGate(int maxConcurrency = 1, TimeSpan? maxWait = null)
     {
         if (maxConcurrency < 1) throw new ArgumentOutOfRangeException(nameof(maxConcurrency));
         _slots = new SemaphoreSlim(maxConcurrency, maxConcurrency);
-        _maxWait = maxWait ?? TimeSpan.FromMilliseconds(1500);
+        _maxWait = maxWait ?? TimeSpan.FromMilliseconds(4500);
     }
 
     public static PasswordVerificationGate FromConfiguration(IConfiguration config) => new(
-        Math.Clamp(config.GetValue("Auth:PasswordVerification:MaxConcurrency", 2), 1, 64),
-        TimeSpan.FromMilliseconds(Math.Clamp(config.GetValue("Auth:PasswordVerification:MaxWaitMs", 1500), 0, 30_000)));
+        Math.Clamp(config.GetValue("Auth:PasswordVerification:MaxConcurrency", 1), 1, 64),
+        TimeSpan.FromMilliseconds(Math.Clamp(config.GetValue("Auth:PasswordVerification:MaxWaitMs", 4500), 0, 30_000)));
 
     /// <summary>Runs <paramref name="work"/> inside a slot, or throws <see cref="PasswordVerificationBusyException"/>.</summary>
     public async Task<T> RunAsync<T>(Func<T> work, CancellationToken ct)

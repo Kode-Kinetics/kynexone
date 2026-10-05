@@ -12,9 +12,18 @@ public class AuthController : ControllerBase
 {
     private readonly IAuthService _authService;
 
-    public AuthController(IAuthService authService)
+    private readonly Zayra.Api.Infrastructure.Auth.LoginAbuseGuard? _abuse;
+
+    public AuthController(IAuthService authService, Zayra.Api.Infrastructure.Auth.LoginAbuseGuard? abuse = null)
     {
         _authService = authService;
+        _abuse = abuse;
+    }
+
+    private IActionResult TooManyAttempts(string message)
+    {
+        Response.Headers.RetryAfter = Zayra.Api.Infrastructure.Auth.LoginAbuseGuard.JitteredRetryAfterSeconds();
+        return StatusCode(StatusCodes.Status429TooManyRequests, new { message });
     }
 
     [HttpPost("login")]
@@ -22,6 +31,17 @@ public class AuthController : ControllerBase
     [EnableRateLimiting("auth_login")]
     public async Task<IActionResult> Login(LoginRequest request, CancellationToken cancellationToken)
     {
+        // Refusals that cost no hashing: an address over its failure budget, or an account over its
+        // attempt budget (LoginAbuseGuard). Both answer 429 before any PBKDF2 work.
+        var clientIp = _abuse?.ClientIp(HttpContext) ?? HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        if (_abuse is not null)
+        {
+            var now = DateTime.UtcNow;
+            if (_abuse.IsIpBlocked(clientIp, now))
+                return TooManyAttempts("Too many failed sign-ins from this network. Please wait a few minutes and try again.");
+            if (!_abuse.TryBeginAccountAttempt("tenant", request.TenantSlug ?? string.Empty, request.Email ?? string.Empty, now))
+                return TooManyAttempts("Too many sign-in attempts for this account. Please wait a few minutes and try again.");
+        }
         try
         {
             var result = await _authService.LoginAsync(request, GetContext(), cancellationToken);
@@ -37,11 +57,14 @@ public class AuthController : ControllerBase
                 });
             return Ok(result.Tokens);
         }
-        catch (UnauthorizedAccessException ex) { return Unauthorized(new { message = ex.Message }); }
+        catch (UnauthorizedAccessException ex)
+        {
+            _abuse?.RecordFailure(clientIp, DateTime.UtcNow);
+            return Unauthorized(new { message = ex.Message });
+        }
         catch (Zayra.Api.Infrastructure.Auth.PasswordVerificationBusyException ex)
         {
-            Response.Headers.RetryAfter = "2";
-            return StatusCode(StatusCodes.Status429TooManyRequests, new { message = ex.Message });
+            return TooManyAttempts(ex.Message);
         }
     }
 
