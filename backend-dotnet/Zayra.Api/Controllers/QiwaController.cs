@@ -79,6 +79,32 @@ public class QiwaController : ControllerBase
         });
     }
 
+    /// <summary>Machine-readable code for "nothing can be sent to Qiwa from this server, so nothing is queued".</summary>
+    public const string SyncUnavailableCode = "qiwa_sync_unavailable";
+
+    public const string SyncUnavailableMessage =
+        "Nothing is sent to Qiwa from this server, so there is nothing to queue or retry. Use the Qiwa data "
+        + "check to see which employee records are incomplete, and record changes in Qiwa itself.";
+
+    /// <summary>
+    /// Sync, bulk sync and retry only make sense when the partner-agreement adapter is running. Without it,
+    /// a queued item could only ever end in a dead letter (and flip the connection to ConfigurationError for
+    /// want of credentials no one can enter), which reads as "Qiwa checks need attention" with nothing to
+    /// fix. So they are refused up front: 501 from the refused-live adapter (its own code), 409 otherwise.
+    /// </summary>
+    private IActionResult? RefuseIfNothingCanBeSent()
+    {
+        if (RefuseIfLiveAdapterRefused() is { } refusedLive) return refusedLive;
+        if (_adapter.IsLiveIntegration) return null;
+        return Conflict(new
+        {
+            code = SyncUnavailableCode,
+            message = SyncUnavailableMessage,
+            runtimeAdapter = _adapter.AdapterName,
+            filesWithQiwa = false,
+        });
+    }
+
     /// <summary>
     /// 501 when the caller asks to be live and this process cannot be. Null when the request is
     /// honourable. Deliberately NOT a 400: the request is well-formed and would be correct against
@@ -298,7 +324,7 @@ public class QiwaController : ControllerBase
     public async Task<IActionResult> EnqueueSync(int employeeId, [FromQuery] string direction = "Push", CancellationToken cancellationToken = default)
     {
         if (!HasPermission("qiwa.sync")) return Forbid();
-        if (RefuseIfLiveAdapterRefused() is { } refusedLive) return refusedLive;
+        if (RefuseIfNothingCanBeSent() is { } refused) return refused;
 
         if (direction is not ("Push" or "Pull"))
             return BadRequest(new { error = "invalid_direction", message = "Direction must be 'Push' or 'Pull'." });
@@ -334,7 +360,7 @@ public class QiwaController : ControllerBase
     public async Task<IActionResult> EnqueueBulkSync(CancellationToken cancellationToken)
     {
         if (!HasPermission("qiwa.sync")) return Forbid();
-        if (RefuseIfLiveAdapterRefused() is { } refusedLive) return refusedLive;
+        if (RefuseIfNothingCanBeSent() is { } refused) return refused;
 
         var result = await _qiwa.EnqueueBulkSyncAsync(
             RequireTenant(), "ManualBulk", GetUserId(), cancellationToken);
@@ -356,7 +382,7 @@ public class QiwaController : ControllerBase
     public async Task<IActionResult> RetryDeadLetter(Guid syncLogId, CancellationToken cancellationToken)
     {
         if (!HasPermission("qiwa.sync")) return Forbid();
-        if (RefuseIfLiveAdapterRefused() is { } refusedLive) return refusedLive;
+        if (RefuseIfNothingCanBeSent() is { } refused) return refused;
 
         try
         {

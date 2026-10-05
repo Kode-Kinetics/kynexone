@@ -229,7 +229,11 @@ public static class ProductionReadinessEvidence
             .Select(_ => new
             {
                 QiwaPending = db.QiwaSyncLogs.Count(x => x.Status == QiwaSyncLogStatuses.Pending || x.Status == QiwaSyncLogStatuses.Processing),
-                QiwaDeadLetter = db.QiwaSyncLogs.Count(x => x.Status == QiwaSyncLogStatuses.DeadLetter),
+                // Credential-only dead letters (written before sync refused to queue unsendable work) are not
+                // an actionable check; see QiwaSyncLogStatuses.IsCredentialsDeadLetter.
+                QiwaDeadLetter = db.QiwaSyncLogs.Count(x => x.Status == QiwaSyncLogStatuses.DeadLetter
+                    && x.DeadLetterReason != QiwaSyncLogStatuses.MissingClientIdReason
+                    && x.DeadLetterReason != QiwaSyncLogStatuses.MissingSecretReason),
                 NotificationsPending = db.NotificationDeliveries.Count(x => x.Outcome == DeliveryOutcomes.Queued || x.Outcome == DeliveryOutcomes.Sending),
                 // Terminal failures that are NOT dead letters: refused on the first try, or unconfirmed.
                 NotificationsFailed = db.NotificationDeliveries.Count(x => x.Outcome == DeliveryOutcomes.Failed || x.Outcome == DeliveryOutcomes.Unknown),

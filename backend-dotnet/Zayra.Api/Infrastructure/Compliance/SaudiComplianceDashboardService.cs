@@ -85,7 +85,10 @@ public sealed class SaudiComplianceDashboardService
 
         var failedCount = await _db.QiwaSyncLogs
             .CountAsync(l => l.TenantId == tenantId &&
-                             (l.Status == QiwaSyncLogStatuses.Failed || l.Status == QiwaSyncLogStatuses.DeadLetter), ct);
+                             (l.Status == QiwaSyncLogStatuses.Failed
+                              || (l.Status == QiwaSyncLogStatuses.DeadLetter
+                                  && l.DeadLetterReason != QiwaSyncLogStatuses.MissingClientIdReason
+                                  && l.DeadLetterReason != QiwaSyncLogStatuses.MissingSecretReason)), ct);
 
         // F09: "Last sync" used to be the newest "Success" row — under the sandbox adapter, a
         // simulation. The real filing and the simulator run are now separate fields.

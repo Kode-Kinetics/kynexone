@@ -197,6 +197,19 @@ public static class QiwaSyncLogStatuses
     public static string Normalise(string status, string? responsePayloadJson) =>
         IsSimulated(status, responsePayloadJson) ? Simulated : status;
 
+    /// <summary>Dead-letter reasons the worker writes when a tenant has no usable Qiwa credentials.</summary>
+    public const string MissingClientIdReason = "Missing QIWA client ID — credentials not configured for this tenant.";
+    public const string MissingSecretReason = "QIWA client secret missing or could not be decrypted.";
+
+    /// <summary>
+    /// A dead letter caused only by absent credentials. Before the sync endpoints refused to queue work no
+    /// server could send, the data-check deployment wrote these for every queued push. They are not a data
+    /// problem anyone can fix in an employee record, so they are not counted as "Qiwa checks need attention".
+    /// </summary>
+    public static bool IsCredentialsDeadLetter(string? status, string? deadLetterReason) =>
+        string.Equals(status, DeadLetter, StringComparison.Ordinal)
+        && (deadLetterReason == MissingClientIdReason || deadLetterReason == MissingSecretReason);
+
     /// <summary>One plain-language label per status.</summary>
     public static string Describe(string status, string? responsePayloadJson) => Normalise(status, responsePayloadJson) switch
     {
