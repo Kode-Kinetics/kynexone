@@ -60,6 +60,10 @@ if (MigrateOnlyEntryPoint.ShouldHandle(args))
 
 var builder = WebApplication.CreateBuilder(args);
 
+// JSON console logs (traceId + tenantId via scopes) outside Development; OpenTelemetry OTLP export
+// only when OTEL_EXPORTER_OTLP_ENDPOINT is set — otherwise nothing is registered. See Observability.
+builder.AddKynexObservability();
+
 // Recovery and invitation credentials are delivered as browser links. A
 // non-development deployment must never emit a relative or insecure link into
 // email/admin responses; fail the release before any credential can be issued.
@@ -770,6 +774,7 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 app.UseAuthentication();
+app.UseTenantLogScope();
 // Per-route audience segregation (defence-in-depth): reject platform-audience tokens on tenant
 // /api/* routes so a platform token can never exercise the cross-tenant read bypass on tenant data.
 // Placed AFTER UseAuthentication (User is populated) and BEFORE UseAuthorization (runs first).
