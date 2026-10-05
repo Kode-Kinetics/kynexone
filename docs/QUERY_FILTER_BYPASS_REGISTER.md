@@ -92,6 +92,7 @@ decide; no foreign-company employee data leaves the method.
 |---|---|---|---|---|---|
 | `Infrastructure/Approvals/ApprovalWorkflowService.cs` (`SubjectUserIdsAsync`) | 1 | SU | `NullableTenantWide(Employees)` — logins linked to the approval's subject employee | Dropped deliberately; the approval itself is read through the normal filters | `ApprovalSeparationOfDutiesGapTests.TheSubject_IsBarred_WhenTheirOwnEmployeeRowIsInAnotherCompany` |
 | `Infrastructure/Approvals/ApprovalWorkflowService.cs` (`ResolveSubjectEmployeeIdAsync`) | 1 | SU | `TenantWide(EmployeeChangeRequests)` — subject of an employee-change approval with no `RequestedForEmployeeId` | Dropped deliberately (the entity is tenant-owned only) | `ApprovalSeparationOfDutiesGapTests.TheSubject_IsBarred_ForAnEmployeeChangeWhoseApprovalCarriesNoSubject` |
+| `Infrastructure/Leave/LeaveService.cs` (`EnsureMakerCheckerAsync`) | 1 | SU | `NullableTenantWide(Employees)` — is the approver the leave request's employee | Dropped deliberately; the leave request itself is read through the normal filters | `ApprovalSeparationOfDutiesGapTests.LeaveScreen_AManagerWhoseRowIsInAnotherCompany_CannotApproveTheirOwnLeave` |
 | `Controllers/Finance/AdvancesController.cs` (`IsAdvanceEmployeeAsync`) | 1 | SU | `NullableTenantWide(Employees)` — is the caller the advance's employee | Dropped deliberately, as `LoansController.IsLoanBorrowerAsync` | `ApprovalSubjectSeparationTests.Advances_TheEmployee_CannotApproveAnAdvanceSomeoneElseRaised` |
 
 ### 4.3 Worker-context reads (no ambient tenant; tenant pinned in predicate)

@@ -198,6 +198,66 @@ public class ApprovalSeparationOfDutiesGapTests
         (await db.LeaveRequests.AsNoTracking().SingleAsync(r => r.Id == leaveId)).Status.Should().Be("Approved");
     }
 
+    [Fact]
+    public async Task LeaveScreen_AManagerWhoseRowIsInAnotherCompany_CannotApproveTheirOwnLeave()
+    {
+        // HR filed the leave under company A; the manager has since moved to company B. Scoped to A, a
+        // company-filtered lookup of the leave's employee finds nothing and the subject bar failed open.
+        var options = Options();
+        var tenantId = Guid.NewGuid();
+        var managerUserId = Guid.NewGuid();
+        var companyA = MakeCompany(tenantId, "Alpha");
+        var companyB = MakeCompany(tenantId, "Beta");
+        Guid leaveId;
+        int managerEmployeeId;
+        await using (var seed = new ZayraDbContext(options))
+        {
+            var leaveType = new LeaveType { TenantId = tenantId, Code = "AL", NameEn = "Annual Leave", IsActive = true };
+            var manager = new Employee
+            {
+                TenantId = tenantId, CompanyId = companyA.Id, UserAccountId = managerUserId, EmployeeCode = "MGR-X",
+                FullName = "Moved Manager", Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-3),
+            };
+            var workflow = new ApprovalWorkflow { TenantId = tenantId, Code = "HR-ONLY", Name = "HR", EntityName = nameof(LeaveRequest), IsDefault = true, IsActive = true };
+            workflow.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, WorkflowId = workflow.Id, StepOrder = 1, StepName = "HR", ApproverType = "HR", IsFinalStep = true });
+            seed.AddRange(companyA, companyB, leaveType, manager, workflow);
+            await seed.SaveChangesAsync();
+            var start = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(7));
+            while (WorkWeekConfig.GccDefault.IsWeekend(start.DayOfWeek)) start = start.AddDays(1);
+            seed.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
+            {
+                TenantId = tenantId, EmployeeId = manager.Id, EmployeeName = manager.FullName,
+                LeaveTypeId = leaveType.Id, LeaveTypeName = leaveType.NameEn, Year = start.Year, Entitled = 21,
+            });
+            await seed.SaveChangesAsync();
+            var submitted = await new LeaveService(seed, new ApprovalRouter(seed)).SubmitRequestAsync(tenantId, new LeaveRequest
+            {
+                TenantId = tenantId, EmployeeId = manager.Id, LeaveTypeId = leaveType.Id, StartDate = start, EndDate = start, DayType = "Full",
+            }, requestedByUserId: Guid.NewGuid());   // HR filed it, so the requester check alone would pass
+            leaveId = submitted.Id;
+            managerEmployeeId = manager.Id;
+            // The transfer: the employee row moves to B; the request and its projection stay under A.
+            seed.ChangeTracker.Clear();
+            (await seed.Employees.SingleAsync(e => e.Id == manager.Id)).CompanyId = companyB.Id;
+            (await seed.LeaveRequests.SingleAsync(r => r.Id == leaveId)).CompanyId = companyA.Id;
+            foreach (var projection in await seed.ApprovalRequests.Where(a => a.EntityId == leaveId.ToString() || a.Id == leaveId).ToListAsync())
+                projection.CompanyId = companyA.Id;
+            await seed.SaveChangesAsync();
+        }
+
+        var accessor = new SwitchableAccessor { HttpContext = ScopedTo(tenantId, managerUserId, companyA.Id) };
+        await using var db = new ZayraDbContext(options, accessor);
+        (await db.Employees.AnyAsync(e => e.Id == managerEmployeeId)).Should().BeFalse("precondition: the manager's own row is outside their company scope");
+        (await db.LeaveRequests.AnyAsync(r => r.Id == leaveId)).Should().BeTrue("precondition: the leave request itself is in scope");
+
+        var result = await WithPrincipal(new LeaveRequestsController(db, new LeaveService(db, new ApprovalRouter(db)), new OrgScope(), TestNotifications.For(db)),
+            tenantId, managerUserId, "Admin").Approve(leaveId, new ApproveLeaveRequest("my own leave"), CancellationToken.None);
+
+        var bad = result.Should().BeOfType<BadRequestObjectResult>().Subject;
+        JsonSerializer.Serialize(bad.Value).Should().Contain("Maker-checker violation");
+        (await db.LeaveRequests.AsNoTracking().SingleAsync(r => r.Id == leaveId)).Status.Should().NotBe("Approved");
+    }
+
     // ── (4) Loans and Offers: one person, one step ───────────────────────────────
 
     [Fact]
@@ -258,6 +318,38 @@ public class ApprovalSeparationOfDutiesGapTests
         JsonSerializer.Serialize(refused.Value).Should().Contain("offer_earlier_step_approver");
         Assert.Equal("Pending", (await db.OfferApprovals.SingleAsync(x => x.Id == stepTwo.Id)).Status);
         Assert.Equal("PendingApproval", (await db.OfferLetters.SingleAsync()).Status);
+    }
+
+    [Fact]
+    public async Task Offers_NamingSomeoneWhoAlreadyApprovedAStep_AsANewStepsApprover_IsRefused()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var author = Guid.NewGuid();
+        var role = new Role { TenantId = tenantId, Name = "HR Manager", NormalizedName = "HR MANAGER", IsActive = true };
+        var approver = new User
+        {
+            TenantId = tenantId, Email = "head@example.test", NormalizedEmail = "HEAD@EXAMPLE.TEST", FullName = "Head of Eng",
+            Status = "Active", IsActive = true,
+        };
+        approver.UserRoles.Add(new UserRole { UserId = approver.Id, RoleId = role.Id, Role = role });
+        var applicationId = Guid.NewGuid();
+        var offer = new OfferLetter
+        {
+            TenantId = tenantId, ApplicationId = applicationId, CandidateName = "Layla Hassan", OfferedJobTitle = "Engineer",
+            OfferedDepartment = "Technology", StartDate = new DateOnly(2026, 11, 1), Status = "PendingApproval",
+        };
+        var approved = new OfferApproval { TenantId = tenantId, OfferLetterId = offer.Id, ApplicationId = applicationId, StepOrder = 1, ApproverName = "Head of Eng", ApproverUserId = approver.Id, Status = "Approved" };
+        db.AddRange(role, approver, offer, approved);
+        db.RecruitmentAuditLogs.Add(OfferRules.AuditRow(tenantId, offer.Id, OfferRules.CreatedAction, author, "Author"));
+        await db.SaveChangesAsync();
+        var controller = WithPrincipal(new OffersController(db, new GapNoLetters(), new RecruitmentService(db)), tenantId, author, "HR Manager");
+
+        var result = await controller.AddApproval(offer.Id, new AddOfferApprovalRequest("Head of Eng", approver.Id, "HR Manager"), CancellationToken.None);
+
+        var conflict = Assert.IsType<ConflictObjectResult>(result);
+        JsonSerializer.Serialize(conflict.Value).Should().Contain("offer_approver_already_named");
+        Assert.Equal(1, await db.OfferApprovals.CountAsync());
     }
 
     // ── fixture ──────────────────────────────────────────────────────────────────
