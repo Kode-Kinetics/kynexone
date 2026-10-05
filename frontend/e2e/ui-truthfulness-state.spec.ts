@@ -92,7 +92,17 @@ test.describe('browserless UI truthfulness contracts', () => {
 
   test('pre-auth preview and capability claims are qualified', () => {
     expect(LOGIN_PREVIEW_DISCLOSURE).toContain('Illustrative sample data');
-    expect(LOGIN_CAPABILITIES.find((item) => item.includes('Qiwa'))).toContain('integration-ready');
+    // WS3: no unbacked Saudi claim before sign-in. Mudad takes only the bank-signed file and there is no
+    // verified Qiwa API, so the login says what the product does: a bank file with WPS fields, a Qiwa
+    // data check, and evidence tracking for Mudad.
+    expect(LOGIN_CAPABILITIES.find((item) => item.includes('Qiwa'))).toBe('Qiwa data checks & Mudad evidence tracking');
+    expect(LOGIN_CAPABILITIES.find((item) => item.includes('WPS'))).toBe('Bank payroll files with WPS fields (ANB)');
+    const login = read('src/components/LoginMarketing.tsx');
+    for (const claim of ["'Mudad file'", "'ملف مدد'", "'Mudad'", "'مدد'", "'Qiwa'", 'Mudad WPS XML exporter', 'the Mudad \'', 'live sync']) {
+      expect(login, `login marketing must not claim ${claim}`).not.toContain(claim);
+    }
+    expect(login).toContain("'ANB payroll file'");
+    expect(login).toContain("'Qiwa data check'");
     expect(LOGIN_CAPABILITIES.find((item) => item.includes('Hijri'))).toContain('aware');
     /* These three used to pin Tailwind utilities on the old panel-grid
        sign-in page: overflow-x-hidden, an lg: two-column grid, and a
@@ -596,11 +606,24 @@ test.describe('browserless withheld establishment spend contracts', () => {
 
 test.describe('browserless outbound-integration truthfulness contracts', () => {
   test('outbound integrations never read as delivered or filed when they were not (F09)', () => {
-    // Qiwa: only a positive "live" from the server is Live. Absent (older API) is a simulation.
-    expect(qiwaModeLabel(true)).toBe('Live');
+    // Qiwa: a data check, never "Live". Only a positive partner flag from the server changes the label,
+    // and even then it never says Live, Connected, Synced or Filed.
+    expect(qiwaModeLabel(true)).toBe('Qiwa partner integration (agreement on file)');
     expect(qiwaModeLabel(false)).toBe(QIWA_SIMULATED_LABEL);
-    expect(qiwaModeLabel(undefined)).toBe('Simulated (sandbox)');
-    expect(qiwaConnectionLabel('Simulated')).toBe('Simulated (sandbox)');
+    expect(qiwaModeLabel(undefined)).toBe('Qiwa data check only (nothing sent to Qiwa)');
+    expect(qiwaConnectionLabel('Simulated')).toBe(QIWA_SIMULATED_LABEL);
+    // A stored "Connected" row is not believed unless the running server is a partner integration.
+    expect(qiwaConnectionLabel('Connected')).toBe(QIWA_SIMULATED_LABEL);
+    expect(qiwaConnectionLabel('Connected', false)).toBe(QIWA_SIMULATED_LABEL);
+    for (const status of ['Simulated', 'Connected', 'Disconnected', 'NotConfigured', 'ConfigurationError', 'ApiError', 'Synced', 'whatever']) {
+      for (const live of [undefined, false]) {
+        const label = qiwaConnectionLabel(status, live);
+        expect(label, `${status}/${live}`).not.toMatch(/synced|connected|\bLive\b|filed with qiwa/i);
+      }
+    }
+    for (const live of [true, false, undefined]) {
+      expect(qiwaModeLabel(live)).not.toMatch(/synced|connected|\bLive\b|filed with qiwa/i);
+    }
 
     // Scheduled reports: SMTP can confirm a relay accepted it, nothing more; not-set-up and captured
     // are neither success nor failure.
@@ -620,9 +643,30 @@ test.describe('browserless outbound-integration truthfulness contracts', () => {
 
     const dashboard = read('src/views/SaudiComplianceDashboard.tsx');
     expect(dashboard).toContain('qiwa-simulation-notice');
-    expect(dashboard).toContain('Last filed with Qiwa');
+    expect(dashboard).not.toContain('Last filed with Qiwa');
     expect(dashboard).not.toContain('<dt className="text-slate-400">Last sync</dt>');
-    expect(dashboard).toContain('{qiwaConnectionLabel(status)}');
+    expect(dashboard).toContain('{qiwaConnectionLabel(status, live)}');
+    expect(dashboard).toContain("{qiwa.isLiveIntegration === true && (");
+
+    // WS3: the Qiwa screens never print a sync/connection claim for the sandbox, and the OAuth form
+    // (with its "Qiwa Developer Portal → My Apps" hunt for secrets) is behind the operator flag.
+    const config = read('src/views/SaudiComplianceConfig.tsx');
+    expect(config).not.toContain('My Apps');
+    expect(config).not.toContain('Developer Portal');
+    expect(config).not.toContain('never <strong>Synced</strong>');
+    expect(config).toContain('{credentialFormEnabled && (');
+    expect(config).toContain('{qiwaConnectionLabel(status, live)}');
+    for (const source of [config, dashboard]) {
+      expect(source).not.toMatch(/>\s*(Synced|Connected|Live)\s*</);
+      expect(source).not.toContain('Ready for Sync');
+      expect(source).not.toContain('Filed with Qiwa');
+    }
+
+    // WS3: the KSA XML export is an internal register, never a "WPS/Mudad" file, and Accepted needs evidence.
+    const payroll = read('src/views/PayrollPage.tsx');
+    expect(payroll).toContain('Generate payroll register (internal — not a bank/WPS file)');
+    expect(payroll).toContain("form.status === 'Accepted' && !form.evidenceFile");
+    expect(payroll).toContain('payrollApi.uploadWpsEvidence');
 
     const health = read('app/platform/system-health/page.tsx');
     expect(health).toContain('delivery-health-unavailable');

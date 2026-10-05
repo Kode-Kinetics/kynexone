@@ -13,7 +13,7 @@ import {
   payrollApi,
   type PayrollRun, type PayrollSlip, type PayrollValidationResult,
   type SalaryStructure, type EmployeeSalaryStructure, type Payslip,
-  type PayrollPaymentBatch, type PayrollPaymentRecord,
+  type PayrollPaymentBatch, type PayrollPaymentRecord, type WpsEvidenceKind,
   type PayrollApproval, type PayrollSummary,
   type PayrollGLJournal, type PayrollReconciliation, type FinalSettlementResult, type FinalSettlementListRow,
   type PayrollCompany, type PayrollOverview, type PayrollReadiness,
@@ -2493,7 +2493,7 @@ function BankWpsTab() {
       await payrollApi.generateWpsFile(batchId);
     } catch (e) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setError(msg ?? 'WPS file generation failed.');
+      setError(msg ?? 'File generation failed.');
     }
     payrollApi.listPaymentBatches(runId).then(setBatches).catch(() => {});
   };
@@ -2546,8 +2546,9 @@ function BankWpsTab() {
                   </div>
                   <p className="mt-1 text-xs text-slate-400">{b.paymentMethod} · {fmtAmt(b.totalAmount, b.currency)}</p>
                   {b.status !== 'FileGenerated' && (
-                    <button type="button" onClick={e => { e.stopPropagation(); generateWps(b.id); }} className={`mt-1.5 ${btn.sm} h-6 px-2 text-xs`}>
-                      Generate WPS/SIF
+                    <button type="button" onClick={e => { e.stopPropagation(); generateWps(b.id); }} className={`mt-1.5 ${btn.sm} h-6 px-2 text-xs`}
+                      title={b.isSaudi ? 'For review only. The Saudi bank payroll file is the ANB Connect instruction.' : undefined}>
+                      {b.isSaudi ? 'Generate payroll register (internal — not a bank/WPS file)' : 'Generate WPS/SIF (not verified with any gateway)'}
                     </button>
                   )}
                 </div>
@@ -2592,6 +2593,16 @@ function BankWpsTab() {
           )}
         </div>
       </div>
+      {selectedBatch?.isSaudi && (
+        <div className="flex items-start gap-2 rounded-lg bg-slate-50 px-4 py-2.5 text-sm text-slate-600 dark:bg-white/5 dark:text-slate-300">
+          <Landmark className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>
+            Saudi bank payroll file: the <strong>ANB Connect payroll instruction</strong> (with WPS fields) is the file to send to the bank.
+            It appears below once bank export is switched on for this company. Mudad accepts only the WPS file your bank signs —
+            keep the bank&apos;s output file or a Mudad screenshot as evidence before marking the batch Accepted.
+          </span>
+        </div>
+      )}
       {selectedBatch && <SaudiBankExportGate key={selectedBatch.id} batchId={selectedBatch.id} employeeIds={records.map(r => r.employeeId)} />}
     </div>
   );
@@ -2603,7 +2614,8 @@ function PaymentTrackingTab() {
   type FinanceActionForm = { reference: string; date: string; group: 'GOSI' | 'TAX' | 'LOAN' | 'All'; reason: string };
   const [batches, setBatches] = useState<PayrollPaymentBatch[]>([]);
   const [loading, setLoading] = useState(true);
-  const [wpsForms, setWpsForms] = useState<Record<string, { status: string; reference: string; notes: string }>>({});
+  type WpsForm = { status: string; reference: string; notes: string; evidenceKind: WpsEvidenceKind; evidenceFile: File | null };
+  const [wpsForms, setWpsForms] = useState<Record<string, WpsForm>>({});
   const [wpsSaving, setWpsSaving] = useState<string | null>(null);
   const [financeSaving, setFinanceSaving] = useState<string | null>(null);
   const [financeForms, setFinanceForms] = useState<Record<string, FinanceActionForm>>({});
@@ -2629,20 +2641,31 @@ function PaymentTrackingTab() {
       default: return [];
     }
   };
-  const emptyWpsForm = { status: '', reference: '', notes: '' };
-  const setWpsForm = (batchId: string, patch: Partial<{ status: string; reference: string; notes: string }>) =>
+  const emptyWpsForm: WpsForm = { status: '', reference: '', notes: '', evidenceKind: 'bank_output_file', evidenceFile: null };
+  const setWpsForm = (batchId: string, patch: Partial<WpsForm>) =>
     setWpsForms(prev => ({ ...prev, [batchId]: { ...emptyWpsForm, ...(prev[batchId] ?? {}), ...patch } }));
   const updateWps = async (batch: PayrollPaymentBatch) => {
     const form = wpsForms[batch.id] ?? emptyWpsForm;
     if (!form.status) return;
+    // Accepted is recorded only against stored proof: the bank's WPS output file or a Mudad
+    // compliance screenshot/PDF. The server hashes the file and refuses Accepted without it.
+    if (form.status === 'Accepted' && !form.evidenceFile) {
+      notifyApiError({ response: { data: { message: 'Attach the bank\'s WPS output file or a Mudad compliance screenshot/PDF before marking the batch Accepted.' } } });
+      return;
+    }
     setWpsSaving(batch.id);
     try {
+      let evidenceId: string | undefined;
+      if (form.status === 'Accepted' && form.evidenceFile) {
+        evidenceId = (await payrollApi.uploadWpsEvidence(batch.id, form.evidenceKind, form.evidenceFile)).evidenceId;
+      }
       await payrollApi.updateWpsStatus(batch.id, {
         status: form.status,
         reference: form.reference || undefined,
         notes: form.notes || undefined,
+        evidenceId,
       });
-      setWpsForms(prev => ({ ...prev, [batch.id]: { status: '', reference: '', notes: '' } }));
+      setWpsForms(prev => ({ ...prev, [batch.id]: emptyWpsForm }));
       loadBatches();
     } catch (e) { notifyApiError(e); }
     finally { setWpsSaving(null); }
@@ -2677,7 +2700,7 @@ function PaymentTrackingTab() {
       {batches.length > 0 && (
         <div className="grid grid-cols-3 gap-4">
           <KpiCard label="Total Batches" value={batches.length} icon={WalletCards} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
-          <KpiCard label="WPS Files Generated" value={fileGenerated} icon={CheckCircle2} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
+          <KpiCard label="Bank / payroll files generated" value={fileGenerated} icon={CheckCircle2} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
           <KpiCard label="Total Amount" value={totalLabel} sub={totalLabel === 'Mixed currencies' ? perCurrency(totals) : undefined} icon={TrendingUp} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
         </div>
       )}
@@ -2709,6 +2732,7 @@ function PaymentTrackingTab() {
                     <div className="space-y-1">
                       <StatusBadge status={b.wpsStatus || 'Draft'} />
                       {b.wpsSubmissionReference && <p className="text-[11px] text-slate-500">{b.wpsSubmissionReference}</p>}
+                      {(b.acceptanceEvidenceCount ?? 0) > 0 && <p className="text-[11px] text-emerald-600 dark:text-emerald-400">Evidence on record: {b.acceptanceEvidenceCount} file{b.acceptanceEvidenceCount === 1 ? '' : 's'}</p>}
                       {b.wpsRejectionReason && <p className="max-w-48 truncate text-[11px] text-rose-500">{b.wpsRejectionReason}</p>}
                     </div>
                   </td>
@@ -2724,8 +2748,29 @@ function PaymentTrackingTab() {
                           onChange={e => setWpsForm(b.id, { status: e.target.value })}
                         >
                           <option value="">Next status</option>
-                          {allowedWpsNext(b.wpsStatus || 'Draft').map(s => <option key={s} value={s}>{s}</option>)}
+                          {allowedWpsNext(b.wpsStatus || 'Draft').map(s => <option key={s} value={s}>{s === 'Accepted' ? 'Accepted (needs evidence)' : s}</option>)}
                         </select>
+                        {(wpsForms[b.id]?.status ?? '') === 'Accepted' && (
+                          <div className="grid gap-1.5 rounded-lg bg-slate-50 p-2 dark:bg-white/5">
+                            <select
+                              aria-label={`Evidence type for ${b.batchNumber}`}
+                              className={sel}
+                              value={wpsForms[b.id]?.evidenceKind ?? 'bank_output_file'}
+                              onChange={e => setWpsForm(b.id, { evidenceKind: e.target.value as WpsEvidenceKind, evidenceFile: null })}
+                            >
+                              <option value="bank_output_file">Bank WPS output file (upload it unopened)</option>
+                              <option value="mudad_compliance_screenshot">Mudad compliance screenshot or PDF</option>
+                            </select>
+                            <input
+                              type="file"
+                              aria-label={`Evidence file for ${b.batchNumber}`}
+                              className="text-xs"
+                              accept={(wpsForms[b.id]?.evidenceKind ?? 'bank_output_file') === 'mudad_compliance_screenshot' ? '.png,.jpg,.jpeg,.pdf' : undefined}
+                              onChange={e => setWpsForm(b.id, { evidenceFile: e.target.files?.[0] ?? null })}
+                            />
+                            <p className="text-[11px] text-slate-500">The file is stored with its SHA-256 fingerprint. A status alone is not proof that Mudad accepted the file.</p>
+                          </div>
+                        )}
                         <div className="grid grid-cols-[1fr_auto] gap-2">
                           <input
                             className={inp}

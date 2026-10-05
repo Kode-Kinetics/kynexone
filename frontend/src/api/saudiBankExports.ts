@@ -34,6 +34,10 @@ export interface SaudiBankExportSettings {
   companyName: string;
   narrative: string;
   batchType: string;
+  /** ANB auto-WPS: ANB builds and uploads the signed WPS file to Mudad. Off by default. */
+  autoWpsUpload: boolean;
+  /** Establishment national unified number (10 digits). Required when autoWpsUpload is on. */
+  nationalUnifiedNo: string;
 }
 
 export interface SaudiBankExportFile {

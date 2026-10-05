@@ -48,6 +48,8 @@ type Copy = {
   company: string; runStatus: string; format: string; bank: string; channel: string; source: string;
   reviewedOn: string; acceptance: string; disclaimerTitle: string; disclaimer: string; zipNote: string;
   legacyNote: string;
+  autoWpsUpload: string; autoWpsHelp: string; nationalUnifiedNo: string; nationalUnifiedNoHelp: string; unifiedDigits: string;
+  molDigits: string; molPlaceholder: string;
   setupTitle: string; setupHelp: string; molEstablishmentId: string; molHelp: string;
   mainAccountNumber: string; mainAccountHelp: string; organizationName: string;
   organizationAddress: (n: number) => string; companyName: string; narrative: string; batchType: string;
@@ -85,11 +87,18 @@ const EN: Copy = {
   disclaimerTitle: 'This does not pay anyone',
   disclaimer: 'Generating these files moves no money and submits nothing to ANB. Pass the files to your approved ANB Connect integration/operator for submission and authorisation under your bank agreement. Bank acceptance of this file layout has not been verified — this is not a certified format, and it is not the ANB corporate-portal (WPY) upload or a format for other Saudi banks.',
   zipNote: 'The download is a zip for transport only. ANB Connect takes header.csv and body.csv as two separate files — extract them before uploading.',
-  legacyNote: 'Separate from the "Legacy WPS/SIF" output in the batch list, which is internal and unverified.',
+  legacyNote: 'This is your Saudi bank payroll file. The "Payroll register (internal — not a bank/WPS file)" in the batch list is for review only — never send it to a bank or Mudad.',
+  autoWpsUpload: 'Ask ANB to upload the WPS file to Mudad for us (auto-WPS)',
+  autoWpsHelp: 'When on, ANB builds and signs the WPS file from this instruction and uploads it to Mudad. Requires the national unified number. Check with ANB that auto-WPS is enabled on your account.',
+  nationalUnifiedNo: 'National unified number',
+  nationalUnifiedNoHelp: 'Exactly 10 digits, as shown in Qiwa (usually starts with 7).',
+  unifiedDigits: 'Must be exactly 10 digits (0–9).',
+  molDigits: 'Digits only, optionally one hyphen between the labour-office and sequence numbers (for example 7-1234567).',
+  molPlaceholder: 'This is a placeholder (all zeros), not a real establishment ID.',
   setupTitle: 'Employer setup (saved per company)',
   setupHelp: 'Enter these once. They are your account and establishment facts as registered with ANB, not login credentials. Nothing is filled in automatically.',
   molEstablishmentId: 'MOL establishment ID',
-  molHelp: '2–15 characters, as registered with the Ministry.',
+  molHelp: '2–15 characters: labour-office number and sequence number, as shown in Qiwa (for example 7-1234567).',
   mainAccountNumber: 'ANB main account number',
   mainAccountHelp: 'Exactly 16 digits — your ANB employer account number, not an IBAN.',
   organizationName: 'Organisation name',
@@ -106,7 +115,7 @@ const EN: Copy = {
   noExportPerm: 'Your account may lack the payroll export permission; the server will refuse validation or generation if so.',
   batchTitle: 'This batch',
   batchReference: 'Batch number',
-  batchReferenceHelp: '1–20 digits. Must be unique for this employer bank account across the workspace; also check references used outside KynexOne.',
+  batchReferenceHelp: '1–16 digits. This is the WPS file reference: it must never repeat for this establishment, including on voided runs; also check references used outside KynexOne.',
   paymentDate: 'Credit value date',
   paymentDateHelp: 'Date the bank should credit employees.',
   validate: 'Validate',
@@ -142,7 +151,7 @@ const EN: Copy = {
   formulaPrefix: 'Cannot start with =, +, - or @.',
   edgeSpaces: 'Remove leading or trailing spaces.',
   accountDigits: 'Must be exactly 16 digits (0–9).',
-  refDigits: 'Must be 1–20 digits (0–9).',
+  refDigits: 'Must be 1–16 digits (0–9).',
   dateRequired: 'Choose a date.',
   fixFields: 'Fix the highlighted fields.',
   genericError: 'The request failed. Please try again.',
@@ -169,7 +178,14 @@ const AR: Copy = {
   disclaimerTitle: 'هذا لا يدفع لأحد',
   disclaimer: 'إنشاء هذه الملفات لا يحوّل أي أموال ولا يرسل شيئًا إلى البنك العربي الوطني. سلّم الملفات إلى مشغّل أو تكامل ANB Connect المعتمد لديك للإرسال والتفويض وفق اتفاقيتك مع البنك. لم يتم التحقق من قبول البنك لهذا التنسيق — ليست صيغة معتمدة، وليست صيغة رفع بوابة الشركات (WPY) ولا صيغة لبنوك سعودية أخرى.',
   zipNote: 'الملف المضغوط للنقل فقط. يستقبل ANB Connect الملفين header.csv و body.csv بشكل منفصل — استخرجهما قبل الرفع.',
-  legacyNote: 'منفصل عن مخرجات "WPS/SIF القديمة" في قائمة الدفعات، وهي مخرجات داخلية غير موثّقة.',
+  legacyNote: 'هذا هو ملف الرواتب البنكي السعودي. أما "سجل الرواتب (داخلي — ليس ملفًا بنكيًا أو ملف حماية أجور)" في قائمة الدفعات فهو للمراجعة فقط — لا ترسله إلى البنك أو منصة مدد.',
+  autoWpsUpload: 'اطلب من البنك العربي الوطني رفع ملف حماية الأجور إلى مدد نيابةً عنا',
+  autoWpsHelp: 'عند التفعيل يُعدّ البنك ملف حماية الأجور الموقّع من هذه التعليمات ويرفعه إلى مدد. يتطلب الرقم الوطني الموحد. تأكد من تفعيل الخدمة على حسابك لدى البنك.',
+  nationalUnifiedNo: 'الرقم الوطني الموحد',
+  nationalUnifiedNoHelp: '10 أرقام بالضبط كما يظهر في منصة قوى (يبدأ عادةً بالرقم 7).',
+  unifiedDigits: 'يجب أن يكون 10 أرقام بالضبط (0–9).',
+  molDigits: 'أرقام فقط، مع شرطة واحدة اختيارية بين رقم مكتب العمل والرقم التسلسلي (مثل 7-1234567).',
+  molPlaceholder: 'هذه قيمة مؤقتة (أصفار)، وليست رقم منشأة حقيقيًا.',
   setupTitle: 'إعدادات صاحب العمل (تُحفظ لكل شركة)',
   setupHelp: 'أدخلها مرة واحدة. هي بيانات حسابك ومنشأتك المسجّلة لدى البنك، وليست بيانات دخول. لا يُملأ أي حقل تلقائيًا.',
   molEstablishmentId: 'رقم المنشأة لدى وزارة الموارد البشرية',
@@ -190,7 +206,7 @@ const AR: Copy = {
   noExportPerm: 'قد لا يملك حسابك صلاحية تصدير الرواتب؛ وسيرفض الخادم التحقق أو الإنشاء في هذه الحالة.',
   batchTitle: 'هذه الدفعة',
   batchReference: 'رقم الدفعة',
-  batchReferenceHelp: 'من 1 إلى 20 رقمًا، ويجب ألا يتكرر بين دفعات هذه الشركة المصدّرة.',
+  batchReferenceHelp: 'من 1 إلى 16 رقمًا. هذا هو مرجع ملف حماية الأجور ويجب ألا يتكرر لهذه المنشأة أبدًا، بما في ذلك المسيرات الملغاة.',
   paymentDate: 'تاريخ قيمة الإيداع',
   paymentDateHelp: 'التاريخ الذي يودع فيه البنك الرواتب.',
   validate: 'تحقق',
@@ -226,7 +242,7 @@ const AR: Copy = {
   formulaPrefix: 'لا يمكن أن يبدأ بـ = أو + أو - أو @.',
   edgeSpaces: 'احذف المسافات في البداية أو النهاية.',
   accountDigits: 'يجب أن يكون 16 رقمًا بالضبط (0–9).',
-  refDigits: 'يجب أن يكون من 1 إلى 20 رقمًا (0–9).',
+  refDigits: 'يجب أن يكون من 1 إلى 16 رقمًا (0–9).',
   dateRequired: 'اختر تاريخًا.',
   fixFields: 'صحّح الحقول المحددة.',
   genericError: 'فشل الطلب. حاول مرة أخرى.',
@@ -235,13 +251,13 @@ const AR: Copy = {
 
 // ── Client-side checks (mirror the contract; the server remains authoritative) ─
 
-type SettingsKey = Exclude<keyof SaudiBankExportSettings, 'formatId'>;
+type SettingsKey = Exclude<keyof SaudiBankExportSettings, 'formatId' | 'autoWpsUpload'>;
 type BatchKey = keyof SaudiBankExportRequest;
 
 const EMPTY_SETTINGS: SaudiBankExportSettings = {
   formatId: '', molEstablishmentId: '', mainAccountNumber: '', organizationName: '',
   organizationAddress1: '', organizationAddress2: '', organizationAddress3: '',
-  companyName: '', narrative: '', batchType: '',
+  companyName: '', narrative: '', batchType: '', autoWpsUpload: false, nationalUnifiedNo: '',
 };
 const SETTINGS_KEYS = Object.keys(EMPTY_SETTINGS) as (keyof SaudiBankExportSettings)[];
 const FREE_TEXT_35: SettingsKey[] = [
@@ -265,8 +281,13 @@ function checkFreeText(v: string, min: number, max: number, c: Copy): string | n
 function checkSettings(s: SaudiBankExportSettings, c: Copy): Partial<Record<keyof SaudiBankExportSettings, string>> {
   const out: Partial<Record<keyof SaudiBankExportSettings, string>> = {};
   if (!s.formatId) out.formatId = c.required;
-  const mol = checkFreeText(s.molEstablishmentId, 2, 15, c);
+  // [MOL-ESTBID] 2–15 chars: digits, optionally one hyphen; never a placeholder. Server is authoritative.
+  const mol = checkFreeText(s.molEstablishmentId, 2, 15, c)
+    ?? (!/^[0-9]+(-[0-9]+)?$/.test(s.molEstablishmentId) ? c.molDigits
+      : /^[0-]+$/.test(s.molEstablishmentId) ? c.molPlaceholder : null);
   if (mol) out.molEstablishmentId = mol;
+  if (s.autoWpsUpload && !s.nationalUnifiedNo) out.nationalUnifiedNo = c.required;
+  else if (s.nationalUnifiedNo && !/^[0-9]{10}$/.test(s.nationalUnifiedNo)) out.nationalUnifiedNo = c.unifiedDigits;
   if (!s.mainAccountNumber) out.mainAccountNumber = c.required;
   else if (!/^[0-9]{16}$/.test(s.mainAccountNumber)) out.mainAccountNumber = c.accountDigits;
   for (const k of FREE_TEXT_35) {
@@ -280,7 +301,7 @@ function checkSettings(s: SaudiBankExportSettings, c: Copy): Partial<Record<keyo
 function checkBatch(b: SaudiBankExportRequest, c: Copy): Partial<Record<BatchKey, string>> {
   const out: Partial<Record<BatchKey, string>> = {};
   if (!b.batchReference) out.batchReference = c.required;
-  else if (!/^[0-9]{1,20}$/.test(b.batchReference)) out.batchReference = c.refDigits;
+  else if (!/^[0-9]{1,16}$/.test(b.batchReference)) out.batchReference = c.refDigits;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(b.paymentDate)) out.paymentDate = c.dateRequired;
   return out;
 }
@@ -293,9 +314,11 @@ function sameSettings(a: SaudiBankExportSettings | null, b: SaudiBankExportSetti
 function normaliseSettings(raw: Partial<SaudiBankExportSettings> | null | undefined): SaudiBankExportSettings {
   const out = { ...EMPTY_SETTINGS };
   for (const k of SETTINGS_KEYS) {
+    if (k === 'autoWpsUpload') continue;
     const v = raw?.[k];
     out[k] = typeof v === 'string' ? v : '';
   }
+  out.autoWpsUpload = raw?.autoWpsUpload === true;
   return out;
 }
 
@@ -452,7 +475,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds }: { batchId: string
     setDraft((d) => (d.formatId ? d : { ...d, formatId: formats[0].id }));
   }, [load.status, formats]);
 
-  const setField = useCallback((k: keyof SaudiBankExportSettings, v: string) => {
+  const setField = useCallback((k: keyof SaudiBankExportSettings, v: string | boolean) => {
     setDraft((d) => ({ ...d, [k]: v }));
     setNotice('');
   }, []);
@@ -706,6 +729,15 @@ export function SaudiBankExportPanel({ batchId, employeeIds }: { batchId: string
             {textInput('organizationAddress2', c.organizationAddress(2))}
             {textInput('organizationAddress3', c.organizationAddress(3))}
             {textInput('narrative', c.narrative)}
+            <div className="sm:col-span-2">
+              <label className="flex items-start gap-2 text-xs text-slate-700 dark:text-slate-300" htmlFor={fid('autoWpsUpload')}>
+                <input id={fid('autoWpsUpload')} type="checkbox" className="mt-0.5" checked={draft.autoWpsUpload}
+                  onChange={(e) => setField('autoWpsUpload', e.target.checked)} aria-describedby={`${fid('autoWpsUpload')}-help`} />
+                <span className="font-medium">{c.autoWpsUpload}</span>
+              </label>
+              <p id={`${fid('autoWpsUpload')}-help`} className="mt-1 text-[11px] text-slate-400">{c.autoWpsHelp}</p>
+            </div>
+            {draft.autoWpsUpload && textInput('nationalUnifiedNo', c.nationalUnifiedNo, { help: c.nationalUnifiedNoHelp, ltr: true, numeric: true })}
           </div>
           <div className="mt-3 flex flex-wrap items-center gap-3">
             <button type="submit" className={btn.primary} disabled={busy !== null} aria-describedby={busy ? fid('save-reason') : undefined}>

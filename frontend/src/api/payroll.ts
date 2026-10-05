@@ -235,6 +235,27 @@ export interface PayrollPaymentBatch {
   wpsSubmissionReference: string | null;
   wpsRejectionReason: string | null;
   createdAtUtc: string;
+  /** Stored Mudad/WPS acceptance evidence for this batch. Accepted needs at least one. */
+  acceptanceEvidenceCount?: number;
+  /** True when the run's legal entity is Saudi: the bank file is the ANB instruction. */
+  isSaudi?: boolean;
+  /** What the "generate" button below actually produces, in plain words. */
+  generatedFileLabel?: string;
+}
+
+export type WpsEvidenceKind = 'bank_output_file' | 'mudad_compliance_screenshot';
+
+export interface WpsEvidence {
+  evidenceId: string;
+  batchId: string;
+  kind: WpsEvidenceKind;
+  kindLabel: string;
+  sha256: string;
+  sizeBytes: number;
+  contentType: string;
+  fileName: string;
+  note: string | null;
+  uploadedAtUtc: string;
 }
 
 export interface PayrollPaymentRecord {
@@ -696,8 +717,22 @@ export const payrollApi = {
   generateWpsFile: (batchId: string) =>
     client.post<WPSFileBatch>(`/api/payroll/payment-batches/${batchId}/wps-file`).then((r) => r.data),
 
-  updateWpsStatus: (batchId: string, body: { status: string; reference?: string; notes?: string }) =>
+  updateWpsStatus: (batchId: string, body: { status: string; reference?: string; notes?: string; evidenceId?: string }) =>
     client.post<{ batchId: string; wpsStatus: string }>(`/api/payroll/payment-batches/${batchId}/wps-status`, body).then((r) => r.data),
+
+  /** Stores proof of Mudad/WPS acceptance. The server hashes the bytes it receives (SHA-256). */
+  uploadWpsEvidence: (batchId: string, kind: WpsEvidenceKind, file: File, note?: string) => {
+    const form = new FormData();
+    form.append('kind', kind);
+    form.append('file', file);
+    if (note) form.append('note', note);
+    return client.post<WpsEvidence>(`/api/payroll/payment-batches/${batchId}/wps-evidence`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }).then((r) => r.data);
+  },
+
+  listWpsEvidence: (batchId: string) =>
+    client.get<WpsEvidence[]>(`/api/payroll/payment-batches/${batchId}/wps-evidence`).then((r) => r.data),
 
   settlePaymentBatch: (batchId: string, body: { reference?: string; paidDate?: string }) =>
     client.post<{ batchId: string; runId: string; wpsStatus: string; settled: number }>(`/api/payroll/payment-batches/${batchId}/settle`, body).then((r) => r.data),

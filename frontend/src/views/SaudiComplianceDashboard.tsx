@@ -134,7 +134,7 @@ function fmtDateTime(s: string | null): string {
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
 }
 
-function ConnectionBadge({ status }: { status: string }) {
+function ConnectionBadge({ status, live }: { status: string; live?: boolean | null }) {
   const map: Record<string, string> = {
     Connected:          'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400',
     // Amber, not green: a simulator completing is not a connection to Qiwa.
@@ -146,8 +146,8 @@ function ConnectionBadge({ status }: { status: string }) {
     ConfigurationError: 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400',
   };
   return (
-    <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${map[status] ?? 'bg-slate-100 text-slate-600'}`}>
-      {qiwaConnectionLabel(status)}
+    <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${(status === 'Connected' && live !== true ? map.Simulated : map[status]) ?? 'bg-slate-100 text-slate-600'}`}>
+      {qiwaConnectionLabel(status, live)}
     </span>
   );
 }
@@ -435,8 +435,8 @@ function QiwaCard({ qiwa }: { qiwa: QiwaSection }) {
   return (
     <SectionCard
       icon={Wifi}
-      title="QIWA"
-      badge={<ConnectionBadge status={qiwa.featureEnabled ? qiwa.connectionStatus : 'NotConfigured'} />}
+      title="Qiwa data check"
+      badge={<ConnectionBadge status={qiwa.featureEnabled ? qiwa.connectionStatus : 'NotConfigured'} live={qiwa.isLiveIntegration} />}
     >
       <div className="space-y-4">
         {!qiwa.featureEnabled ? (
@@ -448,39 +448,46 @@ function QiwaCard({ qiwa }: { qiwa: QiwaSection }) {
                 data-testid="qiwa-simulation-notice"
                 className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/20"
               >
-                <strong>{qiwaModeLabel(qiwa.isLiveIntegration)}.</strong> This server runs the Qiwa simulator.
-                Sync results are practice runs: no employee record has been sent to Qiwa or MHRSD.
+                <strong>{qiwaModeLabel(qiwa.isLiveIntegration)}.</strong> This checks your employee records against
+                what Qiwa requires. Nothing is sent to Qiwa or MHRSD — record contract and employee changes in Qiwa itself.
               </p>
             )}
             <dl className="grid grid-cols-2 gap-2 text-xs">
+              {/* API credentials only mean something with a partner integration; otherwise the row
+                  invited customers to go and find secrets for a path that sends nothing. */}
+              {qiwa.isLiveIntegration === true && (
+                <div>
+                  <dt className="text-slate-400">Partner API credentials</dt>
+                  <dd className={`font-semibold ${qiwa.credentialConfigured ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                    {qiwa.credentialConfigured ? 'Recorded' : 'Not recorded'}
+                  </dd>
+                </div>
+              )}
               <div>
-                <dt className="text-slate-400">Credentials</dt>
-                <dd className={`font-semibold ${qiwa.credentialConfigured ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
-                  {qiwa.credentialConfigured ? 'Configured' : 'Not Set'}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-slate-400">Blocked</dt>
+                <dt className="text-slate-400">Failing the data check</dt>
                 <dd className={`font-semibold ${qiwa.blockedFromSync > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-200'}`}>
                   {qiwa.blockedFromSync}
                 </dd>
               </div>
               <div>
-                <dt className="text-slate-400">Failed syncs</dt>
+                <dt className="text-slate-400">Attempts needing attention</dt>
                 <dd className={`font-semibold ${qiwa.failedSyncCount > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-slate-800 dark:text-slate-200'}`}>
                   {qiwa.failedSyncCount}
                 </dd>
               </div>
-              <div>
-                {/* Only the live adapter's filings count here. "—" means nothing has been filed. */}
-                <dt className="text-slate-400">Last filed with Qiwa</dt>
-                <dd className="text-slate-600 dark:text-slate-300" data-testid="qiwa-last-filed">{fmtDate(qiwa.lastSuccessfulSync)}</dd>
-              </div>
+              {/* Only a partner-agreement integration can have a confirmed update; without one the row
+                  is not shown at all rather than showing an empty "last filed" date. */}
+              {qiwa.isLiveIntegration === true && (
+                <div>
+                  <dt className="text-slate-400">Last update confirmed by the Qiwa partner API</dt>
+                  <dd className="text-slate-600 dark:text-slate-300" data-testid="qiwa-last-filed">{fmtDate(qiwa.lastSuccessfulSync)}</dd>
+                </div>
+              )}
               {qiwa.lastSimulatedSync && (
                 <div className="col-span-2">
-                  <dt className="text-slate-400">Last simulated run</dt>
+                  <dt className="text-slate-400">Last data check run</dt>
                   <dd className="text-amber-700 dark:text-amber-400">
-                    {fmtDate(qiwa.lastSimulatedSync)} · {qiwaModeLabel(false)}, nothing filed
+                    {fmtDate(qiwa.lastSimulatedSync)} · {qiwaModeLabel(false)}
                   </dd>
                 </div>
               )}
@@ -488,7 +495,7 @@ function QiwaCard({ qiwa }: { qiwa: QiwaSection }) {
 
             <div className="space-y-1">
               <div className="flex justify-between gap-2 text-xs text-slate-500">
-                <span>Readiness</span>
+                <span>Passing the Qiwa data check</span>
                 <span data-testid="qiwa-readiness-figure">
                   {readinessCaption(
                     qiwa.readinessPercent,
@@ -512,7 +519,7 @@ function QiwaCard({ qiwa }: { qiwa: QiwaSection }) {
               <div
                 tabIndex={0}
                 role="region"
-                aria-label="Employees blocked from Qiwa sync"
+                aria-label="Employees failing the Qiwa data check"
                 className="max-h-40 overflow-auto rounded-lg border border-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 dark:border-white/[0.07]"
               >
                 <table className="w-full text-start text-xs">
