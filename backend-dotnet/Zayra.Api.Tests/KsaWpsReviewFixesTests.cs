@@ -123,7 +123,10 @@ public class KsaWpsReviewFixesTests
     public void Debt_classification_reads_the_line_source_not_its_name()
     {
         WageDeductionClassification.IsDebtType(Line("ANYTHING", "Loan", 1m)).Should().BeTrue();
-        WageDeductionClassification.IsDebtType(Line("ADJ_X", "Adjustment", 1m)).Should().BeTrue();
+        WageDeductionClassification.IsDebtType(Line("ADJ_PENALTY", "Adjustment", 1m)).Should().BeTrue();
+        WageDeductionClassification.IsDebtType(Line("ADJ_DAMAGES", "Adjustment", 1m)).Should().BeTrue();
+        WageDeductionClassification.IsDebtType(Line("ADJ_CORRECTION", "Adjustment", 1m))
+            .Should().BeFalse("only debt-like adjustment types count toward the Art. 92/93 cap");
         WageDeductionClassification.IsDebtType(new PayrollDeduction { ComponentCode = "CUSTOM", Source = "Salary", GlDriverKey = "DED:LOAN" }).Should().BeTrue();
         WageDeductionClassification.IsDebtType(Line("LOAN_EMI_LOOKALIKE", "Attendance", 1m)).Should().BeFalse("names are never matched");
         WageDeductionClassification.IsDebtType(Line(PayrollRecoveryComponents.ReceivableRecovery, "Recovery", 1m)).Should().BeFalse();
@@ -332,7 +335,7 @@ public class KsaWpsReviewFixesTests
         foreach (var refused in new[] { maker, uploader })
         {
             var res = await refused.UpdateWpsStatus(batch, new WpsStatusRequest(WpsStatuses.Accepted, null, "ACK", evidenceId), default);
-            res.Should().BeOfType<BadRequestObjectResult>();
+            res.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
             JsonSerializer.Serialize(((ObjectResult)res).Value).Should().Contain("acceptance_needs_second_person");
             (await BatchView(refused, batch)).GetProperty("acceptBlockedReason").GetString().Should().Contain("second person");
         }
@@ -365,7 +368,7 @@ public class KsaWpsReviewFixesTests
             new Claim("tenant_id", tenant.ToString()), new Claim("permission", "payroll.export"), new Claim("is_group_scope", "true"),
         }, "test"));
         (await anonymous.UpdateWpsStatus(batch, new WpsStatusRequest(WpsStatuses.Accepted, null, "ACK", evidenceId), default))
-            .Should().BeOfType<BadRequestObjectResult>();
+            .Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
     }
 
     private sealed class FailEvidenceSave : SaveChangesInterceptor
@@ -536,6 +539,8 @@ public class KsaWpsReviewFixesTests
         (await ctrl.GenerateWps(batch, true, false, default)).Should().BeOfType<OkObjectResult>();
         (await ctrl.DownloadWpsFile(batch, default)).Should().BeOfType<FileContentResult>("an unchanged file is reproducible byte for byte");
 
+        // A row generated before bytes were stored: no stored copy, and an older format.
+        db.BankTransferFiles.RemoveRange(db.BankTransferFiles.Where(f => f.FileName.StartsWith(GeneratedWpsFileStore.Prefix)));
         var file = await db.WPSFileBatches.SingleAsync(f => f.PaymentBatchId == batch);
         file.FormatVersion = "mudad-xml";
         await db.SaveChangesAsync();
@@ -546,19 +551,41 @@ public class KsaWpsReviewFixesTests
     }
 
     [Fact]
-    public async Task A_file_whose_inputs_changed_is_refused_rather_than_served_with_a_different_hash()
+    public async Task The_stored_bytes_are_served_even_after_the_inputs_change()
     {
         var (db, tenant, company, batch, empId) = await SeedKsaRegisterBatchAsync();
         await SaveBankSettings(db, tenant, company, "7-1234567");
         (await Payroll(db, tenant, Guid.NewGuid()).GenerateWps(batch, true, false, default)).Should().BeOfType<OkObjectResult>();
+        var first = ((FileContentResult)await Payroll(db, tenant, Guid.NewGuid()).DownloadWpsFile(batch, default)).FileContents;
 
         var emp = await db.Employees.SingleAsync(e => e.Id == empId);
         emp.FullName = "Omar Renamed";
         await db.SaveChangesAsync();
 
+        var again = await Payroll(db, tenant, Guid.NewGuid()).DownloadWpsFile(batch, default);
+        again.Should().BeOfType<FileContentResult>().Which.FileContents.Should().Equal(first, "the generated file is stored, not re-created");
+        GeneratedWpsFileStore.Sha256Hex(first).Should().Be((await db.WPSFileBatches.SingleAsync(f => f.PaymentBatchId == batch)).FileHash);
+    }
+
+    [Theory]
+    [InlineData(WpsStatuses.Accepted, false)]
+    [InlineData(WpsStatuses.Paid, false)]
+    [InlineData(WpsStatuses.Submitted, true)]
+    public async Task A_legacy_file_whose_inputs_changed_is_refused_with_advice_that_fits_the_batch_status(string status, bool adviseRejected)
+    {
+        var (db, tenant, company, batch, empId) = await SeedKsaRegisterBatchAsync();
+        await SaveBankSettings(db, tenant, company, "7-1234567");
+        (await Payroll(db, tenant, Guid.NewGuid()).GenerateWps(batch, true, false, default)).Should().BeOfType<OkObjectResult>();
+        db.BankTransferFiles.RemoveRange(db.BankTransferFiles.Where(f => f.FileName.StartsWith(GeneratedWpsFileStore.Prefix)));
+        (await db.Employees.SingleAsync(e => e.Id == empId)).FullName = "Omar Renamed";
+        (await db.PayrollPaymentBatches.SingleAsync(b => b.Id == batch)).WpsStatus = status;
+        await db.SaveChangesAsync();
+
         var res = await Payroll(db, tenant, Guid.NewGuid()).DownloadWpsFile(batch, default);
-        res.Should().BeOfType<ConflictObjectResult>();
-        JsonSerializer.Serialize(((ObjectResult)res).Value).Should().Contain("SHA-256");
+        var json = JsonSerializer.Serialize(res.Should().BeOfType<ConflictObjectResult>().Subject.Value);
+        json.Should().Contain("SHA-256");
+        if (adviseRejected) json.Should().Contain("mark the batch Rejected");
+        else json.Should().NotContain("Rejected").And.Contain("already been accepted");
     }
 
     [Fact]
@@ -587,6 +614,18 @@ public class KsaWpsReviewFixesTests
     }
 
     // ── 10. Cash/cheque and zero-net employees are left out of the bank batch, by name ──────────
+
+    /// <summary>The sealed Lock audit entry, as Lock writes it, freezing who is paid by cash/cheque.</summary>
+    private static void SeedLockAudit(ZayraDbContext db, Guid tenant, Guid runId, params (int EmployeeId, string Method)[] outside) =>
+        db.PayrollAuditLogs.Add(new PayrollAuditLog
+        {
+            TenantId = tenant, Action = PaymentBatchExclusions.LockAuditAction, EntityName = "PayrollRun", EntityId = runId.ToString(),
+            MetadataJson = JsonSerializer.Serialize(new
+            {
+                ip = "test", userId = (string?)null,
+                data = new { paidOutsideBankFile = outside.Select(o => new { employeeId = o.EmployeeId, method = o.Method }).ToList() },
+            }),
+        });
 
     [Fact]
     public async Task One_cash_and_one_zero_net_employee_are_excluded_and_the_bank_file_reconciles()
@@ -621,6 +660,9 @@ public class KsaWpsReviewFixesTests
             new EmployeePayrollProfile { TenantId = tenant, EmployeeId = zero.Id, Iban = IbanValidator.WithValidCheckDigits("SA0020000000608010167519"), SalaryCurrency = "SAR" });
         run.TotalNetSalary = 11550.50m + 2500m;
         await db.SaveChangesAsync();
+        // The cash method as FROZEN at Lock (the live profile is not what the batch reads).
+        SeedLockAudit(db, tenant, run.Id, (cash.Id, "Cash"));
+        await db.SaveChangesAsync();
 
         var created = await Payroll(db, tenant, Guid.NewGuid()).CreatePaymentBatch(run.Id, new PayrollPaymentBatchRequest("WPS", "SAR"), default);
         var body = JsonDocument.Parse(JsonSerializer.Serialize(created.Should().BeOfType<CreatedResult>().Subject.Value,
@@ -649,6 +691,247 @@ public class KsaWpsReviewFixesTests
         var csv = await GenerateAndReadBody(svc, tenant, batchId);
         csv.Split("\r\n", StringSplitOptions.RemoveEmptyEntries).Should().HaveCount(1 + 2, "a column row plus the two bank-paid employees");
         csv.Should().NotContain("2099999991").And.NotContain("2099999992");
+    }
+
+    // ══ Round 3 ══════════════════════════════════════════════════════════════════════════════════
+
+    private const string SalariesPayable = "2100 - Salaries Payable";
+
+    /// <summary>A Locked KSA run: the two standard bank-paid employees plus one paid in cash (frozen at
+    /// Lock) who is also a leaver mid-settlement, with its net-pay accrual on the ledger.</summary>
+    private static async Task<(ZayraDbContext Db, Guid Tenant, Guid RunId, Employee Cash, EmployeeFinalSettlement CashSettlement)> ArrangeCashRunAsync()
+    {
+        var db = NewDb();
+        var tenant = Guid.NewGuid();
+        var company = await SaudiBankExportTestData.SeedCompanyAsync(db, tenant);
+        var seeded = await SaudiBankExportTestData.SeedBatchAsync(db, tenant, company, 9);
+        var seededBatch = await db.PayrollPaymentBatches.SingleAsync(b => b.Id == seeded);
+        var run = await db.PayrollRuns.SingleAsync(r => r.Id == seededBatch.PayrollRunId);
+        db.PayrollPaymentRecords.RemoveRange(db.PayrollPaymentRecords.Where(r => r.PaymentBatchId == seeded));
+        db.PayrollPaymentBatches.Remove(seededBatch);
+        var cash = new Employee
+        {
+            TenantId = tenant, CompanyId = company, EmployeeCode = "CASH-1", FullName = "Cash Paid", EnglishName = "Cash Paid",
+            Status = "Active", ReadinessState = "Ready", JoiningDate = DateTime.UtcNow, IqamaNumber = "2099999991", Nationality = "Indian",
+        };
+        db.Employees.Add(cash);
+        await db.SaveChangesAsync();
+        db.PayrollSlips.Add(new PayrollSlip
+        {
+            TenantId = tenant, CompanyId = company, RunId = run.Id, EmployeeId = cash.Id, EmployeeCode = cash.EmployeeCode,
+            BasicSalary = 2000m, HousingAllowance = 500m, GrossSalary = 2500m, Deductions = 0m, NetSalary = 2500m, Status = "Locked",
+        });
+        db.EmployeePayrollProfiles.Add(new EmployeePayrollProfile { TenantId = tenant, EmployeeId = cash.Id, PaymentMethod = "Cash", SalaryCurrency = "SAR" });
+        run.TotalNetSalary = 11550.50m + 2500m;
+        SeedLockAudit(db, tenant, run.Id, (cash.Id, "Cash"));
+        db.FinanceGlEntries.Add(new FinanceGlEntry
+        {
+            TenantId = tenant, CompanyId = company, SourceModule = "Payroll", SourceEntityId = run.Id, SourceEntityRef = "RUN",
+            EventType = GlEventTypes.Accrual, CreditAccount = SalariesPayable, DebitAccount = string.Empty,
+            Amount = run.TotalNetSalary, Currency = "SAR", Description = PayrollGlDescriptions.NetPayable,
+            EntryDate = DateOnly.FromDateTime(DateTime.UtcNow), Period = "2026-09",
+        });
+        var settlement = new EmployeeFinalSettlement
+        {
+            TenantId = tenant, CompanyId = company, EmployeeId = cash.Id, EmployeeCode = cash.EmployeeCode, PayrollRunId = run.Id,
+            OffboardingId = Guid.NewGuid(), Status = FinalSettlementStatuses.Disbursing, Currency = "SAR",
+        };
+        db.EmployeeFinalSettlements.Add(settlement);
+        await db.SaveChangesAsync();
+        return (db, tenant, run.Id, cash, settlement);
+    }
+
+    private static async Task<decimal> SalariesPayableBalance(ZayraDbContext db, Guid tenant, Guid runId)
+    {
+        var lines = await db.FinanceGlEntries.AsNoTracking()
+            .Where(e => e.TenantId == tenant && e.SourceEntityId == runId && !e.IsReversed).ToListAsync();
+        return lines.Where(l => l.CreditAccount == SalariesPayable).Sum(l => l.Amount)
+             - lines.Where(l => l.DebitAccount == SalariesPayable).Sum(l => l.Amount);
+    }
+
+    [Fact]
+    public async Task Salaries_payable_clears_only_after_the_bank_batch_and_every_outside_payment_are_recorded()
+    {
+        var (db, tenant, runId, cash, settlement) = await ArrangeCashRunAsync();
+        var ops = Payroll(db, tenant, Guid.NewGuid());
+        var created = await ops.CreatePaymentBatch(runId, new PayrollPaymentBatchRequest("WPS", "SAR"), default);
+        var batchId = (Guid)((CreatedResult)created).Value!.GetType().GetProperty("Id")!.GetValue(((CreatedResult)created).Value)!;
+        var batch = await db.PayrollPaymentBatches.SingleAsync(b => b.Id == batchId);
+        batch.WpsStatus = WpsStatuses.Accepted;
+        await db.SaveChangesAsync();
+        (await SalariesPayableBalance(db, tenant, runId)).Should().Be(14050.50m);
+
+        (await ops.SettlePaymentBatch(batchId, new SettlePaymentBatchRequest("BANK-REF"), default)).Should().BeOfType<OkObjectResult>();
+        (await SalariesPayableBalance(db, tenant, runId))
+            .Should().Be(2500m, "the cash wage was not paid by the bank, so its share of 2100 stays open");
+        (await db.EmployeeFinalSettlements.AsNoTracking().SingleAsync(s => s.Id == settlement.Id)).Status
+            .Should().Be(FinalSettlementStatuses.Disbursing, "a leaver paid in cash is not Paid because the bank batch was");
+
+        // The employee being paid may not record their own payment.
+        var subjectUser = Guid.NewGuid();
+        (await db.Employees.SingleAsync(e => e.Id == cash.Id)).UserAccountId = subjectUser;
+        await db.SaveChangesAsync();
+        var request = new OutsidePaymentRequest(cash.Id, "Cash", "RCPT-001", new DateOnly(2026, 9, 28));
+        (await Payroll(db, tenant, subjectUser).RecordOutsidePayment(batchId, request, default))
+            .Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
+        (await ops.RecordOutsidePayment(batchId, request with { Method = "Transfer" }, default)).Should().BeOfType<BadRequestObjectResult>();
+
+        (await ops.RecordOutsidePayment(batchId, request, default)).Should().BeOfType<OkObjectResult>();
+        (await SalariesPayableBalance(db, tenant, runId)).Should().Be(0m);
+        (await db.EmployeeFinalSettlements.AsNoTracking().SingleAsync(s => s.Id == settlement.Id)).Status
+            .Should().Be(FinalSettlementStatuses.Paid);
+        db.PayrollAuditLogs.Should().Contain(a => a.Action == "payroll.outside_payment.recorded" && a.MetadataJson.Contains("RCPT-001"));
+        (await ops.RecordOutsidePayment(batchId, request, default)).Should().BeOfType<ConflictObjectResult>("once per employee");
+
+        var view = await BatchView(ops, batchId);
+        view.GetProperty("paymentExclusions").EnumerateArray().Single().GetProperty("outsidePaymentRecorded").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task The_batch_uses_the_payment_method_frozen_at_lock_not_the_live_profile()
+    {
+        var (db, tenant, runId, cash, _) = await ArrangeCashRunAsync();
+        // After Lock someone switches the cash employee to bank transfer: the batch still follows the Lock.
+        (await db.EmployeePayrollProfiles.SingleAsync(p => p.EmployeeId == cash.Id)).PaymentMethod = "BankTransfer";
+        await db.SaveChangesAsync();
+        var created = (CreatedResult)await Payroll(db, tenant, Guid.NewGuid()).CreatePaymentBatch(runId, new PayrollPaymentBatchRequest("WPS", "SAR"), default);
+        var json = JsonSerializer.Serialize(created.Value, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        json.Should().Contain($"\"employeeId\":{cash.Id}").And.Contain("\"paymentMethodsFrozenAtLock\":true").And.Contain("Mudad");
+    }
+
+    [Fact]
+    public async Task Lock_refuses_when_cash_pay_changed_since_it_was_validated_and_approved()
+    {
+        await using var db = NewDb();
+        var tenant = Guid.NewGuid();
+        var run = new PayrollRun { TenantId = tenant, Year = 2026, Month = 9, Status = "Approved", TotalNetSalary = 2500m };
+        db.PayrollRuns.Add(run);
+        db.PayrollSlips.Add(new PayrollSlip { TenantId = tenant, RunId = run.Id, EmployeeId = 41, EmployeeCode = "E41", GrossSalary = 2500m, NetSalary = 2500m });
+        db.EmployeePayrollProfiles.Add(new EmployeePayrollProfile { TenantId = tenant, EmployeeId = 41, PaymentMethod = "Cheque" });
+        await db.SaveChangesAsync();
+
+        var res = await Payroll(db, tenant, Guid.NewGuid()).Lock(run.Id, default);
+        res.Should().BeOfType<ConflictObjectResult>();
+        JsonSerializer.Serialize(((ObjectResult)res).Value).Should().Contain("outside_bank_payments_changed");
+        (await db.PayrollRuns.AsNoTracking().SingleAsync(r => r.Id == run.Id)).Status.Should().Be("Approved");
+    }
+
+    [Fact]
+    public async Task Approve_requires_the_cash_and_cheque_count_to_be_acknowledged()
+    {
+        await using var db = NewDb();
+        var tenant = Guid.NewGuid();
+        var run = new PayrollRun { TenantId = tenant, Year = 2026, Month = 9, Status = "Processed", CreatedByUserId = Guid.NewGuid(), ProcessedByUserId = Guid.NewGuid() };
+        db.PayrollRuns.Add(run);
+        db.PayrollValidationResults.Add(new PayrollValidationResult
+        {
+            TenantId = tenant, PayrollRunId = run.Id, EmployeeId = 41, Severity = "Warning",
+            Code = PaymentBatchExclusions.PaidOutsideWithIbanWarning, Message = "paid by cash although an IBAN is on file",
+        });
+        await db.SaveChangesAsync();
+        var approver = Payroll(db, tenant, Guid.NewGuid());
+
+        var refused = await approver.Approve(run.Id, new PayrollDecisionRequest("ok"), default);
+        refused.Should().BeOfType<ConflictObjectResult>();
+        JsonSerializer.Serialize(((ObjectResult)refused).Value).Should().Contain("outside_bank_payments_not_acknowledged").And.Contain("Mudad");
+
+        var acknowledged = await approver.Approve(run.Id, new PayrollDecisionRequest("ok", ExpectedOutsideBankCount: 1), default);
+        JsonSerializer.Serialize((acknowledged as ObjectResult)?.Value).Should().NotContain("outside_bank_payments_not_acknowledged");
+    }
+
+    [Fact]
+    public void Pre_lock_warns_for_cash_pay_and_warns_harder_when_an_iban_is_on_file()
+    {
+        var tenant = Guid.NewGuid();
+        var run = new PayrollRun { Id = Guid.NewGuid(), TenantId = tenant, Year = 2026, Month = 9, Status = "Processed" };
+        var slips = new[]
+        {
+            new PayrollSlip { TenantId = tenant, RunId = run.Id, EmployeeId = 1, EmployeeCode = "E1", GrossSalary = 3000m, NetSalary = 3000m },
+            new PayrollSlip { TenantId = tenant, RunId = run.Id, EmployeeId = 2, EmployeeCode = "E2", GrossSalary = 3000m, NetSalary = 3000m },
+        };
+        var profiles = new[]
+        {
+            new EmployeePayrollProfile { TenantId = tenant, EmployeeId = 1, PaymentMethod = "Cash" },
+            new EmployeePayrollProfile { TenantId = tenant, EmployeeId = 2, PaymentMethod = "Cheque", Iban = SaudiBankExportTestData.IbanA },
+        };
+        var results = PayrollValidationEngine.Run(new PayrollValidationContext(run, slips,
+            new[] { new Employee { Id = 1, TenantId = tenant, Nationality = "Indian" }, new Employee { Id = 2, TenantId = tenant, Nationality = "Indian" } },
+            Array.Empty<EmployeeSalaryStructure>(), profiles, Array.Empty<PayrollDeduction>(), Array.Empty<PayrollEarning>(), KsaCompany(tenant)));
+        results.Should().ContainSingle(r => r.Code == PaymentBatchExclusions.PaidOutsideWarning && r.EmployeeId == 1 && r.Severity == "Warning")
+            .Which.Message.Should().Contain("Mudad");
+        results.Should().ContainSingle(r => r.Code == PaymentBatchExclusions.PaidOutsideWithIbanWarning && r.EmployeeId == 2)
+            .Which.Message.Should().Contain("valid IBAN is on file");
+        results.Should().NotContain(r => r.Code == "MISSING_IBAN");
+    }
+
+    // ── One BIC resolver ─────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task An_anb_bic_recorded_only_in_the_approved_bank_details_is_honoured_by_every_stage()
+    {
+        var (db, tenant, _, batch, svc) = await ArrangeAnb();
+        var e2 = await db.Employees.SingleAsync(e => e.TenantId == tenant && e.IqamaNumber == "2012345678");
+        e2.WpsBankDetails = JsonSerializer.Serialize(new { schema = ApprovedSaudiBeneficiaryDetails.Schema, bicCode = " arnbsari " });
+        var profile = await db.EmployeePayrollProfiles.SingleAsync(p => p.EmployeeId == e2.Id);
+        profile.BankRoutingCode = string.Empty;
+        await db.SaveChangesAsync();
+
+        SaudiBeneficiaryBic.Resolve(e2, profile).Should().Be("ARNBSARI");
+
+        var v = (await svc.ValidateAsync(tenant, batch, SaudiBankExportTestData.Request(), default)).Value!;
+        v.CanExport.Should().BeTrue(string.Join("; ", v.Errors.Select(e => $"{e.Code}: {e.Message}")));
+
+        var b = await db.PayrollPaymentBatches.SingleAsync(x => x.Id == batch);
+        var run = await db.PayrollRuns.SingleAsync(r => r.Id == b.PayrollRunId);
+        var slips = await db.PayrollSlips.Where(s => s.RunId == run.Id).ToListAsync();
+        var employees = await db.Employees.Where(e => e.TenantId == tenant).ToListAsync();
+        var profiles = await db.EmployeePayrollProfiles.Where(p => p.TenantId == tenant).ToListAsync();
+
+        var preLock = PayrollValidationEngine.Run(new PayrollValidationContext(run, slips, employees,
+            Array.Empty<EmployeeSalaryStructure>(), profiles, Array.Empty<PayrollDeduction>(), Array.Empty<PayrollEarning>(), KsaCompany(tenant)));
+        preLock.Should().NotContain(r => r.EmployeeId == e2.Id && (r.Code == "MISSING_IBAN" || r.Code == "INVALID_IBAN"));
+
+        WpsSifValidator.Validate(run, slips, profiles, employees).BlockingErrors
+            .Should().NotContain(e => e.EmployeeId == e2.Id && e.Code == "MISSING_IBAN");
+    }
+
+    // ── Art. 92/93 cap override: written basis, never the subject, never anonymous ───────────────
+
+    [Fact]
+    public async Task The_cap_override_needs_a_document_reference_and_an_identified_approver_who_is_not_the_employee()
+    {
+        await using var db = NewDb();
+        var tenant = Guid.NewGuid();
+        var subjectUser = Guid.NewGuid();
+        var emp = new Employee { TenantId = tenant, EmployeeCode = "E9", FullName = "Subject", UserAccountId = subjectUser, Status = "Active" };
+        db.Employees.Add(emp);
+        await db.SaveChangesAsync();
+        var run = new PayrollRun { TenantId = tenant, Year = 2026, Month = 9, Status = "Processed", CreatedByUserId = Guid.NewGuid(), ProcessedByUserId = Guid.NewGuid() };
+        db.PayrollRuns.Add(run);
+        var result = new PayrollValidationResult
+        {
+            TenantId = tenant, PayrollRunId = run.Id, EmployeeId = emp.Id, Severity = "Error",
+            Code = WageDeductionClassification.DeductionsExceedHalfWageCode, Message = "cap",
+        };
+        db.PayrollValidationResults.Add(result);
+        await db.SaveChangesAsync();
+        const string reason = "Commission decision orders recovery of the full instalment this month.";
+
+        var noRef = await Payroll(db, tenant, Guid.NewGuid()).ResolveValidationResult(run.Id, result.Id, new PayrollReasonRequest(reason), default);
+        JsonSerializer.Serialize(noRef.Should().BeOfType<BadRequestObjectResult>().Subject.Value)
+            .Should().Contain("document_reference_required").And.Contain("lawful written basis").And.NotContain("worker");
+
+        var bySubject = await Payroll(db, tenant, subjectUser).ResolveValidationResult(run.Id, result.Id, new PayrollReasonRequest(reason, "LC-2026-17"), default);
+        bySubject.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
+
+        var anonymous = Payroll(db, tenant, Guid.NewGuid());
+        anonymous.ControllerContext.HttpContext.User = new ClaimsPrincipal(new ClaimsIdentity(new[] { new Claim("tenant_id", tenant.ToString()) }, "test"));
+        (await anonymous.ResolveValidationResult(run.Id, result.Id, new PayrollReasonRequest(reason, "LC-2026-17"), default))
+            .Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
+
+        (await Payroll(db, tenant, Guid.NewGuid()).ResolveValidationResult(run.Id, result.Id, new PayrollReasonRequest(reason, "LC-2026-17"), default))
+            .Should().BeOfType<OkObjectResult>();
+        (await db.PayrollValidationOverrides.SingleAsync()).Reason.Should().Contain("[ref: LC-2026-17]");
     }
 }
 

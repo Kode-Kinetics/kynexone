@@ -167,6 +167,9 @@ export interface PayrollValidationOverrideReport {
   overridableCodes: string[];
   /** Codes that can never be overridden — these must be fixed at source. */
   nonOverridableCodes: string[];
+  /** Employees paid by cash/cheque (outside the bank/WPS file); acknowledged by count at Approve. */
+  paidOutsideBankFile?: { employeeId: number; code: string; message: string }[];
+  mudadNote?: string;
 }
 
 export interface AuditIntegrityFailure {
@@ -254,6 +257,8 @@ export interface PayrollPaymentBatch {
   /** Payslips left out of this bank batch (cash/cheque, zero net), with amount and reason. */
   paymentExclusions?: PaymentBatchExclusion[];
   excludedTotal?: number;
+  /** Shown when the batch leaves cash/cheque wages out of the bank/WPS file. */
+  mudadNote?: string | null;
 }
 
 export interface PaymentBatchExclusion {
@@ -262,6 +267,9 @@ export interface PaymentBatchExclusion {
   amount: number;
   reasonCode: string;
   reason: string;
+  /** A cash/cheque wage whose payment can be recorded against this batch. */
+  canRecordOutsidePayment?: boolean;
+  outsidePaymentRecorded?: boolean;
 }
 
 export type WpsEvidenceKind = 'bank_output_file' | 'mudad_compliance_screenshot';
@@ -590,13 +598,14 @@ export const payrollApi = {
   // cash count, so a client that silently echoes the server's number back would be no control.
   approveRun: (
     id: string,
-    body: { notes?: string; expectedExcludedCount?: number | null; expectedOverriddenCount?: number | null } = {},
+    body: { notes?: string; expectedExcludedCount?: number | null; expectedOverriddenCount?: number | null; expectedOutsideBankCount?: number | null } = {},
   ) =>
     client
       .post<PayrollRun>(`/api/payroll/runs/${id}/approve`, {
         notes: body.notes,
         expectedExcludedCount: body.expectedExcludedCount ?? null,
         expectedOverriddenCount: body.expectedOverriddenCount ?? null,
+        expectedOutsideBankCount: body.expectedOutsideBankCount ?? null,
       })
       .then((r) => r.data),
 
@@ -610,9 +619,9 @@ export const payrollApi = {
     client.get<PayrollValidationOverrideReport>(`/api/payroll/runs/${id}/validation-overrides`).then((r) => r.data),
 
   /** Clears ONE blocking validation error, durably, with a mandatory reason on the audit chain. */
-  resolveValidationResult: (runId: string, resultId: string, reason: string) =>
+  resolveValidationResult: (runId: string, resultId: string, reason: string, documentReference?: string) =>
     client
-      .post<{ message?: string }>(`/api/payroll/runs/${runId}/validation/${resultId}/resolve`, { reason })
+      .post<{ message?: string }>(`/api/payroll/runs/${runId}/validation/${resultId}/resolve`, { reason, documentReference })
       .then((r) => r.data),
 
   /**
@@ -740,6 +749,10 @@ export const payrollApi = {
 
   updateWpsStatus: (batchId: string, body: { status: string; reference?: string; notes?: string; evidenceId?: string }) =>
     client.post<{ batchId: string; wpsStatus: string; wpsStatusLabel?: string }>(`/api/payroll/payment-batches/${batchId}/wps-status`, body).then((r) => r.data),
+
+  /** Records a cash/cheque wage paid outside the bank file (clears its share of Salaries Payable). */
+  recordOutsidePayment: (batchId: string, body: { employeeId: number; method: 'Cash' | 'Cheque'; reference: string; paidDate?: string }) =>
+    client.post(`/api/payroll/payment-batches/${batchId}/outside-payments`, body).then((r) => r.data),
 
   /** Stores proof of Mudad/WPS acceptance. The server hashes the bytes it receives (SHA-256). */
   uploadWpsEvidence: (batchId: string, kind: WpsEvidenceKind, file: File, note?: string) => {

@@ -3596,6 +3596,34 @@ public class PayrollController : ControllerBase
                 errors  = blockingErrors,
             });
 
+        // ── Cash / cheque pay is FROZEN here ─────────────────────────────────────────────────────────
+        // The approver acknowledged, by count, who is paid outside the bank file (PAID_OUTSIDE_BANK_FILE*
+        // warnings). Lock freezes those methods into its sealed audit entry; the payment batch reads them
+        // from there. If a profile changed since validation, the acknowledged set is stale: refuse rather
+        // than freeze something nobody approved.
+        var lockSlipEmployeeIds = await _db.PayrollSlips.AsNoTracking()
+            .Where(s => s.TenantId == tenantId && s.RunId == id && s.NetSalary > 0m).Select(s => s.EmployeeId).ToListAsync(cancellationToken);
+        var paidOutsideAtLock = (await _db.EmployeePayrollProfiles.AsNoTracking()
+                .Where(p => p.TenantId == tenantId && !p.IsDeleted && lockSlipEmployeeIds.Contains(p.EmployeeId))
+                .Select(p => new { p.EmployeeId, p.PaymentMethod }).ToListAsync(cancellationToken))
+            .Where(p => Infrastructure.Payroll.PaymentBatchExclusions.IsPaidOutsideBankFile(p.PaymentMethod))
+            .GroupBy(p => p.EmployeeId)
+            .Select(g => new { employeeId = g.Key, method = g.First().PaymentMethod.Trim() })
+            .OrderBy(x => x.employeeId).ToList();
+        var acknowledgedOutside = (await _db.PayrollValidationResults.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.PayrollRunId == id && x.EmployeeId != null
+                         && (x.Code == Infrastructure.Payroll.PaymentBatchExclusions.PaidOutsideWarning || x.Code == Infrastructure.Payroll.PaymentBatchExclusions.PaidOutsideWithIbanWarning))
+                .Select(x => x.EmployeeId!.Value).ToListAsync(cancellationToken)).ToHashSet();
+        if (!acknowledgedOutside.SetEquals(paidOutsideAtLock.Select(x => x.employeeId)))
+            return Conflict(new
+            {
+                error   = "outside_bank_payments_changed",
+                message = "Who is paid by cash or cheque has changed since this run was validated and approved. Run validation " +
+                          "again (POST runs/{id}/validate) so the approver sees the current list, then lock.",
+                approved = acknowledgedOutside.OrderBy(x => x).ToList(),
+                current  = paidOutsideAtLock.Select(x => x.employeeId).ToList(),
+            });
+
         // FINANCE-P1: Persist double-entry GL on lock (idempotent — skip if already posted).
         // POD-B2 (M7): a non-Regular run may book its ACCRUAL into a later open period (set at Create and
         // validated open there) so a prior-period correction is possible after the month is closed. A
@@ -3766,6 +3794,8 @@ public class PayrollController : ControllerBase
             payPeriod = $"{run.Year}-{run.Month:D2}", excludedCount = lockExcludedCount,
             parentRunId = run.ParentRunId,
             overriddenCount = lockOverrides.Count, overrides = lockOverrides,
+            // Frozen: PaymentBatchExclusions.PaidOutsideAtLockAsync reads exactly this.
+            paidOutsideBankFile = paidOutsideAtLock,
         }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         // Notify all employees with a payslip for this run
@@ -4047,6 +4077,24 @@ public class PayrollController : ControllerBase
                                  $"expectedExcludedCount={resolvedExcludedCount} to acknowledge.",
                 excludedCount  = resolvedExcludedCount,
                 acknowledged   = req.ExpectedExcludedCount,
+            });
+
+        // ── Cash / cheque pay must be ACKNOWLEDGED the same way ───────────────────────────────────────
+        // An employee paid outside the bank file is left out of the WPS file at batch creation. That is a
+        // decision with Mudad consequences, so the approver states how many such employees they expect.
+        var outsideBankCount = await _db.PayrollValidationResults.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.PayrollRunId == id && x.EmployeeId != null
+                     && (x.Code == Infrastructure.Payroll.PaymentBatchExclusions.PaidOutsideWarning || x.Code == Infrastructure.Payroll.PaymentBatchExclusions.PaidOutsideWithIbanWarning))
+            .Select(x => x.EmployeeId).Distinct().CountAsync(cancellationToken);
+        if (outsideBankCount > 0 && req.ExpectedOutsideBankCount != outsideBankCount)
+            return Conflict(new
+            {
+                error   = "outside_bank_payments_not_acknowledged",
+                message = $"{outsideBankCount} employee(s) on this run are paid by cash or cheque and will not be in the bank/WPS file. " +
+                          Infrastructure.Payroll.PaymentBatchExclusions.MudadNote + " Review the PAID_OUTSIDE_BANK_FILE warnings and " +
+                          $"re-submit with expectedOutsideBankCount={outsideBankCount} to acknowledge.",
+                outsideBankCount,
+                acknowledged = req.ExpectedOutsideBankCount,
             });
 
         // ── POD-B3: OVERRIDDEN compliance errors must be acknowledged the same way ────────────────────
@@ -4457,9 +4505,18 @@ public class PayrollController : ControllerBase
             .OrderBy(o => o.Code).ThenBy(o => o.EmployeeId)
             .Select(o => new { o.Id, o.Code, o.EmployeeId, o.Reason, o.OverriddenByUserId, o.OverriddenByName, o.CreatedAtUtc })
             .ToListAsync(cancellationToken);
+        // Employees paid by cash/cheque: the approver acknowledges this list, by count, at Approve.
+        var outside = await _db.PayrollValidationResults.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.PayrollRunId == id && x.EmployeeId != null
+                     && (x.Code == Infrastructure.Payroll.PaymentBatchExclusions.PaidOutsideWarning || x.Code == Infrastructure.Payroll.PaymentBatchExclusions.PaidOutsideWithIbanWarning))
+            .OrderBy(x => x.EmployeeId)
+            .Select(x => new { x.EmployeeId, x.Code, x.Message })
+            .ToListAsync(cancellationToken);
         return Ok(new
         {
             runId          = id,
+            paidOutsideBankFile = outside.GroupBy(x => x.EmployeeId).Select(g => g.First()).ToList(),
+            mudadNote      = Infrastructure.Payroll.PaymentBatchExclusions.MudadNote,
             overrides      = rows,
             overridableCodes    = PayrollValidationOverridePolicy.Overridable.OrderBy(x => x, StringComparer.Ordinal).ToList(),
             nonOverridableCodes = PayrollValidationOverridePolicy.NonOverridable.OrderBy(x => x, StringComparer.Ordinal).ToList(),
@@ -4489,6 +4546,28 @@ public class PayrollController : ControllerBase
         var actorId   = GetUserId();
         var actorName = GetUserName();
         var reason    = req.Reason!.Trim();
+
+        // KSA Art. 92/93 cap: the override rests on a written basis, which must be named, and the employee
+        // whose wage is being deducted may never clear it for themselves.
+        if (result.Code == Infrastructure.Payroll.WageDeductionClassification.DeductionsExceedHalfWageCode)
+        {
+            if (string.IsNullOrWhiteSpace(req.DocumentReference))
+                return BadRequest(new
+                {
+                    error   = "document_reference_required",
+                    message = "Give the reference of the decision or document this rests on (" +
+                              Infrastructure.Payroll.WageDeductionClassification.CapOverrideGrounds + ").",
+                });
+            if (result.EmployeeId is int subjectId
+                && await _db.Employees.AsNoTracking().AnyAsync(
+                    e => e.TenantId == tenantId && e.Id == subjectId && e.UserAccountId == actorId, cancellationToken))
+                return StatusCode(403, new
+                {
+                    error   = "subject_is_decider",
+                    message = "You cannot override a deduction limit on your own wage. Another approver must decide it.",
+                });
+            reason = $"{reason} [ref: {req.DocumentReference.Trim()}]";
+        }
 
         // Upsert the DURABLE record — the result row itself is rebuilt wholesale by the next /validate.
         var existing = await _db.PayrollValidationOverrides.FirstOrDefaultAsync(
@@ -4606,8 +4685,15 @@ public class PayrollController : ControllerBase
 
         // (2) IDENTITY-based segregation of duties. See the block comment above these endpoints for why
         //     the payroll.approve permission alone excludes nobody.
+        // An unidentified caller cannot prove they are not the preparer, so is refused outright.
         var actorId = GetUserId();
-        if (actorId is not null && (run.ProcessedByUserId == actorId || run.CreatedByUserId == actorId))
+        if (actorId is null)
+            return StatusCode(403, new
+            {
+                error   = "actor_unidentified",
+                message = "This override cannot be recorded without an identified user, because separation of duties cannot be checked.",
+            });
+        if (run.ProcessedByUserId == actorId || run.CreatedByUserId == actorId)
             return StatusCode(403, new
             {
                 error   = "maker_checker_violation",
@@ -5083,12 +5169,17 @@ public class PayrollController : ControllerBase
         // and amount, in the response and in this batch's sealed creation audit, and the batch total is
         // the run's net minus exactly those amounts.
         var bankBatch = !Infrastructure.Payroll.PaymentBatchExclusions.IsPaidOutsideBankFile(req.PaymentMethod);
+        // The cash/cheque decision is the one FROZEN in the run's sealed Lock audit entry — the methods the
+        // approver acknowledged — never the live profile, which may have been edited since Lock.
+        var methodsAtLock = await Infrastructure.Payroll.PaymentBatchExclusions.PaidOutsideAtLockAsync(_db, tenantId, id, cancellationToken);
         var exclusions = new List<Infrastructure.Payroll.PaymentBatchExclusion>();
         var included = new List<(PayrollSlip Slip, EmployeePayrollProfile? Profile)>();
         foreach (var slip in slips)
         {
             var profile = profiles.FirstOrDefault(x => x.EmployeeId == slip.EmployeeId);
-            var exclusion = bankBatch ? Infrastructure.Payroll.PaymentBatchExclusions.Decide(slip, profile) : null;
+            var exclusion = bankBatch
+                ? Infrastructure.Payroll.PaymentBatchExclusions.Decide(slip, methodsAtLock?.GetValueOrDefault(slip.EmployeeId))
+                : null;
             if (exclusion is not null) exclusions.Add(exclusion);
             else included.Add((slip, profile));
         }
@@ -5145,6 +5236,9 @@ public class PayrollController : ControllerBase
             runNetTotal,
             excludedTotal,
             paymentExclusions = exclusions,
+            paymentMethodsFrozenAtLock = methodsAtLock is not null,
+            mudadNote = exclusions.Any(x => x.ReasonCode == Infrastructure.Payroll.PaymentBatchExclusions.PaidOutsideBankFileCode)
+                ? Infrastructure.Payroll.PaymentBatchExclusions.MudadNote : null,
         });
     }
 
@@ -5377,7 +5471,8 @@ public class PayrollController : ControllerBase
         var slipByEmpId    = slips.ToDictionary(s => s.EmployeeId);
         var empById        = employees.ToDictionary(e => e.Id);
 
-        var wpsEmployees = records.Select(record =>
+        // Ordered by employee: the file's bytes (and so its SHA-256) must not depend on database row order.
+        var wpsEmployees = records.OrderBy(r => r.EmployeeId).Select(record =>
         {
             var emp     = empById.TryGetValue(record.EmployeeId, out var em) ? em : null;
             var ppf     = profileByEmpId.TryGetValue(record.EmployeeId, out var pr) ? pr : null;
@@ -5432,6 +5527,9 @@ public class PayrollController : ControllerBase
             ResubmissionNumber = existingWpsFiles.Count,
         };
         _db.WPSFileBatches.Add(wps);
+        // The exact bytes are kept, so a later download serves THIS file rather than re-creating it.
+        Infrastructure.Payroll.GeneratedWpsFileStore.Stage(_db, tenantId, id, wps.Id,
+            exportResult.FileName, exportResult.Format, exportResult.FileBytes);
 
         var profileByEmpId2 = profiles.ToDictionary(p => p.EmployeeId);
         var sifRows = new List<SIFFileRecord>();
@@ -5649,7 +5747,8 @@ public class PayrollController : ControllerBase
                 new[] { WpsStatuses.Accepted },
                 Infrastructure.Payroll.WpsLifecycleView.MakerCheckerMessage);
             if (makerChecker.IsViolated(req.Status))
-                return BadRequest(new { error = "acceptance_needs_second_person", message = makerChecker.Message });
+                // 403, like the run-override maker-checker refusal: the request is valid, this caller may not make it.
+                return StatusCode(StatusCodes.Status403Forbidden, new { error = "acceptance_needs_second_person", message = makerChecker.Message });
         }
 
         if (req.Status is WpsStatuses.Rejected && string.IsNullOrWhiteSpace(req.Notes))
@@ -5676,7 +5775,8 @@ public class PayrollController : ControllerBase
             var settlementPosted = await _db.FinanceGlEntries.AnyAsync(
                 x => x.TenantId == tenantId && x.SourceModule == "Payroll"
                   && x.SourceEntityId == batch.PayrollRunId
-                  && x.EventType == GlEventTypes.NetSettlement && !x.IsReversed, cancellationToken);
+                  && x.EventType == GlEventTypes.NetSettlement && !x.IsReversed
+                  && x.SourceEntityRef == batch.BatchNumber, cancellationToken);
             if (!settlementPosted)
                 return UnprocessableEntity(new
                 {
@@ -6003,7 +6103,8 @@ public class PayrollController : ControllerBase
         // Idempotency (mirror Lock).
         var alreadySettled = await _db.FinanceGlEntries.AnyAsync(
             x => x.TenantId == tenantId && x.SourceModule == "Payroll" && x.SourceEntityId == run.Id
-              && x.EventType == GlEventTypes.NetSettlement && !x.IsReversed, cancellationToken);
+              && x.EventType == GlEventTypes.NetSettlement && !x.IsReversed
+              && x.SourceEntityRef == batch.BatchNumber, cancellationToken);
         if (alreadySettled)
             return Conflict(new { error = "already_settled", message = "This batch's net pay has already been settled to GL." });
 
@@ -6020,6 +6121,19 @@ public class PayrollController : ControllerBase
         if (netLines.Count == 0 || netLines.Sum(l => l.Amount) <= 0m)
             return BadRequest(new { error = "nothing_to_settle", message = "No open net-pay liability was found on the accrual to settle." });
 
+        // The bank batch settles ONLY what it carries. Employees left out of it (cash/cheque, zero net)
+        // stay open in 2100 until their payment outside the bank file is recorded against this batch —
+        // crediting Cash/Bank for them here would book a bank outflow that never happened.
+        var batchExclusions = await Infrastructure.Payroll.PaymentBatchExclusions.LoadAsync(_db, tenantId, batch.Id, cancellationToken);
+        var excludedOpen = batchExclusions.Sum(x => x.Amount);
+        var batchEmployeeIds = (await _db.PayrollPaymentRecords.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.PaymentBatchId == batch.Id && x.Status != PaymentRecordStatuses.Cancelled)
+            .Select(x => x.EmployeeId).ToListAsync(cancellationToken)).ToHashSet();
+        var toSettle = netLines.Sum(l => l.Amount) - excludedOpen;
+        if (toSettle <= 0m)
+            return BadRequest(new { error = "nothing_to_settle", message = "Every payslip in this run is paid outside the bank file; record those payments instead of settling the batch." });
+        var clearing = TakeFromAccrual(netLines, toSettle);
+
         var glCtx = await LoadGlResolutionContextAsync(tenantId, run.CompanyId, cancellationToken);
         var (cashCode, cashName) = ResolveGlAccount("CASH_BANK", glCtx.Overrides, glCtx.DriverDefaults);
         var cashAccount = $"{cashCode} - {cashName}";
@@ -6027,7 +6141,7 @@ public class PayrollController : ControllerBase
 
         var (lines, dr, cr) = BuildLiabilityClearingGl(
             tenantId, run.Id, settlementPeriod, batch.BatchNumber, GlEventTypes.NetSettlement,
-            netLines, cashAccount, GetUserId(), GetUserName(), currency,
+            clearing, cashAccount, GetUserId(), GetUserName(), currency,
             $"Net pay settlement — batch {batch.BatchNumber}", run.CompanyId);
         if (Math.Abs(dr - cr) > 0.01m)
             return UnprocessableEntity(new { error = "gl_unbalanced", message = "Net-pay settlement GL is not balanced.", totalDebits = dr, totalCredits = cr });
@@ -6040,13 +6154,14 @@ public class PayrollController : ControllerBase
         // This is the ONLY place a settlement reaches Paid, and it is the ordinary net-pay settlement
         // journal that does it — no second payment mechanism anywhere in the pipeline.
         var settlementResult = await FinalizePaidSettlementsAsync(
-            tenantId, run, batch, glCtx, settlementPeriod, cancellationToken);
+            tenantId, run, batch, glCtx, settlementPeriod, batchEmployeeIds, cancellationToken);
 
         await PayrollAudit("payroll.batch.settled", "PayrollPaymentBatch", batch.Id.ToString(),
             new
             {
                 runId = run.Id, batch.BatchNumber, amount = cr, cashAccount, period = settlementPeriod,
                 reference = req.Reference,
+                leftOpenForOutsidePayment = excludedOpen,
                 settlementsPaid = settlementResult.SettlementIds,
                 residualDebtReclassed = settlementResult.ResidualReclassed,
                 residualDebtUnbooked  = settlementResult.ResidualUnbooked,
@@ -6056,11 +6171,135 @@ public class PayrollController : ControllerBase
         {
             batchId = batch.Id, runId = run.Id, wpsStatus = batch.WpsStatus, settled = cr, cashAccount,
             period = settlementPeriod,
+            // Still open in Salaries Payable until each outside-the-bank-file payment is recorded.
+            leftOpenForOutsidePayment = excludedOpen,
             settlementsPaid = settlementResult.SettlementIds,
             residualDebtReclassed = settlementResult.ResidualReclassed,
             residualDebtUnbooked  = settlementResult.ResidualUnbooked,
         });
     }
+
+    /// <summary>Copies of the accrual credit lines totalling exactly <paramref name="amount"/>, taken in
+    /// order. With the full accrual total it reproduces the lines unchanged, so a batch with nothing left
+    /// out posts the same journal as before.</summary>
+    private static List<FinanceGlEntry> TakeFromAccrual(IReadOnlyList<FinanceGlEntry> accrualLines, decimal amount)
+    {
+        var taken = new List<FinanceGlEntry>();
+        var left = amount;
+        foreach (var l in accrualLines)
+        {
+            if (left <= 0m) break;
+            var take = Math.Min(l.Amount, left);
+            taken.Add(new FinanceGlEntry
+            {
+                TenantId = l.TenantId, CompanyId = l.CompanyId, CreditAccount = l.CreditAccount, Amount = take,
+                Currency = l.Currency, Description = l.Description,
+            });
+            left -= take;
+        }
+        return taken;
+    }
+
+    /// <summary>
+    /// Records the payment of a wage left OUT of the bank file (cash or cheque) — the step that clears its
+    /// part of 2100 Salaries Payable, which settling the bank batch deliberately leaves open. Posts DR 2100 /
+    /// CR Cash-Bank (or the configured PETTY_CASH account for cash, when one is mapped) for exactly the
+    /// excluded amount recorded on the batch, once per employee. Requires payroll.export; the employee who
+    /// was paid may not record their own payment. Audited on the payroll chain.
+    /// </summary>
+    [HttpPost("payment-batches/{batchId:guid}/outside-payments")]
+    public async Task<IActionResult> RecordOutsidePayment(Guid batchId, [FromBody] OutsidePaymentRequest req, CancellationToken cancellationToken)
+    {
+        if (!HasPermission("payroll.export")) return Forbid();
+        var tenantId = GetTenantId();
+        if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, batchId, cancellationToken) is { } batchScopeErr)
+            return batchScopeErr;
+
+        var method = req.Method?.Trim();
+        if (method is null || !Infrastructure.Payroll.PaymentBatchExclusions.OutsidePaymentMethods.Contains(method))
+            return BadRequest(new { error = "method_invalid", message = "Payment method must be Cash or Cheque." });
+        method = Infrastructure.Payroll.PaymentBatchExclusions.OutsidePaymentMethods.First(m => string.Equals(m, method, StringComparison.OrdinalIgnoreCase));
+        var reference = req.Reference?.Trim();
+        if (string.IsNullOrEmpty(reference) || reference.Length > 100 || reference.Any(char.IsControl))
+            return BadRequest(new { error = "reference_required", message = "Enter the cheque number or cash receipt reference (up to 100 characters)." });
+
+        var batch = await _db.PayrollPaymentBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batchId, cancellationToken);
+        if (batch is null) return NotFound();
+        var run = await _db.PayrollRuns.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batch.PayrollRunId, cancellationToken);
+        if (run is null) return NotFound();
+        if (run.Status != "Locked" || batch.WpsStatus == WpsStatuses.Voided)
+            return BadRequest(new { error = "run_not_locked", message = "Payments can only be recorded against a Locked, non-voided run." });
+
+        var exclusion = (await Infrastructure.Payroll.PaymentBatchExclusions.LoadAsync(_db, tenantId, batch.Id, cancellationToken))
+            .FirstOrDefault(x => x.EmployeeId == req.EmployeeId
+                && x.ReasonCode == Infrastructure.Payroll.PaymentBatchExclusions.PaidOutsideBankFileCode);
+        if (exclusion is null || exclusion.Amount <= 0m)
+            return BadRequest(new { error = "not_paid_outside_bank_file", message = "This employee is not listed on this batch as paid by cash or cheque." });
+
+        var actorId = GetUserId();
+        if (actorId is null)
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = "actor_unidentified", message = "A payment can only be recorded by an identified user." });
+        if (await _db.Employees.AsNoTracking().AnyAsync(e => e.TenantId == tenantId && e.Id == req.EmployeeId && e.UserAccountId == actorId, cancellationToken))
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = "subject_is_recorder", message = "You cannot record the payment of your own wage. Another payroll user must record it." });
+
+        var sourceRef = Infrastructure.Payroll.PaymentBatchExclusions.OutsidePaymentRef(batch.BatchNumber, exclusion.EmployeeId);
+        if (await _db.FinanceGlEntries.AnyAsync(x => x.TenantId == tenantId && x.SourceModule == "Payroll" && x.SourceEntityId == run.Id
+                && x.EventType == GlEventTypes.NetSettlement && !x.IsReversed && x.SourceEntityRef == sourceRef, cancellationToken))
+            return Conflict(new { error = "already_recorded", message = "This employee's payment outside the bank file is already recorded." });
+
+        var netLines = await _db.FinanceGlEntries
+            .Where(x => x.TenantId == tenantId && x.SourceModule == "Payroll" && x.SourceEntityId == run.Id
+                     && x.EventType == GlEventTypes.Accrual && !x.IsReversed
+                     && string.IsNullOrEmpty(x.DebitAccount) && x.Description == PayrollGlDescriptions.NetPayable)
+            .ToListAsync(cancellationToken);
+        if (netLines.Count == 0)
+            return BadRequest(new { error = "gl_not_accrued", message = "This run has no net-pay accrual. Lock the run first." });
+
+        var paidDate = req.PaidDate ?? DateOnly.FromDateTime(DateTime.UtcNow);
+        var period = $"{paidDate.Year}-{paidDate.Month:D2}";
+        if (await PeriodCloseGuard.IsClosedAsync(_db, tenantId, run.CompanyId, period, cancellationToken))
+            return UnprocessableEntity(new { error = "gl_period_closed", message = $"GL period {period} is closed. Reopen it before recording payments into it.", period });
+
+        var glCtx = await LoadGlResolutionContextAsync(tenantId, run.CompanyId, cancellationToken);
+        const string pettyCash = "PETTY_CASH";
+        var driver = method == "Cash" && (glCtx.Overrides.ContainsKey(pettyCash) || glCtx.DriverDefaults.ContainsKey(pettyCash))
+            ? pettyCash : "CASH_BANK";
+        var (code, name) = ResolveGlAccount(driver, glCtx.Overrides, glCtx.DriverDefaults);
+        var account = $"{code} - {name}";
+
+        var (lines, dr, cr) = BuildLiabilityClearingGl(
+            tenantId, run.Id, period, sourceRef, GlEventTypes.NetSettlement,
+            TakeFromAccrual(netLines, exclusion.Amount), account, actorId, GetUserName(), netLines[0].Currency,
+            $"Net pay paid outside the bank file ({method}, ref {reference}) — {exclusion.EmployeeCode}, batch {batch.BatchNumber}",
+            run.CompanyId);
+        if (Math.Abs(dr - cr) > 0.01m || Math.Abs(cr - exclusion.Amount) > 0.01m)
+            return UnprocessableEntity(new { error = "gl_unbalanced", message = "The payment journal does not balance against the excluded amount.", totalDebits = dr, totalCredits = cr });
+        _db.FinanceGlEntries.AddRange(lines);
+
+        var settlementResult = await FinalizePaidSettlementsAsync(
+            tenantId, run, batch, glCtx, period, new HashSet<int> { exclusion.EmployeeId }, cancellationToken);
+
+        await PayrollAudit("payroll.outside_payment.recorded", "PayrollPaymentBatch", batch.Id.ToString(), new
+        {
+            runId = run.Id, employeeId = exclusion.EmployeeId, exclusion.EmployeeCode, amount = exclusion.Amount,
+            method, reference, paidDate, account, period, settlementsPaid = settlementResult.SettlementIds,
+        }, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+        return Ok(new
+        {
+            batchId = batch.Id, employeeId = exclusion.EmployeeId, amount = exclusion.Amount, method, reference,
+            paidDate, account, period, settlementsPaid = settlementResult.SettlementIds,
+        });
+    }
+
+    /// <summary>The outside-the-bank-file payments recorded (live, unreversed) for a run, by GL reference.</summary>
+    private async Task<HashSet<string>> OutsidePaymentRefsAsync(Guid tenantId, IReadOnlyCollection<Guid> runIds, CancellationToken ct) =>
+        (await _db.FinanceGlEntries.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.SourceModule == "Payroll" && runIds.Contains(x.SourceEntityId)
+                     && x.EventType == GlEventTypes.NetSettlement && !x.IsReversed
+                     && x.SourceEntityRef.StartsWith(Infrastructure.Payroll.PaymentBatchExclusions.OutsidePaymentRefPrefix))
+            .Select(x => x.SourceEntityRef)
+            .ToListAsync(ct)).ToHashSet(StringComparer.Ordinal);
 
     /// <summary>POD-C1 — what <see cref="FinalizePaidSettlementsAsync"/> did, for the response + audit.</summary>
     private sealed record PaidSettlementResult(
@@ -6091,12 +6330,16 @@ public class PayrollController : ControllerBase
     /// </summary>
     private async Task<PaidSettlementResult> FinalizePaidSettlementsAsync(
         Guid tenantId, PayrollRun run, PayrollPaymentBatch batch, GlResolutionContext glCtx,
-        string settlementPeriod, CancellationToken ct)
+        string settlementPeriod, IReadOnlySet<int> paidEmployeeIds, CancellationToken ct)
     {
-        var settlements = await _db.EmployeeFinalSettlements
+        // Only the leavers whose money actually moved: in the settled bank batch, or with a payment
+        // recorded outside the bank file. A leaver paid in cash is NOT Paid because the bank batch was.
+        var settlements = (await _db.EmployeeFinalSettlements
             .Where(s => s.TenantId == tenantId && s.PayrollRunId == run.Id
                      && s.Status == FinalSettlementStatuses.Disbursing)
-            .ToListAsync(ct);
+            .ToListAsync(ct))
+            .Where(s => paidEmployeeIds.Contains(s.EmployeeId))
+            .ToList();
         if (settlements.Count == 0)
             return new PaidSettlementResult(new List<Guid>(), 0m, 0m);
 
@@ -6262,7 +6505,9 @@ public class PayrollController : ControllerBase
 
         var originals = await _db.FinanceGlEntries
             .Where(x => x.TenantId == tenantId && x.SourceModule == "Payroll" && x.SourceEntityId == batch.PayrollRunId
-                     && x.EventType == GlEventTypes.NetSettlement && !x.IsReversed)
+                     && x.EventType == GlEventTypes.NetSettlement && !x.IsReversed
+                     // This batch's settlement only — never a payment recorded outside the bank file.
+                     && x.SourceEntityRef == batch.BatchNumber)
             .ToListAsync(cancellationToken);
         if (originals.Count == 0)
             return Conflict(new { error = "not_settled", message = "There is no active net-pay settlement to reverse for this batch." });
@@ -6617,6 +6862,17 @@ public class PayrollController : ControllerBase
             .FirstOrDefaultAsync(cancellationToken);
         if (wpsFile is null) return BadRequest(new { message = "WPS file has not been generated for this batch yet." });
 
+        // 1. The stored bytes of this generation, when they were kept (every file generated from now on).
+        Infrastructure.Payroll.GeneratedWpsFileStore.StoredFile? storedFile;
+        try { storedFile = await Infrastructure.Payroll.GeneratedWpsFileStore.LoadAsync(_db, tenantId, batchId, wpsFile.Id, cancellationToken); }
+        catch (InvalidDataException) { return WpsFileNotReproducible(wpsFile, batch.WpsStatus, "its stored copy no longer matches its recorded SHA-256"); }
+        if (storedFile is not null)
+        {
+            if (!string.Equals(storedFile.Sha256, wpsFile.FileHash, StringComparison.OrdinalIgnoreCase))
+                return WpsFileNotReproducible(wpsFile, batch.WpsStatus, "its stored copy does not match the fingerprint recorded at generation");
+            return await ServeWpsFileAsync(tenantId, batchId, wpsFile, storedFile.Bytes, storedFile.FileName, storedFile.Format, cancellationToken);
+        }
+
         var sifRecords  = await _db.SIFFileRecords.AsNoTracking().Where(x => x.TenantId == tenantId && x.WPSFileBatchId == wpsFile.Id).ToListAsync(cancellationToken);
         var run         = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(x => x.Id == batch.PayrollRunId && x.TenantId == tenantId, cancellationToken);
 
@@ -6638,7 +6894,9 @@ public class PayrollController : ControllerBase
         var dlEmpById   = dlEmps.ToDictionary(e => e.Id);
         var dlSlipById  = dlSlips.ToDictionary(s => s.EmployeeId);
 
-        var dlWpsEmployees = sifRecords.Select(r =>
+        // 2. Files generated before bytes were stored: re-create from the frozen records, ordered by employee
+        //    exactly as generation now orders them.
+        var dlWpsEmployees = sifRecords.OrderBy(r => r.EmployeeId).Select(r =>
         {
             var emp  = dlEmpById.TryGetValue(r.EmployeeId, out var em) ? em : null;
             var slip = dlSlipById.TryGetValue(r.EmployeeId, out var sl) ? sl : null;
@@ -6683,12 +6941,25 @@ public class PayrollController : ControllerBase
         var dlResult = await dlExporter.ExportAsync(dlInput, cancellationToken);
         var fileHash = Convert.ToHexString(SHA256.HashData(dlResult.FileBytes)).ToLowerInvariant();
         if (!string.Equals(wpsFile.FormatVersion, dlResult.Format, StringComparison.Ordinal))
-            return WpsFileNotReproducible(wpsFile, "it was generated in an older file format that this version no longer produces");
+            return WpsFileNotReproducible(wpsFile, batch.WpsStatus, "it was generated in an older file format that this version no longer produces");
+        if (!string.IsNullOrEmpty(wpsFile.FileHash) && !string.Equals(wpsFile.FileHash, fileHash, StringComparison.OrdinalIgnoreCase))
+        {
+            // Older generations did not order their rows; try the order the records were stored in.
+            var unordered = await dlExporter.ExportAsync(dlInput with { Employees = sifRecords.Select(r => dlWpsEmployees.First(w => w.EmployeeId == r.EmployeeId)).ToList() }, cancellationToken);
+            if (string.Equals(wpsFile.FileHash, Convert.ToHexString(SHA256.HashData(unordered.FileBytes)).ToLowerInvariant(), StringComparison.OrdinalIgnoreCase))
+                (dlResult, fileHash) = (unordered, wpsFile.FileHash);
+        }
         if (string.IsNullOrEmpty(wpsFile.FileHash) || !string.Equals(wpsFile.FileHash, fileHash, StringComparison.OrdinalIgnoreCase))
-            return WpsFileNotReproducible(wpsFile, string.IsNullOrEmpty(wpsFile.FileHash)
+            return WpsFileNotReproducible(wpsFile, batch.WpsStatus, string.IsNullOrEmpty(wpsFile.FileHash)
                 ? "no fingerprint (SHA-256) was recorded when it was generated"
                 : "the employee or payroll data it was built from has changed since, so it would not match its recorded SHA-256");
+        return await ServeWpsFileAsync(tenantId, batchId, wpsFile, dlResult.FileBytes, dlResult.FileName, dlResult.Format, cancellationToken);
+    }
 
+    private async Task<IActionResult> ServeWpsFileAsync(Guid tenantId, Guid batchId, WPSFileBatch wpsFile, byte[] bytes,
+        string fileName, string format, CancellationToken cancellationToken)
+    {
+        var fileHash = wpsFile.FileHash;
         // Advance lifecycle from Generated → Downloaded on first download.
         var tracked = await _db.PayrollPaymentBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batchId, cancellationToken);
         if (tracked is not null && WpsTransitions.IsAllowed(tracked.WpsStatus, WpsStatuses.Downloaded))
@@ -6699,22 +6970,33 @@ public class PayrollController : ControllerBase
             await _db.SaveChangesAsync(cancellationToken);
         }
 
-        var mimeType = dlResult.FileName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase) ? "application/xml" : "text/plain";
-        Response.Headers["Content-Disposition"] = $"attachment; filename={dlResult.FileName}";
+        var mimeType = fileName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase) ? "application/xml" : "text/plain";
+        Response.Headers["Content-Disposition"] = $"attachment; filename={fileName}";
         // The artefact itself states what it is. The bytes are content-addressed by SHA-256 and
         // their determinism is pinned by tests, so the statement rides on a header rather than in
         // the payload — a WPS gateway would reject an unexpected comment line anyway. Without this,
         // the downloaded file is completely silent about never having been accepted by a gateway.
         Response.Headers[Infrastructure.Payroll.WpsConformance.DownloadHeader] =
-            Infrastructure.Payroll.WpsConformance.HeaderValue(dlResult.Format);
-        return File(dlResult.FileBytes, mimeType, dlResult.FileName);
+            Infrastructure.Payroll.WpsConformance.HeaderValue(format);
+        return File(bytes, mimeType, fileName);
     }
 
-    private IActionResult WpsFileNotReproducible(WPSFileBatch file, string why) => Conflict(new
+    /// <summary>The way forward depends on where the batch is: only a Submitted batch can be marked
+    /// Rejected (and so regenerated); an Accepted/Paid one has already been filed.</summary>
+    private IActionResult WpsFileNotReproducible(WPSFileBatch file, string? batchStatus, string why) => Conflict(new
     {
         error = "wps_file_not_reproducible",
         message = $"This file cannot be downloaded again because {why}. Only the exact file that was generated is ever served. "
-                  + "If you still need a file for this batch, mark the batch Rejected and generate a new one.",
+                  + batchStatus switch
+                  {
+                      WpsStatuses.Accepted or WpsStatuses.Paid or WpsStatuses.Reconciled =>
+                          "This batch has already been accepted, so nothing is regenerated: use the copy that was submitted to the bank, and the bank's output file or Mudad evidence attached to the batch.",
+                      WpsStatuses.Submitted =>
+                          "If the bank rejected the file, mark the batch Rejected and generate a new one; otherwise use the copy that was submitted.",
+                      _ =>
+                          "Use the copy already downloaded. If none was kept, contact your administrator before generating a replacement, so two different files are never sent for one month.",
+                  },
+        batchWpsStatus = batchStatus,
         formatVersion = file.FormatVersion,
         formatLabel = Infrastructure.Payroll.WpsConformance.LabelFor(file.FormatVersion),
         recordedSha256 = file.FileHash,
@@ -6829,6 +7111,7 @@ public class PayrollController : ControllerBase
                 .GroupBy(f => f.PaymentBatchId)
                 .ToDictionary(g => g.Key, g => g.OrderByDescending(f => f.CreatedAtUtc).ThenByDescending(f => f.Id).First());
         var batchExclusions = await Infrastructure.Payroll.PaymentBatchExclusions.LoadAsync(_db, tenantId, d4BatchIds, cancellationToken);
+        var outsideRecorded = await OutsidePaymentRefsAsync(tenantId, batches.Select(b => b.PayrollRunId).Distinct().ToList(), cancellationToken);
         var viewerId = GetUserId();
         // KSA batches: the bank file is the ANB instruction and the generated XML is an internal register.
         var batchRunIds = batches.Select(b => b.PayrollRunId).Distinct().ToList();
@@ -6873,8 +7156,16 @@ public class PayrollController : ControllerBase
                 allowedNextStatuses = Infrastructure.Payroll.WpsLifecycleView.ManualNext(effective, hasFile),
                 // Why THIS viewer cannot record Accepted (maker-checker), so the screen can say so up front.
                 acceptBlockedReason = acceptBlocked ? Infrastructure.Payroll.WpsLifecycleView.MakerCheckerMessage : null,
-                paymentExclusions = exclusions,
+                paymentExclusions = exclusions.Select(x => new
+                {
+                    x.EmployeeId, x.EmployeeCode, x.Amount, x.ReasonCode, x.Reason,
+                    canRecordOutsidePayment = x.ReasonCode == Infrastructure.Payroll.PaymentBatchExclusions.PaidOutsideBankFileCode && x.Amount > 0m,
+                    outsidePaymentRecorded = outsideRecorded.Contains(
+                        Infrastructure.Payroll.PaymentBatchExclusions.OutsidePaymentRef(b.BatchNumber, x.EmployeeId)),
+                }).ToList(),
                 excludedTotal = exclusions.Sum(x => x.Amount),
+                mudadNote = exclusions.Any(x => x.ReasonCode == Infrastructure.Payroll.PaymentBatchExclusions.PaidOutsideBankFileCode)
+                    ? Infrastructure.Payroll.PaymentBatchExclusions.MudadNote : null,
                 isSaudi = ksaRunIds.Contains(b.PayrollRunId),
                 generatedFileLabel = ksaRunIds.Contains(b.PayrollRunId)
                     ? Infrastructure.Payroll.WpsConformance.KsaPayrollRegisterLabel
@@ -10885,7 +11176,10 @@ public record EmployeeSalaryStructureRequest(int EmployeeId, Guid SalaryStructur
 // Optional and defaulted, so every existing caller (and the frontend) is unaffected on a run with none.
 // POD-B3 — ExpectedOverriddenCount is the same acknowledgement for consciously CLEARED compliance
 // errors. Optional and defaulted, so a run with no overrides (i.e. every run today) is unaffected.
-public record PayrollDecisionRequest(string? Notes, int? ExpectedExcludedCount = null, int? ExpectedOverriddenCount = null);
+/// <param name="ExpectedOutsideBankCount">Acknowledges, by count, the employees paid by cash or cheque (outside
+/// the bank/WPS file). Required when the run has any.</param>
+public record PayrollDecisionRequest(string? Notes, int? ExpectedExcludedCount = null, int? ExpectedOverriddenCount = null,
+    int? ExpectedOutsideBankCount = null);
 public record PayrollPaymentBatchRequest(string? PaymentMethod, string? Currency);
 /// <summary><paramref name="EvidenceId"/> is REQUIRED to mark a WPS batch Accepted: the id of evidence
 /// uploaded through POST payment-batches/{id}/wps-evidence (the bank's WPS output file or a Mudad
@@ -10901,9 +11195,14 @@ public sealed class WpsEvidenceUploadForm
 }
 public record ErpPostingStatusRequest(string Status, string? Reference = null, string? Notes = null);
 // POD-B1 — settlement / remittance / reversal request bodies.
+/// <summary>A wage paid outside the bank file: Cash or Cheque, its cheque number / receipt reference, the date paid.</summary>
+public record OutsidePaymentRequest(int EmployeeId, string? Method, string? Reference, DateOnly? PaidDate = null);
 public record SettlePaymentBatchRequest(string? Reference = null, DateOnly? PaidDate = null);
 public record RemitStatutoryRequest(string? Group = null, string? Reference = null, DateOnly? RemitDate = null);
-public record PayrollReasonRequest(string? Reason = null);
+/// <param name="DocumentReference">The decision or document the reason rests on. REQUIRED to override the
+/// KSA Art. 92/93 cap (DEDUCTIONS_EXCEED_HALF_WAGE): a labour court / commission decision or other lawful
+/// written basis, by its reference number.</param>
+public record PayrollReasonRequest(string? Reason = null, string? DocumentReference = null);
 public record RemitReverseRequest(string? Group = null, string? Reason = null);
 public record PayrollGroupRequest(string Code, string Name, string? Currency);
 public record ImportSalaryStructuresRequest(string CsvContent);

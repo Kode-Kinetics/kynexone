@@ -1214,7 +1214,7 @@ public class PayrollModuleTests
             .GetType().GetProperty("EvidenceId")!.GetValue(((OkObjectResult)upload).Value)!;
         // Maker-checker: whoever uploaded the evidence may not record Accepted; a second person does.
         (await ctrl.UpdateWpsStatus(batch.Id, new WpsStatusRequest(WpsStatuses.Accepted, null, "ACK-456", evidenceId), CancellationToken.None))
-            .Should().BeOfType<BadRequestObjectResult>();
+            .Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
         var checker = MakeCtrl(db, tenantId, permissions: new[] { "payroll.export" }, storage: storage);
         (await checker.UpdateWpsStatus(batch.Id, new WpsStatusRequest(WpsStatuses.Accepted, null, "ACK-456", evidenceId), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();

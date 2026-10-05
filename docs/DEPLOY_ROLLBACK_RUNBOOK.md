@@ -98,11 +98,44 @@ harmful.
 - Never promote an image whose migration has not been applied — the `/health/ready` gate (and the
   optional `preDeployCommand`) enforce this automatically, but confirm manually after any manual deploy.
 
+## Pre-deploy checklist — KSA WPS pilot
+
+1. **Nationality audit.** Run the read-only query in the next section and hand the list to payroll
+   (past payslips of those employees carried no employee GOSI; nothing is recomputed automatically).
+2. **Bank-file settings per legal entity:** MOL establishment ID (as shown in Qiwa), the 16-digit ANB
+   main account, organisation name and three address lines, company name, narrative, batch type; the
+   10-digit national unified number if ANB auto-WPS is on. If a GCC WPS agent ID is also set it must equal
+   the MOL establishment ID, or the export is refused.
+3. **Beneficiary BIC.** One resolver serves pre-lock, export and the SIF check: the approved
+   `Employee.WpsBankDetails.bicCode`, else the payroll profile's `BankRoutingCode` (case-insensitive). An
+   ANB-to-ANB credit needs a 16-digit ANB account number with BIC `ARNBSARI` in either place.
+4. **Cash / cheque employees** have payment method `Cash` or `Cheque` on their payroll profile. They are
+   warned before Lock (`PAID_OUTSIDE_BANK_FILE`, stronger `…_WITH_IBAN`), acknowledged by count at Approve,
+   frozen at Lock, left out of the bank file, and their payment is recorded per employee against the batch
+   ("Record payment outside the bank file"). Salaries Payable (2100) is only clear after both the bank
+   batch is settled and every outside payment is recorded. Cash wages count against Mudad WPS compliance.
+   A run approved before this release whose cash list changed is refused at Lock with
+   `outside_bank_payments_changed`: run `POST runs/{id}/validate`, then lock.
+5. **Two payroll users with `payroll.export`** per legal entity: the person who generates the bank/WPS
+   file or uploads the evidence cannot mark the batch Accepted.
+6. Leave `QIWA_USE_LIVE_ADAPTER` unset (Qiwa data check only).
+
+### Final settlements and the Art. 92/93 cap
+
+A final-settlement run recovers an outstanding loan or advance through the ordinary `LOAN_EMI` /
+`ADVANCE_EMI` lines, which are debt-type. Recovering a large balance from one final wage can therefore
+exceed half of that wage and raise `DEDUCTIONS_EXCEED_HALF_WAGE`, blocking Approve and Lock. Either
+reschedule the recovery (leave the remainder as a receivable) and re-process, or have an approver who is
+neither the run's preparer nor the leaver override it citing a labour court / commission decision or
+other lawful written basis, with its reference (`documentReference`). The bank export honours that
+override. No legal conclusion about when set-off is permitted is built into the product.
+
 ## Saudi nationality normaliser — pre/post-deploy diagnostic (read-only)
 
 GOSI used to recognise only `SA`, `SAU`, `Saudi`, `Saudi Arabia`, `Saudi Arabian`, compared without
 trimming. The shared normaliser (`Infrastructure/Compliance/SaudiNationality.cs`) also accepts `KSA`,
-`SaudiArabia` and the Arabic `سعودي` / `سعودية` / `السعودية`, and trims. Employees recorded with one of
+`SaudiArabia`, `Kingdom of Saudi Arabia` and the Arabic `سعودي` / `سعودى` / `سعودية` / `السعودية` /
+`المملكة العربية السعودية`, and trims. Employees recorded with one of
 the newly recognised values were classified as expatriates: **their past payslips carried no employee GOSI.**
 From the next processed run they are Saudi. **Do not recompute or edit filed/locked payslips;** take the
 list to payroll and the GOSI portal for a reviewed correction.
@@ -114,7 +147,8 @@ Run on the production database (SELECT only) to count and list those employees:
 SELECT tenant_id, company_id, id AS employee_id, employee_code, status, nationality
 FROM employees
 WHERE NOT is_deleted
-  AND (lower(btrim(nationality)) IN ('ksa', 'saudiarabia', 'سعودي', 'سعودية', 'السعودية')
+  AND (lower(btrim(nationality)) IN ('ksa', 'saudiarabia', 'kingdom of saudi arabia',
+                                     'سعودي', 'سعودى', 'سعودية', 'السعودية', 'المملكة العربية السعودية')
        OR (nationality <> btrim(nationality)
            AND lower(btrim(nationality)) IN ('sa', 'sau', 'saudi', 'saudi arabia', 'saudi arabian')))
 ORDER BY tenant_id, company_id, employee_code;
@@ -123,7 +157,8 @@ ORDER BY tenant_id, company_id, employee_code;
 SELECT tenant_id, count(*) AS newly_saudi
 FROM employees
 WHERE NOT is_deleted
-  AND (lower(btrim(nationality)) IN ('ksa', 'saudiarabia', 'سعودي', 'سعودية', 'السعودية')
+  AND (lower(btrim(nationality)) IN ('ksa', 'saudiarabia', 'kingdom of saudi arabia',
+                                     'سعودي', 'سعودى', 'سعودية', 'السعودية', 'المملكة العربية السعودية')
        OR (nationality <> btrim(nationality)
            AND lower(btrim(nationality)) IN ('sa', 'sau', 'saudi', 'saudi arabia', 'saudi arabian')))
 GROUP BY tenant_id;

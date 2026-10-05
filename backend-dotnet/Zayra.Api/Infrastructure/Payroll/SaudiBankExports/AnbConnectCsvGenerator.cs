@@ -187,7 +187,7 @@ public static class AnbConnectCsvGenerator
 
     /// <summary>True for ANB's own BIC, the only one a 16-digit internal account may be credited with.</summary>
     public static bool IsAnbBic(string? bic) =>
-        bic is not null && AnbInternalAccountBics.Contains(bic, StringComparer.Ordinal);
+        bic is not null && AnbInternalAccountBics.Contains(bic.Trim(), StringComparer.OrdinalIgnoreCase);
 
     public static string Sha256Hex(byte[] content) => Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant();
 

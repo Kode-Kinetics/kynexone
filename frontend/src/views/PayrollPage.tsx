@@ -1845,14 +1845,17 @@ function OverrideValidationModal({ runId, result, onClose, onDone }: {
   onDone: () => void;
 }) {
   const [reason, setReason] = useState('');
+  const [documentReference, setDocumentReference] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const tooShort = reason.trim().length < MIN_OVERRIDE_REASON;
+  // The deduction-limit override must rest on a named written basis (no legal conclusion is drawn here).
+  const needsDocument = result.code === 'DEDUCTIONS_EXCEED_HALF_WAGE';
+  const tooShort = reason.trim().length < MIN_OVERRIDE_REASON || (needsDocument && !documentReference.trim());
 
   const submit = async () => {
     setSaving(true); setError('');
     try {
-      await payrollApi.resolveValidationResult(runId, result.id, reason.trim());
+      await payrollApi.resolveValidationResult(runId, result.id, reason.trim(), needsDocument ? documentReference.trim() : undefined);
       onDone();
     } catch (e: unknown) {
       setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'The override was refused.');
@@ -1881,6 +1884,17 @@ function OverrideValidationModal({ runId, result, onClose, onDone }: {
             placeholder="Why is this acceptable for this run?"
           />
         </Field>
+        {needsDocument && (
+          <Field label="Decision or document reference (required)">
+            <input
+              aria-label="Decision or document reference"
+              className={inp}
+              value={documentReference}
+              onChange={e => setDocumentReference(e.target.value)}
+              placeholder="Labour court / commission decision or other written basis — its reference number"
+            />
+          </Field>
+        )}
         {error && <p role="alert" className="text-xs text-rose-500">{error}</p>}
         <div className="flex justify-end gap-2">
           <button type="button" className={btn.ghost} onClick={onClose}>Cancel</button>
@@ -2031,6 +2045,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
   const [gateError, setGateError] = useState('');
   const [ackExcluded, setAckExcluded] = useState(false);
   const [ackOverridden, setAckOverridden] = useState(false);
+  const [ackOutside, setAckOutside] = useState(false);
 
   const refreshRuns = () =>
     payrollApi.listAllRuns().then(setRuns).catch(() => {});
@@ -2059,6 +2074,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
   useEffect(() => {
     setAckExcluded(false);
     setAckOverridden(false);
+    setAckOutside(false);
     refreshGate(runId);
   }, [runId, refreshGate]);
 
@@ -2071,8 +2087,12 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
   const overriddenCount = overrideReport?.overrides.length ?? 0;
   const needsExcludedAck = excludedCount > 0;
   const needsOverriddenAck = overriddenCount > 0;
+  const outsideList = overrideReport?.paidOutsideBankFile ?? [];
+  const outsideCount = outsideList.length;
+  const needsOutsideAck = outsideCount > 0;
   const gateSatisfied =
-    (!needsExcludedAck || ackExcluded) && (!needsOverriddenAck || ackOverridden) && !gateLoading && !gateError && currencyConfirmed;
+    (!needsExcludedAck || ackExcluded) && (!needsOverriddenAck || ackOverridden) && (!needsOutsideAck || ackOutside)
+    && !gateLoading && !gateError && currencyConfirmed;
 
   const handleApprove = async () => {
     if (!runId) return;
@@ -2084,6 +2104,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
         notes,
         expectedExcludedCount: needsExcludedAck && ackExcluded ? excludedCount : null,
         expectedOverriddenCount: needsOverriddenAck && ackOverridden ? overriddenCount : null,
+        expectedOutsideBankCount: needsOutsideAck && ackOutside ? outsideCount : null,
       });
       await refreshRuns();
       setRuns(r => r.map(x => x.id === runId ? { ...x, status: selectedRun?.status === 'Processed' && (isHROrPayroll && !isFinance && !isAdmin) ? 'PendingFinanceReview' : 'Approved' } : x));
@@ -2091,13 +2112,16 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
       setNotes('');
       setAckExcluded(false);
       setAckOverridden(false);
+      setAckOutside(false);
       refreshGate(runId);
     } catch (e: unknown) {
       const data = (e as { response?: { data?: { message?: string; error?: string } } })?.response?.data;
       // A 409 here means the run moved under the approver — re-read the counts so the next attempt
       // acknowledges the truth rather than a stale number.
-      if (data?.error === 'excluded_employees_not_acknowledged' || data?.error === 'overridden_errors_not_acknowledged') {
+      if (data?.error === 'excluded_employees_not_acknowledged' || data?.error === 'overridden_errors_not_acknowledged'
+          || data?.error === 'outside_bank_payments_not_acknowledged') {
         setAckExcluded(false);
+        setAckOutside(false);
         setAckOverridden(false);
         refreshGate(runId);
       }
@@ -2203,6 +2227,22 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
                     key: String(e.employeeId),
                     primary: `${e.code} — ${e.name}`,
                     secondary: e.reason ?? '',
+                  }))}
+                />
+              )}
+
+              {needsOutsideAck && overrideReport && (
+                <AcknowledgementPanel
+                  tone="amber"
+                  title={`${outsideCount} employee(s) are paid by cash or cheque, outside the bank/WPS file`}
+                  blurb={`They will be left out of the bank file and their wages must be paid and recorded separately. ${overrideReport.mudadNote ?? ''}`}
+                  checked={ackOutside}
+                  onChange={setAckOutside}
+                  confirmLabel={`I have reviewed the list and confirm exactly ${outsideCount} employee(s) are paid outside the bank file.`}
+                  rows={outsideList.map(o => ({
+                    key: String(o.employeeId),
+                    primary: `Employee #${o.employeeId}${o.code === 'PAID_OUTSIDE_BANK_FILE_WITH_IBAN' ? ' — a valid IBAN is on file' : ''}`,
+                    secondary: o.message,
                   }))}
                 />
               )}
@@ -2616,6 +2656,9 @@ function PaymentTrackingTab() {
   const [loading, setLoading] = useState(true);
   type WpsForm = { status: string; reference: string; notes: string; evidenceKind: WpsEvidenceKind; evidenceFile: File | null };
   const [evidenceSaving, setEvidenceSaving] = useState<string | null>(null);
+  type OutsideForm = { method: 'Cash' | 'Cheque'; reference: string; date: string };
+  const [outsideForms, setOutsideForms] = useState<Record<string, OutsideForm>>({});
+  const [outsideSaving, setOutsideSaving] = useState<string | null>(null);
   const [wpsForms, setWpsForms] = useState<Record<string, WpsForm>>({});
   const [wpsSaving, setWpsSaving] = useState<string | null>(null);
   const [financeSaving, setFinanceSaving] = useState<string | null>(null);
@@ -2655,6 +2698,23 @@ function PaymentTrackingTab() {
       loadBatches();
     } catch (e) { notifyApiError(e); }
     finally { setEvidenceSaving(null); }
+  };
+  const outsideKey = (batchId: string, employeeId: number) => `${batchId}:${employeeId}`;
+  const outsideForm = (key: string): OutsideForm =>
+    outsideForms[key] ?? { method: 'Cash', reference: '', date: new Date().toISOString().slice(0, 10) };
+  const recordOutside = async (batch: PayrollPaymentBatch, employeeId: number) => {
+    const key = outsideKey(batch.id, employeeId);
+    const form = outsideForm(key);
+    if (!form.reference.trim()) {
+      notifyApiError({ response: { data: { message: 'Enter the cheque number or cash receipt reference.' } } });
+      return;
+    }
+    setOutsideSaving(key);
+    try {
+      await payrollApi.recordOutsidePayment(batch.id, { employeeId, method: form.method, reference: form.reference.trim(), paidDate: form.date || undefined });
+      loadBatches();
+    } catch (e) { notifyApiError(e); }
+    finally { setOutsideSaving(null); }
   };
   const updateWps = async (batch: PayrollPaymentBatch) => {
     const form = wpsForms[batch.id] ?? emptyWpsForm;
@@ -2841,6 +2901,41 @@ function PaymentTrackingTab() {
                             </div>
                           </>
                         )}
+                      </div>
+                    )}
+                    {(b.paymentExclusions ?? []).some(x => x.canRecordOutsidePayment) && (
+                      <div className="grid gap-1.5 border-t border-slate-100 pt-2 dark:border-white/10">
+                        <p className="text-[11px] font-medium text-slate-600 dark:text-slate-300">Paid outside the bank file</p>
+                        {b.mudadNote && <p className="text-[11px] text-amber-600 dark:text-amber-400">{b.mudadNote}</p>}
+                        {(b.paymentExclusions ?? []).filter(x => x.canRecordOutsidePayment).map(x => {
+                          const key = outsideKey(b.id, x.employeeId);
+                          const f = outsideForm(key);
+                          return x.outsidePaymentRecorded ? (
+                            <p key={key} className="text-[11px] text-emerald-600 dark:text-emerald-400">{x.employeeCode}: payment recorded</p>
+                          ) : (
+                            <div key={key} className="grid gap-1 rounded-lg bg-slate-50 p-2 dark:bg-white/5">
+                              <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                                {x.employeeCode} — {x.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })} {b.currency}
+                              </p>
+                              <div className="grid grid-cols-[auto_1fr] gap-1.5">
+                                <select className={sel} aria-label={`Payment method for ${x.employeeCode}`} value={f.method}
+                                  onChange={e => setOutsideForms(p => ({ ...p, [key]: { ...f, method: e.target.value as 'Cash' | 'Cheque' } }))}>
+                                  <option value="Cash">Cash</option>
+                                  <option value="Cheque">Cheque</option>
+                                </select>
+                                <input className={inp} aria-label={`Cheque or receipt reference for ${x.employeeCode}`} placeholder="Cheque no. / receipt ref."
+                                  value={f.reference} onChange={e => setOutsideForms(p => ({ ...p, [key]: { ...f, reference: e.target.value } }))} />
+                              </div>
+                              <div className="grid grid-cols-[1fr_auto] gap-1.5">
+                                <input className={inp} type="date" aria-label={`Date paid for ${x.employeeCode}`} value={f.date}
+                                  onChange={e => setOutsideForms(p => ({ ...p, [key]: { ...f, date: e.target.value } }))} />
+                                <button type="button" className={`${btn.sm} disabled:opacity-50`} onClick={() => recordOutside(b, x.employeeId)} disabled={outsideSaving === key}>
+                                  {outsideSaving === key ? 'Recording…' : 'Record payment outside the bank file'}
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                     {nextStatuses(b).length === 0 && effectiveStatus(b) !== 'Accepted' && effectiveStatus(b) !== 'Paid' && <span className="text-xs text-slate-400">No action</span>}

@@ -520,7 +520,7 @@ public sealed class SaudiBankExportService
 
             ksaRows.Add(new KsaWageFileRow(
                 rec.EmployeeId, label, emp.Nationality, idCandidates.Count == 1 ? idCandidates[0] : null, NullIfEmpty(rec.Iban),
-                NullIfEmpty(beneficiary.GetValueOrDefault(rec.EmployeeId)?.BicCode),
+                SaudiBeneficiaryBic.Resolve(emp, profile),
                 NullIfEmpty(string.IsNullOrEmpty(emp.EnglishName) ? emp.FullName : emp.EnglishName),
                 slip.GrossSalary, slip.BasicSalary, slip.HousingAllowance, slip.NetSalary, slip.Deductions,
                 debtByEmployee.GetValueOrDefault(rec.EmployeeId), debtCapOverridden.Contains(rec.EmployeeId)));
@@ -530,7 +530,7 @@ public sealed class SaudiBankExportService
             rows.Add(new AnbPaymentInput(
                 rec.EmployeeId, label, idCandidates.Count == 1 ? idCandidates[0] : null, NullIfEmpty(rec.Iban),
                 slip.NetSalary, slip.BasicSalary, slip.HousingAllowance, other, slip.Deductions,
-                NullIfEmpty(beneficiary.GetValueOrDefault(rec.EmployeeId)?.BicCode),
+                SaudiBeneficiaryBic.Resolve(emp, profile),
                 NullIfEmpty(string.IsNullOrEmpty(emp.EnglishName) ? emp.FullName : emp.EnglishName),
                 hasAddr ? addr.Line1 : null, hasAddr ? addr.Line2 : null, hasAddr ? addr.Line3 : null));
         }
