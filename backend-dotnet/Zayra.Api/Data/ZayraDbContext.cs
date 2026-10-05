@@ -1674,6 +1674,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.MidSalary).HasPrecision(14, 2);
             entity.Property(x => x.MaxSalary).HasPrecision(14, 2);
             entity.Property(x => x.Currency).HasMaxLength(8);
+            entity.Property(x => x.NameAr).HasMaxLength(120);
         });
 
         modelBuilder.Entity<GradePayScaleComponent>(entity =>
@@ -3924,6 +3925,9 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.MaxTotalOutstanding).HasPrecision(14, 2);
             entity.Property(x => x.MaxInstallmentPercentOfSalary).HasPrecision(5, 2);
             entity.Property(x => x.AdditionalApprovalThreshold).HasPrecision(14, 2);
+            // Default true backfills existing policies. ValueGeneratedNever: EF must always send the value, or a false
+            // (the CLR default) would be skipped on insert and the database default would silently re-offer the type.
+            entity.Property(x => x.IsOffered).HasDefaultValue(true).ValueGeneratedNever();
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.LoanTypeId, x.Version }).IsUnique().HasFilter("company_id IS NOT NULL");
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.LoanTypeId }).IsUnique().HasFilter("company_id IS NOT NULL AND is_active");
             entity.HasIndex(x => new { x.TenantId, x.LoanTypeId });

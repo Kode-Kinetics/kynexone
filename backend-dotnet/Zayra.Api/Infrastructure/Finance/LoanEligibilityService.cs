@@ -70,9 +70,10 @@ public sealed class LoanEligibilityService(ZayraDbContext db)
                     && (x.CompanyId == employee.CompanyId || x.CompanyId == null))
                 .OrderByDescending(x => x.CompanyId.HasValue).ThenByDescending(x => x.Version)
                 .ThenByDescending(x => x.CreatedAtUtc).FirstOrDefaultAsync(ct);
-            // A grade-limited type is offered only where the company has published a policy for it. Types that
-            // are not grade-limited keep the loan-type baseline below, exactly as before (live tenants).
-            if (policy == null && loanType.GradeLimited)
+            // Not offered when (a) the company's own active policy says so explicitly — for any type, since it is
+            // an explicit HR decision — or (b) a grade-limited type has no policy at all. Types that are not
+            // grade-limited and have no policy keep the loan-type baseline below, exactly as before (live tenants).
+            if ((policy is { CompanyId: not null, IsOffered: false }) || (policy == null && loanType.GradeLimited))
                 Refuse(LoanEligibilityCodes.TypeNotOffered, LoanEligibilityCodes.TypeNotOfferedText);
         }
         // Freeze the legacy type limits as a baseline snapshot too. A missing policy never disables HR approval.
@@ -226,6 +227,10 @@ public sealed class LoanEligibilityService(ZayraDbContext db)
         var gradeBlocksOutright = grade.Applies && grade.Limits.Count == 0 && grade.Codes.Length > 0;
         var binding = limits.Where(x => x.Available.HasValue)
             .OrderBy(x => x.Available).ThenBy(x => Array.IndexOf(LoanLimitKinds.Order, x.Limit)).FirstOrDefault();
+        // A preview skips the amount rules, so "nothing left to borrow" must be said explicitly: never report
+        // eligible when the strictest limit leaves 0.
+        if (preview && binding is { Available: 0m } && PreviewExhaustedCode(binding.Limit) is { } exhaustedCode && !codes.Contains(exhaustedCode))
+            Refuse(exhaustedCode, $"Nothing is available to borrow right now: {LimitPhrase(binding.Limit)} is fully used.");
         decimal? available = gradeBlocksOutright ? 0m : binding?.Available;
         return new(reasons.Count == 0, reasons.ToArray(), codes.ToArray(), maximum,
             policy.Id == Guid.Empty ? null : policy.Id, policy.Version == 0 ? null : policy.Version,
@@ -243,6 +248,26 @@ public sealed class LoanEligibilityService(ZayraDbContext db)
         loan.GradePerLoanCap = grade.PerLoanCap;
         loan.GradeOutstandingCap = grade.OutstandingCap;
     }
+
+    private static string? PreviewExhaustedCode(string limit) => limit switch
+    {
+        LoanLimitKinds.GradePerLoan => GradeLimitCodes.PerLoan,
+        LoanLimitKinds.GradeOutstanding => GradeLimitCodes.Outstanding,
+        LoanLimitKinds.PolicyInstallmentPercent => "SalaryAffordability",
+        LoanLimitKinds.PolicyConcurrentLoans => "ConcurrentLoans",
+        _ => "AmountLimit",
+    };
+
+    private static string LimitPhrase(string limit) => limit switch
+    {
+        LoanLimitKinds.GradePerLoan => "the grade's per-loan maximum",
+        LoanLimitKinds.GradeOutstanding => "the grade's total outstanding maximum",
+        LoanLimitKinds.PolicyMaxAmount => "the policy's maximum loan amount",
+        LoanLimitKinds.PolicyTotalOutstanding => "the policy's total outstanding maximum",
+        LoanLimitKinds.PolicySalaryMultiple => "the policy's salary multiple",
+        LoanLimitKinds.PolicyInstallmentPercent => "the policy's instalment share of salary",
+        _ => "the policy's maximum number of open loans",
+    };
 
     private static decimal Min(decimal? current, decimal next) => current.HasValue ? Math.Min(current.Value, next) : next;
     private static decimal MonthlyEquivalent(decimal amount, string frequency) => frequency switch

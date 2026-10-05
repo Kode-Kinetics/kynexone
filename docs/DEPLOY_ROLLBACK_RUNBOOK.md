@@ -93,6 +93,14 @@ harmful.
   `job_applications`, `offer_letters`. No pre-existing column or row is touched; the only data lost
   is the new company assignments (re-derivable by `CompanyScopeBackfill` on the next boot).
 
+- **Grade loan limits (`AddGradeLoanLimits`, `AddGradeNameArAndLoanOffering`).** Rolling the *app* back to
+  a release before grade limits leaves the columns in place but **stops enforcing them**: loan types with
+  "Limit this loan type by grade" on, and companies that switched a loan type off, accept requests on policy
+  rules alone until the release is restored. Take a Neon branch before rolling back, and list what is
+  affected with `SELECT id, code FROM loan_types WHERE grade_limited` and
+  `SELECT company_id, loan_type_id FROM loan_policies WHERE is_active AND NOT is_offered`. Both
+  `Down()` migrations refuse to run while those rows exist.
+
 ### 3. Re-verify before restoring traffic
 - `/health/ready` must read `ready` with `pendingMigrations: 0`.
 - Never promote an image whose migration has not been applied — the `/health/ready` gate (and the

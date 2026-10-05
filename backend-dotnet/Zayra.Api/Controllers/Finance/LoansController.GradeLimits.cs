@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
@@ -40,10 +41,12 @@ public partial class LoansController
     /// Values are never edited in place, so a loan's witness keeps pointing at the figures it was decided under.
     /// </summary>
     [HttpPut("grade-limits")]
-    [HasPermission("loans.write")]
+    [Authorize(Roles = "Admin,HR Manager,HR Director")]
     public Task<IActionResult> PublishGradeLimits([FromBody] PublishGradeLimitsRequest req, CancellationToken ct) =>
         FinanceDecisionSerializer.SerializeAsync<IActionResult>(_db, GradeLimitLockScope, GetTenantId(), req.LoanTypeId, async () =>
         {
+            // Same owner as the company loan policy: HR decides how much a grade may borrow; Finance does not.
+            if (!IsHrLoanActor()) return HrPolicyOwnerRequired();
             var tid = GetTenantId();
             var scope = this.GetEntityScope();
             if (req.CompanyId is null && !scope.IsGroupLevel)
@@ -92,12 +95,12 @@ public partial class LoansController
                 var later = versions.Where(x => x.EffectiveFrom > req.EffectiveFrom).OrderBy(x => x.EffectiveFrom).FirstOrDefault();
                 if (later != null)
                     return Conflict(new { error = "later_version_exists",
-                        message = $"Grade {grade.Name} already has a limit starting {later.EffectiveFrom:yyyy-MM-dd}. Publish from that date or later." });
+                        message = $"{grade.Name} already has a limit starting {later.EffectiveFrom:yyyy-MM-dd}. Publish from that date or later." });
                 var current = versions.FirstOrDefault(x => x.IsInEffect(req.EffectiveFrom));
                 if (current != null && SameCellValues(current, row)) continue;
                 if (current != null && current.EffectiveFrom == req.EffectiveFrom)
                     return Conflict(new { error = "same_day_version_exists",
-                        message = $"Grade {grade.Name} already has a limit starting {req.EffectiveFrom:yyyy-MM-dd}. Limits are never overwritten; publish the correction from the next day." });
+                        message = $"{grade.Name} already has a limit starting {req.EffectiveFrom:yyyy-MM-dd}. Limits are never overwritten; publish the correction from the next day." });
                 if (current != null) current.EffectiveTo = req.EffectiveFrom.AddDays(-1);
                 inserts.Add((new GradeEntitlement
                 {
@@ -136,10 +139,11 @@ public partial class LoansController
     /// <summary>Turns grade limits on or off for a loan type. Enabling is refused while any active grade has no
     /// limit in force for some company — those employees could not apply at all.</summary>
     [HttpPatch("types/{id:guid}/grade-limited")]
-    [HasPermission("loans.write")]
+    [Authorize(Roles = "Admin,HR Manager,HR Director")]
     public Task<IActionResult> SetLoanTypeGradeLimited(Guid id, [FromBody] SetGradeLimitedRequest req, CancellationToken ct) =>
         FinanceDecisionSerializer.SerializeAsync<IActionResult>(_db, GradeLimitLockScope, GetTenantId(), id, async () =>
         {
+            if (!IsHrLoanActor()) return HrPolicyOwnerRequired();
             var tid = GetTenantId();
             if (!this.GetEntityScope().IsGroupLevel)
                 return StatusCode(StatusCodes.Status403Forbidden, new { error = "group_scope_required",
@@ -160,7 +164,7 @@ public partial class LoansController
                         error = "grade_limits_missing",
                         message = "Set a limit for every grade before limiting this loan type by grade. Missing: "
                             + string.Join(", ", missing.Select(m => m.GradeName)) + ".",
-                        missingGrades = missing.Select(m => new { m.GradeName, m.GradeCode, m.GradeId }),
+                        missingGrades = missing.Select(m => new { m.GradeName, m.GradeNameAr, m.GradeCode, m.GradeId }),
                     });
             }
             var was = type.GradeLimited;
@@ -192,21 +196,115 @@ public partial class LoansController
         if (employee == null) return NotFound();
         if (!IsHrLoanActor() && !IsFinanceActor() && employee.UserAccountId != uid) return Forbid();
         var types = await _db.LoanTypes.AsNoTracking().Where(x => x.TenantId == tid && !x.IsDeleted && x.IsActive).OrderBy(x => x.NameEn).ToListAsync(ct);
-        var withPolicy = (await _db.Set<LoanPolicy>().AsNoTracking()
+        // Same selection as LoanEligibilityService: the company's own active policy wins over a group-wide one.
+        var policies = (await _db.Set<LoanPolicy>().AsNoTracking()
                 .Where(x => x.TenantId == tid && x.IsActive && (x.CompanyId == employee.CompanyId || x.CompanyId == null))
-                .Select(x => x.LoanTypeId).ToListAsync(ct)).ToHashSet();
+                .Select(x => new { x.LoanTypeId, x.CompanyId, x.IsOffered, x.Version, x.CreatedAtUtc }).ToListAsync(ct))
+            .GroupBy(x => x.LoanTypeId)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.CompanyId.HasValue).ThenByDescending(x => x.Version)
+                .ThenByDescending(x => x.CreatedAtUtc).First());
         return Ok(types.Select(t =>
         {
+            var policy = policies.GetValueOrDefault(t.Id);
             var (code, text) = !t.IsInterestFree || t.InterestRate != 0
                 ? (LoanEligibilityCodes.InterestNotPermitted, LoanEligibilityCodes.InterestNotPermittedText)
-                : t.GradeLimited && !withPolicy.Contains(t.Id)
+                : (policy is { CompanyId: not null, IsOffered: false }) || (policy == null && t.GradeLimited)
                     ? (LoanEligibilityCodes.TypeNotOffered, LoanEligibilityCodes.TypeNotOfferedText)
                     : ((string?)null, (string?)null);
             return new { loanTypeId = t.Id, t.Code, t.NameEn, t.NameAr, t.GradeLimited, offered = code == null, reasonCode = code, reasonText = text };
         }));
     }
 
+    /// <summary>
+    /// The company's explicit "we offer / don't offer this loan type" switch. Stored on the company's own loan
+    /// policy (<see cref="LoanPolicy.IsOffered"/>) as a new policy version — terms are copied from the policy in
+    /// force for the company (its own, else the group-wide one), so switching never changes any other rule and the
+    /// history stays versioned like every other policy change. A no-op when the company is already in the asked
+    /// state. Switching ON a grade-limited type that has no policy at all is refused: there are no terms to offer
+    /// it on, so HR publishes a real policy instead.
+    /// </summary>
+    [HttpPut("offerings")]
+    [Authorize(Roles = "Admin,HR Manager,HR Director")]
+    public Task<IActionResult> SetLoanTypeOffering([FromBody] SetLoanOfferingRequest req, CancellationToken ct) =>
+        FinanceDecisionSerializer.SerializeAsync<IActionResult>(_db, "finance.loan-policies", GetTenantId(), req.CompanyId, async () =>
+        {
+            if (!IsHrLoanActor()) return HrPolicyOwnerRequired();
+            if (!this.GetEntityScope().CanAccessCompany(req.CompanyId)) return Forbid();
+            var tid = GetTenantId();
+            if (req.CompanyId == Guid.Empty || !await _db.Companies.AnyAsync(x => x.TenantId == tid && x.Id == req.CompanyId && !x.IsDeleted, ct))
+                return BadRequest(new { error = "company_not_found", message = "Choose a valid company." });
+            var type = await _db.LoanTypes.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == req.LoanTypeId && !x.IsDeleted && x.IsActive, ct);
+            if (type == null) return NotFound(new { error = "loan_type_not_found", message = "That loan type doesn't exist." });
+            var current = await _db.Set<LoanPolicy>()
+                .Where(x => x.TenantId == tid && x.LoanTypeId == type.Id && x.IsActive && (x.CompanyId == req.CompanyId || x.CompanyId == null))
+                .OrderByDescending(x => x.CompanyId.HasValue).ThenByDescending(x => x.Version).ThenByDescending(x => x.CreatedAtUtc)
+                .FirstOrDefaultAsync(ct);
+            var effectiveOffered = current is not { CompanyId: not null, IsOffered: false } && (current != null || !type.GradeLimited);
+            if (effectiveOffered == req.Offered) return Ok(OfferingDto(type, req.CompanyId, current));
+            // A grade-limited type with no policy at all has no terms to offer it on; that needs a real policy.
+            if (current == null && req.Offered)
+                return Conflict(new { error = "policy_required",
+                    message = "Publish a loan policy for this loan type and company first. The loan type is offered from then on." });
+            var version = await _db.Set<LoanPolicy>().Where(x => x.TenantId == tid && x.CompanyId == req.CompanyId && x.LoanTypeId == type.Id)
+                .Select(x => (int?)x.Version).MaxAsync(ct) ?? 0;
+            foreach (var previous in await _db.Set<LoanPolicy>().Where(x => x.TenantId == tid && x.CompanyId == req.CompanyId && x.LoanTypeId == type.Id && x.IsActive).ToListAsync(ct))
+                previous.IsActive = false;
+            await _db.SaveChangesAsync(ct);
+            // Switching OFF with no policy at all: the terms are never used (nothing can be applied for), so the
+            // loan-type limits are recorded only to keep the version complete.
+            var basis = current ?? new LoanPolicy { PolicyName = type.NameEn, MaxAmount = type.MaxAmount,
+                MaxInstallments = Math.Clamp(type.MaxInstallments, 1, 600), MinServiceMonths = type.MinServiceMonths, MaxConcurrentLoans = 1 };
+            var next = JsonSerializer.Deserialize<LoanPolicy>(JsonSerializer.Serialize(basis))!;
+            next.Id = Guid.NewGuid(); next.TenantId = tid; next.CompanyId = req.CompanyId; next.LoanTypeId = type.Id;
+            next.Version = version + 1; next.IsActive = true; next.IsOffered = req.Offered;
+            next.CreatedAtUtc = DateTime.UtcNow; next.CreatedBy = GetUserId();
+            if (string.IsNullOrWhiteSpace(next.PolicyName)) next.PolicyName = type.NameEn;
+            _db.Set<LoanPolicy>().Add(next);
+            _db.AuditLogs.Add(new AuditLog
+            {
+                TenantId = tid, CompanyId = req.CompanyId, UserId = GetUserId(), Action = req.Offered ? "loans.type.offered" : "loans.type.not_offered",
+                EntityName = "LoanPolicy", EntityId = next.Id.ToString(), IpAddress = HttpContext?.Connection.RemoteIpAddress?.ToString(),
+                CreatedAtUtc = DateTime.UtcNow,
+                Metadata = JsonSerializer.Serialize(new { loanTypeId = type.Id, type.Code, req.Offered, copiedFromPolicyId = current?.Id, next.Version }),
+            });
+            await _db.SaveChangesAsync(ct);
+            return Ok(OfferingDto(type, req.CompanyId, next));
+        }, ct);
+
+    /// <summary>Per company: which loan types its employees are offered, and why not.</summary>
+    [HttpGet("offerings")]
+    [HasPermission("loans.read", "loans.write")]
+    public async Task<IActionResult> ListLoanTypeOfferings([FromQuery] Guid companyId, CancellationToken ct)
+    {
+        if (!this.GetEntityScope().CanAccessCompany(companyId)) return Forbid();
+        var tid = GetTenantId();
+        var types = await _db.LoanTypes.AsNoTracking().Where(x => x.TenantId == tid && !x.IsDeleted && x.IsActive).OrderBy(x => x.NameEn).ToListAsync(ct);
+        var policies = await _db.Set<LoanPolicy>().AsNoTracking()
+            .Where(x => x.TenantId == tid && x.IsActive && (x.CompanyId == companyId || x.CompanyId == null)).ToListAsync(ct);
+        return Ok(types.Select(t => OfferingDto(t, companyId, policies.Where(p => p.LoanTypeId == t.Id)
+            .OrderByDescending(x => x.CompanyId.HasValue).ThenByDescending(x => x.Version).ThenByDescending(x => x.CreatedAtUtc).FirstOrDefault())));
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────────────────────────
+
+    private ObjectResult HrPolicyOwnerRequired() => StatusCode(StatusCodes.Status403Forbidden, new
+    {
+        error = "hr_policy_owner_required",
+        message = "Loan limits and offerings are set by HR (Admin, HR Manager or HR Director), the same people who own company loan policies.",
+    });
+
+    private static object OfferingDto(LoanType t, Guid companyId, LoanPolicy? policy)
+    {
+        var explicitlyOff = policy is { CompanyId: not null, IsOffered: false };
+        var offered = !explicitlyOff && (policy != null || !t.GradeLimited) && t.IsInterestFree && t.InterestRate == 0;
+        return new
+        {
+            loanTypeId = t.Id, t.Code, t.NameEn, t.NameAr, t.GradeLimited, companyId, offered,
+            source = explicitlyOff ? "CompanyNotOffered" : policy == null ? (t.GradeLimited ? "NoPolicy" : "LoanTypeBaseline")
+                : policy.CompanyId.HasValue ? "CompanyPolicy" : "GroupPolicy",
+            policyId = policy?.Id, policyVersion = policy?.Version,
+        };
+    }
 
     private static DateOnly Today() => DateOnly.FromDateTime(DateTime.UtcNow);
 
@@ -227,7 +325,7 @@ public partial class LoansController
         {
             var cell = cells.Where(c => c.GradeId == g.Id)
                 .OrderByDescending(c => c.CompanyId.HasValue).ThenByDescending(c => c.EffectiveFrom).FirstOrDefault();
-            return new GradeLimitRowDto(g.Id, g.Code, g.Name, g.Level, cell?.Id, cell?.Eligible ?? false, cell?.ValueType,
+            return new GradeLimitRowDto(g.Id, g.Code, g.Name, g.NameAr, g.Level, cell?.Id, cell?.Eligible ?? false, cell?.ValueType,
                 cell?.Amount, cell?.Rate, cell?.MaxOutstandingAmount, cell?.EffectiveFrom, cell?.EffectiveTo,
                 cell?.CompanyId != null, cell?.Note);
         }).ToList();
@@ -235,7 +333,7 @@ public partial class LoansController
 
     /// <summary>Active grades with no cell in force on <paramref name="on"/> for at least one active company
     /// (neither that company's override nor the tenant-wide cell).</summary>
-    private async Task<List<(Guid GradeId, string GradeCode, string GradeName)>> MissingGradeLimitsAsync(Guid tid, string code, DateOnly on, CancellationToken ct)
+    private async Task<List<(Guid GradeId, string GradeCode, string GradeName, string? GradeNameAr)>> MissingGradeLimitsAsync(Guid tid, string code, DateOnly on, CancellationToken ct)
     {
         var grades = await _db.Grades.AsNoTracking().Where(x => x.TenantId == tid && !x.IsDeleted && x.IsActive)
             .OrderBy(x => x.Level).ThenBy(x => x.Code).ToListAsync(ct);
@@ -248,7 +346,7 @@ public partial class LoansController
         return grades.Where(g =>
                 !cells.Any(c => c.GradeId == g.Id && c.CompanyId == null)
                 && (companies.Count == 0 || companies.Any(company => !cells.Any(c => c.GradeId == g.Id && c.CompanyId == company))))
-            .Select(g => (g.Id, g.Code, g.Name)).ToList();
+            .Select(g => (g.Id, g.Code, g.Name, g.NameAr)).ToList();
     }
 
     private static bool SameCellValues(GradeEntitlement c, GradeLimitRowInput r) =>
@@ -287,6 +385,7 @@ public sealed record GradeLimitRowInput(Guid GradeId, bool Eligible, string Valu
     decimal? Rate = null, decimal? MaxOutstandingAmount = null, string? Note = null);
 public sealed record PublishGradeLimitsRequest(Guid LoanTypeId, Guid? CompanyId, DateOnly EffectiveFrom, List<GradeLimitRowInput> Rows);
 public sealed record SetGradeLimitedRequest(bool GradeLimited);
-public sealed record GradeLimitRowDto(Guid GradeId, string GradeCode, string GradeName, int Level, Guid? CellId, bool Eligible,
+public sealed record SetLoanOfferingRequest(Guid CompanyId, Guid LoanTypeId, bool Offered);
+public sealed record GradeLimitRowDto(Guid GradeId, string GradeCode, string GradeName, string? GradeNameAr, int Level, Guid? CellId, bool Eligible,
     string? ValueType, decimal? Amount, decimal? Rate, decimal? MaxOutstandingAmount, DateOnly? EffectiveFrom, DateOnly? EffectiveTo,
     bool IsCompanyOverride, string? Note);

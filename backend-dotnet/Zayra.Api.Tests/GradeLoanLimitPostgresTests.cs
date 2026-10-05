@@ -103,12 +103,22 @@ public class GradeLoanLimitPostgresTests(PostgresFixture fixture)
     /// The Facility component must be invisible to payroll. Two tenants, identical in every respect except that
     /// one carries the loan Facility component (created exactly as production creates it) and a grade cell: the
     /// payroll runs must produce identical earnings, deductions, slips and validation results.
+    /// <para><c>seedCatalog: false</c> is the real first-use path: a tenant that never wrote a pay component runs
+    /// on the compiled catalog, and publishing grade limits is the first write to its store (the Facility row
+    /// plus the system rows seeded beside it).</para>
     /// </summary>
-    [Fact]
-    public async Task FacilityComponent_LeavesPayrollOutputUnchanged()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task FacilityComponent_LeavesPayrollOutputUnchanged(bool seedCatalog)
     {
-        var plain = await SeedPayrollAsync(withFacility: false);
-        var facility = await SeedPayrollAsync(withFacility: true);
+        var plain = await SeedPayrollAsync(withFacility: false, seedCatalog);
+        var facility = await SeedPayrollAsync(withFacility: true, seedCatalog);
+        await using (var check = fixture.CreateDb())
+        {
+            Assert.Equal(seedCatalog, await check.PayComponents.AnyAsync(x => x.TenantId == plain.TenantId));
+            Assert.True(await check.PayComponents.AnyAsync(x => x.TenantId == facility.TenantId && x.IsSystem));
+        }
         await using (var check = fixture.CreateDb())
             Assert.True(await check.PayComponents.AnyAsync(x => x.TenantId == facility.TenantId
                 && x.EntitlementClass == PayEntitlementClasses.Facility && x.IsActive && !x.IsDeleted));
@@ -172,11 +182,11 @@ public class GradeLoanLimitPostgresTests(PostgresFixture fixture)
         },
     };
 
-    private async Task<(Guid TenantId, Guid RunId, int EmployeeId)> SeedPayrollAsync(bool withFacility)
+    private async Task<(Guid TenantId, Guid RunId, int EmployeeId)> SeedPayrollAsync(bool withFacility, bool seedCatalog)
     {
         await using var db = fixture.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
-        await PayComponentSeeder.SeedTenantDefaultsAsync(db, tenantId, CancellationToken.None);
+        if (seedCatalog) await PayComponentSeeder.SeedTenantDefaultsAsync(db, tenantId, CancellationToken.None);
         var company = new Company
         {
             TenantId = tenantId, LegalNameEn = $"Facility Co {Guid.NewGuid():N}", CountryCode = "SAU", Jurisdiction = "KSA-mainland",

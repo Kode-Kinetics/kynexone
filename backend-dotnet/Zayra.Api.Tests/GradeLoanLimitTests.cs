@@ -218,21 +218,36 @@ public class GradeLoanLimitTests
     // ── configuration gaps block, with a plain reason ────────────────────────────────────────────
 
     [Fact]
-    public async Task MissingCell_BlocksWithTheConfigReason_AndNotifiesHrOnce()
+    public async Task MissingCell_BlocksWithTheConfigReason_AndNotifiesHrOnSubmitOnly_OncePer24Hours()
     {
         await using var h = await H.Create();
         h.Cell(h.G1, amount: 1_000m);                                 // G2 (the employee's grade) has no cell
         var hrUser = h.AddStaff("HR Manager");
+        var financeUser = h.AddStaff("Finance");
         await h.Db.SaveChangesAsync();
+
+        // A read never notifies.
+        var preview = Json(Ok(await h.Controller("Employee").GetLoanEligibility(h.Type.Id, 500m, 4, ct: default)));
+        Assert.Contains(GradeLimitCodes.NotConfigured, preview);
+        Assert.Empty(await h.Db.Notifications.ToListAsync());
 
         var refused = await h.Controller("Employee").CreateLoan(h.Request(500m), default);
         Assert.Contains(GradeLimitCodes.NotConfigured, Codes(refused));
-        var body = Json(((BadRequestObjectResult)refused).Value);
-        Assert.Contains("HR has been notified", body);
-        await h.Controller("Employee").GetLoanEligibility(h.Type.Id, 500m, 4, ct: default);
-        var notes = await h.Db.Notifications.Where(x => x.UserId == hrUser.Id).ToListAsync();
-        Assert.Single(notes);                                         // de-duplicated while unread
-        Assert.Equal("LoanType", notes[0].EntityName);
+        Assert.Contains("HR has been notified", Json(((BadRequestObjectResult)refused).Value));
+        var note = Assert.Single(await h.Db.Notifications.ToListAsync());
+        Assert.Equal((hrUser.Id, GradeLoanLimitResolver.NotConfiguredEntity, GradeLoanLimitResolver.NotConfiguredEntityId(h.Type.Id, h.G2.Id)),
+            (note.UserId!.Value, note.EntityName, note.EntityId!));
+
+        // Read or not, a second submission within 24 hours raises nothing new.
+        note.Status = "Read"; await h.Db.SaveChangesAsync();
+        await h.Controller("Employee").CreateLoan(h.Request(400m), default);
+        Assert.Single(await h.Db.Notifications.ToListAsync());
+
+        // After 24 hours it is raised again.
+        note.CreatedAtUtc = DateTime.UtcNow.AddHours(-25); await h.Db.SaveChangesAsync();
+        await h.Controller("Employee").CreateLoan(h.Request(400m), default);
+        Assert.Equal(2, await h.Db.Notifications.CountAsync(x => x.UserId == hrUser.Id));
+        Assert.Equal(0, await h.Db.Notifications.CountAsync(x => x.UserId == financeUser.Id));
     }
 
     [Fact]
@@ -468,6 +483,49 @@ public class GradeLoanLimitTests
         Assert.Contains(GradeLimitCodes.Outstanding, judged);
     }
 
+    [Fact]
+    public async Task Preview_WithNothingLeftToBorrow_IsNotEligible_AndSaysWhichLimitIsUsedUp()
+    {
+        await using var h = await H.Create();
+        h.Cell(h.G2, amount: 10_000m, maxOutstanding: 6_000m);
+        var active = h.Loan("Active", 6_000m); active.OutstandingBalance = 6_000m; active.DisbursementDate = h.Today.AddMonths(-1);
+        h.Db.Add(active);
+        await h.Db.SaveChangesAsync();
+        using var doc = JsonDocument.Parse(Json(Ok(await h.Controller("Employee").GetLoanEligibility(h.Type.Id, null, null, ct: default)), web: true));
+        var root = doc.RootElement;
+        Assert.False(root.GetProperty("eligible").GetBoolean());
+        Assert.Equal(0m, root.GetProperty("available").GetDecimal());
+        Assert.Equal("GradeOutstanding", root.GetProperty("bindingLimit").GetString());
+        Assert.Equal(GradeLimitCodes.Outstanding, root.GetProperty("codes")[0].GetString());
+        Assert.Contains("fully used", root.GetProperty("reasons")[0].GetString());
+
+        // Policy-side exhaustion is reported the same way, for a type that is not grade-limited.
+        h.Type.GradeLimited = false; h.Policy.MaxTotalOutstanding = 6_000m;
+        await h.Db.SaveChangesAsync();
+        var policy = await new LoanEligibilityService(h.Db).EvaluateAsync(h.Tid, h.Employee, h.Type, 0, 0, "BankTransfer", preview: true);
+        Assert.Equal((false, "PolicyTotalOutstanding"), (policy.Eligible, policy.BindingLimit));
+        Assert.Contains("AmountLimit", policy.Codes);
+    }
+
+    [Fact]
+    public async Task ReasonTexts_ReadCorrectly_ForTheEmployeeAndForHrOnTheirBehalf()
+    {
+        await using var h = await H.Create();
+        h.Type.NameEn = "Car loan";
+        h.Cell(h.G2, amount: 1_000m);
+        await h.Db.SaveChangesAsync();
+        var reason = (await h.Assess(2_000m)).Reasons.Single();
+        Assert.Equal("Grade 2 allows up to 1,000.00 SAR per loan of this type (Car loan).", reason);
+        Assert.DoesNotContain("loan loan", reason);
+        Assert.DoesNotContain("Your", reason);
+        Assert.IsType<OkObjectResult>(await h.Controller("HR Manager").PublishGradeLimits(new PublishGradeLimitsRequest(h.Type.Id, null, h.Today.AddDays(3),
+            [new(h.G2.Id, true, GradeEntitlementValueTypes.Amount, 2_000m)]), default));
+        var conflict = Json(Assert.IsType<ConflictObjectResult>(await h.Controller("HR Manager").PublishGradeLimits(new PublishGradeLimitsRequest(h.Type.Id, null, h.Today.AddDays(3),
+            [new(h.G2.Id, true, GradeEntitlementValueTypes.Amount, 3_000m)]), default)).Value);
+        Assert.Contains("Grade 2 already has a limit", conflict);
+        Assert.DoesNotContain("Grade Grade", conflict);
+    }
+
     // ── Saudi law: employee loans are principal only (qard) ──────────────────────────────────────
 
     [Fact]
@@ -510,6 +568,222 @@ public class GradeLoanLimitTests
         var step = await h.Db.LoanApprovals.SingleAsync();
         var refused = await h.Controller("HR Manager").DecideApproval(loan.Id, step.Id, new("Approved", null, null, null, null), default);
         Assert.Contains(LoanEligibilityCodes.InterestNotPermitted, Codes(refused));
+    }
+
+    // ── fix round: ownership, collisions, offerings, Arabic names, in-flight loans ───────────────
+
+    [Theory]
+    [InlineData("Finance")]
+    [InlineData("Finance Approver")]
+    [InlineData("Employee")]
+    public async Task OnlyHrPolicyOwners_MayPublishGradeLimits_SwitchGradeLimiting_OrChangeOfferings(string role)
+    {
+        await using var h = await H.Create(gradeLimited: false);
+        var actor = h.Controller(role);
+        var publish = await actor.PublishGradeLimits(new PublishGradeLimitsRequest(h.Type.Id, null, h.Today,
+            [new(h.G1.Id, true, GradeEntitlementValueTypes.Amount, 1_000m)]), default);
+        var toggle = await actor.SetLoanTypeGradeLimited(h.Type.Id, new SetGradeLimitedRequest(true), default);
+        var offering = await actor.SetLoanTypeOffering(new SetLoanOfferingRequest(h.Company.Id, h.Type.Id, false), default);
+        foreach (var result in new[] { publish, toggle, offering })
+        {
+            var refused = Assert.IsType<ObjectResult>(result);
+            Assert.Equal(StatusCodes.Status403Forbidden, refused.StatusCode);
+            Assert.Contains("hr_policy_owner_required", Json(refused.Value));
+        }
+        Assert.Empty(await h.Db.GradeEntitlements.ToListAsync());
+        Assert.False((await h.Db.LoanTypes.AsNoTracking().SingleAsync(x => x.Id == h.Type.Id)).GradeLimited);
+        Assert.Single(await h.Db.LoanPolicies.ToListAsync());
+    }
+
+    [Fact]
+    public async Task LoanTypeCodes_ThatNormaliseToTheSameLimitCode_AreRefused()
+    {
+        await using var h = await H.Create();                         // PERSONAL, already LOAN_PERSONAL
+        foreach (var code in new[] { "personal", "PERSONAL ", "PERSONAL_", "-Personal-" })
+            Assert.IsType<ConflictObjectResult>(await h.Controller("HR Manager").CreateLoanType(
+                new LoanTypeRequest(code, "Personal again", null, 1_000m, 12, "Monthly", true, 0m, 0, true), default));
+        Assert.IsType<OkObjectResult>(await h.Controller("HR Manager").CreateLoanType(
+            new LoanTypeRequest("PER-SONAL", "Per sonal", null, 1_000m, 12, "Monthly", true, 0m, 0, true), default));
+        var punctuation = Assert.IsType<ConflictObjectResult>(await h.Controller("HR Manager").CreateLoanType(
+            new LoanTypeRequest("per.sonal", "Dots", null, 1_000m, 12, "Monthly", true, 0m, 0, true), default));
+        Assert.Contains("too similar", Json(punctuation.Value));
+        Assert.IsType<OkObjectResult>(await h.Controller("HR Manager").CreateLoanType(
+            new LoanTypeRequest("CAR", "Car", null, 1_000m, 12, "Monthly", true, 0m, 0, true), default));
+    }
+
+    [Fact]
+    public async Task EnablingGradeLimits_IsRefused_WhenAnotherTypeAlreadyOwnsTheLimitCode()
+    {
+        await using var h = await H.Create();                         // h.Type owns LOAN_PERSONAL
+        var legacy = new LoanType { TenantId = h.Tid, Code = "personal", NameEn = "Legacy personal", MaxInstallments = 12 };
+        h.Db.Add(legacy);
+        await h.Db.SaveChangesAsync();
+        var refused = Assert.IsType<ConflictObjectResult>(await h.Controller("HR Manager").SetLoanTypeGradeLimited(legacy.Id, new SetGradeLimitedRequest(true), default));
+        Assert.Contains("component_code_taken", Json(refused.Value));
+        Assert.IsType<ConflictObjectResult>(await h.Controller("HR Manager").PublishGradeLimits(new PublishGradeLimitsRequest(legacy.Id, null, h.Today,
+            [new(h.G1.Id, true, GradeEntitlementValueTypes.Amount, 1m)]), default));
+        Assert.Null((await h.Db.LoanTypes.AsNoTracking().SingleAsync(x => x.Id == legacy.Id)).EntitlementComponentCode);
+    }
+
+    [Fact]
+    public async Task CompanyCanSwitchALoanTypeOff_EvenUnderAGroupWidePolicy_AndBackOn()
+    {
+        await using var h = await H.Create(gradeLimited: false);
+        h.Db.Remove(h.Policy);
+        h.Db.Add(new LoanPolicy { TenantId = h.Tid, CompanyId = null, LoanTypeId = h.Type.Id, MaxAmount = 7_000m, MaxConcurrentLoans = 3,
+            MaxInstallments = 24, PolicyName = "Group" });
+        await h.Db.SaveChangesAsync();
+        Assert.True((await h.Assess(100m)).Eligible);
+
+        var hr = h.Controller("HR Manager");
+        Assert.Contains("\"offered\":false", Json(Ok(await hr.SetLoanTypeOffering(new SetLoanOfferingRequest(h.Company.Id, h.Type.Id, false), default)), web: true));
+        var off = await h.Assess(100m);
+        Assert.Equal(new[] { "LoanTypeNotOffered" }, off.Codes);
+        Assert.Contains("\"offered\":false", Json(Ok(await h.Controller("Employee").ListOfferedLoanTypes(null, default)), web: true));
+        Assert.IsType<BadRequestObjectResult>(await h.Controller("Employee").CreateLoan(h.Request(100m), default));
+        // The terms were copied from the group policy: only the offering changed.
+        var companyPolicy = await h.Db.LoanPolicies.SingleAsync(x => x.CompanyId == h.Company.Id && x.IsActive);
+        Assert.Equal((7_000m, 3, false), (companyPolicy.MaxAmount, companyPolicy.MaxConcurrentLoans, companyPolicy.IsOffered));
+        Assert.Equal(1, await h.Db.AuditLogs.CountAsync(x => x.Action == "loans.type.not_offered"));
+        // The other company still follows the group policy.
+        var other = new Employee { TenantId = h.Tid, CompanyId = h.OtherCompany.Id, FullName = "Other", EmployeeCode = "O1", Status = "Active",
+            JoiningDate = DateTime.UtcNow.AddYears(-2) };
+        h.Db.Add(other); await h.Db.SaveChangesAsync();
+        Assert.True((await new LoanEligibilityService(h.Db).EvaluateAsync(h.Tid, other, h.Type, 100m, 4, "BankTransfer")).Eligible);
+
+        // Asking for the state it is already in changes nothing; switching back on offers it again.
+        Assert.IsType<OkObjectResult>(await hr.SetLoanTypeOffering(new SetLoanOfferingRequest(h.Company.Id, h.Type.Id, false), default));
+        Assert.Equal(1, await h.Db.LoanPolicies.CountAsync(x => x.CompanyId == h.Company.Id));
+        Assert.IsType<OkObjectResult>(await hr.SetLoanTypeOffering(new SetLoanOfferingRequest(h.Company.Id, h.Type.Id, true), default));
+        Assert.True((await h.Assess(100m)).Eligible);
+        var offerings = Json(Ok(await hr.ListLoanTypeOfferings(h.Company.Id, default)), web: true);
+        Assert.Contains("\"source\":\"CompanyPolicy\"", offerings);
+    }
+
+    [Fact]
+    public async Task ExplicitNotOffered_AppliesToTypesThatAreNotGradeLimited_AndNoPolicyStillUsesTheBaseline()
+    {
+        await using var h = await H.Create(gradeLimited: false);
+        h.Db.Remove(h.Policy); await h.Db.SaveChangesAsync();
+        Assert.True((await h.Assess(100m)).Eligible);                  // no policy, not grade-limited: baseline, as before
+        Assert.IsType<OkObjectResult>(await h.Controller("HR Manager").SetLoanTypeOffering(new SetLoanOfferingRequest(h.Company.Id, h.Type.Id, false), default));
+        Assert.Contains("LoanTypeNotOffered", (await h.Assess(100m)).Codes);
+        // Publishing a policy with "offered" unticked is the same switch through the policy form.
+        var policy = await h.Controller("HR Manager").CreateLoanPolicy(new LoanPolicyRequest(h.Company.Id, h.Type.Id, "Off again",
+            AllowedEmploymentStatuses: ["Active"], AllowedRepaymentMethods: ["BankTransfer"], IsOffered: true), default);
+        Assert.Contains("\"isOffered\":true", Json(Ok(policy), web: true));
+        Assert.True((await h.Assess(100m)).Eligible);
+    }
+
+    [Fact]
+    public async Task GradeNameAr_IsReturnedInTheGrid_TheLimitCheck_AndMissingGrades()
+    {
+        await using var h = await H.Create(gradeLimited: false);
+        h.G2.NameAr = "الدرجة الثانية";
+        await h.Db.SaveChangesAsync();
+        var grid = Assert.IsType<List<GradeLimitRowDto>>(Ok(await h.Controller("HR Manager").GetGradeLimits(h.Type.Id, null, null, default)));
+        Assert.Equal("الدرجة الثانية", grid.Single(x => x.GradeId == h.G2.Id).GradeNameAr);
+        Assert.Null(grid.Single(x => x.GradeId == h.G1.Id).GradeNameAr);
+        var missing = Assert.IsType<ConflictObjectResult>(await h.Controller("HR Manager").SetLoanTypeGradeLimited(h.Type.Id, new SetGradeLimitedRequest(true), default));
+        Assert.Contains("\"gradeNameAr\":\"الدرجة الثانية\"", Json(missing.Value, web: true));
+
+        h.Type.GradeLimited = true; h.Type.EntitlementComponentCode = "LOAN_PERSONAL";
+        h.Cell(h.G2, amount: 5_000m);
+        await h.Db.SaveChangesAsync();
+        var check = Json(Ok(await h.Controller("Employee").GetLoanEligibility(h.Type.Id, null, null, ct: default)), web: true);
+        Assert.Contains("\"gradeNameAr\":\"الدرجة الثانية\"", check);
+    }
+
+    [Fact]
+    public async Task EnablingGradeLimits_ReChecksLoansAlreadyWaitingForApproval()
+    {
+        await using var h = await H.Create(gradeLimited: false);
+        Assert.IsType<OkObjectResult>(await h.Controller("Employee").CreateLoan(h.Request(8_000m), default));
+        var loan = await h.Db.EmployeeLoans.SingleAsync();
+        Assert.Null(loan.GradeEntitlementId);                          // requested before grade limits applied
+        var hr = h.Controller("HR Director");
+        Assert.IsType<OkObjectResult>(await hr.PublishGradeLimits(new PublishGradeLimitsRequest(h.Type.Id, null, h.Today,
+            [new(h.G1.Id, true, GradeEntitlementValueTypes.Amount, 1_000m), new(h.G2.Id, true, GradeEntitlementValueTypes.Amount, 5_000m),
+             new(h.G3.Id, true, GradeEntitlementValueTypes.Amount, 9_000m)]), default));
+        Assert.IsType<OkObjectResult>(await hr.SetLoanTypeGradeLimited(h.Type.Id, new SetGradeLimitedRequest(true), default));
+
+        var step = await h.Db.LoanApprovals.SingleAsync();
+        var refused = await h.Controller("HR Manager").DecideApproval(loan.Id, step.Id, new("Approved", null, null, null, null), default);
+        Assert.Contains(GradeLimitCodes.PerLoan, Codes(refused));
+        Assert.IsType<OkObjectResult>(await h.Controller("HR Manager").DecideApproval(loan.Id, step.Id, new("Approved", null, 5_000m, null, null), default));
+        var approved = await h.Db.EmployeeLoans.AsNoTracking().SingleAsync();
+        Assert.Equal((h.G2.Id, 5_000m), (approved.GradeIdAtRequest!.Value, approved.GradePerLoanCap!.Value));
+    }
+
+    // ── the real eligibility JSON the UI is built against ────────────────────────────────────────
+
+    /// <summary>
+    /// Serialises real GET /eligibility responses (ASP.NET's web JSON options) for every bindingLimit kind and
+    /// the blocked / preview / not-offered states, and compares them with
+    /// <c>frontend/unit/fixtures/loanEligibilityResponses.json</c>, which the frontend unit specs import. Ids are
+    /// normalised. Set KYNEX_WRITE_FIXTURES=1 to regenerate after an intended API change.
+    /// </summary>
+    [Fact]
+    public async Task EligibilityResponses_MatchTheFixtureTheFrontendSpecsUse()
+    {
+        var responses = new SortedDictionary<string, JsonElement>(StringComparer.Ordinal);
+        async Task Capture(string name, Func<H, Task> arrange, decimal? amount, int? installments = 4, bool gradeLimited = true)
+        {
+            await using var h = await H.Create(gradeLimited);
+            await arrange(h);
+            await h.Db.SaveChangesAsync();
+            var body = Ok(await h.Controller("Employee").GetLoanEligibility(h.Type.Id, amount, installments, ct: default));
+            responses[name] = JsonSerializer.SerializeToElement(body, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        }
+        await Capture("GradePerLoan", h => { h.Cell(h.G2, amount: 10_000m); return Task.CompletedTask; }, 5_000m);
+        await Capture("GradeOutstanding", h => { h.Cell(h.G2, amount: 10_000m, maxOutstanding: 12_000m); h.Db.Add(h.Loan("Pending", 3_000m)); return Task.CompletedTask; }, 5_000m);
+        await Capture("GradeMultipleOfBasic", h => { h.Salary(6_000m); h.Cell(h.G2, rate: 2m, valueType: GradeEntitlementValueTypes.MultipleOfBasic); return Task.CompletedTask; }, 5_000m);
+        await Capture("PolicyMaxAmount", h => { h.Policy.MaxAmount = 6_000m; return Task.CompletedTask; }, 5_000m, gradeLimited: false);
+        await Capture("PolicyTotalOutstanding", h => { h.Policy.MaxTotalOutstanding = 8_000m; h.Db.Add(h.Loan("Pending", 3_000m)); return Task.CompletedTask; }, 1_000m, gradeLimited: false);
+        await Capture("PolicySalaryMultiple", h =>
+        {
+            h.Salary(12_000m); h.Policy.MaxMultiplierOfSalary = 2m;
+            var active = h.Loan("Active", 6_000m); active.OutstandingBalance = 6_000m; active.DisbursementDate = h.Today.AddMonths(-1); h.Db.Add(active);
+            return Task.CompletedTask;
+        }, 1_000m, gradeLimited: false);
+        await Capture("PolicyInstallmentPercent", h => { h.Salary(10_000m); h.Policy.MaxInstallmentPercentOfSalary = 10m; return Task.CompletedTask; }, 1_000m, gradeLimited: false);
+        await Capture("PolicyConcurrentLoans", h => { h.Policy.MaxConcurrentLoans = 1; h.Db.Add(h.Loan("Pending", 500m)); return Task.CompletedTask; }, 1_000m, gradeLimited: false);
+        await Capture("GradeNotEligible", h => { h.Cell(h.G2, eligible: false); return Task.CompletedTask; }, 1_000m);
+        await Capture("GradeSalaryMissing", h => { h.Cell(h.G2, rate: 3m, valueType: GradeEntitlementValueTypes.MultipleOfGross); return Task.CompletedTask; }, 1_000m);
+        await Capture("GradeLimitNotConfigured", _ => Task.CompletedTask, 1_000m);
+        await Capture("PreviewNoAmount", h => { h.Cell(h.G2, amount: 10_000m, maxOutstanding: 12_000m); return Task.CompletedTask; }, null, null);
+        await Capture("LoanTypeNotOffered", h => { h.Cell(h.G2, amount: 10_000m); h.Db.Remove(h.Policy); return Task.CompletedTask; }, 1_000m);
+
+        var actual = NormaliseIds(JsonSerializer.Serialize(responses, new JsonSerializerOptions { WriteIndented = true,
+            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping })) + "\n";
+        var path = RepoPath("frontend/unit/fixtures/loanEligibilityResponses.json");
+        if (Environment.GetEnvironmentVariable("KYNEX_WRITE_FIXTURES") == "1")
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            await File.WriteAllTextAsync(path, actual);
+        }
+        Assert.True(File.Exists(path), $"Missing {path}. Run this test with KYNEX_WRITE_FIXTURES=1 to create it.");
+        Assert.Equal(await File.ReadAllTextAsync(path), actual);
+
+        using var doc = JsonDocument.Parse(actual);
+        foreach (var kind in LoanLimitKinds.Order)
+            Assert.Equal(kind, doc.RootElement.GetProperty(kind).GetProperty("bindingLimit").GetString());
+    }
+
+    private static string NormaliseIds(string json)
+    {
+        var seen = new Dictionary<string, string>();
+        return System.Text.RegularExpressions.Regex.Replace(json, "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+            m => seen.TryGetValue(m.Value, out var v) ? v : seen[m.Value] = $"00000000-0000-0000-0000-{seen.Count + 1:D12}");
+    }
+
+    private static string RepoPath(string relative)
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !Directory.Exists(Path.Combine(dir.FullName, "frontend")))
+            dir = dir.Parent;
+        Assert.NotNull(dir);
+        return Path.Combine(dir!.FullName, relative);
     }
 
     // ── harness ──────────────────────────────────────────────────────────────────────────────────

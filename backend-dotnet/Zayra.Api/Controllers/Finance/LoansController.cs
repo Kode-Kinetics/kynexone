@@ -56,8 +56,19 @@ public partial class LoansController : ControllerBase
             return BadRequest(new { error = LoanEligibilityCodes.InterestNotPermitted, message = LoanEligibilityCodes.InterestNotPermittedText });
         if (req.MaxInstallments is < 1 or > 600 || req.MinServiceMonths is < 0 or > 600 || req.MaxAmount < 0 || decimal.Round(req.MaxAmount, 2) != req.MaxAmount || req.MaxAmount > 999999999999.99m)
             return BadRequest("Set 1–600 maximum installments and a nonnegative two-decimal maximum amount.");
+        if (string.IsNullOrWhiteSpace(req.Code) || req.Code.Trim().Length > 50)
+            return BadRequest(new { error = "invalid_code", message = "Enter a loan type code of up to 50 characters." });
         if (await _db.LoanTypes.AnyAsync(x => x.TenantId == tid && x.Code == req.Code && !x.IsDeleted, ct))
             return Conflict("Loan type code already exists.");
+        // Codes that differ only in case or punctuation ("Personal", "PERSONAL", "per-sonal") would share one
+        // grade-limit code (LOAN_<CODE>) and so one grade grid. Refuse them here, in plain language.
+        var facilityCode = GradeLoanLimitResolver.FacilityCodeFor(req.Code);
+        var similar = (await _db.LoanTypes.AsNoTracking().Where(x => x.TenantId == tid && !x.IsDeleted)
+                .Select(x => new { x.Code, x.NameEn, x.EntitlementComponentCode }).ToListAsync(ct))
+            .FirstOrDefault(x => GradeLoanLimitResolver.FacilityCodeFor(x.Code) == facilityCode || x.EntitlementComponentCode == facilityCode);
+        if (similar != null)
+            return Conflict(new { error = "loan_type_code_too_similar",
+                message = $"The code {req.Code.Trim()} is too similar to the existing loan type {similar.NameEn} ({similar.Code}). Choose a code that differs by more than case or punctuation." });
         var t = new LoanType
         {
             TenantId = tid, Code = req.Code, NameEn = req.NameEn, NameAr = req.NameAr ?? string.Empty,

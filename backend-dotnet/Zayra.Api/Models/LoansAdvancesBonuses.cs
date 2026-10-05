@@ -64,6 +64,11 @@ public class LoanPolicy : ITenantOwned, ICompanyScoped
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? CreatedBy { get; set; }
+
+    /// <summary>The company's explicit decision to offer this loan type. False on the company's active policy
+    /// means its employees cannot apply, whatever any group-wide policy says. Default true keeps every
+    /// existing policy (and tenant) exactly as it was.</summary>
+    public bool IsOffered { get; set; } = true;
 }
 
 public class EmployeeLoan : ITenantOwned, ICompanyScopedOperational

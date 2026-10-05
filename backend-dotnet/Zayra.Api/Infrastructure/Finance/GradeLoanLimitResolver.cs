@@ -69,7 +69,7 @@ public sealed record GradeLoanLimitResult(
     bool IsCompanyOverride, string? ValueType, decimal? Multiple, decimal? SalaryBasisAmount,
     decimal? PerLoanCap, decimal? OutstandingCap, decimal OutstandingNow, decimal? Available,
     string? ReasonCode, string? ReasonText, string[] Codes, string[] Reasons, IReadOnlyList<LoanLimitBreakdown> Limits,
-    string? Currency = null)
+    string? Currency = null, string? GradeNameAr = null)
 {
     public static GradeLoanLimitResult NotApplicable { get; } =
         new(false, true, null, null, null, null, false, null, null, null, null, null, 0m, null, null, null, [], [], []);
@@ -102,16 +102,16 @@ public sealed class GradeLoanLimitResolver(ZayraDbContext db)
         GradeLoanLimitResult Blocked(string code, string text, Grade? grade = null, GradeEntitlement? cell = null) =>
             new(true, false, grade?.Id ?? employee.GradeId, grade?.Code, grade?.Name, cell?.Id,
                 cell?.CompanyId != null, cell?.ValueType, cell?.Rate, null, null, cell?.MaxOutstandingAmount, outstandingNow, 0m,
-                code, text, [code], [text], [], currency);
+                code, text, [code], [text], [], currency, grade?.NameAr);
 
         if (string.IsNullOrWhiteSpace(loanType.EntitlementComponentCode))
             return Blocked(GradeLimitCodes.NotConfigured, GradeLimitCodes.NotConfiguredText);
         if (employee.GradeId is not Guid gradeId)
-            return Blocked(GradeLimitCodes.Missing, "Your grade isn't recorded, so your loan limit can't be worked out. Ask HR to set your grade.");
+            return Blocked(GradeLimitCodes.Missing, "No grade is recorded on the employee record, so the loan limit can't be worked out. HR needs to set the grade.");
         var grade = await db.Grades.AsNoTracking()
             .FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == gradeId && !x.IsDeleted, ct);
         if (grade == null || !grade.IsActive)
-            return Blocked(GradeLimitCodes.Missing, "Your grade is no longer in use, so your loan limit can't be worked out. Ask HR to update your grade.");
+            return Blocked(GradeLimitCodes.Missing, "The grade on the employee record is no longer in use, so the loan limit can't be worked out. HR needs to update the grade.");
 
         // Company filter dropped on purpose: the limit is a property of the EMPLOYEE's company, not of whoever
         // is looking. Tenant is pinned by the bypass; company is re-applied explicitly below.
@@ -126,7 +126,7 @@ public sealed class GradeLoanLimitResolver(ZayraDbContext db)
         var cell = candidates.OrderByDescending(x => x.CompanyId.HasValue).ThenByDescending(x => x.EffectiveFrom).FirstOrDefault();
         if (cell == null) return Blocked(GradeLimitCodes.NotConfigured, GradeLimitCodes.NotConfiguredText, grade);
         if (!cell.Eligible)
-            return Blocked(GradeLimitCodes.NotEligible, $"Employees in grade {grade.Name} aren't eligible for {loanType.NameEn} loans.", grade, cell);
+            return Blocked(GradeLimitCodes.NotEligible, $"Employees in {grade.Name} aren't eligible for this loan type ({loanType.NameEn}).", grade, cell);
 
         decimal? salaryBasis = null;
         decimal? perLoanCap = cell.ValueType == GradeEntitlementValueTypes.Amount ? cell.Amount : null;
@@ -137,14 +137,14 @@ public sealed class GradeLoanLimitResolver(ZayraDbContext db)
                 .OrderByDescending(x => x.EffectiveDate).ThenByDescending(x => x.CreatedAtUtc).FirstOrDefaultAsync(ct);
             if (salary == null || !string.Equals(salary.Currency, currency, StringComparison.OrdinalIgnoreCase))
                 return Blocked(GradeLimitCodes.SalaryMissing,
-                    "Your loan limit is based on your salary, and no current salary in the company's currency is on file. Ask HR to complete it.", grade, cell);
+                    "The loan limit is based on salary, and no current salary in the company's currency is on file. HR needs to complete it.", grade, cell);
             salaryBasis = cell.ValueType == GradeEntitlementValueTypes.MultipleOfBasic
                 ? salary.BasicSalary
                 : salary.BasicSalary + salary.HousingAllowance + salary.TransportAllowance
                   + salary.FoodAllowance + salary.MobileAllowance + salary.OtherAllowance;
             if (salaryBasis <= 0)
                 return Blocked(GradeLimitCodes.SalaryMissing,
-                    "Your loan limit is based on your salary, and the salary on file is zero. Ask HR to complete it.", grade, cell);
+                    "The loan limit is based on salary, and the salary on file is zero. HR needs to complete it.", grade, cell);
             // Rounded DOWN to the cent: a limit is never rounded in the borrower's favour past the multiple.
             perLoanCap = decimal.Floor(salaryBasis.Value * cell.Rate!.Value * 100m) / 100m;
         }
@@ -164,53 +164,63 @@ public sealed class GradeLoanLimitResolver(ZayraDbContext db)
             if (perLoanCap.HasValue && amount > perLoanCap.Value)
             {
                 codes.Add(GradeLimitCodes.PerLoan);
-                reasons.Add($"Your grade ({grade.Name}) allows up to {perLoanCap.Value:N2} {currency} per {loanType.NameEn} loan.");
+                reasons.Add($"{grade.Name} allows up to {perLoanCap.Value:N2} {currency} per loan of this type ({loanType.NameEn}).");
             }
             if (cell.MaxOutstandingAmount is decimal cap && amount > Math.Max(0m, cap - outstandingNow))
             {
                 codes.Add(GradeLimitCodes.Outstanding);
-                reasons.Add($"Your grade ({grade.Name}) allows {cap:N2} {currency} outstanding on {loanType.NameEn} loans; "
+                reasons.Add($"{grade.Name} allows {cap:N2} {currency} outstanding on this loan type ({loanType.NameEn}); "
                     + $"{outstandingNow:N2} is already outstanding or awaiting approval, so {Math.Max(0m, cap - outstandingNow):N2} is available.");
             }
         }
         return new(true, codes.Count == 0, grade.Id, grade.Code, grade.Name, cell.Id, cell.CompanyId.HasValue,
             cell.ValueType, cell.Rate, salaryBasis, perLoanCap, cell.MaxOutstandingAmount, outstandingNow, available,
-            codes.FirstOrDefault(), reasons.FirstOrDefault(), codes.ToArray(), reasons.ToArray(), limits, currency);
+            codes.FirstOrDefault(), reasons.FirstOrDefault(), codes.ToArray(), reasons.ToArray(), limits, currency, grade.NameAr);
     }
 
     /// <summary>
-    /// "HR has been notified" must be true when the employee is told it. Raises one in-app item per HR/Admin
-    /// user who can act for the employee's company, de-duplicated while an earlier one is still unread.
-    /// Does not save — the caller owns the unit of work.
+    /// "HR has been notified" must be true when the employee is told it. Called on SUBMIT only (never on a
+    /// read), it raises one in-app item for each HR/Admin user who can act for the employee's company — at most
+    /// once per (tenant, loan type, grade) in any 24 hours, whether or not the earlier one was read. Recipients
+    /// are resolved in one query. Does not save — the caller owns the unit of work; the caller holds the
+    /// tenant's loan-creation lock, so two submissions cannot both pass the 24-hour check.
     /// </summary>
-    public async Task NotifyLimitNotConfiguredAsync(Guid tid, Employee employee, LoanType loanType, CancellationToken ct = default)
+    public async Task<int> NotifyLimitNotConfiguredAsync(Guid tid, Employee employee, LoanType loanType, CancellationToken ct = default)
     {
         const string title = "Loan limit by grade not set";
+        var entityId = NotConfiguredEntityId(loanType.Id, employee.GradeId);
+        var since = DateTime.UtcNow.AddHours(-24);
+        if (db.ChangeTracker.Entries<Notification>().Any(e => e.State == EntityState.Added && e.Entity.TenantId == tid
+                && e.Entity.EntityName == NotConfiguredEntity && e.Entity.EntityId == entityId)
+            || await db.Notifications.AnyAsync(x => x.TenantId == tid && x.EntityName == NotConfiguredEntity
+                    && x.EntityId == entityId && x.CreatedAtUtc >= since, ct))
+            return 0;
         var roles = new[] { "Admin", "HR Manager", "HR Director" };
-        var staff = await (from user in db.Users.AsNoTracking()
-                           join assignment in db.UserRoles on user.Id equals assignment.UserId
-                           join role in db.Roles on assignment.RoleId equals role.Id
-                           where user.TenantId == tid && user.IsActive && !user.IsDeleted
-                               && (role.TenantId == tid || role.TenantId == null) && role.IsActive && !role.IsDeleted && roles.Contains(role.Name)
-                           select new { user.Id, user.IsGroupScope }).Distinct().ToListAsync(ct);
-        var entityId = loanType.Id.ToString();
+        var companyId = employee.CompanyId;
+        var recipients = await (from user in db.Users.AsNoTracking()
+                                join assignment in db.UserRoles on user.Id equals assignment.UserId
+                                join role in db.Roles on assignment.RoleId equals role.Id
+                                where user.TenantId == tid && user.IsActive && !user.IsDeleted
+                                    && (role.TenantId == tid || role.TenantId == null) && role.IsActive && !role.IsDeleted && roles.Contains(role.Name)
+                                    && (user.IsGroupScope || db.UserEntityAccesses.Any(x => x.TenantId == tid && x.UserId == user.Id && x.IsActive
+                                        && (x.CompanyId == companyId || x.GrantMode == "AllCurrentCompanies" || x.GrantMode == "AllCurrentAndFutureCompanies")))
+                                select user.Id).Distinct().ToListAsync(ct);
+        if (recipients.Count == 0) return 0;
         var gradeName = employee.GradeId is Guid gid
             ? await db.Grades.AsNoTracking().Where(x => x.TenantId == tid && x.Id == gid).Select(x => x.Name).FirstOrDefaultAsync(ct)
             : null;
-        var message = $"An employee could not apply for a {loanType.NameEn} loan because no limit is set for "
-            + (gradeName is null ? "their grade" : $"grade {gradeName}") + ". Set it in Loans → Loan Policies → Limits by grade.";
-        foreach (var user in staff)
+        var message = $"An employee could not apply for this loan type ({loanType.NameEn}) because no limit is set for "
+            + (gradeName ?? "their grade") + ". Set it in Loans → Loan Policies → Limits by grade.";
+        db.Notifications.AddRange(recipients.Select(userId => new Notification
         {
-            if (!user.IsGroupScope && !await db.UserEntityAccesses.AnyAsync(x => x.TenantId == tid && x.UserId == user.Id && x.IsActive
-                    && (x.CompanyId == employee.CompanyId || x.GrantMode == "AllCurrentCompanies" || x.GrantMode == "AllCurrentAndFutureCompanies"), ct))
-                continue;
-            if (await db.Notifications.AnyAsync(x => x.TenantId == tid && x.UserId == user.Id && x.EntityName == "LoanType"
-                    && x.EntityId == entityId && x.Title == title && x.Status == "Unread", ct)
-                || db.Notifications.Local.Any(x => x.UserId == user.Id && x.EntityId == entityId && x.Title == title))
-                continue;
-            db.Notifications.Add(new Notification { TenantId = tid, UserId = user.Id, Title = title, Message = message, EntityName = "LoanType", EntityId = entityId });
-        }
+            TenantId = tid, UserId = userId, Title = title, Message = message, EntityName = NotConfiguredEntity, EntityId = entityId,
+        }));
+        return recipients.Count;
     }
+
+    /// <summary>Notification entity for "a grade has no loan limit"; the id is "{loanTypeId}:{gradeId|none}".</summary>
+    public const string NotConfiguredEntity = "LoanGradeLimit";
+    public static string NotConfiguredEntityId(Guid loanTypeId, Guid? gradeId) => $"{loanTypeId}:{gradeId?.ToString() ?? "none"}";
 
     /// <summary>The Facility component a loan type's grade limits are keyed by, created on first use
     /// (with the system catalog beside it, so the store never holds a tenant row without the system set).
@@ -218,6 +228,13 @@ public sealed class GradeLoanLimitResolver(ZayraDbContext db)
     public static async Task<(string? Code, string? Error)> EnsureFacilityComponentAsync(ZayraDbContext db, Guid tid, LoanType loanType, Guid? userId, CancellationToken ct)
     {
         var code = loanType.EntitlementComponentCode ?? FacilityCodeFor(loanType.Code);
+        // One Facility code belongs to one loan type: two types sharing it would share (and silently merge)
+        // their grade grids. Codes that differ only in case or punctuation normalise to the same code.
+        var clash = await db.LoanTypes.AsNoTracking()
+            .Where(x => x.TenantId == tid && x.Id != loanType.Id && !x.IsDeleted && x.EntitlementComponentCode == code)
+            .Select(x => x.NameEn).FirstOrDefaultAsync(ct);
+        if (clash != null)
+            return (null, $"The loan type {clash} already uses the limit code {code}. Give this loan type a code that differs by more than case or punctuation.");
         var rows = await ScopedBypass.TenantWide(db.PayComponents, tid,
                 "A pay component code is one identity across every company of the tenant (GL groups lines by code).")
             .Where(x => x.Code == code && !x.IsDeleted).ToListAsync(ct);

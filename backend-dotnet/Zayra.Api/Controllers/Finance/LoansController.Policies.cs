@@ -69,7 +69,8 @@ public partial class LoansController
                 AllowedRepaymentFrequenciesJson = JsonSerializer.Serialize(req.AllowedRepaymentFrequencies ?? ["Monthly", "Weekly", "BiWeekly", "Quarterly"]),
                 CooldownMonthsAfterRepayment = req.CooldownMonthsAfterRepayment, AdditionalApprovalThreshold = req.AdditionalApprovalThreshold,
                 AdditionalApproverRole = "HR Director", AllowExceptions = req.AllowExceptions,
-                AllowEarlySettlement = req.AllowEarlySettlement, AllowRescheduling = req.AllowRescheduling, CreatedBy = GetUserId() };
+                AllowEarlySettlement = req.AllowEarlySettlement, AllowRescheduling = req.AllowRescheduling, CreatedBy = GetUserId(),
+                IsOffered = req.IsOffered };
             _db.Set<LoanPolicy>().Add(policy);
             await _db.SaveChangesAsync(ct);
             return Ok(ProjectPolicy(policy));
@@ -98,12 +99,6 @@ public partial class LoansController
         var canRequestException = !result.Eligible && policy.AllowExceptions && result.Codes.All(LoanLifecycleService.ExceptionCodes.Contains);
         var maySeeSalary = IsHrLoanActor() || IsFinanceActor() || employee.UserAccountId == uid;
         decimal? monthlySalary = maySeeSalary ? result.MonthlySalary : null;
-        if (result.Codes.Contains(GradeLimitCodes.NotConfigured))
-        {
-            // The employee is told "HR has been notified" — make it true.
-            await new GradeLoanLimitResolver(_db).NotifyLimitNotConfiguredAsync(tid, employee, type, ct);
-            await _db.SaveChangesAsync(ct);
-        }
         // Salary-derived figures in the breakdown are the same salary monthlySalary already gates.
         var limits = (result.Limits ?? []).Select(x => maySeeSalary ? x : x with { SalaryBasisAmount = null }).ToList();
         return Ok(new { result.Eligible, result.Reasons, result.Codes, result.MaxAvailableAmount, result.PolicyId, result.PolicyVersion,
@@ -115,7 +110,7 @@ public partial class LoansController
     /// <summary>The eligibility response's <c>gradeLimit</c> block. Codes are stable; text is English (the UI maps codes to Arabic).</summary>
     private static object? GradeLimitDto(GradeLoanLimitResult? g, bool includeSalary = true) => g is null ? null : new
     {
-        g.Applies, g.Eligible, g.GradeId, g.GradeCode, g.GradeName, g.CellId, g.IsCompanyOverride,
+        g.Applies, g.Eligible, g.GradeId, g.GradeCode, g.GradeName, g.GradeNameAr, g.CellId, g.IsCompanyOverride,
         basis = g.ValueType, multiple = g.Multiple, salaryBasisAmount = includeSalary ? g.SalaryBasisAmount : null,
         g.PerLoanCap, g.OutstandingCap, g.OutstandingNow, g.Available, bindingLimit = g.BindingLimit,
         g.ReasonCode, g.ReasonText, g.Codes, g.Reasons, g.Currency,
@@ -130,7 +125,7 @@ public partial class LoansController
         AllowedRepaymentMethods = JsonSerializer.Deserialize<string[]>(p.AllowedRepaymentMethodsJson),
         AllowedRepaymentFrequencies = JsonSerializer.Deserialize<string[]>(p.AllowedRepaymentFrequenciesJson),
         p.CooldownMonthsAfterRepayment, p.AdditionalApprovalThreshold, p.AdditionalApproverRole,
-        p.AllowExceptions, p.AllowEarlySettlement, p.AllowRescheduling, p.IsActive, p.CreatedAtUtc };
+        p.AllowExceptions, p.AllowEarlySettlement, p.AllowRescheduling, p.IsActive, p.CreatedAtUtc, p.IsOffered };
 }
 
 public record LoanPolicyRequest(Guid CompanyId, Guid LoanTypeId, string PolicyName,
@@ -140,4 +135,4 @@ public record LoanPolicyRequest(Guid CompanyId, Guid LoanTypeId, string PolicyNa
     bool BlockOnOverdue = true, string[]? AllowedEmploymentStatuses = null, string[]? AllowedContractTypes = null,
     string[]? AllowedRepaymentMethods = null, int CooldownMonthsAfterRepayment = 0, decimal AdditionalApprovalThreshold = 0,
     string AdditionalApproverRole = "HR Director", bool AllowExceptions = false, bool AllowEarlySettlement = true, bool AllowRescheduling = false,
-    string[]? AllowedRepaymentFrequencies = null);
+    string[]? AllowedRepaymentFrequencies = null, bool IsOffered = true);
