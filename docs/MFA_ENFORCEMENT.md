@@ -77,17 +77,32 @@ Every factor change is audited (`auth.mfa.enabled`, `platform.auth.tenant_mfa_di
 
 ## Sign-in abuse controls
 
-Checked before any password hashing (`LoginAbuseGuard`), on tenant and platform sign-in:
+Checked before any password hashing (`LoginAbuseGuard`), on tenant and platform sign-in. Every
+429 carries a jittered `Retry-After` of 2–6 s and a JSON `{ error, message }`:
 
-| Control | Default | Config |
-|---|---|---|
-| Attempts per account (tenant + normalised email) | 10 per 15 min → 429 | `Auth__LoginThrottle__AccountAttempts`, `…AccountWindowMinutes` |
-| Failed sign-ins per client IP | 20 per 10 min → 429 | `Auth__LoginThrottle__IpFailures`, `…IpWindowMinutes` |
-| Concurrent PBKDF2 (600k) computations | 1, wait up to 4.5 s → 429 | `Auth__PasswordVerification__MaxConcurrency`, `…MaxWaitMs` |
+| Control | Default | `error` | Config (`Auth__LoginThrottle__…`) |
+|---|---|---|---|
+| Attempts per account **from one client IP** | 10 per 15 min | `account_rate_limited` | `AccountIpAttempts`, `AccountWindowMinutes` |
+| Attempts per account, all IPs (skipped for a **known device**) | 50 per 15 min | `account_rate_limited` | `AccountAttempts` |
+| Failures against **unknown accounts** per client IP | 150 per 10 min | `ip_failure_budget` | `IpFailures`, `IpWindowMinutes` |
+| Concurrent PBKDF2 (600k) computations | 1, wait ≤ 4.5 s | `sign_in_busy` | `Auth__PasswordVerification__MaxConcurrency`, `…MaxWaitMs` |
 
-Every 429 carries a jittered `Retry-After` of 2–6 s. State is in-process (one API instance).
-The per-IP rate limits in `render.yaml` (`RateLimit__LoginPermitLimit`) are unchanged; once real
-client IPs are on (below), 30/min per IP is a reasonable value to set there.
+- The per-IP budget applies only when the IP identifies one client: asserted by the proxy with the
+  secret (below), or a request that did not come through the web proxy. Without the secret every
+  browser request arrives from the proxy's address, so the budget is skipped for it (per-account
+  limits still apply) and the API logs `[LOGIN-THROTTLE]` at boot; the CI deploy env gate warns too.
+  The proxy marker (`X-KynexOne-Via-Proxy`) is unauthenticated: a direct caller claiming it only
+  escapes the per-IP budget, never the per-account limits.
+- **Known device:** a successful sign-in sets `kx_known_device` (platform: `kx_platform_known_device`),
+  an HttpOnly, Secure, SameSite=Strict cookie scoped to the sign-in path, protected by the Data
+  Protection key ring, bound to the account and valid 90 days. It exempts that browser from the
+  account-wide cap only, so a stranger guessing from many IPs cannot lock the owner out of their own
+  browser. The mobile app does not carry it yet (it cannot read HttpOnly cookies); it gets the per-IP
+  limit only.
+- Not done yet: a CAPTCHA/step-up challenge for the account-wide cap (follow-up).
+- State is in-process (one API instance). The per-IP rate limits in `render.yaml`
+  (`RateLimit__LoginPermitLimit`) are unchanged; once real client IPs are on, 30/min per IP is a
+  reasonable value to set there.
 
 ### Real client IP (off by default)
 

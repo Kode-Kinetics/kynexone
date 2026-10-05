@@ -106,6 +106,21 @@ def parse_required_keys(render_yaml: str) -> list[str]:
     return required
 
 
+# Keys that SHOULD be set but whose absence must not block a deploy. Missing ones are reported as
+# GitHub `::warning::` annotations and never change the exit code. They are listed here rather than
+# in render.yaml because declaring them `sync: false` there would make them hard requirements.
+RECOMMENDED_KEYS: dict[str, str] = {
+    # Without it the API cannot tell real client IPs from the Vercel proxy's, so the per-IP login
+    # failure budget is skipped for proxied traffic (docs/MFA_ENFORCEMENT.md, "Real client IP").
+    "Proxy__ClientIpSecret": "per-IP sign-in failure budget is OFF for browser traffic until it is set "
+                             "(and PROXY_CLIENT_IP_SECRET on Vercel)",
+}
+
+
+def find_recommended_missing(present: set[str]) -> list[str]:
+    return [k for k in RECOMMENDED_KEYS if k not in present]
+
+
 def find_missing(required: list[str], present: set[str]) -> list[str]:
     """Required keys absent from the service. Order follows render.yaml so the message is stable."""
     return [k for k in required if k not in present]
@@ -144,6 +159,9 @@ def fetch_present_keys(service_id: str, api_key: str) -> set[str]:
 # Reporting
 # ──────────────────────────────────────────────────────────────────────────────
 def report(required: list[str], present: set[str], source: str) -> int:
+    for key in find_recommended_missing(present):
+        print(f"::warning::check_render_env: recommended key {key} is not set on {source}: "
+              f"{RECOMMENDED_KEYS[key]}. Not blocking the deploy.")
     missing = find_missing(required, present)
     print(f"Required by render.yaml (sync: false) : {len(required)}")
     print(f"Present on {source:<26}: {len(required) - len(missing)} of {len(required)}")
@@ -241,6 +259,14 @@ def self_test() -> int:
     # 3. And passes once the key is set -- otherwise it is a gate that can only fail.
     missing_now = find_missing(real_required, HISTORICAL_PRESENT_KEYS | {"Proxy__KnownNetworks"})
     check("passes once Proxy__KnownNetworks is set", missing_now, [])
+
+    # 3b. Recommended keys warn but never block.
+    check("Proxy__ClientIpSecret is a recommended (warn-only) key",
+          find_recommended_missing(set()), ["Proxy__ClientIpSecret"])
+    check("a missing recommended key does not fail the gate",
+          report(real_required, HISTORICAL_PRESENT_KEYS | {"Proxy__KnownNetworks"}, "self-test"), 0)
+    check("no warning once it is set",
+          find_recommended_missing({"Proxy__ClientIpSecret"}), [])
 
     # 4. Fail-closed on an empty parse rather than reporting a vacuous pass.
     check("empty blueprint yields no required keys (caller treats as error)",

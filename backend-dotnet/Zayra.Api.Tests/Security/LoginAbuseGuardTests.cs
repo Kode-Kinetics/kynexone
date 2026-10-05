@@ -1,5 +1,6 @@
 using System.Net;
 using FluentAssertions;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
@@ -15,38 +16,130 @@ using Zayra.Api.Tests.Platform;
 namespace Zayra.Api.Tests.Security;
 
 /// <summary>
-/// Login refusals that happen BEFORE any password hashing: 10 attempts per account per 15 minutes,
-/// 20 failures per client address per 10 minutes, and a client address that honours the
-/// proxy-asserted header only when the shared secret is configured and presented.
+/// Sign-in refusals that happen BEFORE any password hashing:
+/// (account, client IP) 10 per 15 min; account overall 50 per 15 min unless the browser is a known
+/// device for that account; and a per-address budget of 150 failures against UNKNOWN accounts per
+/// 10 min, applied only when the address identifies one client.
 /// </summary>
 public sealed class LoginAbuseGuardTests
 {
     private const string Password = "Correct-Horse-Battery-9!";
     private static readonly DateTime T0 = new(2026, 10, 5, 12, 0, 0, DateTimeKind.Utc);
+    private static readonly ClientAddress DirectA = new("198.51.100.1", ClientIpSource.Direct);
+    private static readonly ClientAddress DirectB = new("198.51.100.2", ClientIpSource.Direct);
+    private static readonly IDataProtectionProvider Protection = DataProtectionProvider.Create("login-abuse-tests");
+
+    private static LoginAbuseGuard Guard(int accountIp = 10, int account = 50, int ipFailures = 150)
+        => new(accountIp, account, ipFailureLimit: ipFailures, dataProtection: Protection);
+
+    // ── Account limits ──────────────────────────────────────────────────────────────────────
 
     [Fact]
-    public void AccountBudget_Is10Per15Minutes_AndARefusalDoesNotExtendIt()
+    public void PerAccountAndAddress_Is10Per15Minutes_AndDoesNotLockOtherAddresses()
     {
-        using var guard = new LoginAbuseGuard();
+        using var guard = Guard();
         for (var i = 0; i < 10; i++)
-            guard.TryBeginAccountAttempt("tenant", "acme", "a@acme.test", T0.AddSeconds(i)).Should().BeTrue();
-        guard.TryBeginAccountAttempt("tenant", "acme", "a@acme.test", T0.AddMinutes(1)).Should().BeFalse();
-        guard.TryBeginAccountAttempt("tenant", "ACME", " A@ACME.TEST ", T0.AddMinutes(1)).Should().BeFalse("tenant and email are normalised");
-        guard.TryBeginAccountAttempt("tenant", "other", "a@acme.test", T0.AddMinutes(1)).Should().BeTrue("the key includes the tenant");
-        guard.TryBeginAccountAttempt("platform", "platform", "a@acme.test", T0.AddMinutes(1)).Should().BeTrue("tenant and platform are separate scopes");
-        guard.TryBeginAccountAttempt("tenant", "acme", "a@acme.test", T0.AddMinutes(15).AddSeconds(1)).Should().BeTrue("the window slides");
+            guard.TryBegin("tenant", "acme", "victim@acme.test", DirectA, false, T0.AddSeconds(i)).Should().BeNull();
+        guard.TryBegin("tenant", "acme", "victim@acme.test", DirectA, false, T0.AddMinutes(1)).Should().Be(LoginRefusal.AccountLimit);
+        guard.TryBegin("tenant", "ACME", " VICTIM@ACME.TEST ", DirectA, false, T0.AddMinutes(1))
+            .Should().Be(LoginRefusal.AccountLimit, "tenant and email are normalised");
+        guard.TryBegin("tenant", "acme", "victim@acme.test", DirectB, false, T0.AddMinutes(1))
+            .Should().BeNull("an attacker at one address cannot lock the victim out everywhere");
+        guard.TryBegin("tenant", "acme", "victim@acme.test", DirectA, false, T0.AddMinutes(15).AddSeconds(10))
+            .Should().BeNull("the window slides, and refused attempts were not recorded");
     }
 
     [Fact]
-    public void IpBudget_Is20FailuresPer10Minutes()
+    public void AccountOverall_Is50Per15Minutes_UnlessTheBrowserIsAKnownDevice()
     {
-        using var guard = new LoginAbuseGuard();
-        for (var i = 0; i < 19; i++) guard.RecordFailure("203.0.113.9", T0.AddSeconds(i));
-        guard.IsIpBlocked("203.0.113.9", T0.AddMinutes(1)).Should().BeFalse();
-        guard.RecordFailure("203.0.113.9", T0.AddMinutes(1));
-        guard.IsIpBlocked("203.0.113.9", T0.AddMinutes(1)).Should().BeTrue();
-        guard.IsIpBlocked("203.0.113.10", T0.AddMinutes(1)).Should().BeFalse();
-        guard.IsIpBlocked("203.0.113.9", T0.AddMinutes(11)).Should().BeFalse("old failures drain out of the window");
+        using var guard = Guard();
+        for (var i = 0; i < 50; i++)
+            guard.TryBegin("tenant", "acme", "victim@acme.test", new ClientAddress($"203.0.113.{i}", ClientIpSource.Direct), false, T0)
+                .Should().BeNull();
+        var fresh = new ClientAddress("192.0.2.200", ClientIpSource.Direct);
+        guard.TryBegin("tenant", "acme", "victim@acme.test", fresh, false, T0.AddSeconds(1))
+            .Should().Be(LoginRefusal.AccountLimit, "a distributed guess hits the account-wide cap");
+        guard.TryBegin("tenant", "acme", "victim@acme.test", fresh, knownDevice: true, T0.AddSeconds(1))
+            .Should().BeNull("the account owner's known device is exempt from the account-wide cap");
+    }
+
+    [Fact]
+    public void KnownDevice_DoesNotBypassThePerAddressLimit()
+    {
+        using var guard = Guard();
+        for (var i = 0; i < 10; i++) guard.TryBegin("tenant", "acme", "u@acme.test", DirectA, true, T0).Should().BeNull();
+        guard.TryBegin("tenant", "acme", "u@acme.test", DirectA, knownDevice: true, T0).Should().Be(LoginRefusal.AccountLimit);
+    }
+
+    // ── IP failure budget ───────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void IpBudget_Is150UnknownAccountFailures_AndOnlyForAddressesThatIdentifyOneClient()
+    {
+        using var guard = Guard();
+        var proxied = new ClientAddress("76.76.21.21", ClientIpSource.UnverifiedProxy);
+        var asserted = new ClientAddress("198.51.100.77", ClientIpSource.AuthenticatedProxy);
+        for (var i = 0; i < 150; i++)
+        {
+            guard.RecordUnknownAccountFailure(DirectA, T0);
+            guard.RecordUnknownAccountFailure(proxied, T0);
+            guard.RecordUnknownAccountFailure(asserted, T0);
+        }
+
+        guard.TryBegin("tenant", "acme", "anyone@acme.test", DirectA, false, T0.AddMinutes(1)).Should().Be(LoginRefusal.IpFailureBudget);
+        guard.TryBegin("tenant", "acme", "anyone@acme.test", asserted, false, T0.AddMinutes(1)).Should().Be(LoginRefusal.IpFailureBudget);
+        guard.TryBegin("tenant", "acme", "anyone@acme.test", proxied, false, T0.AddMinutes(1))
+            .Should().BeNull("without the proxy secret every web user shares that address; a budget there would lock everyone out");
+        guard.TryBegin("tenant", "acme", "anyone@acme.test", DirectA, false, T0.AddMinutes(11)).Should().BeNull("old failures drain");
+
+        using var smaller = Guard();
+        for (var i = 0; i < 149; i++) smaller.RecordUnknownAccountFailure(DirectB, T0);
+        smaller.TryBegin("tenant", "acme", "x@acme.test", DirectB, false, T0).Should().BeNull("149 is under the default budget of 150");
+    }
+
+    [Fact]
+    public void ClientAddress_SourceIsAuthenticatedDirectOrUnverified()
+    {
+        const string proxy = "76.76.21.21";
+        static DefaultHttpContext Ctx(string remote, params (string, string)[] headers)
+        {
+            var http = new DefaultHttpContext();
+            http.Connection.RemoteIpAddress = IPAddress.Parse(remote);
+            foreach (var (k, v) in headers) http.Request.Headers[k] = v;
+            return http;
+        }
+
+        ClientIpResolver.ResolveAddress(Ctx(proxy), null).Should().Be(new ClientAddress(proxy, ClientIpSource.Direct));
+        ClientIpResolver.ResolveAddress(Ctx(proxy, (ClientIpResolver.ViaProxyHeader, "1")), null)
+            .Should().Be(new ClientAddress(proxy, ClientIpSource.UnverifiedProxy));
+        ClientIpResolver.ResolveAddress(Ctx(proxy, ("x-vercel-id", "fra1::abc")), null).Source.Should().Be(ClientIpSource.UnverifiedProxy);
+        ClientIpResolver.ResolveAddress(Ctx(proxy, (ClientIpResolver.ViaProxyHeader, "1"),
+                (ClientIpResolver.ClientIpHeader, "198.51.100.7"), (ClientIpResolver.SecretHeader, "wrong")), "s3cret")
+            .Should().Be(new ClientAddress(proxy, ClientIpSource.UnverifiedProxy), "wrong secret");
+        ClientIpResolver.ResolveAddress(Ctx(proxy, (ClientIpResolver.ViaProxyHeader, "1"),
+                (ClientIpResolver.ClientIpHeader, "198.51.100.7"), (ClientIpResolver.SecretHeader, "s3cret")), "s3cret")
+            .Should().Be(new ClientAddress("198.51.100.7", ClientIpSource.AuthenticatedProxy));
+        ClientIpResolver.ResolveAddress(Ctx(proxy, (ClientIpResolver.ClientIpHeader, "198.51.100.7"),
+                (ClientIpResolver.SecretHeader, "s3cret")), null)
+            .Ip.Should().Be(proxy, "with no secret configured the asserted IP is never read");
+    }
+
+    // ── Known device ────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void KnownDeviceToken_IsBoundToTheAccount_AndExpires()
+    {
+        using var guard = Guard();
+        var token = guard.IssueKnownDeviceToken("tenant", "acme", "u@acme.test", DateTime.UtcNow)!;
+
+        guard.IsKnownDevice(token, "tenant", "ACME", "U@acme.test").Should().BeTrue();
+        guard.IsKnownDevice(token, "tenant", "acme", "other@acme.test").Should().BeFalse("bound to one account");
+        guard.IsKnownDevice(token, "platform", "platform", "u@acme.test").Should().BeFalse("bound to one scope");
+        guard.IsKnownDevice(token[..^4] + "AAAA", "tenant", "acme", "u@acme.test").Should().BeFalse("tampered");
+        guard.IsKnownDevice(guard.IssueKnownDeviceToken("tenant", "acme", "u@acme.test", DateTime.UtcNow.AddDays(-91)),
+            "tenant", "acme", "u@acme.test").Should().BeFalse("older than 90 days");
+        using var otherRing = new LoginAbuseGuard(dataProtection: DataProtectionProvider.Create("another-key-ring"));
+        otherRing.IsKnownDevice(token, "tenant", "acme", "u@acme.test").Should().BeFalse();
     }
 
     [Fact]
@@ -57,25 +150,7 @@ public sealed class LoginAbuseGuardTests
         values.Distinct().Count().Should().BeGreaterThan(1);
     }
 
-    private static DefaultHttpContext Http(string remote, string? assertedIp = null, string? secret = null)
-    {
-        var http = new DefaultHttpContext();
-        http.Connection.RemoteIpAddress = IPAddress.Parse(remote);
-        if (assertedIp is not null) http.Request.Headers[ClientIpResolver.ClientIpHeader] = assertedIp;
-        if (secret is not null) http.Request.Headers[ClientIpResolver.SecretHeader] = secret;
-        return http;
-    }
-
-    [Fact]
-    public void ClientIp_TrustsTheProxyHeaderOnlyWithTheConfiguredSecret()
-    {
-        const string proxy = "76.76.21.21";
-        ClientIpResolver.Resolve(Http(proxy, "198.51.100.7", "s3cret"), null).Should().Be(proxy, "off by default");
-        ClientIpResolver.Resolve(Http(proxy, "198.51.100.7"), "s3cret").Should().Be(proxy, "no secret presented");
-        ClientIpResolver.Resolve(Http(proxy, "198.51.100.7", "wrong"), "s3cret").Should().Be(proxy, "wrong secret");
-        ClientIpResolver.Resolve(Http(proxy, "not-an-ip", "s3cret"), "s3cret").Should().Be(proxy, "garbage IP");
-        ClientIpResolver.Resolve(Http(proxy, "198.51.100.7", "s3cret"), "s3cret").Should().Be("198.51.100.7");
-    }
+    // ── Through the controllers ─────────────────────────────────────────────────────────────
 
     private sealed class CountingHasher : IPasswordHasher
     {
@@ -86,53 +161,101 @@ public sealed class LoginAbuseGuardTests
         public bool NeedsRehash(string passwordHash) => _inner.NeedsRehash(passwordHash);
     }
 
+    private static DefaultHttpContext Http(string remote, string? cookie = null, bool viaProxy = false)
+    {
+        var http = new DefaultHttpContext();
+        http.Connection.RemoteIpAddress = IPAddress.Parse(remote);
+        if (cookie is not null) http.Request.Headers.Cookie = $"{LoginAbuseGuard.TenantKnownDeviceCookie}={cookie}";
+        if (viaProxy) http.Request.Headers[ClientIpResolver.ViaProxyHeader] = "1";
+        return http;
+    }
+
+    private static async Task<(IActionResult Result, int Hashing, HttpResponse Response)> TenantLogin(
+        AuthHardeningTestKit kit, LoginAbuseGuard guard, string email, string password, DefaultHttpContext http)
+    {
+        var hasher = new CountingHasher();
+        await using var db = kit.NewDb();
+        var controller = new AuthController(kit.Auth(db, hasher), guard) { ControllerContext = new ControllerContext { HttpContext = http } };
+        var result = await controller.Login(new LoginRequest(email, password, AuthHardeningTestKit.TenantSlug), CancellationToken.None);
+        return (result, hasher.Calls, controller.Response);
+    }
+
+    private static string? ErrorCode(IActionResult result)
+        => result is ObjectResult { Value: { } value } ? value.GetType().GetProperty("error")?.GetValue(value) as string : null;
+
     [Fact]
-    public async Task TenantLogin_RefusesAnExhaustedAccountOrAddress_BeforeAnyHashing()
+    public async Task TenantLogin_AccountLimit_RefusesBeforeHashing_WithItsOwnErrorCode()
     {
         await using var kit = await AuthHardeningTestKit.CreateAsync();
         await kit.SeedUserAsync("victim@hardening.local", new Pbkdf2PasswordHasher().Hash(Password), roleName: null);
-        using var guard = new LoginAbuseGuard(accountLimit: 2, ipFailureLimit: 3);
+        using var guard = Guard(accountIp: 2);
 
-        async Task<(IActionResult Result, int Hashing, HttpResponse Response)> Attempt(string remote, string password)
-        {
-            var hasher = new CountingHasher();
-            await using var db = kit.NewDb();
-            var controller = new AuthController(kit.Auth(db, hasher), guard)
-            {
-                ControllerContext = new ControllerContext { HttpContext = Http(remote) },
-            };
-            var result = await controller.Login(
-                new LoginRequest("victim@hardening.local", password, AuthHardeningTestKit.TenantSlug), CancellationToken.None);
-            return (result, hasher.Calls, controller.Response);
-        }
-
-        (await Attempt("198.51.100.1", "wrong")).Result.Should().BeOfType<UnauthorizedObjectResult>();
-        (await Attempt("198.51.100.2", "wrong")).Result.Should().BeOfType<UnauthorizedObjectResult>();
-        var refused = await Attempt("198.51.100.3", Password);
-        refused.Result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(429, "the account is over its attempt budget");
-        refused.Hashing.Should().Be(0, "the refusal must come before any PBKDF2 work");
+        (await TenantLogin(kit, guard, "victim@hardening.local", "wrong", Http("198.51.100.1"))).Result.Should().BeOfType<UnauthorizedObjectResult>();
+        (await TenantLogin(kit, guard, "victim@hardening.local", "wrong", Http("198.51.100.1"))).Result.Should().BeOfType<UnauthorizedObjectResult>();
+        var refused = await TenantLogin(kit, guard, "victim@hardening.local", Password, Http("198.51.100.1"));
+        refused.Result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(429);
+        ErrorCode(refused.Result).Should().Be("account_rate_limited");
+        refused.Hashing.Should().Be(0, "the refusal comes before any PBKDF2 work");
         int.Parse(refused.Response.Headers.RetryAfter.ToString()).Should().BeInRange(2, 6);
 
-        // One address, many accounts: the failure budget (3 here) blocks it before hashing.
-        for (var i = 0; i < 3; i++)
-        {
-            var hasher = new CountingHasher();
-            await using var db = kit.NewDb();
-            var c = new AuthController(kit.Auth(db, hasher), guard) { ControllerContext = new ControllerContext { HttpContext = Http("192.0.2.50") } };
-            await c.Login(new LoginRequest($"nobody{i}@hardening.local", "x", AuthHardeningTestKit.TenantSlug), CancellationToken.None);
-        }
-        await using (var db = kit.NewDb())
-        {
-            var hasher = new CountingHasher();
-            var c = new AuthController(kit.Auth(db, hasher), guard) { ControllerContext = new ControllerContext { HttpContext = Http("192.0.2.50") } };
-            var blocked = await c.Login(new LoginRequest("someone@hardening.local", "x", AuthHardeningTestKit.TenantSlug), CancellationToken.None);
-            blocked.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(429);
-            hasher.Calls.Should().Be(0);
-        }
+        (await TenantLogin(kit, guard, "victim@hardening.local", Password, Http("198.51.100.9"))).Result
+            .Should().BeOfType<OkObjectResult>("the victim signs in from their own address");
     }
 
     [Fact]
-    public async Task PlatformLogin_RefusesAnExhaustedAccount_BeforeAnyHashing()
+    public async Task TenantLogin_OnlyUnknownAccountFailuresSpendTheIpBudget_AndNeverBehindAnUnverifiedProxy()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        await kit.SeedUserAsync("real@hardening.local", new Pbkdf2PasswordHasher().Hash(Password), roleName: null);
+        using var guard = Guard(accountIp: 100, account: 100, ipFailures: 3);
+
+        // Wrong passwords on a REAL account do not count towards the address budget (4 > budget of 3,
+        // and under the account's own lockout of 5).
+        for (var i = 0; i < 4; i++)
+            await TenantLogin(kit, guard, "real@hardening.local", "wrong", Http("192.0.2.10"));
+        (await TenantLogin(kit, guard, "real@hardening.local", Password, Http("192.0.2.10"))).Result.Should().BeOfType<OkObjectResult>();
+
+        // Unknown accounts from a direct address do.
+        for (var i = 0; i < 3; i++)
+            await TenantLogin(kit, guard, $"ghost{i}@hardening.local", "x", Http("192.0.2.20"));
+        var blocked = await TenantLogin(kit, guard, "someone@hardening.local", "x", Http("192.0.2.20"));
+        ErrorCode(blocked.Result).Should().Be("ip_failure_budget");
+        blocked.Hashing.Should().Be(0);
+
+        // Behind the proxy without the secret, the shared address is never blocked.
+        for (var i = 0; i < 6; i++)
+            await TenantLogin(kit, guard, $"spray{i}@hardening.local", "x", Http("76.76.21.21", viaProxy: true));
+        (await TenantLogin(kit, guard, "real@hardening.local", Password, Http("76.76.21.21", viaProxy: true))).Result
+            .Should().BeOfType<OkObjectResult>("one sprayer must not lock every web user out");
+    }
+
+    [Fact]
+    public async Task TenantLogin_SuccessSetsAHardenedKnownDeviceCookie_ThatLiftsTheAccountWideCap()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        await kit.SeedUserAsync("owner@hardening.local", new Pbkdf2PasswordHasher().Hash(Password), roleName: null);
+        using var guard = Guard(accountIp: 10, account: 3);
+
+        var ok = await TenantLogin(kit, guard, "owner@hardening.local", Password, Http("198.51.100.50"));
+        ok.Result.Should().BeOfType<OkObjectResult>();
+        var setCookie = ok.Response.Headers.SetCookie.ToString();
+        setCookie.Should().StartWith(LoginAbuseGuard.TenantKnownDeviceCookie + "=");
+        setCookie.ToLowerInvariant().Should().Contain("httponly").And.Contain("secure")
+            .And.Contain("samesite=strict").And.Contain("path=/api/auth");
+        var cookie = setCookie.Split(';')[0].Split('=', 2)[1];
+
+        // An attacker exhausts the account-wide cap from other addresses…
+        for (var i = 0; i < 2; i++)
+            await TenantLogin(kit, guard, "owner@hardening.local", "wrong", Http($"203.0.113.{i}"));
+        ErrorCode((await TenantLogin(kit, guard, "owner@hardening.local", Password, Http("198.51.100.60"))).Result)
+            .Should().Be("account_rate_limited");
+        // …but the owner's known browser still gets in.
+        (await TenantLogin(kit, guard, "owner@hardening.local", Password, Http("198.51.100.60", cookie))).Result
+            .Should().BeOfType<OkObjectResult>();
+    }
+
+    [Fact]
+    public async Task PlatformLogin_AccountLimit_RefusesBeforeHashing()
     {
         await using var kit = await AuthHardeningTestKit.CreateAsync();
         await using (var seed = kit.NewDb())
@@ -144,7 +267,7 @@ public sealed class LoginAbuseGuardTests
             });
             await seed.SaveChangesAsync();
         }
-        using var guard = new LoginAbuseGuard(accountLimit: 1);
+        using var guard = Guard(accountIp: 1);
 
         async Task<(IActionResult Result, int Hashing)> Attempt()
         {
@@ -169,6 +292,7 @@ public sealed class LoginAbuseGuardTests
         (await Attempt()).Result.Should().BeOfType<UnauthorizedObjectResult>();
         var refused = await Attempt();
         refused.Result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(429);
+        ErrorCode(refused.Result).Should().Be("account_rate_limited");
         refused.Hashing.Should().Be(0);
     }
 }

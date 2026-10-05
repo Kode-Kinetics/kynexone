@@ -79,7 +79,9 @@ public class AuthService : IAuthService
             });
             await _auditService.WriteAsync("auth.login_failed", "User", null, context,
                 $"{{\"email\":\"{request.Email}\",\"reason\":\"{failReason}\"}}", cancellationToken);
-            throw new UnauthorizedAccessException("Invalid email, password, or tenant.");
+            var refused = new UnauthorizedAccessException("Invalid email, password, or tenant.");
+            if (failReason == "user_not_found") LoginFailureKind.MarkUnknownAccount(refused);
+            throw refused;
         }
 
         // Phase 2 — load per-tenant lockout policy; fall back to safe defaults when no policy is configured

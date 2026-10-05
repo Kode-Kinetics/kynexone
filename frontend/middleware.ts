@@ -3,6 +3,8 @@ import { NextRequest, NextResponse } from 'next/server';
 /** Must match backend ClientIpResolver. */
 const CLIENT_IP_HEADER = 'x-kynexone-client-ip';
 const PROXY_SECRET_HEADER = 'x-kynexone-proxy-secret';
+/** Tells the API this request came through the web proxy, so its peer address is shared by everyone. */
+const VIA_PROXY_HEADER = 'x-kynexone-via-proxy';
 
 /**
  * The browser's own address, as the hosting edge reports it. Vercel sets x-real-ip and REPLACES
@@ -26,6 +28,9 @@ function forwardClientIp(request: NextRequest): NextResponse {
   const headers = new Headers(request.headers);
   headers.delete(CLIENT_IP_HEADER);
   headers.delete(PROXY_SECRET_HEADER);
+  // Always marked, secret or not: without a verified client IP the API must not apply per-IP
+  // failure budgets to this (shared) address.
+  headers.set(VIA_PROXY_HEADER, '1');
   const secret = process.env.PROXY_CLIENT_IP_SECRET;
   const ip = clientIp(request);
   if (secret && ip) {

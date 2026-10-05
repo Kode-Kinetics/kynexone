@@ -314,7 +314,8 @@ builder.Services.AddSingleton(sp => Zayra.Api.Infrastructure.Auth.PasswordVerifi
     sp.GetRequiredService<IConfiguration>()));
 // Per-account attempt and per-address failure budgets, checked before any hashing.
 builder.Services.AddSingleton(sp => Zayra.Api.Infrastructure.Auth.LoginAbuseGuard.FromConfiguration(
-    sp.GetRequiredService<IConfiguration>()));
+    sp.GetRequiredService<IConfiguration>(),
+    sp.GetRequiredService<Microsoft.AspNetCore.DataProtection.IDataProtectionProvider>()));
 builder.Services.AddScoped<ITokenService, JwtTokenService>();
 builder.Services.AddScoped<IAuditService, AuditService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Auth.TotpService>();
@@ -944,6 +945,13 @@ using (var scope = app.Services.CreateScope())
         .DescribeBreakGlass(app.Configuration, DateTime.UtcNow);
     if (breakGlassWarn) logger.LogWarning("{BreakGlass}", breakGlassMessage);
     else logger.LogInformation("{BreakGlass}", breakGlassMessage);
+
+    if (string.IsNullOrEmpty(app.Configuration[Zayra.Api.Infrastructure.Http.ClientIpResolver.SecretConfigKey]))
+        logger.LogWarning(
+            "[LOGIN-THROTTLE] Proxy:ClientIpSecret is not set: the API cannot tell real client IPs from the web "
+            + "proxy's, so the per-IP sign-in failure budget is SKIPPED for proxied traffic (per-account limits "
+            + "still apply). Set Proxy__ClientIpSecret here and PROXY_CLIENT_IP_SECRET on Vercel — see "
+            + "docs/MFA_ENFORCEMENT.md, \"Real client IP\".");
 
     var authSeeder = scope.ServiceProvider.GetRequiredService<IAuthSeeder>();
     await TrySeedAsync("AuthSeeder", () => authSeeder.SeedAsync(), logger);

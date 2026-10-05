@@ -80,8 +80,9 @@ services:
       RateLimit__PlatformLoginPermitLimit: ${PLATFORM_LOGIN_PERMIT_LIMIT:-5}
       # Pre-hash login refusals (LoginAbuseGuard) and the PBKDF2 concurrency gate. Production
       # defaults; a browser suite that signs the same personas in many times raises them.
-      Auth__LoginThrottle__AccountAttempts: ${LOGIN_ACCOUNT_ATTEMPT_LIMIT:-10}
-      Auth__LoginThrottle__IpFailures: ${LOGIN_IP_FAILURE_LIMIT:-20}
+      Auth__LoginThrottle__AccountIpAttempts: ${LOGIN_ACCOUNT_IP_ATTEMPT_LIMIT:-10}
+      Auth__LoginThrottle__AccountAttempts: ${LOGIN_ACCOUNT_ATTEMPT_LIMIT:-50}
+      Auth__LoginThrottle__IpFailures: ${LOGIN_IP_FAILURE_LIMIT:-150}
       Auth__PasswordVerification__MaxConcurrency: ${PASSWORD_HASH_CONCURRENCY:-1}
     ports:
       - "${BACKEND_PORT:-5117}:5117"

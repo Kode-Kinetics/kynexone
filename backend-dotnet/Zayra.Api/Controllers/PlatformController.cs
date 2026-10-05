@@ -100,34 +100,41 @@ public class PlatformController : ControllerBase
     [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<IActionResult> Login([FromBody] PlatformLoginRequest req, CancellationToken ct)
     {
-        // Cheap refusals before any hashing (LoginAbuseGuard): per-address failure budget and
-        // per-account attempt budget.
-        var clientIp = _loginAbuse?.ClientIp(HttpContext) ?? HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-        if (_loginAbuse is not null)
+        // Cheap refusals before any hashing (LoginAbuseGuard): this account from this address, this
+        // account overall (unless a known device), and the address's unknown-account failure budget.
+        var client = _loginAbuse?.Client(HttpContext);
+        var email = req.Email ?? string.Empty;
+        if (_loginAbuse is not null && client is { } address)
         {
-            var now = DateTime.UtcNow;
-            if (_loginAbuse.IsIpBlocked(clientIp, now))
-                return PlatformTooManyAttempts("Too many failed sign-ins from this network. Please wait a few minutes and try again.");
-            if (!_loginAbuse.TryBeginAccountAttempt("platform", "platform", req.Email ?? string.Empty, now))
-                return PlatformTooManyAttempts("Too many sign-in attempts for this account. Please wait a few minutes and try again.");
+            var knownDevice = _loginAbuse.RequestCarriesKnownDevice(Request, "platform", "platform", email);
+            if (_loginAbuse.TryBegin("platform", "platform", email, address, knownDevice, DateTime.UtcNow) is { } refusal)
+            {
+                var (error, message) = LoginAbuseGuard.Describe(refusal);
+                return PlatformRefused(error, message);
+            }
         }
         try
         {
             var result = await LoginCoreAsync(req, ct);
-            if (result is UnauthorizedObjectResult or UnauthorizedResult)
-                _loginAbuse?.RecordFailure(clientIp, DateTime.UtcNow);
+            if (client is { } address2 && HttpContext.Items.ContainsKey(UnknownPlatformAccountItem))
+                _loginAbuse?.RecordUnknownAccountFailure(address2, DateTime.UtcNow);
+            if (HttpContext.Items.ContainsKey(PlatformSessionIssuedItem))
+                _loginAbuse?.AppendKnownDeviceCookie(Response, "platform", "platform", email);
             return result;
         }
         catch (PasswordVerificationBusyException ex)
         {
-            return PlatformTooManyAttempts(ex.Message);
+            return PlatformRefused(LoginAbuseGuard.BusyError, ex.Message);
         }
     }
 
-    private IActionResult PlatformTooManyAttempts(string message)
+    private const string UnknownPlatformAccountItem = "kx.platform.unknown_account";
+    private const string PlatformSessionIssuedItem = "kx.platform.session_issued";
+
+    private IActionResult PlatformRefused(string error, string message)
     {
         Response.Headers.RetryAfter = LoginAbuseGuard.JitteredRetryAfterSeconds();
-        return StatusCode(StatusCodes.Status429TooManyRequests, new { message });
+        return StatusCode(StatusCodes.Status429TooManyRequests, new { error, message });
     }
 
     /// <summary>Same PBKDF2 work as a real check, so a miss is not distinguishable by timing.</summary>
@@ -251,6 +258,7 @@ public class PlatformController : ControllerBase
             // Once any platform principal exists, an unknown email is indistinguishable from a
             // wrong password (401), so this endpoint is not an account-enumeration oracle.
             await VerifyDummyPasswordAsync(req.Password, ct);
+            HttpContext.Items[UnknownPlatformAccountItem] = true;
             if (await _db.PlatformUsers.AnyAsync(ct))
                 return Unauthorized(new { message = "Invalid platform admin credentials." });
 
@@ -272,6 +280,7 @@ public class PlatformController : ControllerBase
         });
         await _db.SaveChangesAsync(ct);
 
+        HttpContext.Items[PlatformSessionIssuedItem] = true;
         return Ok(CreatePlatformToken(authenticatedUser, sessionExpiry));
     }
 
@@ -426,6 +435,7 @@ public class PlatformController : ControllerBase
                 null),
             ct);
         if (pu is null) return Unauthorized(new { message = "Invalid or expired recovery code." });
+        _loginAbuse?.AppendKnownDeviceCookie(Response, "platform", "platform", pu.Email);
         return Ok(CreatePlatformToken(pu));
     }
 
@@ -459,6 +469,7 @@ public class PlatformController : ControllerBase
                 null),
             ct);
         if (pu is null) return Unauthorized(new { message = "Invalid or expired MFA challenge." });
+        _loginAbuse?.AppendKnownDeviceCookie(Response, "platform", "platform", pu.Email);
         return Ok(CreatePlatformToken(pu));
     }
 

@@ -20,10 +20,10 @@ public class AuthController : ControllerBase
         _abuse = abuse;
     }
 
-    private IActionResult TooManyAttempts(string message)
+    private IActionResult Refused(string error, string message)
     {
         Response.Headers.RetryAfter = Zayra.Api.Infrastructure.Auth.LoginAbuseGuard.JitteredRetryAfterSeconds();
-        return StatusCode(StatusCodes.Status429TooManyRequests, new { message });
+        return StatusCode(StatusCodes.Status429TooManyRequests, new { error, message });
     }
 
     [HttpPost("login")]
@@ -32,16 +32,20 @@ public class AuthController : ControllerBase
     [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<IActionResult> Login(LoginRequest request, CancellationToken cancellationToken)
     {
-        // Refusals that cost no hashing: an address over its failure budget, or an account over its
-        // attempt budget (LoginAbuseGuard). Both answer 429 before any PBKDF2 work.
-        var clientIp = _abuse?.ClientIp(HttpContext) ?? HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-        if (_abuse is not null)
+        // Refusals that cost no hashing (LoginAbuseGuard): this account from this address, this
+        // account overall (unless this browser is a known device for it), and — when the address
+        // identifies one client — the address's budget for failures against unknown accounts.
+        var client = _abuse?.Client(HttpContext);
+        var tenant = request.TenantSlug ?? string.Empty;
+        var email = request.Email ?? string.Empty;
+        if (_abuse is not null && client is { } address)
         {
-            var now = DateTime.UtcNow;
-            if (_abuse.IsIpBlocked(clientIp, now))
-                return TooManyAttempts("Too many failed sign-ins from this network. Please wait a few minutes and try again.");
-            if (!_abuse.TryBeginAccountAttempt("tenant", request.TenantSlug ?? string.Empty, request.Email ?? string.Empty, now))
-                return TooManyAttempts("Too many sign-in attempts for this account. Please wait a few minutes and try again.");
+            var knownDevice = _abuse.RequestCarriesKnownDevice(Request, "tenant", tenant, email);
+            if (_abuse.TryBegin("tenant", tenant, email, address, knownDevice, DateTime.UtcNow) is { } refusal)
+            {
+                var (error, message) = Zayra.Api.Infrastructure.Auth.LoginAbuseGuard.Describe(refusal);
+                return Refused(error, message);
+            }
         }
         try
         {
@@ -56,16 +60,18 @@ public class AuthController : ControllerBase
                     expiresInSeconds = result.EnrollmentChallenge.ExpiresInSeconds,
                     message = "Your organization requires multi-factor authentication. Please set up MFA to continue."
                 });
+            _abuse?.AppendKnownDeviceCookie(Response, "tenant", tenant, email);
             return Ok(result.Tokens);
         }
         catch (UnauthorizedAccessException ex)
         {
-            _abuse?.RecordFailure(clientIp, DateTime.UtcNow);
+            if (client is { } failedFrom && Zayra.Api.Infrastructure.Auth.LoginFailureKind.IsUnknownAccount(ex))
+                _abuse?.RecordUnknownAccountFailure(failedFrom, DateTime.UtcNow);
             return Unauthorized(new { message = ex.Message });
         }
         catch (Zayra.Api.Infrastructure.Auth.PasswordVerificationBusyException ex)
         {
-            return TooManyAttempts(ex.Message);
+            return Refused(Zayra.Api.Infrastructure.Auth.LoginAbuseGuard.BusyError, ex.Message);
         }
     }
 
@@ -149,8 +155,10 @@ public class AuthController : ControllerBase
 
     private RequestContext GetContext()
     {
+        // The resolved client address (proxy-asserted when configured), so login activity and audit
+        // show the user's IP rather than the web proxy's.
         return new RequestContext(
-            HttpContext.Connection.RemoteIpAddress?.ToString(),
+            _abuse?.Client(HttpContext).Ip ?? HttpContext.Connection.RemoteIpAddress?.ToString(),
             Request.Headers.UserAgent.ToString(),
             GetUserId(),
             GetTenantId());
