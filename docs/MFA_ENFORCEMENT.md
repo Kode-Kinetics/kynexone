@@ -39,7 +39,9 @@ Change the dates (both audited, reason required; the date must be explicit UTC �
 `+00:00` — and at most 90 days ahead):
 - Platform: `PUT /api/platform/security/privileged-mfa-enforcement` (Owner) `{ enforceFromUtc, reason }`.
 - Tenant: `PUT /api/platform/tenants/{tenantId}/privileged-mfa-enforcement` (Owner/Admin)
-  `{ enforceFromUtc | null, reason }`.
+  `{ enforceFromUtc | null, reason }`. A date later than the platform date needs an **Owner** and
+  may trail it by at most **30 days**; a date less than **7 days** away also needs an Owner. Every
+  change is audited with the previous and new values.
 
 Roll-out check: `GET /api/platform/team` now shows `mfaEnabled` per operator.
 
@@ -61,7 +63,7 @@ recovery codes yet; their lost-device path is the platform reset below.
 | Tenant user lost their authenticator | Platform Owner/Admin: `POST /api/platform/users/{userId}/disable-mfa`. The user enrols a new device at next sign-in. |
 | Operator lost their authenticator | Sign in with a **recovery code**, then re-enrol. Or another **Owner**: `POST /api/platform/team/{id}/reset-mfa` (never self). |
 | Sole Owner lost the authenticator AND the recovery codes | Last resort, under change control, by someone with production database access: clear `mfa_enabled`, `mfa_secret_encrypted`, `mfa_configured_at_utc` and `mfa_recovery_code_hashes` on that `platform_users` row (and bump `updated_at_utc` to end its sessions). The Owner then enrols again at next sign-in. Record it in the incident log. |
-| A customer cannot enrol in time | Move that tenant's date later (tenant endpoint above, at most 90 days ahead). |
+| A customer cannot enrol in time | An Owner moves that tenant's date later (tenant endpoint above; at most 30 days after the platform date). |
 | Enrolment itself is broken (outage) | Set `Auth__PrivilegedMfa__BreakGlassUntilUtc` (ISO-8601 UTC, e.g. `2026-11-02T18:00:00Z`) on the Render service and redeploy. Un-enrolled privileged users can then sign in without enrolling until that time; at most **7 days** ahead (a later or unparseable value is ignored, with a boot warning); the effective state is logged at boot and every login it lets through logs `[MFA-BREAK-GLASS]`. **It does not bypass the code step for users who are already enrolled** — that is what recovery codes are for. Remove it afterwards. |
 
 Every factor change is audited (`auth.mfa.enabled`, `platform.auth.tenant_mfa_disabled`,

@@ -416,7 +416,8 @@ public sealed class PrivilegedMfaEnforcementTests
         return pu.Id;
     }
 
-    private static PlatformController Platform(AuthHardeningTestKit kit, Zayra.Api.Data.ZayraDbContext db, Guid? actingAs = null)
+    private static PlatformController Platform(AuthHardeningTestKit kit, Zayra.Api.Data.ZayraDbContext db, Guid? actingAs = null,
+        string role = PlatformRoles.Owner)
     {
         var jwt = AuthHardeningTestKit.Jwt;
         var hasher = new Pbkdf2PasswordHasher();
@@ -430,7 +431,7 @@ public sealed class PrivilegedMfaEnforcementTests
             new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()));
         var claims = new List<Claim>
         {
-            new("is_platform_admin", "true"), new("platform_role", PlatformRoles.Owner),
+            new("is_platform_admin", "true"), new("platform_role", role),
         };
         if (actingAs is { } id) claims.Add(new Claim(ClaimTypes.NameIdentifier, id.ToString()));
         controller.ControllerContext = new ControllerContext
@@ -634,6 +635,42 @@ public sealed class PrivilegedMfaEnforcementTests
             new MfaVerifySetupRequest(setup!.TempSecret, Totp.Now(setup.TempSecret)), CancellationToken.None)).Should().NotBeNull();
 
         email.Sent.Should().ContainSingle().Which.To.Should().Be("owner@platform.test");
+    }
+
+    [Fact]
+    public async Task TenantPostponement_NeedsAnOwner_IsCappedAt30Days_AndShortNoticeNeedsAnOwner()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        var platformDate = Now.AddDays(14);
+        await kit.SetPlatformEnforcementDateAsync(platformDate);
+        var owner = await SeedOperatorAsync(kit, "owner@platform.test");
+        var admin = await SeedOperatorAsync(kit, "admin@platform.test", PlatformRoles.Admin);
+        const string reason = "customer onboarding their HR team";
+
+        async Task<IActionResult> Set(Guid actor, string role, DateTime? date)
+        {
+            await using var db = kit.NewDb();
+            return await Platform(kit, db, actingAs: actor, role: role).SetTenantPrivilegedMfaEnforcement(
+                kit.TenantId, new PrivilegedMfaEnforcementRequest(date is null ? null : PrivilegedMfaPolicy.FormatDate(date.Value), reason),
+                CancellationToken.None);
+        }
+        static int? Status(IActionResult r) => (r as ObjectResult)?.StatusCode ?? (r as StatusCodeResult)?.StatusCode;
+
+        Status(await Set(admin, PlatformRoles.Admin, platformDate.AddDays(10))).Should().Be(403, "postponing past the platform date is an Owner call");
+        Status(await Set(owner, PlatformRoles.Owner, platformDate.AddDays(31))).Should().Be(400, "never more than 30 days behind the platform");
+        (await Set(owner, PlatformRoles.Owner, platformDate.AddDays(30))).Should().BeOfType<OkObjectResult>();
+        Status(await Set(admin, PlatformRoles.Admin, Now.AddDays(3))).Should().Be(403, "under 7 days' notice is an Owner call");
+        (await Set(owner, PlatformRoles.Owner, Now.AddDays(3))).Should().BeOfType<OkObjectResult>();
+        (await Set(admin, PlatformRoles.Admin, Now.AddDays(10))).Should().BeOfType<OkObjectResult>(
+            "an Admin may bring a tenant forward, with at least a week's notice");
+        (await Set(admin, PlatformRoles.Admin, null)).Should().BeOfType<OkObjectResult>("returning to the platform date");
+
+        await using var verify = kit.NewDb();
+        var audits = await verify.AuditLogs.IgnoreQueryFilters().AsNoTracking()
+            .Where(a => a.Action == "platform.security_policy.privileged_mfa_enforcement_changed")
+            .OrderBy(a => a.CreatedAtUtc).ToListAsync();
+        audits.Should().HaveCount(4, "every applied change is audited; refused ones change nothing");
+        audits.Should().AllSatisfy(a => a.Metadata.Should().Contain("\"previous\"").And.Contain("\"next\""));
     }
 
     // ── Platform recovery codes ───────────────────────────────────────────────────────────────

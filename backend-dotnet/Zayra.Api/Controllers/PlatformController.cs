@@ -4512,6 +4512,11 @@ public class PlatformController : ControllerBase
         }
         if (!await _db.Tenants.AsNoTracking().AnyAsync(t => t.Id == tenantId, ct)) return NotFound();
 
+        var platformDate = await PrivilegedMfaPolicy.LoadPlatformEnforceFromAsync(_db, ct);
+        var callerIsOwner = string.Equals(User.FindFirst("platform_role")?.Value, PlatformRoles.Owner, StringComparison.Ordinal);
+        if (PrivilegedMfaPolicy.CheckTenantDateChange(enforceFrom, platformDate, DateTime.UtcNow, callerIsOwner) is { } refusal)
+            return StatusCode(refusal.Status, new { message = refusal.Message });
+
         var sec = await _db.SecuritySettings.FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
         if (sec is null)
         {
@@ -4530,8 +4535,8 @@ public class PlatformController : ControllerBase
             EntityId     = sec.Id.ToString(),
             Metadata     = System.Text.Json.JsonSerializer.Serialize(new
             {
-                tenantId, previous, next = sec.PrivilegedMfaEnforceFromUtc, reason = body.Reason.Trim(),
-                changedBy = GetPlatformUserId(),
+                tenantId, previous, next = sec.PrivilegedMfaEnforceFromUtc, platformDate, reason = body.Reason.Trim(),
+                changedBy = GetPlatformUserId(), changedByRole = User.FindFirst("platform_role")?.Value,
             }),
             IpAddress    = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
             CreatedAtUtc = DateTime.UtcNow
@@ -4541,7 +4546,7 @@ public class PlatformController : ControllerBase
         {
             tenantId,
             privilegedMfaEnforceFromUtc = sec.PrivilegedMfaEnforceFromUtc,
-            platformPrivilegedMfaEnforceFromUtc = await PrivilegedMfaPolicy.LoadPlatformEnforceFromAsync(_db, ct),
+            platformPrivilegedMfaEnforceFromUtc = platformDate,
         });
     }
 
