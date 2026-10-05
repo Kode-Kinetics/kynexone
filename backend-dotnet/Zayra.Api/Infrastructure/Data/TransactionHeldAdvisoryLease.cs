@@ -44,11 +44,24 @@ internal sealed class TransactionHeldAdvisoryLease : IAsyncDisposable
     internal static readonly TimeSpan DefaultIdleCeiling = TimeSpan.FromMinutes(30);
     internal static readonly TimeSpan DefaultKeepaliveInterval = TimeSpan.FromSeconds(30);
 
+    /// <summary>
+    /// Absolute lease age. Past it the keepalive stops renewing and ends the lease transaction, which
+    /// releases the package lock, so a stuck-but-alive import cannot hold it forever. The import's
+    /// next <see cref="EnsureHeldAsync"/> fails, the batch is left for resume, and a resume can take
+    /// the lock.
+    /// </summary>
+    internal static readonly TimeSpan DefaultMaxAge = TimeSpan.FromHours(4);
+
     /// <param name="IdleCeiling">Hard <c>idle_in_transaction_session_timeout</c> for the lease transaction.</param>
     /// <param name="KeepaliveInterval">Keepalive period; <see cref="Timeout.InfiniteTimeSpan"/> disables it (tests only).</param>
     internal sealed record LeaseOptions(TimeSpan IdleCeiling, TimeSpan KeepaliveInterval)
     {
         public static readonly LeaseOptions Default = new(DefaultIdleCeiling, DefaultKeepaliveInterval);
+
+        public TimeSpan MaxAge { get; init; } = DefaultMaxAge;
+
+        /// <summary>Test seam: runs before each keepalive renewal (used to inject a faulting ping).</summary>
+        internal Func<Task>? BeforeKeepalive { get; init; }
     }
 
     private static readonly TransactionHeldAdvisoryLease None = new(null, null, string.Empty);
@@ -59,6 +72,9 @@ internal sealed class TransactionHeldAdvisoryLease : IAsyncDisposable
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly CancellationTokenSource _stop = new();
     private Task _keepalive = Task.CompletedTask;
+    private long _acquiredAt;
+    private TimeSpan _maxAge = DefaultMaxAge;
+    private Func<Task>? _beforeKeepalive;
     private volatile bool _lost;
     private bool _disposed;
 
@@ -138,8 +154,14 @@ internal sealed class TransactionHeldAdvisoryLease : IAsyncDisposable
                 throw;
             }
         });
-        if (lease is not null && options.KeepaliveInterval != Timeout.InfiniteTimeSpan)
-            lease._keepalive = lease.KeepaliveLoopAsync(options.KeepaliveInterval);
+        if (lease is not null)
+        {
+            lease._acquiredAt = System.Diagnostics.Stopwatch.GetTimestamp();
+            lease._maxAge = options.MaxAge;
+            lease._beforeKeepalive = options.BeforeKeepalive;
+            if (options.KeepaliveInterval != Timeout.InfiniteTimeSpan)
+                lease._keepalive = lease.KeepaliveLoopAsync(options.KeepaliveInterval);
+        }
         return lease;
     }
 
@@ -151,22 +173,58 @@ internal sealed class TransactionHeldAdvisoryLease : IAsyncDisposable
     {
         if (_transaction is null) return;
         ObjectDisposedException.ThrowIf(_disposed, this);
+        if (IsPastMaxAge) _lost = true;
         if (!await PingAsync(ct))
             throw new InvalidOperationException(
                 "The advisory lease protecting this operation was lost; stopping before any unserialised work.");
     }
 
+    private bool IsPastMaxAge => System.Diagnostics.Stopwatch.GetElapsedTime(_acquiredAt) >= _maxAge;
+
+    /// <summary>Never faults: any failure marks the lease lost, and DisposeAsync still rolls back.</summary>
     private async Task KeepaliveLoopAsync(TimeSpan interval)
     {
         using var timer = new PeriodicTimer(interval);
         try
         {
             while (await timer.WaitForNextTickAsync(_stop.Token))
+            {
+                if (IsPastMaxAge)
+                {
+                    _lost = true;
+                    await EndTransactionAsync();
+                    return;
+                }
+                if (_beforeKeepalive is not null) await _beforeKeepalive();
                 if (!await PingAsync(CancellationToken.None)) return;
+            }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (_stop.IsCancellationRequested)
         {
             // Disposed.
+        }
+        catch (Exception)
+        {
+            // Anything PingAsync did not classify: the lease can no longer be trusted.
+            _lost = true;
+        }
+    }
+
+    /// <summary>Rolls the lease transaction back (releasing the lock); safe to call more than once.</summary>
+    private async Task EndTransactionAsync()
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            if (_transaction is not null) await _transaction.RollbackAsync(CancellationToken.None);
+        }
+        catch (Exception)
+        {
+            // Already completed, or the connection is dead: either way nothing is held.
+        }
+        finally
+        {
+            _gate.Release();
         }
     }
 
@@ -197,23 +255,32 @@ internal sealed class TransactionHeldAdvisoryLease : IAsyncDisposable
         if (_disposed || _connection is null) return;
         _disposed = true;
         _stop.Cancel();
-        await _keepalive;
-        await _gate.WaitAsync();
+        try
+        {
+            await _keepalive;
+        }
+        catch (Exception)
+        {
+            // The loop catches everything itself; this is belt and braces so that nothing it could
+            // ever throw skips the rollback below.
+        }
         try
         {
             // Rolling back ends the transaction and releases the xact lock. If the connection is
             // already broken the server has aborted the transaction itself.
-            if (_transaction is not null) await _transaction.RollbackAsync(CancellationToken.None);
-        }
-        catch (Exception ex) when (ex is NpgsqlException or InvalidOperationException)
-        {
-            // Nothing to release on a dead connection; disposing below discards it.
+            await EndTransactionAsync();
         }
         finally
         {
-            if (_transaction is not null) await _transaction.DisposeAsync();
+            try
+            {
+                if (_transaction is not null) await _transaction.DisposeAsync();
+            }
+            catch (Exception)
+            {
+                // Disposing the connection below discards whatever is left.
+            }
             await _connection.DisposeAsync();
-            _gate.Release();
             _gate.Dispose();
             _stop.Dispose();
         }

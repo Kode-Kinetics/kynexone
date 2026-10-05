@@ -346,6 +346,47 @@ public sealed partial class AdvisoryLockTransactionPoolingPostgresTests : IClass
     }
 
     [Fact]
+    public async Task MigrationImportLease_WhenTheKeepaliveFaultsUnexpectedly_DisposeStillReleasesTheLock()
+    {
+        var key = Random.Shared.NextInt64();
+        await using var db = _fx.CreatePooledDb();
+        var options = new TransactionHeldAdvisoryLease.LeaseOptions(TimeSpan.FromMinutes(5), TimeSpan.FromMilliseconds(100))
+        {
+            // An exception type PingAsync does not classify.
+            BeforeKeepalive = () => throw new NotSupportedException("injected keepalive fault"),
+        };
+        var lease = (await TransactionHeldAdvisoryLease.TryAcquireAsync(db, key, options, CancellationToken.None))!;
+        for (var i = 0; i < 50 && !lease.IsLost; i++) await Task.Delay(50);
+        lease.IsLost.Should().BeTrue("a faulted keepalive means the lease can no longer be trusted");
+        (await _fx.GrantedAdvisoryLocksAsync(key)).Should().Be(1);
+
+        var dispose = async () => await lease.DisposeAsync();
+        await dispose.Should().NotThrowAsync();
+        (await _fx.GrantedAdvisoryLocksAsync(key)).Should().Be(0, "dispose must roll back even after the keepalive faulted");
+    }
+
+    [Fact]
+    public async Task MigrationImportLease_PastItsMaxAge_IsEndedAndReleased_SoTheBatchCanBeResumed()
+    {
+        var key = Random.Shared.NextInt64();
+        await using var db = _fx.CreatePooledDb();
+        var options = new TransactionHeldAdvisoryLease.LeaseOptions(TimeSpan.FromMinutes(5), TimeSpan.FromMilliseconds(100))
+        {
+            MaxAge = TimeSpan.FromSeconds(1),
+        };
+        var lease = (await TransactionHeldAdvisoryLease.TryAcquireAsync(db, key, options, CancellationToken.None))!;
+        await using (lease)
+        {
+            await lease.EnsureHeldAsync(CancellationToken.None);
+            for (var i = 0; i < 60 && await _fx.GrantedAdvisoryLocksAsync(key) > 0; i++) await Task.Delay(100);
+            (await _fx.GrantedAdvisoryLocksAsync(key)).Should().Be(0, "a lease past its absolute age is not renewed and lets go");
+            var expired = async () => await lease.EnsureHeldAsync(CancellationToken.None);
+            await expired.Should().ThrowAsync<InvalidOperationException>("the import must stop and leave the batch for resume");
+            (await TryTakeInOtherPooledTransactionAsync(key)).Should().BeTrue("a resume can now take the package lock");
+        }
+    }
+
+    [Fact]
     public async Task MigrationImportLease_RefusesACallerThatAlreadyHasATransactionOpen()
     {
         await using var db = _fx.CreatePooledDb();
