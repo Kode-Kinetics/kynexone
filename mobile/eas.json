@@ -5,6 +5,7 @@
   },
   "build": {
     "simulator": {
+      "channel": "development",
       "distribution": "internal",
       "ios": {
         "simulator": true
@@ -15,6 +16,7 @@
       }
     },
     "preview": {
+      "channel": "preview",
       "distribution": "internal",
       "env": {
         "EXPO_PUBLIC_APP_ENV": "staging",
@@ -22,6 +24,7 @@
       }
     },
     "production": {
+      "channel": "production",
       "autoIncrement": true,
       "env": {
         "EXPO_PUBLIC_APP_ENV": "production",

@@ -158,7 +158,7 @@ Response handling lives in `src/auth/mfaFlow.ts` (pure, unit-tested in `tests/mf
 - Every rejected code is the same 401, so the app counts attempts (server limit 5) and tracks the 300 s expiry itself.
 - Same-phone enrolment: "Open authenticator app" (`otpauth://` link) first; the grouped key is selectable (long-press to copy) and has a "Share key" button (React Native core `Share`). The app never writes to the clipboard.
 - The setup key stays in component state only and is never logged or stored.
-- Release: this flow is JavaScript only. It adds no dependency, config plugin or `app.json`/`app.config.js` change against `main`, so it fits the current native binary and does not need App Store review. A store build would delay managers who sign in only on mobile past the enforcement date. Note: `expo-updates` is not installed and no `updates` URL is configured, so the app has no OTA channel yet; that must exist in the store binary before any JS-only update can be delivered.
+- Release: this flow is JavaScript only. It adds no dependency, config plugin or `app.json`/`app.config.js` change, so once a store binary carrying the OTA channel exists (see [Releasing](#releasing)) a fix to it ships with `eas update` and no App Store review. That matters because managers who sign in only on mobile must not wait for review past the enforcement date.
 
 ---
 
@@ -227,6 +227,34 @@ npx expo run:android --variant release
 ```
 
 Production EAS profiles set `EXPO_PUBLIC_APP_ENV=production` and the HTTPS API URL.
+
+---
+
+## Releasing
+
+Every store binary carries an OTA channel (`expo-updates`): `updates.url` is `https://u.expo.dev/<EAS projectId>` (derived in `app.config.js` from the same project ID the build links to), it checks on launch (`ON_LOAD`) and never blocks startup (`fallbackToCacheTimeout: 0`; a downloaded update applies on the next launch). Channels: `production`, `preview`, and `development` (the `simulator` profile). `npm run updates:check` validates this and prints the iOS/Android runtime versions; `tests/updatesConfig.test.ts` guards it in CI.
+
+The runtime version uses the **fingerprint** policy: a hash of native code and native config. An update reaches only binaries whose fingerprint matches, so a mistaken OTA cannot land on a binary it does not fit.
+
+**OTA (`eas update`):** JavaScript/TypeScript and bundled assets only, with the fingerprint unchanged. Run `npm run updates:check` and compare its runtime version with the store build on expo.dev; if they differ, it is a store build.
+
+**Store build (`eas build`):** anything that changes the fingerprint:
+- adding, removing or upgrading a dependency with native code (any `expo-*` module, `react-native-*`, the Expo SDK);
+- config plugins (`plugins` in `app.json`);
+- native keys in `app.json`/`app.config.js`: `ios`, `android`, permissions, `infoPlist`, `scheme`, icons/splash, `version`;
+- `eas.json` (the fingerprint includes it, so even changing a profile's `env`, such as the API URL, needs a build).
+
+```bash
+# Ship JS/asset changes to production binaries
+eas update --channel production --message "Fix: clearer two-step sign-in errors"
+
+# New store binaries (native change, or first release)
+eas build --profile production --platform all
+
+# Roll back: republish an earlier, known-good update group to the channel
+eas update:list --branch production
+eas update:republish --group <update-group-id>
+```
 
 ---
 

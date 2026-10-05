@@ -51,13 +51,40 @@ function assertSafeReleaseConfig() {
 
 assertSafeReleaseConfig();
 
-module.exports = ({ config }) => ({
-  ...config,
-  extra: {
-    ...(config.extra || {}),
-    apiBaseUrl,
-    releaseChannel: appEnvironment,
-    appEnvironment,
-    ...(easProjectId ? { eas: { projectId: easProjectId } } : {}),
-  },
-});
+// OTA updates (expo-updates). The update URL is derived from the SAME project ID
+// the build is linked to, so an env override can never point a binary at another
+// project's updates. The fingerprint runtime version changes whenever native code
+// or native config changes, so an OTA update can only reach binaries it fits.
+// fallbackToCacheTimeout 0: launch from the cached bundle immediately and apply a
+// downloaded update on the next launch; startup never waits on the network.
+function updatesConfig(projectId) {
+  if (!projectId) {
+    if (appEnvironment === 'production') {
+      throw new Error('Production mobile builds need an EAS project ID for the OTA update URL.');
+    }
+    return {};
+  }
+  return {
+    runtimeVersion: { policy: 'fingerprint' },
+    updates: {
+      url: `https://u.expo.dev/${projectId}`,
+      checkAutomatically: 'ON_LOAD',
+      fallbackToCacheTimeout: 0,
+    },
+  };
+}
+
+module.exports = ({ config }) => {
+  const projectId = easProjectId || config.extra?.eas?.projectId;
+  return {
+    ...config,
+    ...updatesConfig(projectId),
+    extra: {
+      ...(config.extra || {}),
+      apiBaseUrl,
+      releaseChannel: appEnvironment,
+      appEnvironment,
+      ...(projectId ? { eas: { ...(config.extra?.eas || {}), projectId } } : {}),
+    },
+  };
+};
