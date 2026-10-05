@@ -16,4 +16,5 @@ public interface IApprovalWorkflowService
     Task<ApprovalRequestDto?> GetRequestAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken cancellationToken);
     Task<ApprovalRequestDto> CreateRequestAsync(Guid tenantId, CreateApprovalRequest request, RequestContext context, CancellationToken cancellationToken);
     Task<ApprovalRequestDto?> DecideAsync(Guid tenantId, Guid approvalRequestId, ApprovalDecisionRequest request, RequestContext context, CancellationToken cancellationToken);
+    Task<ApprovalRequestDto?> WithdrawAsync(Guid tenantId, Guid approvalRequestId, string? reason, RequestContext context, CancellationToken cancellationToken);
 }

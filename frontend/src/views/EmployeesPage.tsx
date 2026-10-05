@@ -1018,10 +1018,13 @@ export function EmployeesPage() {
       const res = await employeesApi.update(selectedId, new Date().toISOString().slice(0, 10), changes);
       surfaceAdvisoryWarning(res.data);
       if (res.status === 202) {
-        const data = res.data as { sensitiveFields?: string[]; approvalRequestId?: string; appliedFields?: string[] };
+        const data = res.data as { sensitiveFields?: string[]; approvalRequestId?: string; appliedFields?: string[]; alreadyPending?: boolean };
         const fields = data.sensitiveFields ?? [];
         const applied = data.appliedFields?.length ? ` Immediate fields saved: ${data.appliedFields.join(', ')}.` : '';
-        setActionNotice(`Sensitive changes submitted to Approval Center${data.approvalRequestId ? ` (${data.approvalRequestId.slice(0, 8)})` : ''}: ${fields.join(', ')}.${applied}`);
+        const ref = data.approvalRequestId ? ` (${data.approvalRequestId.slice(0, 8)})` : '';
+        setActionNotice(data.alreadyPending
+          ? `This exact change is already waiting in the Approval Center${ref}: ${fields.join(', ')}. Nothing new was submitted.`
+          : `Sensitive changes submitted to Approval Center${ref}: ${fields.join(', ')}.${applied}`);
         setEditOpen(false);
         await openDetail(selectedId, true);
         await load();
@@ -1166,7 +1169,10 @@ export function EmployeesPage() {
       if (res.status === 202) {
         // Sensitive identity/payroll fields route to the Approval Center — the gap clears once approved.
         await loadReadiness(selectedId);
-        return { ok: false, message: 'Submitted to the Approval Center — clears once approved.' };
+        const alreadyPending = (res.data as { alreadyPending?: boolean } | undefined)?.alreadyPending;
+        return { ok: false, message: alreadyPending
+          ? 'Already waiting in the Approval Center — clears once approved.'
+          : 'Submitted to the Approval Center — clears once approved.' };
       }
       await openDetail(selectedId, true);
       await load();
