@@ -117,10 +117,22 @@ public static class PrivilegedMfaPolicy
     public static bool IsPrivilegedPermission(string key) => !NonPrivilegedPermissions.Contains(key);
 
     /// <summary>
+    /// Access-mode bundle keys that are privileged in general but scoped to the person's own record
+    /// inside that bundle. Mobile's <c>attendance.write</c> is the employee's own clock-in; counting it
+    /// would put every mobile user behind MFA. Any OTHER privileged key that appears in a bundle counts.
+    /// </summary>
+    public static readonly IReadOnlySet<(string AccessMode, string Permission)> SelfScopedBundleKeys =
+        new HashSet<(string, string)> { (AccessModes.Mobile, "attendance.write") };
+
+    /// <summary>The privileged keys an access-mode bundle contributes (after the self-scoped exemptions).</summary>
+    public static IEnumerable<string> PrivilegedBundleKeys(string? accessMode, IEnumerable<string> bundle)
+        => bundle.Where(k => IsPrivilegedPermission(k) && !SelfScopedBundleKeys.Contains((accessMode ?? string.Empty, k)));
+
+    /// <summary>
     /// Permissions the user was GRANTED: active roles plus active Allow overrides, minus Deny
-    /// overrides. Access-mode bundles (ESS, Mobile, Kiosk, ManagerPortal) are deliberately left out —
-    /// they are fixed self-service sets (Mobile's attendance.write is the employee's own punch), and
-    /// counting them would put every mobile user behind MFA.
+    /// overrides, plus the PRIVILEGED keys of their access-mode bundle (ESS, Mobile, Kiosk,
+    /// ManagerPortal). Non-privileged bundle keys such as ManagerPortal's approvals.decide change
+    /// nothing; a privileged key added to a bundle later must count, so it does.
     /// </summary>
     public static IReadOnlyCollection<string> GrantedPermissions(User user)
     {
@@ -131,6 +143,9 @@ public static class PrivilegedMfaPolicy
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .Select(x => x!)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var accessMode = AuthCurrentEligibility.PrimaryAccess(user)?.AccessMode;
+        foreach (var key in PrivilegedBundleKeys(accessMode, AuthService.AccessModePermissions(accessMode)))
+            keys.Add(key);
         foreach (var ov in user.PermissionOverrides.Where(x => x.IsActive && (x.ExpiresAtUtc is null || x.ExpiresAtUtc > DateTime.UtcNow)))
         {
             if (ov.Effect.Equals("Deny", StringComparison.OrdinalIgnoreCase)) keys.Remove(ov.PermissionKey);

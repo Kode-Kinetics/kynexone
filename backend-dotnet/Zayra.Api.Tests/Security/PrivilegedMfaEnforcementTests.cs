@@ -180,6 +180,31 @@ public sealed class PrivilegedMfaEnforcementTests
     }
 
     [Fact]
+    public void AccessModeBundles_CountOnlyTheirPrivilegedKeys()
+    {
+        var modes = typeof(AccessModes).GetFields()
+            .Where(f => f.IsLiteral && f.FieldType == typeof(string))
+            .Select(f => (string)f.GetRawConstantValue()!)
+            .ToList();
+        modes.Should().Contain(AccessModes.Mobile).And.Contain(AccessModes.ManagerPortal);
+        foreach (var mode in modes)
+            PrivilegedMfaPolicy.PrivilegedBundleKeys(mode, AuthService.AccessModePermissions(mode))
+                .Should().BeEmpty($"today's {mode} bundle is self-service or exempted on purpose");
+
+        PrivilegedMfaPolicy.PrivilegedBundleKeys(AccessModes.ManagerPortal, new[] { "approvals.decide", "payroll.export" })
+            .Should().Equal(new[] { "payroll.export" }, "a privileged key added to a bundle later must count");
+        PrivilegedMfaPolicy.PrivilegedBundleKeys(AccessModes.EssOnly, new[] { "attendance.write" })
+            .Should().Equal(new[] { "attendance.write" }, "the own-punch exemption is Mobile's alone");
+
+        var mobileEmployee = new User
+        {
+            EmployeeUserAccounts = { new EmployeeUserAccount { AccessMode = AccessModes.Mobile, IsPrimary = true } },
+        };
+        PrivilegedMfaPolicy.HoldsPrivilegedPermission(mobileEmployee).Should().BeFalse(
+            "Mobile's attendance.write is the employee's own clock-in");
+    }
+
+    [Fact]
     public async Task ARenamedSeededRole_IsStillEnforced()
     {
         await using var kit = await AuthHardeningTestKit.CreateAsync();
