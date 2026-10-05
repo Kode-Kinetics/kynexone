@@ -57,7 +57,7 @@ export default function AIAssistantPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: 'assistant',
-      text: 'Hello! I\'m your workspace assistant. I can help you with headcount, leave status, pending approvals, department information, and more. Responses are advisory only — no automated HR decisions are made.\n\nWhat would you like to know?',
+      text: 'Hello! I\'m Kody, your HR assistant. I can help you with headcount, leave status, pending approvals, department information, and more. Responses are advisory only — no automated HR decisions are made.\n\nWhat would you like to know?',
       timestamp: new Date(),
     },
   ]);
@@ -151,7 +151,7 @@ export default function AIAssistantPage() {
   }
 
   const tabs: { id: Tab; label: string }[] = [
-    { id: 'assistant', label: 'Assistant' },
+    { id: 'assistant', label: 'Ask Kody' },
     { id: 'insights', label: 'Insights' },
     { id: 'risk', label: 'Risk Scores' },
     { id: 'history', label: 'Query Log' },
@@ -161,9 +161,9 @@ export default function AIAssistantPage() {
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-4">
       <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-xl bg-sapphire flex items-center justify-center text-white text-xl font-bold">Z</div>
+        <div aria-hidden="true" className="w-10 h-10 shrink-0 rounded-xl bg-sapphire flex items-center justify-center text-white text-xl font-bold">K</div>
         <div>
-          <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">Workspace Assistant</h1>
+          <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">Kody the HR Assistant</h1>
           <p className="text-sm text-gray-500">Advisory only — assists HR decisions but never replaces them</p>
         </div>
         <div className="ms-auto flex items-center gap-2 px-3 py-1 bg-amber-50 border border-amber-200 rounded-full text-xs text-amber-700 font-medium">
@@ -193,7 +193,7 @@ export default function AIAssistantPage() {
         <div className="flex items-start gap-3 px-4 py-3 bg-amber-50 border border-amber-300 rounded-xl text-sm text-amber-800">
           <span className="text-amber-500 text-lg leading-none mt-0.5">⚠</span>
           <div>
-            <span className="font-semibold">Assistant not configured.</span>{' '}
+            <span className="font-semibold">Kody is not configured.</span>{' '}
             The assistant is disabled because no provider key is set (<code className="font-mono text-xs bg-amber-100 px-1 rounded">AI_PROVIDER=none</code>).
             Set <code className="font-mono text-xs bg-amber-100 px-1 rounded">AI_PROVIDER</code> and an API key in Render to enable live responses.
           </div>
@@ -218,7 +218,7 @@ export default function AIAssistantPage() {
                     {msg.role === 'assistant' && (
                       <div className="flex items-center gap-1.5 mb-1.5">
                         <div className="w-4 h-4 rounded-full bg-sapphire"></div>
-                        <span className="text-xs font-semibold text-sapphire">Assistant</span>
+                        <span className="text-xs font-semibold text-sapphire">Kody</span>
                         <span className="text-xs text-gray-400 ms-auto">Advisory</span>
                       </div>
                     )}
@@ -251,7 +251,7 @@ export default function AIAssistantPage() {
                   value={query}
                   onChange={e => setQuery(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendQuery(query); } }}
-                  placeholder={providerStatus?.enabled === false ? 'Assistant not configured — see banner above' : 'Ask anything about your workforce...'}
+                  placeholder={providerStatus?.enabled === false ? 'Kody is not configured — see banner above' : 'Ask Kody about your workforce...'}
                   className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sapphire disabled:bg-gray-50 disabled:text-gray-400"
                   disabled={loading || providerStatus?.enabled === false}
                 />
@@ -432,7 +432,7 @@ export default function AIAssistantPage() {
       {/* Query Log */}
       {tab === 'history' && (
         <div className="space-y-4">
-          <h2 className="text-lg font-semibold text-gray-900">Assistant Query Log</h2>
+          <h2 className="text-lg font-semibold text-gray-900">Kody Query Log</h2>
           {historyList.error != null && (
             <p role="alert" className="text-sm text-rose-600">The query log could not be loaded. {requestFailureReason(historyList.error)}</p>
           )}
@@ -440,7 +440,7 @@ export default function AIAssistantPage() {
             <p className="py-8 text-center text-sm text-gray-400">Loading…</p>
           ) : historyList.error != null && history.length === 0 ? null : history.length === 0 ? (
             <div className="text-center py-16 bg-white rounded-xl border border-gray-200">
-              <p className="text-gray-500 text-sm">No queries logged yet. Use the assistant to get started.</p>
+              <p className="text-gray-500 text-sm">No queries logged yet. Ask Kody to get started.</p>
             </div>
           ) : (
             <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
