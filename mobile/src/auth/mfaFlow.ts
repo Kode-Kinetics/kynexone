@@ -91,7 +91,12 @@ export function classifyMfaStatus(data: unknown, nowMs: number): MfaPrompt {
 
 // ---- Errors --------------------------------------------------------------
 
-export type MfaErrorKind = 'wrongCode' | 'attemptLimit' | 'expired' | 'rateLimited' | 'network' | 'server';
+/**
+ * notAccepted: a 401 right after a network or server failure. The earlier
+ * request may have reached the server (and used up the code or the request),
+ * so "wrong code" could be untrue; the wording stays neutral.
+ */
+export type MfaErrorKind = 'wrongCode' | 'notAccepted' | 'attemptLimit' | 'expired' | 'rateLimited' | 'network' | 'server';
 
 export type MfaFailureClass = 'rejected' | 'rateLimited' | 'network' | 'server' | 'conflict';
 
@@ -101,7 +106,9 @@ export function classifyMfaFailure(error: unknown): MfaFailureClass {
   const response = asRecord(record?.response);
   const status = typeof response?.status === 'number' ? response.status : undefined;
   if (status === undefined) return record?.isAxiosError === true || record?.request ? 'network' : 'server';
-  if (status === 401 || status === 400) return 'rejected';
+  // 401 is the backend's only "code/request not accepted" answer. A 400 is a
+  // malformed request (validation), which no code the user types can fix.
+  if (status === 401) return 'rejected';
   if (status === 409) return 'conflict';
   if (status === 429) return 'rateLimited';
   return 'server';
@@ -116,6 +123,8 @@ export interface CodeEntryState {
   failedAttempts: number;
   expiresAtMs: number;
   error: MfaErrorKind | null;
+  /** The previous attempt ended in a network or server failure. */
+  afterTransientFailure: boolean;
 }
 
 export type CodeEntryEvent =
@@ -126,7 +135,13 @@ export type CodeEntryEvent =
   | { type: 'tick'; nowMs: number };
 
 export function initialCodeEntry(expiresInSeconds: number, nowMs: number): CodeEntryState {
-  return { phase: 'ready', failedAttempts: 0, expiresAtMs: nowMs + normalizeTtl(expiresInSeconds) * 1000, error: null };
+  return {
+    phase: 'ready',
+    failedAttempts: 0,
+    expiresAtMs: nowMs + normalizeTtl(expiresInSeconds) * 1000,
+    error: null,
+    afterTransientFailure: false,
+  };
 }
 
 export function codeEntryReducer(state: CodeEntryState, event: CodeEntryEvent): CodeEntryState {
@@ -145,13 +160,25 @@ export function codeEntryReducer(state: CodeEntryState, event: CodeEntryEvent): 
       if (event.failure === 'rejected') {
         if (event.nowMs >= state.expiresAtMs) return { ...state, phase: 'expired', error: 'expired' };
         const failedAttempts = state.failedAttempts + 1;
-        if (failedAttempts >= MFA_MAX_ATTEMPTS) return { ...state, phase: 'locked', failedAttempts, error: 'attemptLimit' };
-        return { ...state, phase: 'ready', failedAttempts, error: 'wrongCode' };
+        if (failedAttempts >= MFA_MAX_ATTEMPTS) {
+          return { ...state, phase: 'locked', failedAttempts, error: 'attemptLimit', afterTransientFailure: false };
+        }
+        return {
+          ...state,
+          phase: 'ready',
+          failedAttempts,
+          error: state.afterTransientFailure ? 'notAccepted' : 'wrongCode',
+          afterTransientFailure: false,
+        };
       }
       // Transport, throttling and server faults never count as a wrong code.
-      const error: MfaErrorKind = event.failure === 'rateLimited' ? 'rateLimited'
-        : event.failure === 'network' ? 'network' : 'server';
-      return { ...state, phase: 'ready', error };
+      if (event.failure === 'rateLimited') return { ...state, phase: 'ready', error: 'rateLimited' };
+      return {
+        ...state,
+        phase: 'ready',
+        error: event.failure === 'network' ? 'network' : 'server',
+        afterTransientFailure: true,
+      };
     }
     case 'tick':
       return state.phase === 'ready' && event.nowMs >= state.expiresAtMs
@@ -168,6 +195,18 @@ export function attemptsLeft(state: CodeEntryState): number {
 
 export function secondsLeft(state: CodeEntryState, nowMs: number): number {
   return Math.max(0, Math.ceil((state.expiresAtMs - nowMs) / 1000));
+}
+
+/**
+ * What a screen reader announces for the setup key: one character at a time,
+ * with a pause between groups, so "JBSW Y3DP" is not read as words.
+ */
+export function spellSecretForScreenReader(secret: string, size = 4): string {
+  return groupSecret(secret, size)
+    .split(' ')
+    .filter(Boolean)
+    .map((group) => group.split('').join(' '))
+    .join(', ');
 }
 
 export function normalizeCode(text: string): string {

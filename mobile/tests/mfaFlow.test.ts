@@ -15,6 +15,7 @@ import {
   parseRecoveryCodes,
   secondsLeft,
   secretFromProvisioningUri,
+  spellSecretForScreenReader,
   type CodeEntryState,
   type MfaFailureClass,
 } from '../src/auth/mfaFlow.ts';
@@ -174,12 +175,26 @@ test('throttling and server faults are never counted as wrong codes', () => {
   assert.equal(classifyMfaFailure(axiosError(429)), 'rateLimited');
   assert.equal(classifyMfaFailure(axiosError(500)), 'server');
   assert.equal(classifyMfaFailure(axiosError(401)), 'rejected');
-  assert.equal(classifyMfaFailure(axiosError(400)), 'rejected');
+  assert.equal(classifyMfaFailure(axiosError(400)), 'server', 'a 400 is a malformed request, not a wrong code');
   assert.equal(classifyMfaFailure(axiosError(409)), 'conflict');
   assert.equal(classifyMfaFailure(new Error('parse')), 'server');
   const limited = submitAndFail(initialCodeEntry(300, NOW), 'rateLimited');
   assert.equal(limited.error, 'rateLimited');
   assert.equal(limited.failedAttempts, 0);
+});
+
+test('after a network or server failure the next 401 is worded neutrally, then wording returns to wrong code', () => {
+  for (const transient of ['network', 'server'] as const) {
+    let state = submitAndFail(initialCodeEntry(300, NOW), transient);
+    assert.equal(state.afterTransientFailure, true);
+    state = submitAndFail(state, 'rejected');
+    assert.equal(state.error, 'notAccepted');
+    assert.equal(state.failedAttempts, 1, 'it still counts against the server limit');
+    state = submitAndFail(state, 'rejected');
+    assert.equal(state.error, 'wrongCode');
+  }
+  const afterThrottle = submitAndFail(submitAndFail(initialCodeEntry(300, NOW), 'rateLimited'), 'rejected');
+  assert.equal(afterThrottle.error, 'wrongCode', 'a 429 never reached the code check');
 });
 
 test('a second submit while one is in flight is ignored', () => {
@@ -193,6 +208,7 @@ test('setup key comes out of the backend otpauth URI and is shown grouped', () =
   const uri = 'otpauth://totp/admin%40evostel.sa?secret=JBSWY3DPEHPK3PXP&issuer=Zayra%20HRM&algorithm=SHA1&digits=6&period=30';
   assert.equal(secretFromProvisioningUri(uri), 'JBSWY3DPEHPK3PXP');
   assert.equal(groupSecret('JBSWY3DPEHPK3PXP'), 'JBSW Y3DP EHPK 3PXP');
+  assert.equal(spellSecretForScreenReader('JBSWY3DP'), 'J B S W, Y 3 D P', 'screen readers spell it out');
   assert.equal(authenticatorUri(uri, 'JBSWY3DPEHPK3PXP', 'admin@evostel.sa'), uri, "backend's own URI is preferred");
   assert.equal(secretFromProvisioningUri('otpauth://totp/x?issuer=y'), '');
   assert.equal(secretFromProvisioningUri('otpauth://totp/x?secret=not*base32'), '');
@@ -243,10 +259,11 @@ test('every MFA string exists in English and Arabic with the same placeholders',
     assert.ok(ar.get(key)!.trim().length > 0, `${key} is empty in Arabic`);
     assert.deepEqual(placeholders(ar.get(key)!), placeholders(text), `${key} placeholders differ`);
   }
-  for (const kind of ['wrongCode', 'attemptLimit', 'expired', 'rateLimited', 'network', 'server']) {
+  for (const kind of ['wrongCode', 'notAccepted', 'attemptLimit', 'expired', 'rateLimited', 'network', 'server']) {
     assert.ok(en.has(`errors.${kind}`), `missing error string ${kind}`);
   }
   assert.equal(mfaEn.bannerWithDate, 'Your role requires two-step sign-in from {{date}}. Set it up now.');
+  assert.equal(mfaEn.errors.notAccepted, 'Not accepted. If this keeps happening, sign in again.');
 });
 
 test('enrolment ships without a native build: no clipboard module, core Share + selectable key instead', () => {
@@ -266,7 +283,7 @@ test('enrolment ships without a native build: no clipboard module, core Share + 
   }
   const view = mfaSources[0];
   assert.match(view, /Share\.share\(\{ message: /);
-  assert.match(view, /<Text selectable style=\{styles\.secret\}>/);
+  assert.match(view, /<Text\s+selectable\s+style=\{styles\.secret\}/);
   assert.equal('copyKey' in mfaEn, false);
   assert.ok(mfaEn.shareKey && mfaAr.shareKey && mfaEn.longPressToCopy && mfaAr.longPressToCopy);
 });

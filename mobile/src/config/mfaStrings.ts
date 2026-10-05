@@ -11,6 +11,7 @@ export const mfaEn = {
   attemptsLeft: 'Attempts left: {{count}}',
   errors: {
     wrongCode: "That code didn't work. Check the code in your authenticator app and try again.",
+    notAccepted: 'Not accepted. If this keeps happening, sign in again.',
     attemptLimit: 'Too many wrong codes. For your security, go back and sign in again to get a new code request.',
     expired: 'This code request has expired. Go back and sign in again.',
     rateLimited: 'Too many tries in a short time. Wait a minute, then try again.',
@@ -28,6 +29,8 @@ export const mfaEn = {
   manualKeyHelp: 'Or add an account by hand in your authenticator app and enter this setup key:',
   setupKeyLabel: 'Setup key',
   longPressToCopy: 'Press and hold the key to copy it.',
+  clipboardSync: 'Copying puts the key on the clipboard, which may sync to your other devices.',
+  replaceExisting: 'If you already added a KynexOne entry, delete it and add this key.',
   shareKey: 'Share key',
   keyPrivate: 'Keep this key private. Anyone who has it can create your sign-in codes.',
   step2: '2. Enter the 6-digit code your app shows',
@@ -65,6 +68,7 @@ export const mfaAr: typeof mfaEn = {
   attemptsLeft: 'المحاولات المتبقية: {{count}}',
   errors: {
     wrongCode: 'هذا الرمز غير صحيح. تحقّق من الرمز في تطبيق المصادقة وحاول مرة أخرى.',
+    notAccepted: 'لم يُقبل. إذا تكرر ذلك، سجّل الدخول من جديد.',
     attemptLimit: 'أُدخلت رموز خاطئة عدة مرات. لحمايتك، ارجع وسجّل الدخول من جديد للحصول على طلب رمز جديد.',
     expired: 'انتهت صلاحية طلب الرمز. ارجع وسجّل الدخول من جديد.',
     rateLimited: 'محاولات كثيرة خلال وقت قصير. انتظر دقيقة ثم حاول مرة أخرى.',
@@ -81,6 +85,8 @@ export const mfaAr: typeof mfaEn = {
   manualKeyHelp: 'أو أضف حسابًا يدويًا في تطبيق المصادقة وأدخل مفتاح الإعداد هذا:',
   setupKeyLabel: 'مفتاح الإعداد',
   longPressToCopy: 'اضغط مطولًا على المفتاح لنسخه.',
+  clipboardSync: 'يضع النسخ المفتاح في الحافظة، وقد تتم مزامنتها مع أجهزتك الأخرى.',
+  replaceExisting: 'إذا كنت قد أضفت إدخالًا لـ KynexOne من قبل، فاحذفه وأضف هذا المفتاح.',
   shareKey: 'مشاركة المفتاح',
   keyPrivate: 'احتفظ بهذا المفتاح سرًا. يستطيع أي شخص يملكه إنشاء رموز تسجيل الدخول الخاصة بك.',
   step2: '2. أدخل الرمز المكوّن من 6 أرقام الذي يظهر في التطبيق',

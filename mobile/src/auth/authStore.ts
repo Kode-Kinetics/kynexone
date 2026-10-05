@@ -193,9 +193,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   refreshMfaStatus: async () => {
+    const requestedFor = get().user?.id;
+    if (!requestedFor) return;
     try {
       const mfaPrompt = await authApi.getMfaStatus();
-      if (get().isAuthenticated) set({ mfaPrompt });
+      // A reply that lands after sign-out or an account switch belongs to someone else.
+      const { isAuthenticated, user } = get();
+      if (isAuthenticated && user?.id === requestedFor) set({ mfaPrompt });
     } catch {
       // Advisory only: a missing status must never block or end a valid session.
       // The error is not logged because it carries request headers.

@@ -105,7 +105,7 @@ export function MfaCodeError({ state }: { state: CodeEntryState }) {
   return (
     <Text style={styles.error} accessibilityLiveRegion="polite" accessibilityRole="alert">
       {t(`mfa.errors.${state.error}`)}
-      {state.error === 'wrongCode' ? `\n${t('mfa.attemptsLeft', { count: attemptsLeft(state) })}` : ''}
+      {state.error === 'wrongCode' || state.error === 'notAccepted' ? `\n${t('mfa.attemptsLeft', { count: attemptsLeft(state) })}` : ''}
     </Text>
   );
 }

@@ -23,6 +23,7 @@ import {
   groupSecret,
   MFA_CODE_LENGTH,
   secondsLeft,
+  spellSecretForScreenReader,
 } from '@/auth/mfaFlow';
 import { COLORS } from '@/config';
 import { MfaCodeError, MfaCodeInput, useCodeEntry } from './mfaCodeEntry';
@@ -255,15 +256,25 @@ export function MfaEnrollmentView({
         {noAuthenticator ? <Text style={styles.warning}>{t('mfa.noAuthenticator')}</Text> : null}
 
         <Text style={styles.helper}>{t('mfa.manualKeyHelp')}</Text>
-        <View style={styles.secretBox} accessible accessibilityLabel={t('mfa.setupKeyLabel')}>
-          <Text selectable style={styles.secret}>{groupSecret(secret)}</Text>
+        <Text style={styles.helper}>{t('mfa.replaceExisting')}</Text>
+        <View style={styles.secretBox}>
+          <Text
+            selectable
+            style={styles.secret}
+            // Spelled out so VoiceOver/TalkBack read characters, not words.
+            accessibilityLabel={`${t('mfa.setupKeyLabel')}: ${spellSecretForScreenReader(secret)}`}
+          >
+            {groupSecret(secret)}
+          </Text>
         </View>
-        <Text style={styles.securityNote}>{t('mfa.longPressToCopy')}</Text>
+        <Text style={styles.privateNote}>{t('mfa.keyPrivate')}</Text>
+        <Text style={styles.securityNote}>
+          {t('mfa.longPressToCopy')} {t('mfa.clipboardSync')}
+        </Text>
         <TouchableOpacity style={styles.copyButton} onPress={() => share(secret)} accessibilityRole="button">
           <Ionicons name="share-outline" size={16} color={COLORS.cyan} />
           <Text style={styles.copyText}>{t('mfa.shareKey')}</Text>
         </TouchableOpacity>
-        <Text style={styles.securityNote}>{t('mfa.keyPrivate')}</Text>
 
         <Text style={styles.stepTitle}>{t('mfa.step2')}</Text>
         <MfaCodeInput
@@ -364,7 +375,8 @@ const styles = StyleSheet.create({
   recoveryCode: { color: '#fff', textAlign: 'center', fontSize: 15, fontWeight: '700', letterSpacing: 1, writingDirection: 'ltr', paddingVertical: 2 },
   copyButton: { flexDirection: 'row', alignSelf: 'center', alignItems: 'center', gap: 6, paddingVertical: 10, paddingHorizontal: 14 },
   copyText: { color: COLORS.cyan, fontSize: 13, fontWeight: '700' },
-  securityNote: { color: 'rgba(255,255,255,0.4)', fontSize: 11, lineHeight: 16, textAlign: 'center' },
+  privateNote: { color: '#FCD34D', fontSize: 12, lineHeight: 17, textAlign: 'center', marginTop: 10 },
+  securityNote: { color: 'rgba(255,255,255,0.45)', fontSize: 11, lineHeight: 16, textAlign: 'center', marginTop: 6 },
   timer: { color: 'rgba(255,255,255,0.45)', textAlign: 'center', marginTop: 12, fontSize: 12 },
   primaryButton: { backgroundColor: COLORS.blue, borderRadius: 14, alignItems: 'center', paddingVertical: 15, marginTop: 20 },
   primaryText: { color: '#fff', fontSize: 15, fontWeight: '800' },

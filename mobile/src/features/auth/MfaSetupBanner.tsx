@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { ActivityIndicator, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { ActivityIndicator, AppState, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -32,6 +32,15 @@ export function MfaSetupBanner() {
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<MfaErrorKind | 'alreadyOn' | null>(null);
   const [enrollment, setEnrollment] = useState<{ enrollmentToken: string; expiresInSeconds: number } | null>(null);
+
+  // Re-read the standing when the app comes back: the enforcement date may have
+  // passed, or the factor may have been set up on the web, while it was away.
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (next) => {
+      if (next === 'active') void refreshMfaStatus();
+    });
+    return () => subscription.remove();
+  }, [refreshMfaStatus]);
 
   if (!prompt || prompt.kind === 'none' || !user || !tenantId) return null;
   const enforced = prompt.kind === 'enforced';
