@@ -246,7 +246,8 @@ public sealed class GradeLoanLimitResolver(ZayraDbContext db)
             db.PayComponents.Add(new PayComponent
             {
                 TenantId = tid, CompanyId = null, Code = code,
-                NameEn = $"{loanType.NameEn} loan limit", NameAr = string.IsNullOrWhiteSpace(loanType.NameAr) ? $"{loanType.NameEn} loan limit" : $"حد قرض {loanType.NameAr}",
+                NameEn = $"Loan limit by grade: {loanType.NameEn}",
+                NameAr = $"حد القرض حسب الدرجة: {(string.IsNullOrWhiteSpace(loanType.NameAr) ? loanType.NameEn : loanType.NameAr)}",
                 // Every field that could make it pay is set to the non-paying value: an unknown type, no calc
                 // method the engine values, no provider, nothing in WPS/EOSB/GOSI/tax, never emitted at zero.
                 ComponentType = PayComponentTypes.Facility, CalcMethod = "None", Value = null, ProviderKey = null,
