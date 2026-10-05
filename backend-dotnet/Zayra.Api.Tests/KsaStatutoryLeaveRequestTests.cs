@@ -329,6 +329,47 @@ public class KsaStatutoryLeaveRequestTests
     }
 
     [Fact]
+    public async Task ARequestSharingADeclaredEventDate_JoinsThatEvent_NotAnEarlierOne()
+    {
+        // A (1 day) is an earlier, approved event. B is declared separate on date Y (2 days). C names the
+        // same date Y with no reason (3 days) and starts inside A's window: it joins B's event — 2 + 3 =
+        // 5 days — and is not chained back to A, which would make 6.
+        var f = await SeedAsync("BEREAVEMENT", "Bereavement Leave", "Bereavement");
+        var a = await Submit(f, Base, 1);
+        await f.Service.ApproveRequestAsync(f.TenantId, a.Id, Guid.NewGuid(), "HR", null);
+        var y = Base.AddDays(1);
+        var b = await Submit(f, Base.AddDays(1), 2, eventDate: y, separateEventReason: "A second death in the family");
+
+        var c = await Submit(f, Base.AddDays(3), 3, eventDate: y);
+
+        c.TotalDays.Should().Be(3m);
+        var history = (await f.Service.GetKsaStatutoryLeaveHistoryAsync(f.TenantId, new[] { c.Id }))[c.Id].History;
+        history.Single(h => h.RequestId == b.Id).SameEvent.Should().BeTrue();
+        history.Single(h => h.RequestId == a.Id).SameEvent.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task BirthLeave_HasItsOwnSevenDayEventDateLimit()
+    {
+        // Art. 113: the three days are taken within seven days of the birth.
+        var f = await SeedAsync("PAT", "Paternity Leave", "Parental");
+
+        var eightDays = () => Submit(f, Base, 3, eventDate: Base.AddDays(-8));
+        (await eightDays.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should().Contain("more than 7 days before the leave starts");
+
+        (await Submit(f, Base, 3, eventDate: Base.AddDays(-7))).StatutoryEventDate.Should().Be(Base.AddDays(-7));
+    }
+
+    [Fact]
+    public async Task BereavementAndMarriage_KeepTheGeneralThirtyDayLimit()
+    {
+        var f = await SeedAsync("BEREAVEMENT", "Bereavement Leave", "Bereavement");
+
+        (await Submit(f, Base, 3, eventDate: Base.AddDays(-20))).TotalDays.Should().Be(3m, "20 days is within the general 30");
+    }
+
+    [Fact]
     public async Task ADeclarationNeedsAnEventDate()
     {
         var f = await SeedAsync("BEREAVEMENT", "Bereavement Leave", "Bereavement");

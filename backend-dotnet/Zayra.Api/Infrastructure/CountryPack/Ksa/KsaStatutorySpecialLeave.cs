@@ -71,6 +71,12 @@ public static class KsaSpecialLeaveRuleKeys
     public const string IddahNonMuslimDays = "leave.iddah_non_muslim_days";
     /// <summary>How many days before the leave starts the event (death, birth, marriage) may be.</summary>
     public const string EventDateMaxLeadDays = "leave.event_date_max_lead_days";
+    /// <summary>Birth leave's own event-date limit (Art. 113: taken "within seven days" of the birth).</summary>
+    public const string PaternityEventDateMaxLeadDays = "leave.event_date_max_lead_days.paternity";
+
+    /// <summary>The kind's own event-date limit key, or null when the general one applies.</summary>
+    public static string? EventDateMaxLeadDaysFor(KsaStatutoryLeaveKind kind)
+        => kind == KsaStatutoryLeaveKind.Paternity ? PaternityEventDateMaxLeadDays : null;
 
     public static string For(KsaStatutoryLeaveKind kind) => kind switch
     {
@@ -125,6 +131,14 @@ public static class KsaSpecialLeaveDefaults
     /// marriage leave may be. Not a statutory figure: the statute counts these leaves "from the date of
     /// the incident" and the birth leave "within seven days", but sets no outer limit for the others.</summary>
     public const decimal EventDateMaxLeadDays = 30m;
+
+    /// <summary>[COUNSEL] Birth leave's own limit: Art. 113 as amended has the three days taken
+    /// "within seven days" of the birth.</summary>
+    public const decimal PaternityEventDateMaxLeadDays = 7m;
+
+    /// <summary>The compiled fallback for a kind's own event-date limit, or null when it has none.</summary>
+    public static decimal? EventDateMaxLeadDaysFor(KsaStatutoryLeaveKind kind)
+        => kind == KsaStatutoryLeaveKind.Paternity ? PaternityEventDateMaxLeadDays : null;
 
     /// <summary>The compiled floor for <paramref name="kind"/> on <paramref name="on"/>, or null when
     /// the statute granted nothing on that date (a sibling's death before the 2025 amendment).</summary>

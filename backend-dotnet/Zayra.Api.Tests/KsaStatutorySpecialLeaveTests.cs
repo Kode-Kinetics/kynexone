@@ -64,6 +64,7 @@ public class KsaStatutorySpecialLeaveTests
     [InlineData("leave.iddah_non_muslim_days", "15")]
     // [COUNSEL] product default bounding the event date of bereavement, birth and marriage leave.
     [InlineData("leave.event_date_max_lead_days", "30")]
+    [InlineData("leave.event_date_max_lead_days.paternity", "7")]
     // Art. 117 — unchanged by the 2025 package: 30 full, 60 at three quarters, 30 unpaid.
     [InlineData("leave.sick_band1_days", "30")]
     [InlineData("leave.sick_band1_pay_rate", "1.0")]

@@ -742,8 +742,14 @@ public class LeaveService : ILeaveService
                 {
                     // Leave for a death, a birth or a marriage is taken close to the event. How close is a
                     // statutory rule ([COUNSEL]), read from the platform row so counsel can move it.
-                    var maxLead = (int)(await _rules.GetDecimalAsync(CountryCodes.Saudi, Jurisdictions.KsaMainland,
-                        KsaSpecialLeaveRuleKeys.EventDateMaxLeadDays, request.StartDate, null, ct)
+                    // A kind may have its own limit (birth leave: within seven days); otherwise the general one.
+                    var maxLead = (int)(
+                        (KsaSpecialLeaveRuleKeys.EventDateMaxLeadDaysFor(kind) is { } kindKey
+                            ? await _rules.GetDecimalAsync(CountryCodes.Saudi, Jurisdictions.KsaMainland, kindKey, request.StartDate, null, ct)
+                              ?? KsaSpecialLeaveDefaults.EventDateMaxLeadDaysFor(kind)
+                            : null)
+                        ?? await _rules.GetDecimalAsync(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+                            KsaSpecialLeaveRuleKeys.EventDateMaxLeadDays, request.StartDate, null, ct)
                         ?? KsaSpecialLeaveDefaults.EventDateMaxLeadDays);
                     if (earliestCheck < request.StartDate.AddDays(-maxLead))
                         throw new InvalidOperationException(
@@ -1854,8 +1860,23 @@ public class LeaveService : ILeaveService
 
         var windowEnds = history.Append(subject).ToDictionary(n => n.Id, n => WindowEnd(n.StartDate));
         // The order requests were made in: a request being submitted has no SubmittedAtUtc yet and is
-        // the latest; otherwise submission time, then creation time.
+        // the latest; otherwise submission time, then creation time, then Id — so a tie on time still
+        // gives the same answer every run.
         static DateTime Made(LeaveRequest r) => r.SubmittedAtUtc ?? r.CreatedAtUtc;
+        static int Order(LeaveRequest x, LeaveRequest y)
+        {
+            var byTime = Made(x).CompareTo(Made(y));
+            return byTime != 0 ? byTime : x.Id.CompareTo(y.Id);
+        }
+        // An event date that any request has declared separate (date AND reason) carries that declaration
+        // to every request filed under the same date: a later request for the same event joins it rather
+        // than falling back into an earlier, different event.
+        var declaredDates = history.Append(subject)
+            .Where(n => IsDeclaredSeparate(n, kind))
+            .Select(n => n.StatutoryEventDate!.Value)
+            .ToHashSet();
+        bool Declared(LeaveRequest r)
+            => IsDeclaredSeparate(r, kind) || (r.StatutoryEventDate is { } d && declaredDates.Contains(d));
         bool Linked(LeaveRequest a, LeaveRequest b)
         {
             if (declarable)
@@ -1863,10 +1884,11 @@ public class LeaveService : ILeaveService
                 // The same event date is the same event, however far apart the leave is.
                 if (a.StatutoryEventDate is { } da && b.StatutoryEventDate is { } db && da == db) return true;
                 // A DIFFERENT event date splits the event only when the later request was declared
-                // separate — date AND reason, audited and flagged to the approver. A date alone does not:
-                // otherwise any new date would split one entitlement into two with nobody asked why.
-                var later = Made(a) >= Made(b) ? a : b;
-                if (a.StatutoryEventDate != b.StatutoryEventDate && IsDeclaredSeparate(later, kind)) return false;
+                // separate — date AND reason, audited and flagged to the approver — itself or through a
+                // request sharing its date. A date alone does not: otherwise any new date would split one
+                // entitlement into two with nobody asked why.
+                var later = Order(a, b) >= 0 ? a : b;
+                if (a.StatutoryEventDate != b.StatutoryEventDate && Declared(later)) return false;
             }
             return a.StartDate <= windowEnds[b.Id] && b.StartDate <= windowEnds[a.Id];
         }

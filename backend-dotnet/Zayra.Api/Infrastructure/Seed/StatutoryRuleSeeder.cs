@@ -497,6 +497,12 @@ public static class StatutoryRuleSeeder
             + "figure in the Labour Law: Art. 113 counts these leaves from the date of the incident and the birth leave "
             + "within seven days of it, but names no outer limit. 30 is a product default — counsel must confirm it."));
         list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.event_date_max_lead_days.paternity", "7", "decimal", effM44,
+            "[COUNSEL] Birth (paternity) leave's own event-date limit, read before the general 30-day one: Art. 113 as "
+            + "amended by Royal Decree M/44 (in force 2025-02-19) has the three days taken \"within seven days\" of the "
+            + "birth. A birth date more than 7 days before the leave starts is refused. Confirm whether the seven days "
+            + "bind the start of the leave (implemented) or its last day."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
             "leave.iddah_non_muslim_days", "15", "decimal", eff07,
             "[CERT] KSA Art.160(2): a non-Muslim female worker whose husband dies is entitled to fifteen days with "
             + "full pay."));
