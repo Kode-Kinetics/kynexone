@@ -10,7 +10,7 @@ type ErrorKind = 'invalid_credentials' | 'not_configured' | 'network' | 'busy' |
 
 /** credentials → (mfa | enroll). `enroll` is reached from sign-in once two-step sign-in is mandatory,
  *  or from the console's "set up now" prompt via sessionStorage. */
-type Step = 'credentials' | 'mfa' | 'enroll';
+type Step = 'credentials' | 'mfa' | 'enroll' | 'codes';
 
 function errorMessage(kind: ErrorKind): string {
   switch (kind) {
@@ -46,6 +46,9 @@ export default function PlatformLoginPage() {
   const [enrollmentUri, setEnrollmentUri] = useState('');
   const [totpCode, setTotpCode] = useState('');
   const [info, setInfo] = useState('');
+  const [useRecoveryCode, setUseRecoveryCode] = useState(false);
+  const [recoveryCode, setRecoveryCode] = useState('');
+  const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -82,6 +85,8 @@ export default function PlatformLoginPage() {
     setTotpCode('');
     setChallengeToken('');
     setEnrollmentToken('');
+    setUseRecoveryCode(false);
+    setRecoveryCode('');
   }
 
   async function handleMfa(e: React.FormEvent) {
@@ -89,7 +94,9 @@ export default function PlatformLoginPage() {
     setErrorKind(null);
     setLoading(true);
     try {
-      const { token } = await platformApi.mfaChallengeVerify(challengeToken, totpCode);
+      const { token } = useRecoveryCode
+        ? await platformApi.mfaRecoveryVerify(challengeToken, recoveryCode)
+        : await platformApi.mfaChallengeVerify(challengeToken, totpCode);
       localStorage.setItem('platform_access_token', token);
       router.replace('/platform/dashboard');
     } catch {
@@ -104,9 +111,9 @@ export default function PlatformLoginPage() {
     setErrorKind(null);
     setLoading(true);
     try {
-      await platformApi.mfaEnrollmentVerifySetup(enrollmentToken, enrollmentSecret, totpCode);
-      backToCredentials();
-      setInfo('Two-step sign-in is on. Sign in again with your password and a code from your app.');
+      const { recoveryCodes: codes } = await platformApi.mfaEnrollmentVerifySetup(enrollmentToken, enrollmentSecret, totpCode);
+      setRecoveryCodes(codes ?? []);
+      setStep('codes');
     } catch {
       setErrorKind('invalid_code');
     } finally {
@@ -244,18 +251,36 @@ export default function PlatformLoginPage() {
 
             {step === 'mfa' && (
               <form onSubmit={handleMfa} className="mt-8 space-y-5">
-                <div>
-                  <label htmlFor="platform-mfa-code" className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
-                    Authentication code
-                  </label>
-                  <input id="platform-mfa-code" type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} dir="ltr"
-                    value={totpCode} onChange={e => setTotpCode(e.target.value.replace(/\D/g, ''))}
-                    autoComplete="one-time-code" autoFocus required placeholder="000000" className="pa-input" />
-                  <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">Enter the 6-digit code from your authenticator app.</p>
-                </div>
+                {useRecoveryCode ? (
+                  <div>
+                    <label htmlFor="platform-mfa-recovery" className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                      Recovery code
+                    </label>
+                    <input id="platform-mfa-recovery" type="text" dir="ltr" autoComplete="off" autoFocus required
+                      value={recoveryCode} onChange={e => setRecoveryCode(e.target.value)}
+                      placeholder="XXXXX-XXXXX" className="pa-input font-mono" />
+                    <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">Each recovery code works once.</p>
+                  </div>
+                ) : (
+                  <div>
+                    <label htmlFor="platform-mfa-code" className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                      Authentication code
+                    </label>
+                    <input id="platform-mfa-code" type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} dir="ltr"
+                      value={totpCode} onChange={e => setTotpCode(e.target.value.replace(/\D/g, ''))}
+                      autoComplete="one-time-code" autoFocus required placeholder="000000" className="pa-input" />
+                    <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">Enter the 6-digit code from your authenticator app.</p>
+                  </div>
+                )}
                 {errorKind && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{errorMessage(errorKind)}</p>}
-                <button type="submit" disabled={loading || totpCode.length !== 6} className="pa-btn disabled:cursor-not-allowed disabled:opacity-60">
+                <button type="submit"
+                  disabled={loading || (useRecoveryCode ? recoveryCode.replace(/[^A-Za-z0-9]/g, '').length !== 10 : totpCode.length !== 6)}
+                  className="pa-btn disabled:cursor-not-allowed disabled:opacity-60">
                   {loading ? 'Verifying…' : 'Verify and sign in'}
+                </button>
+                <button type="button" onClick={() => { setUseRecoveryCode(v => !v); setErrorKind(null); }}
+                  className="w-full text-sm text-slate-500 underline-offset-2 hover:underline dark:text-slate-400">
+                  {useRecoveryCode ? 'Use my authenticator app instead' : 'Lost your device? Use a recovery code'}
                 </button>
                 <button type="button" onClick={backToCredentials} className="w-full text-sm text-slate-500 underline-offset-2 hover:underline dark:text-slate-400">
                   Back to sign in
@@ -293,6 +318,26 @@ export default function PlatformLoginPage() {
                   Back to sign in
                 </button>
               </form>
+            )}
+
+            {step === 'codes' && (
+              <div className="mt-8 space-y-5">
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300">
+                  Two-step sign-in is on. Save these recovery codes somewhere safe. Each one signs you in once if you lose your
+                  authenticator. They are shown only now.
+                </div>
+                <ul dir="ltr" aria-label="Recovery codes" className="grid grid-cols-2 gap-2 rounded-lg border border-slate-200 bg-white p-4 font-mono text-sm text-slate-800 dark:border-white/10 dark:bg-white/5 dark:text-slate-100">
+                  {recoveryCodes.map(code => <li key={code}>{code}</li>)}
+                </ul>
+                <button type="button" className="pa-btn"
+                  onClick={() => {
+                    setRecoveryCodes([]);
+                    backToCredentials();
+                    setInfo('Sign in again with your password and a code from your app.');
+                  }}>
+                  I have saved my recovery codes
+                </button>
+              </div>
             )}
 
             {step === 'credentials' && info && (

@@ -305,8 +305,10 @@ public class PlatformController : ControllerBase
     {
         var platformUserId = GetPlatformUserId();
         if (platformUserId is null) return Unauthorized();
-        var ok = await _mfa.VerifyPlatformSetupAsync(platformUserId.Value, request, ct);
-        return ok ? NoContent() : BadRequest(new { message = "Invalid TOTP code." });
+        var codes = await _mfa.VerifyPlatformSetupAsync(platformUserId.Value, request, ct);
+        return codes is not null
+            ? Ok(new { recoveryCodes = codes })
+            : BadRequest(new { message = "Invalid TOTP code." });
     }
 
     /// <summary>The signed-in operator's mandatory-MFA standing; drives the console's enrolment prompt.</summary>
@@ -324,7 +326,8 @@ public class PlatformController : ControllerBase
             RequiredBecause: "platform_operator",
             EnforceFromUtc: state.EnforceFromUtc,
             Enforced: state.Status == PrivilegedMfaStatus.Enforced,
-            PromptToEnroll: state.ShouldPrompt));
+            PromptToEnroll: state.ShouldPrompt,
+            RecoveryCodesRemaining: MfaService.RecoveryCodesRemaining(pu)));
     }
 
     /// <summary>
@@ -364,9 +367,47 @@ public class PlatformController : ControllerBase
     [EnableRateLimiting("platform_mfa_verify")]
     public async Task<IActionResult> PlatformMfaEnrollmentVerifySetup([FromBody] MfaEnrollmentVerifySetupRequest request, CancellationToken ct)
     {
-        var ok = await _mfa.VerifyPlatformEnrollmentSetupAsync(
+        var codes = await _mfa.VerifyPlatformEnrollmentSetupAsync(
             request.EnrollmentToken, new MfaVerifySetupRequest(request.TempSecret, request.TotpCode), ct);
-        return ok ? NoContent() : Unauthorized(new { message = "Invalid or expired MFA enrollment challenge." });
+        // The recovery codes are returned exactly once, here. Only their hashes are stored.
+        return codes is not null
+            ? Ok(new { recoveryCodes = codes })
+            : Unauthorized(new { message = "Invalid or expired MFA enrollment challenge." });
+    }
+
+    /// <summary>
+    /// Completes the sign-in TOTP challenge with a one-time recovery code (lost authenticator).
+    /// The code is consumed and the use audited; it counts against the challenge's attempt cap.
+    /// </summary>
+    [HttpPost("auth/mfa/recovery/verify")]
+    [AllowAnonymous]
+    [EnableRateLimiting("platform_mfa_verify")]
+    public async Task<IActionResult> PlatformMfaRecoveryVerify([FromBody] PlatformRecoveryCodeRequest request, CancellationToken ct)
+    {
+        var pu = await _mfa.CompletePlatformChallengeWithRecoveryCodeAsync(
+            request.ChallengeToken,
+            request.RecoveryCode,
+            new RequestContext(
+                HttpContext.Connection.RemoteIpAddress?.ToString(),
+                HttpContext.Request.Headers.UserAgent.ToString(),
+                null,
+                null),
+            ct);
+        if (pu is null) return Unauthorized(new { message = "Invalid or expired recovery code." });
+        return Ok(CreatePlatformToken(pu));
+    }
+
+    /// <summary>Replaces every recovery code (old ones stop working). Requires a current TOTP code.</summary>
+    [HttpPost("auth/mfa/recovery-codes/regenerate")]
+    [EnableRateLimiting("platform_mfa_verify")]
+    public async Task<IActionResult> PlatformMfaRegenerateRecoveryCodes([FromBody] MfaDisableRequest request, CancellationToken ct)
+    {
+        var platformUserId = GetPlatformUserId();
+        if (platformUserId is null) return Unauthorized();
+        var codes = await _mfa.RegeneratePlatformRecoveryCodesAsync(platformUserId.Value, request.TotpCode, ct);
+        return codes is not null
+            ? Ok(new { recoveryCodes = codes })
+            : BadRequest(new { message = "Invalid TOTP code or MFA not enabled." });
     }
 
     [HttpPost("auth/mfa/challenge/verify")]
@@ -5355,6 +5396,10 @@ public record ConvertLeadRequest(
     // Required, same rule as CreateTenantRequest.HomeCountryCode. A lead records no jurisdiction, and
     // this path provisions statutory defaults exactly as CreateTenant does.
     string? HomeCountryCode = null);
+
+public record PlatformRecoveryCodeRequest(
+    [property: System.ComponentModel.DataAnnotations.Required] string ChallengeToken,
+    [property: System.ComponentModel.DataAnnotations.Required] string RecoveryCode);
 
 public record PrivilegedMfaEnforcementRequest(DateTime? EnforceFromUtc, string Reason);
 

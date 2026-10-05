@@ -568,6 +568,8 @@ export interface MfaStatus {
   enforceFromUtc: string | null;
   enforced: boolean;
   promptToEnroll: boolean;
+  /** Platform operators only: unused one-time recovery codes. */
+  recoveryCodesRemaining?: number | null;
 }
 
 /** Hand-off from the console's "set up now" prompt to the sign-in page's enrolment step. */
@@ -583,8 +585,16 @@ export const platformApi = {
   mfaEnrollmentSetup: (enrollmentToken: string) =>
     platform.post<{ provisioningUri: string }>('/api/platform/auth/mfa/enrollment/setup', { enrollmentToken }).then(r => r.data),
 
+  /** Turns the factor on; answers the operator's one-time recovery codes (shown once). */
   mfaEnrollmentVerifySetup: (enrollmentToken: string, tempSecret: string, totpCode: string) =>
-    platform.post('/api/platform/auth/mfa/enrollment/verify-setup', { enrollmentToken, tempSecret, totpCode }).then(() => undefined),
+    platform.post<{ recoveryCodes: string[] }>('/api/platform/auth/mfa/enrollment/verify-setup', { enrollmentToken, tempSecret, totpCode }).then(r => r.data),
+
+  /** Completes the sign-in code step with a one-time recovery code instead of a TOTP code. */
+  mfaRecoveryVerify: (challengeToken: string, recoveryCode: string) =>
+    platform.post<{ token: string }>('/api/platform/auth/mfa/recovery/verify', { challengeToken, recoveryCode }).then(r => r.data),
+
+  mfaRegenerateRecoveryCodes: (totpCode: string) =>
+    platform.post<{ recoveryCodes: string[] }>('/api/platform/auth/mfa/recovery-codes/regenerate', { totpCode }).then(r => r.data),
 
   mfaStatus: () =>
     platform.get<MfaStatus>('/api/platform/auth/mfa/status').then(r => r.data),

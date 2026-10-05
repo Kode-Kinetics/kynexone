@@ -31,21 +31,34 @@ Enforcement starts on a date, never on deploy:
   sessions end within one access-token lifetime (30 min).
 - No date anywhere (e.g. a database built without migrations) = prompt only, never blocked.
 
-Change the dates (both audited, reason required):
+Change the dates (both audited, reason required; the date must be explicit UTC — `Z` or
+`+00:00` — and at most 90 days ahead):
 - Platform: `PUT /api/platform/security/privileged-mfa-enforcement` (Owner) `{ enforceFromUtc, reason }`.
 - Tenant: `PUT /api/platform/tenants/{tenantId}/privileged-mfa-enforcement` (Owner/Admin)
   `{ enforceFromUtc | null, reason }`.
 
 Roll-out check: `GET /api/platform/team` now shows `mfaEnabled` per operator.
 
+## Recovery codes (platform operators)
+
+Enrolling a platform factor returns **10 one-time recovery codes**, shown once (sign-in page,
+"Save your recovery codes"). Only SHA-256 hashes are stored (`platform_users.mfa_recovery_code_hashes`).
+At the code step of sign-in, "Use a recovery code" (`POST /api/platform/auth/mfa/recovery/verify`)
+accepts one instead of a TOTP code; each works once, misses count against the challenge's
+five-attempt cap, and uses are audited (`platform.auth.mfa_recovery_code_used` / `_failed`).
+`POST /api/platform/auth/mfa/recovery-codes/regenerate` (needs a current TOTP code) replaces them all.
+`GET /api/platform/auth/mfa/status` reports `recoveryCodesRemaining`. Tenant users do not have
+recovery codes yet; their lost-device path is the platform reset below.
+
 ## Break-glass
 
 | Situation | Action |
 |---|---|
 | Tenant user lost their authenticator | Platform Owner/Admin: `POST /api/platform/users/{userId}/disable-mfa`. The user enrols a new device at next sign-in. |
-| Operator lost their authenticator | Another **Owner**: `POST /api/platform/team/{id}/reset-mfa` (never self). The operator enrols again at next sign-in. |
-| A customer cannot enrol in time | Move that tenant's date later (tenant endpoint above). |
-| Sole Owner locked out, or an enrolment outage | Set `Auth__PrivilegedMfa__BreakGlassUntilUtc` (ISO-8601 UTC) on the Render service and redeploy. Enforcement is suspended for everyone until then; at most **7 days** ahead (a later value is ignored); every login it lets through logs `[MFA-BREAK-GLASS]`. Remove the variable once the factor is reset. |
+| Operator lost their authenticator | Sign in with a **recovery code**, then re-enrol. Or another **Owner**: `POST /api/platform/team/{id}/reset-mfa` (never self). |
+| Sole Owner lost the authenticator AND the recovery codes | Last resort, under change control, by someone with production database access: clear `mfa_enabled`, `mfa_secret_encrypted`, `mfa_configured_at_utc` and `mfa_recovery_code_hashes` on that `platform_users` row (and bump `updated_at_utc` to end its sessions). The Owner then enrols again at next sign-in. Record it in the incident log. |
+| A customer cannot enrol in time | Move that tenant's date later (tenant endpoint above, at most 90 days ahead). |
+| Enrolment itself is broken (outage) | Set `Auth__PrivilegedMfa__BreakGlassUntilUtc` (ISO-8601 UTC, e.g. `2026-11-02T18:00:00Z`) on the Render service and redeploy. Un-enrolled privileged users can then sign in without enrolling until that time; at most **7 days** ahead (a later or unparseable value is ignored, with a boot warning); the effective state is logged at boot and every login it lets through logs `[MFA-BREAK-GLASS]`. **It does not bypass the code step for users who are already enrolled** — that is what recovery codes are for. Remove it afterwards. |
 
 Every factor change is audited (`auth.mfa.enabled`, `platform.auth.tenant_mfa_disabled`,
 `platform.auth.mfa_reset_by_owner`, `platform.auth.mfa_enabled`, …).

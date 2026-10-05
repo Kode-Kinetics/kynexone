@@ -185,7 +185,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
                             nameof(PlatformUser.FailedLoginCount) or
                             nameof(PlatformUser.LockoutEndUtc) or
                             nameof(PlatformUser.LastLoginAtUtc) or
-                            nameof(PlatformUser.LastLoginIp));
+                            nameof(PlatformUser.LastLoginIp) or
+                            // Consuming or regenerating recovery codes changes no identity, role or
+                            // factor; rotating the stamp would sign the operator out mid-session.
+                            nameof(PlatformUser.MfaRecoveryCodeHashes));
                 // User.UpdatedAtUtc is likewise the tenant access-token security stamp. Routine
                 // login telemetry must allow multiple legitimate device/browser sessions and a
                 // sub-threshold bad-password attempt must not revoke an existing session. Lockout,
@@ -3183,6 +3186,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.Role).HasMaxLength(40);
             entity.Property(x => x.LastLoginIp).HasMaxLength(64);
             entity.Property(x => x.MfaSecretEncrypted).HasMaxLength(1024);
+            entity.Property(x => x.MfaRecoveryCodeHashes).HasMaxLength(2000);
             entity.HasIndex(x => x.Email).IsUnique();
             entity.Property(x => x.IsActive).HasDefaultValue(true);
         });

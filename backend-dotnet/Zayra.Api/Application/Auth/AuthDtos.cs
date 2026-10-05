@@ -264,7 +264,8 @@ public record MfaStatusDto(
     string? RequiredBecause,
     DateTime? EnforceFromUtc,
     bool Enforced,
-    bool PromptToEnroll);
+    bool PromptToEnroll,
+    int? RecoveryCodesRemaining = null);
 
 /// <summary>Result from LoginAsync — one of: Tokens (success), Challenge (MFA code needed),
 /// or RequiresMfaEnrollment (tenant mandates MFA but this user hasn't set it up yet).</summary>

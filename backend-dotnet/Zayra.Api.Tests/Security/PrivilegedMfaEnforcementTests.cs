@@ -393,10 +393,10 @@ public sealed class PrivilegedMfaEnforcementTests
             var setup = await mfa.InitiatePlatformEnrollmentSetupAsync(enrollmentToken, CancellationToken.None);
             setup.Should().NotBeNull();
             (await mfa.VerifyPlatformEnrollmentSetupAsync(enrollmentToken, new MfaVerifySetupRequest(setup!.TempSecret, "000000"), CancellationToken.None))
-                .Should().BeFalse("a wrong code does not enable the factor");
+                .Should().BeNull("a wrong code does not enable the factor");
             (await mfa.VerifyPlatformEnrollmentSetupAsync(enrollmentToken,
                 new MfaVerifySetupRequest(setup.TempSecret, Totp.Now(setup.TempSecret)), CancellationToken.None))
-                .Should().BeTrue();
+                .Should().HaveCount(10, "enrolment hands out the one-time recovery codes");
             (await mfa.InitiatePlatformEnrollmentSetupAsync(enrollmentToken, CancellationToken.None))
                 .Should().BeNull("the enrolment token is single-use");
         }
@@ -440,6 +440,134 @@ public sealed class PrivilegedMfaEnforcementTests
             var body = Body(await Platform(kit, db).Login(new PlatformLoginRequest("lost@platform.test", Password), CancellationToken.None));
             body.GetProperty("mfaEnrollmentRequired").GetBoolean().Should().BeTrue("the operator re-enrols; they are not locked out");
         }
+    }
+
+    // ── Platform recovery codes ───────────────────────────────────────────────────────────────
+
+    /// <summary>Enrols an operator through the real enrolment flow; returns the TOTP secret and codes.</summary>
+    private static async Task<(string Secret, IReadOnlyList<string> Codes)> EnrolOperatorAsync(AuthHardeningTestKit kit, Guid id)
+    {
+        await using var db = kit.NewDb();
+        var mfa = kit.Mfa(db);
+        var token = await mfa.CreatePlatformEnrollmentChallengeAsync(id, "127.0.0.1", CancellationToken.None);
+        var setup = await mfa.InitiatePlatformEnrollmentSetupAsync(token, CancellationToken.None);
+        var codes = await mfa.VerifyPlatformEnrollmentSetupAsync(token,
+            new MfaVerifySetupRequest(setup!.TempSecret, Totp.Now(setup.TempSecret)), CancellationToken.None);
+        return (setup.TempSecret, codes!);
+    }
+
+    private static async Task<string> PasswordStepChallengeAsync(AuthHardeningTestKit kit, string email)
+    {
+        await using var db = kit.NewDb();
+        var body = Body(await Platform(kit, db).Login(new PlatformLoginRequest(email, Password), CancellationToken.None));
+        body.GetProperty("mfaRequired").GetBoolean().Should().BeTrue();
+        return body.GetProperty("challengeToken").GetString()!;
+    }
+
+    [Fact]
+    public async Task RecoveryCodes_AreIssuedOnce_StoredOnlyAsHashes()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        var id = await SeedOperatorAsync(kit, "owner@platform.test");
+        var (_, codes) = await EnrolOperatorAsync(kit, id);
+
+        codes.Should().HaveCount(10).And.OnlyHaveUniqueItems();
+        codes.Should().AllSatisfy(c => c.Should().MatchRegex("^[A-Z2-9]{5}-[A-Z2-9]{5}$"));
+        await using var db = kit.NewDb();
+        var stored = (await db.PlatformUsers.AsNoTracking().SingleAsync(p => p.Id == id)).MfaRecoveryCodeHashes!;
+        foreach (var code in codes)
+        {
+            stored.Should().NotContain(code);
+            stored.Should().NotContain(code.Replace("-", ""));
+        }
+    }
+
+    [Fact]
+    public async Task RecoveryCode_SignsInOnce_ThenIsSpent_AndTheUseIsAudited()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        var id = await SeedOperatorAsync(kit, "owner@platform.test");
+        var (_, codes) = await EnrolOperatorAsync(kit, id);
+
+        var challenge = await PasswordStepChallengeAsync(kit, "owner@platform.test");
+        await using (var db = kit.NewDb())
+        {
+            var result = await Platform(kit, db).PlatformMfaRecoveryVerify(
+                new PlatformRecoveryCodeRequest(challenge, codes[3].ToLowerInvariant().Replace("-", " ")), CancellationToken.None);
+            Body(result).TryGetProperty("token", out _).Should().BeTrue("a recovery code replaces the authenticator code");
+        }
+
+        var again = await PasswordStepChallengeAsync(kit, "owner@platform.test");
+        await using (var db = kit.NewDb())
+        {
+            (await Platform(kit, db).PlatformMfaRecoveryVerify(new PlatformRecoveryCodeRequest(again, codes[3]), CancellationToken.None))
+                .Should().BeOfType<UnauthorizedObjectResult>("each code works once");
+            (await Platform(kit, db).PlatformMfaRecoveryVerify(new PlatformRecoveryCodeRequest(again, codes[4]), CancellationToken.None))
+                .Should().BeOfType<OkObjectResult>("the remaining codes still work, and a miss only costs an attempt");
+        }
+
+        await using (var db = kit.NewDb())
+        {
+            (await db.AuditLogs.IgnoreQueryFilters().CountAsync(a => a.Action == "platform.auth.mfa_recovery_code_used")).Should().Be(2);
+            (await db.AuditLogs.IgnoreQueryFilters().CountAsync(a => a.Action == "platform.auth.mfa_recovery_code_failed")).Should().Be(1);
+            MfaService.RecoveryCodesRemaining(await db.PlatformUsers.AsNoTracking().SingleAsync(p => p.Id == id)).Should().Be(8);
+        }
+    }
+
+    [Fact]
+    public async Task RecoveryCode_IsRejectedWithoutTheSignInChallenge_AndWithTheEnrolmentToken()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        var id = await SeedOperatorAsync(kit, "owner@platform.test");
+        var (_, codes) = await EnrolOperatorAsync(kit, id);
+        await using var db = kit.NewDb();
+        var mfa = kit.Mfa(db);
+        var enrolment = await mfa.CreatePlatformEnrollmentChallengeAsync(id, "127.0.0.1", CancellationToken.None);
+
+        (await mfa.CompletePlatformChallengeWithRecoveryCodeAsync("pm1.forged", codes[0], AuthHardeningTestKit.Ctx, CancellationToken.None)).Should().BeNull();
+        (await mfa.CompletePlatformChallengeWithRecoveryCodeAsync(enrolment, codes[0], AuthHardeningTestKit.Ctx, CancellationToken.None)).Should().BeNull(
+            "a recovery code is a second factor; it never replaces the password step");
+    }
+
+    [Fact]
+    public async Task RegeneratingRecoveryCodes_RequiresTotp_AndRetiresTheOldCodes()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        var id = await SeedOperatorAsync(kit, "owner@platform.test");
+        var (secret, oldCodes) = await EnrolOperatorAsync(kit, id);
+
+        IReadOnlyList<string>? fresh;
+        await using (var db = kit.NewDb())
+        {
+            var mfa = kit.Mfa(db);
+            (await mfa.RegeneratePlatformRecoveryCodesAsync(id, "000000", CancellationToken.None)).Should().BeNull();
+            fresh = await mfa.RegeneratePlatformRecoveryCodesAsync(id, Totp.Now(secret), CancellationToken.None);
+        }
+        fresh.Should().HaveCount(10).And.NotIntersectWith(oldCodes);
+
+        var challenge = await PasswordStepChallengeAsync(kit, "owner@platform.test");
+        await using (var db = kit.NewDb())
+        {
+            var mfa = kit.Mfa(db);
+            (await mfa.CompletePlatformChallengeWithRecoveryCodeAsync(challenge, oldCodes[0], AuthHardeningTestKit.Ctx, CancellationToken.None))
+                .Should().BeNull("regeneration retires every earlier code");
+            (await mfa.CompletePlatformChallengeWithRecoveryCodeAsync(challenge, fresh![0], AuthHardeningTestKit.Ctx, CancellationToken.None))
+                .Should().NotBeNull();
+        }
+    }
+
+    [Fact]
+    public async Task OwnerReset_AlsoClearsRecoveryCodes()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        var owner = await SeedOperatorAsync(kit, "owner@platform.test");
+        var lost = await SeedOperatorAsync(kit, "lost@platform.test", PlatformRoles.Support);
+        await EnrolOperatorAsync(kit, lost);
+
+        await using (var db = kit.NewDb())
+            (await kit.Mfa(db).AdminResetPlatformFactorAsync(lost, owner, AuthHardeningTestKit.Ctx, CancellationToken.None)).Should().BeTrue();
+        await using (var db = kit.NewDb())
+            (await db.PlatformUsers.AsNoTracking().SingleAsync(p => p.Id == lost)).MfaRecoveryCodeHashes.Should().BeNull();
     }
 
     // ── TOTP for tests ────────────────────────────────────────────────────────────────────────

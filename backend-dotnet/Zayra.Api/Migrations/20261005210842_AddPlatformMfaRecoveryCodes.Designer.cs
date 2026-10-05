@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Zayra.Api.Data;
@@ -11,9 +12,11 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Migrations
 {
     [DbContext(typeof(ZayraDbContext))]
-    partial class ZayraDbContextModelSnapshot : ModelSnapshot
+    [Migration("20261005210842_AddPlatformMfaRecoveryCodes")]
+    partial class AddPlatformMfaRecoveryCodes
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -15215,6 +15218,322 @@ namespace Zayra.Api.Migrations
                     b.ToTable("loan_audit_logs", (string)null);
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.LoanChangeRequest", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ChangeType")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("change_type");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<DateTime?>("DecidedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("decided_at_utc");
+
+                    b.Property<Guid?>("DecidedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("decided_by");
+
+                    b.Property<string>("DecisionReason")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("decision_reason");
+
+                    b.Property<DateOnly?>("EffectiveDate")
+                        .HasColumnType("date")
+                        .HasColumnName("effective_date");
+
+                    b.Property<Guid>("LoanId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("loan_id");
+
+                    b.Property<decimal>("OutstandingBalanceAtRequest")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("outstanding_balance_at_request");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("reason");
+
+                    b.Property<string>("Reference")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)")
+                        .HasColumnName("reference");
+
+                    b.Property<Guid?>("RepaymentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("repayment_id");
+
+                    b.Property<string>("RequestedExceptionsJson")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("requested_exceptions_json");
+
+                    b.Property<int?>("RequestedInstallments")
+                        .HasColumnType("integer")
+                        .HasColumnName("requested_installments");
+
+                    b.Property<string>("RequestedRepaymentMethod")
+                        .HasColumnType("text")
+                        .HasColumnName("requested_repayment_method");
+
+                    b.Property<DateOnly?>("RequestedStartDate")
+                        .HasColumnType("date")
+                        .HasColumnName("requested_start_date");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "LoanId", "Reference")
+                        .IsUnique()
+                        .HasFilter("reference <> ''");
+
+                    b.HasIndex("TenantId", "LoanId", "RepaymentId");
+
+                    b.HasIndex("TenantId", "LoanId", "Status");
+
+                    b.ToTable("loan_change_requests", (string)null);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.LoanDisbursementBatch", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime?>("ApprovedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("approved_at_utc");
+
+                    b.Property<Guid?>("ApprovedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("approved_by");
+
+                    b.Property<string>("BatchNumber")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("batch_number");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)")
+                        .HasColumnName("currency");
+
+                    b.Property<DateTime?>("PaidAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("paid_at_utc");
+
+                    b.Property<Guid?>("PaidBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("paid_by");
+
+                    b.Property<DateOnly?>("PaidDate")
+                        .HasColumnType("date")
+                        .HasColumnName("paid_date");
+
+                    b.Property<string>("PaymentMethod")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("payment_method");
+
+                    b.Property<string>("PaymentReference")
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)")
+                        .HasColumnName("payment_reference");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<decimal>("TotalAmount")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("total_amount");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "BatchNumber")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "CompanyId", "PaymentReference")
+                        .IsUnique()
+                        .HasFilter("payment_reference IS NOT NULL");
+
+                    b.HasIndex("TenantId", "CompanyId", "Status");
+
+                    b.ToTable("loan_disbursement_batches", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_loan_payment_batch_amount", "total_amount > 0");
+
+                            t.HasCheckConstraint("ck_loan_payment_batch_paid_evidence", "status <> 'Paid' OR (paid_date IS NOT NULL AND paid_by IS NOT NULL AND payment_reference IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_loan_payment_batch_status", "status IN ('Draft','Approved','PartiallyPaid','Completed','Paid','Cancelled')");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.LoanDisbursementLine", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("amount");
+
+                    b.Property<string>("BankName")
+                        .IsRequired()
+                        .HasMaxLength(250)
+                        .HasColumnType("character varying(250)")
+                        .HasColumnName("bank_name");
+
+                    b.Property<Guid>("BatchId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("batch_id");
+
+                    b.Property<string>("EmployeeCode")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("employee_code");
+
+                    b.Property<string>("EmployeeName")
+                        .IsRequired()
+                        .HasMaxLength(250)
+                        .HasColumnType("character varying(250)")
+                        .HasColumnName("employee_name");
+
+                    b.Property<string>("FailureReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("failure_reason");
+
+                    b.Property<Guid?>("GlEntryId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("gl_entry_id");
+
+                    b.Property<string>("Iban")
+                        .IsRequired()
+                        .HasMaxLength(34)
+                        .HasColumnType("character varying(34)")
+                        .HasColumnName("iban");
+
+                    b.Property<bool>("IsCancelled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_cancelled");
+
+                    b.Property<Guid>("LoanId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("loan_id");
+
+                    b.Property<Guid?>("PaidBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("paid_by");
+
+                    b.Property<DateOnly?>("PaidDate")
+                        .HasColumnType("date")
+                        .HasColumnName("paid_date");
+
+                    b.Property<string>("PaymentMethod")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("payment_method");
+
+                    b.Property<string>("PaymentReference")
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)")
+                        .HasColumnName("payment_reference");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "BatchId");
+
+                    b.HasIndex("TenantId", "GlEntryId")
+                        .IsUnique()
+                        .HasFilter("gl_entry_id IS NOT NULL");
+
+                    b.HasIndex("TenantId", "LoanId")
+                        .IsUnique()
+                        .HasFilter("NOT is_cancelled");
+
+                    b.ToTable("loan_disbursement_lines", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_loan_payment_line_amount", "amount > 0");
+
+                            t.HasCheckConstraint("ck_loan_payment_line_evidence", "status NOT IN ('Paid','Reversed') OR (paid_date IS NOT NULL AND paid_by IS NOT NULL AND payment_reference IS NOT NULL AND trim(payment_reference) <> '' AND payment_method IS NOT NULL AND payment_method IN ('BankTransfer','DirectDebit','Cash'))");
+
+                            t.HasCheckConstraint("ck_loan_payment_line_status", "status IN ('Pending','Paid','Failed','Cancelled','Reversed')");
+                        });
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.LoanInstallment", b =>
                 {
                     b.Property<Guid>("Id")
@@ -15420,6 +15739,97 @@ namespace Zayra.Api.Migrations
                         .HasFilter("company_id IS NOT NULL");
 
                     b.ToTable("loan_policies", (string)null);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.LoanRepayment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("amount");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<Guid?>("GlEntryId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("gl_entry_id");
+
+                    b.Property<bool>("IsReversed")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_reversed");
+
+                    b.Property<Guid>("LoanId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("loan_id");
+
+                    b.Property<DateOnly>("PaidDate")
+                        .HasColumnType("date")
+                        .HasColumnName("paid_date");
+
+                    b.Property<string>("PaymentMethod")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("payment_method");
+
+                    b.Property<string>("Reference")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)")
+                        .HasColumnName("reference");
+
+                    b.Property<Guid?>("ReversalGlEntryId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reversal_gl_entry_id");
+
+                    b.Property<DateTime?>("ReversedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("reversed_at_utc");
+
+                    b.Property<Guid?>("ReversedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reversed_by");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "GlEntryId")
+                        .IsUnique()
+                        .HasFilter("gl_entry_id IS NOT NULL");
+
+                    b.HasIndex("TenantId", "ReversalGlEntryId")
+                        .IsUnique()
+                        .HasFilter("reversal_gl_entry_id IS NOT NULL");
+
+                    b.HasIndex("TenantId", "LoanId", "Reference")
+                        .IsUnique();
+
+                    b.ToTable("loan_repayments", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_loan_receipt_amount", "amount > 0");
+
+                            t.HasCheckConstraint("ck_loan_receipt_method", "payment_method IN ('BankTransfer','DirectDebit','Cash')");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.LoanSettlement", b =>
@@ -25212,6 +25622,67 @@ namespace Zayra.Api.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.LoanChangeRequest", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.EmployeeLoan", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "LoanId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.LoanRepayment", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "LoanId", "RepaymentId")
+                        .HasPrincipalKey("TenantId", "LoanId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.LoanDisbursementLine", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.LoanDisbursementBatch", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "BatchId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.FinanceGlEntry", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "GlEntryId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.EmployeeLoan", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "LoanId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.LoanRepayment", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.FinanceGlEntry", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "GlEntryId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.EmployeeLoan", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "LoanId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.FinanceGlEntry", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "ReversalGlEntryId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.TimesheetEntry", b =>
                 {
                     b.HasOne("Zayra.Api.Models.Timesheet", "Timesheet")
@@ -25307,474 +25778,6 @@ namespace Zayra.Api.Migrations
             modelBuilder.Entity("Zayra.Api.Models.Timesheet", b =>
                 {
                     b.Navigation("Entries");
-                });
-
-            modelBuilder.Entity("Zayra.Api.Models.LoanChangeRequest", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<string>("ChangeType")
-                        .IsRequired()
-                        .HasMaxLength(40)
-                        .HasColumnType("character varying(40)")
-                        .HasColumnName("change_type");
-
-                    b.Property<Guid?>("CompanyId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("company_id");
-
-                    b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at_utc");
-
-                    b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("uuid")
-                        .HasColumnName("created_by");
-
-                    b.Property<DateTime?>("DecidedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("decided_at_utc");
-
-                    b.Property<Guid?>("DecidedBy")
-                        .HasColumnType("uuid")
-                        .HasColumnName("decided_by");
-
-                    b.Property<string>("DecisionReason")
-                        .IsRequired()
-                        .HasMaxLength(2000)
-                        .HasColumnType("character varying(2000)")
-                        .HasColumnName("decision_reason");
-
-                    b.Property<DateOnly?>("EffectiveDate")
-                        .HasColumnType("date")
-                        .HasColumnName("effective_date");
-
-                    b.Property<Guid>("LoanId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("loan_id");
-
-                    b.Property<decimal>("OutstandingBalanceAtRequest")
-                        .HasPrecision(14, 2)
-                        .HasColumnType("numeric(14,2)")
-                        .HasColumnName("outstanding_balance_at_request");
-
-                    b.Property<string>("Reason")
-                        .IsRequired()
-                        .HasMaxLength(2000)
-                        .HasColumnType("character varying(2000)")
-                        .HasColumnName("reason");
-
-                    b.Property<string>("Reference")
-                        .IsRequired()
-                        .HasMaxLength(160)
-                        .HasColumnType("character varying(160)")
-                        .HasColumnName("reference");
-
-                    b.Property<Guid?>("RepaymentId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("repayment_id");
-
-                    b.Property<string>("RequestedExceptionsJson")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("requested_exceptions_json");
-
-                    b.Property<int?>("RequestedInstallments")
-                        .HasColumnType("integer")
-                        .HasColumnName("requested_installments");
-
-                    b.Property<string>("RequestedRepaymentMethod")
-                        .HasColumnType("text")
-                        .HasColumnName("requested_repayment_method");
-
-                    b.Property<DateOnly?>("RequestedStartDate")
-                        .HasColumnType("date")
-                        .HasColumnName("requested_start_date");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("character varying(20)")
-                        .HasColumnName("status");
-
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("tenant_id");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("TenantId", "CompanyId");
-
-                    b.HasIndex("TenantId", "LoanId", "Reference")
-                        .IsUnique()
-                        .HasFilter("reference <> ''");
-
-                    b.HasIndex("TenantId", "LoanId", "RepaymentId");
-
-                    b.HasIndex("TenantId", "LoanId", "Status");
-
-                    b.ToTable("loan_change_requests", (string)null);
-                });
-
-            modelBuilder.Entity("Zayra.Api.Models.LoanDisbursementBatch", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<DateTime?>("ApprovedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("approved_at_utc");
-
-                    b.Property<Guid?>("ApprovedBy")
-                        .HasColumnType("uuid")
-                        .HasColumnName("approved_by");
-
-                    b.Property<string>("BatchNumber")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
-                        .HasColumnName("batch_number");
-
-                    b.Property<Guid?>("CompanyId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("company_id");
-
-                    b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at_utc");
-
-                    b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("uuid")
-                        .HasColumnName("created_by");
-
-                    b.Property<string>("Currency")
-                        .IsRequired()
-                        .HasMaxLength(3)
-                        .HasColumnType("character varying(3)")
-                        .HasColumnName("currency");
-
-                    b.Property<DateTime?>("PaidAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("paid_at_utc");
-
-                    b.Property<Guid?>("PaidBy")
-                        .HasColumnType("uuid")
-                        .HasColumnName("paid_by");
-
-                    b.Property<DateOnly?>("PaidDate")
-                        .HasColumnType("date")
-                        .HasColumnName("paid_date");
-
-                    b.Property<string>("PaymentMethod")
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
-                        .HasColumnName("payment_method");
-
-                    b.Property<string>("PaymentReference")
-                        .HasMaxLength(160)
-                        .HasColumnType("character varying(160)")
-                        .HasColumnName("payment_reference");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("character varying(20)")
-                        .HasColumnName("status");
-
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("tenant_id");
-
-                    b.Property<decimal>("TotalAmount")
-                        .HasPrecision(14, 2)
-                        .HasColumnType("numeric(14,2)")
-                        .HasColumnName("total_amount");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("TenantId", "BatchNumber")
-                        .IsUnique();
-
-                    b.HasIndex("TenantId", "CompanyId");
-
-                    b.HasIndex("TenantId", "CompanyId", "PaymentReference")
-                        .IsUnique()
-                        .HasFilter("payment_reference IS NOT NULL");
-
-                    b.HasIndex("TenantId", "CompanyId", "Status");
-
-                    b.ToTable("loan_disbursement_batches", null, t =>
-                        {
-                            t.HasCheckConstraint("ck_loan_payment_batch_amount", "total_amount > 0");
-
-                            t.HasCheckConstraint("ck_loan_payment_batch_paid_evidence", "status <> 'Paid' OR (paid_date IS NOT NULL AND paid_by IS NOT NULL AND payment_reference IS NOT NULL)");
-
-                            t.HasCheckConstraint("ck_loan_payment_batch_status", "status IN ('Draft','Approved','PartiallyPaid','Completed','Paid','Cancelled')");
-                        });
-                });
-
-            modelBuilder.Entity("Zayra.Api.Models.LoanDisbursementLine", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<decimal>("Amount")
-                        .HasPrecision(14, 2)
-                        .HasColumnType("numeric(14,2)")
-                        .HasColumnName("amount");
-
-                    b.Property<string>("BankName")
-                        .IsRequired()
-                        .HasMaxLength(250)
-                        .HasColumnType("character varying(250)")
-                        .HasColumnName("bank_name");
-
-                    b.Property<Guid>("BatchId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("batch_id");
-
-                    b.Property<string>("EmployeeCode")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)")
-                        .HasColumnName("employee_code");
-
-                    b.Property<string>("EmployeeName")
-                        .IsRequired()
-                        .HasMaxLength(250)
-                        .HasColumnType("character varying(250)")
-                        .HasColumnName("employee_name");
-
-                    b.Property<string>("FailureReason")
-                        .HasMaxLength(1000)
-                        .HasColumnType("character varying(1000)")
-                        .HasColumnName("failure_reason");
-
-                    b.Property<Guid?>("GlEntryId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("gl_entry_id");
-
-                    b.Property<string>("Iban")
-                        .IsRequired()
-                        .HasMaxLength(34)
-                        .HasColumnType("character varying(34)")
-                        .HasColumnName("iban");
-
-                    b.Property<bool>("IsCancelled")
-                        .HasColumnType("boolean")
-                        .HasColumnName("is_cancelled");
-
-                    b.Property<Guid>("LoanId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("loan_id");
-
-                    b.Property<Guid?>("PaidBy")
-                        .HasColumnType("uuid")
-                        .HasColumnName("paid_by");
-
-                    b.Property<DateOnly?>("PaidDate")
-                        .HasColumnType("date")
-                        .HasColumnName("paid_date");
-
-                    b.Property<string>("PaymentMethod")
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
-                        .HasColumnName("payment_method");
-
-                    b.Property<string>("PaymentReference")
-                        .HasMaxLength(160)
-                        .HasColumnType("character varying(160)")
-                        .HasColumnName("payment_reference");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("character varying(20)")
-                        .HasColumnName("status");
-
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("tenant_id");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("TenantId", "BatchId");
-
-                    b.HasIndex("TenantId", "GlEntryId")
-                        .IsUnique()
-                        .HasFilter("gl_entry_id IS NOT NULL");
-
-                    b.HasIndex("TenantId", "LoanId")
-                        .IsUnique()
-                        .HasFilter("NOT is_cancelled");
-
-                    b.ToTable("loan_disbursement_lines", null, t =>
-                        {
-                            t.HasCheckConstraint("ck_loan_payment_line_amount", "amount > 0");
-
-                            t.HasCheckConstraint("ck_loan_payment_line_evidence", "status NOT IN ('Paid','Reversed') OR (paid_date IS NOT NULL AND paid_by IS NOT NULL AND payment_reference IS NOT NULL AND trim(payment_reference) <> '' AND payment_method IS NOT NULL AND payment_method IN ('BankTransfer','DirectDebit','Cash'))");
-
-                            t.HasCheckConstraint("ck_loan_payment_line_status", "status IN ('Pending','Paid','Failed','Cancelled','Reversed')");
-                        });
-                });
-
-            modelBuilder.Entity("Zayra.Api.Models.LoanRepayment", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<decimal>("Amount")
-                        .HasPrecision(14, 2)
-                        .HasColumnType("numeric(14,2)")
-                        .HasColumnName("amount");
-
-                    b.Property<Guid?>("CompanyId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("company_id");
-
-                    b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at_utc");
-
-                    b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("uuid")
-                        .HasColumnName("created_by");
-
-                    b.Property<Guid?>("GlEntryId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("gl_entry_id");
-
-                    b.Property<bool>("IsReversed")
-                        .HasColumnType("boolean")
-                        .HasColumnName("is_reversed");
-
-                    b.Property<Guid>("LoanId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("loan_id");
-
-                    b.Property<DateOnly>("PaidDate")
-                        .HasColumnType("date")
-                        .HasColumnName("paid_date");
-
-                    b.Property<string>("PaymentMethod")
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
-                        .HasColumnName("payment_method");
-
-                    b.Property<string>("Reference")
-                        .IsRequired()
-                        .HasMaxLength(160)
-                        .HasColumnType("character varying(160)")
-                        .HasColumnName("reference");
-
-                    b.Property<Guid?>("ReversalGlEntryId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("reversal_gl_entry_id");
-
-                    b.Property<DateTime?>("ReversedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("reversed_at_utc");
-
-                    b.Property<Guid?>("ReversedBy")
-                        .HasColumnType("uuid")
-                        .HasColumnName("reversed_by");
-
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("tenant_id");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("TenantId", "CompanyId");
-
-                    b.HasIndex("TenantId", "GlEntryId")
-                        .IsUnique()
-                        .HasFilter("gl_entry_id IS NOT NULL");
-
-                    b.HasIndex("TenantId", "ReversalGlEntryId")
-                        .IsUnique()
-                        .HasFilter("reversal_gl_entry_id IS NOT NULL");
-
-                    b.HasIndex("TenantId", "LoanId", "Reference")
-                        .IsUnique();
-
-                    b.ToTable("loan_repayments", null, t =>
-                        {
-                            t.HasCheckConstraint("ck_loan_receipt_amount", "amount > 0");
-
-                            t.HasCheckConstraint("ck_loan_receipt_method", "payment_method IN ('BankTransfer','DirectDebit','Cash')");
-                        });
-                });
-
-            modelBuilder.Entity("Zayra.Api.Models.LoanChangeRequest", b =>
-                {
-                    b.HasOne("Zayra.Api.Models.EmployeeLoan", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId", "LoanId")
-                        .HasPrincipalKey("TenantId", "Id")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("Zayra.Api.Models.LoanRepayment", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId", "LoanId", "RepaymentId")
-                        .HasPrincipalKey("TenantId", "LoanId", "Id")
-                        .OnDelete(DeleteBehavior.Restrict);
-                });
-
-            modelBuilder.Entity("Zayra.Api.Models.LoanDisbursementLine", b =>
-                {
-                    b.HasOne("Zayra.Api.Models.LoanDisbursementBatch", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId", "BatchId")
-                        .HasPrincipalKey("TenantId", "Id")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("Zayra.Api.Models.FinanceGlEntry", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId", "GlEntryId")
-                        .HasPrincipalKey("TenantId", "Id")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.HasOne("Zayra.Api.Models.EmployeeLoan", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId", "LoanId")
-                        .HasPrincipalKey("TenantId", "Id")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-                });
-
-            modelBuilder.Entity("Zayra.Api.Models.LoanRepayment", b =>
-                {
-                    b.HasOne("Zayra.Api.Models.FinanceGlEntry", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId", "GlEntryId")
-                        .HasPrincipalKey("TenantId", "Id")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.HasOne("Zayra.Api.Models.EmployeeLoan", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId", "LoanId")
-                        .HasPrincipalKey("TenantId", "Id")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("Zayra.Api.Models.FinanceGlEntry", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId", "ReversalGlEntryId")
-                        .HasPrincipalKey("TenantId", "Id")
-                        .OnDelete(DeleteBehavior.Restrict);
                 });
 #pragma warning restore 612, 618
         }

@@ -468,9 +468,10 @@ public class MfaService : IMfaService
         return new MfaSetupInitDto(uri, tempSecret);
     }
 
-    public async Task<bool> VerifyPlatformSetupAsync(Guid platformUserId, MfaVerifySetupRequest request, CancellationToken ct)
+    public async Task<IReadOnlyList<string>?> VerifyPlatformSetupAsync(Guid platformUserId, MfaVerifySetupRequest request, CancellationToken ct)
     {
-        if (!_totp.Verify(request.TempSecret, request.TotpCode)) return false;
+        if (!_totp.Verify(request.TempSecret, request.TotpCode)) return null;
+        var recovery = NewRecoveryCodes();
 
         var encryptedSecret = _totp.EncryptSecret(request.TempSecret);
         var configuredAtUtc = DateTime.UtcNow;
@@ -491,6 +492,7 @@ public class MfaService : IMfaService
             pu.MfaEnabled = true;
             pu.MfaSecretEncrypted = encryptedSecret;
             pu.MfaConfiguredAtUtc = configuredAtUtc;
+            pu.MfaRecoveryCodeHashes = recovery.Hashes;
             PlatformSessionSecurity.RotateStamp(pu, configuredAtUtc);
             _db.AuditLogs.Add(AuthAuditEntry.Create(
                 auditId,
@@ -504,7 +506,7 @@ public class MfaService : IMfaService
             return true;
         }
 
-        if (!_db.Database.IsRelational()) return await EnableOnceAsync(ct);
+        if (!_db.Database.IsRelational()) return await EnableOnceAsync(ct) ? recovery.Codes : null;
         var strategy = _db.Database.CreateExecutionStrategy();
         var succeeded = await strategy.ExecuteInTransactionAsync(
             EnableOnceAsync,
@@ -513,10 +515,11 @@ public class MfaService : IMfaService
                 .AnyAsync(x => x.Id == auditId && x.Action == "platform.auth.mfa_enabled", cancellationToken),
             IsolationLevel.ReadCommitted,
             ct);
-        if (succeeded) return true;
+        if (succeeded) return recovery.Codes;
         _db.ChangeTracker.Clear();
         return await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
-            .AnyAsync(x => x.Id == auditId && x.Action == "platform.auth.mfa_enabled", ct);
+            .AnyAsync(x => x.Id == auditId && x.Action == "platform.auth.mfa_enabled", ct)
+            ? recovery.Codes : null;
     }
 
     public async Task<string> CreatePlatformChallengeAsync(Guid platformUserId, string ip, CancellationToken ct)
@@ -769,6 +772,7 @@ public class MfaService : IMfaService
             pu.MfaEnabled = false;
             pu.MfaSecretEncrypted = null;
             pu.MfaConfiguredAtUtc = null;
+            pu.MfaRecoveryCodeHashes = null;
             PlatformSessionSecurity.RotateStamp(pu, disabledAtUtc);
             _db.AuditLogs.Add(AuthAuditEntry.Create(
                 auditId,
@@ -846,11 +850,12 @@ public class MfaService : IMfaService
         return await InitiatePlatformSetupAsync(pu.Id, ct);
     }
 
-    public async Task<bool> VerifyPlatformEnrollmentSetupAsync(string enrollmentToken, MfaVerifySetupRequest request, CancellationToken ct)
+    public async Task<IReadOnlyList<string>?> VerifyPlatformEnrollmentSetupAsync(string enrollmentToken, MfaVerifySetupRequest request, CancellationToken ct)
     {
         if (!AuthChallengeTokenCodec.TryParse(enrollmentToken, AuthChallengeTokenCodec.PlatformEnrollmentPurpose, out var envelope))
-            return false;
+            return null;
         var hash = _tokenService.HashToken(enrollmentToken);
+        var recovery = NewRecoveryCodes();
         // Microsecond-truncated so the commit check below can match it exactly after a Postgres round trip.
         var now = DateTime.UtcNow;
         var verifiedAtUtc = new DateTime(now.Ticks - now.Ticks % 10, DateTimeKind.Utc);
@@ -906,6 +911,7 @@ public class MfaService : IMfaService
             pu.MfaEnabled = true;
             pu.MfaSecretEncrypted = encryptedSecret;
             pu.MfaConfiguredAtUtc = verifiedAtUtc;
+            pu.MfaRecoveryCodeHashes = recovery.Hashes;
             PlatformSessionSecurity.RotateStamp(pu, verifiedAtUtc);
             _db.AuditLogs.Add(AuthAuditEntry.Create(
                 auditId,
@@ -925,13 +931,13 @@ public class MfaService : IMfaService
             _db.PlatformUsers.AsNoTracking().AnyAsync(x => x.Id == envelope.PrincipalId
                 && x.MfaEnabled && x.MfaConfiguredAtUtc == verifiedAtUtc, cancellationToken);
 
-        if (!_db.Database.IsRelational()) return await VerifyOnceAsync(ct);
+        if (!_db.Database.IsRelational()) return await VerifyOnceAsync(ct) ? recovery.Codes : null;
         var strategy = _db.Database.CreateExecutionStrategy();
         var succeeded = await strategy.ExecuteInTransactionAsync(
             VerifyOnceAsync, EnabledByThisCallAsync, IsolationLevel.ReadCommitted, ct);
-        if (succeeded) return true;
+        if (succeeded) return recovery.Codes;
         _db.ChangeTracker.Clear();
-        return codeValid && await EnabledByThisCallAsync(ct);
+        return codeValid && await EnabledByThisCallAsync(ct) ? recovery.Codes : null;
     }
 
     public async Task<bool> AdminResetPlatformFactorAsync(
@@ -956,6 +962,7 @@ public class MfaService : IMfaService
             pu.MfaEnabled = false;
             pu.MfaSecretEncrypted = null;
             pu.MfaConfiguredAtUtc = null;
+            pu.MfaRecoveryCodeHashes = null;
             PlatformSessionSecurity.RotateStamp(pu, resetAtUtc);
             _db.AuditLogs.Add(AuthAuditEntry.Create(
                 auditId,
@@ -979,6 +986,173 @@ public class MfaService : IMfaService
                 && !x.MfaEnabled && x.MfaSecretEncrypted == null, cancellationToken),
             IsolationLevel.ReadCommitted,
             ct);
+    }
+
+    // ── Platform recovery codes ───────────────────────────────────────────────
+
+    private const int RecoveryCodeCount = 10;
+    private static readonly char[] RecoveryAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789".ToCharArray();
+
+    /// <summary>
+    /// Ten fresh one-time codes (XXXXX-XXXXX, 50 bits each from a 32-symbol alphabet without 0/O/1/I)
+    /// and their newline-joined SHA-256 hashes. High-entropy random codes, so an unsalted fast hash is
+    /// the same standard the repo applies to reset and refresh tokens (ITokenService.HashToken).
+    /// </summary>
+    private (IReadOnlyList<string> Codes, string Hashes) NewRecoveryCodes()
+    {
+        var codes = new List<string>(RecoveryCodeCount);
+        for (var i = 0; i < RecoveryCodeCount; i++)
+        {
+            var chars = new char[10];
+            for (var c = 0; c < chars.Length; c++)
+                chars[c] = RecoveryAlphabet[System.Security.Cryptography.RandomNumberGenerator.GetInt32(RecoveryAlphabet.Length)];
+            codes.Add($"{new string(chars, 0, 5)}-{new string(chars, 5, 5)}");
+        }
+        return (codes, string.Join('\n', codes.Select(c => _tokenService.HashToken(NormalizeRecoveryCode(c)))));
+    }
+
+    private static string NormalizeRecoveryCode(string code)
+        => new string(code.Where(char.IsLetterOrDigit).Select(char.ToUpperInvariant).ToArray());
+
+    private static List<string> RecoveryHashes(string? stored)
+        => (stored ?? string.Empty).Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+
+    public static int RecoveryCodesRemaining(PlatformUser pu) => RecoveryHashes(pu.MfaRecoveryCodeHashes).Count;
+
+    public async Task<PlatformUser?> CompletePlatformChallengeWithRecoveryCodeAsync(
+        string rawToken, string recoveryCode, RequestContext context, CancellationToken ct)
+    {
+        if (!AuthChallengeTokenCodec.TryParse(rawToken, AuthChallengeTokenCodec.PlatformLoginPurpose, out var envelope))
+            return null;
+        var hash = _tokenService.HashToken(rawToken);
+        var presented = NormalizeRecoveryCode(recoveryCode ?? string.Empty);
+        var presentedHash = presented.Length == 10 ? _tokenService.HashToken(presented) : null;
+        var now = DateTime.UtcNow;
+        var completedAtUtc = new DateTime(now.Ticks - now.Ticks % 10, DateTimeKind.Utc);
+        PlatformUser? prepared = null;
+
+        async Task<bool> CompleteOnceAsync(CancellationToken cancellationToken)
+        {
+            _db.ChangeTracker.Clear();
+            prepared = null;
+            var pu = await _db.PlatformUsers.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == envelope.PrincipalId, cancellationToken);
+            var challenge = await _db.MfaChallengeTokens.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == envelope.ChallengeId, cancellationToken);
+            if (pu is null
+                || challenge is null
+                || challenge.TokenHash != hash
+                || challenge.PlatformUserId != pu.Id
+                || challenge.UserId is not null
+                || challenge.TenantId is not null
+                || challenge.UsedAtUtc is not null
+                || challenge.ExpiresAtUtc <= completedAtUtc
+                || challenge.FailedAttempts >= MfaChallengeToken.MaxAttempts
+                || !pu.IsActive
+                || !PlatformRoles.All.Contains(pu.Role)
+                || pu.LockoutEndUtc > completedAtUtc
+                || !pu.UpdatedAtUtc.HasValue
+                || !string.Equals(envelope.SessionStamp, PlatformSessionSecurity.StampValue(pu.UpdatedAtUtc.Value), StringComparison.Ordinal)
+                || !pu.MfaEnabled)
+                return false;
+
+            var remaining = RecoveryHashes(pu.MfaRecoveryCodeHashes);
+            var index = presentedHash is null ? -1 : remaining.FindIndex(h => string.Equals(h, presentedHash, StringComparison.Ordinal));
+            if (index < 0)
+            {
+                challenge.FailedAttempts++;
+                if (challenge.FailedAttempts >= MfaChallengeToken.MaxAttempts)
+                    challenge.UsedAtUtc = completedAtUtc;
+                _db.LoginActivities.Add(new LoginActivity
+                {
+                    UserId = pu.Id, EmailAttempted = pu.Email, EventType = LoginEventTypes.PlatformLoginFailed,
+                    FailureReason = "mfa_recovery_code_mismatch", IpAddress = context.IpAddress,
+                    UserAgent = context.UserAgent, OccurredAtUtc = completedAtUtc,
+                });
+                _db.AuditLogs.Add(AuthAuditEntry.Create(
+                    Guid.NewGuid(), completedAtUtc, "platform.auth.mfa_recovery_code_failed", "MfaChallengeToken",
+                    challenge.Id.ToString(), context with { UserId = null, TenantId = null },
+                    $"{{\"platformUserId\":\"{pu.Id:D}\",\"failedAttempts\":{challenge.FailedAttempts}}}"));
+                await _db.SaveChangesAsync(cancellationToken);
+                return false;
+            }
+
+            remaining.RemoveAt(index);
+            pu.MfaRecoveryCodeHashes = remaining.Count == 0 ? null : string.Join('\n', remaining);
+            challenge.UsedAtUtc = completedAtUtc;
+            pu.FailedLoginCount = 0;
+            pu.LastLoginAtUtc = completedAtUtc;
+            pu.LastLoginIp = context.IpAddress;
+            _db.LoginActivities.Add(new LoginActivity
+            {
+                UserId = pu.Id, EmailAttempted = pu.Email, EventType = LoginEventTypes.PlatformLoginSuccess,
+                IpAddress = context.IpAddress, UserAgent = context.UserAgent, OccurredAtUtc = completedAtUtc,
+            });
+            _db.AuditLogs.Add(AuthAuditEntry.Create(
+                Guid.NewGuid(), completedAtUtc, "platform.auth.mfa_recovery_code_used", "PlatformUser",
+                pu.Id.ToString(), context with { UserId = null, TenantId = null },
+                $"{{\"platformUserId\":\"{pu.Id:D}\",\"remaining\":{remaining.Count}}}"));
+            await _db.SaveChangesAsync(cancellationToken);
+            prepared = pu;
+            return true;
+        }
+
+        // Commit evidence: this call's login stamp on the operator row (platform_users is unfiltered).
+        Task<bool> CommittedAsync(CancellationToken cancellationToken) =>
+            _db.PlatformUsers.AsNoTracking().AnyAsync(x => x.Id == envelope.PrincipalId && x.LastLoginAtUtc == completedAtUtc, cancellationToken);
+
+        bool succeeded;
+        if (_db.Database.IsRelational())
+        {
+            succeeded = await _db.Database.CreateExecutionStrategy().ExecuteInTransactionAsync(
+                CompleteOnceAsync, CommittedAsync, IsolationLevel.ReadCommitted, ct);
+            if (!succeeded && presentedHash is not null)
+            {
+                _db.ChangeTracker.Clear();
+                succeeded = await CommittedAsync(ct);
+            }
+        }
+        else
+        {
+            succeeded = await CompleteOnceAsync(ct);
+        }
+        if (!succeeded) return null;
+        return prepared ?? await _db.PlatformUsers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == envelope.PrincipalId, ct);
+    }
+
+    public async Task<IReadOnlyList<string>?> RegeneratePlatformRecoveryCodesAsync(Guid platformUserId, string totpCode, CancellationToken ct)
+    {
+        var recovery = NewRecoveryCodes();
+        var now = DateTime.UtcNow;
+
+        async Task<bool> RegenerateOnceAsync(CancellationToken cancellationToken)
+        {
+            _db.ChangeTracker.Clear();
+            var pu = await _db.PlatformUsers.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == platformUserId, cancellationToken);
+            if (pu is null || !pu.IsActive || !pu.MfaEnabled || string.IsNullOrWhiteSpace(pu.MfaSecretEncrypted))
+                return false;
+            string secret;
+            try { secret = _totp.DecryptSecret(pu.MfaSecretEncrypted); }
+            catch { return false; }
+            if (!_totp.Verify(secret, totpCode)) return false;
+            pu.MfaRecoveryCodeHashes = recovery.Hashes;
+            _db.AuditLogs.Add(AuthAuditEntry.Create(
+                Guid.NewGuid(), now, "platform.auth.mfa_recovery_codes_regenerated", "PlatformUser",
+                pu.Id.ToString(), new RequestContext(null, null, null, null),
+                $"{{\"platformUserId\":\"{pu.Id:D}\",\"count\":{RecoveryCodeCount}}}"));
+            await _db.SaveChangesAsync(cancellationToken);
+            return true;
+        }
+
+        Task<bool> CommittedAsync(CancellationToken cancellationToken) =>
+            _db.PlatformUsers.AsNoTracking().AnyAsync(x => x.Id == platformUserId && x.MfaRecoveryCodeHashes == recovery.Hashes, cancellationToken);
+
+        var ok = _db.Database.IsRelational()
+            ? await _db.Database.CreateExecutionStrategy().ExecuteInTransactionAsync(
+                RegenerateOnceAsync, CommittedAsync, IsolationLevel.ReadCommitted, ct)
+            : await RegenerateOnceAsync(ct);
+        return ok ? recovery.Codes : null;
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
