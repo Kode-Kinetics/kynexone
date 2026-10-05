@@ -241,6 +241,27 @@ export interface PayrollPaymentBatch {
   isSaudi?: boolean;
   /** What the "generate" button below actually produces, in plain words. */
   generatedFileLabel?: string;
+  /** The lifecycle status that applies (a frozen ANB instruction counts as Generated). Server-computed. */
+  effectiveWpsStatus?: string;
+  /** Plain-language status, e.g. "Accepted — evidence attached (not verified by Mudad)". */
+  wpsStatusLabel?: string;
+  /** The statuses an operator may pick next. The server owns the transition table; the screen never copies it. */
+  allowedNextStatuses?: string[];
+  /** The newest stored acceptance evidence, which marking Accepted refers to. */
+  latestEvidenceId?: string | null;
+  /** Set when THIS viewer may not record Accepted (they generated the file or uploaded the evidence). */
+  acceptBlockedReason?: string | null;
+  /** Payslips left out of this bank batch (cash/cheque, zero net), with amount and reason. */
+  paymentExclusions?: PaymentBatchExclusion[];
+  excludedTotal?: number;
+}
+
+export interface PaymentBatchExclusion {
+  employeeId: number;
+  employeeCode: string;
+  amount: number;
+  reasonCode: string;
+  reason: string;
 }
 
 export type WpsEvidenceKind = 'bank_output_file' | 'mudad_compliance_screenshot';
@@ -718,7 +739,7 @@ export const payrollApi = {
     client.post<WPSFileBatch>(`/api/payroll/payment-batches/${batchId}/wps-file`).then((r) => r.data),
 
   updateWpsStatus: (batchId: string, body: { status: string; reference?: string; notes?: string; evidenceId?: string }) =>
-    client.post<{ batchId: string; wpsStatus: string }>(`/api/payroll/payment-batches/${batchId}/wps-status`, body).then((r) => r.data),
+    client.post<{ batchId: string; wpsStatus: string; wpsStatusLabel?: string }>(`/api/payroll/payment-batches/${batchId}/wps-status`, body).then((r) => r.data),
 
   /** Stores proof of Mudad/WPS acceptance. The server hashes the bytes it receives (SHA-256). */
   uploadWpsEvidence: (batchId: string, kind: WpsEvidenceKind, file: File, note?: string) => {

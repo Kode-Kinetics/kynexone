@@ -2615,6 +2615,7 @@ function PaymentTrackingTab() {
   const [batches, setBatches] = useState<PayrollPaymentBatch[]>([]);
   const [loading, setLoading] = useState(true);
   type WpsForm = { status: string; reference: string; notes: string; evidenceKind: WpsEvidenceKind; evidenceFile: File | null };
+  const [evidenceSaving, setEvidenceSaving] = useState<string | null>(null);
   const [wpsForms, setWpsForms] = useState<Record<string, WpsForm>>({});
   const [wpsSaving, setWpsSaving] = useState<string | null>(null);
   const [financeSaving, setFinanceSaving] = useState<string | null>(null);
@@ -2632,38 +2633,50 @@ function PaymentTrackingTab() {
   const totals = totalsByCurrency(batches, b => b.currency, b => b.totalAmount);
   const totalLabel = totals.length === 1 && totals[0].currency ? fmtAmt(totals[0].total, totals[0].currency) : 'Mixed currencies';
   const fileGenerated = batches.filter(b => b.status === 'FileGenerated').length;
-  const allowedWpsNext = (status: string) => {
-    switch (status) {
-      case 'Generated': return ['Submitted'];
-      case 'Downloaded': return ['Submitted'];
-      case 'Submitted': return ['Accepted', 'Rejected'];
-      case 'Accepted': return ['Reconciled'];
-      default: return [];
-    }
-  };
+  // The server owns the WPS transition table and the effective status (a frozen ANB instruction counts as
+  // Generated). The screen only renders what it is given, so the two can never drift apart again.
+  const nextStatuses = (b: PayrollPaymentBatch) => b.allowedNextStatuses ?? [];
+  const effectiveStatus = (b: PayrollPaymentBatch) => b.effectiveWpsStatus || b.wpsStatus || 'Draft';
   const emptyWpsForm: WpsForm = { status: '', reference: '', notes: '', evidenceKind: 'bank_output_file', evidenceFile: null };
   const setWpsForm = (batchId: string, patch: Partial<WpsForm>) =>
     setWpsForms(prev => ({ ...prev, [batchId]: { ...emptyWpsForm, ...(prev[batchId] ?? {}), ...patch } }));
+  // Evidence is attached on its own: maker-checker means the person who uploads it (or generated the
+  // file) cannot be the one who marks the batch Accepted.
+  const uploadEvidence = async (batch: PayrollPaymentBatch) => {
+    const form = wpsForms[batch.id] ?? emptyWpsForm;
+    if (!form.evidenceFile) {
+      notifyApiError({ response: { data: { message: 'Choose the bank\'s WPS output file or a Mudad compliance screenshot/PDF first.' } } });
+      return;
+    }
+    setEvidenceSaving(batch.id);
+    try {
+      await payrollApi.uploadWpsEvidence(batch.id, form.evidenceKind, form.evidenceFile);
+      setWpsForms(prev => ({ ...prev, [batch.id]: { ...emptyWpsForm, ...(prev[batch.id] ?? {}), evidenceFile: null } }));
+      loadBatches();
+    } catch (e) { notifyApiError(e); }
+    finally { setEvidenceSaving(null); }
+  };
   const updateWps = async (batch: PayrollPaymentBatch) => {
     const form = wpsForms[batch.id] ?? emptyWpsForm;
     if (!form.status) return;
-    // Accepted is recorded only against stored proof: the bank's WPS output file or a Mudad
-    // compliance screenshot/PDF. The server hashes the file and refuses Accepted without it.
-    if (form.status === 'Accepted' && !form.evidenceFile) {
-      notifyApiError({ response: { data: { message: 'Attach the bank\'s WPS output file or a Mudad compliance screenshot/PDF before marking the batch Accepted.' } } });
+    // Accepted is recorded only against stored proof (the bank's WPS output file or a Mudad
+    // screenshot/PDF already attached to this batch), and only by someone other than its maker.
+    const evidenceId = batch.latestEvidenceId ?? undefined;
+    if (form.status === 'Accepted' && !evidenceId) {
+      notifyApiError({ response: { data: { message: 'Attach the bank\'s WPS output file or a Mudad compliance screenshot/PDF to this batch first. Another person then marks it Accepted.' } } });
+      return;
+    }
+    if (form.status === 'Accepted' && batch.acceptBlockedReason) {
+      notifyApiError({ response: { data: { message: batch.acceptBlockedReason } } });
       return;
     }
     setWpsSaving(batch.id);
     try {
-      let evidenceId: string | undefined;
-      if (form.status === 'Accepted' && form.evidenceFile) {
-        evidenceId = (await payrollApi.uploadWpsEvidence(batch.id, form.evidenceKind, form.evidenceFile)).evidenceId;
-      }
       await payrollApi.updateWpsStatus(batch.id, {
         status: form.status,
         reference: form.reference || undefined,
         notes: form.notes || undefined,
-        evidenceId,
+        evidenceId: form.status === 'Accepted' ? evidenceId : undefined,
       });
       setWpsForms(prev => ({ ...prev, [batch.id]: emptyWpsForm }));
       loadBatches();
@@ -2730,7 +2743,13 @@ function PaymentTrackingTab() {
                   <td className="px-4 py-2"><StatusBadge status={b.status} /></td>
                   <td className="px-4 py-2">
                     <div className="space-y-1">
-                      <StatusBadge status={b.wpsStatus || 'Draft'} />
+                      <StatusBadge status={effectiveStatus(b)} />
+                      {b.wpsStatusLabel && b.wpsStatusLabel !== effectiveStatus(b) && <p className="max-w-56 text-[11px] text-slate-500">{b.wpsStatusLabel}</p>}
+                      {(b.paymentExclusions?.length ?? 0) > 0 && (
+                        <p className="max-w-56 text-[11px] text-amber-600 dark:text-amber-400" title={b.paymentExclusions!.map(x => `${x.employeeCode}: ${x.reason}`).join('\n')}>
+                          {b.paymentExclusions!.length} not in the bank file (cash/cheque or zero net): {(b.excludedTotal ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                        </p>
+                      )}
                       {b.wpsSubmissionReference && <p className="text-[11px] text-slate-500">{b.wpsSubmissionReference}</p>}
                       {(b.acceptanceEvidenceCount ?? 0) > 0 && <p className="text-[11px] text-emerald-600 dark:text-emerald-400">Evidence on record: {b.acceptanceEvidenceCount} file{b.acceptanceEvidenceCount === 1 ? '' : 's'}</p>}
                       {b.wpsRejectionReason && <p className="max-w-48 truncate text-[11px] text-rose-500">{b.wpsRejectionReason}</p>}
@@ -2739,7 +2758,34 @@ function PaymentTrackingTab() {
                   <td className="px-4 py-2 text-xs text-slate-400">{fmtDate(b.createdAtUtc)}</td>
                   <td className="px-4 py-2">
                     <div className="grid min-w-[290px] gap-2">
-                    {allowedWpsNext(b.wpsStatus || 'Draft').length > 0 && (
+                    {effectiveStatus(b) === 'Submitted' && (
+                      <div className="grid gap-1.5 rounded-lg bg-slate-50 p-2 dark:bg-white/5">
+                        <p className="text-[11px] font-medium text-slate-600 dark:text-slate-300">Acceptance evidence</p>
+                        <select
+                          aria-label={`Evidence type for ${b.batchNumber}`}
+                          className={sel}
+                          value={wpsForms[b.id]?.evidenceKind ?? 'bank_output_file'}
+                          onChange={e => setWpsForm(b.id, { evidenceKind: e.target.value as WpsEvidenceKind, evidenceFile: null })}
+                        >
+                          <option value="bank_output_file">Bank WPS output file (upload it unopened)</option>
+                          <option value="mudad_compliance_screenshot">Mudad compliance screenshot or PDF</option>
+                        </select>
+                        <div className="grid grid-cols-[1fr_auto] gap-2">
+                          <input
+                            type="file"
+                            aria-label={`Evidence file for ${b.batchNumber}`}
+                            className="text-xs"
+                            accept={(wpsForms[b.id]?.evidenceKind ?? 'bank_output_file') === 'mudad_compliance_screenshot' ? '.png,.jpg,.jpeg,.pdf' : undefined}
+                            onChange={e => setWpsForm(b.id, { evidenceFile: e.target.files?.[0] ?? null })}
+                          />
+                          <button type="button" className={`${btn.sm} disabled:opacity-50`} onClick={() => uploadEvidence(b)} disabled={evidenceSaving === b.id || !wpsForms[b.id]?.evidenceFile}>
+                            {evidenceSaving === b.id ? 'Uploading…' : 'Attach evidence'}
+                          </button>
+                        </div>
+                        <p className="text-[11px] text-slate-500">The file is stored with its SHA-256 fingerprint. Mudad&apos;s verdict never reaches this system, so Accepted means &ldquo;evidence attached&rdquo;, and a second person records it.</p>
+                      </div>
+                    )}
+                    {nextStatuses(b).length > 0 && (
                       <>
                         <select
                           title="Next WPS status"
@@ -2748,28 +2794,17 @@ function PaymentTrackingTab() {
                           onChange={e => setWpsForm(b.id, { status: e.target.value })}
                         >
                           <option value="">Next status</option>
-                          {allowedWpsNext(b.wpsStatus || 'Draft').map(s => <option key={s} value={s}>{s === 'Accepted' ? 'Accepted (needs evidence)' : s}</option>)}
+                          {nextStatuses(b).map(s => (
+                            <option key={s} value={s} disabled={s === 'Accepted' && (!b.latestEvidenceId || !!b.acceptBlockedReason)}>
+                              {s === 'Accepted' ? 'Accepted — evidence attached (not verified by Mudad)' : s}
+                            </option>
+                          ))}
                         </select>
-                        {(wpsForms[b.id]?.status ?? '') === 'Accepted' && (
-                          <div className="grid gap-1.5 rounded-lg bg-slate-50 p-2 dark:bg-white/5">
-                            <select
-                              aria-label={`Evidence type for ${b.batchNumber}`}
-                              className={sel}
-                              value={wpsForms[b.id]?.evidenceKind ?? 'bank_output_file'}
-                              onChange={e => setWpsForm(b.id, { evidenceKind: e.target.value as WpsEvidenceKind, evidenceFile: null })}
-                            >
-                              <option value="bank_output_file">Bank WPS output file (upload it unopened)</option>
-                              <option value="mudad_compliance_screenshot">Mudad compliance screenshot or PDF</option>
-                            </select>
-                            <input
-                              type="file"
-                              aria-label={`Evidence file for ${b.batchNumber}`}
-                              className="text-xs"
-                              accept={(wpsForms[b.id]?.evidenceKind ?? 'bank_output_file') === 'mudad_compliance_screenshot' ? '.png,.jpg,.jpeg,.pdf' : undefined}
-                              onChange={e => setWpsForm(b.id, { evidenceFile: e.target.files?.[0] ?? null })}
-                            />
-                            <p className="text-[11px] text-slate-500">The file is stored with its SHA-256 fingerprint. A status alone is not proof that Mudad accepted the file.</p>
-                          </div>
+                        {nextStatuses(b).includes('Accepted') && !b.latestEvidenceId && (
+                          <p className="text-[11px] text-slate-500">Attach evidence above before the batch can be marked Accepted.</p>
+                        )}
+                        {nextStatuses(b).includes('Accepted') && b.latestEvidenceId && b.acceptBlockedReason && (
+                          <p className="text-[11px] text-amber-600 dark:text-amber-400">{b.acceptBlockedReason}</p>
                         )}
                         <div className="grid grid-cols-[1fr_auto] gap-2">
                           <input
@@ -2808,7 +2843,7 @@ function PaymentTrackingTab() {
                         )}
                       </div>
                     )}
-                    {allowedWpsNext(b.wpsStatus || 'Draft').length === 0 && b.wpsStatus !== 'Accepted' && b.wpsStatus !== 'Paid' && <span className="text-xs text-slate-400">No action</span>}
+                    {nextStatuses(b).length === 0 && effectiveStatus(b) !== 'Accepted' && effectiveStatus(b) !== 'Paid' && <span className="text-xs text-slate-400">No action</span>}
                     </div>
                   </td>
                 </tr>

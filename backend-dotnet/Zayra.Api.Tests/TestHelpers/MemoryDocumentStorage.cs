@@ -25,5 +25,12 @@ internal sealed class MemoryDocumentStorage : IDocumentStorage
         return Objects.TryGetValue(storageUrl, out var b) ? Task.FromResult(b) : throw new FileNotFoundException(storageUrl);
     }
 
+    public Task<bool> TryDeleteAsync(Guid tenantId, string storageUrl, CancellationToken ct = default)
+    {
+        if (!storageUrl.StartsWith($"storage/documents/{tenantId:N}/", StringComparison.Ordinal))
+            throw new InvalidOperationException("Cross-tenant storage access denied.");
+        return Task.FromResult(Objects.Remove(storageUrl));
+    }
+
     public string ResolvePath(string storageUrl) => storageUrl;
 }

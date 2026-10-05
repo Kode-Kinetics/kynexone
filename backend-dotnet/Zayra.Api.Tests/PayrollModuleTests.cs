@@ -1192,7 +1192,8 @@ public class PayrollModuleTests
         db.WPSFileBatches.Add(file);
         await db.SaveChangesAsync();
 
-        var ctrl = MakeCtrl(db, tenantId, permissions: new[] { "payroll.export" }, storage: new MemoryDocumentStorage());
+        var storage = new MemoryDocumentStorage();
+        var ctrl = MakeCtrl(db, tenantId, permissions: new[] { "payroll.export" }, storage: storage);
 
         var missingReference = await ctrl.UpdateWpsStatus(batch.Id, new WpsStatusRequest(WpsStatuses.Submitted, null), CancellationToken.None);
         missingReference.Should().BeOfType<BadRequestObjectResult>();
@@ -1211,7 +1212,11 @@ public class PayrollModuleTests
         }, CancellationToken.None);
         var evidenceId = (Guid)upload.Should().BeOfType<OkObjectResult>().Subject.Value!
             .GetType().GetProperty("EvidenceId")!.GetValue(((OkObjectResult)upload).Value)!;
+        // Maker-checker: whoever uploaded the evidence may not record Accepted; a second person does.
         (await ctrl.UpdateWpsStatus(batch.Id, new WpsStatusRequest(WpsStatuses.Accepted, null, "ACK-456", evidenceId), CancellationToken.None))
+            .Should().BeOfType<BadRequestObjectResult>();
+        var checker = MakeCtrl(db, tenantId, permissions: new[] { "payroll.export" }, storage: storage);
+        (await checker.UpdateWpsStatus(batch.Id, new WpsStatusRequest(WpsStatuses.Accepted, null, "ACK-456", evidenceId), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
 
         var savedBatch = await db.PayrollPaymentBatches.FindAsync(batch.Id);

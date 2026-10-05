@@ -665,8 +665,12 @@ test.describe('browserless outbound-integration truthfulness contracts', () => {
     // WS3: the KSA XML export is an internal register, never a "WPS/Mudad" file, and Accepted needs evidence.
     const payroll = read('src/views/PayrollPage.tsx');
     expect(payroll).toContain('Generate payroll register (internal — not a bank/WPS file)');
-    expect(payroll).toContain("form.status === 'Accepted' && !form.evidenceFile");
+    expect(payroll).toContain("form.status === 'Accepted' && !evidenceId");
     expect(payroll).toContain('payrollApi.uploadWpsEvidence');
+    // The server owns the WPS transition table; the screen keeps no copy of it.
+    expect(payroll).toContain('b.allowedNextStatuses');
+    expect(payroll).not.toContain('allowedWpsNext');
+    expect(payroll).toContain('Accepted — evidence attached (not verified by Mudad)');
 
     const health = read('app/platform/system-health/page.tsx');
     expect(health).toContain('delivery-health-unavailable');

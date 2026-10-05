@@ -5077,6 +5077,23 @@ public class PayrollController : ControllerBase
             PayrollRunTypes.Replacement   => "RP",   // POD-B3
             _                             => "RG",
         };
+        // Cash/cheque employees and zero-net payslips are LEFT OUT of a bank batch rather than blocking
+        // it: neither has anything to send to a bank, and before this one cash employee (no IBAN) or one
+        // fully-deducted payslip refused the whole month's file. Each exclusion is named, with its reason
+        // and amount, in the response and in this batch's sealed creation audit, and the batch total is
+        // the run's net minus exactly those amounts.
+        var bankBatch = !Infrastructure.Payroll.PaymentBatchExclusions.IsPaidOutsideBankFile(req.PaymentMethod);
+        var exclusions = new List<Infrastructure.Payroll.PaymentBatchExclusion>();
+        var included = new List<(PayrollSlip Slip, EmployeePayrollProfile? Profile)>();
+        foreach (var slip in slips)
+        {
+            var profile = profiles.FirstOrDefault(x => x.EmployeeId == slip.EmployeeId);
+            var exclusion = bankBatch ? Infrastructure.Payroll.PaymentBatchExclusions.Decide(slip, profile) : null;
+            if (exclusion is not null) exclusions.Add(exclusion);
+            else included.Add((slip, profile));
+        }
+        var runNetTotal = slips.Sum(x => x.NetSalary);
+        var excludedTotal = exclusions.Sum(x => x.Amount);
         var batch    = new PayrollPaymentBatch
         {
             TenantId      = tenantId,
@@ -5085,24 +5102,31 @@ public class PayrollController : ControllerBase
                 ? $"PAY-{run.Year}{run.Month:00}-{DateTime.UtcNow:HHmmss}"
                 : $"PAY-{run.Year}{run.Month:00}-{runTypeTag}-{DateTime.UtcNow:HHmmss}-{id.ToString("N")[..4]}",
             PaymentMethod = req.PaymentMethod ?? "WPS",
-            TotalAmount   = slips.Sum(x => x.NetSalary),
+            TotalAmount   = included.Sum(x => x.Slip.NetSalary),
             Currency      = currency,
             WpsStatus     = WpsStatuses.Draft,
         };
         _db.PayrollPaymentBatches.Add(batch);
-        foreach (var slip in slips)
+        foreach (var (slip, profile) in included)
         {
-            var profile = profiles.FirstOrDefault(x => x.EmployeeId == slip.EmployeeId);
-            if (string.IsNullOrWhiteSpace(profile?.Iban))
+            // The credit account is the IBAN, or — for an ANB-to-ANB credit — the 16-digit ANB account
+            // number. Same rule as the bank export's "approved account" comparison.
+            var account = string.IsNullOrWhiteSpace(profile?.Iban) ? (profile?.AccountNumber ?? string.Empty) : profile!.Iban;
+            if (string.IsNullOrWhiteSpace(account))
                 _db.PayrollValidationResults.Add(new PayrollValidationResult { TenantId = tenantId, PayrollRunId = id, EmployeeId = slip.EmployeeId, Severity = "Warning", Code = "MISSING_IBAN", Message = "Employee is missing IBAN for payment file." });
-            _db.PayrollPaymentRecords.Add(new PayrollPaymentRecord { TenantId = tenantId, PaymentBatchId = batch.Id, EmployeeId = slip.EmployeeId, Amount = slip.NetSalary, Iban = profile?.Iban ?? string.Empty, Status = "Pending", WpsReference = $"WPS-{slip.EmployeeCode}-{run.Year}{run.Month:00}" });
+            _db.PayrollPaymentRecords.Add(new PayrollPaymentRecord { TenantId = tenantId, PaymentBatchId = batch.Id, EmployeeId = slip.EmployeeId, Amount = slip.NetSalary, Iban = account, Status = "Pending", WpsReference = $"WPS-{slip.EmployeeCode}-{run.Year}{run.Month:00}" });
         }
         // POD-B2 (M5b) — restate the hold-out count at the moment money is queued for disbursement.
         var batchExcludedCount = await _db.PayrollRunEmployeeSelections.AsNoTracking()
             .CountAsync(s => s.TenantId == tenantId && s.PayrollRunId == id
                           && s.Outcome == PayrollRunSelectionOutcomes.Excluded, cancellationToken);
-        await PayrollAudit("payroll.payment_batch.created", "PayrollPaymentBatch", batch.Id.ToString(),
-            new { totalAmount = batch.TotalAmount, method = batch.PaymentMethod, runType = run.RunType, excludedCount = batchExcludedCount }, cancellationToken);
+        await PayrollAudit(Infrastructure.Payroll.PaymentBatchExclusions.CreatedAuditAction, "PayrollPaymentBatch", batch.Id.ToString(),
+            new
+            {
+                totalAmount = batch.TotalAmount, method = batch.PaymentMethod, runType = run.RunType, excludedCount = batchExcludedCount,
+                runNetTotal, excludedTotal,
+                exclusions = Infrastructure.Payroll.PaymentBatchExclusions.ToAuditData(exclusions),
+            }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         // `Status` is NOT optional here. ListPaymentBatches returns it, the client's
         // PayrollPaymentBatch type declares it non-nullable, and BankWpsTab renders the freshly
@@ -5117,6 +5141,10 @@ public class PayrollController : ControllerBase
             runType       = run.RunType,
             parentRunId   = run.ParentRunId,
             excludedCount = batchExcludedCount,
+            // Reconciliation, stated: totalAmount = runNetTotal − excludedTotal.
+            runNetTotal,
+            excludedTotal,
+            paymentExclusions = exclusions,
         });
     }
 
@@ -5294,8 +5322,18 @@ public class PayrollController : ControllerBase
 
         // Full validator: same rules as WpsValidation endpoint.
         var slips = await _db.PayrollSlips.AsNoTracking().Where(x => x.TenantId == tenantId && x.RunId == run.Id).ToListAsync(cancellationToken);
+        // Payslips left out of this bank batch when it was created (cash/cheque, zero net) are not in the
+        // wage file either: they are validated out, and the run total is reconciled net of them.
+        var wpsExclusions = await Infrastructure.Payroll.PaymentBatchExclusions.LoadAsync(_db, tenantId, id, cancellationToken);
+        var wpsExcludedIds = wpsExclusions.Select(x => x.EmployeeId).ToHashSet();
+        var fileSlips = slips.Where(x => !wpsExcludedIds.Contains(x.EmployeeId)).ToList();
+        var runForFile = wpsExclusions.Count == 0 ? run : new PayrollRun
+        {
+            Id = run.Id, TenantId = run.TenantId, CompanyId = run.CompanyId, Year = run.Year, Month = run.Month,
+            Status = run.Status, TotalNetSalary = run.TotalNetSalary - wpsExclusions.Sum(x => x.Amount),
+        };
         var (hardBlocked, driftWarn) = await ComputePayReadinessAsync(tenantId, employees, cancellationToken);
-        var validation = Infrastructure.Payroll.WpsSifValidator.Validate(run, slips, profiles, employees, hardBlocked);
+        var validation = Infrastructure.Payroll.WpsSifValidator.Validate(runForFile, fileSlips, profiles, employees, hardBlocked);
         if (!validation.CanExport)
             return BadRequest(new
             {
@@ -5320,8 +5358,8 @@ public class PayrollController : ControllerBase
         // printed a placeholder as if it were an establishment into every file of a tenant that had not
         // configured one. Now a missing or placeholder id refuses the export with a stable code.
         var isKsaRegister = exporter is Infrastructure.CountryPack.Ksa.KsaWageProtectionExporter;
-        var agentId = await ResolveWpsEstablishmentIdAsync(tenantId, run.CompanyId, isKsaRegister, cancellationToken);
-        if (WpsEstablishmentError(agentId, isKsaRegister) is { } estError)
+        var (agentId, agentConflict) = await ResolveWpsEstablishmentIdAsync(tenantId, run.CompanyId, isKsaRegister, cancellationToken);
+        if ((agentConflict ?? WpsEstablishmentError(agentId, isKsaRegister)) is { } estError)
             return UnprocessableEntity(new { error = estError.Code, message = estError.Message, field = estError.Field });
         var currency    = !string.IsNullOrWhiteSpace(batch.Currency) && batch.Currency != "USD"
                             ? batch.Currency
@@ -5565,13 +5603,12 @@ public class PayrollController : ControllerBase
 
         // A frozen ANB Connect bank instruction is the KSA default bank file; it counts as the generated
         // file for this lifecycle even though the bank-export service deliberately never touches WpsStatus.
-        var hasBankInstruction = await _db.BankTransferFiles.AsNoTracking().AnyAsync(
-            f => f.TenantId == tenantId && f.PaymentBatchId == batchId
-              && f.FileName.StartsWith(Infrastructure.Payroll.SaudiBankExports.SaudiBankExportService.ArtifactPrefix),
-            cancellationToken);
+        var instructionGenerators = await new Infrastructure.Payroll.SaudiBankExports.SaudiBankExportService(_db)
+            .InstructionGeneratorsAsync(tenantId, new[] { batchId }, cancellationToken);
+        var hasBankInstruction = instructionGenerators.ContainsKey(batchId);
         if (latestFile is null && !hasBankInstruction)
             return BadRequest(new { error = "wps_file_missing", message = "Generate the bank payroll file (or the payroll register) for this batch before changing its WPS status." });
-        if (from == WpsStatuses.Draft && hasBankInstruction) from = WpsStatuses.Generated;
+        from = Infrastructure.Payroll.WpsLifecycleView.Effective(from, hasBankInstruction);
 
         if (req.Status is WpsStatuses.Submitted && string.IsNullOrWhiteSpace(req.Reference))
             return BadRequest(new { error = "submission_reference_required", message = "A statutory submission reference is required when marking WPS as Submitted." });
@@ -5598,6 +5635,21 @@ public class PayrollController : ControllerBase
                 return BadRequest(new { error = "acceptance_evidence_not_found", message = "That evidence was not found for this payment batch." });
             if (await evidence.ReadVerifiedAsync(tenantId, acceptanceEvidence, cancellationToken) is null)
                 return Conflict(new { error = "acceptance_evidence_integrity_failed", message = "The stored evidence file is missing or no longer matches its recorded SHA-256. Upload it again." });
+
+            // Maker-checker (the tenant's strict separation of duties): whoever generated the bank/WPS
+            // file or uploaded this evidence may not be the one who records it as accepted. An unknown
+            // caller cannot prove separation, so is refused too.
+            var deciderId = GetUserId();
+            var makers = new HashSet<Guid>();
+            if (acceptanceEvidence.UploadedBy is Guid uploader) makers.Add(uploader);
+            if (latestFile?.GeneratedByUserId is Guid fileMaker) makers.Add(fileMaker);
+            if (instructionGenerators.GetValueOrDefault(batchId) is Guid instructionMaker) makers.Add(instructionMaker);
+            var makerChecker = new Application.Approvals.MakerCheckerRule(
+                deciderId is not Guid d || makers.Contains(d),
+                new[] { WpsStatuses.Accepted },
+                Infrastructure.Payroll.WpsLifecycleView.MakerCheckerMessage);
+            if (makerChecker.IsViolated(req.Status))
+                return BadRequest(new { error = "acceptance_needs_second_person", message = makerChecker.Message });
         }
 
         if (req.Status is WpsStatuses.Rejected && string.IsNullOrWhiteSpace(req.Notes))
@@ -5696,9 +5748,14 @@ public class PayrollController : ControllerBase
                 from, to = req.Status, reference = req.Reference, notes = req.Notes,
                 evidenceId = acceptanceEvidence?.EvidenceId, evidenceKind = acceptanceEvidence?.Kind,
                 evidenceSha256 = acceptanceEvidence?.Sha256,
+                statusLabel = acceptanceEvidence is null ? null : Infrastructure.Payroll.WpsLifecycleView.AcceptedWithEvidenceLabel,
             }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
-        return Ok(new { batchId, wpsStatus = batch.WpsStatus });
+        return Ok(new
+        {
+            batchId, wpsStatus = batch.WpsStatus,
+            wpsStatusLabel = Infrastructure.Payroll.WpsLifecycleView.Label(batch.WpsStatus, acceptanceEvidence is null ? 0 : 1),
+        });
     }
 
     private Infrastructure.Payroll.WpsAcceptanceEvidenceService EvidenceService() => new(_db, _storage);
@@ -5734,11 +5791,19 @@ public class PayrollController : ControllerBase
             bytes = buffer.ToArray();
         }
 
+        var companyId = await _db.PayrollRuns.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && r.Id == batch.PayrollRunId).Select(r => r.CompanyId).FirstOrDefaultAsync(cancellationToken);
+
+        // Store + insert + audit commit together (and the stored object is removed if they do not).
         Infrastructure.Payroll.WpsEvidenceUploadResult result;
         try
         {
-            result = await EvidenceService().StoreAsync(tenantId, batchId, GetUserId(), form.Kind?.Trim(),
-                form.File.FileName, form.File.ContentType, bytes, form.Note, cancellationToken);
+            result = await EvidenceService().RecordAsync(tenantId, companyId, batchId, GetUserId(), form.Kind?.Trim(),
+                form.File.FileName, form.File.ContentType, bytes, form.Note,
+                e => PayrollAudit("payroll.wps.evidence_uploaded", "PayrollPaymentBatch", batchId.ToString(),
+                    new { evidenceId = e.EvidenceId, kind = e.Kind, sha256 = e.Sha256, sizeBytes = e.SizeBytes, contentType = e.ContentType },
+                    cancellationToken),
+                cancellationToken);
         }
         catch (InvalidOperationException ex) { return BadRequest(new { error = "evidence_storage_refused", message = ex.Message }); }
         if (result.Evidence is null)
@@ -5746,12 +5811,7 @@ public class PayrollController : ControllerBase
                 ? Conflict(new { error = result.Error, message = result.Message })
                 : BadRequest(new { error = result.Error, message = result.Message });
 
-        var e = result.Evidence;
-        await PayrollAudit("payroll.wps.evidence_uploaded", "PayrollPaymentBatch", batchId.ToString(),
-            new { evidenceId = e.EvidenceId, kind = e.Kind, sha256 = e.Sha256, sizeBytes = e.SizeBytes, contentType = e.ContentType },
-            cancellationToken);
-        await _db.SaveChangesAsync(cancellationToken);
-        return Ok(EvidenceDto(e));
+        return Ok(EvidenceDto(result.Evidence));
     }
 
     /// <summary>Acceptance evidence recorded for a batch (metadata only).</summary>
@@ -6550,7 +6610,11 @@ public class PayrollController : ControllerBase
             return batchScopeErr;
         var batch    = await _db.PayrollPaymentBatches.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batchId, cancellationToken);
         if (batch is null) return NotFound();
-        var wpsFile = await _db.WPSFileBatches.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.PaymentBatchId == batchId, cancellationToken);
+        // The LATEST generation for the batch (a resubmission after Rejected supersedes the original).
+        var wpsFile = await _db.WPSFileBatches.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.PaymentBatchId == batchId)
+            .OrderByDescending(x => x.CreatedAtUtc).ThenByDescending(x => x.Id)
+            .FirstOrDefaultAsync(cancellationToken);
         if (wpsFile is null) return BadRequest(new { message = "WPS file has not been generated for this batch yet." });
 
         var sifRecords  = await _db.SIFFileRecords.AsNoTracking().Where(x => x.TenantId == tenantId && x.WPSFileBatchId == wpsFile.Id).ToListAsync(cancellationToken);
@@ -6596,8 +6660,8 @@ public class PayrollController : ControllerBase
         }).ToList();
 
         var dlIsKsa = dlExporter is Infrastructure.CountryPack.Ksa.KsaWageProtectionExporter;
-        var dlEstablishmentId = await ResolveWpsEstablishmentIdAsync(tenantId, run?.CompanyId, dlIsKsa, cancellationToken);
-        if (WpsEstablishmentError(dlEstablishmentId, dlIsKsa) is { } dlEstError)
+        var (dlEstablishmentId, dlConflict) = await ResolveWpsEstablishmentIdAsync(tenantId, run?.CompanyId, dlIsKsa, cancellationToken);
+        if ((dlConflict ?? WpsEstablishmentError(dlEstablishmentId, dlIsKsa)) is { } dlEstError)
             return UnprocessableEntity(new { error = dlEstError.Code, message = dlEstError.Message, field = dlEstError.Field });
 
         var dlInput = new WageProtectionExportInput(
@@ -6612,8 +6676,18 @@ public class PayrollController : ControllerBase
             CompanyNameAr:   dlCompany?.LegalNameAr ?? string.Empty,
             Employees:       dlWpsEmployees);
 
+        // The bytes of a generated file are not stored; the download re-creates them from the frozen
+        // records. That is only honest if the result IS the file that was generated: the same format and
+        // the same SHA-256. A file generated in an older layout (e.g. the retired "mudad-xml"), or one
+        // whose inputs have since changed, is REFUSED rather than silently served in a different form.
         var dlResult = await dlExporter.ExportAsync(dlInput, cancellationToken);
         var fileHash = Convert.ToHexString(SHA256.HashData(dlResult.FileBytes)).ToLowerInvariant();
+        if (!string.Equals(wpsFile.FormatVersion, dlResult.Format, StringComparison.Ordinal))
+            return WpsFileNotReproducible(wpsFile, "it was generated in an older file format that this version no longer produces");
+        if (string.IsNullOrEmpty(wpsFile.FileHash) || !string.Equals(wpsFile.FileHash, fileHash, StringComparison.OrdinalIgnoreCase))
+            return WpsFileNotReproducible(wpsFile, string.IsNullOrEmpty(wpsFile.FileHash)
+                ? "no fingerprint (SHA-256) was recorded when it was generated"
+                : "the employee or payroll data it was built from has changed since, so it would not match its recorded SHA-256");
 
         // Advance lifecycle from Generated → Downloaded on first download.
         var tracked = await _db.PayrollPaymentBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batchId, cancellationToken);
@@ -6635,6 +6709,16 @@ public class PayrollController : ControllerBase
             Infrastructure.Payroll.WpsConformance.HeaderValue(dlResult.Format);
         return File(dlResult.FileBytes, mimeType, dlResult.FileName);
     }
+
+    private IActionResult WpsFileNotReproducible(WPSFileBatch file, string why) => Conflict(new
+    {
+        error = "wps_file_not_reproducible",
+        message = $"This file cannot be downloaded again because {why}. Only the exact file that was generated is ever served. "
+                  + "If you still need a file for this batch, mark the batch Rejected and generate a new one.",
+        formatVersion = file.FormatVersion,
+        formatLabel = Infrastructure.Payroll.WpsConformance.LabelFor(file.FormatVersion),
+        recordedSha256 = file.FileHash,
+    });
 
     /// <summary>
     /// Returns the WPS export history for a payment batch (all WPSFileBatch records).
@@ -6732,7 +6816,20 @@ public class PayrollController : ControllerBase
         // bare status therefore reports "Paid" over money that bounced. The per-employee confirmation
         // coverage rides alongside it so a batch with open returns can never present as terminal-clean.
         var d4BatchIds = batches.Select(b => b.Id).ToList();
-        var evidenceCounts = await EvidenceService().CountByBatchAsync(tenantId, d4BatchIds, cancellationToken);
+        var evidenceByBatch = await EvidenceService().ListForBatchesAsync(tenantId, d4BatchIds, cancellationToken);
+        // The lifecycle the screen shows and offers is computed HERE, once: the effective status (a frozen
+        // ANB instruction counts as Generated), its plain label, and the transitions an operator may pick.
+        var instructionMakers = await new Infrastructure.Payroll.SaudiBankExports.SaudiBankExportService(_db)
+            .InstructionGeneratorsAsync(tenantId, d4BatchIds, cancellationToken);
+        var latestWpsFiles = d4BatchIds.Count == 0
+            ? new Dictionary<Guid, WPSFileBatch>()
+            : (await _db.WPSFileBatches.AsNoTracking()
+                    .Where(f => f.TenantId == tenantId && d4BatchIds.Contains(f.PaymentBatchId))
+                    .ToListAsync(cancellationToken))
+                .GroupBy(f => f.PaymentBatchId)
+                .ToDictionary(g => g.Key, g => g.OrderByDescending(f => f.CreatedAtUtc).ThenByDescending(f => f.Id).First());
+        var batchExclusions = await Infrastructure.Payroll.PaymentBatchExclusions.LoadAsync(_db, tenantId, d4BatchIds, cancellationToken);
+        var viewerId = GetUserId();
         // KSA batches: the bank file is the ANB instruction and the generated XML is an internal register.
         var batchRunIds = batches.Select(b => b.PayrollRunId).Distinct().ToList();
         var ksaRunIds = (await (from r in _db.PayrollRuns.AsNoTracking()
@@ -6750,6 +6847,15 @@ public class PayrollController : ControllerBase
         {
             var cov = Infrastructure.Finance.BankConfirmationService.Coverage(
                 d4Records.Where(r => r.PaymentBatchId == b.Id).ToList());
+            var evidence = evidenceByBatch.GetValueOrDefault(b.Id) ?? new List<Infrastructure.Payroll.WpsEvidenceEnvelope>();
+            var latestEvidence = evidence.LastOrDefault();
+            var hasInstruction = instructionMakers.TryGetValue(b.Id, out var instructionMaker);
+            latestWpsFiles.TryGetValue(b.Id, out var latestWpsFile);
+            var hasFile = hasInstruction || latestWpsFile is not null;
+            var effective = Infrastructure.Payroll.WpsLifecycleView.Effective(b.WpsStatus, hasInstruction);
+            var acceptBlocked = viewerId is not Guid viewer
+                || viewer == instructionMaker || viewer == latestWpsFile?.GeneratedByUserId || viewer == latestEvidence?.UploadedBy;
+            var exclusions = batchExclusions.GetValueOrDefault(b.Id) ?? Array.Empty<Infrastructure.Payroll.PaymentBatchExclusion>();
             return new
             {
                 b.Id, b.TenantId, b.PayrollRunId, b.BatchNumber, b.PaymentMethod, b.TotalAmount, b.Currency,
@@ -6760,7 +6866,15 @@ public class PayrollController : ControllerBase
                 confirmationCoverage = cov.ConfirmationCoverage,
                 presentsCleanButIsNot = b.WpsStatus is WpsStatuses.Paid or WpsStatuses.Reconciled
                                         && (cov.FailedCount > 0 || cov.UnconfirmedCount > 0),
-                acceptanceEvidenceCount = evidenceCounts.GetValueOrDefault(b.Id),
+                acceptanceEvidenceCount = evidence.Count,
+                latestEvidenceId = latestEvidence?.EvidenceId,
+                effectiveWpsStatus = effective,
+                wpsStatusLabel = Infrastructure.Payroll.WpsLifecycleView.Label(effective, evidence.Count),
+                allowedNextStatuses = Infrastructure.Payroll.WpsLifecycleView.ManualNext(effective, hasFile),
+                // Why THIS viewer cannot record Accepted (maker-checker), so the screen can say so up front.
+                acceptBlockedReason = acceptBlocked ? Infrastructure.Payroll.WpsLifecycleView.MakerCheckerMessage : null,
+                paymentExclusions = exclusions,
+                excludedTotal = exclusions.Sum(x => x.Amount),
                 isSaudi = ksaRunIds.Contains(b.PayrollRunId),
                 generatedFileLabel = ksaRunIds.Contains(b.PayrollRunId)
                     ? Infrastructure.Payroll.WpsConformance.KsaPayrollRegisterLabel
@@ -8115,21 +8229,32 @@ public class PayrollController : ControllerBase
 
     // M1: audit log now captures caller IP and structured metadata
     /// <summary>
-    /// The establishment id a wage file carries: the legal entity's own GCC compliance row, else the
-    /// tenant-wide row, else (KSA only) the MOL establishment id saved in the Saudi bank-file settings.
-    /// Null when none is recorded — the caller refuses; there is no placeholder.
+    /// The establishment id a wage file carries. KSA: the MOL establishment id saved in the Saudi bank-file
+    /// settings (the id the bank instruction itself carries) is preferred over the GCC WpsAgentId; when
+    /// both are set and differ the export is refused, because two files for one month would name two
+    /// establishments. Other countries, and KSA without bank-file settings: the legal entity's own GCC
+    /// compliance row, else the tenant-wide row. Null when none is recorded — the caller refuses.
     /// </summary>
-    private async Task<string?> ResolveWpsEstablishmentIdAsync(Guid tenantId, Guid? companyId, bool isKsa, CancellationToken ct)
+    private async Task<(string? Id, Infrastructure.Payroll.SaudiBankExports.SaudiBankExportIssueDto? Conflict)> ResolveWpsEstablishmentIdAsync(
+        Guid tenantId, Guid? companyId, bool isKsa, CancellationToken ct)
     {
         var rows = await _db.GCCComplianceSettings.AsNoTracking()
             .Where(x => x.TenantId == tenantId && (x.CompanyId == null || x.CompanyId == companyId))
             .Select(x => new { x.CompanyId, x.WpsAgentId })
             .ToListAsync(ct);
-        var id = rows.FirstOrDefault(x => companyId != null && x.CompanyId == companyId && !string.IsNullOrWhiteSpace(x.WpsAgentId))?.WpsAgentId
-              ?? rows.FirstOrDefault(x => x.CompanyId == null && !string.IsNullOrWhiteSpace(x.WpsAgentId))?.WpsAgentId;
-        if (string.IsNullOrWhiteSpace(id) && isKsa && companyId is Guid c)
-            id = (await new Infrastructure.Payroll.SaudiBankExports.SaudiBankExportService(_db).GetSettingsAsync(tenantId, c, ct)).MolEstablishmentId;
-        return string.IsNullOrWhiteSpace(id) ? null : id.Trim();
+        var agentId = rows.FirstOrDefault(x => companyId != null && x.CompanyId == companyId && !string.IsNullOrWhiteSpace(x.WpsAgentId))?.WpsAgentId
+                   ?? rows.FirstOrDefault(x => x.CompanyId == null && !string.IsNullOrWhiteSpace(x.WpsAgentId))?.WpsAgentId;
+        agentId = string.IsNullOrWhiteSpace(agentId) ? null : agentId.Trim();
+        if (!isKsa || companyId is not Guid c) return (agentId, null);
+
+        var mol = (await new Infrastructure.Payroll.SaudiBankExports.SaudiBankExportService(_db).GetSettingsAsync(tenantId, c, ct)).MolEstablishmentId;
+        mol = string.IsNullOrWhiteSpace(mol) ? null : mol.Trim();
+        if (mol is not null && agentId is not null && !string.Equals(mol, agentId, StringComparison.Ordinal))
+            return (null, new("mol_establishment_id_conflict",
+                $"Two different establishment IDs are recorded for this company: {mol} in the Saudi bank-file settings and {agentId} "
+                + "as the WPS employer ID in Setup \u2192 Compliance. Make them the same (the MOL establishment ID shown in Qiwa), then try again.",
+                null, "molEstablishmentId"));
+        return (mol ?? agentId, null);
     }
 
     /// <summary>Null when the id is usable. KSA applies the [MOL-ESTBID] rule; every country refuses a
