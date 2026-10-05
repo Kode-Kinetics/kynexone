@@ -9,14 +9,17 @@ Tests: `Zayra.Api.Tests/Security/PrivilegedMfaEnforcementTests.cs`, `MfaStatusHt
 - **Tenant users holding any privileged permission** — through a role, an override or a company
   grant's role. Every permission is privileged **by default**; only an explicit list is not:
   self-service/own-record (`profile.*`, `ess.*`, `loans.self`, `attendance.kiosk`, `leave.write`,
-  `overtime.write`), read-only views (`*.read`, `ai.query`, `ai.insights_view`) and a line manager's
+  `overtime.write`), read-only views (`*.read` except `payroll.read`, plus `ai.query`,
+  `ai.insights_view`) and a line manager's
   decisions on their own team (`manager.approve`, `approvals.write`, `approvals.decide`,
   `leave.approve`, `overtime.approve`, `performance.write`). See
   `PrivilegedMfaPolicy.NonPrivilegedPermissions`. Access-mode bundles (ESS, Mobile, Kiosk) are not
   counted. A new permission requires MFA until it is classified, and a test fails until it is.
   With the seeded roles that means: Admin, HR Director, HR Manager, HR Officer, Payroll Manager,
-  Payroll Officer, Finance, Finance Approver, Compliance Officer, Supervisor and Recruiter.
-  Not: Employee, Manager, HR Assistant, Auditor, Kiosk Operator.
+  Payroll Officer, Finance, Finance Approver, Compliance Officer, Supervisor, Recruiter and Auditor
+  (`payroll.read`). Not: Employee, Manager, HR Assistant, Kiosk Operator.
+- The tenant audit log (`GET /api/audit-logs`) returns raw metadata, IP and user agent only to
+  callers holding `security.manage`; other readers get the event without them.
 - Unchanged: a tenant can still require MFA for *all* its users (`security_settings.mfa_required`).
 
 ## When

@@ -74,7 +74,7 @@ public static class PrivilegedMfaPolicy
         "leave.write", "overtime.write",
         // Read-only views.
         "dashboard.read", "employees.read", "organization.read", "attendance.read", "leave.read",
-        "overtime.read", "payroll.read", "payroll.rates.read", "loans.read", "recruitment.read",
+        "overtime.read", "payroll.rates.read", "loans.read", "recruitment.read",
         "performance.read", "compliance.read", "manager.read", "approvals.read", "reports.read",
         "notifications.read", "localization.read", "shifts.read", "qiwa.read", "audit.read",
         "finance.gl.read", "ai.query", "ai.insights_view",
@@ -94,6 +94,7 @@ public static class PrivilegedMfaPolicy
         // Access control and identity.
         "users.manage", "roles.manage", "security.manage",
         // Payroll, banking and statutory money.
+        "payroll.read", // every employee's pay and bank lines, read-only but sensitive
         "payroll.write", "payroll.approve", "payroll.lock", "payroll.run_delete", "payroll.export",
         "payroll.structure_manage", "payroll.rates.manage", "payroll.rates.statutory_override",
         ReportAccessPolicy.SensitivePermission, // employees.sensitive — salary, IBAN, identity fields

@@ -100,6 +100,7 @@ public sealed class PrivilegedMfaEnforcementTests
     [InlineData("payroll.lock")]
     [InlineData("employees.sensitive")]
     [InlineData("loans.approve")]
+    [InlineData("payroll.read")]
     public void NamedHighRiskPermissions_ArePrivileged(string key)
         => PrivilegedMfaPolicy.IsPrivilegedPermission(key).Should().BeTrue();
 
@@ -172,8 +173,9 @@ public sealed class PrivilegedMfaEnforcementTests
             "Compliance Officer",  // compliance.write, employees.documents
             "Supervisor",          // attendance.write (drives overtime and deductions)
             "Recruiter",           // recruitment.write (candidate PII, offers)
+            "Auditor",             // payroll.read (every employee's pay and bank lines)
         });
-        privileged.Should().NotContain(new[] { "Employee", "Manager", "HR Assistant", "Auditor", "Kiosk Operator" },
+        privileged.Should().NotContain(new[] { "Employee", "Manager", "HR Assistant", "Kiosk Operator" },
             "self-service, read-only and own-team roles must not be forced onto MFA");
     }
 
@@ -202,7 +204,7 @@ public sealed class PrivilegedMfaEnforcementTests
         await kit.SetPlatformEnforcementDateAsync(Past);
         var hash = new Pbkdf2PasswordHasher().Hash(Password);
         await kit.SeedUserAsync("desk@hardening.local", hash, "Salary Desk", "payroll.read", "payroll.write", "employees.sensitive");
-        await kit.SeedUserAsync("viewer@hardening.local", hash, "Roster Viewer", "employees.read", "attendance.read", "payroll.read");
+        await kit.SeedUserAsync("viewer@hardening.local", hash, "Roster Viewer", "employees.read", "attendance.read", "leave.read");
 
         (await LoginAsync(kit, "desk@hardening.local")).RequiresMfaEnrollment.Should().BeTrue(
             "a custom role that can run payroll and read bank details is a Payroll role whatever it is called");
