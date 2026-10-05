@@ -62,7 +62,7 @@ public static class GosiCalculationService
         if (Compliance.SaudiNationality.IsSaudi(nationality))
             return GosiClassifications.Saudi;
 
-        if (GccNationalityTerms.ContainsKey(nationality))
+        if (GccNationalityTerms.ContainsKey(nationality.Trim()))
             return GosiClassifications.GCC;
 
         return GosiClassifications.NonSaudi;
@@ -76,7 +76,7 @@ public static class GosiCalculationService
     public static string? DeriveGccHomeState(string? nationality)
         => !string.IsNullOrWhiteSpace(nationality)
            && !Compliance.SaudiNationality.IsSaudi(nationality)
-           && GccHomeStates.TryGetValue(nationality, out var iso)
+           && GccHomeStates.TryGetValue(nationality.Trim(), out var iso)
             ? iso
             : null;
 

@@ -20,6 +20,9 @@ public class SaudiNationalityTests
     [InlineData("sau")]
     [InlineData("سعودية")]
     [InlineData("السعودية")]
+    [InlineData("Kingdom of Saudi Arabia")]
+    [InlineData("سعودى")]
+    [InlineData(" المملكة العربية السعودية ")]
     public void Every_saudi_spelling_classifies_as_saudi_for_gosi(string nationality)
     {
         GosiCalculationService.DeriveClassification(nationality).Should().Be(GosiClassifications.Saudi);
@@ -46,6 +49,8 @@ public class SaudiNationalityTests
     [InlineData("Bahraini", "BH")]
     [InlineData("UAE", "AE")]
     [InlineData("Kuwait", "KW")]
+    [InlineData(" Bahraini ", "BH")]
+    [InlineData("omani ", "OM")]
     public void Gcc_classification_is_unchanged(string nationality, string home)
     {
         GosiCalculationService.DeriveClassification(nationality).Should().Be(GosiClassifications.GCC);

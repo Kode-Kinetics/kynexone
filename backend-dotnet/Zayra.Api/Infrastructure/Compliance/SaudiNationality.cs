@@ -14,9 +14,10 @@ public static class SaudiNationality
     private static readonly HashSet<string> Spellings = new(StringComparer.OrdinalIgnoreCase)
     {
         // Country, demonym, ISO-2/ISO-3 and the common abbreviation.
-        "KSA", "Saudi", "Saudi Arabia", "Saudi Arabian", "SA", "SAU",
-        // Arabic: Saudi (m.), Saudi (f.), Saudi Arabia.
-        "سعودي", "سعودية", "السعودية",
+        "KSA", "Saudi", "Saudi Arabia", "Saudi Arabian", "Kingdom of Saudi Arabia", "SA", "SAU",
+        // Arabic: Saudi (m.), the same with a dotless final ya (سعودى, common in Egyptian-style input),
+        // Saudi (f.), Saudi Arabia, and the Kingdom of Saudi Arabia.
+        "سعودي", "سعودى", "سعودية", "السعودية", "المملكة العربية السعودية",
         // Kept from the GCC readiness floor's own list, so no caller loses a spelling it accepted.
         "SaudiArabia",
     };
