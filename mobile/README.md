@@ -255,7 +255,8 @@ The runtime version uses the **fingerprint** policy: a hash of native code and t
 - adding, removing or upgrading a dependency with native code (any `expo-*` module, `react-native-*`, the Expo SDK). Example: `expo-screen-capture`, which blocks screenshots of the MFA setup key, is native;
 - config plugins (`plugins` in `app.json`);
 - native keys in `app.json`/`app.config.js`: `ios`, `android`, permissions, `infoPlist`, `scheme`, icons/splash, `version`;
-- a profile's `env` in `eas.json`, the code-signing certificate, and `.gitignore` (part of the fingerprint).
+- a profile's `env` in `eas.json`, and the code-signing certificate;
+- `mobile/.gitignore`. The fingerprint hashes it (source reason `bareGitIgnore`), so any edit, even a comment, changes the runtime version. It is deliberately not in `fingerprint.config.js` `ignorePaths`, because Expo does not document that as safe.
 
 ```bash
 # Ship JS/asset changes to production binaries (the only supported way)

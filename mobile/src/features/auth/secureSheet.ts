@@ -20,12 +20,16 @@ export interface SecureSheet<T> {
   open(value: T): Promise<void>;
   /** Hide the sheet, then release the window. */
   close(): void;
-  /** Release on unmount without touching state. */
+  /** Release on unmount without touching state. Any later open() releases and does nothing else. */
   dispose(): void;
 }
 
 export function createSecureSheet<T>(capture: ScreenCaptureApi, setSheet: (value: T | null) => void): SecureSheet<T> {
   let secured = false;
+  // Set on unmount. An open() still in flight (the banner unmounted while the
+  // enrolment token was being fetched) must neither show a sheet nor leave the
+  // window secured.
+  let disposed = false;
   const release = () => {
     if (!secured) return;
     secured = false;
@@ -33,11 +37,21 @@ export function createSecureSheet<T>(capture: ScreenCaptureApi, setSheet: (value
   };
   return {
     async open(value) {
+      if (disposed) {
+        void capture.allowScreenCaptureAsync(MFA_SHEET_CAPTURE_KEY).catch(() => undefined);
+        return;
+      }
       try {
         await capture.preventScreenCaptureAsync(MFA_SHEET_CAPTURE_KEY);
         secured = true;
       } catch {
         // Module unavailable (e.g. web): continue unprotected rather than lock the user out.
+      }
+      if (disposed) {
+        // Unmounted while securing: undo it and show nothing.
+        secured = false;
+        void capture.allowScreenCaptureAsync(MFA_SHEET_CAPTURE_KEY).catch(() => undefined);
+        return;
       }
       setSheet(value);
     },
@@ -45,6 +59,9 @@ export function createSecureSheet<T>(capture: ScreenCaptureApi, setSheet: (value
       setSheet(null);
       release();
     },
-    dispose: release,
+    dispose() {
+      disposed = true;
+      release();
+    },
   };
 }

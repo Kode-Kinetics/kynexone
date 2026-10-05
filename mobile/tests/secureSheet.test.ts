@@ -44,6 +44,33 @@ test('restart: close-then-open re-secures before the new sheet appears', async (
   assert.deepEqual(log.slice(-2), ['prevent:mfa-sheet', 'open:token-2']);
 });
 
+test('open() after dispose() (unmounted mid-fetch) releases the window and never opens the sheet', async () => {
+  const { log, sheet } = harness();
+  sheet.dispose();
+  await sheet.open('token-late');
+  assert.deepEqual(log, ['allow:mfa-sheet']);
+});
+
+test('dispose() while open() is securing: released afterwards, sheet never opened', async () => {
+  const log: string[] = [];
+  let finishPrevent: () => void = () => undefined;
+  const capture = {
+    preventScreenCaptureAsync(key?: string) {
+      log.push(`prevent:${key}`);
+      return new Promise<void>((resolve) => { finishPrevent = resolve; });
+    },
+    async allowScreenCaptureAsync(key?: string) {
+      log.push(`allow:${key}`);
+    },
+  };
+  const sheet = createSecureSheet<string>(capture, (value) => log.push(value === null ? 'close' : `open:${value}`));
+  const opening = sheet.open('token-1');
+  sheet.dispose();
+  finishPrevent();
+  await opening;
+  assert.deepEqual(log, ['prevent:mfa-sheet', 'allow:mfa-sheet']);
+});
+
 test('if securing fails the sheet still opens (never block enrolment) and nothing is released', async () => {
   const { log, sheet } = harness({ preventFails: true });
   await sheet.open('token-1');
