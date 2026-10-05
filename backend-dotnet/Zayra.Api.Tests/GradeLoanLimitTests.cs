@@ -680,7 +680,7 @@ public class GradeLoanLimitTests
 
         var hr = h.Controller("HR Manager");
         Assert.IsType<OkObjectResult>(await hr.SetLoanTypeOffering(new SetLoanOfferingRequest(h.Company.Id, h.Type.Id, false), default));
-        Assert.Contains("LoanTypeNotOffered", (await h.Assess(100m)).Codes);
+        Assert.Equal(new[] { "LoanTypeNotOffered" }, (await h.Assess(100m)).Codes);   // the only reason while off
         var on = Json(Ok(await hr.SetLoanTypeOffering(new SetLoanOfferingRequest(h.Company.Id, h.Type.Id, true), default)), web: true);
         Assert.Contains("\"source\":\"LoanTypeBaseline\"", on);
 

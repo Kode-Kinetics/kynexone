@@ -313,7 +313,9 @@ public partial class LoansController
             // Switching OFF with no policy at all: the terms are never used (nothing can be applied for), so the
             // loan-type limits are recorded only to keep the version complete; switching ON retires this row.
             var basis = current ?? new LoanPolicy { PolicyName = type.NameEn, MaxAmount = type.MaxAmount,
-                MaxInstallments = Math.Clamp(type.MaxInstallments, 1, 600), MinServiceMonths = type.MinServiceMonths, MaxConcurrentLoans = 1 };
+                MaxInstallments = Math.Clamp(type.MaxInstallments, 1, 600), MinServiceMonths = type.MinServiceMonths,
+                // Same as the eligibility baseline (unlimited), so "not offered" is the only reason shown while off.
+                MaxConcurrentLoans = int.MaxValue };
             var next = JsonSerializer.Deserialize<LoanPolicy>(JsonSerializer.Serialize(basis))!;
             next.Id = Guid.NewGuid(); next.TenantId = tid; next.CompanyId = req.CompanyId; next.LoanTypeId = type.Id;
             next.Version = version + 1; next.IsActive = true; next.IsOffered = req.Offered;
