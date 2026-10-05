@@ -55,7 +55,7 @@ export default function ComplianceProfilesPage() {
           Company{' '}
           <select
             value={companyId}
-            onChange={(e) => { loadRevision.current++; setReadiness(null); setLoading(true); setCompanyId(e.target.value); }}
+            onChange={(e) => { if (e.target.value !== companyId) setCompanyId(e.target.value); }}
             className="ms-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-slate-200"
           >
             {companies.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.code})</option>)}

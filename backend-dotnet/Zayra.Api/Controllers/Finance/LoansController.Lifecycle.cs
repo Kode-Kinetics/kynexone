@@ -94,13 +94,13 @@ public partial class LoansController
     }, ct);
 
     [HttpGet("{id:guid}/changes")]
-    [HasPermission("loans.read", "loans.write")]
+    [HasPermission("loans.self", "loans.read", "loans.write")]
     public async Task<IActionResult> ListLoanChanges(Guid id, CancellationToken ct)
     {
         if (LoansReadDenial(this) is { } denied) return denied;
         var loan = await FindVisibleLoanForReadAsync(id, ct);
         if (loan == null) return NotFound();
-        if (!await CanAccessLoanAsync(loan, ct)) return Forbid();
+        if (!await CanReadLoanAsync(loan, ct)) return Forbid();
         var ownLoan = await _db.Employees.AnyAsync(x => x.TenantId == GetTenantId() && x.Id == loan.EmployeeIntId && x.UserAccountId == GetUserId() && !x.IsDeleted, ct);
         var changesQuery = ownLoan
             ? Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.LoanChangeRequests, GetTenantId(), "Owner-only historical changes after transfer, restricted to the authorized loan and linked employee.")

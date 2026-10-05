@@ -75,24 +75,34 @@ public partial class LoansController : ControllerBase
     // ── Employee Loans ────────────────────────────────────────────────────────
 
     /// <summary>
-    /// F10 — the loan book is read behind loans.read or loans.write (the Loans page's own navigation rule;
-    /// HR Manager holds loans.write). These GETs had no permission gate, only the employee-scope filter,
-    /// so every organisation-wide reader — Compliance Officer, Recruiter, HR Assistant — read every loan.
-    /// Employees see their own loans through self-service, which does not use these endpoints.
+    /// F10 — the loan book is read behind loans.read or loans.write (the Loans page's staff navigation rule;
+    /// HR Manager holds loans.write). loans.self is a separate owner-only capability for employee self-service.
+    /// These GETs had no permission gate, only the employee-scope filter, so every organisation-wide reader —
+    /// Compliance Officer, Recruiter, HR Assistant — read every loan.
     /// </summary>
     internal static IActionResult? LoansReadDenial(ControllerBase controller) =>
-        controller.User.HasPermission("loans.read") || controller.User.HasPermission("loans.write")
+        controller.User.HasPermission("loans.self") || controller.User.HasPermission("loans.read") || controller.User.HasPermission("loans.write")
             ? null
             : controller.StatusCode(StatusCodes.Status403Forbidden, new
             {
                 error = "loans_read_forbidden",
-                message = "Loans and salary advances are shown to holders of the loans.read or loans.write permission. " +
+                message = "Loans and salary advances are shown to holders of the loans.self, loans.read or loans.write permission. " +
                           "Ask an administrator if you need them.",
-                requiredPermissions = new[] { "loans.read", "loans.write" },
+                requiredPermissions = new[] { "loans.self", "loans.read", "loans.write" },
             });
 
+    private bool CanReadLoanBook() => User.HasPermission("loans.read") || User.HasPermission("loans.write");
+
+    private async Task<bool> CanReadLoanAsync(EmployeeLoan loan, CancellationToken ct)
+    {
+        if (CanReadLoanBook()) return await CanAccessLoanAsync(loan, ct);
+        if (!User.HasPermission("loans.self") || GetUserId() is not { } userId || !loan.EmployeeIntId.HasValue) return false;
+        return await _db.Employees.AnyAsync(x => x.TenantId == GetTenantId() && x.Id == loan.EmployeeIntId
+            && x.UserAccountId == userId && !x.IsDeleted, ct);
+    }
+
     [HttpGet]
-    [HasPermission("loans.read", "loans.write")]
+    [HasPermission("loans.self", "loans.read", "loans.write")]
     public async Task<IActionResult> ListLoans(
         [FromQuery] Guid? employeeId, [FromQuery] string? status,
         [FromQuery] int page = 1, [FromQuery] int pageSize = 30, CancellationToken ct = default, [FromQuery] bool mine = false)
@@ -100,6 +110,8 @@ public partial class LoansController : ControllerBase
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
         if (LoansReadDenial(this) is { } denied) return denied;
+        // An owner-only caller cannot turn off the server-resolved ownership filter with ?mine=false.
+        if (!CanReadLoanBook()) mine = true;
         var tid = GetTenantId();
         var scope = await _scopeService.ResolveAsync(User, tid, ct);
         var q = _db.EmployeeLoans.Where(x => x.TenantId == tid && !x.IsDeleted);
@@ -123,7 +135,7 @@ public partial class LoansController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
-    [HasPermission("loans.read", "loans.write")]
+    [HasPermission("loans.self", "loans.read", "loans.write")]
     public async Task<IActionResult> GetLoan(Guid id, CancellationToken ct)
     {
         if (LoansReadDenial(this) is { } denied) return denied;
@@ -131,7 +143,7 @@ public partial class LoansController : ControllerBase
         var loan = await FindVisibleLoanForReadAsync(id, ct);
         if (loan == null) return NotFound();
         // Object-level authorization still constrains ordinary company-scoped employee/manager reads.
-        if (!await CanAccessLoanAsync(loan, ct)) return Forbid();
+        if (!await CanReadLoanAsync(loan, ct)) return Forbid();
         var installments = await _db.LoanInstallments.Where(x => x.LoanId == id && x.TenantId == tid).OrderBy(x => x.InstallmentNumber).ToListAsync(ct);
         var approvals = await _db.LoanApprovals.Where(x => x.LoanId == id && x.TenantId == tid).OrderBy(x => x.StepOrder).ToListAsync(ct);
         var auditLogs = await _db.LoanAuditLogs.AsNoTracking().Where(x => x.LoanId == id && x.TenantId == tid).OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct);
@@ -445,7 +457,7 @@ public partial class LoansController : ControllerBase
         Task.FromResult<IActionResult>(Conflict("Record a repayment with its payment reference through the repayments endpoint. Waivers require a separate write-off workflow."));
 
     [HttpGet("{id:guid}/installments")]
-    [HasPermission("loans.read", "loans.write")]
+    [HasPermission("loans.self", "loans.read", "loans.write")]
     public async Task<IActionResult> GetInstallments(Guid id, CancellationToken ct)
     {
         if (LoansReadDenial(this) is { } denied) return denied;
@@ -453,7 +465,7 @@ public partial class LoansController : ControllerBase
         // Same permission and object-level checks as GetLoan, including the bounded historical transfer read.
         var loan = await FindVisibleLoanForReadAsync(id, ct);
         if (loan == null) return NotFound();
-        if (!await CanAccessLoanAsync(loan, ct)) return Forbid();
+        if (!await CanReadLoanAsync(loan, ct)) return Forbid();
         return Ok(await _db.LoanInstallments.Where(x => x.LoanId == id && x.TenantId == tid)
             .OrderBy(x => x.InstallmentNumber).ToListAsync(ct));
     }

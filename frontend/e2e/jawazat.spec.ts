@@ -27,7 +27,7 @@ async function boot(page: Page, route: string, role: string, handler: (path: str
     return interception.fulfill({ json: { items: [], total: 0 } });
   });
   await page.goto(route);
-  await expect(page).toHaveURL(new URL(route, 'http://localhost:5183').href);
+  await expect(page).toHaveURL(url => `${url.pathname}${url.search}` === route);
   await expect(page).toHaveTitle(/Kynex/i);
   return errors;
 }

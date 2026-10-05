@@ -50,7 +50,7 @@ export function LoanPoliciesTab({ loanTypes }: { loanTypes: LoanType[] }) {
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
     if (accessibleCompanies.length) return;
-    companiesApi.list(1, 250).then(result => { setCompanies(result.items); setCompanyId(current => current || result.items[0]?.id || ''); }).catch(() => {});
+    companiesApi.listAll().then(items => { setCompanies(items); setCompanyId(current => current || items[0]?.id || ''); }).catch(() => {});
   }, [accessibleCompanies.length]);
   const save = async () => {
     if (!form.companyId || !form.loanTypeId || !form.policyName.trim() || !form.allowedRepaymentMethods.length) { setError('Choose a company, loan type, policy name and at least one repayment method.'); return; }

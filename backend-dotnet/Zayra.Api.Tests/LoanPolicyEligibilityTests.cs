@@ -6,7 +6,9 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Controllers.Finance;
 using Zayra.Api.Data;
+using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Finance;
+using Zayra.Api.Infrastructure.Seed;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Tests;
@@ -204,6 +206,60 @@ public class LoanPolicyEligibilityTests
         }
     }
 
+    [Fact]
+    public async Task SelfPermission_ForcesOwnerFilterAndRejectsAnotherVisibleEmployeesLoan()
+    {
+        await using var h = await Fixture.Create();
+        var otherEmployee = new Employee
+        {
+            TenantId = h.Tid, CompanyId = h.Employee.CompanyId, UserAccountId = Guid.NewGuid(),
+            FullName = "Another borrower", EmployeeCode = "P2", Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-1)
+        };
+        h.Db.Add(otherEmployee);
+        await h.Db.SaveChangesAsync();
+        var own = h.Loan("Active", 100);
+        var other = h.Loan("Active", 200);
+        other.EmployeeIntId = otherEmployee.Id;
+        other.EmployeeId = otherEmployee.PublicId;
+        h.Db.AddRange(own, other);
+        await h.Db.SaveChangesAsync();
+        var controller = h.Controller("Employee");
+        ((ClaimsIdentity)controller.User.Identity!).AddClaim(new Claim("permission", "loans.self"));
+
+        var listed = Assert.IsType<OkObjectResult>(await controller.ListLoans(null, null, mine: false));
+        var json = JsonSerializer.SerializeToElement(listed.Value);
+        Assert.Equal(1, json.GetProperty("total").GetInt32());
+        Assert.Equal(own.Id, json.GetProperty("items")[0].GetProperty("Id").GetGuid());
+        Assert.IsType<OkObjectResult>(await controller.GetLoan(own.Id, default));
+        Assert.IsType<ForbidResult>(await controller.GetLoan(other.Id, default));
+    }
+
+    [Fact]
+    public async Task SeededLoanRoles_HaveUniqueLevelsAndRepairEmployeeBroadReadGrant()
+    {
+        await using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
+        var tid = Guid.NewGuid();
+        db.Tenants.Add(new Tenant { Id = tid, Name = "Loan roles", Slug = $"loan-roles-{tid:N}" });
+        await db.SaveChangesAsync();
+        var seeder = new AuthSeeder(db);
+        await seeder.EnsureTenantRolesAsync(tid);
+        var employee = await db.Roles.Include(x => x.RolePermissions).SingleAsync(x => x.TenantId == tid && x.Name == "Employee");
+        var broadRead = await db.Permissions.SingleAsync(x => x.Key == "loans.read");
+        employee.RolePermissions.Add(new RolePermission { RoleId = employee.Id, PermissionId = broadRead.Id });
+        await db.SaveChangesAsync();
+
+        await seeder.EnsureTenantRolesAsync(tid);
+        db.ChangeTracker.Clear();
+        var roles = await db.Roles.Where(x => x.TenantId == tid).Include(x => x.RolePermissions).ThenInclude(x => x.Permission).ToListAsync();
+        Assert.Equal(roles.Count, roles.Select(x => x.AuthorityLevel).Distinct().Count());
+        Assert.Equal(7, roles.Single(x => x.Name == "Finance").AuthorityLevel);
+        var employeeRole = roles.Single(x => x.Name == "Employee");
+        var employeeKeys = employeeRole.RolePermissions.Select(x => x.Permission!.Key).ToArray();
+        Assert.Contains("loans.self", employeeKeys);
+        Assert.DoesNotContain("loans.read", employeeKeys);
+    }
+
     [Theory]
     [InlineData("loans.read")]
     [InlineData("loans.write")]
@@ -249,11 +305,12 @@ public class LoanPolicyEligibilityTests
         await h.Db.SaveChangesAsync();
         var http = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(new[] {
             new Claim("tenant_id", h.Tid.ToString()), new Claim(ClaimTypes.NameIdentifier, userId.ToString()),
-            new Claim("permission", "loans.read"),
+            new Claim("permission", "loans.self"),
             new Claim(ClaimTypes.Role, "Employee"), new Claim("entity_access", JsonSerializer.Serialize(new { c = h.Employee.CompanyId, r = "Employee" })) }, "test")) };
         await using var scopedDb = new ZayraDbContext(h.Options, new HttpContextAccessor { HttpContext = http });
         var controller = new LoansController(scopedDb, new Scope()) { ControllerContext = new() { HttpContext = http } };
-        var listed = Assert.IsType<OkObjectResult>(await controller.ListLoans(null, null, mine: true));
+        // loans.self is owner-only even when the caller explicitly sends mine=false.
+        var listed = Assert.IsType<OkObjectResult>(await controller.ListLoans(null, null, mine: false));
         var listJson = JsonSerializer.SerializeToElement(listed.Value);
         Assert.Equal(1, listJson.GetProperty("total").GetInt32());
         Assert.Empty(await scopedDb.LoanRepayments.ToListAsync()); // proves the ambient old-company filter is active

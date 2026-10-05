@@ -92,11 +92,11 @@ export const ROLE_POLICY: PolicyRule[] = [
     'An auditor is read-only by definition (mirrors Zayra.Api.Tests/Security/AuditorReadOnlyTests).'),
   confinedTo('kiosk-operator-is-kiosk-only', 'Kiosk Operator', 'attendance.kiosk', (key) => key === 'attendance.kiosk',
     'A kiosk device account captures punches and nothing else.', ['attendance.kiosk']),
-  confinedTo('employee-is-self-service-only', 'Employee', 'dashboard/profile/ess and performance.read',
-    (key) => key === 'dashboard.read' || key.startsWith('profile.') || key.startsWith('ess.') || key === 'performance.read',
+  confinedTo('employee-is-self-service-only', 'Employee', 'dashboard/profile/ess, loans.self and performance.read',
+    (key) => key === 'dashboard.read' || key.startsWith('profile.') || key.startsWith('ess.') || key === 'loans.self' || key === 'performance.read',
     'An employee sees their own record through self-service, never other people\'s records or pay. '
-    + 'performance.read opens only their OWN review and goals (data scope); goals are set by others, so no performance.write.',
-    ['performance.read']),
+    + 'loans.self and performance.read open only their OWN records (object/data scope); goals are set by others, so no performance.write.',
+    ['loans.self', 'performance.read']),
   onlyHeldBy('erp-confirm-is-the-checker', 'finance.erp.confirm', ['Admin', 'Finance Approver'],
     'Maker-checker on the GL hand-off: Payroll Manager produces the journal export, so it must not also attest '
     + 'that the client ERP imported it.'),
