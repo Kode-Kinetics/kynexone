@@ -76,8 +76,8 @@ public partial class LoansController
         }, ct);
 
     [HttpGet("eligibility")]
-    public async Task<IActionResult> GetLoanEligibility([FromQuery] Guid loanTypeId, [FromQuery] decimal amount,
-        [FromQuery] int installments, [FromQuery] string repaymentMethod = "BankTransfer", [FromQuery] int? employeeIntId = null, CancellationToken ct = default)
+    public async Task<IActionResult> GetLoanEligibility([FromQuery] Guid loanTypeId, [FromQuery] decimal? amount,
+        [FromQuery] int? installments, [FromQuery] string repaymentMethod = "BankTransfer", [FromQuery] int? employeeIntId = null, CancellationToken ct = default)
     {
         var tid = GetTenantId();
         var uid = GetUserId();
@@ -90,13 +90,37 @@ public partial class LoansController
         var type = await _db.LoanTypes.FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == loanTypeId && !x.IsDeleted && x.IsActive, ct);
         if (employee == null || type == null) return NotFound();
         if (!IsHrLoanActor() && !IsFinanceActor() && employee.UserAccountId != uid) return Forbid();
-        var result = await new LoanEligibilityService(_db).EvaluateAsync(tid, employee, type, amount, installments, repaymentMethod, ct: ct);
+        // No amount (or 0) = preview: the employee sees their limit as soon as they pick a type.
+        var preview = amount is null or 0m;
+        var result = await new LoanEligibilityService(_db).EvaluateAsync(tid, employee, type, amount ?? 0m, installments ?? 0,
+            repaymentMethod, ct: ct, preview: preview);
         var policy = JsonSerializer.Deserialize<LoanPolicy>(result.PolicySnapshotJson)!;
         var canRequestException = !result.Eligible && policy.AllowExceptions && result.Codes.All(LoanLifecycleService.ExceptionCodes.Contains);
-        decimal? monthlySalary = IsHrLoanActor() || IsFinanceActor() || employee.UserAccountId == uid ? result.MonthlySalary : null;
+        var maySeeSalary = IsHrLoanActor() || IsFinanceActor() || employee.UserAccountId == uid;
+        decimal? monthlySalary = maySeeSalary ? result.MonthlySalary : null;
+        if (result.Codes.Contains(GradeLimitCodes.NotConfigured))
+        {
+            // The employee is told "HR has been notified" — make it true.
+            await new GradeLoanLimitResolver(_db).NotifyLimitNotConfiguredAsync(tid, employee, type, ct);
+            await _db.SaveChangesAsync(ct);
+        }
+        // Salary-derived figures in the breakdown are the same salary monthlySalary already gates.
+        var limits = (result.Limits ?? []).Select(x => maySeeSalary ? x : x with { SalaryBasisAmount = null }).ToList();
         return Ok(new { result.Eligible, result.Reasons, result.Codes, result.MaxAvailableAmount, result.PolicyId, result.PolicyVersion,
-            monthlySalary, result.CommittedAmount, canRequestException });
+            monthlySalary, result.CommittedAmount, canRequestException,
+            preview, available = result.Available, bindingLimit = result.BindingLimit, limitBreakdowns = limits,
+            gradeLimit = GradeLimitDto(result.GradeLimit, maySeeSalary) });
     }
+
+    /// <summary>The eligibility response's <c>gradeLimit</c> block. Codes are stable; text is English (the UI maps codes to Arabic).</summary>
+    private static object? GradeLimitDto(GradeLoanLimitResult? g, bool includeSalary = true) => g is null ? null : new
+    {
+        g.Applies, g.Eligible, g.GradeId, g.GradeCode, g.GradeName, g.CellId, g.IsCompanyOverride,
+        basis = g.ValueType, multiple = g.Multiple, salaryBasisAmount = includeSalary ? g.SalaryBasisAmount : null,
+        g.PerLoanCap, g.OutstandingCap, g.OutstandingNow, g.Available, bindingLimit = g.BindingLimit,
+        g.ReasonCode, g.ReasonText, g.Codes, g.Reasons, g.Currency,
+        limitBreakdowns = g.Limits.Select(x => includeSalary ? x : x with { SalaryBasisAmount = null }),
+    };
 
     private static object ProjectPolicy(LoanPolicy p) => new { p.Id, p.CompanyId, p.LoanTypeId, p.Version, p.PolicyName,
         p.MaxAmount, p.MaxTotalOutstanding, p.MaxMultiplierOfSalary, p.MaxInstallmentPercentOfSalary, p.MinServiceMonths,
