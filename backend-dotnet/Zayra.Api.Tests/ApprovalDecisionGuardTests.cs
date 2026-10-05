@@ -171,6 +171,50 @@ public class ApprovalDecisionGuardTests
     }
 
     [Fact]
+    public void TheSubjectDecidingARecordAboutThemIsRefused()
+    {
+        // HR raised it, so maker-checker passes; the borrower holds the approver role.
+        var verdict = ApprovalDecisionGuard.Evaluate(Build(spec => spec.SubjectIsDecider = true));
+
+        Assert.Equal(ApprovalGuardOutcome.SubjectIsDecider, verdict.Outcome);
+        Assert.Equal("you cannot decide a request about you", verdict.Message);
+    }
+
+    [Fact]
+    public void MakerCheckerStillOutranksTheSubjectBar()
+    {
+        // Self-service: requester and subject are the same person. The refusal they always got stays.
+        var verdict = ApprovalDecisionGuard.Evaluate(Build(spec =>
+        {
+            spec.RequesterIsDecider = true;
+            spec.SubjectIsDecider = true;
+        }));
+
+        Assert.Equal(ApprovalGuardOutcome.MakerIsChecker, verdict.Outcome);
+    }
+
+    [Fact]
+    public void ASubjectBarScopedToApprovalStillLetsTheSubjectWithdraw()
+    {
+        var approving = ApprovalDecisionGuard.Evaluate(Build(spec =>
+        {
+            spec.Decision = "Approved";
+            spec.SubjectIsDecider = true;
+            spec.SubjectScope = new[] { "Approved" };
+        }));
+        var rejecting = ApprovalDecisionGuard.Evaluate(Build(spec =>
+        {
+            spec.Decision = "Rejected";
+            spec.SubjectIsDecider = true;
+            spec.SubjectScope = new[] { "Approved" };
+        }));
+
+        Assert.Equal(ApprovalGuardOutcome.SubjectIsDecider, approving.Outcome);
+        Assert.True(rejecting.Passed);
+        Assert.False(SubjectSeparationRule.None.IsViolated("Approved"));
+    }
+
+    [Fact]
     public void AMultiStatusVocabularyIsRenderedReadablyInTheRefusal()
     {
         var verdict = ApprovalDecisionGuard.Evaluate(Build(spec =>
@@ -201,6 +245,8 @@ public class ApprovalDecisionGuardTests
         public bool Locked;
         public bool RequesterIsDecider;
         public IReadOnlyCollection<string>? MakerCheckerScope;
+        public bool SubjectIsDecider;
+        public IReadOnlyCollection<string>? SubjectScope;
     }
 
     private static ApprovalDecisionSpec Spec() => Build(_ => { });
@@ -221,6 +267,8 @@ public class ApprovalDecisionGuardTests
             Lock = new ApprovalLock(k.Locked, "locked for payroll"),
             MakerChecker = new MakerCheckerRule(
                 k.RequesterIsDecider, k.MakerCheckerScope, "you cannot decide your own"),
+            SubjectSeparation = new SubjectSeparationRule(
+                k.SubjectIsDecider, k.SubjectScope, "you cannot decide a request about you"),
         };
     }
 }

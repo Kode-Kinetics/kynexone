@@ -409,6 +409,9 @@ public class OffersController : ControllerBase
                 author is { } maker && decider.HasValue && maker == decider,
                 new[] { "Approved" },
                 "The person who wrote the offer cannot approve it."),
+            // DECLARED ABSENCE: an offer's subject is a candidate, and a Candidate row carries no user
+            // or employee link to compare the decider with. Matching on e-mail would be a guess.
+            SubjectSeparation = SubjectSeparationRule.None,
         });
         if (!verdict.Passed) return OfferDecisionRefusal(verdict, approval?.Status, offer?.Status);
 

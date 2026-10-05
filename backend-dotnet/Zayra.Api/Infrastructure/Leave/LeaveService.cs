@@ -1503,6 +1503,11 @@ public class LeaveService : ILeaveService
                 .FirstOrDefaultAsync(ct);
         if (employeeUserId == approverId || actualMakerUserId == approverId)
             throw new InvalidOperationException("Maker-checker violation: the requester cannot approve or reject their own leave request.");
+        // Segregation of duties across steps, here so the leave screen and the Approval Center refuse alike:
+        // whoever approved an earlier step of this request cannot also decide a later one.
+        if (await _db.LeaveApprovals.AsNoTracking().AnyAsync(a => a.TenantId == request.TenantId
+                && a.LeaveRequestId == request.Id && a.Decision == "Approved" && a.ApproverId == approverId, ct))
+            throw new InvalidOperationException("Segregation of duties: you already decided an earlier step of this leave request, so a different approver must decide this one.");
     }
 
     private async Task<LeaveApproval> EnsureCanonicalApprovalAsync(
