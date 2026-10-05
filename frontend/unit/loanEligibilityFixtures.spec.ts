@@ -1,18 +1,24 @@
 import { expect, test } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { LoanBindingLimit, LoanEligibility } from '../src/api/loanGovernance';
+import type { LoanBindingLimit, LoanEligibility, OfferedLoanType } from '../src/api/loanGovernance';
 import { LOCALE_DICTS, translate } from '../src/i18n/translations';
 import {
-  bindingBreakdown, breakdownExplanation, isGradeBlocked, isLoanTypeNotOffered, limitCardText, reasonKeyFor,
+  bindingBreakdown, breakdownExplanation, companiesWithoutPolicyFromError, isGradeBlocked, isLoanTypeNotOffered, limitCardText,
+  moneyFormatter, reasonKeyFor,
 } from '../src/lib/gradeLoanLimits';
+import { loanErrorMessage } from '../src/lib/loanWorkflow';
 
 /**
  * Specs built from the backend's REAL eligibility JSON. The fixture is written and verified by the backend
  * test GradeLoanLimitTests.EligibilityResponses_MatchTheFixtureTheFrontendSpecsUse, so if the API changes
  * shape, that test fails until the fixture (and therefore these specs) are refreshed together.
  */
-const fixtures = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'loanEligibilityResponses.json'), 'utf8')) as Record<string, LoanEligibility>;
+const raw = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'loanEligibilityResponses.json'), 'utf8')) as Record<string, unknown>;
+/** GET /eligibility responses only (the fixture also pins the create refusal and /types/offered). */
+const fixtures = Object.fromEntries(Object.entries(raw).filter(([name]) => name !== 'TypesOffered' && !name.startsWith('Create'))) as Record<string, LoanEligibility>;
+const createRefused = raw.CreateRefusedGradeLimitPerLoan as LoanEligibility & { error: string };
+const typesOffered = raw.TypesOffered as OfferedLoanType[];
 
 /** A money formatter that fails loudly on anything but a number — what toLocaleString on null used to do. */
 const strictMoney = (n: number) => {
@@ -108,4 +114,45 @@ test('every eligibility code in the fixtures maps to EN and AR text, never shown
       expect(LOCALE_DICTS.ar[key], `${code} ar`).not.toBe(key);
       expect(key).not.toBe(code);
     }
+});
+
+test('every response states the company currency, and the card formats in it — never a guessed default', () => {
+  for (const [name, eligibility] of Object.entries(fixtures)) expect(eligibility.currency, name).toBe('SAR');
+  expect(moneyFormatter('SAR')(1000)).toContain('SAR');
+  expect(moneyFormatter(null)(1000)).toBe('1,000.00');
+  expect(moneyFormatter(undefined)(1000)).not.toContain('USD');
+});
+
+test('a refused submission (create 400) carries the same explainable fields the form shows', () => {
+  expect(createRefused.error).toBe('loan_ineligible');
+  expect(createRefused.codes).toEqual(['GradeLimitPerLoan']);
+  expect(createRefused.bindingLimit).toBe('GradePerLoan');
+  expect(createRefused.currency).toBe('SAR');
+  const text = limitCardText(createRefused, true, 'en', en, strictMoney)!;
+  expect(text.reason).toBe('This amount is above the per-loan maximum for your grade (SAR 10,000.00).');
+  expect(loanErrorMessage({ response: { data: createRefused } }, 'fallback')).toBeTruthy();
+});
+
+test('/types/offered lists every type with a plain reason for the ones not offered', () => {
+  const byCode = Object.fromEntries(typesOffered.map(t => [t.code, t]));
+  expect(byCode.PERSONAL.offered).toBe(true);
+  expect(byCode.PERSONAL.reasonCode).toBeNull();
+  expect(byCode.HOME).toMatchObject({ offered: false, reasonCode: 'LoanTypeNotOffered', nameAr: 'قرض سكن' });
+  expect(byCode.LEGACY).toMatchObject({ offered: false, reasonCode: 'InterestNotPermitted' });
+  for (const t of typesOffered.filter(x => !x.offered)) expect(LOCALE_DICTS.ar[reasonKeyFor(t.reasonCode, true)]).toBeTruthy();
+});
+
+test('enabling grade limits that would stop companies offering a type is read as a confirmation request', () => {
+  const body = { error: 'companies_without_policy', message: 'm', companies: [{ id: 'c1', name: 'Other Co' }, { id: 'c2', name: '' }] };
+  expect(companiesWithoutPolicyFromError({ response: { data: body } })).toEqual([{ id: 'c1', name: 'Other Co' }, { id: 'c2', name: 'c2' }]);
+  expect(companiesWithoutPolicyFromError({ response: { data: { error: 'grade_limits_missing', companies: body.companies } } })).toEqual([]);
+  expect(companiesWithoutPolicyFromError(new Error('x'))).toEqual([]);
+});
+
+test('terminology: an employer loan is قرض and a salary advance is سلفة — never the other way round', () => {
+  for (const [key, value] of Object.entries(LOCALE_DICTS.ar)) {
+    const k = key.toLowerCase();
+    if (k.includes('loan') && !k.includes('advance')) expect(value, key).not.toContain('سلف');
+    if (k.includes('advance') && !k.includes('loan')) expect(value, key).not.toContain('قرض');
+  }
 });

@@ -1,5 +1,5 @@
 import type {
-  GradeLimitReasonCode, GradeLoanLimitInput, GradeLoanLimitRow, GradeMissingLimit,
+  CompanyWithoutPolicy, GradeLimitReasonCode, GradeLoanLimitInput, GradeLoanLimitRow, GradeMissingLimit,
   LoanBindingLimit, LoanEligibility, LoanLimitBreakdown,
 } from '../api/loanGovernance';
 
@@ -287,4 +287,22 @@ export function limitCardText(eligibility: LoanEligibility, self: boolean, local
     binding: eligibility.bindingLimit ? fillTemplate(t('The limit that applies: {limit}.'), { limit: t(bindingLimitKeyFor(eligibility.bindingLimit, self)) }) : null,
     explanation: explained ? fillTemplate(t(explained.key), explained.values) : null,
   };
+}
+
+/** Reads the companies the server listed when enabling grade limits would stop them offering the type. */
+export function companiesWithoutPolicyFromError(error: unknown): CompanyWithoutPolicy[] {
+  const data = (error as { response?: { data?: unknown } })?.response?.data;
+  if (!data || typeof data !== 'object' || (data as { error?: unknown }).error !== 'companies_without_policy') return [];
+  const list = (data as { companies?: unknown }).companies;
+  return Array.isArray(list)
+    ? list.filter((c): c is CompanyWithoutPolicy => !!c && typeof (c as CompanyWithoutPolicy).id === 'string')
+      .map(c => ({ id: c.id, name: c.name || c.id }))
+    : [];
+}
+
+/** Formats an amount in the response's own currency. With no currency, a plain number — never a guessed one. */
+export function moneyFormatter(currency: string | null | undefined): (n: number) => string {
+  return currency
+    ? (n: number) => n.toLocaleString('en-US', { style: 'currency', currency, maximumFractionDigits: 2 })
+    : (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }

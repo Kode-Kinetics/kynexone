@@ -546,7 +546,6 @@ const en: Dict = {
   "Your grade isn't eligible for this loan type.": "Your grade isn't eligible for this loan type.",
   'This amount is above the per-loan maximum for your grade ({perLoanCap}).': 'This amount is above the per-loan maximum for your grade ({perLoanCap}).',
   'This would take your outstanding balance for this loan type above the maximum for your grade ({outstandingCap}).': 'This would take your outstanding balance for this loan type above the maximum for your grade ({outstandingCap}).',
-  "There's no grade on your employee record yet. HR needs to set it before you can apply for this loan type.": "There's no grade on your employee record yet. HR needs to set it before you can apply for this loan type.",
   "Your loan limit hasn't been set up yet — HR has been notified.": "Your loan limit hasn't been set up yet — HR has been notified.",
   'This request is outside the loan limit for your grade.': 'This request is outside the loan limit for your grade.',
   "your grade's per-loan maximum": "your grade's per-loan maximum",
@@ -657,6 +656,11 @@ const en: Dict = {
   "Direct debit": "Direct debit",
   "Cash receipt": "Cash receipt",
   "Payroll deduction": "Payroll deduction",
+  "Limit by grade and stop offering it there": "Limit by grade and stop offering it there",
+  "Publish a loan policy for them first, or confirm that they stop offering this loan type.": "Publish a loan policy for them first, or confirm that they stop offering this loan type.",
+  "Requests already submitted can still be approved after you switch a type off.": "Requests already submitted can still be approved after you switch a type off.",
+  "These companies have no loan policy for this loan type. Once it is limited by grade, their employees can no longer apply for it:": "These companies have no loan policy for this loan type. Once it is limited by grade, their employees can no longer apply for it:",
+  "This company now has its own policy; group changes no longer apply.": "This company now has its own policy; group changes no longer apply.",
 };
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
@@ -1203,7 +1207,6 @@ const ar: Dict = {
   "Your grade isn't eligible for this loan type.": 'درجتك غير مؤهلة لهذا النوع من القروض.',
   'This amount is above the per-loan maximum for your grade ({perLoanCap}).': 'هذا المبلغ يتجاوز الحد الأقصى للقرض الواحد لدرجتك ({perLoanCap}).',
   'This would take your outstanding balance for this loan type above the maximum for your grade ({outstandingCap}).': 'سيؤدي هذا إلى تجاوز رصيدك القائم لهذا النوع من القروض الحدَّ الأقصى لدرجتك ({outstandingCap}).',
-  "There's no grade on your employee record yet. HR needs to set it before you can apply for this loan type.": 'لا توجد درجة مسجلة في ملفك الوظيفي بعد. يجب أن تحددها الموارد البشرية قبل أن تتمكن من التقديم على هذا النوع من القروض.',
   "Your loan limit hasn't been set up yet — HR has been notified.": 'لم يتم إعداد حد القرض الخاص بك بعد — تم إبلاغ الموارد البشرية.',
   'This request is outside the loan limit for your grade.': 'هذا الطلب خارج حد القرض لدرجتك.',
   "your grade's per-loan maximum": 'الحد الأقصى للقرض الواحد لدرجتك',
@@ -1250,7 +1253,7 @@ const ar: Dict = {
   "Eligible to apply": "مؤهل للتقديم",
   "Eligible up to {available} over {installments} instalments: instalments can be up to {cap} a month ({percent}% of salary {salary})": "مؤهل حتى {available} على {installments} قسط: يمكن أن يصل القسط إلى {cap} شهرياً ({percent}% من الراتب {salary})",
   "Eligible up to {available} over {installments} instalments: instalments can be up to {cap} a month ({percent}% of salary {salary}), less {outstanding} a month already committed": "مؤهل حتى {available} على {installments} قسط: يمكن أن يصل القسط إلى {cap} شهرياً ({percent}% من الراتب {salary})، مطروحاً منه {outstanding} شهرياً ملتزم بها حالياً",
-  "Employee loans must be interest-free under Saudi law.": "يجب أن تكون قروض الموظفين بدون فوائد وفقاً للنظام السعودي.",
+  "Employee loans must be interest-free under Saudi law.": "يجب أن تكون قروض الموظفين قروضاً حسنة بدون فوائد وفقاً للنظام السعودي.",
   "Employees serving notice can't receive a new loan.": "لا يمكن للموظفين في فترة الإشعار الحصول على قرض جديد.",
   "Enter a positive amount and a whole number of installments.": "أدخل مبلغاً موجباً وعدداً صحيحاً من الأقساط.",
   "Enter a positive amount with at most two decimals that covers every instalment.": "أدخل مبلغاً موجباً بخانتين عشريتين كحد أقصى يغطي كل الأقساط.",
@@ -1291,7 +1294,7 @@ const ar: Dict = {
   "The employee's employment status isn't eligible under this policy.": "حالة توظيف الموظف غير مؤهلة وفق هذه السياسة.",
   "The loan policy needs correcting by HR before this can be assessed.": "تحتاج سياسة القروض إلى تصحيح من الموارد البشرية قبل التقييم.",
   "The maximum number of open loans would be exceeded, counting requests still waiting for approval.": "سيتم تجاوز الحد الأقصى لعدد القروض المفتوحة، بما فيها الطلبات التي تنتظر الموافقة.",
-  "The minimum service period for this loan type hasn't been completed.": "لم تكتمل الحد الأدنى لمدة الخدمة لهذا النوع من القروض.",
+  "The minimum service period for this loan type hasn't been completed.": "لم يكتمل الحد الأدنى لمدة الخدمة لهذا النوع من القروض.",
   "The number of instalments is outside what the policy allows.": "عدد الأقساط خارج ما تسمح به السياسة.",
   "This amount is above the most that can be borrowed now.": "هذا المبلغ أعلى من الحد الأقصى المتاح للاقتراض حالياً.",
   "This amount is above the per-loan maximum for this employee's grade ({perLoanCap}).": "هذا المبلغ أعلى من الحد الأقصى للقرض الواحد لدرجة هذا الموظف ({perLoanCap}).",
@@ -1314,6 +1317,11 @@ const ar: Dict = {
   "Direct debit": "خصم مباشر",
   "Cash receipt": "إيصال نقدي",
   "Payroll deduction": "خصم من الراتب",
+  "Limit by grade and stop offering it there": "التحديد حسب الدرجة وإيقاف إتاحته لديها",
+  "Publish a loan policy for them first, or confirm that they stop offering this loan type.": "انشر سياسة قروض لها أولاً، أو أكّد إيقاف إتاحة هذا النوع من القروض لديها.",
+  "Requests already submitted can still be approved after you switch a type off.": "يمكن الموافقة على الطلبات المقدَّمة مسبقاً حتى بعد إيقاف إتاحة النوع.",
+  "These companies have no loan policy for this loan type. Once it is limited by grade, their employees can no longer apply for it:": "لا توجد لدى هذه الشركات سياسة قروض لهذا النوع. بعد تحديده حسب الدرجة لن يتمكن موظفوها من التقديم عليه:",
+  "This company now has its own policy; group changes no longer apply.": "أصبحت لهذه الشركة سياستها الخاصة؛ ولم تعد تغييرات سياسة المجموعة تنطبق عليها.",
 };
 
 // ── French ────────────────────────────────────────────────────────────────────

@@ -1,14 +1,14 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { gradeLoanLimitsApi, type GradeLoanLimitRow } from '../../api/loanGovernance';
+import { gradeLoanLimitsApi, type CompanyWithoutPolicy, type GradeLoanLimitRow } from '../../api/loanGovernance';
 import type { LoanType } from '../../api/loans';
 import { useCompany } from '../../contexts/CompanyContext';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useTenantSettings } from '../../contexts/TenantSettingsContext';
 import { loanErrorMessage, localDateToday } from '../../lib/loanWorkflow';
 import {
-  applyFromGradeUpward, applySameForAll, draftFromRow, draftProblem, fillTemplate, inputFromDraft, localName,
+  applyFromGradeUpward, applySameForAll, companiesWithoutPolicyFromError, draftFromRow, draftProblem, fillTemplate, inputFromDraft, localName,
   missingGradesFromError, unsetGradeNames, type GradeEligibilityChoice, type GradeLimitBasis, type GradeLimitDraft,
 } from '../../lib/gradeLoanLimits';
 
@@ -44,6 +44,8 @@ export function GradeLimitsPanel({ loanTypes, companies, initialLoanTypeId, onGr
   const [publishing, setPublishing] = useState(false);
   const [toggling, setToggling] = useState(false);
   const [missingFromServer, setMissingFromServer] = useState<string[]>([]);
+  // Companies that would stop offering the type once it is limited by grade (no policy of their own or group).
+  const [stopOffering, setStopOffering] = useState<CompanyWithoutPolicy[]>([]);
   const [helperGradeId, setHelperGradeId] = useState('');
   // The date the grid is shown as of. Today, or the effective date of the last publish (so a future-dated
   // publish shows what will apply, with a "Changes from <date>" note).
@@ -112,17 +114,19 @@ export function GradeLimitsPanel({ loanTypes, companies, initialLoanTypeId, onGr
     finally { setPublishing(false); }
   };
 
-  const toggleGradeLimited = async (enable: boolean) => {
+  const toggleGradeLimited = async (enable: boolean, confirmStopOffering = false) => {
     if (!loanType) return;
-    setError(''); setNotice(''); setMissingFromServer([]);
+    setError(''); setNotice(''); setMissingFromServer([]); setStopOffering([]);
     setToggling(true);
     try {
-      await gradeLoanLimitsApi.setGradeLimited(loanType.id, enable);
+      await gradeLoanLimitsApi.setGradeLimited(loanType.id, enable, confirmStopOffering);
       onGradeLimitedChanged(loanType.id, enable);
       setNotice(t(enable ? 'Grade limits now apply to new requests for this loan type.' : 'Grade limits no longer apply to new requests for this loan type.'));
     } catch (e) {
       const missing = missingGradesFromError(e, locale);
+      const uncovered = companiesWithoutPolicyFromError(e);
       if (missing.length) setMissingFromServer(missing);
+      else if (uncovered.length) setStopOffering(uncovered);
       else setError(loanErrorMessage(e, t('Unable to change grade limiting for this loan type.')));
     } finally { setToggling(false); }
   };
@@ -163,6 +167,15 @@ export function GradeLimitsPanel({ loanTypes, companies, initialLoanTypeId, onGr
       {missingFromServer.length > 0 && <p role="alert" className="mt-2 ps-6 text-sm text-amber-700 dark:text-amber-300">
         {fillTemplate(t('Set a limit for every grade before switching this on. Missing: {grades}.'), { grades: missingFromServer.join(', ') })}
       </p>}
+      {stopOffering.length > 0 && <div role="alert" className="mt-2 space-y-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm dark:border-amber-500/40 dark:bg-amber-500/10">
+        <p className="font-semibold text-amber-800 dark:text-amber-200">{t('These companies have no loan policy for this loan type. Once it is limited by grade, their employees can no longer apply for it:')}</p>
+        <ul className="list-disc ps-5">{stopOffering.map(c => <li key={c.id}>{c.name}</li>)}</ul>
+        <p>{t('Publish a loan policy for them first, or confirm that they stop offering this loan type.')}</p>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className="btn-primary" disabled={toggling} onClick={() => void toggleGradeLimited(true, true)}>{t('Limit by grade and stop offering it there')}</button>
+          <button type="button" className="btn-secondary" disabled={toggling} onClick={() => setStopOffering([])}>{t('Cancel')}</button>
+        </div>
+      </div>}
       {loanType.gradeLimited && unset.length > 0 && !loading && <p role="alert" className="mt-2 ps-6 text-sm text-amber-700 dark:text-amber-300">
         {fillTemplate(t('Employees in these grades can\'t apply until a limit is set: {grades}.'), { grades: unset.join(', ') })}
       </p>}

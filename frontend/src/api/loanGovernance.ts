@@ -20,6 +20,8 @@ export interface LoanEligibility {
   policyId?: string | null; policyVersion?: number | null; monthlySalary: number | null; committedAmount: number;
   /** True when no amount was sent: only the limits are judged. */
   preview?: boolean;
+  /** The employee's company currency; every amount in this response is in it. */
+  currency?: string | null;
   /** Strictest of every evaluated limit, as principal. 0 when nothing can be borrowed; null when nothing caps the amount. */
   available?: number | null;
   gradeLimit?: LoanGradeLimitCheck | null; bindingLimit?: LoanBindingLimit | null; limitBreakdowns?: LoanLimitBreakdown[] | null;
@@ -139,7 +141,12 @@ export interface LoanTypeOffering {
   loanTypeId: string; code: string; nameEn: string; nameAr: string; gradeLimited: boolean; companyId: string; offered: boolean;
   source: 'CompanyPolicy' | 'GroupPolicy' | 'CompanyNotOffered' | 'NoPolicy' | 'LoanTypeBaseline';
   policyId: string | null; policyVersion: number | null;
+  /** The company runs on its own policy while a group policy exists: group changes no longer reach it. */
+  detachedFromGroupPolicy?: boolean;
 }
+
+/** A company the server lists when enabling grade limits would stop it offering the loan type. */
+export interface CompanyWithoutPolicy { id: string; name: string; }
 
 export const loanOfferingsApi = {
   offeredTypes: (employeeIntId?: number) =>
@@ -154,8 +161,9 @@ export const gradeLoanLimitsApi = {
     client.get<GradeLoanLimitRow[]>('/api/finance/loans/grade-limits', { params, signal }).then(r => r.data),
   publish: (body: PublishGradeLoanLimitsRequest) =>
     client.put<PublishGradeLoanLimitsResponse>('/api/finance/loans/grade-limits', body).then(r => r.data),
-  setGradeLimited: (loanTypeId: string, gradeLimited: boolean) =>
-    client.patch(`/api/finance/loans/types/${loanTypeId}/grade-limited`, { gradeLimited }).then(r => r.data),
+  /** confirmStopOffering: HR has seen the companies without a policy and accepts that they stop offering the type. */
+  setGradeLimited: (loanTypeId: string, gradeLimited: boolean, confirmStopOffering = false) =>
+    client.patch(`/api/finance/loans/types/${loanTypeId}/grade-limited`, { gradeLimited, confirmStopOffering }).then(r => r.data),
 };
 export interface LoanChangeRequest {
   id: string; loanId: string; changeType: 'Reschedule' | 'PolicyException' | 'CollectionMethod'; status: string;
