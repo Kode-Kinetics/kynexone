@@ -302,7 +302,9 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
     if (!createModal || (!applicantId && staff && !mine)) return;
     let cancelled = false;
     loanOfferingsApi.offeredTypes(applicantId)
-      .then(list => { if (!cancelled) setOfferedTypes({ applicant: applicantId, list }); })
+      // Anything but a list (an older API without this endpoint, a proxy error page) means "unknown": list every
+      // type and let the server's own "not offered" refusal decide, rather than hiding all types or crashing.
+      .then(list => { if (!cancelled) setOfferedTypes(Array.isArray(list) ? { applicant: applicantId, list } : null); })
       .catch(() => { if (!cancelled) setOfferedTypes(null); });
     return () => { cancelled = true; };
   }, [createModal, applicantId, staff, mine]);

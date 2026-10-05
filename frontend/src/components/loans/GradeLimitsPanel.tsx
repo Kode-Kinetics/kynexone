@@ -63,7 +63,7 @@ export function GradeLimitsPanel({ loanTypes, companies, initialLoanTypeId, onGr
   const money = useCallback((n: number) => n.toLocaleString('en-US', { style: 'currency', currency: currencyCode, maximumFractionDigits: 2 }), [currencyCode]);
 
   const applyRows = useCallback((rows: GradeLoanLimitRow[]) => {
-    const next = [...rows].sort((a, b) => a.level - b.level).map(draftFromRow);
+    const next = (Array.isArray(rows) ? [...rows] : []).sort((a, b) => a.level - b.level).map(draftFromRow);
     setDrafts(next);
     setHelperGradeId(current => (next.some(d => d.gradeId === current) ? current : next[0]?.gradeId ?? ''));
   }, []);

@@ -30,7 +30,7 @@ export function LoanOfferingsPanel({ companyId, companyName }: { companyId: stri
   const load = useCallback(async () => {
     const mine = ++seq.current;
     if (!companyId) { setRows([]); return; }
-    try { const list = await loanOfferingsApi.list(companyId); if (mine === seq.current) setRows(list); }
+    try { const list = await loanOfferingsApi.list(companyId); if (mine === seq.current) setRows(Array.isArray(list) ? list : []); }
     catch (e) { if (mine === seq.current) setError(loanErrorMessage(e, t('Unable to load which loan types this company offers.'))); }
   }, [companyId, t]);
   useEffect(() => { setError(''); void load(); }, [load]);

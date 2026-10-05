@@ -51,6 +51,11 @@ async function boot(page: Page, role: string, handler: (path: string, method: st
     if (path === '/api/auth/me') return route.fulfill({ json: { id: 'user-1', employeeId: 17, tenantId: 'tenant-1', tenantSlug: 'fixture', fullName: 'Amira Mansour', roles: [role], permissions: ['loans.read', 'loans.write'], companies: [{ id: 'company-1', name: 'Acme Arabia', code: 'ACME', countryCode: 'SA', isActive: true }] } });
     if (path === '/api/tenant-admin/localization') return route.fulfill({ json: { currencyCode: 'USD' } });
     if (path === '/api/finance/loans/types') return route.fulfill({ json: [loanType] });
+    // Slice L1 endpoints, in their real (array) shapes: the request form lists only offered types, and Loan
+    // Policies shows the per-company offerings and the limits-by-grade grid.
+    if (path === '/api/finance/loans/types/offered') return route.fulfill({ json: [{ loanTypeId: loanType.id, code: loanType.code, nameEn: loanType.nameEn, nameAr: 'قرض شخصي', gradeLimited: false, offered: true, reasonCode: null, reasonText: null }] });
+    if (path === '/api/finance/loans/offerings') return route.fulfill({ json: [{ loanTypeId: loanType.id, code: loanType.code, nameEn: loanType.nameEn, nameAr: '', gradeLimited: false, companyId: 'company-1', offered: true, source: 'LoanTypeBaseline', policyId: null, policyVersion: null, detachedFromGroupPolicy: false }] });
+    if (path === '/api/finance/loans/grade-limits') return route.fulfill({ json: [] });
     if (path === '/api/finance/loans') return route.fulfill({ json: { items: [originalLoan], total: 1 } });
     if (path.endsWith('/audit')) return route.fulfill({ json: {} });
     if (path.endsWith('/changes') || path.endsWith('/corrections') || path.includes('/features/') || path === '/api/notifications' || path.endsWith('/bonuses/types')) return route.fulfill({ json: [] });
@@ -81,6 +86,7 @@ test('employee sees own loan statement and can submit an eligible application', 
   await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).last().click();
   await page.getByRole('button', { name: 'New Loan Request' }).click();
   await expect(page.getByPlaceholder('Search by name or code…')).toHaveCount(0);
+  await expect(page.getByRole('dialog').getByTitle('Loan Type')).toHaveValue('type-1');   // from /types/offered
   await page.getByTitle('Requested Amount').fill('1200');
   await expect(page.getByRole('button', { name: 'Submit Request', exact: true })).toBeDisabled();
   await page.getByRole('button', { name: 'Check Eligibility', exact: true }).click();
@@ -100,6 +106,7 @@ test('HR creates an immutable company policy version with its approval route', a
     if (path.endsWith('/policies') && method === 'POST') { policy = { ...body, id: 'policy-1', version: 1, createdAtUtc: '2026-10-04T00:00:00Z' }; return policy; }
   });
   await page.getByRole('button', { name: 'Loan Policies', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Loan types offered' })).toContainText('Personal');
   await page.getByRole('button', { name: 'New Policy Version', exact: true }).click();
   await page.getByLabel('Policy name', { exact: true }).fill('Employee welfare');
   await page.getByLabel('Maximum loan amount', { exact: true }).fill('10000');
@@ -107,7 +114,7 @@ test('HR creates an immutable company policy version with its approval route', a
   await page.getByRole('button', { name: 'Create Policy Version', exact: true }).click();
   await expect(page.getByText(/Policy version 1 created/)).toBeVisible();
   await expect(page.getByRole('row').filter({ hasText: 'Employee welfare' })).toContainText('HR Manager → HR Director above 5,000');
-  expect(policy.companyId).toBe('company-1'); expect(policy.allowedRepaymentMethods).toEqual(['BankTransfer']); expect(policy.allowedRepaymentFrequencies).toContain('Quarterly'); expect(errors).toEqual([]);
+  expect(policy.companyId).toBe('company-1'); expect(policy.allowedRepaymentMethods).toEqual(['BankTransfer']); expect(policy.allowedRepaymentFrequencies).toContain('Quarterly'); expect(policy.isOffered).not.toBe(false); expect(errors).toEqual([]);
 });
 
 test('Finance records a failed line, retries it, and requests audited corrections', async ({ page }, info) => {
