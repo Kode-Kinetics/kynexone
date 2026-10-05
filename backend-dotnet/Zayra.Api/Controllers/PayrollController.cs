@@ -5316,11 +5316,23 @@ public class PayrollController : ControllerBase
                 driftedEmployeeIds = driftWarn.ToArray(),
             });
 
-        var gcc         = await _db.GCCComplianceSettings.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId, cancellationToken);
-        var agentId     = gcc?.WpsAgentId ?? "0000000000";
+        // The establishment / WPS employer id is REQUIRED. It used to fall back to "0000000000", which
+        // printed a placeholder as if it were an establishment into every file of a tenant that had not
+        // configured one. Now a missing or placeholder id refuses the export with a stable code.
+        var isKsaRegister = exporter is Infrastructure.CountryPack.Ksa.KsaWageProtectionExporter;
+        var agentId = await ResolveWpsEstablishmentIdAsync(tenantId, run.CompanyId, isKsaRegister, cancellationToken);
+        if (WpsEstablishmentError(agentId, isKsaRegister) is { } estError)
+            return UnprocessableEntity(new { error = estError.Code, message = estError.Message, field = estError.Field });
         var currency    = !string.IsNullOrWhiteSpace(batch.Currency) && batch.Currency != "USD"
                             ? batch.Currency
                             : await ResolveCurrencyAsync(tenantId, cancellationToken);
+        if (isKsaRegister && !string.Equals(currency, "SAR", StringComparison.Ordinal))
+            return UnprocessableEntity(new
+            {
+                error = Infrastructure.Payroll.SaudiBankExports.KsaWageFileRules.Codes.CurrencyNotSar,
+                message = $"Saudi payroll files are in SAR only. This batch is in {currency}.",
+                field = "currency",
+            });
 
         // Build WpsEmployee list from payment records + employee snapshot data.
         var profileByEmpId = profiles.ToDictionary(p => p.EmployeeId);
@@ -5339,7 +5351,8 @@ public class PayrollController : ControllerBase
                 FullNameEn:     emp?.FullName    ?? code,
                 FullNameAr:     string.Empty,
                 Nationality:    emp?.Nationality ?? string.Empty,
-                NationalId:     ppf?.MolId       ?? string.Empty,
+                // KSA: the employee's own government ID (MOL-ID), never the profile's free-text MolId.
+                NationalId:     isKsaRegister ? (emp?.IdNumber ?? string.Empty) : (ppf?.MolId ?? string.Empty),
                 IbanOrAccount:  record.Iban,
                 BankCode:       ppf?.BankRoutingCode ?? string.Empty,
                 Salary: new SalaryBreakdown(
@@ -5356,7 +5369,7 @@ public class PayrollController : ControllerBase
             PayrollRunId:    run.Id,
             PeriodYear:      run.Year,
             PeriodMonth:     run.Month,
-            EstablishmentId: agentId,
+            EstablishmentId: agentId!,
             EmployerIban:    string.Empty,
             CompanyNameEn:   wpsCompany?.LegalNameEn ?? string.Empty,
             CompanyNameAr:   wpsCompany?.LegalNameAr ?? string.Empty,
@@ -5396,7 +5409,9 @@ public class PayrollController : ControllerBase
                 EmployeeCode   = code,
                 Iban           = record.Iban,
                 NetPay         = record.Amount,
-                MolId          = ppf?.MolId ?? string.Empty,
+                MolId          = isKsaRegister
+                                    ? (employees.FirstOrDefault(e => e.Id == record.EmployeeId)?.IdNumber ?? string.Empty)
+                                    : (ppf?.MolId ?? string.Empty),
                 RoutingCode    = ppf?.BankRoutingCode ?? string.Empty,
             };
             _db.SIFFileRecords.Add(row);
@@ -5441,6 +5456,7 @@ public class PayrollController : ControllerBase
             wps.TotalSalaryAmount,
             wps.GeneratedByUserId,
             wps.CreatedAtUtc,
+            formatLabel = Infrastructure.Payroll.WpsConformance.LabelFor(genResult.FormatVersion),
             // "File generated" is not "wage filed". The generated artefact's layout has never been
             // accepted by a live Mudad/bank gateway, and the screen that celebrates a successful
             // generation is exactly where that has to be said.
@@ -6404,7 +6420,6 @@ public class PayrollController : ControllerBase
         if (wpsFile is null) return BadRequest(new { message = "WPS file has not been generated for this batch yet." });
 
         var sifRecords  = await _db.SIFFileRecords.AsNoTracking().Where(x => x.TenantId == tenantId && x.WPSFileBatchId == wpsFile.Id).ToListAsync(cancellationToken);
-        var gcc         = await _db.GCCComplianceSettings.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId, cancellationToken);
         var run         = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(x => x.Id == batch.PayrollRunId && x.TenantId == tenantId, cancellationToken);
 
         // Resolve exporter via pack for deterministic regeneration.
@@ -6446,13 +6461,18 @@ public class PayrollController : ControllerBase
                 NetPay: r.NetPay);
         }).ToList();
 
+        var dlIsKsa = dlExporter is Infrastructure.CountryPack.Ksa.KsaWageProtectionExporter;
+        var dlEstablishmentId = await ResolveWpsEstablishmentIdAsync(tenantId, run?.CompanyId, dlIsKsa, cancellationToken);
+        if (WpsEstablishmentError(dlEstablishmentId, dlIsKsa) is { } dlEstError)
+            return UnprocessableEntity(new { error = dlEstError.Code, message = dlEstError.Message, field = dlEstError.Field });
+
         var dlInput = new WageProtectionExportInput(
             TenantId:        tenantId,
             CompanyId:       (run?.CompanyId) ?? Guid.Empty,
             PayrollRunId:    run?.Id          ?? Guid.Empty,
             PeriodYear:      run?.Year      ?? DateTime.UtcNow.Year,
             PeriodMonth:     run?.Month     ?? DateTime.UtcNow.Month,
-            EstablishmentId: gcc?.WpsAgentId ?? "0000000000",
+            EstablishmentId: dlEstablishmentId!,
             EmployerIban:    string.Empty,
             CompanyNameEn:   dlCompany?.LegalNameEn ?? string.Empty,
             CompanyNameAr:   dlCompany?.LegalNameAr ?? string.Empty,
@@ -6471,7 +6491,7 @@ public class PayrollController : ControllerBase
             await _db.SaveChangesAsync(cancellationToken);
         }
 
-        var mimeType = dlResult.Format == "mudad-xml" ? "application/xml" : "text/plain";
+        var mimeType = dlResult.FileName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase) ? "application/xml" : "text/plain";
         Response.Headers["Content-Disposition"] = $"attachment; filename={dlResult.FileName}";
         // The artefact itself states what it is. The bytes are content-addressed by SHA-256 and
         // their determinism is pinned by tests, so the statement rides on a header rather than in
@@ -7947,6 +7967,41 @@ public class PayrollController : ControllerBase
     }
 
     // M1: audit log now captures caller IP and structured metadata
+    /// <summary>
+    /// The establishment id a wage file carries: the legal entity's own GCC compliance row, else the
+    /// tenant-wide row, else (KSA only) the MOL establishment id saved in the Saudi bank-file settings.
+    /// Null when none is recorded — the caller refuses; there is no placeholder.
+    /// </summary>
+    private async Task<string?> ResolveWpsEstablishmentIdAsync(Guid tenantId, Guid? companyId, bool isKsa, CancellationToken ct)
+    {
+        var rows = await _db.GCCComplianceSettings.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && (x.CompanyId == null || x.CompanyId == companyId))
+            .Select(x => new { x.CompanyId, x.WpsAgentId })
+            .ToListAsync(ct);
+        var id = rows.FirstOrDefault(x => companyId != null && x.CompanyId == companyId && !string.IsNullOrWhiteSpace(x.WpsAgentId))?.WpsAgentId
+              ?? rows.FirstOrDefault(x => x.CompanyId == null && !string.IsNullOrWhiteSpace(x.WpsAgentId))?.WpsAgentId;
+        if (string.IsNullOrWhiteSpace(id) && isKsa && companyId is Guid c)
+            id = (await new Infrastructure.Payroll.SaudiBankExports.SaudiBankExportService(_db).GetSettingsAsync(tenantId, c, ct)).MolEstablishmentId;
+        return string.IsNullOrWhiteSpace(id) ? null : id.Trim();
+    }
+
+    /// <summary>Null when the id is usable. KSA applies the [MOL-ESTBID] rule; every country refuses a
+    /// missing or all-zero id.</summary>
+    private static Infrastructure.Payroll.SaudiBankExports.SaudiBankExportIssueDto? WpsEstablishmentError(string? id, bool isKsa)
+    {
+        if (isKsa)
+        {
+            var errors = new List<Infrastructure.Payroll.SaudiBankExports.SaudiBankExportIssueDto>();
+            Infrastructure.Payroll.SaudiBankExports.KsaWageFileRules.ValidateEstablishmentId(id, errors);
+            return errors.FirstOrDefault();
+        }
+        if (string.IsNullOrWhiteSpace(id) || id.Where(char.IsLetterOrDigit).All(ch => ch == '0'))
+            return new("wps_employer_id_missing",
+                "Enter the WPS employer / establishment ID in Setup \u2192 Compliance before creating a wage file. No placeholder is used.",
+                null, "wpsAgentId");
+        return null;
+    }
+
     private async Task PayrollAudit(string action, string entity, string entityId, object? metadata, CancellationToken ct,
         Guid? auditId = null)
     {
