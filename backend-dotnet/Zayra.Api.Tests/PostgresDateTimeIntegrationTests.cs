@@ -60,6 +60,10 @@ public sealed class PostgresFixture : IAsyncLifetime
               ON payroll_runs (tenant_id, year, month)
               WHERE ""company_id"" IS NULL AND ""status"" != 'Voided' AND ""run_type"" = 'Regular';
         ");
+        // Slice L1 — EnsureCreated cannot emit EXCLUDE. Apply the same DDL the AddGradeLoanLimits migration
+        // does, so every integration test runs against production's no-overlap guarantee on grade_entitlements.
+        await db.Database.ExecuteSqlRawAsync(GradeEntitlementSql.CreateExtension);
+        await db.Database.ExecuteSqlRawAsync(GradeEntitlementSql.AddExclusion);
     }
 
     /// <summary>

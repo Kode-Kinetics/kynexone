@@ -21,6 +21,16 @@ public class LoanType : ITenantOwned
     public bool IsDeleted { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? CreatedBy { get; set; }
+
+    /// <summary>Opt-in: when true, every application of this type is capped by the employee's grade
+    /// (<see cref="GradeEntitlement"/> rows keyed by <see cref="EntitlementComponentCode"/>). False keeps the
+    /// pre-grade behaviour exactly, so live tenants are unaffected until HR turns it on.</summary>
+    public bool GradeLimited { get; set; }
+
+    /// <summary>The Facility pay component (LOAN_&lt;Code&gt;) the grade limits are keyed by. Created the
+    /// first time a grade grid is published or grade limits are enabled. Required while
+    /// <see cref="GradeLimited"/> is true (database CHECK).</summary>
+    public string? EntitlementComponentCode { get; set; }
 }
 
 public class LoanPolicy : ITenantOwned, ICompanyScoped
@@ -98,6 +108,14 @@ public class EmployeeLoan : ITenantOwned, ICompanyScopedOperational
     public bool ReviewRequired { get; set; }
     public string ReviewReason { get; set; } = string.Empty;
     public string CollectionStatus { get; set; } = "Normal";
+
+    // ── Grade-limit witnesses (frozen at request, refreshed at the approval re-check) ──
+    // A later promotion or grid change never rewrites them: they record which grade and which cell
+    // the decision was taken under. NULL for every loan of a type that is not grade-limited.
+    public Guid? GradeIdAtRequest { get; set; }
+    public Guid? GradeEntitlementId { get; set; }
+    public decimal? GradePerLoanCap { get; set; }
+    public decimal? GradeOutstandingCap { get; set; }
 }
 
 public class LoanDisbursementBatch : ITenantOwned, ICompanyScopedOperational
