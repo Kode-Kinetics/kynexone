@@ -4,9 +4,19 @@
 
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
-import { I18nManager } from 'react-native';
+import { Alert, I18nManager } from 'react-native';
+import { reloadAppAsync } from 'expo';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { STORAGE_KEYS } from '@/config';
+import {
+  applyDirection,
+  markRestartPrompted,
+  readStoredLanguage,
+  shouldPromptRestart,
+  type AppLanguage,
+} from './languageDirection';
+
+export type { AppLanguage };
 
 export const en = {
   common: {
@@ -516,8 +526,6 @@ const ar: TranslationResources = {
   },
 };
 
-export type AppLanguage = 'en' | 'ar';
-
 /**
  * Language at cold start, synchronously. The persisted choice is in AsyncStorage (async), but the
  * native layout direction is already decided before JS runs: I18nManager.isRTL reflects the last
@@ -536,44 +544,39 @@ i18n.use(initReactI18next).init({
   interpolation: { escapeValue: false },
 });
 
-function isLanguage(v: unknown): v is AppLanguage {
-  return v === 'en' || v === 'ar';
-}
+/** Remembers which language a restart was last offered for, so the offer is made once (see languageDirection.ts). */
+const RESTART_PROMPTED_KEY = `${STORAGE_KEYS.LANGUAGE}_restart_prompted`;
 
-async function readStoredLanguage(): Promise<AppLanguage | null> {
-  try {
-    const raw = await AsyncStorage.getItem(STORAGE_KEYS.LANGUAGE);
-    if (raw == null) return null;
-    // appStorage writes JSON ('"ar"'); accept a bare value too.
-    const parsed = raw.startsWith('"') ? JSON.parse(raw) : raw;
-    return isLanguage(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
+function promptRestart(): void {
+  Alert.alert(i18n.t('settings.restartTitle'), i18n.t('settings.restartBody'), [
+    { text: i18n.t('settings.later'), style: 'cancel' },
+    {
+      text: i18n.t('settings.restartNow'),
+      onPress: () => {
+        reloadAppAsync('Language direction changed').catch((error) =>
+          console.warn('[i18n] Reload failed; the direction applies on next launch:', error));
+      },
+    },
+  ]);
 }
 
 /**
- * Applies the native direction for `lang`. Returns true when the running layout does not match
- * yet — RTL is fixed per process, so the user has to restart for it to flip.
+ * Call once at startup: apply the user's saved language. Text switches now; if the native
+ * direction disagrees with it (the choice was made but the app never fully restarted), offer a
+ * restart — once per language, never in a loop.
  */
-function applyDirection(lang: AppLanguage): boolean {
-  const rtl = lang === 'ar';
-  I18nManager.allowRTL(rtl);
-  I18nManager.forceRTL(rtl);
-  return I18nManager.isRTL !== rtl;
-}
-
-/** Call once at startup: apply the user's saved language (text now, direction from next start). */
 export async function restoreLanguage(): Promise<void> {
-  const stored = await readStoredLanguage();
+  const stored = await readStoredLanguage(AsyncStorage, STORAGE_KEYS.LANGUAGE);
   if (!stored) return;
   if (i18n.language !== stored) await i18n.changeLanguage(stored);
-  applyDirection(stored);
+  const mismatch = applyDirection(stored, I18nManager);
+  if (await shouldPromptRestart(stored, mismatch, AsyncStorage, RESTART_PROMPTED_KEY)) promptRestart();
 }
 
 /**
  * The user picked a language: translate now, persist the choice, and set the native direction.
- * Resolves to `{ restartRequired: true }` when the layout direction changes on the next start.
+ * Resolves to `{ restartRequired: true }` when the layout direction changes on the next start;
+ * the caller (SettingsScreen) offers the restart, and startup will not offer it a second time.
  */
 export async function setLanguage(lang: AppLanguage): Promise<{ restartRequired: boolean }> {
   await i18n.changeLanguage(lang);
@@ -582,7 +585,9 @@ export async function setLanguage(lang: AppLanguage): Promise<{ restartRequired:
   } catch (error) {
     console.warn('[i18n] Could not persist the language choice:', error);
   }
-  return { restartRequired: applyDirection(lang) };
+  const restartRequired = applyDirection(lang, I18nManager);
+  if (restartRequired) await markRestartPrompted(lang, AsyncStorage, RESTART_PROMPTED_KEY);
+  return { restartRequired };
 }
 
 void restoreLanguage();
