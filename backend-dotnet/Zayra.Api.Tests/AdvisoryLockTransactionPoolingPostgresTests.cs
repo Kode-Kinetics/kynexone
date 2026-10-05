@@ -52,8 +52,10 @@ public sealed class PgBouncerTransactionPoolFixture : IAsyncLifetime
     {
         await _network.CreateAsync();
         _postgres = new PostgreSqlBuilder()
-            // postgres:16-alpine, pinned by digest (Testcontainers 3.10 cannot parse tag@digest).
-            .WithImage("postgres@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229")
+            // Pinned by tag, like every other Postgres test here. A bare repo@digest reference pulls
+            // fine from a warm local cache but fails on a clean CI runner ("invalid reference
+            // format"): Testcontainers 3.10 appends ":latest" to a reference that has no tag.
+            .WithImage("postgres:16-alpine")
             .WithNetwork(_network)
             .WithNetworkAliases("pg")
             .Build();
@@ -62,8 +64,8 @@ public sealed class PgBouncerTransactionPoolFixture : IAsyncLifetime
         var direct = new NpgsqlConnectionStringBuilder(DirectConnectionString);
 
         _pgbouncer = new ContainerBuilder()
-            // edoburu/pgbouncer:v1.26.0-p0 (PgBouncer 1.26.0), pinned by digest.
-            .WithImage("edoburu/pgbouncer@sha256:b17551c776ef7e5769ef80b956d20f85e2fd25dd8912d31d58f782aad495b711")
+            // PgBouncer 1.26.0, pinned by its exact version tag (see the note on the Postgres image).
+            .WithImage("edoburu/pgbouncer:v1.26.0-p0")
             .WithNetwork(_network)
             .WithEnvironment("DB_HOST", "pg")
             .WithEnvironment("DB_PORT", "5432")
