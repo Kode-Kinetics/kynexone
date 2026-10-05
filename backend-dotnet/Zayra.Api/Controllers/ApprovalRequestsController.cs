@@ -72,6 +72,22 @@ public class ApprovalRequestsController : ControllerBase
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
+    // approvals.read, not approvals.decide: the person who raised a change may withdraw it without being
+    // an approver. The service refuses anyone but the requester, and anything but a pending employee change.
+    [HttpPost("{id:guid}/withdraw")]
+    [HasPermission("approvals.read")]
+    public async Task<ActionResult<ApprovalRequestDto>> Withdraw(Guid id, ApprovalWithdrawRequest? request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var tenantId = this.GetTenantId();
+            if (tenantId is null) return Unauthorized();
+            var approval = await _approvals.WithdrawAsync(tenantId.Value, id, request?.Reason, Context(), cancellationToken);
+            return approval is null ? NotFound() : Ok(approval);
+        }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
     private RequestContext Context() => new(
         HttpContext.Connection.RemoteIpAddress?.ToString(),
         Request.Headers.UserAgent.ToString(),
