@@ -4,16 +4,23 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { CONFIG_ENV_KEY } from './profileEnv.mjs';
 
 export const EXPECTED_CHANNELS = { production: 'production', preview: 'preview', simulator: 'development' };
 
-/** env: values for EXPO_PUBLIC_* while app.config.js is evaluated (it reads them at load time). */
+/**
+ * env: the config-affecting values (EXPO_PUBLIC_*, EXPO_UPDATES_CODE_SIGNING_CERT)
+ * to evaluate app.config.js with. Any such key in the shell that env does not
+ * name is hidden while loading, so the result matches a build with exactly env.
+ */
 export function loadEffectiveConfig(root, env = {}) {
   const require = createRequire(path.join(root, 'package.json'));
   const configPath = require.resolve('./app.config.js');
   const saved = {};
-  for (const [key, value] of Object.entries(env)) {
+  const keys = new Set([...Object.keys(env), ...Object.keys(process.env).filter((key) => CONFIG_ENV_KEY.test(key))]);
+  for (const key of keys) {
     saved[key] = process.env[key];
+    const value = env[key];
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }

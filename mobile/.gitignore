@@ -54,3 +54,7 @@ yarn-error.*
 # Generated native projects (Expo CNG; regenerate with npm run prebuild:clean)
 /ios/
 /android/
+
+# EAS Update code-signing private keys (expo-updates codesigning:generate). Never commit.
+keys/
+*.private.pem

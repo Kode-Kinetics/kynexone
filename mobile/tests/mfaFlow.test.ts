@@ -277,9 +277,28 @@ test('every MFA string exists in English and Arabic with the same placeholders',
   assert.equal(mfaEn.errors.notAccepted, 'Not accepted. If this keeps happening, sign in again.');
 });
 
-test('enrolment ships without a native build: no clipboard module, core Share + selectable key instead', () => {
+// Dependencies of the last native baseline (origin/main before the first store
+// build). Anything else is new native surface and must be named here on purpose.
+const BASELINE_DEPENDENCIES = [
+  '@expo/vector-icons', '@hookform/resolvers', '@react-native-async-storage/async-storage',
+  '@react-native-community/datetimepicker', '@react-navigation/bottom-tabs', '@react-navigation/native',
+  '@react-navigation/native-stack', 'axios', 'date-fns', 'expo', 'expo-application', 'expo-blur', 'expo-camera',
+  'expo-constants', 'expo-device', 'expo-document-picker', 'expo-file-system', 'expo-font', 'expo-glass-effect',
+  'expo-haptics', 'expo-image-picker', 'expo-linear-gradient', 'expo-local-authentication', 'expo-location',
+  'expo-notifications', 'expo-secure-store', 'expo-sharing', 'expo-splash-screen', 'expo-status-bar',
+  'expo-system-ui', 'i18next', 'react', 'react-hook-form', 'react-i18next', 'react-native',
+  'react-native-reanimated', 'react-native-safe-area-context', 'react-native-screens', 'react-native-svg',
+  'react-native-worklets', 'zod', 'zustand',
+];
+// Both must ship in the FIRST store binary: the OTA channel, and screen-capture
+// protection for the setup key.
+const ALLOWED_NEW_NATIVE = ['expo-screen-capture', 'expo-updates'];
+
+test('new native modules are exactly expo-updates and expo-screen-capture; no clipboard module', () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(pkg.dependencies['expo-clipboard'], undefined);
+  const added = Object.keys(pkg.dependencies).filter((name) => !BASELINE_DEPENDENCIES.includes(name)).sort();
+  assert.deepEqual(added, ALLOWED_NEW_NATIVE);
   const mfaSources = [
     '../src/features/auth/MfaEnrollmentView.tsx',
     '../src/features/auth/MfaSetupBanner.tsx',
@@ -294,6 +313,8 @@ test('enrolment ships without a native build: no clipboard module, core Share + 
   }
   const view = mfaSources[0];
   assert.match(view, /Share\.share\(\{ message: /);
+  assert.match(view, /usePreventScreenCapture\('mfa-enrollment'\)/);
+  assert.match(view, /disableAppSwitcherProtectionAsync\(\)/, 'protection is removed on unmount');
   assert.match(view, /<Text\s+selectable\s+style=\{styles\.secret\}/);
   assert.equal('copyKey' in mfaEn, false);
   assert.ok(mfaEn.shareKey && mfaAr.shareKey && mfaEn.longPressToCopy && mfaAr.longPressToCopy);

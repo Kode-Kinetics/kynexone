@@ -57,6 +57,23 @@ assertSafeReleaseConfig();
 // or native config changes, so an OTA update can only reach binaries it fits.
 // fallbackToCacheTimeout 0: launch from the cached bundle immediately and apply a
 // downloaded update on the next launch; startup never waits on the network.
+// Optional code signing (see README "Code signing"). Only the PUBLIC certificate
+// path is configured here; the private key never enters the repo or the app.
+// Unset = unsigned updates. Turning it on changes the runtime version, so decide
+// before the first store build.
+const codeSigningCertificate = value('EXPO_UPDATES_CODE_SIGNING_CERT');
+
+function codeSigningConfig() {
+  if (!codeSigningCertificate) return {};
+  if (!fs.existsSync(path.resolve(__dirname, codeSigningCertificate))) {
+    throw new Error(`EXPO_UPDATES_CODE_SIGNING_CERT points to a missing file: ${codeSigningCertificate}`);
+  }
+  return {
+    codeSigningCertificate,
+    codeSigningMetadata: { keyid: 'main', alg: 'rsa-v1_5-sha256' },
+  };
+}
+
 function updatesConfig(projectId) {
   if (!projectId) {
     if (appEnvironment === 'production') {
@@ -70,6 +87,7 @@ function updatesConfig(projectId) {
       url: `https://u.expo.dev/${projectId}`,
       checkAutomatically: 'ON_LOAD',
       fallbackToCacheTimeout: 0,
+      ...codeSigningConfig(),
     },
   };
 }

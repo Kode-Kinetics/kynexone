@@ -13,6 +13,11 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import {
+  disableAppSwitcherProtectionAsync,
+  enableAppSwitcherProtectionAsync,
+  usePreventScreenCapture,
+} from 'expo-screen-capture';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useTranslation } from 'react-i18next';
 import { authApi } from '@/api/services';
@@ -79,6 +84,18 @@ export function MfaEnrollmentView({
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
   const [done, setDone] = useState(false);
   const { state, nowMs, run, edited } = useCodeEntry(expiresInSeconds);
+
+  // The setup key is a long-lived credential: no screenshots or recordings
+  // (Android FLAG_SECURE also blanks the recent-apps preview), and on iOS a blur
+  // over the app-switcher snapshot while this screen is mounted.
+  usePreventScreenCapture('mfa-enrollment');
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    void enableAppSwitcherProtectionAsync(1).catch(() => undefined);
+    return () => {
+      void disableAppSwitcherProtectionAsync().catch(() => undefined);
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;

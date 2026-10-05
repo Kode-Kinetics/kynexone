@@ -156,9 +156,9 @@ Response handling lives in `src/auth/mfaFlow.ts` (pure, unit-tested in `tests/mf
 - `/auth/login` returns `mfaEnrollmentRequired` + `enrollmentToken` (enforced, not enrolled) → `MfaEnrollmentScreen`; after the first code the user signs in again.
 - Grace period: login returns tokens; `GET /auth/mfa/status` drives `MfaSetupBanner`, which starts enrolment via `POST /auth/mfa/enrollment/start`. Enrolling ends the session (the server rotates the session stamp).
 - Every rejected code is the same 401, so the app counts attempts (server limit 5) and tracks the 300 s expiry itself.
-- Same-phone enrolment: "Open authenticator app" (`otpauth://` link) first; the grouped key is selectable (long-press to copy) and has a "Share key" button (React Native core `Share`). The app never writes to the clipboard.
+- Same-phone enrolment: "Open authenticator app" (`otpauth://` link) first; the grouped key is selectable (long-press to copy) and has a "Share key" button (React Native core `Share`). The app never writes to the clipboard itself. While the setup screen is open, `expo-screen-capture` blocks screenshots and recordings and, on iOS, blurs the app-switcher snapshot. That module is native (see [Releasing](#releasing)).
 - The setup key stays in component state only and is never logged or stored.
-- Release: this flow is JavaScript only. It adds no dependency, config plugin or `app.json`/`app.config.js` change, so once a store binary carrying the OTA channel exists (see [Releasing](#releasing)) a fix to it ships with `eas update` and no App Store review. That matters because managers who sign in only on mobile must not wait for review past the enforcement date.
+- Release: the sign-in and enrolment logic is JavaScript, so after the first store build, fixes to it ship with `npm run update:production` and no App Store review. That matters because managers who sign in only on mobile must not wait for review past the enforcement date. The one native piece, screen-capture protection, must be in the first store binary.
 
 ---
 
@@ -232,31 +232,61 @@ Production EAS profiles set `EXPO_PUBLIC_APP_ENV=production` and the HTTPS API U
 
 ## Releasing
 
-Every store binary carries an OTA channel (`expo-updates`): `updates.url` is `https://u.expo.dev/<EAS projectId>` (derived in `app.config.js` from the same project ID the build links to), it checks on launch (`ON_LOAD`) and never blocks startup (`fallbackToCacheTimeout: 0`; a downloaded update applies on the next launch). Channels: `production`, `preview`, and `development` (the `simulator` profile). `npm run updates:check` validates this and prints the iOS/Android runtime versions; `tests/updatesConfig.test.ts` guards it in CI.
+Every store binary carries an OTA channel (`expo-updates`): `updates.url` is `https://u.expo.dev/<EAS projectId>` (derived in `app.config.js` from the same project ID the build links to), it checks on launch (`ON_LOAD`) and never blocks startup (`fallbackToCacheTimeout: 0`; a downloaded update applies on the next launch). Channels: `production`, `preview`, and `development` (the `simulator` profile). `tests/updatesConfig.test.ts` guards this in CI.
 
-The runtime version uses the **fingerprint** policy: a hash of native code and native config. An update reaches only binaries whose fingerprint matches, so a mistaken OTA cannot land on a binary it does not fit.
+**Binaries built before the OTA channel commit can never receive an OTA update.** They have no update URL, so they need a store build. The app was not in either store when the channel was added, so the first store binary carries it.
 
-**OTA (`eas update`):** JavaScript/TypeScript and bundled assets only, with the fingerprint unchanged. Run `npm run updates:check` and compare its runtime version with the store build on expo.dev; if they differ, it is a store build.
+### Runtime version
+
+The runtime version uses the **fingerprint** policy: a hash of native code and the resolved app config. An update reaches only binaries whose fingerprint matches.
+
+- `app.config.js` copies the profile's `EXPO_PUBLIC_API_BASE_URL` and `EXPO_PUBLIC_APP_ENV` into `extra`, and `extra` stays in the fingerprint on purpose. An update built against a different API URL (for example localhost) gets a different runtime version and reaches nobody.
+- `eas update` does not read `eas.json` build-profile `env`. **Only publish with `npm run update:<profile>`**, which replaces every `EXPO_PUBLIC_*` and `EXPO_UPDATES_CODE_SIGNING_CERT` value with exactly that profile's `eas.json` env, and refuses if `.env` would add one.
+- `fingerprint.config.js` ignores `eas.json` itself, so editing build or submit plumbing does not cut installed binaries off from updates. Changing a profile's `env` still changes the fingerprint, through `extra`.
+- `npm run updates:check` validates the config and prints the iOS and Android runtime version for each profile. Compare it with the build on expo.dev: if they differ, you need a store build.
+
+### What ships how
+
+**OTA (`npm run update:production`):** JavaScript/TypeScript and bundled assets, with the fingerprint unchanged.
 
 **Store build (`eas build`):** anything that changes the fingerprint:
-- adding, removing or upgrading a dependency with native code (any `expo-*` module, `react-native-*`, the Expo SDK);
+- adding, removing or upgrading a dependency with native code (any `expo-*` module, `react-native-*`, the Expo SDK). Example: `expo-screen-capture`, which blocks screenshots of the MFA setup key, is native;
 - config plugins (`plugins` in `app.json`);
 - native keys in `app.json`/`app.config.js`: `ios`, `android`, permissions, `infoPlist`, `scheme`, icons/splash, `version`;
-- `eas.json` (the fingerprint includes it, so even changing a profile's `env`, such as the API URL, needs a build).
+- a profile's `env` in `eas.json`, the code-signing certificate, and `.gitignore` (part of the fingerprint).
 
 ```bash
-# Ship JS/asset changes to production binaries
-eas update --channel production --message "Fix: clearer two-step sign-in errors"
+# Ship JS/asset changes to production binaries (the only supported way)
+MSG="Fix: clearer two-step sign-in errors" npm run update:production
+MSG="..." npm run update:preview
 
 # New store binaries (native change, or first release)
 eas build --profile production --platform all
 
-# Roll back: republish an earlier, known-good update group to the channel
+# Roll back to an earlier, known-good update
 eas update:list --branch production
 eas update:republish --group <update-group-id>
+
+# Roll back to the JS bundled inside the store binary. Fingerprints differ per
+# platform, so run once per platform with that platform's runtime version
+# (from npm run updates:check). Add --private-key-path once signing is on.
+eas update:roll-back-to-embedded --branch production --platform ios --runtime-version <ios-runtime> --message "Roll back"
+eas update:roll-back-to-embedded --branch production --platform android --runtime-version <android-runtime> --message "Roll back"
 ```
 
----
+### Code signing (decide before the first store build)
+
+Signed updates let the app reject any update not signed with our key, even one served by a compromised Expo account or CDN. The certificate is baked into the binary, so **turning signing on or off later needs a new store build**. Make the decision before the first store build.
+
+The wiring is in `app.config.js` and is off unless `EXPO_UPDATES_CODE_SIGNING_CERT` is set. When it is set, it adds `updates.codeSigningCertificate` and `codeSigningMetadata: { keyid: 'main', alg: 'rsa-v1_5-sha256' }`.
+
+1. Generate the key pair once, outside the repo:
+   `npx expo-updates codesigning:generate --key-output-directory ~/kynexone-keys --certificate-output-directory certs --certificate-validity-duration-years 10 --certificate-common-name "KynexOne"`
+2. **The private key (`private-key.pem`) must never be in this repo** (`keys/` and `*.private.pem` are git-ignored). Keep it in the team secret manager; only the machine or CI job that publishes updates gets it.
+3. Commit the public `certs/certificate.pem`. Add `"EXPO_UPDATES_CODE_SIGNING_CERT": "./certs/certificate.pem"` to the `env` of every build profile in `eas.json`.
+4. Publish with `EXPO_UPDATES_CODE_SIGNING_KEY=/path/to/private-key.pem MSG="..." npm run update:production`. The script adds `--private-key-path` and refuses to publish without it.
+
+Losing the private key means signed binaries can never be updated again. Back it up.
 
 ## TypeScript
 
