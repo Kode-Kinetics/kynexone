@@ -393,7 +393,12 @@ public partial class LoansController : ControllerBase
                 approvedEarlierStep,
                 "Maker-checker control: you approved an earlier step of this loan, so a different approver must decide this one."),
         });
-        if (!verdict.Passed) return LoanDecisionRefusal(verdict, loan?.Status);
+        if (!verdict.Passed)
+            return verdict.Outcome is ApprovalGuardOutcome.MakerIsChecker or ApprovalGuardOutcome.SubjectIsDecider
+                    or ApprovalGuardOutcome.DeciderApprovedEarlierStep
+                // Same bare-string 400, plus who could act instead when nobody can.
+                ? BadRequest(verdict.Message + await LoanUnblockHintAsync(tid, loan!, approval!, uid, ct))
+                : LoanDecisionRefusal(verdict, loan?.Status);
 
         // Guard postcondition: a passing verdict means both records were found.
         ArgumentNullException.ThrowIfNull(approval);
@@ -642,6 +647,31 @@ public partial class LoansController : ControllerBase
             or ApprovalGuardOutcome.DeciderApprovedEarlierStep => BadRequest(verdict.Message),
         _ => throw new InvalidOperationException($"Unhandled approval guard outcome '{verdict.Outcome}'."),
     };
+
+    /// <summary>
+    /// The "nobody else can decide it yet" sentence for a separation-of-duties refusal, or empty when
+    /// someone else can. Excludes the caller, the loan's maker, the borrower and whoever approved another
+    /// step; counts Admin and the step's role (legacy Finance/Manager steps read as HR Manager, as below).
+    /// A hint only — the checks in DecideApproval decide who may act.
+    /// </summary>
+    private async Task<string> LoanUnblockHintAsync(Guid tid, EmployeeLoan loan, LoanApproval step, Guid? callerId, CancellationToken ct)
+    {
+        var excluded = new HashSet<Guid>();
+        if (callerId is Guid caller) excluded.Add(caller);
+        if (loan.CreatedBy is Guid maker) excluded.Add(maker);
+        foreach (var approver in await _db.LoanApprovals.AsNoTracking()
+                     .Where(x => x.TenantId == tid && x.LoanId == loan.Id && x.Status == "Approved" && x.ApprovedBy != null)
+                     .Select(x => x.ApprovedBy!.Value).ToListAsync(ct))
+            excluded.Add(approver);
+        if (loan.EmployeeIntId is int borrower)
+            foreach (var linked in await Zayra.Api.Infrastructure.Approvals.ApprovalUnblock.SubjectUserIdsAsync(_db, tid, borrower, ct))
+                excluded.Add(linked);
+        var role = step.ApproverRole is "Finance" or "Finance Approver" or "Manager" ? "HR Manager" : step.ApproverRole;
+        return await Zayra.Api.Infrastructure.Approvals.ApprovalUnblock.AnyOtherUserInRolesAsync(
+                _db, tid, new[] { role, "Admin" }, orOverride: false, excluded, ct)
+            ? string.Empty
+            : Zayra.Api.Infrastructure.Approvals.ApprovalUnblock.NobodyElseSentence("decide", null, role);
+    }
 
     private async Task WriteLoanAudit(Guid tid, Guid? uid, Guid loanId, string action, string? oldVal, string newVal, CancellationToken ct)
     {

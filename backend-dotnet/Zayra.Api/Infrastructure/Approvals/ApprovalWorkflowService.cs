@@ -273,6 +273,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         var canDecide = bar == DecisionBar.None
             && await CanDecideRequestAsync(approval, context, cancellationToken, separationOfDuties: false);
         var requestedByCaller = context?.UserId is not null && approval.RequestedByUserId == context.UserId;
+        var canWithdraw = approval.Status == "Pending" && requestedByCaller
+            && string.Equals(approval.EntityName, nameof(EmployeeChangeRequest), StringComparison.OrdinalIgnoreCase);
         string? blockedReason = null;
         if (context is not null && !canDecide && approval.Status == "Pending")
         {
@@ -285,7 +287,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
                     : "You already decided an earlier step of this request, so a different person must decide this one.";
                 blockedReason += await AnyoneElseCanDecideAsync(approval, otherDeciders, cancellationToken)
                     ? $" It is waiting for {OwnerLabel(approval)}."
-                    : $" No other active user can decide it yet: give a colleague the {OwnerLabel(approval)} or Admin role in User Management.";
+                    : NobodyElseSentence(approval, "decide", canWithdraw: false);
             }
             else if (requestedByCaller)
             {
@@ -294,17 +296,23 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
                 blockedReason = "You requested this, so someone else must approve it (maker-checker).";
                 blockedReason += await AnyoneElseCanDecideAsync(approval, otherDeciders, cancellationToken)
                     ? $" It is waiting for {OwnerLabel(approval)}."
-                    : $" No other active user can approve it yet: give a colleague the {OwnerLabel(approval)} or Admin role in User Management, or withdraw it.";
+                    : NobodyElseSentence(approval, "approve", canWithdraw);
             }
             else
             {
                 blockedReason = $"This step is assigned to {OwnerLabel(approval)}, which your access does not cover.";
             }
         }
-        var canWithdraw = approval.Status == "Pending" && requestedByCaller
-            && string.Equals(approval.EntityName, nameof(EmployeeChangeRequest), StringComparison.OrdinalIgnoreCase);
         return approval.ToDto(canDecide, blockedReason, canWithdraw, summaries.GetValueOrDefault(approval.EntityId));
     }
+
+    // A step routed to a named person is unblocked by reassigning it, not by granting "their" role.
+    private static string NobodyElseSentence(ApprovalRequest approval, string verb, bool canWithdraw) =>
+        ApprovalUnblock.NobodyElseSentence(verb,
+            approval.CurrentApproverUserId is not null || approval.CurrentApproverEmployeeId is not null
+                ? Clean(approval.CurrentApproverName) is { Length: > 0 } name ? name : "the named approver"
+                : null,
+            Clean(approval.CurrentApproverRole) is "" ? null : OwnerLabel(approval), canWithdraw);
 
     private static string OwnerLabel(ApprovalRequest approval) =>
         new[] { approval.CurrentApproverName, approval.CurrentApproverRole, approval.CurrentQueue }
@@ -334,23 +342,12 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         var key = $"{role}|{string.Join(",", excludedIds)}";
         if (cache.TryGetValue(key, out var known)) return known;
 
-        // An empty or "Any" role is decidable by any active user, exactly as CanDecideRequestAsync treats it.
+        // An empty or "Any" role is open to anyone CanDecideRequestAsync admits, but deciding also needs the
+        // approvals.decide permission, so only holders of it count as someone who could unblock the request.
         var anyRole = role.Length == 0 || role.Equals("Any", StringComparison.OrdinalIgnoreCase);
-        var normalizedRole = role.ToUpperInvariant();
-        var tenantId = approval.TenantId;
         var exists = anyRole
-            ? await _db.Users.AsNoTracking()
-                .AnyAsync(u => u.TenantId == tenantId && u.IsActive && !u.IsDeleted && !excludedIds.Contains(u.Id), cancellationToken)
-            : await (
-            from ur in _db.UserRoles.AsNoTracking()
-            join u in _db.Users.AsNoTracking() on ur.UserId equals u.Id
-            join r in _db.Roles.AsNoTracking() on ur.RoleId equals r.Id
-            where u.TenantId == tenantId && r.TenantId == tenantId && u.IsActive && !u.IsDeleted
-                  && !excludedIds.Contains(u.Id)
-                  && (r.NormalizedName == normalizedRole
-                      || _db.RolePermissions.Any(rp => rp.RoleId == r.Id
-                          && _db.Permissions.Any(p => p.Id == rp.PermissionId && p.Key == "approvals.override")))
-            select ur.UserId).AnyAsync(cancellationToken);
+            ? await ApprovalUnblock.AnyOtherUserWithPermissionAsync(_db, approval.TenantId, "approvals.decide", excludedIds, cancellationToken)
+            : await ApprovalUnblock.AnyOtherUserInRolesAsync(_db, approval.TenantId, new[] { role }, orOverride: true, excludedIds, cancellationToken);
         cache[key] = exists;
         return exists;
     }
@@ -784,12 +781,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     private async Task<IReadOnlyCollection<Guid>> SubjectUserIdsAsync(Guid tenantId, int subjectEmployeeId, CancellationToken cancellationToken)
     {
         if (_subjectUserIds.TryGetValue((tenantId, subjectEmployeeId), out var known)) return known;
-        var linked = await Zayra.Api.Infrastructure.Data.ScopedBypass.NullableTenantWide(_db.Employees, tenantId,
-                "Exclude the employee an approval is about from deciding it, even when their row is in another legal entity.")
-            .AsNoTracking()
-            .Where(x => x.Id == subjectEmployeeId && x.UserAccountId != null)
-            .Select(x => x.UserAccountId!.Value)
-            .ToListAsync(cancellationToken);
+        var linked = await ApprovalUnblock.SubjectUserIdsAsync(_db, tenantId, subjectEmployeeId, cancellationToken);
         _subjectUserIds[(tenantId, subjectEmployeeId)] = linked;
         return linked;
     }

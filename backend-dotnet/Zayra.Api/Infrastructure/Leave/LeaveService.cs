@@ -1492,26 +1492,23 @@ public class LeaveService : ILeaveService
 
     private async Task EnsureMakerCheckerAsync(LeaveRequest request, Guid approverId, CancellationToken ct)
     {
-        // Tenant-wide, as ApprovalWorkflowService.SubjectUserIdsAsync: a company-filtered read misses the
-        // employee's row once they move to another legal entity (or the approver's switcher is on one),
-        // and the subject could then approve their own leave. Not filtered on IsDeleted either: a login
-        // linked to the request's employee row is barred whatever that row's state.
-        var approverIsSubject = await Zayra.Api.Infrastructure.Data.ScopedBypass.NullableTenantWide(_db.Employees, request.TenantId,
-                "Exclude the employee a leave request is about from deciding it, even when their row is in another legal entity.")
-            .AsNoTracking()
-            .AnyAsync(e => e.Id == request.EmployeeId && e.UserAccountId == approverId, ct);
+        // Tenant-wide (ApprovalUnblock.SubjectUserIdsAsync, shared with the Approval Center): a company-filtered
+        // read misses the employee's row once they move to another legal entity (or the approver's switcher is
+        // on one), and the subject could then approve their own leave.
+        var approverIsSubject = (await Zayra.Api.Infrastructure.Approvals.ApprovalUnblock
+            .SubjectUserIdsAsync(_db, request.TenantId, request.EmployeeId, ct)).Contains(approverId);
         var actualMakerUserId = _db.ApprovalRequests.Local.FirstOrDefault(a => a.Id == request.Id)?.RequestedByUserId
             ?? await _db.ApprovalRequests.AsNoTracking()
                 .Where(a => a.TenantId == request.TenantId && a.Id == request.Id)
                 .Select(a => a.RequestedByUserId)
                 .FirstOrDefaultAsync(ct);
         if (approverIsSubject || actualMakerUserId == approverId)
-            throw new InvalidOperationException("Maker-checker violation: the requester cannot approve or reject their own leave request.");
+            throw new Zayra.Api.Infrastructure.Approvals.ApprovalSeparationException("Maker-checker violation: the requester cannot approve or reject their own leave request.");
         // Segregation of duties across steps, here so the leave screen and the Approval Center refuse alike:
         // whoever approved an earlier step of this request cannot also decide a later one.
         if (await _db.LeaveApprovals.AsNoTracking().AnyAsync(a => a.TenantId == request.TenantId
                 && a.LeaveRequestId == request.Id && a.Decision == "Approved" && a.ApproverId == approverId, ct))
-            throw new InvalidOperationException("Segregation of duties: you already decided an earlier step of this leave request, so a different approver must decide this one.");
+            throw new Zayra.Api.Infrastructure.Approvals.ApprovalSeparationException("Segregation of duties: you already decided an earlier step of this leave request, so a different approver must decide this one.");
     }
 
     private async Task<LeaveApproval> EnsureCanonicalApprovalAsync(

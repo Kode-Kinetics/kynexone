@@ -145,7 +145,7 @@ public class ApprovalSubjectSeparationTests
             .DecideApproval(loan.Id, step.Id, new Zayra.Api.Controllers.Finance.ApprovalDecisionRequest("Approved", "mine", null, null, null), CancellationToken.None);
 
         var bad = Assert.IsType<BadRequestObjectResult>(approve);
-        Assert.Equal("Maker-checker control: borrower cannot approve their own loan.", bad.Value as string);
+        Assert.StartsWith("Maker-checker control: borrower cannot approve their own loan.", Assert.IsType<string>(bad.Value));
         Assert.Equal("Pending", (await db.LoanApprovals.SingleAsync()).Status);
         Assert.Equal("Pending", (await db.EmployeeLoans.SingleAsync()).Status);
 

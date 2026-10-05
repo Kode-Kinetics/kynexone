@@ -283,7 +283,9 @@ public class ApprovalSeparationOfDutiesGapTests
         {
             var refused = await WithPrincipal(new LoansController(db, new OrgScope()), tenantId, firstApprover, "Admin")
                 .DecideApproval(loan.Id, stepTwo.Id, new Zayra.Api.Controllers.Finance.ApprovalDecisionRequest(decision, "again", null, null, null), CancellationToken.None);
-            Assert.Equal("Maker-checker control: you approved an earlier step of this loan, so a different approver must decide this one.",
+            // Nobody else in this tenant holds HR Director or Admin, so the refusal says who could unblock it.
+            Assert.Equal("Maker-checker control: you approved an earlier step of this loan, so a different approver must decide this one."
+                + " No other active user can decide it yet: give a colleague the HR Director or Admin role in User Management.",
                 Assert.IsType<BadRequestObjectResult>(refused).Value as string);
         }
         Assert.Equal("Pending", (await db.LoanApprovals.SingleAsync(x => x.Id == stepTwo.Id)).Status);
@@ -350,6 +352,85 @@ public class ApprovalSeparationOfDutiesGapTests
         var conflict = Assert.IsType<ConflictObjectResult>(result);
         JsonSerializer.Serialize(conflict.Value).Should().Contain("offer_approver_already_named");
         Assert.Equal(1, await db.OfferApprovals.CountAsync());
+    }
+
+    // ── (6) Saying who could unblock it, everywhere ──────────────────────────────
+
+    [Fact]
+    public async Task LeaveScreen_ABarredApprover_IsToldNobodyElseCanDecide_UntilAColleagueHasTheRole()
+    {
+        await using var db = CreateDb();
+        var (tenantId, managerUserId, _, leaveId) = await SubmitTwoStepLeaveAsync(db);
+        (await LeaveFor(db, tenantId, managerUserId).Approve(leaveId, new ApproveLeaveRequest("ok"), CancellationToken.None))
+            .Should().BeOfType<OkObjectResult>();
+
+        var alone = await LeaveFor(db, tenantId, managerUserId).Approve(leaveId, new ApproveLeaveRequest("again"), CancellationToken.None);
+        JsonSerializer.Serialize(alone.Should().BeOfType<BadRequestObjectResult>().Subject.Value).Should()
+            .Contain("Segregation of duties").And.Contain("No other active user can decide it yet: give a colleague the HR Manager or Admin role in User Management.");
+
+        var hrRole = new Role { Id = Guid.NewGuid(), TenantId = tenantId, Name = "HR Manager", NormalizedName = "HR MANAGER", Description = "HR" };
+        db.Roles.Add(hrRole);
+        await db.SaveChangesAsync();
+        await AddUserAsync(db, tenantId, hrRole.Id);
+        var withColleague = await LeaveFor(db, tenantId, managerUserId).Approve(leaveId, new ApproveLeaveRequest("again"), CancellationToken.None);
+        JsonSerializer.Serialize(withColleague.Should().BeOfType<BadRequestObjectResult>().Subject.Value).Should()
+            .Contain("Segregation of duties").And.NotContain("No other active user");
+    }
+
+    [Fact]
+    public async Task AStepNamedToTheBarredPerson_SaysReassignIt_NotGrantTheirNameAsARole()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var adminRole = await SeedAdminRoleAsync(db, tenantId);
+        var soleAdmin = await AddUserAsync(db, tenantId, adminRole);
+        var subject = await AddEmployeeAsync(db, tenantId, soleAdmin);
+        var approval = new ApprovalRequest
+        {
+            TenantId = tenantId, WorkflowId = Guid.NewGuid(), EntityName = "EmployeeTransferRequest", EntityId = "TR-NAMED",
+            Title = "Transfer", Status = "Pending", CurrentStepOrder = 1, RequestedByUserId = Guid.NewGuid(),
+            RequestedForEmployeeId = subject.Id, CurrentApproverUserId = soleAdmin, CurrentApproverEmployeeId = subject.Id,
+            CurrentApproverName = "Huda Salem", CurrentApproverType = "Manager", CurrentApproverRole = "Manager",
+        };
+        db.ApprovalRequests.Add(approval);
+        await db.SaveChangesAsync();
+
+        var view = await Service(db).GetRequestAsync(tenantId, approval.Id, AdminContext(tenantId, soleAdmin), CancellationToken.None);
+
+        view!.DecisionBlockedReason.Should().StartWith("This request is about you")
+            .And.Contain("No other active user can decide it yet: reassign it, or give a colleague the Admin role in User Management.")
+            .And.NotContain("give a colleague the Huda Salem");
+    }
+
+    [Fact]
+    public async Task AnAnyStep_CountsOnlyColleaguesWhoMayDecide_AsSomeoneWhoCanUnblockIt()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var adminRole = await SeedAdminRoleAsync(db, tenantId);
+        var soleAdmin = await AddUserAsync(db, tenantId, adminRole);
+        var clerkRole = new Role { Id = Guid.NewGuid(), TenantId = tenantId, Name = "Clerk", NormalizedName = "CLERK", Description = "Clerk" };
+        db.Roles.Add(clerkRole);
+        await db.SaveChangesAsync();
+        await AddUserAsync(db, tenantId, clerkRole.Id);   // active, but cannot decide anything
+        var subject = await AddEmployeeAsync(db, tenantId, soleAdmin);
+        var workflow = new ApprovalWorkflow { TenantId = tenantId, Code = "ANY", Name = "Any", EntityName = "EmployeeTransferRequest" };
+        workflow.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, StepOrder = 1, StepName = "Anyone", ApproverRole = "Any", IsFinalStep = true });
+        db.ApprovalWorkflows.Add(workflow);
+        await db.SaveChangesAsync();
+        var request = await Service(db).CreateRequestAsync(tenantId,
+            new CreateApprovalRequest(workflow.Id, "EmployeeTransferRequest", "TR-ANY", "Transfer", RequestedForEmployeeId: subject.Id),
+            new RequestContext("127.0.0.1", "xunit", Guid.NewGuid(), tenantId, ["HR Officer"], []), CancellationToken.None);
+
+        var clerkOnly = await Service(db).GetRequestAsync(tenantId, request.Id, AdminContext(tenantId, soleAdmin), CancellationToken.None);
+        clerkOnly!.DecisionBlockedReason.Should().Contain("No other active user can decide it yet: give a colleague an approver role or the Admin role");
+
+        var decide = new Permission { Key = "approvals.decide", Module = "Approvals", Description = "Decide" };
+        db.Permissions.Add(decide);
+        db.RolePermissions.Add(new RolePermission { RoleId = clerkRole.Id, PermissionId = decide.Id });
+        await db.SaveChangesAsync();
+        var clerkMayDecide = await Service(db).GetRequestAsync(tenantId, request.Id, AdminContext(tenantId, soleAdmin), CancellationToken.None);
+        clerkMayDecide!.DecisionBlockedReason.Should().Contain("It is waiting for").And.NotContain("No other active user");
     }
 
     // ── fixture ──────────────────────────────────────────────────────────────────
