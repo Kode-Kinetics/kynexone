@@ -22,6 +22,14 @@ import {
 } from '@/auth/publicAuthInput';
 import { mapEmployeeProfile } from './profileMapper';
 import { fetchAllPages } from './paging';
+import {
+  classifyLoginResponse,
+  classifyMfaStatus,
+  normalizeTtl,
+  parseRecoveryCodes,
+  secretFromProvisioningUri,
+  type MfaPrompt,
+} from '@/auth/mfaFlow';
 import { riyadhBusinessDate, riyadhBusinessMonth } from '@/utils/businessDate';
 import type {
   AuthUser,
@@ -479,7 +487,6 @@ export type LoginOutcome =
       expiresInSeconds: number;
       tenantId: string;
       email: string;
-      message?: string;
     };
 
 function authenticatedSession(data: any): AuthenticatedSession {
@@ -496,44 +503,19 @@ function authenticatedSession(data: any): AuthenticatedSession {
   };
 }
 
-function secretFromProvisioningUri(provisioningUri: string): string {
-  try {
-    return new URL(provisioningUri).searchParams.get('secret') ?? '';
-  } catch {
-    return decodeURIComponent(provisioningUri.match(/[?&]secret=([^&]+)/i)?.[1] ?? '');
-  }
-}
-
 // ---- Auth ----
 export const authApi = {
   async login(username: string, password: string, tenantId: string): Promise<LoginOutcome> {
     const input = publicLoginInput(username, password, tenantId);
     const res = await createPublicAuthClient().post('/auth/login', input);
-    const data = unwrapApiData<any>(res.data);
-    if (data?.mfaRequired) {
-      const challengeToken = String(data.challengeToken ?? '');
-      if (!challengeToken) throw new Error('The server returned an invalid MFA challenge.');
-      return {
-        kind: 'mfaChallenge',
-        challengeToken,
-        expiresInSeconds: Number(data.expiresInSeconds ?? 300),
-        tenantId: input.tenantSlug,
-        email: input.email,
-      };
+    const step = classifyLoginResponse(unwrapApiData<unknown>(res.data));
+    if (step.kind === 'mfaChallenge') {
+      return { ...step, tenantId: input.tenantSlug, email: input.email };
     }
-    if (data?.mfaEnrollmentRequired) {
-      const enrollmentToken = String(data.enrollmentToken ?? '');
-      if (!enrollmentToken) throw new Error('The server returned an invalid MFA enrollment challenge.');
-      return {
-        kind: 'mfaEnrollment',
-        enrollmentToken,
-        expiresInSeconds: Number(data.expiresInSeconds ?? 600),
-        tenantId: input.tenantSlug,
-        email: input.email,
-        message: data.message,
-      };
+    if (step.kind === 'mfaEnrollment') {
+      return { ...step, tenantId: input.tenantSlug, email: input.email };
     }
-    return { kind: 'authenticated', ...authenticatedSession(data) };
+    return { kind: 'authenticated', ...authenticatedSession(step.payload) };
   },
 
   async verifyMfaChallenge(
@@ -549,6 +531,7 @@ export const authApi = {
     return authenticatedSession(unwrapApiData<any>(response.data));
   },
 
+  /** Exchanges a setup-only enrolment token for a fresh otpauth URI. Each call mints a new secret. */
   async startMfaEnrollment(
     enrollmentToken: string,
     tenantId: string
@@ -561,23 +544,46 @@ export const authApi = {
     const provisioningUri = String(data?.provisioningUri ?? '');
     const tempSecret = secretFromProvisioningUri(provisioningUri);
     if (!provisioningUri || !tempSecret) {
-      throw new Error('The server did not return a valid MFA setup secret.');
+      throw new Error('The server did not return a valid two-step setup key.');
     }
     return { provisioningUri, tempSecret };
   },
 
+  /**
+   * Turns the factor on. No session is issued; the user signs in again with a code.
+   * Returns one-time recovery codes only if the server sends them (tenant enrolment
+   * answers 204 today, so this is null).
+   */
   async verifyMfaEnrollment(
     enrollmentToken: string,
     tempSecret: string,
     totpCode: string,
     tenantId: string
-  ): Promise<void> {
+  ): Promise<{ recoveryCodes: string[] | null }> {
     requireWorkspace(tenantId);
-    await createPublicAuthClient().post('/auth/mfa/enrollment/verify-setup', {
+    const response = await createPublicAuthClient().post('/auth/mfa/enrollment/verify-setup', {
       enrollmentToken,
       tempSecret,
       totpCode,
     });
+    return { recoveryCodes: parseRecoveryCodes(unwrapApiData<unknown>(response?.data)) };
+  },
+
+  /** Signed-in standing against mandatory two-step sign-in (grace prompt). */
+  async getMfaStatus(): Promise<MfaPrompt> {
+    const status = await apiGet<unknown>('/auth/mfa/status');
+    return classifyMfaStatus(status, Date.now());
+  },
+
+  /**
+   * Starts enrolment from a signed-in session: the backend hands back the same
+   * setup-only token the sign-in flow uses. Completing it ends this session.
+   */
+  async startSignedInMfaEnrollment(): Promise<{ enrollmentToken: string; expiresInSeconds: number }> {
+    const data = await apiPost<any>('/auth/mfa/enrollment/start');
+    const enrollmentToken = typeof data?.enrollmentToken === 'string' ? data.enrollmentToken : '';
+    if (!enrollmentToken) throw new Error('The server did not return a two-step setup request.');
+    return { enrollmentToken, expiresInSeconds: normalizeTtl(data?.expiresInSeconds) };
   },
 
   async logout(refreshToken: string): Promise<void> {

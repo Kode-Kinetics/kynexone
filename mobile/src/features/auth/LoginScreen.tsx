@@ -41,8 +41,11 @@ type Props = NativeStackScreenProps<AuthStackParamList, 'Login'>;
 export default function LoginScreen({ navigation, route }: Props) {
   const { t } = useTranslation();
   const { login, isLoading, error, clearError } = useAuthStore();
+  const mfaEnrolledNotice = useAuthStore((s) => s.mfaEnrolledNotice);
+  const consumeMfaEnrolledNotice = useAuthStore((s) => s.consumeMfaEnrolledNotice);
 
   const [showPassword, setShowPassword] = useState(false);
+  const [mfaJustEnabled, setMfaJustEnabled] = useState(false);
   const {
     control,
     handleSubmit,
@@ -66,10 +69,17 @@ export default function LoginScreen({ navigation, route }: Props) {
   useEffect(() => {
     if (route?.params?.tenantId) setValue('tenantId', normalizeWorkspace(route.params.tenantId));
     if (route?.params?.email) setValue('username', normalizeEmail(route.params.email));
-    if (route?.params?.enrollmentComplete) {
-      Alert.alert('MFA enabled', 'Enter your password and new authentication code to sign in.');
-    }
+    if (route?.params?.enrollmentComplete) setMfaJustEnabled(true);
   }, [route?.params, setValue]);
+
+  // Signed-in enrolment ends the session; say why and keep the account filled in.
+  useEffect(() => {
+    if (!mfaEnrolledNotice) return;
+    setValue('tenantId', normalizeWorkspace(mfaEnrolledNotice.tenantId));
+    setValue('username', normalizeEmail(mfaEnrolledNotice.email));
+    setMfaJustEnabled(true);
+    consumeMfaEnrolledNotice();
+  }, [consumeMfaEnrolledNotice, mfaEnrolledNotice, setValue]);
 
   useEffect(() => {
     if (error) {
@@ -125,6 +135,16 @@ export default function LoginScreen({ navigation, route }: Props) {
         <View style={styles.card}>
           <Text style={styles.cardTitle}>{t('auth.login')}</Text>
           <Text style={styles.cardSubtitle}>Access your workforce portal</Text>
+
+          {mfaJustEnabled ? (
+            <View style={styles.notice} accessibilityRole="alert">
+              <Ionicons name="shield-checkmark-outline" size={18} color={COLORS.cyan} />
+              <View style={styles.noticeText}>
+                <Text style={styles.noticeTitle}>{t('mfa.doneTitle')}</Text>
+                <Text style={styles.noticeBody}>{t('mfa.doneSignInAgain')}</Text>
+              </View>
+            </View>
+          ) : null}
 
           {/* Company ID */}
           <View style={styles.fieldGroup}>
@@ -316,6 +336,20 @@ const styles = StyleSheet.create({
   cardTitle: { fontSize: 22, fontWeight: '700', color: '#fff', marginBottom: 4 },
   cardSubtitle: { fontSize: 14, color: 'rgba(255,255,255,0.5)', marginBottom: 24 },
   fieldGroup: { marginBottom: 16 },
+  notice: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    backgroundColor: 'rgba(94,235,255,0.08)',
+    borderColor: 'rgba(94,235,255,0.25)',
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 18,
+  },
+  noticeText: { flex: 1 },
+  noticeTitle: { color: '#fff', fontSize: 14, fontWeight: '700', textAlign: 'auto' },
+  noticeBody: { color: 'rgba(255,255,255,0.7)', fontSize: 13, lineHeight: 18, marginTop: 2, textAlign: 'auto' },
   label: { fontSize: 13, fontWeight: '600', color: 'rgba(255,255,255,0.7)', marginBottom: 8 },
   inputWrapper: {
     flexDirection: 'row',

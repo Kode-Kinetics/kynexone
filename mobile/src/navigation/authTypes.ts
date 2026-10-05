@@ -18,6 +18,5 @@ export type AuthStackParamList = {
     tenantId: string;
     email: string;
     expiresInSeconds: number;
-    message?: string;
   };
 };

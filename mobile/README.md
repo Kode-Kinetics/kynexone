@@ -148,6 +148,16 @@ app/
 6. On 401: the client queues requests, rotates via `POST /api/auth/refresh`, then replays
 7. Logout clears all stored tokens and navigates back to Auth stack
 
+### Two-step sign-in (privileged users)
+
+Response handling lives in `src/auth/mfaFlow.ts` (pure, unit-tested in `tests/mfaFlow.test.ts`).
+
+- `/auth/login` returns `mfaRequired` + `challengeToken` → `MfaChallengeScreen` → `POST /auth/mfa/challenge/verify`.
+- `/auth/login` returns `mfaEnrollmentRequired` + `enrollmentToken` (enforced, not enrolled) → `MfaEnrollmentScreen`; after the first code the user signs in again.
+- Grace period: login returns tokens; `GET /auth/mfa/status` drives `MfaSetupBanner`, which starts enrolment via `POST /auth/mfa/enrollment/start`. Enrolling ends the session (the server rotates the session stamp).
+- Every rejected code is the same 401, so the app counts attempts (server limit 5) and tracks the 300 s expiry itself.
+- The setup key stays in component state only and is never logged or stored.
+
 ---
 
 ## Role-Based Access
