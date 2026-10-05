@@ -15,6 +15,14 @@ import type {
   DashboardFull,
 } from '../../api/dashboard';
 import type { AIInsight } from '../../api/intelligence';
+import { msg, translate, type MessageParams } from '../../i18n/translations';
+
+/**
+ * The translator the builders below write their copy with. Components pass `useT()`; tests and
+ * any caller without one get English, so every sentence is still one dictionary key either way.
+ */
+export type Translator = (key: string, params?: MessageParams) => string;
+const EN: Translator = (key, params) => translate('en', key, params);
 
 // ── Formatting ────────────────────────────────────────────────────────────────
 
@@ -47,11 +55,12 @@ function ageHours(iso: string, now = Date.now()): number {
   return (now - new Date(iso).getTime()) / 3_600_000;
 }
 
-export function ageLabel(hours: number): string {
-  if (hours < 1) return 'under an hour';
-  if (hours < 24) return `${Math.floor(hours)} h`;
-  const d = Math.floor(hours / 24);
-  return `${d} ${d === 1 ? 'day' : 'days'}`;
+/** How long something has waited: "45 min", "5 h", "3 days" — one key per unit so Arabic can
+ *  pluralise and place the number itself. */
+export function ageLabel(hours: number, t: Translator = EN): string {
+  if (hours < 1) return t('{count} min', { count: Math.max(1, Math.round(hours * 60)) });
+  if (hours < 24) return t('{count} h', { count: Math.floor(hours) });
+  return t('{count} days', { count: Math.floor(hours / 24) });
 }
 
 function plural(n: number, one: string, many = `${one}s`): string {
@@ -68,22 +77,22 @@ function splitPascal(s: string): string {
 
 /** The approval queue's `module` is the backing entity name, not a product module. */
 const ENTITY_LABEL: Record<string, string> = {
-  EmployeeChangeRequest: 'Profile change',
-  LeaveRequest: 'Leave request',
-  AttendanceCorrection: 'Attendance correction',
-  AttendanceCorrectionRequest: 'Attendance correction',
-  AttendanceRegularizationRequest: 'Attendance correction',
-  OvertimeRequest: 'Overtime request',
-  PayrollRun: 'Payroll run',
-  LoanRequest: 'Loan request',
-  LoanApplication: 'Loan request',
-  ExpenseClaim: 'Expense claim',
-  HrLetterRequest: 'HR letter',
-  OffboardingCase: 'Offboarding',
-  Payroll: 'Payroll',
-  Leave: 'Leave request',
-  Attendance: 'Attendance',
-  HR: 'HR request',
+  EmployeeChangeRequest: msg('Profile change'),
+  LeaveRequest: msg('Leave request'),
+  AttendanceCorrection: msg('Attendance correction'),
+  AttendanceCorrectionRequest: msg('Attendance correction'),
+  AttendanceRegularizationRequest: msg('Attendance correction'),
+  OvertimeRequest: msg('Overtime request'),
+  PayrollRun: msg('Payroll run'),
+  LoanRequest: msg('Loan request'),
+  LoanApplication: msg('Loan request'),
+  ExpenseClaim: msg('Expense claim'),
+  HrLetterRequest: msg('HR letter'),
+  OffboardingCase: msg('Offboarding'),
+  Payroll: msg('Payroll'),
+  Leave: msg('Leave request'),
+  Attendance: msg('Attendance'),
+  HR: msg('HR request'),
 };
 
 export function entityLabel(module: string): string {
@@ -207,13 +216,13 @@ const INSIGHT_ROUTE: Record<string, string> = {
 };
 
 const INSIGHT_CTA: Record<string, string> = {
-  MissingSalarySetup: 'Open salary setup',
-  InactiveSalaryStructure: 'Open salary structures',
-  PayrollVariance: 'Review payroll variance',
-  OvertimeAnomaly: 'Review overtime',
-  LeaveAccumulationRisk: 'Review leave balances',
-  HeadcountTurnover: 'Review turnover',
-  VisaExpiryRisk: 'Review visa expiries',
+  MissingSalarySetup: msg('Open salary setup'),
+  InactiveSalaryStructure: msg('Open salary structures'),
+  PayrollVariance: msg('Review payroll variance'),
+  OvertimeAnomaly: msg('Review overtime'),
+  LeaveAccumulationRisk: msg('Review leave balances'),
+  HeadcountTurnover: msg('Review turnover'),
+  VisaExpiryRisk: msg('Review visa expiries'),
 };
 
 /** Where the records behind a rules finding live. */
@@ -237,7 +246,10 @@ export interface ComplianceDeadline {
 
 /** Accepts both the enriched alert shape and the legacy "Passport Number expired 01 Jan"
  *  title-only shape; identical legacy rows (no employee attached) collapse with a count. */
-export function complianceDeadlines(alerts: DashboardAlert[]): ComplianceDeadline[] {
+export function complianceDeadlines(
+  alerts: DashboardAlert[],
+  formatDate: (d: Date) => string = (d) => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }),
+): ComplianceDeadline[] {
   const rows = new Map<string, ComplianceDeadline>();
   for (const a of alerts) {
     // The API's `kind` is a raw field key (iqama_number); the title carries the human label.
@@ -247,7 +259,7 @@ export function complianceDeadlines(alerts: DashboardAlert[]): ComplianceDeadlin
     let dateLabel: string | null = null;
     if (a.expiryDate) {
       const d = new Date(a.expiryDate);
-      if (!Number.isNaN(d.getTime())) dateLabel = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+      if (!Number.isNaN(d.getTime())) dateLabel = formatDate(d);
     }
     if (!kind || !dateLabel) {
       const m = a.title.match(/^(.*?)\s+(expired|expires|expiring)\b\s*(?:on\s+|in\s+)?(.*)$/i);
@@ -515,8 +527,10 @@ export function buildAttention(
   data: DashboardFull | null,
   insights: AIInsight[] | null,
   now = Date.now(),
-  options: { payroll?: boolean } = {},
+  options: { payroll?: boolean; t?: Translator; relative?: (iso: string) => string } = {},
 ): AttentionItem[] {
+  const t = options.t ?? EN;
+  const ago = options.relative ?? ((iso: string) => timeAgo(iso, now).toLowerCase());
   const items: AttentionItem[] = [];
   const showPayroll = options.payroll ?? true;
   // Live payroll prerequisites replace the rules-engine salary finding when the API provides them:
@@ -528,57 +542,57 @@ export function buildAttention(
     const critical = o.complianceCriticalTotal ?? o.alerts.filter((a) => normSeverity(a.severity) === 'Critical').length;
     if (critical > 0) items.push({
       id: 'compliance-expired', severity: 'critical',
-      title: `${plural(critical, 'compliance record')} expired`,
-      detail: 'Iqama, passport, visa or permit dates on employee records',
-      source: 'Employee records', to: '/compliance', cta: 'Review expired records',
+      title: t('{count, plural, one {# compliance record expired} other {# compliance records expired}}', { count: critical }),
+      detail: t('Iqama, passport, visa or permit dates on employee records'),
+      source: t('Employee records'), to: '/compliance', cta: t('Review expired records'),
     });
     if (k.expiredDocuments > 0) items.push({
       id: 'docs-expired', severity: 'critical',
-      title: `${plural(k.expiredDocuments, 'uploaded document')} expired`,
-      detail: 'Past their expiry date; a renewed copy is needed',
-      source: 'Employee documents', to: '/compliance?tab=employee-documents', cta: 'Review expired documents',
+      title: t('{count, plural, one {# uploaded document expired} other {# uploaded documents expired}}', { count: k.expiredDocuments }),
+      detail: t('Past their expiry date; a renewed copy is needed'),
+      source: t('Employee documents'), to: '/compliance?tab=employee-documents', cta: t('Review expired documents'),
     });
     if (k.missingDocuments > 0) items.push({
       id: 'docs-missing', severity: 'critical',
-      title: `${plural(k.missingDocuments, 'employee')} missing required documents`,
-      detail: 'Each is missing at least one document type the policy requires',
-      source: 'Employee documents', to: '/compliance?tab=employee-documents', cta: 'Review missing documents',
+      title: t('{count, plural, one {# employee missing required documents} other {# employees missing required documents}}', { count: k.missingDocuments }),
+      detail: t('Each is missing at least one document type the policy requires'),
+      source: t('Employee documents'), to: '/compliance?tab=employee-documents', cta: t('Review missing documents'),
     });
     if (showPayroll && (k.missingSalaryAssignments ?? 0) > 0) items.push({
       id: 'payroll-salary-missing', severity: 'critical',
-      title: `${plural(k.missingSalaryAssignments!, 'employee')} without a salary this month`,
-      detail: 'Active employees with no salary effective by month end cannot be paid',
-      source: 'Salary assignments · live', to: '/payroll', cta: 'Review payroll readiness',
+      title: t('{count, plural, one {# employee without a salary this month} other {# employees without a salary this month}}', { count: k.missingSalaryAssignments! }),
+      detail: t('Active employees with no salary effective by month end cannot be paid'),
+      source: t('Salary assignments · live'), to: '/payroll', cta: t('Review payroll readiness'),
     });
     if (showPayroll && (k.missingBankDetails ?? 0) > 0) items.push({
       id: 'payroll-bank-missing', severity: 'critical',
-      title: `${plural(k.missingBankDetails!, 'employee')} without bank details`,
-      detail: 'No IBAN on their payroll profile; payroll approval is blocked until each has one',
-      source: 'Payroll profiles · live', to: '/payroll', cta: 'Review payroll readiness',
+      title: t('{count, plural, one {# employee without bank details} other {# employees without bank details}}', { count: k.missingBankDetails! }),
+      detail: t('No IBAN on their payroll profile; payroll approval is blocked until each has one'),
+      source: t('Payroll profiles · live'), to: '/payroll', cta: t('Review payroll readiness'),
     });
     if (k.attendanceExceptions > 0) items.push({
       id: 'att-exceptions', severity: 'critical',
-      title: `${plural(k.attendanceExceptions, 'attendance exception')}`,
-      detail: 'Missed punches or anomalies awaiting review',
-      source: 'Attendance', to: '/attendance', cta: 'Review exceptions',
+      title: t('{count, plural, one {# attendance exception} other {# attendance exceptions}}', { count: k.attendanceExceptions }),
+      detail: t('Missed punches or anomalies awaiting review'),
+      source: t('Attendance'), to: '/attendance', cta: t('Review exceptions'),
     });
     if (k.expiringDocuments > 0) items.push({
       id: 'docs-expiring', severity: 'warning',
-      title: `${plural(k.expiringDocuments, 'uploaded document')} expiring within 60 days`,
-      detail: 'Renew before they lapse',
-      source: 'Employee documents', to: '/compliance?tab=employee-documents', cta: 'Review expiring documents',
+      title: t('{count, plural, one {# uploaded document expiring within 60 days} other {# uploaded documents expiring within 60 days}}', { count: k.expiringDocuments }),
+      detail: t('Renew before they lapse'),
+      source: t('Employee documents'), to: '/compliance?tab=employee-documents', cta: t('Review expiring documents'),
     });
     if (k.pendingAttendanceCorrections > 0) items.push({
       id: 'att-corrections', severity: 'warning',
-      title: `${plural(k.pendingAttendanceCorrections, 'attendance correction')} pending`,
-      detail: 'Employees asked for a punch to be corrected',
-      source: 'Attendance', to: '/attendance', cta: 'Review corrections',
+      title: t('{count, plural, one {# attendance correction pending} other {# attendance corrections pending}}', { count: k.pendingAttendanceCorrections }),
+      detail: t('Employees asked for a punch to be corrected'),
+      source: t('Attendance'), to: '/attendance', cta: t('Review corrections'),
     });
     if (k.pendingLeaveRequests > 0) items.push({
       id: 'leave-pending', severity: 'warning',
-      title: `${plural(k.pendingLeaveRequests, 'leave request')} pending`,
-      detail: 'Waiting for a decision',
-      source: 'Leave', to: '/leave', cta: 'Review leave requests',
+      title: t('{count, plural, one {# leave request pending} other {# leave requests pending}}', { count: k.pendingLeaveRequests }),
+      detail: t('Waiting for a decision'),
+      source: t('Leave'), to: '/leave', cta: t('Review leave requests'),
     });
   }
   for (const i of dedupeInsights(insights ?? [])) {
@@ -588,11 +602,13 @@ export function buildAttention(
     items.push({
       id: `insight-${i.insightType}-${i.id}`,
       severity: sev === 'Critical' ? 'critical' : 'warning',
+      // The finding's title and summary are written by the rules engine (server-side, English
+      // today); they are shown as data. Localising them needs finding codes from the API.
       title: i.title.replace(/employee\(s\)/g, 'employees'),
       detail: i.summary,
-      source: `Rules check · ${timeAgo(i.createdAtUtc, now).toLowerCase()} · all companies`,
+      source: t('Rules check · {when} · all companies', { when: ago(i.createdAtUtc) }),
       to: insightRoute(i.insightType),
-      cta: INSIGHT_CTA[i.insightType] ?? 'Open findings',
+      cta: t(INSIGHT_CTA[i.insightType] ?? 'Open findings'),
     });
   }
   return items.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'critical' ? -1 : 1));

@@ -57,7 +57,7 @@ export interface FormatSettings {
 }
 
 export type DateInput = Date | string | number | null | undefined;
-export type DateStyle = 'short' | 'medium' | 'long' | 'full' | 'dayMonth' | 'monthYear' | 'weekdayShort';
+export type DateStyle = 'short' | 'medium' | 'long' | 'full' | 'dayMonth' | 'monthYear' | 'weekdayShort' | 'weekdayDate';
 
 function toDate(d: DateInput): Date | null {
   if (d == null || d === '') return null;
@@ -144,6 +144,7 @@ export function createFormatter(settings: FormatSettings) {
       case 'dayMonth': return dtf({ day: 'numeric', month: 'short' }, cal).format(date);
       case 'monthYear': return dtf({ month: 'long', year: 'numeric' }, cal).format(date);
       case 'weekdayShort': return dtf({ weekday: 'short' }, cal).format(date);
+      case 'weekdayDate': return dtf({ weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }, cal).format(date);
       case 'long': return dtf({ day: 'numeric', month: 'long', year: 'numeric' }, cal).format(date);
       case 'full': return dtf({ weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }, cal).format(date);
       case 'medium':
@@ -213,7 +214,10 @@ export function createFormatter(settings: FormatSettings) {
     const year = m[2] ? Number(m[2]) : 2000;
     const d = new Date(Date.UTC(year, idx, 15));
     const opts: Intl.DateTimeFormatOptions = { month: style, timeZone: 'UTC', ...(m[2] ? { year: 'numeric' } : {}) };
-    try { return new Intl.DateTimeFormat(dateLocale(locale, 'gregory'), opts).format(d); } catch { return label; }
+    // English month names come from en-US: en-GB abbreviates September as "Sept", which would
+    // change every chart axis the API already labels "Sep".
+    const tag = locale === 'en' ? 'en-US-u-ca-gregory-nu-latn' : dateLocale(locale, 'gregory');
+    try { return new Intl.DateTimeFormat(tag, opts).format(d); } catch { return label; }
   }
 
   return {

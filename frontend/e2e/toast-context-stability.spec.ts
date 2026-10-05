@@ -31,6 +31,8 @@ test.describe('AppToast context — referential stability', () => {
   test('the consumers that make stability load-bearing still depend on the value', () => {
     // If these stop depending on the toast object the memo is merely tidy; while they do, it is required.
     expect(read('src/components/PermissionGate.tsx')).toContain('[user, hasAccess, router, toast]');
-    expect(read('src/hooks/useApiCall.ts')).toMatch(/\[toast\],?\s*\)/);
+    // `t` joined the deps when errors became translated; it is itself memoised per language
+    // (LocaleContext), so it changes only when the user switches language.
+    expect(read('src/hooks/useApiCall.ts')).toMatch(/\[toast(, t)?\],?\s*\)/);
   });
 });

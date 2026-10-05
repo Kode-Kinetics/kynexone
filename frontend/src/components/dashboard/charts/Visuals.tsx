@@ -9,6 +9,8 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
+import { useT } from '../../../hooks/useT';
+import { useFormat } from '../../../hooks/useFormat';
 
 // ── Smooth trend line (hero) ─────────────────────────────────────────────────
 
@@ -155,15 +157,18 @@ export function HeroTrend({
  * and employer contributions, each labelled with its amount and share. Grows in once on load.
  */
 export function GrossSplit({ net, deductions, employer, format }: { net: number; deductions: number; employer: number | null; format: (v: number) => string }) {
+  const t = useT();
+  const f = useFormat();
   const parts = [
-    { key: 'net', label: 'Net pay', value: net, cls: 'bg-white' },
-    { key: 'ded', label: 'Deductions', value: deductions, cls: 'bg-white/45' },
-    ...(employer ? [{ key: 'emp', label: 'Employer contributions', value: employer, cls: 'bg-amber-200' }] : []),
+    { key: 'net', label: t('Net pay'), value: net, cls: 'bg-white' },
+    { key: 'ded', label: t('Deductions'), value: deductions, cls: 'bg-white/45' },
+    ...(employer ? [{ key: 'emp', label: t('Employer contributions'), value: employer, cls: 'bg-amber-200' }] : []),
   ].filter((p) => p.value > 0);
   const total = parts.reduce((n, p) => n + p.value, 0) || 1;
+  const share = (v: number) => f.percent((v / total) * 100);
   return (
-    <div className="flex flex-col gap-3" role="img" aria-label={`Where this run's cost went: ${parts.map((p) => `${p.label} ${format(p.value)}, ${Math.round((p.value / total) * 100)}%`).join('; ')}`}>
-      <span className="text-[12px] font-medium text-white/90">Where this run&rsquo;s cost went</span>
+    <div className="flex flex-col gap-3" role="img" aria-label={t('Where this run’s cost went: {values}', { values: parts.map((p) => `${p.label} ${format(p.value)}, ${share(p.value)}`).join('; ') })}>
+      <span className="text-[12px] font-medium text-white/90">{t('Where this run’s cost went')}</span>
       <span className="flex h-11 w-full gap-[3px] overflow-hidden rounded-xl bg-white/10 p-[3px]">
         {parts.map((p, i) => (
           <span key={p.key} className={`wg-grow-x h-full rounded-[9px] ${p.cls}`} style={{ animationDelay: `${i * 120}ms` }}
@@ -176,7 +181,7 @@ export function GrossSplit({ net, deductions, employer, format }: { net: number;
             <span aria-hidden className={`h-2.5 w-2.5 rounded-sm ${p.cls}`} />
             <span className="text-white/90">{p.label}</span>
             <b className="font-semibold tabular-nums text-white">{format(p.value)}</b>
-            <span className="text-white/80">{Math.round((p.value / total) * 100)}%</span>
+            <span className="text-white/80">{share(p.value)}</span>
           </li>
         ))}
       </ul>
@@ -201,9 +206,10 @@ export function HeroSpark({ values, label }: { values: number[]; label: string }
 // ── Run stepper ──────────────────────────────────────────────────────────────
 
 export function Stepper({ steps, current }: { steps: string[]; current: number }) {
+  const t = useT();
   // Equal slots: every step owns the same width, so the connectors are the same length.
   return (
-    <ol className="grid" aria-label="Payroll run progress" ref={(n) => { if (n) n.style.gridTemplateColumns = `repeat(${steps.length}, minmax(0, 1fr))`; }}>
+    <ol className="grid" aria-label={t('Payroll run progress')} ref={(n) => { if (n) n.style.gridTemplateColumns = `repeat(${steps.length}, minmax(0, 1fr))`; }}>
       {steps.map((s, i) => {
         const done = i < current;
         const cur = i === current;
@@ -217,8 +223,9 @@ export function Stepper({ steps, current }: { steps: string[]; current: number }
               done ? 'bg-white text-blue-800' : cur ? 'bg-amber-200 text-amber-950 ring-4 ring-amber-200/30' : 'bg-white/15 text-white/85'
             }`}>{done ? '✓' : i + 1}</span>
             <span className={`text-center text-[11px] leading-tight ${done || cur ? 'text-white' : 'text-white/80'} ${cur ? 'font-semibold' : 'font-medium'}`}>
-              {s === 'Review' ? <><span aria-hidden>Review</span><span className="sr-only">Finance review</span></> : s}
-              <span className="sr-only">{done ? ', done' : cur ? ', current step' : ', to do'}</span>
+              {/* Steps are dictionary keys. "Review" is short for finance review; say so to a screen reader. */}
+              <span aria-hidden>{t(s)}</span>
+              <span className="sr-only">{t(done ? '{step}, done' : cur ? '{step}, current step' : '{step}, to do', { step: s === 'Review' ? t('Finance review') : t(s) })}</span>
             </span>
           </li>
         );
@@ -253,11 +260,11 @@ export function Gauge({ pct, center, sub, label }: { pct: number | null; center:
 // ── Heatmap ──────────────────────────────────────────────────────────────────
 
 const HEAT = [
-  { min: 97, bg: '#1E3A8A', fg: '#FFFFFF', label: '97% and above' },
-  { min: 94, bg: '#1D4ED8', fg: '#FFFFFF', label: '94 to 96%' },
-  { min: 90, bg: '#60A5FA', fg: '#0B1220', label: '90 to 93%' },
-  { min: 86, bg: '#DBEAFE', fg: '#0B1220', label: '86 to 89%' },
-  { min: 0, bg: '#FEE2E2', fg: '#7F1D1D', label: 'below 86%' },
+  { min: 97, max: null, bg: '#1E3A8A', fg: '#FFFFFF', label: '97% and above' },
+  { min: 94, max: 96, bg: '#1D4ED8', fg: '#FFFFFF', label: '94 to 96%' },
+  { min: 90, max: 93, bg: '#60A5FA', fg: '#0B1220', label: '90 to 93%' },
+  { min: 86, max: 89, bg: '#DBEAFE', fg: '#0B1220', label: '86 to 89%' },
+  { min: 0, max: 85, bg: '#FEE2E2', fg: '#7F1D1D', label: 'below 86%' },
 ];
 
 export function heatStyle(rate: number | null) {
@@ -266,14 +273,20 @@ export function heatStyle(rate: number | null) {
 }
 
 export function HeatLegend() {
+  const t = useT();
+  const f = useFormat();
+  const label = (h: (typeof HEAT)[number]) => h.max == null
+    ? t('{rate} and above', { rate: f.percent(h.min) })
+    : h.min === 0 ? t('Below {rate}', { rate: f.percent(h.max + 1) })
+    : t('{from} to {to}', { from: f.integer(h.min), to: f.percent(h.max) });
   return (
-    <ul className="flex flex-wrap gap-x-4 gap-y-1.5 text-[11px] text-slate-700 dark:text-slate-300" aria-label="Heatmap scale">
+    <ul className="flex flex-wrap gap-x-4 gap-y-1.5 text-[11px] text-slate-700 dark:text-slate-300" aria-label={t('Heatmap scale')}>
       {[...HEAT].reverse().map((h) => (
         <li key={h.label} className="flex items-center gap-1.5">
-          <span aria-hidden className="h-3.5 w-3.5 rounded" ref={(n) => { if (n) n.style.background = h.bg; }} />{h.label}
+          <span aria-hidden className="h-3.5 w-3.5 rounded" ref={(n) => { if (n) n.style.background = h.bg; }} />{label(h)}
         </li>
       ))}
-      <li className="flex items-center gap-1.5"><span aria-hidden className="h-3.5 w-3.5 rounded bg-slate-100 dark:bg-white/[0.06]" />no one rostered</li>
+      <li className="flex items-center gap-1.5"><span aria-hidden className="h-3.5 w-3.5 rounded bg-slate-100 dark:bg-white/[0.06]" />{t('Nobody rostered')}</li>
     </ul>
   );
 }

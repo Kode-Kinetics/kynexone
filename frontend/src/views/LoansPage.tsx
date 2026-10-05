@@ -30,6 +30,9 @@ import { LoanAccountSummary, LoanStatement } from '../components/loans/LoanState
 import { loanGovernanceApi, type LoanEligibility } from '../api/loanGovernance';
 import { useCompany } from '../contexts/CompanyContext';
 
+import { EnumLabel, type EnumName } from '../components/EnumLabel';
+import { useFormat } from '../hooks/useFormat';
+import { useT } from '../hooks/useT';
 type Tab = 'loans' | 'loanPayments' | 'loanPolicies' | 'loanTypes' | 'advances' | 'advancePolicy' | 'bonusTypes' | 'bonusBatches' | 'auditReport';
 
 const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
@@ -46,7 +49,7 @@ const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({ status, enumName = 'LoanStatus' }: { status: string; enumName?: EnumName }) {
   const colors: Record<string, string> = {
     Active: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
     Approved: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
@@ -63,7 +66,7 @@ function StatusBadge({ status }: { status: string }) {
   };
   return (
     <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${colors[status] ?? 'bg-slate-100 text-slate-500'}`}>
-      {status}
+      <EnumLabel enum={enumName} value={status} />
     </span>
   );
 }
@@ -168,7 +171,8 @@ function LoanTypesTab() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  const fmt = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: currencyCode, minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  const fx = useFormat();
+  const fmt = (n: number) => fx.money(n, currencyCode, { decimals: 0 });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -261,7 +265,9 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
   const staff = user?.roles.some(role => ['Admin', 'Finance', 'Finance Approver', 'HR Manager', 'HR Director', 'Manager'].includes(role)) ?? false;
   const canManagePayments = user?.roles.some(role => ['Admin', 'Finance'].includes(role)) ?? false;
   const { currencyCode } = useTenantSettings();
-  const fmt = (n: number, currency: string) => n.toLocaleString('en-US', { style: 'currency', currency });
+  const fx = useFormat();
+  const t = useT();
+  const fmt = (n: number, currency: string) => fx.money(n, currency);
   const [items, setItems] = useState<EmployeeLoan[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -448,7 +454,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
               <textarea value={createForm.notes} onChange={(e) => setCreateForm(x => ({ ...x, notes: e.target.value }))} className="input w-full" rows={2} title="Notes" />
             </FormField>
           </div>
-          <div className="space-y-2 rounded-lg border border-slate-200 p-3 dark:border-white/10"><button className="btn-secondary" disabled={checkingEligibility || saving} onClick={checkEligibility}>{checkingEligibility ? 'Checking…' : 'Check Eligibility'}</button>{eligibility && checkedKey === eligibilityKey && <div role="status" className="space-y-1 text-sm"><p className={eligibility.eligible ? 'text-emerald-700' : 'text-amber-700'}>{eligibility.eligible ? 'Eligible to apply' : 'Not eligible for this request'}</p><p>{eligibility.maxAvailableAmount == null ? 'No fixed amount limit' : `Maximum available: ${eligibility.maxAvailableAmount.toLocaleString()}`} · Policy v{eligibility.policyVersion ?? '—'}</p>{eligibility.reasons.map((reason, index) => <p key={reason}>{reason}{eligibility.codes?.[index] ? ` (${eligibility.codes[index]})` : ''}</p>)}{!eligibility.eligible && eligibility.canRequestException && <label className="flex items-center gap-2"><input type="checkbox" checked={requestException} onChange={e => setRequestException(e.target.checked)} />Request an HR Director policy exception</label>}<p className="text-xs text-slate-500">Approval starts with HR Manager. Policy exceptions need a separate independent approval before the loan can proceed.</p></div>}</div>
+          <div className="space-y-2 rounded-lg border border-slate-200 p-3 dark:border-white/10"><button className="btn-secondary" disabled={checkingEligibility || saving} onClick={checkEligibility}>{checkingEligibility ? t('Checking…') : t('Check eligibility')}</button>{eligibility && checkedKey === eligibilityKey && <div role="status" className="space-y-1 text-sm"><p className={eligibility.eligible ? 'text-emerald-700' : 'text-amber-700'}>{eligibility.eligible ? t('Eligible to apply') : t('Not eligible for this request')}</p><p>{eligibility.maxAvailableAmount == null ? t('No fixed amount limit') : t('Maximum available: {amount}', { amount: fx.number(eligibility.maxAvailableAmount) })} · {t('Policy v{version}', { version: eligibility.policyVersion == null ? '—' : String(eligibility.policyVersion) })}</p>{eligibility.reasons.map((reason, index) => <p key={reason}>{reason}{eligibility.codes?.[index] ? ` (${eligibility.codes[index]})` : ''}</p>)}{!eligibility.eligible && eligibility.canRequestException && <label className="flex items-center gap-2"><input type="checkbox" checked={requestException} onChange={e => setRequestException(e.target.checked)} />{t('Request an HR Director policy exception')}</label>}<p className="text-xs text-slate-500">{t('Approval starts with HR Manager. Policy exceptions need a separate independent approval before the loan can proceed.')}</p></div>}</div>
         </div>
       </Modal>
 
@@ -641,7 +647,8 @@ function AdvancePolicyTab() {
 
 function AdvancesTab() {
   const { currencyCode } = useTenantSettings();
-  const fmt = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: currencyCode });
+  const fx = useFormat();
+  const fmt = (n: number) => fx.money(n, currencyCode);
   const [items, setItems] = useState<SalaryAdvance[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -1101,7 +1108,8 @@ function BonusTypesTab() {
 
 function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
   const { currencyCode } = useTenantSettings();
-  const fmt = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: currencyCode });
+  const fx = useFormat();
+  const fmt = (n: number) => fx.money(n, currencyCode);
   const [items, setItems] = useState<BonusBatch[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -1406,7 +1414,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
           <div className="space-y-3">
             <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-800 dark:bg-emerald-900/20">
               <p className="font-semibold text-emerald-700 dark:text-emerald-300">{bulkResult.added} employees added</p>
-              <p className="text-sm text-emerald-600 dark:text-emerald-400 mt-1">Total bonus: {bulkResult.totalNetAdded.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+              <p className="text-sm text-emerald-600 dark:text-emerald-400 mt-1">Total bonus: {fx.money(bulkResult.totalNetAdded, currencyCode)}</p>
             </div>
             {(bulkResult.skippedDuplicate + bulkResult.skippedMinService + bulkResult.skippedNoSalary) > 0 && (
               <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-900/20 text-sm space-y-1">
@@ -1481,7 +1489,8 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
 
 function AuditReportTab() {
   const { currencyCode } = useTenantSettings();
-  const fmt = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: currencyCode });
+  const fx = useFormat();
+  const fmt = (n: number) => fx.money(n, currencyCode);
   const [loanAudit, setLoanAudit] = useState<any>(null);
   const [advanceAudit, setAdvanceAudit] = useState<any>(null);
   const [bonusAudit, setBonusAudit] = useState<any>(null);
@@ -1511,7 +1520,8 @@ function AuditReportTab() {
             <p className="font-semibold text-emerald-700 dark:text-emerald-400">Finance Module — Audit Ready</p>
             <p className="text-xs text-emerald-600 dark:text-emerald-300 mt-0.5">
               All financial transactions are recorded with double-entry GL journal entries, immutable audit trails, and reconciliation checks.
-              Report generated: {new Date().toLocaleString('en-US', { timeZone: 'America/New_York', dateStyle: 'medium', timeStyle: 'short' })} EST
+              {/* Was hard-coded to America/New_York and labelled EST for every tenant; now the tenant's zone. */}
+              Report generated: {fx.dateTime(new Date())}
             </p>
           </div>
         </div>
@@ -1650,7 +1660,8 @@ export function LoansPage() {
   const ownAccounts = mine || !canViewTeam;
   const canManagePayments = user?.roles.some(role => ['Admin', 'Finance', 'Finance Approver'].includes(role)) ?? false;
   const { currencyCode } = useTenantSettings();
-  const fmt = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: currencyCode });
+  const fx = useFormat();
+  const fmt = (n: number) => fx.money(n, currencyCode);
   const [activeTab, setActiveTab] = useState<Tab>('loans');
   const [loanTypes, setLoanTypes] = useState<LoanType[]>([]);
   const [bonusTypes, setBonusTypes] = useState<BonusType[]>([]);

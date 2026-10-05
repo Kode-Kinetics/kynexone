@@ -14,30 +14,22 @@
 import Link from 'next/link';
 import { ArrowRight } from 'lucide-react';
 import type { DashboardFull } from '../../api/dashboard';
-import { fmtMoney } from './dashboardModel';
 import { GrossSplit, HeroSpark, HeroTrend, Stepper } from './charts/Visuals';
 import { useT } from '../../hooks/useT';
+import { useFormat } from '../../hooks/useFormat';
+import { msg } from '../../i18n/translations';
+import { enumLabel } from '../EnumLabel';
 
 /** PayrollRun.Status in run order, as the backend defines it (Draft -> Processed ->
  *  PendingFinanceReview -> Approved -> Locked). Payment itself is tracked on the WPS batch,
  *  not the run, so there is no "Paid" step here. Voided runs show their status instead. */
-export const RUN_STEPS = ['Draft', 'Processed', 'Review', 'Approved', 'Locked'];
+export const RUN_STEPS = [msg('Draft'), msg('Processed'), msg('Review'), msg('Approved'), msg('Locked')];
 const STATUS_INDEX: Record<string, number> = { draft: 0, processed: 1, pendingfinancereview: 2, approved: 3, locked: 4 };
 
 function stepIndex(status: string): number {
   return STATUS_INDEX[status.replace(/[\s_-]/g, '').toLowerCase()] ?? -1;
 }
 
-/** "PendingFinanceReview" -> "Pending finance review". */
-function statusLabel(status: string): string {
-  const w = status.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
-  return w.charAt(0).toUpperCase() + w.slice(1);
-}
-
-const MONTH_LONG: Record<string, string> = {
-  Jan: 'January', Feb: 'February', Mar: 'March', Apr: 'April', May: 'May', Jun: 'June',
-  Jul: 'July', Aug: 'August', Sep: 'September', Oct: 'October', Nov: 'November', Dec: 'December',
-};
 
 /**
  * `currency` is the latest run's company currency and `trendCurrency` the one currency every run on the
@@ -50,6 +42,7 @@ export function PayrollHero({ data, payrollEnabled, dense = false, currency = nu
   currency?: string | null; trendCurrency?: string | null; currencyNote?: string | null;
 }) {
   const t = useT();
+  const f = useFormat();
   const s = data.summary;
   const o = data.overview;
   const run = payrollEnabled ? o.payrollSummary : null;
@@ -61,22 +54,23 @@ export function PayrollHero({ data, payrollEnabled, dense = false, currency = nu
   const step = run ? stepIndex(run.status) : -1;
   const done = step === RUN_STEPS.length - 1;
   const trend = data.analytics?.headcountTrend ?? [];
-  const money = (v: number) => fmtMoney(v, currency);
+  const money = (v: number) => f.moneyCompact(v, currency);
+  const statusLabel = (status: string) => enumLabel(t, 'PayrollRunStatus', status);
 
   const side = (
     <div className="flex flex-col gap-2">
       <span className="text-[13px] font-medium text-white/80">{t('Active headcount')}</span>
       <div className="flex items-end justify-between gap-3">
-        <span className="text-[34px] font-semibold leading-none tracking-tight tabular-nums">{s.activeEmployees.toLocaleString()}</span>
+        <span className="text-[34px] font-semibold leading-none tracking-tight tabular-nums">{f.integer(s.activeEmployees)}</span>
         {trend.length >= 3 && (
-          <HeroSpark values={trend.map((p) => p.active)} label={`${t('Active headcount by month')}: ${trend.map((p) => `${p.month} ${p.active}`).join(', ')}`} />
+          <HeroSpark values={trend.map((p) => p.active)} label={t('Active headcount by month: {values}', { values: trend.map((p) => `${f.period(p.month, 'short')} ${f.integer(p.active)}`).join(', ') })} />
         )}
       </div>
       <span className="text-[12px] text-white/85">
         {o.newJoinersThisMonth > 0
-          ? <><span className="font-semibold text-emerald-200">+{o.newJoinersThisMonth} {t('joined')}</span> {t('this month')}. </>
-          : `${t('No one joined this month')}. `}
-        {s.totalEmployees.toLocaleString()} {t('on record')}.
+          ? <span className="font-semibold text-emerald-200">{t('+{count} joined this month', { count: o.newJoinersThisMonth })}</span>
+          : t('No one joined this month')}
+        {' · '}{t('{count} on record', { count: s.totalEmployees })}
       </span>
     </div>
   );
@@ -105,25 +99,26 @@ export function PayrollHero({ data, payrollEnabled, dense = false, currency = nu
     );
   }
 
-  const periodMonth = run.periodLabel.split(' ')[0];
   return (
     <section aria-labelledby="hero-heading" className={`wg-hero relative overflow-hidden rounded-[22px] text-white ${dense ? 'p-5' : 'p-6 sm:p-7'}`}>
       <div className={`grid lg:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)] ${dense ? 'gap-5' : 'gap-7'}`}>
         <div className={`flex min-w-0 flex-col ${dense ? 'gap-2' : 'gap-3'}`}>
           <div className="flex flex-wrap items-center gap-2.5">
-            <h2 id="hero-heading" className="text-[13px] font-semibold text-white">{t('Payroll')}, {MONTH_LONG[periodMonth] ?? periodMonth} {run.periodLabel.split(' ')[1]}</h2>
+            <h2 id="hero-heading" className="text-[13px] font-semibold text-white">{t('Payroll, {period}', { period: f.period(run.periodLabel) })}</h2>
             <span className={`rounded-full px-2.5 py-0.5 text-[12px] font-semibold ${done ? 'bg-emerald-300/20 text-emerald-100' : 'bg-amber-200/20 text-amber-100'}`}>
-              {statusLabel(run.status)}{run.payDate ? `, ${t('pay date')} ${new Date(run.payDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}` : ''}
+              {run.payDate
+                ? t('{status}, pay date {date}', { status: statusLabel(run.status), date: f.date(run.payDate, 'dayMonth') })
+                : statusLabel(run.status)}
             </span>
           </div>
           <div className="flex flex-wrap items-end gap-x-7 gap-y-3">
             <div className="flex flex-col gap-0.5">
               <span className={`${dense ? 'text-[36px]' : 'text-[44px]'} font-semibold leading-none tracking-[-0.03em] tabular-nums`}>{money(run.totalNet)}</span>
               <span className="text-[13px] text-white/90">
-                {t('Net pay for')} {run.employeeCount.toLocaleString()} {run.employeeCount === 1 ? t('employee') : t('employees')}
+                {t('{count, plural, one {Net pay for # employee} other {Net pay for # employees}}', { count: run.employeeCount })}
                 {delta != null && prev && (
                   <span className="ms-2 font-semibold text-white">
-                    {delta >= 0 ? '+' : ''}{delta.toFixed(1)}% {t('vs')} {prev.label}
+                    {t('{change} vs {period}', { change: `${delta >= 0 ? '+' : ''}${f.percent(delta, 1)}`, period: f.period(prev.label, 'short') })}
                   </span>
                 )}
               </span>
@@ -131,9 +126,9 @@ export function PayrollHero({ data, payrollEnabled, dense = false, currency = nu
             </div>
             <dl className="flex gap-6 pb-1">
               {[
-                { k: 'Gross', v: money(run.totalGross) },
-                { k: 'Deductions', v: money(run.totalDeductions) },
-                ...(run.employerContributions ? [{ k: 'Employer contributions', v: money(run.employerContributions) }] : []),
+                { k: msg('Gross'), v: money(run.totalGross) },
+                { k: msg('Deductions'), v: money(run.totalDeductions) },
+                ...(run.employerContributions ? [{ k: msg('Employer contributions'), v: money(run.employerContributions) }] : []),
               ].map((r) => (
                 <div key={r.k} className="flex flex-col gap-0.5">
                   <dt className="text-[12px] text-white/90">{t(r.k)}</dt>
@@ -143,7 +138,7 @@ export function PayrollHero({ data, payrollEnabled, dense = false, currency = nu
             </dl>
           </div>
           {ran.length >= 2 && trendCurrency ? (
-            <HeroTrend points={series} format={(v) => fmtMoney(v)} unit={trendCurrency} label={`${t('Net payroll by month')}, ${trendCurrency}`} height={dense ? 172 : 190} />
+            <HeroTrend points={series.map((p) => ({ ...p, label: f.period(p.label, 'short') }))} format={(v) => f.moneyCompact(v, null)} unit={trendCurrency} label={t('Net payroll by month ({currency})', { currency: trendCurrency })} height={dense ? 172 : 190} />
           ) : (
             <div className="flex flex-col gap-2 pt-1">
               <GrossSplit net={run.totalNet} deductions={run.totalDeductions} employer={run.employerContributions ?? null} format={money} />
@@ -158,7 +153,7 @@ export function PayrollHero({ data, payrollEnabled, dense = false, currency = nu
         <div className={`flex flex-col border-white/15 lg:border-s ${dense ? 'gap-4 lg:ps-5' : 'gap-5 lg:ps-7'}`}>
           <div className="flex flex-col gap-3">
             <span className="text-[13px] font-medium text-white/85">{t('Run progress')}</span>
-            {step >= 0 ? <Stepper steps={RUN_STEPS} current={done ? RUN_STEPS.length : step} /> : <span className="text-[13px] text-white/85">{t('Status')}: {statusLabel(run.status)}</span>}
+            {step >= 0 ? <Stepper steps={RUN_STEPS} current={done ? RUN_STEPS.length : step} /> : <span className="text-[13px] text-white/85">{t('Status: {status}', { status: statusLabel(run.status) })}</span>}
             <Link href="/payroll" className="wg-press inline-flex w-fit items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-[13px] font-semibold text-blue-900 hover:bg-blue-50">
               {done ? t('Open payroll run') : step === 3 ? t('Review and lock run') : t('Review payroll run')} <ArrowRight className="h-4 w-4" aria-hidden />
             </Link>
@@ -166,8 +161,9 @@ export function PayrollHero({ data, payrollEnabled, dense = false, currency = nu
           <div className="h-px bg-white/15" />
           {dense ? (
             <p className="text-[13px] text-white/90">
-              <span className="text-[22px] font-semibold tabular-nums text-white">{s.activeEmployees.toLocaleString()}</span> {t('active')}
-              {o.newJoinersThisMonth > 0 ? `, +${o.newJoinersThisMonth} ${t('joined this month')}` : ''}. {s.totalEmployees.toLocaleString()} {t('on record')}.
+              <span className="text-[22px] font-semibold tabular-nums text-white">{f.integer(s.activeEmployees)}</span> {t('Active')}
+              {o.newJoinersThisMonth > 0 ? ` · ${t('+{count} joined this month', { count: o.newJoinersThisMonth })}` : ''}
+              {' · '}{t('{count} on record', { count: s.totalEmployees })}
             </p>
           ) : side}
         </div>
