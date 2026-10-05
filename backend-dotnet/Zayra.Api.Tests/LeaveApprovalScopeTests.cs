@@ -270,6 +270,10 @@ public class LeaveApprovalScopeTests
         afterManagerProjection.WorkflowId.Should().Be(managerThenHr.Id);
         afterManagerProjection.Decisions.Should().ContainSingle(d => d.StepOrder == 1 && d.Decision == "Approved");
 
+        // Segregation of duties across steps: the manager who approved step 1 cannot also decide step 2.
+        var managerAgain = () => service.ApproveRequestAsync(tenantId, submitted.Id, managerUserId, "Manager One", "both steps");
+        await managerAgain.Should().ThrowAsync<InvalidOperationException>().WithMessage("Segregation of duties*");
+
         await service.ApproveRequestAsync(tenantId, submitted.Id, hrUserId, "HR One", "final");
 
         var finalRequest = await db.LeaveRequests.SingleAsync(r => r.Id == submitted.Id);

@@ -31,6 +31,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     private readonly IDataScopeService _dataScopes;
     private readonly IHttpContextAccessor? _http;
     private readonly Dictionary<RequestContext, DataScope> _jawazatScopes = new();
+    private readonly Dictionary<(Guid TenantId, int EmployeeId), IReadOnlyCollection<Guid>> _subjectUserIds = new();
 
     public ApprovalWorkflowService(ZayraDbContext db, IAuditService audit)
         : this(db, audit, new HrmHierarchyService(db, audit))
@@ -267,29 +268,51 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     private async Task<ApprovalRequestDto> ProjectAsync(ApprovalRequest approval, RequestContext? context,
         IReadOnlyDictionary<string, string?> summaries, Dictionary<string, bool> otherDeciders, CancellationToken cancellationToken)
     {
-        var canDecide = await CanDecideRequestAsync(approval, context, cancellationToken);
+        // The bar is resolved once per row and shared by canDecide and the reason below.
+        var bar = context is null ? DecisionBar.None : await ResolveDecisionBarAsync(approval, context, cancellationToken);
+        var canDecide = bar == DecisionBar.None
+            && await CanDecideRequestAsync(approval, context, cancellationToken, separationOfDuties: false);
         var requestedByCaller = context?.UserId is not null && approval.RequestedByUserId == context.UserId;
+        var canWithdraw = approval.Status == "Pending" && requestedByCaller
+            && string.Equals(approval.EntityName, nameof(EmployeeChangeRequest), StringComparison.OrdinalIgnoreCase);
         string? blockedReason = null;
         if (context is not null && !canDecide && approval.Status == "Pending")
         {
-            if (requestedByCaller)
+            if (bar is DecisionBar.Subject or DecisionBar.DecidedEarlierStep)
+            {
+                // Same shape as maker-checker below: say why, then who can unblock it. A sole Admin who is
+                // the subject, or who decided step 1, must be told nobody else can ever decide it.
+                blockedReason = bar == DecisionBar.Subject
+                    ? "This request is about you, so someone else must decide it."
+                    : "You already decided an earlier step of this request, so a different person must decide this one.";
+                blockedReason += await AnyoneElseCanDecideAsync(approval, otherDeciders, cancellationToken)
+                    ? $" It is waiting for {OwnerLabel(approval)}."
+                    : NobodyElseSentence(approval, "decide", canWithdraw: false);
+            }
+            else if (requestedByCaller)
             {
                 // Maker-checker is deliberate and stays. What was missing is saying so: the screen showed
                 // "Watching", and a sole administrator had no way to learn that nobody could ever decide.
                 blockedReason = "You requested this, so someone else must approve it (maker-checker).";
                 blockedReason += await AnyoneElseCanDecideAsync(approval, otherDeciders, cancellationToken)
                     ? $" It is waiting for {OwnerLabel(approval)}."
-                    : $" No other active user can approve it yet: give a colleague the {OwnerLabel(approval)} or Admin role in User Management, or withdraw it.";
+                    : NobodyElseSentence(approval, "approve", canWithdraw);
             }
             else
             {
                 blockedReason = $"This step is assigned to {OwnerLabel(approval)}, which your access does not cover.";
             }
         }
-        var canWithdraw = approval.Status == "Pending" && requestedByCaller
-            && string.Equals(approval.EntityName, nameof(EmployeeChangeRequest), StringComparison.OrdinalIgnoreCase);
         return approval.ToDto(canDecide, blockedReason, canWithdraw, summaries.GetValueOrDefault(approval.EntityId));
     }
+
+    // A step routed to a named person is unblocked by reassigning it, not by granting "their" role.
+    private static string NobodyElseSentence(ApprovalRequest approval, string verb, bool canWithdraw) =>
+        ApprovalUnblock.NobodyElseSentence(verb,
+            approval.CurrentApproverUserId is not null || approval.CurrentApproverEmployeeId is not null
+                ? Clean(approval.CurrentApproverName) is { Length: > 0 } name ? name : "the named approver"
+                : null,
+            Clean(approval.CurrentApproverRole) is "" ? null : OwnerLabel(approval), canWithdraw);
 
     private static string OwnerLabel(ApprovalRequest approval) =>
         new[] { approval.CurrentApproverName, approval.CurrentApproverRole, approval.CurrentQueue }
@@ -302,25 +325,29 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     /// </summary>
     private async Task<bool> AnyoneElseCanDecideAsync(ApprovalRequest approval, Dictionary<string, bool> cache, CancellationToken cancellationToken)
     {
-        if (approval.CurrentApproverUserId is not null)
-            return approval.CurrentApproverUserId != approval.RequestedByUserId;
+        // Everyone the separation-of-duties bars exclude: the requester, every earlier-step decider and every
+        // login linked to the subject employee. None of them can unblock the request, so none of them count.
+        var excluded = new HashSet<Guid>();
+        if (approval.RequestedByUserId is Guid requester) excluded.Add(requester);
+        foreach (var decision in approval.Decisions)
+            if (decision.DecidedByUserId is Guid decider) excluded.Add(decider);
+        var subject = approval.RequestedForEmployeeId ?? await ResolveSubjectEmployeeIdAsync(approval, cancellationToken);
+        if (subject is int subjectId)
+            foreach (var linked in await SubjectUserIdsAsync(approval.TenantId, subjectId, cancellationToken)) excluded.Add(linked);
+
+        if (approval.CurrentApproverUserId is Guid named)
+            return !excluded.Contains(named);
         var role = Clean(approval.CurrentApproverRole);
-        var key = $"{role}|{approval.RequestedByUserId}";
+        var excludedIds = excluded.OrderBy(x => x).ToArray();
+        var key = $"{role}|{string.Join(",", excludedIds)}";
         if (cache.TryGetValue(key, out var known)) return known;
 
-        var normalizedRole = role.ToUpperInvariant();
-        var requester = approval.RequestedByUserId;
-        var tenantId = approval.TenantId;
-        var exists = await (
-            from ur in _db.UserRoles.AsNoTracking()
-            join u in _db.Users.AsNoTracking() on ur.UserId equals u.Id
-            join r in _db.Roles.AsNoTracking() on ur.RoleId equals r.Id
-            where u.TenantId == tenantId && r.TenantId == tenantId && u.IsActive && !u.IsDeleted
-                  && (requester == null || u.Id != requester)
-                  && ((normalizedRole.Length > 0 && r.NormalizedName == normalizedRole)
-                      || _db.RolePermissions.Any(rp => rp.RoleId == r.Id
-                          && _db.Permissions.Any(p => p.Id == rp.PermissionId && p.Key == "approvals.override")))
-            select ur.UserId).AnyAsync(cancellationToken);
+        // An empty or "Any" role is open to anyone CanDecideRequestAsync admits, but deciding also needs the
+        // approvals.decide permission, so only holders of it count as someone who could unblock the request.
+        var anyRole = role.Length == 0 || role.Equals("Any", StringComparison.OrdinalIgnoreCase);
+        var exists = anyRole
+            ? await ApprovalUnblock.AnyOtherUserWithPermissionAsync(_db, approval.TenantId, "approvals.decide", excludedIds, cancellationToken)
+            : await ApprovalUnblock.AnyOtherUserInRolesAsync(_db, approval.TenantId, new[] { role }, orOverride: true, excludedIds, cancellationToken);
         cache[key] = exists;
         return exists;
     }
@@ -413,6 +440,15 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             throw new InvalidOperationException("Decision must be Approve or Reject.");
         if (context.UserId is not null && approval.RequestedByUserId == context.UserId)
             throw new InvalidOperationException("Maker-checker violation: requester cannot approve or reject their own approval request.");
+        // Segregation of duties, ahead of every role and override check: neither the employee the
+        // request is about nor someone who already decided one of its steps may decide it.
+        switch (await ResolveDecisionBarAsync(approval, context, cancellationToken))
+        {
+            case DecisionBar.Subject:
+                throw new InvalidOperationException(SubjectBarMessage);
+            case DecisionBar.DecidedEarlierStep:
+                throw new InvalidOperationException(EarlierStepBarMessage);
+        }
         await JawazatApprovalSync.ValidateDecisionAsync(_db, approval, context, cancellationToken,
             JawazatApprovalSync.IsJawazat(approval) ? await ResolveJawazatScopeAsync(tenantId, context, cancellationToken) : null);
         if (string.Equals(approval.EntityName, nameof(LeaveRequest), StringComparison.OrdinalIgnoreCase))
@@ -620,8 +656,12 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         if (string.Equals(approval.EntityName, nameof(EmployeeChangeRequest), StringComparison.OrdinalIgnoreCase)
             && Guid.TryParse(approval.EntityId, out var changeId))
         {
-            return await _db.EmployeeChangeRequests.AsNoTracking()
-                .Where(x => x.TenantId == approval.TenantId && x.Id == changeId)
+            // Tenant-wide: the subject must resolve whichever legal entity the caller is switched to, or the
+            // separation-of-duties bar fails open for a change about an employee in another company.
+            return await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.EmployeeChangeRequests, approval.TenantId,
+                    "Resolve an approval's subject employee for routing and the separation-of-duties bar, whatever company the caller has selected.")
+                .AsNoTracking()
+                .Where(x => x.Id == changeId)
                 .Select(x => (int?)x.EmployeeId)
                 .FirstOrDefaultAsync(cancellationToken);
         }
@@ -705,10 +745,55 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         return await CanDecideRequestAsync(approval, context, cancellationToken);
     }
 
-    private async Task<bool> CanDecideRequestAsync(ApprovalRequest approval, RequestContext? context, CancellationToken cancellationToken)
+    internal const string SubjectBarMessage =
+        "Segregation of duties: this request is about you, so you cannot approve or reject it.";
+    internal const string EarlierStepBarMessage =
+        "Segregation of duties: you already decided an earlier step of this request, so a different approver must decide this one.";
+
+    /// <summary>Why the caller may never decide this request, whatever their role or permissions.</summary>
+    private enum DecisionBar { None, Requester, Subject, DecidedEarlierStep }
+
+    /// <summary>
+    /// The segregation-of-duties bars, in one place for the decision itself, canDecide and the
+    /// "why can't I decide" sentence. They outrank approvals.override and an empty or "Any" approver
+    /// role: those widen WHO may decide a step, never to the person the request is about or to
+    /// someone who already decided another step of it.
+    /// </summary>
+    private async Task<DecisionBar> ResolveDecisionBarAsync(ApprovalRequest approval, RequestContext context, CancellationToken cancellationToken)
+    {
+        if (context.UserId is not Guid userId) return DecisionBar.None;
+        if (approval.RequestedByUserId == userId) return DecisionBar.Requester;
+        var subject = approval.RequestedForEmployeeId ?? await ResolveSubjectEmployeeIdAsync(approval, cancellationToken);
+        if (subject is int subjectId && (await SubjectUserIdsAsync(approval.TenantId, subjectId, cancellationToken)).Contains(userId))
+            return DecisionBar.Subject;
+        // Every load of a request for a decision or a listing includes its decision ledger.
+        if (approval.Decisions.Any(x => x.DecidedByUserId == userId)) return DecisionBar.DecidedEarlierStep;
+        return DecisionBar.None;
+    }
+
+    /// <summary>
+    /// Every login linked to the subject employee, read TENANT-WIDE. The company-filtered caller lookup
+    /// (<see cref="ResolveCallerEmployeeIdAsync"/>) resolves to null when the caller's own employee row is
+    /// in another legal entity, or the company switcher is on one, and the bar then failed open. Asking
+    /// "which users is this employee?" instead of "which employee is this user?" also covers a login
+    /// linked to more than one employee row. Cached per subject: a listing asks once per row.
+    /// </summary>
+    private async Task<IReadOnlyCollection<Guid>> SubjectUserIdsAsync(Guid tenantId, int subjectEmployeeId, CancellationToken cancellationToken)
+    {
+        if (_subjectUserIds.TryGetValue((tenantId, subjectEmployeeId), out var known)) return known;
+        var linked = await ApprovalUnblock.SubjectUserIdsAsync(_db, tenantId, subjectEmployeeId, cancellationToken);
+        _subjectUserIds[(tenantId, subjectEmployeeId)] = linked;
+        return linked;
+    }
+
+    /// <param name="separationOfDuties">False only for visibility: a subject or earlier-step decider
+    /// who is routed this step may still SEE it (and be told why they cannot decide it).</param>
+    private async Task<bool> CanDecideRequestAsync(ApprovalRequest approval, RequestContext? context, CancellationToken cancellationToken,
+        bool separationOfDuties = true)
     {
         if (context is null || approval.Status != "Pending") return false;
         if (context.UserId is not null && approval.RequestedByUserId == context.UserId) return false;
+        if (separationOfDuties && await ResolveDecisionBarAsync(approval, context, cancellationToken) != DecisionBar.None) return false;
         if (JawazatApprovalSync.IsJawazat(approval))
         {
             try { await JawazatApprovalSync.ValidateDecisionAsync(_db, approval, context, cancellationToken,
@@ -745,7 +830,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             if (scope.CallerEmployeeId == subject) return true;
         }
         if (CanViewAllApprovalRequests(context)) return true;
-        if (await CanDecideRequestAsync(approval, context, cancellationToken)) return true;
+        if (await CanDecideRequestAsync(approval, context, cancellationToken, separationOfDuties: false)) return true;
         if (context.UserId is not null && approval.RequestedByUserId == context.UserId) return true;
 
         var callerEmployeeId = await ResolveCallerEmployeeIdAsync(approval.TenantId, context.UserId, cancellationToken);

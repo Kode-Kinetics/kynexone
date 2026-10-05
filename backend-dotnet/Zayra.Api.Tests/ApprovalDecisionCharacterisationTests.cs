@@ -119,7 +119,9 @@ public class ApprovalDecisionCharacterisationTests
             .DecideApproval(f.LoanId, f.ApprovalId, LoanDecision("Approved"), CancellationToken.None);
 
         var bad = Assert.IsType<BadRequestObjectResult>(result);
-        Assert.Equal("Maker-checker control: requester cannot approve their own loan.", bad.Value as string);
+        // Still a bare string. Since the separation-of-duties change it may carry a trailing "No other
+        // active user can decide it yet…" sentence when nobody else could act — this fixture has no users.
+        Assert.StartsWith("Maker-checker control: requester cannot approve their own loan.", Assert.IsType<string>(bad.Value));
         Assert.Equal("Pending", (await db.EmployeeLoans.SingleAsync()).Status);
     }
 

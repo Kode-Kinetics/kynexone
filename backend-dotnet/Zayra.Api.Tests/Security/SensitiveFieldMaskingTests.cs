@@ -331,77 +331,7 @@ public class SensitiveFieldMaskingTests
         dto.IqamaNumber.Should().BeEmpty("HR Officer must NOT see Iqama in the update response");
     }
 
-    // ── P2.1: ApproveChange — mask gate on write response ────────────────────────
-
-    [Fact]
-    public async Task ApproveChange_AdminRole_ResponseIsEmployeeDetailDto_WithSensitiveData()
-    {
-        await using var db = CreateDb();
-        var tenantId = await SeedTenantAsync(db);
-        var emp = SeedEmployee(db, tenantId);
-        var controller = CreateController(db, tenantId, "Admin");
-
-        var change = new EmployeeChangeRequest
-        {
-            TenantId = tenantId,
-            EmployeeId = emp.Id,
-            EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow.Date),
-            SensitiveFields = "salary",
-            ProposedChangesJson = System.Text.Json.JsonSerializer.Serialize(
-                new Dictionary<string, System.Text.Json.JsonElement>
-                {
-                    ["salary"] = System.Text.Json.JsonSerializer.SerializeToElement(60_000m)
-                })
-        };
-        db.EmployeeChangeRequests.Add(change);
-        await db.SaveChangesAsync();
-
-        var result = await controller.ApproveChange(change.Id, CancellationToken.None);
-
-        var dto = Assert.IsType<EmployeeDetailDto>(Assert.IsType<OkObjectResult>(result).Value);
-        dto.Should().NotBeNull("ApproveChange must return EmployeeDetailDto");
-        dto.Salary.Should().Be(60_000m, "Admin sees updated salary unmasked after approving change");
-        dto.IqamaNumber.Should().Be("2000000001", "Admin sees Iqama unmasked in approve response");
-    }
-
-    [Fact]
-    public async Task ApproveChange_UnprivilegedViewerForRead_ResponseMasksSensitiveFields()
-    {
-        await using var db = CreateDb();
-        var tenantId = await SeedTenantAsync(db);
-        var emp = SeedEmployee(db, tenantId);
-
-        var change = new EmployeeChangeRequest
-        {
-            TenantId = tenantId,
-            EmployeeId = emp.Id,
-            EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow.Date),
-            SensitiveFields = "salary",
-            ProposedChangesJson = System.Text.Json.JsonSerializer.Serialize(
-                new Dictionary<string, System.Text.Json.JsonElement>
-                {
-                    ["salary"] = System.Text.Json.JsonSerializer.SerializeToElement(60_000m)
-                })
-        };
-        db.EmployeeChangeRequests.Add(change);
-        await db.SaveChangesAsync();
-
-        // HR Manager can approve but does NOT satisfy CanViewSensitive (only Admin/HR Manager/Payroll Officer do)
-        // ApproveChange is limited to Admin,HR Manager — so test HR Manager seeing salary (they CAN)
-        // and separately confirm CanViewSensitive returns false for non-qualifying roles.
-        // Use Auditor role impersonation on the read side to verify mask in write response.
-        // The practical mask test: CanViewSensitive() in controller returns false when role != Admin/HR Manager/Payroll Officer.
-        // We test this with a role that passes [Authorize(Roles="Admin,HR Manager")] but doesn't satisfy CanViewSensitive.
-        // For this scenario we simply assert that a non-HR-Manager role calling the endpoint gets masked output.
-        // We create a controller with no roles to confirm that CanViewSensitive=false masks the response.
-        var noRoleController = CreateController(db, tenantId, "Auditor");
-        // Note: Auditor cannot call ApproveChange (filtered by Authorize attribute, but in unit tests attribute isn't enforced)
-        var result = await noRoleController.ApproveChange(change.Id, CancellationToken.None);
-
-        var dto = Assert.IsType<EmployeeDetailDto>(Assert.IsType<OkObjectResult>(result).Value);
-        dto.Salary.Should().BeNull("Auditor-role caller must NOT see salary in ApproveChange write response");
-        dto.BankIban.Should().BeEmpty("Auditor-role caller must NOT see IBAN");
-    }
+    // ── P2.1: ApproveChange — retired (410); its response no longer carries employee data. ──
 
     // ── P2.1: ApproveHrTransfer — mask gate on write response ────────────────────
 
