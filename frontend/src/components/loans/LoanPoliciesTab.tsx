@@ -8,6 +8,7 @@ import { useCompany } from '../../contexts/CompanyContext';
 import { loanErrorMessage, repaymentMethodLabels } from '../../lib/loanWorkflow';
 import { Modal } from '../Modal';
 import { GradeLimitsPanel } from './GradeLimitsPanel';
+import { LoanOfferingsPanel } from './LoanOfferingsPanel';
 
 const defaults: LoanPolicyInput = {
   companyId: '', loanTypeId: '', policyName: '', maxAmount: 0, maxTotalOutstanding: 0,
@@ -81,8 +82,10 @@ export function LoanPoliciesTab({ loanTypes, onGradeLimitedChanged }: { loanType
         <fieldset><legend className="mb-2 text-sm font-semibold">Allowed repayment methods</legend><div className="flex flex-wrap gap-3">{Object.entries(repaymentMethodLabels).map(([value, label]) => <label key={value} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.allowedRepaymentMethods.includes(value)} onChange={e => setForm(f => ({ ...f, allowedRepaymentMethods: e.target.checked ? [...f.allowedRepaymentMethods, value] : f.allowedRepaymentMethods.filter(method => method !== value) }))} />{label}</label>)}</div></fieldset>
         <fieldset><legend className="mb-2 text-sm font-semibold">Allowed repayment frequencies</legend><div className="flex flex-wrap gap-3">{['Monthly', 'Weekly', 'BiWeekly', 'Quarterly'].map(value => <label key={value} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.allowedRepaymentFrequencies.includes(value)} onChange={e => setForm(f => ({ ...f, allowedRepaymentFrequencies: e.target.checked ? [...f.allowedRepaymentFrequencies, value] : f.allowedRepaymentFrequencies.filter(frequency => frequency !== value) }))} />{value}</label>)}</div></fieldset>
         <div className="grid gap-2 sm:grid-cols-2">{checks.map(([key, label]) => <label key={key} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.checked }))} />{label}</label>)}</div>
+        <label className="flex items-center gap-2 text-sm font-semibold"><input type="checkbox" checked={form.isOffered !== false} onChange={e => setForm(f => ({ ...f, isOffered: e.target.checked }))} />Offered to this company's employees</label>
       </div>
     </Modal>
+    <LoanOfferingsPanel key={`offerings-${companyId}-${notice}`} companyId={companyId} companyName={companies.find(c => c.id === companyId)?.legalNameEn ?? ''} />
     <GradeLimitsPanel loanTypes={loanTypes} companies={companies.map(c => ({ id: c.id, name: c.legalNameEn }))} initialLoanTypeId={typeId} onGradeLimitedChanged={onGradeLimitedChanged} />
   </div>;
 }

@@ -11,9 +11,19 @@ export interface LoanPolicyInput {
   maxConcurrentLoans: number; cooldownMonthsAfterRepayment: number;
   additionalApprovalThreshold: number; additionalApproverRole: string;
   allowExceptions: boolean; allowEarlySettlement: boolean; allowRescheduling: boolean; isActive: boolean;
+  /** False = this company does not offer the loan type at all (its employees cannot apply). Defaults to true. */
+  isOffered?: boolean;
 }
 export interface LoanPolicy extends LoanPolicyInput { id: string; version: number; createdAtUtc: string; }
-export interface LoanEligibility { eligible: boolean; reasons: string[]; codes?: string[]; canRequestException?: boolean; maxAvailableAmount: number | null; policyId?: string; policyVersion?: number; monthlySalary: number | null; committedAmount: number; gradeLimit?: LoanGradeLimitCheck | null; bindingLimit?: LoanBindingLimit | null; limitBreakdowns?: LoanLimitBreakdown[] | null; }
+export interface LoanEligibility {
+  eligible: boolean; reasons: string[]; codes?: string[]; canRequestException?: boolean; maxAvailableAmount: number | null;
+  policyId?: string | null; policyVersion?: number | null; monthlySalary: number | null; committedAmount: number;
+  /** True when no amount was sent: only the limits are judged. */
+  preview?: boolean;
+  /** Strictest of every evaluated limit, as principal. 0 when nothing can be borrowed; null when nothing caps the amount. */
+  available?: number | null;
+  gradeLimit?: LoanGradeLimitCheck | null; bindingLimit?: LoanBindingLimit | null; limitBreakdowns?: LoanLimitBreakdown[] | null;
+}
 
 /** Which of the effective limits is the one that actually caps this request (strictest wins). */
 export type LoanBindingLimit = 'GradePerLoan' | 'GradeOutstanding' | 'PolicyMaxAmount' | 'PolicyTotalOutstanding'
@@ -23,12 +33,20 @@ export type LoanBindingLimit = 'GradePerLoan' | 'GradeOutstanding' | 'PolicyMaxA
 export interface LoanLimitBreakdown {
   /** Which limit this breakdown describes; the form explains the one matching bindingLimit. */
   limit: LoanBindingLimit;
-  basis: 'Amount' | 'MultipleOfBasic' | 'MultipleOfGross';
+  /** 'Count' only for PolicyConcurrentLoans (a number of loans, not money). */
+  basis: 'Amount' | 'MultipleOfBasic' | 'MultipleOfGross' | 'Count';
   multiple?: number | null;
   salaryBasisAmount?: number | null;
+  /** In `unit`: principal, a monthly instalment amount, or a number of loans. */
   cap: number;
-  outstandingNow: number;
-  available: number;
+  /** Null for a per-loan limit (nothing is subtracted). In `unit`. */
+  outstandingNow: number | null;
+  /** Principal this limit still allows; null when it does not cap the amount. */
+  available: number | null;
+  /** Principal for money limits; MonthlyInstalment for PolicyInstallmentPercent (cap/outstandingNow are monthly); Loans for the count. */
+  unit?: 'Principal' | 'MonthlyInstalment' | 'Loans';
+  /** For MonthlyInstalment: the number of instalments `available` is worked out over. */
+  installments?: number | null;
 }
 
 // ── Grade loan limits (slice L1) ─────────────────────────────────────────────
@@ -37,18 +55,21 @@ export interface LoanLimitBreakdown {
 export type GradeLimitValueType = 'Amount' | 'MultipleOfBasic' | 'MultipleOfGross' | 'EligibilityOnly';
 
 /** Grade-limit reason codes the eligibility service can return. Never exceptionable. */
-export type GradeLimitReasonCode = 'GradeNotEligible' | 'GradeLimitPerLoan' | 'GradeLimitOutstanding' | 'GradeMissing' | 'GradeLimitNotConfigured';
+export type GradeLimitReasonCode = 'GradeNotEligible' | 'GradeLimitPerLoan' | 'GradeLimitOutstanding' | 'GradeMissing' | 'GradeLimitNotConfigured' | 'GradeSalaryMissing';
 
 /** One row of GET /api/finance/loans/grade-limits — one per active grade, ordered by level. */
 export interface GradeLoanLimitRow {
   gradeId: string;
   gradeCode: string;
   gradeName: string;
+  /** Optional Arabic grade name; fall back to gradeName. */
+  gradeNameAr?: string | null;
   level: number;
   /** Null when this grade has no limit in force for the loan type (and company, when given). */
   cellId?: string | null;
   eligible: boolean;
-  valueType: GradeLimitValueType;
+  /** Null when there is no cell in force. */
+  valueType: GradeLimitValueType | null;
   /** Fixed per-loan maximum; set only when valueType = Amount. */
   amount: number | null;
   /** Salary multiple (e.g. 3 = three months); set only when valueType = MultipleOfBasic / MultipleOfGross. */
@@ -56,9 +77,14 @@ export interface GradeLoanLimitRow {
   /** Fixed total-outstanding maximum for this loan type; null = no grade cap on outstanding. */
   maxOutstandingAmount: number | null;
   effectiveFrom: string | null;
+  effectiveTo?: string | null;
   /** True when the cell in force is the company's own override rather than the group-wide cell. */
   isCompanyOverride: boolean;
+  note?: string | null;
 }
+
+/** Response of PUT /api/finance/loans/grade-limits: the grid as of the published effectiveFrom. */
+export interface PublishGradeLoanLimitsResponse { changed: number; unchanged: number; rows: GradeLoanLimitRow[]; }
 
 /** One row sent to PUT /api/finance/loans/grade-limits. Only the rows the user changed are sent. */
 export interface GradeLoanLimitInput {
@@ -79,7 +105,7 @@ export interface PublishGradeLoanLimitsRequest {
 }
 
 /** A grade the server reports as lacking a limit when grade limiting is switched on. */
-export interface GradeMissingLimit { gradeId?: string; gradeCode?: string; gradeName?: string; level?: number; }
+export interface GradeMissingLimit { gradeId?: string; gradeCode?: string; gradeName?: string; gradeNameAr?: string | null; level?: number; }
 
 /** The gradeLimit block of GET /api/finance/loans/eligibility. */
 export interface LoanGradeLimitCheck {
@@ -87,21 +113,47 @@ export interface LoanGradeLimitCheck {
   eligible: boolean;
   perLoanCap: number | null;
   outstandingCap: number | null;
-  outstandingNow: number;
+  outstandingNow: number | null;
   available: number | null;
   reasonCode: GradeLimitReasonCode | null;
   reasonText: string | null;
   /** Optional display name of the grade in force (e.g. "Grade 2"). Shown in the limit card when present. */
   gradeName?: string | null;
+  gradeNameAr?: string | null;
+  basis?: GradeLimitValueType | null;
+  multiple?: number | null;
+  salaryBasisAmount?: number | null;
+  codes?: string[];
   /** Optional ISO currency of the caps; the tenant currency is used when absent. */
   currency?: string | null;
 }
 
+/** GET /api/finance/loans/types/offered — the loan types one employee may apply for. */
+export interface OfferedLoanType {
+  loanTypeId: string; code: string; nameEn: string; nameAr: string; gradeLimited: boolean;
+  offered: boolean; reasonCode: 'LoanTypeNotOffered' | 'InterestNotPermitted' | null; reasonText: string | null;
+}
+
+/** GET/PUT /api/finance/loans/offerings — a company's explicit offer / don't-offer decision per loan type. */
+export interface LoanTypeOffering {
+  loanTypeId: string; code: string; nameEn: string; nameAr: string; gradeLimited: boolean; companyId: string; offered: boolean;
+  source: 'CompanyPolicy' | 'GroupPolicy' | 'CompanyNotOffered' | 'NoPolicy' | 'LoanTypeBaseline';
+  policyId: string | null; policyVersion: number | null;
+}
+
+export const loanOfferingsApi = {
+  offeredTypes: (employeeIntId?: number) =>
+    client.get<OfferedLoanType[]>('/api/finance/loans/types/offered', { params: employeeIntId ? { employeeIntId } : {} }).then(r => r.data),
+  list: (companyId: string) => client.get<LoanTypeOffering[]>('/api/finance/loans/offerings', { params: { companyId } }).then(r => r.data),
+  set: (body: { companyId: string; loanTypeId: string; offered: boolean }) =>
+    client.put<LoanTypeOffering>('/api/finance/loans/offerings', body).then(r => r.data),
+};
+
 export const gradeLoanLimitsApi = {
-  list: (params: { loanTypeId: string; companyId?: string }) =>
-    client.get<GradeLoanLimitRow[]>('/api/finance/loans/grade-limits', { params }).then(r => r.data),
+  list: (params: { loanTypeId: string; companyId?: string; asOf?: string }, signal?: AbortSignal) =>
+    client.get<GradeLoanLimitRow[]>('/api/finance/loans/grade-limits', { params, signal }).then(r => r.data),
   publish: (body: PublishGradeLoanLimitsRequest) =>
-    client.put('/api/finance/loans/grade-limits', body).then(r => r.data),
+    client.put<PublishGradeLoanLimitsResponse>('/api/finance/loans/grade-limits', body).then(r => r.data),
   setGradeLimited: (loanTypeId: string, gradeLimited: boolean) =>
     client.patch(`/api/finance/loans/types/${loanTypeId}/grade-limited`, { gradeLimited }).then(r => r.data),
 };
