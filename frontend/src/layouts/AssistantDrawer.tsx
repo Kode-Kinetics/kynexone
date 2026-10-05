@@ -16,7 +16,8 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import Link from 'next/link';
-import { ArrowRight, MessageSquareText, Send, X } from 'lucide-react';
+import { ArrowRight, Send, X } from 'lucide-react';
+import { ASSISTANT_DIALOG_ID } from './AssistantLauncher';
 import { aiAssistantApi } from '../api/intelligence';
 import { useAuth } from '../contexts/AuthContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
@@ -202,6 +203,7 @@ export function AssistantDrawer({ open, onClose }: { open: boolean; onClose: () 
       />
       <div
         ref={sheetStyleRef}
+        id={ASSISTANT_DIALOG_ID}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
@@ -221,7 +223,7 @@ export function AssistantDrawer({ open, onClose }: { open: boolean; onClose: () 
           >
             <button
               type="button"
-              aria-label={detent === 'half' ? t('Expand assistant') : t('Collapse assistant')}
+              aria-label={detent === 'half' ? t('Expand Kody') : t('Collapse Kody')}
               onClick={() => setDetent((d) => (d === 'half' ? 'full' : 'half'))}
               className="h-1.5 w-10 rounded-full bg-slate-400/70"
             />
@@ -229,17 +231,17 @@ export function AssistantDrawer({ open, onClose }: { open: boolean; onClose: () 
         )}
 
         <header className="flex shrink-0 items-center gap-2 px-5 pb-3 pt-3 sm:pt-4">
-          <MessageSquareText className="h-4 w-4 text-sapphire dark:text-blue-300" aria-hidden />
-          <h2 id={titleId} className="text-[15px] font-semibold text-slate-900 dark:text-white">{t('Assistant')}</h2>
-          <span className="rounded-full border border-amber-300/70 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+          <span aria-hidden="true" className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-blue-700 text-base font-bold text-white dark:bg-blue-600">K</span>
+          <h2 id={titleId} className="min-w-0 flex-1 text-sm font-semibold text-slate-900 dark:text-white">{t('Kody the HR Assistant')}</h2>
+          <span className="shrink-0 rounded-full border border-amber-300/70 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
             {t('Advisory')}
           </span>
           <button
             ref={closeRef}
             type="button"
             onClick={onClose}
-            aria-label={t('Close assistant')}
-            className="wg-press ms-auto grid h-8 w-8 place-items-center rounded-lg text-slate-600 hover:bg-slate-900/5 dark:text-slate-300 dark:hover:bg-white/10"
+            aria-label={t('Close Kody')}
+            className="wg-press grid h-11 w-11 shrink-0 place-items-center rounded-lg text-slate-600 hover:bg-slate-900/5 dark:text-slate-300 dark:hover:bg-white/10"
           >
             <X className="h-4 w-4" aria-hidden />
           </button>
@@ -345,13 +347,13 @@ export function AssistantDrawer({ open, onClose }: { open: boolean; onClose: () 
               onSubmit={(e) => { e.preventDefault(); void ask(draft); }}
               className="flex shrink-0 items-center gap-2 border-t border-[color:var(--wg-line)] p-3"
             >
-              <label htmlFor={`${titleId}-q`} className="sr-only">{t('Ask the assistant')}</label>
+              <label htmlFor={`${titleId}-q`} className="sr-only">{t('Ask Kody')}</label>
               <input
                 id={`${titleId}-q`}
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 placeholder={t('Ask about payroll, leave, approvals…')}
-                className="input h-10 flex-1"
+                className="input h-10 min-w-0 flex-1"
                 autoComplete="off"
               />
               <button type="submit" disabled={!draft.trim() || asking} aria-label={t('Send')} className="wg-press grid h-10 w-10 place-items-center rounded-lg bg-sapphire text-white disabled:opacity-40 dark:bg-blue-600">
@@ -360,7 +362,7 @@ export function AssistantDrawer({ open, onClose }: { open: boolean; onClose: () 
             </form>
           )}
           <Link href="/ai-assistant" onClick={onClose} className="flex shrink-0 items-center justify-center gap-1 border-t border-[color:var(--wg-line)] py-2.5 text-xs font-semibold text-slate-600 hover:text-sapphire dark:text-slate-300">
-            {t('Open the full assistant')} <ArrowRight className="h-3 w-3" aria-hidden />
+            {t('Open Kody in full view')} <ArrowRight className="h-3 w-3" aria-hidden />
           </Link>
         </div>
       </div>

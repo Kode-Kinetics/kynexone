@@ -1964,12 +1964,14 @@ export function EmployeesPage() {
             </div>
           )}
           <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
-          <Section title="Master Profile">
+          <Section title="Master Profile" wide>
+            <div className="col-span-full grid gap-2.5 sm:grid-cols-2">
             <Input label="Employee code" ltr value={form.employeeCode ?? ''} onChange={(v) => setField('employeeCode', v)} placeholder="Leave blank for auto generation" info="Unique staff ID, e.g. KNX-0001. Leave blank and the system generates the next number automatically; tick 'Manual override' to type your own." infoKey="employees.employee_code" />
             <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
               <input type="checkbox" checked={form.manualEmployeeCode} onChange={(e) => setField('manualEmployeeCode', e.target.checked)} className="h-4 w-4 accent-sapphire" />
               Manual override
             </label>
+            </div>
             <Input label="English full name" required value={form.englishName} onChange={(v) => setField('englishName', v)} info="Employee's full legal name in English, exactly as on their passport or ID. Required." infoKey="employees.english_name" />
             <Input label="Arabic full name" value={form.arabicName ?? ''} onChange={(v) => setField('arabicName', v)} rtl action={<TransliterateButton source={form.englishName} onSuggest={(s) => setField('arabicName', s)} />} />
             <Input label="Preferred name" value={form.preferredName ?? ''} onChange={(v) => setField('preferredName', v)} />
@@ -1978,6 +1980,7 @@ export function EmployeesPage() {
             <Input label="Date of birth" value={form.dateOfBirth ?? ''} onChange={(v) => setField('dateOfBirth', v)} type="date" info="Used for statutory records and — for some jurisdictions — required before the employee can be activated." infoKey="employees.date_of_birth" />
             <Select label="Marital status" value={form.maritalStatus ?? ''} onChange={(v) => setField('maritalStatus', v)} options={MARITAL_STATUS_OPTIONS} />
             <Input label="Personal email" value={form.personalEmail ?? ''} onChange={(v) => setField('personalEmail', v)} type="email" />
+            <Input label="Mobile number" ltr value={form.mobileNumber ?? ''} onChange={(v) => setField('mobileNumber', v)} info="Personal mobile with country code, e.g. +971 50 123 4567." infoKey="employees.mobile_number" />
             <WorkEmailField
               label="Work email"
               value={form.workEmail ?? ''}
@@ -1991,7 +1994,6 @@ export function EmployeesPage() {
               info="Auto-built from the name + the company's email domain. Edit only the part before the @ — the domain is locked to the company. Also links this employee to their self-service (ESS) login."
               infoKey="employees.work_email"
             />
-            <Input label="Mobile number" ltr value={form.mobileNumber ?? ''} onChange={(v) => setField('mobileNumber', v)} info="Personal mobile with country code, e.g. +971 50 123 4567." infoKey="employees.mobile_number" />
           </Section>
 
           <Section title="Employment Details">
@@ -2253,11 +2255,11 @@ function EmptyRow({ label }: { label: string }) {
   return <tr><td colSpan={7} className="py-16 text-center text-sm text-slate-400">{label}</td></tr>;
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children, wide = false }: { title: string; children: React.ReactNode; wide?: boolean }) {
   return (
-    <fieldset className="rounded-2xl border border-white/80 bg-white/72 p-3 shadow-[8px_8px_22px_rgba(148,163,184,0.18),-8px_-8px_22px_rgba(255,255,255,0.85),inset_0_1px_0_rgba(255,255,255,0.95)] ring-1 ring-slate-900/[0.03] dark:border-white/10 dark:bg-white/[0.045] dark:shadow-[8px_8px_24px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.06)]">
+    <fieldset className={`min-w-0 rounded-2xl border border-white/80 bg-white/72 p-3 shadow-[8px_8px_22px_rgba(148,163,184,0.18),-8px_-8px_22px_rgba(255,255,255,0.85),inset_0_1px_0_rgba(255,255,255,0.95)] ring-1 ring-slate-900/[0.03] dark:border-white/10 dark:bg-white/[0.045] dark:shadow-[8px_8px_24px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.06)] ${wide ? 'lg:col-span-2' : ''}`}>
       <legend className="mb-2 px-1 text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">{title}</legend>
-      <div className="grid gap-2.5 sm:grid-cols-2">{children}</div>
+      <div className={`grid gap-2.5 sm:grid-cols-2 ${wide ? 'lg:grid-cols-3' : ''}`}>{children}</div>
     </fieldset>
   );
 }
@@ -2382,7 +2384,7 @@ function WorkEmailField({
   const arabicOnly = !manualMode && preview?.status === 'manual-arabic-only';
 
   return (
-    <label className="block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
+    <label className="col-span-full block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
       <span className="flex min-w-0 items-center gap-1.5 leading-snug">
         {label}
         {info && <InfoTip text={info} fieldKey={infoKey} className="ms-1" />}
@@ -2408,22 +2410,22 @@ function WorkEmailField({
         </>
       ) : (
         <>
-          <span className={`mt-1.5 flex items-stretch overflow-hidden rounded-lg border ${conflict ? 'border-rose-300 dark:border-rose-500/40' : 'border-slate-200 focus-within:border-sapphire dark:border-white/10'}`}>
+          <span dir="ltr" className={`mt-1.5 flex flex-wrap items-stretch overflow-hidden rounded-lg border ${conflict ? 'border-rose-300 dark:border-rose-500/40' : 'border-slate-200 focus-within:border-sapphire dark:border-white/10'}`}>
             <input
               type="text"
               value={localPart}
               onChange={(e) => handleLocalChange(e.target.value)}
               placeholder="john.smith"
-              className="w-full border-0 bg-transparent px-2.5 py-2 text-sm outline-none focus:ring-0"
+              className="min-h-11 min-w-0 flex-[1_0_16ch] border-0 bg-transparent px-2.5 py-2 text-sm outline-none focus:ring-0"
               spellCheck={false}
               autoCapitalize="none"
               aria-label={`${label} local part`}
             />
             <span
-              className="flex select-none items-center gap-1 whitespace-nowrap bg-slate-100 px-2.5 text-sm font-medium text-slate-500 dark:bg-white/[0.06] dark:text-slate-400"
+              className="flex min-h-11 max-w-full items-center gap-1 bg-slate-100 px-2.5 py-2 text-sm font-medium text-slate-600 dark:bg-white/[0.06] dark:text-slate-400"
               title="Domain is locked to the company. Change it in Setup → Companies."
             >
-              <Lock className="h-3 w-3 opacity-60" aria-hidden="true" />@{cleanDomain}
+              <Lock className="h-3 w-3 shrink-0 opacity-60" aria-hidden="true" /><span className="min-w-0 break-all">@{cleanDomain}</span>
             </span>
           </span>
 
@@ -2452,7 +2454,7 @@ function WorkEmailField({
           ) : checking ? (
             <p className="mt-1 text-xs text-slate-400">Checking availability…</p>
           ) : (
-            <p className="mt-1 text-xs text-slate-400">
+            <p className="mt-1 break-words text-xs text-slate-500 dark:text-slate-400">
               Editable name only — the @{cleanDomain} domain is locked to the company.
             </p>
           )}

@@ -4,6 +4,15 @@ type Dict = Record<string, string>;
 
 // ── English (base) ────────────────────────────────────────────────────────────
 const en: Dict = {
+  'Kody': 'Kody',
+  'HR Assistant': 'HR Assistant',
+  'Kody the HR Assistant': 'Kody the HR Assistant',
+  'Open Kody the HR Assistant': 'Open Kody the HR Assistant',
+  'Close Kody': 'Close Kody',
+  'Expand Kody': 'Expand Kody',
+  'Collapse Kody': 'Collapse Kody',
+  'Ask Kody': 'Ask Kody',
+  'Open Kody in full view': 'Open Kody in full view',
   // Nav groups
   'Overview': 'Overview',
   'HR & Time': 'HR & Time',
@@ -477,6 +486,15 @@ const en: Dict = {
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
 const ar: Dict = {
+  'Kody': 'Kody',
+  'HR Assistant': 'مساعد الموارد البشرية',
+  'Kody the HR Assistant': 'Kody، مساعد الموارد البشرية',
+  'Open Kody the HR Assistant': 'فتح Kody، مساعد الموارد البشرية',
+  'Close Kody': 'إغلاق Kody',
+  'Expand Kody': 'توسيع Kody',
+  'Collapse Kody': 'تصغير Kody',
+  'Ask Kody': 'اسأل Kody',
+  'Open Kody in full view': 'فتح Kody في العرض الكامل',
   // Nav groups
   'Overview': 'نظرة عامة',
   'HR & Time': 'الموارد البشرية والوقت',
@@ -950,6 +968,15 @@ const ar: Dict = {
 
 // ── French ────────────────────────────────────────────────────────────────────
 const fr: Dict = {
+  'Kody': 'Kody',
+  'HR Assistant': 'Assistant RH',
+  'Kody the HR Assistant': 'Kody, l’assistant RH',
+  'Open Kody the HR Assistant': 'Ouvrir Kody, l’assistant RH',
+  'Close Kody': 'Fermer Kody',
+  'Expand Kody': 'Agrandir Kody',
+  'Collapse Kody': 'Réduire Kody',
+  'Ask Kody': 'Demander à Kody',
+  'Open Kody in full view': 'Ouvrir la page de Kody',
   // Nav groups
   'Overview': "Vue d'ensemble",
   'HR & Time': 'RH et Temps',
@@ -1180,6 +1207,15 @@ const fr: Dict = {
 
 // ── Spanish ───────────────────────────────────────────────────────────────────
 const es: Dict = {
+  'Kody': 'Kody',
+  'HR Assistant': 'Asistente de RR. HH.',
+  'Kody the HR Assistant': 'Kody, el asistente de RR. HH.',
+  'Open Kody the HR Assistant': 'Abrir Kody, el asistente de RR. HH.',
+  'Close Kody': 'Cerrar Kody',
+  'Expand Kody': 'Ampliar Kody',
+  'Collapse Kody': 'Contraer Kody',
+  'Ask Kody': 'Preguntar a Kody',
+  'Open Kody in full view': 'Abrir la página de Kody',
   // Nav groups
   'Overview': 'Resumen',
   'HR & Time': 'RRHH y Tiempo',

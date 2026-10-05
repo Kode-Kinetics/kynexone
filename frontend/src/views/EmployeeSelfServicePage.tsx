@@ -909,7 +909,7 @@ export function EmployeeSelfServicePage() {
               <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-sapphire/10 dark:bg-cyanAccent/10">
                 <MessageSquareText className="h-4 w-4 text-sapphire dark:text-cyanAccent" />
               </div>
-              <p className="text-sm font-semibold text-slate-900 dark:text-white">HR Assistant</p>
+              <p className="text-sm font-semibold text-slate-900 dark:text-white">Kody the HR Assistant</p>
             </div>
             <div className="space-y-3 p-5">
               <textarea
