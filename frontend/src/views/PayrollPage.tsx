@@ -2515,7 +2515,17 @@ function BankWpsTab() {
     setCreating(true);
     setError('');
     try {
-      const batch = await payrollApi.createPaymentBatch(runId, paymentMethod);
+      let batch: PayrollPaymentBatch;
+      try {
+        batch = await payrollApi.createPaymentBatch(runId, paymentMethod);
+      } catch (e) {
+        // A run locked before payment methods were frozen: the cash/cheque list must be acknowledged by count.
+        const data = (e as { response?: { data?: { error?: string; message?: string; outsideBankCount?: number; employees?: { employeeCode: string; method: string }[] } } })?.response?.data;
+        if (data?.error !== 'outside_bank_payments_not_acknowledged' || !data.outsideBankCount) throw e;
+        const list = (data.employees ?? []).map(x => `• ${x.employeeCode} (${x.method})`).join('\n');
+        if (!window.confirm(`${data.message}\n\n${list}\n\nConfirm that exactly ${data.outsideBankCount} employee(s) are paid outside the bank file?`)) return;
+        batch = await payrollApi.createPaymentBatch(runId, paymentMethod, undefined, data.outsideBankCount);
+      }
       if (currentRunRef.current !== runId) return;
       setBatches(b => [batch, ...b]);
       openBatch(batch);
@@ -2911,7 +2921,22 @@ function PaymentTrackingTab() {
                           const key = outsideKey(b.id, x.employeeId);
                           const f = outsideForm(key);
                           return x.outsidePaymentRecorded ? (
-                            <p key={key} className="text-[11px] text-emerald-600 dark:text-emerald-400">{x.employeeCode}: payment recorded</p>
+                            <div key={key} className="flex items-center justify-between gap-2">
+                              <p className="text-[11px] text-emerald-600 dark:text-emerald-400">{x.employeeCode}: payment recorded</p>
+                              {b.wpsStatus !== 'Reconciled' && (
+                                <button type="button" className={`${btn.sm} disabled:opacity-50`} disabled={outsideSaving === key}
+                                  onClick={async () => {
+                                    const reason = window.prompt(`Why is ${x.employeeCode}'s recorded payment being reversed (e.g. cheque bounced)?`);
+                                    if (!reason?.trim()) return;
+                                    setOutsideSaving(key);
+                                    try { await payrollApi.reverseOutsidePayment(b.id, x.employeeId, reason.trim()); loadBatches(); }
+                                    catch (err) { notifyApiError(err); }
+                                    finally { setOutsideSaving(null); }
+                                  }}>
+                                  Reverse payment
+                                </button>
+                              )}
+                            </div>
                           ) : (
                             <div key={key} className="grid gap-1 rounded-lg bg-slate-50 p-2 dark:bg-white/5">
                               <p className="text-[11px] text-slate-600 dark:text-slate-300">

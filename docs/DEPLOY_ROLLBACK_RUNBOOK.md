@@ -106,16 +106,27 @@ harmful.
    main account, organisation name and three address lines, company name, narrative, batch type; the
    10-digit national unified number if ANB auto-WPS is on. If a GCC WPS agent ID is also set it must equal
    the MOL establishment ID, or the export is refused.
-3. **Beneficiary BIC.** One resolver serves pre-lock, export and the SIF check: the approved
+3. **Pay-redirection guard.** A pending approval-gated change to IBAN, beneficiary details, account
+   number or routing code blocks the bank export for that employee. A CSV import never writes bank
+   details for an EXISTING employee (they go to approval); a NEW employee's imported bank details are
+   flagged in the import warnings for verification before the first payroll.
+3a. **Beneficiary BIC.** One resolver serves pre-lock, export and the SIF check: the approved
    `Employee.WpsBankDetails.bicCode`, else the payroll profile's `BankRoutingCode` (case-insensitive). An
    ANB-to-ANB credit needs a 16-digit ANB account number with BIC `ARNBSARI` in either place.
-4. **Cash / cheque employees** have payment method `Cash` or `Cheque` on their payroll profile. They are
-   warned before Lock (`PAID_OUTSIDE_BANK_FILE`, stronger `…_WITH_IBAN`), acknowledged by count at Approve,
-   frozen at Lock, left out of the bank file, and their payment is recorded per employee against the batch
-   ("Record payment outside the bank file"). Salaries Payable (2100) is only clear after both the bank
-   batch is settled and every outside payment is recorded. Cash wages count against Mudad WPS compliance.
-   A run approved before this release whose cash list changed is refused at Lock with
-   `outside_bank_payments_changed`: run `POST runs/{id}/validate`, then lock.
+4. **Cash / cheque employees are supported at go-live** — there is no "no cash/cheque" condition. Set
+   payment method `Cash` or `Cheque` on the payroll profile. The flow:
+   - warned before Lock (`PAID_OUTSIDE_BANK_FILE`, stronger `…_WITH_IBAN` when a valid IBAN is on file) and
+     acknowledged by count at Approve; the acknowledged list is sealed into the approval;
+   - if the list changes after approval, Lock sends the run back for approval (re-validating alone does not
+     make it lockable); otherwise Lock freezes the methods and the batch reads them from there;
+   - the bank batch settles only its own employees; each cash/cheque wage is recorded per employee
+     ("Record payment outside the bank file") — serialized per batch, once per employee — and can be
+     reversed with a reason (not by the employee, not after Reconciled) and recorded again;
+   - Salaries Payable (2100) is clear, and the batch can reach Reconciled, only after the bank batch is
+     settled and every outside payment is recorded;
+   - a run locked before this release falls back to the live profile, but batch creation first lists the
+     cash/cheque employees and requires `expectedOutsideBankCount`.
+   Cash wages count against Mudad WPS compliance.
 5. **Two payroll users with `payroll.export`** per legal entity: the person who generates the bank/WPS
    file or uploads the evidence cannot mark the batch Accepted.
 6. Leave `QIWA_USE_LIVE_ADAPTER` unset (Qiwa data check only).

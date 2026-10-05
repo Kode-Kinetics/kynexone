@@ -3610,19 +3610,38 @@ public class PayrollController : ControllerBase
             .GroupBy(p => p.EmployeeId)
             .Select(g => new { employeeId = g.Key, method = g.First().PaymentMethod.Trim() })
             .OrderBy(x => x.employeeId).ToList();
-        var acknowledgedOutside = (await _db.PayrollValidationResults.AsNoTracking()
-                .Where(x => x.TenantId == tenantId && x.PayrollRunId == id && x.EmployeeId != null
-                         && (x.Code == Infrastructure.Payroll.PaymentBatchExclusions.PaidOutsideWarning || x.Code == Infrastructure.Payroll.PaymentBatchExclusions.PaidOutsideWithIbanWarning))
-                .Select(x => x.EmployeeId!.Value).ToListAsync(cancellationToken)).ToHashSet();
+        // Compared against the list sealed into the APPROVAL audit, not the validation results: re-running
+        // /validate refreshes the warnings but is not an approval, so it can never make a stale run lockable.
+        var acknowledgedOutside = await Infrastructure.Payroll.PaymentBatchExclusions.ApprovedOutsideAsync(_db, tenantId, id, cancellationToken)
+                                  ?? new HashSet<int>();
         if (!acknowledgedOutside.SetEquals(paidOutsideAtLock.Select(x => x.employeeId)))
+        {
+            // Send the run back for a fresh approval (the existing send-back transition): the approver must
+            // see and acknowledge the current cash/cheque list before anything is frozen.
+            _db.PayrollApprovals.Add(new PayrollApproval
+            {
+                TenantId = tenantId, PayrollRunId = id, ApprovalLevel = "FinanceReview", Decision = "SentBack",
+                Notes = "Sent back automatically at Lock: the cash/cheque list changed after approval.",
+                DecidedByUserId = GetUserId(), DecidedAtUtc = DateTime.UtcNow,
+            });
+            run.Status = "Processed";
+            await PayrollAudit("payroll.run.sent_back", "PayrollRun", id.ToString(), new
+            {
+                reason = "outside_bank_payments_changed",
+                approved = acknowledgedOutside.OrderBy(x => x).ToList(),
+                current  = paidOutsideAtLock.Select(x => x.employeeId).ToList(),
+            }, cancellationToken);
+            await _db.SaveChangesAsync(cancellationToken);
             return Conflict(new
             {
                 error   = "outside_bank_payments_changed",
-                message = "Who is paid by cash or cheque has changed since this run was validated and approved. Run validation " +
-                          "again (POST runs/{id}/validate) so the approver sees the current list, then lock.",
+                message = "Who is paid by cash or cheque changed after this run was approved, so it has been sent back for " +
+                          "approval. Run validation (POST runs/{id}/validate), approve it again acknowledging the current list, then lock.",
                 approved = acknowledgedOutside.OrderBy(x => x).ToList(),
                 current  = paidOutsideAtLock.Select(x => x.employeeId).ToList(),
+                status   = run.Status,
             });
+        }
 
         // FINANCE-P1: Persist double-entry GL on lock (idempotent — skip if already posted).
         // POD-B2 (M7): a non-Regular run may book its ACCRUAL into a later open period (set at Create and
@@ -4082,10 +4101,11 @@ public class PayrollController : ControllerBase
         // ── Cash / cheque pay must be ACKNOWLEDGED the same way ───────────────────────────────────────
         // An employee paid outside the bank file is left out of the WPS file at batch creation. That is a
         // decision with Mudad consequences, so the approver states how many such employees they expect.
-        var outsideBankCount = await _db.PayrollValidationResults.AsNoTracking()
+        var outsideBankEmployees = (await _db.PayrollValidationResults.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.PayrollRunId == id && x.EmployeeId != null
                      && (x.Code == Infrastructure.Payroll.PaymentBatchExclusions.PaidOutsideWarning || x.Code == Infrastructure.Payroll.PaymentBatchExclusions.PaidOutsideWithIbanWarning))
-            .Select(x => x.EmployeeId).Distinct().CountAsync(cancellationToken);
+            .Select(x => x.EmployeeId!.Value).Distinct().ToListAsync(cancellationToken)).OrderBy(x => x).ToList();
+        var outsideBankCount = outsideBankEmployees.Count;
         if (outsideBankCount > 0 && req.ExpectedOutsideBankCount != outsideBankCount)
             return Conflict(new
             {
@@ -4135,7 +4155,9 @@ public class PayrollController : ControllerBase
         {
             _db.PayrollApprovals.Add(new PayrollApproval { TenantId = tenantId, PayrollRunId = id, ApprovalLevel = "FinanceReview", Decision = "Approved", Notes = req.Notes ?? string.Empty, DecidedByUserId = GetUserId(), DecidedAtUtc = DateTime.UtcNow });
             run.Status = "Approved";
-            await PayrollAudit("payroll.run.approved", "PayrollRun", id.ToString(), new { notes = req.Notes, level = "Finance" }, cancellationToken);
+            // The acknowledged cash/cheque list is sealed here; Lock refuses to freeze any other list.
+            await PayrollAudit("payroll.run.approved", "PayrollRun", id.ToString(),
+                new { notes = req.Notes, level = "Finance", paidOutsideBankFile = outsideBankEmployees }, cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
             var runCurrency = await ResolveRunCurrencyAsync(tenantId, run.CompanyId, cancellationToken);
             await _notifications.NotifyAsync(tenantId, GetUserId(), $"Payroll Run Approved — {run.Year}/{run.Month:D2}", $"Payroll run for {run.Year}/{run.Month:D2} has been approved by Finance. Total net: {run.TotalNetSalary:N2} {runCurrency}.", "PayrollRun", id.ToString(), cancellationToken);
@@ -5172,6 +5194,31 @@ public class PayrollController : ControllerBase
         // The cash/cheque decision is the one FROZEN in the run's sealed Lock audit entry — the methods the
         // approver acknowledged — never the live profile, which may have been edited since Lock.
         var methodsAtLock = await Infrastructure.Payroll.PaymentBatchExclusions.PaidOutsideAtLockAsync(_db, tenantId, id, cancellationToken);
+        var methodSource = "frozen-at-lock";
+        if (methodsAtLock is null && bankBatch)
+        {
+            // A run locked before methods were frozen: fall back to the live profile, but only once the person
+            // creating the batch has seen and acknowledged, by count, who will be left out of the bank file.
+            var liveOutside = slips.Where(sl => sl.NetSalary > 0m)
+                .Select(sl => (Slip: sl, Profile: profiles.FirstOrDefault(p => p.EmployeeId == sl.EmployeeId)))
+                .Where(x => Infrastructure.Payroll.PaymentBatchExclusions.IsPaidOutsideBankFile(x.Profile?.PaymentMethod))
+                .Select(x => new { x.Slip.EmployeeId, x.Slip.EmployeeCode, method = x.Profile!.PaymentMethod.Trim(), amount = x.Slip.NetSalary })
+                .OrderBy(x => x.EmployeeId).ToList();
+            if (liveOutside.Count > 0 && req.ExpectedOutsideBankCount != liveOutside.Count)
+                return Conflict(new
+                {
+                    error   = "outside_bank_payments_not_acknowledged",
+                    message = $"This run was locked before payment methods were frozen. {liveOutside.Count} employee(s) are set to cash or " +
+                              "cheque on their profile today and will be left out of the bank file. " +
+                              Infrastructure.Payroll.PaymentBatchExclusions.MudadNote +
+                              $" Review the list and re-submit with expectedOutsideBankCount={liveOutside.Count}.",
+                    outsideBankCount = liveOutside.Count,
+                    employees = liveOutside,
+                    acknowledged = req.ExpectedOutsideBankCount,
+                });
+            methodsAtLock = liveOutside.ToDictionary(x => x.EmployeeId, x => x.method);
+            methodSource = "live-profile-acknowledged-at-batch";
+        }
         var exclusions = new List<Infrastructure.Payroll.PaymentBatchExclusion>();
         var included = new List<(PayrollSlip Slip, EmployeePayrollProfile? Profile)>();
         foreach (var slip in slips)
@@ -5215,7 +5262,8 @@ public class PayrollController : ControllerBase
             new
             {
                 totalAmount = batch.TotalAmount, method = batch.PaymentMethod, runType = run.RunType, excludedCount = batchExcludedCount,
-                runNetTotal, excludedTotal,
+                runNetTotal, excludedTotal, paymentMethodSource = methodSource,
+                acknowledgedOutsideBankCount = req.ExpectedOutsideBankCount,
                 exclusions = Infrastructure.Payroll.PaymentBatchExclusions.ToAuditData(exclusions),
             }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
@@ -5236,7 +5284,8 @@ public class PayrollController : ControllerBase
             runNetTotal,
             excludedTotal,
             paymentExclusions = exclusions,
-            paymentMethodsFrozenAtLock = methodsAtLock is not null,
+            paymentMethodsFrozenAtLock = methodSource == "frozen-at-lock",
+            paymentMethodSource = methodSource,
             mudadNote = exclusions.Any(x => x.ReasonCode == Infrastructure.Payroll.PaymentBatchExclusions.PaidOutsideBankFileCode)
                 ? Infrastructure.Payroll.PaymentBatchExclusions.MudadNote : null,
         });
@@ -5777,6 +5826,22 @@ public class PayrollController : ControllerBase
                   && x.SourceEntityId == batch.PayrollRunId
                   && x.EventType == GlEventTypes.NetSettlement && !x.IsReversed
                   && x.SourceEntityRef == batch.BatchNumber, cancellationToken);
+            // Every wage left out of the bank file for cash/cheque must have its payment recorded too, or the
+            // month would close with Salaries Payable still owed to those employees.
+            var unpaidOutside = new List<object>();
+            var recordedOutside = await OutsidePaymentRefsAsync(tenantId, new[] { batch.PayrollRunId }, cancellationToken);
+            foreach (var x in await Infrastructure.Payroll.PaymentBatchExclusions.LoadAsync(_db, tenantId, batch.Id, cancellationToken))
+                if (x.ReasonCode == Infrastructure.Payroll.PaymentBatchExclusions.PaidOutsideBankFileCode && x.Amount > 0m
+                    && !recordedOutside.Contains(Infrastructure.Payroll.PaymentBatchExclusions.OutsidePaymentRef(batch.BatchNumber, x.EmployeeId)))
+                    unpaidOutside.Add(new { x.EmployeeId, x.EmployeeCode, x.Amount });
+            if (unpaidOutside.Count > 0)
+                return UnprocessableEntity(new
+                {
+                    error   = "outside_payments_unrecorded",
+                    message = $"{unpaidOutside.Count} cash/cheque wage(s) left out of the bank file have no recorded payment. " +
+                              "Record each payment outside the bank file before reconciling the batch.",
+                    unpaid  = unpaidOutside,
+                });
             if (!settlementPosted)
                 return UnprocessableEntity(new
                 {
@@ -6067,6 +6132,19 @@ public class PayrollController : ControllerBase
         // cross-company (PayrollRun is company-filtered, so the run reads back null).
         if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, batchId, cancellationToken) is { } batchScopeErr)
             return batchScopeErr;
+        // The already-settled check and the journal it guards run as ONE serialized unit per batch, so two
+        // concurrent settles cannot both pass the check and post two journals.
+        return await Infrastructure.Finance.FinanceDecisionSerializer.SerializeAsync(_db, BatchPaymentLockScope, tenantId, batchId,
+            () => SettlePaymentBatchCoreAsync(tenantId, batchId, req, cancellationToken), cancellationToken);
+    }
+
+    /// <summary>Advisory-lock scope shared by every net-pay posting against one payment batch: the bank
+    /// settlement, and each payment recorded (or reversed) outside the bank file. Coarser than (batch,
+    /// employee) on purpose: those postings also share the leaver-settlement and receivable reclass state.</summary>
+    private const string BatchPaymentLockScope = "payroll.batch-payment";
+
+    private async Task<IActionResult> SettlePaymentBatchCoreAsync(Guid tenantId, Guid batchId, SettlePaymentBatchRequest req, CancellationToken cancellationToken)
+    {
         var batch = await _db.PayrollPaymentBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batchId, cancellationToken);
         if (batch is null) return NotFound();
         var run = await _db.PayrollRuns.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batch.PayrollRunId, cancellationToken);
@@ -6223,6 +6301,15 @@ public class PayrollController : ControllerBase
         if (string.IsNullOrEmpty(reference) || reference.Length > 100 || reference.Any(char.IsControl))
             return BadRequest(new { error = "reference_required", message = "Enter the cheque number or cash receipt reference (up to 100 characters)." });
 
+        // Check-and-insert as ONE serialized unit (same lock as the batch settlement): two simultaneous
+        // posts for the same employee produce exactly one journal.
+        return await Infrastructure.Finance.FinanceDecisionSerializer.SerializeAsync(_db, BatchPaymentLockScope, tenantId, batchId,
+            () => RecordOutsidePaymentCoreAsync(tenantId, batchId, req, method, reference, cancellationToken), cancellationToken);
+    }
+
+    private async Task<IActionResult> RecordOutsidePaymentCoreAsync(Guid tenantId, Guid batchId, OutsidePaymentRequest req,
+        string method, string reference, CancellationToken cancellationToken)
+    {
         var batch = await _db.PayrollPaymentBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batchId, cancellationToken);
         if (batch is null) return NotFound();
         var run = await _db.PayrollRuns.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batch.PayrollRunId, cancellationToken);
@@ -6290,6 +6377,60 @@ public class PayrollController : ControllerBase
             batchId = batch.Id, employeeId = exclusion.EmployeeId, amount = exclusion.Amount, method, reference,
             paidDate, account, period, settlementsPaid = settlementResult.SettlementIds,
         });
+    }
+
+    /// <summary>
+    /// Reverses a payment recorded outside the bank file (e.g. a cheque that bounced or was cancelled), the
+    /// same way a bank settlement is reversed: contra lines dated to the original period, refused if that
+    /// period is closed, the originals flagged reversed. 2100 re-opens for the employee, and the payment can
+    /// then be recorded again. Requires payroll.export and a reason; refused once the batch is Reconciled,
+    /// and never by the employee who was paid. Audited.
+    /// </summary>
+    [HttpPost("payment-batches/{batchId:guid}/outside-payments/{employeeId:int}/reverse")]
+    public async Task<IActionResult> ReverseOutsidePayment(Guid batchId, int employeeId, [FromBody] PayrollReasonRequest req, CancellationToken cancellationToken)
+    {
+        if (!HasPermission("payroll.export")) return Forbid();
+        var tenantId = GetTenantId();
+        if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, batchId, cancellationToken) is { } batchScopeErr)
+            return batchScopeErr;
+        if (string.IsNullOrWhiteSpace(req.Reason))
+            return BadRequest(new { error = "reason_required", message = "A reason is required to reverse a recorded payment." });
+
+        return await Infrastructure.Finance.FinanceDecisionSerializer.SerializeAsync(_db, BatchPaymentLockScope, tenantId, batchId, async () =>
+        {
+            var batch = await _db.PayrollPaymentBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batchId, cancellationToken);
+            if (batch is null) return (IActionResult)NotFound();
+            if (batch.WpsStatus is WpsStatuses.Reconciled)
+                return UnprocessableEntity(new { error = "batch_reconciled", message = "This batch is Reconciled; its payments can no longer be reversed." });
+
+            var actorId = GetUserId();
+            if (actorId is null)
+                return StatusCode(StatusCodes.Status403Forbidden, new { error = "actor_unidentified", message = "A payment can only be reversed by an identified user." });
+            if (await _db.Employees.AsNoTracking().AnyAsync(e => e.TenantId == tenantId && e.Id == employeeId && e.UserAccountId == actorId, cancellationToken))
+                return StatusCode(StatusCodes.Status403Forbidden, new { error = "subject_is_recorder", message = "You cannot reverse the payment of your own wage. Another payroll user must do it." });
+
+            var sourceRef = Infrastructure.Payroll.PaymentBatchExclusions.OutsidePaymentRef(batch.BatchNumber, employeeId);
+            var originals = await _db.FinanceGlEntries
+                .Where(x => x.TenantId == tenantId && x.SourceModule == "Payroll" && x.SourceEntityId == batch.PayrollRunId
+                         && x.EventType == GlEventTypes.NetSettlement && !x.IsReversed && x.SourceEntityRef == sourceRef)
+                .ToListAsync(cancellationToken);
+            if (originals.Count == 0)
+                return Conflict(new { error = "not_recorded", message = "There is no recorded payment outside the bank file to reverse for this employee." });
+
+            var run = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batch.PayrollRunId, cancellationToken);
+            foreach (var period in originals.Select(o => o.Period).Distinct())
+                if (await PeriodCloseGuard.IsClosedAsync(_db, tenantId, run?.CompanyId, period, cancellationToken))
+                    return UnprocessableEntity(new { error = "gl_period_closed", message = $"GL period {period} is closed. Reopen it before reversing this payment.", period });
+
+            var contras = BuildContraGl(tenantId, batch.PayrollRunId, originals, GlEventTypes.NetSettlementReversal, actorId, GetUserName(), req.Reason!.Trim());
+            foreach (var o in originals) o.IsReversed = true;
+            _db.FinanceGlEntries.AddRange(contras);
+            var amount = originals.Where(o => !string.IsNullOrEmpty(o.DebitAccount)).Sum(o => o.Amount);
+            await PayrollAudit("payroll.outside_payment.reversed", "PayrollPaymentBatch", batch.Id.ToString(),
+                new { runId = batch.PayrollRunId, employeeId, amount, reason = req.Reason!.Trim(), reversedEntries = contras.Count }, cancellationToken);
+            await _db.SaveChangesAsync(cancellationToken);
+            return Ok(new { batchId = batch.Id, employeeId, reversed = amount, reversedEntries = contras.Count });
+        }, cancellationToken);
     }
 
     /// <summary>The outside-the-bank-file payments recorded (live, unreversed) for a run, by GL reference.</summary>
@@ -11180,7 +11321,9 @@ public record EmployeeSalaryStructureRequest(int EmployeeId, Guid SalaryStructur
 /// the bank/WPS file). Required when the run has any.</param>
 public record PayrollDecisionRequest(string? Notes, int? ExpectedExcludedCount = null, int? ExpectedOverriddenCount = null,
     int? ExpectedOutsideBankCount = null);
-public record PayrollPaymentBatchRequest(string? PaymentMethod, string? Currency);
+/// <param name="ExpectedOutsideBankCount">Only for a run locked before payment methods were frozen: acknowledges,
+/// by count, the cash/cheque employees the batch will leave out of the bank file.</param>
+public record PayrollPaymentBatchRequest(string? PaymentMethod, string? Currency, int? ExpectedOutsideBankCount = null);
 /// <summary><paramref name="EvidenceId"/> is REQUIRED to mark a WPS batch Accepted: the id of evidence
 /// uploaded through POST payment-batches/{id}/wps-evidence (the bank's WPS output file or a Mudad
 /// compliance screenshot/PDF). A status picked from a dropdown is not proof that Mudad accepted anything.</summary>

@@ -426,7 +426,10 @@ public sealed class SaudiBankExportService
         var pendingBankChanges = await _db.EmployeeChangeRequests.AsNoTracking()
             .Where(x => x.TenantId == tenantId && ids.Contains(x.EmployeeId) && x.Status == "PendingApproval"
                 && x.EffectiveDate <= paymentDate
-                && (x.SensitiveFields.Contains("bankIban") || x.SensitiveFields.Contains("wpsBankDetails")))
+                // Every field that decides WHERE the salary lands: IBAN, the approved beneficiary details (BIC),
+                // the ANB account number and the payroll profile's routing code (the BIC resolver's fallback).
+                && (x.SensitiveFields.Contains("bankIban") || x.SensitiveFields.Contains("wpsBankDetails")
+                    || x.SensitiveFields.Contains("accountNumber") || x.SensitiveFields.Contains("bankRoutingCode")))
             .Select(x => x.EmployeeId).Distinct().ToListAsync(ct);
 
         var recordTotal = records.Sum(r => r.Amount);

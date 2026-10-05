@@ -38,6 +38,31 @@ public static class PaymentBatchExclusions
         + "they count against the establishment's WPS compliance figure.";
 
     public const string LockAuditAction = "payroll.run.locked";
+    public const string ApproveAuditAction = "payroll.run.approved";
+
+    /// <summary>The cash/cheque employee ids the approver acknowledged, as sealed in the run's LATEST final
+    /// approval audit entry. Null when the run has no such entry (approved before this was recorded).</summary>
+    public static async Task<HashSet<int>?> ApprovedOutsideAsync(ZayraDbContext db, Guid tenantId, Guid runId, CancellationToken ct)
+    {
+        var key = runId.ToString();
+        var raw = await db.PayrollAuditLogs.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.Action == ApproveAuditAction && a.EntityId == key)
+            .OrderByDescending(a => a.CreatedAtUtc)
+            .Select(a => a.MetadataJson).FirstOrDefaultAsync(ct);
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(raw);
+            if (!doc.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object
+                || !data.TryGetProperty("paidOutsideBankFile", out var list) || list.ValueKind != JsonValueKind.Array)
+                return null;
+            return list.EnumerateArray().Select(e => e.GetInt32()).ToHashSet();
+        }
+        catch (Exception e) when (e is JsonException or InvalidOperationException or FormatException)
+        {
+            return null;
+        }
+    }
 
     /// <summary>GL SourceEntityRef prefix of a net-pay payment recorded OUTSIDE the bank file.</summary>
     public const string OutsidePaymentRefPrefix = "OUTSIDE-BANK/";

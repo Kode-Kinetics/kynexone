@@ -12,11 +12,11 @@ namespace Zayra.Api.Infrastructure.Payroll;
 /// <list type="bullet">
 /// <item><c>Source = "Loan"</c> — loan instalments (LOAN_EMI) and salary-advance repayments
 ///   (ADVANCE_EMI); both route to <c>DED:LOAN</c>.</item>
-/// <item><c>Source = "Adjustment"</c> — an approved NEGATIVE payroll adjustment whose TYPE is debt-like
-///   (<see cref="DebtAdjustmentTypeCodes"/>: loan/advance recovery, penalty/fine, damages/compensation,
-///   overpayment or debt recovery). The line carries the type as its code (<c>ADJ_{TYPE}</c>, the same
-///   normalisation Process applies). A negative adjustment of any other type (a correction, an
-///   allowance clawback) is not a debt and is not counted.</item>
+/// <item><c>Source = "Adjustment"</c> — an approved NEGATIVE payroll adjustment, FAIL-CLOSED: it counts
+///   unless its TYPE is one known not to be a debt (<see cref="NonDebtAdjustmentTypeCodes"/>: a correction of
+///   this period's own pay or an allowance clawback). The line carries the type as its code
+///   (<c>ADJ_{TYPE}</c>, the same normalisation Process applies). An unknown or blank type is treated as a
+///   debt, so a new free-text type can never slip a penalty past the cap.</item>
 /// <item>A tenant-configured component pinned to <c>DED:LOAN</c>.</item>
 /// </list>
 ///
@@ -44,13 +44,12 @@ public static class WageDeductionClassification
         !line.IsEmployerContribution && IsDebtType(line.Source, line.GlDriverKey, line.ComponentCode);
 
     /// <summary>Adjustment types (as normalised into the line code: upper-case, non-alphanumerics → '_')
-    /// that represent a debt owed to the employer under Art. 92.</summary>
-    public static readonly IReadOnlySet<string> DebtAdjustmentTypeCodes = new HashSet<string>(StringComparer.Ordinal)
+    /// known NOT to be a debt owed to the employer: corrections of the period's own pay. Every other
+    /// negative adjustment type counts toward the cap.</summary>
+    public static readonly IReadOnlySet<string> NonDebtAdjustmentTypeCodes = new HashSet<string>(StringComparer.Ordinal)
     {
-        "LOAN", "LOAN_RECOVERY", "LOAN_REPAYMENT", "ADVANCE", "ADVANCE_RECOVERY", "SALARY_ADVANCE",
-        "PENALTY", "FINE", "DISCIPLINARY_PENALTY", "DISCIPLINARY_FINE",
-        "DAMAGE", "DAMAGES", "COMPENSATION", "DAMAGE_COMPENSATION",
-        "DEBT_RECOVERY", "OVERPAYMENT_RECOVERY",
+        "CORRECTION", "PAYROLL_CORRECTION", "SALARY_CORRECTION", "PAY_CORRECTION",
+        "ALLOWANCE_CORRECTION", "ALLOWANCE_CLAWBACK", "ALLOWANCE_REVERSAL",
     };
 
     public const string AdjustmentCodePrefix = "ADJ_";
@@ -58,8 +57,8 @@ public static class WageDeductionClassification
     public static bool IsDebtType(string? source, string? glDriverKey, string? componentCode = null) =>
         string.Equals(source, LoanSource, StringComparison.Ordinal)
         || (string.Equals(source, AdjustmentSource, StringComparison.Ordinal)
-            && componentCode is not null && componentCode.StartsWith(AdjustmentCodePrefix, StringComparison.Ordinal)
-            && DebtAdjustmentTypeCodes.Contains(componentCode[AdjustmentCodePrefix.Length..]))
+            && !(componentCode is not null && componentCode.StartsWith(AdjustmentCodePrefix, StringComparison.Ordinal)
+                 && NonDebtAdjustmentTypeCodes.Contains(componentCode[AdjustmentCodePrefix.Length..])))
         || string.Equals(glDriverKey, LoanGlDriver, StringComparison.Ordinal);
 
     /// <summary>Σ debt-type deduction lines per employee.</summary>

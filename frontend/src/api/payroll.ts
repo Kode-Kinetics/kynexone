@@ -735,8 +735,11 @@ export const payrollApi = {
 
   // currency omitted by default so the backend resolves it from the tenant's company currency.
   // Pass an explicit currency only to override.
-  createPaymentBatch: (runId: string, paymentMethod = 'WPS', currency?: string) =>
-    client.post<PayrollPaymentBatch>(`/api/payroll/runs/${runId}/payment-batches`, { paymentMethod, ...(currency ? { currency } : {}) }).then((r) => r.data),
+  createPaymentBatch: (runId: string, paymentMethod = 'WPS', currency?: string, expectedOutsideBankCount?: number) =>
+    client.post<PayrollPaymentBatch>(`/api/payroll/runs/${runId}/payment-batches`, {
+      paymentMethod, ...(currency ? { currency } : {}),
+      ...(expectedOutsideBankCount !== undefined ? { expectedOutsideBankCount } : {}),
+    }).then((r) => r.data),
 
   listPaymentBatches: (runId?: string) =>
     client.get<PayrollPaymentBatch[]>('/api/payroll/payment-batches', { params: runId ? { runId } : undefined }).then((r) => r.data),
@@ -753,6 +756,10 @@ export const payrollApi = {
   /** Records a cash/cheque wage paid outside the bank file (clears its share of Salaries Payable). */
   recordOutsidePayment: (batchId: string, body: { employeeId: number; method: 'Cash' | 'Cheque'; reference: string; paidDate?: string }) =>
     client.post(`/api/payroll/payment-batches/${batchId}/outside-payments`, body).then((r) => r.data),
+
+  /** Reverses a recorded outside-the-bank-file payment (e.g. a bounced cheque); a reason is required. */
+  reverseOutsidePayment: (batchId: string, employeeId: number, reason: string) =>
+    client.post(`/api/payroll/payment-batches/${batchId}/outside-payments/${employeeId}/reverse`, { reason }).then((r) => r.data),
 
   /** Stores proof of Mudad/WPS acceptance. The server hashes the bytes it receives (SHA-256). */
   uploadWpsEvidence: (batchId: string, kind: WpsEvidenceKind, file: File, note?: string) => {
