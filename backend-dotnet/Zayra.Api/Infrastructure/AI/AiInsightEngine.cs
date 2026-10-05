@@ -61,7 +61,17 @@ public sealed class AiInsightEngine : BackgroundService
     {
         await using var scope = _scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
-        var llm = scope.ServiceProvider.GetService<ILlmClient>();
+
+        // One instance per cycle across the cluster. The 24h InsightType dedupe below is a read-then-
+        // insert with no unique index, so two concurrent cycles (two instances, or old and new during a
+        // deploy) would each see "no insight yet" and both insert it. Sequential cycles are safe: the
+        // second one sees the first one's rows.
+        await using var lease = await SingletonWorkerLease.TryAcquireAsync(db, ProductionWorkerNames.AiInsights, ct);
+        if (lease is null)
+        {
+            _log.LogDebug("AiInsightEngine: cycle skipped; another instance holds the sweep lease.");
+            return;
+        }
 
         var tenantIds = await db.Tenants
             .AsNoTracking()
@@ -73,7 +83,7 @@ public sealed class AiInsightEngine : BackgroundService
 
         foreach (var tenantId in tenantIds)
         {
-            if (ct.IsCancellationRequested) break;
+            if (ct.IsCancellationRequested || lease.IsLost) break;
             try
             {
                 await using var tenantScope = _scopeFactory.CreateAsyncScope();

@@ -62,6 +62,17 @@ public sealed class ComplianceReminderWorker : BackgroundService
         await using var scope = _scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
         var notifications = scope.ServiceProvider.GetRequiredService<INotificationService>();
+
+        // One instance per sweep across the cluster. The outbox dedupe key already refuses a second
+        // delivery, but two concurrent sweeps would still both resolve, render and race every due row.
+        // Skipping is a healthy outcome: the instance holding the lease is doing the work.
+        await using var lease = await SingletonWorkerLease.TryAcquireAsync(db, ProductionWorkerNames.ComplianceReminders, ct);
+        if (lease is null)
+        {
+            _log.LogDebug("Compliance reminder sweep skipped: another instance holds the sweep lease.");
+            return 0;
+        }
+
         var now = DateTime.UtcNow;
 
         // Background services run in system scope, so every query pins TenantId again downstream.
@@ -75,7 +86,7 @@ public sealed class ComplianceReminderWorker : BackgroundService
         var completed = 0;
         foreach (var reminder in due)
         {
-            if (ct.IsCancellationRequested) break;
+            if (ct.IsCancellationRequested || lease.IsLost) break;
 
             // EmployeeId is the stable Employee.PublicId. Never infer a subject from EmployeeName.
             var employee = await db.Employees.AsNoTracking()
