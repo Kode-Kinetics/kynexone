@@ -12,6 +12,8 @@ export const mfaEn = {
   errors: {
     wrongCode: "That code didn't work. Check the code in your authenticator app and try again.",
     notAccepted: 'Not accepted. If this keeps happening, sign in again.',
+    waitForNextCode:
+      'That looks like the code you just used to set up. Each code works once: wait for the next code in your authenticator app, then enter it.',
     attemptLimit: 'Too many wrong codes. For your security, go back and sign in again to get a new code request.',
     expired: 'This code request has expired. Go back and sign in again.',
     rateLimited: 'Too many tries in a short time. Wait a minute, then try again.',
@@ -43,7 +45,8 @@ export const mfaEn = {
   retry: 'Try again',
   cancel: 'Cancel',
   doneTitle: 'Two-step sign-in is on',
-  doneSignInAgain: 'Sign in again with your password and a code from your authenticator app.',
+  doneSignInAgain:
+    'Sign in again with your password and a code from your authenticator app. Wait for the next code; the one you just used will not work twice.',
   continue: 'Continue',
   recoveryTitle: 'Save your recovery codes',
   recoveryBody:
@@ -69,6 +72,8 @@ export const mfaAr: typeof mfaEn = {
   errors: {
     wrongCode: 'هذا الرمز غير صحيح. تحقّق من الرمز في تطبيق المصادقة وحاول مرة أخرى.',
     notAccepted: 'لم يُقبل. إذا تكرر ذلك، سجّل الدخول من جديد.',
+    waitForNextCode:
+      'يبدو أنه الرمز الذي استخدمته للتو في الإعداد. كل رمز يعمل مرة واحدة: انتظر الرمز التالي في تطبيق المصادقة ثم أدخله.',
     attemptLimit: 'أُدخلت رموز خاطئة عدة مرات. لحمايتك، ارجع وسجّل الدخول من جديد للحصول على طلب رمز جديد.',
     expired: 'انتهت صلاحية طلب الرمز. ارجع وسجّل الدخول من جديد.',
     rateLimited: 'محاولات كثيرة خلال وقت قصير. انتظر دقيقة ثم حاول مرة أخرى.',
@@ -99,7 +104,8 @@ export const mfaAr: typeof mfaEn = {
   retry: 'حاول مرة أخرى',
   cancel: 'إلغاء',
   doneTitle: 'تم تفعيل تسجيل الدخول بخطوتين',
-  doneSignInAgain: 'سجّل الدخول من جديد بكلمة المرور ورمز من تطبيق المصادقة.',
+  doneSignInAgain:
+    'سجّل الدخول من جديد بكلمة المرور ورمز من تطبيق المصادقة. انتظر الرمز التالي؛ فالرمز الذي استخدمته للتو لن يعمل مرة ثانية.',
   continue: 'متابعة',
   recoveryTitle: 'احفظ رموز الاسترداد',
   recoveryBody:

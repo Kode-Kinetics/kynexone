@@ -197,6 +197,17 @@ test('after a network or server failure the next 401 is worded neutrally, then w
   assert.equal(afterThrottle.error, 'wrongCode', 'a 429 never reached the code check');
 });
 
+test('first sign-in after enrolling: the first rejection says to wait for the next code, later ones say wrong code', () => {
+  let state = initialCodeEntry(300, NOW, { justEnrolled: true });
+  state = submitAndFail(state, 'rejected');
+  assert.equal(state.error, 'waitForNextCode');
+  assert.equal(state.failedAttempts, 1, 'the backend still counts it');
+  state = submitAndFail(state, 'rejected');
+  assert.equal(state.error, 'wrongCode');
+  assert.equal(submitAndFail(initialCodeEntry(300, NOW), 'rejected').error, 'wrongCode', 'ordinary sign-in unchanged');
+  assert.match(mfaEn.doneSignInAgain, /Wait for the next code/);
+});
+
 test('a second submit while one is in flight is ignored', () => {
   const submitted = codeEntryReducer(initialCodeEntry(300, NOW), { type: 'submit', nowMs: NOW });
   assert.equal(codeEntryReducer(submitted, { type: 'submit', nowMs: NOW }), submitted);
@@ -259,7 +270,7 @@ test('every MFA string exists in English and Arabic with the same placeholders',
     assert.ok(ar.get(key)!.trim().length > 0, `${key} is empty in Arabic`);
     assert.deepEqual(placeholders(ar.get(key)!), placeholders(text), `${key} placeholders differ`);
   }
-  for (const kind of ['wrongCode', 'notAccepted', 'attemptLimit', 'expired', 'rateLimited', 'network', 'server']) {
+  for (const kind of ['wrongCode', 'notAccepted', 'waitForNextCode', 'attemptLimit', 'expired', 'rateLimited', 'network', 'server']) {
     assert.ok(en.has(`errors.${kind}`), `missing error string ${kind}`);
   }
   assert.equal(mfaEn.bannerWithDate, 'Your role requires two-step sign-in from {{date}}. Set it up now.');

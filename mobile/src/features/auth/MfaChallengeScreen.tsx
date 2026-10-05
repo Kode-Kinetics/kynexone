@@ -24,10 +24,10 @@ type Props = NativeStackScreenProps<AuthStackParamList, 'MfaChallenge'>;
 /** Step 2 of sign-in for an enrolled user: the 6-digit code from the authenticator app. */
 export default function MfaChallengeScreen({ navigation, route }: Props) {
   const { t } = useTranslation();
-  const { challengeToken, tenantId, email, expiresInSeconds } = route.params;
+  const { challengeToken, tenantId, email, expiresInSeconds, justEnrolled } = route.params;
   const completeMfa = useAuthStore((s) => s.completeMfa);
   const [code, setCode] = useState('');
-  const { state, nowMs, run, edited } = useCodeEntry(expiresInSeconds);
+  const { state, nowMs, run, edited } = useCodeEntry(expiresInSeconds, { justEnrolled });
 
   const finished = state.phase === 'locked' || state.phase === 'expired';
   const submitting = state.phase === 'submitting' || state.phase === 'succeeded';

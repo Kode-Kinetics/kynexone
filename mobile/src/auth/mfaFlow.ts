@@ -96,7 +96,7 @@ export function classifyMfaStatus(data: unknown, nowMs: number): MfaPrompt {
  * request may have reached the server (and used up the code or the request),
  * so "wrong code" could be untrue; the wording stays neutral.
  */
-export type MfaErrorKind = 'wrongCode' | 'notAccepted' | 'attemptLimit' | 'expired' | 'rateLimited' | 'network' | 'server';
+export type MfaErrorKind = 'wrongCode' | 'notAccepted' | 'waitForNextCode' | 'attemptLimit' | 'expired' | 'rateLimited' | 'network' | 'server';
 
 export type MfaFailureClass = 'rejected' | 'rateLimited' | 'network' | 'server' | 'conflict';
 
@@ -125,6 +125,12 @@ export interface CodeEntryState {
   error: MfaErrorKind | null;
   /** The previous attempt ended in a network or server failure. */
   afterTransientFailure: boolean;
+  /**
+   * First sign-in right after enrolling. The backend refuses a TOTP code whose
+   * time-step was already accepted, and enrolment accepted one, so the likeliest
+   * reason the first code fails is that it is the enrolment code again.
+   */
+  justEnrolled: boolean;
 }
 
 export type CodeEntryEvent =
@@ -134,13 +140,18 @@ export type CodeEntryEvent =
   | { type: 'failed'; failure: MfaFailureClass; nowMs: number }
   | { type: 'tick'; nowMs: number };
 
-export function initialCodeEntry(expiresInSeconds: number, nowMs: number): CodeEntryState {
+export function initialCodeEntry(
+  expiresInSeconds: number,
+  nowMs: number,
+  options: { justEnrolled?: boolean } = {}
+): CodeEntryState {
   return {
     phase: 'ready',
     failedAttempts: 0,
     expiresAtMs: nowMs + normalizeTtl(expiresInSeconds) * 1000,
     error: null,
     afterTransientFailure: false,
+    justEnrolled: options.justEnrolled === true,
   };
 }
 
@@ -167,7 +178,9 @@ export function codeEntryReducer(state: CodeEntryState, event: CodeEntryEvent): 
           ...state,
           phase: 'ready',
           failedAttempts,
-          error: state.afterTransientFailure ? 'notAccepted' : 'wrongCode',
+          error: state.afterTransientFailure ? 'notAccepted'
+            : state.justEnrolled && failedAttempts === 1 ? 'waitForNextCode'
+            : 'wrongCode',
           afterTransientFailure: false,
         };
       }

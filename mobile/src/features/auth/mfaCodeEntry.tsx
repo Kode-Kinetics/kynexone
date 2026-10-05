@@ -15,9 +15,9 @@ import {
  * Drives one code request (sign-in challenge or first-code enrolment check)
  * through mfaFlow.codeEntryReducer, with a 1 s clock for the expiry countdown.
  */
-export function useCodeEntry(expiresInSeconds: number) {
+export function useCodeEntry(expiresInSeconds: number, options: { justEnrolled?: boolean } = {}) {
   const [state, dispatch] = useReducer(codeEntryReducer, undefined, () =>
-    initialCodeEntry(expiresInSeconds, Date.now())
+    initialCodeEntry(expiresInSeconds, Date.now(), options)
   );
   const [nowMs, setNowMs] = useState(() => Date.now());
   const stateRef = useRef<CodeEntryState>(state);
@@ -105,7 +105,7 @@ export function MfaCodeError({ state }: { state: CodeEntryState }) {
   return (
     <Text style={styles.error} accessibilityLiveRegion="polite" accessibilityRole="alert">
       {t(`mfa.errors.${state.error}`)}
-      {state.error === 'wrongCode' || state.error === 'notAccepted' ? `\n${t('mfa.attemptsLeft', { count: attemptsLeft(state) })}` : ''}
+      {state.error === 'wrongCode' || state.error === 'notAccepted' || state.error === 'waitForNextCode' ? `\n${t('mfa.attemptsLeft', { count: attemptsLeft(state) })}` : ''}
     </Text>
   );
 }

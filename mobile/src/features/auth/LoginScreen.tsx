@@ -92,7 +92,7 @@ export default function LoginScreen({ navigation, route }: Props) {
       try {
         const outcome = await login(normalizeEmail(data.username), data.password, normalizeWorkspace(data.tenantId));
         if (outcome.kind === 'mfaChallenge') {
-          navigation.navigate('MfaChallenge', outcome);
+          navigation.navigate('MfaChallenge', { ...outcome, justEnrolled: mfaJustEnabled });
         } else if (outcome.kind === 'mfaEnrollment') {
           navigation.navigate('MfaEnrollment', outcome);
         }
@@ -101,7 +101,7 @@ export default function LoginScreen({ navigation, route }: Props) {
         // Error handled by store
       }
     },
-    [login, navigation]
+    [login, mfaJustEnabled, navigation]
   );
 
   return (
