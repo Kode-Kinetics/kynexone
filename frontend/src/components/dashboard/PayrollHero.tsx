@@ -70,7 +70,7 @@ export function PayrollHero({ data, payrollEnabled, dense = false, currency = nu
         {o.newJoinersThisMonth > 0
           ? <span className="font-semibold text-emerald-200">{t('+{count} joined this month', { count: o.newJoinersThisMonth })}</span>
           : t('No one joined this month')}
-        {' · '}{t('{count} on record', { count: s.totalEmployees })}
+        {'. '}{t('{count} on record', { count: s.totalEmployees })}.
       </span>
     </div>
   );
@@ -162,8 +162,8 @@ export function PayrollHero({ data, payrollEnabled, dense = false, currency = nu
           {dense ? (
             <p className="text-[13px] text-white/90">
               <span className="text-[22px] font-semibold tabular-nums text-white">{f.integer(s.activeEmployees)}</span> {t('Active')}
-              {o.newJoinersThisMonth > 0 ? ` · ${t('+{count} joined this month', { count: o.newJoinersThisMonth })}` : ''}
-              {' · '}{t('{count} on record', { count: s.totalEmployees })}
+              {o.newJoinersThisMonth > 0 ? `${f.locale === 'ar' ? '، ' : ', '}${t('+{count} joined this month', { count: o.newJoinersThisMonth })}` : ''}
+              {'. '}{t('{count} on record', { count: s.totalEmployees })}.
             </p>
           ) : side}
         </div>

@@ -65,7 +65,7 @@ export function AttendanceHeatmap({ data }: { data: DashboardFull }) {
               {depts.map((d) => (
                 <tr key={d.name} className="border-t border-[color:var(--wg-line)]">
                   <th scope="row" className="py-1.5 text-start font-medium text-slate-800 dark:text-slate-200">{d.name}</th>
-                  {d.cells.map((c) => <td key={c.date} className="px-1 py-1.5 text-end tabular-nums text-slate-900 dark:text-white">{c.rate == null ? '·' : f.percent(c.rate)}</td>)}
+                  {d.cells.map((c) => <td key={c.date} className="px-1 py-1.5 text-end tabular-nums text-slate-900 dark:text-white">{c.rate == null ? '·' : f.plain.percent(c.rate)}</td>)}
                 </tr>
               ))}
             </tbody>

@@ -49,6 +49,48 @@ test.describe('lib/format', () => {
     expect(sp(f.moneyCompact(1_250_000, 'SAR'))).toBe('SAR 1.25M');
     expect(sp(f.moneyCompact(12_340, 'SAR'))).toBe('SAR 12.3K');
     expect(f.moneyCompact(950, null)).toBe('950');
+    // Under a thousand, whole units, as the dashboard always showed them.
+    expect(f.moneyCompact(950.6, null)).toBe('951');
+    expect(sp(f.moneyCompact(950.4, 'SAR'))).toBe('SAR 950');
+  });
+
+  test('money uses the currency symbol: $ for USD, the code where English has no symbol', () => {
+    const en = createFormatter({ locale: 'en' });
+    expect(en.money(1250, 'USD')).toBe('$1,250.00');
+    expect(sp(en.money(1250, 'SAR'))).toBe('SAR 1,250.00');
+    expect(createFormatter({ locale: 'ar' }).money(1250, 'SAR')).toContain('ر.س');
+  });
+
+  test('percent uses % in Arabic too', () => {
+    expect(createFormatter({ locale: 'ar' }).percent(45.6)).toMatch(/^[^\u066A]*%[^\u066A]*$/);
+    expect(createFormatter({ locale: 'en' }).percent(45.6)).toBe('46%');
+  });
+
+  test('plain.* drops the invisible direction marks Intl adds to Arabic, for copying', () => {
+    const f = createFormatter({ locale: 'ar', timeZone: 'UTC' });
+    const MARKS = /[\u200E\u200F\u061C]/;
+    expect(f.money(-1250, 'SAR')).toMatch(MARKS); // display keeps them: a negative amount reads right
+    for (const s of [f.plain.money(-1250, 'SAR'), f.plain.number(-1234.5), f.plain.date(SEP_15, 'short'), f.plain.percent(-4.5, 1)]) {
+      expect(s, JSON.stringify(s)).not.toMatch(MARKS);
+    }
+    expect(f.plain.money(1250, 'SAR')).toContain('1,250.00');
+    expect(f.plain.date(SEP_15, 'short')).toBe('15/09/2026');
+  });
+
+  test('an invalid tenant zone warns once and falls back to the viewer zone', () => {
+    const warned: unknown[] = [];
+    const orig = console.warn;
+    console.warn = (...a: unknown[]) => { warned.push(a); };
+    try {
+      const a = createFormatter({ locale: 'en', timeZone: 'Mars/Olympus_Mons' });
+      createFormatter({ locale: 'en', timeZone: 'Mars/Olympus_Mons' }).time(SEP_15);
+      expect(a.time(SEP_15)).toMatch(/^\d{2}:\d{2}$/);
+      expect(a.zone()).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
+    } finally {
+      console.warn = orig;
+    }
+    expect(warned).toHaveLength(1);
+    expect(createFormatter({ locale: 'en', timeZone: 'Asia/Riyadh' }).zone()).toBe('Asia/Riyadh');
   });
 
   test('the tenant date pattern drives short dates', () => {

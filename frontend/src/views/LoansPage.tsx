@@ -17,7 +17,7 @@ import type {
   FinanceGlEntry, AuditLogEntry,
 } from '../api/loans';
 import { Modal } from '../components/Modal';
-import { useTenantSettings } from '../contexts/TenantSettingsContext';
+import { useTenantSettings, useTenantSettingsContext } from '../contexts/TenantSettingsContext';
 import { EmployeeSearchSelect } from '../components/EmployeeSearchSelect';
 import type { EmployeeSelection } from '../components/EmployeeSearchSelect';
 import { employeesApi } from '../api/employees';
@@ -172,7 +172,7 @@ function LoanTypesTab() {
   const [error, setError] = useState('');
 
   const fx = useFormat();
-  const fmt = (n: number) => fx.money(n, currencyCode, { decimals: 0 });
+  const fmt = (n: number) => fx.plain.money(n, currencyCode, { decimals: 0 });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -267,7 +267,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
   const { currencyCode } = useTenantSettings();
   const fx = useFormat();
   const t = useT();
-  const fmt = (n: number, currency: string) => fx.money(n, currency);
+  const fmt = (n: number, currency: string) => fx.plain.money(n, currency);
   const [items, setItems] = useState<EmployeeLoan[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -648,7 +648,7 @@ function AdvancePolicyTab() {
 function AdvancesTab() {
   const { currencyCode } = useTenantSettings();
   const fx = useFormat();
-  const fmt = (n: number) => fx.money(n, currencyCode);
+  const fmt = (n: number) => fx.plain.money(n, currencyCode);
   const [items, setItems] = useState<SalaryAdvance[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -1107,9 +1107,13 @@ function BonusTypesTab() {
 // ── Bonus Batches ─────────────────────────────────────────────────────────────
 
 function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
-  const { currencyCode } = useTenantSettings();
+  // A bonus batch has no currency of its own; it is paid in the tenant's. Until the tenant's
+  // settings load, that currency is unknown (the context's 'USD' is a placeholder), so amounts
+  // are shown bare rather than labelled with a guess.
+  const { settings: { currencyCode }, loaded: settingsLoaded } = useTenantSettingsContext();
+  const batchCurrency = settingsLoaded ? currencyCode : null;
   const fx = useFormat();
-  const fmt = (n: number) => fx.money(n, currencyCode);
+  const fmt = (n: number) => fx.plain.money(n, batchCurrency);
   const [items, setItems] = useState<BonusBatch[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -1414,7 +1418,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
           <div className="space-y-3">
             <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-800 dark:bg-emerald-900/20">
               <p className="font-semibold text-emerald-700 dark:text-emerald-300">{bulkResult.added} employees added</p>
-              <p className="text-sm text-emerald-600 dark:text-emerald-400 mt-1">Total bonus: {fx.money(bulkResult.totalNetAdded, currencyCode)}</p>
+              <p className="text-sm text-emerald-600 dark:text-emerald-400 mt-1">Total bonus: {fx.plain.money(bulkResult.totalNetAdded, batchCurrency)}</p>
             </div>
             {(bulkResult.skippedDuplicate + bulkResult.skippedMinService + bulkResult.skippedNoSalary) > 0 && (
               <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-900/20 text-sm space-y-1">
@@ -1490,7 +1494,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
 function AuditReportTab() {
   const { currencyCode } = useTenantSettings();
   const fx = useFormat();
-  const fmt = (n: number) => fx.money(n, currencyCode);
+  const fmt = (n: number) => fx.plain.money(n, currencyCode);
   const [loanAudit, setLoanAudit] = useState<any>(null);
   const [advanceAudit, setAdvanceAudit] = useState<any>(null);
   const [bonusAudit, setBonusAudit] = useState<any>(null);
@@ -1520,8 +1524,9 @@ function AuditReportTab() {
             <p className="font-semibold text-emerald-700 dark:text-emerald-400">Finance Module — Audit Ready</p>
             <p className="text-xs text-emerald-600 dark:text-emerald-300 mt-0.5">
               All financial transactions are recorded with double-entry GL journal entries, immutable audit trails, and reconciliation checks.
-              {/* Was hard-coded to America/New_York and labelled EST for every tenant; now the tenant's zone. */}
-              Report generated: {fx.dateTime(new Date())}
+              {/* Was hard-coded to America/New_York and labelled EST for every tenant; now the tenant's
+                  zone, named, so a reader in another zone knows which clock the time is on. */}
+              Report generated: {fx.dateTime(new Date())} ({fx.zone()})
             </p>
           </div>
         </div>
@@ -1661,7 +1666,7 @@ export function LoansPage() {
   const canManagePayments = user?.roles.some(role => ['Admin', 'Finance', 'Finance Approver'].includes(role)) ?? false;
   const { currencyCode } = useTenantSettings();
   const fx = useFormat();
-  const fmt = (n: number) => fx.money(n, currencyCode);
+  const fmt = (n: number) => fx.plain.money(n, currencyCode);
   const [activeTab, setActiveTab] = useState<Tab>('loans');
   const [loanTypes, setLoanTypes] = useState<LoanType[]>([]);
   const [bonusTypes, setBonusTypes] = useState<BonusType[]>([]);

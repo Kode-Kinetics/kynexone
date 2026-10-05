@@ -16,6 +16,7 @@ import type {
 } from '../../api/dashboard';
 import type { AIInsight } from '../../api/intelligence';
 import { msg, translate, type MessageParams } from '../../i18n/translations';
+import { createFormatter } from '../../lib/format';
 
 /**
  * The translator the builders below write their copy with. Components pass `useT()`; tests and
@@ -248,7 +249,10 @@ export interface ComplianceDeadline {
  *  title-only shape; identical legacy rows (no employee attached) collapse with a count. */
 export function complianceDeadlines(
   alerts: DashboardAlert[],
-  formatDate: (d: Date) => string = (d) => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }),
+  // Gets the API's raw value: an expiry is a calendar date ("2026-10-05"), and the formatter shows a
+  // bare date as that day for every viewer. Turning it into a Date first made it an instant, which
+  // slipped a day for viewers east of the tenant's zone.
+  formatDate: (expiryDate: string) => string = (d) => createFormatter({ locale: 'en' }).date(d, 'medium'),
 ): ComplianceDeadline[] {
   const rows = new Map<string, ComplianceDeadline>();
   for (const a of alerts) {
@@ -257,10 +261,7 @@ export function complianceDeadlines(
     let status: 'expired' | 'expiring' =
       a.daysRemaining != null ? (a.daysRemaining < 0 ? 'expired' : 'expiring') : /expired/i.test(a.title) ? 'expired' : 'expiring';
     let dateLabel: string | null = null;
-    if (a.expiryDate) {
-      const d = new Date(a.expiryDate);
-      if (!Number.isNaN(d.getTime())) dateLabel = formatDate(d);
-    }
+    if (a.expiryDate && !Number.isNaN(new Date(a.expiryDate).getTime())) dateLabel = formatDate(a.expiryDate);
     if (!kind || !dateLabel) {
       const m = a.title.match(/^(.*?)\s+(expired|expires|expiring)\b\s*(?:on\s+|in\s+)?(.*)$/i);
       if (m) {
