@@ -53,7 +53,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     authApi
       .me()
       .then(setUser)
-      .catch(() => clearSessionKeepingLocale())
+      .catch((err: { response?: { status?: number } }) => {
+        // Only a definite "not signed in" ends the session. A network error or a 5xx (a deploy's
+        // ~38 s of 502s, a cold start) must not sign the user out and wipe their workspace; the
+        // API client already clears the session itself when a 401 cannot be refreshed.
+        if (err?.response?.status === 401) clearSessionKeepingLocale();
+      })
       .finally(() => setIsLoading(false));
   }, []);
 

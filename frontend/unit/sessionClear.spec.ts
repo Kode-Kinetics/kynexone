@@ -51,7 +51,12 @@ test('every tenant session exit goes through clearSessionKeepingLocale', async (
     .map((f) => path.relative(root, f));
   expect(bareClears, 'use clearSessionKeepingLocale() instead of localStorage.clear()').toEqual([]);
 
+  const tokensOnly = /removeItem\(\s*['"`]zayra_(access|refresh)_token['"`]/;
+  for (const file of [path.join('src', 'contexts', 'AuthContext.tsx'), path.join('src', 'api', 'client.ts')]) {
+    const source = fs.readFileSync(path.join(root, file), 'utf8');
+    expect(source, `${file} must not end a session by removing only the tokens`).not.toMatch(tokensOnly);
+    expect(source, `${file} must end a session with clearSessionKeepingLocale()`).toMatch(/clearSessionKeepingLocale\(\)/);
+  }
   const auth = fs.readFileSync(path.join(root, 'src', 'contexts', 'AuthContext.tsx'), 'utf8');
-  expect(auth, 'tenant logout must not remove only the tokens').not.toMatch(/removeItem\(\s*'zayra_access_token'/);
-  expect(auth.match(/clearSessionKeepingLocale\(\)/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+  expect(auth.match(/clearSessionKeepingLocale\(\)/g)?.length ?? 0, 'logout and the /me 401 path').toBeGreaterThanOrEqual(2);
 });
