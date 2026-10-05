@@ -56,24 +56,6 @@ public class GosiCohortEmployeeFactTests
     }
 
     [Fact]
-    public async Task ApproveChange_WritesTheDate()
-    {
-        await using var db = CreateDb();
-        var (tenantId, employee) = await SeedSaudiAsync(db);
-        await Controller(db, tenantId).UpdateEmployee(employee.Id,
-            new EmployeeUpdateRequest(Today, Changes(("gosiFirstRegisteredOn", "2025-02-01"))), CancellationToken.None);
-        var change = await db.EmployeeChangeRequests.AsNoTracking().SingleAsync(c => c.EmployeeId == employee.Id);
-
-        // A different user approves (maker-checker).
-        var approved = await Controller(db, tenantId).ApproveChange(change.Id, CancellationToken.None);
-
-        approved.Should().BeOfType<OkObjectResult>();
-        db.ChangeTracker.Clear();
-        (await db.Employees.AsNoTracking().SingleAsync(e => e.Id == employee.Id))
-            .GosiFirstRegisteredOn.Should().Be(new DateOnly(2025, 2, 1));
-    }
-
-    [Fact]
     public async Task ApprovalsScreenDecision_WritesTheDate_TheSameWay()
     {
         // The second approve path (ApprovalWorkflowService.DecideAsync, the Approvals screen) carries its own

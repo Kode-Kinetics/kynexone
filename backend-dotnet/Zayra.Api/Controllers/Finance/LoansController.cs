@@ -361,6 +361,8 @@ public partial class LoansController : ControllerBase
         var approval = await _db.LoanApprovals.FirstOrDefaultAsync(x => x.Id == approvalId && x.LoanId == id && x.TenantId == tid, ct);
         var loan = await _db.EmployeeLoans.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
         var borrowerIsDecider = loan is not null && uid.HasValue && await IsLoanBorrowerAsync(loan, uid.Value, ct);
+        var approvedEarlierStep = approval is not null && uid.HasValue && await _db.LoanApprovals.AnyAsync(x =>
+            x.TenantId == tid && x.LoanId == id && x.Id != approvalId && x.Status == "Approved" && x.ApprovedBy == uid, ct);
 
         var verdict = ApprovalDecisionGuard.Evaluate(new ApprovalDecisionSpec
         {
@@ -385,6 +387,11 @@ public partial class LoansController : ControllerBase
                 borrowerIsDecider,
                 new[] { "Approved" },
                 "Maker-checker control: borrower cannot approve their own loan."),
+            // An Admin satisfies every step's role, so without this one person could approve a
+            // multi-step loan alone. Every decision: there is nothing to withdraw at a later step.
+            EarlierStepSeparation = new EarlierStepRule(
+                approvedEarlierStep,
+                "Maker-checker control: you approved an earlier step of this loan, so a different approver must decide this one."),
         });
         if (!verdict.Passed) return LoanDecisionRefusal(verdict, loan?.Status);
 
@@ -631,7 +638,8 @@ public partial class LoansController : ControllerBase
             }),
         ApprovalGuardOutcome.ParentLocked =>
             Conflict(new { error = "locked_by_payroll", message = verdict.Message }),
-        ApprovalGuardOutcome.MakerIsChecker or ApprovalGuardOutcome.SubjectIsDecider => BadRequest(verdict.Message),
+        ApprovalGuardOutcome.MakerIsChecker or ApprovalGuardOutcome.SubjectIsDecider
+            or ApprovalGuardOutcome.DeciderApprovedEarlierStep => BadRequest(verdict.Message),
         _ => throw new InvalidOperationException($"Unhandled approval guard outcome '{verdict.Outcome}'."),
     };
 

@@ -215,6 +215,36 @@ public class ApprovalDecisionGuardTests
     }
 
     [Fact]
+    public void WhoeverApprovedAnEarlierStepCannotDecideALaterOne_ForEitherDecision()
+    {
+        foreach (var decision in new[] { "Approved", "Rejected" })
+        {
+            var verdict = ApprovalDecisionGuard.Evaluate(Build(spec =>
+            {
+                spec.Decision = decision;
+                spec.ApprovedEarlierStep = true;
+            }));
+
+            Assert.Equal(ApprovalGuardOutcome.DeciderApprovedEarlierStep, verdict.Outcome);
+            Assert.Equal("you approved an earlier step", verdict.Message);
+        }
+        Assert.False(EarlierStepRule.None.DeciderApprovedEarlierStep);
+    }
+
+    [Fact]
+    public void TheEarlierStepBarIsCheckedAfterEveryExistingRefusal()
+    {
+        var verdict = ApprovalDecisionGuard.Evaluate(Build(spec =>
+        {
+            spec.RequesterIsDecider = true;
+            spec.SubjectIsDecider = true;
+            spec.ApprovedEarlierStep = true;
+        }));
+
+        Assert.Equal(ApprovalGuardOutcome.MakerIsChecker, verdict.Outcome);
+    }
+
+    [Fact]
     public void AMultiStatusVocabularyIsRenderedReadablyInTheRefusal()
     {
         var verdict = ApprovalDecisionGuard.Evaluate(Build(spec =>
@@ -247,6 +277,7 @@ public class ApprovalDecisionGuardTests
         public IReadOnlyCollection<string>? MakerCheckerScope;
         public bool SubjectIsDecider;
         public IReadOnlyCollection<string>? SubjectScope;
+        public bool ApprovedEarlierStep;
     }
 
     private static ApprovalDecisionSpec Spec() => Build(_ => { });
@@ -269,6 +300,7 @@ public class ApprovalDecisionGuardTests
                 k.RequesterIsDecider, k.MakerCheckerScope, "you cannot decide your own"),
             SubjectSeparation = new SubjectSeparationRule(
                 k.SubjectIsDecider, k.SubjectScope, "you cannot decide a request about you"),
+            EarlierStepSeparation = new EarlierStepRule(k.ApprovedEarlierStep, "you approved an earlier step"),
         };
     }
 }

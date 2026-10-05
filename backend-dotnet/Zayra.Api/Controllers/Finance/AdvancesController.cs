@@ -234,6 +234,7 @@ public class AdvancesController : ControllerBase
                 employeeIsDecider,
                 null,
                 "Segregation of duties: you cannot approve a salary advance paid to you."),
+            EarlierStepSeparation = EarlierStepRule.None,   // DECLARED ABSENCE: one synthetic step.
         });
         if (!verdict.Passed) return AdvanceApproveRefusal(verdict);
         ArgumentNullException.ThrowIfNull(adv);
@@ -301,6 +302,7 @@ public class AdvancesController : ControllerBase
             // DECLARED ABSENCE: the employee may likewise reject (withdraw) an advance paid to them;
             // a rejection grants nothing. Approve, above, carries the bar.
             SubjectSeparation = SubjectSeparationRule.None,
+            EarlierStepSeparation = EarlierStepRule.None,   // DECLARED ABSENCE: one synthetic step.
         });
         if (!verdict.Passed) return AdvanceRejectRefusal(verdict, adv?.Status);
         ArgumentNullException.ThrowIfNull(adv);

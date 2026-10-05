@@ -81,6 +81,19 @@ Legend — **Actor**: `SU` scoped user · `GU` group user · `SW` system worker 
 | `Infrastructure/Payroll/EosbProvisionLedger.cs` | 2 | RC | Provision balance/consumption must net across entities | Dropped deliberately |
 | `Infrastructure/Payroll/PayrollVoidService.cs` | 1 | RC | A contra must reverse the **original** entries exactly, including pre-company rows | Dropped deliberately |
 
+### 4.2a Separation-of-duties identity reads (user-triggered, `ScopedBypass`)
+
+A decider must be excluded from a record about themselves whichever legal entity their employee row, or
+their company switcher, is in. A company-filtered read resolves to nothing there and the bar fails open.
+Each read returns only a boolean or user ids about a record the caller has already been authorised to
+decide; no foreign-company employee data leaves the method.
+
+| File (method) | Sites | Actor | Helper | Company restriction | Tests |
+|---|---|---|---|---|---|
+| `Infrastructure/Approvals/ApprovalWorkflowService.cs` (`SubjectUserIdsAsync`) | 1 | SU | `NullableTenantWide(Employees)` — logins linked to the approval's subject employee | Dropped deliberately; the approval itself is read through the normal filters | `ApprovalSeparationOfDutiesGapTests.TheSubject_IsBarred_WhenTheirOwnEmployeeRowIsInAnotherCompany` |
+| `Infrastructure/Approvals/ApprovalWorkflowService.cs` (`ResolveSubjectEmployeeIdAsync`) | 1 | SU | `TenantWide(EmployeeChangeRequests)` — subject of an employee-change approval with no `RequestedForEmployeeId` | Dropped deliberately (the entity is tenant-owned only) | `ApprovalSeparationOfDutiesGapTests.TheSubject_IsBarred_ForAnEmployeeChangeWhoseApprovalCarriesNoSubject` |
+| `Controllers/Finance/AdvancesController.cs` (`IsAdvanceEmployeeAsync`) | 1 | SU | `NullableTenantWide(Employees)` — is the caller the advance's employee | Dropped deliberately, as `LoansController.IsLoanBorrowerAsync` | `ApprovalSubjectSeparationTests.Advances_TheEmployee_CannotApproveAnAdvanceSomeoneElseRaised` |
+
 ### 4.3 Worker-context reads (no ambient tenant; tenant pinned in predicate)
 
 | File | Sites | Actor | Notes |

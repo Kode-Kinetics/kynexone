@@ -100,6 +100,11 @@ public static class ApprovalDecisionGuard
         if (spec.SubjectSeparation.IsViolated(spec.Decision))
             return new ApprovalGuardVerdict(ApprovalGuardOutcome.SubjectIsDecider, spec.SubjectSeparation.Message);
 
+        // 9 ─ Did the person deciding already approve an earlier step of the same record? One person
+        // approving every step in turn is one approval wearing several steps' clothes.
+        if (spec.EarlierStepSeparation.DeciderApprovedEarlierStep)
+            return new ApprovalGuardVerdict(ApprovalGuardOutcome.DeciderApprovedEarlierStep, spec.EarlierStepSeparation.Message);
+
         return ApprovalGuardVerdict.Pass;
     }
 
@@ -128,6 +133,7 @@ public enum ApprovalGuardOutcome
     ParentLocked,
     MakerIsChecker,
     SubjectIsDecider,
+    DeciderApprovedEarlierStep,
 }
 
 /// <param name="Outcome">The first checklist entry that refused.</param>
@@ -179,6 +185,10 @@ public sealed class ApprovalDecisionSpec
     /// the subject and the requester are often different people: HR raises a loan for an employee
     /// who happens to hold the approver role.</summary>
     public required SubjectSeparationRule SubjectSeparation { get; init; }
+
+    /// <summary>The bar on one person deciding two steps of the same record, or
+    /// <see cref="EarlierStepRule.None"/> for a module whose record has a single step.</summary>
+    public required EarlierStepRule EarlierStepSeparation { get; init; }
 }
 
 /// <param name="Exists">False when the step row could not be loaded for this tenant and parent.</param>
@@ -236,4 +246,17 @@ public readonly record struct SubjectSeparationRule(
     public bool IsViolated(string decision)
         => SubjectIsDecider
            && (AppliesToDecisions is not { Count: > 0 } scope || scope.Contains(decision, StringComparer.Ordinal));
+}
+
+/// <summary>
+/// Segregation of duties across steps: whoever approved an earlier step of a record must not also
+/// decide a later one. Only approvals count — a rejection ends the record, so there is no later step.
+/// </summary>
+/// <param name="DeciderApprovedEarlierStep">True when the caller approved another step of this record.</param>
+/// <param name="Message">The refusal text.</param>
+public readonly record struct EarlierStepRule(bool DeciderApprovedEarlierStep, string Message)
+{
+    /// <summary>This module's record has a single step, so there is no earlier one. Stated out loud
+    /// for the same reason as <see cref="MakerCheckerRule.None"/>.</summary>
+    public static readonly EarlierStepRule None = new(false, string.Empty);
 }

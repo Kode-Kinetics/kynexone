@@ -92,38 +92,23 @@ public class GovernanceHardeningTests
     }
 
     [Fact]
-    public async Task ApproveChange_BlocksRequesterSelfApproval()
+    public async Task ApproveChange_IsRetired_AndAppliesNothing()
     {
-        await using var db = CreateDb();
-        var tenantId = await SeedTenantAsync(db);
-        var requesterId = Guid.NewGuid();
-        var employee = SeedEmployee(db, tenantId);
-        var change = SeedSalaryChange(db, tenantId, employee.Id, requesterId, DateOnly.FromDateTime(DateTime.UtcNow.Date));
-        var controller = CreateController(db, tenantId, "Admin", requesterId);
-
-        var result = await controller.ApproveChange(change.Id, CancellationToken.None);
-
-        Assert.IsType<BadRequestObjectResult>(result);
-        var unchanged = await db.Employees.FindAsync(employee.Id);
-        unchanged!.Salary.Should().Be(10_000m);
-        (await db.EmployeeChangeRequests.FindAsync(change.Id))!.Status.Should().Be("PendingApproval");
-    }
-
-    [Fact]
-    public async Task ApproveChange_BlocksFutureEffectiveApply()
-    {
+        // The one-click endpoint skipped the workflow's steps and the separation-of-duties bars. It now
+        // answers 410 for every caller, including one the old maker-checker would have let through.
         await using var db = CreateDb();
         var tenantId = await SeedTenantAsync(db);
         var employee = SeedEmployee(db, tenantId);
-        var change = SeedSalaryChange(db, tenantId, employee.Id, Guid.NewGuid(), DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(7)));
+        var change = SeedSalaryChange(db, tenantId, employee.Id, Guid.NewGuid(), DateOnly.FromDateTime(DateTime.UtcNow.Date));
         var controller = CreateController(db, tenantId, "Admin", Guid.NewGuid());
 
         var result = await controller.ApproveChange(change.Id, CancellationToken.None);
 
-        Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Equal(StatusCodes.Status410Gone, Assert.IsType<ObjectResult>(result).StatusCode);
         var unchanged = await db.Employees.FindAsync(employee.Id);
         unchanged!.Salary.Should().Be(10_000m);
         (await db.EmployeeChangeRequests.FindAsync(change.Id))!.Status.Should().Be("PendingApproval");
+        (await controller.ApproveChange(Guid.NewGuid(), CancellationToken.None)).Should().BeOfType<NotFoundResult>();
     }
 
     [Fact]
