@@ -203,6 +203,16 @@ public sealed class PasswordHashUpgradeTests
     }
 
     [Fact]
+    public void TheTestOverride_IsIgnoredWithoutTheExplicitSwitch()
+    {
+        Pbkdf2PasswordHasher.ResolveDefaultIterations(false, 1_000).Should().Be(Pbkdf2PasswordHasher.CurrentIterations,
+            "an override set without the test-only AppContext switch must be ignored");
+        Pbkdf2PasswordHasher.ResolveDefaultIterations(true, null).Should().Be(Pbkdf2PasswordHasher.CurrentIterations);
+        Pbkdf2PasswordHasher.ResolveDefaultIterations(true, 0).Should().Be(Pbkdf2PasswordHasher.CurrentIterations);
+        Pbkdf2PasswordHasher.ResolveDefaultIterations(true, 1_000).Should().Be(1_000);
+    }
+
+    [Fact]
     public void ProductionNeverLowersTheWorkFactor()
     {
         Pbkdf2PasswordHasher.DefaultIterationsOverride.Should().Be(1_000, "the test module initializer ran");
@@ -227,6 +237,11 @@ public sealed class PasswordHashUpgradeTests
                         && System.Text.RegularExpressions.Regex.IsMatch(x.Line, @"DefaultIterationsOverride\s*=[^=>]"))
             .ToList();
         assignments.Should().BeEmpty("only the test assembly may lower the default work factor");
+        Directory.EnumerateFiles(api, "*.cs", SearchOption.AllDirectories)
+            .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}"))
+            .Where(f => File.ReadAllText(f).Contains("SetSwitch(Pbkdf2PasswordHasher.WeakHashingSwitch", StringComparison.Ordinal)
+                        || File.ReadAllText(f).Contains("SetSwitch(\"Zayra.Tests.AllowWeakPasswordHashing\"", StringComparison.Ordinal))
+            .Should().BeEmpty("production must never turn on the weak-hashing switch");
     }
 
     private sealed class RacingHasher(Func<Task> onHash) : IPasswordHasher

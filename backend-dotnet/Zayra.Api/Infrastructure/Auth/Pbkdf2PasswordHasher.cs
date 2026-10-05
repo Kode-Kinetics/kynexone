@@ -41,16 +41,29 @@ public class Pbkdf2PasswordHasher : IPasswordHasher
     /// </summary>
     public static string DummyHash => Dummy.Value;
 
-    public Pbkdf2PasswordHasher() : this(DefaultIterationsOverride ?? CurrentIterations) { }
+    public Pbkdf2PasswordHasher() : this(ResolveDefaultIterations(
+        AppContext.TryGetSwitch(WeakHashingSwitch, out var allowWeak) && allowWeak, DefaultIterationsOverride)) { }
+
+    /// <summary>
+    /// AppContext switch that the TEST assembly's module initializer sets. Without it,
+    /// <see cref="DefaultIterationsOverride"/> is ignored, so nothing short of deliberately setting
+    /// both — which only Zayra.Api.Tests does — can lower the production work factor.
+    /// </summary>
+    internal const string WeakHashingSwitch = "Zayra.Tests.AllowWeakPasswordHashing";
 
     /// <summary>
     /// TEST ASSEMBLY ONLY (internal, reached through InternalsVisibleTo by a module initializer in
-    /// Zayra.Api.Tests). Thousands of tests hash fixture passwords; at 600k iterations that CPU load
-    /// starved the suite's timing-sensitive Postgres tests. Production never assigns it —
-    /// PasswordHashUpgradeTests.ProductionNeverLowersTheWorkFactor scans the API source to keep it so —
-    /// and the work-factor tests construct hashers with <see cref="CurrentIterations"/> explicitly.
+    /// Zayra.Api.Tests), and honoured only when <see cref="WeakHashingSwitch"/> is on. Thousands of
+    /// tests hash fixture passwords; at 600k iterations that CPU load starved the suite's
+    /// timing-sensitive Postgres tests. Production never assigns it —
+    /// PasswordHashUpgradeTests.ProductionNeverLowersTheWorkFactor scans the API source to keep it so.
     /// </summary>
     internal static int? DefaultIterationsOverride { get; set; }
+
+    internal static int ResolveDefaultIterations(bool weakHashingAllowed, int? overrideIterations)
+        => weakHashingAllowed && overrideIterations is > 0 and <= MaxAcceptedIterations
+            ? overrideIterations.Value
+            : CurrentIterations;
 
     /// <summary>
     /// Explicit work factor. Production registers the parameterless constructor; this exists so the

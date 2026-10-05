@@ -12,5 +12,9 @@ namespace Zayra.Api.Tests.Security;
 internal static class CheapTestPasswordHashing
 {
     [ModuleInitializer]
-    internal static void UseCheapHashing() => Pbkdf2PasswordHasher.DefaultIterationsOverride = 1_000;
+    internal static void UseCheapHashing()
+    {
+        AppContext.SetSwitch(Pbkdf2PasswordHasher.WeakHashingSwitch, true);
+        Pbkdf2PasswordHasher.DefaultIterationsOverride = 1_000;
+    }
 }
