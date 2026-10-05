@@ -1,44 +1,16 @@
 'use client';
 
-import { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, useCallback } from 'react';
 import client from '../api/client';
+import { DEFAULTS, readLocalization, type LocalizationAnswer, type TenantSettings } from '../lib/tenantLocalization';
 
-export interface TenantSettings {
-  currencyCode: string;
-  countryCode: string;
-  defaultTimezone: string;
-  dateFormat: string;
-  workWeek: string;
-  weekStartDay: string;
-  defaultLanguage: string;
-  rtlEnabled: boolean;
-  calendarSystem: string;
-  hijriDatesEnabled: boolean;
-}
-
-const DEFAULTS: TenantSettings = {
-  currencyCode: 'USD',
-  countryCode: 'US',
-  // EMPTY, never a zone. This used to be 'America/New_York', which meant a tenant whose zone was
-  // unknown — the API still loading, the request failing, or the tenant having no localization row
-  // — silently rendered its clocks in US Eastern. For a GCC customer that is 7-11 hours out, and on
-  // the HR Command Center header it showed the wrong DAY. Empty means "unknown", and every consumer
-  // passes it to Intl as `undefined`, which renders in the VIEWER's own browser zone: still not the
-  // tenant's stated zone, but never a foreign one, and never silently wrong by a day.
-  defaultTimezone: '',
-  dateFormat: 'MM/DD/YYYY',
-  workWeek: 'Mon-Fri',
-  weekStartDay: 'Monday',
-  defaultLanguage: 'en',
-  rtlEnabled: false,
-  calendarSystem: 'Gregorian',
-  hijriDatesEnabled: false,
-};
+export type { TenantSettings };
 
 interface TenantSettingsContextValue {
   settings: TenantSettings;
   /**
-   * True once the tenant's localization has been fetched successfully. Until then `settings` are
+   * True once the tenant's localization has been fetched successfully AND the API said it is the
+   * tenant's own (`stated: true`, not the anonymous pre-sign-in placeholder). Until then `settings` are
    * DEFAULTS, which are placeholders, not the tenant's answer: anything that acts on a tenant
    * value (LocaleContext applying the default language) must wait for this. A failed fetch leaves
    * it as it was.
@@ -56,24 +28,18 @@ const TenantSettingsContext = createContext<TenantSettingsContextValue>({
 export function TenantSettingsProvider({ children }: { children: React.ReactNode }) {
   const [settings, setSettings] = useState<TenantSettings>(DEFAULTS);
   const [loaded, setLoaded] = useState(false);
+  const loadedRef = useRef(false);
 
   const load = useCallback(async () => {
     try {
-      const { data } = await client.get<Partial<TenantSettings>>('/api/tenant-admin/localization');
-      if (data) {
-        setSettings({
-          currencyCode: data.currencyCode || DEFAULTS.currencyCode,
-          countryCode: data.countryCode || DEFAULTS.countryCode,
-          defaultTimezone: data.defaultTimezone || DEFAULTS.defaultTimezone,
-          dateFormat: data.dateFormat || DEFAULTS.dateFormat,
-          workWeek: data.workWeek || DEFAULTS.workWeek,
-          weekStartDay: data.weekStartDay || DEFAULTS.weekStartDay,
-          defaultLanguage: data.defaultLanguage || DEFAULTS.defaultLanguage,
-          rtlEnabled: data.rtlEnabled ?? DEFAULTS.rtlEnabled,
-          calendarSystem: data.calendarSystem || DEFAULTS.calendarSystem,
-          hijriDatesEnabled: data.hijriDatesEnabled ?? DEFAULTS.hijriDatesEnabled,
-        });
-        setLoaded(true);
+      const { data } = await client.get<LocalizationAnswer>('/api/tenant-admin/localization');
+      const answer = readLocalization(data);
+      // Only a real tenant's answer counts as loaded: before sign-in the endpoint returns the
+      // anonymous placeholder with stated: false (lib/tenantLocalization.ts). A placeholder never
+      // replaces a tenant's answer already loaded.
+      if (answer && (answer.stated || !loadedRef.current)) {
+        setSettings(answer.settings);
+        if (answer.stated) { loadedRef.current = true; setLoaded(true); }
       }
     } catch {
       // Keep what we had (defaults, or the last good load). Happens on first load before the auth
