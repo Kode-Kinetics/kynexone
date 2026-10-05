@@ -45,7 +45,7 @@ Roll-out check: `GET /api/platform/team` now shows `mfaEnabled` per operator.
 
 ## Recovery codes (platform operators)
 
-Enrolling a platform factor returns **10 one-time recovery codes**, shown once (sign-in page,
+Enrolling a platform factor returns **10 one-time recovery codes** (20 symbols, 100 bits, shown as XXXX-XXXX-XXXX-XXXX-XXXX; spaces, dashes and case are ignored on entry), shown once (sign-in page,
 "Save your recovery codes"). Only SHA-256 hashes are stored (`platform_users.mfa_recovery_code_hashes`).
 At the code step of sign-in, "Use a recovery code" (`POST /api/platform/auth/mfa/recovery/verify`)
 accepts one instead of a TOTP code; each works once, misses count against the challenge's

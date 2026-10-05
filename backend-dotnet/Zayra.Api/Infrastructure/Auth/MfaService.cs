@@ -1067,26 +1067,30 @@ public class MfaService : IMfaService
     private const int RecoveryCodeCount = 10;
     private static readonly char[] RecoveryAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789".ToCharArray();
 
+    private const int RecoveryCodeLength = 20;
+
     /// <summary>
-    /// Ten fresh one-time codes (XXXXX-XXXXX, 50 bits each from a 32-symbol alphabet without 0/O/1/I)
-    /// and their newline-joined SHA-256 hashes. High-entropy random codes, so an unsalted fast hash is
-    /// the same standard the repo applies to reset and refresh tokens (ITokenService.HashToken).
+    /// Ten fresh one-time codes, 20 symbols each from a 32-symbol alphabet without 0/O/1/I — 100 bits
+    /// of entropy — shown as XXXX-XXXX-XXXX-XXXX-XXXX, with their newline-joined SHA-256 hashes. At
+    /// 100 bits an offline guess against a leaked hash is infeasible, so an unsalted fast hash is
+    /// sufficient (the standard the repo applies to reset and refresh tokens, ITokenService.HashToken).
     /// </summary>
     private (IReadOnlyList<string> Codes, string Hashes) NewRecoveryCodes()
     {
         var codes = new List<string>(RecoveryCodeCount);
         for (var i = 0; i < RecoveryCodeCount; i++)
         {
-            var chars = new char[10];
+            var chars = new char[RecoveryCodeLength];
             for (var c = 0; c < chars.Length; c++)
                 chars[c] = RecoveryAlphabet[System.Security.Cryptography.RandomNumberGenerator.GetInt32(RecoveryAlphabet.Length)];
-            codes.Add($"{new string(chars, 0, 5)}-{new string(chars, 5, 5)}");
+            codes.Add(string.Join('-', Enumerable.Range(0, RecoveryCodeLength / 4).Select(g => new string(chars, g * 4, 4))));
         }
         return (codes, string.Join('\n', codes.Select(c => _tokenService.HashToken(NormalizeRecoveryCode(c)))));
     }
 
+    /// <summary>Drops spaces, dashes and anything else that is not a letter or digit; upper-cases.</summary>
     private static string NormalizeRecoveryCode(string code)
-        => new string(code.Where(char.IsLetterOrDigit).Select(char.ToUpperInvariant).ToArray());
+        => new string(code.Where(char.IsAsciiLetterOrDigit).Select(char.ToUpperInvariant).ToArray());
 
     private static List<string> RecoveryHashes(string? stored)
         => (stored ?? string.Empty).Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
@@ -1100,7 +1104,7 @@ public class MfaService : IMfaService
             return null;
         var hash = _tokenService.HashToken(rawToken);
         var presented = NormalizeRecoveryCode(recoveryCode ?? string.Empty);
-        var presentedHash = presented.Length == 10 ? _tokenService.HashToken(presented) : null;
+        var presentedHash = presented.Length == RecoveryCodeLength ? _tokenService.HashToken(presented) : null;
         var now = DateTime.UtcNow;
         var completedAtUtc = new DateTime(now.Ticks - now.Ticks % 10, DateTimeKind.Utc);
         PlatformUser? prepared = null;

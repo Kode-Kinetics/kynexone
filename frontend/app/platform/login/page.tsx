@@ -258,7 +258,7 @@ export default function PlatformLoginPage() {
                     </label>
                     <input id="platform-mfa-recovery" type="text" dir="ltr" autoComplete="off" autoFocus required
                       value={recoveryCode} onChange={e => setRecoveryCode(e.target.value)}
-                      placeholder="XXXXX-XXXXX" className="pa-input font-mono" />
+                      placeholder="XXXX-XXXX-XXXX-XXXX-XXXX" className="pa-input font-mono" />
                     <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">Each recovery code works once.</p>
                   </div>
                 ) : (
@@ -274,7 +274,7 @@ export default function PlatformLoginPage() {
                 )}
                 {errorKind && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{errorMessage(errorKind)}</p>}
                 <button type="submit"
-                  disabled={loading || (useRecoveryCode ? recoveryCode.replace(/[^A-Za-z0-9]/g, '').length !== 10 : totpCode.length !== 6)}
+                  disabled={loading || (useRecoveryCode ? recoveryCode.replace(/[^A-Za-z0-9]/g, '').length !== 20 : totpCode.length !== 6)}
                   className="pa-btn disabled:cursor-not-allowed disabled:opacity-60">
                   {loading ? 'Verifying…' : 'Verify and sign in'}
                 </button>
@@ -326,7 +326,7 @@ export default function PlatformLoginPage() {
                   Two-step sign-in is on. Save these recovery codes somewhere safe. Each one signs you in once if you lose your
                   authenticator. They are shown only now.
                 </div>
-                <ul dir="ltr" aria-label="Recovery codes" className="grid grid-cols-2 gap-2 rounded-lg border border-slate-200 bg-white p-4 font-mono text-sm text-slate-800 dark:border-white/10 dark:bg-white/5 dark:text-slate-100">
+                <ul dir="ltr" aria-label="Recovery codes" className="grid grid-cols-1 gap-2 sm:grid-cols-2 rounded-lg border border-slate-200 bg-white p-4 font-mono text-sm text-slate-800 dark:border-white/10 dark:bg-white/5 dark:text-slate-100">
                   {recoveryCodes.map(code => <li key={code}>{code}</li>)}
                 </ul>
                 <button type="button" className="pa-btn"

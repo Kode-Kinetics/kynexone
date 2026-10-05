@@ -666,7 +666,8 @@ public sealed class PrivilegedMfaEnforcementTests
         var (_, codes) = await EnrolOperatorAsync(kit, id);
 
         codes.Should().HaveCount(10).And.OnlyHaveUniqueItems();
-        codes.Should().AllSatisfy(c => c.Should().MatchRegex("^[A-Z2-9]{5}-[A-Z2-9]{5}$"));
+        codes.Should().AllSatisfy(c => c.Should().MatchRegex("^[A-HJ-NP-Z2-9]{4}(-[A-HJ-NP-Z2-9]{4}){4}$",
+            "20 symbols from the 32-letter alphabet (100 bits), grouped 4-4-4-4-4"));
         await using var db = kit.NewDb();
         var stored = (await db.PlatformUsers.AsNoTracking().SingleAsync(p => p.Id == id)).MfaRecoveryCodeHashes!;
         foreach (var code in codes)
@@ -687,7 +688,7 @@ public sealed class PrivilegedMfaEnforcementTests
         await using (var db = kit.NewDb())
         {
             var result = await Platform(kit, db).PlatformMfaRecoveryVerify(
-                new PlatformRecoveryCodeRequest(challenge, codes[3].ToLowerInvariant().Replace("-", " ")), CancellationToken.None);
+                new PlatformRecoveryCodeRequest(challenge, " " + codes[3].ToLowerInvariant().Replace("-", " ") + " "), CancellationToken.None);
             Body(result).TryGetProperty("token", out _).Should().BeTrue("a recovery code replaces the authenticator code");
         }
 
