@@ -840,9 +840,11 @@ app.MapGet("/health", async (ZayraDbContext db, ILoggerFactory loggerFactory) =>
         if (conn.State != System.Data.ConnectionState.Open)
             await conn.OpenAsync();
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = current_schema()";
-        var tableCount = Convert.ToInt32(await cmd.ExecuteScalarAsync());
-        return Results.Ok(new { status = "healthy", utc = DateTime.UtcNow, db = "connected", tables = tableCount });
+        // A plain round trip. The schema's table count used to be returned here, to anyone:
+        // nothing needs it, and it fingerprints the schema version for an anonymous caller.
+        cmd.CommandText = "SELECT 1";
+        await cmd.ExecuteScalarAsync();
+        return Results.Ok(new { status = "healthy", utc = DateTime.UtcNow, db = "connected" });
     }
     catch (Exception ex)
     {

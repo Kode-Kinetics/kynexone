@@ -23,9 +23,9 @@ public sealed class FixtureCredentialIsolationTests
     {
         var world = ResolveRepoPath(Path.Combine("frontend", "e2e", "world.ts"));
         var api = ResolveRepoPath(Path.Combine("backend-dotnet", "Zayra.Api"));
-        if (world is null || api is null) return; // source tree not reachable from this binary layout
+        if ((world is null || api is null) && SkipOrFailWhenSourceMissing("frontend/e2e/world.ts or backend-dotnet/Zayra.Api")) return;
 
-        var passwords = FixturePasswordDefault.Matches(File.ReadAllText(world))
+        var passwords = FixturePasswordDefault.Matches(File.ReadAllText(world!))
             .Select(m => m.Groups["pw"].Value)
             .Distinct()
             .ToList();
@@ -34,7 +34,7 @@ public sealed class FixtureCredentialIsolationTests
             + "if this is empty the extractor has drifted and the guard is guarding nothing");
 
         var offenders = Directory
-            .EnumerateFiles(api, "*.*", SearchOption.AllDirectories)
+            .EnumerateFiles(api!, "*.*", SearchOption.AllDirectories)
             .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}")
                         && !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}"))
             .Where(f => f.EndsWith(".cs", StringComparison.Ordinal)
@@ -44,7 +44,7 @@ public sealed class FixtureCredentialIsolationTests
             {
                 var text = File.ReadAllText(f);
                 return passwords.Where(p => text.Contains(p, StringComparison.Ordinal))
-                    .Select(p => $"{Path.GetRelativePath(api, f)} contains a fixture password");
+                    .Select(p => $"{Path.GetRelativePath(api!, f)} contains a fixture password");
             })
             .ToList();
 
@@ -52,6 +52,20 @@ public sealed class FixtureCredentialIsolationTests
             "test-fixture passwords are public (the repo is public) and must never be seedable by the API "
             + "in any environment. Provision test users through frontend/e2e/bootstrap, which takes its "
             + "passwords from the environment and refuses non-disposable hosts.");
+    }
+
+    /// <summary>
+    /// Skipping is only acceptable on a developer layout where the source tree is not beside the
+    /// binaries. Under CI the tree is always there, so not finding it means the guard silently
+    /// stopped guarding — that must fail.
+    /// </summary>
+    private static bool SkipOrFailWhenSourceMissing(string what)
+    {
+        var ci = Environment.GetEnvironmentVariable("CI");
+        if (string.Equals(ci, "true", StringComparison.OrdinalIgnoreCase) || ci == "1"
+            || string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase))
+            throw new Xunit.Sdk.XunitException($"{what} was not found from {AppContext.BaseDirectory} under CI; the guard would pass vacuously.");
+        return true;
     }
 
     private static string? ResolveRepoPath(string relative)

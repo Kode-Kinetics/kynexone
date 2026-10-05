@@ -17,9 +17,9 @@ public sealed class ContainerRunsAsNonRootTests
     public void FinalStage_DropsToANonRootUserBeforeTheEntrypoint(string relativePath)
     {
         var path = ResolveRepoFile(relativePath);
-        if (path is null) return; // source tree not reachable from this binary layout
+        if (path is null && SkipOrFailWhenSourceMissing(relativePath)) return;
 
-        var lines = File.ReadAllLines(path)
+        var lines = File.ReadAllLines(path!)
             .Select(l => l.Trim())
             .Where(l => l.Length > 0 && !l.StartsWith('#'))
             .ToList();
@@ -41,6 +41,20 @@ public sealed class ContainerRunsAsNonRootTests
                                                 && l.Contains("chown", StringComparison.Ordinal));
         storage.Should().BeInRange(0, user - 1,
             "the writable storage directory must be created and handed over while still root");
+    }
+
+    /// <summary>
+    /// Skipping is only acceptable on a developer layout where the source tree is not beside the
+    /// binaries. Under CI the tree is always there, so not finding it means the guard silently
+    /// stopped guarding — that must fail.
+    /// </summary>
+    private static bool SkipOrFailWhenSourceMissing(string what)
+    {
+        var ci = Environment.GetEnvironmentVariable("CI");
+        if (string.Equals(ci, "true", StringComparison.OrdinalIgnoreCase) || ci == "1"
+            || string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase))
+            throw new Xunit.Sdk.XunitException($"{what} was not found from {AppContext.BaseDirectory} under CI; the guard would pass vacuously.");
+        return true;
     }
 
     private static string? ResolveRepoFile(string relativePath)

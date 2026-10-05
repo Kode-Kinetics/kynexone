@@ -52,6 +52,17 @@ public sealed class ReadinessDisclosureHttpTests
     }
 
     [Fact]
+    public async Task AnonymousHealth_SaysOnlyWhetherTheDatabaseAnswers()
+    {
+        var response = await GetAsync("/health");
+        response.StatusCode.Should().BeOneOf(HttpStatusCode.OK, HttpStatusCode.ServiceUnavailable);
+        if (response.StatusCode != HttpStatusCode.OK) return;
+        var body = await JsonAsync(response);
+        body.EnumerateObject().Select(p => p.Name).Should().BeEquivalentTo(new[] { "status", "utc", "db" },
+            "the schema's table count is a version fingerprint and is no longer published");
+    }
+
+    [Fact]
     public async Task ReadinessDetails_RejectsAnonymousCallers()
     {
         var response = await GetAsync("/health/ready/details");
