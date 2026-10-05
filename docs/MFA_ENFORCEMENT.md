@@ -121,3 +121,23 @@ shares one IP bucket. To partition on the real client IP:
 
 Without a matching secret the headers are ignored and `RemoteIpAddress` is used, as before. To roll
 back, remove either variable. Rotate by setting the new value on Render first, then Vercel.
+
+### Preview check before merging (the middleware now runs on every `/api/*` request)
+
+`frontend/middleware.ts` now matches `/api/:path*` to add the proxy headers, so every API call passes
+through Vercel's edge middleware before the rewrite to Render. This cannot be checked offline. On the
+branch's Vercel **preview** deployment (pointed at a non-production API), confirm:
+
+1. **Large upload:** a migration import (`/opening-balances`, which posts to `/api/migrations/...`) with a file **over 4.5 MB** completes. That
+   is Vercel's serverless body limit; the middleware must not turn the proxied request into one that
+   hits it.
+2. **Document upload:** upload an employee document (multipart) and download it back unchanged
+   (same size and checksum).
+3. **Streaming:** a streamed response arrives incrementally, not all at once at the end — the AI
+   assistant's streamed answer, and a large report/WPS file download.
+4. **Headers:** in the API's login activity for a preview sign-in, the IP is the browser's (with the
+   secret set) or Vercel's (without); and a request carrying a forged `X-KynexOne-Client-IP` from the
+   browser does not change it.
+
+If any of 1–3 fails, narrow the middleware matcher to the sign-in routes (`/api/auth/:path*`,
+`/api/platform/auth/:path*`), which are the only ones that need the client IP.
