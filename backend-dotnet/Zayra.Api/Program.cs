@@ -928,6 +928,13 @@ using (var scope = app.Services.CreateScope())
         }
     }
 
+    // Say what MFA break-glass will do, once, where an operator reading the boot log will see it —
+    // and loudly when the variable is set but ignored (unparseable, past, or beyond the 7-day cap).
+    var (breakGlassWarn, breakGlassMessage) = Zayra.Api.Infrastructure.Auth.PrivilegedMfaPolicy
+        .DescribeBreakGlass(app.Configuration, DateTime.UtcNow);
+    if (breakGlassWarn) logger.LogWarning("{BreakGlass}", breakGlassMessage);
+    else logger.LogInformation("{BreakGlass}", breakGlassMessage);
+
     var authSeeder = scope.ServiceProvider.GetRequiredService<IAuthSeeder>();
     await TrySeedAsync("AuthSeeder", () => authSeeder.SeedAsync(), logger);
 

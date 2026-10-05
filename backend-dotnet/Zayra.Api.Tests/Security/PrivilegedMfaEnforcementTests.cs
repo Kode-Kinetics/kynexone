@@ -442,6 +442,69 @@ public sealed class PrivilegedMfaEnforcementTests
         }
     }
 
+    // ── Date input and break-glass visibility ─────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("2026-11-01T06:00:00Z", true)]
+    [InlineData("2026-11-01T06:00:00+00:00", true)]
+    [InlineData("2026-11-01T06:00:00", false)]
+    [InlineData("2026-11-01", false)]
+    [InlineData("2026-11-01T06:00:00+03:00", false)]
+    [InlineData("not a date", false)]
+    public void EnforcementDates_MustBeExplicitUtc(string input, bool accepted)
+        => (PrivilegedMfaPolicy.ParseExplicitUtc(input, out _) is not null).Should().Be(accepted);
+
+    [Fact]
+    public void BootLog_SaysWhetherBreakGlassIsActive_AndWarnsWhenItIsIgnored()
+    {
+        (bool Warn, string Message) Describe(string? value) => PrivilegedMfaPolicy.DescribeBreakGlass(
+            new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                [PrivilegedMfaPolicy.BreakGlassConfigKey] = value,
+            }).Build(), Now);
+
+        Describe(null).Warn.Should().BeFalse();
+        Describe(PrivilegedMfaPolicy.FormatDate(Now.AddDays(2))).Message.Should().Contain("ACTIVE");
+        foreach (var ignored in new[]
+                 {
+                     PrivilegedMfaPolicy.FormatDate(Now.AddDays(30)), // beyond the cap
+                     PrivilegedMfaPolicy.FormatDate(Now.AddDays(-1)), // past
+                     "tomorrow",                                      // unparseable
+                     Now.AddDays(2).ToString("yyyy-MM-ddTHH:mm:ss"),  // offset-less
+                 })
+        {
+            var (warn, message) = Describe(ignored);
+            warn.Should().BeTrue();
+            message.Should().Contain("IGNORED", $"'{ignored}' must be reported as not in effect");
+        }
+    }
+
+    [Fact]
+    public async Task TenantEnforcementDate_RejectsOffsetlessAndFarFutureDates_AndAcceptsUtc()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        var owner = await SeedOperatorAsync(kit, "owner@platform.test");
+        const string reason = "customer onboarding their HR team";
+
+        async Task<IActionResult> Set(string? date)
+        {
+            await using var db = kit.NewDb();
+            return await Platform(kit, db, actingAs: owner).SetTenantPrivilegedMfaEnforcement(
+                kit.TenantId, new PrivilegedMfaEnforcementRequest(date, reason), CancellationToken.None);
+        }
+
+        (await Set(Now.AddDays(30).ToString("yyyy-MM-ddTHH:mm:ss"))).Should().BeOfType<BadRequestObjectResult>("offset-less");
+        (await Set(PrivilegedMfaPolicy.FormatDate(Now.AddDays(120)))).Should().BeOfType<BadRequestObjectResult>("beyond 90 days");
+        (await Set(PrivilegedMfaPolicy.FormatDate(Now.AddDays(30)))).Should().BeOfType<OkObjectResult>();
+        await using (var db = kit.NewDb())
+            (await db.SecuritySettings.AsNoTracking().SingleAsync(x => x.TenantId == kit.TenantId))
+                .PrivilegedMfaEnforceFromUtc.Should().BeCloseTo(Now.AddDays(30), TimeSpan.FromSeconds(5));
+        (await Set(null)).Should().BeOfType<OkObjectResult>("null returns the tenant to the platform date");
+        await using (var db = kit.NewDb())
+            (await db.SecuritySettings.AsNoTracking().SingleAsync(x => x.TenantId == kit.TenantId))
+                .PrivilegedMfaEnforceFromUtc.Should().BeNull();
+    }
+
     // ── Platform recovery codes ───────────────────────────────────────────────────────────────
 
     /// <summary>Enrols an operator through the real enrolment flow; returns the TOTP secret and codes.</summary>

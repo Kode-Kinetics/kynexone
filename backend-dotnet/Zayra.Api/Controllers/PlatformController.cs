@@ -4480,6 +4480,14 @@ public class PlatformController : ControllerBase
     {
         if (string.IsNullOrWhiteSpace(body.Reason) || body.Reason.Trim().Length < 10)
             return BadRequest(new { message = "Give a reason of at least 10 characters; it is recorded in the audit log." });
+        DateTime? enforceFrom = null;
+        if (body.EnforceFromUtc is not null)
+        {
+            enforceFrom = PrivilegedMfaPolicy.ParseExplicitUtc(body.EnforceFromUtc, out var dateError);
+            if (enforceFrom is null) return BadRequest(new { message = dateError });
+            if (enforceFrom.Value - DateTime.UtcNow > PrivilegedMfaPolicy.MaxEnforcementLead)
+                return BadRequest(new { message = "The enforcement date can be at most 90 days ahead." });
+        }
         if (!await _db.Tenants.AsNoTracking().AnyAsync(t => t.Id == tenantId, ct)) return NotFound();
 
         var sec = await _db.SecuritySettings.FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
@@ -4489,7 +4497,7 @@ public class PlatformController : ControllerBase
             _db.SecuritySettings.Add(sec);
         }
         var previous = sec.PrivilegedMfaEnforceFromUtc;
-        sec.PrivilegedMfaEnforceFromUtc = body.EnforceFromUtc is { } at ? DateTime.SpecifyKind(at.ToUniversalTime(), DateTimeKind.Utc) : null;
+        sec.PrivilegedMfaEnforceFromUtc = enforceFrom;
         sec.UpdatedAtUtc = DateTime.UtcNow;
         _db.AuditLogs.Add(new AuditLog
         {
@@ -4525,6 +4533,10 @@ public class PlatformController : ControllerBase
             return BadRequest(new { message = "A platform enforcement date is required; it cannot be removed." });
         if (string.IsNullOrWhiteSpace(body.Reason) || body.Reason.Trim().Length < 10)
             return BadRequest(new { message = "Give a reason of at least 10 characters; it is recorded in the audit log." });
+        var platformDate = PrivilegedMfaPolicy.ParseExplicitUtc(body.EnforceFromUtc, out var platformDateError);
+        if (platformDate is null) return BadRequest(new { message = platformDateError });
+        if (platformDate.Value - DateTime.UtcNow > PrivilegedMfaPolicy.MaxEnforcementLead)
+            return BadRequest(new { message = "The enforcement date can be at most 90 days ahead." });
 
         var entry = await _db.PlatformConfigEntries.FirstOrDefaultAsync(e => e.Key == PrivilegedMfaPolicy.PlatformConfigKey, ct);
         var previous = entry?.Value;
@@ -4533,7 +4545,7 @@ public class PlatformController : ControllerBase
             entry = new PlatformConfigEntry { Key = PrivilegedMfaPolicy.PlatformConfigKey };
             _db.PlatformConfigEntries.Add(entry);
         }
-        entry.Value = PrivilegedMfaPolicy.FormatDate(body.EnforceFromUtc.Value.ToUniversalTime());
+        entry.Value = PrivilegedMfaPolicy.FormatDate(platformDate.Value);
         entry.UpdatedAtUtc = DateTime.UtcNow;
         entry.UpdatedByPlatformUserId = GetPlatformUserId();
         _db.AdminAuditLogs.Add(new AdminAuditLog
@@ -5401,7 +5413,8 @@ public record PlatformRecoveryCodeRequest(
     [property: System.ComponentModel.DataAnnotations.Required] string ChallengeToken,
     [property: System.ComponentModel.DataAnnotations.Required] string RecoveryCode);
 
-public record PrivilegedMfaEnforcementRequest(DateTime? EnforceFromUtc, string Reason);
+/// <param name="EnforceFromUtc">Explicit UTC instant ("…Z" or "…+00:00"); null clears a tenant's own date.</param>
+public record PrivilegedMfaEnforcementRequest(string? EnforceFromUtc, string Reason);
 
 public record UpdateSecurityPolicyRequest(
     int? PasswordMinLength,

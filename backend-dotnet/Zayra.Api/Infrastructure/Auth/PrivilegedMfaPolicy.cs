@@ -130,9 +130,57 @@ public static class PrivilegedMfaPolicy
     /// <summary>The live break-glass deadline, or null when unset, past, unreadable or beyond the cap.</summary>
     public static DateTime? ActiveBreakGlassUntil(IConfiguration? config, DateTime nowUtc)
     {
-        var until = ParseDate(config?[BreakGlassConfigKey]);
+        var until = ParseExplicitUtc(config?[BreakGlassConfigKey], out _);
         if (until is null || until <= nowUtc) return null;
         return until - nowUtc <= MaxBreakGlassWindow ? until : null;
+    }
+
+    /// <summary>
+    /// One line for the boot log saying what break-glass will do right now. Warns whenever the
+    /// variable is present but NOT in effect (unparseable, past, or beyond the cap), so an operator who
+    /// set it during an incident can see that it is being ignored.
+    /// </summary>
+    public static (bool Warn, string Message) DescribeBreakGlass(IConfiguration? config, DateTime nowUtc)
+    {
+        var raw = config?[BreakGlassConfigKey];
+        if (string.IsNullOrWhiteSpace(raw))
+            return (false, "[MFA-BREAK-GLASS] not set; mandatory MFA is enforced by date as configured.");
+        var until = ParseExplicitUtc(raw, out _);
+        if (until is null)
+            return (true, $"[MFA-BREAK-GLASS] IGNORED: {BreakGlassConfigKey} is not an explicit UTC instant (use e.g. 2026-11-02T18:00:00Z).");
+        if (until <= nowUtc)
+            return (true, $"[MFA-BREAK-GLASS] IGNORED: {BreakGlassConfigKey}={FormatDate(until.Value)} is in the past. Remove the variable.");
+        if (until - nowUtc > MaxBreakGlassWindow)
+            return (true, $"[MFA-BREAK-GLASS] IGNORED: {BreakGlassConfigKey}={FormatDate(until.Value)} is more than {MaxBreakGlassWindow.TotalDays:0} days ahead.");
+        return (true, $"[MFA-BREAK-GLASS] ACTIVE until {FormatDate(until.Value)}: un-enrolled privileged users may sign in without enrolling.");
+    }
+
+    /// <summary>Longest a per-tenant or platform enforcement date may be pushed out.</summary>
+    public static readonly TimeSpan MaxEnforcementLead = TimeSpan.FromDays(90);
+
+    /// <summary>
+    /// Parses an instant that states its offset AND whose offset is UTC (<c>Z</c> or <c>+00:00</c>).
+    /// Offset-less input ("2026-11-01T00:00:00") is rejected: it means server-local time to one
+    /// reader and UTC to another, and an enforcement date is too consequential to guess.
+    /// </summary>
+    public static DateTime? ParseExplicitUtc(string? value, out string? error)
+    {
+        error = null;
+        var text = value?.Trim();
+        if (string.IsNullOrEmpty(text))
+        {
+            error = "A date is required.";
+            return null;
+        }
+        var explicitUtc = text.EndsWith('Z') || text.EndsWith('z') || text.EndsWith("+00:00", StringComparison.Ordinal);
+        if (!explicitUtc
+            || !DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed)
+            || parsed.Offset != TimeSpan.Zero)
+        {
+            error = "Give the date as an explicit UTC instant, e.g. 2026-11-01T06:00:00Z.";
+            return null;
+        }
+        return DateTime.SpecifyKind(parsed.UtcDateTime, DateTimeKind.Utc);
     }
 
     /// <summary>Pure decision, unit-tested directly.</summary>
