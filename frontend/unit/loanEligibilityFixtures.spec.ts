@@ -106,6 +106,7 @@ test('a preview carries the limits without judging an amount', () => {
 test('every eligibility code in the fixtures maps to EN and AR text, never shown raw', () => {
   const codes = new Set(Object.values(fixtures).flatMap(f => f.codes ?? []));
   codes.add('MinService'); codes.add('Probation'); codes.add('SalaryAffordability'); codes.add('Cooldown');
+  codes.add('GradeLimitCurrencyAmbiguous'); codes.add('GradeSalaryMissing');
   for (const code of codes)
     for (const self of [true, false]) {
       const key = reasonKeyFor(code, self);

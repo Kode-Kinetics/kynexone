@@ -25,7 +25,7 @@ public partial class LoansController
     [HttpPost("policies")]
     [Authorize(Roles = "Admin,HR Manager,HR Director")]
     public Task<IActionResult> CreateLoanPolicy([FromBody] LoanPolicyRequest req, CancellationToken ct) =>
-        FinanceDecisionSerializer.SerializeAsync<IActionResult>(_db, "finance.loan-policies", GetTenantId(), req.CompanyId, async () =>
+        FinanceDecisionSerializer.SerializeAsync<IActionResult>(_db, LoanPolicyLockScope, GetTenantId(), req.CompanyId, async () =>
         {
             if (!IsHrLoanActor() || !this.GetEntityScope().CanAccessCompany(req.CompanyId)) return Forbid();
             var tid = GetTenantId();

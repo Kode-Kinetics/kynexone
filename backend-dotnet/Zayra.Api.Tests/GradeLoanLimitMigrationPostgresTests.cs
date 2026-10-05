@@ -77,6 +77,24 @@ public sealed class GradeLoanLimitMigrationPostgresTests
         await db.Database.ExecuteSqlRawAsync("UPDATE loan_types SET is_interest_free = true, interest_rate = 0 WHERE code = 'INTEREST'");
         await db.Database.ExecuteSqlRawAsync("DELETE FROM loan_types WHERE code = 'INTEREST'");
 
+        // loan_policies offering markers: each constraint rejects the row it exists to stop.
+        const string policyCols = "id,tenant_id,company_id,loan_type_id,policy_name,max_concurrent_loans,max_multiplier_of_salary,cooldown_months_after_repayment,allow_early_settlement,allow_rescheduling,is_active,created_at_utc";
+        const string policyVals = "'Legacy policy',2,3,2,true,true,true,CURRENT_TIMESTAMP";
+        await db.Database.ExecuteSqlRawAsync($"INSERT INTO loan_policies ({policyCols}) VALUES ('40000000-0000-0000-0000-0000000000a1','{Tenant}',NULL,'30000000-0000-0000-0000-0000000000a1',{policyVals})");
+        // copied_from without the switch flag
+        await AssertRejectedAsync(db, $"INSERT INTO loan_policies ({policyCols},copied_from_policy_id) VALUES (gen_random_uuid(),'{Tenant}',NULL,'30000000-0000-0000-0000-0000000000a1',{policyVals},'40000000-0000-0000-0000-0000000000a1')", "23514");
+        // a switch stub that says "offered"
+        await AssertRejectedAsync(db, $"INSERT INTO loan_policies ({policyCols},created_by_offering_switch,is_offered) VALUES (gen_random_uuid(),'{Tenant}',NULL,'30000000-0000-0000-0000-0000000000a1',{policyVals},true,true)", "23514");
+        // copied from a policy that does not exist in this tenant (another tenant's id, or none at all)
+        await AssertRejectedAsync(db, $"INSERT INTO loan_policies ({policyCols},created_by_offering_switch,is_offered,copied_from_policy_id) VALUES (gen_random_uuid(),'10000000-0000-0000-0000-0000000000ff',NULL,'30000000-0000-0000-0000-0000000000a1',{policyVals},true,false,'40000000-0000-0000-0000-0000000000a1')", "23503");
+        // the valid shape: a not-offered stub pointing at a policy of the same tenant
+        await db.Database.ExecuteSqlRawAsync($"INSERT INTO loan_policies ({policyCols},created_by_offering_switch,is_offered,copied_from_policy_id) VALUES ('40000000-0000-0000-0000-0000000000a2','{Tenant}',NULL,'30000000-0000-0000-0000-0000000000a1',{policyVals},true,false,'40000000-0000-0000-0000-0000000000a1')");
+        // a retired stub keeps its markers and stays "not offered"
+        await db.Database.ExecuteSqlRawAsync("UPDATE loan_policies SET is_active = false WHERE id = '40000000-0000-0000-0000-0000000000a2'");
+        await AssertRejectedAsync(db, "DELETE FROM loan_policies WHERE id = '40000000-0000-0000-0000-0000000000a1'", "23503");   // RESTRICT
+        await db.Database.ExecuteSqlRawAsync("DELETE FROM loan_policies WHERE tenant_id = '" + Tenant + "' AND created_by_offering_switch");
+        await db.Database.ExecuteSqlRawAsync("DELETE FROM loan_policies WHERE tenant_id = '" + Tenant + "'");
+
         var rollback = await Assert.ThrowsAsync<Npgsql.PostgresException>(() => migrator.MigrateAsync(Previous));
         Assert.Equal(Npgsql.PostgresErrorCodes.RaiseException, rollback.SqlState);
         Assert.Equal(2L, await ScalarAsync<long>(db, "SELECT count(*) FROM grade_entitlements"));

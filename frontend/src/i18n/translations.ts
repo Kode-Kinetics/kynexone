@@ -661,6 +661,8 @@ const en: Dict = {
   "Requests already submitted can still be approved after you switch a type off.": "Requests already submitted can still be approved after you switch a type off.",
   "These companies have no loan policy for this loan type. Once it is limited by grade, their employees can no longer apply for it:": "These companies have no loan policy for this loan type. Once it is limited by grade, their employees can no longer apply for it:",
   "This company now has its own policy; group changes no longer apply.": "This company now has its own policy; group changes no longer apply.",
+  "Your grade's loan limit is a fixed amount set for all companies, but the companies pay in different currencies. HR needs to set your company's own limit before you can apply.": "Your grade's loan limit is a fixed amount set for all companies, but the companies pay in different currencies. HR needs to set your company's own limit before you can apply.",
+  "This grade's loan limit is a fixed amount set for all companies, but the companies pay in different currencies. Set this employee's company's own limit in Loan Policies → Limits by grade.": "This grade's loan limit is a fixed amount set for all companies, but the companies pay in different currencies. Set this employee's company's own limit in Loan Policies → Limits by grade.",
 };
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
@@ -1322,6 +1324,8 @@ const ar: Dict = {
   "Requests already submitted can still be approved after you switch a type off.": "يمكن الموافقة على الطلبات المقدَّمة مسبقاً حتى بعد إيقاف إتاحة النوع.",
   "These companies have no loan policy for this loan type. Once it is limited by grade, their employees can no longer apply for it:": "لا توجد لدى هذه الشركات سياسة قروض لهذا النوع. بعد تحديده حسب الدرجة لن يتمكن موظفوها من التقديم عليه:",
   "This company now has its own policy; group changes no longer apply.": "أصبحت لهذه الشركة سياستها الخاصة؛ ولم تعد تغييرات سياسة المجموعة تنطبق عليها.",
+  "Your grade's loan limit is a fixed amount set for all companies, but the companies pay in different currencies. HR needs to set your company's own limit before you can apply.": "حد القرض لدرجتك مبلغ ثابت لجميع الشركات، لكن الشركات تدفع بعملات مختلفة. يجب أن تحدد الموارد البشرية حداً خاصاً بشركتك قبل أن تتمكن من التقديم.",
+  "This grade's loan limit is a fixed amount set for all companies, but the companies pay in different currencies. Set this employee's company's own limit in Loan Policies → Limits by grade.": "حد القرض لهذه الدرجة مبلغ ثابت لجميع الشركات، لكن الشركات تدفع بعملات مختلفة. حدّد حداً خاصاً بشركة هذا الموظف في سياسات القروض ← الحدود حسب الدرجة.",
 };
 
 // ── French ────────────────────────────────────────────────────────────────────

@@ -823,6 +823,82 @@ public class GradeLoanLimitTests
         Assert.Equal((h.G2.Id, 5_000m), (approved.GradeIdAtRequest!.Value, approved.GradePerLoanCap!.Value));
     }
 
+    [Fact]
+    public async Task BaselineStub_ThenGradeLimits_ThenSwitchOn_IsRefused_AndNeverOffersTheStubsTerms()
+    {
+        await using var h = await H.Create(gradeLimited: false);
+        h.Db.Remove(h.Policy);                                          // no policy anywhere: the baseline applies
+        await h.Db.SaveChangesAsync();
+        var hr = h.Controller("HR Manager");
+        Assert.IsType<OkObjectResult>(await hr.SetLoanTypeOffering(new SetLoanOfferingRequest(h.Company.Id, h.Type.Id, false), default));
+        Assert.IsType<OkObjectResult>(await hr.PublishGradeLimits(new PublishGradeLimitsRequest(h.Type.Id, null, h.Today,
+            [new(h.G1.Id, true, GradeEntitlementValueTypes.Amount, 1_000m), new(h.G2.Id, true, GradeEntitlementValueTypes.Amount, 1_000m),
+             new(h.G3.Id, true, GradeEntitlementValueTypes.Amount, 1_000m)]), default));
+
+        // The stub is not a policy: the company is listed as having none.
+        var warned = Json(Assert.IsType<ConflictObjectResult>(await hr.SetLoanTypeGradeLimited(h.Type.Id, new SetGradeLimitedRequest(true), default)).Value, web: true);
+        Assert.Contains("companies_without_policy", warned);
+        Assert.Contains(h.Company.Id.ToString(), warned);
+        Assert.Contains(h.OtherCompany.Id.ToString(), warned);
+        Assert.IsType<OkObjectResult>(await hr.SetLoanTypeGradeLimited(h.Type.Id, new SetGradeLimitedRequest(true, ConfirmStopOffering: true), default));
+
+        var refused = Assert.IsType<ConflictObjectResult>(await hr.SetLoanTypeOffering(new SetLoanOfferingRequest(h.Company.Id, h.Type.Id, true), default));
+        Assert.Contains("policy_required", Json(refused.Value));
+        Assert.False(await h.Db.LoanPolicies.AnyAsync(x => x.IsOffered && x.CompanyId == h.Company.Id));
+        var stub = await h.Db.LoanPolicies.SingleAsync(x => x.CompanyId == h.Company.Id);
+        Assert.True(stub.IsActive && stub.CreatedByOfferingSwitch && !stub.IsOffered);
+        Assert.Contains("LoanTypeNotOffered", (await h.Assess(100m)).Codes);
+    }
+
+    [Fact]
+    public async Task OffThenOn_FromTheCompanysOwnPolicy_CopiesThatPolicy_NotTheStub()
+    {
+        await using var h = await H.Create(gradeLimited: false);
+        h.Policy.MaxAmount = 3_000m; h.Policy.MaxConcurrentLoans = 2;
+        await h.Db.SaveChangesAsync();
+        var hr = h.Controller("HR Manager");
+        Assert.IsType<OkObjectResult>(await hr.SetLoanTypeOffering(new SetLoanOfferingRequest(h.Company.Id, h.Type.Id, false), default));
+        Assert.IsType<OkObjectResult>(await hr.SetLoanTypeOffering(new SetLoanOfferingRequest(h.Company.Id, h.Type.Id, true), default));
+        var active = await h.Db.LoanPolicies.SingleAsync(x => x.CompanyId == h.Company.Id && x.IsActive);
+        Assert.Equal((3_000m, 2, true, false, (Guid?)null), (active.MaxAmount, active.MaxConcurrentLoans, active.IsOffered, active.CreatedByOfferingSwitch, active.CopiedFromPolicyId));
+        Assert.True((await h.Assess(100m)).Eligible);
+    }
+
+    [Fact]
+    public async Task TenantWideFixedCell_IsBlockedAtEligibility_WhenCompaniesLaterUseDifferentCurrencies()
+    {
+        await using var h = await H.Create();
+        h.Cell(h.G2, amount: 10_000m);
+        await h.Db.SaveChangesAsync();
+        Assert.True((await h.Assess(1_000m)).Eligible);
+
+        h.OtherCompany.DefaultCurrency = "AED";                           // a company changes currency after publishing
+        await h.Db.SaveChangesAsync();
+        var blocked = await h.Assess(1_000m);
+        Assert.Equal(new[] { GradeLimitCodes.CurrencyAmbiguous }, blocked.Codes);
+        Assert.Contains("set this company's own limit", blocked.Reasons.Single());
+        Assert.Equal(0m, blocked.Available);
+
+        h.Cell(h.G2, amount: 8_000m, companyId: h.Company.Id);             // the company's own cell resolves it
+        await h.Db.SaveChangesAsync();
+        var fixedForCompany = await h.Assess(1_000m);
+        Assert.True(fixedForCompany.Eligible);
+        Assert.Equal(8_000m, fixedForCompany.GradeLimit!.PerLoanCap);
+    }
+
+    [Fact]
+    public async Task TenantWideSalaryMultiple_StaysValid_AcrossCurrencies()
+    {
+        await using var h = await H.Create();
+        h.OtherCompany.DefaultCurrency = "AED";
+        h.Salary(basic: 5_000m);
+        h.Cell(h.G2, rate: 2m, valueType: GradeEntitlementValueTypes.MultipleOfBasic);
+        await h.Db.SaveChangesAsync();
+        var result = await h.Assess(1_000m);
+        Assert.True(result.Eligible);
+        Assert.Equal(10_000m, result.GradeLimit!.PerLoanCap);
+    }
+
     // ── the real eligibility JSON the UI is built against ────────────────────────────────────────
 
     /// <summary>

@@ -19,6 +19,8 @@ namespace Zayra.Api.Controllers.Finance;
 public partial class LoansController
 {
     private const string GradeLimitLockScope = "finance.grade-limits";
+    /// <summary>Per-company policy lock, shared with CreateLoanPolicy and the offering switch.</summary>
+    internal const string LoanPolicyLockScope = "finance.loan-policies";
 
     /// <summary>The grid for one loan type: one row per active grade, by level. With <c>companyId</c>, each row
     /// is the cell in force for that company — its own override, else the tenant-wide cell
@@ -184,6 +186,11 @@ public partial class LoansController
                     });
                 // A grade-limited type is offered only where a policy exists. Companies that today run on the
                 // loan-type baseline would silently stop offering it: say so, and require an explicit confirmation.
+                // Hold every company's policy lock while deciding, so no policy or offering change slips in between
+                // the check and the switch. LOCK ORDER (deadlock-free): finance.grade-limits(loan type) — already held
+                // — then finance.loan-policies(company) for each active company in ascending lock-key order. No path
+                // takes a loan-policies lock and then a grade-limits lock.
+                await AcquireCompanyPolicyLocksAsync(tid, ct);
                 var uncovered = await CompaniesWithoutPolicyAsync(tid, type.Id, ct);
                 if (uncovered.Count > 0 && !req.ConfirmStopOffering)
                     return Conflict(new
@@ -255,7 +262,7 @@ public partial class LoansController
     [HttpPut("offerings")]
     [Authorize(Roles = "Admin,HR Manager,HR Director")]
     public Task<IActionResult> SetLoanTypeOffering([FromBody] SetLoanOfferingRequest req, CancellationToken ct) =>
-        FinanceDecisionSerializer.SerializeAsync<IActionResult>(_db, "finance.loan-policies", GetTenantId(), req.CompanyId, async () =>
+        FinanceDecisionSerializer.SerializeAsync<IActionResult>(_db, LoanPolicyLockScope, GetTenantId(), req.CompanyId, async () =>
         {
             if (!IsHrLoanActor()) return HrPolicyOwnerRequired();
             if (!this.GetEntityScope().CanAccessCompany(req.CompanyId)) return Forbid();
@@ -280,16 +287,20 @@ public partial class LoansController
 
             if (req.Offered && companyActive is { CreatedByOfferingSwitch: true } stub)
             {
-                // Switching back ON undoes the switch rather than copying the stub: the group policy (or the
-                // loan-type baseline) it shadowed applies again with its own, current terms. Only when the stub was
-                // copied from the group policy AND its terms still match is it safe to say nothing was customised.
+                // Switching back ON undoes the switch and never offers the stub's terms: a stub over the group policy
+                // or the loan-type baseline is retired so that applies again with its own, current terms; a stub over
+                // the company's own policy is replaced by a copy of that policy (below).
                 var source = stub.CopiedFromPolicyId is Guid sourceId
                     ? await _db.Set<LoanPolicy>().AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == sourceId, ct)
                     : null;
-                var fromBaseline = stub.CopiedFromPolicyId == null;
-                var fromUnchangedGroup = source is { CompanyId: null } && SamePolicyTerms(stub, source);
+                var fromCompanyPolicy = source is { CompanyId: not null } && source.CompanyId == req.CompanyId;
                 var restoresSomething = group != null || !type.GradeLimited;
-                if ((fromBaseline || fromUnchangedGroup) && restoresSomething)
+                if (!fromCompanyPolicy && !restoresSomething)
+                    // The stub shadowed the baseline (or a group policy that no longer exists) and the type is now
+                    // limited by grade: there are no real terms to offer it on. A stub's terms are never offered.
+                    return Conflict(new { error = "policy_required",
+                        message = "Publish a loan policy for this loan type and company first. The loan type is offered from then on." });
+                if (!fromCompanyPolicy)
                 {
                     stub.IsActive = false;
                     _db.AuditLogs.Add(new AuditLog
@@ -312,7 +323,10 @@ public partial class LoansController
             await _db.SaveChangesAsync(ct);
             // Switching OFF with no policy at all: the terms are never used (nothing can be applied for), so the
             // loan-type limits are recorded only to keep the version complete; switching ON retires this row.
-            var basis = current ?? new LoanPolicy { PolicyName = type.NameEn, MaxAmount = type.MaxAmount,
+            // Never offer a stub's terms: switching ON from a stub copies the company policy it shadowed.
+            var basis = req.Offered && companyActive is { CreatedByOfferingSwitch: true } shadowing
+                ? await _db.Set<LoanPolicy>().AsNoTracking().FirstAsync(x => x.TenantId == tid && x.Id == shadowing.CopiedFromPolicyId, ct)
+                : current ?? new LoanPolicy { PolicyName = type.NameEn, MaxAmount = type.MaxAmount,
                 MaxInstallments = Math.Clamp(type.MaxInstallments, 1, 600), MinServiceMonths = type.MinServiceMonths,
                 // Same as the eligibility baseline (unlimited), so "not offered" is the only reason shown while off.
                 MaxConcurrentLoans = int.MaxValue };
@@ -336,21 +350,6 @@ public partial class LoansController
             await _db.SaveChangesAsync(ct);
             return Ok(OfferingDto(type, req.CompanyId, next, group));
         }, ct);
-
-    /// <summary>True when two policy versions carry the same rules (identity, versioning and offering fields aside).</summary>
-    private static bool SamePolicyTerms(LoanPolicy a, LoanPolicy b)
-    {
-        static string Terms(LoanPolicy p)
-        {
-            var node = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(p))!.AsObject();
-            foreach (var key in new[] { nameof(LoanPolicy.Id), nameof(LoanPolicy.TenantId), nameof(LoanPolicy.CompanyId), nameof(LoanPolicy.Version),
-                         nameof(LoanPolicy.IsActive), nameof(LoanPolicy.CreatedAtUtc), nameof(LoanPolicy.CreatedBy), nameof(LoanPolicy.IsOffered),
-                         nameof(LoanPolicy.CreatedByOfferingSwitch), nameof(LoanPolicy.CopiedFromPolicyId), nameof(LoanPolicy.PolicyName) })
-                node.Remove(key);
-            return node.ToJsonString();
-        }
-        return Terms(a) == Terms(b);
-    }
 
     /// <summary>Per company: which loan types its employees are offered, and why not.</summary>
     [HttpGet("offerings")]
@@ -394,10 +393,21 @@ public partial class LoansController
         };
     }
 
+    /// <summary>Takes finance.loan-policies for every active company, sorted by lock key (see the lock order above).</summary>
+    private async Task AcquireCompanyPolicyLocksAsync(Guid tid, CancellationToken ct)
+    {
+        var companyIds = await ScopedBypass.TenantWide(_db.Companies, tid, "Locking every company's loan policy before a tenant-wide change.")
+            .Where(x => !x.IsDeleted && x.IsActive).Select(x => x.Id).ToListAsync(ct);
+        foreach (var companyId in companyIds.OrderBy(id => FinanceDecisionSerializer.ComputeLockKey(LoanPolicyLockScope, tid, id)))
+            await FinanceDecisionSerializer.AcquireAsync(_db, LoanPolicyLockScope, tid, companyId, ct);
+    }
+
     /// <summary>Active companies with no active policy for the type (neither their own nor a group-wide one).</summary>
     private async Task<List<(Guid Id, string Name)>> CompaniesWithoutPolicyAsync(Guid tid, Guid loanTypeId, CancellationToken ct)
     {
-        var policies = await _db.Set<LoanPolicy>().AsNoTracking().Where(x => x.TenantId == tid && x.LoanTypeId == loanTypeId && x.IsActive)
+        // A switch-created stub is not a policy: it only records "not offered" and carries no real terms.
+        var policies = await _db.Set<LoanPolicy>().AsNoTracking()
+            .Where(x => x.TenantId == tid && x.LoanTypeId == loanTypeId && x.IsActive && !x.CreatedByOfferingSwitch)
             .Select(x => x.CompanyId).ToListAsync(ct);
         if (policies.Any(x => x == null)) return [];
         var covered = policies.Where(x => x.HasValue).Select(x => x!.Value).ToHashSet();

@@ -15881,6 +15881,8 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "CompanyId");
 
+                    b.HasIndex("TenantId", "CopiedFromPolicyId");
+
                     b.HasIndex("TenantId", "LoanTypeId");
 
                     b.HasIndex("TenantId", "CompanyId", "LoanTypeId")
@@ -15891,7 +15893,12 @@ namespace Zayra.Api.Migrations
                         .IsUnique()
                         .HasFilter("company_id IS NOT NULL");
 
-                    b.ToTable("loan_policies", (string)null);
+                    b.ToTable("loan_policies", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_loan_policies__copied_from_only_on_switch", "copied_from_policy_id IS NULL OR created_by_offering_switch");
+
+                            t.HasCheckConstraint("ck_loan_policies__switch_stub_not_offered", "NOT created_by_offering_switch OR NOT is_offered");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.LoanRepayment", b =>
@@ -25862,6 +25869,15 @@ namespace Zayra.Api.Migrations
                         .HasPrincipalKey("TenantId", "Id")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.LoanPolicy", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.LoanPolicy", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "CopiedFromPolicyId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.LoanRepayment", b =>

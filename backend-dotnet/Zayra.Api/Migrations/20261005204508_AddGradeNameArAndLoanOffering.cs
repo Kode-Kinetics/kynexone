@@ -1,5 +1,6 @@
 ﻿using System;
 using Microsoft.EntityFrameworkCore.Migrations;
+using Zayra.Api.Models;
 
 #nullable disable
 
@@ -12,8 +13,9 @@ namespace Zayra.Api.Migrations
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             // Slice L1 — additive only. is_offered defaults TRUE so every existing policy keeps offering its loan
-            // type; created_by_offering_switch / copied_from_policy_id let the per-company switch undo itself;
-            // name_ar is optional (readers fall back to name).
+            // type; created_by_offering_switch / copied_from_policy_id let the per-company switch undo itself, with
+            // a tenant-composite FK and two CHECKs keeping those markers honest; name_ar is optional (readers fall
+            // back to name).
             migrationBuilder.AddColumn<Guid>(
                 name: "copied_from_policy_id",
                 table: "loan_policies",
@@ -41,12 +43,36 @@ namespace Zayra.Api.Migrations
                 maxLength: 120,
                 nullable: true);
 
-            // Qard: an employer loan is principal only (Civil Transactions Law Art. 385). NOT VALID enforces every
-            // new and updated loan_types row without failing on legacy interest-bearing rows; those are listed by
-            // the read-only pre-deploy query in docs/DEPLOY_ROLLBACK_RUNBOOK.md and validated once cleaned.
-            migrationBuilder.Sql(
-                "ALTER TABLE loan_types ADD CONSTRAINT ck_loan_types__interest_free " +
-                "CHECK (is_interest_free AND interest_rate = 0) NOT VALID;");
+            migrationBuilder.AddUniqueConstraint(
+                name: "AK_loan_policies_tenant_id_id",
+                table: "loan_policies",
+                columns: new[] { "tenant_id", "id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_loan_policies_tenant_id_copied_from_policy_id",
+                table: "loan_policies",
+                columns: new[] { "tenant_id", "copied_from_policy_id" });
+
+            migrationBuilder.AddCheckConstraint(
+                name: "ck_loan_policies__copied_from_only_on_switch",
+                table: "loan_policies",
+                sql: "copied_from_policy_id IS NULL OR created_by_offering_switch");
+
+            migrationBuilder.AddCheckConstraint(
+                name: "ck_loan_policies__switch_stub_not_offered",
+                table: "loan_policies",
+                sql: "NOT created_by_offering_switch OR NOT is_offered");
+
+            migrationBuilder.AddForeignKey(
+                name: "FK_loan_policies_loan_policies_tenant_id_copied_from_policy_id",
+                table: "loan_policies",
+                columns: new[] { "tenant_id", "copied_from_policy_id" },
+                principalTable: "loan_policies",
+                principalColumns: new[] { "tenant_id", "id" },
+                onDelete: ReferentialAction.Restrict);
+
+            // Qard: employer loans are principal only. Shared with the Postgres test fixture (LoanTypeSql).
+            migrationBuilder.Sql(LoanTypeSql.AddInterestFreeCheck);
         }
 
         /// <inheritdoc />
@@ -60,7 +86,27 @@ namespace Zayra.Api.Migrations
                     END IF;
                 END $$;
                 """);
-            migrationBuilder.Sql("ALTER TABLE loan_types DROP CONSTRAINT IF EXISTS ck_loan_types__interest_free;");
+            migrationBuilder.Sql(LoanTypeSql.DropInterestFreeCheck);
+            migrationBuilder.DropForeignKey(
+                name: "FK_loan_policies_loan_policies_tenant_id_copied_from_policy_id",
+                table: "loan_policies");
+
+            migrationBuilder.DropUniqueConstraint(
+                name: "AK_loan_policies_tenant_id_id",
+                table: "loan_policies");
+
+            migrationBuilder.DropIndex(
+                name: "IX_loan_policies_tenant_id_copied_from_policy_id",
+                table: "loan_policies");
+
+            migrationBuilder.DropCheckConstraint(
+                name: "ck_loan_policies__copied_from_only_on_switch",
+                table: "loan_policies");
+
+            migrationBuilder.DropCheckConstraint(
+                name: "ck_loan_policies__switch_stub_not_offered",
+                table: "loan_policies");
+
             migrationBuilder.DropColumn(
                 name: "copied_from_policy_id",
                 table: "loan_policies");

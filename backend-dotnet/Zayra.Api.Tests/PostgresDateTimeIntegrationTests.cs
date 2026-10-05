@@ -65,8 +65,7 @@ public sealed class PostgresFixture : IAsyncLifetime
         await db.Database.ExecuteSqlRawAsync(GradeEntitlementSql.CreateExtension);
         await db.Database.ExecuteSqlRawAsync(GradeEntitlementSql.AddExclusion);
         // AddGradeNameArAndLoanOffering: employer loans are principal only (qard). Same DDL as the migration.
-        await db.Database.ExecuteSqlRawAsync(
-            "ALTER TABLE loan_types ADD CONSTRAINT ck_loan_types__interest_free CHECK (is_interest_free AND interest_rate = 0) NOT VALID;");
+        await db.Database.ExecuteSqlRawAsync(LoanTypeSql.AddInterestFreeCheck);
     }
 
     /// <summary>

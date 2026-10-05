@@ -57,7 +57,8 @@ public static class GradeLimitCodes
     public const string Missing = "GradeMissing";
     public const string NotConfigured = "GradeLimitNotConfigured";
     public const string SalaryMissing = "GradeSalaryMissing";
-    public static readonly string[] All = [NotEligible, PerLoan, Outstanding, Missing, NotConfigured, SalaryMissing];
+    public const string CurrencyAmbiguous = "GradeLimitCurrencyAmbiguous";
+    public static readonly string[] All = [NotEligible, PerLoan, Outstanding, Missing, NotConfigured, SalaryMissing, CurrencyAmbiguous];
 
     public const string NotConfiguredText = "Your loan limit hasn't been set up yet — HR has been notified.";
 }
@@ -127,6 +128,19 @@ public sealed class GradeLoanLimitResolver(ZayraDbContext db)
         if (cell == null) return Blocked(GradeLimitCodes.NotConfigured, GradeLimitCodes.NotConfiguredText, grade);
         if (!cell.Eligible)
             return Blocked(GradeLimitCodes.NotEligible, $"Employees in {grade.Name} aren't eligible for this loan type ({loanType.NameEn}).", grade, cell);
+
+        // A tenant-wide cell's fixed figures carry no currency. Publishing refuses them once companies pay in
+        // different currencies, but a company can change currency (or a new one can be added) afterwards: never
+        // apply "10,000" as SAR to one company and AED to another — block until HR sets per-company cells.
+        if (cell.CompanyId == null && (cell.ValueType == GradeEntitlementValueTypes.Amount || cell.MaxOutstandingAmount != null))
+        {
+            var currencies = await ScopedBypass.TenantWide(db.Companies, tid, "A tenant-wide fixed grade limit must mean one currency across every active company.")
+                .AsNoTracking().Where(x => !x.IsDeleted && x.IsActive).Select(x => x.DefaultCurrency).ToListAsync(ct);
+            if (currencies.Select(c => (c ?? string.Empty).Trim().ToUpperInvariant()).Distinct().Count() > 1)
+                return Blocked(GradeLimitCodes.CurrencyAmbiguous,
+                    "The loan limit for this grade is a fixed amount set for all companies, but the companies pay in different currencies. HR needs to set this company's own limit.",
+                    grade, cell);
+        }
 
         decimal? salaryBasis = null;
         decimal? perLoanCap = cell.ValueType == GradeEntitlementValueTypes.Amount ? cell.Amount : null;

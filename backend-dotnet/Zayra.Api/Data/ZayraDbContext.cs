@@ -3918,8 +3918,16 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
 
         modelBuilder.Entity<LoanPolicy>(entity =>
         {
-            entity.ToTable("loan_policies");
+            entity.ToTable("loan_policies", t =>
+            {
+                // Only the offering switch records what a version copied, and a switch stub only ever says "not offered".
+                t.HasCheckConstraint("ck_loan_policies__copied_from_only_on_switch", "copied_from_policy_id IS NULL OR created_by_offering_switch");
+                t.HasCheckConstraint("ck_loan_policies__switch_stub_not_offered", "NOT created_by_offering_switch OR NOT is_offered");
+            });
             entity.HasKey(x => x.Id);
+            entity.HasAlternateKey(x => new { x.TenantId, x.Id });
+            entity.HasOne<LoanPolicy>().WithMany().HasForeignKey(x => new { x.TenantId, x.CopiedFromPolicyId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
             entity.Property(x => x.MaxMultiplierOfSalary).HasPrecision(8, 2);
             entity.Property(x => x.MaxAmount).HasPrecision(14, 2);
             entity.Property(x => x.MaxTotalOutstanding).HasPrecision(14, 2);

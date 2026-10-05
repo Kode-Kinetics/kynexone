@@ -33,6 +33,16 @@ public class LoanType : ITenantOwned
     public string? EntitlementComponentCode { get; set; }
 }
 
+/// <summary>DDL EF cannot express (NOT VALID), shared by the migration and the Postgres test fixture.</summary>
+public static class LoanTypeSql
+{
+    /// <summary>Qard: an employer loan is principal only (Civil Transactions Law Art. 385). NOT VALID enforces every new
+    /// and updated row without failing on legacy interest-bearing rows (see docs/DEPLOY_ROLLBACK_RUNBOOK.md).</summary>
+    public const string AddInterestFreeCheck =
+        "ALTER TABLE loan_types ADD CONSTRAINT ck_loan_types__interest_free CHECK (is_interest_free AND interest_rate = 0) NOT VALID;";
+    public const string DropInterestFreeCheck = "ALTER TABLE loan_types DROP CONSTRAINT IF EXISTS ck_loan_types__interest_free;";
+}
+
 public class LoanPolicy : ITenantOwned, ICompanyScoped
 {
     public Guid Id { get; set; } = Guid.NewGuid();

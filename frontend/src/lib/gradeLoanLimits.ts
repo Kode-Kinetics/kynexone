@@ -38,6 +38,7 @@ export const gradeReasonKeys: Record<GradeLimitReasonCode, string> = {
   GradeMissing: "Your employee record has no grade in use (none is set, or the grade is no longer active). HR needs to update it before you can apply for this loan type.",
   GradeLimitNotConfigured: "Your loan limit hasn't been set up yet — HR has been notified.",
   GradeSalaryMissing: "Your limit is a multiple of your salary, and no current salary is on file. HR needs to complete it before you can apply.",
+  GradeLimitCurrencyAmbiguous: "Your grade's loan limit is a fixed amount set for all companies, but the companies pay in different currencies. HR needs to set your company's own limit before you can apply.",
 };
 
 /** The same refusals, worded for HR applying on an employee's behalf. */
@@ -48,6 +49,7 @@ export const gradeReasonKeysForEmployee: Record<GradeLimitReasonCode, string> = 
   GradeMissing: "This employee's record has no grade in use (none is set, or the grade is no longer active). Update it before applying for this loan type.",
   GradeLimitNotConfigured: "No loan limit is set for this employee's grade yet. Set it in Loan Policies → Limits by grade.",
   GradeSalaryMissing: "This employee's limit is a multiple of salary, and no current salary is on file. Complete it before applying.",
+  GradeLimitCurrencyAmbiguous: "This grade's loan limit is a fixed amount set for all companies, but the companies pay in different currencies. Set this employee's company's own limit in Loan Policies \u2192 Limits by grade.",
 };
 export const gradeReasonFallbackKey = "This request is outside the loan limit for your grade.";
 export const gradeReasonFallbackKeyForEmployee = "This request is outside the loan limit for this employee's grade.";

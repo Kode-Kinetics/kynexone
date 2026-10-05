@@ -138,6 +138,25 @@ public class GradeLoanLimitPostgresTests(PostgresFixture fixture)
         Assert.Equal(expected, actual);
     }
 
+    [Fact]
+    public async Task EnablingGradeLimits_TakesTheCompanyPolicyLocksInsideItsTransaction()
+    {
+        var seed = await SeedAsync(cap: 10_000m, outstandingCap: null);
+        await using (var db = fixture.CreateDb())
+        {
+            var type = await db.LoanTypes.SingleAsync(x => x.Id == seed.LoanTypeId);
+            type.GradeLimited = false;
+            await db.SaveChangesAsync();
+        }
+        await using (var db = fixture.CreateDb())
+        {
+            var result = await Controller(db, seed, "HR Manager").SetLoanTypeGradeLimited(seed.LoanTypeId, new SetGradeLimitedRequest(true), default);
+            if (result is ObjectResult { StatusCode: >= 400 } bad) Assert.Fail($"HTTP {bad.StatusCode} {JsonSerializer.Serialize(bad.Value)}");
+        }
+        await using var verify = fixture.CreateDb();
+        Assert.True((await verify.LoanTypes.SingleAsync(x => x.Id == seed.LoanTypeId)).GradeLimited);
+    }
+
     // ── harness ──────────────────────────────────────────────────────────────────────────────────
 
     private sealed record Seed(Guid TenantId, Guid CompanyId, Guid GradeId, Guid LoanTypeId, int EmployeeId, Guid EmployeePublicId, Guid EmployeeUserId);
