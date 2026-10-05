@@ -13,7 +13,12 @@ namespace Zayra.Api.Infrastructure.Auth;
 public class MfaService : IMfaService
 {
     private const int ChallengeTtlSeconds = 300; // 5 minutes
-    private const string Issuer = "Zayra HRM";
+    /// <summary>
+    /// The issuer label authenticator apps show next to the account. Customer-visible, so it carries
+    /// the product name. A label only: factors enrolled under the old "Zayra HRM" label keep working,
+    /// because codes depend on the shared secret alone.
+    /// </summary>
+    internal const string Issuer = "KynexOne";
 
     private readonly ZayraDbContext _db;
     private readonly TotpService _totp;

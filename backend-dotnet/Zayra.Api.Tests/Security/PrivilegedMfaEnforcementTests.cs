@@ -929,6 +929,17 @@ public sealed class PrivilegedMfaEnforcementTests
         http.Response.Headers.CacheControl.ToString().Should().Contain("no-store");
     }
 
+    [Fact]
+    public async Task AuthenticatorApps_ShowTheProductName()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        var id = await SeedOperatorAsync(kit, "owner@platform.test");
+        await using var db = kit.NewDb();
+        var setup = await kit.Mfa(db).InitiatePlatformSetupAsync(id, CancellationToken.None);
+
+        setup.ProvisioningUri.Should().Contain("issuer=KynexOne").And.NotContain("Zayra");
+    }
+
     // ── Grace-period platform sessions ────────────────────────────────────────────────────────
 
     [Fact]
