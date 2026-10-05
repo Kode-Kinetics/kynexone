@@ -29,6 +29,7 @@ public class AuthController : ControllerBase
     [HttpPost("login")]
     [AllowAnonymous]
     [EnableRateLimiting("auth_login")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<IActionResult> Login(LoginRequest request, CancellationToken cancellationToken)
     {
         // Refusals that cost no hashing: an address over its failure budget, or an account over its
@@ -71,6 +72,7 @@ public class AuthController : ControllerBase
     [HttpPost("refresh")]
     [AllowAnonymous]
     [EnableRateLimiting("auth_refresh")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<ActionResult<AuthResponse>> Refresh(RefreshTokenRequest request, CancellationToken cancellationToken)
     {
         try { return Ok(await _authService.RefreshAsync(request, GetContext(), cancellationToken)); }

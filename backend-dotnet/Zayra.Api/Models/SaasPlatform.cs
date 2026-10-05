@@ -37,6 +37,8 @@ public class PlatformUser
     /// Plaintext codes are shown once, at enrolment or regeneration, and never stored.
     /// </summary>
     public string? MfaRecoveryCodeHashes { get; set; }
+    /// <summary>Last accepted TOTP time-step; any code at or below it is refused (replay protection).</summary>
+    public long? MfaLastTotpStep { get; set; }
     public DateTime? LastLoginAtUtc { get; set; }
     public string? LastLoginIp { get; set; }
     // Brute-force lockout for platform-admin accounts (highest-privilege in the system). Mirrors the

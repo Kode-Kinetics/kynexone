@@ -97,6 +97,7 @@ public class PlatformController : ControllerBase
     [HttpPost("auth/login")]
     [AllowAnonymous]
     [EnableRateLimiting("platform_login")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<IActionResult> Login([FromBody] PlatformLoginRequest req, CancellationToken ct)
     {
         // Cheap refusals before any hashing (LoginAbuseGuard): per-address failure budget and
@@ -307,6 +308,7 @@ public class PlatformController : ControllerBase
 
     // Every platform role must enrol (PrivilegedMfaPolicy), so every role may set up its OWN factor.
     [HttpPost("auth/mfa/setup")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<IActionResult> PlatformMfaSetup(CancellationToken ct)
     {
         var platformUserId = GetPlatformUserId();
@@ -323,6 +325,7 @@ public class PlatformController : ControllerBase
     }
 
     [HttpPost("auth/mfa/verify-setup")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<IActionResult> PlatformMfaVerifySetup([FromBody] MfaVerifySetupRequest request, CancellationToken ct)
     {
         var platformUserId = GetPlatformUserId();
@@ -359,6 +362,7 @@ public class PlatformController : ControllerBase
     /// </summary>
     [HttpPost("auth/mfa/enrollment/start")]
     [EnableRateLimiting("platform_mfa_verify")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<IActionResult> PlatformMfaEnrollmentStart(CancellationToken ct)
     {
         var platformUserId = GetPlatformUserId();
@@ -375,6 +379,7 @@ public class PlatformController : ControllerBase
     [HttpPost("auth/mfa/enrollment/setup")]
     [AllowAnonymous]
     [EnableRateLimiting("platform_mfa_verify")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<IActionResult> PlatformMfaEnrollmentSetup([FromBody] MfaEnrollmentSetupRequest request, CancellationToken ct)
     {
         var dto = await _mfa.InitiatePlatformEnrollmentSetupAsync(request.EnrollmentToken, ct);
@@ -387,6 +392,7 @@ public class PlatformController : ControllerBase
     [HttpPost("auth/mfa/enrollment/verify-setup")]
     [AllowAnonymous]
     [EnableRateLimiting("platform_mfa_verify")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<IActionResult> PlatformMfaEnrollmentVerifySetup([FromBody] MfaEnrollmentVerifySetupRequest request, CancellationToken ct)
     {
         var codes = await _mfa.VerifyPlatformEnrollmentSetupAsync(
@@ -404,6 +410,7 @@ public class PlatformController : ControllerBase
     [HttpPost("auth/mfa/recovery/verify")]
     [AllowAnonymous]
     [EnableRateLimiting("platform_mfa_verify")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<IActionResult> PlatformMfaRecoveryVerify([FromBody] PlatformRecoveryCodeRequest request, CancellationToken ct)
     {
         var pu = await _mfa.CompletePlatformChallengeWithRecoveryCodeAsync(
@@ -422,6 +429,7 @@ public class PlatformController : ControllerBase
     /// <summary>Replaces every recovery code (old ones stop working). Requires a current TOTP code.</summary>
     [HttpPost("auth/mfa/recovery-codes/regenerate")]
     [EnableRateLimiting("platform_mfa_verify")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<IActionResult> PlatformMfaRegenerateRecoveryCodes([FromBody] MfaDisableRequest request, CancellationToken ct)
     {
         var platformUserId = GetPlatformUserId();
@@ -435,6 +443,7 @@ public class PlatformController : ControllerBase
     [HttpPost("auth/mfa/challenge/verify")]
     [AllowAnonymous]
     [EnableRateLimiting("platform_mfa_verify")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<IActionResult> PlatformMfaChallengeVerify([FromBody] MfaChallengeVerifyRequest request, CancellationToken ct)
     {
         var pu = await _mfa.CompletePlatformChallengeAsync(

@@ -773,7 +773,8 @@ public sealed class PrivilegedMfaEnforcementTests
         {
             var mfa = kit.Mfa(db);
             (await mfa.RegeneratePlatformRecoveryCodesAsync(id, "000000", CancellationToken.None)).Should().BeNull();
-            fresh = await mfa.RegeneratePlatformRecoveryCodesAsync(id, Totp.Now(secret), CancellationToken.None);
+            // The enrolment code's time-step is spent (replay protection); the next one is accepted.
+            fresh = await mfa.RegeneratePlatformRecoveryCodesAsync(id, Totp.At(secret, 1), CancellationToken.None);
         }
         fresh.Should().HaveCount(10).And.NotIntersectWith(oldCodes);
 
@@ -802,14 +803,147 @@ public sealed class PrivilegedMfaEnforcementTests
             (await db.PlatformUsers.AsNoTracking().SingleAsync(p => p.Id == lost)).MfaRecoveryCodeHashes.Should().BeNull();
     }
 
+    // ── TOTP replay, notices and no-store ─────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task PlatformTotp_ACodeIsAcceptedOnce_AndNeverAtOrBelowTheLastAcceptedStep()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        var id = await SeedOperatorAsync(kit, "owner@platform.test");
+        var (secret, _) = await EnrolOperatorAsync(kit, id);
+
+        async Task<PlatformUser?> SignIn(string code)
+        {
+            var challenge = await PasswordStepChallengeAsync(kit, "owner@platform.test");
+            await using var db = kit.NewDb();
+            return await kit.Mfa(db).CompletePlatformChallengeAsync(challenge, code, AuthHardeningTestKit.Ctx, CancellationToken.None);
+        }
+
+        long enrolled;
+        await using (var db = kit.NewDb())
+            enrolled = (await db.PlatformUsers.AsNoTracking().SingleAsync(p => p.Id == id)).MfaLastTotpStep!.Value;
+
+        (await SignIn(Totp.ForStep(secret, enrolled))).Should().BeNull("the enrolment code's step is already spent");
+        (await SignIn(Totp.ForStep(secret, enrolled + 1))).Should().NotBeNull();
+        (await SignIn(Totp.ForStep(secret, enrolled + 1))).Should().BeNull("a replayed code is refused");
+        (await SignIn(Totp.ForStep(secret, enrolled))).Should().BeNull("an older step than the last accepted one is refused");
+        await using var verify = kit.NewDb();
+        (await verify.PlatformUsers.AsNoTracking().SingleAsync(p => p.Id == id)).MfaLastTotpStep.Should().Be(enrolled + 1);
+    }
+
+    [Fact]
+    public async Task TenantTotp_AReplayedCodeIsRefused()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        await kit.SetPlatformEnforcementDateAsync(Past);
+        await kit.SeedUserAsync("admin@hardening.local", new Pbkdf2PasswordHasher().Hash(Password), "Admin");
+        var token = (await LoginAsync(kit, "admin@hardening.local")).EnrollmentChallenge!.ChallengeToken;
+        string secret;
+        await using (var db = kit.NewDb())
+        {
+            var mfa = kit.Mfa(db);
+            var setup = await mfa.InitiateEnrollmentSetupAsync(token, CancellationToken.None);
+            secret = setup!.TempSecret;
+            (await mfa.VerifyEnrollmentSetupAsync(token, new MfaVerifySetupRequest(secret, Totp.Now(secret)), CancellationToken.None))
+                .Should().BeTrue();
+        }
+
+        async Task<bool> Complete(string code)
+        {
+            var challenge = (await LoginAsync(kit, "admin@hardening.local")).Challenge!.ChallengeToken;
+            await using var db = kit.NewDb();
+            try
+            {
+                await kit.Auth(db).CompleteMfaLoginAsync(challenge, code, AuthHardeningTestKit.Ctx, CancellationToken.None);
+                return true;
+            }
+            catch (UnauthorizedAccessException) { return false; }
+        }
+
+        long enrolled;
+        await using (var db = kit.NewDb())
+            enrolled = (await db.Users.AsNoTracking().SingleAsync(u => u.Email == "admin@hardening.local")).MfaLastTotpStep!.Value;
+
+        (await Complete(Totp.ForStep(secret, enrolled))).Should().BeFalse("the enrolment code's step is spent");
+        (await Complete(Totp.ForStep(secret, enrolled + 1))).Should().BeTrue();
+        (await Complete(Totp.ForStep(secret, enrolled + 1))).Should().BeFalse("replay");
+    }
+
+    [Fact]
+    public async Task RecoveryCodeUse_Regeneration_AndInSessionSetup_EachEmailTheOperator()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        var id = await SeedOperatorAsync(kit, "owner@platform.test");
+        var email = new RecordingEmail();
+
+        string secret;
+        IReadOnlyList<string> codes;
+        await using (var db = kit.NewDb())
+        {
+            var mfa = kit.Mfa(db, email);
+            var setup = await mfa.InitiatePlatformSetupAsync(id, CancellationToken.None);
+            secret = setup.TempSecret;
+            codes = (await mfa.VerifyPlatformSetupAsync(id, new MfaVerifySetupRequest(secret, Totp.Now(secret)), CancellationToken.None))!;
+        }
+        email.Sent.Should().ContainSingle(m => m.Subject.Contains("turned on"), "in-session setup also notifies");
+
+        var challenge = await PasswordStepChallengeAsync(kit, "owner@platform.test");
+        await using (var db = kit.NewDb())
+            (await kit.Mfa(db, email).CompletePlatformChallengeWithRecoveryCodeAsync(challenge, codes[0], AuthHardeningTestKit.Ctx, CancellationToken.None))
+                .Should().NotBeNull();
+        email.Sent.Should().ContainSingle(m => m.Subject.Contains("recovery code was used"));
+
+        await using (var db = kit.NewDb())
+            (await kit.Mfa(db, email).RegeneratePlatformRecoveryCodesAsync(id, Totp.At(secret, 1), CancellationToken.None)).Should().NotBeNull();
+        email.Sent.Should().ContainSingle(m => m.Subject.Contains("New recovery codes"));
+        email.Sent.Should().OnlyContain(m => m.To == "owner@platform.test");
+    }
+
+    [Theory]
+    [InlineData(typeof(MfaController), nameof(MfaController.InitiateSetup))]
+    [InlineData(typeof(MfaController), nameof(MfaController.InitiateEnrollmentSetup))]
+    [InlineData(typeof(MfaController), nameof(MfaController.StartEnrollment))]
+    [InlineData(typeof(MfaController), nameof(MfaController.VerifyChallenge))]
+    [InlineData(typeof(AuthController), nameof(AuthController.Login))]
+    [InlineData(typeof(AuthController), nameof(AuthController.Refresh))]
+    [InlineData(typeof(PlatformController), nameof(PlatformController.Login))]
+    [InlineData(typeof(PlatformController), nameof(PlatformController.PlatformMfaSetup))]
+    [InlineData(typeof(PlatformController), nameof(PlatformController.PlatformMfaVerifySetup))]
+    [InlineData(typeof(PlatformController), nameof(PlatformController.PlatformMfaEnrollmentStart))]
+    [InlineData(typeof(PlatformController), nameof(PlatformController.PlatformMfaEnrollmentSetup))]
+    [InlineData(typeof(PlatformController), nameof(PlatformController.PlatformMfaEnrollmentVerifySetup))]
+    [InlineData(typeof(PlatformController), nameof(PlatformController.PlatformMfaChallengeVerify))]
+    [InlineData(typeof(PlatformController), nameof(PlatformController.PlatformMfaRecoveryVerify))]
+    [InlineData(typeof(PlatformController), nameof(PlatformController.PlatformMfaRegenerateRecoveryCodes))]
+    public void ResponsesCarryingSecretsOrCodes_AreNeverCached(Type controller, string action)
+    {
+        var method = controller.GetMethods().Single(m => m.Name == action && m.DeclaringType == controller);
+        method.GetCustomAttributes(typeof(Zayra.Api.Infrastructure.Http.NoStoreAttribute), inherit: true)
+            .Should().NotBeEmpty($"{controller.Name}.{action} returns a token, secret or recovery codes");
+
+        var http = new DefaultHttpContext();
+        var ctx = new Microsoft.AspNetCore.Mvc.Filters.ResultExecutingContext(
+            new ActionContext(http, new Microsoft.AspNetCore.Routing.RouteData(), new Microsoft.AspNetCore.Mvc.Abstractions.ActionDescriptor()),
+            new List<Microsoft.AspNetCore.Mvc.Filters.IFilterMetadata>(), new OkResult(), controller: null!);
+        new Zayra.Api.Infrastructure.Http.NoStoreAttribute().OnResultExecuting(ctx);
+        http.Response.Headers.CacheControl.ToString().Should().Contain("no-store");
+    }
+
     // ── TOTP for tests ────────────────────────────────────────────────────────────────────────
 
     private static class Totp
     {
-        public static string Now(string base32Secret)
+        public static string Now(string base32Secret) => At(base32Secret, 0);
+
+        /// <summary>The code for the current time-step plus <paramref name="offsetSteps"/> (still inside the ±1 window).</summary>
+        public static string At(string base32Secret, int offsetSteps)
+            => ForStep(base32Secret, DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30 + offsetSteps);
+
+        /// <summary>The code for an absolute time-step (tests anchor on the stored step, not the clock).</summary>
+        public static string ForStep(string base32Secret, long step)
         {
             var key = FromBase32(base32Secret);
-            var msg = BitConverter.GetBytes(DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30);
+            var msg = BitConverter.GetBytes(step);
             if (BitConverter.IsLittleEndian) Array.Reverse(msg);
             using var hmac = new System.Security.Cryptography.HMACSHA1(key);
             var hash = hmac.ComputeHash(msg);

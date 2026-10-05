@@ -1087,7 +1087,9 @@ public class AuthService : IAuthService
             }
 
             var auditContext = context with { UserId = user.Id, TenantId = user.TenantId };
-            if (!_totp.Verify(plainSecret, totpCode))
+            // A replayed code (its time-step already accepted) is a failed attempt.
+            var matchedStep = _totp.MatchStep(plainSecret, totpCode);
+            if (!TotpService.IsFreshStep(matchedStep, user.MfaLastTotpStep))
             {
                 challenge.FailedAttempts++;
                 user.MfaFailedCount++;
@@ -1144,6 +1146,7 @@ public class AuthService : IAuthService
 
             challenge.UsedAtUtc = completedAtUtc;
             user.MfaLastVerifiedAtUtc = completedAtUtc;
+            user.MfaLastTotpStep = matchedStep;
             user.MfaFailedCount = 0;
             user.FailedLoginCount = 0;
             user.LastLoginAtUtc = completedAtUtc;

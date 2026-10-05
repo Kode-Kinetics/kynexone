@@ -28,6 +28,7 @@ public class MfaController : ControllerBase
     /// The provisioning URI contains the base32 secret; it must only be shown once.</summary>
     [HttpPost("setup")]
     [Authorize]
+    [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<IActionResult> InitiateSetup(CancellationToken ct)
     {
         var userId = GetUserId();
@@ -65,6 +66,7 @@ public class MfaController : ControllerBase
     [HttpPost("enrollment/setup")]
     [AllowAnonymous]
     [EnableRateLimiting("auth_login")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<IActionResult> InitiateEnrollmentSetup([FromBody] MfaEnrollmentSetupRequest request, CancellationToken ct)
     {
         var dto = await _mfa.InitiateEnrollmentSetupAsync(request.EnrollmentToken, ct);
@@ -133,6 +135,7 @@ public class MfaController : ControllerBase
     [HttpPost("enrollment/start")]
     [Authorize]
     [EnableRateLimiting("auth_login")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<IActionResult> StartEnrollment([FromServices] ZayraDbContext db, CancellationToken ct)
     {
         var userId = GetUserId();
@@ -158,6 +161,7 @@ public class MfaController : ControllerBase
     [HttpPost("challenge/verify")]
     [AllowAnonymous]
     [EnableRateLimiting("auth_login")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<IActionResult> VerifyChallenge([FromBody] MfaChallengeVerifyRequest request, CancellationToken ct)
     {
         try

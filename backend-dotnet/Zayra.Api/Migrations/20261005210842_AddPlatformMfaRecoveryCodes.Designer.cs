@@ -702,6 +702,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("mfa_failed_count");
 
+                    b.Property<long?>("MfaLastTotpStep")
+                        .HasColumnType("bigint")
+                        .HasColumnName("mfa_last_totp_step");
+
                     b.Property<DateTime?>("MfaLastVerifiedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("mfa_last_verified_at_utc");
@@ -21766,6 +21770,10 @@ namespace Zayra.Api.Migrations
                     b.Property<bool>("MfaEnabled")
                         .HasColumnType("boolean")
                         .HasColumnName("mfa_enabled");
+
+                    b.Property<long?>("MfaLastTotpStep")
+                        .HasColumnType("bigint")
+                        .HasColumnName("mfa_last_totp_step");
 
                     b.Property<string>("MfaRecoveryCodeHashes")
                         .HasMaxLength(2000)

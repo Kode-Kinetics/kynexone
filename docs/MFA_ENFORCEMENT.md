@@ -53,7 +53,13 @@ At the code step of sign-in, "Use a recovery code" (`POST /api/platform/auth/mfa
 accepts one instead of a TOTP code; each works once, misses count against the challenge's
 five-attempt cap, and uses are audited (`platform.auth.mfa_recovery_code_used` / `_failed`).
 `POST /api/platform/auth/mfa/recovery-codes/regenerate` (needs a current TOTP code) replaces them all.
-`GET /api/platform/auth/mfa/status` reports `recoveryCodesRemaining`. Tenant users do not have
+`GET /api/platform/auth/mfa/status` reports `recoveryCodesRemaining`. The operator is emailed when a
+recovery code is used, when codes are regenerated and whenever a factor is enrolled.
+
+TOTP codes are single-use: the last accepted time-step is stored per user
+(`users.mfa_last_totp_step`, `platform_users.mfa_last_totp_step`) and any code at or below it is
+refused, including the code used to enrol. Responses that carry a token, a provisioning URI or
+recovery codes are sent with `Cache-Control: no-store`. Tenant users do not have
 recovery codes yet; their lost-device path is the platform reset below.
 
 ## Break-glass

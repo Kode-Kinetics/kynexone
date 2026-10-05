@@ -48,7 +48,8 @@ public class MfaService : IMfaService
 
     public async Task<bool> VerifySetupAsync(Guid userId, Guid tenantId, MfaVerifySetupRequest request, CancellationToken ct)
     {
-        if (!_totp.Verify(request.TempSecret, request.TotpCode)) return false;
+        var setupStep = _totp.MatchStep(request.TempSecret, request.TotpCode);
+        if (setupStep is null) return false;
 
         var encryptedSecret = _totp.EncryptSecret(request.TempSecret);
         var configuredAtUtc = DateTime.UtcNow;
@@ -85,6 +86,7 @@ public class MfaService : IMfaService
             graph!.MFAEnabled = true;
             graph.MfaSecretEncrypted = encryptedSecret;
             graph.MfaConfiguredAtUtc = configuredAtUtc;
+            graph.MfaLastTotpStep = setupStep;
             graph.MfaFailedCount = 0;
             TenantSessionSecurity.RotateStamp(graph, configuredAtUtc);
             _db.AuditLogs.Add(AuthAuditEntry.Create(
@@ -143,7 +145,8 @@ public class MfaService : IMfaService
 
         var tokenHash = _tokenService.HashToken(enrollmentToken);
         var verifiedAtUtc = DateTime.UtcNow;
-        var codeValid = _totp.Verify(request.TempSecret, request.TotpCode);
+        var enrolStep = _totp.MatchStep(request.TempSecret, request.TotpCode);
+        var codeValid = enrolStep is not null;
         var encryptedSecret = codeValid ? _totp.EncryptSecret(request.TempSecret) : null;
         var auditId = Guid.NewGuid();
         (Guid TenantId, string Email, string Name)? recipient = null;
@@ -243,6 +246,7 @@ public class MfaService : IMfaService
             graph!.MFAEnabled = true;
             graph.MfaSecretEncrypted = encryptedSecret;
             graph.MfaConfiguredAtUtc = verifiedAtUtc;
+            graph.MfaLastTotpStep = enrolStep;
             graph.MfaFailedCount = 0;
             challenge.UsedAtUtc = verifiedAtUtc;
             TenantSessionSecurity.RotateStamp(graph, verifiedAtUtc);
@@ -407,7 +411,8 @@ public class MfaService : IMfaService
                 string plainSecret;
                 try { plainSecret = _totp.DecryptSecret(user.MfaSecretEncrypted); }
                 catch { return false; }
-                if (string.IsNullOrWhiteSpace(totpCode) || !_totp.Verify(plainSecret, totpCode))
+                if (string.IsNullOrWhiteSpace(totpCode)
+                    || !TotpService.IsFreshStep(_totp.MatchStep(plainSecret, totpCode), user.MfaLastTotpStep))
                     return false;
             }
 
@@ -445,6 +450,7 @@ public class MfaService : IMfaService
             user.MfaSecretEncrypted = null;
             user.MfaConfiguredAtUtc = null;
             user.MfaLastVerifiedAtUtc = null;
+            user.MfaLastTotpStep = null;
             user.MfaFailedCount = 0;
             TenantSessionSecurity.RotateStamp(user, disabledAtUtc);
             _db.AuditLogs.Add(AuthAuditEntry.Create(
@@ -488,12 +494,14 @@ public class MfaService : IMfaService
 
     public async Task<IReadOnlyList<string>?> VerifyPlatformSetupAsync(Guid platformUserId, MfaVerifySetupRequest request, CancellationToken ct)
     {
-        if (!_totp.Verify(request.TempSecret, request.TotpCode)) return null;
+        var setupStep = _totp.MatchStep(request.TempSecret, request.TotpCode);
+        if (setupStep is null) return null;
         var recovery = NewRecoveryCodes();
 
         var encryptedSecret = _totp.EncryptSecret(request.TempSecret);
         var configuredAtUtc = DateTime.UtcNow;
         var auditId = Guid.NewGuid();
+        (string Email, string Name)? recipient = null;
 
         async Task<bool> EnableOnceAsync(CancellationToken cancellationToken)
         {
@@ -511,6 +519,7 @@ public class MfaService : IMfaService
             pu.MfaSecretEncrypted = encryptedSecret;
             pu.MfaConfiguredAtUtc = configuredAtUtc;
             pu.MfaRecoveryCodeHashes = recovery.Hashes;
+            pu.MfaLastTotpStep = setupStep;
             PlatformSessionSecurity.RotateStamp(pu, configuredAtUtc);
             _db.AuditLogs.Add(AuthAuditEntry.Create(
                 auditId,
@@ -521,10 +530,16 @@ public class MfaService : IMfaService
                 new RequestContext(null, null, null, null),
                 "{\"via\":\"authenticated_setup\"}"));
             await _db.SaveChangesAsync(cancellationToken);
+            recipient = (pu.Email, pu.FullName);
             return true;
         }
 
-        if (!_db.Database.IsRelational()) return await EnableOnceAsync(ct) ? recovery.Codes : null;
+        if (!_db.Database.IsRelational())
+        {
+            if (!await EnableOnceAsync(ct)) return null;
+            await NotifyPlatformFactorEnrolledAsync(recipient, configuredAtUtc, ct);
+            return recovery.Codes;
+        }
         var strategy = _db.Database.CreateExecutionStrategy();
         var succeeded = await strategy.ExecuteInTransactionAsync(
             EnableOnceAsync,
@@ -533,7 +548,11 @@ public class MfaService : IMfaService
                 .AnyAsync(x => x.Id == auditId && x.Action == "platform.auth.mfa_enabled", cancellationToken),
             IsolationLevel.ReadCommitted,
             ct);
-        if (succeeded) return recovery.Codes;
+        if (succeeded)
+        {
+            await NotifyPlatformFactorEnrolledAsync(recipient, configuredAtUtc, ct);
+            return recovery.Codes;
+        }
         _db.ChangeTracker.Clear();
         return await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
             .AnyAsync(x => x.Id == auditId && x.Action == "platform.auth.mfa_enabled", ct)
@@ -655,7 +674,8 @@ public class MfaService : IMfaService
                 return false;
             }
 
-            if (!_totp.Verify(plainSecret, totpCode))
+            var matchedStep = _totp.MatchStep(plainSecret, totpCode);
+            if (!TotpService.IsFreshStep(matchedStep, pu.MfaLastTotpStep))
             {
                 challenge.FailedAttempts++;
                 if (challenge.FailedAttempts >= MfaChallengeToken.MaxAttempts)
@@ -684,6 +704,7 @@ public class MfaService : IMfaService
             }
 
             challenge.UsedAtUtc = completedAtUtc;
+            pu.MfaLastTotpStep = matchedStep;
             pu.FailedLoginCount = 0;
             pu.LastLoginAtUtc = completedAtUtc;
             pu.LastLoginIp = context.IpAddress;
@@ -769,7 +790,7 @@ public class MfaService : IMfaService
             string plainSecret;
             try { plainSecret = _totp.DecryptSecret(pu.MfaSecretEncrypted); }
             catch { return false; }
-            if (!_totp.Verify(plainSecret, totpCode)) return false;
+            if (!TotpService.IsFreshStep(_totp.MatchStep(plainSecret, totpCode), pu.MfaLastTotpStep)) return false;
 
             await _db.MfaChallengeTokens.TagWith(RowLockingInterceptor.ForUpdateTag)
                 .Where(x => x.PlatformUserId == pu.Id && x.UsedAtUtc == null)
@@ -791,6 +812,7 @@ public class MfaService : IMfaService
             pu.MfaSecretEncrypted = null;
             pu.MfaConfiguredAtUtc = null;
             pu.MfaRecoveryCodeHashes = null;
+            pu.MfaLastTotpStep = null;
             PlatformSessionSecurity.RotateStamp(pu, disabledAtUtc);
             _db.AuditLogs.Add(AuthAuditEntry.Create(
                 auditId,
@@ -877,7 +899,8 @@ public class MfaService : IMfaService
         // Microsecond-truncated so the commit check below can match it exactly after a Postgres round trip.
         var now = DateTime.UtcNow;
         var verifiedAtUtc = new DateTime(now.Ticks - now.Ticks % 10, DateTimeKind.Utc);
-        var codeValid = _totp.Verify(request.TempSecret, request.TotpCode);
+        var enrolStep = _totp.MatchStep(request.TempSecret, request.TotpCode);
+        var codeValid = enrolStep is not null;
         var encryptedSecret = codeValid ? _totp.EncryptSecret(request.TempSecret) : null;
         var auditId = Guid.NewGuid();
         (string Email, string Name)? recipient = null;
@@ -931,6 +954,7 @@ public class MfaService : IMfaService
             pu.MfaSecretEncrypted = encryptedSecret;
             pu.MfaConfiguredAtUtc = verifiedAtUtc;
             pu.MfaRecoveryCodeHashes = recovery.Hashes;
+            pu.MfaLastTotpStep = enrolStep;
             PlatformSessionSecurity.RotateStamp(pu, verifiedAtUtc);
             _db.AuditLogs.Add(AuthAuditEntry.Create(
                 auditId,
@@ -992,6 +1016,7 @@ public class MfaService : IMfaService
             pu.MfaSecretEncrypted = null;
             pu.MfaConfiguredAtUtc = null;
             pu.MfaRecoveryCodeHashes = null;
+            pu.MfaLastTotpStep = null;
             PlatformSessionSecurity.RotateStamp(pu, resetAtUtc);
             _db.AuditLogs.Add(AuthAuditEntry.Create(
                 auditId,
@@ -1047,18 +1072,27 @@ public class MfaService : IMfaService
         }
     }
 
-    private async Task NotifyPlatformFactorEnrolledAsync((string Email, string Name)? to, DateTime atUtc, CancellationToken ct)
+    private Task NotifyPlatformFactorEnrolledAsync((string Email, string Name)? to, DateTime atUtc, CancellationToken ct)
+        => NotifyPlatformAsync(to, "Two-step sign-in was turned on for your KynexOne platform account",
+            FactorEnrolledHtml(to?.Name ?? string.Empty, atUtc), "enrolment", ct);
+
+    private static string RecoveryNoticeHtml(string name, string what, DateTime atUtc) => $"""
+        <p>Hello {System.Net.WebUtility.HtmlEncode(name)},</p>
+        <p>{what} on your KynexOne platform account on {atUtc:yyyy-MM-dd HH:mm} UTC.</p>
+        <p><strong>If this was not you</strong>, tell another platform Owner immediately and have your factor reset.</p>
+        """;
+
+    private async Task NotifyPlatformAsync((string Email, string Name)? to, string subject, string html, string kind, CancellationToken ct)
     {
         if (_email is null || to is not { } r || string.IsNullOrWhiteSpace(r.Email)) return;
         try
         {
-            var result = await _email.DeliverPlatformAsync(r.Email, r.Name,
-                "Two-step sign-in was turned on for your KynexOne platform account", FactorEnrolledHtml(r.Name, atUtc), cancellationToken: ct);
-            _log?.LogInformation("MFA enrolment notice for a platform operator: {Outcome}.", result.Status);
+            var result = await _email.DeliverPlatformAsync(r.Email, r.Name, subject, html, cancellationToken: ct);
+            _log?.LogInformation("MFA {Kind} notice for a platform operator: {Outcome}.", kind, result.Status);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _log?.LogWarning(ex, "MFA enrolment notice for a platform operator could not be sent.");
+            _log?.LogWarning(ex, "MFA {Kind} notice for a platform operator could not be sent.", kind);
         }
     }
 
@@ -1108,6 +1142,7 @@ public class MfaService : IMfaService
         var now = DateTime.UtcNow;
         var completedAtUtc = new DateTime(now.Ticks - now.Ticks % 10, DateTimeKind.Utc);
         PlatformUser? prepared = null;
+        var remainingAfterUse = 0;
 
         async Task<bool> CompleteOnceAsync(CancellationToken cancellationToken)
         {
@@ -1172,6 +1207,7 @@ public class MfaService : IMfaService
                 $"{{\"platformUserId\":\"{pu.Id:D}\",\"remaining\":{remaining.Count}}}"));
             await _db.SaveChangesAsync(cancellationToken);
             prepared = pu;
+            remainingAfterUse = remaining.Count;
             return true;
         }
 
@@ -1195,13 +1231,21 @@ public class MfaService : IMfaService
             succeeded = await CompleteOnceAsync(ct);
         }
         if (!succeeded) return null;
-        return prepared ?? await _db.PlatformUsers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == envelope.PrincipalId, ct);
+        var signedIn = prepared ?? await _db.PlatformUsers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == envelope.PrincipalId, ct);
+        if (signedIn is not null)
+            await NotifyPlatformAsync((signedIn.Email, signedIn.FullName),
+                "A recovery code was used to sign in to your KynexOne platform account",
+                RecoveryNoticeHtml(signedIn.FullName,
+                    $"A one-time recovery code was used to sign in ({remainingAfterUse} code(s) left)", completedAtUtc),
+                "recovery-code-use", ct);
+        return signedIn;
     }
 
     public async Task<IReadOnlyList<string>?> RegeneratePlatformRecoveryCodesAsync(Guid platformUserId, string totpCode, CancellationToken ct)
     {
         var recovery = NewRecoveryCodes();
         var now = DateTime.UtcNow;
+        (string Email, string Name)? recipient = null;
 
         async Task<bool> RegenerateOnceAsync(CancellationToken cancellationToken)
         {
@@ -1213,13 +1257,16 @@ public class MfaService : IMfaService
             string secret;
             try { secret = _totp.DecryptSecret(pu.MfaSecretEncrypted); }
             catch { return false; }
-            if (!_totp.Verify(secret, totpCode)) return false;
+            var step = _totp.MatchStep(secret, totpCode);
+            if (!TotpService.IsFreshStep(step, pu.MfaLastTotpStep)) return false;
+            pu.MfaLastTotpStep = step;
             pu.MfaRecoveryCodeHashes = recovery.Hashes;
             _db.AuditLogs.Add(AuthAuditEntry.Create(
                 Guid.NewGuid(), now, "platform.auth.mfa_recovery_codes_regenerated", "PlatformUser",
                 pu.Id.ToString(), new RequestContext(null, null, null, null),
                 $"{{\"platformUserId\":\"{pu.Id:D}\",\"count\":{RecoveryCodeCount}}}"));
             await _db.SaveChangesAsync(cancellationToken);
+            recipient = (pu.Email, pu.FullName);
             return true;
         }
 
@@ -1230,7 +1277,11 @@ public class MfaService : IMfaService
             ? await _db.Database.CreateExecutionStrategy().ExecuteInTransactionAsync(
                 RegenerateOnceAsync, CommittedAsync, IsolationLevel.ReadCommitted, ct)
             : await RegenerateOnceAsync(ct);
-        return ok ? recovery.Codes : null;
+        if (!ok) return null;
+        await NotifyPlatformAsync(recipient, "New recovery codes were generated for your KynexOne platform account",
+            RecoveryNoticeHtml(recipient?.Name ?? string.Empty, "New recovery codes were generated (all earlier codes stopped working)", now),
+            "recovery-codes-regenerated", ct);
+        return recovery.Codes;
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

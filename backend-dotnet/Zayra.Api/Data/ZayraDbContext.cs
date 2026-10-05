@@ -188,7 +188,9 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
                             nameof(PlatformUser.LastLoginIp) or
                             // Consuming or regenerating recovery codes changes no identity, role or
                             // factor; rotating the stamp would sign the operator out mid-session.
-                            nameof(PlatformUser.MfaRecoveryCodeHashes));
+                            nameof(PlatformUser.MfaRecoveryCodeHashes) or
+                            // Replay-protection bookkeeping on every MFA sign-in, likewise.
+                            nameof(PlatformUser.MfaLastTotpStep));
                 // User.UpdatedAtUtc is likewise the tenant access-token security stamp. Routine
                 // login telemetry must allow multiple legitimate device/browser sessions and a
                 // sub-threshold bad-password attempt must not revoke an existing session. Lockout,
