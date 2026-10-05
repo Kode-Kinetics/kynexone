@@ -565,7 +565,7 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
         reason: form.reason, isEmergency: form.isEmergency,
         delegateEmployeeId: form.delegateEmployeeId ? Number(form.delegateEmployeeId) : undefined,
         delegateEmployeeName: form.delegateEmployeeName,
-        statutoryEventDate: applyKind && form.statutoryEventDate ? form.statutoryEventDate : undefined,
+        statutoryEventDate: isDeclarableLeave(applyKind) && form.statutoryEventDate ? form.statutoryEventDate : undefined,
         separateEventReason: isDeclarableLeave(applyKind) && form.separateEventReason.trim() ? form.separateEventReason.trim() : undefined,
       });
       setSuccess(true);
@@ -668,7 +668,7 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
             <textarea className={inp} rows={3} value={form.reason} onChange={e => set('reason', e.target.value)} placeholder={selectedType?.requiresReason ? 'Reason is required for this leave type…' : 'Optional reason…'} />
           </Field>
 
-          {applyKind && (
+          {isDeclarableLeave(applyKind) && (
             <Field label={t('Date of the event (death, birth or marriage)')}>
               <input type="date" className={inp} value={form.statutoryEventDate} onChange={e => set('statutoryEventDate', e.target.value)} />
             </Field>

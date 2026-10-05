@@ -723,7 +723,14 @@ public class LeaveService : ILeaveService
                 // A separate-event declaration means something only for the leaves that can genuinely
                 // recur close together (a second death, a second birth, a marriage). For maternity,
                 // iddah and Hajj it is not stored, so it can neither split an event nor mislead an approver.
-                if (!IsDeclarable(kind)) request.SeparateEventReason = null;
+                // Event dates and separate-event declarations mean something only for the leaves that can
+                // genuinely recur close together (a second death, a second birth, a marriage). For
+                // maternity, iddah and Hajj neither is stored, so neither can split an event or mislead.
+                if (!IsDeclarable(kind))
+                {
+                    request.SeparateEventReason = null;
+                    request.StatutoryEventDate = null;
+                }
                 if (request.SeparateEventReason is { Length: > 1000 })
                     throw new InvalidOperationException("The reason for a separate event must be 1,000 characters or fewer.");
                 if (request.SeparateEventReason is not null && request.StatutoryEventDate is null)
@@ -731,6 +738,19 @@ public class LeaveService : ILeaveService
                         "To declare a separate event, give the date of the event (the death, birth or marriage) as well as the reason.");
                 if (request.StatutoryEventDate is { } eventDate && eventDate > request.EndDate)
                     throw new InvalidOperationException("The event date cannot be after the last day of the leave.");
+                if (request.StatutoryEventDate is { } earliestCheck)
+                {
+                    // Leave for a death, a birth or a marriage is taken close to the event. How close is a
+                    // statutory rule ([COUNSEL]), read from the platform row so counsel can move it.
+                    var maxLead = (int)(await _rules.GetDecimalAsync(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+                        KsaSpecialLeaveRuleKeys.EventDateMaxLeadDays, request.StartDate, null, ct)
+                        ?? KsaSpecialLeaveDefaults.EventDateMaxLeadDays);
+                    if (earliestCheck < request.StartDate.AddDays(-maxLead))
+                        throw new InvalidOperationException(
+                            $"The event date is more than {maxLead} days before the leave starts. Leave for a death, birth or "
+                            + $"marriage has to start within {maxLead} days of the event — give the date it happened, no earlier "
+                            + $"than {request.StartDate.AddDays(-maxLead):dd MMM yyyy}.");
+                }
                 withinStatutory = (KsaStatutorySpecialLeave.IsCalendarSpan(kind) ? calendarDays : workingDays) <= statutorySpan;
                 withinPolicy = effectivePolicy is { AnnualEntitlementDays: > 0m } && workingDays <= effectivePolicy.AnnualEntitlementDays;
                 request.TotalDays = workingDays;
@@ -1833,12 +1853,20 @@ public class LeaveService : ILeaveService
         }
 
         var windowEnds = history.Append(subject).ToDictionary(n => n.Id, n => WindowEnd(n.StartDate));
+        // The order requests were made in: a request being submitted has no SubmittedAtUtc yet and is
+        // the latest; otherwise submission time, then creation time.
+        static DateTime Made(LeaveRequest r) => r.SubmittedAtUtc ?? r.CreatedAtUtc;
         bool Linked(LeaveRequest a, LeaveRequest b)
         {
             if (declarable)
             {
-                if (a.StatutoryEventDate is { } da && b.StatutoryEventDate is { } db) return da == db;
-                if (IsDeclaredSeparate(a, kind) || IsDeclaredSeparate(b, kind)) return false;
+                // The same event date is the same event, however far apart the leave is.
+                if (a.StatutoryEventDate is { } da && b.StatutoryEventDate is { } db && da == db) return true;
+                // A DIFFERENT event date splits the event only when the later request was declared
+                // separate — date AND reason, audited and flagged to the approver. A date alone does not:
+                // otherwise any new date would split one entitlement into two with nobody asked why.
+                var later = Made(a) >= Made(b) ? a : b;
+                if (a.StatutoryEventDate != b.StatutoryEventDate && IsDeclaredSeparate(later, kind)) return false;
             }
             return a.StartDate <= windowEnds[b.Id] && b.StartDate <= windowEnds[a.Id];
         }
@@ -1914,7 +1942,8 @@ public class LeaveService : ILeaveService
             + $". This request belongs to the same event as leave from {first:dd MMM yyyy}; together they would be "
             + $"{(calendar ? ev.StatutoryTotal : ev.PolicyTotal):0.##} day(s)."
             + (IsDeclarable(kind)
-                ? " If this is a separate event (for example a second bereavement), give the event date and the reason to declare it."
+                ? " If this is a separate event (for example a second bereavement), declare it by giving the event date and the "
+                  + "reason; if you cannot enter them where you are making this request, ask HR or use the web app to declare a separate event."
                 : string.Empty));
     }
 

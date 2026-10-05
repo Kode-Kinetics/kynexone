@@ -261,7 +261,8 @@ public class KsaStatutoryLeaveRequestTests
         var act = () => Submit(f, Base.AddDays(13), 5);
 
         (await act.Should().ThrowAsync<InvalidOperationException>())
-            .Which.Message.Should().Contain("per event").And.Contain("give the event date and the reason");
+            .Which.Message.Should().Contain("per event").And.Contain("giving the event date and the reason")
+            .And.Contain("ask HR or use the web app to declare a separate event");
     }
 
     [Fact]
@@ -281,6 +282,50 @@ public class KsaStatutoryLeaveRequestTests
         context.SeparateEventReason.Should().Be("Grandmother died two days after my father");
         context.StatutoryKind.Should().Be("Bereavement");
         context.History.Should().ContainSingle().Which.SameEvent.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task DifferentEventDatesWithoutAReason_DoNotSplitTheEvent()
+    {
+        // A new date alone is not a declaration: without a reason (audited, flagged) the window rule
+        // decides, and the overrun is refused with the way to declare.
+        var f = await SeedAsync("BEREAVEMENT", "Bereavement Leave", "Bereavement");
+        await Submit(f, Base.AddDays(10), 3, eventDate: Base.AddDays(9));
+
+        var act = () => Submit(f, Base.AddDays(13), 5, eventDate: Base.AddDays(12));
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should().Contain("per event").And.Contain("declare it by giving the event date and the reason");
+    }
+
+    [Fact]
+    public async Task AnEventDateBeyondTheLimit_IsRefused_AndOneAtTheLimit_IsAllowed()
+    {
+        var f = await SeedAsync("MARRIAGE", "Marriage Leave", "Marriage");
+
+        var tooEarly = () => Submit(f, Base, 3, eventDate: Base.AddDays(-31));
+        (await tooEarly.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should().Contain("more than 30 days before the leave starts");
+
+        (await Submit(f, Base, 3, eventDate: Base.AddDays(-30))).StatutoryEventDate.Should().Be(Base.AddDays(-30));
+    }
+
+    [Fact]
+    public async Task TheEventDateLimit_IsReadFromTheStatutoryRule()
+    {
+        var f = await SeedAsync("MARRIAGE", "Marriage Leave", "Marriage");
+        f.Db.StatutoryRules.Add(new StatutoryRule
+        {
+            Id = Guid.NewGuid(), TenantId = null, CountryCode = CountryCodes.Saudi, Jurisdiction = Jurisdictions.KsaMainland,
+            RuleKey = KsaSpecialLeaveRuleKeys.EventDateMaxLeadDays, RuleValue = "10", DataType = "decimal",
+            EffectiveFrom = new DateTime(2005, 9, 27, 0, 0, 0, DateTimeKind.Utc), Description = "test",
+        });
+        await f.Db.SaveChangesAsync();
+
+        var act = () => Submit(f, Base, 3, eventDate: Base.AddDays(-11));
+
+        (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("more than 10 days before the leave starts");
+        (await Submit(f, Base.AddDays(40), 3, eventDate: Base.AddDays(30))).TotalDays.Should().Be(3m);
     }
 
     [Fact]
@@ -339,7 +384,7 @@ public class KsaStatutoryLeaveRequestTests
         var f = await SeedAsync("MARRIAGE", "Marriage Leave", "Marriage");
         await Submit(f, Base, 3, eventDate: Base);
 
-        var act = () => Submit(f, Base.AddDays(40), 3, eventDate: Base);
+        var act = () => Submit(f, Base.AddDays(25), 3, eventDate: Base);
 
         (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("per event");
     }

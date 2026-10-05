@@ -491,6 +491,12 @@ public static class StatutoryRuleSeeder
             + "it may be extended without pay until delivery. Expressed as 130 calendar days; four Gregorian months and "
             + "ten days is 130–133 days depending on the months spanned, so confirm the counting basis."));
         list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.event_date_max_lead_days", "30", "decimal", eff07,
+            "[COUNSEL] How many days before a bereavement, sibling-bereavement, birth or marriage leave starts the "
+            + "event itself may be. Bounds the event date an employee gives (and so a declared separate event). NOT a "
+            + "figure in the Labour Law: Art. 113 counts these leaves from the date of the incident and the birth leave "
+            + "within seven days of it, but names no outer limit. 30 is a product default — counsel must confirm it."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
             "leave.iddah_non_muslim_days", "15", "decimal", eff07,
             "[CERT] KSA Art.160(2): a non-Muslim female worker whose husband dies is entitled to fifteen days with "
             + "full pay."));

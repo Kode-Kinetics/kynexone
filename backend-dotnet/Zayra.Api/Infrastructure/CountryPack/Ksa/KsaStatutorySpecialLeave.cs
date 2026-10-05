@@ -69,6 +69,8 @@ public static class KsaSpecialLeaveRuleKeys
     public const string HajjMinServiceYears = "leave.hajj_min_service_years";
     public const string IddahMuslimDays = "leave.iddah_muslim_days";
     public const string IddahNonMuslimDays = "leave.iddah_non_muslim_days";
+    /// <summary>How many days before the leave starts the event (death, birth, marriage) may be.</summary>
+    public const string EventDateMaxLeadDays = "leave.event_date_max_lead_days";
 
     public static string For(KsaStatutoryLeaveKind kind) => kind switch
     {
@@ -118,6 +120,11 @@ public static class KsaSpecialLeaveDefaults
 
     /// <summary>Art. 160(2): "a fifteen-day leave with full pay".</summary>
     public const decimal IddahNonMuslimDays = 15m;
+
+    /// <summary>[COUNSEL] How many days before the leave starts the event of a bereavement, birth or
+    /// marriage leave may be. Not a statutory figure: the statute counts these leaves "from the date of
+    /// the incident" and the birth leave "within seven days", but sets no outer limit for the others.</summary>
+    public const decimal EventDateMaxLeadDays = 30m;
 
     /// <summary>The compiled floor for <paramref name="kind"/> on <paramref name="on"/>, or null when
     /// the statute granted nothing on that date (a sibling's death before the 2025 amendment).</summary>

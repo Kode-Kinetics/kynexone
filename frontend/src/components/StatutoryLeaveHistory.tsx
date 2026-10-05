@@ -44,16 +44,19 @@ export function StatutoryLeaveHistory({ context }: { context?: StatutoryLeaveCon
       {items.length > 0 && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
           <p className="font-semibold">{t('Earlier statutory leave of this kind')}</p>
+          <p>{fill(t('This request: event date {event}.'), {
+            event: <bdi>{context.eventDate ? date(context.eventDate) : t('no event date')}</bdi>,
+          })}</p>
           <ul className="mt-1 space-y-0.5">
             {items.map((h) => {
               const approved = APPROVED_STATUSES.has(h.status);
               const key = h.sameEvent
                 ? approved
-                  ? 'Earlier {kind}: {days} day(s), {from} – {to}, approved — same event window.'
-                  : 'Earlier {kind}: {days} day(s), {from} – {to}, pending approval — same event window.'
+                  ? 'Earlier {kind}: {days} day(s), {from} – {to}, approved — same event. Event date: {event}.'
+                  : 'Earlier {kind}: {days} day(s), {from} – {to}, pending approval — same event. Event date: {event}.'
                 : approved
-                  ? 'Earlier {kind}: {days} day(s), {from} – {to}, approved.'
-                  : 'Earlier {kind}: {days} day(s), {from} – {to}, pending approval.';
+                  ? 'Earlier {kind}: {days} day(s), {from} – {to}, approved. Event date: {event}.'
+                  : 'Earlier {kind}: {days} day(s), {from} – {to}, pending approval. Event date: {event}.';
               return (
                 <li key={h.requestId} className={h.sameEvent ? 'font-semibold' : undefined}>
                   {fill(t(key), {
@@ -61,6 +64,7 @@ export function StatutoryLeaveHistory({ context }: { context?: StatutoryLeaveCon
                     days: <bdi>{h.totalDays}</bdi>,
                     from: <bdi>{date(h.startDate)}</bdi>,
                     to: <bdi>{date(h.endDate)}</bdi>,
+                    event: <bdi>{h.eventDate ? date(h.eventDate) : t('no event date')}</bdi>,
                   })}
                 </li>
               );
