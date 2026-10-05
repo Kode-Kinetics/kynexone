@@ -29,6 +29,9 @@ import { LoanLifecyclePanel } from '../components/loans/LoanLifecyclePanel';
 import { LoanAccountSummary, LoanStatement } from '../components/loans/LoanStatement';
 import { loanGovernanceApi, type LoanEligibility } from '../api/loanGovernance';
 import { useCompany } from '../contexts/CompanyContext';
+import { useLocale } from '../contexts/LocaleContext';
+import { LoanLimitCard } from '../components/loans/LoanLimitCard';
+import { isGradeBlocked, isLoanTypeNotOffered, NOT_OFFERED_CODE } from '../lib/gradeLoanLimits';
 
 type Tab = 'loans' | 'loanPayments' | 'loanPolicies' | 'loanTypes' | 'advances' | 'advancePolicy' | 'bonusTypes' | 'bonusBatches' | 'auditReport';
 
@@ -288,6 +291,17 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
   const applicantId = selectedEmployee?.intId ?? (mine || !staff ? user?.employeeId : undefined);
   const eligibilityKey = JSON.stringify([applicantId, createForm.loanTypeId, createForm.requestedAmount, createForm.requestedInstallments, createForm.repaymentMethod]);
   const [checkedKey, setCheckedKey] = useState('');
+  const { t } = useLocale();
+  const checkedEligibility = eligibility && checkedKey === eligibilityKey ? eligibility : null;
+  const notOffered = isLoanTypeNotOffered(checkedEligibility);
+  // Grade limits are hard: no policy exception can lift them.
+  const gradeBlocked = isGradeBlocked(checkedEligibility);
+  const canSubmit = !!checkedEligibility && !notOffered && !gradeBlocked
+    && (checkedEligibility.eligible || (requestException && !!checkedEligibility.canRequestException));
+  // Reasons the limit card already explains in plain words (grade refusals, "not offered") are not repeated.
+  const otherReasons = checkedEligibility
+    ? checkedEligibility.reasons.filter((_, index) => { const code = checkedEligibility.codes?.[index] ?? ''; return !code.startsWith('Grade') && code !== NOT_OFFERED_CODE; })
+    : [];
   const checkEligibility = async () => {
     if ((!applicantId && staff && !mine) || !createForm.loanTypeId || createForm.requestedAmount <= 0) { setError('Select the employee, loan type and requested amount first.'); return; }
     setCheckingEligibility(true); setError('');
@@ -310,7 +324,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
 
   const createLoan = async () => {
     if ((!applicantId && staff && !mine) || !createForm.loanTypeId) { setError('Select an employee and loan type'); return; }
-    if (checkedKey !== eligibilityKey || !(eligibility?.eligible || (requestException && eligibility?.canRequestException))) { setError('Check eligibility for the current request before submitting.'); return; }
+    if (!canSubmit || !eligibility) { setError(notOffered || gradeBlocked ? t('This request cannot be submitted. The reason is shown under Check Eligibility.') : 'Check eligibility for the current request before submitting.'); return; }
     if (createForm.requestedAmount <= 0 || !Number.isInteger(createForm.requestedInstallments) || createForm.requestedInstallments < 1) { setError('Enter a positive amount and a whole number of installments.'); return; }
     setSaving(true); setError('');
     try {
@@ -419,7 +433,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
 
       {/* Create Loan Modal */}
       <Modal isOpen={createModal} title="New Loan Request" onClose={() => setCreateModal(false)} size="lg"
-        footer={<><button type="button" onClick={() => setCreateModal(false)} className="btn-secondary">Cancel</button><button type="button" onClick={createLoan} disabled={saving || checkingEligibility || checkedKey !== eligibilityKey || !(eligibility?.eligible || (requestException && eligibility?.canRequestException))} className="btn-primary disabled:opacity-60">{saving ? 'Submitting…' : 'Submit Request'}</button></>}>
+        footer={<><button type="button" onClick={() => setCreateModal(false)} className="btn-secondary">Cancel</button>{!notOffered && <button type="button" onClick={createLoan} disabled={saving || checkingEligibility || !canSubmit} className="btn-primary disabled:opacity-60">{saving ? 'Submitting…' : 'Submit Request'}</button>}</>}>
         <FormError error={error} />
         <div className="space-y-3">
           <FormField label="Employee" required>
@@ -448,7 +462,9 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
               <textarea value={createForm.notes} onChange={(e) => setCreateForm(x => ({ ...x, notes: e.target.value }))} className="input w-full" rows={2} title="Notes" />
             </FormField>
           </div>
-          <div className="space-y-2 rounded-lg border border-slate-200 p-3 dark:border-white/10"><button className="btn-secondary" disabled={checkingEligibility || saving} onClick={checkEligibility}>{checkingEligibility ? 'Checking…' : 'Check Eligibility'}</button>{eligibility && checkedKey === eligibilityKey && <div role="status" className="space-y-1 text-sm"><p className={eligibility.eligible ? 'text-emerald-700' : 'text-amber-700'}>{eligibility.eligible ? 'Eligible to apply' : 'Not eligible for this request'}</p><p>{eligibility.maxAvailableAmount == null ? 'No fixed amount limit' : `Maximum available: ${eligibility.maxAvailableAmount.toLocaleString()}`} · Policy v{eligibility.policyVersion ?? '—'}</p>{eligibility.reasons.map((reason, index) => <p key={reason}>{reason}{eligibility.codes?.[index] ? ` (${eligibility.codes[index]})` : ''}</p>)}{!eligibility.eligible && eligibility.canRequestException && <label className="flex items-center gap-2"><input type="checkbox" checked={requestException} onChange={e => setRequestException(e.target.checked)} />Request an HR Director policy exception</label>}<p className="text-xs text-slate-500">Approval starts with HR Manager. Policy exceptions need a separate independent approval before the loan can proceed.</p></div>}</div>
+          <div className="space-y-2 rounded-lg border border-slate-200 p-3 dark:border-white/10"><button className="btn-secondary" disabled={checkingEligibility || saving} onClick={checkEligibility}>{checkingEligibility ? 'Checking…' : 'Check Eligibility'}</button>{checkedEligibility && (notOffered
+            ? <p role="status" className="text-sm font-semibold text-amber-700 dark:text-amber-300">{t(mine || !staff ? "Loans of this type aren't offered by your company." : "Loans of this type aren't offered by this employee's company.")}</p>
+            : <div role="status" className="space-y-1 text-sm"><p className={checkedEligibility.eligible ? 'text-emerald-700' : 'text-amber-700'}>{checkedEligibility.eligible ? 'Eligible to apply' : 'Not eligible for this request'}</p><LoanLimitCard eligibility={checkedEligibility} self={mine || !staff} /><p>{checkedEligibility.maxAvailableAmount == null ? 'No fixed amount limit' : `Maximum available: ${checkedEligibility.maxAvailableAmount.toLocaleString()}`} · Policy v{checkedEligibility.policyVersion ?? '—'}</p>{otherReasons.map(reason => <p key={reason}>{reason}</p>)}{!checkedEligibility.eligible && checkedEligibility.canRequestException && !gradeBlocked && <label className="flex items-center gap-2"><input type="checkbox" checked={requestException} onChange={e => setRequestException(e.target.checked)} />Request an HR Director policy exception</label>}{gradeBlocked && <p className="text-xs text-slate-500">{t('Grade limits cannot be overridden by a policy exception.')}</p>}<p className="text-xs text-slate-500">Approval starts with HR Manager. Policy exceptions need a separate independent approval before the loan can proceed.</p></div>)}</div>
         </div>
       </Modal>
 
