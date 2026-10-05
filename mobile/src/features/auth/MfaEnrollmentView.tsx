@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   I18nManager,
@@ -6,12 +6,12 @@ import {
   Linking,
   Platform,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
-import * as Clipboard from 'expo-clipboard';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useTranslation } from 'react-i18next';
@@ -53,7 +53,9 @@ type SetupState =
 
 /**
  * First-time TOTP enrolment on the same phone (a QR code cannot be scanned by
- * the device showing it): grouped setup key with Copy, an otpauth:// deep link,
+ * the device showing it): an otpauth:// deep link first, then a selectable
+ * grouped setup key the user can long-press to copy or send with the system
+ * share sheet (React Native core only, so this ships without a native build),
  * then the first code. The secret lives only in this component's state.
  */
 export function MfaEnrollmentView({
@@ -72,11 +74,9 @@ export function MfaEnrollmentView({
   const [provisioningUri, setProvisioningUri] = useState('');
   const [secret, setSecret] = useState('');
   const [code, setCode] = useState('');
-  const [copied, setCopied] = useState(false);
   const [noAuthenticator, setNoAuthenticator] = useState(false);
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
   const [done, setDone] = useState(false);
-  const copiedToClipboard = useRef(false);
   const { state, nowMs, run, edited } = useCodeEntry(expiresInSeconds);
 
   useEffect(() => {
@@ -103,26 +103,20 @@ export function MfaEnrollmentView({
     };
   }, [enrollmentToken, tenantId, attempt]);
 
-  // Never keep the key past this screen: drop it from state, and take it back
-  // off the clipboard if we put it there.
+  // Never keep the key past this screen.
   useEffect(
     () => () => {
       setSecret('');
       setProvisioningUri('');
       setRecoveryCodes(null);
-      if (copiedToClipboard.current) void Clipboard.setStringAsync('').catch(() => undefined);
     },
     []
   );
 
-  const copy = async (text: string) => {
-    try {
-      await Clipboard.setStringAsync(text);
-      copiedToClipboard.current = true;
-      setCopied(true);
-    } catch {
-      setCopied(false);
-    }
+  // The user picks the destination (authenticator, password manager). A
+  // dismissed or failed share sheet changes nothing.
+  const share = (text: string) => {
+    void Share.share({ message: text }).catch(() => undefined);
   };
 
   const openAuthenticator = async () => {
@@ -146,7 +140,6 @@ export function MfaEnrollmentView({
       const result = await authApi.verifyMfaEnrollment(enrollmentToken, secret, entered, tenantId);
       setSecret('');
       setProvisioningUri('');
-      setCopied(false);
       if (!result.recoveryCodes && !confirmWhenDone) {
         onEnrolled();
         return;
@@ -170,9 +163,9 @@ export function MfaEnrollmentView({
               <Text key={item} selectable style={styles.recoveryCode}>{item}</Text>
             ))}
           </View>
-          <TouchableOpacity style={styles.outlineButton} onPress={() => void copy(recoveryCodes.join('\n'))} accessibilityRole="button">
-            <Ionicons name="copy-outline" size={18} color={COLORS.blue} />
-            <Text style={styles.outlineButtonText}>{copied ? t('mfa.copied') : t('mfa.copyCodes')}</Text>
+          <TouchableOpacity style={styles.outlineButton} onPress={() => share(recoveryCodes.join('\n'))} accessibilityRole="button">
+            <Ionicons name="share-outline" size={18} color={COLORS.blue} />
+            <Text style={styles.outlineButtonText}>{t('mfa.shareCodes')}</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.primaryButton}
@@ -265,9 +258,10 @@ export function MfaEnrollmentView({
         <View style={styles.secretBox} accessible accessibilityLabel={t('mfa.setupKeyLabel')}>
           <Text selectable style={styles.secret}>{groupSecret(secret)}</Text>
         </View>
-        <TouchableOpacity style={styles.copyButton} onPress={() => void copy(secret)} accessibilityRole="button">
-          <Ionicons name={copied ? 'checkmark' : 'copy-outline'} size={16} color={COLORS.cyan} />
-          <Text style={styles.copyText}>{copied ? t('mfa.copied') : t('mfa.copyKey')}</Text>
+        <Text style={styles.securityNote}>{t('mfa.longPressToCopy')}</Text>
+        <TouchableOpacity style={styles.copyButton} onPress={() => share(secret)} accessibilityRole="button">
+          <Ionicons name="share-outline" size={16} color={COLORS.cyan} />
+          <Text style={styles.copyText}>{t('mfa.shareKey')}</Text>
         </TouchableOpacity>
         <Text style={styles.securityNote}>{t('mfa.keyPrivate')}</Text>
 

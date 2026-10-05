@@ -156,7 +156,9 @@ Response handling lives in `src/auth/mfaFlow.ts` (pure, unit-tested in `tests/mf
 - `/auth/login` returns `mfaEnrollmentRequired` + `enrollmentToken` (enforced, not enrolled) → `MfaEnrollmentScreen`; after the first code the user signs in again.
 - Grace period: login returns tokens; `GET /auth/mfa/status` drives `MfaSetupBanner`, which starts enrolment via `POST /auth/mfa/enrollment/start`. Enrolling ends the session (the server rotates the session stamp).
 - Every rejected code is the same 401, so the app counts attempts (server limit 5) and tracks the 300 s expiry itself.
+- Same-phone enrolment: "Open authenticator app" (`otpauth://` link) first; the grouped key is selectable (long-press to copy) and has a "Share key" button (React Native core `Share`). The app never writes to the clipboard.
 - The setup key stays in component state only and is never logged or stored.
+- Release: this flow is JavaScript only. It adds no dependency, config plugin or `app.json`/`app.config.js` change against `main`, so it fits the current native binary and does not need App Store review. A store build would delay managers who sign in only on mobile past the enforcement date. Note: `expo-updates` is not installed and no `updates` URL is configured, so the app has no OTA channel yet; that must exist in the store binary before any JS-only update can be delivered.
 
 ---
 

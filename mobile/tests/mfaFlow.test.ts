@@ -19,6 +19,7 @@ import {
   type MfaFailureClass,
 } from '../src/auth/mfaFlow.ts';
 import { mfaAr, mfaEn } from '../src/config/mfaStrings.ts';
+import { readFileSync } from 'node:fs';
 
 const NOW = Date.parse('2026-10-05T12:00:00Z');
 
@@ -246,4 +247,26 @@ test('every MFA string exists in English and Arabic with the same placeholders',
     assert.ok(en.has(`errors.${kind}`), `missing error string ${kind}`);
   }
   assert.equal(mfaEn.bannerWithDate, 'Your role requires two-step sign-in from {{date}}. Set it up now.');
+});
+
+test('enrolment ships without a native build: no clipboard module, core Share + selectable key instead', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(pkg.dependencies['expo-clipboard'], undefined);
+  const mfaSources = [
+    '../src/features/auth/MfaEnrollmentView.tsx',
+    '../src/features/auth/MfaSetupBanner.tsx',
+    '../src/features/auth/MfaChallengeScreen.tsx',
+    '../src/features/auth/mfaCodeEntry.tsx',
+  ].map((path) => readFileSync(new URL(path, import.meta.url), 'utf8'));
+  for (const source of mfaSources) {
+    for (const [, specifier] of source.matchAll(/from '([^'.@][^']*|@[^/']+\/[^']+)'/g)) {
+      const bare = specifier.startsWith('@') ? specifier.split('/').slice(0, 2).join('/') : specifier.split('/')[0];
+      assert.ok(bare in pkg.dependencies, `${specifier} is not an existing dependency`);
+    }
+  }
+  const view = mfaSources[0];
+  assert.match(view, /Share\.share\(\{ message: /);
+  assert.match(view, /<Text selectable style=\{styles\.secret\}>/);
+  assert.equal('copyKey' in mfaEn, false);
+  assert.ok(mfaEn.shareKey && mfaAr.shareKey && mfaEn.longPressToCopy && mfaAr.longPressToCopy);
 });
