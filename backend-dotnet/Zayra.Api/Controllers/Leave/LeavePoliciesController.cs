@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Leave;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Leave;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Leave;
@@ -73,9 +74,9 @@ public class LeavePoliciesController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
-        var leaveTypeExists = await _db.LeaveTypes
-            .AnyAsync(t => t.Id == req.LeaveTypeId && t.TenantId == tenantId, ct);
-        if (!leaveTypeExists)
+        var leaveType = await _db.LeaveTypes.AsNoTracking()
+            .FirstOrDefaultAsync(t => t.Id == req.LeaveTypeId && t.TenantId == tenantId, ct);
+        if (leaveType is null)
             return BadRequest(new { message = "Leave type not found." });
 
         if (RefuseCarryForward(req.CarryForwardMax, req.CarryForwardExpiry) is { } carryForwardRefusal)
@@ -110,6 +111,9 @@ public class LeavePoliciesController : ControllerBase
             ApprovalWorkflowId = req.ApprovalWorkflowId,
             Status = req.Status ?? "Draft"
         };
+
+        if (await RefuseBelowStatutoryFloorAsync(tenantId.Value, leaveType, policy, ct) is { } floorRefusal)
+            return floorRefusal;
 
         _db.LeavePolicies.Add(policy);
         await _db.SaveChangesAsync(ct);
@@ -150,6 +154,29 @@ public class LeavePoliciesController : ControllerBase
             })
             : null;
 
+    /// <summary>
+    /// KSA statutory special leave (maternity, marriage, bereavement, birth, Hajj, iddah) cannot be
+    /// configured below the Labour Law's figure, or as unpaid, for a policy that reaches Saudi
+    /// employees. Refused with the citation rather than stored: a policy saved at 70 maternity days
+    /// would read back as the tenant's policy and be applied as if it were lawful.
+    /// </summary>
+    private async Task<IActionResult?> RefuseBelowStatutoryFloorAsync(
+        Guid tenantId, LeaveType leaveType, LeavePolicy policy, CancellationToken ct)
+    {
+        var violations = await KsaStatutoryLeavePolicyGuard.CheckAsync(
+            _db, tenantId, leaveType.Code, leaveType.NameEn, leaveType.Category,
+            policy.CountryCode, policy.CompanyId, policy.Status,
+            policy.AnnualEntitlementDays, policy.MaximumDaysPerRequest, policy.PayrollImpact, ct);
+        return violations.Count == 0
+            ? null
+            : BadRequest(new
+            {
+                error = "statutory_leave_floor",
+                message = string.Join(" ", violations) + " An employer may grant more than the law; it may not grant less.",
+                violations,
+            });
+    }
+
     [HttpPut("{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateLeavePolicyRequest req, CancellationToken ct)
@@ -189,6 +216,14 @@ public class LeavePoliciesController : ControllerBase
         if (req.ApprovalWorkflowId.HasValue) policy.ApprovalWorkflowId = req.ApprovalWorkflowId;
         if (!string.IsNullOrWhiteSpace(req.Status)) policy.Status = req.Status;
         policy.UpdatedAtUtc = DateTime.UtcNow;
+
+        // Checked on the policy as it WILL be, so a change to any one field — the days, the cap, the
+        // country, the company, the pay treatment or the status — is judged against the others.
+        var leaveType = await _db.LeaveTypes.AsNoTracking()
+            .FirstOrDefaultAsync(t => t.Id == policy.LeaveTypeId && t.TenantId == tenantId, ct);
+        if (leaveType is not null
+            && await RefuseBelowStatutoryFloorAsync(tenantId.Value, leaveType, policy, ct) is { } floorRefusal)
+            return floorRefusal;
 
         await _db.SaveChangesAsync(ct);
 

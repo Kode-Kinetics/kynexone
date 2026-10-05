@@ -6,6 +6,7 @@ using System.Text.RegularExpressions;
 using Zayra.Api.Application.AI;
 using Zayra.Api.Application.Setup;
 using Zayra.Api.Infrastructure.AI;
+using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Infrastructure.Payroll;
 
 namespace Zayra.Api.Infrastructure.Setup;
@@ -93,6 +94,11 @@ public sealed class SetupAssistantService : ISetupAssistantService
             };
         if (profile.Sections.Holidays)
             draft = draft with { HolidayCalendar = HolidayCalendarFor(iso3, notes) };
+        // Saudi statutory special leave is a matter of law, not of the model's or the template's
+        // taste: every Art. 113/114/151/160 entitlement is present and at least its statutory length,
+        // whichever engine produced the leave types. Before the entitlements, which read these spans.
+        if (profile.Sections.Leave && iso3 == "SAU")
+            draft = draft with { LeaveTypes = WithKsaStatutoryLeave(draft.LeaveTypes, rules, notes) };
         // Last, because an entitlement is meaningless without the leave type it is attached to:
         // this reads whichever leave types step 1 produced, the model's or the template's.
         if (profile.Sections.Leave && profile.Sections.LeavePolicies)
@@ -855,6 +861,13 @@ public sealed class SetupAssistantService : ISetupAssistantService
 
             if (entitlement <= 0m && !isUnpaid) unsourced.Add(t.NameEn);
 
+            // Maternity (12 weeks) and iddah (four months and ten days) are spans of calendar time
+            // in the statute, so the rest days inside them are leave days. Counted in working days,
+            // 84 would be nearly 17 weeks; counted on the calendar it is exactly the 12 the law gives.
+            var calendarSpan = iso3 == "SAU" && !isUnpaid
+                && KsaStatutorySpecialLeave.Classify(t.Code, t.NameEn, t.Category) is { } kind
+                && KsaStatutorySpecialLeave.IsCalendarSpan(kind);
+
             policies.Add(new DraftLeavePolicy(
                 Name: $"{t.NameEn} Policy",
                 LeaveTypeCode: t.Code,
@@ -869,8 +882,8 @@ public sealed class SetupAssistantService : ISetupAssistantService
                 // Sick leave cannot be booked in advance, so requiring notice for it would block
                 // the request it is meant to govern.
                 NoticeRequiredDays: isAnnual ? 7 : 0,
-                WeekendsIncluded: false,
-                PublicHolidaysIncluded: false,
+                WeekendsIncluded: calendarSpan,
+                PublicHolidaysIncluded: calendarSpan,
                 AppliesOnProbation: probation && !isAnnual,
                 PayrollImpact: isUnpaid ? "Unpaid" : "Full"));
         }
@@ -882,12 +895,81 @@ public sealed class SetupAssistantService : ISetupAssistantService
         if (sick is not null)
             notes.Add($"Sick leave is drafted at {sick.Value:0.##} days, which is the FULL-PAY band only. Longer sickness continues at reduced or nil pay under the statutory scale, which payroll applies separately — the entitlement here is not the whole picture.");
 
-        notes.Add("Leave days are counted in working days: weekends and public holidays inside a request are not deducted. Check this against your own contracts — some entitlements are expressed in calendar days, which is a different number.");
+        notes.Add(iso3 == "SAU"
+            ? "Leave days are counted in working days: weekends and public holidays inside a request are not deducted. Maternity and iddah leave are the exception — the law sets them in weeks and months, so they are counted on the calendar. Check this against your own contracts."
+            : "Leave days are counted in working days: weekends and public holidays inside a request are not deducted. Check this against your own contracts — some entitlements are expressed in calendar days, which is a different number.");
         notes.Add("Carry-forward is not part of the draft. This build has no year-end rollover, so a cap would be stored and never consulted; unused balance is handled through encashment.");
         if (probation)
             notes.Add($"Probation is set to {p.ProbationMonths} month(s). Annual leave is drafted as not available during probation; sick and the fixed-span leaves are.");
 
         return policies;
+    }
+
+    /// <summary>The Saudi statutory special leaves a KSA draft must carry, with the code, name and
+    /// colour each is drafted under when the model or template left it out.</summary>
+    private static readonly (KsaStatutoryLeaveKind Kind, string Code, string NameEn, string Category, bool RequiresAttachment, string Color)[] KsaStatutoryLeaveSeeds =
+    {
+        (KsaStatutoryLeaveKind.Maternity, "MAT", "Maternity Leave", "Parental", true, "#ec4899"),
+        (KsaStatutoryLeaveKind.Paternity, "PAT", "Paternity Leave", "Parental", false, "#8b5cf6"),
+        (KsaStatutoryLeaveKind.Marriage, "MARRIAGE", "Marriage Leave", "Marriage", true, "#14b8a6"),
+        (KsaStatutoryLeaveKind.Bereavement, "BEREAVEMENT", "Bereavement Leave", "Bereavement", true, "#475569"),
+        (KsaStatutoryLeaveKind.Hajj, "HAJJ", "Hajj Leave", "Religious", false, "#2F6BFF"),
+        (KsaStatutoryLeaveKind.IddahMuslim, "IDDAH", "Iddah Leave", "Bereavement", true, "#6366f1"),
+    };
+
+    /// <summary>
+    /// KSA Labour Law Arts. 113, 114, 151 and 160, applied to a draft's leave types: a statutory leave
+    /// already present is raised to its statutory length if it falls short, and one that is missing is
+    /// added. Nothing is lowered — a longer span is the employer's to give. The lengths come from the
+    /// platform statutory rules, falling back to <see cref="KsaSpecialLeaveDefaults"/>.
+    /// </summary>
+    private static List<DraftLeaveType> WithKsaStatutoryLeave(
+        List<DraftLeaveType> types, IReadOnlyDictionary<string, string> rules, List<string> notes)
+    {
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        int Floor(KsaStatutoryLeaveKind kind)
+        {
+            var seeded = rules.TryGetValue(KsaSpecialLeaveRuleKeys.For(kind), out var raw)
+                         && decimal.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out var v) && v > 0
+                ? v : (decimal?)null;
+            return (int)Math.Ceiling(seeded ?? KsaSpecialLeaveDefaults.FloorDays(kind, today) ?? 0m);
+        }
+
+        var result = new List<DraftLeaveType>();
+        var raised = new List<string>();
+        var present = new HashSet<KsaStatutoryLeaveKind>();
+        foreach (var t in types)
+        {
+            var kind = t.IsPaid ? KsaStatutorySpecialLeave.Classify(t.Code, t.NameEn, t.Category) : null;
+            if (kind is null) { result.Add(t); continue; }
+            present.Add(kind.Value);
+            var floor = Floor(kind.Value);
+            if (t.MaxConsecutiveDays >= floor) { result.Add(t); continue; }
+            raised.Add($"{t.NameEn} {t.MaxConsecutiveDays} → {floor}");
+            result.Add(t with { MaxConsecutiveDays = floor });
+        }
+
+        var codes = result.Select(t => t.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var added = new List<string>();
+        foreach (var seed in KsaStatutoryLeaveSeeds)
+        {
+            if (present.Contains(seed.Kind) || codes.Contains(seed.Code)) continue;
+            result.Add(new DraftLeaveType(seed.Code, seed.NameEn, seed.Category, true, Floor(seed.Kind), seed.RequiresAttachment, seed.Color));
+            added.Add(seed.NameEn);
+        }
+
+        if (raised.Count > 0)
+            notes.Add($"Raised to the Saudi statutory minimum: {string.Join("; ", raised)} days.");
+        if (added.Count > 0)
+            notes.Add($"Saudi statutory leave included in the draft: {string.Join(", ", added)}.");
+        notes.Add(
+            $"Saudi statutory leave is drafted at the legal minimum and cannot be set lower: maternity {Floor(KsaStatutoryLeaveKind.Maternity)} calendar days (12 weeks, Art. 151 as amended from 19 Feb 2025); " +
+            $"marriage {Floor(KsaStatutoryLeaveKind.Marriage)} days; bereavement {Floor(KsaStatutoryLeaveKind.Bereavement)} days for a spouse, parent or child and {Floor(KsaStatutoryLeaveKind.BereavementSibling)} for a brother or sister; " +
+            $"{Floor(KsaStatutoryLeaveKind.Paternity)} days for the birth of a child, taken within 7 days (Art. 113); Hajj {Floor(KsaStatutoryLeaveKind.Hajj)} to 15 days (Art. 114); " +
+            $"iddah {Floor(KsaStatutoryLeaveKind.IddahMuslim)} calendar days for a Muslim widow, {Floor(KsaStatutoryLeaveKind.IddahNonMuslim)} days for a non-Muslim widow (Art. 160). All fully paid.");
+        notes.Add("Not checked automatically, so the approver must confirm them: Hajj leave is due once in an employee's service and only after two consecutive years with you; the bereavement type covers both the 5-day and the 3-day cases; iddah is 15 days, not 130, for a non-Muslim widow.");
+        notes.Add("Exam leave (Art. 115) is not drafted: it lasts the actual exam days, and is paid only when you approved the enrolment and the year is not a repeat. Add it if your employees study.");
+        return result;
     }
 
     // ── Public holidays ─────────────────────────────────────────────────────
@@ -1263,10 +1345,13 @@ public sealed class SetupAssistantService : ISetupAssistantService
         {
             new("ANNUAL", "Annual Leave", "Standard", true, 30, false, "#00C896"),
             new("SICK", "Sick Leave", "Medical", true, 30, true, "#f59e0b"),
-            new("MAT", "Maternity Leave", "Parental", true, 70, true, "#ec4899"),
             new("PAT", "Paternity Leave", "Parental", true, 3, false, "#8b5cf6"),
             new("UNPAID", "Unpaid Leave", "Unpaid", false, 30, false, "#64748b"),
         };
+        // Saudi maternity is not drafted here: GenerateAsync's WithKsaStatutoryLeave adds it, and the
+        // other Saudi statutory leaves, from the Art. 151 statutory rule (84 days from 19 Feb 2025).
+        // For every other country this 70 has not been checked against local law.
+        if (iso3 != "SAU") leaves.Insert(2, new("MAT", "Maternity Leave", "Parental", true, 70, true, "#ec4899"));
         if (iso3 == "SAU") leaves.Add(new("HAJJ", "Hajj Leave", "Religious", true, 10, false, "#2F6BFF"));
 
         // A three-shift rotation is a real operational commitment, not a default. The customer now

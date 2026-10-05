@@ -8,6 +8,9 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Setup;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.CountryPack;
+using Zayra.Api.Infrastructure.CountryPack.Ksa;
+using Zayra.Api.Infrastructure.Leave;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
@@ -50,6 +53,10 @@ public class SetupAssistantController : ControllerBase
         if (!HasPermission("organization.setup.apply")) return Forbid();
         var tenantId = GetTenantId();
         var d = req.Draft;
+        // Before anything is written: a reviewed draft can still have been edited below the Saudi
+        // statutory floor, and applying half of it first would leave the tenant half-configured.
+        if (await RefuseBelowStatutoryLeaveFloorAsync(tenantId, req, ct) is { } floorRefusal)
+            return floorRefusal;
         var counts = new Dictionary<string, int>();
         void Bump(string k, int n) => counts[k] = counts.GetValueOrDefault(k) + n;
 
@@ -590,6 +597,53 @@ public class SetupAssistantController : ControllerBase
         => string.Equals(value, "NearestMinute", StringComparison.OrdinalIgnoreCase) ? "NearestMinute"
          : string.Equals(value, "Nearest15", StringComparison.OrdinalIgnoreCase) ? "Nearest15"
          : fallback;
+
+    /// <summary>
+    /// The setup-apply leg of the KSA statutory special-leave floor (Arts. 113, 114, 151, 160). The
+    /// draft's leave policies are checked with the same guard as <c>LeavePoliciesController</c>, and
+    /// the leave types' own day caps are checked against the same figures, since a 70-day cap on the
+    /// type would refuse the 84-day request the policy allows.
+    /// </summary>
+    private async Task<IActionResult?> RefuseBelowStatutoryLeaveFloorAsync(Guid tenantId, ApplySetupRequest req, CancellationToken ct)
+    {
+        var d = req.Draft;
+        if (d.LeaveTypes.Count == 0) return null;
+        var violations = new List<string>();
+
+        if (await KsaStatutoryLeavePolicyGuard.ReachesKsaAsync(_db, tenantId, req.CountryCode, null, ct))
+        {
+            var rules = new StatutoryRuleReader(_db);
+            var today = DateOnly.FromDateTime(DateTime.UtcNow);
+            foreach (var t in d.LeaveTypes)
+            {
+                if (!t.IsPaid || t.MaxConsecutiveDays <= 0) continue;
+                if (KsaStatutorySpecialLeave.Classify(t.Code, t.NameEn, t.Category) is not { } kind) continue;
+                if (await KsaStatutorySpecialLeave.ResolveFloorAsync(rules, kind, today, ct) is { } floor && t.MaxConsecutiveDays < floor)
+                    violations.Add($"{t.NameEn}: {KsaStatutorySpecialLeave.Describe(kind)} cannot be capped below the statutory {floor:0.##} days ({KsaStatutorySpecialLeave.Citation(kind)}); the draft caps it at {t.MaxConsecutiveDays}.");
+            }
+        }
+
+        var typeByCode = d.LeaveTypes
+            .GroupBy(t => t.Code, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        foreach (var lp in d.LeavePolicies)
+        {
+            if (!typeByCode.TryGetValue(lp.LeaveTypeCode ?? string.Empty, out var t)) continue;
+            var found = await KsaStatutoryLeavePolicyGuard.CheckAsync(
+                _db, tenantId, t.Code, t.NameEn, t.Category, req.CountryCode, null, "Active",
+                lp.AnnualEntitlementDays, lp.MaximumDaysPerRequest, lp.PayrollImpact, ct);
+            violations.AddRange(found.Select(v => $"{t.NameEn}: {v}"));
+        }
+
+        return violations.Count == 0
+            ? null
+            : BadRequest(new
+            {
+                error = "statutory_leave_floor",
+                message = "Nothing was applied. " + string.Join(" ", violations) + " An employer may grant more than the law; it may not grant less.",
+                violations,
+            });
+    }
 
     private Guid GetTenantId() => Guid.Parse(User.FindFirstValue("tenant_id")!);
     private Guid? GetUserId() => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var id)

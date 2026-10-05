@@ -689,8 +689,18 @@ public class LeaveService : ILeaveService
         if (leaveType.RequiresReason && string.IsNullOrWhiteSpace(request.Reason))
             throw new InvalidOperationException("A reason is required for this leave type.");
 
-        if (leaveType.MaxConsecutiveDays > 0 && workingDays > leaveType.MaxConsecutiveDays)
-            throw new InvalidOperationException($"This leave type allows a maximum of {leaveType.MaxConsecutiveDays} consecutive day(s). Requested: {workingDays}.");
+        // KSA statutory special leave (Arts. 113, 114, 151, 160): a cap configured below the Labour
+        // Law's figure must not refuse a request the law grants. The figure is the one in force on the
+        // leave's first day, so a maternity leave that began before 19 Feb 2025 is still 10 weeks.
+        // Raised only — a cap above the statute is the employer's to give and is left alone.
+        decimal statutorySpan = 0m;
+        if (KsaStatutorySpecialLeave.Classify(leaveType.Code, leaveType.NameEn, leaveType.Category) is { } statutoryKind
+            && IsKsaCountry(await ResolveEmployeeCountryAsync(tenantId, employee.Id, ct)))
+            statutorySpan = await KsaStatutorySpecialLeave.ResolveFloorAsync(_rules, statutoryKind, request.StartDate, ct) ?? 0m;
+
+        var typeCap = leaveType.MaxConsecutiveDays > 0 ? Math.Max(leaveType.MaxConsecutiveDays, statutorySpan) : 0m;
+        if (typeCap > 0 && workingDays > typeCap)
+            throw new InvalidOperationException($"This leave type allows a maximum of {typeCap:0.##} consecutive day(s). Requested: {workingDays}.");
 
         if (request.DayType.StartsWith("Half", StringComparison.OrdinalIgnoreCase) && !leaveType.IsHalfDayAllowed)
             throw new InvalidOperationException("Half-day leave is not allowed for this leave type.");
@@ -708,8 +718,10 @@ public class LeaveService : ILeaveService
         {
             if (workingDays < effectivePolicy.MinimumDaysPerRequest)
                 throw new InvalidOperationException($"This policy requires at least {effectivePolicy.MinimumDaysPerRequest} day(s) per request.");
-            if (effectivePolicy.MaximumDaysPerRequest > 0 && workingDays > effectivePolicy.MaximumDaysPerRequest)
-                throw new InvalidOperationException($"This policy allows at most {effectivePolicy.MaximumDaysPerRequest} day(s) per request.");
+            var policyCap = effectivePolicy.MaximumDaysPerRequest > 0
+                ? Math.Max(effectivePolicy.MaximumDaysPerRequest, statutorySpan) : 0m;
+            if (policyCap > 0 && workingDays > policyCap)
+                throw new InvalidOperationException($"This policy allows at most {policyCap:0.##} day(s) per request.");
             var noticeDays = request.StartDate.DayNumber - DateOnly.FromDateTime(DateTime.UtcNow).DayNumber;
             // A policy that requires NO notice must not refuse a backdated request. The guard used
             // to read `NoticeRequiredDays > noticeDays` alone, and for a request that started
