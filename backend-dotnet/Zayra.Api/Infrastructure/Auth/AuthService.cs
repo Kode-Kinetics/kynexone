@@ -137,6 +137,13 @@ public class AuthService : IAuthService
             throw new UnauthorizedAccessException("Invalid email, password, or tenant.");
         }
 
+        // Phase 4a — transparent rehash. The plaintext was proven a moment ago, so a hash written
+        // under an older work factor is upgraded now (Pbkdf2PasswordHasher.NeedsRehash). Done before
+        // any challenge or session is minted, so both see the stored hash this login verified.
+        var verifiedPasswordHash = user.PasswordHash;
+        if (_passwordHasher.NeedsRehash(verifiedPasswordHash))
+            verifiedPasswordHash = await UpgradePasswordHashAsync(user, request.Password, cancellationToken);
+
         // Phase 4b — MFA challenge: if the user has TOTP enabled, issue a short-lived challenge
         // token instead of full session tokens. Full tokens are only issued after the TOTP code
         // is verified via POST /api/auth/mfa/challenge/verify.
@@ -169,7 +176,7 @@ public class AuthService : IAuthService
             await CompletePasswordOnlyLoginAsync(
                 user.Id,
                 tenantSlug,
-                request.Password,
+                verifiedPasswordHash,
                 context,
                 cancellationToken),
             null);
@@ -1235,10 +1242,53 @@ public class AuthService : IAuthService
         return BuildAuthResponse(committedUser, refreshRaw);
     }
 
+    /// <summary>
+    /// Re-hashes a just-verified password at today's work factor and stores it only if the stored hash
+    /// is still the one that was verified (compare-and-swap), so a concurrent password change always
+    /// wins. Returns the hash now stored. On a relational database the write is a single
+    /// <c>UPDATE … WHERE password_hash = @verified</c> that bypasses SaveChanges on purpose: an
+    /// encoding upgrade of the SAME password must not rotate the session stamp (User.UpdatedAtUtc)
+    /// and sign the user out of every other device. A failure here never fails the login.
+    /// </summary>
+    private async Task<string> UpgradePasswordHashAsync(User user, string password, CancellationToken ct)
+    {
+        var verified = user.PasswordHash;
+        try
+        {
+            var upgraded = _passwordHasher.Hash(password);
+            if (_db.Database.IsRelational())
+            {
+                var rows = await _db.Users
+                    .Where(x => x.Id == user.Id && x.TenantId == user.TenantId && x.PasswordHash == verified)
+                    .ExecuteUpdateAsync(set => set.SetProperty(x => x.PasswordHash, upgraded), ct);
+                if (rows != 1) return verified;
+                // Mirror the row without marking the property dirty: a later SaveChanges must not
+                // see a "password change" and rotate the session stamp.
+                var property = _db.Entry(user).Property(x => x.PasswordHash);
+                property.CurrentValue = upgraded;
+                property.OriginalValue = upgraded;
+                property.IsModified = false;
+            }
+            else
+            {
+                user.PasswordHash = upgraded;
+                await _db.SaveChangesAsync(ct);
+            }
+            await _auditService.WriteAsync("auth.password_rehashed", "User", user.Id.ToString(),
+                new RequestContext(null, null, user.Id, user.TenantId), null, ct);
+            return upgraded;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "Password rehash for user {UserId} failed; the existing hash stays valid.", user.Id);
+            return verified;
+        }
+    }
+
     private async Task<AuthResponse> CompletePasswordOnlyLoginAsync(
         Guid userId,
         string tenantSlug,
-        string presentedPassword,
+        string verifiedPasswordHash,
         RequestContext context,
         CancellationToken cancellationToken)
     {
@@ -1287,7 +1337,11 @@ public class AuthService : IAuthService
             if (!eligibility.Allowed
                 || user.MFAEnabled
                 || policy?.MfaRequired == true
-                || !_passwordHasher.Verify(presentedPassword, user.PasswordHash))
+                // The presented password was verified against this exact stored hash before the
+                // lock. Ordinal equality under the lock proves it is still the credential — the
+                // same guard ChangePasswordAsync uses — without paying a second 600k-iteration
+                // PBKDF2 inside the transaction.
+                || !string.Equals(user.PasswordHash, verifiedPasswordHash, StringComparison.Ordinal))
                 throw new UnauthorizedAccessException("Invalid email, password, or tenant.");
 
             issuedTenantId = user.TenantId;

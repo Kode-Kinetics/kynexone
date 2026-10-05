@@ -3,27 +3,87 @@ using Zayra.Api.Application.Auth;
 
 namespace Zayra.Api.Infrastructure.Auth;
 
+/// <summary>
+/// PBKDF2-HMAC-SHA256 password hashing.
+///
+/// <para><b>Versioned format.</b> Every stored hash is <c>PBKDF2$&lt;iterations&gt;$&lt;salt&gt;$&lt;key&gt;</c>.
+/// The iteration count travels WITH the hash, so raising the work factor never invalidates an
+/// existing credential: <see cref="Verify"/> uses the count written in the hash, and
+/// <see cref="NeedsRehash"/> tells the login paths to re-hash at today's count once the plaintext
+/// has just been proven. Hashes written before 2026-10 carry 100,000; new ones carry
+/// <see cref="CurrentIterations"/> (OWASP Password Storage Cheat Sheet, PBKDF2-HMAC-SHA256: 600,000).</para>
+/// </summary>
 public class Pbkdf2PasswordHasher : IPasswordHasher
 {
+    /// <summary>Work factor for every hash written from now on.</summary>
+    public const int CurrentIterations = 600_000;
+
+    /// <summary>
+    /// Upper bound accepted from a STORED hash. The count is read from the database, so without a cap
+    /// a single tampered or corrupt row could make one login burn minutes of CPU.
+    /// </summary>
+    internal const int MaxAcceptedIterations = 10_000_000;
+
+    private const string Scheme = "PBKDF2";
     private const int SaltSize = 16;
     private const int KeySize = 32;
-    private const int Iterations = 100_000;
+
+    private readonly int _iterations;
+
+    public Pbkdf2PasswordHasher() : this(CurrentIterations) { }
+
+    /// <summary>
+    /// Explicit work factor. Production registers the parameterless constructor; this exists so the
+    /// rehash path can be exercised with a deliberately weaker "legacy" hasher in tests.
+    /// </summary>
+    public Pbkdf2PasswordHasher(int iterations)
+    {
+        if (iterations < 1 || iterations > MaxAcceptedIterations)
+            throw new ArgumentOutOfRangeException(nameof(iterations));
+        _iterations = iterations;
+    }
 
     public string Hash(string password)
     {
         var salt = RandomNumberGenerator.GetBytes(SaltSize);
-        var hash = Rfc2898DeriveBytes.Pbkdf2(password, salt, Iterations, HashAlgorithmName.SHA256, KeySize);
-        return $"PBKDF2${Iterations}${Convert.ToBase64String(salt)}${Convert.ToBase64String(hash)}";
+        var hash = Rfc2898DeriveBytes.Pbkdf2(password, salt, _iterations, HashAlgorithmName.SHA256, KeySize);
+        return $"{Scheme}${_iterations}${Convert.ToBase64String(salt)}${Convert.ToBase64String(hash)}";
     }
 
     public bool Verify(string password, string passwordHash)
     {
-        var parts = passwordHash.Split('$');
-        if (parts.Length != 4 || parts[0] != "PBKDF2" || !int.TryParse(parts[1], out var iterations)) return false;
-
-        var salt = Convert.FromBase64String(parts[2]);
-        var expected = Convert.FromBase64String(parts[3]);
+        if (!TryParse(passwordHash, out var iterations, out var salt, out var expected)) return false;
         var actual = Rfc2898DeriveBytes.Pbkdf2(password, salt, iterations, HashAlgorithmName.SHA256, expected.Length);
         return CryptographicOperations.FixedTimeEquals(actual, expected);
+    }
+
+    /// <summary>
+    /// True for a well-formed hash written with fewer iterations than this hasher uses. A malformed
+    /// value is NOT reported: it cannot have verified, so there is nothing to upgrade.
+    /// </summary>
+    public bool NeedsRehash(string passwordHash)
+        => TryParse(passwordHash, out var iterations, out _, out _) && iterations < _iterations;
+
+    private static bool TryParse(string? passwordHash, out int iterations, out byte[] salt, out byte[] key)
+    {
+        iterations = 0;
+        salt = key = Array.Empty<byte>();
+        if (string.IsNullOrEmpty(passwordHash)) return false;
+        var parts = passwordHash.Split('$');
+        if (parts.Length != 4 || parts[0] != Scheme
+            || !int.TryParse(parts[1], System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out iterations)
+            || iterations < 1 || iterations > MaxAcceptedIterations)
+            return false;
+        try
+        {
+            salt = Convert.FromBase64String(parts[2]);
+            key = Convert.FromBase64String(parts[3]);
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+        return salt.Length > 0 && key.Length > 0;
     }
 }

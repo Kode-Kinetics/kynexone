@@ -144,6 +144,12 @@ public class PlatformController : ControllerBase
             dbUser.FailedLoginCount = 0;
             dbUser.LockoutEndUtc = null;
 
+            // Transparent rehash at today's work factor (see Pbkdf2PasswordHasher). A guarded
+            // UPDATE rather than a tracked change: PlatformUser.UpdatedAtUtc is the operator's
+            // session stamp, and re-encoding the SAME password must not sign out other sessions.
+            if (_passwordHasher.NeedsRehash(dbUser.PasswordHash))
+                await UpgradePlatformPasswordHashAsync(dbUser, req.Password, ct);
+
             // MFA challenge: if the DB platform user has TOTP configured, issue a challenge
             // token instead of the full JWT. The client must complete /api/platform/auth/mfa/challenge/verify.
             if (dbUser.MfaEnabled && !string.IsNullOrEmpty(dbUser.MfaSecretEncrypted))
@@ -190,6 +196,35 @@ public class PlatformController : ControllerBase
         await _db.SaveChangesAsync(ct);
 
         return Ok(CreatePlatformToken(authenticatedUser));
+    }
+
+    private async Task UpgradePlatformPasswordHashAsync(PlatformUser user, string password, CancellationToken ct)
+    {
+        var verified = user.PasswordHash;
+        try
+        {
+            var upgraded = _passwordHasher.Hash(password);
+            if (_db.Database.IsRelational())
+            {
+                var rows = await _db.PlatformUsers
+                    .Where(x => x.Id == user.Id && x.PasswordHash == verified)
+                    .ExecuteUpdateAsync(set => set.SetProperty(x => x.PasswordHash, upgraded), ct);
+                if (rows != 1) return;
+                var property = _db.Entry(user).Property(x => x.PasswordHash);
+                property.CurrentValue = upgraded;
+                property.OriginalValue = upgraded;
+                property.IsModified = false;
+            }
+            else
+            {
+                user.PasswordHash = upgraded;
+            }
+            _log.LogInformation("Platform user {PlatformUserId} password re-hashed at the current work factor.", user.Id);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "Platform password rehash for {PlatformUserId} failed; the existing hash stays valid.", user.Id);
+        }
     }
 
     // ── Platform MFA ─────────────────────────────────────────────────────────

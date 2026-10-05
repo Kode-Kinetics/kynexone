@@ -7,6 +7,14 @@ public interface IPasswordHasher
 {
     string Hash(string password);
     bool Verify(string password, string passwordHash);
+
+    /// <summary>
+    /// True when <paramref name="passwordHash"/> verifies under an older work factor than
+    /// <see cref="Hash"/> would produce today. Callers that have JUST verified the plaintext
+    /// re-hash it and store the result (rehash-on-login), so old hashes upgrade transparently
+    /// without ever being invalidated. Default false keeps simple test doubles valid.
+    /// </summary>
+    bool NeedsRehash(string passwordHash) => false;
 }
 
 public interface ITokenService
