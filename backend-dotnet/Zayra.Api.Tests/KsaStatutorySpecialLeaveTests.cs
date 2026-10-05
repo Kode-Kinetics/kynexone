@@ -3,10 +3,13 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.CountryPack;
+using Zayra.Api.Application.Setup;
+using Zayra.Api.Controllers;
 using Zayra.Api.Controllers.Leave;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Approvals;
+using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Infrastructure.Leave;
 using Zayra.Api.Infrastructure.Seed;
@@ -138,13 +141,13 @@ public class KsaStatutorySpecialLeaveTests
 
     private static CreateLeavePolicyRequest Policy(
         Guid leaveTypeId, decimal days, string? country = "SA", decimal maxPerRequest = 0m,
-        string payrollImpact = "Full", Guid? companyId = null) => new(
+        string payrollImpact = "Full", Guid? companyId = null, bool calendar = true) => new(
         Name: "Maternity", LeaveTypeId: leaveTypeId, CountryCode: country, CompanyId: companyId, BranchId: null,
         DepartmentName: null, Grade: null, EmploymentType: null, ContractType: null, Gender: "Female",
         AppliesOnProbation: true, AnnualEntitlementDays: days, AccrualMethod: "Yearly",
         CarryForwardMax: 0m, CarryForwardExpiry: 0, EncashmentAllowed: false, EncashmentMaxDays: 0m,
         MinimumDaysPerRequest: 1m, MaximumDaysPerRequest: maxPerRequest, NoticeRequiredDays: 0,
-        WeekendsIncluded: true, PublicHolidaysIncluded: true, PayrollImpact: payrollImpact,
+        WeekendsIncluded: calendar, PublicHolidaysIncluded: calendar, PayrollImpact: payrollImpact,
         ApprovalWorkflowId: null, Status: "Active");
 
     private static async Task<LeaveType> AddMaternityTypeAsync(ZayraDbContext db, Guid tenantId, int maxConsecutive = 0)
@@ -257,6 +260,125 @@ public class KsaStatutorySpecialLeaveTests
         AssertFloorRefusal(await PoliciesController(db, tenantId).Create(Policy(mat.Id, days: 84m), default));
     }
 
+    [Fact]
+    public async Task SaudiMaternityPolicy_CountedInWorkingDays_IsRefused_EvenAtEightyFourDays()
+    {
+        // 84 working days is nearly 17 weeks; the law gives 12 weeks, i.e. 84 CALENDAR days.
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var mat = await AddMaternityTypeAsync(db, tenantId);
+
+        var refused = await PoliciesController(db, tenantId).Create(Policy(mat.Id, days: 84m, calendar: false), default);
+
+        AssertFloorRefusal(refused);
+        var message = (string)((BadRequestObjectResult)refused).Value!.GetType().GetProperty("message")!
+            .GetValue(((BadRequestObjectResult)refused).Value)!;
+        message.Should().Contain("counted in calendar days by law").And.Contain("switch this policy's counting to calendar days");
+    }
+
+    [Fact]
+    public async Task MixedTenant_NeutralMaternityPolicy_IsNotForcedToTheSaudiFigure_ButNeedsASaudiPolicy()
+    {
+        // A no-country, no-company policy in a tenant with Saudi AND UAE companies governs both. The
+        // Saudi 84 must not be forced onto the UAE staff; the admin is told to add a Saudi policy.
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        db.Companies.Add(new Company { TenantId = tenantId, LegalNameEn = "KSA Co", CountryCode = "SA" });
+        db.Companies.Add(new Company { TenantId = tenantId, LegalNameEn = "UAE Co", CountryCode = "AE" });
+        var mat = await AddMaternityTypeAsync(db, tenantId);
+        var controller = PoliciesController(db, tenantId);
+
+        var refused = await controller.Create(Policy(mat.Id, days: 60m, country: null, calendar: false), default);
+        AssertFloorRefusal(refused);
+        ((string)((BadRequestObjectResult)refused).Value!.GetType().GetProperty("message")!
+                .GetValue(((BadRequestObjectResult)refused).Value)!)
+            .Should().Contain("create a separate Saudi policy (country SA)");
+
+        (await controller.Create(Policy(mat.Id, days: 84m, country: "SA"), default)).Should().BeOfType<CreatedResult>();
+        (await controller.Create(Policy(mat.Id, days: 60m, country: null, calendar: false), default))
+            .Should().BeOfType<CreatedResult>("Saudi employees now resolve the Saudi policy, which outranks this one");
+    }
+
+    // ── Setup apply: a reviewed draft edited below the floor is refused whole ──────────────
+
+    private sealed class NoPreview : ISetupAssistantService
+    {
+        public Task<SetupPreviewResult> GenerateAsync(SetupRequester requester, CompanyProfile profile, CancellationToken ct)
+            => Task.FromResult(new SetupPreviewResult(SetupDraft.Empty(), [], "test"));
+    }
+
+    private static SetupAssistantController SetupController(ZayraDbContext db, Guid tenantId)
+    {
+        var claims = new[]
+        {
+            new System.Security.Claims.Claim("tenant_id", tenantId.ToString()),
+            new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+            new System.Security.Claims.Claim("permission", "organization.setup.apply"),
+        };
+        return new SetupAssistantController(db, new NoPreview(), new AuditService(db))
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(claims, "Test")),
+                },
+            },
+        };
+    }
+
+    private static DraftLeavePolicy DraftPolicy(string code, decimal days, bool calendar = true)
+        => new($"{code} Policy", code, days, "Yearly", false, 0m, 1m, days, 0, calendar, calendar, true, "Full");
+
+    [Fact]
+    public async Task SetupApply_RefusesADraftBelowTheSaudiFloor_AndWritesNothing()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var draft = SetupDraft.Empty() with
+        {
+            LeaveTypes = [new DraftLeaveType("MAT", "Maternity Leave", "Parental", true, 70, true, "#ec4899")],
+            LeavePolicies = [DraftPolicy("MAT", 70m)],
+        };
+
+        var result = await SetupController(db, tenantId).Apply(new ApplySetupRequest(draft, "SA", "SAR"), default);
+
+        var bad = result.Should().BeOfType<BadRequestObjectResult>().Subject;
+        bad.Value!.GetType().GetProperty("error")!.GetValue(bad.Value).Should().Be("statutory_leave_floor");
+        (await db.LeaveTypes.AnyAsync()).Should().BeFalse("nothing is applied when the draft is refused");
+        (await db.LeavePolicies.AnyAsync()).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SetupApply_RefusesAnUnpaidMaternityType_EvenWithNoPolicy()
+    {
+        await using var db = CreateDb();
+        var draft = SetupDraft.Empty() with
+        {
+            LeaveTypes = [new DraftLeaveType("MAT", "Maternity Leave", "Parental", false, 84, true, "#ec4899")],
+        };
+
+        var result = await SetupController(db, Guid.NewGuid()).Apply(new ApplySetupRequest(draft, "SA", "SAR"), default);
+
+        result.Should().BeOfType<BadRequestObjectResult>();
+    }
+
+    [Fact]
+    public async Task SetupApply_ResolvesThePolicysLeaveTypeFromTheDatabase_WhenTheDraftDoesNotCarryIt()
+    {
+        // Apply attaches a policy to the tenant's EXISTING type of that code; the guard must too, or a
+        // draft holding only a policy would slip past it.
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        await AddMaternityTypeAsync(db, tenantId);
+        var draft = SetupDraft.Empty() with { LeavePolicies = [DraftPolicy("MAT", 84m, calendar: false)] };
+
+        var result = await SetupController(db, tenantId).Apply(new ApplySetupRequest(draft, "SA", "SAR"), default);
+
+        result.Should().BeOfType<BadRequestObjectResult>();
+        (await db.LeavePolicies.AnyAsync()).Should().BeFalse();
+    }
+
     // ── The request path: a below-floor cap must not refuse a lawful request ────────────────
 
     private static async Task<(Employee Employee, LeaveType Maternity)> SeedLegacySeventyDayMaternityAsync(
@@ -298,30 +420,74 @@ public class KsaStatutorySpecialLeaveTests
     };
 
     [Fact]
-    public async Task SaudiEmployee_TwelveWeekMaternityRequest_IsNotRefusedByALegacySeventyDayCap()
+    public async Task SaudiEmployee_TwelveWeekMaternityRequest_NeedsNoBalanceRow_AndIsNotRefusedByALegacyCap()
     {
+        // Two defects at once: the legacy 70-day caps, and the balance check — nothing ever grants a
+        // "Yearly" policy a balance, so every statutory event leave was refused "Insufficient leave
+        // balance". The statutory entitlement in force is the grant now.
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var (employee, mat) = await SeedLegacySeventyDayMaternityAsync(db, tenantId, "SA");
-        var start = Today.AddDays(30);
-        // Balance granted by hand, as it must be today (see the report: nothing grants a Yearly policy).
-        db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
-        {
-            TenantId = tenantId, EmployeeId = employee.Id, EmployeeName = employee.FullName,
-            LeaveTypeId = mat.Id, LeaveTypeName = mat.NameEn, Year = start.Year, Entitled = 84m,
-        });
-        if (start.AddDays(83).Year != start.Year)
-            db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
-            {
-                TenantId = tenantId, EmployeeId = employee.Id, EmployeeName = employee.FullName,
-                LeaveTypeId = mat.Id, LeaveTypeName = mat.NameEn, Year = start.Year + 1, Entitled = 84m,
-            });
-        await db.SaveChangesAsync();
+        (await db.EmployeeLeaveBalances.AnyAsync()).Should().BeFalse("the point is that no balance was granted");
 
         var submitted = await new LeaveService(db, new ApprovalRouter(db))
-            .SubmitRequestAsync(tenantId, TwelveWeeks(employee, mat, start), employee.UserAccountId);
+            .SubmitRequestAsync(tenantId, TwelveWeeks(employee, mat, Today.AddDays(30)), employee.UserAccountId);
 
         submitted.TotalDays.Should().Be(84m, "12 weeks counted on the calendar is 84 days");
+        var balances = await db.EmployeeLeaveBalances.Where(b => b.LeaveTypeId == mat.Id).ToListAsync();
+        balances.Sum(b => b.Pending).Should().Be(84m);
+        balances.Should().OnlyContain(b => b.Available >= 0m, "the statutory grant is recorded, so the ledger never goes negative");
+        (await db.LeaveBalanceTransactions.Where(t => t.TransactionType == "Allocation").SumAsync(t => t.Amount))
+            .Should().Be(84m, "the grant is a traceable Allocation referenced to the request");
+    }
+
+    [Fact]
+    public async Task SaudiStatutoryEventLeave_IsCappedAtTheStatutoryEntitlementPerEvent()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var (employee, _) = await SeedLegacySeventyDayMaternityAsync(db, tenantId, "SA");
+        var marriage = new LeaveType
+        {
+            TenantId = tenantId, Code = "MARRIAGE", NameEn = "Marriage Leave", Category = "Marriage", IsPaid = true, IsActive = true,
+        };
+        db.LeaveTypes.Add(marriage);
+        db.LeavePolicies.Add(new LeavePolicy
+        {
+            TenantId = tenantId, Name = "Marriage", LeaveTypeId = marriage.Id, AnnualEntitlementDays = 5m,
+            WeekendsIncluded = true, PublicHolidaysIncluded = true, AppliesOnProbation = true, Status = "Active",
+        });
+        await db.SaveChangesAsync();
+        var service = new LeaveService(db, new ApprovalRouter(db));
+        LeaveRequest Days(int n, int offset) => new()
+        {
+            EmployeeId = employee.Id, EmployeeName = employee.FullName, LeaveTypeId = marriage.Id,
+            StartDate = Today.AddDays(offset), EndDate = Today.AddDays(offset + n - 1), DayType = "Full", Reason = "Wedding",
+        };
+
+        var tooLong = () => service.SubmitRequestAsync(tenantId, Days(6, 10), employee.UserAccountId);
+        (await tooLong.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("5 day(s) per event");
+
+        (await service.SubmitRequestAsync(tenantId, Days(5, 20), employee.UserAccountId)).TotalDays.Should().Be(5m);
+    }
+
+    [Fact]
+    public async Task MaternityInProgressOnTheAmendmentDate_GetsTwelveWeeks_OneThatEndedBeforeItGetsTen()
+    {
+        // Royal Decree M/44 took effect 19 Feb 2025. A leave running across that date is given the more
+        // favourable 84 days [COUNSEL]; one wholly before it is judged on the old 70.
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var (employee, mat) = await SeedLegacySeventyDayMaternityAsync(db, tenantId, "SA");
+        var service = new LeaveService(db, new ApprovalRouter(db));
+
+        var spanning = await service.SubmitRequestAsync(
+            tenantId, TwelveWeeks(employee, mat, new DateOnly(2025, 1, 20)), employee.UserAccountId);
+        spanning.TotalDays.Should().Be(84m);
+
+        var before = () => service.SubmitRequestAsync(
+            tenantId, TwelveWeeks(employee, mat, new DateOnly(2024, 9, 1)), employee.UserAccountId);
+        (await before.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("maximum of 70");
     }
 
     [Fact]

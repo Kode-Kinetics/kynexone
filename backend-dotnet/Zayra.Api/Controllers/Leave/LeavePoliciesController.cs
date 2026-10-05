@@ -156,17 +156,18 @@ public class LeavePoliciesController : ControllerBase
 
     /// <summary>
     /// KSA statutory special leave (maternity, marriage, bereavement, birth, Hajj, iddah) cannot be
-    /// configured below the Labour Law's figure, or as unpaid, for a policy that reaches Saudi
-    /// employees. Refused with the citation rather than stored: a policy saved at 70 maternity days
+    /// configured below the Labour Law's figure, as unpaid, or — for maternity and iddah — counted in
+    /// working days, for a policy that reaches Saudi employees. Refused with the citation rather than stored: a policy saved at 70 maternity days
     /// would read back as the tenant's policy and be applied as if it were lawful.
     /// </summary>
     private async Task<IActionResult?> RefuseBelowStatutoryFloorAsync(
         Guid tenantId, LeaveType leaveType, LeavePolicy policy, CancellationToken ct)
     {
         var violations = await KsaStatutoryLeavePolicyGuard.CheckAsync(
-            _db, tenantId, leaveType.Code, leaveType.NameEn, leaveType.Category,
+            _db, tenantId, policy.Id, leaveType.Id, leaveType.Code, leaveType.NameEn, leaveType.Category,
             policy.CountryCode, policy.CompanyId, policy.Status,
-            policy.AnnualEntitlementDays, policy.MaximumDaysPerRequest, policy.PayrollImpact, ct);
+            policy.AnnualEntitlementDays, policy.MaximumDaysPerRequest, policy.PayrollImpact,
+            policy.WeekendsIncluded, policy.PublicHolidaysIncluded, ct);
         return violations.Count == 0
             ? null
             : BadRequest(new

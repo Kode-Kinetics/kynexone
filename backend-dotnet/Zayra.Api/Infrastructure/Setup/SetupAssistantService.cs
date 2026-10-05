@@ -940,13 +940,15 @@ public sealed class SetupAssistantService : ISetupAssistantService
         var present = new HashSet<KsaStatutoryLeaveKind>();
         foreach (var t in types)
         {
-            var kind = t.IsPaid ? KsaStatutorySpecialLeave.Classify(t.Code, t.NameEn, t.Category) : null;
+            var kind = KsaStatutorySpecialLeave.Classify(t.Code, t.NameEn, t.Category);
             if (kind is null) { result.Add(t); continue; }
             present.Add(kind.Value);
             var floor = Floor(kind.Value);
-            if (t.MaxConsecutiveDays >= floor) { result.Add(t); continue; }
-            raised.Add($"{t.NameEn} {t.MaxConsecutiveDays} → {floor}");
-            result.Add(t with { MaxConsecutiveDays = floor });
+            if (t.MaxConsecutiveDays >= floor && t.IsPaid) { result.Add(t); continue; }
+            // Every one of these is fully paid by statute; Classify has already set aside a type
+            // whose name says it is the unpaid extension.
+            raised.Add($"{t.NameEn} {(t.IsPaid ? string.Empty : "unpaid → paid, ")}{t.MaxConsecutiveDays} → {Math.Max(floor, t.MaxConsecutiveDays)} days");
+            result.Add(t with { MaxConsecutiveDays = Math.Max(floor, t.MaxConsecutiveDays), IsPaid = true });
         }
 
         var codes = result.Select(t => t.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -959,7 +961,7 @@ public sealed class SetupAssistantService : ISetupAssistantService
         }
 
         if (raised.Count > 0)
-            notes.Add($"Raised to the Saudi statutory minimum: {string.Join("; ", raised)} days.");
+            notes.Add($"Raised to the Saudi statutory minimum: {string.Join("; ", raised)}.");
         if (added.Count > 0)
             notes.Add($"Saudi statutory leave included in the draft: {string.Join(", ", added)}.");
         notes.Add(

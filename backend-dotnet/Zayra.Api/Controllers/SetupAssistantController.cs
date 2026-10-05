@@ -599,40 +599,62 @@ public class SetupAssistantController : ControllerBase
          : fallback;
 
     /// <summary>
-    /// The setup-apply leg of the KSA statutory special-leave floor (Arts. 113, 114, 151, 160). The
-    /// draft's leave policies are checked with the same guard as <c>LeavePoliciesController</c>, and
-    /// the leave types' own day caps are checked against the same figures, since a 70-day cap on the
-    /// type would refuse the 84-day request the policy allows.
+    /// The setup-apply leg of the KSA statutory special-leave floor (Arts. 113, 114, 151, 160), run
+    /// with the same guard as <c>LeavePoliciesController</c> before anything is written.
+    ///
+    /// <para>A policy's leave type is resolved the way the apply step below resolves it: the tenant's
+    /// EXISTING type of that code first (apply never overwrites one), then the draft's. A statutory leave
+    /// type in the draft is also checked on its own — marked unpaid, or with a day cap below the statute
+    /// — whether or not the draft carries a policy for it.</para>
     /// </summary>
     private async Task<IActionResult?> RefuseBelowStatutoryLeaveFloorAsync(Guid tenantId, ApplySetupRequest req, CancellationToken ct)
     {
         var d = req.Draft;
-        if (d.LeaveTypes.Count == 0) return null;
+        if (d.LeaveTypes.Count == 0 && d.LeavePolicies.Count == 0) return null;
         var violations = new List<string>();
 
-        if (await KsaStatutoryLeavePolicyGuard.ReachesKsaAsync(_db, tenantId, req.CountryCode, null, ct))
+        var existing = await _db.LeaveTypes.AsNoTracking()
+            .Where(x => x.TenantId == tenantId)
+            .Select(x => new { x.Id, x.Code, x.NameEn, x.Category, x.IsPaid, x.MaxConsecutiveDays })
+            .ToListAsync(ct);
+        var existingByCode = existing
+            .GroupBy(x => x.Code.Trim(), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        var draftByCode = d.LeaveTypes
+            .GroupBy(t => t.Code.Trim(), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+        if (await KsaStatutoryLeavePolicyGuard.ReachAsync(_db, tenantId, req.CountryCode, null, ct) != KsaPolicyReach.None)
         {
             var rules = new StatutoryRuleReader(_db);
             var today = DateOnly.FromDateTime(DateTime.UtcNow);
             foreach (var t in d.LeaveTypes)
             {
-                if (!t.IsPaid || t.MaxConsecutiveDays <= 0) continue;
+                if (existingByCode.ContainsKey(t.Code.Trim())) continue;   // apply keeps the existing type
                 if (KsaStatutorySpecialLeave.Classify(t.Code, t.NameEn, t.Category) is not { } kind) continue;
-                if (await KsaStatutorySpecialLeave.ResolveFloorAsync(rules, kind, today, ct) is { } floor && t.MaxConsecutiveDays < floor)
+                if (!t.IsPaid)
+                    violations.Add($"{t.NameEn}: {KsaStatutorySpecialLeave.Describe(kind)} is fully paid by statute ({KsaStatutorySpecialLeave.Citation(kind)}); it cannot be drafted as unpaid.");
+                if (t.MaxConsecutiveDays > 0
+                    && await KsaStatutorySpecialLeave.ResolveFloorAsync(rules, kind, today, ct) is { } floor
+                    && t.MaxConsecutiveDays < floor)
                     violations.Add($"{t.NameEn}: {KsaStatutorySpecialLeave.Describe(kind)} cannot be capped below the statutory {floor:0.##} days ({KsaStatutorySpecialLeave.Citation(kind)}); the draft caps it at {t.MaxConsecutiveDays}.");
             }
         }
 
-        var typeByCode = d.LeaveTypes
-            .GroupBy(t => t.Code, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
         foreach (var lp in d.LeavePolicies)
         {
-            if (!typeByCode.TryGetValue(lp.LeaveTypeCode ?? string.Empty, out var t)) continue;
+            var code = (lp.LeaveTypeCode ?? string.Empty).Trim();
+            Guid? typeId;
+            string typeCode, typeName, typeCategory;
+            if (existingByCode.TryGetValue(code, out var e)) (typeId, typeCode, typeName, typeCategory) = (e.Id, e.Code, e.NameEn, e.Category);
+            else if (draftByCode.TryGetValue(code, out var t)) (typeId, typeCode, typeName, typeCategory) = (null, t.Code, t.NameEn, t.Category);
+            else continue;   // the apply step skips a policy whose type resolves nowhere
+
             var found = await KsaStatutoryLeavePolicyGuard.CheckAsync(
-                _db, tenantId, t.Code, t.NameEn, t.Category, req.CountryCode, null, "Active",
-                lp.AnnualEntitlementDays, lp.MaximumDaysPerRequest, lp.PayrollImpact, ct);
-            violations.AddRange(found.Select(v => $"{t.NameEn}: {v}"));
+                _db, tenantId, null, typeId, typeCode, typeName, typeCategory, req.CountryCode, null, "Active",
+                lp.AnnualEntitlementDays, lp.MaximumDaysPerRequest, lp.PayrollImpact,
+                lp.WeekendsIncluded, lp.PublicHolidaysIncluded, ct);
+            violations.AddRange(found.Select(v => $"{typeName}: {v}"));
         }
 
         return violations.Count == 0

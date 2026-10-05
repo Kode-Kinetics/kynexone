@@ -690,13 +690,19 @@ public class LeaveService : ILeaveService
             throw new InvalidOperationException("A reason is required for this leave type.");
 
         // KSA statutory special leave (Arts. 113, 114, 151, 160): a cap configured below the Labour
-        // Law's figure must not refuse a request the law grants. The figure is the one in force on the
-        // leave's first day, so a maternity leave that began before 19 Feb 2025 is still 10 weeks.
-        // Raised only — a cap above the statute is the employer's to give and is left alone.
+        // Law's figure must not refuse a request the law grants. The figure is the more favourable of
+        // those in force on the leave's first and last day: a maternity leave that ended before 19 Feb
+        // 2025 is 10 weeks, one in progress on that date gets 12 [COUNSEL]. Raised only — a cap above
+        // the statute is the employer's to give and is left alone.
         decimal statutorySpan = 0m;
-        if (KsaStatutorySpecialLeave.Classify(leaveType.Code, leaveType.NameEn, leaveType.Category) is { } statutoryKind
+        KsaStatutoryLeaveKind? statutoryKind = null;
+        if (KsaStatutorySpecialLeave.Classify(leaveType.Code, leaveType.NameEn, leaveType.Category) is { } kind
             && IsKsaCountry(await ResolveEmployeeCountryAsync(tenantId, employee.Id, ct)))
-            statutorySpan = await KsaStatutorySpecialLeave.ResolveFloorAsync(_rules, statutoryKind, request.StartDate, ct) ?? 0m;
+        {
+            statutorySpan = await KsaStatutorySpecialLeave.ResolveFloorForSpanAsync(
+                _rules, kind, request.StartDate, request.EndDate, ct) ?? 0m;
+            if (statutorySpan > 0m) statutoryKind = kind;
+        }
 
         var typeCap = leaveType.MaxConsecutiveDays > 0 ? Math.Max(leaveType.MaxConsecutiveDays, statutorySpan) : 0m;
         if (typeCap > 0 && workingDays > typeCap)
@@ -741,9 +747,23 @@ public class LeaveService : ILeaveService
         }
 
         var yearSegments = await CalculateRequestYearSegmentsAsync(tenantId, request, effectivePolicy?.Id, ct);
-        foreach (var segment in yearSegments)
-            if (!await HasSufficientBalanceAsync(tenantId, request.EmployeeId, request.LeaveTypeId, segment.Days, segment.Year, ct))
-                throw new InvalidOperationException($"Insufficient leave balance for {segment.Year}.");
+        if (statutoryKind is { } eventKind)
+        {
+            // A KSA statutory event leave is not drawn from an accrued balance: the entitlement is the
+            // statute's (or the policy's, if more generous) and it arises with the event. Requiring a
+            // balance row refused every one of them, because nothing grants a "Yearly" policy a balance.
+            var entitlement = Math.Max(statutorySpan, effectivePolicy?.AnnualEntitlementDays ?? 0m);
+            if (workingDays > entitlement)
+                throw new InvalidOperationException(
+                    $"{KsaStatutorySpecialLeave.Describe(eventKind)} is {entitlement:0.##} day(s) per event "
+                    + $"({KsaStatutorySpecialLeave.Citation(eventKind)}). Requested: {workingDays}.");
+        }
+        else
+        {
+            foreach (var segment in yearSegments)
+                if (!await HasSufficientBalanceAsync(tenantId, request.EmployeeId, request.LeaveTypeId, segment.Days, segment.Year, ct))
+                    throw new InvalidOperationException($"Insufficient leave balance for {segment.Year}.");
+        }
 
         request.TenantId = tenantId;
         request.LeaveTypeName = leaveType.NameEn;
@@ -800,8 +820,21 @@ public class LeaveService : ILeaveService
             firstStep.EscalationAfterHours));
 
         foreach (var segment in yearSegments)
+        {
+            if (statutoryKind is not null)
+            {
+                // Record the statutory grant the request draws on, so the balance ledger shows where the
+                // days came from and never goes negative. Only the shortfall is allocated, and it is a
+                // transaction in its own right (type Allocation, referenced to this request).
+                var balance = await GetOrCreateBalanceAsync(tenantId, request.EmployeeId, request.LeaveTypeId, segment.Year, ct);
+                var shortfall = segment.Days - balance.Available;
+                if (shortfall > 0m)
+                    await ApplyLeaveBalanceAsync(tenantId, request.EmployeeId, request.LeaveTypeId, shortfall, segment.Year,
+                        "Allocation", request.Id.ToString(), "System (KSA statutory entitlement)", ct);
+            }
             await ApplyLeaveBalanceAsync(tenantId, request.EmployeeId, request.LeaveTypeId, segment.Days, segment.Year,
                 "Pending", request.Id.ToString(), request.EmployeeName, ct);
+        }
 
         await LogAuditAsync(tenantId, "LeaveRequest", request.Id.ToString(), "Submitted",
             string.Empty, "Submitted", "Leave request submitted", request.EmployeeName, ct);

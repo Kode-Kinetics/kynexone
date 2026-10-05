@@ -453,7 +453,9 @@ public static class StatutoryRuleSeeder
             "[CERT] KSA Art.151(1) as amended by Royal Decree M/44 (in force 2025-02-19): \"a fully paid maternity "
             + "leave of (twelve) weeks, of which the six weeks following childbirth are mandatory\" — 84 calendar days. "
             + "A FLOOR. If childbirth is later than expected and fewer than six weeks remain, the shortfall is unpaid "
-            + "leave, extendable by one unpaid month; that extension is not part of this figure."));
+            + "leave, extendable by one unpaid month; that extension is not part of this figure. [COUNSEL] A maternity "
+            + "leave already in progress on 2025-02-19 is given the amended 84 days (the more favourable of the figures "
+            + "in force on its first and last day); M/44 has no transitional provision, so confirm this reading."));
         list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
             "leave.paternity_days", "3", "decimal", eff07,
             "[CERT] KSA Art.113: three days fully paid on the birth of a child. Royal Decree M/44 (2025-02-19) kept "

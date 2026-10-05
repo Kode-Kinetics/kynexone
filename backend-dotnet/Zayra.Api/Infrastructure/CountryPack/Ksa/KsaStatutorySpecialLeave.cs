@@ -30,6 +30,11 @@ namespace Zayra.Api.Infrastructure.CountryPack.Ksa;
 //  for an unseeded database and are identical to those rows, exactly as
 //  KsaLeaveHoursDefaults is for Arts. 98/109/117.
 //
+//  RECOGNITION IS BY NAME. A leave type is treated as statutory because its code,
+//  English name or category says so (see Classify). A type renamed so that none
+//  of them does — "Mat. leave" under code "ML", say — is invisible to the floor
+//  guard, the request-time floor and the 2025 data correction alike.
+//
 //  Art. 115 (exam leave) is deliberately NOT a kind here: its length is "the actual
 //  number of examination days" and whether it is paid turns on the employer having
 //  approved the enrolment and on the year not being a repeat, so there is no day
@@ -188,6 +193,22 @@ public static class KsaStatutorySpecialLeave
         => kind is KsaStatutoryLeaveKind.Maternity or KsaStatutoryLeaveKind.IddahMuslim;
 
     /// <summary>
+    /// The statutory floor for a leave running from <paramref name="start"/> to <paramref name="end"/>:
+    /// the more favourable of the figures in force on its first and last day. A maternity leave in
+    /// progress on 19 Feb 2025 therefore gets the amended 84 days. [COUNSEL] Royal Decree M/44 has no
+    /// transitional provision for a leave already running; the employee-favourable reading is taken.
+    /// </summary>
+    public static async Task<decimal?> ResolveFloorForSpanAsync(
+        IStatutoryRuleReader rules, KsaStatutoryLeaveKind kind, DateOnly start, DateOnly end, CancellationToken ct)
+    {
+        var atStart = await ResolveFloorAsync(rules, kind, start, ct);
+        var atEnd = end > start ? await ResolveFloorAsync(rules, kind, end, ct) : atStart;
+        if (atStart is null) return atEnd;
+        if (atEnd is null) return atStart;
+        return Math.Max(atStart.Value, atEnd.Value);
+    }
+
+    /// <summary>
     /// The statutory floor in days, from the PLATFORM statutory rule (tenant null, so a tenant row
     /// can never lower it), falling back to the compiled figure on an unseeded database. Null when
     /// the statute granted nothing on that date.
@@ -204,13 +225,18 @@ public static class KsaStatutorySpecialLeave
     /// <summary>
     /// What is wrong with a KSA leave policy for a statutory kind, in plain words, or an empty list.
     /// <paramref name="maxPerRequest"/> of 0 means "no cap" and is always lawful.
+    /// <paramref name="countsCalendarDays"/> is true when the policy counts weekends AND public
+    /// holidays inside a request — required for the kinds the statute measures in weeks or months,
+    /// because 84 working days is not 12 weeks.
     /// </summary>
     public static IReadOnlyList<string> PolicyViolations(
         KsaStatutoryLeaveKind kind, decimal floorDays, decimal entitlementDays, decimal maxPerRequest,
-        string? payrollImpact)
+        string? payrollImpact, bool countsCalendarDays)
     {
         var errors = new List<string>();
         var what = Describe(kind);
+        if (IsCalendarSpan(kind) && !countsCalendarDays)
+            errors.Add($"{what} is counted in calendar days by law ({Citation(kind)}) — switch this policy's counting to calendar days (include weekends and public holidays).");
         if (entitlementDays < floorDays)
             errors.Add($"{what} cannot be granted below the statutory {floorDays:0.##} days ({Citation(kind)}); this policy grants {entitlementDays:0.##}.");
         if (maxPerRequest > 0m && maxPerRequest < floorDays)
