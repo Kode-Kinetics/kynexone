@@ -4,6 +4,7 @@ using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
 using FluentAssertions;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Npgsql;
@@ -51,7 +52,8 @@ public sealed class PgBouncerTransactionPoolFixture : IAsyncLifetime
     {
         await _network.CreateAsync();
         _postgres = new PostgreSqlBuilder()
-            .WithImage("postgres:16-alpine")
+            // postgres:16-alpine, pinned by digest (Testcontainers 3.10 cannot parse tag@digest).
+            .WithImage("postgres@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229")
             .WithNetwork(_network)
             .WithNetworkAliases("pg")
             .Build();
@@ -60,7 +62,8 @@ public sealed class PgBouncerTransactionPoolFixture : IAsyncLifetime
         var direct = new NpgsqlConnectionStringBuilder(DirectConnectionString);
 
         _pgbouncer = new ContainerBuilder()
-            .WithImage("edoburu/pgbouncer:v1.26.0-p0")
+            // edoburu/pgbouncer:v1.26.0-p0 (PgBouncer 1.26.0), pinned by digest.
+            .WithImage("edoburu/pgbouncer@sha256:b17551c776ef7e5769ef80b956d20f85e2fd25dd8912d31d58f782aad495b711")
             .WithNetwork(_network)
             .WithEnvironment("DB_HOST", "pg")
             .WithEnvironment("DB_PORT", "5432")
@@ -116,8 +119,27 @@ public sealed class PgBouncerTransactionPoolFixture : IAsyncLifetime
     private static ZayraDbContext Create(string connectionString, params IInterceptor[] extra) => new(
         new DbContextOptionsBuilder<ZayraDbContext>()
             .UseNpgsql(connectionString, PostgresFixture.ProductionProviderOptions)
-            .AddInterceptors(new IInterceptor[] { RowLockingInterceptor.Instance }.Concat(extra))
+            .AddInterceptors(new IInterceptor[] { RowLockingInterceptor.Instance, AdvisoryXactLockGuardInterceptor.Instance }.Concat(extra))
             .Options);
+
+    /// <summary>backend_xid / backend_xmin of the session holding the advisory lock on <paramref name="key"/>.</summary>
+    public async Task<(string? Xid, string? Xmin)> LockHolderXidAndXminAsync(long key)
+    {
+        await using var conn = new NpgsqlConnection(DirectConnectionString);
+        await conn.OpenAsync();
+        await using var cmd = new NpgsqlCommand(
+            """
+            SELECT a.backend_xid::text, a.backend_xmin::text
+            FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+            WHERE l.locktype = 'advisory' AND l.granted AND l.objsubid = 1
+              AND l.classid::bigint = @hi AND l.objid::bigint = @lo
+            """, conn);
+        cmd.Parameters.AddWithValue("hi", (long)((ulong)key >> 32));
+        cmd.Parameters.AddWithValue("lo", (long)((ulong)key & 0xFFFF_FFFF));
+        await using var reader = await cmd.ExecuteReaderAsync();
+        if (!await reader.ReadAsync()) throw new InvalidOperationException("No session holds the lock.");
+        return (reader.IsDBNull(0) ? null : reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1));
+    }
 
     /// <summary>Granted advisory locks on <paramref name="key"/>, counted server-wide over the direct connection.</summary>
     public async Task<int> GrantedAdvisoryLocksAsync(long key)
@@ -256,7 +278,8 @@ public sealed partial class AdvisoryLockTransactionPoolingPostgresTests : IClass
         var key = MigrationImportController.MigrationImportLockKey(Guid.NewGuid(), Guid.NewGuid().ToString("N"));
         await using (var db = _fx.CreatePooledDb())
         {
-            await using (var lease = await TransactionHeldAdvisoryLease.AcquireAsync(db, key, CancellationToken.None))
+            var lease = (await TransactionHeldAdvisoryLease.TryAcquireAsync(db, key, CancellationToken.None))!;
+            await using (lease)
             {
                 lease.IsHeld.Should().BeTrue();
                 (await _fx.GrantedAdvisoryLocksAsync(key)).Should().Be(1);
@@ -267,64 +290,186 @@ public sealed partial class AdvisoryLockTransactionPoolingPostgresTests : IClass
                 {
                     await db.Tenants.AsNoTracking().CountAsync();
                     (await TryTakeInOtherPooledTransactionAsync(key)).Should().BeFalse(
-                        $"round {i}: a second import of the same package must wait for the lease");
+                        $"round {i}: a second import of the same package must not get the lock");
                     await lease.EnsureHeldAsync(CancellationToken.None);
                 }
 
-                // A second lease for the same key blocks until the first is released.
-                var contender = Task.Run(async () =>
-                {
-                    await using var db2 = _fx.CreatePooledDb();
-                    await using var second = await TransactionHeldAdvisoryLease.AcquireAsync(db2, key, CancellationToken.None);
-                    return second.IsHeld;
-                });
-                await Task.Delay(500);
-                contender.IsCompleted.Should().BeFalse("the first lease still holds the lock");
-                await lease.DisposeAsync();
-                (await contender.WaitAsync(TimeSpan.FromSeconds(20))).Should().BeTrue();
+                // A second lease for the same key is refused immediately (non-blocking), not queued.
+                await using (var db2 = _fx.CreatePooledDb())
+                    (await TransactionHeldAdvisoryLease.TryAcquireAsync(db2, key, CancellationToken.None)).Should().BeNull();
             }
         }
 
         (await _fx.GrantedAdvisoryLocksAsync(key)).Should().Be(0, "a disposed lease leaves nothing behind");
-        (await TryTakeInOtherPooledTransactionAsync(key)).Should().BeTrue();
+        await using (var db3 = _fx.CreatePooledDb())
+        await using (var again = await TransactionHeldAdvisoryLease.TryAcquireAsync(db3, key, CancellationToken.None))
+            again.Should().NotBeNull("once released, the next import takes the lock");
+    }
+
+    [Fact]
+    public async Task MigrationImportLease_KeepaliveOutlivesAShortIdleCeiling_AndHoldsNoXminHorizon()
+    {
+        var ceiling = TimeSpan.FromSeconds(2);
+        var key = Random.Shared.NextInt64();
+        await using var db = _fx.CreatePooledDb();
+        var lease = (await TransactionHeldAdvisoryLease.TryAcquireAsync(
+            db, key, new TransactionHeldAdvisoryLease.LeaseOptions(ceiling, TimeSpan.FromMilliseconds(300)), CancellationToken.None))!;
+        await using (lease)
+        {
+            // A "section" twice as long as the idle ceiling, doing no work on the lease connection.
+            await Task.Delay(ceiling * 2);
+            (await _fx.GrantedAdvisoryLocksAsync(key)).Should().Be(1, "the keepalive kept the lease transaction from idling out");
+            await lease.EnsureHeldAsync(CancellationToken.None);
+
+            var (xid, xmin) = await _fx.LockHolderXidAndXminAsync(key);
+            xid.Should().BeNull("the lease never writes, so it is never assigned a transaction id");
+            xmin.Should().BeNull("between keepalives a READ COMMITTED lease holds no snapshot, so vacuum is not held back");
+        }
+        (await _fx.GrantedAdvisoryLocksAsync(key)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task MigrationImportLease_WithoutKeepalive_TheIdleCeilingEndsIt_AndReleasesTheLock()
+    {
+        var key = Random.Shared.NextInt64();
+        await using var db = _fx.CreatePooledDb();
+        var lease = (await TransactionHeldAdvisoryLease.TryAcquireAsync(
+            db, key, new TransactionHeldAdvisoryLease.LeaseOptions(TimeSpan.FromSeconds(1), Timeout.InfiniteTimeSpan), CancellationToken.None))!;
+        await using (lease)
+        {
+            for (var i = 0; i < 50 && await _fx.GrantedAdvisoryLocksAsync(key) > 0; i++) await Task.Delay(100);
+            (await _fx.GrantedAdvisoryLocksAsync(key)).Should().Be(0, "the SET LOCAL ceiling is enforced: an idle lease is ended, never leaked");
+            var lost = async () => await lease.EnsureHeldAsync(CancellationToken.None);
+            await lost.Should().ThrowAsync<InvalidOperationException>();
+            lease.IsLost.Should().BeTrue();
+        }
+    }
+
+    [Fact]
+    public async Task MigrationImportLease_RefusesACallerThatAlreadyHasATransactionOpen()
+    {
+        await using var db = _fx.CreatePooledDb();
+        var strategy = db.Database.CreateExecutionStrategy();
+        var act = async () => await strategy.ExecuteAsync(async () =>
+        {
+            await using var tx = await db.Database.BeginTransactionAsync();
+            await TransactionHeldAdvisoryLease.TryAcquireAsync(db, 42, CancellationToken.None);
+        });
+        (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("before opening a transaction");
+    }
+
+    [Fact]
+    public async Task XactLockGuard_RefusesALockOutsideATransaction_AndAllowsOneInside()
+    {
+        await using var db = _fx.CreatePooledDb();
+        var outside = async () => await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({42L})");
+        (await outside.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("outside a transaction");
+
+        var strategy = db.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
+        {
+            await using var tx = await db.Database.BeginTransactionAsync();
+            await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({42L})");
+            await tx.CommitAsync();
+        });
+        (await _fx.GrantedAdvisoryLocksAsync(42)).Should().Be(0);
     }
 
     [Fact]
     public async Task MigrationImportCommit_ThroughTransactionPooler_HoldsLeaseForTheImport_AndReleasesIt()
     {
-        Guid tenantId;
-        await using (var seed = _fx.CreateDirectDb())
-            tenantId = await PostgresFixture.SeedMinimalTenant(seed);
-        var externalBatchId = $"pooler-{Guid.NewGuid():N}";
-        var key = MigrationImportController.MigrationImportLockKey(tenantId, externalBatchId);
+        var tenantId = await SeedTenantAsync();
+        var request = RolesPackage($"pooler-{Guid.NewGuid():N}");
+        var key = MigrationImportController.MigrationImportLockKey(tenantId, MigrationImportController.PackageChecksum(request));
 
         bool? otherClientCouldTakeLock = null;
         var probe = new FirstSaveProbe(async () => otherClientCouldTakeLock = await TryTakeInOtherPooledTransactionAsync(key));
         await using var db = _fx.CreatePooledDb(probe);
-        var controller = new MigrationImportController(db, new Pbkdf2PasswordHasher(), new Zayra.Api.Infrastructure.Audit.AuditService(db));
-        controller.ControllerContext = new Microsoft.AspNetCore.Mvc.ControllerContext
-        {
-            HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext
-            {
-                User = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(new[]
-                {
-                    new System.Security.Claims.Claim("tenant_id", tenantId.ToString()),
-                    new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
-                    new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Role, "Admin"),
-                }, "test"))
-            }
-        };
+        var result = await CreateController(db, tenantId).Commit(request, CancellationToken.None);
 
-        var result = await controller.Commit(new MigrationPackageRequest(externalBatchId, new Dictionary<string, string>
-        {
-            ["roles"] = "Name,Description,AuthorityLevel,IsActive\nImported HR,Imported role,50,true\n",
-        }, false), CancellationToken.None);
-
-        var dto = result.Result.Should().BeOfType<Microsoft.AspNetCore.Mvc.OkObjectResult>()
-            .Which.Value.Should().BeOfType<MigrationReconciliationDto>().Which;
-        dto.Status.Should().Be("Completed");
-        otherClientCouldTakeLock.Should().BeFalse("a second import of the same package must wait while the first runs");
+        OkDto(result).Status.Should().Be("Completed");
+        otherClientCouldTakeLock.Should().BeFalse("a second import of the same package must not run while the first does");
         (await _fx.GrantedAdvisoryLocksAsync(key)).Should().Be(0, "the import's lease is released when the request ends");
+    }
+
+    [Fact]
+    public async Task MigrationImportCommit_WhenThePackageIsAlreadyBeingImported_Returns409_WithoutWaiting()
+    {
+        var tenantId = await SeedTenantAsync();
+        var request = RolesPackage(null);
+        var key = MigrationImportController.MigrationImportLockKey(tenantId, MigrationImportController.PackageChecksum(request));
+        await using var holderDb = _fx.CreatePooledDb();
+        await using var held = await TransactionHeldAdvisoryLease.TryAcquireAsync(holderDb, key, CancellationToken.None);
+        held.Should().NotBeNull();
+
+        await using var db = _fx.CreatePooledDb();
+        var result = await CreateController(db, tenantId).Commit(request, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+
+        var conflict = result.Result.Should().BeOfType<ConflictObjectResult>().Subject;
+        System.Text.Json.JsonSerializer.Serialize(conflict.Value).Should().Contain(MigrationImportController.AlreadyProcessingMessage);
+        await using var verify = _fx.CreateDirectDb();
+        (await verify.MigrationImportBatches.CountAsync(x => x.TenantId == tenantId)).Should().Be(0, "the refused caller wrote nothing");
+    }
+
+    [Fact]
+    public async Task MigrationImportResume_OfACommitWithoutExternalBatchId_ContendsForTheSameLock_AndNeverDuplicatesTheBatch()
+    {
+        var tenantId = await SeedTenantAsync();
+        var request = RolesPackage(null);
+
+        // While the commit is running (after it has written its Processing batch), a resume of
+        // that batch arrives on another connection.
+        ActionResult<MigrationReconciliationDto>? concurrentResume = null;
+        var probe = new FirstSaveProbe(async () =>
+        {
+            await using var lookup = _fx.CreateDirectDb();
+            var batchId = await lookup.MigrationImportBatches.Where(x => x.TenantId == tenantId).Select(x => x.Id).SingleAsync();
+            await using var resumeDb = _fx.CreatePooledDb();
+            concurrentResume = await CreateController(resumeDb, tenantId).Resume(batchId, request, CancellationToken.None);
+        });
+        await using (var db = _fx.CreatePooledDb(probe))
+            OkDto(await CreateController(db, tenantId).Commit(request, CancellationToken.None)).Status.Should().Be("Completed");
+
+        concurrentResume.Should().NotBeNull();
+        concurrentResume!.Result.Should().BeOfType<ConflictObjectResult>("the resume must not run concurrently with the commit");
+        await using var verify = _fx.CreateDirectDb();
+        (await verify.MigrationImportBatches.CountAsync(x => x.TenantId == tenantId)).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task MigrationImportResume_OfAnInterruptedBatchWithoutExternalBatchId_ContinuesThatBatch()
+    {
+        var tenantId = await SeedTenantAsync();
+        var request = RolesPackage(null);
+        Guid batchId;
+        await using (var seed = _fx.CreateDirectDb())
+        {
+            // What a crash mid-import leaves behind: a Processing batch with no ExternalBatchId.
+            var crashed = new MigrationImportBatch
+            {
+                TenantId = tenantId,
+                ExternalBatchId = null,
+                PackageChecksum = MigrationImportController.PackageChecksum(request),
+                PackageType = "MigrationPackage",
+                Status = "Processing",
+                PayloadJson = "{}",
+                CreatedBy = Guid.NewGuid(),
+            };
+            seed.MigrationImportBatches.Add(crashed);
+            await seed.SaveChangesAsync();
+            batchId = crashed.Id;
+        }
+
+        await using (var db = _fx.CreatePooledDb())
+        {
+            var dto = OkDto(await CreateController(db, tenantId).Resume(batchId, request, CancellationToken.None));
+            dto.Status.Should().Be("Completed");
+            dto.BatchId.Should().Be(batchId, "resume continues the original batch");
+        }
+
+        await using var verify = _fx.CreateDirectDb();
+        (await verify.MigrationImportBatches.CountAsync(x => x.TenantId == tenantId)).Should().Be(1,
+            "resuming must not create a second batch for the same package");
     }
 
     [Fact]
@@ -332,7 +477,7 @@ public sealed partial class AdvisoryLockTransactionPoolingPostgresTests : IClass
     {
         var key = Random.Shared.NextInt64();
         await using var db = _fx.CreatePooledDb();
-        var lease = await TransactionHeldAdvisoryLease.AcquireAsync(db, key, CancellationToken.None);
+        var lease = (await TransactionHeldAdvisoryLease.TryAcquireAsync(db, key, CancellationToken.None))!;
         try
         {
             await using (var admin = new NpgsqlConnection(_fx.DirectConnectionString))
@@ -360,6 +505,37 @@ public sealed partial class AdvisoryLockTransactionPoolingPostgresTests : IClass
             await lease.DisposeAsync();
         }
     }
+
+    private async Task<Guid> SeedTenantAsync()
+    {
+        await using var seed = _fx.CreateDirectDb();
+        return await PostgresFixture.SeedMinimalTenant(seed);
+    }
+
+    private static MigrationPackageRequest RolesPackage(string? externalBatchId) => new(externalBatchId, new Dictionary<string, string>
+    {
+        ["roles"] = $"Name,Description,AuthorityLevel,IsActive\nImported HR {Guid.NewGuid():N},Imported role,50,true\n",
+    }, false);
+
+    private static MigrationReconciliationDto OkDto(ActionResult<MigrationReconciliationDto> result) =>
+        result.Result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<MigrationReconciliationDto>().Which;
+
+    private static MigrationImportController CreateController(ZayraDbContext db, Guid tenantId) =>
+        new(db, new Pbkdf2PasswordHasher(), new Zayra.Api.Infrastructure.Audit.AuditService(db))
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext
+                {
+                    User = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(new[]
+                    {
+                        new System.Security.Claims.Claim("tenant_id", tenantId.ToString()),
+                        new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+                        new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Role, "Admin"),
+                    }, "test"))
+                }
+            }
+        };
 
     private async Task<bool> TryTakeInOtherPooledTransactionAsync(long key)
     {

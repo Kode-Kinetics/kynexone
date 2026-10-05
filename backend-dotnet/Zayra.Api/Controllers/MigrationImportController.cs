@@ -132,7 +132,16 @@ public sealed partial class MigrationImportController : ControllerBase
     }
 
     [HttpPost("commit")]
-    public async Task<ActionResult<MigrationReconciliationDto>> Commit(MigrationPackageRequest request, CancellationToken ct)
+    public Task<ActionResult<MigrationReconciliationDto>> Commit(MigrationPackageRequest request, CancellationToken ct) =>
+        CommitCoreAsync(request, resumeBatchId: null, ct);
+
+    internal const string AlreadyProcessingMessage = "This migration package is already being processed.";
+
+    /// <param name="resumeBatchId">Set by Resume: the run continues THAT batch, found by id, instead of
+    /// looking one up by ExternalBatchId/checksum (a package committed without an ExternalBatchId has
+    /// none to find it by, and the old lookup created a second batch).</param>
+    private async Task<ActionResult<MigrationReconciliationDto>> CommitCoreAsync(
+        MigrationPackageRequest request, Guid? resumeBatchId, CancellationToken ct)
     {
         var tenantId = RequireTenant();
         var validation = ValidatePackage(request);
@@ -154,13 +163,23 @@ public sealed partial class MigrationImportController : ControllerBase
             });
 
         var checksum = PackageChecksum(request);
-        await using var lease = await TransactionHeldAdvisoryLease.AcquireAsync(
-            _db, MigrationImportLockKey(tenantId, request.ExternalBatchId ?? checksum), ct);
-        var existing = await FindBatchAsync(tenantId, request.ExternalBatchId, checksum, ct);
+        // Keyed on (tenant, package checksum) — never on ExternalBatchId, which a commit may omit and
+        // a resume used to invent — so a commit and a resume of the same package always contend for
+        // the same lock. Non-blocking: a second caller is told the package is busy rather than
+        // queueing behind an import that can run for many minutes.
+        await using var lease = await TransactionHeldAdvisoryLease.TryAcquireAsync(
+            _db, MigrationImportLockKey(tenantId, checksum), ct);
+        if (lease is null)
+            return Conflict(new { message = AlreadyProcessingMessage });
+        var existing = resumeBatchId is { } id
+            ? await _db.MigrationImportBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, ct)
+            : await FindBatchAsync(tenantId, request.ExternalBatchId, checksum, ct);
+        // Resume loaded this row before the lease; re-read it now that we own the package.
+        if (existing is not null) await _db.Entry(existing).ReloadAsync(ct);
         if (existing is not null && existing.Status == "Completed")
             return Ok(ToDto(existing, ReadCounts(existing.ReconciliationJson), ReadErrors(existing.ErrorJson)));
         if (existing is not null && existing.Status == "Processing" && !_db.Database.IsNpgsql())
-            return Conflict(new { message = "This migration package is already being processed." });
+            return Conflict(new { message = AlreadyProcessingMessage });
         // On PostgreSQL the lease above holds a transaction-scoped advisory lock on its own connection
         // for the whole import (a session lock would not survive Neon's transaction pooler). Therefore a
         // Processing row observed after acquiring it cannot still have a live owner; it is a crash/
@@ -200,7 +219,18 @@ public sealed partial class MigrationImportController : ControllerBase
         batch.StartedAtUtc = DateTime.UtcNow;
         batch.CompletedAtUtc = null;
         batch.UpdatedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (existing is null
+            && ex.InnerException is Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.UniqueViolation })
+        {
+            // The lease is per package checksum, so a DIFFERENT package racing in with the same
+            // ExternalBatchId is not serialised by it; the unique (tenant, external_batch_id) index is.
+            // Answer the loser exactly as the sequential path does.
+            return Conflict(new { message = "ExternalBatchId is already associated with a different package checksum." });
+        }
 
         try
         {
@@ -218,6 +248,7 @@ public sealed partial class MigrationImportController : ControllerBase
                 if (section == "companyCutover")
                     cutover = await LoadCutoverContextAsync(tenantId, request, batch.Id, ct);
                 totals.Add(section, result);
+                await lease.EnsureHeldAsync(ct);
                 batch.ReceivedRows += result.Received;
                 batch.CreatedRows += result.Created;
                 batch.UpdatedRows += result.Updated;
@@ -228,6 +259,8 @@ public sealed partial class MigrationImportController : ControllerBase
                 batch.ResultJson = JsonSerializer.Serialize(totals.ToLedger());
                 await _db.SaveChangesAsync(ct);
             }
+            // Never record success for work that finished after the lease was lost.
+            await lease.EnsureHeldAsync(ct);
             batch.Status = request.DryRun ? "DryRunCompleted" : "Completed";
             batch.CurrentSection = string.Empty;
             batch.CompletedAtUtc = DateTime.UtcNow;
@@ -238,6 +271,17 @@ public sealed partial class MigrationImportController : ControllerBase
         }
         catch (Exception ex) when (ex is FormatException or InvalidOperationException or DbUpdateException)
         {
+            // Only the lease holder may write the batch's outcome. If the lease is gone another
+            // import may already own this batch, so leave it untouched: it stays Processing and the
+            // next commit/resume that wins the lease recovers it as interrupted. There is no owner
+            // column to compare against, so the residual is a lease lost after this check and
+            // before the write below — a window of one statement.
+            if (lease.IsLost)
+                return Conflict(new
+                {
+                    code = "migration_lease_lost",
+                    message = "The import lost its exclusive lock before finishing; nothing further was recorded. Resume the batch."
+                });
             batch.Status = "Failed";
             batch.ErrorJson = JsonSerializer.Serialize(new[] { ex.Message });
             batch.ErrorRows++;
@@ -257,7 +301,7 @@ public sealed partial class MigrationImportController : ControllerBase
             return Conflict(new { message = "Resume package checksum does not match the persisted migration batch." });
         if (batch.Status == "Completed" || batch.Status == "DryRunCompleted")
             return Ok(ToDto(batch, ReadCounts(batch.ReconciliationJson), ReadErrors(batch.ErrorJson)));
-        return await Commit(request with { ExternalBatchId = batch.ExternalBatchId ?? batchId.ToString("N") }, ct);
+        return await CommitCoreAsync(request with { ExternalBatchId = batch.ExternalBatchId }, batch.Id, ct);
     }
 
     [HttpGet("{batchId:guid}")]
@@ -943,7 +987,7 @@ public sealed partial class MigrationImportController : ControllerBase
             : throw new FormatException($"{key} is not a date in yyyy-MM-dd form (found '{raw.Trim()}').");
     }
     private PackageValidation ValidatePackage(MigrationPackageRequest request) { var errors = request.Sections.Keys.Except(SupportedSections, StringComparer.OrdinalIgnoreCase).Select(x => $"Unsupported migration section '{x}'.").ToList(); if (request.Sections.Count == 0) errors.Add("At least one migration section is required."); return new(errors); }
-    private static string PackageChecksum(MigrationPackageRequest request) { using var sha = SHA256.Create(); var canonical = string.Join("\n", request.Sections.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase).Select(x => x.Key.ToLowerInvariant() + "\n" + x.Value.Replace("\r\n", "\n").Replace('\r', '\n'))); return Convert.ToHexString(sha.ComputeHash(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant(); }
+    internal static string PackageChecksum(MigrationPackageRequest request) { using var sha = SHA256.Create(); var canonical = string.Join("\n", request.Sections.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase).Select(x => x.Key.ToLowerInvariant() + "\n" + x.Value.Replace("\r\n", "\n").Replace('\r', '\n'))); return Convert.ToHexString(sha.ComputeHash(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant(); }
     /// <summary>
     /// The control total for a whole section: the money the FILE claims, over every row received,
     /// whether or not each row will survive validation.

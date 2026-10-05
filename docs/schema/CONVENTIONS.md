@@ -1062,7 +1062,8 @@ counts as columns.
 transaction mode, so a `pg_advisory_lock` stays on whichever pooled server session ran it, the
 `pg_advisory_unlock` usually lands elsewhere, and the lock **leaks into other requests**. Take
 `pg_advisory_xact_lock` inside the operation's transaction; a lock that must span many transactions
-uses `TransactionHeldAdvisoryLease`. `SessionAdvisoryLockRatchetTests` enforces this.
+uses `TransactionHeldAdvisoryLease`. `SessionAdvisoryLockRatchetTests` bans the session functions in
+C# and SQL, and `AdvisoryXactLockGuardInterceptor` throws if an xact lock runs outside a transaction.
 
 ---
 

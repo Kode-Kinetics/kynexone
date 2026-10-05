@@ -108,6 +108,7 @@ public sealed class PostgresFixture : IAsyncLifetime
             .UseNpgsql(ConnectionString, ProductionProviderOptions)
             // Same as Program.cs: F3 job claiming relies on it for FOR UPDATE SKIP LOCKED.
             .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance)
+            .AddInterceptors(Zayra.Api.Infrastructure.Data.AdvisoryXactLockGuardInterceptor.Instance)
             .Options);
 
     /// <summary>
@@ -122,6 +123,7 @@ public sealed class PostgresFixture : IAsyncLifetime
             .UseNpgsql(ConnectionString, ProductionProviderOptions)
             // Same as Program.cs: F3 job claiming relies on it for FOR UPDATE SKIP LOCKED.
             .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance)
+            .AddInterceptors(Zayra.Api.Infrastructure.Data.AdvisoryXactLockGuardInterceptor.Instance)
             .Options,
         accessor);
 
@@ -135,6 +137,7 @@ public sealed class PostgresFixture : IAsyncLifetime
             .UseNpgsql(ConnectionString, ProductionProviderOptions)
             // Same as Program.cs: F3 job claiming relies on it for FOR UPDATE SKIP LOCKED.
             .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance)
+            .AddInterceptors(Zayra.Api.Infrastructure.Data.AdvisoryXactLockGuardInterceptor.Instance)
             .Options,
         accessor,
         logger: null,
