@@ -29,9 +29,11 @@ public class AuthService : IAuthService
     private readonly ILogger<AuthService> _log;
     private readonly string _appUrl;
     private readonly IConfiguration? _configuration;
+    private readonly PasswordVerificationGate? _passwordGate;
 
-    public AuthService(ZayraDbContext db, IPasswordHasher passwordHasher, ITokenService tokenService, IAuditService auditService, IEmailService emailService, IOptions<JwtOptions> jwtOptions, IMfaService mfaService, TotpService totp, ILogger<AuthService> log, IConfiguration? configuration = null)
+    public AuthService(ZayraDbContext db, IPasswordHasher passwordHasher, ITokenService tokenService, IAuditService auditService, IEmailService emailService, IOptions<JwtOptions> jwtOptions, IMfaService mfaService, TotpService totp, ILogger<AuthService> log, IConfiguration? configuration = null, PasswordVerificationGate? passwordGate = null)
     {
+        _passwordGate = passwordGate;
         _db = db;
         _passwordHasher = passwordHasher;
         _tokenService = tokenService;
@@ -61,6 +63,9 @@ public class AuthService : IAuthService
 
         if (failReason is not null)
         {
+            // Same PBKDF2 work as a real check, so an unknown or ineligible account is not
+            // distinguishable by response time from a wrong password.
+            await VerifyDummyAsync(request.Password, cancellationToken);
             _log.LogWarning("Login failed for {Email} / tenant={Slug}: {Reason}", request.Email, request.TenantSlug, failReason);
             _db.LoginActivities.Add(new LoginActivity
             {
@@ -88,6 +93,7 @@ public class AuthService : IAuthService
         if ((user!.IsLocked && (!user.LockoutEnd.HasValue || user.LockoutEnd > DateTime.UtcNow))
             || (user.LockoutEnd.HasValue && user.LockoutEnd > DateTime.UtcNow))
         {
+            await VerifyDummyAsync(request.Password, cancellationToken);
             _log.LogWarning("Login blocked — lockout active until {LockoutEnd} for {Email}", user.LockoutEnd, request.Email);
             _db.LoginActivities.Add(new LoginActivity
             {
@@ -106,7 +112,9 @@ public class AuthService : IAuthService
         }
 
         // Phase 4 — password verification; increment failure counter on mismatch and lock if threshold reached
-        if (!_passwordHasher.Verify(request.Password, user.PasswordHash))
+        var storedHash = user.PasswordHash;
+        if (!await PasswordVerificationGate.RunAsync(_passwordGate,
+                () => _passwordHasher.Verify(request.Password, storedHash), cancellationToken))
         {
             user.FailedLoginCount++;
 
@@ -1279,18 +1287,42 @@ public class AuthService : IAuthService
     /// encoding upgrade of the SAME password must not rotate the session stamp (User.UpdatedAtUtc)
     /// and sign the user out of every other device. A failure here never fails the login.
     /// </summary>
+    private Task<bool> VerifyDummyAsync(string password, CancellationToken ct)
+        => PasswordVerificationGate.RunAsync(_passwordGate,
+            () => _passwordHasher.Verify(password, Pbkdf2PasswordHasher.DummyHash), ct);
+
     private async Task<string> UpgradePasswordHashAsync(User user, string password, CancellationToken ct)
     {
         var verified = user.PasswordHash;
         try
         {
-            var upgraded = _passwordHasher.Hash(password);
+            var upgraded = await PasswordVerificationGate.RunAsync(_passwordGate, () => _passwordHasher.Hash(password), ct);
             if (_db.Database.IsRelational())
             {
                 var rows = await _db.Users
                     .Where(x => x.Id == user.Id && x.TenantId == user.TenantId && x.PasswordHash == verified)
                     .ExecuteUpdateAsync(set => set.SetProperty(x => x.PasswordHash, upgraded), ct);
-                if (rows != 1) return verified;
+                if (rows != 1)
+                {
+                    // Lost the compare-and-set. Usually a simultaneous first login of the SAME user
+                    // already upgraded it; accept the stored hash if this password verifies against
+                    // it, so both logins succeed. A real password change will not verify, and the
+                    // locked issuance check then refuses as before.
+                    var current = await _db.Users.AsNoTracking()
+                        .Where(x => x.Id == user.Id && x.TenantId == user.TenantId)
+                        .Select(x => x.PasswordHash)
+                        .SingleOrDefaultAsync(ct);
+                    if (current is not null && await PasswordVerificationGate.RunAsync(_passwordGate,
+                            () => _passwordHasher.Verify(password, current), ct))
+                    {
+                        var stored = _db.Entry(user).Property(x => x.PasswordHash);
+                        stored.CurrentValue = current;
+                        stored.OriginalValue = current;
+                        stored.IsModified = false;
+                        return current;
+                    }
+                    return verified;
+                }
                 // Mirror the row without marking the property dirty: a later SaveChanges must not
                 // see a "password change" and rotate the session stamp.
                 var property = _db.Entry(user).Property(x => x.PasswordHash);

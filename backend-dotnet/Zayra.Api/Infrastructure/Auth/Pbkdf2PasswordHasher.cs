@@ -30,6 +30,17 @@ public class Pbkdf2PasswordHasher : IPasswordHasher
 
     private readonly int _iterations;
 
+    private static readonly Lazy<string> Dummy = new(
+        () => new Pbkdf2PasswordHasher().Hash(Convert.ToBase64String(RandomNumberGenerator.GetBytes(24))));
+
+    /// <summary>
+    /// A valid hash of a random, never-disclosed password at the current work factor. Login paths
+    /// verify against it when there is no real credential to check (unknown email, inactive account),
+    /// so a miss costs the same CPU and time as a hit and response timing does not reveal which
+    /// emails exist.
+    /// </summary>
+    public static string DummyHash => Dummy.Value;
+
     public Pbkdf2PasswordHasher() : this(CurrentIterations) { }
 
     /// <summary>

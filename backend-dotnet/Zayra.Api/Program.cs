@@ -309,6 +309,9 @@ builder.Services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationH
 builder.Services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationMiddlewareResultHandler, Zayra.Api.Infrastructure.Authorization.PermissionAwareAuthorizationResultHandler>();
 
 builder.Services.AddScoped<IPasswordHasher, Pbkdf2PasswordHasher>();
+// One process-wide bound on concurrent 600k-iteration PBKDF2 work (logins, dummy checks, re-hashes).
+builder.Services.AddSingleton(sp => Zayra.Api.Infrastructure.Auth.PasswordVerificationGate.FromConfiguration(
+    sp.GetRequiredService<IConfiguration>()));
 builder.Services.AddScoped<ITokenService, JwtTokenService>();
 builder.Services.AddScoped<IAuditService, AuditService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Auth.TotpService>();

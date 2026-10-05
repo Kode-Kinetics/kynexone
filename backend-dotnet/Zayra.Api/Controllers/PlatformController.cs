@@ -47,6 +47,7 @@ public class PlatformController : ControllerBase
     private readonly ILogger<PlatformController> _log;
     private readonly IMemoryCache _cache;
     private readonly string _appUrl;
+    private readonly PasswordVerificationGate? _passwordGate;
 
     /// <summary>
     /// Key read (never written) by the <c>/platform/health</c> distributed-cache probe. Carries the
@@ -66,8 +67,10 @@ public class PlatformController : ControllerBase
         IMfaService mfa,
         IAccessManagementService accessManagement,
         ILogger<PlatformController> log,
-        IMemoryCache cache)
+        IMemoryCache cache,
+        PasswordVerificationGate? passwordGate = null)
     {
+        _passwordGate = passwordGate;
         _db = db;
         _jwt = jwt.Value;
         _passwordHasher = passwordHasher;
@@ -93,6 +96,24 @@ public class PlatformController : ControllerBase
     [EnableRateLimiting("platform_login")]
     public async Task<IActionResult> Login([FromBody] PlatformLoginRequest req, CancellationToken ct)
     {
+        try
+        {
+            return await LoginCoreAsync(req, ct);
+        }
+        catch (PasswordVerificationBusyException ex)
+        {
+            Response.Headers.RetryAfter = "2";
+            return StatusCode(StatusCodes.Status429TooManyRequests, new { message = ex.Message });
+        }
+    }
+
+    /// <summary>Same PBKDF2 work as a real check, so a miss is not distinguishable by timing.</summary>
+    private Task<bool> VerifyDummyPasswordAsync(string password, CancellationToken ct)
+        => PasswordVerificationGate.RunAsync(_passwordGate,
+            () => _passwordHasher.Verify(password, Pbkdf2PasswordHasher.DummyHash), ct);
+
+    private async Task<IActionResult> LoginCoreAsync(PlatformLoginRequest req, CancellationToken ct)
+    {
         if (string.IsNullOrWhiteSpace(req.Email) || string.IsNullOrWhiteSpace(req.Password))
             return BadRequest(new { message = "Email and password are required." });
 
@@ -106,11 +127,15 @@ public class PlatformController : ControllerBase
         if (dbUser is not null)
         {
             if (!dbUser.IsActive || !PlatformRoles.All.Contains(dbUser.Role))
+            {
+                await VerifyDummyPasswordAsync(req.Password, ct);
                 return Unauthorized(new { message = "Invalid platform admin credentials." });
+            }
 
             // Brute-force lockout (see PlatformUser.FailedLoginCount): reject while a lockout is active.
             if (dbUser.LockoutEndUtc.HasValue && dbUser.LockoutEndUtc > DateTime.UtcNow)
             {
+                await VerifyDummyPasswordAsync(req.Password, ct);
                 _db.LoginActivities.Add(new LoginActivity
                 {
                     UserId = dbUser.Id, EmailAttempted = dbUser.Email,
@@ -122,7 +147,9 @@ public class PlatformController : ControllerBase
                 return Unauthorized(new { message = "Invalid platform admin credentials." });
             }
 
-            if (!_passwordHasher.Verify(req.Password, dbUser.PasswordHash))
+            var storedHash = dbUser.PasswordHash;
+            if (!await PasswordVerificationGate.RunAsync(_passwordGate,
+                    () => _passwordHasher.Verify(req.Password, storedHash), ct))
             {
                 dbUser.FailedLoginCount++;
                 if (dbUser.FailedLoginCount >= PlatformUser.MaxFailedLogins)
@@ -197,6 +224,7 @@ public class PlatformController : ControllerBase
             // request must never materialize a privileged principal or mint its first session.
             // Once any platform principal exists, an unknown email is indistinguishable from a
             // wrong password (401), so this endpoint is not an account-enumeration oracle.
+            await VerifyDummyPasswordAsync(req.Password, ct);
             if (await _db.PlatformUsers.AnyAsync(ct))
                 return Unauthorized(new { message = "Invalid platform admin credentials." });
 
@@ -226,12 +254,15 @@ public class PlatformController : ControllerBase
         var verified = user.PasswordHash;
         try
         {
-            var upgraded = _passwordHasher.Hash(password);
+            var upgraded = await PasswordVerificationGate.RunAsync(_passwordGate, () => _passwordHasher.Hash(password), ct);
             if (_db.Database.IsRelational())
             {
                 var rows = await _db.PlatformUsers
                     .Where(x => x.Id == user.Id && x.PasswordHash == verified)
                     .ExecuteUpdateAsync(set => set.SetProperty(x => x.PasswordHash, upgraded), ct);
+                // Lost the compare-and-set (e.g. a simultaneous first login already upgraded it).
+                // Nothing to do: this login was already verified, and the platform path has no
+                // locked re-check that compares hashes.
                 if (rows != 1) return;
                 var property = _db.Entry(user).Property(x => x.PasswordHash);
                 property.CurrentValue = upgraded;

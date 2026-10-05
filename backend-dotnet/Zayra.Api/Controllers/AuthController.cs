@@ -38,6 +38,11 @@ public class AuthController : ControllerBase
             return Ok(result.Tokens);
         }
         catch (UnauthorizedAccessException ex) { return Unauthorized(new { message = ex.Message }); }
+        catch (Zayra.Api.Infrastructure.Auth.PasswordVerificationBusyException ex)
+        {
+            Response.Headers.RetryAfter = "2";
+            return StatusCode(StatusCodes.Status429TooManyRequests, new { message = ex.Message });
+        }
     }
 
     [HttpPost("refresh")]

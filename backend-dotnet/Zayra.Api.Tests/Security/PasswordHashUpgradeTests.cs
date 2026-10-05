@@ -143,6 +143,34 @@ public sealed class PasswordHashUpgradeTests
                 .Should().Be(changedElsewhere, "the guarded UPDATE must not overwrite a newer password");
     }
 
+    [Fact]
+    public async Task TwoSimultaneousFirstLogins_BothSucceed_WhenTheOtherAlreadyUpgradedTheHash()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        var userId = await kit.SeedUserAsync("twin@hardening.local", Legacy.Hash(Password), roleName: null);
+        // The "other" login upgrades the SAME password first, between this login's verify and its
+        // guarded UPDATE, so this login's compare-and-set misses.
+        var otherUpgrade = new Pbkdf2PasswordHasher().Hash(Password);
+        var racing = new RacingHasher(async () =>
+        {
+            await using var other = kit.NewDb();
+            await other.Users.Where(u => u.Id == userId)
+                .ExecuteUpdateAsync(s => s.SetProperty(u => u.PasswordHash, otherUpgrade));
+        });
+
+        await using (var db = kit.NewDb())
+        {
+            var result = await kit.Auth(db, racing).LoginAsync(
+                new LoginRequest("twin@hardening.local", Password, AuthHardeningTestKit.TenantSlug),
+                AuthHardeningTestKit.Ctx, CancellationToken.None);
+            result.Tokens.Should().NotBeNull("the stored hash still verifies this password, so the login must pass");
+        }
+
+        await using (var db = kit.NewDb())
+            (await db.Users.AsNoTracking().SingleAsync(u => u.Id == userId)).PasswordHash
+                .Should().Be(otherUpgrade, "the winner's upgrade is kept, not overwritten");
+    }
+
     private sealed class RacingHasher(Func<Task> onHash) : IPasswordHasher
     {
         private readonly Pbkdf2PasswordHasher _inner = new();

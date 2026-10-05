@@ -6,7 +6,7 @@ import { AlertCircle, Eye, EyeOff, Lock, ShieldCheck, Activity, Users } from 'lu
 import { platformApi, PLATFORM_PENDING_ENROLLMENT_KEY } from '@/src/api/platform';
 import { Logo } from '@/src/components/Logo';
 
-type ErrorKind = 'invalid_credentials' | 'not_configured' | 'network' | 'invalid_code' | 'enrollment_expired' | null;
+type ErrorKind = 'invalid_credentials' | 'not_configured' | 'network' | 'busy' | 'invalid_code' | 'enrollment_expired' | null;
 
 /** credentials → (mfa | enroll). `enroll` is reached from sign-in once two-step sign-in is mandatory,
  *  or from the console's "set up now" prompt via sessionStorage. */
@@ -17,6 +17,7 @@ function errorMessage(kind: ErrorKind): string {
     case 'invalid_credentials': return 'Invalid platform admin credentials. Please check your email and password.';
     case 'not_configured': return 'Platform admin access is not configured on this server. Set PLATFORM_ADMIN_EMAIL and PLATFORM_ADMIN_PASSWORD environment variables.';
     case 'network': return 'Cannot reach the server. Check that the backend is running and reachable.';
+    case 'busy': return 'Too many sign-in attempts right now. Wait a moment and try again.';
     case 'invalid_code': return 'That code was not accepted. Check your authenticator app and try again.';
     case 'enrollment_expired': return 'This setup session has expired. Sign in again to restart setup.';
     default: return '';
@@ -136,6 +137,7 @@ export default function PlatformLoginPage() {
       const status = (err as { response?: { status?: number } })?.response?.status;
       if (status === 401) setErrorKind('invalid_credentials');
       else if (status === 503) setErrorKind('not_configured');
+      else if (status === 429) setErrorKind('busy');
       else if (!(err as { response?: unknown })?.response) setErrorKind('network');
       else setErrorKind('invalid_credentials');
     } finally {
