@@ -53,12 +53,14 @@ public class RawSqlExecutionRatchetTests
         // ── Advisory locks. `SELECT pg_advisory_*lock(key)` writes no row at all; it is only
         // here because it goes through the same API. The key is derived per tenant/entity at
         // each site. No tenant-boundary risk. ────────────────────────────────────────────────
-        ["Controllers/MigrationImportController.cs"] = 2,
+        // (MigrationImportController's session lock/unlock pair is gone: its lease now runs
+        // pg_advisory_xact_lock on its own connection in Infrastructure/Data/TransactionHeldAdvisoryLease.)
         // Employee CSV import: serializes two submissions carrying the same client ImportKey
         // (key = SHA-256 of "EMPIMPRT" ‖ tenantId ‖ importKey), transaction-scoped.
         ["Controllers/EmployeesController.cs"] = 1,
         ["Data/ZayraDbContext.cs"] = 2,
-        ["Infrastructure/Auth/AccessManagementService.cs"] = 2,
+        // Admin-seat pg_advisory_xact_lock (was a session lock + unlock pair, 2 -> 1).
+        ["Infrastructure/Auth/AccessManagementService.cs"] = 1,
         ["Infrastructure/Finance/FinanceDecisionSerializer.cs"] = 1,
         // Parameterized advisory lock only; key includes tenant + canonical employee. No row writes.
         // Jawazat creation idempotency and company-scope tests cover the governed ticket producer.

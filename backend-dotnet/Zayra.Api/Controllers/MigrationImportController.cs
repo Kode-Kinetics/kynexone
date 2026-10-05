@@ -154,14 +154,15 @@ public sealed partial class MigrationImportController : ControllerBase
             });
 
         var checksum = PackageChecksum(request);
-        await using var lease = await MigrationImportLease.AcquireAsync(
-            _db, tenantId, request.ExternalBatchId ?? checksum, ct);
+        await using var lease = await TransactionHeldAdvisoryLease.AcquireAsync(
+            _db, MigrationImportLockKey(tenantId, request.ExternalBatchId ?? checksum), ct);
         var existing = await FindBatchAsync(tenantId, request.ExternalBatchId, checksum, ct);
         if (existing is not null && existing.Status == "Completed")
             return Ok(ToDto(existing, ReadCounts(existing.ReconciliationJson), ReadErrors(existing.ErrorJson)));
         if (existing is not null && existing.Status == "Processing" && !_db.Database.IsNpgsql())
             return Conflict(new { message = "This migration package is already being processed." });
-        // On PostgreSQL the session advisory lock above is held for the whole import. Therefore a
+        // On PostgreSQL the lease above holds a transaction-scoped advisory lock on its own connection
+        // for the whole import (a session lock would not survive Neon's transaction pooler). Therefore a
         // Processing row observed after acquiring it cannot still have a live owner; it is a crash/
         // cancellation remnant. Reuse the governed ledger and idempotent upserts instead of leaving
         // the batch permanently unresumable.
@@ -210,6 +211,7 @@ public sealed partial class MigrationImportController : ControllerBase
             foreach (var section in SupportedSections)
             {
                 if (!request.Sections.TryGetValue(section, out var csv)) continue;
+                await lease.EnsureHeldAsync(ct);
                 batch.CurrentSection = section;
                 await _db.SaveChangesAsync(ct);
                 var result = await ApplySectionAsync(section, csv, tenantId, request.DryRun, cutover, ct);
@@ -272,39 +274,10 @@ public sealed partial class MigrationImportController : ControllerBase
         return await _db.MigrationImportBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.PackageChecksum == checksum && x.Status != "Previewed", ct);
     }
 
-    private sealed class MigrationImportLease : IAsyncDisposable
+    internal static long MigrationImportLockKey(Guid tenantId, string packageKey)
     {
-        private readonly ZayraDbContext? _db;
-        private readonly long _key;
-
-        private MigrationImportLease(ZayraDbContext? db, long key) { _db = db; _key = key; }
-
-        public static async Task<MigrationImportLease> AcquireAsync(
-            ZayraDbContext db, Guid tenantId, string packageKey, CancellationToken ct)
-        {
-            if (!db.Database.IsNpgsql()) return new MigrationImportLease(null, 0);
-            var material = Encoding.UTF8.GetBytes($"migration-import:{tenantId:D}:{packageKey}");
-            var digest = SHA256.HashData(material);
-            var key = System.Buffers.Binary.BinaryPrimitives.ReadInt64BigEndian(digest.AsSpan(0, 8));
-            await db.Database.OpenConnectionAsync(ct);
-            try
-            {
-                await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_lock({key})", ct);
-                return new MigrationImportLease(db, key);
-            }
-            catch
-            {
-                await db.Database.CloseConnectionAsync();
-                throw;
-            }
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            if (_db is null) return;
-            try { await _db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_unlock({_key})"); }
-            finally { await _db.Database.CloseConnectionAsync(); }
-        }
+        var digest = SHA256.HashData(Encoding.UTF8.GetBytes($"migration-import:{tenantId:D}:{packageKey}"));
+        return System.Buffers.Binary.BinaryPrimitives.ReadInt64BigEndian(digest.AsSpan(0, 8));
     }
 
     private async Task<PlanTotals> BuildPlanAsync(Guid tenantId, MigrationPackageRequest request, CancellationToken ct)
