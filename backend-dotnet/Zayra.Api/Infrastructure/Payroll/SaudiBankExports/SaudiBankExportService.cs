@@ -85,6 +85,8 @@ public sealed class SaudiBankExportService
             errors.Add(new("format_unsupported", "This bank/channel format is not supported. No fallback format is used.", null, "formatId"));
         foreach (var field in AnbConnectCsvGenerator.EmployerFields)
             AnbConnectCsvGenerator.ValidateEmployerField(field, FieldValue(s, field), errors, allowBlank: true);
+        // Auto-WPS needs the national unified number; a value that is present must be well-formed.
+        KsaWageFileRules.ValidateNationalUnifiedNo(s.NationalUnifiedNo, required: s.AutoWpsUpload, errors);
         return errors;
     }
 
@@ -119,7 +121,7 @@ public sealed class SaudiBankExportService
             row.UpdatedBy = actorId;
 
             // Field NAMES only — the audit never carries account numbers or establishment values.
-            var changed = new[] { "formatId" }.Concat(AnbConnectCsvGenerator.EmployerFields)
+            var changed = new[] { "formatId" }.Concat(AnbConnectCsvGenerator.EmployerFields).Concat(new[] { "autoWpsUpload", "nationalUnifiedNo" })
                 .Where(f => !string.Equals(FieldValue(before, f), FieldValue(saved, f), StringComparison.Ordinal)).ToArray();
             Audit(tenantId, actorId, "payroll.bank_export.settings_saved", "Company", companyId.ToString(),
                 new { companyId, formatId = saved.FormatId, changedFields = changed });
@@ -210,7 +212,7 @@ public sealed class SaudiBankExportService
                 request.BatchReference!, request.PaymentDate!, prepared.Validation.EmployeeCount, prepared.Validation.TotalAmount,
                 prepared.Validation.Currency,
                 prepared.Files.Select(f => new StoredFile(f.Name, f.Sha256, Convert.ToBase64String(f.Content))).ToList(),
-                DateTime.UtcNow, actorId, SaudiBankExportFormats.AcceptanceStatus);
+                DateTime.UtcNow, actorId, SaudiBankExportFormats.AcceptanceStatus, prepared.MolEstablishmentId);
             var row = new BankTransferFile
             {
                 TenantId = tenantId, PaymentBatchId = batchId,
@@ -291,7 +293,8 @@ public sealed class SaudiBankExportService
 
     // ── Preparation: the ONE place every rule is evaluated (validate + generate share it) ─────────
 
-    private sealed record Prepared(Guid CompanyId, Guid RunId, SaudiBankExportValidationDto Validation, IReadOnlyList<AnbGeneratedFile>? Files, string AccountNumber);
+    private sealed record Prepared(Guid CompanyId, Guid RunId, SaudiBankExportValidationDto Validation, IReadOnlyList<AnbGeneratedFile>? Files, string AccountNumber,
+        string MolEstablishmentId);
 
     private async Task<Prepared?> PrepareAsync(Guid tenantId, Guid batchId, SaudiBankExportBatchRequest request, CancellationToken ct)
     {
@@ -337,22 +340,37 @@ public sealed class SaudiBankExportService
         if (IneligibleWpsStatuses.Contains(batch.WpsStatus) || batch.Status is "Cancelled" or "Voided")
             errors.Add(new("batch_ineligible", $"This payment batch cannot be exported (status {batch.Status}, WPS {batch.WpsStatus})."));
         if (batch.Currency != "SAR")
-            errors.Add(new("currency_not_sar", $"The batch currency is {batch.Currency}; this format pays SAR only."));
+            errors.Add(new("currency_not_sar", $"Saudi bank and WPS files pay in SAR only. This batch is in {batch.Currency}.", null, "currency"));
 
         var unresolvedErrors = await _db.PayrollValidationResults.AsNoTracking()
             .CountAsync(v => v.TenantId == tenantId && v.PayrollRunId == run.Id && v.Severity == "Error" && !v.IsResolved, ct);
         if (unresolvedErrors > 0)
             errors.Add(new("payroll_errors_unresolved", $"The run has {unresolvedErrors} unresolved payroll validation error(s)."));
 
-        // Reference uniqueness across this company's exports (other batches).
-        if (run.CompanyId is not null && errors.All(e => e.Code != "batch_reference_invalid"))
+        // FILE-REF uniqueness, across history and INCLUDING voided runs' exports (an artifact is never
+        // deleted by a void): the bank rejects a repeated reference for the same establishment, and the
+        // old account-level check is kept beside it so no reference that was refused before is now allowed.
+        var usedReferences = new List<string>();
+        if (run.CompanyId is not null && !string.IsNullOrEmpty(request.BatchReference))
         {
-            var companyPrefix = ArtifactPrefix;
-            var suffix = $"/{AccountFingerprint(settings.MainAccountNumber)}/{request.BatchReference}";
-            var clash = await _db.BankTransferFiles.AsNoTracking()
-                .AnyAsync(f => f.TenantId == tenantId && f.PaymentBatchId != batchId
-                            && f.FileName.StartsWith(companyPrefix) && f.FileName.EndsWith(suffix), ct);
-            if (clash) errors.Add(new("batch_reference_in_use", "This batch reference was already used for this employer bank account in the workspace.", null, "batchReference"));
+            var suffix = $"/{request.BatchReference}";
+            var accountSegment = $"/{AccountFingerprint(settings.MainAccountNumber)}/";
+            var candidates = await _db.BankTransferFiles.AsNoTracking()
+                .Where(f => f.TenantId == tenantId && f.PaymentBatchId != batchId
+                            && f.FileName.StartsWith(ArtifactPrefix) && f.FileName.EndsWith(suffix))
+                .Select(f => new { f.FileName, f.FileContent }).ToListAsync(ct);
+            foreach (var c in candidates)
+            {
+                var sameAccount = c.FileName.Contains(accountSegment, StringComparison.Ordinal);
+                string? establishment = null;
+                try { establishment = JsonSerializer.Deserialize<StoredEnvelope>(c.FileContent, Json)?.MolEstablishmentId; }
+                catch (JsonException) { /* unreadable legacy row: the account check still applies */ }
+                var sameEstablishment = !string.IsNullOrEmpty(establishment)
+                    && string.Equals(establishment, settings.MolEstablishmentId, StringComparison.Ordinal);
+                if (sameAccount && errors.All(e => e.Code != "batch_reference_in_use"))
+                    errors.Add(new("batch_reference_in_use", "This batch reference was already used for this employer bank account in the workspace.", null, "batchReference"));
+                if (sameEstablishment) usedReferences.Add(request.BatchReference!);
+            }
         }
 
         // Population: frozen payment records, reconciled against the run's locked slips.
@@ -387,6 +405,7 @@ public sealed class SaudiBankExportService
             errors.Add(new("slip_missing_from_batch", $"{s.EmployeeCode}: has a positive net slip but no payment record in this batch.", s.EmployeeId));
 
         var rows = new List<AnbPaymentInput>();
+        var ksaRows = new List<KsaWageFileRow>();
         foreach (var rec in records.OrderBy(r => r.EmployeeId))
         {
             var emp = employees.FirstOrDefault(e => e.Id == rec.EmployeeId);
@@ -440,6 +459,12 @@ public sealed class SaudiBankExportService
                 .Where(v => !string.IsNullOrEmpty(v)).Distinct(StringComparer.Ordinal).ToList();
             if (idCandidates.Count > 1) Err("employee_id_conflict", "national ID/Iqama differs between identity fields.", "employeeId");
 
+            ksaRows.Add(new KsaWageFileRow(
+                rec.EmployeeId, label, emp.Nationality, idCandidates.Count == 1 ? idCandidates[0] : null, NullIfEmpty(rec.Iban),
+                NullIfEmpty(beneficiary.GetValueOrDefault(rec.EmployeeId)?.BicCode),
+                NullIfEmpty(string.IsNullOrEmpty(emp.EnglishName) ? emp.FullName : emp.EnglishName),
+                slip.GrossSalary, slip.BasicSalary, slip.HousingAllowance, slip.NetSalary, slip.Deductions));
+
             addresses.TryGetValue(rec.EmployeeId, out var addr);
             var hasAddr = addresses.ContainsKey(rec.EmployeeId);
             rows.Add(new AnbPaymentInput(
@@ -455,17 +480,35 @@ public sealed class SaudiBankExportService
         var header = new AnbHeaderInput(
             request.BatchReference, settings.BatchType, settings.MolEstablishmentId, settings.MainAccountNumber,
             dateOk ? paymentDate : default, settings.OrganizationName, settings.OrganizationAddress1,
-            settings.OrganizationAddress2, settings.OrganizationAddress3, settings.Narrative, settings.CompanyName);
+            settings.OrganizationAddress2, settings.OrganizationAddress3, settings.Narrative, settings.CompanyName,
+            settings.AutoWpsUpload, settings.NationalUnifiedNo);
+
+        // Saudi wage-file rules FIRST: they carry the stable, bank-independent codes. The ANB layout
+        // rules then add only what they alone know; where both flag the same field of the same
+        // employee, the user sees one message, not two wordings of one problem.
+        var ksaErrors = KsaWageFileRules.Validate(
+            new KsaWageFileHeader(settings.MolEstablishmentId, batch.Currency, request.BatchReference,
+                settings.AutoWpsUpload, settings.NationalUnifiedNo),
+            ksaRows, usedReferences);
+        foreach (var e in ksaErrors) AddUnlessCovered(errors, e);
         var generated = AnbConnectCsvGenerator.Generate(header, rows, batch.TotalAmount);
-        foreach (var e in generated.Errors)
-            if (!errors.Contains(e) && !(e.Code == "batch_reference_invalid" && errors.Any(x => x.Code == e.Code)))
-                errors.Add(e);
+        foreach (var e in generated.Errors) AddUnlessCovered(errors, e);
 
         var files = errors.Count == 0 ? generated.Files : null;
-        return new Prepared(companyId, run.Id, Result(records.Count, recordTotal, errors), files, settings.MainAccountNumber);
+        return new Prepared(companyId, run.Id, Result(records.Count, recordTotal, errors), files, settings.MainAccountNumber,
+            settings.MolEstablishmentId);
     }
 
     // ── Plumbing ───────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>Adds an issue unless one with the same code already exists for the same employee and
+    /// field, or — for a field-attributed issue — any issue already names that employee's field.</summary>
+    private static void AddUnlessCovered(List<SaudiBankExportIssueDto> errors, SaudiBankExportIssueDto e)
+    {
+        if (errors.Any(x => x.Code == e.Code && x.EmployeeId == e.EmployeeId && x.Field == e.Field)) return;
+        if (e.Field is not null && errors.Any(x => x.EmployeeId == e.EmployeeId && x.Field == e.Field)) return;
+        errors.Add(e);
+    }
 
     private async Task<(PayrollPaymentBatch? Batch, PayrollRun? Run)> LoadBatchAndRunAsync(Guid tenantId, Guid batchId, CancellationToken ct)
     {
@@ -544,6 +587,7 @@ public sealed class SaudiBankExportService
         OrganizationAddress1 = s.OrganizationAddress1 ?? string.Empty, OrganizationAddress2 = s.OrganizationAddress2 ?? string.Empty,
         OrganizationAddress3 = s.OrganizationAddress3 ?? string.Empty, CompanyName = s.CompanyName ?? string.Empty,
         Narrative = s.Narrative ?? string.Empty, BatchType = s.BatchType ?? string.Empty,
+        AutoWpsUpload = s.AutoWpsUpload, NationalUnifiedNo = s.NationalUnifiedNo ?? string.Empty,
     };
 
     private static string? FieldValue(SaudiBankExportSettingsDto s, string field) => field switch
@@ -558,6 +602,8 @@ public sealed class SaudiBankExportService
         "companyName" => s.CompanyName,
         "narrative" => s.Narrative,
         "batchType" => s.BatchType,
+        "autoWpsUpload" => s.AutoWpsUpload ? "true" : "false",
+        "nationalUnifiedNo" => s.NationalUnifiedNo,
         _ => null,
     };
 
@@ -566,5 +612,8 @@ public sealed class SaudiBankExportService
     internal sealed record StoredEnvelope(
         string Schema, string FormatId, Guid TenantId, Guid CompanyId, Guid BatchId, Guid RunId,
         string BatchReference, string PaymentDate, int EmployeeCount, decimal TotalAmount, string Currency,
-        List<StoredFile> Files, DateTime GeneratedAtUtc, Guid GeneratedBy, string AcceptanceStatus);
+        List<StoredFile> Files, DateTime GeneratedAtUtc, Guid GeneratedBy, string AcceptanceStatus,
+        // Added with the KSA wage-file rules: the establishment the FILE-REF was spent against, so
+        // uniqueness is enforced per establishment across history. Absent on older envelopes.
+        string? MolEstablishmentId = null);
 }

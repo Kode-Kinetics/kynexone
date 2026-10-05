@@ -23,6 +23,12 @@ public sealed class SaudiBankExportSettingsDto
     public string CompanyName { get; set; } = string.Empty;
     public string Narrative { get; set; } = string.Empty;
     public string BatchType { get; set; } = string.Empty;
+    /// <summary>ANB auto-WPS: ask ANB to produce and upload the signed WPS file to Mudad on the
+    /// employer's behalf. Off by default; when on, <see cref="NationalUnifiedNo"/> is required and both
+    /// travel in the instruction header. [CONFIRM] header column names with ANB onboarding.</summary>
+    public bool AutoWpsUpload { get; set; }
+    /// <summary>Establishment national unified number, exactly 10 digits. [CONFIRM] format with ANB.</summary>
+    public string NationalUnifiedNo { get; set; } = string.Empty;
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]

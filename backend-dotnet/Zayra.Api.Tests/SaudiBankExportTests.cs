@@ -22,6 +22,10 @@ internal static class SaudiBankExportTestData
 {
     public static readonly string IbanA = IbanValidator.WithValidCheckDigits("SA0080000000608010167519");
     public const string AnbInternal = "0108057386290038";
+    /// <summary>An ANB (bank code 30) Saudi IBAN. The KSA wage-file rules require a 24-character SA IBAN
+    /// for every line, so the service fixture pays E2 by IBAN; the pure ANB generator tests still cover
+    /// the 16-digit internal-account form ANB's own layout allows.</summary>
+    public static readonly string IbanAnb = IbanValidator.WithValidCheckDigits("SA0030100000608010167519");
 
     public sealed class FakeAddresses : ISaudiBankEmployeeAddressSource
     {
@@ -65,13 +69,13 @@ internal static class SaudiBankExportTestData
         {
             TenantId = tenantId, CompanyId = companyId, EmployeeCode = $"E1-{tag}", FullName = "Omar Test",
             EnglishName = "Omar Test", Status = "Active", ReadinessState = "Ready", JoiningDate = DateTime.UtcNow,
-            IdType = "NationalId", IdNumber = "1012345678",
+            IdType = "NationalId", IdNumber = "1012345678", Nationality = "Saudi",
         };
         var e2 = new Employee
         {
             TenantId = tenantId, CompanyId = companyId, EmployeeCode = $"E2-{tag}", FullName = "Sara Test",
             EnglishName = "Sara Test", Status = "Active", ReadinessState = "Ready", JoiningDate = DateTime.UtcNow,
-            IqamaNumber = "2012345678",
+            IqamaNumber = "2012345678", Nationality = "Egyptian",
         };
         // Explicit pre-approved BIC fixtures; addresses are intentionally absent until supplied.
         e1.WpsBankDetails = JsonSerializer.Serialize(new { schema = ApprovedSaudiBeneficiaryDetails.Schema, bicCode = "RJHISARI" });
@@ -100,7 +104,7 @@ internal static class SaudiBankExportTestData
             });
         db.EmployeePayrollProfiles.AddRange(
             new EmployeePayrollProfile { TenantId = tenantId, EmployeeId = e1.Id, Iban = IbanA, SalaryCurrency = "SAR", BankRoutingCode = "RJHISARI" },
-            new EmployeePayrollProfile { TenantId = tenantId, EmployeeId = e2.Id, AccountNumber = AnbInternal, SalaryCurrency = "SAR", BankRoutingCode = "ARNBSARI" });
+            new EmployeePayrollProfile { TenantId = tenantId, EmployeeId = e2.Id, Iban = IbanAnb, SalaryCurrency = "SAR", BankRoutingCode = "ARNBSARI" });
         var batch = new PayrollPaymentBatch
         {
             TenantId = tenantId, PayrollRunId = run.Id, BatchNumber = $"PB-{tag}", PaymentMethod = "WPS",
@@ -109,7 +113,7 @@ internal static class SaudiBankExportTestData
         db.PayrollPaymentBatches.Add(batch);
         db.PayrollPaymentRecords.AddRange(
             new PayrollPaymentRecord { TenantId = tenantId, PaymentBatchId = batch.Id, EmployeeId = e1.Id, Amount = 6300m, Iban = IbanA, Status = "Pending" },
-            new PayrollPaymentRecord { TenantId = tenantId, PaymentBatchId = batch.Id, EmployeeId = e2.Id, Amount = 5250.50m, Iban = AnbInternal, Status = "Pending" });
+            new PayrollPaymentRecord { TenantId = tenantId, PaymentBatchId = batch.Id, EmployeeId = e2.Id, Amount = 5250.50m, Iban = IbanAnb, Status = "Pending" });
         await db.SaveChangesAsync();
         return batch.Id;
     }
