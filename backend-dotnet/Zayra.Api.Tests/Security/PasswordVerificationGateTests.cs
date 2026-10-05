@@ -29,8 +29,9 @@ public sealed class PasswordVerificationGateTests
     {
         using var gate = new PasswordVerificationGate(maxConcurrency: 1, maxWait: TimeSpan.FromMilliseconds(50));
         using var release = new ManualResetEventSlim(false);
-        var holder = Task.Run(() => gate.RunAsync(() => { release.Wait(); return true; }, CancellationToken.None));
-        await Task.Delay(100);
+        using var entered = new ManualResetEventSlim(false);
+        var holder = Task.Run(() => gate.RunAsync(() => { entered.Set(); release.Wait(); return true; }, CancellationToken.None));
+        entered.Wait(TimeSpan.FromSeconds(30)).Should().BeTrue("the holder must own the only slot before the probe");
 
         var act = () => gate.RunAsync(() => true, CancellationToken.None);
         await act.Should().ThrowAsync<PasswordVerificationBusyException>();
@@ -47,8 +48,9 @@ public sealed class PasswordVerificationGateTests
         await kit.SeedUserAsync("busy@hardening.local", new Pbkdf2PasswordHasher().Hash(Password), roleName: null);
         using var gate = new PasswordVerificationGate(maxConcurrency: 1, maxWait: TimeSpan.FromMilliseconds(20));
         using var release = new ManualResetEventSlim(false);
-        var holder = Task.Run(() => gate.RunAsync(() => { release.Wait(); return true; }, CancellationToken.None));
-        await Task.Delay(100);
+        using var entered = new ManualResetEventSlim(false);
+        var holder = Task.Run(() => gate.RunAsync(() => { entered.Set(); release.Wait(); return true; }, CancellationToken.None));
+        entered.Wait(TimeSpan.FromSeconds(30)).Should().BeTrue();
 
         await using var db = kit.NewDb();
         var controller = new AuthController(kit.Auth(db, gate: gate))
