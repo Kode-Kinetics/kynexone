@@ -43,7 +43,7 @@ echo "== §19.1 gate 1: canonical schema.sql byte-diff =="
 # it deletes, the diff cannot see — so assertion 18 is checked before the diff relies on it.
 "$NORMALISE" --self-test
 
-"$REPO_ROOT/scripts/schema-build.sh" --db "$DB" --quiet
+"$REPO_ROOT/scripts/schema-build.sh" --db "$DB" --quiet --seed-month "$SCHEMA_SNAPSHOT_SEED_MONTH"
 
 TMP="$(mktemp -d)"
 trap '[[ $OWN_CONTAINER -eq 1 ]] && schema_gate_down; rm -rf "$TMP"' EXIT

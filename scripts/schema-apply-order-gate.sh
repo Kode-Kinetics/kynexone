@@ -46,8 +46,8 @@ echo "   discovered apply order:"
 # ── 1. repeatability ─────────────────────────────────────────────────────────────────────
 echo ""
 echo "   [1/3] building twice from empty, in filename order…"
-"$BUILD" --db kynex_order_a --quiet
-"$BUILD" --db kynex_order_b --quiet
+"$BUILD" --db kynex_order_a --quiet --seed-month "$SCHEMA_SNAPSHOT_SEED_MONTH"
+"$BUILD" --db kynex_order_b --quiet --seed-month "$SCHEMA_SNAPSHOT_SEED_MONTH"
 pg_dump_schema kynex_order_a | "$NORMALISE" > "$TMP/a.sql"
 pg_dump_schema kynex_order_b | "$NORMALISE" > "$TMP/b.sql"
 

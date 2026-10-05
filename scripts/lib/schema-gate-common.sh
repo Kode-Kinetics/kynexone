@@ -30,6 +30,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BASELINE_DIR="$REPO_ROOT/backend-dotnet/Zayra.Api/Db/baseline"
 CANONICAL_SCHEMA="$BASELINE_DIR/schema.sql"
 
+# The month the committed schema.sql's partition window is centred on (030_partitions.sql §7
+# seeds eleven months back to three ahead of it). Only the builds that are byte-diffed against
+# schema.sql pass it (schema-build.sh --seed-month); everything else uses the real date. Change
+# it only together with a `schema-drift-gate.sh --write`, in the same commit.
+SCHEMA_SNAPSHOT_SEED_MONTH="2026-09-01"
+
 # ── connection ───────────────────────────────────────────────────────────────────────────
 pg_psql() {           # pg_psql <role> <db> [psql args…]
   local role="$1" db="$2"; shift 2

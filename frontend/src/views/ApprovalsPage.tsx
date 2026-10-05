@@ -51,6 +51,7 @@ export function ApprovalsPage() {
   const [selected, setSelected] = useState<ApprovalRequest | null>(null);
   const [comments, setComments] = useState('');
   const [deciding, setDeciding] = useState(false);
+  const [withdrawing, setWithdrawing] = useState(false);
   const [decisionError, setDecisionError] = useState('');
   // Stale-approval path: the establishment guard re-checks at apply time; a slot
   // consumed since submission returns a structured 409 rendered as the popup.
@@ -171,6 +172,25 @@ export function ApprovalsPage() {
     finally { setDeciding(false); }
   };
 
+  // The requester takes back their own pending employee change. Not optimistic: it is rare, and the
+  // server is the one that knows whether an approver decided it a moment earlier.
+  const handleWithdraw = async () => {
+    if (!selected) return;
+    setWithdrawing(true);
+    setDecisionError('');
+    try {
+      await approvalsApi.withdraw(selected.id, comments.trim());
+      setSelected(null);
+      setComments('');
+      await Promise.all([load({ silent: true }), loadMetrics()]);
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      setDecisionError(msg ?? 'Could not withdraw this request. Please try again.');
+    } finally {
+      setWithdrawing(false);
+    }
+  };
+
   const totalPages = Math.max(1, Math.ceil(total / 25));
 
   return (
@@ -279,6 +299,7 @@ export function ApprovalsPage() {
                       <span className={`mt-0.5 h-2.5 w-2.5 rounded-full ${r.isOverdue ? 'bg-rose-500' : r.status === 'Pending' ? 'bg-amber-400' : 'bg-slate-300'}`} />
                       <div>
                         <p className="font-medium text-slate-900 dark:text-white">{r.title}</p>
+                        {r.changeSummary && <p className="mt-0.5 text-xs font-medium text-slate-600 dark:text-slate-300">Changes: {r.changeSummary}</p>}
                         <p className="mt-1 text-xs text-slate-400">{r.entityName} · {r.priority || 'Normal'} · Created {fmtDateTime(r.createdAtUtc)}</p>
                       </div>
                     </div>
@@ -312,7 +333,14 @@ export function ApprovalsPage() {
                       </button>
                     )}
                     {r.status === 'Pending' && !r.canDecide && (
-                      <span className="text-xs font-medium text-slate-400">Watching</span>
+                      <div className="flex flex-col items-start gap-1">
+                        <button type="button" onClick={() => { setSelected(r); setComments(''); setDecisionError(''); }}
+                          title={r.decisionBlockedReason ?? undefined}
+                          className="btn-secondary h-8 px-3 text-xs">
+                          Details
+                        </button>
+                        <span className="text-xs font-medium text-slate-400">{r.canWithdraw ? 'Your request' : 'Another approver'}</span>
+                      </div>
                     )}
                   </td>
                 </tr>
@@ -336,7 +364,12 @@ export function ApprovalsPage() {
       <Modal isOpen={!!selected} title="Review Approval" onClose={() => { setSelected(null); setDecisionError(''); }}
         footer={
           <>
-            <button type="button" onClick={() => { setSelected(null); setDecisionError(''); }} className="btn-secondary">Cancel</button>
+            <button type="button" onClick={() => { setSelected(null); setDecisionError(''); }} className="btn-secondary">Close</button>
+            {selected?.canWithdraw && (
+              <button type="button" onClick={handleWithdraw} disabled={withdrawing} className="btn-secondary text-rose-500 hover:border-rose-300 disabled:opacity-60">
+                {withdrawing ? 'Withdrawing...' : 'Withdraw request'}
+              </button>
+            )}
             {selected?.canDecide && (
               <>
                 <button type="button" onClick={() => handleDecide('Reject')} disabled={deciding} className="btn-secondary text-rose-500 hover:border-rose-300 disabled:opacity-60">Reject</button>
@@ -352,6 +385,7 @@ export function ApprovalsPage() {
                 <div>
                   <p className="text-xs font-bold uppercase tracking-wide text-slate-400 dark:text-slate-500">Request</p>
                   <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">{selected.title}</p>
+                  {selected.changeSummary && <p className="mt-0.5 text-sm text-slate-700 dark:text-slate-200">Changes: {selected.changeSummary}</p>}
                   <p className="text-xs text-slate-400 dark:text-slate-500">{selected.entityName} · {selected.entityId}</p>
                 </div>
                 <StatusChip {...statusTone(selected.status)} />
@@ -402,8 +436,17 @@ export function ApprovalsPage() {
                 {decisionError && <p id="approval-decision-error" role="alert" className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300">{decisionError}</p>}
               </div>
             ) : (
-              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-400">
-                This item is visible for accountability, but the current workflow step is assigned to another owner.
+              <div className="space-y-2">
+                <div role="note" className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300">
+                  {selected.decisionBlockedReason ?? 'This item is visible for accountability, but the current workflow step is assigned to another owner.'}
+                </div>
+                {selected.canWithdraw && (
+                  <div>
+                    <label htmlFor="approval-withdraw-reason" className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Reason for withdrawing (optional)</label>
+                    <textarea id="approval-withdraw-reason" value={comments} onChange={(e) => { setComments(e.target.value); if (decisionError) setDecisionError(''); }} className="input w-full resize-none" rows={2} placeholder="e.g. Submitted twice by mistake" />
+                  </div>
+                )}
+                {decisionError && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300">{decisionError}</p>}
               </div>
             )}
           </div>
