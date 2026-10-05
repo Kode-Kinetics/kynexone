@@ -1715,7 +1715,7 @@ export function LoansPage() {
       <div>
         {activeTab === 'loans' && <LoansTab key={`${companyVersion}-${ownAccounts}`} mine={ownAccounts} loanTypes={loanTypes} onPayments={() => setActiveTab('loanPayments')} onChanged={refreshSummary} />}
         {activeTab === 'loanPayments' && canManagePayments && <LoanPaymentsTab key={companyVersion} onChanged={refreshSummary} />}
-        {activeTab === 'loanPolicies' && canConfigurePolicies && <LoanPoliciesTab key={companyVersion} loanTypes={loanTypes} />}
+        {activeTab === 'loanPolicies' && canConfigurePolicies && <LoanPoliciesTab key={companyVersion} loanTypes={loanTypes} onGradeLimitedChanged={(id, gradeLimited) => setLoanTypes(list => list.map(type => (type.id === id ? { ...type, gradeLimited } : type)))} />}
         {activeTab === 'loanTypes' && <LoanTypesTab />}
         {activeTab === 'advances' && <AdvancesTab />}
         {activeTab === 'advancePolicy' && <AdvancePolicyTab />}

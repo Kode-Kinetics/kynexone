@@ -7,6 +7,7 @@ import { companiesApi, type CompanyDto } from '../../api/organization';
 import { useCompany } from '../../contexts/CompanyContext';
 import { loanErrorMessage, repaymentMethodLabels } from '../../lib/loanWorkflow';
 import { Modal } from '../Modal';
+import { GradeLimitsPanel } from './GradeLimitsPanel';
 
 const defaults: LoanPolicyInput = {
   companyId: '', loanTypeId: '', policyName: '', maxAmount: 0, maxTotalOutstanding: 0,
@@ -30,7 +31,7 @@ const checks = [
   ['allowEarlySettlement', 'Allow early settlement'], ['allowRescheduling', 'Allow approved rescheduling'],
 ] as const;
 
-export function LoanPoliciesTab({ loanTypes }: { loanTypes: LoanType[] }) {
+export function LoanPoliciesTab({ loanTypes, onGradeLimitedChanged }: { loanTypes: LoanType[]; onGradeLimitedChanged: (loanTypeId: string, gradeLimited: boolean) => void }) {
   const { companies: accessibleCompanies, selectedCompanyId } = useCompany();
   const [companies, setCompanies] = useState<Pick<CompanyDto, 'id' | 'legalNameEn'>[]>(accessibleCompanies.map(c => ({ id: c.id, legalNameEn: c.name })));
   const [companyId, setCompanyId] = useState(selectedCompanyId ?? accessibleCompanies[0]?.id ?? '');
@@ -82,5 +83,6 @@ export function LoanPoliciesTab({ loanTypes }: { loanTypes: LoanType[] }) {
         <div className="grid gap-2 sm:grid-cols-2">{checks.map(([key, label]) => <label key={key} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.checked }))} />{label}</label>)}</div>
       </div>
     </Modal>
+    <GradeLimitsPanel loanTypes={loanTypes} companies={companies.map(c => ({ id: c.id, name: c.legalNameEn }))} initialLoanTypeId={typeId} onGradeLimitedChanged={onGradeLimitedChanged} />
   </div>;
 }
