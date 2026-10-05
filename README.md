@@ -27,6 +27,14 @@ dotnet restore
 dotnet run
 Swagger: http://localhost:5117/swagger or printed launch URL
 
+## Run the stack in Docker
+`docker compose up -d --build` (API on :5117, UI on :5173). The API container runs as the
+unprivileged `app` user (uid 1654), not root. A `zayra-documents` volume created by an older,
+root-running image is owned by root, and document uploads then fail with "permission denied".
+Fix it once, either by dropping the local volumes (`docker compose down -v` — deletes local data)
+or by keeping them and handing the directory over:
+`docker compose run --rm --no-deps --user root --entrypoint chown backend -R 1654 /app/storage`.
+
 ## Run Node AI Service
 cd backend-node
 cp .env.example .env
