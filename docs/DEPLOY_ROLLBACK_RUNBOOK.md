@@ -31,6 +31,13 @@ tenant-wide `42703`/`42P01` outages. Read this before promoting or reverting a b
    > the check returns the `-1` unknown sentinel and reports `not_ready` — it **fails closed**
    > instead of reporting a comfortable zero. See `Infrastructure/Operations/MigrationManifest.cs`.
 
+   **Shutdown drain.** On SIGTERM the old instance answers `/health/ready` with
+   `503 {"status":"draining"}` straight away (no database call), keeps serving for
+   `Shutdown__ReadinessDrainSeconds` (default 5; 0 in Development) so the balancer can take it out of
+   rotation, then stops accepting and gives in-flight requests up to `Shutdown__TimeoutSeconds`
+   (default 30). `/health/live` is unchanged. The platform's kill grace period must cover the sum
+   (35s by default); Render's default `maxShutdownDelaySeconds` is 30. See `ShutdownDrain.cs`.
+
 5. **Before any of the above**, two CI gates must pass. Both exist because the checks that were
    supposed to cover this ground did not:
    - `scripts/check_render_env.py` — every key `render.yaml` marks `sync: false` must actually be

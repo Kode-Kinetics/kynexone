@@ -120,6 +120,14 @@ builder.Host.UseDefaultServiceProvider(options =>
     options.ValidateScopes  = true;
 });
 
+// ── Graceful drain (multi-instance / zero-downtime deploys) ──────────────────
+// On SIGTERM /health/ready flips to 503 first, the instance keeps serving for
+// Shutdown:ReadinessDrainSeconds while the balancer notices, then the server stops accepting and
+// in-flight requests get up to Shutdown:TimeoutSeconds to finish. /health/live is unchanged.
+builder.Services.AddSingleton<ShutdownDrain>();
+builder.Services.Configure<HostOptions>(options =>
+    options.ShutdownTimeout = ShutdownDrain.ShutdownTimeout(builder.Configuration));
+
 // ── P3: JWT audience prod fail-fast ──────────────────────────────────────────
 // Dev defaults are intentionally left in appsettings.json for zero-config local dev.
 // In Production they MUST be overridden via environment variables (Jwt__TenantAudience,
@@ -709,6 +717,8 @@ builder.Services.AddSwaggerGen(options =>
 
 var app = builder.Build();
 
+app.Services.GetRequiredService<ShutdownDrain>().Attach(app.Lifetime);
+
 if (trustForwardedHeaders)
     app.UseForwardedHeaders();
 
@@ -781,8 +791,13 @@ app.MapGet("/health/live", () => Results.Ok(new
     commit = BuildInfo.Commit
 })).AllowAnonymous();
 
-app.MapGet("/health/ready", async (ZayraDbContext db, IConfiguration config, ILoggerFactory lf, CancellationToken ct) =>
+app.MapGet("/health/ready", async (ZayraDbContext db, IConfiguration config, ILoggerFactory lf, ShutdownDrain drain, CancellationToken ct) =>
 {
+    // Shutting down: tell the balancer to stop routing here before the server stops accepting.
+    // Answered without touching the database, so a drain never waits on a slow dependency.
+    if (drain.IsDraining)
+        return Results.Json(new { status = "draining", utc = DateTime.UtcNow }, statusCode: StatusCodes.Status503ServiceUnavailable);
+
     var evidence = await ProductionReadinessEvidence.BuildReadinessAsync(db, config, ct);
     if (evidence.Status == "ready") return Results.Ok(evidence);
 
