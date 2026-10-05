@@ -49,6 +49,13 @@ public class LeavePolicy : ITenantOwned, ICompanyScoped
     public bool PublicHolidaysIncluded { get; set; }
     public string PayrollImpact { get; set; } = "Full";
     public Guid? ApprovalWorkflowId { get; set; }
+    /// <summary>
+    /// The company's own, explicit choice to grant Hajj leave beyond KSA Labour Law Art. 114's
+    /// eligibility — before two consecutive years of service, or more than once. Off by default, so
+    /// the statute's conditions apply unless a person has deliberately chosen to be more generous.
+    /// Read only for a Hajj leave type; it never shortens or lowers anything.
+    /// </summary>
+    public bool AllowsHajjBeyondStatutoryEligibility { get; set; }
     public string Status { get; set; } = "Draft";
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;

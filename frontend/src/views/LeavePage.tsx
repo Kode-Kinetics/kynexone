@@ -1060,6 +1060,7 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
     weekendsIncluded: existing?.weekendsIncluded ?? false,
     publicHolidaysIncluded: existing?.publicHolidaysIncluded ?? false,
     payrollImpact: existing?.payrollImpact ?? 'Full',
+    allowsHajjBeyondStatutoryEligibility: existing?.allowsHajjBeyondStatutoryEligibility ?? false,
     status: existing?.status ?? 'Draft',
   });
   const [saving, setSaving] = useState(false);
@@ -1141,7 +1142,7 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
             <Field label="Notice Required (days)"><input type="number" className={inp} value={form.noticeRequiredDays} onChange={e => set('noticeRequiredDays', Number(e.target.value))} /></Field>
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2">
-            {([['weekendsIncluded', 'Count Weekends'], ['publicHolidaysIncluded', 'Count Public Holidays'], ['encashmentAllowed', 'Encashment Allowed'], ['appliesOnProbation', 'Applies on Probation']] as [keyof typeof form, string][]).map(([k, l]) => (
+            {([['weekendsIncluded', 'Count Weekends'], ['publicHolidaysIncluded', 'Count Public Holidays'], ['encashmentAllowed', 'Encashment Allowed'], ['appliesOnProbation', 'Applies on Probation'], ['allowsHajjBeyondStatutoryEligibility', 'Hajj: allow before 2 years or more than once']] as [keyof typeof form, string][]).map(([k, l]) => (
               <label key={k} className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
                 <input type="checkbox" checked={form[k] as boolean} onChange={e => set(k, e.target.checked)} className="rounded" />{l}
               </label>

@@ -109,6 +109,7 @@ public class LeavePoliciesController : ControllerBase
             PublicHolidaysIncluded = req.PublicHolidaysIncluded,
             PayrollImpact = req.PayrollImpact ?? "Full",
             ApprovalWorkflowId = req.ApprovalWorkflowId,
+            AllowsHajjBeyondStatutoryEligibility = req.AllowsHajjBeyondStatutoryEligibility,
             Status = req.Status ?? "Draft"
         };
 
@@ -215,6 +216,7 @@ public class LeavePoliciesController : ControllerBase
         if (req.PublicHolidaysIncluded.HasValue) policy.PublicHolidaysIncluded = req.PublicHolidaysIncluded.Value;
         if (!string.IsNullOrWhiteSpace(req.PayrollImpact)) policy.PayrollImpact = req.PayrollImpact;
         if (req.ApprovalWorkflowId.HasValue) policy.ApprovalWorkflowId = req.ApprovalWorkflowId;
+        if (req.AllowsHajjBeyondStatutoryEligibility.HasValue) policy.AllowsHajjBeyondStatutoryEligibility = req.AllowsHajjBeyondStatutoryEligibility.Value;
         if (!string.IsNullOrWhiteSpace(req.Status)) policy.Status = req.Status;
         policy.UpdatedAtUtc = DateTime.UtcNow;
 
@@ -278,7 +280,8 @@ public record CreateLeavePolicyRequest(
     bool PublicHolidaysIncluded,
     string? PayrollImpact,
     Guid? ApprovalWorkflowId,
-    string? Status);
+    string? Status,
+    bool AllowsHajjBeyondStatutoryEligibility = false);
 
 public record UpdateLeavePolicyRequest(
     string? Name,
@@ -304,4 +307,5 @@ public record UpdateLeavePolicyRequest(
     bool? PublicHolidaysIncluded,
     string? PayrollImpact,
     Guid? ApprovalWorkflowId,
-    string? Status);
+    string? Status,
+    bool? AllowsHajjBeyondStatutoryEligibility = null);

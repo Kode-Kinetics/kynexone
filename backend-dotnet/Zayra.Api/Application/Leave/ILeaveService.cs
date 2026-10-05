@@ -24,8 +24,15 @@ public interface ILeaveService
     Task<LeaveRequest> ApproveRequestAsync(Guid tenantId, Guid requestId, Guid approverId, string approverName, string? notes, CancellationToken ct = default);
     Task<LeaveRequest> RejectRequestAsync(Guid tenantId, Guid requestId, Guid approverId, string approverName, string reason, CancellationToken ct = default);
     Task<LeaveRequest> CancelRequestAsync(Guid tenantId, Guid requestId, string cancelledByName, string reason, CancellationToken ct = default);
+    /// <summary>The employee's other pending or approved leave of the same KSA statutory kind, for the
+    /// approver's view of a request. Empty for any other leave.</summary>
+    Task<IReadOnlyList<StatutoryLeaveHistoryItem>> GetKsaStatutoryLeaveHistoryAsync(Guid tenantId, Guid requestId, CancellationToken ct = default);
     // Audit
     Task LogAuditAsync(Guid tenantId, string entityType, string entityId, string action, string oldValue, string newValue, string reason, string performedByName, CancellationToken ct = default);
     // AI insights
     Task GenerateInsightsAsync(Guid tenantId, CancellationToken ct = default);
 }
+
+/// <summary>One earlier leave of the same KSA statutory kind, shown to the approver.</summary>
+public sealed record StatutoryLeaveHistoryItem(
+    Guid RequestId, string StatutoryKind, string LeaveTypeName, DateOnly StartDate, DateOnly EndDate, decimal TotalDays, string Status);

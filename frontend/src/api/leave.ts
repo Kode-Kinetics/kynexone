@@ -48,6 +48,8 @@ export interface LeavePolicy {
   publicHolidaysIncluded: boolean;
   payrollImpact: string;
   approvalWorkflowId: string | null;
+  /** Company choice to grant Hajj leave beyond Saudi Labour Law Art. 114 eligibility. */
+  allowsHajjBeyondStatutoryEligibility?: boolean;
   status: string;
   createdAtUtc: string;
   updatedAtUtc: string | null;

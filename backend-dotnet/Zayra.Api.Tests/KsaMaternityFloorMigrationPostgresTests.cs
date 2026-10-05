@@ -27,7 +27,7 @@ public sealed class KsaMaternityFloorMigrationPostgresTests : IAsyncLifetime
     private ZayraDbContext CreateDb() => new(new DbContextOptionsBuilder<ZayraDbContext>().UseNpgsql(_cs).Options);
 
     private sealed record Ids(
-        Guid KsaType, Guid KsaSaCalendar, Guid KsaNeutralCalendar, Guid KsaGenerous, Guid KsaArchived, Guid KsaSaWorking,
+        Guid KsaType, Guid KsaSaCalendar, Guid KsaNeutralCalendar, Guid KsaGenerous, Guid KsaArchived, Guid KsaSaWorking, Guid KsaSaWorkingGenerous,
         Guid KsaExtensionType, Guid KsaExtensionPolicy, Guid KsaAnnualPolicy,
         Guid MixedType, Guid MixedNeutral, Guid MixedSaWorking, Guid MixedUaeCompanyPolicy,
         Guid UaeType, Guid UaePolicyAe, Guid UaePolicyNeutral,
@@ -74,6 +74,7 @@ public sealed class KsaMaternityFloorMigrationPostgresTests : IAsyncLifetime
         var ksaGenerous = Policy(ksa, ksaType, "SA", 98m, 98m);                // company grants more
         var ksaArchived = Policy(ksa, ksaType, "SA", 70m, 70m, status: "Archived");
         var ksaWorking = Policy(ksa, ksaType, "SA", 70m, 70m, calendar: false); // working days: review, not raise
+        var ksaWorkingGenerous = Policy(ksa, ksaType, "SA", 90m, 0m, calendar: false); // already >= 84: no review row
         var extType = Type(ksa, "MATEXT", "Maternity extension (unpaid)", 30);
         var extPolicy = Policy(ksa, extType, "SA", 30m, 30m);
         var annualType = new LeaveType { TenantId = ksa, Code = "ANNUAL", NameEn = "Annual Leave", Category = "Annual", IsPaid = true, MaxConsecutiveDays = 30 };
@@ -96,7 +97,7 @@ public sealed class KsaMaternityFloorMigrationPostgresTests : IAsyncLifetime
         var sauPolicy = Policy(sauOnly, sauType, "SAU", 60m, 60m);
 
         await db.SaveChangesAsync();
-        return new Ids(ksaType.Id, ksaSa.Id, ksaNeutral.Id, ksaGenerous.Id, ksaArchived.Id, ksaWorking.Id,
+        return new Ids(ksaType.Id, ksaSa.Id, ksaNeutral.Id, ksaGenerous.Id, ksaArchived.Id, ksaWorking.Id, ksaWorkingGenerous.Id,
             extType.Id, extPolicy.Id, annualPolicy.Id,
             mixedType.Id, mixedNeutral.Id, mixedSaWorking.Id, mixedUaePolicy.Id,
             uaeType.Id, uaeAe.Id, uaeNeutral.Id, sauType.Id, sauPolicy.Id);
@@ -144,6 +145,7 @@ public sealed class KsaMaternityFloorMigrationPostgresTests : IAsyncLifetime
 
         // Not raised: working days, mixed reach, more generous, archived, not maternity, not Saudi.
         P(ids.KsaSaWorking).Should().Be((70m, 70m));
+        P(ids.KsaSaWorkingGenerous).Should().Be((90m, 0m));
         P(ids.MixedNeutral).Should().Be((70m, 70m));
         P(ids.MixedSaWorking).Should().Be((70m, 70m));
         P(ids.MixedUaeCompanyPolicy).Should().Be((60m, 60m));

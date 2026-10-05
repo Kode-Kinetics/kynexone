@@ -92,7 +92,11 @@ public class LeaveRequestsController : ControllerBase
             .OrderBy(a => a.StepNumber)
             .ToListAsync(ct);
 
-        return Ok(new { request, approvals });
+        // The approver decides a Saudi statutory leave (maternity, Hajj, bereavement…) with the
+        // employee's earlier leave of the same kind in view.
+        var statutoryHistory = await _leaveService.GetKsaStatutoryLeaveHistoryAsync(tenantId.Value, id, ct);
+
+        return Ok(new { request, approvals, statutoryHistory });
     }
 
     [HttpPost]
