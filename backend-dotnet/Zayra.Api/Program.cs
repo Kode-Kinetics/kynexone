@@ -228,6 +228,8 @@ builder.Services.AddDbContextPool<ZayraDbContext>(options => options
     // F3: turns a query tagged ForUpdateSkipLockedTag into SELECT … FOR UPDATE SKIP LOCKED (job claiming).
     // Inert for every other command.
     .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance)
+    // Throws if pg_advisory_xact_lock runs outside a transaction (it would serialise nothing).
+    .AddInterceptors(Zayra.Api.Infrastructure.Data.AdvisoryXactLockGuardInterceptor.Instance)
     .ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.CoreEventId.PossibleIncorrectRequiredNavigationWithQueryFilterInteractionWarning)));
 
 builder.Services.AddMemoryCache();

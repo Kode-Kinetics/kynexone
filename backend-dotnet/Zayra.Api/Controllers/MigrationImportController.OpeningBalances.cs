@@ -10,7 +10,7 @@ namespace Zayra.Api.Controllers;
 ///
 /// <para>WHY EXTEND RATHER THAN BUILD ALONGSIDE. The engine already has the four things that are
 /// expensive and dangerous to get wrong: a SHA-256 package checksum so a resume cannot be fed a
-/// different file, a Postgres session advisory lock held for the whole import, a durable
+/// different file, a Postgres advisory lease held for the whole import, a durable
 /// <c>MigrationImportBatch</c> ledger with per-section counts and a recorded current section, and —
 /// most importantly — per-row idempotent upserts keyed on natural keys, which is what makes a re-run
 /// safe. Every new section below is a case in the same dispatch table and inherits all four for free.

@@ -108,6 +108,7 @@ public sealed class PostgresFixture : IAsyncLifetime
             .UseNpgsql(ConnectionString, ProductionProviderOptions)
             // Same as Program.cs: F3 job claiming relies on it for FOR UPDATE SKIP LOCKED.
             .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance)
+            .AddInterceptors(Zayra.Api.Infrastructure.Data.AdvisoryXactLockGuardInterceptor.Instance)
             .Options);
 
     /// <summary>
@@ -122,6 +123,7 @@ public sealed class PostgresFixture : IAsyncLifetime
             .UseNpgsql(ConnectionString, ProductionProviderOptions)
             // Same as Program.cs: F3 job claiming relies on it for FOR UPDATE SKIP LOCKED.
             .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance)
+            .AddInterceptors(Zayra.Api.Infrastructure.Data.AdvisoryXactLockGuardInterceptor.Instance)
             .Options,
         accessor);
 
@@ -135,6 +137,7 @@ public sealed class PostgresFixture : IAsyncLifetime
             .UseNpgsql(ConnectionString, ProductionProviderOptions)
             // Same as Program.cs: F3 job claiming relies on it for FOR UPDATE SKIP LOCKED.
             .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance)
+            .AddInterceptors(Zayra.Api.Infrastructure.Data.AdvisoryXactLockGuardInterceptor.Instance)
             .Options,
         accessor,
         logger: null,
@@ -143,7 +146,7 @@ public sealed class PostgresFixture : IAsyncLifetime
 
     /// <summary>One definition of "production's provider configuration", so the fixture's factories
     /// cannot drift apart from each other or from Program.cs.</summary>
-    private static void ProductionProviderOptions(NpgsqlDbContextOptionsBuilder options) =>
+    internal static void ProductionProviderOptions(NpgsqlDbContextOptionsBuilder options) =>
         options.EnableRetryOnFailure(
             maxRetryCount: 5, maxRetryDelay: TimeSpan.FromSeconds(5), errorCodesToAdd: null);
 
