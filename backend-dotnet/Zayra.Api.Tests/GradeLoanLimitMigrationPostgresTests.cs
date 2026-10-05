@@ -100,6 +100,18 @@ public sealed class GradeLoanLimitMigrationPostgresTests
         Assert.Equal(2L, await ScalarAsync<long>(db, "SELECT count(*) FROM grade_entitlements"));
     }
 
+    /// <summary>
+    /// The migration carries a FROZEN copy of the interest-free DDL so a later edit to <see cref="LoanTypeSql"/> cannot
+    /// rewrite history; the Postgres test fixture applies the constant. They must stay identical, or the fixture would
+    /// test a constraint production never got.
+    /// </summary>
+    [Fact]
+    public void InterestFreeCheckFrozenInMigration_MatchesTheConstantTheFixtureApplies()
+    {
+        Assert.Equal(LoanTypeSql.AddInterestFreeCheck, Zayra.Api.Migrations.AddGradeNameArAndLoanOffering.AddInterestFreeCheckSql);
+        Assert.Equal(LoanTypeSql.DropInterestFreeCheck, Zayra.Api.Migrations.AddGradeNameArAndLoanOffering.DropInterestFreeCheckSql);
+    }
+
     private static string Insert(string valueType, string amount, string rate, string maxOutstanding, bool eligible, string from) => $"""
         INSERT INTO grade_entitlements (id,tenant_id,company_id,grade_id,pay_component_code,entitlement_class,eligible,value_type,amount,rate,max_outstanding_amount,effective_from,created_at_utc)
         VALUES (gen_random_uuid(),'{Tenant}',NULL,'50000000-0000-0000-0000-0000000000a1','LOAN_LEGACY','Facility',{(eligible ? "true" : "false")},{valueType},{amount},{rate},{maxOutstanding},'{from}',CURRENT_TIMESTAMP)

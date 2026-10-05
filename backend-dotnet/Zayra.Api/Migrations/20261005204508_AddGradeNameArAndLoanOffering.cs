@@ -1,6 +1,5 @@
 ﻿using System;
 using Microsoft.EntityFrameworkCore.Migrations;
-using Zayra.Api.Models;
 
 #nullable disable
 
@@ -9,6 +8,11 @@ namespace Zayra.Api.Migrations
     /// <inheritdoc />
     public partial class AddGradeNameArAndLoanOffering : Migration
     {
+        // Frozen history: never edit these, even if LoanTypeSql changes — write a new migration instead.
+        internal const string AddInterestFreeCheckSql =
+            "ALTER TABLE loan_types ADD CONSTRAINT ck_loan_types__interest_free CHECK (is_interest_free AND interest_rate = 0) NOT VALID;";
+        internal const string DropInterestFreeCheckSql = "ALTER TABLE loan_types DROP CONSTRAINT IF EXISTS ck_loan_types__interest_free;";
+
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
@@ -71,8 +75,9 @@ namespace Zayra.Api.Migrations
                 principalColumns: new[] { "tenant_id", "id" },
                 onDelete: ReferentialAction.Restrict);
 
-            // Qard: employer loans are principal only. Shared with the Postgres test fixture (LoanTypeSql).
-            migrationBuilder.Sql(LoanTypeSql.AddInterestFreeCheck);
+            // Qard: employer loans are principal only. FROZEN copy of LoanTypeSql.AddInterestFreeCheck (which the
+            // Postgres test fixture applies); GradeLoanLimitMigrationPostgresTests fails if the two diverge.
+            migrationBuilder.Sql(AddInterestFreeCheckSql);
         }
 
         /// <inheritdoc />
@@ -86,7 +91,7 @@ namespace Zayra.Api.Migrations
                     END IF;
                 END $$;
                 """);
-            migrationBuilder.Sql(LoanTypeSql.DropInterestFreeCheck);
+            migrationBuilder.Sql(DropInterestFreeCheckSql);
             migrationBuilder.DropForeignKey(
                 name: "FK_loan_policies_loan_policies_tenant_id_copied_from_policy_id",
                 table: "loan_policies");
