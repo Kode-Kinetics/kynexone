@@ -157,19 +157,9 @@ public static class KsaWageFileRules
             }),
             StringComparer.Ordinal);
 
-    /// <summary>
-    /// Nationality spellings that mean Saudi, compared after trimming and case-insensitively. HR imports
-    /// carry the country, the demonym, ISO codes and Arabic forms; all mean the same person.
-    /// </summary>
-    private static readonly HashSet<string> SaudiNationalitySpellings = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "KSA", "Saudi", "Saudi Arabia", "Saudi Arabian", "SA", "SAU",
-        "سعودي", "سعودية", "السعودية",
-    };
-
-    /// <summary>True when <paramref name="nationality"/> is a recognised spelling of Saudi.</summary>
-    public static bool IsSaudiNationality(string? nationality) =>
-        !string.IsNullOrWhiteSpace(nationality) && SaudiNationalitySpellings.Contains(nationality.Trim());
+    /// <summary>True when <paramref name="nationality"/> is a recognised spelling of Saudi
+    /// (<see cref="Compliance.SaudiNationality"/>, shared with GOSI and Saudisation).</summary>
+    public static bool IsSaudiNationality(string? nationality) => Compliance.SaudiNationality.IsSaudi(nationality);
 
     // [MOL-ESTBID] "Labor Office – Sequential Number", 2d-15d. Digits with at most one hyphen
     // between two digit groups (e.g. "7-1234567"). [CONFIRM] the exact form the customer's bank

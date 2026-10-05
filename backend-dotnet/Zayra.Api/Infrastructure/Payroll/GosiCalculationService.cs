@@ -24,12 +24,6 @@ public static class GosiCalculationService
         "BH", "KW", "OM", "QA", "AE",
     };
 
-    // Normalised nationality strings that map to Saudi classification
-    private static readonly HashSet<string> SaudiNationalityTerms = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "SA", "SAU", "Saudi", "Saudi Arabia", "Saudi Arabian",
-    };
-
     // GCC country names in common HR system spellings
     private static readonly Dictionary<string, string> GccNationalityTerms =
         new(StringComparer.OrdinalIgnoreCase)
@@ -64,7 +58,8 @@ public static class GosiCalculationService
         if (string.IsNullOrWhiteSpace(nationality))
             return GosiClassifications.NonSaudi;
 
-        if (SaudiNationalityTerms.Contains(nationality))
+        // Saudi: the shared normaliser (trims; KSA and Arabic spellings). GCC matching is unchanged.
+        if (Compliance.SaudiNationality.IsSaudi(nationality))
             return GosiClassifications.Saudi;
 
         if (GccNationalityTerms.ContainsKey(nationality))
@@ -80,7 +75,7 @@ public static class GosiCalculationService
     /// </summary>
     public static string? DeriveGccHomeState(string? nationality)
         => !string.IsNullOrWhiteSpace(nationality)
-           && !SaudiNationalityTerms.Contains(nationality)
+           && !Compliance.SaudiNationality.IsSaudi(nationality)
            && GccHomeStates.TryGetValue(nationality, out var iso)
             ? iso
             : null;

@@ -98,6 +98,40 @@ harmful.
 - Never promote an image whose migration has not been applied — the `/health/ready` gate (and the
   optional `preDeployCommand`) enforce this automatically, but confirm manually after any manual deploy.
 
+## Saudi nationality normaliser — pre/post-deploy diagnostic (read-only)
+
+GOSI used to recognise only `SA`, `SAU`, `Saudi`, `Saudi Arabia`, `Saudi Arabian`, compared without
+trimming. The shared normaliser (`Infrastructure/Compliance/SaudiNationality.cs`) also accepts `KSA`,
+`SaudiArabia` and the Arabic `سعودي` / `سعودية` / `السعودية`, and trims. Employees recorded with one of
+the newly recognised values were classified as expatriates: **their past payslips carried no employee GOSI.**
+From the next processed run they are Saudi. **Do not recompute or edit filed/locked payslips;** take the
+list to payroll and the GOSI portal for a reviewed correction.
+
+Run on the production database (SELECT only) to count and list those employees:
+
+```sql
+-- Employees whose nationality is newly classified as Saudi (was NonSaudi before this release).
+SELECT tenant_id, company_id, id AS employee_id, employee_code, status, nationality
+FROM employees
+WHERE NOT is_deleted
+  AND (lower(btrim(nationality)) IN ('ksa', 'saudiarabia', 'سعودي', 'سعودية', 'السعودية')
+       OR (nationality <> btrim(nationality)
+           AND lower(btrim(nationality)) IN ('sa', 'sau', 'saudi', 'saudi arabia', 'saudi arabian')))
+ORDER BY tenant_id, company_id, employee_code;
+
+-- Count only, per tenant.
+SELECT tenant_id, count(*) AS newly_saudi
+FROM employees
+WHERE NOT is_deleted
+  AND (lower(btrim(nationality)) IN ('ksa', 'saudiarabia', 'سعودي', 'سعودية', 'السعودية')
+       OR (nationality <> btrim(nationality)
+           AND lower(btrim(nationality)) IN ('sa', 'sau', 'saudi', 'saudi arabia', 'saudi arabian')))
+GROUP BY tenant_id;
+```
+
+The second branch catches previously recognised spellings stored with surrounding spaces (the old
+comparison did not trim). Zero rows means no past payslip was affected.
+
 ## Invariants
 - **Schema leads code.** Migrations apply in `migrate-backend` before the deploy hook fires.
 - **Single trigger.** `autoDeploy: false`; the CI hook is the only deploy path.
