@@ -38,8 +38,8 @@ import { messageArgs } from '../src/i18n/message';
  * IF A RATCHET FAILS because a count went UP: translate the string (t / EnumLabel / useFormat /
  *   a mirrored icon) instead of adding a literal.
  * IF A COUNT WENT DOWN: nothing fails (a lagging baseline is accepted so parallel PRs do not
- *   conflict on it); the run prints a warning. Run `npm run i18n:repin` and commit the baseline
- *   when convenient, so the ratchet keeps its teeth.
+ *   conflict on it); the run prints a warning. Each Wave PR repins (`npm run i18n:repin`) and
+ *   commits the baseline, so the ratchet keeps its teeth.
  *
  * REPIN (`npm run i18n:repin`) writes the current counts. It REFUSES any per-file increase and
  * any new fragment key, unless I18N_ALLOW_INCREASE=1 is set AND the baseline's
@@ -126,7 +126,8 @@ function paramsOf(call: ts.CallExpression): TCall['params'] {
   // `fmt(t('… {n} …'), { n })`: the template is filled by a local helper (EstablishmentPanel and
   // friends). Its second argument is the params.
   const outer = call.parent;
-  if (!arg && outer && ts.isCallExpression(outer) && outer.arguments[0] === call && outer.arguments[1]) arg = outer.arguments[1];
+  if (!arg && outer && ts.isCallExpression(outer) && ts.isIdentifier(outer.expression) && outer.expression.text === 'fmt'
+    && outer.arguments[0] === call && outer.arguments[1]) arg = outer.arguments[1];
   if (!arg) return 'none';
   const obj = ts.isParenthesizedExpression(arg) ? arg.expression : arg;
   if (!ts.isObjectLiteralExpression(obj)) return 'opaque';
@@ -284,7 +285,7 @@ function buildBaseline(scan: Scan): Baseline {
     totals.files++;
   }
   return {
-    _readme: 'Pinned by e2e/i18n-coverage.spec.ts. Counts may not go up. Regenerate with `npm run i18n:repin` after removing hard-coded strings; it refuses increases unless I18N_ALLOW_INCREASE=1 and allowIncreaseReason is set here. Never hand-edit a number upward.',
+    _readme: 'Pinned by e2e/i18n-coverage.spec.ts. Counts may not go up. Each Wave PR repins (`npm run i18n:repin`) and commits this file, so the baseline never lags more than one PR. Repin refuses increases unless I18N_ALLOW_INCREASE=1 and allowIncreaseReason is set here. Never hand-edit a number upward.',
     pinnedAt: new Date().toISOString().slice(0, 10),
     totals,
     fragmentKeys: Object.keys(en).filter(isFragmentKey).sort(),

@@ -1,5 +1,5 @@
 {
-  "_readme": "Pinned by e2e/i18n-coverage.spec.ts. Counts may not go up. Regenerate with `npm run i18n:repin` after removing hard-coded strings; it refuses increases unless I18N_ALLOW_INCREASE=1 and allowIncreaseReason is set here. Never hand-edit a number upward.",
+  "_readme": "Pinned by e2e/i18n-coverage.spec.ts. Counts may not go up. Each Wave PR repins (`npm run i18n:repin`) and commits this file, so the baseline never lags more than one PR. Repin refuses increases unless I18N_ALLOW_INCREASE=1 and allowIncreaseReason is set here. Never hand-edit a number upward.",
   "pinnedAt": "2026-10-05",
   "totals": {
     "hardcoded": 5771,
