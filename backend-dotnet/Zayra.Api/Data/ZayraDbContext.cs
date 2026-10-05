@@ -3928,6 +3928,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             // Default true backfills existing policies. ValueGeneratedNever: EF must always send the value, or a false
             // (the CLR default) would be skipped on insert and the database default would silently re-offer the type.
             entity.Property(x => x.IsOffered).HasDefaultValue(true).ValueGeneratedNever();
+            entity.Property(x => x.CreatedByOfferingSwitch).HasDefaultValue(false);
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.LoanTypeId, x.Version }).IsUnique().HasFilter("company_id IS NOT NULL");
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.LoanTypeId }).IsUnique().HasFilter("company_id IS NOT NULL AND is_active");
             entity.HasIndex(x => new { x.TenantId, x.LoanTypeId });

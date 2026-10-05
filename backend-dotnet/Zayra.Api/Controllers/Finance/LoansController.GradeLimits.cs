@@ -78,6 +78,22 @@ public partial class LoansController
             if (errors.Count > 0)
                 return BadRequest(new { error = "invalid_grade_limits", message = "Some limits need correcting before they can be published.", rows = errors });
 
+            // Cells carry no currency: a fixed amount means "in the employee's company currency". Tenant-wide fixed
+            // amounts are therefore ambiguous when companies use different currencies — 10,000 SAR is not 10,000 AED.
+            // Salary multiples are currency-neutral and stay allowed tenant-wide.
+            if (req.CompanyId is null && req.Rows.Any(r => r.Eligible && (r.ValueType == GradeEntitlementValueTypes.Amount || r.MaxOutstandingAmount != null)))
+            {
+                var currencies = await ScopedBypass.TenantWide(_db.Companies, tid, "A tenant-wide fixed amount must mean one currency across every active company.")
+                    .Where(x => !x.IsDeleted && x.IsActive).Select(x => x.DefaultCurrency).Distinct().ToListAsync(ct);
+                if (currencies.Select(c => (c ?? string.Empty).Trim().ToUpperInvariant()).Distinct().Count() > 1)
+                    return UnprocessableEntity(new
+                    {
+                        error = "grade_limit_currency_ambiguous",
+                        message = $"Your companies pay in different currencies ({string.Join(", ", currencies.OrderBy(c => c))}), so a fixed amount for all companies "
+                            + "is ambiguous. Set fixed amounts per company instead, or use a multiple of salary for all companies.",
+                        currencies = currencies.OrderBy(c => c),
+                    });
+            }
             var (code, componentError) = await GradeLoanLimitResolver.EnsureFacilityComponentAsync(_db, tid, type, GetUserId(), ct);
             if (code == null) return Conflict(new { error = "component_code_taken", message = componentError });
 
@@ -166,6 +182,18 @@ public partial class LoansController
                             + string.Join(", ", missing.Select(m => m.GradeName)) + ".",
                         missingGrades = missing.Select(m => new { m.GradeName, m.GradeNameAr, m.GradeCode, m.GradeId }),
                     });
+                // A grade-limited type is offered only where a policy exists. Companies that today run on the
+                // loan-type baseline would silently stop offering it: say so, and require an explicit confirmation.
+                var uncovered = await CompaniesWithoutPolicyAsync(tid, type.Id, ct);
+                if (uncovered.Count > 0 && !req.ConfirmStopOffering)
+                    return Conflict(new
+                    {
+                        error = "companies_without_policy",
+                        message = "These companies have no loan policy for this loan type, so once it is limited by grade their employees "
+                            + "can no longer apply for it: " + string.Join(", ", uncovered.Select(c => c.Name))
+                            + ". Publish a policy for them first, or confirm that they stop offering it.",
+                        companies = uncovered.Select(c => new { c.Id, c.Name }),
+                    });
             }
             var was = type.GradeLimited;
             type.GradeLimited = req.GradeLimited;
@@ -174,7 +202,8 @@ public partial class LoansController
                 TenantId = tid, UserId = GetUserId(), Action = req.GradeLimited ? "loans.type.grade_limited_on" : "loans.type.grade_limited_off",
                 EntityName = "LoanType", EntityId = type.Id.ToString(), IpAddress = HttpContext?.Connection.RemoteIpAddress?.ToString(),
                 CreatedAtUtc = DateTime.UtcNow,
-                Metadata = JsonSerializer.Serialize(new { type.Code, was, now = type.GradeLimited, type.EntitlementComponentCode }),
+                Metadata = JsonSerializer.Serialize(new { type.Code, was, now = type.GradeLimited, type.EntitlementComponentCode,
+                    req.ConfirmStopOffering, stoppedOfferingCompanyIds = req.GradeLimited ? (await CompaniesWithoutPolicyAsync(tid, type.Id, ct)).Select(c => c.Id) : [] }),
             });
             await _db.SaveChangesAsync(ct);
             return Ok(LoanTypeGradeDto(type));
@@ -235,29 +264,64 @@ public partial class LoansController
                 return BadRequest(new { error = "company_not_found", message = "Choose a valid company." });
             var type = await _db.LoanTypes.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == req.LoanTypeId && !x.IsDeleted && x.IsActive, ct);
             if (type == null) return NotFound(new { error = "loan_type_not_found", message = "That loan type doesn't exist." });
-            var current = await _db.Set<LoanPolicy>()
-                .Where(x => x.TenantId == tid && x.LoanTypeId == type.Id && x.IsActive && (x.CompanyId == req.CompanyId || x.CompanyId == null))
-                .OrderByDescending(x => x.CompanyId.HasValue).ThenByDescending(x => x.Version).ThenByDescending(x => x.CreatedAtUtc)
-                .FirstOrDefaultAsync(ct);
+            var companyActive = await _db.Set<LoanPolicy>()
+                .Where(x => x.TenantId == tid && x.LoanTypeId == type.Id && x.IsActive && x.CompanyId == req.CompanyId)
+                .OrderByDescending(x => x.Version).ThenByDescending(x => x.CreatedAtUtc).FirstOrDefaultAsync(ct);
+            var group = await _db.Set<LoanPolicy>().AsNoTracking()
+                .Where(x => x.TenantId == tid && x.LoanTypeId == type.Id && x.IsActive && x.CompanyId == null)
+                .OrderByDescending(x => x.Version).ThenByDescending(x => x.CreatedAtUtc).FirstOrDefaultAsync(ct);
+            var current = companyActive ?? group;
             var effectiveOffered = current is not { CompanyId: not null, IsOffered: false } && (current != null || !type.GradeLimited);
-            if (effectiveOffered == req.Offered) return Ok(OfferingDto(type, req.CompanyId, current));
+            if (effectiveOffered == req.Offered) return Ok(OfferingDto(type, req.CompanyId, current, group));
             // A grade-limited type with no policy at all has no terms to offer it on; that needs a real policy.
             if (current == null && req.Offered)
                 return Conflict(new { error = "policy_required",
                     message = "Publish a loan policy for this loan type and company first. The loan type is offered from then on." });
+
+            if (req.Offered && companyActive is { CreatedByOfferingSwitch: true } stub)
+            {
+                // Switching back ON undoes the switch rather than copying the stub: the group policy (or the
+                // loan-type baseline) it shadowed applies again with its own, current terms. Only when the stub was
+                // copied from the group policy AND its terms still match is it safe to say nothing was customised.
+                var source = stub.CopiedFromPolicyId is Guid sourceId
+                    ? await _db.Set<LoanPolicy>().AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == sourceId, ct)
+                    : null;
+                var fromBaseline = stub.CopiedFromPolicyId == null;
+                var fromUnchangedGroup = source is { CompanyId: null } && SamePolicyTerms(stub, source);
+                var restoresSomething = group != null || !type.GradeLimited;
+                if ((fromBaseline || fromUnchangedGroup) && restoresSomething)
+                {
+                    stub.IsActive = false;
+                    _db.AuditLogs.Add(new AuditLog
+                    {
+                        TenantId = tid, CompanyId = req.CompanyId, UserId = GetUserId(), Action = "loans.type.offered",
+                        EntityName = "LoanPolicy", EntityId = stub.Id.ToString(), IpAddress = HttpContext?.Connection.RemoteIpAddress?.ToString(),
+                        CreatedAtUtc = DateTime.UtcNow,
+                        Metadata = JsonSerializer.Serialize(new { loanTypeId = type.Id, type.Code, req.Offered, retiredSwitchPolicyId = stub.Id,
+                            restored = group != null ? "GroupPolicy" : "LoanTypeBaseline", restoredPolicyId = group?.Id }),
+                    });
+                    await _db.SaveChangesAsync(ct);
+                    return Ok(OfferingDto(type, req.CompanyId, group, group));
+                }
+            }
+
             var version = await _db.Set<LoanPolicy>().Where(x => x.TenantId == tid && x.CompanyId == req.CompanyId && x.LoanTypeId == type.Id)
                 .Select(x => (int?)x.Version).MaxAsync(ct) ?? 0;
             foreach (var previous in await _db.Set<LoanPolicy>().Where(x => x.TenantId == tid && x.CompanyId == req.CompanyId && x.LoanTypeId == type.Id && x.IsActive).ToListAsync(ct))
                 previous.IsActive = false;
             await _db.SaveChangesAsync(ct);
             // Switching OFF with no policy at all: the terms are never used (nothing can be applied for), so the
-            // loan-type limits are recorded only to keep the version complete.
+            // loan-type limits are recorded only to keep the version complete; switching ON retires this row.
             var basis = current ?? new LoanPolicy { PolicyName = type.NameEn, MaxAmount = type.MaxAmount,
                 MaxInstallments = Math.Clamp(type.MaxInstallments, 1, 600), MinServiceMonths = type.MinServiceMonths, MaxConcurrentLoans = 1 };
             var next = JsonSerializer.Deserialize<LoanPolicy>(JsonSerializer.Serialize(basis))!;
             next.Id = Guid.NewGuid(); next.TenantId = tid; next.CompanyId = req.CompanyId; next.LoanTypeId = type.Id;
             next.Version = version + 1; next.IsActive = true; next.IsOffered = req.Offered;
             next.CreatedAtUtc = DateTime.UtcNow; next.CreatedBy = GetUserId();
+            // OFF writes a switch stub that remembers what it shadowed; ON (from an edited or company-owned policy)
+            // writes an ordinary company version — the company keeps its own terms.
+            next.CreatedByOfferingSwitch = !req.Offered;
+            next.CopiedFromPolicyId = req.Offered ? null : current?.Id;
             if (string.IsNullOrWhiteSpace(next.PolicyName)) next.PolicyName = type.NameEn;
             _db.Set<LoanPolicy>().Add(next);
             _db.AuditLogs.Add(new AuditLog
@@ -268,8 +332,23 @@ public partial class LoansController
                 Metadata = JsonSerializer.Serialize(new { loanTypeId = type.Id, type.Code, req.Offered, copiedFromPolicyId = current?.Id, next.Version }),
             });
             await _db.SaveChangesAsync(ct);
-            return Ok(OfferingDto(type, req.CompanyId, next));
+            return Ok(OfferingDto(type, req.CompanyId, next, group));
         }, ct);
+
+    /// <summary>True when two policy versions carry the same rules (identity, versioning and offering fields aside).</summary>
+    private static bool SamePolicyTerms(LoanPolicy a, LoanPolicy b)
+    {
+        static string Terms(LoanPolicy p)
+        {
+            var node = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(p))!.AsObject();
+            foreach (var key in new[] { nameof(LoanPolicy.Id), nameof(LoanPolicy.TenantId), nameof(LoanPolicy.CompanyId), nameof(LoanPolicy.Version),
+                         nameof(LoanPolicy.IsActive), nameof(LoanPolicy.CreatedAtUtc), nameof(LoanPolicy.CreatedBy), nameof(LoanPolicy.IsOffered),
+                         nameof(LoanPolicy.CreatedByOfferingSwitch), nameof(LoanPolicy.CopiedFromPolicyId), nameof(LoanPolicy.PolicyName) })
+                node.Remove(key);
+            return node.ToJsonString();
+        }
+        return Terms(a) == Terms(b);
+    }
 
     /// <summary>Per company: which loan types its employees are offered, and why not.</summary>
     [HttpGet("offerings")]
@@ -281,8 +360,12 @@ public partial class LoansController
         var types = await _db.LoanTypes.AsNoTracking().Where(x => x.TenantId == tid && !x.IsDeleted && x.IsActive).OrderBy(x => x.NameEn).ToListAsync(ct);
         var policies = await _db.Set<LoanPolicy>().AsNoTracking()
             .Where(x => x.TenantId == tid && x.IsActive && (x.CompanyId == companyId || x.CompanyId == null)).ToListAsync(ct);
-        return Ok(types.Select(t => OfferingDto(t, companyId, policies.Where(p => p.LoanTypeId == t.Id)
-            .OrderByDescending(x => x.CompanyId.HasValue).ThenByDescending(x => x.Version).ThenByDescending(x => x.CreatedAtUtc).FirstOrDefault())));
+        return Ok(types.Select(t =>
+        {
+            var forType = policies.Where(p => p.LoanTypeId == t.Id)
+                .OrderByDescending(x => x.CompanyId.HasValue).ThenByDescending(x => x.Version).ThenByDescending(x => x.CreatedAtUtc).ToList();
+            return OfferingDto(t, companyId, forType.FirstOrDefault(), forType.FirstOrDefault(x => x.CompanyId == null));
+        }));
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────────────────────────
@@ -293,7 +376,9 @@ public partial class LoansController
         message = "Loan limits and offerings are set by HR (Admin, HR Manager or HR Director), the same people who own company loan policies.",
     });
 
-    private static object OfferingDto(LoanType t, Guid companyId, LoanPolicy? policy)
+    /// <param name="group">The group-wide policy in force for the type, if any. <c>detachedFromGroupPolicy</c> is true when
+    /// the company runs on its own offered policy while a group policy exists: group changes no longer reach it.</param>
+    private static object OfferingDto(LoanType t, Guid companyId, LoanPolicy? policy, LoanPolicy? group)
     {
         var explicitlyOff = policy is { CompanyId: not null, IsOffered: false };
         var offered = !explicitlyOff && (policy != null || !t.GradeLimited) && t.IsInterestFree && t.InterestRate == 0;
@@ -303,7 +388,20 @@ public partial class LoansController
             source = explicitlyOff ? "CompanyNotOffered" : policy == null ? (t.GradeLimited ? "NoPolicy" : "LoanTypeBaseline")
                 : policy.CompanyId.HasValue ? "CompanyPolicy" : "GroupPolicy",
             policyId = policy?.Id, policyVersion = policy?.Version,
+            detachedFromGroupPolicy = offered && policy is { CompanyId: not null } && group != null,
         };
+    }
+
+    /// <summary>Active companies with no active policy for the type (neither their own nor a group-wide one).</summary>
+    private async Task<List<(Guid Id, string Name)>> CompaniesWithoutPolicyAsync(Guid tid, Guid loanTypeId, CancellationToken ct)
+    {
+        var policies = await _db.Set<LoanPolicy>().AsNoTracking().Where(x => x.TenantId == tid && x.LoanTypeId == loanTypeId && x.IsActive)
+            .Select(x => x.CompanyId).ToListAsync(ct);
+        if (policies.Any(x => x == null)) return [];
+        var covered = policies.Where(x => x.HasValue).Select(x => x!.Value).ToHashSet();
+        return (await ScopedBypass.TenantWide(_db.Companies, tid, "Coverage of a tenant-wide setting is checked against every active company.")
+                .Where(x => !x.IsDeleted && x.IsActive).OrderBy(x => x.LegalNameEn).Select(x => new { x.Id, x.LegalNameEn }).ToListAsync(ct))
+            .Where(x => !covered.Contains(x.Id)).Select(x => (x.Id, x.LegalNameEn)).ToList();
     }
 
     private static DateOnly Today() => DateOnly.FromDateTime(DateTime.UtcNow);
@@ -384,7 +482,7 @@ public partial class LoansController
 public sealed record GradeLimitRowInput(Guid GradeId, bool Eligible, string ValueType, decimal? Amount = null,
     decimal? Rate = null, decimal? MaxOutstandingAmount = null, string? Note = null);
 public sealed record PublishGradeLimitsRequest(Guid LoanTypeId, Guid? CompanyId, DateOnly EffectiveFrom, List<GradeLimitRowInput> Rows);
-public sealed record SetGradeLimitedRequest(bool GradeLimited);
+public sealed record SetGradeLimitedRequest(bool GradeLimited, bool ConfirmStopOffering = false);
 public sealed record SetLoanOfferingRequest(Guid CompanyId, Guid LoanTypeId, bool Offered);
 public sealed record GradeLimitRowDto(Guid GradeId, string GradeCode, string GradeName, string? GradeNameAr, int Level, Guid? CellId, bool Eligible,
     string? ValueType, decimal? Amount, decimal? Rate, decimal? MaxOutstandingAmount, DateOnly? EffectiveFrom, DateOnly? EffectiveTo,

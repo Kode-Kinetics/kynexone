@@ -69,6 +69,14 @@ public class LoanPolicy : ITenantOwned, ICompanyScoped
     /// means its employees cannot apply, whatever any group-wide policy says. Default true keeps every
     /// existing policy (and tenant) exactly as it was.</summary>
     public bool IsOffered { get; set; } = true;
+
+    /// <summary>True when this version was written by the per-company "offered" switch rather than by HR
+    /// publishing terms. Switching the type back ON retires such a version (instead of copying its terms), so the
+    /// group policy or the loan-type baseline it shadowed applies again exactly as before.</summary>
+    public bool CreatedByOfferingSwitch { get; set; }
+
+    /// <summary>For a switch-created version: the policy whose terms it copied (null = the loan-type baseline).</summary>
+    public Guid? CopiedFromPolicyId { get; set; }
 }
 
 public class EmployeeLoan : ITenantOwned, ICompanyScopedOperational

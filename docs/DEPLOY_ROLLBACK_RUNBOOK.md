@@ -101,6 +101,24 @@ harmful.
   `SELECT company_id, loan_type_id FROM loan_policies WHERE is_active AND NOT is_offered`. Both
   `Down()` migrations refuse to run while those rows exist.
 
+- **Before deploying `AddGradeNameArAndLoanOffering` (owner runs this; agents never touch production).** The
+  migration adds `ck_loan_types__interest_free` as `NOT VALID`: legacy rows survive, but any edit to an
+  interest-bearing loan type is refused from then on. List them first, read-only:
+
+  ```sql
+  SELECT lt.tenant_id, lt.id, lt.code, lt.name_en, lt.is_interest_free, lt.interest_rate,
+         count(el.id) FILTER (WHERE el.status IN ('Pending','Approved'))          AS pending_or_approved_loans,
+         count(el.id) FILTER (WHERE el.status IN ('Active','Overdue'))            AS disbursed_open_loans
+  FROM loan_types lt
+  LEFT JOIN employee_loans el ON el.loan_type_id = lt.id AND NOT el.is_deleted
+  WHERE NOT lt.is_deleted AND (NOT lt.is_interest_free OR lt.interest_rate <> 0)
+  GROUP BY lt.tenant_id, lt.id, lt.code, lt.name_en, lt.is_interest_free, lt.interest_rate
+  ORDER BY lt.tenant_id, lt.code;
+  ```
+
+  Zero rows is expected (the API has refused interest since before this release). Once any rows are cleaned,
+  `ALTER TABLE loan_types VALIDATE CONSTRAINT ck_loan_types__interest_free;` makes the rule cover history too.
+
 ### 3. Re-verify before restoring traffic
 - `/health/ready` must read `ready` with `pendingMigrations: 0`.
 - Never promote an image whose migration has not been applied — the `/health/ready` gate (and the

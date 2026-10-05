@@ -261,7 +261,8 @@ public partial class LoansController : ControllerBase
                 await _db.SaveChangesAsync(ct);
             }
             return BadRequest(new { error = "loan_ineligible", assessment.Reasons, assessment.Codes, assessment.MaxAvailableAmount,
-                gradeLimit = GradeLimitDto(assessment.GradeLimit), assessment.Available, assessment.BindingLimit, limitBreakdowns = assessment.Limits });
+                gradeLimit = GradeLimitDto(assessment.GradeLimit), assessment.Available, assessment.BindingLimit, limitBreakdowns = assessment.Limits,
+                currency = await GlAccountResolver.ResolveCurrencyAsync(_db, tid, employee.CompanyId, ct) });
         }
 
         var loanNumber = $"LN-{DateTime.UtcNow.Year}-{Guid.NewGuid().ToString("N")[..10].ToUpperInvariant()}";

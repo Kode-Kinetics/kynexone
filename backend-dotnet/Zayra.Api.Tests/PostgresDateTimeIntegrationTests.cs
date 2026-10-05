@@ -64,6 +64,9 @@ public sealed class PostgresFixture : IAsyncLifetime
         // does, so every integration test runs against production's no-overlap guarantee on grade_entitlements.
         await db.Database.ExecuteSqlRawAsync(GradeEntitlementSql.CreateExtension);
         await db.Database.ExecuteSqlRawAsync(GradeEntitlementSql.AddExclusion);
+        // AddGradeNameArAndLoanOffering: employer loans are principal only (qard). Same DDL as the migration.
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE loan_types ADD CONSTRAINT ck_loan_types__interest_free CHECK (is_interest_free AND interest_rate = 0) NOT VALID;");
     }
 
     /// <summary>

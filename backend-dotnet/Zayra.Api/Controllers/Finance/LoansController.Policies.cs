@@ -104,7 +104,9 @@ public partial class LoansController
         return Ok(new { result.Eligible, result.Reasons, result.Codes, result.MaxAvailableAmount, result.PolicyId, result.PolicyVersion,
             monthlySalary, result.CommittedAmount, canRequestException,
             preview, available = result.Available, bindingLimit = result.BindingLimit, limitBreakdowns = limits,
-            gradeLimit = GradeLimitDto(result.GradeLimit, maySeeSalary) });
+            gradeLimit = GradeLimitDto(result.GradeLimit, maySeeSalary),
+            // The employee's company currency — every amount above is in it. The UI never guesses a tenant default.
+            currency = await Zayra.Api.Infrastructure.Payroll.GlAccountResolver.ResolveCurrencyAsync(_db, tid, employee.CompanyId, ct) });
     }
 
     /// <summary>The eligibility response's <c>gradeLimit</c> block. Codes are stable; text is English (the UI maps codes to Arabic).</summary>

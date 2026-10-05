@@ -16,6 +16,15 @@ public class NavigationPageGateParityTests
         @"path:\s*'(?<path>/[^']*)'\s*,\s*requiredPermissions:\s*\[(?<perms>[^\]]*)\]",
         RegexOptions.Compiled);
 
+    /// <summary>An entry whose permissions are a shared constant (e.g. PERFORMANCE_MODULE_PERMISSIONS).</summary>
+    private static readonly Regex NavItemByName = new(
+        @"path:\s*'(?<path>/[^']*)'\s*,\s*requiredPermissions:\s*(?<name>[A-Z][A-Z0-9_]*)\b",
+        RegexOptions.Compiled);
+
+    private static readonly Regex GateByName = new(
+        @"<PermissionGate\s+permissions=\{(?<name>[A-Z][A-Z0-9_]*)\}",
+        RegexOptions.Compiled);
+
     private static readonly Regex Gate = new(
         @"<PermissionGate\s+permissions=\{\[(?<perms>[^\]]*)\]\}",
         RegexOptions.Compiled);
@@ -40,6 +49,22 @@ public class NavigationPageGateParityTests
 
         var items = NavItem.Matches(navigation).Select(m => (Path: m.Groups["path"].Value, Perms: Parse(m.Groups["perms"].Value))).ToList();
         items.Should().NotBeEmpty("the parser must still recognise navigation.ts entries");
+        // A link gated by a shared constant is in parity when its page gate uses the SAME constant.
+        var named = NavItemByName.Matches(navigation).Select(m => (Path: m.Groups["path"].Value, Name: m.Groups["name"].Value)).ToList();
+        foreach (var (path, name) in named)
+        {
+            var page = Path.Combine(appRoot, path.TrimStart('/').Replace('/', Path.DirectorySeparatorChar), "page.tsx");
+            if (!File.Exists(page)) continue;
+            var text = File.ReadAllText(page);
+            var gateName = GateByName.Match(text);
+            (gateName.Success && gateName.Groups["name"].Value == name)
+                .Should().BeTrue($"{path} is shown by {name}, so its page gate must use the same constant");
+        }
+        // Every link must be parsed: an entry whose shape neither regex matches would otherwise be skipped
+        // silently, and its trap would go unchecked.
+        var declared = Regex.Matches(navigation, @"path:\s*'/").Count;
+        (items.Count + named.Count).Should().Be(declared,
+            "every `path: '/…'` entry in navigation.ts must be parsed with its requiredPermissions; one was dropped by the parser");
 
         var checkedPages = 0;
         var traps = new List<string>();

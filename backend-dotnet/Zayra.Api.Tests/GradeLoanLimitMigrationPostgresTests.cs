@@ -35,6 +35,8 @@ public sealed class GradeLoanLimitMigrationPostgresTests
             VALUES ('30000000-0000-0000-0000-0000000000a1','{Tenant}','LEGACY','Legacy','',5000,12,'Monthly',true,0,0,true,true,false,CURRENT_TIMESTAMP);
             INSERT INTO pay_components (id,tenant_id,company_id,code,name_en,name_ar,component_type,calc_method,structure_field,value,formula_expression,provider_key,is_taxable,gosi_subject,wps_included,eosb_included,gl_driver_key,emit_when_zero,is_family,display_order,is_system,is_statutory,is_active,is_deleted,created_at_utc,effective_from,effective_to)
             VALUES ('40000000-0000-0000-0000-0000000000a1','{Tenant}',NULL,'SHIFT','Shift','Shift','Earning','Fixed',NULL,100,NULL,NULL,false,false,true,false,'EARN:OTHER',false,false,500,false,false,true,false,CURRENT_TIMESTAMP,NULL,NULL);
+            INSERT INTO loan_types (id,tenant_id,code,name_en,name_ar,max_amount,max_installments,repayment_frequency,is_interest_free,interest_rate,min_service_months,requires_approval,is_active,is_deleted,created_at_utc)
+            VALUES ('30000000-0000-0000-0000-0000000000b2','{Tenant}','INTEREST','Legacy interest','',5000,12,'Monthly',false,3.5,0,true,true,false,CURRENT_TIMESTAMP);
             INSERT INTO grades (id,tenant_id,code,name,band,level,min_salary,mid_salary,max_salary,currency,is_active,created_at_utc,is_deleted)
             VALUES ('50000000-0000-0000-0000-0000000000a1','{Tenant}','G1','Grade 1','',1,0,0,0,'SAR',true,CURRENT_TIMESTAMP,false);
             """);
@@ -64,6 +66,16 @@ public sealed class GradeLoanLimitMigrationPostgresTests
             "UPDATE grade_entitlements SET effective_to = '2026-05-31' WHERE amount = 1000");
         await db.Database.ExecuteSqlRawAsync(Insert("'Amount'", "2000", "NULL", "NULL", eligible: true, from: "2026-06-01"));
         Assert.Equal(Guid.Empty, await ScalarAsync<Guid>(db, "SELECT company_key FROM grade_entitlements WHERE amount = 2000"));
+
+        // Qard CHECK, NOT VALID: the legacy interest-bearing row survives the upgrade untouched, but no new or
+        // updated row may carry interest — including an edit to that legacy row that leaves its interest in place.
+        Assert.Equal(1L, await ScalarAsync<long>(db, "SELECT count(*) FROM loan_types WHERE code = 'INTEREST'"));
+        Assert.False(await ScalarAsync<bool>(db, "SELECT convalidated FROM pg_constraint WHERE conname = 'ck_loan_types__interest_free'"));
+        await AssertRejectedAsync(db, $"INSERT INTO loan_types (id,tenant_id,code,name_en,name_ar,max_amount,max_installments,repayment_frequency,is_interest_free,interest_rate,min_service_months,requires_approval,is_active,is_deleted,created_at_utc,grade_limited) VALUES (gen_random_uuid(),'{Tenant}','NEWINT','New interest','',1,12,'Monthly',true,1,0,true,true,false,CURRENT_TIMESTAMP,false)", "23514");
+        await AssertRejectedAsync(db, $"INSERT INTO loan_types (id,tenant_id,code,name_en,name_ar,max_amount,max_installments,repayment_frequency,is_interest_free,interest_rate,min_service_months,requires_approval,is_active,is_deleted,created_at_utc,grade_limited) VALUES (gen_random_uuid(),'{Tenant}','NEWFLAG','Not free','',1,12,'Monthly',false,0,0,true,true,false,CURRENT_TIMESTAMP,false)", "23514");
+        await AssertRejectedAsync(db, "UPDATE loan_types SET name_en = 'Renamed' WHERE code = 'INTEREST'", "23514");
+        await db.Database.ExecuteSqlRawAsync("UPDATE loan_types SET is_interest_free = true, interest_rate = 0 WHERE code = 'INTEREST'");
+        await db.Database.ExecuteSqlRawAsync("DELETE FROM loan_types WHERE code = 'INTEREST'");
 
         var rollback = await Assert.ThrowsAsync<Npgsql.PostgresException>(() => migrator.MigrateAsync(Previous));
         Assert.Equal(Npgsql.PostgresErrorCodes.RaiseException, rollback.SqlState);

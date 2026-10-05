@@ -15797,6 +15797,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("cooldown_months_after_repayment");
 
+                    b.Property<Guid?>("CopiedFromPolicyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("copied_from_policy_id");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -15804,6 +15808,12 @@ namespace Zayra.Api.Migrations
                     b.Property<Guid?>("CreatedBy")
                         .HasColumnType("uuid")
                         .HasColumnName("created_by");
+
+                    b.Property<bool>("CreatedByOfferingSwitch")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("created_by_offering_switch");
 
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean")
