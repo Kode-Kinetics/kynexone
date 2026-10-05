@@ -64,22 +64,99 @@ public sealed class PrivilegedMfaEnforcementTests
     }
 
     [Fact]
-    public void PrivilegedRoles_AreTheAgreedSet_AndCompanyGrantsCount()
+    public async Task PrivilegedPermissions_SelectExactlyTheSevenPrivilegedSeededRoles()
     {
-        PrivilegedMfaPolicy.TenantRoles.Should().BeEquivalentTo(
-            "Admin", "HR Manager", "HR Director", "Payroll Manager", "Payroll Officer", "Finance", "Finance Approver");
+        var (db, tenantId) = await SeededRoleBundles.NewTenantAsync("mfa-priv");
+        await using var _ = db;
+        var roles = await db.Roles.AsNoTracking()
+            .Where(r => r.TenantId == tenantId)
+            .Include(r => r.RolePermissions).ThenInclude(rp => rp.Permission)
+            .ToListAsync();
 
-        User With(string role, bool active = true) => new()
+        var privileged = roles
+            .Where(r => r.RolePermissions.Any(rp => PrivilegedMfaPolicy.PrivilegedPermissions.Contains(rp.Permission!.Key)))
+            .Select(r => r.Name)
+            .ToList();
+
+        privileged.Should().BeEquivalentTo(new[]
         {
-            UserRoles = { new UserRole { Role = new Role { Name = role, IsActive = active } } },
-        };
-        PrivilegedMfaPolicy.HoldsPrivilegedTenantRole(With("Admin")).Should().BeTrue();
-        PrivilegedMfaPolicy.HoldsPrivilegedTenantRole(With("Employee")).Should().BeFalse();
-        PrivilegedMfaPolicy.HoldsPrivilegedTenantRole(With("Admin", active: false)).Should().BeFalse();
-        PrivilegedMfaPolicy.HoldsPrivilegedTenantRole(new User
+            "Admin", "HR Director", "HR Manager", "Payroll Manager", "Payroll Officer", "Finance", "Finance Approver",
+        }, "the permission set must pick out today's seven privileged roles and none of the other nine");
+        roles.Should().HaveCountGreaterThan(privileged.Count);
+
+        var catalogue = await db.Permissions.AsNoTracking().Select(p => p.Key).ToListAsync();
+        catalogue.Should().Contain(PrivilegedMfaPolicy.PrivilegedPermissions,
+            "every privileged key must be a real permission in the seeded catalogue — a typo would silently exempt everyone");
+    }
+
+    [Fact]
+    public async Task ARenamedSeededRole_IsStillEnforced()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        await kit.SetPlatformEnforcementDateAsync(Past);
+        await kit.SeedUserAsync("admin@hardening.local", new Pbkdf2PasswordHasher().Hash(Password), "Admin");
+        await using (var db = kit.NewDb())
         {
-            EntityAccesses = { new UserEntityAccess { Role = "Finance", IsActive = true } },
-        }).Should().BeTrue("a company-scoped Finance grant is still a Finance user");
+            var admin = await db.Roles.SingleAsync(r => r.TenantId == kit.TenantId && r.Name == "Admin");
+            admin.Name = "Workspace Owner";
+            admin.NormalizedName = "WORKSPACE OWNER";
+            await db.SaveChangesAsync();
+        }
+
+        (await LoginAsync(kit, "admin@hardening.local")).RequiresMfaEnrollment.Should().BeTrue(
+            "renaming the role changes nothing about what it can do");
+    }
+
+    [Fact]
+    public async Task ACustomRoleWithPrivilegedPermissions_IsEnforced_AndOneWithout_IsNot()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        await kit.SetPlatformEnforcementDateAsync(Past);
+        var hash = new Pbkdf2PasswordHasher().Hash(Password);
+        await kit.SeedUserAsync("desk@hardening.local", hash, "Salary Desk", "payroll.read", "payroll.write", "employees.sensitive");
+        await kit.SeedUserAsync("viewer@hardening.local", hash, "Roster Viewer", "employees.read", "attendance.read", "payroll.read");
+
+        (await LoginAsync(kit, "desk@hardening.local")).RequiresMfaEnrollment.Should().BeTrue(
+            "a custom role that can run payroll and read bank details is a Payroll role whatever it is called");
+        (await LoginAsync(kit, "viewer@hardening.local")).Tokens.Should().NotBeNull();
+    }
+
+    [Theory]
+    [InlineData("users.manage")]
+    [InlineData("roles.manage")]
+    [InlineData("payroll.write")]
+    [InlineData("payroll.approve")]
+    [InlineData("payroll.lock")]
+    [InlineData("employees.sensitive")]
+    [InlineData("loans.approve")]
+    public async Task EachPrivilegedPermission_OnItsOwn_TriggersEnforcement(string permission)
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        await kit.SetPlatformEnforcementDateAsync(Past);
+        await kit.SeedUserAsync("one@hardening.local", new Pbkdf2PasswordHasher().Hash(Password), $"Only {permission}", permission);
+
+        (await LoginAsync(kit, "one@hardening.local")).RequiresMfaEnrollment.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ACompanyGrantNamingAPrivilegedRole_IsEnforced()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        await kit.SetPlatformEnforcementDateAsync(Past);
+        // Make sure the seeded "Finance" role exists, then give a role-less user only a company grant.
+        await kit.SeedUserAsync("seed@hardening.local", new Pbkdf2PasswordHasher().Hash(Password), "Finance");
+        var userId = await kit.SeedUserAsync("grant@hardening.local", new Pbkdf2PasswordHasher().Hash(Password), roleName: null);
+        await using (var db = kit.NewDb())
+        {
+            db.UserEntityAccesses.Add(new UserEntityAccess
+            {
+                TenantId = kit.TenantId, UserId = userId, CompanyId = null, Role = "Finance", IsActive = true,
+                GrantMode = EntityGrantModes.AllCurrentCompanies,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        (await LoginAsync(kit, "grant@hardening.local")).RequiresMfaEnrollment.Should().BeTrue();
     }
 
     // ── Tenant sign-in ────────────────────────────────────────────────────────────────────────

@@ -103,8 +103,11 @@ public class MfaController : ControllerBase
         if (userId is null || tenantId is null) return Unauthorized();
 
         var user = await db.Users.AsNoTracking()
-            .Include(x => x.UserRoles).ThenInclude(x => x.Role)
+            .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
+            .Include(x => x.PermissionOverrides)
+            .Include(x => x.EmployeeUserAccounts)
             .Include(x => x.EntityAccesses)
+            .AsSplitQuery()
             .SingleOrDefaultAsync(x => x.Id == userId && x.TenantId == tenantId && !x.IsDeleted, ct);
         if (user is null) return Unauthorized();
         var policy = await db.SecuritySettings.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId, ct);

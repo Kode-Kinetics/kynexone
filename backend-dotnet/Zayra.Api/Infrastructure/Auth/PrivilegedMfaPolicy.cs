@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Reports;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Auth;
@@ -32,8 +33,8 @@ public sealed record PrivilegedMfaState(PrivilegedMfaStatus Status, DateTime? En
 }
 
 /// <summary>
-/// Mandatory TOTP for privileged principals: every platform operator, and tenant users holding a role
-/// that can see or move payroll, banking or access control.
+/// Mandatory TOTP for privileged principals: every platform operator, and tenant users holding a
+/// permission that can see or move payroll, banking or access control (<see cref="PrivilegedPermissions"/>).
 ///
 /// <para><b>Rollout without lock-out.</b> Enforcement starts on a date, not on deploy. The platform-wide
 /// date is the <c>platform_config_entries</c> row <see cref="PlatformConfigKey"/>, written by migration
@@ -56,13 +57,60 @@ public static class PrivilegedMfaPolicy
     public static readonly TimeSpan MaxBreakGlassWindow = TimeSpan.FromDays(7);
 
     /// <summary>
-    /// Tenant roles that must use MFA. Payroll Manager and Payroll Officer are both "Payroll": each can
-    /// read salaries and bank details and prepare WPS files.
+    /// "Privileged" is decided by what a user can DO, never by a role's name: seeded roles are
+    /// editable and renameable, tenants create custom roles, and the migration importer marks
+    /// imported roles editable. Holding ANY of these permissions requires MFA. The set is the minimal
+    /// one that selects exactly today's seven privileged seeded roles (Admin, HR Director, HR Manager,
+    /// Payroll Manager, Payroll Officer, Finance, Finance Approver) and none of the other nine —
+    /// pinned against the real AuthSeeder by PrivilegedMfaEnforcementTests.
+    /// <list type="bullet">
+    /// <item><c>users.manage</c>, <c>roles.manage</c> — who can sign in and with what access.</item>
+    /// <item><c>payroll.write</c>, <c>payroll.approve</c>, <c>payroll.lock</c> — run, approve, lock payroll.</item>
+    /// <item><c>employees.sensitive</c> — salary, IBAN/bank and identity fields.</item>
+    /// <item><c>loans.approve</c> — approve loans and salary advances.</item>
+    /// </list>
     /// </summary>
-    public static readonly IReadOnlySet<string> TenantRoles = new HashSet<string>(StringComparer.Ordinal)
+    public static readonly IReadOnlySet<string> PrivilegedPermissions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
-        "Admin", "HR Manager", "HR Director", "Payroll Manager", "Payroll Officer", "Finance", "Finance Approver",
+        "users.manage",
+        "roles.manage",
+        "payroll.write",
+        "payroll.approve",
+        "payroll.lock",
+        ReportAccessPolicy.SensitivePermission, // employees.sensitive
+        "loans.approve",
     };
+
+    /// <summary>
+    /// True when the user's EFFECTIVE permissions (active roles + access mode + overrides, exactly as
+    /// a session would carry them — AuthService.GetPermissions) include a privileged one. Needs the
+    /// user graph loaded with UserRoles→Role→RolePermissions→Permission, PermissionOverrides and
+    /// EmployeeUserAccounts.
+    /// </summary>
+    public static bool HoldsPrivilegedPermission(User user)
+        => AuthService.GetPermissions(user).Any(PrivilegedPermissions.Contains);
+
+    /// <summary>
+    /// <see cref="HoldsPrivilegedPermission"/>, plus active company-scoped grants: a grant names a
+    /// tenant role, and that role's permissions count as held. Resolved by the role's current
+    /// permissions in this tenant, so renaming or cloning a role cannot slip it past the rule.
+    /// </summary>
+    public static async Task<bool> IsPrivilegedTenantUserAsync(ZayraDbContext db, User user, CancellationToken ct)
+    {
+        if (HoldsPrivilegedPermission(user)) return true;
+        var grantRoles = user.EntityAccesses
+            .Where(x => x.IsActive && !string.IsNullOrWhiteSpace(x.Role))
+            .Select(x => x.Role)
+            .Distinct()
+            .ToList();
+        if (grantRoles.Count == 0) return false;
+        var keys = PrivilegedPermissions.ToList();
+        return await db.RolePermissions.AsNoTracking()
+            .AnyAsync(rp => rp.Role!.TenantId == user.TenantId
+                            && rp.Role.IsActive && !rp.Role.IsDeleted
+                            && grantRoles.Contains(rp.Role.Name)
+                            && keys.Contains(rp.Permission!.Key), ct);
+    }
 
     public static string FormatDate(DateTime utc)
         => DateTime.SpecifyKind(utc, DateTimeKind.Utc).ToString("O", CultureInfo.InvariantCulture);
@@ -72,14 +120,6 @@ public static class PrivilegedMfaPolicy
             DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var parsed)
             ? DateTime.SpecifyKind(parsed, DateTimeKind.Utc)
             : null;
-
-    /// <summary>
-    /// The roles a session for <paramref name="user"/> would carry (active role assignments, as in
-    /// AuthService.GetRoles) plus active company-scoped grants, which name roles too.
-    /// </summary>
-    public static bool HoldsPrivilegedTenantRole(User user)
-        => user.UserRoles.Any(x => x.Role is { IsActive: true, IsDeleted: false } role && TenantRoles.Contains(role.Name))
-           || user.EntityAccesses.Any(x => x.IsActive && TenantRoles.Contains(x.Role));
 
     public static bool IsTenantUserEnrolled(User user)
         => user.MFAEnabled && !string.IsNullOrWhiteSpace(user.MfaSecretEncrypted);
@@ -120,7 +160,7 @@ public static class PrivilegedMfaPolicy
     public static async Task<PrivilegedMfaState> ForTenantUserAsync(
         ZayraDbContext db, IConfiguration? config, User user, SecuritySetting? policy, DateTime nowUtc, CancellationToken ct)
     {
-        var required = HoldsPrivilegedTenantRole(user);
+        var required = await IsPrivilegedTenantUserAsync(db, user, ct);
         if (!required) return new(PrivilegedMfaStatus.NotRequired, null, false);
         var enforceFrom = policy?.PrivilegedMfaEnforceFromUtc ?? await LoadPlatformEnforceFromAsync(db, ct);
         return Evaluate(true, IsTenantUserEnrolled(user), enforceFrom, ActiveBreakGlassUntil(config, nowUtc), nowUtc);

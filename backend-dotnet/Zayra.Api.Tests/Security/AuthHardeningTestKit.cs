@@ -88,9 +88,20 @@ internal sealed class AuthHardeningTestKit : IAsyncDisposable
         return new MfaService(db, Totp, tokens, new AuditService(db));
     }
 
-    /// <summary>Seeds an active, confirmed, group-scope tenant user holding <paramref name="roleName"/>.</summary>
-    public async Task<Guid> SeedUserAsync(string email, string passwordHash, string? roleName)
+    /// <summary>
+    /// Seeds an active, confirmed, group-scope tenant user holding <paramref name="roleName"/>. When the
+    /// role does not exist it is created with <paramref name="permissions"/>, or — for one of the
+    /// standard role names and no explicit list — with that role's real AuthSeeder bundle.
+    /// </summary>
+    public async Task<Guid> SeedUserAsync(string email, string passwordHash, string? roleName, params string[] permissions)
     {
+        if (roleName is not null && permissions.Length == 0)
+        {
+            await using var seedDb = NewDb();
+            if (!await seedDb.Roles.AnyAsync(r => r.TenantId == TenantId && r.Name == roleName))
+                await new Zayra.Api.Infrastructure.Seed.AuthSeeder(seedDb).EnsureTenantRolesAsync(TenantId);
+        }
+
         await using var db = NewDb();
         var user = new User
         {
@@ -117,6 +128,17 @@ internal sealed class AuthHardeningTestKit : IAsyncDisposable
                     NormalizedName = roleName.ToUpperInvariant(), Description = roleName,
                 };
                 db.Roles.Add(role);
+                foreach (var key in permissions)
+                {
+                    var permission = await db.Permissions.FirstOrDefaultAsync(p => p.Key == key)
+                        ?? db.Permissions.Local.FirstOrDefault(p => p.Key == key);
+                    if (permission is null)
+                    {
+                        permission = new Permission { Id = Guid.NewGuid(), Key = key, Module = "Test", Description = key };
+                        db.Permissions.Add(permission);
+                    }
+                    db.RolePermissions.Add(new RolePermission { RoleId = role.Id, PermissionId = permission.Id });
+                }
             }
             db.UserRoles.Add(new UserRole { UserId = user.Id, RoleId = role.Id });
         }

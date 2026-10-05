@@ -6,8 +6,13 @@ Tests: `Zayra.Api.Tests/Security/PrivilegedMfaEnforcementTests.cs`, `MfaStatusHt
 ## Who
 
 - **Every platform operator** (all six platform roles).
-- **Tenant users holding** Admin, HR Manager, HR Director, Payroll Manager, Payroll Officer,
-  Finance or Finance Approver — as a role assignment or as an active company-scoped grant.
+- **Tenant users who can** manage users or roles, run/approve/lock payroll, see salary and bank
+  details, or approve loans and advances — i.e. whose effective permissions include any of
+  `users.manage`, `roles.manage`, `payroll.write`, `payroll.approve`, `payroll.lock`,
+  `employees.sensitive`, `loans.approve` (through roles, overrides, or a company grant's role).
+  Decided by permission, not role name, so renamed, cloned and custom roles are covered. Today
+  that is exactly the seeded Admin, HR Director, HR Manager, Payroll Manager, Payroll Officer,
+  Finance and Finance Approver roles.
 - Unchanged: a tenant can still require MFA for *all* its users (`security_settings.mfa_required`).
 
 ## When

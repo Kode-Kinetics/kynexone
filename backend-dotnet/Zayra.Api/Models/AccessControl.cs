@@ -38,7 +38,7 @@ public class SecuritySetting : ITenantOwned
     public bool AllowMultipleSessions { get; set; } = true;
     // MFA policy — when true all tenant users must complete TOTP at login
     public bool MfaRequired { get; set; }
-    // Mandatory MFA for privileged roles (PrivilegedMfaPolicy.TenantRoles) starts at this instant for
+    // Mandatory MFA for privileged users (PrivilegedMfaPolicy.PrivilegedPermissions) starts at this instant for
     // this tenant. Null = use the platform-wide date (platform_config_entries
     // 'auth.privileged_mfa_enforce_from_utc'). Set by platform Owner/Admin only.
     public DateTime? PrivilegedMfaEnforceFromUtc { get; set; }
