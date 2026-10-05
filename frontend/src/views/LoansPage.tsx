@@ -293,7 +293,22 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
   const [checkedKey, setCheckedKey] = useState('');
   const { t } = useLocale();
   const checkedEligibility = eligibility && checkedKey === eligibilityKey ? eligibility : null;
-  const notOffered = isLoanTypeNotOffered(checkedEligibility);
+  // Limits preview: fetched as soon as a loan type (and, for HR on behalf, an employee) is chosen,
+  // so the applicant sees their limit before typing an amount. The full check still needs the amount.
+  const [preview, setPreview] = useState<{ key: string; result: LoanEligibility } | null>(null);
+  const previewKey = JSON.stringify([applicantId, createForm.loanTypeId]);
+  useEffect(() => {
+    if (!createModal || !createForm.loanTypeId || (!applicantId && staff && !mine)) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      loanGovernanceApi.preview({ employeeIntId: applicantId, loanTypeId: createForm.loanTypeId })
+        .then(result => { if (!cancelled) setPreview({ key: previewKey, result }); })
+        .catch(() => { if (!cancelled) setPreview(null); }); // A preview is a convenience; Check Eligibility reports errors.
+    }, 350);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [createModal, createForm.loanTypeId, applicantId, staff, mine, previewKey]);
+  const currentPreview = preview?.key === previewKey ? preview.result : null;
+  const notOffered = isLoanTypeNotOffered(checkedEligibility) || isLoanTypeNotOffered(currentPreview);
   // Grade limits are hard: no policy exception can lift them.
   const gradeBlocked = isGradeBlocked(checkedEligibility);
   const canSubmit = !!checkedEligibility && !notOffered && !gradeBlocked
@@ -385,7 +400,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
             <option value="">All Statuses</option>
             {['Pending', 'Approved', 'Active', 'Overdue', 'Settled', 'Rejected', 'Closed'].map((s) => <option key={s} value={s}>{s === 'Approved' ? 'Approved — awaiting payment' : s}</option>)}
           </select>
-          <button type="button" onClick={() => { setCreateForm({ loanTypeId: loanTypes[0]?.id ?? '', requestedAmount: 0, requestedInstallments: 12, repaymentMethod: 'BankTransfer', notes: '' }); setSelectedEmployee(null); setEligibility(null); setRequestException(false); setCheckedKey(''); setError(''); setCreateModal(true); }} className="btn-primary">
+          <button type="button" onClick={() => { setCreateForm({ loanTypeId: loanTypes[0]?.id ?? '', requestedAmount: 0, requestedInstallments: 12, repaymentMethod: 'BankTransfer', notes: '' }); setSelectedEmployee(null); setEligibility(null); setPreview(null); setRequestException(false); setCheckedKey(''); setError(''); setCreateModal(true); }} className="btn-primary">
             <Plus className="h-4 w-4" /> New Loan Request
           </button>
         </div>
@@ -462,7 +477,9 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
               <textarea value={createForm.notes} onChange={(e) => setCreateForm(x => ({ ...x, notes: e.target.value }))} className="input w-full" rows={2} title="Notes" />
             </FormField>
           </div>
-          <div className="space-y-2 rounded-lg border border-slate-200 p-3 dark:border-white/10"><button className="btn-secondary" disabled={checkingEligibility || saving} onClick={checkEligibility}>{checkingEligibility ? 'Checking…' : 'Check Eligibility'}</button>{checkedEligibility && (notOffered
+          <div className="space-y-2 rounded-lg border border-slate-200 p-3 dark:border-white/10"><button className="btn-secondary" disabled={checkingEligibility || saving} onClick={checkEligibility}>{checkingEligibility ? 'Checking…' : 'Check Eligibility'}</button>{!checkedEligibility && currentPreview && (notOffered
+            ? <p role="status" className="text-sm font-semibold text-amber-700 dark:text-amber-300">{t(mine || !staff ? "Loans of this type aren't offered by your company." : "Loans of this type aren't offered by this employee's company.")}</p>
+            : <LoanLimitCard eligibility={currentPreview} self={mine || !staff} />)}{checkedEligibility && (notOffered
             ? <p role="status" className="text-sm font-semibold text-amber-700 dark:text-amber-300">{t(mine || !staff ? "Loans of this type aren't offered by your company." : "Loans of this type aren't offered by this employee's company.")}</p>
             : <div role="status" className="space-y-1 text-sm"><p className={checkedEligibility.eligible ? 'text-emerald-700' : 'text-amber-700'}>{checkedEligibility.eligible ? 'Eligible to apply' : 'Not eligible for this request'}</p><LoanLimitCard eligibility={checkedEligibility} self={mine || !staff} /><p>{checkedEligibility.maxAvailableAmount == null ? 'No fixed amount limit' : `Maximum available: ${checkedEligibility.maxAvailableAmount.toLocaleString()}`} · Policy v{checkedEligibility.policyVersion ?? '—'}</p>{otherReasons.map(reason => <p key={reason}>{reason}</p>)}{!checkedEligibility.eligible && checkedEligibility.canRequestException && !gradeBlocked && <label className="flex items-center gap-2"><input type="checkbox" checked={requestException} onChange={e => setRequestException(e.target.checked)} />Request an HR Director policy exception</label>}{gradeBlocked && <p className="text-xs text-slate-500">{t('Grade limits cannot be overridden by a policy exception.')}</p>}<p className="text-xs text-slate-500">Approval starts with HR Manager. Policy exceptions need a separate independent approval before the loan can proceed.</p></div>)}</div>
         </div>

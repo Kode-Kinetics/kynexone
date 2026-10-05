@@ -120,6 +120,8 @@ export const loanGovernanceApi = {
   policies: (params: { companyId?: string; loanTypeId?: string } = {}) => client.get<LoanPolicy[]>('/api/finance/loans/policies', { params }).then(r => r.data),
   createPolicy: (body: LoanPolicyInput) => client.post<LoanPolicy>('/api/finance/loans/policies', body).then(r => r.data),
   eligibility: (params: { employeeIntId?: number; loanTypeId: string; amount: number; installments: number; repaymentMethod: LoanRepaymentMethod }) => client.get<LoanEligibility>('/api/finance/loans/eligibility', { params }).then(r => r.data),
+  /** Limits-only preview for a chosen loan type: no amount or instalments, so only the limits (gradeLimit, available, bindingLimit) are meaningful. */
+  preview: (params: { employeeIntId?: number; loanTypeId: string }) => client.get<LoanEligibility>('/api/finance/loans/eligibility', { params }).then(r => r.data),
   refreshLifecycle: (id: string) => client.post(`/api/finance/loans/${id}/lifecycle/refresh`).then(r => r.data),
   reviewLifecycle: (id: string, body: { decision: 'Continue' | 'Hold' | 'Cancel'; reason: string }) => client.patch(`/api/finance/loans/${id}/lifecycle/review`, body).then(r => r.data),
   changes: (id: string) => client.get<LoanChangeRequest[]>(`/api/finance/loans/${id}/changes`).then(r => r.data),
