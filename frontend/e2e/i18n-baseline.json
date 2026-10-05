@@ -1,0 +1,492 @@
+{
+  "_readme": "Pinned by e2e/i18n-coverage.spec.ts. Counts may only go down. Regenerate with `npm run i18n:repin` after removing hard-coded strings; never hand-edit a number upward.",
+  "pinnedAt": "2026-10-05",
+  "totals": {
+    "hardcoded": 5771,
+    "rawStatus": 61,
+    "locale": 227,
+    "icons": 0,
+    "files": 126
+  },
+  "fragmentKeys": [
+    "companies in group",
+    "e.g. Approved by management for Q3 expansion",
+    "frozen",
+    "levels without a budget are uncontrolled (\"—\"), an explicit 0 freezes the level, and the total approved headcount never hard-blocks — only level budgets do.",
+    "not set",
+    "over-establishment: {n}",
+    "uncontrolled"
+  ],
+  "files": {
+    "app/(dashboard)/compliance-profiles/page.tsx": {
+      "hardcoded": 11
+    },
+    "app/(dashboard)/group/page.tsx": {
+      "hardcoded": 14,
+      "rawStatus": 1
+    },
+    "app/(dashboard)/tax-policies/page.tsx": {
+      "hardcoded": 25,
+      "rawStatus": 1
+    },
+    "app/access-denied/page.tsx": {
+      "hardcoded": 3
+    },
+    "app/error.tsx": {
+      "hardcoded": 4
+    },
+    "app/global-error.tsx": {
+      "hardcoded": 5
+    },
+    "app/not-found.tsx": {
+      "hardcoded": 2
+    },
+    "app/platform/ai-usage/page.tsx": {
+      "hardcoded": 9,
+      "locale": 8
+    },
+    "app/platform/audit-logs/page.tsx": {
+      "hardcoded": 17,
+      "locale": 1
+    },
+    "app/platform/billing/page.tsx": {
+      "hardcoded": 19,
+      "rawStatus": 1,
+      "locale": 7
+    },
+    "app/platform/compliance/page.tsx": {
+      "hardcoded": 27,
+      "locale": 3
+    },
+    "app/platform/dashboard/page.tsx": {
+      "hardcoded": 27,
+      "locale": 3
+    },
+    "app/platform/layout.tsx": {
+      "hardcoded": 11
+    },
+    "app/platform/leads/page.tsx": {
+      "hardcoded": 35,
+      "rawStatus": 1,
+      "locale": 1
+    },
+    "app/platform/login/page.tsx": {
+      "hardcoded": 21
+    },
+    "app/platform/marketing/page.tsx": {
+      "hardcoded": 28,
+      "rawStatus": 1,
+      "locale": 2
+    },
+    "app/platform/plans/page.tsx": {
+      "hardcoded": 8
+    },
+    "app/platform/pricing/page.tsx": {
+      "hardcoded": 42,
+      "rawStatus": 1,
+      "locale": 8
+    },
+    "app/platform/quotes/[id]/convert/page.tsx": {
+      "hardcoded": 34,
+      "rawStatus": 1,
+      "locale": 2
+    },
+    "app/platform/roles/page.tsx": {
+      "hardcoded": 22
+    },
+    "app/platform/security/page.tsx": {
+      "hardcoded": 12,
+      "locale": 1
+    },
+    "app/platform/settings/page.tsx": {
+      "hardcoded": 40,
+      "locale": 2
+    },
+    "app/platform/support-sessions/page.tsx": {
+      "hardcoded": 7,
+      "locale": 2
+    },
+    "app/platform/support/page.tsx": {
+      "hardcoded": 10,
+      "locale": 1
+    },
+    "app/platform/system-health/page.tsx": {
+      "hardcoded": 29,
+      "locale": 5
+    },
+    "app/platform/team/page.tsx": {
+      "hardcoded": 18,
+      "locale": 1
+    },
+    "app/platform/tenants/[id]/GovernanceTab.tsx": {
+      "hardcoded": 25
+    },
+    "app/platform/tenants/[id]/audit/page.tsx": {
+      "hardcoded": 9,
+      "locale": 1
+    },
+    "app/platform/tenants/[id]/billing/page.tsx": {
+      "hardcoded": 96,
+      "rawStatus": 2,
+      "locale": 3
+    },
+    "app/platform/tenants/[id]/features/page.tsx": {
+      "hardcoded": 1
+    },
+    "app/platform/tenants/[id]/page.tsx": {
+      "hardcoded": 112,
+      "locale": 2
+    },
+    "app/platform/tenants/[id]/security/page.tsx": {
+      "hardcoded": 31,
+      "locale": 2
+    },
+    "app/platform/tenants/[id]/users/page.tsx": {
+      "hardcoded": 60,
+      "locale": 1
+    },
+    "app/platform/tenants/page.tsx": {
+      "hardcoded": 77,
+      "locale": 1
+    },
+    "app/pricing/page.tsx": {
+      "hardcoded": 54,
+      "locale": 3
+    },
+    "app/privacy/page.tsx": {
+      "hardcoded": 86
+    },
+    "app/security/page.tsx": {
+      "hardcoded": 34
+    },
+    "app/terms/page.tsx": {
+      "hardcoded": 46
+    },
+    "src/components/AiSetupAssistant.tsx": {
+      "hardcoded": 100,
+      "locale": 1
+    },
+    "src/components/CompanySwitcher.tsx": {
+      "hardcoded": 3
+    },
+    "src/components/CountrySelect.tsx": {
+      "hardcoded": 2
+    },
+    "src/components/DataPanel.tsx": {
+      "hardcoded": 1
+    },
+    "src/components/DraftPlacementFix.tsx": {
+      "hardcoded": 4
+    },
+    "src/components/EmployeePicker.tsx": {
+      "hardcoded": 3
+    },
+    "src/components/EmployeeSearchSelect.tsx": {
+      "hardcoded": 2
+    },
+    "src/components/EstablishmentPanel.tsx": {
+      "hardcoded": 39,
+      "locale": 1
+    },
+    "src/components/GosiCohortPanel.tsx": {
+      "hardcoded": 3
+    },
+    "src/components/HelpTextManager.tsx": {
+      "hardcoded": 12,
+      "locale": 1
+    },
+    "src/components/ImportExportToolbar.tsx": {
+      "hardcoded": 51
+    },
+    "src/components/InfoTip.tsx": {
+      "hardcoded": 1
+    },
+    "src/components/LoginMarketing.tsx": {
+      "hardcoded": 5,
+      "locale": 3
+    },
+    "src/components/Logo.tsx": {
+      "hardcoded": 5
+    },
+    "src/components/Modal.tsx": {
+      "hardcoded": 1
+    },
+    "src/components/ModuleGate.tsx": {
+      "hardcoded": 5
+    },
+    "src/components/OfferPlacementFields.tsx": {
+      "hardcoded": 3
+    },
+    "src/components/PolicyDocumentManager.tsx": {
+      "hardcoded": 19
+    },
+    "src/components/ReadinessChecklist.tsx": {
+      "hardcoded": 14
+    },
+    "src/components/StoreBadges.tsx": {
+      "hardcoded": 1
+    },
+    "src/components/SubscriptionGate.tsx": {
+      "hardcoded": 12,
+      "locale": 2
+    },
+    "src/components/TransliterateButton.tsx": {
+      "hardcoded": 1
+    },
+    "src/components/charts/dashboard/DashboardPayrollByEntityChart.tsx": {
+      "locale": 1
+    },
+    "src/components/charts/reports/ReportsPayrollTrendChart.tsx": {
+      "locale": 1
+    },
+    "src/components/compliance/JawazatPanel.tsx": {
+      "hardcoded": 47,
+      "locale": 3
+    },
+    "src/components/compliance/JawazatPolicyEditor.tsx": {
+      "hardcoded": 18,
+      "locale": 1
+    },
+    "src/components/dashboard/dashboardModel.ts": {
+      "locale": 10
+    },
+    "src/components/gl/AccountsMappingsPanel.tsx": {
+      "hardcoded": 34
+    },
+    "src/components/gl/CompanyRatesPanel.tsx": {
+      "hardcoded": 27
+    },
+    "src/components/gl/DriverManagerPanel.tsx": {
+      "hardcoded": 50
+    },
+    "src/components/gl/GlSetupPanel.tsx": {
+      "hardcoded": 4
+    },
+    "src/components/gl/StatutoryRatesPanel.tsx": {
+      "hardcoded": 39
+    },
+    "src/components/gl/glUi.tsx": {
+      "hardcoded": 3,
+      "locale": 1
+    },
+    "src/components/loans/LoanLifecyclePanel.tsx": {
+      "hardcoded": 42,
+      "rawStatus": 2
+    },
+    "src/components/loans/LoanPaymentsTab.tsx": {
+      "hardcoded": 37,
+      "rawStatus": 2,
+      "locale": 1
+    },
+    "src/components/loans/LoanPoliciesTab.tsx": {
+      "hardcoded": 24,
+      "locale": 1
+    },
+    "src/components/loans/LoanStatement.tsx": {
+      "hardcoded": 5,
+      "locale": 2
+    },
+    "src/components/payroll/SaudiBankExportPanel.tsx": {
+      "rawStatus": 3,
+      "locale": 1
+    },
+    "src/components/platform/ComingSoon.tsx": {
+      "hardcoded": 2
+    },
+    "src/components/platform/PlatformErrorBoundary.tsx": {
+      "hardcoded": 4
+    },
+    "src/components/platform/PlatformToast.tsx": {
+      "hardcoded": 1
+    },
+    "src/components/ui/AppToast.tsx": {
+      "hardcoded": 2
+    },
+    "src/components/ui/ConfirmDialog.tsx": {
+      "hardcoded": 3
+    },
+    "src/components/ui/ErrorBanner.tsx": {
+      "hardcoded": 1
+    },
+    "src/layouts/AppLayout.tsx": {
+      "hardcoded": 10
+    },
+    "src/layouts/AssistantLauncher.tsx": {
+      "hardcoded": 1
+    },
+    "src/layouts/Sidebar.tsx": {
+      "hardcoded": 4
+    },
+    "src/layouts/TopBar.tsx": {
+      "hardcoded": 12
+    },
+    "src/lib/calendarDate.ts": {
+      "locale": 1
+    },
+    "src/lib/newHireReview.ts": {
+      "locale": 1
+    },
+    "src/lib/paging.ts": {
+      "locale": 2
+    },
+    "src/lib/payrollPrerequisites.ts": {
+      "locale": 3
+    },
+    "src/views/AIAssistantPage.tsx": {
+      "hardcoded": 49,
+      "locale": 1
+    },
+    "src/views/ApprovalsPage.tsx": {
+      "hardcoded": 35,
+      "locale": 2
+    },
+    "src/views/AttendancePage.tsx": {
+      "hardcoded": 228,
+      "locale": 1
+    },
+    "src/views/BenefitsPage.tsx": {
+      "hardcoded": 120,
+      "locale": 1
+    },
+    "src/views/CompliancePage.tsx": {
+      "hardcoded": 75,
+      "rawStatus": 5,
+      "locale": 3
+    },
+    "src/views/DashboardPage.tsx": {
+      "hardcoded": 2
+    },
+    "src/views/EmployeeSelfServicePage.tsx": {
+      "hardcoded": 60,
+      "rawStatus": 3,
+      "locale": 6
+    },
+    "src/views/EmployeesPage.tsx": {
+      "hardcoded": 189,
+      "rawStatus": 3,
+      "locale": 5
+    },
+    "src/views/ExEmployeesTable.tsx": {
+      "hardcoded": 11,
+      "locale": 1
+    },
+    "src/views/GosiFilingPage.tsx": {
+      "hardcoded": 62,
+      "rawStatus": 1,
+      "locale": 1
+    },
+    "src/views/HRRequestCenterPage.tsx": {
+      "hardcoded": 22,
+      "rawStatus": 3,
+      "locale": 3
+    },
+    "src/views/HrLettersPage.tsx": {
+      "hardcoded": 58,
+      "rawStatus": 1,
+      "locale": 3
+    },
+    "src/views/LeavePage.tsx": {
+      "hardcoded": 238,
+      "locale": 3
+    },
+    "src/views/LoansPage.tsx": {
+      "hardcoded": 287,
+      "rawStatus": 1,
+      "locale": 2
+    },
+    "src/views/LoginPage.tsx": {
+      "hardcoded": 21
+    },
+    "src/views/MigrationImportPage.tsx": {
+      "hardcoded": 53,
+      "rawStatus": 1,
+      "locale": 2
+    },
+    "src/views/MyBenefitsPage.tsx": {
+      "hardcoded": 10,
+      "rawStatus": 1,
+      "locale": 1
+    },
+    "src/views/NewHiresPage.tsx": {
+      "hardcoded": 31,
+      "locale": 3
+    },
+    "src/views/NitaqatPanel.tsx": {
+      "hardcoded": 74
+    },
+    "src/views/OffboardingPage.tsx": {
+      "hardcoded": 72,
+      "rawStatus": 1,
+      "locale": 1
+    },
+    "src/views/OrgChartPage.tsx": {
+      "hardcoded": 10
+    },
+    "src/views/OvertimePage.tsx": {
+      "hardcoded": 155,
+      "locale": 2
+    },
+    "src/views/ParallelRunVariancePage.tsx": {
+      "hardcoded": 58,
+      "rawStatus": 2,
+      "locale": 2
+    },
+    "src/views/PayrollPage.tsx": {
+      "hardcoded": 368,
+      "rawStatus": 10,
+      "locale": 30
+    },
+    "src/views/PayslipTemplatesPage.tsx": {
+      "hardcoded": 44,
+      "rawStatus": 1,
+      "locale": 1
+    },
+    "src/views/PerformancePage.tsx": {
+      "hardcoded": 234,
+      "locale": 2
+    },
+    "src/views/PublicCredentialPage.tsx": {
+      "hardcoded": 11
+    },
+    "src/views/RecruitmentPage.tsx": {
+      "hardcoded": 367,
+      "rawStatus": 9,
+      "locale": 11
+    },
+    "src/views/ReportsPage.tsx": {
+      "hardcoded": 99,
+      "locale": 6
+    },
+    "src/views/SaudiComplianceConfig.tsx": {
+      "hardcoded": 144,
+      "locale": 3
+    },
+    "src/views/SaudiComplianceDashboard.tsx": {
+      "hardcoded": 48,
+      "locale": 2
+    },
+    "src/views/SetupPage.tsx": {
+      "hardcoded": 280,
+      "rawStatus": 1,
+      "locale": 3
+    },
+    "src/views/ShiftsPage.tsx": {
+      "hardcoded": 113,
+      "locale": 8
+    },
+    "src/views/TenantAdminPage.tsx": {
+      "hardcoded": 112,
+      "rawStatus": 1,
+      "locale": 13
+    },
+    "src/views/TimesheetsPage.tsx": {
+      "hardcoded": 59,
+      "rawStatus": 1,
+      "locale": 5
+    },
+    "src/views/UserManagementPage.tsx": {
+      "hardcoded": 204,
+      "locale": 3
+    }
+  }
+}
