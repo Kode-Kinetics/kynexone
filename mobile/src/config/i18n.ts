@@ -11,8 +11,8 @@ import { STORAGE_KEYS } from '@/config';
 import {
   applyDirection,
   markRestartPrompted,
+  offerRestartOnce,
   readStoredLanguage,
-  shouldPromptRestart,
   type AppLanguage,
 } from './languageDirection';
 
@@ -561,16 +561,31 @@ function promptRestart(): void {
 }
 
 /**
- * Call once at startup: apply the user's saved language. Text switches now; if the native
- * direction disagrees with it (the choice was made but the app never fully restarted), offer a
- * restart — once per language, never in a loop.
+ * Runs once, at import: apply the user's saved language. Text switches now and the native direction
+ * is set for the next start. Resolves to the language and whether the running layout disagrees.
  */
-export async function restoreLanguage(): Promise<void> {
+async function restoreLanguage(): Promise<{ lang: AppLanguage; mismatch: boolean } | null> {
   const stored = await readStoredLanguage(AsyncStorage, STORAGE_KEYS.LANGUAGE);
-  if (!stored) return;
+  if (!stored) return null;
   if (i18n.language !== stored) await i18n.changeLanguage(stored);
-  const mismatch = applyDirection(stored, I18nManager);
-  if (await shouldPromptRestart(stored, mismatch, AsyncStorage, RESTART_PROMPTED_KEY)) promptRestart();
+  return { lang: stored, mismatch: applyDirection(stored, I18nManager) };
+}
+
+const restored = restoreLanguage().catch((error) => {
+  console.warn('[i18n] Could not restore the saved language:', error);
+  return null;
+});
+
+/**
+ * Call from App after the first screen has mounted (InteractionManager.runAfterInteractions): if the
+ * saved language disagrees with the native direction (the choice was made but the app never fully
+ * restarted), offer a restart — once per language, never in a loop. Not at import: Android drops an
+ * Alert raised before an Activity has a window, and the prompt was then marked as shown anyway.
+ */
+export async function promptRestartIfNeeded(): Promise<void> {
+  const state = await restored;
+  if (!state) return;
+  await offerRestartOnce(state.lang, state.mismatch, AsyncStorage, RESTART_PROMPTED_KEY, promptRestart);
 }
 
 /**
@@ -590,6 +605,5 @@ export async function setLanguage(lang: AppLanguage): Promise<{ restartRequired:
   return { restartRequired };
 }
 
-void restoreLanguage();
 
 export default i18n;

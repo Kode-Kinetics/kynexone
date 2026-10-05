@@ -49,10 +49,11 @@ export function applyDirection(lang: AppLanguage, manager: DirectionManager): bo
 }
 
 /**
- * Whether to offer a restart at cold start, given that the layout does not match `lang`.
+ * Whether to offer a restart at cold start, given that the layout does not match `lang`. Reads
+ * only; the marker is written by `offerRestartOnce` after the prompt has been shown.
  *
- * At most ONE prompt per language: `promptedFor` remembers the language a restart was last offered
- * for (by this function or by the Settings switch). If a restart did not flip the direction (a dev
+ * At most ONE prompt per language: `promptedKey` remembers the language a restart was last offered
+ * for (at startup or by the Settings switch). If a restart did not flip the direction (a dev
  * client, an OS that ignores forceRTL), the user is not asked again on every launch.
  */
 export async function shouldPromptRestart(
@@ -67,13 +68,29 @@ export async function shouldPromptRestart(
       if (await storage.getItem(promptedKey)) await storage.removeItem(promptedKey);
       return false;
     }
-    if ((await storage.getItem(promptedKey)) === lang) return false;
-    await storage.setItem(promptedKey, lang);
-    return true;
+    return (await storage.getItem(promptedKey)) !== lang;
   } catch {
-    // If the marker cannot be stored, do not prompt: an unbounded prompt loop is worse than none.
+    // Unreadable storage: do not prompt rather than risk asking on every launch.
     return false;
   }
+}
+
+/**
+ * Show the restart prompt if it is due, and only THEN record it. Recording first lost the prompt
+ * for good when the alert never appeared (Android drops an Alert raised before the first screen
+ * mounts). If `show` throws, nothing is recorded and the next launch asks again.
+ */
+export async function offerRestartOnce(
+  lang: AppLanguage,
+  mismatch: boolean,
+  storage: LanguageStorage,
+  promptedKey: string,
+  show: () => void,
+): Promise<boolean> {
+  if (!(await shouldPromptRestart(lang, mismatch, storage, promptedKey))) return false;
+  show();
+  await markRestartPrompted(lang, storage, promptedKey);
+  return true;
 }
 
 /** Record that a restart was offered for `lang` (the Settings switch does its own prompt). */

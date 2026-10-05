@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   applyDirection,
   markRestartPrompted,
+  offerRestartOnce,
   readStoredLanguage,
   shouldPromptRestart,
   type DirectionManager,
@@ -62,17 +63,39 @@ test('applyDirection forces the direction and reports a mismatch until restart',
 
 test('a direction mismatch at startup prompts once per language, never in a loop', async () => {
   const storage = memoryStorage();
-  assert.equal(await shouldPromptRestart('ar', true, storage, PROMPTED), true);
-  // The restart did not flip the layout (dev client): the next launch must not ask again.
-  assert.equal(await shouldPromptRestart('ar', true, storage, PROMPTED), false);
-  assert.equal(await shouldPromptRestart('ar', true, storage, PROMPTED), false);
+  let shown = 0;
+  const show = () => { shown++; };
+  assert.equal(await offerRestartOnce('ar', true, storage, PROMPTED, show), true);
+  // The restart did not flip the layout (dev client): later launches must not ask again.
+  assert.equal(await offerRestartOnce('ar', true, storage, PROMPTED, show), false);
+  assert.equal(await offerRestartOnce('ar', true, storage, PROMPTED, show), false);
+  assert.equal(shown, 1);
   // Switching to the other language is a new question.
-  assert.equal(await shouldPromptRestart('en', true, storage, PROMPTED), true);
+  assert.equal(await offerRestartOnce('en', true, storage, PROMPTED, show), true);
+  assert.equal(shown, 2);
+});
+
+test('the marker is written only after the prompt was shown', async () => {
+  const storage = memoryStorage();
+  // Deciding alone writes nothing.
+  assert.equal(await shouldPromptRestart('ar', true, storage, PROMPTED), true);
+  assert.equal(PROMPTED in storage.data, false);
+  // If showing fails (no window yet), nothing is recorded and the next launch asks again.
+  await assert.rejects(offerRestartOnce('ar', true, storage, PROMPTED, () => { throw new Error('no window'); }));
+  assert.equal(PROMPTED in storage.data, false);
+  const order: string[] = [];
+  const watching: LanguageStorage = {
+    ...storage,
+    setItem: async (k, v) => { order.push('mark'); await storage.setItem(k, v); },
+  };
+  await offerRestartOnce('ar', true, watching, PROMPTED, () => { order.push('show'); });
+  assert.deepEqual(order, ['show', 'mark']);
+  assert.equal(storage.data[PROMPTED], 'ar');
 });
 
 test('no mismatch: no prompt, and the marker is cleared for a later switch', async () => {
   const storage = memoryStorage({ [PROMPTED]: 'ar' });
-  assert.equal(await shouldPromptRestart('ar', false, storage, PROMPTED), false);
+  assert.equal(await offerRestartOnce('ar', false, storage, PROMPTED, () => assert.fail('must not prompt')), false);
   assert.equal(PROMPTED in storage.data, false);
   assert.equal(await shouldPromptRestart('ar', true, storage, PROMPTED), true);
 });
@@ -80,13 +103,13 @@ test('no mismatch: no prompt, and the marker is cleared for a later switch', asy
 test('the Settings switch prompts itself, so startup does not prompt a second time', async () => {
   const storage = memoryStorage();
   await markRestartPrompted('ar', storage, PROMPTED);
-  assert.equal(await shouldPromptRestart('ar', true, storage, PROMPTED), false);
+  assert.equal(await offerRestartOnce('ar', true, storage, PROMPTED, () => assert.fail('must not prompt')), false);
 });
 
-test('if the marker cannot be stored, it does not prompt (no unbounded loop)', async () => {
+test('unreadable storage does not prompt', async () => {
   const broken: LanguageStorage = {
-    getItem: async () => null,
-    setItem: async () => { throw new Error('full'); },
+    getItem: async () => { throw new Error('disk'); },
+    setItem: async () => {},
     removeItem: async () => {},
   };
   assert.equal(await shouldPromptRestart('ar', true, broken, PROMPTED), false);
