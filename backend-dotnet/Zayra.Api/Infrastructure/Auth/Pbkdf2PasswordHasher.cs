@@ -41,7 +41,16 @@ public class Pbkdf2PasswordHasher : IPasswordHasher
     /// </summary>
     public static string DummyHash => Dummy.Value;
 
-    public Pbkdf2PasswordHasher() : this(CurrentIterations) { }
+    public Pbkdf2PasswordHasher() : this(DefaultIterationsOverride ?? CurrentIterations) { }
+
+    /// <summary>
+    /// TEST ASSEMBLY ONLY (internal, reached through InternalsVisibleTo by a module initializer in
+    /// Zayra.Api.Tests). Thousands of tests hash fixture passwords; at 600k iterations that CPU load
+    /// starved the suite's timing-sensitive Postgres tests. Production never assigns it —
+    /// PasswordHashUpgradeTests.ProductionNeverLowersTheWorkFactor scans the API source to keep it so —
+    /// and the work-factor tests construct hashers with <see cref="CurrentIterations"/> explicitly.
+    /// </summary>
+    internal static int? DefaultIterationsOverride { get; set; }
 
     /// <summary>
     /// Explicit work factor. Production registers the parameterless constructor; this exists so the

@@ -14,16 +14,18 @@ public sealed class PasswordHashUpgradeTests
 {
     private const string Password = "CorrectHorse-Battery-9!";
     private static readonly Pbkdf2PasswordHasher Legacy = new(100_000);
+    /// <summary>The production work factor, explicitly: the test assembly makes default hashers cheap.</summary>
+    private static Pbkdf2PasswordHasher Current() => new(Pbkdf2PasswordHasher.CurrentIterations);
 
     [Fact]
     public void NewHashes_CarryTheCurrentWorkFactor()
     {
-        var hash = new Pbkdf2PasswordHasher().Hash(Password);
+        var hash = Current().Hash(Password);
 
         hash.Should().StartWith($"PBKDF2${Pbkdf2PasswordHasher.CurrentIterations}$");
         Pbkdf2PasswordHasher.CurrentIterations.Should().BeGreaterThanOrEqualTo(600_000);
-        new Pbkdf2PasswordHasher().Verify(Password, hash).Should().BeTrue();
-        new Pbkdf2PasswordHasher().NeedsRehash(hash).Should().BeFalse();
+        Current().Verify(Password, hash).Should().BeTrue();
+        Current().NeedsRehash(hash).Should().BeFalse();
     }
 
     [Fact]
@@ -32,7 +34,7 @@ public sealed class PasswordHashUpgradeTests
         var legacy = Legacy.Hash(Password);
         legacy.Should().StartWith("PBKDF2$100000$");
 
-        var current = new Pbkdf2PasswordHasher();
+        var current = Current();
         current.Verify(Password, legacy).Should().BeTrue("raising the work factor must never invalidate a credential");
         current.Verify("wrong", legacy).Should().BeFalse();
         current.NeedsRehash(legacy).Should().BeTrue();
@@ -47,7 +49,7 @@ public sealed class PasswordHashUpgradeTests
     [InlineData("PBKDF2$2000000000$c2FsdA==$a2V5")]
     public void MalformedOrAbusiveHashes_NeitherVerifyNorRequestRehash(string stored)
     {
-        var hasher = new Pbkdf2PasswordHasher();
+        var hasher = Current();
         hasher.Verify(Password, stored).Should().BeFalse();
         hasher.NeedsRehash(stored).Should().BeFalse();
     }
@@ -64,7 +66,7 @@ public sealed class PasswordHashUpgradeTests
 
         await using (var db = kit.NewDb())
         {
-            var result = await kit.Auth(db).LoginAsync(
+            var result = await kit.Auth(db, Current()).LoginAsync(
                 new LoginRequest("legacy@hardening.local", Password, AuthHardeningTestKit.TenantSlug),
                 AuthHardeningTestKit.Ctx, CancellationToken.None);
             result.Tokens.Should().NotBeNull("the legacy hash must still sign the user in");
@@ -74,7 +76,7 @@ public sealed class PasswordHashUpgradeTests
         {
             var user = await db.Users.AsNoTracking().SingleAsync(u => u.Id == userId);
             user.PasswordHash.Should().StartWith($"PBKDF2${Pbkdf2PasswordHasher.CurrentIterations}$");
-            new Pbkdf2PasswordHasher().Verify(Password, user.PasswordHash).Should().BeTrue();
+            Current().Verify(Password, user.PasswordHash).Should().BeTrue();
             user.UpdatedAtUtc.Should().Be(stampBefore,
                 "re-encoding the same password is not a credential change; rotating User.UpdatedAtUtc "
                 + "would sign the user out of every other device");
@@ -85,7 +87,7 @@ public sealed class PasswordHashUpgradeTests
         // Second login uses the upgraded hash and does not rehash again.
         await using (var db = kit.NewDb())
         {
-            var again = await kit.Auth(db).LoginAsync(
+            var again = await kit.Auth(db, Current()).LoginAsync(
                 new LoginRequest("legacy@hardening.local", Password, AuthHardeningTestKit.TenantSlug),
                 AuthHardeningTestKit.Ctx, CancellationToken.None);
             again.Tokens.Should().NotBeNull();
@@ -103,7 +105,7 @@ public sealed class PasswordHashUpgradeTests
 
         await using (var db = kit.NewDb())
         {
-            var act = () => kit.Auth(db).LoginAsync(
+            var act = () => kit.Auth(db, Current()).LoginAsync(
                 new LoginRequest("legacy2@hardening.local", "wrong-password", AuthHardeningTestKit.TenantSlug),
                 AuthHardeningTestKit.Ctx, CancellationToken.None);
             await act.Should().ThrowAsync<UnauthorizedAccessException>();
@@ -118,7 +120,7 @@ public sealed class PasswordHashUpgradeTests
     {
         await using var kit = await AuthHardeningTestKit.CreateAsync();
         var userId = await kit.SeedUserAsync("race@hardening.local", Legacy.Hash(Password), roleName: null);
-        var changedElsewhere = new Pbkdf2PasswordHasher().Hash("A-new-password-42!");
+        var changedElsewhere = Current().Hash("A-new-password-42!");
 
         // A hasher that changes the stored password the moment the rehash computes its new value —
         // i.e. between the verify and the guarded UPDATE.
@@ -150,7 +152,7 @@ public sealed class PasswordHashUpgradeTests
         var userId = await kit.SeedUserAsync("twin@hardening.local", Legacy.Hash(Password), roleName: null);
         // The "other" login upgrades the SAME password first, between this login's verify and its
         // guarded UPDATE, so this login's compare-and-set misses.
-        var otherUpgrade = new Pbkdf2PasswordHasher().Hash(Password);
+        var otherUpgrade = Current().Hash(Password);
         var racing = new RacingHasher(async () =>
         {
             await using var other = kit.NewDb();
@@ -171,9 +173,36 @@ public sealed class PasswordHashUpgradeTests
                 .Should().Be(otherUpgrade, "the winner's upgrade is kept, not overwritten");
     }
 
+    [Fact]
+    public void ProductionNeverLowersTheWorkFactor()
+    {
+        Pbkdf2PasswordHasher.DefaultIterationsOverride.Should().Be(1_000, "the test module initializer ran");
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        string? api = null;
+        for (var i = 0; i < 8 && dir is not null; i++, dir = dir.Parent)
+        {
+            var candidate = Path.Combine(dir.FullName, "backend-dotnet", "Zayra.Api");
+            if (Directory.Exists(candidate)) { api = candidate; break; }
+        }
+        if (api is null)
+        {
+            if (Environment.GetEnvironmentVariable("CI") is "true" or "1")
+                throw new Xunit.Sdk.XunitException("Zayra.Api source not found under CI.");
+            return;
+        }
+        var assignments = Directory.EnumerateFiles(api, "*.cs", SearchOption.AllDirectories)
+            .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}")
+                        && !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}"))
+            .SelectMany(f => File.ReadAllLines(f).Select(l => (File: f, Line: l)))
+            .Where(x => x.Line.Contains("DefaultIterationsOverride", StringComparison.Ordinal)
+                        && System.Text.RegularExpressions.Regex.IsMatch(x.Line, @"DefaultIterationsOverride\s*=[^=>]"))
+            .ToList();
+        assignments.Should().BeEmpty("only the test assembly may lower the default work factor");
+    }
+
     private sealed class RacingHasher(Func<Task> onHash) : IPasswordHasher
     {
-        private readonly Pbkdf2PasswordHasher _inner = new();
+        private readonly Pbkdf2PasswordHasher _inner = new(Pbkdf2PasswordHasher.CurrentIterations);
 
         public string Hash(string password)
         {
