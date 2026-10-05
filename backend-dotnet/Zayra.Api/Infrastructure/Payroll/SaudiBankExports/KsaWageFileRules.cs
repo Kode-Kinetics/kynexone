@@ -79,7 +79,6 @@ public static class KsaWageFileRules
         public const string NetNotPositive = "net_not_positive";
         public const string OtherEarningsNegative = "other_earnings_negative";
         public const string DeductionsUnreconciled = "deductions_unreconciled";
-        public const string NetUnreconciled = "net_unreconciled";
         public const string AmountPrecision = "amount_precision";
         public const string DeductionsOverHalf = "deductions_exceed_half_wage";
         public const string DuplicateMolId = "duplicate_mol_id";
@@ -285,10 +284,11 @@ public static class KsaWageFileRules
         var deductions = r.Gross - r.Net;
         if (otherEarnings < 0m)
             Err(Codes.OtherEarningsNegative, $"basic ({Fmt(r.Basic)}) plus housing ({Fmt(r.Housing)}) is more than gross pay ({Fmt(r.Gross)}).", "otherEarnings");
+        // With OEA and DED derived this way, net = basic + housing + OEA − DED holds by construction; the
+        // check that can actually fail — and the one the spec's identity depends on — is that DED is the
+        // deduction total the payslip shows.
         if (deductions != r.SlipDeductions)
-            Err(Codes.DeductionsUnreconciled, $"gross minus net is {Fmt(deductions)}, but the payslip shows deductions of {Fmt(r.SlipDeductions)}. Re-process the payslip.", "salaryDeductions");
-        if (r.Net != r.Basic + r.Housing + otherEarnings - deductions)
-            Err(Codes.NetUnreconciled, "net pay does not equal basic + housing + other earnings − deductions.", "salaryAmount");
+            Err(Codes.DeductionsUnreconciled, $"net pay does not equal basic + housing + other earnings − deductions: gross minus net is {Fmt(deductions)}, but the payslip shows deductions of {Fmt(r.SlipDeductions)}. Re-process the payslip.", "salaryDeductions");
 
         // Saudi Labour Law Art. 93: deductions for debts owed to the employer may not exceed half
         // of the wage due. Applied to total deductions as a fail-closed guard; a court-ordered

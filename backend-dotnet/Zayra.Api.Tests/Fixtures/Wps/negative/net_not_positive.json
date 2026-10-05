@@ -1,0 +1,11 @@
+{
+  "expectedCode": "net_not_positive",
+  "patch": {
+    "rows": {
+      "0": {
+        "net": 0.0,
+        "slipDeductions": 6750.0
+      }
+    }
+  }
+}

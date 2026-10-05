@@ -1,0 +1,10 @@
+{
+  "expectedCode": "amount_precision",
+  "patch": {
+    "rows": {
+      "0": {
+        "basic": 5000.005
+      }
+    }
+  }
+}

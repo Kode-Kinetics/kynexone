@@ -1,0 +1,10 @@
+{
+  "expectedCode": "nationality_missing",
+  "patch": {
+    "rows": {
+      "0": {
+        "nationality": ""
+      }
+    }
+  }
+}

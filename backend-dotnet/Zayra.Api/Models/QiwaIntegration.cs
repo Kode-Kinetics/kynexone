@@ -171,8 +171,14 @@ public static class QiwaSyncLogStatuses
     /// </summary>
     public const string Simulated  = "Simulated";
 
-    /// <summary>What every screen calls a simulated result.</summary>
-    public const string SimulatedLabel = "Simulated (sandbox)";
+    /// <summary>What every screen calls a simulated result: a readiness check, never a filing.</summary>
+    public const string SimulatedLabel = "Qiwa data check only (nothing sent to Qiwa)";
+
+    /// <summary>The mode label when (and only when) a partner-agreement live adapter is running.</summary>
+    public const string PartnerIntegrationLabel = "Qiwa partner integration (agreement on file)";
+
+    /// <summary>The integration mode as a screen shows it. Never "Live", "Connected" or "Synced".</summary>
+    public static string ModeLabel(bool isLiveIntegration) => isLiveIntegration ? PartnerIntegrationLabel : SimulatedLabel;
 
     /// <summary>
     /// Rows written before F09 say "Success" but carry the simulator's envelope; this marker in
@@ -195,9 +201,9 @@ public static class QiwaSyncLogStatuses
     public static string Describe(string status, string? responsePayloadJson) => Normalise(status, responsePayloadJson) switch
     {
         Simulated => SimulatedLabel,
-        Success => "Filed with Qiwa",
-        Pending => "Waiting to send",
-        Processing => "Sending to Qiwa",
+        Success => "Accepted by the Qiwa partner API",
+        Pending => "Queued",
+        Processing => "In progress",
         Failed => "Failed, will retry",
         DeadLetter => "Gave up: needs attention",
         Skipped => "Skipped",

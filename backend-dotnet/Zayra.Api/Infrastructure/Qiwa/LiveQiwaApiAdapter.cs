@@ -6,8 +6,9 @@ using Microsoft.Extensions.Logging;
 namespace Zayra.Api.Infrastructure.Qiwa;
 
 /// <summary>
-/// Real Qiwa API client.  Only used when QIWA_USE_LIVE_ADAPTER=true AND valid
-/// credentials are configured per tenant.  Uses the named HttpClient "qiwa".
+/// Qiwa API client. UNVERIFIED: the endpoints below have never been confirmed against Qiwa. Only
+/// constructed when QIWA_USE_LIVE_ADAPTER=true AND a Qiwa partner agreement is recorded
+/// (see <see cref="QiwaLiveAdapterPolicy"/>); otherwise construction throws. Uses the named HttpClient "qiwa".
 ///
 /// OAuth2 (client_credentials):
 ///   POST https://api.qiwa.tech/auth/realms/organizations/protocol/openid-connect/token
@@ -21,8 +22,14 @@ public sealed class LiveQiwaApiAdapter : IQiwaApiAdapter
     private readonly IHttpClientFactory _httpFactory;
     private readonly ILogger<LiveQiwaApiAdapter> _log;
 
-    public LiveQiwaApiAdapter(IHttpClientFactory httpFactory, ILogger<LiveQiwaApiAdapter> log)
+    public LiveQiwaApiAdapter(IHttpClientFactory httpFactory, ILogger<LiveQiwaApiAdapter> log,
+        Microsoft.Extensions.Configuration.IConfiguration configuration)
     {
+        // Defence in depth behind Program.cs: this adapter refuses to exist without a recorded Qiwa
+        // partner agreement, so no composition root, test host or future refactor can switch on
+        // unverified live calls by registering it directly.
+        if (!QiwaLiveAdapterPolicy.HasPartnerAgreement(configuration))
+            throw new InvalidOperationException(QiwaLiveAdapterPolicy.RefusedMessage);
         _httpFactory = httpFactory;
         _log = log;
     }
