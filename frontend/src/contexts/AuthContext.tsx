@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { authApi, isMfaChallenge, isMfaEnrollment } from '../api/auth';
 import type { AuthUser } from '../api/auth';
+import { clearSessionKeepingLocale } from '../api/clearSession';
 
 // Returned when the backend requires a TOTP code before issuing full tokens.
 export interface MfaPendingState {
@@ -52,10 +53,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     authApi
       .me()
       .then(setUser)
-      .catch(() => {
-        localStorage.removeItem('zayra_access_token');
-        localStorage.removeItem('zayra_refresh_token');
-      })
+      .catch(() => clearSessionKeepingLocale())
       .finally(() => setIsLoading(false));
   }, []);
 
@@ -98,8 +96,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // ignore
     }
-    localStorage.removeItem('zayra_access_token');
-    localStorage.removeItem('zayra_refresh_token');
+    // Same wipe as an expired session: a shared computer keeps nothing of this user's
+    // (search history, company selection, import history), only the display language.
+    clearSessionKeepingLocale();
     setUser(null);
     setMfaPending(null);
     setMfaEnrollmentPending(null);
