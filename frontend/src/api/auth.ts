@@ -86,6 +86,17 @@ export const authApi = {
   mfaEnrollmentVerifySetup: (enrollmentToken: string, tempSecret: string, totpCode: string) =>
     publicAuthClient.post('/api/auth/mfa/enrollment/verify-setup', { enrollmentToken, tempSecret, totpCode }),
 
+  /** Mandatory-MFA standing of the signed-in user (drives the enrolment prompt). */
+  mfaStatus: () =>
+    client.get<{
+      enabled: boolean; required: boolean; requiredBecause: string | null;
+      enforceFromUtc: string | null; enforced: boolean; promptToEnroll: boolean;
+    }>('/api/auth/mfa/status').then((r) => r.data),
+
+  /** Issues a setup-only enrolment token for the signed-in user; the sign-in page completes it. */
+  mfaEnrollmentStart: () =>
+    client.post<{ enrollmentToken: string; expiresInSeconds: number }>('/api/auth/mfa/enrollment/start').then((r) => r.data),
+
   mfaDisable: (totpCode: string) =>
     client.post('/api/auth/mfa/disable', { totpCode }),
 

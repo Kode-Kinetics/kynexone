@@ -253,6 +253,19 @@ public record SecuritySettingDto(
 /// The client must POST this token + TOTP code to /api/auth/mfa/challenge/verify to obtain full tokens.</summary>
 public record MfaChallengeDto(string ChallengeToken, int ExpiresInSeconds);
 
+/// <summary>
+/// Mandatory-MFA standing for the signed-in principal. <c>RequiredBecause</c> is "privileged_role",
+/// "workspace_policy" or null; <c>EnforceFromUtc</c> null with <c>Required</c> true means no date is
+/// configured yet (prompt only).
+/// </summary>
+public record MfaStatusDto(
+    bool Enabled,
+    bool Required,
+    string? RequiredBecause,
+    DateTime? EnforceFromUtc,
+    bool Enforced,
+    bool PromptToEnroll);
+
 /// <summary>Result from LoginAsync — one of: Tokens (success), Challenge (MFA code needed),
 /// or RequiresMfaEnrollment (tenant mandates MFA but this user hasn't set it up yet).</summary>
 public record AuthLoginResult(AuthResponse? Tokens, MfaChallengeDto? Challenge, bool RequiresMfaEnrollment = false, MfaChallengeDto? EnrollmentChallenge = null)

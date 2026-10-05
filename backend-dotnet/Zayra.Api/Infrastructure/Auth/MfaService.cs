@@ -796,6 +796,191 @@ public class MfaService : IMfaService
             .AnyAsync(x => x.Id == auditId && x.Action == "platform.auth.mfa_disabled", ct);
     }
 
+    // ── Platform mandatory-MFA enrolment ──────────────────────────────────────
+
+    public async Task<string> CreatePlatformEnrollmentChallengeAsync(Guid platformUserId, string ip, CancellationToken ct)
+    {
+        var platformUser = await LoadPlatformUser(platformUserId, ct)
+            ?? throw new InvalidOperationException("Platform user not found.");
+        if (!platformUser.UpdatedAtUtc.HasValue)
+            PlatformSessionSecurity.RotateStamp(platformUser);
+        var challengeId = Guid.NewGuid();
+        var rawToken = AuthChallengeTokenCodec.CreatePlatform(
+            AuthChallengeTokenCodec.PlatformEnrollmentPurpose,
+            challengeId,
+            platformUserId,
+            PlatformSessionSecurity.StampValue(platformUser.UpdatedAtUtc!.Value),
+            _tokenService.CreateSecureToken());
+        _db.MfaChallengeTokens.Add(new MfaChallengeToken
+        {
+            Id = challengeId,
+            PlatformUserId = platformUserId,
+            TokenHash = _tokenService.HashToken(rawToken),
+            ExpiresAtUtc = DateTime.UtcNow.AddSeconds(ChallengeTtlSeconds),
+            CreatedByIp = ip
+        });
+        await _db.SaveChangesAsync(ct);
+        return rawToken;
+    }
+
+    public async Task<MfaSetupInitDto?> InitiatePlatformEnrollmentSetupAsync(string enrollmentToken, CancellationToken ct)
+    {
+        if (!AuthChallengeTokenCodec.TryParse(enrollmentToken, AuthChallengeTokenCodec.PlatformEnrollmentPurpose, out var envelope))
+            return null;
+        var hash = _tokenService.HashToken(enrollmentToken);
+        var challenge = await _db.MfaChallengeTokens.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.Id == envelope.ChallengeId
+                && x.TokenHash == hash
+                && x.PlatformUserId == envelope.PrincipalId
+                && x.UserId == null
+                && x.TenantId == null, ct);
+        if (challenge is null || !challenge.IsValid) return null;
+        var pu = await LoadPlatformUser(envelope.PrincipalId, ct);
+        if (pu is null
+            || !PlatformRoles.All.Contains(pu.Role)
+            || !pu.UpdatedAtUtc.HasValue
+            || !string.Equals(envelope.SessionStamp, PlatformSessionSecurity.StampValue(pu.UpdatedAtUtc.Value), StringComparison.Ordinal)
+            || pu.MfaEnabled
+            || !string.IsNullOrWhiteSpace(pu.MfaSecretEncrypted))
+            return null;
+        return await InitiatePlatformSetupAsync(pu.Id, ct);
+    }
+
+    public async Task<bool> VerifyPlatformEnrollmentSetupAsync(string enrollmentToken, MfaVerifySetupRequest request, CancellationToken ct)
+    {
+        if (!AuthChallengeTokenCodec.TryParse(enrollmentToken, AuthChallengeTokenCodec.PlatformEnrollmentPurpose, out var envelope))
+            return false;
+        var hash = _tokenService.HashToken(enrollmentToken);
+        // Microsecond-truncated so the commit check below can match it exactly after a Postgres round trip.
+        var now = DateTime.UtcNow;
+        var verifiedAtUtc = new DateTime(now.Ticks - now.Ticks % 10, DateTimeKind.Utc);
+        var codeValid = _totp.Verify(request.TempSecret, request.TotpCode);
+        var encryptedSecret = codeValid ? _totp.EncryptSecret(request.TempSecret) : null;
+        var auditId = Guid.NewGuid();
+
+        async Task<bool> VerifyOnceAsync(CancellationToken cancellationToken)
+        {
+            _db.ChangeTracker.Clear();
+            var pu = await _db.PlatformUsers.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == envelope.PrincipalId, cancellationToken);
+            var challenge = await _db.MfaChallengeTokens.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == envelope.ChallengeId, cancellationToken);
+            if (pu is null
+                || challenge is null
+                || challenge.TokenHash != hash
+                || challenge.PlatformUserId != pu.Id
+                || challenge.UserId is not null
+                || challenge.TenantId is not null
+                || challenge.UsedAtUtc is not null
+                || challenge.ExpiresAtUtc <= verifiedAtUtc
+                || challenge.FailedAttempts >= MfaChallengeToken.MaxAttempts
+                || !pu.IsActive
+                || !PlatformRoles.All.Contains(pu.Role)
+                || !pu.UpdatedAtUtc.HasValue
+                || !string.Equals(envelope.SessionStamp, PlatformSessionSecurity.StampValue(pu.UpdatedAtUtc.Value), StringComparison.Ordinal)
+                || pu.MfaEnabled
+                || !string.IsNullOrWhiteSpace(pu.MfaSecretEncrypted))
+                return false;
+
+            if (!codeValid)
+            {
+                challenge.FailedAttempts++;
+                if (challenge.FailedAttempts >= MfaChallengeToken.MaxAttempts)
+                    challenge.UsedAtUtc = verifiedAtUtc;
+                _db.AuditLogs.Add(AuthAuditEntry.Create(
+                    auditId,
+                    verifiedAtUtc,
+                    "platform.auth.mfa_enrollment_failed",
+                    "MfaChallengeToken",
+                    challenge.Id.ToString(),
+                    new RequestContext(null, null, null, null),
+                    $"{{\"platformUserId\":\"{pu.Id:D}\",\"failedAttempts\":{challenge.FailedAttempts}}}"));
+                await _db.SaveChangesAsync(cancellationToken);
+                return false;
+            }
+
+            foreach (var sibling in await _db.MfaChallengeTokens
+                .Where(x => x.PlatformUserId == pu.Id && x.UsedAtUtc == null)
+                .ToListAsync(cancellationToken))
+                sibling.UsedAtUtc = verifiedAtUtc;
+            pu.MfaEnabled = true;
+            pu.MfaSecretEncrypted = encryptedSecret;
+            pu.MfaConfiguredAtUtc = verifiedAtUtc;
+            PlatformSessionSecurity.RotateStamp(pu, verifiedAtUtc);
+            _db.AuditLogs.Add(AuthAuditEntry.Create(
+                auditId,
+                verifiedAtUtc,
+                "platform.auth.mfa_enabled",
+                "PlatformUser",
+                pu.Id.ToString(),
+                new RequestContext(null, null, null, null),
+                "{\"via\":\"enrollment_challenge\"}"));
+            await _db.SaveChangesAsync(cancellationToken);
+            return true;
+        }
+
+        // Commit evidence is the enabled factor itself (platform_users has no tenant filter), so a
+        // lost COMMIT acknowledgement is reconciled without widening the query-filter bypass register.
+        Task<bool> EnabledByThisCallAsync(CancellationToken cancellationToken) =>
+            _db.PlatformUsers.AsNoTracking().AnyAsync(x => x.Id == envelope.PrincipalId
+                && x.MfaEnabled && x.MfaConfiguredAtUtc == verifiedAtUtc, cancellationToken);
+
+        if (!_db.Database.IsRelational()) return await VerifyOnceAsync(ct);
+        var strategy = _db.Database.CreateExecutionStrategy();
+        var succeeded = await strategy.ExecuteInTransactionAsync(
+            VerifyOnceAsync, EnabledByThisCallAsync, IsolationLevel.ReadCommitted, ct);
+        if (succeeded) return true;
+        _db.ChangeTracker.Clear();
+        return codeValid && await EnabledByThisCallAsync(ct);
+    }
+
+    public async Task<bool> AdminResetPlatformFactorAsync(
+        Guid platformUserId, Guid actingPlatformUserId, RequestContext context, CancellationToken ct)
+    {
+        // Never self-service: resetting your own factor without proving it would make MFA optional.
+        if (platformUserId == actingPlatformUserId) return false;
+        var resetAtUtc = DateTime.UtcNow;
+        var auditId = Guid.NewGuid();
+
+        async Task<bool> ResetOnceAsync(CancellationToken cancellationToken)
+        {
+            _db.ChangeTracker.Clear();
+            var pu = await _db.PlatformUsers.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == platformUserId, cancellationToken);
+            if (pu is null || (!pu.MfaEnabled && string.IsNullOrEmpty(pu.MfaSecretEncrypted)))
+                return false;
+            foreach (var challenge in await _db.MfaChallengeTokens
+                .Where(x => x.PlatformUserId == pu.Id && x.UsedAtUtc == null)
+                .ToListAsync(cancellationToken))
+                challenge.UsedAtUtc = resetAtUtc;
+            pu.MfaEnabled = false;
+            pu.MfaSecretEncrypted = null;
+            pu.MfaConfiguredAtUtc = null;
+            PlatformSessionSecurity.RotateStamp(pu, resetAtUtc);
+            _db.AuditLogs.Add(AuthAuditEntry.Create(
+                auditId,
+                resetAtUtc,
+                "platform.auth.mfa_reset_by_owner",
+                "PlatformUser",
+                pu.Id.ToString(),
+                context with { UserId = null, TenantId = null },
+                $"{{\"platformUserId\":\"{pu.Id:D}\",\"resetBy\":\"{actingPlatformUserId:D}\"}}"));
+            await _db.SaveChangesAsync(cancellationToken);
+            return true;
+        }
+
+        if (!_db.Database.IsRelational()) return await ResetOnceAsync(ct);
+        var strategy = _db.Database.CreateExecutionStrategy();
+        // Lost COMMIT acknowledgement: the reset is idempotent, so "no factor left" is the success
+        // condition and a retry is harmless.
+        return await strategy.ExecuteInTransactionAsync(
+            ResetOnceAsync,
+            cancellationToken => _db.PlatformUsers.AsNoTracking().AnyAsync(x => x.Id == platformUserId
+                && !x.MfaEnabled && x.MfaSecretEncrypted == null, cancellationToken),
+            IsolationLevel.ReadCommitted,
+            ct);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private Task<User?> LoadCompleteTenantGraphAsync(Guid userId, Guid tenantId, CancellationToken ct) =>

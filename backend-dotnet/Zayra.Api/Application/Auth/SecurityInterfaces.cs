@@ -56,6 +56,22 @@ public interface IMfaService
     Task<Zayra.Api.Models.PlatformUser?> VerifyPlatformChallengeAsync(string challengeToken, string totpCode, CancellationToken cancellationToken);
     Task<Zayra.Api.Models.PlatformUser?> CompletePlatformChallengeAsync(string challengeToken, string totpCode, RequestContext context, CancellationToken cancellationToken);
     Task<bool> DisablePlatformAsync(Guid platformUserId, string totpCode, CancellationToken cancellationToken);
+
+    // ── Platform mandatory-MFA enrolment (PrivilegedMfaPolicy) ───────────────
+    // Default bodies keep the test doubles that predate mandatory MFA compiling; MfaService
+    // implements all three. A double reaching one of them means a test hit the enforcement path
+    // without a real MFA service, which should fail loudly.
+    /// <summary>Setup-only token for a platform operator who must enrol before any session.</summary>
+    Task<string> CreatePlatformEnrollmentChallengeAsync(Guid platformUserId, string ip, CancellationToken cancellationToken)
+        => throw new NotSupportedException("This IMfaService does not support platform MFA enrolment.");
+    Task<MfaSetupInitDto?> InitiatePlatformEnrollmentSetupAsync(string enrollmentToken, CancellationToken cancellationToken)
+        => throw new NotSupportedException("This IMfaService does not support platform MFA enrolment.");
+    Task<bool> VerifyPlatformEnrollmentSetupAsync(string enrollmentToken, Zayra.Api.Application.Auth.MfaVerifySetupRequest request, CancellationToken cancellationToken)
+        => throw new NotSupportedException("This IMfaService does not support platform MFA enrolment.");
+    /// <summary>Break-glass: an Owner clears ANOTHER operator's factor (lost device). The operator
+    /// re-enrols at next sign-in; all their sessions and pending challenges end.</summary>
+    Task<bool> AdminResetPlatformFactorAsync(Guid platformUserId, Guid actingPlatformUserId, RequestContext context, CancellationToken cancellationToken)
+        => throw new NotSupportedException("This IMfaService does not support platform factor reset.");
 }
 
 public record MfaSetupInitDto(string ProvisioningUri, string TempSecret);

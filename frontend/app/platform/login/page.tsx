@@ -3,16 +3,22 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { AlertCircle, Eye, EyeOff, Lock, ShieldCheck, Activity, Users } from 'lucide-react';
-import { platformApi } from '@/src/api/platform';
+import { platformApi, PLATFORM_PENDING_ENROLLMENT_KEY } from '@/src/api/platform';
 import { Logo } from '@/src/components/Logo';
 
-type ErrorKind = 'invalid_credentials' | 'not_configured' | 'network' | null;
+type ErrorKind = 'invalid_credentials' | 'not_configured' | 'network' | 'invalid_code' | 'enrollment_expired' | null;
+
+/** credentials → (mfa | enroll). `enroll` is reached from sign-in once two-step sign-in is mandatory,
+ *  or from the console's "set up now" prompt via sessionStorage. */
+type Step = 'credentials' | 'mfa' | 'enroll';
 
 function errorMessage(kind: ErrorKind): string {
   switch (kind) {
     case 'invalid_credentials': return 'Invalid platform admin credentials. Please check your email and password.';
     case 'not_configured': return 'Platform admin access is not configured on this server. Set PLATFORM_ADMIN_EMAIL and PLATFORM_ADMIN_PASSWORD environment variables.';
     case 'network': return 'Cannot reach the server. Check that the backend is running and reachable.';
+    case 'invalid_code': return 'That code was not accepted. Check your authenticator app and try again.';
+    case 'enrollment_expired': return 'This setup session has expired. Sign in again to restart setup.';
     default: return '';
   }
 }
@@ -32,20 +38,99 @@ export default function PlatformLoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [errorKind, setErrorKind] = useState<ErrorKind>(null);
   const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState<Step>('credentials');
+  const [challengeToken, setChallengeToken] = useState('');
+  const [enrollmentToken, setEnrollmentToken] = useState('');
+  const [enrollmentSecret, setEnrollmentSecret] = useState('');
+  const [enrollmentUri, setEnrollmentUri] = useState('');
+  const [totpCode, setTotpCode] = useState('');
+  const [info, setInfo] = useState('');
 
   useEffect(() => {
-    if (typeof window !== 'undefined' && localStorage.getItem('platform_access_token')) {
+    if (typeof window === 'undefined') return;
+    let pending: string | null = null;
+    try {
+      pending = sessionStorage.getItem(PLATFORM_PENDING_ENROLLMENT_KEY);
+      sessionStorage.removeItem(PLATFORM_PENDING_ENROLLMENT_KEY);
+    } catch { /* storage unavailable */ }
+    if (pending) { void beginEnrollment(pending); return; }
+    if (localStorage.getItem('platform_access_token')) {
       router.replace('/platform/dashboard');
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
+
+  async function beginEnrollment(token: string) {
+    setStep('enroll');
+    setEnrollmentToken(token);
+    setEnrollmentSecret('');
+    setEnrollmentUri('');
+    setTotpCode('');
+    setErrorKind(null);
+    try {
+      const { provisioningUri } = await platformApi.mfaEnrollmentSetup(token);
+      setEnrollmentUri(provisioningUri);
+      setEnrollmentSecret(new URL(provisioningUri).searchParams.get('secret') ?? '');
+    } catch {
+      setErrorKind('enrollment_expired');
+    }
+  }
+
+  function backToCredentials() {
+    setStep('credentials');
+    setTotpCode('');
+    setChallengeToken('');
+    setEnrollmentToken('');
+  }
+
+  async function handleMfa(e: React.FormEvent) {
+    e.preventDefault();
+    setErrorKind(null);
+    setLoading(true);
+    try {
+      const { token } = await platformApi.mfaChallengeVerify(challengeToken, totpCode);
+      localStorage.setItem('platform_access_token', token);
+      router.replace('/platform/dashboard');
+    } catch {
+      setErrorKind('invalid_code');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleEnroll(e: React.FormEvent) {
+    e.preventDefault();
+    setErrorKind(null);
+    setLoading(true);
+    try {
+      await platformApi.mfaEnrollmentVerifySetup(enrollmentToken, enrollmentSecret, totpCode);
+      backToCredentials();
+      setInfo('Two-step sign-in is on. Sign in again with your password and a code from your app.');
+    } catch {
+      setErrorKind('invalid_code');
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setErrorKind(null);
     setLoading(true);
     try {
-      const { token } = await platformApi.login(email, password);
-      localStorage.setItem('platform_access_token', token);
+      const res = await platformApi.login(email, password);
+      if ('mfaRequired' in res && res.mfaRequired) {
+        setChallengeToken(res.challengeToken);
+        setTotpCode('');
+        setStep('mfa');
+        return;
+      }
+      if ('mfaEnrollmentRequired' in res && res.mfaEnrollmentRequired) {
+        await beginEnrollment(res.enrollmentToken);
+        return;
+      }
+      if (!('token' in res)) throw new Error('Unexpected sign-in response.');
+      localStorage.setItem('platform_access_token', res.token);
       router.replace('/platform/dashboard');
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status;
@@ -155,6 +240,64 @@ export default function PlatformLoginPage() {
               Enter your internal operator credentials to continue.
             </p>
 
+            {step === 'mfa' && (
+              <form onSubmit={handleMfa} className="mt-8 space-y-5">
+                <div>
+                  <label htmlFor="platform-mfa-code" className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                    Authentication code
+                  </label>
+                  <input id="platform-mfa-code" type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} dir="ltr"
+                    value={totpCode} onChange={e => setTotpCode(e.target.value.replace(/\D/g, ''))}
+                    autoComplete="one-time-code" autoFocus required placeholder="000000" className="pa-input" />
+                  <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">Enter the 6-digit code from your authenticator app.</p>
+                </div>
+                {errorKind && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{errorMessage(errorKind)}</p>}
+                <button type="submit" disabled={loading || totpCode.length !== 6} className="pa-btn disabled:cursor-not-allowed disabled:opacity-60">
+                  {loading ? 'Verifying…' : 'Verify and sign in'}
+                </button>
+                <button type="button" onClick={backToCredentials} className="w-full text-sm text-slate-500 underline-offset-2 hover:underline dark:text-slate-400">
+                  Back to sign in
+                </button>
+              </form>
+            )}
+
+            {step === 'enroll' && (
+              <form onSubmit={handleEnroll} className="mt-8 space-y-5">
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+                  Two-step sign-in is required for platform operators. Add this account to your authenticator app, then enter the 6-digit code it shows.
+                </div>
+                {enrollmentSecret && (
+                  <div>
+                    <label htmlFor="platform-mfa-setup-key" className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                      Setup key
+                    </label>
+                    <input id="platform-mfa-setup-key" readOnly value={enrollmentSecret} dir="ltr" className="pa-input font-mono text-xs" />
+                  </div>
+                )}
+                {enrollmentUri && <p dir="ltr" className="break-all text-xs text-slate-500 dark:text-slate-400">{enrollmentUri}</p>}
+                <div>
+                  <label htmlFor="platform-mfa-enroll-code" className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                    Authentication code
+                  </label>
+                  <input id="platform-mfa-enroll-code" type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} dir="ltr"
+                    value={totpCode} onChange={e => setTotpCode(e.target.value.replace(/\D/g, ''))}
+                    autoComplete="one-time-code" required placeholder="000000" className="pa-input" />
+                </div>
+                {errorKind && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{errorMessage(errorKind)}</p>}
+                <button type="submit" disabled={loading || totpCode.length !== 6 || !enrollmentSecret} className="pa-btn disabled:cursor-not-allowed disabled:opacity-60">
+                  {loading ? 'Enabling…' : 'Turn on two-step sign-in'}
+                </button>
+                <button type="button" onClick={backToCredentials} className="w-full text-sm text-slate-500 underline-offset-2 hover:underline dark:text-slate-400">
+                  Back to sign in
+                </button>
+              </form>
+            )}
+
+            {step === 'credentials' && info && (
+              <p role="status" className="mt-6 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300">{info}</p>
+            )}
+
+            {step === 'credentials' && (
             <form onSubmit={handleSubmit} className="mt-8 space-y-5">
               <div>
                 <label htmlFor="platform-email" className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
@@ -215,6 +358,7 @@ export default function PlatformLoginPage() {
                   : 'Sign in'}
               </button>
             </form>
+            )}
 
             <div className="mt-8 flex flex-wrap items-center gap-2 border-t border-slate-200 pt-6 dark:border-white/10">
               <ShieldCheck className="h-4 w-4 text-slate-400" aria-hidden />

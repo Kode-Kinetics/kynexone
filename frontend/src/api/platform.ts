@@ -553,9 +553,44 @@ export interface PlatformQuote {
   updatedAtUtc?: string;
 }
 
+/** What /api/platform/auth/login can answer: a session, a TOTP challenge, or (once mandatory MFA is
+ *  enforced) a setup-only enrolment token for an operator with no factor yet. */
+export type PlatformLoginResponse =
+  | { token: string }
+  | { mfaRequired: true; challengeToken: string; expiresInSeconds: number }
+  | { mfaEnrollmentRequired: true; enrollmentToken: string; expiresInSeconds: number; message?: string };
+
+/** Mandatory-MFA standing of the signed-in principal (same shape for tenant users). */
+export interface MfaStatus {
+  enabled: boolean;
+  required: boolean;
+  requiredBecause: string | null;
+  enforceFromUtc: string | null;
+  enforced: boolean;
+  promptToEnroll: boolean;
+}
+
+/** Hand-off from the console's "set up now" prompt to the sign-in page's enrolment step. */
+export const PLATFORM_PENDING_ENROLLMENT_KEY = 'platform_mfa_enrollment';
+
 export const platformApi = {
   login: (email: string, password: string) =>
-    platform.post<{ token: string }>('/api/platform/auth/login', { email, password }).then(r => r.data),
+    platform.post<PlatformLoginResponse>('/api/platform/auth/login', { email, password }).then(r => r.data),
+
+  mfaChallengeVerify: (challengeToken: string, totpCode: string) =>
+    platform.post<{ token: string }>('/api/platform/auth/mfa/challenge/verify', { challengeToken, totpCode }).then(r => r.data),
+
+  mfaEnrollmentSetup: (enrollmentToken: string) =>
+    platform.post<{ provisioningUri: string }>('/api/platform/auth/mfa/enrollment/setup', { enrollmentToken }).then(r => r.data),
+
+  mfaEnrollmentVerifySetup: (enrollmentToken: string, tempSecret: string, totpCode: string) =>
+    platform.post('/api/platform/auth/mfa/enrollment/verify-setup', { enrollmentToken, tempSecret, totpCode }).then(() => undefined),
+
+  mfaStatus: () =>
+    platform.get<MfaStatus>('/api/platform/auth/mfa/status').then(r => r.data),
+
+  mfaEnrollmentStart: () =>
+    platform.post<{ enrollmentToken: string; expiresInSeconds: number }>('/api/platform/auth/mfa/enrollment/start').then(r => r.data),
 
   logout: () =>
     platform.post('/api/platform/auth/logout').then(() => undefined),

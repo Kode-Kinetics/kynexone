@@ -159,6 +159,29 @@ public class PlatformController : ControllerBase
                 return Ok(new { mfaRequired = true, challengeToken, expiresInSeconds = 300 });
             }
 
+            // Mandatory MFA for every platform operator (PrivilegedMfaPolicy). From the enforcement
+            // date an un-enrolled operator gets a setup-only enrolment token instead of a session;
+            // before it, sign-in proceeds and the console prompts (GET auth/mfa/status).
+            var mfaState = await PrivilegedMfaPolicy.ForPlatformUserAsync(_db, _config, dbUser, DateTime.UtcNow, ct);
+            if (mfaState.BlocksSession)
+            {
+                await _db.SaveChangesAsync(ct); // persist the cleared lockout counters
+                var enrollmentToken = await _mfa.CreatePlatformEnrollmentChallengeAsync(
+                    dbUser.Id, HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty, ct);
+                _log.LogInformation("Platform user {PlatformUserId} must enrol MFA before signing in.", dbUser.Id);
+                return Ok(new
+                {
+                    mfaEnrollmentRequired = true,
+                    enrollmentToken,
+                    expiresInSeconds = 300,
+                    message = "Two-step sign-in is required for platform operators. Set it up to continue.",
+                });
+            }
+            if (mfaState.BreakGlassActive)
+                _log.LogWarning(
+                    "[MFA-BREAK-GLASS] Platform user {PlatformUserId} signed in without MFA because {Key} is suspending enforcement.",
+                    dbUser.Id, PrivilegedMfaPolicy.BreakGlassConfigKey);
+
             // Update last login audit fields
             dbUser.LastLoginAtUtc = DateTime.UtcNow;
             dbUser.LastLoginIp = HttpContext.Connection.RemoteIpAddress?.ToString();
@@ -229,8 +252,8 @@ public class PlatformController : ControllerBase
 
     // ── Platform MFA ─────────────────────────────────────────────────────────
 
+    // Every platform role must enrol (PrivilegedMfaPolicy), so every role may set up its OWN factor.
     [HttpPost("auth/mfa/setup")]
-    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
     public async Task<IActionResult> PlatformMfaSetup(CancellationToken ct)
     {
         var platformUserId = GetPlatformUserId();
@@ -247,13 +270,72 @@ public class PlatformController : ControllerBase
     }
 
     [HttpPost("auth/mfa/verify-setup")]
-    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
     public async Task<IActionResult> PlatformMfaVerifySetup([FromBody] MfaVerifySetupRequest request, CancellationToken ct)
     {
         var platformUserId = GetPlatformUserId();
         if (platformUserId is null) return Unauthorized();
         var ok = await _mfa.VerifyPlatformSetupAsync(platformUserId.Value, request, ct);
         return ok ? NoContent() : BadRequest(new { message = "Invalid TOTP code." });
+    }
+
+    /// <summary>The signed-in operator's mandatory-MFA standing; drives the console's enrolment prompt.</summary>
+    [HttpGet("auth/mfa/status")]
+    public async Task<IActionResult> PlatformMfaStatus(CancellationToken ct)
+    {
+        var platformUserId = GetPlatformUserId();
+        if (platformUserId is null) return Unauthorized();
+        var pu = await _db.PlatformUsers.AsNoTracking().FirstOrDefaultAsync(x => x.Id == platformUserId && x.IsActive, ct);
+        if (pu is null) return Unauthorized();
+        var state = await PrivilegedMfaPolicy.ForPlatformUserAsync(_db, _config, pu, DateTime.UtcNow, ct);
+        return Ok(new MfaStatusDto(
+            Enabled: PrivilegedMfaPolicy.IsPlatformUserEnrolled(pu),
+            Required: true,
+            RequiredBecause: "platform_operator",
+            EnforceFromUtc: state.EnforceFromUtc,
+            Enforced: state.Status == PrivilegedMfaStatus.Enforced,
+            PromptToEnroll: state.ShouldPrompt));
+    }
+
+    /// <summary>
+    /// Starts enrolment from a signed-in console session by issuing the same setup-only token the
+    /// sign-in flow uses, so the sign-in page's enrolment step is reused. Completing it rotates the
+    /// operator's session stamp; they sign in again with their code.
+    /// </summary>
+    [HttpPost("auth/mfa/enrollment/start")]
+    [EnableRateLimiting("platform_mfa_verify")]
+    public async Task<IActionResult> PlatformMfaEnrollmentStart(CancellationToken ct)
+    {
+        var platformUserId = GetPlatformUserId();
+        if (platformUserId is null) return Unauthorized();
+        var pu = await _db.PlatformUsers.AsNoTracking().FirstOrDefaultAsync(x => x.Id == platformUserId && x.IsActive, ct);
+        if (pu is null) return Unauthorized();
+        if (pu.MfaEnabled || !string.IsNullOrWhiteSpace(pu.MfaSecretEncrypted))
+            return Conflict(new { message = "MFA is already configured. Use the approved recovery flow to replace a factor." });
+        var token = await _mfa.CreatePlatformEnrollmentChallengeAsync(
+            pu.Id, HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty, ct);
+        return Ok(new { enrollmentToken = token, expiresInSeconds = 300 });
+    }
+
+    [HttpPost("auth/mfa/enrollment/setup")]
+    [AllowAnonymous]
+    [EnableRateLimiting("platform_mfa_verify")]
+    public async Task<IActionResult> PlatformMfaEnrollmentSetup([FromBody] MfaEnrollmentSetupRequest request, CancellationToken ct)
+    {
+        var dto = await _mfa.InitiatePlatformEnrollmentSetupAsync(request.EnrollmentToken, ct);
+        return dto is null
+            ? Unauthorized(new { message = "Invalid or expired MFA enrollment challenge." })
+            : Ok(new MfaSetupInitResponse(dto.ProvisioningUri));
+    }
+
+    /// <summary>Confirms first-time setup with the setup-only token. Issues no session.</summary>
+    [HttpPost("auth/mfa/enrollment/verify-setup")]
+    [AllowAnonymous]
+    [EnableRateLimiting("platform_mfa_verify")]
+    public async Task<IActionResult> PlatformMfaEnrollmentVerifySetup([FromBody] MfaEnrollmentVerifySetupRequest request, CancellationToken ct)
+    {
+        var ok = await _mfa.VerifyPlatformEnrollmentSetupAsync(
+            request.EnrollmentToken, new MfaVerifySetupRequest(request.TempSecret, request.TotpCode), ct);
+        return ok ? NoContent() : Unauthorized(new { message = "Invalid or expired MFA enrollment challenge." });
     }
 
     [HttpPost("auth/mfa/challenge/verify")]
@@ -481,11 +563,32 @@ public class PlatformController : ControllerBase
                 u.LastLoginAtUtc,
                 u.LastLoginIp,
                 u.CreatedAtUtc,
-                u.UpdatedAtUtc
+                u.UpdatedAtUtc,
+                u.MfaEnabled
             })
             .ToListAsync(ct);
 
         return Ok(users);
+    }
+
+    /// <summary>
+    /// Break-glass for a lost authenticator: an Owner clears ANOTHER operator's factor. That operator's
+    /// sessions end and they enrol a new factor at their next sign-in. Never self-service.
+    /// </summary>
+    [HttpPost("team/{id:guid}/reset-mfa")]
+    [RequirePlatformRole(PlatformRoles.Owner)]
+    public async Task<IActionResult> ResetTeamMemberMfa(Guid id, CancellationToken ct)
+    {
+        var actor = GetPlatformUserId();
+        if (actor is null) return Unauthorized();
+        if (actor.Value == id)
+            return BadRequest(new { message = "You cannot reset your own factor. Another Owner must do it." });
+        var reset = await _mfa.AdminResetPlatformFactorAsync(id, actor.Value,
+            new RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(), HttpContext.Request.Headers.UserAgent.ToString(), null, null),
+            ct);
+        return reset
+            ? Ok(new { id, mfaReset = true })
+            : NotFound(new { message = "No enrolled factor to reset for this platform user." });
     }
 
     [HttpPost("team")]
@@ -4286,9 +4389,94 @@ public class PlatformController : ControllerBase
             sessionTimeoutMinutes      = sec?.SessionTimeoutMinutes ?? 480,
             refreshTokenExpiryDays     = sec?.RefreshTokenExpiryDays ?? 30,
             allowMultipleSessions      = sec?.AllowMultipleSessions ?? true,
+            privilegedMfaEnforceFromUtc = sec?.PrivilegedMfaEnforceFromUtc,
+            platformPrivilegedMfaEnforceFromUtc = await PrivilegedMfaPolicy.LoadPlatformEnforceFromAsync(_db, ct),
             isCustomPolicy             = sec is not null,
             updatedAtUtc               = sec?.UpdatedAtUtc
         });
+    }
+
+    /// <summary>
+    /// Sets (or, with null, clears back to the platform date) WHEN mandatory MFA for this tenant's
+    /// privileged roles starts. Moving it later is the tenant-level break-glass for a customer that
+    /// cannot enrol in time; a reason is required and the change is audited.
+    /// </summary>
+    [HttpPut("tenants/{tenantId:guid}/privileged-mfa-enforcement")]
+    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    public async Task<IActionResult> SetTenantPrivilegedMfaEnforcement(
+        Guid tenantId, [FromBody] PrivilegedMfaEnforcementRequest body, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(body.Reason) || body.Reason.Trim().Length < 10)
+            return BadRequest(new { message = "Give a reason of at least 10 characters; it is recorded in the audit log." });
+        if (!await _db.Tenants.AsNoTracking().AnyAsync(t => t.Id == tenantId, ct)) return NotFound();
+
+        var sec = await _db.SecuritySettings.FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
+        if (sec is null)
+        {
+            sec = new SecuritySetting { TenantId = tenantId };
+            _db.SecuritySettings.Add(sec);
+        }
+        var previous = sec.PrivilegedMfaEnforceFromUtc;
+        sec.PrivilegedMfaEnforceFromUtc = body.EnforceFromUtc is { } at ? DateTime.SpecifyKind(at.ToUniversalTime(), DateTimeKind.Utc) : null;
+        sec.UpdatedAtUtc = DateTime.UtcNow;
+        _db.AuditLogs.Add(new AuditLog
+        {
+            TenantId     = tenantId,
+            UserId       = Guid.Empty,
+            Action       = "platform.security_policy.privileged_mfa_enforcement_changed",
+            EntityName   = "SecuritySetting",
+            EntityId     = sec.Id.ToString(),
+            Metadata     = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                tenantId, previous, next = sec.PrivilegedMfaEnforceFromUtc, reason = body.Reason.Trim(),
+                changedBy = GetPlatformUserId(),
+            }),
+            IpAddress    = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            CreatedAtUtc = DateTime.UtcNow
+        });
+        await _db.SaveChangesAsync(ct);
+        return Ok(new
+        {
+            tenantId,
+            privilegedMfaEnforceFromUtc = sec.PrivilegedMfaEnforceFromUtc,
+            platformPrivilegedMfaEnforceFromUtc = await PrivilegedMfaPolicy.LoadPlatformEnforceFromAsync(_db, ct),
+        });
+    }
+
+    /// <summary>Moves the platform-wide enforcement date (operators, and every tenant without its own date).</summary>
+    [HttpPut("security/privileged-mfa-enforcement")]
+    [RequirePlatformRole(PlatformRoles.Owner)]
+    public async Task<IActionResult> SetPlatformPrivilegedMfaEnforcement(
+        [FromBody] PrivilegedMfaEnforcementRequest body, CancellationToken ct)
+    {
+        if (body.EnforceFromUtc is null)
+            return BadRequest(new { message = "A platform enforcement date is required; it cannot be removed." });
+        if (string.IsNullOrWhiteSpace(body.Reason) || body.Reason.Trim().Length < 10)
+            return BadRequest(new { message = "Give a reason of at least 10 characters; it is recorded in the audit log." });
+
+        var entry = await _db.PlatformConfigEntries.FirstOrDefaultAsync(e => e.Key == PrivilegedMfaPolicy.PlatformConfigKey, ct);
+        var previous = entry?.Value;
+        if (entry is null)
+        {
+            entry = new PlatformConfigEntry { Key = PrivilegedMfaPolicy.PlatformConfigKey };
+            _db.PlatformConfigEntries.Add(entry);
+        }
+        entry.Value = PrivilegedMfaPolicy.FormatDate(body.EnforceFromUtc.Value.ToUniversalTime());
+        entry.UpdatedAtUtc = DateTime.UtcNow;
+        entry.UpdatedByPlatformUserId = GetPlatformUserId();
+        _db.AdminAuditLogs.Add(new AdminAuditLog
+        {
+            TenantId        = Guid.Empty,
+            EntityType      = "PlatformConfigEntry",
+            EntityId        = PrivilegedMfaPolicy.PlatformConfigKey,
+            Action          = "PrivilegedMfaEnforcementChanged",
+            OldValuesJson   = System.Text.Json.JsonSerializer.Serialize(new { enforceFromUtc = previous }),
+            NewValuesJson   = System.Text.Json.JsonSerializer.Serialize(new { enforceFromUtc = entry.Value, reason = body.Reason.Trim() }),
+            PerformedByName = "platform_admin",
+            IpAddress       = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
+        });
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { platformPrivilegedMfaEnforceFromUtc = PrivilegedMfaPolicy.ParseDate(entry.Value) });
     }
 
     [HttpPut("tenants/{tenantId:guid}/security-policy")]
@@ -5136,6 +5324,8 @@ public record ConvertLeadRequest(
     // Required, same rule as CreateTenantRequest.HomeCountryCode. A lead records no jurisdiction, and
     // this path provisions statutory defaults exactly as CreateTenant does.
     string? HomeCountryCode = null);
+
+public record PrivilegedMfaEnforcementRequest(DateTime? EnforceFromUtc, string Reason);
 
 public record UpdateSecurityPolicyRequest(
     int? PasswordMinLength,

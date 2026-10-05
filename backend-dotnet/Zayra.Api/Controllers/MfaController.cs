@@ -2,7 +2,9 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
+using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Auth;
 
 namespace Zayra.Api.Controllers;
@@ -83,6 +85,67 @@ public class MfaController : ControllerBase
             new MfaVerifySetupRequest(request.TempSecret, request.TotpCode),
             ct);
         return ok ? NoContent() : Unauthorized(new { message = "Invalid or expired MFA enrollment challenge." });
+    }
+
+    // ── Mandatory-MFA status and self-service enrolment ──────────────────────
+
+    /// <summary>
+    /// Whether the signed-in user must use MFA, and from when. Drives the "set up two-step sign-in"
+    /// prompt shown during the grace period before <see cref="PrivilegedMfaPolicy"/> enforcement.
+    /// </summary>
+    [HttpGet("status")]
+    [Authorize]
+    public async Task<IActionResult> Status(
+        [FromServices] ZayraDbContext db, [FromServices] IConfiguration config, CancellationToken ct)
+    {
+        var userId = GetUserId();
+        var tenantId = GetTenantId();
+        if (userId is null || tenantId is null) return Unauthorized();
+
+        var user = await db.Users.AsNoTracking()
+            .Include(x => x.UserRoles).ThenInclude(x => x.Role)
+            .Include(x => x.EntityAccesses)
+            .SingleOrDefaultAsync(x => x.Id == userId && x.TenantId == tenantId && !x.IsDeleted, ct);
+        if (user is null) return Unauthorized();
+        var policy = await db.SecuritySettings.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId, ct);
+        var state = await PrivilegedMfaPolicy.ForTenantUserAsync(db, config, user, policy, DateTime.UtcNow, ct);
+        var enrolled = PrivilegedMfaPolicy.IsTenantUserEnrolled(user);
+
+        return Ok(new MfaStatusDto(
+            Enabled: enrolled,
+            Required: policy?.MfaRequired == true || state.Status != PrivilegedMfaStatus.NotRequired,
+            RequiredBecause: policy?.MfaRequired == true ? "workspace_policy"
+                : state.Status != PrivilegedMfaStatus.NotRequired ? "privileged_role" : null,
+            EnforceFromUtc: state.Status == PrivilegedMfaStatus.NotRequired ? null : state.EnforceFromUtc,
+            Enforced: state.Status == PrivilegedMfaStatus.Enforced || (policy?.MfaRequired == true && !enrolled),
+            PromptToEnroll: !enrolled && (state.ShouldPrompt || policy?.MfaRequired == true)));
+    }
+
+    /// <summary>
+    /// Starts first-time enrolment from a signed-in session: returns the same setup-only enrolment
+    /// token the login flow issues, so the client reuses the sign-in page's enrolment screen.
+    /// Completing it rotates the session stamp, which signs this session out; the user then signs in
+    /// with their code.
+    /// </summary>
+    [HttpPost("enrollment/start")]
+    [Authorize]
+    [EnableRateLimiting("auth_login")]
+    public async Task<IActionResult> StartEnrollment([FromServices] ZayraDbContext db, CancellationToken ct)
+    {
+        var userId = GetUserId();
+        var tenantId = GetTenantId();
+        if (userId is null || tenantId is null) return Unauthorized();
+        var enrolled = await db.Users.AsNoTracking()
+            .Where(x => x.Id == userId && x.TenantId == tenantId && !x.IsDeleted)
+            .Select(x => (bool?)(x.MFAEnabled || x.MfaSecretEncrypted != null))
+            .SingleOrDefaultAsync(ct);
+        if (enrolled is null) return Unauthorized();
+        if (enrolled.Value)
+            return Conflict(new { message = "MFA is already configured. Use the approved recovery flow to replace a factor." });
+
+        var token = await _mfa.CreateEnrollmentChallengeAsync(
+            userId.Value, tenantId.Value, HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty, ct);
+        return Ok(new { enrollmentToken = token, expiresInSeconds = 300 });
     }
 
     // ── Challenge verify (unauthenticated — the challenge token IS the auth) ──

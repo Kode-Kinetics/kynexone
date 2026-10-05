@@ -124,6 +124,43 @@ internal sealed class AuthHardeningTestKit : IAsyncDisposable
         return user.Id;
     }
 
+    public async Task SetPlatformEnforcementDateAsync(DateTime? enforceFromUtc)
+    {
+        await using var db = NewDb();
+        var existing = await db.PlatformConfigEntries
+            .FirstOrDefaultAsync(e => e.Key == PrivilegedMfaPolicy.PlatformConfigKey);
+        if (enforceFromUtc is null)
+        {
+            if (existing is not null) db.PlatformConfigEntries.Remove(existing);
+        }
+        else if (existing is null)
+        {
+            db.PlatformConfigEntries.Add(new PlatformConfigEntry
+            {
+                Key = PrivilegedMfaPolicy.PlatformConfigKey,
+                Value = PrivilegedMfaPolicy.FormatDate(enforceFromUtc.Value),
+            });
+        }
+        else
+        {
+            existing.Value = PrivilegedMfaPolicy.FormatDate(enforceFromUtc.Value);
+        }
+        await db.SaveChangesAsync();
+    }
+
+    public async Task SetTenantEnforcementDateAsync(DateTime? enforceFromUtc)
+    {
+        await using var db = NewDb();
+        var sec = await db.SecuritySettings.FirstOrDefaultAsync(s => s.TenantId == TenantId);
+        if (sec is null)
+        {
+            sec = new SecuritySetting { TenantId = TenantId };
+            db.SecuritySettings.Add(sec);
+        }
+        sec.PrivilegedMfaEnforceFromUtc = enforceFromUtc;
+        await db.SaveChangesAsync();
+    }
+
     public async ValueTask DisposeAsync() => await _anchor.DisposeAsync();
 }
 

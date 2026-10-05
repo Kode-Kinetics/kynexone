@@ -28,6 +28,7 @@ public class AuthService : IAuthService
     private readonly TotpService _totp;
     private readonly ILogger<AuthService> _log;
     private readonly string _appUrl;
+    private readonly IConfiguration? _configuration;
 
     public AuthService(ZayraDbContext db, IPasswordHasher passwordHasher, ITokenService tokenService, IAuditService auditService, IEmailService emailService, IOptions<JwtOptions> jwtOptions, IMfaService mfaService, TotpService totp, ILogger<AuthService> log, IConfiguration? configuration = null)
     {
@@ -40,6 +41,7 @@ public class AuthService : IAuthService
         _mfaService = mfaService;
         _totp = totp;
         _log = log;
+        _configuration = configuration;
         _appUrl = AuthLinkBuilder.ResolvePublicAppUrl(
             configuration?["APP_URL"] ?? Environment.GetEnvironmentVariable("APP_URL"));
     }
@@ -168,6 +170,27 @@ public class AuthService : IAuthService
                 context with { UserId = user.Id, TenantId = user.TenantId }, null, cancellationToken);
             return new AuthLoginResult(null, null, RequiresMfaEnrollment: true, EnrollmentChallenge: new MfaChallengeDto(enrollmentToken, 300));
         }
+
+        // Phase 4d — mandatory MFA for privileged roles (PrivilegedMfaPolicy). From the enforcement
+        // date an un-enrolled Admin/HR/Payroll/Finance user gets the same setup-only enrolment
+        // challenge as 4c instead of a session. Before it, sign-in proceeds and the client prompts
+        // (GET /api/auth/mfa/status), so nobody is locked out on deploy day.
+        var privilegedMfa = await PrivilegedMfaPolicy.ForTenantUserAsync(
+            _db, _configuration, user, sec, DateTime.UtcNow, cancellationToken);
+        if (privilegedMfa.BlocksSession)
+        {
+            var enrollmentToken = await _mfaService.CreateEnrollmentChallengeAsync(
+                user.Id, user.TenantId, context.IpAddress ?? string.Empty, cancellationToken);
+            await _auditService.WriteAsync("auth.mfa_enrollment_required", "User", user.Id.ToString(),
+                context with { UserId = user.Id, TenantId = user.TenantId },
+                $"{{\"reason\":\"privileged_role\",\"enforceFromUtc\":\"{privilegedMfa.EnforceFromUtc:O}\"}}",
+                cancellationToken);
+            return new AuthLoginResult(null, null, RequiresMfaEnrollment: true, EnrollmentChallenge: new MfaChallengeDto(enrollmentToken, 300));
+        }
+        if (privilegedMfa.BreakGlassActive)
+            _log.LogWarning(
+                "[MFA-BREAK-GLASS] Privileged user {UserId} (tenant {TenantId}) signed in without MFA because "
+                + "{Key} is suspending enforcement.", user.Id, user.TenantId, PrivilegedMfaPolicy.BreakGlassConfigKey);
 
         // Phase 5 — successful password-only issuance is re-authorized under the same tenant/user
         // serialization anchors used by MFA completion and refresh. The refresh row, activity and
@@ -308,7 +331,13 @@ public class AuthService : IAuthService
                 policy,
                 decidedAtUtc);
             var sessionTimeoutMinutes = Math.Clamp(policy?.SessionTimeoutMinutes ?? 480, 15, 1440);
+            // Past the enforcement date an un-enrolled privileged user's refresh tokens stop
+            // rotating, so a session started during the grace period ends within one access-token
+            // lifetime and the next sign-in goes through enrolment.
+            var privilegedMfaBlocks = (await PrivilegedMfaPolicy.ForTenantUserAsync(
+                _db, _configuration, token.User, policy, decidedAtUtc, ct)).BlocksSession;
             if (!eligibility.Allowed
+                || privilegedMfaBlocks
                 || token.CreatedAtUtc.AddMinutes(sessionTimeoutMinutes) <= decidedAtUtc)
             {
                 token.RevokedAtUtc = decidedAtUtc;
@@ -1337,6 +1366,7 @@ public class AuthService : IAuthService
             if (!eligibility.Allowed
                 || user.MFAEnabled
                 || policy?.MfaRequired == true
+                || (await PrivilegedMfaPolicy.ForTenantUserAsync(_db, _configuration, user, policy, issuedAtUtc, ct)).BlocksSession
                 // The presented password was verified against this exact stored hash before the
                 // lock. Ordinal equality under the lock proves it is still the credential — the
                 // same guard ChangePasswordAsync uses — without paying a second 600k-iteration
@@ -1488,7 +1518,9 @@ public class AuthService : IAuthService
                 committedPolicy,
                 DateTime.UtcNow).Allowed
             || committedUser.MFAEnabled
-            || committedPolicy?.MfaRequired == true)
+            || committedPolicy?.MfaRequired == true
+            || (await PrivilegedMfaPolicy.ForTenantUserAsync(
+                _db, _configuration, committedUser, committedPolicy, DateTime.UtcNow, cancellationToken)).BlocksSession)
             throw new UnauthorizedAccessException("Invalid email, password, or tenant.");
         return BuildAuthResponse(committedUser, refreshRaw);
     }
