@@ -156,7 +156,7 @@ Response handling lives in `src/auth/mfaFlow.ts` (pure, unit-tested in `tests/mf
 - `/auth/login` returns `mfaEnrollmentRequired` + `enrollmentToken` (enforced, not enrolled) → `MfaEnrollmentScreen`; after the first code the user signs in again.
 - Grace period: login returns tokens; `GET /auth/mfa/status` drives `MfaSetupBanner`, which starts enrolment via `POST /auth/mfa/enrollment/start`. Enrolling ends the session (the server rotates the session stamp).
 - Every rejected code is the same 401, so the app counts attempts (server limit 5) and tracks the 300 s expiry itself.
-- Same-phone enrolment: "Open authenticator app" (`otpauth://` link) first; the grouped key is selectable (long-press to copy) and has a "Share key" button (React Native core `Share`). The app never writes to the clipboard itself. While the setup screen is open, `expo-screen-capture` blocks screenshots and recordings and, on iOS, blurs the app-switcher snapshot. That module is native (see [Releasing](#releasing)).
+- Same-phone enrolment: "Open authenticator app" (`otpauth://` link) first; the grouped key is selectable (long-press to copy) and has a "Share key" button (React Native core `Share`). The app never writes to the clipboard itself. While the setup screen is open, `expo-screen-capture` blocks screenshots and recordings and, on iOS, blurs the app-switcher snapshot. That module is native (see [Releasing](#releasing)). The signed-in sheet is an RN `Modal`, a separate dialog window on Android that copies `FLAG_SECURE` from the activity only when it is created. So `MfaSetupBanner` secures the window before opening the sheet and releases it after closing (`secureSheet.ts`, order unit-tested). **Confirm on a device with the first Android build:** a screenshot of the open sheet must come out blank.
 - The setup key stays in component state only and is never logged or stored.
 - Release: the sign-in and enrolment logic is JavaScript, so after the first store build, fixes to it ship with `npm run update:production` and no App Store review. That matters because managers who sign in only on mobile must not wait for review past the enforcement date. The one native piece, screen-capture protection, must be in the first store binary.
 
@@ -244,6 +244,8 @@ The runtime version uses the **fingerprint** policy: a hash of native code and t
 - `eas update` does not read `eas.json` build-profile `env`. **Only publish with `npm run update:<profile>`**, which replaces every `EXPO_PUBLIC_*` and `EXPO_UPDATES_CODE_SIGNING_CERT` value with exactly that profile's `eas.json` env, and refuses if `.env` would add one.
 - `fingerprint.config.js` ignores `eas.json` itself, so editing build or submit plumbing does not cut installed binaries off from updates. Changing a profile's `env` still changes the fingerprint, through `extra`.
 - `npm run updates:check` validates the config and prints the iOS and Android runtime version for each profile. Compare it with the build on expo.dev: if they differ, you need a store build.
+- Publishing sets `EXPO_NO_DOTENV=1`, and both `app.config.js` and Expo then skip `.env` files. It also refuses while `.env`, `.env.local`, `.env.production`, `.env.production.local` or the preview/development equivalents define any `EXPO_PUBLIC_*` or `EXPO_UPDATES_CODE_SIGNING_CERT`. Every `build.*.env` key must be `EXPO_PUBLIC_*` or allow-listed with a reason in `tests/updatesConfig.test.ts`.
+- **Before the first `npm run update:production`:** check that the runtime version on the expo.dev page for the production build equals the production line of `npm run updates:check`. Then run `eas env:list` (each environment) to confirm no `EXPO_PUBLIC_*` variables are set on the EAS dashboard: a dashboard value would reach the build but not the local publish.
 
 ### What ships how
 
@@ -282,7 +284,7 @@ The wiring is in `app.config.js` and is off unless `EXPO_UPDATES_CODE_SIGNING_CE
 
 1. Generate the key pair once, outside the repo:
    `npx expo-updates codesigning:generate --key-output-directory ~/kynexone-keys --certificate-output-directory certs --certificate-validity-duration-years 10 --certificate-common-name "KynexOne"`
-2. **The private key (`private-key.pem`) must never be in this repo** (`keys/` and `*.private.pem` are git-ignored). Keep it in the team secret manager; only the machine or CI job that publishes updates gets it.
+2. **The private key (`private-key.pem`) must never be in this repo.** `.gitignore` ignores `keys/` and every `*.pem` except `certs/certificate.pem`. Keep it in the team secret manager; only the machine or CI job that publishes updates gets it.
 3. Commit the public `certs/certificate.pem`. Add `"EXPO_UPDATES_CODE_SIGNING_CERT": "./certs/certificate.pem"` to the `env` of every build profile in `eas.json`.
 4. Publish with `EXPO_UPDATES_CODE_SIGNING_KEY=/path/to/private-key.pem MSG="..." npm run update:production`. The script adds `--private-key-path` and refuses to publish without it.
 

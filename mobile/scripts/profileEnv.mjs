@@ -24,25 +24,48 @@ export function profileEnv(eas, profile) {
   return { channel: build.channel, env: { ...(build.env ?? {}) } };
 }
 
-/** Shell env with every config-affecting key replaced by exactly the profile's values. */
+/**
+ * Shell env with every config-affecting key replaced by exactly the profile's
+ * values, and .env loading switched off (EAS builds never see local .env files).
+ */
 export function envForProfile(baseEnv, eas, profile) {
   const { env } = profileEnv(eas, profile);
   const out = {};
   for (const [key, value] of Object.entries(baseEnv)) {
     if (!CONFIG_ENV_KEY.test(key)) out[key] = value;
   }
-  return { ...out, ...env };
+  return { ...out, ...env, EXPO_NO_DOTENV: '1' };
 }
 
-/** Keys a local .env would add on top of the profile (app.config.js falls back to .env). */
-export function dotEnvLeaks(root, eas, profile) {
-  const file = path.join(root, '.env');
-  if (!fs.existsSync(file)) return [];
-  const { env } = profileEnv(eas, profile);
-  return fs.readFileSync(file, 'utf8')
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith('#') && line.includes('='))
-    .map((line) => line.slice(0, line.indexOf('=')).trim())
-    .filter((key) => CONFIG_ENV_KEY.test(key) && !(key in env));
+/** Every dotenv file Expo or app.config.js could load for any build profile. */
+export const DOTENV_FILES = [
+  '.env',
+  '.env.local',
+  '.env.production',
+  '.env.production.local',
+  '.env.preview',
+  '.env.preview.local',
+  '.env.development',
+  '.env.development.local',
+];
+
+/**
+ * Config-affecting keys defined in local dotenv files, as "file: KEY". Publishing
+ * refuses while any exist, even though EXPO_NO_DOTENV already ignores them:
+ * a value that differs between a developer's machine and the build is the bug
+ * this guards against, and it should be fixed, not silently skipped.
+ */
+export function dotEnvLeaks(root) {
+  const leaks = [];
+  for (const name of DOTENV_FILES) {
+    const file = path.join(root, name);
+    if (!fs.existsSync(file)) continue;
+    for (const raw of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
+      const line = raw.trim().replace(/^export\s+/, '');
+      if (!line || line.startsWith('#') || !line.includes('=')) continue;
+      const key = line.slice(0, line.indexOf('=')).trim();
+      if (CONFIG_ENV_KEY.test(key)) leaks.push(`${name}: ${key}`);
+    }
+  }
+  return leaks;
 }

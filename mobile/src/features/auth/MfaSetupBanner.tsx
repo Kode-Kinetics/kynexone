@@ -3,11 +3,13 @@ import { ActivityIndicator, AppState, Modal, StyleSheet, Text, TouchableOpacity,
 import { Ionicons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as ScreenCapture from 'expo-screen-capture';
 import { authApi } from '@/api/services';
 import { useAuthStore } from '@/auth/authStore';
 import { classifyMfaFailure, formatEnforceDate, type MfaErrorKind } from '@/auth/mfaFlow';
 import { COLORS } from '@/config';
 import { MfaEnrollmentView } from './MfaEnrollmentView';
+import { createSecureSheet } from './secureSheet';
 
 // Bottom tab bars are a fixed 72 pt (MainTabs tabScreenOptions); float just above them.
 const TAB_BAR_HEIGHT = 72;
@@ -32,6 +34,9 @@ export function MfaSetupBanner() {
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<MfaErrorKind | 'alreadyOn' | null>(null);
   const [enrollment, setEnrollment] = useState<{ enrollmentToken: string; expiresInSeconds: number } | null>(null);
+  // Secures the window before the Modal exists (see secureSheet.ts for why).
+  const [sheet] = useState(() => createSecureSheet(ScreenCapture, setEnrollment));
+  useEffect(() => () => sheet.dispose(), [sheet]);
 
   // Re-read the standing when the app comes back: the enforcement date may have
   // passed, or the factor may have been set up on the web, while it was away.
@@ -51,7 +56,7 @@ export function MfaSetupBanner() {
     setStarting(true);
     setStartError(null);
     try {
-      setEnrollment(await authApi.startSignedInMfaEnrollment());
+      await sheet.open(await authApi.startSignedInMfaEnrollment());
     } catch (error: unknown) {
       const failure = classifyMfaFailure(error);
       if (failure === 'conflict') {
@@ -117,7 +122,7 @@ export function MfaSetupBanner() {
         visible={!!enrollment}
         animationType="slide"
         presentationStyle="fullScreen"
-        onRequestClose={() => setEnrollment(null)}
+        onRequestClose={() => sheet.close()}
       >
         {enrollment ? (
           <MfaEnrollmentView
@@ -127,13 +132,13 @@ export function MfaSetupBanner() {
             tenantId={tenantId}
             email={user.email}
             confirmWhenDone={false}
-            onCancel={() => setEnrollment(null)}
+            onCancel={() => sheet.close()}
             onRestart={() => {
-              setEnrollment(null);
+              sheet.close();
               void start();
             }}
             onEnrolled={() => {
-              setEnrollment(null);
+              sheet.close();
               void endSession();
             }}
           />

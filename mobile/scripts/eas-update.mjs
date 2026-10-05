@@ -25,9 +25,9 @@ if (isMain) {
   const root = process.cwd();
   try {
     const eas = readEasJson(root);
-    const leaks = dotEnvLeaks(root, eas, profile);
+    const leaks = dotEnvLeaks(root);
     if (leaks.length) {
-      throw new Error(`.env sets ${leaks.join(', ')}, which the ${profile} build does not have; it would change the runtime version. Remove it or move it into eas.json.`);
+      throw new Error(`Local dotenv files set build config (${leaks.join('; ')}). Move them aside before publishing; the ${profile} build only has eas.json build.${profile}.env.`);
     }
     const { command, args, env } = updateCommand({ eas, profile, baseEnv: process.env, message: process.env.MSG });
     const result = spawnSync(command, args, { stdio: 'inherit', env });

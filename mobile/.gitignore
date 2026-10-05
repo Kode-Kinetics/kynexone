@@ -55,6 +55,10 @@ yarn-error.*
 /ios/
 /android/
 
-# EAS Update code-signing private keys (expo-updates codesigning:generate). Never commit.
+# EAS Update code signing (expo-updates codesigning:generate). Every PEM is
+# ignored so private-key.pem can never be committed, wherever it is generated.
+# The single exception is the PUBLIC certificate the app config references
+# (README "Code signing").
 keys/
-*.private.pem
+*.pem
+!certs/certificate.pem

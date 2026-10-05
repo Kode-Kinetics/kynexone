@@ -12,8 +12,8 @@ const eas = readEasJson(root);
 const { failures, config } = checkUpdatesConfig(root, envForProfile({}, eas, 'production'));
 
 console.log(`Update URL: ${config.updates?.url ?? '<none>'}`);
+for (const leak of dotEnvLeaks(root)) failures.push(`Local dotenv file sets build config: ${leak}.`);
 for (const profile of Object.keys(EXPECTED_CHANNELS)) {
-  for (const leak of dotEnvLeaks(root, eas, profile)) failures.push(`.env sets ${leak}, which the ${profile} build does not have.`);
   const env = envForProfile(process.env, eas, profile);
   const versions = [];
   for (const platform of ['ios', 'android']) {

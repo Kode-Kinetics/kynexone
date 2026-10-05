@@ -8,6 +8,10 @@ const fs = require('fs');
 const path = require('path');
 
 function readDotEnv() {
+  // EXPO_NO_DOTENV is Expo's switch for "no .env files"; the OTA publish and the
+  // runtime-version check set it so a developer's local .env can never reach a
+  // production update. This reader honours it too.
+  if (process.env.EXPO_NO_DOTENV) return {};
   const envPath = path.join(__dirname, '.env');
   if (!fs.existsSync(envPath)) return {};
 
