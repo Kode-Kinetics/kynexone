@@ -559,6 +559,7 @@ public class MfaService : IMfaService
             return recovery.Codes;
         }
         _db.ChangeTracker.Clear();
+        // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
         return await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
             .AnyAsync(x => x.Id == auditId && x.Action == "platform.auth.mfa_enabled", ct)
             ? recovery.Codes : null;
