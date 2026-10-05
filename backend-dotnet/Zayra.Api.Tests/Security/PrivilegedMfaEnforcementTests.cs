@@ -64,7 +64,94 @@ public sealed class PrivilegedMfaEnforcementTests
     }
 
     [Fact]
-    public async Task PrivilegedPermissions_SelectExactlyTheSevenPrivilegedSeededRoles()
+    public async Task EveryCataloguePermission_IsDeliberatelyClassified()
+    {
+        var (db, _) = await SeededRoleBundles.NewTenantAsync("mfa-catalogue");
+        await using var _db = db;
+        var catalogue = await db.Permissions.AsNoTracking().Select(p => p.Key).ToListAsync();
+
+        PrivilegedMfaPolicy.PrivilegedPermissions.Should().NotIntersectWith(PrivilegedMfaPolicy.NonPrivilegedPermissions);
+        var unclassified = catalogue
+            .Where(k => !PrivilegedMfaPolicy.PrivilegedPermissions.Contains(k) && !PrivilegedMfaPolicy.NonPrivilegedPermissions.Contains(k))
+            .ToList();
+        unclassified.Should().BeEmpty(
+            "a new permission must be classified on purpose. Runtime already treats it as privileged (MFA required); "
+            + "add it to PrivilegedMfaPolicy.PrivilegedPermissions, or to NonPrivilegedPermissions if it is self-service, "
+            + "read-only or a line manager's own-team decision");
+        catalogue.Should().Contain(PrivilegedMfaPolicy.PrivilegedPermissions.Concat(PrivilegedMfaPolicy.NonPrivilegedPermissions),
+            "every classified key must be real — a typo in the non-privileged list would silently exempt a permission");
+        PrivilegedMfaPolicy.IsPrivilegedPermission("some.future_permission").Should().BeTrue("unknown keys default to privileged");
+    }
+
+    [Theory]
+    [InlineData("security.manage")]
+    [InlineData("payroll.export")]
+    [InlineData("payroll.rates.manage")]
+    [InlineData("payroll.rates.statutory_override")]
+    [InlineData("payroll.structure_manage")]
+    [InlineData("finance.gl.manage")]
+    [InlineData("approvals.override")]
+    [InlineData("qiwa.configure")]
+    [InlineData("employees.bulk_import")]
+    [InlineData("users.manage")]
+    [InlineData("roles.manage")]
+    [InlineData("payroll.write")]
+    [InlineData("payroll.approve")]
+    [InlineData("payroll.lock")]
+    [InlineData("employees.sensitive")]
+    [InlineData("loans.approve")]
+    public void NamedHighRiskPermissions_ArePrivileged(string key)
+        => PrivilegedMfaPolicy.IsPrivilegedPermission(key).Should().BeTrue();
+
+    [Fact]
+    public void EveryPermissionGuardingAccessIdentitySetupAndBankExports_IsPrivileged()
+    {
+        var api = FindApiSource();
+        if (api is null)
+        {
+            if (Environment.GetEnvironmentVariable("CI") is "true" or "1")
+                throw new Xunit.Sdk.XunitException("Zayra.Api source not found under CI.");
+            return;
+        }
+        var literal = new System.Text.RegularExpressions.Regex(@"HasPermission\(\s*""([a-z0-9_.]+)""");
+        var found = new List<(string File, string Key)>();
+        foreach (var file in new[]
+                 {
+                     "Controllers/AccessController.cs", "Controllers/EnterpriseIdentityController.cs",
+                     "Controllers/Admin/SetupSettingsController.cs", "Controllers/SaudiBankExportsController.cs",
+                 })
+            found.AddRange(literal.Matches(File.ReadAllText(Path.Combine(api, file))).Select(m => (file, m.Groups[1].Value)));
+
+        // The WPS / bank-file endpoints in PayrollController check their permission inline.
+        var payroll = File.ReadAllLines(Path.Combine(api, "Controllers/PayrollController.cs"));
+        for (var i = 0; i < payroll.Length; i++)
+        {
+            if (!System.Text.RegularExpressions.Regex.IsMatch(payroll[i], @"\[Http\w+\(""[^""]*(wps|payment-batches|bank)", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                continue;
+            var body = string.Join('\n', payroll.Skip(i).Take(25));
+            found.AddRange(literal.Matches(body).Select(m => ("PayrollController (WPS/bank)", m.Groups[1].Value)));
+        }
+
+        found.Should().NotBeEmpty("the scan must still be matching the guards it is meant to check");
+        found.Select(f => f.Key).Should().Contain("security.manage").And.Contain("payroll.export");
+        found.Where(f => !PrivilegedMfaPolicy.IsPrivilegedPermission(f.Key))
+            .Select(f => $"{f.File}: {f.Key}")
+            .Should().BeEmpty("whoever can manage access, identity, setup or bank/WPS files must use MFA");
+    }
+
+    private static string? FindApiSource()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        for (var i = 0; i < 8 && dir is not null; i++, dir = dir.Parent)
+        {
+            var candidate = Path.Combine(dir.FullName, "backend-dotnet", "Zayra.Api");
+            if (Directory.Exists(candidate)) return candidate;
+        }
+        return null;
+    }
+
+    [Fact]
+    public async Task SeededRoles_PrivilegeFollowsTheirPermissions_AndSelfServiceRolesStayExempt()
     {
         var (db, tenantId) = await SeededRoleBundles.NewTenantAsync("mfa-priv");
         await using var _ = db;
@@ -74,19 +161,20 @@ public sealed class PrivilegedMfaEnforcementTests
             .ToListAsync();
 
         var privileged = roles
-            .Where(r => r.RolePermissions.Any(rp => PrivilegedMfaPolicy.PrivilegedPermissions.Contains(rp.Permission!.Key)))
+            .Where(r => r.RolePermissions.Any(rp => PrivilegedMfaPolicy.IsPrivilegedPermission(rp.Permission!.Key)))
             .Select(r => r.Name)
             .ToList();
 
         privileged.Should().BeEquivalentTo(new[]
         {
             "Admin", "HR Director", "HR Manager", "Payroll Manager", "Payroll Officer", "Finance", "Finance Approver",
-        }, "the permission set must pick out today's seven privileged roles and none of the other nine");
-        roles.Should().HaveCountGreaterThan(privileged.Count);
-
-        var catalogue = await db.Permissions.AsNoTracking().Select(p => p.Key).ToListAsync();
-        catalogue.Should().Contain(PrivilegedMfaPolicy.PrivilegedPermissions,
-            "every privileged key must be a real permission in the seeded catalogue — a typo would silently exempt everyone");
+            "HR Officer",          // employees.write, employees.bulk_import, employees.documents, …
+            "Compliance Officer",  // compliance.write, employees.documents
+            "Supervisor",          // attendance.write (drives overtime and deductions)
+            "Recruiter",           // recruitment.write (candidate PII, offers)
+        });
+        privileged.Should().NotContain(new[] { "Employee", "Manager", "HR Assistant", "Auditor", "Kiosk Operator" },
+            "self-service, read-only and own-team roles must not be forced onto MFA");
     }
 
     [Fact]
@@ -123,12 +211,11 @@ public sealed class PrivilegedMfaEnforcementTests
 
     [Theory]
     [InlineData("users.manage")]
-    [InlineData("roles.manage")]
-    [InlineData("payroll.write")]
-    [InlineData("payroll.approve")]
-    [InlineData("payroll.lock")]
+    [InlineData("security.manage")]
+    [InlineData("payroll.export")]
     [InlineData("employees.sensitive")]
-    [InlineData("loans.approve")]
+    [InlineData("approvals.override")]
+    [InlineData("a.permission_nobody_has_classified")]
     public async Task EachPrivilegedPermission_OnItsOwn_TriggersEnforcement(string permission)
     {
         await using var kit = await AuthHardeningTestKit.CreateAsync();

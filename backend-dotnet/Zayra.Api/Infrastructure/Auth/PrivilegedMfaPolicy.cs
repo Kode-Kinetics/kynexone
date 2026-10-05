@@ -59,36 +59,90 @@ public static class PrivilegedMfaPolicy
     /// <summary>
     /// "Privileged" is decided by what a user can DO, never by a role's name: seeded roles are
     /// editable and renameable, tenants create custom roles, and the migration importer marks
-    /// imported roles editable. Holding ANY of these permissions requires MFA. The set is the minimal
-    /// one that selects exactly today's seven privileged seeded roles (Admin, HR Director, HR Manager,
-    /// Payroll Manager, Payroll Officer, Finance, Finance Approver) and none of the other nine —
-    /// pinned against the real AuthSeeder by PrivilegedMfaEnforcementTests.
-    /// <list type="bullet">
-    /// <item><c>users.manage</c>, <c>roles.manage</c> — who can sign in and with what access.</item>
-    /// <item><c>payroll.write</c>, <c>payroll.approve</c>, <c>payroll.lock</c> — run, approve, lock payroll.</item>
-    /// <item><c>employees.sensitive</c> — salary, IBAN/bank and identity fields.</item>
-    /// <item><c>loans.approve</c> — approve loans and salary advances.</item>
-    /// </list>
+    /// imported roles editable.
+    ///
+    /// <para><b>Every permission is privileged by default.</b> Only the keys below are not: things
+    /// a person does about themselves, read-only views, and a line manager's decisions on their own
+    /// reporting line (each routed and recorded by the approval engine). A permission added to the
+    /// catalogue tomorrow therefore requires MFA until someone deliberately lists it here — and
+    /// PrivilegedMfaEnforcementTests fails until it is classified one way or the other.</para>
     /// </summary>
-    public static readonly IReadOnlySet<string> PrivilegedPermissions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    public static readonly IReadOnlySet<string> NonPrivilegedPermissions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
-        "users.manage",
-        "roles.manage",
-        "payroll.write",
-        "payroll.approve",
-        "payroll.lock",
-        ReportAccessPolicy.SensitivePermission, // employees.sensitive
-        "loans.approve",
+        // Self-service / own record.
+        "profile.read", "profile.write", "ess.read", "ess.write", "loans.self", "attendance.kiosk",
+        "leave.write", "overtime.write",
+        // Read-only views.
+        "dashboard.read", "employees.read", "organization.read", "attendance.read", "leave.read",
+        "overtime.read", "payroll.read", "payroll.rates.read", "loans.read", "recruitment.read",
+        "performance.read", "compliance.read", "manager.read", "approvals.read", "reports.read",
+        "notifications.read", "localization.read", "shifts.read", "qiwa.read", "audit.read",
+        "finance.gl.read", "ai.query", "ai.insights_view",
+        // A line manager's decisions on their own reporting line (data-scoped, approval-routed).
+        "manager.approve", "approvals.write", "approvals.decide", "leave.approve", "overtime.approve",
+        "performance.write",
     };
 
     /// <summary>
-    /// True when the user's EFFECTIVE permissions (active roles + access mode + overrides, exactly as
-    /// a session would carry them — AuthService.GetPermissions) include a privileged one. Needs the
-    /// user graph loaded with UserRoles→Role→RolePermissions→Permission, PermissionOverrides and
-    /// EmployeeUserAccounts.
+    /// The catalogue permissions that ARE privileged, listed so the classification is reviewable and
+    /// the completeness test can tell "deliberately privileged" from "nobody looked". Runtime does
+    /// not consult this list: anything outside <see cref="NonPrivilegedPermissions"/> is privileged,
+    /// including keys not in the catalogue at all.
     /// </summary>
-    public static bool HoldsPrivilegedPermission(User user)
-        => AuthService.GetPermissions(user).Any(PrivilegedPermissions.Contains);
+    public static readonly IReadOnlySet<string> PrivilegedPermissions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        // Access control and identity.
+        "users.manage", "roles.manage", "security.manage",
+        // Payroll, banking and statutory money.
+        "payroll.write", "payroll.approve", "payroll.lock", "payroll.run_delete", "payroll.export",
+        "payroll.structure_manage", "payroll.rates.manage", "payroll.rates.statutory_override",
+        ReportAccessPolicy.SensitivePermission, // employees.sensitive — salary, IBAN, identity fields
+        "loans.write", "loans.approve", "loans.policy_manage",
+        "finance.gl.manage", "finance.gl.drivers.manage", "finance.gl.drivers.author_predicates", "finance.erp.confirm",
+        // Employee records and bulk changes.
+        "employees.write", "employees.delete", "employees.approve", "employees.documents", "employees.templates",
+        "employees.bulk_import", "dashboard.export", "reports.export", "reports.schedule", "audit.export",
+        // Organisation, policy and configuration.
+        "organization.write", "organization.delete", "organization.establishment.write", "organization.setup.apply",
+        "leave.policy_manage", "leave.cancel", "overtime.policy_manage", "notifications.manage", "localization.manage",
+        "shifts.write", "shifts.manage", "qiwa.configure", "qiwa.sync",
+        // Attendance that drives pay.
+        "attendance.write", "attendance.delete", "attendance.bulk_import", "attendance.lock",
+        // Approvals beyond one's own line, recruitment, performance and compliance decisions.
+        "approvals.override", "approvals.manage", "recruitment.write", "recruitment.approve", "recruitment.delete",
+        "performance.approve", "performance.cycle_manage", "compliance.write", "compliance.approve",
+    };
+
+    public static bool IsPrivilegedPermission(string key) => !NonPrivilegedPermissions.Contains(key);
+
+    /// <summary>
+    /// Permissions the user was GRANTED: active roles plus active Allow overrides, minus Deny
+    /// overrides. Access-mode bundles (ESS, Mobile, Kiosk, ManagerPortal) are deliberately left out —
+    /// they are fixed self-service sets (Mobile's attendance.write is the employee's own punch), and
+    /// counting them would put every mobile user behind MFA.
+    /// </summary>
+    public static IReadOnlyCollection<string> GrantedPermissions(User user)
+    {
+        var keys = user.UserRoles
+            .Where(x => x.Role is { IsActive: true, IsDeleted: false })
+            .SelectMany(x => x.Role!.RolePermissions)
+            .Select(x => x.Permission?.Key)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Select(x => x!)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var ov in user.PermissionOverrides.Where(x => x.IsActive && (x.ExpiresAtUtc is null || x.ExpiresAtUtc > DateTime.UtcNow)))
+        {
+            if (ov.Effect.Equals("Deny", StringComparison.OrdinalIgnoreCase)) keys.Remove(ov.PermissionKey);
+            else keys.Add(ov.PermissionKey);
+        }
+        return keys;
+    }
+
+    /// <summary>The privileged permissions among <see cref="GrantedPermissions"/> (empty = not privileged).</summary>
+    public static IReadOnlyList<string> PrivilegedPermissionsHeld(User user)
+        => GrantedPermissions(user).Where(IsPrivilegedPermission).OrderBy(x => x, StringComparer.Ordinal).ToList();
+
+    public static bool HoldsPrivilegedPermission(User user) => PrivilegedPermissionsHeld(user).Count > 0;
 
     /// <summary>
     /// <see cref="HoldsPrivilegedPermission"/>, plus active company-scoped grants: a grant names a
@@ -104,12 +158,12 @@ public static class PrivilegedMfaPolicy
             .Distinct()
             .ToList();
         if (grantRoles.Count == 0) return false;
-        var keys = PrivilegedPermissions.ToList();
+        var safe = NonPrivilegedPermissions.ToList();
         return await db.RolePermissions.AsNoTracking()
             .AnyAsync(rp => rp.Role!.TenantId == user.TenantId
                             && rp.Role.IsActive && !rp.Role.IsDeleted
                             && grantRoles.Contains(rp.Role.Name)
-                            && keys.Contains(rp.Permission!.Key), ct);
+                            && !safe.Contains(rp.Permission!.Key), ct);
     }
 
     public static string FormatDate(DateTime utc)

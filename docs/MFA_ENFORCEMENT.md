@@ -6,13 +6,17 @@ Tests: `Zayra.Api.Tests/Security/PrivilegedMfaEnforcementTests.cs`, `MfaStatusHt
 ## Who
 
 - **Every platform operator** (all six platform roles).
-- **Tenant users who can** manage users or roles, run/approve/lock payroll, see salary and bank
-  details, or approve loans and advances — i.e. whose effective permissions include any of
-  `users.manage`, `roles.manage`, `payroll.write`, `payroll.approve`, `payroll.lock`,
-  `employees.sensitive`, `loans.approve` (through roles, overrides, or a company grant's role).
-  Decided by permission, not role name, so renamed, cloned and custom roles are covered. Today
-  that is exactly the seeded Admin, HR Director, HR Manager, Payroll Manager, Payroll Officer,
-  Finance and Finance Approver roles.
+- **Tenant users holding any privileged permission** — through a role, an override or a company
+  grant's role. Every permission is privileged **by default**; only an explicit list is not:
+  self-service/own-record (`profile.*`, `ess.*`, `loans.self`, `attendance.kiosk`, `leave.write`,
+  `overtime.write`), read-only views (`*.read`, `ai.query`, `ai.insights_view`) and a line manager's
+  decisions on their own team (`manager.approve`, `approvals.write`, `approvals.decide`,
+  `leave.approve`, `overtime.approve`, `performance.write`). See
+  `PrivilegedMfaPolicy.NonPrivilegedPermissions`. Access-mode bundles (ESS, Mobile, Kiosk) are not
+  counted. A new permission requires MFA until it is classified, and a test fails until it is.
+  With the seeded roles that means: Admin, HR Director, HR Manager, HR Officer, Payroll Manager,
+  Payroll Officer, Finance, Finance Approver, Compliance Officer, Supervisor and Recruiter.
+  Not: Employee, Manager, HR Assistant, Auditor, Kiosk Operator.
 - Unchanged: a tenant can still require MFA for *all* its users (`security_settings.mfa_required`).
 
 ## When
