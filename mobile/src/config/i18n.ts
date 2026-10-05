@@ -5,6 +5,7 @@
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
 import { I18nManager } from 'react-native';
+import { mfaAr, mfaEn } from './mfaStrings';
 
 const en = {
   common: {
@@ -63,6 +64,7 @@ const en = {
     invalidCredentials: 'Invalid username or password.',
     firstLogin: 'Welcome! Please set your password to continue.',
   },
+  mfa: mfaEn,
   nav: {
     home: 'Home',
     attendance: 'Attendance',
@@ -306,6 +308,7 @@ const ar: typeof en = {
     invalidCredentials: 'اسم المستخدم أو كلمة المرور غير صحيحة.',
     firstLogin: 'مرحباً! يرجى تعيين كلمة المرور للمتابعة.',
   },
+  mfa: mfaAr,
   nav: {
     home: 'الرئيسية',
     attendance: 'الحضور',
