@@ -42,8 +42,9 @@ public sealed class AiInsightEngine : BackgroundService
         {
             try
             {
-                await RunAnalysisForAllTenantsAsync(stoppingToken);
-                if (_heartbeat is not null) await _heartbeat.SucceededAsync(ProductionWorkerNames.AiInsights, stoppingToken);
+                var ran = await RunAnalysisForAllTenantsAsync(stoppingToken);
+                // A skipped cycle (another instance holds the lease) is not a success of this worker.
+                if (_heartbeat is not null && ran) await _heartbeat.SucceededAsync(ProductionWorkerNames.AiInsights, stoppingToken);
             }
             catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
             {
@@ -57,7 +58,7 @@ public sealed class AiInsightEngine : BackgroundService
         }
     }
 
-    private async Task RunAnalysisForAllTenantsAsync(CancellationToken ct)
+    private async Task<bool> RunAnalysisForAllTenantsAsync(CancellationToken ct)
     {
         await using var scope = _scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
@@ -70,7 +71,7 @@ public sealed class AiInsightEngine : BackgroundService
         if (lease is null)
         {
             _log.LogDebug("AiInsightEngine: cycle skipped; another instance holds the sweep lease.");
-            return;
+            return false;
         }
 
         var tenantIds = await db.Tenants
@@ -93,6 +94,7 @@ public sealed class AiInsightEngine : BackgroundService
             }
             catch (Exception ex) { _log.LogWarning(ex, "AiInsightEngine: error for tenant {TenantId}", tenantId); }
         }
+        return true;
     }
 
     internal async Task AnalyzeTenantAsync(ZayraDbContext db, ILlmClient? llm, Guid tenantId, CancellationToken ct)

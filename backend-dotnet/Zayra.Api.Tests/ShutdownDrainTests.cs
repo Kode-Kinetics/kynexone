@@ -24,11 +24,12 @@ namespace Zayra.Api.Tests;
 public sealed class ShutdownDrainTests
 {
     [Fact]
-    public void Defaults_AreFiveSecondsOfDrainOutsideDevelopment_ZeroInDevelopment_AndThirtySecondShutdown()
+    public void Defaults_AreNoDrainDelayInAnyEnvironment_AndThirtySecondShutdown()
     {
         var empty = new ConfigurationBuilder().Build();
         new ShutdownDrain(empty, new Env(Environments.Production), NullLogger<ShutdownDrain>.Instance)
-            .ReadinessDrainDelay.Should().Be(TimeSpan.FromSeconds(5));
+            .ReadinessDrainDelay.Should().Be(TimeSpan.Zero,
+                "a single instance with no deploy overlap gains nothing from a drain delay; it is opt-in");
         new ShutdownDrain(empty, new Env(Environments.Development), NullLogger<ShutdownDrain>.Instance)
             .ReadinessDrainDelay.Should().Be(TimeSpan.Zero);
         ShutdownDrain.ShutdownTimeout(empty).Should().Be(TimeSpan.FromSeconds(30));

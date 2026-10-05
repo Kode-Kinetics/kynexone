@@ -40,7 +40,10 @@ public sealed class ComplianceReminderWorker : BackgroundService
             try
             {
                 await DrainOnceAsync(stoppingToken);
-                if (_heartbeat is not null) await _heartbeat.SucceededAsync(ProductionWorkerNames.ComplianceReminders, stoppingToken);
+                // A skipped sweep (another instance holds the lease) is not a success of this worker:
+                // reporting it as one would keep readiness green while nothing is being sent anywhere.
+                if (_heartbeat is not null && !LastSweepSkipped)
+                    await _heartbeat.SucceededAsync(ProductionWorkerNames.ComplianceReminders, stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
             catch (Exception ex)
@@ -56,9 +59,13 @@ public sealed class ComplianceReminderWorker : BackgroundService
         }
     }
 
+    /// <summary>True when the last <see cref="DrainOnceAsync"/> did no work because another instance held the sweep lease.</summary>
+    public bool LastSweepSkipped { get; private set; }
+
     /// <summary>Exposed for focused tests and operational one-shot execution.</summary>
     public async Task<int> DrainOnceAsync(CancellationToken ct)
     {
+        LastSweepSkipped = false;
         await using var scope = _scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
         var notifications = scope.ServiceProvider.GetRequiredService<INotificationService>();
@@ -70,6 +77,7 @@ public sealed class ComplianceReminderWorker : BackgroundService
         if (lease is null)
         {
             _log.LogDebug("Compliance reminder sweep skipped: another instance holds the sweep lease.");
+            LastSweepSkipped = true;
             return 0;
         }
 

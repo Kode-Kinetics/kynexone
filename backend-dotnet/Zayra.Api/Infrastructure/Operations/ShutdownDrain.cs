@@ -21,7 +21,9 @@ namespace Zayra.Api.Infrastructure.Operations;
 /// </summary>
 public sealed class ShutdownDrain
 {
-    public const int DefaultReadinessDrainSeconds = 5;
+    // Off by default: on a single instance with no overlap (Render with a disk today) the delay only adds
+    // downtime. Set Shutdown__ReadinessDrainSeconds (e.g. 5) once two or more instances sit behind a balancer.
+    public const int DefaultReadinessDrainSeconds = 0;
     public const int DefaultShutdownTimeoutSeconds = 30;
 
     private readonly ILogger<ShutdownDrain> _log;
@@ -32,8 +34,7 @@ public sealed class ShutdownDrain
         _log = log;
         // Development (local runs, the in-process test host) has no balancer to drain from; waiting
         // there only slows every Ctrl+C and every test-host dispose.
-        var seconds = configuration.GetValue("Shutdown:ReadinessDrainSeconds",
-            environment.IsDevelopment() ? 0 : DefaultReadinessDrainSeconds);
+        var seconds = configuration.GetValue("Shutdown:ReadinessDrainSeconds", DefaultReadinessDrainSeconds);
         ReadinessDrainDelay = TimeSpan.FromSeconds(Math.Clamp(seconds, 0, 120));
     }
 
