@@ -40,7 +40,7 @@ jobs:
           for sha in "$BASE" "$HEAD"; do
             if [ -z "$sha" ] || ! git cat-file -e "$sha^{commit}" 2>/dev/null; then run_verify; fi
           done
-          files=$(git diff --name-only "$BASE...$HEAD") || run_verify
+          files=$(git diff --no-renames --name-only "$BASE...$HEAD") || run_verify
           if grep -qE '^(mobile/|\.github/workflows/mobile-ci\.yml$)' <<<"$files"; then
             echo "mobile=true" >> "$GITHUB_OUTPUT"
           else
