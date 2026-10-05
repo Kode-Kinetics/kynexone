@@ -21,11 +21,13 @@ import { messageArgs } from '../src/i18n/message';
  *      (except AR_SAME_ALLOWED: brand names);
  *   3. every translation keeps the English entry's {placeholders} exactly;
  *   4. no NEW fragment keys: a key that starts lower-case, ends in ':' or ',', or is a bare
- *      connective ('of', 'for', 'in', …). The existing ones are pinned in i18n-baseline.json.
+ *      connective ('of', 'for', 'in', …). The existing ones are pinned in i18n-baseline.json;
+ *   5. every literal t('…') call whose English or Arabic text has a {placeholder} passes params,
+ *      and an inline params object names every placeholder — otherwise the screen shows "{name}".
  *   app/platform (the operator console stays English, CTO decision) and the legal pages are
  *   excluded from check 1 — they are still counted by the ratchets below.
  *
- * RATCHETS (per file, pinned in e2e/i18n-baseline.json; counts may only go down):
+ * RATCHETS (per file, pinned in e2e/i18n-baseline.json; counts may not go UP):
  *   hardcoded  user-visible JSX text and label/title/placeholder/aria-label/… literals
  *   rawStatus  `{x.status}` rendered as-is instead of through <EnumLabel>
  *   locale     'en-US' / 'en-GB' literals and argument-less toLocale*() — use useFormat()
@@ -35,14 +37,21 @@ import { messageArgs } from '../src/i18n/message';
  *   sentence with {placeholders} (see i18n/message.ts for plurals).
  * IF A RATCHET FAILS because a count went UP: translate the string (t / EnumLabel / useFormat /
  *   a mirrored icon) instead of adding a literal.
- * IF A RATCHET FAILS because a count went DOWN: good — run `npm run i18n:repin` and commit the
- *   new baseline so the ratchet keeps its teeth.
+ * IF A COUNT WENT DOWN: nothing fails (a lagging baseline is accepted so parallel PRs do not
+ *   conflict on it); the run prints a warning. Run `npm run i18n:repin` and commit the baseline
+ *   when convenient, so the ratchet keeps its teeth.
+ *
+ * REPIN (`npm run i18n:repin`) writes the current counts. It REFUSES any per-file increase and
+ * any new fragment key, unless I18N_ALLOW_INCREASE=1 is set AND the baseline's
+ * "allowIncreaseReason" says why. The reason and the increases are then moved into the
+ * baseline's "increaseLog", so every accepted regression is on record in the diff.
  */
 
 const FRONTEND_ROOT = process.cwd();
 const BASELINE_PATH = path.join(FRONTEND_ROOT, 'e2e/i18n-baseline.json');
 const SCANNED_DIRS = ['app', 'src'];
 const REPIN = process.env.I18N_REPIN === '1';
+const ALLOW_INCREASE = process.env.I18N_ALLOW_INCREASE === '1';
 
 /** Excluded from the key-existence check only. Still counted by every ratchet. */
 const HARD_CHECK_EXCLUDED = [/^app\/platform\//, /^src\/components\/platform\//, /^app\/privacy\//, /^app\/terms\//, /^app\/security\//];
@@ -70,7 +79,12 @@ const METRICS: Metric[] = ['hardcoded', 'rawStatus', 'locale', 'icons'];
 type Counts = Record<Metric, number>;
 
 interface KeyUse { key: string; file: string; line: number }
-interface Scan { counts: Map<string, Counts>; keys: KeyUse[]; files: string[]; dynamicKeyCalls: number }
+/**
+ * A literal t('…') call and what it passes as params: `none` (no second argument), the names in an
+ * inline object literal, or `opaque` (a variable, a spread — not checkable statically).
+ */
+interface TCall { keys: string[]; file: string; line: number; params: 'none' | 'opaque' | string[] }
+interface Scan { counts: Map<string, Counts>; keys: KeyUse[]; tCalls: TCall[]; files: string[]; dynamicKeyCalls: number }
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -107,6 +121,24 @@ function isTranslatorCall(n: ts.Node): n is ts.CallExpression {
   return ts.isCallExpression(n) && ts.isIdentifier(n.expression) && (n.expression.text === 't' || n.expression.text === 'msg');
 }
 
+function paramsOf(call: ts.CallExpression): TCall['params'] {
+  let arg = call.arguments[1];
+  // `fmt(t('… {n} …'), { n })`: the template is filled by a local helper (EstablishmentPanel and
+  // friends). Its second argument is the params.
+  const outer = call.parent;
+  if (!arg && outer && ts.isCallExpression(outer) && outer.arguments[0] === call && outer.arguments[1]) arg = outer.arguments[1];
+  if (!arg) return 'none';
+  const obj = ts.isParenthesizedExpression(arg) ? arg.expression : arg;
+  if (!ts.isObjectLiteralExpression(obj)) return 'opaque';
+  const names: string[] = [];
+  for (const p of obj.properties) {
+    if (ts.isShorthandPropertyAssignment(p)) names.push(p.name.text);
+    else if (ts.isPropertyAssignment(p) && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name))) names.push(p.name.text);
+    else return 'opaque'; // spread, computed name, method
+  }
+  return names;
+}
+
 /** Literal keys in a t()/msg() first argument, through `a ? 'x' : 'y'` branches. */
 function literalKeys(arg: ts.Expression): string[] | null {
   if (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) return [arg.text];
@@ -123,6 +155,7 @@ function scanSources(): Scan {
   const mirrored = mirroredIconClasses();
   const counts = new Map<string, Counts>();
   const keys: KeyUse[] = [];
+  const tCalls: TCall[] = [];
   let dynamicKeyCalls = 0;
   const files: string[] = [];
   for (const d of SCANNED_DIRS) files.push(...walk(path.join(FRONTEND_ROOT, d)));
@@ -159,8 +192,10 @@ function scanSources(): Scan {
       // Keys
       if (isTranslatorCall(n) && n.arguments.length) {
         const lits = literalKeys(n.arguments[0]);
-        if (lits) for (const key of lits) keys.push({ key, file: rel, line: lineOf(n) });
-        else dynamicKeyCalls++;
+        if (lits) {
+          for (const key of lits) keys.push({ key, file: rel, line: lineOf(n) });
+          if ((n.expression as ts.Identifier).text === 't') tCalls.push({ keys: lits, file: rel, line: lineOf(n), params: paramsOf(n) });
+        } else dynamicKeyCalls++;
       }
       // hardcoded JSX
       if (ts.isJsxText(n)) {
@@ -198,7 +233,7 @@ function scanSources(): Scan {
     visit(sf);
     if (METRICS.some((m) => c[m] > 0)) counts.set(rel, c);
   }
-  return { counts, keys, files: files.map((f) => path.relative(FRONTEND_ROOT, f).split(path.sep).join('/')), dynamicKeyCalls };
+  return { counts, keys, tCalls, files: files.map((f) => path.relative(FRONTEND_ROOT, f).split(path.sep).join('/')), dynamicKeyCalls };
 }
 
 // ── Dictionaries ─────────────────────────────────────────────────────────────
@@ -225,6 +260,10 @@ const sameSet = (a: Set<string>, b: Set<string>) => a.size === b.size && [...a].
 interface Baseline {
   _readme: string;
   pinnedAt: string;
+  /** Set by hand, with I18N_ALLOW_INCREASE=1, to let one repin accept increases. Cleared by the repin. */
+  allowIncreaseReason?: string;
+  /** Every repin that accepted an increase: when, why, and what went up. */
+  increaseLog?: Array<{ pinnedAt: string; reason: string; increases: string[] }>;
   totals: Counts & { files: number };
   fragmentKeys: string[];
   files: Record<string, Partial<Counts>>;
@@ -245,7 +284,7 @@ function buildBaseline(scan: Scan): Baseline {
     totals.files++;
   }
   return {
-    _readme: 'Pinned by e2e/i18n-coverage.spec.ts. Counts may only go down. Regenerate with `npm run i18n:repin` after removing hard-coded strings; never hand-edit a number upward.',
+    _readme: 'Pinned by e2e/i18n-coverage.spec.ts. Counts may not go up. Regenerate with `npm run i18n:repin` after removing hard-coded strings; it refuses increases unless I18N_ALLOW_INCREASE=1 and allowIncreaseReason is set here. Never hand-edit a number upward.',
     pinnedAt: new Date().toISOString().slice(0, 10),
     totals,
     fragmentKeys: Object.keys(en).filter(isFragmentKey).sort(),
@@ -302,23 +341,8 @@ test.describe('i18n coverage ratchet', () => {
     expect(bad, `Placeholder mismatches:\n${bad.join('\n')}`).toEqual([]);
   });
 
-  test('no new sentence-fragment keys', () => {
-    const pinned = new Set(REPIN ? Object.keys(en).filter(isFragmentKey) : readBaseline().fragmentKeys);
-    const now = Object.keys(en).filter(isFragmentKey);
-    const added = now.filter((k) => !pinned.has(k));
-    expect(added, `New fragment keys. Arabic cannot reorder a sentence glued from fragments — write one key for the whole sentence with {placeholders}:\n${added.join('\n')}`).toEqual([]);
-    const gone = [...pinned].filter((k) => !now.includes(k));
-    expect(gone, `Pinned fragment keys that no longer exist — run \`npm run i18n:repin\`:\n${gone.join('\n')}`).toEqual([]);
-  });
-
-  test('per-file counts may only go down', () => {
-    const current = buildBaseline(scan);
-    if (REPIN) {
-      fs.writeFileSync(BASELINE_PATH, `${JSON.stringify(current, null, 2)}\n`);
-      console.log(`i18n baseline re-pinned: ${JSON.stringify(current.totals)}`);
-      return;
-    }
-    const pinned = readBaseline();
+  /** Per-file increases and decreases of `current` against `pinned`, as readable lines. */
+  function compare(pinned: Baseline, current: Baseline) {
     const up: string[] = [];
     const down: string[] = [];
     const filesSeen = new Set([...Object.keys(pinned.files), ...Object.keys(current.files)]);
@@ -330,8 +354,70 @@ test.describe('i18n coverage ratchet', () => {
         else if (is < was) down.push(`  ${rel}  ${m}: ${was} → ${is}`);
       }
     }
+    const pinnedFragments = new Set(pinned.fragmentKeys);
+    const newFragments = current.fragmentKeys.filter((k) => !pinnedFragments.has(k));
+    const goneFragments = pinned.fragmentKeys.filter((k) => !current.fragmentKeys.includes(k));
+    return { up, down, newFragments, goneFragments };
+  }
+
+  /** A stale (too high) baseline is not a failure: it is reported so someone repins. */
+  function warn(lines: string[]) {
+    const text = lines.join('\n');
+    console.warn(text);
+    test.info().annotations.push({ type: 'warning', description: text });
+  }
+
+  const pinned = readBaseline();
+
+  test('every t() call passes the params its message needs', () => {
+    const bad: string[] = [];
+    for (const call of scan.tCalls) {
+      for (const key of call.keys) {
+        const needed = new Set<string>();
+        for (const dict of [en, ar]) if (key in dict) messageArgs(dict[key]).forEach((a) => needed.add(a));
+        if (needed.size === 0) continue;
+        if (call.params === 'none') bad.push(`  ${call.file}:${call.line}  ${JSON.stringify(key)}  needs {${[...needed].join(', ')}} but is called without params`);
+        else if (call.params !== 'opaque') {
+          const missing = [...needed].filter((a) => !(call.params as string[]).includes(a));
+          if (missing.length) bad.push(`  ${call.file}:${call.line}  ${JSON.stringify(key)}  params do not name {${missing.join(', ')}}`);
+        }
+      }
+    }
+    expect(bad, `t() calls that would show a raw {placeholder}:\n${bad.join('\n')}\n`).toEqual([]);
+  });
+
+  test('no new sentence-fragment keys', () => {
+    test.skip(REPIN, 'the repin test checks fragments itself');
+    const now = Object.keys(en).filter(isFragmentKey);
+    const { newFragments, goneFragments } = compare(pinned, { ...pinned, fragmentKeys: now });
+    expect(newFragments, `New fragment keys. Arabic cannot reorder a sentence glued from fragments — write one key for the whole sentence with {placeholders}:\n${newFragments.join('\n')}`).toEqual([]);
+    if (goneFragments.length) warn([`Pinned fragment keys that no longer exist — thank you. Run \`npm run i18n:repin\` and commit e2e/i18n-baseline.json:`, ...goneFragments.map((k) => `  ${k}`)]);
+  });
+
+  test('per-file counts may not go up', () => {
+    test.skip(REPIN, 'the repin test writes the baseline instead');
+    const { up, down } = compare(pinned, buildBaseline(scan));
     expect(up, `i18n regressions (counts went UP). Use t()/msg(), <EnumLabel>, useFormat() or a mirrored icon:\n${up.join('\n')}\n`).toEqual([]);
-    expect(down, `Counts went DOWN — thank you. Lock it in: \`npm run i18n:repin\`, then commit e2e/i18n-baseline.json:\n${down.join('\n')}\n`).toEqual([]);
+    if (down.length) warn([`i18n baseline is stale: counts went DOWN — thank you. Lock it in with \`npm run i18n:repin\`, then commit e2e/i18n-baseline.json:`, ...down]);
+  });
+
+  test('repin: write the baseline, refusing increases without a recorded reason', () => {
+    test.skip(!REPIN, 'only under `npm run i18n:repin`');
+    const current = buildBaseline(scan);
+    const { up, newFragments } = compare(pinned, current);
+    const increases = [...up, ...newFragments.map((k) => `  new fragment key: ${JSON.stringify(k)}`)];
+    const reason = pinned.allowIncreaseReason?.trim() ?? '';
+    if (increases.length) {
+      expect(ALLOW_INCREASE && reason.length > 0,
+        `Refusing to repin: these would go UP.\n${increases.join('\n')}\n\n`
+        + 'Translate them instead. If an increase is genuinely intended, write why in "allowIncreaseReason" in '
+        + 'e2e/i18n-baseline.json and rerun with I18N_ALLOW_INCREASE=1.\n').toBe(true);
+    }
+    const log = [...(pinned.increaseLog ?? [])];
+    if (increases.length) log.push({ pinnedAt: current.pinnedAt, reason, increases: increases.map((l) => l.trim()) });
+    const out: Baseline = { _readme: current._readme, pinnedAt: current.pinnedAt, ...(log.length ? { increaseLog: log } : {}), totals: current.totals, fragmentKeys: current.fragmentKeys, files: current.files };
+    fs.writeFileSync(BASELINE_PATH, `${JSON.stringify(out, null, 2)}\n`);
+    console.log(`i18n baseline re-pinned: ${JSON.stringify(current.totals)}${increases.length ? ` (accepted ${increases.length} increase(s): ${reason})` : ''}`);
   });
 
   test('the shared foundations stay wired', () => {

@@ -1,10 +1,10 @@
 {
-  "_readme": "Pinned by e2e/i18n-coverage.spec.ts. Counts may only go down. Regenerate with `npm run i18n:repin` after removing hard-coded strings; never hand-edit a number upward.",
+  "_readme": "Pinned by e2e/i18n-coverage.spec.ts. Counts may not go up. Regenerate with `npm run i18n:repin` after removing hard-coded strings; it refuses increases unless I18N_ALLOW_INCREASE=1 and allowIncreaseReason is set here. Never hand-edit a number upward.",
   "pinnedAt": "2026-10-05",
   "totals": {
     "hardcoded": 5771,
     "rawStatus": 61,
-    "locale": 227,
+    "locale": 226,
     "icons": 0,
     "files": 126
   },
@@ -248,7 +248,7 @@
       "locale": 1
     },
     "src/components/dashboard/dashboardModel.ts": {
-      "locale": 10
+      "locale": 9
     },
     "src/components/gl/AccountsMappingsPanel.tsx": {
       "hardcoded": 34
