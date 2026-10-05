@@ -630,6 +630,8 @@ string RateLimitPartitionKey(HttpContext ctx) =>
 builder.Services.AddRateLimiter(o =>
 {
     o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    // Same 429 shape as sign-in refusals: JSON { error, message } and a Retry-After.
+    o.OnRejected = Zayra.Api.Infrastructure.Http.RateLimitRejection.WriteAsync;
 
     o.AddPolicy("auth_login", ctx =>
         RateLimitPartition.GetFixedWindowLimiter(

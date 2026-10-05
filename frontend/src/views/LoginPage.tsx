@@ -107,7 +107,13 @@ export function LoginPage() {
       const status = err?.response?.status;
       if (status === 401)      setError('Invalid credentials. Check your email, password and workspace.');
       else if (status === 400) setError(err.response?.data?.message ?? 'Please check the details you entered.');
-      else if (status === 429) setError('Too many attempts. Please wait a moment and try again.');
+      else if (status === 429) {
+        // Distinct codes from the API (LoginAbuseGuard): only the account limit is "too many attempts".
+        const code = err?.response?.data?.error;
+        if (code === 'account_rate_limited') setError('Too many attempts for this account. Please wait a few minutes and try again.');
+        else if (code === 'ip_failure_budget') setError('Too many failed sign-ins from your network. Please wait a few minutes and try again.');
+        else setError('The sign-in service is busy — try again in a few seconds.');
+      }
       else if (!err?.response) setError('Cannot reach the server. Check your connection and try again.');
       else {
         const traceId = err.response?.data?.traceId;
