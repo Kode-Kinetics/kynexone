@@ -436,7 +436,10 @@ public sealed class QiwaIntegrationService : IQiwaIntegrationService
 
         var failedCount = await _db.QiwaSyncLogs
             .CountAsync(l => l.TenantId == tenantId &&
-                             (l.Status == QiwaSyncLogStatuses.Failed || l.Status == QiwaSyncLogStatuses.DeadLetter), ct);
+                             (l.Status == QiwaSyncLogStatuses.Failed
+                              || (l.Status == QiwaSyncLogStatuses.DeadLetter
+                                  && l.DeadLetterReason != QiwaSyncLogStatuses.MissingClientIdReason
+                                  && l.DeadLetterReason != QiwaSyncLogStatuses.MissingSecretReason)), ct);
 
         var (lastFiled, lastSimulated) = await LastRunsAsync(_db, tenantId, ct);
 

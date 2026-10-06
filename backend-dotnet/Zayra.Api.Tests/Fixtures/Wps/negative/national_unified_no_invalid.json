@@ -1,0 +1,8 @@
+{
+  "expectedCode": "national_unified_no_invalid",
+  "patch": {
+    "header": {
+      "nationalUnifiedNo": "70012345"
+    }
+  }
+}

@@ -8,7 +8,8 @@ namespace Zayra.Api.Infrastructure.Payroll.SaudiBankExports;
 public sealed record AnbHeaderInput(
     string? BatchNumber, string? BatchType, string? MolEstablishmentId, string? MainAccountNumber,
     DateOnly CreditValueDate, string? OrganizationName, string? OrganizationAddress1, string? OrganizationAddress2,
-    string? OrganizationAddress3, string? Narrative, string? CompanyName);
+    string? OrganizationAddress3, string? Narrative, string? CompanyName,
+    bool AutoWpsUpload = false, string? NationalUnifiedNo = null);
 
 /// <summary>One payment row. <see cref="EmployeeRef"/> is the internal employee id (ordering + blocker
 /// attribution); <see cref="EmployeeLabel"/> is the employee code used in messages — never a national
@@ -51,6 +52,12 @@ public static class AnbConnectCsvGenerator
         "paymentCount", "totalPayrollAmount", "narrative", "companyName",
     };
 
+    /// <summary>Appended to the header ONLY when auto-WPS upload is enabled, so a file without it stays
+    /// byte-identical to every instruction generated before the option existed. ANB documents the
+    /// switch as <c>autowpsfileupload=YES</c> with <c>nationalunifiedno</c>. [CONFIRM] the exact column
+    /// names and casing ANB Connect expects in the CSV header during bank onboarding.</summary>
+    public static readonly IReadOnlyList<string> AutoWpsHeaderColumns = new[] { "autoWpsFileUpload", "nationalUnifiedNo" };
+
     public static readonly IReadOnlyList<string> BodyColumns = new[]
     {
         "employeeId", "employeeAccountNumber", "salaryAmount", "basicSalary", "housingAllowance",
@@ -90,6 +97,8 @@ public static class AnbConnectCsvGenerator
         ValidateEmployerField("organizationAddress3", header.OrganizationAddress3, errors, allowBlank: false);
         ValidateEmployerField("narrative", header.Narrative, errors, allowBlank: false);
         ValidateEmployerField("companyName", header.CompanyName, errors, allowBlank: false);
+        if (header.AutoWpsUpload)
+            KsaWageFileRules.ValidateNationalUnifiedNo(header.NationalUnifiedNo, required: true, errors);
 
         if (rows.Count == 0)
             errors.Add(new("batch_empty", "The batch has no payment rows."));
@@ -110,14 +119,16 @@ public static class AnbConnectCsvGenerator
         if (errors.Count > 0) return new AnbGenerationResult(errors, null, rows.Count, total);
 
         var headerCsv = new StringBuilder();
-        AppendLine(headerCsv, HeaderColumns);
-        AppendLine(headerCsv, new[]
+        var headerValues = new List<string>
         {
             header.BatchNumber!, header.BatchType!, header.MolEstablishmentId!, header.MainAccountNumber!,
             header.CreditValueDate.ToString("yyMMdd", CultureInfo.InvariantCulture),
             header.OrganizationName!, header.OrganizationAddress1!, header.OrganizationAddress2!, header.OrganizationAddress3!,
             rows.Count.ToString(CultureInfo.InvariantCulture), Amount(total), header.Narrative!, header.CompanyName!,
-        });
+        };
+        AppendLine(headerCsv, header.AutoWpsUpload ? HeaderColumns.Concat(AutoWpsHeaderColumns) : HeaderColumns);
+        if (header.AutoWpsUpload) headerValues.AddRange(new[] { "YES", header.NationalUnifiedNo! });
+        AppendLine(headerCsv, headerValues);
 
         var bodyCsv = new StringBuilder();
         AppendLine(bodyCsv, BodyColumns);
@@ -141,7 +152,9 @@ public static class AnbConnectCsvGenerator
     {
         if (string.IsNullOrEmpty(value))
         {
-            if (!allowBlank) errors.Add(new("field_required", $"{field} is required for the ANB header.", null, field));
+            if (allowBlank) return;
+            if (field == "molEstablishmentId") KsaWageFileRules.ValidateEstablishmentId(value, errors);
+            else errors.Add(new("field_required", $"{field} is required for the ANB header.", null, field));
             return;
         }
         switch (field)
@@ -151,7 +164,8 @@ public static class AnbConnectCsvGenerator
                     errors.Add(new("batch_type_invalid", "batchType must be PAYROLL, BENEFIT, BONUS or WELFARE.", null, field));
                 break;
             case "molEstablishmentId":
-                ValidateText(field, value, 2, 15, null, null, errors);
+                // [MOL-ESTBID] 2d-15d — never free text, never a placeholder.
+                KsaWageFileRules.ValidateEstablishmentId(value, errors);
                 break;
             case "mainAccountNumber":
                 if (!IsAsciiDigits(value, 16, 16))
@@ -170,6 +184,10 @@ public static class AnbConnectCsvGenerator
                 break;
         }
     }
+
+    /// <summary>True for ANB's own BIC, the only one a 16-digit internal account may be credited with.</summary>
+    public static bool IsAnbBic(string? bic) =>
+        bic is not null && AnbInternalAccountBics.Contains(bic.Trim(), StringComparer.OrdinalIgnoreCase);
 
     public static string Sha256Hex(byte[] content) => Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant();
 

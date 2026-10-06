@@ -1,0 +1,8 @@
+{
+  "expectedCode": "mol_establishment_id_invalid",
+  "patch": {
+    "header": {
+      "molEstablishmentId": "EST-ABC"
+    }
+  }
+}

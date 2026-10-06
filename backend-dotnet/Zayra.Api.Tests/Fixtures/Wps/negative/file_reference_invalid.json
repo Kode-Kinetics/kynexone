@@ -1,0 +1,8 @@
+{
+  "expectedCode": "file_reference_invalid",
+  "patch": {
+    "header": {
+      "fileReference": "20261001010203045"
+    }
+  }
+}

@@ -456,13 +456,25 @@ builder.Services.AddDataProtection()
     .SetApplicationName("Zayra.Api")
     .PersistKeysToDbContext<ZayraDbContext>();
 
-// Qiwa API adapter: live HTTP client when QIWA_USE_LIVE_ADAPTER=true, sandbox mock otherwise.
+// Qiwa API adapter. HARD-DISABLED unless QIWA_USE_LIVE_ADAPTER=true AND a Qiwa partner agreement is
+// recorded (Qiwa:PartnerAgreementReference). The switch alone registers the refusing adapter: no
+// network call, 501 on every Qiwa write, never "Filed with Qiwa". See QiwaLiveAdapterPolicy.
 builder.Services.AddSingleton<QiwaOAuthTokenCache>();
 builder.Services.AddHttpClient("qiwa", c => c.BaseAddress = new Uri("https://api.qiwa.tech"));
-if (string.Equals(Environment.GetEnvironmentVariable("QIWA_USE_LIVE_ADAPTER"), "true", StringComparison.OrdinalIgnoreCase))
-    builder.Services.AddSingleton<IQiwaApiAdapter, LiveQiwaApiAdapter>();
-else
-    builder.Services.AddSingleton<IQiwaApiAdapter, SandboxQiwaApiAdapter>();
+switch (QiwaLiveAdapterPolicy.Decide(builder.Configuration))
+{
+    case QiwaLiveAdapterPolicy.Mode.Live:
+        builder.Services.AddSingleton<IQiwaApiAdapter, LiveQiwaApiAdapter>();
+        break;
+    case QiwaLiveAdapterPolicy.Mode.RefusedLive:
+        Console.Error.WriteLine("[startup] QIWA_USE_LIVE_ADAPTER=true but no Qiwa partner agreement is recorded "
+            + $"({QiwaLiveAdapterPolicy.PartnerAgreementKey}); live Qiwa calls are REFUSED.");
+        builder.Services.AddSingleton<IQiwaApiAdapter, RefusedLiveQiwaApiAdapter>();
+        break;
+    default:
+        builder.Services.AddSingleton<IQiwaApiAdapter, SandboxQiwaApiAdapter>();
+        break;
+}
 builder.Services.AddHostedService<QiwaSyncWorker>();
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Operations.WorkerHeartbeatReporter>();
 builder.Services.AddHostedService<Zayra.Api.Infrastructure.Reports.ReportScheduleWorker>();

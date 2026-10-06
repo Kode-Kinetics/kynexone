@@ -1,0 +1,10 @@
+{
+  "expectedCode": "other_earnings_negative",
+  "patch": {
+    "rows": {
+      "0": {
+        "housing": 2000.0
+      }
+    }
+  }
+}
