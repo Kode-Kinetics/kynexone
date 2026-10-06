@@ -4,7 +4,9 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Routing;
 using Zayra.Api.Controllers;
+using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Models;
 using static Zayra.Api.Tests.Security.SeededRoleBundles;
 using static Zayra.Api.Tests.Security.LegacyRoleGateBypassSweepTests.Reason;
 
@@ -35,6 +37,34 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         "Finance Approver", "Compliance Officer", "Manager", "Supervisor", "Recruiter", "HR Assistant",
         "Auditor", "Kiosk Operator", "Employee",
     };
+
+    /// <summary>
+    /// Access-mode bundles: a user's effective permissions are their role's bundle PLUS the access mode's grants
+    /// (AuthService.AccessModePermissions). The label is what the allow-list names; the role is what the gate
+    /// compares against its role list.
+    /// </summary>
+    internal static readonly (string Label, string Role, string AccessMode)[] AccessModeBundles =
+    {
+        ("Employee+Mobile", "Employee", AccessModes.Mobile),
+        ("Employee+ManagerPortal", "Employee", AccessModes.ManagerPortal),
+        ("KioskOnly", "Kiosk Operator", AccessModes.KioskOnly),
+    };
+
+    /// <summary>Every caller shape the sweep checks: label, the role name it carries, and its effective permissions.</summary>
+    internal static async Task<List<(string Label, string Role, HashSet<string> Permissions)>> CallerBundlesAsync()
+    {
+        var (db, tenantId) = await NewTenantAsync("role-gate-sweep");
+        var bundles = new List<(string, string, HashSet<string>)>();
+        foreach (var role in SeededRoles)
+            bundles.Add((role, role, (await PermissionsOfAsync(db, tenantId, role)).ToHashSet(StringComparer.OrdinalIgnoreCase)));
+        foreach (var (label, role, mode) in AccessModeBundles)
+        {
+            var permissions = (await PermissionsOfAsync(db, tenantId, role)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            permissions.UnionWith(AuthService.AccessModePermissions(mode));
+            bundles.Add((label, role, permissions));
+        }
+        return bundles;
+    }
 
     internal sealed record RoleGate(string Endpoint, IReadOnlyCollection<string> NamedRoles, IReadOnlyList<string> Permissions);
 
@@ -95,17 +125,34 @@ public sealed partial class LegacyRoleGateBypassSweepTests
 
     internal static async Task<List<Bypass>> CurrentBypassesAsync()
     {
-        var (db, tenantId) = await NewTenantAsync("role-gate-sweep");
-        var bundles = new Dictionary<string, HashSet<string>>();
-        foreach (var role in SeededRoles)
-            bundles[role] = (await PermissionsOfAsync(db, tenantId, role)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var bundles = await CallerBundlesAsync();
+        var gates = RoleGatedEndpoints().ToList();
+        var bypasses = new List<Bypass>();
+        foreach (var (label, role, permissions) in bundles)
+        {
+            foreach (var gate in gates.Where(g => !g.NamedRoles.Contains(role)))
+            {
+                var key = gate.Permissions.FirstOrDefault(permissions.Contains);
+                if (key is null) continue;
+                // An access-mode bundle is reported only for what the mode ADDS: what the bare role already
+                // reaches is reviewed under the role itself.
+                var bare = bundles.First(b => b.Label == role).Permissions;
+                if (label != role && gate.Permissions.Any(bare.Contains)) continue;
+                bypasses.Add(new Bypass(gate.Endpoint, label, key));
+            }
+        }
+        return bypasses;
+    }
 
+    /// <summary>Seeded roles a gate NAMES but that can never pass it: they hold none of its permissions.</summary>
+    internal static async Task<List<(string Endpoint, string Role, string Keys)>> NamedButLockedAsync()
+    {
+        var bundles = (await CallerBundlesAsync()).Where(b => b.Label == b.Role).ToDictionary(b => b.Role, b => b.Permissions);
         return RoleGatedEndpoints()
-            .SelectMany(gate => SeededRoles
-                .Where(role => !gate.NamedRoles.Contains(role))
-                .Select(role => (role, key: gate.Permissions.FirstOrDefault(bundles[role].Contains)))
-                .Where(x => x.key is not null)
-                .Select(x => new Bypass(gate.Endpoint, x.role, x.key!)))
+            .SelectMany(g => g.NamedRoles
+                .Where(r => bundles.ContainsKey(r) && !g.Permissions.Any(bundles[r].Contains))
+                .Select(r => (g.Endpoint, r, string.Join("|", g.Permissions))))
+            .Distinct()
             .ToList();
     }
 
@@ -139,6 +186,27 @@ public sealed partial class LegacyRoleGateBypassSweepTests
     }
 
     [Fact]
+    public async Task EveryNamedButLockedRole_IsListedForTheOwnersDecision()
+    {
+        // A role named on a gate that holds none of its keys is refused by the pipeline: the role list promises
+        // access the permission model never grants. Each is listed for an owner decision (grant the key, or drop
+        // the role from the list); this test does not grant anything.
+        var current = await NamedButLockedAsync();
+        var listed = NamedButLocked
+            .SelectMany(e => e.Roles.Split(',', StringSplitOptions.TrimEntries).Select(r => (e.Endpoint, r)))
+            .ToHashSet();
+
+        var missing = current.Where(x => !listed.Contains((x.Endpoint, x.Role))).Select(x => $"{x.Endpoint} | {x.Role} | needs {x.Keys}").ToList();
+        missing.Should().BeEmpty(
+            "a role named on this gate can never pass it; add it to NamedButLocked with a decision:\n" + string.Join('\n', missing));
+        var currentPairs = current.Select(x => (x.Endpoint, x.Role)).ToHashSet();
+        listed.Where(x => !currentPairs.Contains(x)).Select(x => $"{x.Endpoint} | {x.Item2}").Should().BeEmpty(
+            "these NamedButLocked entries are resolved; delete them");
+        NamedButLocked.Select(e => (e.Endpoint, e.Decision)).Should().OnlyHaveUniqueItems();
+        NamedButLocked.Should().OnlyContain(e => e.Decision.StartsWith("GRANT ", StringComparison.Ordinal) || e.Decision.StartsWith("DROP ", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void EveryAllowListEntryCarriesAnExplainedReason()
     {
         AllowList.Should().OnlyContain(e => Reasons.ContainsKey(e.Why) && !string.IsNullOrWhiteSpace(Reasons[e.Why]));
@@ -150,8 +218,9 @@ public sealed partial class LegacyRoleGateBypassSweepTests
     {
         // A plain employee, kiosk operator or line supervisor bypassing a role gate is only ever acceptable for
         // aggregate or data-scoped reads, scoped attendance processing, or an action whose body refuses them anyway.
-        var frontLine = new[] { "Employee", "Kiosk Operator", "Supervisor", "Manager" };
-        var acceptable = new[] { ScopedRead, AggregateOnly, AttendanceProcessScoped, OpenUnscopedNames, DeviceReadMasked, WorkflowStepAuthority, BodyRechecksRole };
+        var frontLine = new[] { "Employee", "Kiosk Operator", "Supervisor", "Manager" }
+            .Concat(AccessModeBundles.Select(b => b.Label)).ToArray();
+        var acceptable = new[] { TeamScopedRead, AggregateOnly, AttendanceProcessScoped, OpenUnscopedNames, DeviceReadMasked, WorkflowStepAuthority, BodyRechecksRole };
         var offending = AllowList
             .Where(e => e.Roles.Split(',', StringSplitOptions.TrimEntries).Intersect(frontLine).Any() && !acceptable.Contains(e.Why))
             .Select(e => $"{e.Endpoint} [{e.Roles}] {e.Why}")
