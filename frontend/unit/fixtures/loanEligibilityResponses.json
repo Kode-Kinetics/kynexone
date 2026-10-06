@@ -1,0 +1,1011 @@
+{
+  "CreateRefusedGradeLimitPerLoan": {
+    "error": "loan_ineligible",
+    "reasons": [
+      "Grade 2 allows up to 10,000.00 SAR per loan of this type (Personal)."
+    ],
+    "codes": [
+      "GradeLimitPerLoan"
+    ],
+    "maxAvailableAmount": 10000,
+    "gradeLimit": {
+      "applies": true,
+      "eligible": false,
+      "gradeId": "00000000-0000-0000-0000-000000000001",
+      "gradeCode": "G2",
+      "gradeName": "Grade 2",
+      "gradeNameAr": null,
+      "cellId": "00000000-0000-0000-0000-000000000002",
+      "isCompanyOverride": false,
+      "basis": "Amount",
+      "multiple": null,
+      "salaryBasisAmount": null,
+      "perLoanCap": 10000,
+      "outstandingCap": null,
+      "outstandingNow": 0,
+      "available": 10000,
+      "bindingLimit": "GradePerLoan",
+      "reasonCode": "GradeLimitPerLoan",
+      "reasonText": "Grade 2 allows up to 10,000.00 SAR per loan of this type (Personal).",
+      "codes": [
+        "GradeLimitPerLoan"
+      ],
+      "reasons": [
+        "Grade 2 allows up to 10,000.00 SAR per loan of this type (Personal)."
+      ],
+      "currency": "SAR",
+      "limitBreakdowns": [
+        {
+          "limit": "GradePerLoan",
+          "basis": "Amount",
+          "multiple": null,
+          "salaryBasisAmount": null,
+          "cap": 10000,
+          "outstandingNow": null,
+          "available": 10000,
+          "unit": "Principal",
+          "installments": null
+        }
+      ]
+    },
+    "available": 10000,
+    "bindingLimit": "GradePerLoan",
+    "limitBreakdowns": [
+      {
+        "limit": "GradePerLoan",
+        "basis": "Amount",
+        "multiple": null,
+        "salaryBasisAmount": null,
+        "cap": 10000,
+        "outstandingNow": null,
+        "available": 10000,
+        "unit": "Principal",
+        "installments": null
+      },
+      {
+        "limit": "PolicyConcurrentLoans",
+        "basis": "Count",
+        "multiple": null,
+        "salaryBasisAmount": null,
+        "cap": 10,
+        "outstandingNow": 0,
+        "available": null,
+        "unit": "Loans",
+        "installments": null
+      }
+    ],
+    "currency": "SAR"
+  },
+  "GradeLimitNotConfigured": {
+    "eligible": false,
+    "reasons": [
+      "Your loan limit hasn't been set up yet — HR has been notified."
+    ],
+    "codes": [
+      "GradeLimitNotConfigured"
+    ],
+    "maxAvailableAmount": 0,
+    "policyId": "00000000-0000-0000-0000-000000000003",
+    "policyVersion": 1,
+    "monthlySalary": 0,
+    "committedAmount": 0,
+    "canRequestException": false,
+    "preview": false,
+    "available": 0,
+    "bindingLimit": null,
+    "limitBreakdowns": [
+      {
+        "limit": "PolicyConcurrentLoans",
+        "basis": "Count",
+        "multiple": null,
+        "salaryBasisAmount": null,
+        "cap": 10,
+        "outstandingNow": 0,
+        "available": null,
+        "unit": "Loans",
+        "installments": null
+      }
+    ],
+    "gradeLimit": {
+      "applies": true,
+      "eligible": false,
+      "gradeId": "00000000-0000-0000-0000-000000000004",
+      "gradeCode": "G2",
+      "gradeName": "Grade 2",
+      "gradeNameAr": null,
+      "cellId": null,
+      "isCompanyOverride": false,
+      "basis": null,
+      "multiple": null,
+      "salaryBasisAmount": null,
+      "perLoanCap": null,
+      "outstandingCap": null,
+      "outstandingNow": 0,
+      "available": 0,
+      "bindingLimit": null,
+      "reasonCode": "GradeLimitNotConfigured",
+      "reasonText": "Your loan limit hasn't been set up yet — HR has been notified.",
+      "codes": [
+        "GradeLimitNotConfigured"
+      ],
+      "reasons": [
+        "Your loan limit hasn't been set up yet — HR has been notified."
+      ],
+      "currency": "SAR",
+      "limitBreakdowns": []
+    },
+    "currency": "SAR"
+  },
+  "GradeMultipleOfBasic": {
+    "eligible": true,
+    "reasons": [],
+    "codes": [],
+    "maxAvailableAmount": 12000,
+    "policyId": "00000000-0000-0000-0000-000000000005",
+    "policyVersion": 1,
+    "monthlySalary": 6000,
+    "committedAmount": 0,
+    "canRequestException": false,
+    "preview": false,
+    "available": 12000,
+    "bindingLimit": "GradePerLoan",
+    "limitBreakdowns": [
+      {
+        "limit": "GradePerLoan",
+        "basis": "MultipleOfBasic",
+        "multiple": 2,
+        "salaryBasisAmount": 6000,
+        "cap": 12000,
+        "outstandingNow": null,
+        "available": 12000,
+        "unit": "Principal",
+        "installments": null
+      },
+      {
+        "limit": "PolicyConcurrentLoans",
+        "basis": "Count",
+        "multiple": null,
+        "salaryBasisAmount": null,
+        "cap": 10,
+        "outstandingNow": 0,
+        "available": null,
+        "unit": "Loans",
+        "installments": null
+      }
+    ],
+    "gradeLimit": {
+      "applies": true,
+      "eligible": true,
+      "gradeId": "00000000-0000-0000-0000-000000000006",
+      "gradeCode": "G2",
+      "gradeName": "Grade 2",
+      "gradeNameAr": null,
+      "cellId": "00000000-0000-0000-0000-000000000007",
+      "isCompanyOverride": false,
+      "basis": "MultipleOfBasic",
+      "multiple": 2,
+      "salaryBasisAmount": 6000,
+      "perLoanCap": 12000,
+      "outstandingCap": null,
+      "outstandingNow": 0,
+      "available": 12000,
+      "bindingLimit": "GradePerLoan",
+      "reasonCode": null,
+      "reasonText": null,
+      "codes": [],
+      "reasons": [],
+      "currency": "SAR",
+      "limitBreakdowns": [
+        {
+          "limit": "GradePerLoan",
+          "basis": "MultipleOfBasic",
+          "multiple": 2,
+          "salaryBasisAmount": 6000,
+          "cap": 12000,
+          "outstandingNow": null,
+          "available": 12000,
+          "unit": "Principal",
+          "installments": null
+        }
+      ]
+    },
+    "currency": "SAR"
+  },
+  "GradeNotEligible": {
+    "eligible": false,
+    "reasons": [
+      "Employees in Grade 2 aren't eligible for this loan type (Personal)."
+    ],
+    "codes": [
+      "GradeNotEligible"
+    ],
+    "maxAvailableAmount": 0,
+    "policyId": "00000000-0000-0000-0000-000000000008",
+    "policyVersion": 1,
+    "monthlySalary": 0,
+    "committedAmount": 0,
+    "canRequestException": false,
+    "preview": false,
+    "available": 0,
+    "bindingLimit": null,
+    "limitBreakdowns": [
+      {
+        "limit": "PolicyConcurrentLoans",
+        "basis": "Count",
+        "multiple": null,
+        "salaryBasisAmount": null,
+        "cap": 10,
+        "outstandingNow": 0,
+        "available": null,
+        "unit": "Loans",
+        "installments": null
+      }
+    ],
+    "gradeLimit": {
+      "applies": true,
+      "eligible": false,
+      "gradeId": "00000000-0000-0000-0000-000000000009",
+      "gradeCode": "G2",
+      "gradeName": "Grade 2",
+      "gradeNameAr": null,
+      "cellId": "00000000-0000-0000-0000-000000000010",
+      "isCompanyOverride": false,
+      "basis": "EligibilityOnly",
+      "multiple": null,
+      "salaryBasisAmount": null,
+      "perLoanCap": null,
+      "outstandingCap": null,
+      "outstandingNow": 0,
+      "available": 0,
+      "bindingLimit": null,
+      "reasonCode": "GradeNotEligible",
+      "reasonText": "Employees in Grade 2 aren't eligible for this loan type (Personal).",
+      "codes": [
+        "GradeNotEligible"
+      ],
+      "reasons": [
+        "Employees in Grade 2 aren't eligible for this loan type (Personal)."
+      ],
+      "currency": "SAR",
+      "limitBreakdowns": []
+    },
+    "currency": "SAR"
+  },
+  "GradeOutstanding": {
+    "eligible": true,
+    "reasons": [],
+    "codes": [],
+    "maxAvailableAmount": 9000,
+    "policyId": "00000000-0000-0000-0000-000000000011",
+    "policyVersion": 1,
+    "monthlySalary": 0,
+    "committedAmount": 3000,
+    "canRequestException": false,
+    "preview": false,
+    "available": 9000,
+    "bindingLimit": "GradeOutstanding",
+    "limitBreakdowns": [
+      {
+        "limit": "GradePerLoan",
+        "basis": "Amount",
+        "multiple": null,
+        "salaryBasisAmount": null,
+        "cap": 10000,
+        "outstandingNow": null,
+        "available": 10000,
+        "unit": "Principal",
+        "installments": null
+      },
+      {
+        "limit": "GradeOutstanding",
+        "basis": "Amount",
+        "multiple": null,
+        "salaryBasisAmount": null,
+        "cap": 12000,
+        "outstandingNow": 3000,
+        "available": 9000,
+        "unit": "Principal",
+        "installments": null
+      },
+      {
+        "limit": "PolicyConcurrentLoans",
+        "basis": "Count",
+        "multiple": null,
+        "salaryBasisAmount": null,
+        "cap": 10,
+        "outstandingNow": 1,
+        "available": null,
+        "unit": "Loans",
+        "installments": null
+      }
+    ],
+    "gradeLimit": {
+      "applies": true,
+      "eligible": true,
+      "gradeId": "00000000-0000-0000-0000-000000000012",
+      "gradeCode": "G2",
+      "gradeName": "Grade 2",
+      "gradeNameAr": null,
+      "cellId": "00000000-0000-0000-0000-000000000013",
+      "isCompanyOverride": false,
+      "basis": "Amount",
+      "multiple": null,
+      "salaryBasisAmount": null,
+      "perLoanCap": 10000,
+      "outstandingCap": 12000,
+      "outstandingNow": 3000,
+      "available": 9000,
+      "bindingLimit": "GradeOutstanding",
+      "reasonCode": null,
+      "reasonText": null,
+      "codes": [],
+      "reasons": [],
+      "currency": "SAR",
+      "limitBreakdowns": [
+        {
+          "limit": "GradePerLoan",
+          "basis": "Amount",
+          "multiple": null,
+          "salaryBasisAmount": null,
+          "cap": 10000,
+          "outstandingNow": null,
+          "available": 10000,
+          "unit": "Principal",
+          "installments": null
+        },
+        {
+          "limit": "GradeOutstanding",
+          "basis": "Amount",
+          "multiple": null,
+          "salaryBasisAmount": null,
+          "cap": 12000,
+          "outstandingNow": 3000,
+          "available": 9000,
+          "unit": "Principal",
+          "installments": null
+        }
+      ]
+    },
+    "currency": "SAR"
+  },
+  "GradePerLoan": {
+    "eligible": true,
+    "reasons": [],
+    "codes": [],
+    "maxAvailableAmount": 10000,
+    "policyId": "00000000-0000-0000-0000-000000000014",
+    "policyVersion": 1,
+    "monthlySalary": 0,
+    "committedAmount": 0,
+    "canRequestException": false,
+    "preview": false,
+    "available": 10000,
+    "bindingLimit": "GradePerLoan",
+    "limitBreakdowns": [
+      {
+        "limit": "GradePerLoan",
+        "basis": "Amount",
+        "multiple": null,
+        "salaryBasisAmount": null,
+        "cap": 10000,
+        "outstandingNow": null,
+        "available": 10000,
+        "unit": "Principal",
+        "installments": null
+      },
+      {
+        "limit": "PolicyConcurrentLoans",
+        "basis": "Count",
+        "multiple": null,
+        "salaryBasisAmount": null,
+        "cap": 10,
+        "outstandingNow": 0,
+        "available": null,
+        "unit": "Loans",
+        "installments": null
+      }
+    ],
+    "gradeLimit": {
+      "applies": true,
+      "eligible": true,
+      "gradeId": "00000000-0000-0000-0000-000000000015",
+      "gradeCode": "G2",
+      "gradeName": "Grade 2",
+      "gradeNameAr": null,
+      "cellId": "00000000-0000-0000-0000-000000000016",
+      "isCompanyOverride": false,
+      "basis": "Amount",
+      "multiple": null,
+      "salaryBasisAmount": null,
+      "perLoanCap": 10000,
+      "outstandingCap": null,
+      "outstandingNow": 0,
+      "available": 10000,
+      "bindingLimit": "GradePerLoan",
+      "reasonCode": null,
+      "reasonText": null,
+      "codes": [],
+      "reasons": [],
+      "currency": "SAR",
+      "limitBreakdowns": [
+        {
+          "limit": "GradePerLoan",
+          "basis": "Amount",
+          "multiple": null,
+          "salaryBasisAmount": null,
+          "cap": 10000,
+          "outstandingNow": null,
+          "available": 10000,
+          "unit": "Principal",
+          "installments": null
+        }
+      ]
+    },
+    "currency": "SAR"
+  },
+  "GradeSalaryMissing": {
+    "eligible": false,
+    "reasons": [
+      "The loan limit is based on salary, and no current salary in the company's currency is on file. HR needs to complete it."
+    ],
+    "codes": [
+      "GradeSalaryMissing"
+    ],
+    "maxAvailableAmount": 0,
+    "policyId": "00000000-0000-0000-0000-000000000017",
+    "policyVersion": 1,
+    "monthlySalary": 0,
+    "committedAmount": 0,
+    "canRequestException": false,
+    "preview": false,
+    "available": 0,
+    "bindingLimit": null,
+    "limitBreakdowns": [
+      {
+        "limit": "PolicyConcurrentLoans",
+        "basis": "Count",
+        "multiple": null,
+        "salaryBasisAmount": null,
+        "cap": 10,
+        "outstandingNow": 0,
+        "available": null,
+        "unit": "Loans",
+        "installments": null
+      }
+    ],
+    "gradeLimit": {
+      "applies": true,
+      "eligible": false,
+      "gradeId": "00000000-0000-0000-0000-000000000018",
+      "gradeCode": "G2",
+      "gradeName": "Grade 2",
+      "gradeNameAr": null,
+      "cellId": "00000000-0000-0000-0000-000000000019",
+      "isCompanyOverride": false,
+      "basis": "MultipleOfGross",
+      "multiple": 3,
+      "salaryBasisAmount": null,
+      "perLoanCap": null,
+      "outstandingCap": null,
+      "outstandingNow": 0,
+      "available": 0,
+      "bindingLimit": null,
+      "reasonCode": "GradeSalaryMissing",
+      "reasonText": "The loan limit is based on salary, and no current salary in the company's currency is on file. HR needs to complete it.",
+      "codes": [
+        "GradeSalaryMissing"
+      ],
+      "reasons": [
+        "The loan limit is based on salary, and no current salary in the company's currency is on file. HR needs to complete it."
+      ],
+      "currency": "SAR",
+      "limitBreakdowns": []
+    },
+    "currency": "SAR"
+  },
+  "LoanTypeNotOffered": {
+    "eligible": false,
+    "reasons": [
+      "Loans of this type aren't offered by your company."
+    ],
+    "codes": [
+      "LoanTypeNotOffered"
+    ],
+    "maxAvailableAmount": 10000,
+    "policyId": null,
+    "policyVersion": null,
+    "monthlySalary": 0,
+    "committedAmount": 0,
+    "canRequestException": false,
+    "preview": false,
+    "available": 10000,
+    "bindingLimit": "GradePerLoan",
+    "limitBreakdowns": [
+      {
+        "limit": "GradePerLoan",
+        "basis": "Amount",
+        "multiple": null,
+        "salaryBasisAmount": null,
+        "cap": 10000,
+        "outstandingNow": null,
+        "available": 10000,
+        "unit": "Principal",
+        "installments": null
+      }
+    ],
+    "gradeLimit": {
+      "applies": true,
+      "eligible": true,
+      "gradeId": "00000000-0000-0000-0000-000000000020",
+      "gradeCode": "G2",
+      "gradeName": "Grade 2",
+      "gradeNameAr": null,
+      "cellId": "00000000-0000-0000-0000-000000000021",
+      "isCompanyOverride": false,
+      "basis": "Amount",
+      "multiple": null,
+      "salaryBasisAmount": null,
+      "perLoanCap": 10000,
+      "outstandingCap": null,
+      "outstandingNow": 0,
+      "available": 10000,
+      "bindingLimit": "GradePerLoan",
+      "reasonCode": null,
+      "reasonText": null,
+      "codes": [],
+      "reasons": [],
+      "currency": "SAR",
+      "limitBreakdowns": [
+        {
+          "limit": "GradePerLoan",
+          "basis": "Amount",
+          "multiple": null,
+          "salaryBasisAmount": null,
+          "cap": 10000,
+          "outstandingNow": null,
+          "available": 10000,
+          "unit": "Principal",
+          "installments": null
+        }
+      ]
+    },
+    "currency": "SAR"
+  },
+  "PolicyConcurrentLoans": {
+    "eligible": false,
+    "reasons": [
+      "Maximum concurrent loans (1) would be exceeded, including pending requests."
+    ],
+    "codes": [
+      "ConcurrentLoans"
+    ],
+    "maxAvailableAmount": null,
+    "policyId": "00000000-0000-0000-0000-000000000022",
+    "policyVersion": 1,
+    "monthlySalary": 0,
+    "committedAmount": 500,
+    "canRequestException": false,
+    "preview": false,
+    "available": 0,
+    "bindingLimit": "PolicyConcurrentLoans",
+    "limitBreakdowns": [
+      {
+        "limit": "PolicyConcurrentLoans",
+        "basis": "Count",
+        "multiple": null,
+        "salaryBasisAmount": null,
+        "cap": 1,
+        "outstandingNow": 1,
+        "available": 0,
+        "unit": "Loans",
+        "installments": null
+      }
+    ],
+    "gradeLimit": {
+      "applies": false,
+      "eligible": true,
+      "gradeId": null,
+      "gradeCode": null,
+      "gradeName": null,
+      "gradeNameAr": null,
+      "cellId": null,
+      "isCompanyOverride": false,
+      "basis": null,
+      "multiple": null,
+      "salaryBasisAmount": null,
+      "perLoanCap": null,
+      "outstandingCap": null,
+      "outstandingNow": 0,
+      "available": null,
+      "bindingLimit": null,
+      "reasonCode": null,
+      "reasonText": null,
+      "codes": [],
+      "reasons": [],
+      "currency": null,
+      "limitBreakdowns": []
+    },
+    "currency": "SAR"
+  },
+  "PolicyInstallmentPercent": {
+    "eligible": true,
+    "reasons": [],
+    "codes": [],
+    "maxAvailableAmount": null,
+    "policyId": "00000000-0000-0000-0000-000000000023",
+    "policyVersion": 1,
+    "monthlySalary": 10000,
+    "committedAmount": 0,
+    "canRequestException": false,
+    "preview": false,
+    "available": 4000,
+    "bindingLimit": "PolicyInstallmentPercent",
+    "limitBreakdowns": [
+      {
+        "limit": "PolicyInstallmentPercent",
+        "basis": "MultipleOfGross",
+        "multiple": 0.1,
+        "salaryBasisAmount": 10000,
+        "cap": 1000,
+        "outstandingNow": 0,
+        "available": 4000,
+        "unit": "MonthlyInstalment",
+        "installments": 4
+      },
+      {
+        "limit": "PolicyConcurrentLoans",
+        "basis": "Count",
+        "multiple": null,
+        "salaryBasisAmount": null,
+        "cap": 10,
+        "outstandingNow": 0,
+        "available": null,
+        "unit": "Loans",
+        "installments": null
+      }
+    ],
+    "gradeLimit": {
+      "applies": false,
+      "eligible": true,
+      "gradeId": null,
+      "gradeCode": null,
+      "gradeName": null,
+      "gradeNameAr": null,
+      "cellId": null,
+      "isCompanyOverride": false,
+      "basis": null,
+      "multiple": null,
+      "salaryBasisAmount": null,
+      "perLoanCap": null,
+      "outstandingCap": null,
+      "outstandingNow": 0,
+      "available": null,
+      "bindingLimit": null,
+      "reasonCode": null,
+      "reasonText": null,
+      "codes": [],
+      "reasons": [],
+      "currency": null,
+      "limitBreakdowns": []
+    },
+    "currency": "SAR"
+  },
+  "PolicyMaxAmount": {
+    "eligible": true,
+    "reasons": [],
+    "codes": [],
+    "maxAvailableAmount": 6000,
+    "policyId": "00000000-0000-0000-0000-000000000024",
+    "policyVersion": 1,
+    "monthlySalary": 0,
+    "committedAmount": 0,
+    "canRequestException": false,
+    "preview": false,
+    "available": 6000,
+    "bindingLimit": "PolicyMaxAmount",
+    "limitBreakdowns": [
+      {
+        "limit": "PolicyMaxAmount",
+        "basis": "Amount",
+        "multiple": null,
+        "salaryBasisAmount": null,
+        "cap": 6000,
+        "outstandingNow": null,
+        "available": 6000,
+        "unit": "Principal",
+        "installments": null
+      },
+      {
+        "limit": "PolicyConcurrentLoans",
+        "basis": "Count",
+        "multiple": null,
+        "salaryBasisAmount": null,
+        "cap": 10,
+        "outstandingNow": 0,
+        "available": null,
+        "unit": "Loans",
+        "installments": null
+      }
+    ],
+    "gradeLimit": {
+      "applies": false,
+      "eligible": true,
+      "gradeId": null,
+      "gradeCode": null,
+      "gradeName": null,
+      "gradeNameAr": null,
+      "cellId": null,
+      "isCompanyOverride": false,
+      "basis": null,
+      "multiple": null,
+      "salaryBasisAmount": null,
+      "perLoanCap": null,
+      "outstandingCap": null,
+      "outstandingNow": 0,
+      "available": null,
+      "bindingLimit": null,
+      "reasonCode": null,
+      "reasonText": null,
+      "codes": [],
+      "reasons": [],
+      "currency": null,
+      "limitBreakdowns": []
+    },
+    "currency": "SAR"
+  },
+  "PolicySalaryMultiple": {
+    "eligible": true,
+    "reasons": [],
+    "codes": [],
+    "maxAvailableAmount": 18000,
+    "policyId": "00000000-0000-0000-0000-000000000025",
+    "policyVersion": 1,
+    "monthlySalary": 12000,
+    "committedAmount": 6000,
+    "canRequestException": false,
+    "preview": false,
+    "available": 18000,
+    "bindingLimit": "PolicySalaryMultiple",
+    "limitBreakdowns": [
+      {
+        "limit": "PolicySalaryMultiple",
+        "basis": "MultipleOfGross",
+        "multiple": 2,
+        "salaryBasisAmount": 12000,
+        "cap": 24000,
+        "outstandingNow": 6000,
+        "available": 18000,
+        "unit": "Principal",
+        "installments": null
+      },
+      {
+        "limit": "PolicyConcurrentLoans",
+        "basis": "Count",
+        "multiple": null,
+        "salaryBasisAmount": null,
+        "cap": 10,
+        "outstandingNow": 1,
+        "available": null,
+        "unit": "Loans",
+        "installments": null
+      }
+    ],
+    "gradeLimit": {
+      "applies": false,
+      "eligible": true,
+      "gradeId": null,
+      "gradeCode": null,
+      "gradeName": null,
+      "gradeNameAr": null,
+      "cellId": null,
+      "isCompanyOverride": false,
+      "basis": null,
+      "multiple": null,
+      "salaryBasisAmount": null,
+      "perLoanCap": null,
+      "outstandingCap": null,
+      "outstandingNow": 0,
+      "available": null,
+      "bindingLimit": null,
+      "reasonCode": null,
+      "reasonText": null,
+      "codes": [],
+      "reasons": [],
+      "currency": null,
+      "limitBreakdowns": []
+    },
+    "currency": "SAR"
+  },
+  "PolicyTotalOutstanding": {
+    "eligible": true,
+    "reasons": [],
+    "codes": [],
+    "maxAvailableAmount": 5000,
+    "policyId": "00000000-0000-0000-0000-000000000026",
+    "policyVersion": 1,
+    "monthlySalary": 0,
+    "committedAmount": 3000,
+    "canRequestException": false,
+    "preview": false,
+    "available": 5000,
+    "bindingLimit": "PolicyTotalOutstanding",
+    "limitBreakdowns": [
+      {
+        "limit": "PolicyTotalOutstanding",
+        "basis": "Amount",
+        "multiple": null,
+        "salaryBasisAmount": null,
+        "cap": 8000,
+        "outstandingNow": 3000,
+        "available": 5000,
+        "unit": "Principal",
+        "installments": null
+      },
+      {
+        "limit": "PolicyConcurrentLoans",
+        "basis": "Count",
+        "multiple": null,
+        "salaryBasisAmount": null,
+        "cap": 10,
+        "outstandingNow": 1,
+        "available": null,
+        "unit": "Loans",
+        "installments": null
+      }
+    ],
+    "gradeLimit": {
+      "applies": false,
+      "eligible": true,
+      "gradeId": null,
+      "gradeCode": null,
+      "gradeName": null,
+      "gradeNameAr": null,
+      "cellId": null,
+      "isCompanyOverride": false,
+      "basis": null,
+      "multiple": null,
+      "salaryBasisAmount": null,
+      "perLoanCap": null,
+      "outstandingCap": null,
+      "outstandingNow": 0,
+      "available": null,
+      "bindingLimit": null,
+      "reasonCode": null,
+      "reasonText": null,
+      "codes": [],
+      "reasons": [],
+      "currency": null,
+      "limitBreakdowns": []
+    },
+    "currency": "SAR"
+  },
+  "PreviewNoAmount": {
+    "eligible": true,
+    "reasons": [],
+    "codes": [],
+    "maxAvailableAmount": 10000,
+    "policyId": "00000000-0000-0000-0000-000000000027",
+    "policyVersion": 1,
+    "monthlySalary": 0,
+    "committedAmount": 0,
+    "canRequestException": false,
+    "preview": true,
+    "available": 10000,
+    "bindingLimit": "GradePerLoan",
+    "limitBreakdowns": [
+      {
+        "limit": "GradePerLoan",
+        "basis": "Amount",
+        "multiple": null,
+        "salaryBasisAmount": null,
+        "cap": 10000,
+        "outstandingNow": null,
+        "available": 10000,
+        "unit": "Principal",
+        "installments": null
+      },
+      {
+        "limit": "GradeOutstanding",
+        "basis": "Amount",
+        "multiple": null,
+        "salaryBasisAmount": null,
+        "cap": 12000,
+        "outstandingNow": 0,
+        "available": 12000,
+        "unit": "Principal",
+        "installments": null
+      },
+      {
+        "limit": "PolicyConcurrentLoans",
+        "basis": "Count",
+        "multiple": null,
+        "salaryBasisAmount": null,
+        "cap": 10,
+        "outstandingNow": 0,
+        "available": null,
+        "unit": "Loans",
+        "installments": null
+      }
+    ],
+    "gradeLimit": {
+      "applies": true,
+      "eligible": true,
+      "gradeId": "00000000-0000-0000-0000-000000000028",
+      "gradeCode": "G2",
+      "gradeName": "Grade 2",
+      "gradeNameAr": null,
+      "cellId": "00000000-0000-0000-0000-000000000029",
+      "isCompanyOverride": false,
+      "basis": "Amount",
+      "multiple": null,
+      "salaryBasisAmount": null,
+      "perLoanCap": 10000,
+      "outstandingCap": 12000,
+      "outstandingNow": 0,
+      "available": 10000,
+      "bindingLimit": "GradePerLoan",
+      "reasonCode": null,
+      "reasonText": null,
+      "codes": [],
+      "reasons": [],
+      "currency": "SAR",
+      "limitBreakdowns": [
+        {
+          "limit": "GradePerLoan",
+          "basis": "Amount",
+          "multiple": null,
+          "salaryBasisAmount": null,
+          "cap": 10000,
+          "outstandingNow": null,
+          "available": 10000,
+          "unit": "Principal",
+          "installments": null
+        },
+        {
+          "limit": "GradeOutstanding",
+          "basis": "Amount",
+          "multiple": null,
+          "salaryBasisAmount": null,
+          "cap": 12000,
+          "outstandingNow": 0,
+          "available": 12000,
+          "unit": "Principal",
+          "installments": null
+        }
+      ]
+    },
+    "currency": "SAR"
+  },
+  "TypesOffered": [
+    {
+      "loanTypeId": "00000000-0000-0000-0000-000000000030",
+      "code": "HOME",
+      "nameEn": "Home",
+      "nameAr": "قرض سكن",
+      "gradeLimited": true,
+      "offered": false,
+      "reasonCode": "LoanTypeNotOffered",
+      "reasonText": "Loans of this type aren't offered by your company."
+    },
+    {
+      "loanTypeId": "00000000-0000-0000-0000-000000000031",
+      "code": "LEGACY",
+      "nameEn": "Legacy",
+      "nameAr": "",
+      "gradeLimited": false,
+      "offered": false,
+      "reasonCode": "InterestNotPermitted",
+      "reasonText": "Employee loans must be interest-free under Saudi law."
+    },
+    {
+      "loanTypeId": "00000000-0000-0000-0000-000000000032",
+      "code": "PERSONAL",
+      "nameEn": "Personal",
+      "nameAr": "",
+      "gradeLimited": true,
+      "offered": true,
+      "reasonCode": null,
+      "reasonText": null
+    }
+  ]
+}
