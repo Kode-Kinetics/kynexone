@@ -12,7 +12,7 @@ import { limitCardText, moneyFormatter } from '../../lib/gradeLoanLimits';
  */
 export function LoanLimitCard({ eligibility, self }: { eligibility: LoanEligibility; self: boolean }) {
   const { t, locale } = useLocale();
-  const money = moneyFormatter(eligibility.currency || eligibility.gradeLimit?.currency);
+  const money = moneyFormatter(eligibility.currency || eligibility.gradeLimit?.currency, locale);
   const text = limitCardText(eligibility, self, locale, t, money);
   if (!text) return null;
   return <div className="space-y-1 rounded-lg border border-sapphire/30 bg-sapphire/5 p-3 text-sm" aria-live="polite">

@@ -11,6 +11,7 @@ import { notificationsApi } from '../api/notifications';
 import type { NotificationItem } from '../api/notifications';
 import type { ThemeMode } from '../types/ui';
 
+import { useFormat } from '../hooks/useFormat';
 function LanguageSwitcher() {
   const { locale, setLocale, t } = useLocale();
   const [open, setOpen] = useState(false);
@@ -25,8 +26,6 @@ function LanguageSwitcher() {
     return () => document.removeEventListener('mousedown', handler);
   }, [open]);
 
-  const current = LOCALES.find((l) => l.code === locale) ?? LOCALES[0];
-
   return (
     <div ref={ref} className="relative">
       <button
@@ -36,7 +35,8 @@ function LanguageSwitcher() {
         className="flex h-8 items-center gap-1.5 rounded-lg border border-slate-200/80 bg-white/60 px-2.5 text-xs font-semibold text-slate-600 backdrop-blur-sm transition hover:border-slate-300 hover:bg-white/90 dark:border-white/[0.08] dark:bg-white/[0.05] dark:text-slate-300 dark:hover:bg-white/[0.10]"
       >
         <Globe className="h-3.5 w-3.5 text-slate-400 dark:text-slate-500" />
-        <span className="uppercase">{current.code}</span>
+        {/* The active code, even for a hidden language (fr/es) someone chose before it was hidden. */}
+        <span className="uppercase">{locale}</span>
       </button>
 
       {open && (
@@ -65,16 +65,9 @@ interface TopBarProps {
   onOpenSearch: () => void;
 }
 
-function timeAgo(utc: string) {
-  const diff = Math.floor((Date.now() - new Date(utc).getTime()) / 1000);
-  if (diff < 60) return 'just now';
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  return `${Math.floor(diff / 86400)}d ago`;
-}
-
 function NotificationPanel({ onClose, onCountChange }: { onClose: () => void; onCountChange: (n: number) => void }) {
   const { t } = useLocale();
+  const fmt = useFormat();
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [markingAll, setMarkingAll] = useState(false);
@@ -189,7 +182,7 @@ function NotificationPanel({ onClose, onCountChange }: { onClose: () => void; on
             <div className="min-w-0 flex-1">
               <p className={`text-xs font-semibold ${n.status === 'Unread' ? 'text-slate-900 dark:text-white' : 'text-slate-600 dark:text-slate-300'}`}>{n.title}</p>
               <p className="mt-0.5 text-xs leading-relaxed text-slate-500 dark:text-slate-400">{n.message}</p>
-              <p className="mt-1 text-[10px] text-slate-300 dark:text-slate-600">{timeAgo(n.createdAtUtc)}</p>
+              <p className="mt-1 text-[10px] text-slate-300 dark:text-slate-600">{fmt.relative(n.createdAtUtc)}</p>
             </div>
             {/* Actions */}
             <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">

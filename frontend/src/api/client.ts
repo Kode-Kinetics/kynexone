@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { RefreshQueue } from './refreshQueue';
+import { clearSessionKeepingLocale } from './clearSession';
 
 // In the browser, use relative URLs so Next.js proxy handles CORS.
 // On the server (SSR), we need the absolute URL since there's no proxy.
@@ -139,7 +140,7 @@ client.interceptors.response.use(
       return client(original);
     } catch (refreshError) {
       pendingRefreshes.reject(refreshError);
-      localStorage.clear();
+      clearSessionKeepingLocale();
       window.location.href = '/login';
       return Promise.reject(refreshError);
     } finally {

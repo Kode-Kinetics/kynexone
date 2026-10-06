@@ -11,6 +11,8 @@ import type { DashboardFull } from '../../api/dashboard';
 import { todayAttendance } from './dashboardModel';
 import { Gauge } from './charts/Visuals';
 import { useT } from '../../hooks/useT';
+import { useFormat } from '../../hooks/useFormat';
+import { EnumLabel } from '../EnumLabel';
 
 const TILE = 'wg-card wg-press flex w-[84%] shrink-0 min-w-0 flex-col sm:w-auto gap-2 p-5 [.kx-dense_&]:gap-1.5 [.kx-dense_&]:p-4 outline-none hover:border-[color:var(--wg-line-strong)] focus-visible:ring-2 focus-visible:ring-sapphire';
 
@@ -30,8 +32,10 @@ function Legend({ items }: { items: Array<{ label: string; value: string; color:
 
 export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFull; hour: number; asOf: string | null; dense?: boolean }) {
   const t = useT();
+  const f = useFormat();
   const s = data.summary;
   const a = data.analytics;
+  const days = (count: number) => t('{count} days', { count });
   const today = todayAttendance(data, hour);
 
   // 1 · Attendance today
@@ -43,25 +47,27 @@ export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFul
       </span>
       <span className="flex items-center gap-3">
         {today.kind === 'counted' ? (
-          <Gauge pct={today.rate / 100} center={`${today.rate}%`} sub={t('present')} label={`${today.rate}% ${t('of expected staff present today')}`} />
+          <Gauge pct={today.rate / 100} center={f.percent(today.rate)} sub={t('Present')} label={t('{rate} of expected staff present today', { rate: f.percent(today.rate) })} />
         ) : (
-          <Gauge pct={null} center={today.kind === 'pre-shift' ? t('Pre-shift') : today.kind === 'not-captured' ? t('No punches') : t('Unknown')} sub={t('today')} label={t('No attendance recorded yet today')} />
+          <Gauge pct={null} center={today.kind === 'pre-shift' ? t('Pre-shift') : today.kind === 'not-captured' ? t('No punches') : t('Unknown')} sub={t('Today')} label={t('No attendance recorded yet today')} />
         )}
         {today.kind === 'counted' ? (
           <Legend items={[
-            { label: t('Present'), value: String(today.present), color: 'var(--viz-1)' },
-            ...(today.expected - today.present - s.absent > 0 ? [{ label: t('Not in yet'), value: String(today.expected - today.present - s.absent), color: '#94A3B8' }] : []),
-            { label: t('Absent'), value: String(s.absent), color: '#EF4444' },
-            { label: t('On leave'), value: String(s.onLeave), color: '#0EA5E9' },
+            { label: t('Present'), value: f.integer(today.present), color: 'var(--viz-1)' },
+            ...(today.expected - today.present - s.absent > 0 ? [{ label: t('Not in yet'), value: f.integer(today.expected - today.present - s.absent), color: '#94A3B8' }] : []),
+            { label: t('Absent'), value: f.integer(s.absent), color: '#EF4444' },
+            { label: t('On leave'), value: f.integer(s.onLeave), color: '#0EA5E9' },
           ]} />
         ) : (
           <span className="text-[13px] leading-snug text-slate-700 dark:text-slate-300">
-            {s.activeEmployees.toLocaleString()} {t('expected')}{s.onLeave > 0 ? `, ${s.onLeave} ${t('on approved leave')}` : ''}.
+            {s.onLeave > 0
+              ? t('{expected} expected, {onLeave} on approved leave.', { expected: s.activeEmployees, onLeave: s.onLeave })
+              : t('{expected} expected.', { expected: s.activeEmployees })}
           </span>
         )}
       </span>
       <span className="text-xs text-slate-600 dark:text-slate-400 [.kx-dense_&]:line-clamp-1">
-        {today.kind === 'counted' ? `${t('Of')} ${today.expected} ${t('expected today.')}`
+        {today.kind === 'counted' ? t('Of {count} expected today.', { count: today.expected })
           : today.kind === 'pre-shift' ? t('The working day has not started. Nothing is late yet.')
           : today.kind === 'not-captured' ? t('No punches recorded today. Check the attendance devices.')
           : t('Attendance could not be loaded.')}
@@ -82,12 +88,12 @@ export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFul
       {lu ? (
         <>
           <span className="text-[28px] [.kx-dense_&]:text-[24px] font-semibold leading-none tracking-tight tabular-nums text-slate-900 dark:text-white">
-            {Math.round(lu.takenDays).toLocaleString()}
+            {f.integer(lu.takenDays)}
             <span className="ms-1.5 text-[13px] font-medium text-slate-600 dark:text-slate-400">
-              {lu.entitlementDays ? `${t('of')} ${Math.round(lu.entitlementDays).toLocaleString()} ${t('days')}` : t('days taken')}
+              {lu.entitlementDays ? t('/ {time}', { time: days(Math.round(lu.entitlementDays)) }) : t('Days taken')}
             </span>
           </span>
-          <span className="flex h-3.5 gap-[2px] overflow-hidden rounded" role="img" aria-label={parts.map((p) => `${p.label} ${p.days} days`).join(', ')}>
+          <span className="flex h-3.5 gap-[2px] overflow-hidden rounded" role="img" aria-label={parts.map((p) => t('{type}: {time}', { type: p.label, time: days(p.days) })).join(', ')}>
             {lu.takenDays === 0 ? <span className="h-full w-full rounded bg-[color:var(--viz-track)]" /> : parts.map((p, i) => (
               <span key={p.label} className="wg-hbar h-full" ref={(n) => { if (n) { n.style.width = `${(p.days / denom) * 100}%`; n.style.background = leaveColors[i]; } }} />
             ))}
@@ -97,15 +103,15 @@ export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFul
             {parts.map((p, i) => (
               <li key={p.label} className="flex items-center gap-1.5 truncate">
                 <span aria-hidden className="h-2 w-2 shrink-0 rounded-sm" ref={(n) => { if (n) n.style.background = leaveColors[i]; }} />
-                <span className="truncate">{p.label}</span><b className="ms-auto font-semibold tabular-nums text-slate-900 dark:text-white">{Math.round(p.days)}</b>
+                <span className="truncate">{p.label}</span><b className="ms-auto font-semibold tabular-nums text-slate-900 dark:text-white">{f.integer(p.days)}</b>
               </li>
             ))}
           </ul>
-          <span className="text-xs text-slate-600 dark:text-slate-400 [.kx-dense_&]:hidden">{t('Approved leave,')} {lu.year}.</span>
+          <span className="text-xs text-slate-600 dark:text-slate-400 [.kx-dense_&]:hidden">{t('Approved leave, {year}.', { year: String(lu.year) })}</span>
         </>
       ) : (
         <span className="text-[13px] text-slate-700 dark:text-slate-300">
-          <b className="block text-[28px] [.kx-dense_&]:text-[24px] font-semibold leading-none tabular-nums text-slate-900 dark:text-white">{data.overview.openLeaveRequests}</b> {t('leave requests waiting for a decision.')}
+          <b className="block text-[28px] [.kx-dense_&]:text-[24px] font-semibold leading-none tabular-nums text-slate-900 dark:text-white">{f.integer(data.overview.openLeaveRequests)}</b> {t('{count, plural, one {leave request waiting for a decision.} other {leave requests waiting for a decision.}}', { count: data.overview.openLeaveRequests })}
         </span>
       )}
     </Link>
@@ -121,8 +127,10 @@ export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFul
       <span className="flex items-baseline justify-between gap-2">
         <span className="text-sm font-semibold text-slate-900 dark:text-white">{t('Overtime hours')}</span>
       </span>
-      <span className="text-[28px] [.kx-dense_&]:text-[24px] font-semibold leading-none tracking-tight tabular-nums text-slate-900 dark:text-white">{Math.round(s.overtimeHours)} h <span className="text-[13px] font-medium text-slate-600 dark:text-slate-400">{t('this month to date')}</span></span>
-      <span className="flex items-end gap-1.5" role="img" aria-label={ot.map((p) => `${p.m} ${p.v == null ? 'no attendance captured' : `${Math.round(p.v)} hours`}`).join(', ')}>
+      <span className="text-[28px] [.kx-dense_&]:text-[24px] font-semibold leading-none tracking-tight tabular-nums text-slate-900 dark:text-white">{t('{count} h', { count: Math.round(s.overtimeHours) })} <span className="text-[13px] font-medium text-slate-600 dark:text-slate-400">{t('Month to date')}</span></span>
+      <span className="flex items-end gap-1.5" role="img" aria-label={ot.map((p) => p.v == null
+        ? t('{month}: no attendance captured', { month: f.period(p.m) })
+        : t('{month}: {count, plural, one {# hour} other {# hours}}', { month: f.period(p.m), count: Math.round(p.v) })).join(', ')}>
         {ot.map((p) => (
           <span key={p.m} className="flex flex-1 flex-col items-center gap-1">
             <span className="flex h-[64px] items-end [.kx-dense_&]:h-[36px]">
@@ -130,7 +138,7 @@ export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFul
                 ? <span className="block h-[64px] w-[16px] [.kx-dense_&]:h-[36px] rounded-[5px] border border-dashed border-slate-300 dark:border-white/15" />
                 : <span className="wg-bar wg-col3d block w-[16px] rounded-t-[4px] rounded-b-[2px]" ref={(n) => { if (n) { n.style.height = `${Math.max(3, ((p.v as number) / otMax) * (n.closest('.kx-dense') ? 36 : 64))}px`; n.style.background = p.m === current ? 'var(--viz-1)' : 'var(--viz-recede)'; } }} />}
             </span>
-            <span className={`text-[11px] ${p.m === current ? 'font-semibold text-slate-900 dark:text-white' : 'text-slate-600 dark:text-slate-400'}`}>{p.m}</span>
+            <span className={`text-[11px] ${p.m === current ? 'font-semibold text-slate-900 dark:text-white' : 'text-slate-600 dark:text-slate-400'}`}>{f.period(p.m, 'short')}</span>
           </span>
         ))}
       </span>
@@ -144,26 +152,28 @@ export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFul
     <Link href="/saudi-compliance" className={TILE}>
       <span className="flex items-baseline justify-between gap-2">
         <span className="text-sm font-semibold text-slate-900 dark:text-white">{t('Saudization')}</span>
-        {n.nitaqatBand && <span title={t('Latest Nitaqat snapshot')} className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-semibold text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300">{n.nitaqatBand.replace(/([a-z])([A-Z])/g, '$1 $2')}</span>}
+        {n.nitaqatBand && <span title={t('Latest Nitaqat snapshot')} className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-semibold text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300"><EnumLabel enum="NitaqatBand" value={n.nitaqatBand} /></span>}
       </span>
       <span className="text-[28px] [.kx-dense_&]:text-[24px] font-semibold leading-none tracking-tight tabular-nums text-slate-900 dark:text-white">
-        {n.saudizationPct != null ? `${n.saudizationPct.toFixed(1)}%` : t('Not set')}
-        <span className="ms-1.5 text-[13px] font-medium text-slate-600 dark:text-slate-400">{n.saudi} {t('of')} {n.saudi + n.nonSaudi} {t('Saudi')}</span>
+        {n.saudizationPct != null ? f.percent(n.saudizationPct, 1) : t('Not set')}
+        <span className="ms-1.5 text-[13px] font-medium text-slate-600 dark:text-slate-400">{t('{saudi} of {total} Saudi', { saudi: n.saudi, total: n.saudi + n.nonSaudi })}</span>
       </span>
-      <span className="flex h-3 gap-[2px] overflow-hidden rounded-full" role="img" aria-label={`${t('Nationality mix')}: ${t('Saudi')} ${n.saudi}, ${t('non-Saudi')} ${n.nonSaudi}${n.unknown ? `, ${t('nationality not recorded')} ${n.unknown}` : ''}`}>
+      <span className="flex h-3 gap-[2px] overflow-hidden rounded-full" role="img" aria-label={n.unknown
+        ? t('Nationality mix: Saudi {saudi}, non-Saudi {nonSaudi}, not recorded {unknown}', { saudi: n.saudi, nonSaudi: n.nonSaudi, unknown: n.unknown })
+        : t('Nationality mix: Saudi {saudi}, non-Saudi {nonSaudi}', { saudi: n.saudi, nonSaudi: n.nonSaudi })}>
         {[{ v: n.saudi, c: '#15803D' }, { v: n.nonSaudi, c: '#BBF7D0' }, { v: n.unknown, c: '#E2E8F0' }].filter((x) => x.v > 0).map((x, i) => (
           <span key={i} className="wg-hbar h-full" ref={(el) => { if (el) { el.style.flexGrow = String(x.v); el.style.background = x.c; } }} />
         ))}
       </span>
       <span className="text-xs text-slate-600 dark:text-slate-400 [.kx-dense_&]:line-clamp-1">
-        {n.unknown > 0 ? `${n.unknown} ${n.unknown === 1 ? t('employee has') : t('employees have')} ${t('no nationality recorded.')}` : t('Share of active employees who are Saudi nationals.')}
+        {n.unknown > 0 ? t('{count, plural, one {# employee has no nationality recorded.} other {# employees have no nationality recorded.}}', { count: n.unknown }) : t('Share of active employees who are Saudi nationals.')}
       </span>
     </Link>
   ) : (
     <Link href="/people" className={TILE}>
       <span className="text-sm font-semibold text-slate-900 dark:text-white">{t('On leave today')}</span>
-      <span className="text-[28px] [.kx-dense_&]:text-[24px] font-semibold leading-none tabular-nums text-slate-900 dark:text-white">{s.onLeave}</span>
-      <span className="text-xs text-slate-600 dark:text-slate-400 [.kx-dense_&]:line-clamp-1">{data.overview.openLeaveRequests} {t('open leave requests')}</span>
+      <span className="text-[28px] [.kx-dense_&]:text-[24px] font-semibold leading-none tabular-nums text-slate-900 dark:text-white">{f.integer(s.onLeave)}</span>
+      <span className="text-xs text-slate-600 dark:text-slate-400 [.kx-dense_&]:line-clamp-1">{t('{count, plural, one {# open leave request} other {# open leave requests}}', { count: data.overview.openLeaveRequests })}</span>
     </Link>
   );
 
