@@ -74,7 +74,7 @@ public class ReleaseAContractTests
             "Quantity:Nullable`1", "DependantScope:String", "MaxDependants:Nullable`1", "DependantsCovered:Int32",
             "LimitPeriod:String", "GradeEntitlementId:Nullable`1", "EmployeeEntitlementId:Nullable`1", "IsCompanyOverride:Boolean",
             "GradeStandardDiffers:Boolean", "ReasonCode:String", "MaxOutstandingAmount:Nullable`1", "ResolvedAmount:Nullable`1",
-            "EligibleFrom:Nullable`1");
+            "EligibleFrom:Nullable`1", "StandardValue:GradeStandardLine");
         // Rates are compared at the grade cell's 4 dp, so salary-row precision never reads as a difference.
         EntitlementRates.Same(0.250000m, 0.2500m).Should().BeTrue();
         EntitlementRates.Same(0.25004m, 0.2500m).Should().BeTrue();
@@ -238,7 +238,12 @@ public class ReleaseAContractTests
     public void FloorComponents_CanNeverBeSkippedByACompany()
     {
         foreach (var rule in EntitlementComponentRules.Catalogue)
-            EntitlementComponentRules.CanBeSkipped(rule).Should().Be(!rule.IsFloor && !rule.IsLoanFacility, rule.Code);
+            EntitlementComponentRules.CanBeSkipped(rule).Should()
+                .Be(!rule.IsFloor && !rule.IsLoanFacility && rule.Class != PayEntitlementClasses.QiwaWage, rule.Code);
+        // Cash wage that payroll reads is never skippable, floor or not.
+        EntitlementComponentRules.CanBeSkipped(EntitlementComponentRules.For("OTHER_ALLOWANCES")!).Should().BeFalse();
+        EntitlementComponentRules.Catalogue.Where(EntitlementComponentRules.CanBeSkipped).Select(r => r.Code)
+            .Should().BeEquivalentTo("AIR_TICKET", "EDUCATION", "PER_DIEM");
     }
 
     [Fact]

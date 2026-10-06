@@ -56,13 +56,13 @@ public class GradeEntitlement : ITenantOwned, ICompanyScoped
     /// <summary>Medical class (CchiBasic … VIP) or ticket class (Economy, Business).</summary>
     public string? CoverageTier { get; set; }
 
-    /// <summary>A count: tickets per period, or the most children an education allowance covers.</summary>
+    /// <summary>A count: tickets per period. NOT the education child cap — that is <see cref="MaxDependants"/> with scope Children.</summary>
     public short? Quantity { get; set; }
 
     /// <summary>Who besides the employee the benefit covers. A coverage basis, never an eligibility criterion.</summary>
     public string DependantScope { get; set; } = DependantScopes.None;
 
-    /// <summary>The most dependants covered (NULL = every dependant in scope).</summary>
+    /// <summary>The most dependants covered (NULL = every dependant in scope). Education: the child cap (scope Children).</summary>
     public short? MaxDependants { get; set; }
 
     /// <summary>When the allowance resets. See <see cref="EntitlementLimitPeriods"/>.</summary>
