@@ -2091,8 +2091,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
   const outsideCount = outsideList.length;
   const needsOutsideAck = outsideCount > 0;
   const gateSatisfied =
-    (!needsExcludedAck || ackExcluded) && (!needsOverriddenAck || ackOverridden) && (!needsOutsideAck || ackOutside)
-    && !gateLoading && !gateError && currencyConfirmed;
+    (!needsExcludedAck || ackExcluded) && (!needsOverriddenAck || ackOverridden) && (!needsOutsideAck || ackOutside) && !gateLoading && !gateError && currencyConfirmed;
 
   const handleApprove = async () => {
     if (!runId) return;

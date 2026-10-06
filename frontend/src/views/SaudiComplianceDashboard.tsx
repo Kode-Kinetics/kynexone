@@ -519,7 +519,7 @@ function QiwaCard({ qiwa }: { qiwa: QiwaSection }) {
               <div
                 tabIndex={0}
                 role="region"
-                aria-label="Employees failing the Qiwa data check"
+                aria-label="Employees blocked from passing the Qiwa data check"
                 className="max-h-40 overflow-auto rounded-lg border border-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 dark:border-white/[0.07]"
               >
                 <table className="w-full text-start text-xs">
