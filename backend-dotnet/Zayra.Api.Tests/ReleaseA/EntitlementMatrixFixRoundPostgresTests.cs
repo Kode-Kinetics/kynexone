@@ -256,6 +256,31 @@ public class EntitlementMatrixFixRoundPostgresTests(PostgresFixture fixture)
             .Should().Equal([9_999m], "the legacy scale still describes the structure for a tenant without the flag");
     }
 
+    [Fact]
+    public async Task GradeSalaryStructure_IsPerCompany_SoCompanyBsHireIsNeverAttachedToCompanyAsStructure()
+    {
+        var seed = await SeedAsync(releaseA: false);
+        Guid companyB;
+        await using (var db = fixture.CreateDb())
+        {
+            var b = new Company { TenantId = seed.TenantId, LegalNameEn = $"Masar Trading {Guid.NewGuid():N}", CountryCode = "SA", DefaultCurrency = "SAR", IsActive = true };
+            db.Companies.Add(b);
+            await db.SaveChangesAsync();
+            companyB = b.Id;
+        }
+        var explicitSalary = new EmployeeSalaryBreakdownRequest(8_000m, 1_000m, 300m, null, null, 0m, null, null, Today, "SAR");
+        await using (var db = fixture.CreateDb())
+        {
+            await Employees(db).CreateAsync(seed.TenantId, Request(seed, explicitSalary), Ctx(seed.TenantId), default);
+            var hireB = await Employees(db).CreateAsync(seed.TenantId, Request(seed with { CompanyId = companyB }, explicitSalary), Ctx(seed.TenantId), default);
+            var assignment = await db.EmployeeSalaryStructures.AsNoTracking().SingleAsync(x => x.EmployeeId == hireB.Id && x.IsActive);
+            var structure = await db.SalaryStructures.AsNoTracking().SingleAsync(x => x.Id == assignment.SalaryStructureId);
+            (structure.Code, structure.CompanyId).Should().Be(("GRADE-G3", (Guid?)companyB));
+        }
+        await using (var check = fixture.CreateDb())
+            (await check.SalaryStructures.CountAsync(x => x.TenantId == seed.TenantId && x.Code == "GRADE-G3")).Should().Be(2);
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────────────────────────
 
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);

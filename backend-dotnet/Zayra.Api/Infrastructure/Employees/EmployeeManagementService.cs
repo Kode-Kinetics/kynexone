@@ -1690,7 +1690,13 @@ public class EmployeeManagementService : IEmployeeManagementService
         var structureCode = Clean(request?.SalaryStructureCode);
         if (string.IsNullOrWhiteSpace(structureCode))
             structureCode = grade is null ? DirectSalaryStructureCode : $"GRADE-{grade.Code}";
-        var structure = await _db.SalaryStructures.FirstOrDefaultAsync(x => x.TenantId == employee.TenantId && x.Code == structureCode && !x.IsDeleted, cancellationToken);
+        // The employing company's own structure first, then a group-wide one (CompanyId null): the same rule the import uses,
+        // so company B's new hire is never attached to company A's structure lines.
+        var structure = await _db.SalaryStructures
+            .Where(x => x.TenantId == employee.TenantId && x.Code == structureCode && !x.IsDeleted
+                && (x.CompanyId == employee.CompanyId || x.CompanyId == null))
+            .OrderByDescending(x => x.CompanyId == employee.CompanyId)
+            .FirstOrDefaultAsync(cancellationToken);
         if (structure is null)
         {
             // Currency, most specific first: what the operator typed, then the grade's, then the
