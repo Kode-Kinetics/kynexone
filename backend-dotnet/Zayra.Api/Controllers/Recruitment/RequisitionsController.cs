@@ -130,15 +130,30 @@ public class RequisitionsController : ControllerBase
     public async Task<IActionResult> Submit(Guid id, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
-        var userId = this.GetUserId();
         var r = await _db.ManpowerRequisitions.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
         if (r is null) return NotFound();
         if (r.Status != "Draft") return BadRequest(new { message = "Only Draft requisitions can be submitted." });
 
-        var approvalId = await _svc.CreateApprovalRequestAsync(
-            tenantId, "ManpowerRequisition", id,
-            $"Manpower Requisition {r.RequisitionNumber} — {r.DesignationTitle} × {r.HeadCount}",
-            userId, ct);
+        // The ONE router picks the workflow; a requisition has no employee subject, so only tenant-wide
+        // workflows apply, and none keeps the product rule that it is submitted without an approval step.
+        // The request is started through the shared approval service so step 1 is ROUTED to its configured
+        // approver (HR Manager by default, or a tenant's Finance step). It used to be inserted directly with
+        // no approver, which made every requisition's first step an "Any" step.
+        var route = await new Zayra.Api.Infrastructure.Approvals.ApprovalRouter(_db)
+            .TryResolveAsync(tenantId, null, "ManpowerRequisition", ct);
+        Guid? approvalId = null;
+        if (route is not null)
+        {
+            try
+            {
+                var started = await _approvals.CreateRequestAsync(tenantId, new CreateApprovalRequest(
+                    route.WorkflowId, "ManpowerRequisition", id.ToString(),
+                    $"Manpower Requisition {r.RequisitionNumber} — {r.DesignationTitle} × {r.HeadCount}"), Context(), ct);
+                approvalId = started.Id;
+            }
+            catch (ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
+            catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        }
 
         r.Status = approvalId.HasValue ? "PendingApproval" : "Submitted";
         r.SubmittedAtUtc = DateTime.UtcNow;

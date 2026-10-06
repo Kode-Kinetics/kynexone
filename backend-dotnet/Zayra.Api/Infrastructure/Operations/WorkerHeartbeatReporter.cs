@@ -25,6 +25,14 @@ public sealed class WorkerHeartbeatReporter
     public Task FailedAsync(string workerName, Exception exception, CancellationToken ct) =>
         TryWriteAsync(workerName, WorkerHeartbeatStatuses.Failed, exception.GetType().Name, ct);
 
+    /// <summary>The sweep was skipped (another instance holds its lease). No schema change: status + reason code.</summary>
+    public Task SkippedAsync(string workerName, string reason, CancellationToken ct) =>
+        TryWriteAsync(workerName, WorkerHeartbeatStatuses.Skipped, reason, ct);
+
+    /// <summary>The sweep stopped part-way (its lease was lost). Never reported as Healthy.</summary>
+    public Task InterruptedAsync(string workerName, string reason, CancellationToken ct) =>
+        TryWriteAsync(workerName, WorkerHeartbeatStatuses.Interrupted, reason, ct);
+
     private async Task TryWriteAsync(string workerName, string status, string? errorCode, CancellationToken ct)
     {
         try { await WriteAsync(workerName, status, errorCode, ct); }
@@ -61,6 +69,11 @@ public sealed class WorkerHeartbeatReporter
         {
             row.LastFailedAtUtc = now;
             row.LastErrorCode = errorCode ?? "worker_failure";
+        }
+        else if (status is WorkerHeartbeatStatuses.Skipped or WorkerHeartbeatStatuses.Interrupted)
+        {
+            // LastSucceededAtUtc is left alone: it still says when this instance last did the work.
+            row.LastErrorCode = errorCode ?? string.Empty;
         }
         await db.SaveChangesAsync(ct);
     }

@@ -217,7 +217,8 @@ function deriveFieldGaps(preview: ImportPreview): ImportFieldGap[] {
 
 export interface ImportExportToolbarProps {
   entityName: string;
-  onExport: () => Promise<void>;
+  /** Omit to hide the Export button (the caller may not export this entity). */
+  onExport?: () => Promise<void>;
   onDownloadTemplate: () => Promise<void>;
   /**
    * `importKey` identifies one selected file. An importer that forwards it lets the server replay a
@@ -349,6 +350,7 @@ export function ImportExportToolbar({
   };
 
   const handleExport = async () => {
+    if (!onExport) return;
     setExporting(true);
     try {
       await onExport();
@@ -511,16 +513,18 @@ export function ImportExportToolbar({
         onChange={handleFileChange}
       />
 
-      <button
-        type="button"
-        className={btnOutline}
-        disabled={exporting}
-        onClick={handleExport}
-        title={`Export ${entityName} as CSV`}
-      >
-        <Download className="h-3.5 w-3.5" />
-        {exporting ? 'Exporting…' : 'Export'}
-      </button>
+      {onExport && (
+        <button
+          type="button"
+          className={btnOutline}
+          disabled={exporting}
+          onClick={handleExport}
+          title={`Export ${entityName} as CSV`}
+        >
+          <Download className="h-3.5 w-3.5" />
+          {exporting ? 'Exporting…' : 'Export'}
+        </button>
+      )}
 
       <button
         type="button"

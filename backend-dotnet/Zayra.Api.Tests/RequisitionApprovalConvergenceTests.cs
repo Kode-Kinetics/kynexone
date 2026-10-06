@@ -110,10 +110,86 @@ public class RequisitionApprovalConvergenceTests
             tenantId, null, RequisitionApprovalSync.ApprovalEntityName, CancellationToken.None);
         route.Should().NotBeNull("a fresh tenant must route a requisition through the shared approval service");
 
-        var approvalId = await new RecruitmentService(db).CreateApprovalRequestAsync(
-            tenantId, RequisitionApprovalSync.ApprovalEntityName, Guid.NewGuid(), "REQ-2026-0001", Guid.NewGuid(),
-            CancellationToken.None);
+        var req = AddRequisition(db, tenantId, Guid.NewGuid());
+        db.ManpowerRequisitions.Add(req);
+        await db.SaveChangesAsync();
+        (await Controller(db, tenantId, Guid.NewGuid(), "Manager").Submit(req.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        var approvalId = (await db.ManpowerRequisitions.SingleAsync(x => x.Id == req.Id)).ApprovalRequestId;
         approvalId.Should().NotBeNull();
+        (await db.ApprovalRequests.SingleAsync(a => a.Id == approvalId)).CurrentApproverRole.Should().Be("HR Manager",
+            "the seeded default's step 1 is the HR Manager queue");
+    }
+
+    // ── Step 1 is routed to its configured approver, not left as an "Any" step ─────────────────
+
+    [Fact]
+    public async Task ANewRequisition_LandsOnTheConfiguredStepOneRole()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        AddRequisitionWorkflow(db, tenantId);
+        var req = AddRequisition(db, tenantId, Guid.NewGuid());
+        db.ManpowerRequisitions.Add(req);
+        await db.SaveChangesAsync();
+
+        await Controller(db, tenantId, req.RequestedByUserId!.Value, "Manager").Submit(req.Id, CancellationToken.None);
+
+        var shared = await db.ApprovalRequests.SingleAsync();
+        shared.CurrentApproverRole.Should().Be("HR Manager");
+        shared.CurrentApproverType.Should().Be("Role");
+        shared.CurrentQueue.Should().Be("Role:HR Manager");
+    }
+
+    [Fact]
+    public async Task ALineManager_CannotApproveAPeersRequisitionAtStepOne()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        AddRequisitionWorkflow(db, tenantId);
+        var req = AddRequisition(db, tenantId, Guid.NewGuid());
+        db.ManpowerRequisitions.Add(req);
+        await db.SaveChangesAsync();
+        await Controller(db, tenantId, req.RequestedByUserId!.Value, "Manager").Submit(req.Id, CancellationToken.None);
+        var approvalId = (await db.ManpowerRequisitions.SingleAsync(x => x.Id == req.Id)).ApprovalRequestId!.Value;
+
+        // A peer line manager holds approvals.decide and manager.approve, which an "Any" step would have accepted.
+        var peer = new RequestContext("127.0.0.1", "tests", Guid.NewGuid(), tenantId, ["Manager"], ["approvals.decide", "manager.approve"]);
+        var act = () => new ApprovalWorkflowService(db, new AuditService(db)).DecideAsync(
+            tenantId, approvalId, new ApprovalDecisionRequest("Approve", "peer"), peer, CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*HR Manager*");
+        (await db.ManpowerRequisitions.SingleAsync(x => x.Id == req.Id)).Status.Should().Be("PendingApproval");
+    }
+
+    [Fact]
+    public async Task ATenantWhoseStepOneIsFinance_RoutesToFinance()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var wf = new ApprovalWorkflow
+        {
+            TenantId = tenantId, Code = "REQ-FIN", Name = "Requisition via Finance",
+            EntityName = RequisitionApprovalSync.ApprovalEntityName, IsDefault = true, IsActive = true,
+        };
+        wf.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, WorkflowId = wf.Id, StepOrder = 1, StepName = "Budget", ApproverType = "Role", ApproverRole = "Finance", IsFinalStep = false });
+        wf.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, WorkflowId = wf.Id, StepOrder = 2, StepName = "HR", ApproverType = "HR", ApproverRole = "HR Manager", IsFinalStep = true });
+        db.ApprovalWorkflows.Add(wf);
+        var req = AddRequisition(db, tenantId, Guid.NewGuid());
+        db.ManpowerRequisitions.Add(req);
+        await db.SaveChangesAsync();
+
+        await Controller(db, tenantId, req.RequestedByUserId!.Value, "Manager").Submit(req.Id, CancellationToken.None);
+
+        var shared = await db.ApprovalRequests.SingleAsync();
+        shared.CurrentStepOrder.Should().Be(1);
+        shared.CurrentApproverRole.Should().Be("Finance");
+        var centre = new ApprovalWorkflowService(db, new AuditService(db));
+        var hrFirst = () => centre.DecideAsync(tenantId, shared.Id, new ApprovalDecisionRequest("Approve", "hr"),
+            new RequestContext("127.0.0.1", "tests", Guid.NewGuid(), tenantId, ["HR Manager"], ["approvals.decide"]), CancellationToken.None);
+        await hrFirst.Should().ThrowAsync<InvalidOperationException>();
+        var afterFinance = await centre.DecideAsync(tenantId, shared.Id, new ApprovalDecisionRequest("Approve", "budget ok"),
+            new RequestContext("127.0.0.1", "tests", Guid.NewGuid(), tenantId, ["Finance"], ["approvals.decide"]), CancellationToken.None);
+        afterFinance!.CurrentStepOrder.Should().Be(2);
     }
 
     // ── Half two: the shared row is completed, from either side ──────────────────────────────
