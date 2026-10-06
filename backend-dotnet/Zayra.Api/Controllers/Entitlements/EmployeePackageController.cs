@@ -56,13 +56,20 @@ public sealed class EmployeePackageController : ControllerBase
         var resolved = await _resolver.ResolveDetailedAsync(tid, employeeId, date, ct);
         var context = await PackageViewContext.LoadAsync(_db, tid, resolved.Package, ct);
         var proposal = context.Contract is null ? null : await OpenProposalAsync(tid, context.Contract.Id, ct);
-        return Ok(EmployeePackageView.From(resolved, context, proposal, this.GetUserId()));
+        FreezePreview? preview = null;
+        if (context.Contract is { Status: "Active" } active)
+        {
+            try { preview = await new EntitlementWriter(_db, _clock, _resolver).PreviewAsync(tid, active.Id, ct); }
+            catch (EntitlementWriteRefusedException) { preview = null; }
+        }
+        return Ok(EmployeePackageView.From(resolved, context, proposal, preview, this.GetUserId()));
     }
 
     /// <summary>
-    /// POST /api/entitlements/employees/{employeeId}/package/freeze — fix the contract-year package for an active term now.
-    /// Naturally idempotent (an Idempotency-Key header is accepted and not needed). Components that could not be fixed are
-    /// returned with their reason; nothing that would be refused is ever written.
+    /// POST /api/entitlements/employees/{employeeId}/package/freeze — fix the package for a term that has NOT started yet, from
+    /// the grade table. A running term (started before today) goes through propose → a second HR user confirms (four eyes),
+    /// and a term with an open proposal waits for that decision; both are refused here. Idempotent per benefit (an
+    /// Idempotency-Key header is accepted and not needed). What could not be fixed is returned with its reason.
     /// </summary>
     [HttpPost("employees/{employeeId:int}/package/freeze")]
     [HasPermission("entitlements.manage")]
@@ -71,22 +78,51 @@ public sealed class EmployeePackageController : ControllerBase
         if (this.GetTenantId() is not Guid tid) return Unauthorized();
         var employee = await VisibleEmployeeAsync(tid, employeeId, ct);
         if (employee is null) return EmployeeNotFound();
-        if (!await OwnContractAsync(tid, employee.PublicId, req.ContractId, ct))
+        var contract = await OwnContractAsync(tid, employee.PublicId, req.ContractId, ct);
+        if (contract is null)
             return Refused(PackageReasons.ContractNotFound, "That contract isn't one of this employee's.", StatusCodes.Status404NotFound);
-        var writer = _writer as EntitlementWriter;
+        if (contract.StartDate < await _clock.TodayAsync(tid, ct))
+            return Refused(PackageReasons.TermRunningNeedsProposal,
+                "This term has already started. Propose its package, and another HR user confirms it against the signed contract.");
+        if (await OpenProposalAsync(tid, contract.Id, ct) is not null)
+            return Refused(PackageReasons.ProposalOpen, "A proposed package for this term is waiting for a decision.");
+        var writer = new EntitlementWriter(_db, _clock, _resolver);
         return await WriteAsync(async () =>
         {
             var result = await FinanceDecisionSerializer.SerializeAsync(_db, FinanceDecisionSerializer.ScopeEmployeePackage, tid, employee.PublicId, async () =>
             {
-                var outcome = await _writer.FreezeTermAsync(tid, req.ContractId, ct);
+                var outcome = await writer.FreezeTermAsync(tid, req.ContractId, ct);
                 if (outcome.Frozen) Audit(tid, employee.PublicId, "ContractPackage", req.ContractId.ToString(), "PackageFrozen",
-                    new { rows = outcome.RowsWritten, skipped = writer?.LastSkips });
+                    new { rows = outcome.RowsWritten, skipped = writer.LastSkips });
                 await _db.SaveChangesAsync(ct);
                 return outcome;
             }, ct);
             return Ok(new { frozen = result.Frozen, alreadyFrozen = result.AlreadyFrozen, rowsWritten = result.RowsWritten,
-                skipped = Skips(writer?.LastSkips ?? []) });
+                skipped = Skips(writer.LastSkips) });
         });
+    }
+
+    /// <summary>
+    /// POST /api/entitlements/employees/{employeeId}/package/propose — propose the package of one running term (the four-eyes
+    /// path). A background job that writes nothing; another HR user confirms or rejects it on the package panel.
+    /// </summary>
+    [HttpPost("employees/{employeeId:int}/package/propose")]
+    [HasPermission("entitlements.manage")]
+    public async Task<IActionResult> Propose(int employeeId, [FromBody] PackageContractRequest req, [FromServices] BackgroundJobStore jobs, CancellationToken ct)
+    {
+        if (this.GetTenantId() is not Guid tid) return Unauthorized();
+        var employee = await VisibleEmployeeAsync(tid, employeeId, ct);
+        if (employee is null) return EmployeeNotFound();
+        var contract = await OwnContractAsync(tid, employee.PublicId, req.ContractId, ct);
+        if (contract?.CompanyId is not Guid companyId)
+            return Refused(PackageReasons.ContractNotFound, "That contract isn't one of this employee's.", StatusCodes.Status404NotFound);
+        if (await OpenProposalAsync(tid, contract.Id, ct) is not null)
+            return Refused(PackageReasons.ProposalOpen, "A proposed package for this term is already waiting for a decision.");
+        var result = await jobs.EnqueueAsync(tid, PackageFreezeJobHandler.JobType, PackageFreezeJobHandler.IdempotencyKey(companyId, contract.Id),
+            new PackageFreezeJobPayload(companyId, contract.Id), this.GetUserId(), ct);
+        if (!result.Created) Response.Headers["X-Job-Deduplicated"] = "true";
+        return Accepted($"/api/jobs/{result.Job.Id}",
+            new BackgroundJobEnqueueResponse(result.Job.Id, result.Job.Status, !result.Created, $"/api/jobs/{result.Job.Id}"));
     }
 
     /// <summary>
@@ -124,15 +160,16 @@ public sealed class EmployeePackageController : ControllerBase
         var userId = this.GetUserId();
         return Ok(new
         {
-            batchId, requestedBy = job.CreatedByUserId, canDecide = job.CreatedByUserId != userId,
+            batchId, requestedBy = job.CreatedByUserId, canDecide = job.CreatedByUserId is Guid r && r != userId,
             proposals = proposals.Select(p => new { proposal = p, decision = decisions.GetValueOrDefault(p.ContractId) }),
         });
     }
 
     /// <summary>
     /// POST /api/entitlements/package/proposals/{batchId}/confirm — write one proposed package after checking it against the
-    /// signed contract. Needs the contract document on the employee's file, and a different person from whoever asked for
-    /// the run (four eyes). Rows are written Migrated and Verified; the batch, document and row ids go to the audit log.
+    /// signed contract: the contract's own file or a contract-type document of this employee. The confirmer must be a known,
+    /// different person from whoever asked for the run (four eyes). Decided once: re-checked under the per-employee lock.
+    /// Rows are written Migrated and Verified; the batch, document and row ids go to the audit log.
     /// </summary>
     [HttpPost("package/proposals/{batchId:guid}/confirm")]
     [HasPermission("entitlements.manage")]
@@ -141,14 +178,14 @@ public sealed class EmployeePackageController : ControllerBase
         if (this.GetTenantId() is not Guid tid) return Unauthorized();
         var (proposal, employee, failure) = await OpenProposalForDecisionAsync(tid, batchId, req.ContractId, ct);
         if (failure is not null) return failure;
-        if (req.DocumentId is not Guid documentId
-            || !await _db.EmployeeDocuments.AsNoTracking().AnyAsync(x => x.TenantId == tid && x.Id == documentId && x.EmployeeId == employee!.Id && !x.IsDeleted, ct))
+        if (req.DocumentId is not Guid documentId || !await IsSignedContractAsync(tid, employee!.Id, req.ContractId, documentId, ct))
             return Refused(PackageReasons.ProposalDocumentRequired, "Choose the employee's signed contract from their documents.", StatusCodes.Status400BadRequest);
         var writer = new EntitlementWriter(_db, _clock, _resolver);
         return await WriteAsync(async () =>
         {
             var rows = await FinanceDecisionSerializer.SerializeAsync(_db, FinanceDecisionSerializer.ScopeEmployeePackage, tid, employee!.PublicId, async () =>
             {
+                await EnsureUndecidedAsync(tid, batchId, req.ContractId, ct);
                 var written = await writer.WriteConfirmedProposalAsync(tid, proposal!, ct);
                 Audit(tid, employee.PublicId, ProposalAuditEntity, ProposalKey(batchId, req.ContractId), "Confirmed", new
                 {
@@ -171,10 +208,18 @@ public sealed class EmployeePackageController : ControllerBase
         if (failure is not null) return failure;
         if (string.IsNullOrWhiteSpace(req.Reason) || req.Reason.Length > 500)
             return BadRequest(new { error = "reason_required", message = "Say why the proposal does not match the contract (up to 500 characters)." });
-        Audit(tid, employee!.PublicId, ProposalAuditEntity, ProposalKey(batchId, req.ContractId), "Rejected",
-            new { batchId, contractId = req.ContractId, reason = req.Reason.Trim() });
-        await _db.SaveChangesAsync(ct);
-        return Ok(new { rejected = true });
+        return await WriteAsync(async () =>
+        {
+            await FinanceDecisionSerializer.SerializeAsync(_db, FinanceDecisionSerializer.ScopeEmployeePackage, tid, employee!.PublicId, async () =>
+            {
+                await EnsureUndecidedAsync(tid, batchId, req.ContractId, ct);
+                Audit(tid, employee.PublicId, ProposalAuditEntity, ProposalKey(batchId, req.ContractId), "Rejected",
+                    new { batchId, contractId = req.ContractId, reason = req.Reason.Trim() });
+                await _db.SaveChangesAsync(ct);
+                return 0;
+            }, ct);
+            return Ok(new { rejected = true });
+        });
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────────────────────────
@@ -184,7 +229,10 @@ public sealed class EmployeePackageController : ControllerBase
     {
         var job = await BatchAsync(tid, batchId, ct);
         if (job is null) return (null, null, NotFound(new { error = "batch_not_found", message = "That proposal run doesn't exist." }));
-        if (job.CreatedByUserId is Guid requester && requester == this.GetUserId())
+        // Four eyes needs two known people: a run that does not record who asked for it can be rejected and proposed again.
+        if (job.CreatedByUserId is not Guid requester)
+            return (null, null, Refused(PackageReasons.ProposalRequesterUnknown, "This proposal does not record who asked for it, so it cannot be confirmed."));
+        if (requester == this.GetUserId())
             return (null, null, Refused(PackageReasons.ProposalSameUser, "You asked for these proposals, so another HR user must decide them."));
         var item = await _db.BackgroundJobItems.AsNoTracking()
             .FirstOrDefaultAsync(x => x.TenantId == tid && x.JobId == batchId && x.ItemKey == PackageFreezeJobHandler.ItemKey(contractId), ct);
@@ -196,6 +244,25 @@ public sealed class EmployeePackageController : ControllerBase
         var employee = await VisibleEmployeeAsync(tid, proposal.EmployeeId, ct);
         if (employee is null) return (null, null, EmployeeNotFound());
         return (proposal, employee, null);
+    }
+
+    /// <summary>Inside the per-employee lock: a proposal is decided once, however many people press the button at once.</summary>
+    private async Task EnsureUndecidedAsync(Guid tid, Guid batchId, Guid contractId, CancellationToken ct)
+    {
+        if ((await DecisionsAsync(tid, batchId, ct)).ContainsKey(contractId))
+            throw new EntitlementWriteRefusedException(PackageReasons.ProposalClosed, "This proposal was already decided.");
+    }
+
+    /// <summary>The signed contract: the term's own file, or a contract-type document on this employee's file.</summary>
+    private async Task<bool> IsSignedContractAsync(Guid tid, int employeeId, Guid contractId, Guid documentId, CancellationToken ct)
+    {
+        var document = await _db.EmployeeDocuments.AsNoTracking()
+            .Where(x => x.TenantId == tid && x.Id == documentId && x.EmployeeId == employeeId && !x.IsDeleted)
+            .Select(x => new EmployeeDocumentView(x.DocumentType, x.StorageUrl)).FirstOrDefaultAsync(ct);
+        if (document is null) return false;
+        var fileUrl = await _db.EmployeeContracts.AsNoTracking().Where(x => x.TenantId == tid && x.Id == contractId)
+            .Select(x => x.FileUrl).FirstOrDefaultAsync(ct);
+        return SignedContractDocuments.Matches(document, fileUrl);
     }
 
     /// <summary>The open (undecided) proposal for one term, from the newest run that proposed something for it.</summary>
@@ -219,13 +286,16 @@ public sealed class EmployeePackageController : ControllerBase
     private Task<BackgroundJob?> BatchAsync(Guid tid, Guid batchId, CancellationToken ct) =>
         _db.BackgroundJobs.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == batchId && x.JobType == PackageFreezeJobHandler.JobType, ct);
 
+    /// <summary>The decision per term of one run. The FIRST decision recorded stands (the lock makes a second one impossible;
+    /// the order is still explicit rather than whatever the database returns first).</summary>
     private async Task<Dictionary<Guid, string>> DecisionsAsync(Guid tid, Guid batchId, CancellationToken ct)
     {
         var prefix = $"{batchId:N}:";
         var logs = await _db.ComplianceAuditLogs.AsNoTracking()
             .Where(x => x.TenantId == tid && x.EntityType == ProposalAuditEntity && x.EntityId.StartsWith(prefix))
-            .Select(x => new { x.EntityId, x.Action }).ToListAsync(ct);
-        return logs.GroupBy(x => Guid.ParseExact(x.EntityId[prefix.Length..], "N")).ToDictionary(g => g.Key, g => g.First().Action);
+            .Select(x => new { x.EntityId, x.Action, x.CreatedAtUtc, x.Id }).ToListAsync(ct);
+        return logs.GroupBy(x => Guid.ParseExact(x.EntityId[prefix.Length..], "N"))
+            .ToDictionary(g => g.Key, g => g.OrderBy(x => x.CreatedAtUtc).ThenBy(x => x.Id).First().Action);
     }
 
     private static string ProposalKey(Guid batchId, Guid contractId) => $"{batchId:N}:{contractId:N}";
@@ -233,18 +303,19 @@ public sealed class EmployeePackageController : ControllerBase
     private static IEnumerable<object> Skips(IEnumerable<FreezeSkip> skips) =>
         skips.Select(s => new { s.ComponentCode, s.Code, reason = PackageReasons.Describe(s.Code) });
 
-    /// <summary>Runs a write; a refusal or a database rule becomes 409 with a reason code, never a 500.</summary>
+    /// <summary>Runs a write; a refusal or a database rule becomes 409 with a specific reason code, never a 500.</summary>
     private async Task<IActionResult> WriteAsync(Func<Task<IActionResult>> write)
     {
         try { return await write(); }
-        catch (EntitlementWriteRefusedException ex) { return Refused(ex.Code, ex.Message); }
-        catch (DbUpdateException ex) when (ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.ExclusionViolation })
+        catch (EntitlementLifecycleBlockedException ex)
         {
-            return Refused(PackageReasons.TermOverlap, "Another contract term already has this benefit for these dates.");
+            return StatusCode(StatusCodes.Status409Conflict, new { error = ex.Code, message = ex.Message, possibleFrom = ex.PossibleFrom,
+                components = ex.Components, reason = PackageReasons.Describe(ex.Code) });
         }
-        catch (DbUpdateException ex) when (ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.CheckViolation })
+        catch (EntitlementWriteRefusedException ex) { return Refused(ex.Code, ex.Message); }
+        catch (DbUpdateException ex) when (PackageReasons.FromDatabase(ex) is { } code)
         {
-            return Refused(PackageReasons.ContractNotInForce, "The package doesn't fit this contract term. Check the term's dates and company.");
+            return Refused(code, "The package doesn't fit this contract term.");
         }
     }
 
@@ -261,8 +332,8 @@ public sealed class EmployeePackageController : ControllerBase
         return employee is not null && this.GetRequestScope().CanAccessCompany(employee.CompanyId) ? employee : null;
     }
 
-    private Task<bool> OwnContractAsync(Guid tid, Guid employeePublicId, Guid contractId, CancellationToken ct) =>
-        _db.EmployeeContracts.AsNoTracking().AnyAsync(x => x.TenantId == tid && x.Id == contractId && x.EmployeeId == employeePublicId && !x.IsDeleted, ct);
+    private Task<EmployeeContract?> OwnContractAsync(Guid tid, Guid employeePublicId, Guid contractId, CancellationToken ct) =>
+        _db.EmployeeContracts.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == contractId && x.EmployeeId == employeePublicId && !x.IsDeleted, ct);
 
     private void Audit(Guid tid, Guid employeePublicId, string entityType, string entityId, string action, object metadata) =>
         _db.ComplianceAuditLogs.Add(new ComplianceAuditLog
@@ -293,14 +364,28 @@ public sealed record EmployeePackageView(
     IReadOnlyDictionary<string, BlockReason> Reasons,
     IReadOnlyDictionary<string, string> Criteria,
     bool CanFreeze,
+    bool CanPropose,
+    PackageFreezeStatusDto FreezeStatus,
     int DependantsOnFile,
     PackageProposalDto? Proposal,
     IReadOnlyDictionary<string, ComponentLabel> Labels)
 {
-    public static EmployeePackageView From(ResolvedPackage resolved, PackageViewContext c, OpenProposal? proposal, Guid? viewer)
+    public static EmployeePackageView From(ResolvedPackage resolved, PackageViewContext c, OpenProposal? proposal, FreezePreview? preview, Guid? viewer)
     {
         var package = resolved.Package;
-        var frozenCount = package.Lines.Count(l => l.Source == PackageLineSources.ContractFrozen);
+        // "N of M benefits fixed": M = the contract benefits this employee is given (eligible and offered), N = those frozen.
+        var contractLines = package.Lines.Where(l => l.Class == PayEntitlementClasses.Contractual && l.Offered
+            && (l.Eligible || l.ReasonCode == PackageReasons.NotEligibleCriteria)).ToList();
+        var frozen = contractLines.Where(l => l.Source == PackageLineSources.ContractFrozen).Select(l => l.ComponentCode).ToHashSet();
+        var skips = preview?.Skips.ToDictionary(x => x.ComponentCode, x => x.Code) ?? [];
+        var notFixed = contractLines.Where(l => !frozen.Contains(l.ComponentCode))
+            .Select(l => new PackageNotFixedDto(l.ComponentCode,
+                proposal?.Proposal.Rows.Any(r => r.ComponentCode == l.ComponentCode) == true ? PackageReasons.ProposalOpen
+                : skips.GetValueOrDefault(l.ComponentCode)
+                  ?? preview?.BlockedCode
+                  ?? (preview?.Running == true ? PackageReasons.TermRunningNeedsProposal : null)))
+            .ToList();
+        var freezeStatus = new PackageFreezeStatusDto(frozen.Count, contractLines.Count, notFixed, preview?.BlockedCode, preview?.PossibleFrom);
         var codes = package.Lines.Select(l => l.ReasonCode).Concat(package.BlockCodes).OfType<string>().Distinct();
         return new EmployeePackageView(
             package, c.Currency,
@@ -315,10 +400,14 @@ public sealed record EmployeePackageView(
             c.FrozenRows.Values.Select(x => new PackageFrozenRowDto(x.Id, x.PayComponentCode, x.Source, x.VerificationState,
                 x.ResolvedAmount, x.EffectiveFrom, x.EffectiveTo)).ToList(),
             package.BlockCodes.Select(PackageReasons.Describe).OfType<BlockReason>().ToList(),
-            codes.Select(code => (code, reason: PackageReasons.Describe(code))).Where(x => x.reason is not null)
+            codes.Concat(notFixed.Select(n => n.ReasonCode).OfType<string>()).Distinct()
+                .Select(code => (code, reason: PackageReasons.Describe(code))).Where(x => x.reason is not null)
                 .ToDictionary(x => x.code, x => x.reason!),
             resolved.Reasons.Where(r => r.Value.Criterion is not null).ToDictionary(r => r.Key, r => r.Value.Criterion!),
-            c.Contract is { Status: "Active" } && frozenCount == 0 && package.GradeId is not null && proposal is null,
+            // Offered only when it can succeed now: a "Fix" that would just repeat a skip is never shown.
+            proposal is null && preview is { Running: false, BlockedCode: null, FreezableRows: > 0 },
+            proposal is null && preview is { Running: true, ProposableRows: > 0 },
+            freezeStatus,
             c.Dependants.Count,
             proposal is null ? null : new PackageProposalDto(proposal.BatchId, proposal.RequestedBy is Guid r && r == viewer,
                 proposal.Proposal.From, proposal.Proposal.To, proposal.Proposal.Rows, proposal.Proposal.Skips),
@@ -336,6 +425,11 @@ public sealed record PackageCellDto(Guid Id, string ComponentCode, bool IsCompan
     DateOnly EffectiveFrom, DateOnly? EffectiveTo);
 public sealed record PackageFrozenRowDto(Guid Id, string ComponentCode, string Source, string VerificationState, decimal? ResolvedAmount,
     DateOnly EffectiveFrom, DateOnly? EffectiveTo);
+/// <summary>"N of M benefits fixed" and why each of the rest is not.</summary>
+/// <param name="ReasonCode">Why it is not fixed; NULL when it can be fixed now (the "Fix" action).</param>
+public sealed record PackageNotFixedDto(string ComponentCode, string? ReasonCode);
+public sealed record PackageFreezeStatusDto(int Fixed, int Total, IReadOnlyList<PackageNotFixedDto> NotFixed, string? BlockedCode, DateOnly? PossibleFrom);
+
 /// <param name="RequestedByYou">The viewer asked for this run, so they cannot decide it (four eyes).</param>
 public sealed record PackageProposalDto(Guid BatchId, bool RequestedByYou, DateOnly From, DateOnly? To, IReadOnlyList<ProposedRow> Rows,
     IReadOnlyList<FreezeSkip> Skips);

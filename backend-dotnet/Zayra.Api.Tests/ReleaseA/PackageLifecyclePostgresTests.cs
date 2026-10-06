@@ -39,7 +39,7 @@ public sealed class PackageLifecyclePostgresTests(PostgresFixture fixture)
         await using (var db = fixture.CreateDb())
             await FinanceDecisionSerializer.SerializeAsync(db, FinanceDecisionSerializer.ScopeEmployeePackage, s.TenantId, s.Mohammed.PublicId, async () =>
             {
-                var r = await Writer(db, Today).FreezeTermAsync(s.TenantId, s.Term.Id, default);
+                var r = await Writer(db, PackageSeed.FreezeDay).FreezeTermAsync(s.TenantId, s.Term.Id, default);
                 await db.SaveChangesAsync();
                 return r;
             });

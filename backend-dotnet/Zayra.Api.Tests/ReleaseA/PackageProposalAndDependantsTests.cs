@@ -70,7 +70,14 @@ public sealed class PackageProposalAndDependantsTests
 
         // The HR panel shows the open proposal instead of "fix the year".
         var view = (EmployeePackageView)((OkObjectResult)(await Package(db, s, requester).Get(s.Mohammed.Id, null, default)).Result!).Value!;
-        (view.Proposal!.BatchId, view.Proposal.RequestedByYou, view.CanFreeze).Should().Be((batch, true, false));
+        (view.Proposal!.BatchId, view.Proposal.RequestedByYou, view.CanFreeze, view.CanPropose).Should().Be((batch, true, false, false));
+        view.Proposal.Rows.Should().OnlyContain(r => r.VerificationState == EntitlementVerificationStates.Unverified);
+        (view.FreezeStatus.Fixed, view.FreezeStatus.Total).Should().Be((0, 2));
+        view.FreezeStatus.NotFixed.Should().OnlyContain(n => n.ReasonCode == PackageReasons.ProposalOpen);
+
+        // P1: the direct freeze cannot be used to skip the second person — not for a running term, not beside a proposal.
+        var direct = (ObjectResult)await Package(db, s, requester).Freeze(s.Mohammed.Id, new PackageContractRequest(s.Term.Id), default);
+        (direct.StatusCode, JsonSerializer.Serialize(direct.Value).Contains(PackageReasons.TermRunningNeedsProposal)).Should().Be((409, true));
 
         var self = await Package(db, s, requester).ConfirmProposal(batch, new ConfirmProposalRequest(s.Term.Id, null), default);
         ((ObjectResult)self).StatusCode.Should().Be(409);
@@ -80,10 +87,15 @@ public sealed class PackageProposalAndDependantsTests
         var noDocument = await Package(db, s, checker).ConfirmProposal(batch, new ConfirmProposalRequest(s.Term.Id, null), default);
         JsonSerializer.Serialize(((ObjectResult)noDocument).Value).Should().Contain(PackageReasons.ProposalDocumentRequired);
 
+        var passport = new EmployeeDocument { TenantId = s.TenantId, CompanyId = s.Company.Id, EmployeeId = s.Mohammed.Id,
+            DocumentType = "Passport", FileName = "passport.pdf", StorageUrl = "p" };
         var contractDoc = new EmployeeDocument { TenantId = s.TenantId, CompanyId = s.Company.Id, EmployeeId = s.Mohammed.Id,
             DocumentType = "Contract", FileName = "signed.pdf", StorageUrl = "x" };
-        db.EmployeeDocuments.Add(contractDoc);
+        db.EmployeeDocuments.AddRange(passport, contractDoc);
         await db.SaveChangesAsync();
+        var notAContract = await Package(db, s, checker).ConfirmProposal(batch, new ConfirmProposalRequest(s.Term.Id, passport.Id), default);
+        JsonSerializer.Serialize(((ObjectResult)notAContract).Value).Should().Contain(PackageReasons.ProposalDocumentRequired,
+            "only the signed contract counts, not any document on file");
         (await Package(db, s, checker).ConfirmProposal(batch, new ConfirmProposalRequest(s.Term.Id, contractDoc.Id), default)).Should().BeOfType<OkObjectResult>();
 
         var rows = await db.EmployeeEntitlements.ToListAsync();
@@ -108,7 +120,8 @@ public sealed class PackageProposalAndDependantsTests
             .Should().BeOfType<OkObjectResult>();
         (await db.EmployeeEntitlements.CountAsync()).Should().Be(0);
         var view = (EmployeePackageView)((OkObjectResult)(await Package(db, s, checker).Get(s.Mohammed.Id, null, default)).Result!).Value!;
-        (view.Proposal, view.CanFreeze).Should().Be(((PackageProposalDto?)null, true));
+        (view.Proposal, view.CanFreeze, view.CanPropose).Should().Be(((PackageProposalDto?)null, false, true),
+            "the term is running: proposing again is offered, a direct freeze never is");
     }
 
     [Fact]
@@ -151,4 +164,76 @@ public sealed class PackageProposalAndDependantsTests
         (await scoped.Add(s.Mohammed.Id, new DependantInput("X", DependantRelationships.Other, new DateOnly(1960, 1, 1), null), default))
             .Should().BeOfType<NotFoundObjectResult>();
     }
+
+    [Fact]
+    public async Task ADirectFreeze_IsRefused_BesideAnOpenProposal_EvenForATermNotStarted()
+    {
+        var (db, s) = await SeededAsync();
+        await using var _ = db;
+        var term = await db.EmployeeContracts.SingleAsync(x => x.Id == s.Term.Id);
+        (term.StartDate, term.EndDate) = (new DateOnly(2026, 11, 1), new DateOnly(2027, 10, 31));
+        await db.SaveChangesAsync();
+        await ProposeAsync(db, s, Guid.NewGuid());
+        var refused = (ObjectResult)await Package(db, s, Guid.NewGuid()).Freeze(s.Mohammed.Id, new PackageContractRequest(s.Term.Id), default);
+        (refused.StatusCode, JsonSerializer.Serialize(refused.Value).Contains(PackageReasons.ProposalOpen)).Should().Be((409, true));
+        (await db.EmployeeEntitlements.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task AProposalWithNoRecordedRequester_CannotBeConfirmed()
+    {
+        var (db, s) = await SeededAsync();
+        await using var _ = db;
+        var batch = await ProposeAsync(db, s, Guid.Empty);
+        (await db.BackgroundJobs.SingleAsync(x => x.Id == batch)).CreatedByUserId = null;
+        await db.SaveChangesAsync();
+        var refused = (ObjectResult)await Package(db, s, Guid.NewGuid()).ConfirmProposal(batch, new ConfirmProposalRequest(s.Term.Id, Guid.NewGuid()), default);
+        (refused.StatusCode, JsonSerializer.Serialize(refused.Value).Contains(PackageReasons.ProposalRequesterUnknown)).Should().Be((409, true));
+    }
+
+    [Fact]
+    public async Task DependantIdNumbers_AreMasked_ForReadOnlyCallers_AndRemovalIsSoft()
+    {
+        var (db, s) = await SeededAsync();
+        await using var _ = db;
+        var son = await db.EmployeeDependents.SingleAsync(x => x.FullName == "Son");
+        son.NationalId = "2123456789";
+        await db.SaveChangesAsync();
+
+        var reader = Bind(new EmployeeDependantsController(db, new FixedTenantClock(Today)), s.TenantId, Guid.NewGuid(), "employees.read");
+        var masked = ((IEnumerable<DependantDto>)((OkObjectResult)await reader.List(s.Mohammed.Id, default)).Value!).Single(d => d.FullName == "Son");
+        masked.NationalId.Should().Be("***6789");
+        foreach (var permission in new[] { "employees.write", "employees.sensitive" })
+        {
+            var full = Bind(new EmployeeDependantsController(db, new FixedTenantClock(Today)), s.TenantId, Guid.NewGuid(), "employees.read", permission);
+            ((IEnumerable<DependantDto>)((OkObjectResult)await full.List(s.Mohammed.Id, default)).Value!).Single(d => d.FullName == "Son")
+                .NationalId.Should().Be("2123456789", permission);
+        }
+
+        var hr = Guid.NewGuid();
+        var writer = Bind(new EmployeeDependantsController(db, new FixedTenantClock(Today)), s.TenantId, hr, "employees.write");
+        (await writer.Remove(s.Mohammed.Id, son.Id, default)).Should().BeOfType<NoContentResult>();
+        var kept = await db.EmployeeDependents.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == son.Id); // soft-deleted rows are filtered by convention
+        (kept.IsDeleted, kept.DeletedBy).Should().Be((true, (Guid?)hr));
+        ((IEnumerable<DependantDto>)((OkObjectResult)await writer.List(s.Mohammed.Id, default)).Value!).Should().NotContain(d => d.Id == son.Id);
+        Line(await new EntitlementResolver(db).ResolveAsync(s.TenantId, s.Mohammed.Id, Today, default), "MEDICAL")
+            .DependantsCovered.Should().Be(2, "a removed dependant is no longer covered");
+    }
+
+    [Fact]
+    public async Task Supersede_KeepsTheStampedNationalityClass()
+    {
+        var (db, s) = await SeededAsync();
+        await using var _ = db;
+        var contracts = new Zayra.Api.Controllers.Compliance.ContractsController(db);
+        contracts.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(
+            [new Claim("tenant_id", s.TenantId.ToString()), new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+             new Claim(ClaimTypes.Role, "HR Manager")], "Test")) } };
+        var result = await contracts.Supersede(s.Term.Id, new Zayra.Api.Controllers.Compliance.CreateContractRequest(
+            s.Mohammed.PublicId, null, null, null, new DateOnly(2026, 11, 1), PackageSeed.TermEnd, 8000m, "SAR", null, null, null), default);
+        ((EmployeeContract)((OkObjectResult)result).Value!).WorkerNationalityClass.Should().Be(WorkerNationalityClasses.NonSaudi);
+    }
+
+    private static Application.Entitlements.PackageLine Line(Application.Entitlements.EmployeePackage p, string code) =>
+        p.Lines.Single(l => l.ComponentCode == code);
 }

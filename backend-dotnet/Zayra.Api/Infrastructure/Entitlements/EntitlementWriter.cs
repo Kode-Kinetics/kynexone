@@ -12,9 +12,32 @@ namespace Zayra.Api.Infrastructure.Entitlements;
 // RenewalApplyPlan). Gated per tenant by the release_a feature flag at the API edge and in the lifecycle dispatcher.
 
 /// <summary>A write the entitlement writer refuses. <see cref="Code"/> is a <see cref="PackageReasons"/> code; never shown raw.</summary>
-public sealed class EntitlementWriteRefusedException(string code, string message) : InvalidOperationException(message)
+public class EntitlementWriteRefusedException(string code, string message) : InvalidOperationException(message)
 {
     public string Code { get; } = code;
+}
+
+/// <summary>
+/// The writer cannot do what a contract change needs without removing a fixed benefit that never took effect (it starts on or
+/// after the change), and the database never removes one (R0 close-only trigger, DELETE clause). The change itself — an
+/// activation or a termination — is refused with a 409 instead of leaving a live benefit or losing the package.
+/// <see cref="PossibleFrom"/> is the first day the same change would succeed.
+/// </summary>
+public sealed class EntitlementLifecycleBlockedException(string code, string message, IReadOnlyList<string> components, DateOnly? possibleFrom)
+    : EntitlementWriteRefusedException(code, message)
+{
+    public IReadOnlyList<string> Components { get; } = components;
+    public DateOnly? PossibleFrom { get; } = possibleFrom;
+}
+
+/// <summary>
+/// Money for entitlements: two decimals, half away from zero — what PostgreSQL's <c>round(numeric, 2)</c> does, so a
+/// figure the writer computes always equals the one the database recomputes (the carried-row check). Never banker's rounding.
+/// </summary>
+public static class EntitlementMoney
+{
+    public static decimal Round(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
+    public static decimal PercentOf(decimal basic, decimal rate) => Round(basic * rate);
 }
 
 /// <summary>A component the writer deliberately did not write, and why (a <see cref="PackageReasons"/> code).</summary>
@@ -30,6 +53,14 @@ public sealed record ProposedRow(
 public sealed record FreezeProposal(
     Guid ContractId, Guid EmployeePublicId, int EmployeeId, Guid CompanyId, DateOnly From, DateOnly? To,
     IReadOnlyList<ProposedRow> Rows, IReadOnlyList<FreezeSkip> Skips);
+
+/// <summary>What freezing or proposing would do now (nothing staged): the HR panel's "Fix" / "Propose" offer and its reasons.</summary>
+/// <param name="FreezableRows">Rows a direct freeze would write now.</param>
+/// <param name="BlockedCode">Set when the freeze would be refused outright (a predecessor benefit that never took effect).</param>
+/// <param name="ProposableRows">Rows the four-eyes proposal path would propose now.</param>
+/// <param name="Running">The term started before today, so a package from the grade table needs a proposal.</param>
+public sealed record FreezePreview(int FreezableRows, IReadOnlyList<FreezeSkip> Skips, string? BlockedCode, DateOnly? PossibleFrom,
+    int ProposableRows, bool Running);
 
 /// <summary>
 /// The ONLY writer of <c>employee_entitlements</c> (<see cref="IEntitlementWriter"/>). It stages rows on the caller's context
@@ -62,40 +93,54 @@ public sealed class EntitlementWriter : IEntitlementWriter
     public IReadOnlyList<FreezeSkip> LastSkips { get; private set; } = [];
 
     /// <summary>
-    /// Freezes the Contractual package for a term from the later of its start and today (a term activated before it starts
-    /// is frozen from its start; a running term is frozen from today, never back-dated). An amendment — a new version
-    /// (<c>PreviousVersionId</c>) starting inside its predecessor's term — carries the predecessor's rows forward unchanged
-    /// instead of re-reading the grade table (Art. 59: a mid-term amendment does not reset acquired benefits). Idempotent.
+    /// Freezes the Contractual package for a term, one benefit at a time: a benefit that already has its row on this term is
+    /// left alone, so a benefit skipped earlier (nationality not confirmed, an overlap that has since been closed) is frozen
+    /// once its blocker clears. A term not yet started is frozen from its start, from the grade table. A term already
+    /// running is NOT frozen from the grade table here — that is a proposal a second HR user confirms against the signed
+    /// contract (four eyes) — except an amendment, which carries its predecessor's confirmed rows forward unchanged
+    /// (Art. 59). Never stages a row the database would refuse; see <see cref="LastSkips"/>.
     /// </summary>
+    /// <exception cref="EntitlementLifecycleBlockedException">An amendment would have to remove a predecessor benefit that never took effect.</exception>
     public async Task<FreezeResult> FreezeTermAsync(Guid tenantId, Guid contractId, CancellationToken ct)
     {
-        var plan = await PlanAsync(tenantId, contractId, ct);
-        if (plan.AlreadyFrozen) return new FreezeResult(false, true, 0);
-        if (plan.Proposal is not { } proposal) return new FreezeResult(false, false, 0);
+        var plan = await PlanAsync(tenantId, contractId, PlanMode.Freeze, ct);
+        if (plan.Blocked is { } blocked) throw blocked;
+        var proposal = plan.Proposal!;
         foreach (var (row, closeOn) in plan.Closes) row.EffectiveTo = closeOn;
         foreach (var row in proposal.Rows)
             Stage(tenantId, proposal, row, row.CarriedFromId is null ? EntitlementSources.GradeDefault : EntitlementSources.Carried, row.VerificationState);
-        return new FreezeResult(proposal.Rows.Count > 0, false, proposal.Rows.Count);
+        return new FreezeResult(proposal.Rows.Count > 0, plan.AlreadyFrozen && proposal.Rows.Count == 0, proposal.Rows.Count);
     }
 
-    /// <summary>The bulk path: what freezing would write for a running term, with nothing staged. HR confirms or rejects it.</summary>
-    public async Task<FreezeProposal?> ProposeAsync(Guid tenantId, Guid contractId, CancellationToken ct)
+    /// <summary>What <see cref="FreezeTermAsync"/> would do now, with nothing staged — the panel offers "Fix" only when it can succeed.</summary>
+    public async Task<FreezePreview> PreviewAsync(Guid tenantId, Guid contractId, CancellationToken ct)
     {
-        var plan = await PlanAsync(tenantId, contractId, ct, forProposal: true);
-        return plan.AlreadyFrozen ? null : plan.Proposal;
+        var plan = await PlanAsync(tenantId, contractId, PlanMode.Freeze, ct);
+        var proposal = await PlanAsync(tenantId, contractId, PlanMode.Propose, ct);
+        return new FreezePreview(plan.Proposal?.Rows.Count ?? 0, plan.Proposal?.Skips ?? [], plan.Blocked?.Code, plan.Blocked?.PossibleFrom,
+            proposal.Proposal?.Rows.Count ?? 0, plan.Running);
     }
 
     /// <summary>
-    /// Writes a proposal HR has confirmed against the signed contract: <c>Migrated</c>, <c>Verified</c>. The proposal is
-    /// re-checked against today's rows first (another write may have landed since it was made): a term that already has its
-    /// package is refused, and a component that would now overlap is skipped.
+    /// The four-eyes path for a running term: what freezing from the grade table would write, with nothing staged. Rows are
+    /// <c>Unverified</c> until a second HR user confirms them against the signed contract. NULL when nothing is left to propose.
+    /// </summary>
+    public async Task<FreezeProposal?> ProposeAsync(Guid tenantId, Guid contractId, CancellationToken ct)
+    {
+        var plan = await PlanAsync(tenantId, contractId, PlanMode.Propose, ct);
+        return plan.Proposal is { Rows.Count: > 0 } p ? p : null;
+    }
+
+    /// <summary>
+    /// Writes a proposal HR has confirmed against the signed contract: <c>Migrated</c>, <c>Verified</c>. Re-checked against
+    /// today's rows first (another write may have landed since it was made): a benefit that now has its row is skipped, one
+    /// that would now overlap is skipped, and a proposal with nothing left to write is refused.
     /// </summary>
     public async Task<IReadOnlyList<EmployeeEntitlement>> WriteConfirmedProposalAsync(Guid tenantId, FreezeProposal proposal, CancellationToken ct)
     {
         var contract = await InForceContractAsync(tenantId, proposal.ContractId, ct);
         await LockAsync(tenantId, contract.EmployeeId, ct);
-        if (await HasRowsAsync(tenantId, contract.EmployeeId, contract.Id, ct))
-            throw new EntitlementWriteRefusedException(PackageReasons.ProposalClosed, "This term already has its package.");
+        var done = await DoneComponentsAsync(tenantId, contract.EmployeeId, contract.Id, ct);
         var existing = await ExistingRowsAsync(tenantId, contract.EmployeeId, ct);
         var written = new List<EmployeeEntitlement>();
         var skips = new List<FreezeSkip>();
@@ -103,20 +148,23 @@ public sealed class EntitlementWriter : IEntitlementWriter
         var target = proposal with { From = from, To = contract.EndDate, CompanyId = contract.CompanyId!.Value };
         foreach (var row in proposal.Rows.Where(r => r.CarriedFromId is null))
         {
+            if (done.Contains(row.ComponentCode)) { skips.Add(new FreezeSkip(row.ComponentCode, PackageReasons.ProposalClosed)); continue; }
             if (Overlaps(existing, row.ComponentCode, contract.Id, from, contract.EndDate) is not null)
             { skips.Add(new FreezeSkip(row.ComponentCode, PackageReasons.TermOverlap)); continue; }
             written.Add(Stage(tenantId, target, row, EntitlementSources.Migrated, EntitlementVerificationStates.Verified));
         }
         LastSkips = skips;
+        if (written.Count == 0 && proposal.Rows.Count > 0 && proposal.Rows.All(r => done.Contains(r.ComponentCode)))
+            throw new EntitlementWriteRefusedException(PackageReasons.ProposalClosed, "This term already has every proposed benefit.");
         return written;
     }
 
     /// <summary>
     /// A term ended (<see cref="ContractEndReasons"/>). Its open rows are closed: at the successor's start − 1 when a successor
-    /// version exists (supersede, or a termination replaced by a new term), else at today for a termination or separation,
-    /// and at the end date for an expiry. A row that starts after the close date cannot be cut back (rows are never deleted)
-    /// and is left as it is. When a term is superseded the successor is created after this hook runs, so there is no date to
-    /// close at yet; the successor's activation then closes the rows at its start − 1 and carries them forward.
+    /// version exists, else at today for a termination or separation, and at the end date for an expiry. A row that starts
+    /// after that day never took effect; it cannot be shortened below its start and the database never deletes it, so the
+    /// end is refused (<see cref="EntitlementLifecycleBlockedException"/>) rather than leaving a live benefit behind. When a
+    /// term is superseded the successor does not exist yet when this runs; its activation closes and carries the rows.
     /// </summary>
     public async Task<int> CloseForEndAsync(Guid tenantId, EmployeeContract contract, string reason, CancellationToken ct)
     {
@@ -131,16 +179,25 @@ public sealed class EntitlementWriter : IEntitlementWriter
             };
         if (closeOn is not DateOnly on) return 0;
         var open = await Rows(tenantId).Where(x => x.EmployeeId == contract.EmployeeId && x.ContractId == contract.Id
-            && (x.EffectiveTo == null || x.EffectiveTo > on) && x.EffectiveFrom <= on).ToListAsync(ct);
+            && (x.EffectiveTo == null || x.EffectiveTo > on)).ToListAsync(ct);
+        var neverInEffect = open.Where(x => x.EffectiveFrom > on).ToList();
+        if (neverInEffect.Count > 0)
+            throw new EntitlementLifecycleBlockedException(PackageReasons.RowNeverTookEffect,
+                $"This term has fixed benefits that start on {neverInEffect.Min(x => x.EffectiveFrom):yyyy-MM-dd}, after the day it would end. "
+                + "Fixed benefits are never removed, so the term can be ended from that date.",
+                neverInEffect.Select(x => x.PayComponentCode).Distinct().ToList(), neverInEffect.Min(x => x.EffectiveFrom));
         foreach (var row in open) row.EffectiveTo = on;
         return open.Count;
     }
 
     // ── Planning ───────────────────────────────────────────────────────────────────────────────────
 
-    private sealed record Plan(bool AlreadyFrozen, FreezeProposal? Proposal, IReadOnlyList<(EmployeeEntitlement Row, DateOnly CloseOn)> Closes);
+    private enum PlanMode { Freeze, Propose }
 
-    private async Task<Plan> PlanAsync(Guid tenantId, Guid contractId, CancellationToken ct, bool forProposal = false)
+    private sealed record Plan(bool AlreadyFrozen, bool Running, FreezeProposal? Proposal,
+        IReadOnlyList<(EmployeeEntitlement Row, DateOnly CloseOn)> Closes, EntitlementLifecycleBlockedException? Blocked);
+
+    private async Task<Plan> PlanAsync(Guid tenantId, Guid contractId, PlanMode mode, CancellationToken ct)
     {
         LastSkips = [];
         var contract = await InForceContractAsync(tenantId, contractId, ct);
@@ -150,15 +207,15 @@ public sealed class EntitlementWriter : IEntitlementWriter
         var companyId = contract.CompanyId!.Value;
 
         await LockAsync(tenantId, contract.EmployeeId, ct);
-        if (await HasRowsAsync(tenantId, contract.EmployeeId, contract.Id, ct)) return new Plan(true, null, []);
+        var done = await DoneComponentsAsync(tenantId, contract.EmployeeId, contract.Id, ct);
+        var today = await _clock.TodayAsync(tenantId, ct);
+        var running = contract.StartDate < today;
+        var from = running ? today : contract.StartDate;
+        var empty = new FreezeProposal(contract.Id, contract.EmployeeId, 0, companyId, from, contract.EndDate, [], []);
 
         var employee = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId, "The contract's own employee, to read their grade.")
             .AsNoTracking().FirstOrDefaultAsync(x => x.PublicId == contract.EmployeeId && !x.IsDeleted, ct);
-        if (employee is null) return new Plan(false, null, []);
-
-        var today = await _clock.TodayAsync(tenantId, ct);
-        var from = contract.StartDate >= today ? contract.StartDate : today;
-        if (contract.EndDate is DateOnly end && from > end) return new Plan(false, null, []);
+        if (employee is null || (contract.EndDate is DateOnly end && from > end)) return new Plan(done.Count > 0, running, empty, [], null);
 
         var existing = await ExistingRowsAsync(tenantId, contract.EmployeeId, ct);
         var rows = new List<ProposedRow>();
@@ -167,16 +224,27 @@ public sealed class EntitlementWriter : IEntitlementWriter
         EmployeeSalaryStructure? salary = null;
         async Task<EmployeeSalaryStructure?> Salary() => salary ??= await EntitlementResolver.SalaryInForce(_db, tenantId, employee.Id, from, ct);
 
-        // An amendment carries the predecessor's package forward (not a re-read of the grade table).
+        // An amendment carries its predecessor's package forward (not a re-read of the grade table).
         var carried = contract.PreviousVersionId is Guid previousId
             ? existing.Where(x => x.ContractId == previousId && x.EntitlementClass == PayEntitlementClasses.Contractual
-                && (x.EffectiveTo == null || x.EffectiveTo >= from)).ToList()
+                && (x.EffectiveTo == null || x.EffectiveTo >= from) && !done.Contains(x.PayComponentCode)).ToList()
             : [];
-        if (carried.Count > 0 && !forProposal)
+        if (carried.Count > 0 && mode == PlanMode.Freeze)
         {
+            // A predecessor row starting on or after the amendment's first day never took effect under that term. It can only
+            // be removed, never shortened, and the database never removes a fixed row: refuse rather than lose the package.
+            var neverInEffect = carried.Where(x => x.EffectiveFrom >= from).ToList();
+            if (neverInEffect.Count > 0)
+            {
+                var possible = neverInEffect.Max(x => x.EffectiveFrom).AddDays(1);
+                return new Plan(false, running, empty, [], new EntitlementLifecycleBlockedException(PackageReasons.RowNeverTookEffect,
+                    $"The earlier version has fixed benefits starting on {neverInEffect.Min(x => x.EffectiveFrom):yyyy-MM-dd}, which never took effect. "
+                    + $"Fixed benefits are never removed, so this version can be activated from {possible:yyyy-MM-dd}"
+                    + (contract.StartDate >= possible ? "." : " (or give it a later start date)."),
+                    neverInEffect.Select(x => x.PayComponentCode).Distinct().ToList(), possible));
+            }
             foreach (var origin in carried)
             {
-                if (origin.EffectiveFrom > from.AddDays(-1)) { skips.Add(new FreezeSkip(origin.PayComponentCode, PackageReasons.RowInTheWay)); continue; }
                 if (Overlaps(existing, origin.PayComponentCode, contract.Id, from, contract.EndDate, except: origin.Id) is not null)
                 { skips.Add(new FreezeSkip(origin.PayComponentCode, PackageReasons.TermOverlap)); continue; }
                 decimal? resolved = origin.ResolvedAmount;
@@ -184,7 +252,7 @@ public sealed class EntitlementWriter : IEntitlementWriter
                 if (origin.ValueType == GradeEntitlementValueTypes.PercentOfBasic)
                 {
                     if (await Salary() is not { } s) { skips.Add(new FreezeSkip(origin.PayComponentCode, PackageReasons.SalaryMissing)); continue; }
-                    (resolved, basis) = (Math.Round(s.BasicSalary * origin.Rate!.Value, 2), s.Id);
+                    (resolved, basis) = (EntitlementMoney.PercentOf(s.BasicSalary, origin.Rate!.Value), s.Id);
                 }
                 closes.Add((origin, from.AddDays(-1)));
                 rows.Add(new ProposedRow(origin.PayComponentCode, origin.ValueType, origin.Amount, origin.Rate, origin.MaxOutstandingAmount,
@@ -195,7 +263,7 @@ public sealed class EntitlementWriter : IEntitlementWriter
         else if (employee.GradeId is Guid gradeId)
         {
             var standard = await _resolver.GradeStandardAsync(tenantId, gradeId, companyId, from, ct);
-            foreach (var cell in standard.Where(s => s.Class == PayEntitlementClasses.Contractual))
+            foreach (var cell in standard.Where(s => s.Class == PayEntitlementClasses.Contractual && !done.Contains(s.ComponentCode)))
             {
                 var isFloor = cell.Floor != PayStatutoryFloors.None;
                 if (!cell.Eligible) { skips.Add(new FreezeSkip(cell.ComponentCode, PackageReasons.NotInGrade)); continue; }
@@ -205,20 +273,24 @@ public sealed class EntitlementWriter : IEntitlementWriter
                 { skips.Add(new FreezeSkip(cell.ComponentCode, n.Code)); continue; }
                 if (Overlaps(existing, cell.ComponentCode, contract.Id, from, contract.EndDate) is not null)
                 { skips.Add(new FreezeSkip(cell.ComponentCode, PackageReasons.TermOverlap)); continue; }
+                // A running term's package from the grade table needs a second person (the proposal path).
+                if (running && mode == PlanMode.Freeze) { skips.Add(new FreezeSkip(cell.ComponentCode, PackageReasons.TermRunningNeedsProposal)); continue; }
                 decimal? resolved = cell.ValueType == GradeEntitlementValueTypes.Amount ? cell.Amount : null;
                 Guid? basis = null;
                 if (cell.ValueType == GradeEntitlementValueTypes.PercentOfBasic)
                 {
                     if (await Salary() is not { } s) { skips.Add(new FreezeSkip(cell.ComponentCode, PackageReasons.SalaryMissing)); continue; }
-                    (resolved, basis) = (Math.Round(s.BasicSalary * cell.Rate!.Value, 2), s.Id);
+                    (resolved, basis) = (EntitlementMoney.PercentOf(s.BasicSalary, cell.Rate!.Value), s.Id);
                 }
                 rows.Add(new ProposedRow(cell.ComponentCode, cell.ValueType, cell.Amount, cell.Rate, null, cell.CoverageTier, cell.Quantity,
                     cell.DependantScope, cell.DependantScope == DependantScopes.None ? null : cell.MaxDependants, cell.LimitPeriod,
-                    resolved, basis, cell.GradeEntitlementId, null, EntitlementVerificationStates.Verified));
+                    resolved, basis, cell.GradeEntitlementId, null,
+                    mode == PlanMode.Propose ? EntitlementVerificationStates.Unverified : EntitlementVerificationStates.Verified));
             }
         }
         LastSkips = skips;
-        return new Plan(false, new FreezeProposal(contract.Id, contract.EmployeeId, employee.Id, companyId, from, contract.EndDate, rows, skips), closes);
+        return new Plan(done.Count > 0, running,
+            new FreezeProposal(contract.Id, contract.EmployeeId, employee.Id, companyId, from, contract.EndDate, rows, skips), closes, null);
     }
 
     private EmployeeEntitlement Stage(Guid tenantId, FreezeProposal target, ProposedRow row, string source, string verification)
@@ -336,7 +408,7 @@ public sealed class EntitlementWriter : IEntitlementWriter
                     .AsNoTracking().Where(x => x.PublicId == from.EmployeeId).Select(x => x.Id).FirstAsync(ct);
                 salary ??= await EntitlementResolver.SalaryInForce(_db, tenantId, employeeId, provisional.StartDate, ct);
                 if (salary is null) continue;
-                resolved = Math.Round(salary.BasicSalary * origin.Rate!.Value, 2);
+                resolved = EntitlementMoney.PercentOf(salary.BasicSalary, origin.Rate!.Value);
                 basis = salary.Id;
             }
             _db.EmployeeEntitlements.Add(new EmployeeEntitlement
@@ -413,10 +485,16 @@ public sealed class EntitlementWriter : IEntitlementWriter
             .AsNoTracking().Where(x => x.PreviousVersionId == contractId && !x.IsDeleted).OrderBy(x => x.StartDate).FirstOrDefaultAsync(ct);
     }
 
-    private async Task<bool> HasRowsAsync(Guid tenantId, Guid employeePublicId, Guid contractId, CancellationToken ct) =>
-        _db.ChangeTracker.Entries<EmployeeEntitlement>().Any(e => e.State == EntityState.Added
-            && e.Entity.TenantId == tenantId && e.Entity.ContractId == contractId)
-        || await Rows(tenantId).AnyAsync(x => x.EmployeeId == employeePublicId && x.ContractId == contractId, ct);
+    /// <summary>The benefits that already have a row on this term (staged or stored): freezing is idempotent per benefit.</summary>
+    private async Task<HashSet<string>> DoneComponentsAsync(Guid tenantId, Guid employeePublicId, Guid contractId, CancellationToken ct)
+    {
+        var stored = await Rows(tenantId).Where(x => x.EmployeeId == employeePublicId && x.ContractId == contractId)
+            .Select(x => x.PayComponentCode).ToListAsync(ct);
+        var staged = _db.ChangeTracker.Entries<EmployeeEntitlement>()
+            .Where(e => e.State == EntityState.Added && e.Entity.TenantId == tenantId && e.Entity.ContractId == contractId)
+            .Select(e => e.Entity.PayComponentCode);
+        return new HashSet<string>(stored.Concat(staged), StringComparer.OrdinalIgnoreCase);
+    }
 
     private Task LockAsync(Guid tenantId, Guid employeePublicId, CancellationToken ct) =>
         _db.Database.IsRelational() && _db.Database.CurrentTransaction is not null

@@ -47,7 +47,7 @@ public sealed record PackageViewContext(
             : await ScopedBypass.TenantWide(db.EmployeeEntitlements, tenantId, "The employee's own frozen rows the package lines cite.")
                 .AsNoTracking().Where(x => rowIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, ct);
         var dependants = await db.EmployeeDependents.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.EmployeeId == employee.Id).ToListAsync(ct);
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && !x.IsDeleted).ToListAsync(ct);
         var currency = company?.DefaultCurrency ?? salary?.Currency ?? "SAR";
         return new PackageViewContext(employee, grade, company, contract, salary, currency, cells, rows, dependants,
             await LabelsAsync(db, tenantId, package.Lines.Select(l => l.ComponentCode).Distinct().ToList(), ct));

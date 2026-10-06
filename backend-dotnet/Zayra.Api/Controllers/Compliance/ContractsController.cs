@@ -253,6 +253,32 @@ public class ContractsController : ControllerBase
     public async Task<IActionResult> UpdateStatus(Guid id, [FromBody] UpdateContractStatusRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
+        // Release A: every change to a term's status runs under the per-employee package lock, in one transaction, so two
+        // activations (or an activation and a freeze) for the same employee cannot both pass the writer's overlap check.
+        var employeeId = await _db.EmployeeContracts.AsNoTracking()
+            .Where(x => x.Id == id && x.TenantId == tid && !x.IsDeleted).Select(x => (Guid?)x.EmployeeId).FirstOrDefaultAsync(ct);
+        if (employeeId is null) return NotFound();
+        try
+        {
+            return await Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.SerializeAsync(_db,
+                Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.ScopeEmployeePackage, tid, employeeId.Value,
+                () => UpdateStatusCoreAsync(id, req, tid, ct), ct);
+        }
+        catch (Zayra.Api.Infrastructure.Entitlements.EntitlementLifecycleBlockedException ex)
+        {
+            return PackageConflict(ex.Code, ex.Message, ex.PossibleFrom);
+        }
+        catch (DbUpdateException ex) when (Zayra.Api.Infrastructure.Entitlements.PackageReasons.FromDatabase(ex) is { } code)
+        {
+            return PackageConflict(code, "The contract's benefits don't fit this change.", null);
+        }
+    }
+
+    private ObjectResult PackageConflict(string code, string message, DateOnly? possibleFrom) =>
+        Conflict(new { error = code, message, possibleFrom, reason = Zayra.Api.Infrastructure.Entitlements.PackageReasons.Describe(code) });
+
+    private async Task<IActionResult> UpdateStatusCoreAsync(Guid id, UpdateContractStatusRequest req, Guid tid, CancellationToken ct)
+    {
         var contract = await _db.EmployeeContracts
             .FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (contract == null) return NotFound();
@@ -366,6 +392,9 @@ public class ContractsController : ControllerBase
             Version = old.Version + 1,
             PreviousVersionId = old.Id,
             CreatedByUserId = GetUserId(),
+            // Release A: an amendment is the same worker under the same chain — keep the stamped nationality class, so
+            // nationality-scoped benefits are not "needs confirmation" on every new version.
+            WorkerNationalityClass = old.WorkerNationalityClass,
         };
 
         _db.EmployeeContracts.Add(newContract);

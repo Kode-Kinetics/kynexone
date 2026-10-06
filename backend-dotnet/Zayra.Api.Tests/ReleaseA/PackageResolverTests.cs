@@ -37,8 +37,9 @@ public sealed class PackageResolverTests
         return (db, seed);
     }
 
+    /// <summary>The writer, by default on a day before the term starts (a running term's package is a proposal instead).</summary>
     private static EntitlementWriter Writer(ZayraDbContext db, DateOnly? today = null) =>
-        new(db, new FixedTenantClock(today ?? Today), new EntitlementResolver(db));
+        new(db, new FixedTenantClock(today ?? PackageSeed.FreezeDay), new EntitlementResolver(db));
 
     private static PackageLine Line(EmployeePackage p, string code) => p.Lines.Single(l => l.ComponentCode == code);
 
@@ -69,9 +70,10 @@ public sealed class PackageResolverTests
         housing.GradeStandardDiffers.Should().BeFalse();
         housing.GradeEntitlementId.Should().Be(s.Cells["HOUSING"].Id, "the 'Why?' popover cites the grade cell");
 
-        // The salary pays transport as SAR 800; the grade standard says 10% — the salary wins, the difference is flagged.
+        // The salary pays transport as a fixed SAR 800; the grade standard says 10% of 8,000 = SAR 800. Same cash, so it is
+        // NOT "reviewed at renewal" — the badge compares what the employee gets, not how it is written.
         var transport = Line(package, "TRANSPORT");
-        (transport.Source, transport.MonthlyCash, transport.GradeStandardDiffers).Should().Be((PackageLineSources.Salary, 800m, true));
+        (transport.Source, transport.MonthlyCash, transport.GradeStandardDiffers).Should().Be((PackageLineSources.Salary, 800m, false));
 
         var medical = Line(package, "MEDICAL");
         (medical.Source, medical.CoverageTier, medical.DependantsCovered).Should().Be((PackageLineSources.ContractFrozen, CoverageTiers.B, 3));
@@ -225,7 +227,7 @@ public sealed class PackageResolverTests
     // ── The writer ──────────────────────────────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task Freeze_WritesOnlyContractualRows_IsIdempotent_AndFixesThemFromTodayToTheTermEnd()
+    public async Task Freeze_WritesOnlyContractualRows_IsIdempotent_AndFixesThemFromTheStartToTheTermEnd()
     {
         var (db, s) = await SeededAsync();
         await using var _ = db;
@@ -239,7 +241,7 @@ public sealed class PackageResolverTests
         var rows = await db.EmployeeEntitlements.ToListAsync();
         rows.Select(r => r.PayComponentCode).Should().BeEquivalentTo("MEDICAL", "AIR_TICKET");
         rows.Should().OnlyContain(r => r.EntitlementClass == PayEntitlementClasses.Contractual && r.Source == EntitlementSources.GradeDefault
-            && r.VerificationState == EntitlementVerificationStates.Verified && r.EffectiveFrom == Today && r.EffectiveTo == PackageSeed.TermEnd
+            && r.VerificationState == EntitlementVerificationStates.Verified && r.EffectiveFrom == PackageSeed.TermStart && r.EffectiveTo == PackageSeed.TermEnd
             && r.EmployeeId == s.Mohammed.PublicId && r.CompanyId == s.Company.Id && r.GradeEntitlementId != null);
     }
 
@@ -302,8 +304,9 @@ public sealed class PackageResolverTests
             reason.Should().NotBeNull(code);
             new[] { reason!.TitleEn, reason.TitleAr, reason.WhyEn, reason.WhyAr, reason.FixEn, reason.FixAr }.Should().OnlyContain(t => t.Length > 3, code);
         }
-        PackageReasons.Pending.Should().BeEmpty("R0 #189 added all twelve R2 codes to the catalogue");
-        PackageReasons.All.Should().OnlyContain(code => ReleaseABlockReasons.All.ContainsKey(code), "every R2 code resolves from the R0 catalogue");
+        PackageReasons.Pending.Keys.Should().NotIntersectWith(ReleaseABlockReasons.All.Keys, "a code R0 adds must be deleted from Pending");
+        PackageReasons.All.Where(c => !PackageReasons.Pending.ContainsKey(c))
+            .Should().OnlyContain(code => ReleaseABlockReasons.All.ContainsKey(code), "every other R2 code resolves from the R0 catalogue");
     }
 
     [Theory]
@@ -471,5 +474,98 @@ public sealed class PackageResolverTests
             HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test")) },
         };
         return controller;
+    }
+
+    // ── Review round 2 ──────────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ReviewedAtRenewal_ComparesCash_NotHowTheValueIsWritten()
+    {
+        var (db, s) = await SeededAsync(seed => seed.Cells["TRANSPORT"].Rate = 0.12m); // 12% of 8,000 = 960 ≠ 800
+        await using var _ = db;
+        var package = await new EntitlementResolver(db).ResolveAsync(s.TenantId, s.Mohammed.Id, Today, default);
+        Line(package, "TRANSPORT").GradeStandardDiffers.Should().BeTrue();
+        Line(package, "HOUSING").GradeStandardDiffers.Should().BeFalse("25% of 8,000 is the 2,000 paid");
+    }
+
+    [Fact]
+    public async Task ARunningTerm_IsNotFrozenFromTheGradeTable_Directly_ItIsProposed()
+    {
+        var (db, s) = await SeededAsync();
+        await using var _ = db;
+        var writer = Writer(db, Today); // the term started on 1 Feb
+        (await writer.FreezeTermAsync(s.TenantId, s.Term.Id, default)).Should().Be(new FreezeResult(false, false, 0));
+        writer.LastSkips.Where(x => x.Code == PackageReasons.TermRunningNeedsProposal).Select(x => x.ComponentCode)
+            .Should().BeEquivalentTo("MEDICAL", "AIR_TICKET");
+        var proposal = await Writer(db, Today).ProposeAsync(s.TenantId, s.Term.Id, default);
+        proposal!.Rows.Should().HaveCount(2).And.OnlyContain(r => r.VerificationState == EntitlementVerificationStates.Unverified,
+            "a proposal is unverified until a second HR user confirms it");
+    }
+
+    [Fact]
+    public async Task FreezingIsIdempotentPerBenefit_ASkippedBenefitIsFrozenOnceItsBlockerClears()
+    {
+        var (db, s) = await SeededAsync(seed => seed.Term.WorkerNationalityClass = null);
+        await using var _ = db;
+        (await Writer(db).FreezeTermAsync(s.TenantId, s.Term.Id, default)).RowsWritten.Should().Be(1, "only medical; the ticket waits for the class");
+        await db.SaveChangesAsync();
+        (await db.EmployeeContracts.SingleAsync(x => x.Id == s.Term.Id)).WorkerNationalityClass = WorkerNationalityClasses.NonSaudi;
+        await db.SaveChangesAsync();
+
+        var again = await Writer(db).FreezeTermAsync(s.TenantId, s.Term.Id, default);
+        again.Should().Be(new FreezeResult(true, false, 1));
+        await db.SaveChangesAsync();
+        (await db.EmployeeEntitlements.Select(x => x.PayComponentCode).ToListAsync()).Should().BeEquivalentTo("MEDICAL", "AIR_TICKET");
+        (await Writer(db).FreezeTermAsync(s.TenantId, s.Term.Id, default)).Should().Be(new FreezeResult(false, true, 0));
+    }
+
+    [Fact]
+    public async Task ATerminatedTerm_CarriesNoPackage_AfterTheDayItWasTerminated()
+    {
+        var (db, s) = await SeededAsync();
+        await using var _ = db;
+        await Writer(db).FreezeTermAsync(s.TenantId, s.Term.Id, default);
+        await db.SaveChangesAsync();
+        var term = await db.EmployeeContracts.SingleAsync(x => x.Id == s.Term.Id);
+        (term.Status, term.UpdatedAtUtc) = ("Terminated", new DateTime(2026, 9, 30, 9, 0, 0, DateTimeKind.Utc));
+        await db.SaveChangesAsync();
+
+        Line(await new EntitlementResolver(db).ResolveAsync(s.TenantId, s.Mohammed.Id, new DateOnly(2026, 9, 30), default), "MEDICAL")
+            .Source.Should().Be(PackageLineSources.ContractFrozen);
+        var after = await new EntitlementResolver(db).ResolveAsync(s.TenantId, s.Mohammed.Id, new DateOnly(2026, 11, 1), default);
+        after.ContractId.Should().BeNull("rows still open past a termination are ignored");
+        after.Lines.Should().NotContain(l => l.Source == PackageLineSources.ContractFrozen);
+    }
+
+    [Fact]
+    public async Task TheHousingAdvanceHonoursTheDateAsked_ThroughTheLoanFormsOwnRules()
+    {
+        var (db, s) = await SeededAsync(seed => seed.HousingAdvance.MinServiceMonths = 24); // joined 1 Feb 2025
+        await using var _ = db;
+        var october = Line(await new EntitlementResolver(db).ResolveAsync(s.TenantId, s.Mohammed.Id, Today, default), "LOAN_HOUSING_ADVANCE");
+        (october.Eligible, october.ReasonCode).Should().Be((false, ReleaseABlockReasons.EntitlementNotEligibleCriteria));
+        var march = Line(await new EntitlementResolver(db).ResolveAsync(s.TenantId, s.Mohammed.Id, new DateOnly(2027, 3, 1), default), "LOAN_HOUSING_ADVANCE");
+        (march.Eligible, march.ResolvedAmount).Should().Be((true, 6000m));
+    }
+
+    [Fact]
+    public void DatabaseRefusals_MapToSpecificReasonCodes()
+    {
+        static DbUpdateException Refusal(string sqlState, string message, string? constraint = null) =>
+            new("x", new Npgsql.PostgresException(message, "ERROR", "ERROR", sqlState, constraintName: constraint));
+        PackageReasons.FromDatabase(Refusal("23P01", "conflicting key value", "ex_employee_entitlements__no_overlap")).Should().Be(PackageReasons.TermOverlap);
+        foreach (var code in new[] { PackageReasons.OutsideTerm, PackageReasons.CompanyMismatch, PackageReasons.BasisNotOwnSalary,
+                     PackageReasons.CarriedDiffers, PackageReasons.CarriedOverlaps, PackageReasons.CloseOnly, PackageReasons.ContractNotInForce })
+            PackageReasons.FromDatabase(Refusal("23514", $"{code}: entitlement 1 something")).Should().Be(code);
+        PackageReasons.FromDatabase(Refusal("23514", "new row violates check", "ck_employee_entitlements__value_shape"))
+            .Should().Be(PackageReasons.ContractNotInForce);
+        PackageReasons.FromDatabase(Refusal("23505", "dup")).Should().BeNull();
+    }
+
+    [Fact]
+    public void Money_RoundsHalfAwayFromZero_LikePostgres()
+    {
+        EntitlementMoney.PercentOf(8000.10m, 0.25m).Should().Be(2000.03m, "round(2000.025, 2) in PostgreSQL; banker's rounding would give 2000.02");
+        EntitlementMoney.Round(-0.005m).Should().Be(-0.01m);
     }
 }

@@ -21,6 +21,8 @@ public sealed class PackageSeed
     public static readonly DateOnly TermStart = new(2026, 2, 1);
     public static readonly DateOnly TermEnd = new(2027, 1, 31);
     public static readonly DateOnly CellsFrom = new(2026, 1, 1);
+    /// <summary>A day before the term starts: a direct freeze (activation) is from the grade table only before a term runs.</summary>
+    public static readonly DateOnly FreezeDay = new(2026, 1, 20);
 
     public Tenant Tenant { get; } = new() { Id = Guid.NewGuid(), Name = "Masar", Slug = $"masar-{Guid.NewGuid():N}" };
     public Company Company { get; }

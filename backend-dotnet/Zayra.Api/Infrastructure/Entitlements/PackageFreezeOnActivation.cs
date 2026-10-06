@@ -13,9 +13,10 @@ namespace Zayra.Api.Infrastructure.Entitlements;
 /// <item><b>Activated</b> — freeze the contract-year package (an amendment carries its predecessor's rows forward).</item>
 /// <item><b>Ended</b> — close the term's open rows (<see cref="EntitlementWriter.CloseForEndAsync"/>).</item>
 /// </list>
-/// Both stage changes on the same context so they commit with the status change or not at all, and neither ever throws:
-/// the writer stages only rows the database will accept, and anything it cannot do is logged and shown on the package
-/// panel instead of blocking a signed contract.
+/// Both stage changes on the same context so they commit with the status change or not at all. Neither throws, with one
+/// deliberate exception: <see cref="EntitlementLifecycleBlockedException"/>, when the change would need a fixed benefit that
+/// never took effect to be removed (the database never removes one). The status change is then refused with a 409 and a
+/// reason, never left half-done or silently skipped. Anything else is logged and shown on the package panel.
 /// </summary>
 public sealed class PackageFreezeOnActivation : IContractTermLifecycle
 {
@@ -41,6 +42,10 @@ public sealed class PackageFreezeOnActivation : IContractTermLifecycle
         {
             throw; // the request itself was abandoned; activation is not happening either
         }
+        catch (EntitlementLifecycleBlockedException)
+        {
+            throw; // deliberate: the change would need a fixed row removed, which the database never does — the caller answers 409
+        }
         catch (Exception ex)
         {
             _log.LogWarning(ex, "Package not frozen on activation of contract {ContractId}; activation continues", contract.Id);
@@ -58,6 +63,10 @@ public sealed class PackageFreezeOnActivation : IContractTermLifecycle
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             throw;
+        }
+        catch (EntitlementLifecycleBlockedException)
+        {
+            throw; // deliberate: ending the term would leave a benefit that never took effect live — the caller answers 409
         }
         catch (Exception ex)
         {

@@ -14,7 +14,8 @@ namespace Zayra.Api.Controllers.Entitlements;
 /// The employee's dependants (Release A slice R2, CTO decision in review round 1): HR records the spouse and children a
 /// medical, ticket or education entitlement covers. Uses the existing <c>employee_dependents</c> table — no migration.
 /// Under /api/entitlements, so closed unless the tenant has release_a on. Every change is audited; the ID number is never
-/// written to the audit log in full.
+/// written to the audit log in full, and is shown in full only to callers with employees.write or employees.sensitive.
+/// Removing a dependant is a soft delete (expand-only migration 20261008000200).
 /// </summary>
 [Authorize]
 [ApiController]
@@ -36,9 +37,10 @@ public sealed class EmployeeDependantsController : ControllerBase
     {
         if (this.GetTenantId() is not Guid tid) return Unauthorized();
         if (await VisibleEmployeeAsync(tid, employeeId, ct) is null) return EmployeeNotFound();
-        var rows = await _db.EmployeeDependents.AsNoTracking().Where(x => x.TenantId == tid && x.EmployeeId == employeeId)
+        var rows = await _db.EmployeeDependents.AsNoTracking().Where(x => x.TenantId == tid && x.EmployeeId == employeeId && !x.IsDeleted)
             .OrderBy(x => x.DateOfBirth).ToListAsync(ct);
-        return Ok(rows.Select(Dto));
+        var reveal = CanSeeIdNumbers();
+        return Ok(rows.Select(r => Dto(r, reveal)));
     }
 
     [HttpPost]
@@ -54,7 +56,7 @@ public sealed class EmployeeDependantsController : ControllerBase
         _db.EmployeeDependents.Add(row);
         Audit(tid, employee, row, "DependantAdded");
         await _db.SaveChangesAsync(ct);
-        return Ok(Dto(row));
+        return Ok(Dto(row, true));
     }
 
     [HttpPut("{dependantId:guid}")]
@@ -64,13 +66,13 @@ public sealed class EmployeeDependantsController : ControllerBase
         if (this.GetTenantId() is not Guid tid) return Unauthorized();
         var employee = await VisibleEmployeeAsync(tid, employeeId, ct);
         if (employee is null) return EmployeeNotFound();
-        var row = await _db.EmployeeDependents.FirstOrDefaultAsync(x => x.TenantId == tid && x.EmployeeId == employeeId && x.Id == dependantId, ct);
+        var row = await _db.EmployeeDependents.FirstOrDefaultAsync(x => x.TenantId == tid && x.EmployeeId == employeeId && x.Id == dependantId && !x.IsDeleted, ct);
         if (row is null) return NotFound(new { error = "dependant_not_found", message = "That dependant isn't on this employee's file." });
         if (await ValidateAsync(tid, input, ct) is { } problem) return BadRequest(problem);
         Apply(row, input);
         Audit(tid, employee, row, "DependantChanged");
         await _db.SaveChangesAsync(ct);
-        return Ok(Dto(row));
+        return Ok(Dto(row, true));
     }
 
     [HttpDelete("{dependantId:guid}")]
@@ -80,9 +82,12 @@ public sealed class EmployeeDependantsController : ControllerBase
         if (this.GetTenantId() is not Guid tid) return Unauthorized();
         var employee = await VisibleEmployeeAsync(tid, employeeId, ct);
         if (employee is null) return EmployeeNotFound();
-        var row = await _db.EmployeeDependents.FirstOrDefaultAsync(x => x.TenantId == tid && x.EmployeeId == employeeId && x.Id == dependantId, ct);
+        var row = await _db.EmployeeDependents.FirstOrDefaultAsync(x => x.TenantId == tid && x.EmployeeId == employeeId && x.Id == dependantId && !x.IsDeleted, ct);
         if (row is null) return NotFound(new { error = "dependant_not_found", message = "That dependant isn't on this employee's file." });
-        _db.EmployeeDependents.Remove(row);
+        // Soft delete: the package history that counted this dependant stays explainable.
+        row.IsDeleted = true;
+        row.DeletedAtUtc = DateTime.UtcNow;
+        row.DeletedBy = this.GetUserId();
         Audit(tid, employee, row, "DependantRemoved");
         await _db.SaveChangesAsync(ct);
         return NoContent();
@@ -90,8 +95,14 @@ public sealed class EmployeeDependantsController : ControllerBase
 
     // ── Helpers ────────────────────────────────────────────────────────────────────────────────────
 
-    public static DependantDto Dto(EmployeeDependent x) =>
-        new(x.Id, x.FullName, Normalise(x.Relationship), x.DateOfBirth, x.NationalId);
+    /// <param name="revealIdNumber">False: the Iqama / ID number is masked to its last 4 (SensitiveValueMask.MaskId).</param>
+    public static DependantDto Dto(EmployeeDependent x, bool revealIdNumber) =>
+        new(x.Id, x.FullName, Normalise(x.Relationship), x.DateOfBirth,
+            revealIdNumber ? x.NationalId : SensitiveValueMask.MaskId(x.NationalId));
+
+    /// <summary>The full ID number only for those who may change it (employees.write) or see identity fields (employees.sensitive).</summary>
+    private bool CanSeeIdNumbers() =>
+        User.HasClaim("permission", "employees.write") || User.HasClaim("permission", "employees.sensitive");
 
     /// <summary>Stored values are the enum; older free-text rows are shown in the enum's terms.</summary>
     public static string Normalise(string? relationship) =>
@@ -131,7 +142,7 @@ public sealed class EmployeeDependantsController : ControllerBase
             MetadataJson = JsonSerializer.Serialize(new
             {
                 row.FullName, row.Relationship, row.DateOfBirth,
-                nationalIdEnding = row.NationalId.Length > 4 ? row.NationalId[^4..] : (row.NationalId.Length > 0 ? "****" : null),
+                nationalId = SensitiveValueMask.MaskId(row.NationalId),
             }),
         });
 

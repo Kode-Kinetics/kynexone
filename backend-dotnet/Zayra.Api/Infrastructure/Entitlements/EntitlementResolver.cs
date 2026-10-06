@@ -129,7 +129,7 @@ public sealed class EntitlementResolver : IEntitlementResolver
         var contract = await ContractInForceAsync(tenantId, employee.PublicId, asOf, ct);
         var salary = await SalaryInForce(_db, tenantId, employee.Id, asOf, ct);
         var dependants = await _db.EmployeeDependents.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.EmployeeId == employee.Id).ToListAsync(ct);
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && !x.IsDeleted).ToListAsync(ct);
 
         IReadOnlyList<GradeStandardLine> standard = [];
         if (employee.GradeId is not Guid gradeId) blocks.Add(PackageReasons.GradeMissing);
@@ -279,13 +279,23 @@ public sealed class EntitlementResolver : IEntitlementResolver
             reason = new PackageReason(floor == PayStatutoryFloors.Housing
                 ? Application.Contracts.ReleaseABlockReasons.EntitlementFloorHousing
                 : Application.Contracts.ReleaseABlockReasons.EntitlementFloorTransport);
-        var differs = salary is not null && cell is not null && (!cell.Eligible || cell.ValueType != valueType
-            || (valueType == GradeEntitlementValueTypes.PercentOfBasic && !EntitlementRates.Same(cell.Rate, rate))
-            || (valueType == GradeEntitlementValueTypes.Amount && cell.Amount != amount));
+        // "Reviewed at renewal" compares what the employee GETS, not how it is expressed: 25% of 8,000 and a fixed 2,000 are the
+        // same cash. In kind differs from any cash, and cash from in kind.
+        var differs = salary is not null && cell is not null && (!cell.Eligible
+            || (cell.ValueType == GradeEntitlementValueTypes.InKind) != (valueType == GradeEntitlementValueTypes.InKind)
+            || (valueType != GradeEntitlementValueTypes.InKind && StandardCash(cell, salary.BasicSalary) is decimal standardCash && standardCash != cash));
         return new(NewLine(code, cls, floor, PackageLineSources.Salary, true, true, valueType, amount, rate, cash, null, null,
             DependantScopes.None, null, 0, EntitlementLimitPeriods.Monthly, cell?.GradeEntitlementId, null, cell?.IsCompanyOverride ?? false,
             differs, null, cash, null, cell), reason);
     }
+
+    /// <summary>The monthly cash a wage cell stands for on this basic salary; NULL when it is not a cash figure.</summary>
+    private static decimal? StandardCash(GradeStandardLine cell, decimal basic) => cell.ValueType switch
+    {
+        GradeEntitlementValueTypes.Amount => cell.Amount,
+        GradeEntitlementValueTypes.PercentOfBasic when cell.Rate is decimal r => EntitlementMoney.PercentOf(basic, r),
+        _ => null,
+    };
 
     private static Built ContractualLine(string code, string cls, string floor, EmployeeEntitlement? row, GradeStandardLine? cell,
         GradeEntitlement? citedCell, Employee employee, string? nationalityClass, IReadOnlyList<EmployeeDependent> dependants, DateOnly asOf)
@@ -332,7 +342,7 @@ public sealed class EntitlementResolver : IEntitlementResolver
         decimal? amount = cell.Amount, resolved = cell.ValueType == GradeEntitlementValueTypes.Amount ? cell.Amount : null;
         if (reason is null && EntitlementComponentRules.For(code)?.IsLoanFacility == true)
         {
-            var loan = await LoanPreviewAsync(tenantId, employee, code, ct);
+            var loan = await LoanPreviewAsync(tenantId, employee, code, asOf, ct);
             if (loan is not null)
             {
                 (reason, offered) = (loan.Value.Reason, loan.Value.Offered);
@@ -351,12 +361,13 @@ public sealed class EntitlementResolver : IEntitlementResolver
     /// so "up to SAR 6,000" here is exactly what the employee would be offered: grade cell, policy caps, notice and overdue
     /// blocks, concurrent loans, currency and anything already outstanding. NULL when no grade-limited loan type uses the code.
     /// </summary>
-    private async Task<(PackageReason? Reason, bool Offered, decimal? Available)?> LoanPreviewAsync(Guid tenantId, Employee employee, string code, CancellationToken ct)
+    private async Task<(PackageReason? Reason, bool Offered, decimal? Available)?> LoanPreviewAsync(Guid tenantId, Employee employee, string code,
+        DateOnly asOf, CancellationToken ct)
     {
         var loanType = await _db.LoanTypes.AsNoTracking()
             .FirstOrDefaultAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.IsActive && x.GradeLimited && x.EntitlementComponentCode == code, ct);
         if (loanType is null) return null;
-        var result = await new LoanEligibilityService(_db).EvaluateAsync(tenantId, employee, loanType, 0m, 0, LoanPreviewRepaymentMethod, ct: ct, preview: true);
+        var result = await new LoanEligibilityService(_db).EvaluateAsync(tenantId, employee, loanType, 0m, 0, LoanPreviewRepaymentMethod, ct: ct, preview: true, asOf: asOf);
         if (result.Eligible) return (null, true, result.Available ?? result.MaxAvailableAmount);
         var codes = result.Codes;
         if (codes.Contains(LoanEligibilityCodes.TypeNotOffered)) return (new PackageReason(PackageReasons.NotOfferedByCompany), false, null);
@@ -399,14 +410,22 @@ public sealed class EntitlementResolver : IEntitlementResolver
 
     // ── Reads ───────────────────────────────────────────────────────────────────────────────────────
 
-    private Task<EmployeeContract?> ContractInForceAsync(Guid tenantId, Guid employeePublicId, DateOnly asOf, CancellationToken ct) =>
-        ScopedBypass.TenantWide(_db.EmployeeContracts, tenantId, "The employee's own contract term in force on the date.")
+    /// <summary>
+    /// The term in force on the date. A Terminated term ends on the day it was terminated (its UpdatedAtUtc, which the status
+    /// change stamps), not on its original end date: after that day it carries no package, whatever rows it still has.
+    /// </summary>
+    private async Task<EmployeeContract?> ContractInForceAsync(Guid tenantId, Guid employeePublicId, DateOnly asOf, CancellationToken ct)
+    {
+        var candidates = await ScopedBypass.TenantWide(_db.EmployeeContracts, tenantId, "The employee's own contract term in force on the date.")
             .AsNoTracking()
             .Where(x => x.EmployeeId == employeePublicId && !x.IsDeleted
                 && (x.Status == "Active" || x.Status == "Expired" || x.Status == "Terminated")
                 && x.StartDate <= asOf && (x.EndDate == null || x.EndDate >= asOf))
             .OrderByDescending(x => x.StartDate).ThenByDescending(x => x.Version)
-            .FirstOrDefaultAsync(ct);
+            .Take(5).ToListAsync(ct);
+        return candidates.FirstOrDefault(x => x.Status != "Terminated"
+            || (x.UpdatedAtUtc is DateTime ended && DateOnly.FromDateTime(ended) >= asOf));
+    }
 
     /// <summary>The salary row in force on <paramref name="asOf"/> (the rule GradeLoanLimitResolver applies).</summary>
     internal static Task<EmployeeSalaryStructure?> SalaryInForce(ZayraDbContext db, Guid tenantId, int employeeId, DateOnly asOf, CancellationToken ct) =>

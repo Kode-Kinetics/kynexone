@@ -19,7 +19,7 @@ public sealed class PackageFreezePostgresTests(PostgresFixture fixture)
     private static readonly DateOnly Today = new(2026, 10, 6);
 
     private static EntitlementWriter Writer(ZayraDbContext db, DateOnly? today = null) =>
-        new(db, new FixedTenantClock(today ?? Today), new EntitlementResolver(db));
+        new(db, new FixedTenantClock(today ?? PackageSeed.FreezeDay), new EntitlementResolver(db));
 
     private async Task<PackageSeed> SeedAsync()
     {
@@ -53,7 +53,7 @@ public sealed class PackageFreezePostgresTests(PostgresFixture fixture)
         await using var verify = fixture.CreateDb();
         var rows = await verify.EmployeeEntitlements.Where(x => x.TenantId == s.TenantId).ToListAsync();
         Assert.Equal(new[] { "AIR_TICKET", "MEDICAL" }, rows.Select(r => r.PayComponentCode).OrderBy(c => c));
-        Assert.All(rows, r => Assert.Equal((Today, (DateOnly?)PackageSeed.TermEnd), (r.EffectiveFrom, r.EffectiveTo)));
+        Assert.All(rows, r => Assert.Equal((PackageSeed.TermStart, (DateOnly?)PackageSeed.TermEnd), (r.EffectiveFrom, r.EffectiveTo)));
     }
 
     [Fact]

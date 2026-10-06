@@ -11,8 +11,8 @@ namespace Zayra.Api.Infrastructure.Entitlements;
 
 // Release A slice R2 owns this file. Registered (descriptor + scoped handler) by ReleaseAServiceCollectionExtensions.
 
-/// <summary>Payload of <see cref="PackageFreezeJobHandler"/>: one company's employees.</summary>
-public sealed record PackageFreezeJobPayload(Guid CompanyId);
+/// <summary>Payload of <see cref="PackageFreezeJobHandler"/>: one company's employees, or one running term of it.</summary>
+public sealed record PackageFreezeJobPayload(Guid CompanyId, Guid? ContractId = null);
 
 /// <summary>
 /// Proposed packages for employees already on a running term when Release A is switched on for a company (CTO decision,
@@ -34,8 +34,9 @@ public sealed class PackageFreezeJobHandler : IBackgroundJobHandler
         KeyRetention: BackgroundJobKeyRetention.WhileActive,
         MaxAttempts: 5);
 
-    /// <summary>One live proposal run per company: a second request returns the running job.</summary>
+    /// <summary>One live proposal run per company (or per term): a second request returns the running job.</summary>
     public static string IdempotencyKey(Guid companyId) => $"company:{companyId:N}";
+    public static string IdempotencyKey(Guid companyId, Guid contractId) => $"company:{companyId:N}:contract:{contractId:N}";
 
     /// <summary>The checkpoint key of one term's proposal.</summary>
     public static string ItemKey(Guid contractId) => $"contract:{contractId:N}";
@@ -56,6 +57,7 @@ public sealed class PackageFreezeJobHandler : IBackgroundJobHandler
         var tenantId = context.TenantId;
         var today = await _clock.TodayAsync(tenantId, context.AbortToken);
         var terms = await RunningTermsAsync(db, tenantId, payload.CompanyId, today, context.AbortToken);
+        if (payload.ContractId is Guid only) terms = terms.Where(t => t == only).ToList();
         await context.SetTotalAsync(terms.Count, $"{terms.Count} contract terms to check");
 
         var writer = new EntitlementWriter(db, _clock, _resolver);
