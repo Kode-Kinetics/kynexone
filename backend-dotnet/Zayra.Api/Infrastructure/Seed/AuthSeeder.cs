@@ -180,7 +180,9 @@ public class AuthSeeder : IAuthSeeder
             // employees.bulk_import reconciles HR Officer's existing role-name reach to POST /employees/import(-preview).
             "employees.bulk_import",
             "organization.read", "approvals.read", "approvals.write", "notifications.read", "localization.read",
-            "leave.read", "leave.write", "attendance.read", "overtime.read", "profile.read"
+            // overtime.write beside leave.write: HR Officer files both on an employee's behalf. Filing overtime
+            // for someone else is gated on overtime.write (OvertimeController.CreateRequest), not on data scope.
+            "leave.read", "leave.write", "attendance.read", "overtime.read", "overtime.write", "profile.read"
         }), 5, true, cancellationToken);
 
         // Level 6 — Payroll Officer: payroll processing
