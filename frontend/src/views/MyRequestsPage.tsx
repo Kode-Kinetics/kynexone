@@ -48,6 +48,8 @@ export function MyRequestsPage() {
 
   useEffect(() => { void load(); }, [load]);
 
+  // Categories carry one (English) name; a standard one with a dictionary entry ("General HR") reads in Arabic.
+  const categoryName = (name: string) => t(name);
   const set = <K extends keyof typeof blankForm>(k: K, v: (typeof blankForm)[K]) => setForm((f) => ({ ...f, [k]: v }));
 
   const openThread = async (id: string) => {
@@ -122,7 +124,7 @@ export function MyRequestsPage() {
                 <EssField label={t('What is it about?')}>
                   <select className={essInput} value={form.categoryId} onChange={(e) => set('categoryId', e.target.value)}>
                     <option value="">{t('General HR')}</option>
-                    {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    {categories.map((c) => <option key={c.id} value={c.id}>{categoryName(c.name)}</option>)}
                   </select>
                 </EssField>
                 <EssField label={t('Subject')}>
@@ -154,7 +156,7 @@ export function MyRequestsPage() {
                             <span className="min-w-0">
                               <span className="block text-sm font-semibold text-slate-800 dark:text-slate-100">{r.subject}</span>
                               <span className="block text-xs text-slate-500 dark:text-slate-400">
-                                {fillTemplate(t('{category}, raised on {date}'), { category: r.categoryName, date: fmtDate(r.createdAtUtc) })}
+                                {fillTemplate(t('{category}, raised on {date}'), { category: categoryName(r.categoryName), date: fmtDate(r.createdAtUtc) })}
                               </span>
                             </span>
                             <StatusChip label={t(s.label)} tone={s.tone} dot />

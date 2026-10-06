@@ -561,6 +561,41 @@ public class EssEmployeeActionsTests
         list.First().NetSalary.Should().Be(dashboard.PayrollSnapshot.NetSalary, "the card and the payslip list agree on the latest slip");
     }
 
+    /// <summary>
+    /// "The subject never decides" stays strict now the caller lookup is shared. The bar holds when EITHER link
+    /// names the subject: the login rows behind the subject (Employee.UserAccountId) OR the employee the caller's
+    /// own token is linked to. Here only the second does, and the decision is still refused.
+    /// </summary>
+    [Fact]
+    public async Task ACallerWhoseTokenIsLinkedToTheSubject_CannotDecideTheRequest_EvenWithNoUserAccountMatch()
+    {
+        var w = await SeedAsync();
+        var approval = new ApprovalRequest
+        {
+            TenantId = w.TenantId, EntityName = "EmployeeChangeRequest", EntityId = Guid.NewGuid().ToString(), Title = "Bank change",
+            Status = "Pending", RequestedForEmployeeId = w.Me.Id, RequestedByUserId = Guid.NewGuid(), CurrentApproverRole = "Any",
+        };
+        w.Db.ApprovalRequests.Add(approval);
+        await w.Db.SaveChangesAsync();
+
+        var deciderUserId = Guid.NewGuid(); // not w.Me.UserAccountId: the user-account link does not name the subject
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim("tenant_id", w.TenantId.ToString()), new Claim(ClaimTypes.NameIdentifier, deciderUserId.ToString()),
+            new Claim("employee_id", w.Me.Id.ToString()),
+        }, "Test"));
+        var http = new HttpContextAccessor { HttpContext = new DefaultHttpContext { User = principal } };
+        var service = new Zayra.Api.Infrastructure.Approvals.ApprovalWorkflowService(
+            w.Db, new AuditService(w.Db), new HrmHierarchyService(w.Db, new AuditService(w.Db)), http: http);
+        var context = new Zayra.Api.Application.Auth.RequestContext(null, null, deciderUserId, w.TenantId,
+            new[] { "Admin" }, new[] { "approvals.decide", "approvals.override", "manager.approve" });
+
+        var act = () => service.DecideAsync(w.TenantId, approval.Id,
+            new Zayra.Api.Application.Approvals.ApprovalDecisionRequest("Approve", "ok"), context, CancellationToken.None);
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should().Be(Zayra.Api.Infrastructure.Approvals.ApprovalWorkflowService.SubjectBarMessage);
+    }
+
     // ── Stubs ────────────────────────────────────────────────────────────────
 
     private sealed class NoStorage : IDocumentStorage

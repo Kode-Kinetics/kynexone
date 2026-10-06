@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test, expect } from '@playwright/test';
 import { LOCALE_DICTS } from '../src/i18n/translations';
-import { payslipMonthLabel } from '../src/lib/essPayslip';
+import { payslipLineName, payslipMonthLabel } from '../src/lib/essPayslip';
 import {
   ESS_LEAVE_PATH, ESS_OVERTIME_PATH, ESS_REQUESTS_PATH,
   canCancelLeave, hrRequestStatus, leaveStatus, overtimeStatus, overtimeWindow, splitMinutes,
@@ -17,10 +17,10 @@ const read = (rel: string) => readFileSync(join(root, rel), 'utf8');
 test('self-service buttons open the employee pages, never the HR screens', () => {
   const ess = read('src/views/EmployeeSelfServicePage.tsx');
   expect(ess).not.toMatch(/['"]\/(leave|overtime|hr-requests)['"]/);
-  // Apply Leave button, Leave Balance card, "Request leave" link; OT Request; My Requests.
+  // Apply Leave button, Leave Balance card, "Request leave" link; OT Request; My Requests and the HR requests card.
   expect(ess.match(/router\.push\(ESS_LEAVE_PATH\)/g)?.length).toBe(3);
   expect(ess.match(/router\.push\(ESS_OVERTIME_PATH\)/g)?.length).toBe(1);
-  expect(ess.match(/router\.push\(ESS_REQUESTS_PATH\)/g)?.length).toBe(1);
+  expect(ess.match(/router\.push\(ESS_REQUESTS_PATH\)/g)?.length).toBe(3); // My Requests, the card's link, each recent request
   expect(ess).toMatch(/label: 'Request Leave', path: ESS_LEAVE_PATH/);
 });
 
@@ -83,7 +83,7 @@ test('every string on the employee pages has English and Arabic, with the same p
 });
 
 test('OT Request on the self-service page follows the Overtime module switch', () => {
-  expect(read('src/views/EmployeeSelfServicePage.tsx')).toMatch(/\{isFeatureEnabled\('overtime'\) && \(\s*<button\s+type="button"\s+onClick=\{\(\) => router\.push\(ESS_OVERTIME_PATH\)\}/);
+  expect(read('src/views/EmployeeSelfServicePage.tsx')).toMatch(/\{canWrite && isFeatureEnabled\('overtime'\) && \(\s*<button\s+type="button"\s+onClick=\{\(\) => router\.push\(ESS_OVERTIME_PATH\)\}/);
 });
 
 test('the submit forms are offered only with ess.write', () => {
@@ -111,4 +111,22 @@ test('leave type names use the Arabic name from the leave types', () => {
   expect(src).not.toMatch(/\{[br]\.leaveTypeName\}/);
   expect(src).toMatch(/typeNameById\(b\.leaveTypeId, b\.leaveTypeName\)/);
   expect(src).toMatch(/typeNameById\(r\.leaveTypeId, r\.leaveTypeName\)/);
+});
+
+test('the self-service home offers its write actions only with ess.write, and raises HR requests on /ess/requests', () => {
+  const home = read('src/views/EmployeeSelfServicePage.tsx');
+  expect(home).toMatch(/const canWrite = useCanWriteEss\(\);/);
+  expect(home).toMatch(/\{canWrite && \(\s*<button\s+type="button"\s+onClick=\{\(\) => router\.push\(ESS_LEAVE_PATH\)\}/);
+  // Request a document: the form, or the read-only notice.
+  expect(home).toMatch(/!canWrite \? \(\s*<EssReadOnly \/>/);
+  // No inline HR request form or thread any more: the card links to the employee's requests page.
+  expect(home).not.toMatch(/createHrRequest|addHrRequestComment|hrRequestDetail/);
+  expect(home).toMatch(/data-testid="ess-home-hr-requests"/);
+});
+
+test('payslip lines read in Arabic from the catalogue, or a translated standard name', () => {
+  const t = (k: string) => (k === 'Net Pay' ? 'صافي الراتب' : k);
+  expect(payslipLineName({ name: 'Housing', nameAr: 'بدل السكن' }, 'ar', t)).toBe('بدل السكن');
+  expect(payslipLineName({ name: 'Net Pay' }, 'ar', t)).toBe('صافي الراتب');
+  expect(payslipLineName({ name: 'Housing', nameAr: 'بدل السكن' }, 'en', t)).toBe('Housing');
 });
