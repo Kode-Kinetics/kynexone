@@ -12,8 +12,8 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Migrations
 {
     [DbContext(typeof(ZayraDbContext))]
-    [Migration("20261005200657_RequirePrivilegedMfa")]
-    partial class RequirePrivilegedMfa
+    [Migration("20261005194242_RaiseKsaMaternityLeaveToTwelveWeeks")]
+    partial class RaiseKsaMaternityLeaveToTwelveWeeks
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -23572,10 +23572,6 @@ namespace Zayra.Api.Migrations
                     b.Property<bool>("PasswordRequireUppercase")
                         .HasColumnType("boolean")
                         .HasColumnName("password_require_uppercase");
-
-                    b.Property<DateTime?>("PrivilegedMfaEnforceFromUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("privileged_mfa_enforce_from_utc");
 
                     b.Property<int>("RefreshTokenExpiryDays")
                         .HasColumnType("integer")

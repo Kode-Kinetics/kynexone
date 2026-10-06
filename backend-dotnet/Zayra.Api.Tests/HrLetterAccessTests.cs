@@ -170,10 +170,12 @@ public class HrLetterAccessTests
     private static async Task<AuthorizationPolicy?> PolicyFor(Type controller, string methodName)
     {
         var method = controller.GetMethod(methodName) ?? throw new InvalidOperationException(methodName);
+        // The role audience only. A [HasPermission] gate is a perm: policy this bare provider cannot build;
+        // those gates are exercised through the real pipeline in Security/RoleGateBypassHotfixTests.
         IEnumerable<IAuthorizeData> data =
         [
-            .. method.GetCustomAttributes<AuthorizeAttribute>(inherit: true),
-            .. controller.GetCustomAttributes<AuthorizeAttribute>(inherit: true),
+            .. method.GetCustomAttributes<AuthorizeAttribute>(inherit: true).Where(a => a is not Zayra.Api.Infrastructure.Authorization.HasPermissionAttribute),
+            .. controller.GetCustomAttributes<AuthorizeAttribute>(inherit: true).Where(a => a is not Zayra.Api.Infrastructure.Authorization.HasPermissionAttribute),
         ];
         var options = new AuthorizationOptions();
         return await AuthorizationPolicy.CombineAsync(new DefaultAuthorizationPolicyProvider(

@@ -12,8 +12,8 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Migrations
 {
     [DbContext(typeof(ZayraDbContext))]
-    [Migration("20261005210842_AddPlatformMfaRecoveryCodes")]
-    partial class AddPlatformMfaRecoveryCodes
+    [Migration("20261005204934_AddKsaStatutoryLeaveFields")]
+    partial class AddKsaStatutoryLeaveFields
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -701,10 +701,6 @@ namespace Zayra.Api.Migrations
                     b.Property<int>("MfaFailedCount")
                         .HasColumnType("integer")
                         .HasColumnName("mfa_failed_count");
-
-                    b.Property<long?>("MfaLastTotpStep")
-                        .HasColumnType("bigint")
-                        .HasColumnName("mfa_last_totp_step");
 
                     b.Property<DateTime?>("MfaLastVerifiedAtUtc")
                         .HasColumnType("timestamp with time zone")
@@ -14642,6 +14638,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("accrual_method");
 
+                    b.Property<bool>("AllowsHajjBeyondStatutoryEligibility")
+                        .HasColumnType("boolean")
+                        .HasColumnName("allows_hajj_beyond_statutory_eligibility");
+
                     b.Property<decimal>("AnnualEntitlementDays")
                         .HasPrecision(6, 2)
                         .HasColumnType("numeric(6,2)")
@@ -14957,6 +14957,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("date")
                         .HasColumnName("return_date");
 
+                    b.Property<string>("SeparateEventReason")
+                        .HasColumnType("text")
+                        .HasColumnName("separate_event_reason");
+
                     b.Property<DateOnly>("StartDate")
                         .HasColumnType("date")
                         .HasColumnName("start_date");
@@ -14965,6 +14969,15 @@ namespace Zayra.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("status");
+
+                    b.Property<DateOnly?>("StatutoryEventDate")
+                        .HasColumnType("date")
+                        .HasColumnName("statutory_event_date");
+
+                    b.Property<string>("StatutoryLeaveKind")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("statutory_leave_kind");
 
                     b.Property<DateTime?>("SubmittedAtUtc")
                         .HasColumnType("timestamp with time zone")
@@ -21771,15 +21784,6 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("mfa_enabled");
 
-                    b.Property<long?>("MfaLastTotpStep")
-                        .HasColumnType("bigint")
-                        .HasColumnName("mfa_last_totp_step");
-
-                    b.Property<string>("MfaRecoveryCodeHashes")
-                        .HasMaxLength(2000)
-                        .HasColumnType("character varying(2000)")
-                        .HasColumnName("mfa_recovery_code_hashes");
-
                     b.Property<string>("MfaSecretEncrypted")
                         .HasMaxLength(1024)
                         .HasColumnType("character varying(1024)")
@@ -23585,10 +23589,6 @@ namespace Zayra.Api.Migrations
                     b.Property<bool>("PasswordRequireUppercase")
                         .HasColumnType("boolean")
                         .HasColumnName("password_require_uppercase");
-
-                    b.Property<DateTime?>("PrivilegedMfaEnforceFromUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("privileged_mfa_enforce_from_utc");
 
                     b.Property<int>("RefreshTokenExpiryDays")
                         .HasColumnType("integer")

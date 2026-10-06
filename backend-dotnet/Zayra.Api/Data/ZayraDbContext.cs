@@ -1076,6 +1076,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     // ── Loans, Advances & Bonuses ──────────────────────────────────────────────
     public DbSet<LoanType> LoanTypes => Set<LoanType>();
     public DbSet<LoanPolicy> LoanPolicies => Set<LoanPolicy>();
+    public DbSet<GradeEntitlement> GradeEntitlements => Set<GradeEntitlement>();
     public DbSet<LoanChangeRequest> LoanChangeRequests => Set<LoanChangeRequest>();
     public DbSet<EmployeeLoan> EmployeeLoans => Set<EmployeeLoan>();
     public DbSet<LoanDisbursementBatch> LoanDisbursementBatches => Set<LoanDisbursementBatch>();
@@ -1678,6 +1679,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.MidSalary).HasPrecision(14, 2);
             entity.Property(x => x.MaxSalary).HasPrecision(14, 2);
             entity.Property(x => x.Currency).HasMaxLength(8);
+            entity.Property(x => x.NameAr).HasMaxLength(120);
         });
 
         modelBuilder.Entity<GradePayScaleComponent>(entity =>
@@ -1734,8 +1736,16 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
 
         modelBuilder.Entity<PayComponent>(entity =>
         {
-            entity.ToTable("pay_components");
+            entity.ToTable("pay_components", t =>
+            {
+                t.HasCheckConstraint("ck_pay_components__entitlement_class",
+                    "entitlement_class IN ('None','QiwaWage','Contractual','Facility')");
+                t.HasCheckConstraint("ck_pay_components__statutory_floor",
+                    "statutory_floor IN ('None','Housing','Transport','Medical','Art40')");
+            });
             entity.HasKey(x => x.Id);
+            entity.Property(x => x.EntitlementClass).HasMaxLength(20).HasDefaultValue(PayEntitlementClasses.None);
+            entity.Property(x => x.StatutoryFloor).HasMaxLength(20).HasDefaultValue(PayStatutoryFloors.None);
             // Non-unique helper index; the real UNIQUE (tenant, company, code, component_type) NULLS NOT
             // DISTINCT is created via raw SQL in the AddPayComponentDefinitions migration (Npgsql 8 cannot
             // express NULLS NOT DISTINCT fluently — same idiom as gl_drivers). component_type is part of the
@@ -2069,6 +2079,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasKey(x => x.Id);
             entity.Property(x => x.TotalDays).HasPrecision(6,2);
             entity.Property(x => x.HoursRequested).HasPrecision(5,2);
+            entity.Property(x => x.StatutoryLeaveKind).HasMaxLength(40);
             entity.HasIndex(x => new { x.TenantId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.StartDate });
         });
@@ -3860,22 +3871,79 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         // ── Loans ──────────────────────────────────────────────────────────────
         modelBuilder.Entity<LoanType>(entity =>
         {
-            entity.ToTable("loan_types");
+            entity.ToTable("loan_types", t =>
+                t.HasCheckConstraint("ck_loan_types__grade_limited_has_component",
+                    "NOT grade_limited OR entitlement_component_code IS NOT NULL"));
             entity.HasKey(x => x.Id);
             entity.Property(x => x.MaxAmount).HasPrecision(14, 2);
             entity.Property(x => x.InterestRate).HasPrecision(8, 4);
+            entity.Property(x => x.GradeLimited).HasDefaultValue(false);
+            entity.Property(x => x.EntitlementComponentCode).HasMaxLength(64);
             entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+        });
+
+        // Slice L1 — grade entitlement grid. Close-only, effective-dated; the no-overlap EXCLUDE (which EF
+        // cannot model) is added by the migration from GradeEntitlementSql.
+        modelBuilder.Entity<GradeEntitlement>(entity =>
+        {
+            entity.ToTable("grade_entitlements", t =>
+            {
+                t.HasCheckConstraint("ck_grade_entitlements__entitlement_class",
+                    "entitlement_class IN ('QiwaWage','Contractual','Facility')");
+                t.HasCheckConstraint("ck_grade_entitlements__value_type",
+                    "value_type IN ('Amount','MultipleOfBasic','MultipleOfGross','EligibilityOnly')");
+                t.HasCheckConstraint("ck_grade_entitlements__value_shape",
+                    "(value_type = 'Amount' AND amount IS NOT NULL AND amount >= 0 AND rate IS NULL)"
+                    + " OR (value_type IN ('MultipleOfBasic','MultipleOfGross') AND rate IS NOT NULL AND rate > 0 AND amount IS NULL)"
+                    + " OR (value_type = 'EligibilityOnly' AND amount IS NULL AND rate IS NULL)");
+                t.HasCheckConstraint("ck_grade_entitlements__ineligible_has_no_values",
+                    "eligible OR (amount IS NULL AND rate IS NULL AND max_outstanding_amount IS NULL)");
+                t.HasCheckConstraint("ck_grade_entitlements__outstanding_is_facility",
+                    "max_outstanding_amount IS NULL OR (entitlement_class = 'Facility' AND max_outstanding_amount >= 0)");
+                t.HasCheckConstraint("ck_grade_entitlements__dates",
+                    "effective_to IS NULL OR effective_to >= effective_from");
+            });
+            entity.HasKey(x => x.Id);
+            entity.HasAlternateKey(x => new { x.TenantId, x.Id });
+            entity.Property(x => x.CompanyKey)
+                .HasComputedColumnSql("COALESCE(company_id, '00000000-0000-0000-0000-000000000000')", stored: true);
+            entity.Property(x => x.PayComponentCode).HasMaxLength(64);
+            entity.Property(x => x.EntitlementClass).HasMaxLength(20);
+            entity.Property(x => x.ValueType).HasMaxLength(20);
+            entity.Property(x => x.Amount).HasPrecision(18, 2);
+            entity.Property(x => x.Rate).HasPrecision(9, 4);
+            entity.Property(x => x.MaxOutstandingAmount).HasPrecision(18, 2);
+            entity.Property(x => x.Note).HasMaxLength(500);
+            entity.Property(x => x.SourceRule).HasMaxLength(100);
+            // Serves the resolver: "the cell for (tenant, grade, component) in effect on a date", newest first.
+            entity.HasIndex(x => new { x.TenantId, x.GradeId, x.PayComponentCode, x.EffectiveFrom })
+                .IsDescending(false, false, false, true);
+            entity.HasOne<Grade>().WithMany().HasForeignKey(x => new { x.TenantId, x.GradeId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<Company>().WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<LoanPolicy>(entity =>
         {
-            entity.ToTable("loan_policies");
+            entity.ToTable("loan_policies", t =>
+            {
+                // Only the offering switch records what a version copied, and a switch stub only ever says "not offered".
+                t.HasCheckConstraint("ck_loan_policies__copied_from_only_on_switch", "copied_from_policy_id IS NULL OR created_by_offering_switch");
+                t.HasCheckConstraint("ck_loan_policies__switch_stub_not_offered", "NOT created_by_offering_switch OR NOT is_offered");
+            });
             entity.HasKey(x => x.Id);
+            entity.HasAlternateKey(x => new { x.TenantId, x.Id });
+            entity.HasOne<LoanPolicy>().WithMany().HasForeignKey(x => new { x.TenantId, x.CopiedFromPolicyId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
             entity.Property(x => x.MaxMultiplierOfSalary).HasPrecision(8, 2);
             entity.Property(x => x.MaxAmount).HasPrecision(14, 2);
             entity.Property(x => x.MaxTotalOutstanding).HasPrecision(14, 2);
             entity.Property(x => x.MaxInstallmentPercentOfSalary).HasPrecision(5, 2);
             entity.Property(x => x.AdditionalApprovalThreshold).HasPrecision(14, 2);
+            // Default true backfills existing policies. ValueGeneratedNever: EF must always send the value, or a false
+            // (the CLR default) would be skipped on insert and the database default would silently re-offer the type.
+            entity.Property(x => x.IsOffered).HasDefaultValue(true).ValueGeneratedNever();
+            entity.Property(x => x.CreatedByOfferingSwitch).HasDefaultValue(false);
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.LoanTypeId, x.Version }).IsUnique().HasFilter("company_id IS NOT NULL");
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.LoanTypeId }).IsUnique().HasFilter("company_id IS NOT NULL AND is_active");
             entity.HasIndex(x => new { x.TenantId, x.LoanTypeId });
@@ -3896,6 +3964,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(x => new { x.TenantId, x.LoanNumber }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.EmployeeIntId, x.Status });
+            entity.Property(x => x.GradePerLoanCap).HasPrecision(18, 2);
+            entity.Property(x => x.GradeOutstandingCap).HasPrecision(18, 2);
+            entity.HasOne<GradeEntitlement>().WithMany().HasForeignKey(x => new { x.TenantId, x.GradeEntitlementId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<LoanDisbursementBatch>(entity =>

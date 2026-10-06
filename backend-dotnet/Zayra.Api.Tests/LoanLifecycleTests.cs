@@ -185,7 +185,10 @@ public class LoanLifecycleTests
             // An explicit schema, not reflection over the record, catches accidental Employee
             // navigation properties and future sensitive additions to the assessment itself.
             var allowed = new[] { "Eligible", "Reasons", "Codes", "MaxAvailableAmount", "PolicyId", "PolicyVersion",
-                "PolicySnapshotJson", "EmploymentSnapshotJson", "MonthlySalary", "CommittedAmount" };
+                "PolicySnapshotJson", "EmploymentSnapshotJson", "MonthlySalary", "CommittedAmount",
+                // Slice L1: the explainable-limit fields. Same sensitivity as MonthlySalary (salary-derived caps),
+                // no personnel identifiers — the grade block carries grade id/code/name and the cell's figures only.
+                "GradeLimit", "Available", "BindingLimit", "Limits" };
             Assert.Equal(allowed.OrderBy(x => x), document.RootElement.EnumerateObject().Select(x => x.Name).OrderBy(x => x));
             Assert.True(document.RootElement.GetProperty("Eligible").GetBoolean());
             Assert.Equal(10_000m, document.RootElement.GetProperty("MonthlySalary").GetDecimal());

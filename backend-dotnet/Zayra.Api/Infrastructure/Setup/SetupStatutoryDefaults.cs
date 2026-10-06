@@ -1,5 +1,6 @@
 using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Application.Setup;
+using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Infrastructure.Payroll;
 
 namespace Zayra.Api.Infrastructure.Setup;
@@ -41,6 +42,16 @@ public sealed class SetupStatutoryDefaults : ISetupStatutoryDefaults
     {
         "leave.annual_base_days",
         "leave.sick_band1_days",
+        // KSA Arts. 113/114/151/160 special-leave floors. Absent for every other country, which is
+        // what leaves those countries' drafted special leave on the template's own figures.
+        KsaSpecialLeaveRuleKeys.MaternityDays,
+        KsaSpecialLeaveRuleKeys.PaternityDays,
+        KsaSpecialLeaveRuleKeys.MarriageDays,
+        KsaSpecialLeaveRuleKeys.BereavementDays,
+        KsaSpecialLeaveRuleKeys.BereavementSiblingDays,
+        KsaSpecialLeaveRuleKeys.HajjMinDays,
+        KsaSpecialLeaveRuleKeys.IddahMuslimDays,
+        KsaSpecialLeaveRuleKeys.IddahNonMuslimDays,
         OvertimeStatutoryContextResolver.RuleStandardMultiplier,
         OvertimeStatutoryContextResolver.RuleRestDayMultiplier,
         OvertimeStatutoryContextResolver.RuleHolidayMultiplier,

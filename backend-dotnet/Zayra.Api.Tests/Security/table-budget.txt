@@ -145,6 +145,7 @@ GlJournalExports
 GlPeriodCloses
 GoalProgressUpdates
 GosiContributionRules
+GradeEntitlements
 GradePayScaleComponents
 Grades
 HRRequestAttachments
