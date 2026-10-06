@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { notifyApiError } from '../api/client';
 import {
@@ -23,6 +23,10 @@ import { useFullList } from '../hooks/useFullList';
 import { pageWindowText } from '../lib/paging';
 import { requestFailureReason } from '../lib/requestFailure';
 import { JawazatPanel } from '../components/compliance/JawazatPanel';
+import { BenefitsAwaitingNotice } from '../components/entitlements/BenefitsAwaitingNotice';
+import { packageApi, type ContractPackageStatus } from '../api/package';
+import { useReleaseA } from '../lib/releaseA';
+import { useAuth } from '../contexts/AuthContext';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -152,6 +156,27 @@ function ContractsTab() {
 
   useEffect(() => { void list.reload(); }, [statusFilter, list.reload]);
 
+  // Release A: an active contract whose benefits wait for a second person gets one next action on its row.
+  const releaseA = useReleaseA();
+  const { hasPermission } = useAuth();
+  const [packageStatus, setPackageStatus] = useState<Record<string, ContractPackageStatus>>({});
+  const [proposing, setProposing] = useState<string | null>(null);
+  const activeIds = contracts.filter((c) => c.status === 'Active').map((c) => c.id).join(',');
+  const loadPackageStatus = useCallback(async () => {
+    if (!releaseA || !hasPermission('entitlements.read') || !activeIds) { setPackageStatus({}); return; }
+    try {
+      const rows = await packageApi.contractStatus(activeIds.split(',').slice(0, 200));
+      setPackageStatus(Object.fromEntries(rows.map((r) => [r.contractId, r])));
+    } catch { setPackageStatus({}); }
+  }, [releaseA, hasPermission, activeIds]);
+  useEffect(() => { void loadPackageStatus(); }, [loadPackageStatus]);
+  const proposeBenefits = async (status: ContractPackageStatus) => {
+    setProposing(status.contractId);
+    try { await packageApi.propose(status.employeeId, status.contractId); await loadPackageStatus(); }
+    catch (e) { notifyApiError(e); }
+    finally { setProposing(null); }
+  };
+
   const save = async () => {
     if (!form.employeeId || !form.startDate || !form.basicSalary) return;
     setSaving(true);
@@ -259,7 +284,8 @@ function ContractsTab() {
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-white/5">
               {contracts.map(c => (
-                <tr key={c.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.02]">
+                <Fragment key={c.id}>
+                <tr className="hover:bg-slate-50 dark:hover:bg-white/[0.02]">
                   <td className="p-3 font-mono text-xs text-sapphire dark:text-cyanAccent">{c.contractNumber}</td>
                   <td className="p-3 font-medium text-slate-800 dark:text-slate-200">{c.employeeName}</td>
                   <td className="p-3 text-slate-500 dark:text-slate-400">{c.contractType}</td>
@@ -284,6 +310,16 @@ function ContractsTab() {
                     </div>
                   </td>
                 </tr>
+                {packageStatus[c.id] && (
+                  <tr data-testid={`contract-benefits-${c.id}`}>
+                    <td colSpan={9} className="px-3 pb-3">
+                      <BenefitsAwaitingNotice action={packageStatus[c.id].nextAction} busy={proposing === c.id}
+                        onPropose={hasPermission('entitlements.manage') ? () => void proposeBenefits(packageStatus[c.id]) : undefined}
+                        reviewHref={`/people?employeeId=${packageStatus[c.id].employeeId}&tab=package`} />
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
           </table>

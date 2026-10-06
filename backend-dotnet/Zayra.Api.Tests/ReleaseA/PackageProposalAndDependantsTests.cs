@@ -236,4 +236,60 @@ public sealed class PackageProposalAndDependantsTests
 
     private static Application.Entitlements.PackageLine Line(Application.Entitlements.EmployeePackage p, string code) =>
         p.Lines.Single(l => l.ComponentCode == code);
+
+    // ── Back-dated activation: the benefits wait for a proposal, with one clear next action ──────────
+
+    private static async Task<IActionResult> ActivateAsync(ZayraDbContext db, PackageSeed s, DateOnly today)
+    {
+        db.TenantFeatureFlags.Add(new TenantFeatureFlag { TenantId = s.TenantId, FeatureKey = FeatureKeys.ReleaseA, IsEnabled = true });
+        await db.SaveChangesAsync();
+        var resolver = new EntitlementResolver(db);
+        var hook = new PackageFreezeOnActivation(new EntitlementWriter(db, new FixedTenantClock(today), resolver));
+        var dispatcher = new Zayra.Api.Infrastructure.Contracts.ContractTermLifecycleDispatcher([hook],
+            new Zayra.Api.Infrastructure.Modules.TenantModuleService(db, new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions())));
+        var contracts = Bind(new Zayra.Api.Controllers.Compliance.ContractsController(db, dispatcher), s.TenantId, s.UserId);
+        return await contracts.UpdateStatus(s.Term.Id, new Zayra.Api.Controllers.Compliance.UpdateContractStatusRequest("Active", "HR Lead"), default);
+    }
+
+    private static async Task<ContractPackageStatusDto[]> StatusAsync(ZayraDbContext db, PackageSeed s) =>
+        ((IEnumerable<ContractPackageStatusDto>)((OkObjectResult)await Package(db, s, Guid.NewGuid())
+            .ContractsPackageStatus([s.Term.Id, s.ColleagueTerm.Id], default)).Value!).ToArray();
+
+    [Theory]
+    [InlineData(2026, 1, 20)] // before the start
+    [InlineData(2026, 2, 1)]  // on the start date
+    public async Task ActivationOnOrBeforeTheStart_StillWritesTheGradeDefaults_AndNeedsNoNextAction(int y, int m, int d)
+    {
+        var (db, s) = await SeededAsync();
+        await using var _ = db;
+        (await db.EmployeeContracts.SingleAsync(x => x.Id == s.Term.Id)).Status = "PendingApproval";
+        await db.SaveChangesAsync();
+        (await ActivateAsync(db, s, new DateOnly(y, m, d))).Should().BeOfType<OkObjectResult>();
+        (await db.EmployeeEntitlements.Where(x => x.ContractId == s.Term.Id).ToListAsync())
+            .Should().HaveCount(2).And.OnlyContain(r => r.Source == EntitlementSources.GradeDefault && r.EffectiveFrom == PackageSeed.TermStart);
+        (await StatusAsync(db, s)).Should().NotContain(x => x.ContractId == s.Term.Id);
+    }
+
+    [Fact]
+    public async Task BackDatedActivation_WritesNothing_AndTheNextActionIsProposeThenReview()
+    {
+        var (db, s) = await SeededAsync();
+        await using var _ = db;
+        (await db.EmployeeContracts.SingleAsync(x => x.Id == s.Term.Id)).Status = "PendingApproval";
+        await db.SaveChangesAsync();
+        (await ActivateAsync(db, s, Today)).Should().BeOfType<OkObjectResult>("activation itself is never blocked by the package");
+        (await db.EmployeeEntitlements.CountAsync(x => x.ContractId == s.Term.Id)).Should().Be(0);
+
+        // Contract register and package panel agree: one next action, propose the benefits.
+        (await StatusAsync(db, s)).Should().ContainSingle(x => x.ContractId == s.Term.Id)
+            .Which.Should().Be(new ContractPackageStatusDto(s.Term.Id, s.Mohammed.Id, ContractPackageNextActions.ProposeBenefits));
+        var view = (EmployeePackageView)((OkObjectResult)(await Package(db, s, Guid.NewGuid()).Get(s.Mohammed.Id, null, default)).Result!).Value!;
+        (view.CanPropose, view.CanFreeze, view.Proposal).Should().Be((true, false, (PackageProposalDto?)null));
+
+        // Once proposed, the next action is to review it.
+        await ProposeAsync(db, s, Guid.NewGuid());
+        (await StatusAsync(db, s)).Should().ContainSingle(x => x.ContractId == s.Term.Id).Which.NextAction.Should().Be(ContractPackageNextActions.ReviewProposal);
+        view = (EmployeePackageView)((OkObjectResult)(await Package(db, s, Guid.NewGuid()).Get(s.Mohammed.Id, null, default)).Result!).Value!;
+        (view.CanPropose, view.Proposal is not null).Should().Be((false, true));
+    }
 }

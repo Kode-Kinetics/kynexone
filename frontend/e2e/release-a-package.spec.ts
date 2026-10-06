@@ -31,12 +31,24 @@ const documents = [
 ];
 const user = {
   id: 'u-checker', tenantId: 't1', tenantSlug: 'masar', email: 'hr@masar.test', fullName: 'HR Director', roles: ['HR Director'],
-  permissions: ['employees.read', 'employees.write', 'entitlements.read', 'entitlements.manage'], accountType: 'SingleCompany',
+  permissions: ['employees.read', 'employees.write', 'entitlements.read', 'entitlements.manage', 'compliance.read'], accountType: 'SingleCompany',
   isGroupScope: true, companies: [{ id: 'c1', name: 'Masar Facility Services', code: 'MFS', countryCode: 'SAU', isActive: true }],
 };
 
-async function open(page: Page, locale: 'en' | 'ar', view: unknown, dependants: unknown) {
+const contracts = [
+  { id: 'k-propose', employeeId: '00000000-0000-0000-0000-000000000001', employeeName: 'Mohammed Abdelrahman', templateId: null,
+    contractNumber: 'CON-2026-0001', contractType: 'Employment', status: 'Active', startDate: '2026-02-01', endDate: '2027-01-31',
+    basicSalary: 8000, currencyCode: 'SAR', language: 'en', version: 1, previousVersionId: null, signedByEmployeeName: '',
+    signedByEmployeeAtUtc: null, signedByHrName: 'HR Lead', signedByHrAtUtc: '2026-10-06T08:00:00Z', fileUrl: '', createdAtUtc: '2026-10-06T08:00:00Z', updatedAtUtc: null },
+  { id: 'k-review', employeeId: '00000000-0000-0000-0000-000000000002', employeeName: 'Ramon Dela Cruz', templateId: null,
+    contractNumber: 'CON-2026-0002', contractType: 'Employment', status: 'Active', startDate: '2026-03-01', endDate: '2027-02-28',
+    basicSalary: 5000, currencyCode: 'SAR', language: 'en', version: 1, previousVersionId: null, signedByEmployeeName: '',
+    signedByEmployeeAtUtc: null, signedByHrName: 'HR Lead', signedByHrAtUtc: '2026-10-06T08:00:00Z', fileUrl: '', createdAtUtc: '2026-10-06T08:00:00Z', updatedAtUtc: null },
+];
+
+async function open(page: Page, locale: 'en' | 'ar', view: unknown, dependants: unknown, path = `/people?employeeId=${EMP_ID}`) {
   const confirmBodies: unknown[] = [];
+  const proposeBodies: { path: string; body: unknown }[] = [];
   await page.addInitScript(([l]) => {
     localStorage.setItem('zayra_access_token', 'fixture-token');
     localStorage.setItem('zayra_refresh_token', 'fixture-refresh');
@@ -58,15 +70,25 @@ async function open(page: Page, locale: 'en' | 'ar', view: unknown, dependants: 
     if (p === `/api/employees/${EMP_ID}/readiness`) return json({ error: 'n/a' }, 404);
     if (/\/api\/entitlements\/employees\/\d+\/package$/.test(p)) return json(view);
     if (/\/api\/entitlements\/employees\/\d+\/dependants$/.test(p)) return json(dependants);
+    if (/\/api\/entitlements\/employees\/\d+\/package\/propose$/.test(p) && req.method() === 'POST') {
+      proposeBodies.push({ path: p, body: req.postDataJSON() });
+      return json({ jobId: 'j1', status: 'Queued', deduplicated: false, statusUrl: '/api/jobs/j1' }, 202);
+    }
+    if (p === '/api/compliance/contracts') return json({ total: contracts.length, page: 1, items: contracts });
+    if (p === '/api/entitlements/contracts/package-status') return json([
+      { contractId: 'k-propose', employeeId: EMP_ID, nextAction: 'proposeBenefits' },
+      { contractId: 'k-review', employeeId: 2, nextAction: 'reviewProposal' },
+    ]);
     if (/\/api\/entitlements\/package\/proposals\/[^/]+\/confirm$/.test(p) && req.method() === 'POST') {
       confirmBodies.push(req.postDataJSON());
       return json({ confirmed: 2, skipped: [] });
     }
     return json(p.endsWith('s') ? [] : {});
   });
-  await page.goto(`/people?employeeId=${EMP_ID}`);
-  await page.getByRole('button', { name: locale === 'ar' ? 'الباقة' : 'Package', exact: true }).click({ timeout: 30_000 });
-  return { errors, confirmBodies };
+  await page.goto(path);
+  if (path.startsWith('/people'))
+    await page.getByRole('button', { name: locale === 'ar' ? 'الباقة' : 'Package', exact: true }).click({ timeout: 30_000 });
+  return { errors, confirmBodies, proposeBodies };
 }
 
 async function noRawCodes(page: Page) {
@@ -78,14 +100,20 @@ async function noRawCodes(page: Page) {
 for (const locale of ['en', 'ar'] as const) {
   const T = locale === 'ar'
     ? { proposed: 'الباقة المقترحة — لم تُثبَّت بعد', confirm: 'تأكيد مطابقتها للعقد الموقّع', dependants: 'المعالون', none: 'لا يوجد معالون مسجلون.',
-        oneOfTwo: '1 من 2 من مزايا العقد مثبتة', waiting: 'بحاجة إلى تأكيد', ticket: 'تذكرة السفر السنوية' }
+        oneOfTwo: '1 من 2 من مزايا العقد مثبتة', waiting: 'بحاجة إلى تأكيد', ticket: 'تذكرة السفر السنوية',
+        awaiting: 'مزايا هذا العقد بانتظار تأكيد شخص آخر.', propose: 'اقتراح المزايا', review: 'مراجعة المقترح' }
     : { proposed: 'Proposed package — not fixed yet', confirm: 'Confirm it matches the signed contract', dependants: 'Dependants',
-        none: 'No dependants on file.', oneOfTwo: '1 of 2 contract benefits are fixed', waiting: 'Needs confirmation', ticket: 'Annual air ticket' };
+        none: 'No dependants on file.', oneOfTwo: '1 of 2 contract benefits are fixed', waiting: 'Needs confirmation', ticket: 'Annual air ticket',
+        awaiting: 'Benefits for this contract are waiting for a second person to confirm.', propose: 'Propose benefits', review: 'Review proposal' };
 
   test(`a proposal is confirmed by another HR user against the signed contract only (${locale})`, async ({ page }) => {
     const { errors, confirmBodies } = await open(page, locale, read('view-proposal.json'), read('dependants.json'));
     const card = page.locator(`section[aria-label="${locale === 'ar' ? 'الباقة المقترحة' : 'Proposed package'}"]`);
     await expect(card.getByRole('heading', { name: T.proposed })).toBeVisible({ timeout: 30_000 });
+    // One next action while the proposal waits: review it (and nothing else to propose or fix).
+    const waiting = page.getByRole('status').filter({ hasText: T.awaiting });
+    await expect(waiting.getByRole('button', { name: T.review })).toBeVisible();
+    await expect(page.getByRole('button', { name: T.propose })).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.dir)).toBe(locale === 'ar' ? 'rtl' : 'ltr');
 
     // Only the signed contract can be chosen — the passport on file is not offered.
@@ -122,6 +150,35 @@ for (const locale of ['en', 'ar'] as const) {
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(overflow, 'no horizontal page scroll').toBeLessThanOrEqual(1);
     if (EVIDENCE) await page.screenshot({ path: `${EVIDENCE}/r2-reasons-${locale}-${test.info().project.name}.png`, fullPage: true });
+    expect(errors).toEqual([]);
+  });
+
+  test(`a contract activated after it started: its benefits wait for a second person, one next action (${locale})`, async ({ page }) => {
+    const { errors, proposeBodies } = await open(page, locale, read('view-awaiting.json'), read('dependants.json'));
+    const waiting = page.getByRole('status').filter({ hasText: T.awaiting });
+    await expect(waiting).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole('button', { name: T.review })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: locale === 'ar' ? 'تثبيت الباقة لهذه السنة التعاقدية' : 'Fix the package for this contract year' })).toHaveCount(0);
+    await noRawCodes(page);
+    if (EVIDENCE) await page.screenshot({ path: `${EVIDENCE}/r2-awaiting-${locale}-${test.info().project.name}.png`, fullPage: true });
+    await waiting.getByRole('button', { name: T.propose }).click();
+    await expect.poll(() => proposeBodies.length).toBe(1);
+    expect(proposeBodies[0]).toEqual({ path: `/api/entitlements/employees/${EMP_ID}/package/propose`, body: { contractId: read('view-awaiting.json').contract.id } });
+    expect(errors).toEqual([]);
+  });
+
+  test(`the contract register shows the same next action on each waiting contract (${locale})`, async ({ page }) => {
+    const { errors, proposeBodies } = await open(page, locale, read('view-awaiting.json'), [], '/compliance?tab=contracts');
+    const proposeRow = page.getByTestId('contract-benefits-k-propose');
+    const reviewRow = page.getByTestId('contract-benefits-k-review');
+    await expect(proposeRow.getByText(T.awaiting)).toBeVisible({ timeout: 30_000 });
+    await expect(reviewRow.getByRole('link', { name: T.review })).toHaveAttribute('href', '/people?employeeId=2&tab=package');
+    await expect(proposeRow.getByRole('link', { name: T.review })).toHaveCount(0);
+    await noRawCodes(page);
+    if (EVIDENCE) await page.screenshot({ path: `${EVIDENCE}/r2-register-${locale}-${test.info().project.name}.png`, fullPage: true });
+    await proposeRow.getByRole('button', { name: T.propose }).click();
+    await expect.poll(() => proposeBodies.length).toBe(1);
+    expect(proposeBodies[0]).toEqual({ path: `/api/entitlements/employees/${EMP_ID}/package/propose`, body: { contractId: 'k-propose' } });
     expect(errors).toEqual([]);
   });
 }

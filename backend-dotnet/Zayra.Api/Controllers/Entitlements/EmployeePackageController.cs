@@ -66,6 +66,46 @@ public sealed class EmployeePackageController : ControllerBase
     }
 
     /// <summary>
+    /// GET /api/entitlements/contracts/package-status?ids=… — the one next action for each active contract's benefits, for
+    /// the contract register: <c>proposeBenefits</c> (a term that started before it was activated: its benefits wait for a
+    /// proposal a second person confirms), <c>reviewProposal</c> (a proposal is waiting), or nothing. Contracts the caller
+    /// cannot see, or that need no action, are left out.
+    /// </summary>
+    [HttpGet("contracts/package-status")]
+    [HasPermission("entitlements.read")]
+    public async Task<IActionResult> ContractsPackageStatus([FromQuery] Guid[] ids, CancellationToken ct)
+    {
+        if (this.GetTenantId() is not Guid tid) return Unauthorized();
+        if (ids is not { Length: > 0 } || ids.Length > 200)
+            return BadRequest(new { error = "ids_required", message = "Ask for between 1 and 200 contracts." });
+        var scope = this.GetRequestScope();
+        var contracts = await _db.EmployeeContracts.AsNoTracking()
+            .Where(x => x.TenantId == tid && ids.Contains(x.Id) && x.Status == "Active" && !x.IsDeleted)
+            .Select(x => new { x.Id, x.EmployeeId, x.CompanyId }).ToListAsync(ct);
+        var publicIds = contracts.Select(c => c.EmployeeId).Distinct().ToList();
+        var employees = await _db.Employees.AsNoTracking().Where(x => x.TenantId == tid && publicIds.Contains(x.PublicId) && !x.IsDeleted)
+            .Select(x => new { x.Id, x.PublicId, x.CompanyId }).ToListAsync(ct);
+        var writer = new EntitlementWriter(_db, _clock, _resolver);
+        var result = new List<ContractPackageStatusDto>();
+        foreach (var contract in contracts)
+        {
+            var employee = employees.FirstOrDefault(e => e.PublicId == contract.EmployeeId);
+            if (employee is null || !scope.CanAccessCompany(employee.CompanyId)) continue;
+            string? next = null;
+            if (await OpenProposalAsync(tid, contract.Id, ct) is not null) next = ContractPackageNextActions.ReviewProposal;
+            else
+            {
+                FreezePreview? preview;
+                try { preview = await writer.PreviewAsync(tid, contract.Id, ct); }
+                catch (EntitlementWriteRefusedException) { preview = null; }
+                if (preview is { Running: true, ProposableRows: > 0 }) next = ContractPackageNextActions.ProposeBenefits;
+            }
+            if (next is not null) result.Add(new ContractPackageStatusDto(contract.Id, employee.Id, next));
+        }
+        return Ok(result);
+    }
+
+    /// <summary>
     /// POST /api/entitlements/employees/{employeeId}/package/freeze — fix the package for a term that has NOT started yet, from
     /// the grade table. A running term (started before today) goes through propose → a second HR user confirms (four eyes),
     /// and a term with an open proposal waits for that decision; both are refused here. Idempotent per benefit (an
@@ -345,6 +385,16 @@ public sealed class EmployeePackageController : ControllerBase
 }
 
 public sealed record PackageContractRequest(Guid ContractId);
+
+/// <summary>Value set of <see cref="ContractPackageStatusDto.NextAction"/>.</summary>
+public static class ContractPackageNextActions
+{
+    public const string ProposeBenefits = "proposeBenefits";
+    public const string ReviewProposal = "reviewProposal";
+}
+
+/// <param name="EmployeeId">The int employees.id, to open the employee's package panel.</param>
+public sealed record ContractPackageStatusDto(Guid ContractId, int EmployeeId, string NextAction);
 public sealed record PackageBulkFreezeRequest(Guid CompanyId);
 public sealed record ConfirmProposalRequest(Guid ContractId, Guid? DocumentId);
 public sealed record RejectProposalRequest(Guid ContractId, string? Reason);

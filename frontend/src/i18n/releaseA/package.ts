@@ -146,8 +146,6 @@ const pairs: Array<[string, string]> = [
   ['Already decided.', 'تم البت فيها.'],
   ['The package is being proposed. Another HR user confirms it here when it is ready.', 'جارٍ اقتراح الباقة، ويؤكدها مستخدم آخر في الموارد البشرية هنا عند جاهزيتها.'],
   ['Contract benefits — {n} of {m} fixed for this contract year', 'مزايا العقد — {n} من {m} مثبتة لهذه السنة التعاقدية'],
-  ['Propose the package for a second check', 'اقتراح الباقة لتحقق شخص آخر'],
-  ['This term has already started, so another HR user confirms its package against the signed contract.', 'بدأ هذا العقد بالفعل، لذلك يؤكد مستخدم آخر في الموارد البشرية باقته مقابل العقد الموقّع.'],
   ['Can be fixed now.', 'يمكن تثبيتها الآن.'],
   ['Possible from {date}.', 'ممكن اعتباراً من {date}.'],
   ['No signed contract is on file. Upload it to the employee’s documents first.', 'لا يوجد عقد موقّع في الملف. ارفعه إلى مستندات الموظف أولاً.'],
@@ -171,6 +169,11 @@ const pairs: Array<[string, string]> = [
   ['These were not fixed: {list}', 'لم يُثبَّت ما يلي: {list}'],
   ['These benefits are not in the proposal, for the reason shown.', 'هذه المزايا غير مشمولة في المقترح للسبب الظاهر.'],
   ['Months of housing allowance', 'أشهر من بدل السكن'],
+
+  // Back-dated activation: one next action (contract register and package panel)
+  ['Benefits for this contract are waiting for a second person to confirm.', 'مزايا هذا العقد بانتظار تأكيد شخص آخر.'],
+  ['Propose benefits', 'اقتراح المزايا'],
+  ['Review proposal', 'مراجعة المقترح'],
 
   // Employee app
   ['Your package could not be loaded.', 'تعذّر تحميل باقتك.'],

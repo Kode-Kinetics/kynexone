@@ -581,7 +581,11 @@ export function EmployeesPage() {
     if (!employeeId) return;
     const id = Number(employeeId);
     if (Number.isFinite(id) && id > 0 && selectedId !== id) {
-      openDetail(id);
+      // ?tab=package (from the contract register's "Review proposal") opens the employee on that tab.
+      const requestedTab = searchParams?.get('tab');
+      const tabWanted = tabs.some((x) => x.id === requestedTab) ? (requestedTab as DetailTab) : null;
+      void openDetail(id, tabWanted !== null).then(() => { if (tabWanted) setActiveTab(tabWanted); });
+      if (tabWanted) setActiveTab(tabWanted);
     }
   }, [searchParams, selectedId]);
 

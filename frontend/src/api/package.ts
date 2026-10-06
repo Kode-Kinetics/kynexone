@@ -146,6 +146,8 @@ export interface FreezeOutcome {
   skipped: Array<{ componentCode: string; code: string; reason: BlockReason | null }>;
 }
 
+export interface ContractPackageStatus { contractId: string; employeeId: number; nextAction: 'proposeBenefits' | 'reviewProposal' }
+
 export type DependantRelationship = 'Spouse' | 'Child' | 'Parent' | 'Other';
 export interface Dependant { id: string; fullName: string; relationship: DependantRelationship; dateOfBirth: string | null; nationalId: string }
 export interface DependantInput { fullName: string; relationship: DependantRelationship; dateOfBirth: string | null; nationalId: string | null }
@@ -198,6 +200,10 @@ export const packageApi = {
     client.post<FreezeOutcome>(
       `/api/entitlements/employees/${employeeId}/package/freeze`, { contractId },
       { headers: { 'Idempotency-Key': `package-freeze:${contractId}` } }).then((r) => r.data),
+  /** The one next action for each active contract's benefits (contract register). Contracts needing none are omitted. */
+  contractStatus: (contractIds: string[]) =>
+    client.get<ContractPackageStatus[]>('/api/entitlements/contracts/package-status', { params: { ids: contractIds },
+      paramsSerializer: { indexes: null } }).then((r) => r.data),
   propose: (employeeId: number, contractId: string) =>
     client.post<{ jobId: string }>(`/api/entitlements/employees/${employeeId}/package/propose`, { contractId }).then((r) => r.data),
   confirmProposal: (batchId: string, contractId: string, documentId: string) =>

@@ -1,8 +1,8 @@
 {
   "package": {
     "employeeId": 1,
-    "gradeId": "958edde7-e1be-4aa9-ae11-725ff0567471",
-    "contractId": "b23005b5-479e-49b2-82fe-21d4d381fbcd",
+    "gradeId": "3203e04c-b749-4d4a-bf68-e2fa441ce53b",
+    "contractId": "b06a3a73-ddad-4f64-8861-d56d8fd8a729",
     "termEndsOn": "2027-01-31",
     "asOf": "2026-10-06",
     "lines": [
@@ -23,7 +23,7 @@
         "maxDependants": null,
         "dependantsCovered": 0,
         "limitPeriod": "Monthly",
-        "gradeEntitlementId": "61177fb7-3f45-4f29-b441-366e14bca823",
+        "gradeEntitlementId": "cabe0c57-80f4-4c30-8c90-73d79281b250",
         "employeeEntitlementId": null,
         "isCompanyOverride": false,
         "gradeStandardDiffers": false,
@@ -49,7 +49,7 @@
           "minServiceMonths": null,
           "afterProbation": false,
           "nationalityScope": "Any",
-          "gradeEntitlementId": "61177fb7-3f45-4f29-b441-366e14bca823",
+          "gradeEntitlementId": "cabe0c57-80f4-4c30-8c90-73d79281b250",
           "isCompanyOverride": false,
           "effectiveFrom": "2026-01-01"
         }
@@ -71,7 +71,7 @@
         "maxDependants": null,
         "dependantsCovered": 0,
         "limitPeriod": "Monthly",
-        "gradeEntitlementId": "f027cdcf-0103-4fe4-a1df-c141e1abea14",
+        "gradeEntitlementId": "5529ce97-89c2-4d6a-b419-4a302c7ae878",
         "employeeEntitlementId": null,
         "isCompanyOverride": false,
         "gradeStandardDiffers": false,
@@ -97,7 +97,7 @@
           "minServiceMonths": null,
           "afterProbation": false,
           "nationalityScope": "Any",
-          "gradeEntitlementId": "f027cdcf-0103-4fe4-a1df-c141e1abea14",
+          "gradeEntitlementId": "5529ce97-89c2-4d6a-b419-4a302c7ae878",
           "isCompanyOverride": false,
           "effectiveFrom": "2026-01-01"
         }
@@ -108,7 +108,7 @@
         "floor": "None",
         "source": "GradeStandard",
         "offered": true,
-        "eligible": false,
+        "eligible": true,
         "valueType": "Quantity",
         "amount": null,
         "rate": null,
@@ -119,11 +119,11 @@
         "maxDependants": null,
         "dependantsCovered": 0,
         "limitPeriod": "Annual",
-        "gradeEntitlementId": "47b138d1-0f26-482d-973d-4914fd278afb",
+        "gradeEntitlementId": "c7045809-f35b-4100-9938-f68d07c51675",
         "employeeEntitlementId": null,
         "isCompanyOverride": false,
         "gradeStandardDiffers": false,
-        "reasonCode": "ENTITLEMENT_NATIONALITY_UNCONFIRMED",
+        "reasonCode": null,
         "maxOutstandingAmount": null,
         "resolvedAmount": null,
         "eligibleFrom": null,
@@ -145,7 +145,7 @@
           "minServiceMonths": null,
           "afterProbation": false,
           "nationalityScope": "NonSaudi",
-          "gradeEntitlementId": "47b138d1-0f26-482d-973d-4914fd278afb",
+          "gradeEntitlementId": "c7045809-f35b-4100-9938-f68d07c51675",
           "isCompanyOverride": false,
           "effectiveFrom": "2026-01-01"
         }
@@ -154,7 +154,7 @@
         "componentCode": "MEDICAL",
         "class": "Contractual",
         "floor": "Medical",
-        "source": "ContractFrozen",
+        "source": "GradeStandard",
         "offered": true,
         "eligible": true,
         "valueType": "CoverageTier",
@@ -165,10 +165,10 @@
         "quantity": null,
         "dependantScope": "Family",
         "maxDependants": null,
-        "dependantsCovered": 0,
+        "dependantsCovered": 3,
         "limitPeriod": "PerTerm",
-        "gradeEntitlementId": "9dcbf542-5699-497f-ad88-bf453742bd28",
-        "employeeEntitlementId": "8a2563c9-7ffc-424a-9d32-051c88f1f6cf",
+        "gradeEntitlementId": "5dc23787-c0b4-4702-ba49-21c1686585d7",
+        "employeeEntitlementId": null,
         "isCompanyOverride": false,
         "gradeStandardDiffers": false,
         "reasonCode": null,
@@ -193,7 +193,7 @@
           "minServiceMonths": null,
           "afterProbation": false,
           "nationalityScope": "Any",
-          "gradeEntitlementId": "9dcbf542-5699-497f-ad88-bf453742bd28",
+          "gradeEntitlementId": "5dc23787-c0b4-4702-ba49-21c1686585d7",
           "isCompanyOverride": false,
           "effectiveFrom": "2026-01-01"
         }
@@ -215,7 +215,7 @@
         "maxDependants": null,
         "dependantsCovered": 0,
         "limitPeriod": null,
-        "gradeEntitlementId": "b6583fb1-8e99-4078-8aaf-84adbd91afdd",
+        "gradeEntitlementId": "9a7a403b-5d9a-4cd2-a1f1-410fc145a982",
         "employeeEntitlementId": null,
         "isCompanyOverride": false,
         "gradeStandardDiffers": false,
@@ -241,7 +241,7 @@
           "minServiceMonths": null,
           "afterProbation": false,
           "nationalityScope": "Any",
-          "gradeEntitlementId": "b6583fb1-8e99-4078-8aaf-84adbd91afdd",
+          "gradeEntitlementId": "9a7a403b-5d9a-4cd2-a1f1-410fc145a982",
           "isCompanyOverride": false,
           "effectiveFrom": "2026-01-01"
         }
@@ -263,7 +263,7 @@
         "maxDependants": null,
         "dependantsCovered": 0,
         "limitPeriod": "PerDay",
-        "gradeEntitlementId": "b9f21c98-236c-4b18-87cf-537b7d3c9328",
+        "gradeEntitlementId": "93a83004-f3e6-43a4-875c-3f4a3e0b635f",
         "employeeEntitlementId": null,
         "isCompanyOverride": false,
         "gradeStandardDiffers": false,
@@ -289,7 +289,7 @@
           "minServiceMonths": null,
           "afterProbation": false,
           "nationalityScope": "Any",
-          "gradeEntitlementId": "b9f21c98-236c-4b18-87cf-537b7d3c9328",
+          "gradeEntitlementId": "93a83004-f3e6-43a4-875c-3f4a3e0b635f",
           "isCompanyOverride": false,
           "effectiveFrom": "2026-01-01"
         }
@@ -311,7 +311,7 @@
         "maxDependants": null,
         "dependantsCovered": 0,
         "limitPeriod": null,
-        "gradeEntitlementId": "34e3c87b-df3e-437f-9cf5-50f07196b5ae",
+        "gradeEntitlementId": "f1eb6730-c451-42ea-bdca-82f5d553a7b8",
         "employeeEntitlementId": null,
         "isCompanyOverride": false,
         "gradeStandardDiffers": false,
@@ -337,36 +337,34 @@
           "minServiceMonths": null,
           "afterProbation": false,
           "nationalityScope": "Any",
-          "gradeEntitlementId": "34e3c87b-df3e-437f-9cf5-50f07196b5ae",
+          "gradeEntitlementId": "f1eb6730-c451-42ea-bdca-82f5d553a7b8",
           "isCompanyOverride": false,
           "effectiveFrom": "2026-01-01"
         }
       }
     ],
-    "blockCodes": [
-      "ENTITLEMENT_NATIONALITY_UNCONFIRMED"
-    ]
+    "blockCodes": []
   },
   "currency": "SAR",
   "grade": {
-    "id": "958edde7-e1be-4aa9-ae11-725ff0567471",
+    "id": "3203e04c-b749-4d4a-bf68-e2fa441ce53b",
     "code": "G3",
     "name": "Supervisor",
     "nameAr": "\u0645\u0634\u0631\u0641",
     "level": 30
   },
   "company": {
-    "id": "72e35f7e-b49e-4479-8d7d-2b69c594d6a4",
+    "id": "2e195834-8094-4d8b-bbf1-3c30fb7c0feb",
     "nameEn": "Masar Facility Services",
     "nameAr": "\u0645\u0633\u0627\u0631 \u0644\u0644\u062E\u062F\u0645\u0627\u062A"
   },
   "contract": {
-    "id": "b23005b5-479e-49b2-82fe-21d4d381fbcd",
+    "id": "b06a3a73-ddad-4f64-8861-d56d8fd8a729",
     "number": "CON-1",
     "status": "Active",
     "startDate": "2026-02-01",
     "endDate": "2027-01-31",
-    "workerNationalityClass": null
+    "workerNationalityClass": "NonSaudi"
   },
   "salary": {
     "effectiveDate": "2026-02-01",
@@ -375,7 +373,7 @@
   },
   "cells": [
     {
-      "id": "61177fb7-3f45-4f29-b441-366e14bca823",
+      "id": "cabe0c57-80f4-4c30-8c90-73d79281b250",
       "componentCode": "HOUSING",
       "isCompanyOverride": false,
       "eligible": true,
@@ -397,7 +395,7 @@
       "effectiveTo": null
     },
     {
-      "id": "f027cdcf-0103-4fe4-a1df-c141e1abea14",
+      "id": "5529ce97-89c2-4d6a-b419-4a302c7ae878",
       "componentCode": "TRANSPORT",
       "isCompanyOverride": false,
       "eligible": true,
@@ -419,7 +417,7 @@
       "effectiveTo": null
     },
     {
-      "id": "9dcbf542-5699-497f-ad88-bf453742bd28",
+      "id": "5dc23787-c0b4-4702-ba49-21c1686585d7",
       "componentCode": "MEDICAL",
       "isCompanyOverride": false,
       "eligible": true,
@@ -441,7 +439,7 @@
       "effectiveTo": null
     },
     {
-      "id": "47b138d1-0f26-482d-973d-4914fd278afb",
+      "id": "c7045809-f35b-4100-9938-f68d07c51675",
       "componentCode": "AIR_TICKET",
       "isCompanyOverride": false,
       "eligible": true,
@@ -463,7 +461,7 @@
       "effectiveTo": null
     },
     {
-      "id": "b6583fb1-8e99-4078-8aaf-84adbd91afdd",
+      "id": "9a7a403b-5d9a-4cd2-a1f1-410fc145a982",
       "componentCode": "EDUCATION",
       "isCompanyOverride": false,
       "eligible": false,
@@ -485,7 +483,7 @@
       "effectiveTo": null
     },
     {
-      "id": "b9f21c98-236c-4b18-87cf-537b7d3c9328",
+      "id": "93a83004-f3e6-43a4-875c-3f4a3e0b635f",
       "componentCode": "PER_DIEM",
       "isCompanyOverride": false,
       "eligible": true,
@@ -507,7 +505,7 @@
       "effectiveTo": null
     },
     {
-      "id": "34e3c87b-df3e-437f-9cf5-50f07196b5ae",
+      "id": "f1eb6730-c451-42ea-bdca-82f5d553a7b8",
       "componentCode": "LOAN_HOUSING_ADVANCE",
       "isCompanyOverride": false,
       "eligible": true,
@@ -529,40 +527,9 @@
       "effectiveTo": null
     }
   ],
-  "frozenRows": [
-    {
-      "id": "8a2563c9-7ffc-424a-9d32-051c88f1f6cf",
-      "componentCode": "MEDICAL",
-      "source": "GradeDefault",
-      "verificationState": "Verified",
-      "resolvedAmount": null,
-      "effectiveFrom": "2026-02-01",
-      "effectiveTo": "2027-01-31"
-    }
-  ],
-  "blockReasons": [
-    {
-      "code": "ENTITLEMENT_NATIONALITY_UNCONFIRMED",
-      "titleEn": "Nationality class not confirmed",
-      "titleAr": "\u0644\u0645 \u062A\u064F\u0624\u0643\u064E\u0651\u062F \u0641\u0626\u0629 \u0627\u0644\u062C\u0646\u0633\u064A\u0629",
-      "whyEn": "This benefit depends on whether the worker is Saudi or non-Saudi, and the contract term does not record it yet. Nothing is assumed.",
-      "whyAr": "\u062A\u0639\u062A\u0645\u062F \u0647\u0630\u0647 \u0627\u0644\u0645\u064A\u0632\u0629 \u0639\u0644\u0649 \u0643\u0648\u0646 \u0627\u0644\u0639\u0627\u0645\u0644 \u0633\u0639\u0648\u062F\u064A\u0627\u064B \u0623\u0648 \u063A\u064A\u0631 \u0633\u0639\u0648\u062F\u064A\u060C \u0648\u0644\u0645 \u064A\u064F\u0633\u062C\u064E\u0651\u0644 \u0630\u0644\u0643 \u0641\u064A \u0627\u0644\u0639\u0642\u062F \u0628\u0639\u062F\u060C \u0648\u0644\u0627 \u064A\u064F\u0641\u062A\u0631\u0636 \u0623\u064A \u0634\u064A\u0621.",
-      "fixEn": "Confirm the worker\u0027s nationality class on the contract.",
-      "fixAr": "\u0623\u0643\u0651\u062F \u0641\u0626\u0629 \u062C\u0646\u0633\u064A\u0629 \u0627\u0644\u0639\u0627\u0645\u0644 \u0641\u064A \u0627\u0644\u0639\u0642\u062F.",
-      "ownerRole": "HR Manager"
-    }
-  ],
+  "frozenRows": [],
+  "blockReasons": [],
   "reasons": {
-    "ENTITLEMENT_NATIONALITY_UNCONFIRMED": {
-      "code": "ENTITLEMENT_NATIONALITY_UNCONFIRMED",
-      "titleEn": "Nationality class not confirmed",
-      "titleAr": "\u0644\u0645 \u062A\u064F\u0624\u0643\u064E\u0651\u062F \u0641\u0626\u0629 \u0627\u0644\u062C\u0646\u0633\u064A\u0629",
-      "whyEn": "This benefit depends on whether the worker is Saudi or non-Saudi, and the contract term does not record it yet. Nothing is assumed.",
-      "whyAr": "\u062A\u0639\u062A\u0645\u062F \u0647\u0630\u0647 \u0627\u0644\u0645\u064A\u0632\u0629 \u0639\u0644\u0649 \u0643\u0648\u0646 \u0627\u0644\u0639\u0627\u0645\u0644 \u0633\u0639\u0648\u062F\u064A\u0627\u064B \u0623\u0648 \u063A\u064A\u0631 \u0633\u0639\u0648\u062F\u064A\u060C \u0648\u0644\u0645 \u064A\u064F\u0633\u062C\u064E\u0651\u0644 \u0630\u0644\u0643 \u0641\u064A \u0627\u0644\u0639\u0642\u062F \u0628\u0639\u062F\u060C \u0648\u0644\u0627 \u064A\u064F\u0641\u062A\u0631\u0636 \u0623\u064A \u0634\u064A\u0621.",
-      "fixEn": "Confirm the worker\u0027s nationality class on the contract.",
-      "fixAr": "\u0623\u0643\u0651\u062F \u0641\u0626\u0629 \u062C\u0646\u0633\u064A\u0629 \u0627\u0644\u0639\u0627\u0645\u0644 \u0641\u064A \u0627\u0644\u0639\u0642\u062F.",
-      "ownerRole": "HR Manager"
-    },
     "ENTITLEMENT_NOT_IN_GRADE": {
       "code": "ENTITLEMENT_NOT_IN_GRADE",
       "titleEn": "Not included for this grade",
@@ -572,26 +539,38 @@
       "fixEn": "If the grade should include it, change it in Benefits by grade.",
       "fixAr": "\u0625\u0630\u0627 \u0643\u0627\u0646 \u064A\u062C\u0628 \u0623\u0646 \u062A\u0634\u0645\u0644\u0647\u0627 \u0627\u0644\u062F\u0631\u062C\u0629\u060C \u0639\u062F\u0651\u0644\u0647\u0627 \u0641\u064A \u0627\u0644\u0645\u0632\u0627\u064A\u0627 \u062D\u0633\u0628 \u0627\u0644\u062F\u0631\u062C\u0629.",
       "ownerRole": "HR Director"
+    },
+    "ENTITLEMENT_TERM_RUNNING_NEEDS_PROPOSAL": {
+      "code": "ENTITLEMENT_TERM_RUNNING_NEEDS_PROPOSAL",
+      "titleEn": "Needs a second person\u0027s check",
+      "titleAr": "\u064A\u062D\u062A\u0627\u062C \u0625\u0644\u0649 \u062A\u062D\u0642\u0642 \u0634\u062E\u0635 \u0622\u062E\u0631",
+      "whyEn": "This contract term has already started, so its benefits are taken from the grade table only as a proposal that another HR user checks against the signed contract.",
+      "whyAr": "\u0628\u062F\u0623 \u0647\u0630\u0627 \u0627\u0644\u0639\u0642\u062F \u0628\u0627\u0644\u0641\u0639\u0644\u060C \u0644\u0630\u0644\u0643 \u062A\u0624\u062E\u0630 \u0645\u0632\u0627\u064A\u0627\u0647 \u0645\u0646 \u062C\u062F\u0648\u0644 \u0627\u0644\u062F\u0631\u062C\u0627\u062A \u0643\u0645\u0642\u062A\u0631\u062D \u0641\u0642\u0637 \u064A\u0631\u0627\u062C\u0639\u0647 \u0645\u0633\u062A\u062E\u062F\u0645 \u0622\u062E\u0631 \u0641\u064A \u0627\u0644\u0645\u0648\u0627\u0631\u062F \u0627\u0644\u0628\u0634\u0631\u064A\u0629 \u0645\u0642\u0627\u0628\u0644 \u0627\u0644\u0639\u0642\u062F \u0627\u0644\u0645\u0648\u0642\u0651\u0639.",
+      "fixEn": "Propose the package, then ask another HR user to confirm it.",
+      "fixAr": "\u0627\u0642\u062A\u0631\u062D \u0627\u0644\u0628\u0627\u0642\u0629 \u062B\u0645 \u0627\u0637\u0644\u0628 \u0645\u0646 \u0645\u0633\u062A\u062E\u062F\u0645 \u0622\u062E\u0631 \u0641\u064A \u0627\u0644\u0645\u0648\u0627\u0631\u062F \u0627\u0644\u0628\u0634\u0631\u064A\u0629 \u062A\u0623\u0643\u064A\u062F\u0647\u0627.",
+      "ownerRole": "HR Manager"
     }
   },
-  "criteria": {
-    "AIR_TICKET": "Nationality"
-  },
+  "criteria": {},
   "canFreeze": false,
-  "canPropose": false,
+  "canPropose": true,
   "freezeStatus": {
-    "fixed": 1,
+    "fixed": 0,
     "total": 2,
     "notFixed": [
       {
         "componentCode": "AIR_TICKET",
-        "reasonCode": "ENTITLEMENT_NATIONALITY_UNCONFIRMED"
+        "reasonCode": "ENTITLEMENT_TERM_RUNNING_NEEDS_PROPOSAL"
+      },
+      {
+        "componentCode": "MEDICAL",
+        "reasonCode": "ENTITLEMENT_TERM_RUNNING_NEEDS_PROPOSAL"
       }
     ],
     "blockedCode": null,
     "possibleFrom": null
   },
-  "dependantsOnFile": 0,
+  "dependantsOnFile": 4,
   "proposal": null,
   "labels": {
     "HOUSING": {
