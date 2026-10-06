@@ -52,6 +52,11 @@ test.describe('API error sentences', () => {
       .toBe('Loan amount exceeds the policy limit.');
   });
 
+  test('a 403 keeps the domain reason it was sent with, e.g. a separation-of-duties refusal', () => {
+    expect(describeApiError(axiosError(403, { code: 'forbidden', message: 'You cannot decide a request you submitted.' }), en))
+      .toBe('You cannot decide a request you submitted.');
+  });
+
   test('validation problem details list the field messages', () => {
     expect(describeApiError(axiosError(400, { title: 'One or more validation errors occurred.', errors: { Amount: ['Amount must be positive.'] } }), en))
       .toBe('Amount must be positive.');

@@ -23,8 +23,10 @@ const EN: Translator = (key, params) => translate('en', key, params);
 /**
  * Codes too generic to replace the server's sentence: `bad_request` wraps whatever the domain
  * rule said ("Loan amount exceeds the policy limit"), and that detail is the useful part.
+ * `forbidden` is the same: the global handler sends it with the domain sentence ("You cannot
+ * decide a request you submitted"), so the generic `error.forbidden` text is only the fallback.
  */
-const GENERIC_CODES = new Set(['bad_request', 'invalid_request', 'conflict', 'decision_refused']);
+const GENERIC_CODES = new Set(['bad_request', 'invalid_request', 'conflict', 'decision_refused', 'forbidden']);
 
 interface ErrorBody {
   code?: unknown;
