@@ -5,56 +5,52 @@ import {
   MessageSquareText, Loader2, CalendarOff, Send, FileText, Clock,
   ChevronRight, Megaphone, CheckCircle2, AlertCircle,
   Zap, ClipboardList, TrendingUp, CreditCard, Banknote,
-  Star, Target, Calendar, BadgeCheck, User, X, Download, FileSignature,
+  Star, Target, Calendar, BadgeCheck, User, Download, FileSignature,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { essApi, type EssDashboard, type EssHrRequest, type EssHrRequestDetail, type EssRosterEntry } from '../api/ess';
+import { ESS_PAYSLIPS_PATH } from '../lib/essPayslip';
+import { ESS_LEAVE_PATH, ESS_OVERTIME_PATH, ESS_REQUESTS_PATH, hrRequestStatus, splitMinutes } from '../lib/essSelfService';
+import { essActionsApi, essApi, type EssDashboard, type EssHrRequest, type EssRosterEntry } from '../api/ess';
+import type { LeaveType } from '../api/leave';
 import { essDocumentsApi, type EssDocumentRequest, type EssLetterType } from '../api/hrLetters';
 import { useAuth } from '../contexts/AuthContext';
+import { useFeatureFlags } from '../contexts/FeatureFlagContext';
+import { useLocale } from '../contexts/LocaleContext';
+import { useFormat } from '../hooks/useFormat';
+import { enumLabel } from '../i18n/enumLabel';
 import { StatusChip } from '../components/StatusChip';
+import { EssReadOnly, useCanWriteEss } from '../components/ess/EssParts';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-function greeting(): string {
+type T = ReturnType<typeof useLocale>['t'];
+
+/** A whole greeting sentence, so Arabic can order the name and punctuation itself. */
+function greeting(t: T, name: string): string {
   const h = new Date().getHours();
-  if (h < 12) return 'Good morning';
-  if (h < 17) return 'Good afternoon';
-  return 'Good evening';
+  if (h < 12) return t('Good morning, {name}', { name });
+  if (h < 17) return t('Good afternoon, {name}', { name });
+  return t('Good evening, {name}', { name });
 }
 
-function todayLabel(): string {
-  return new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+function workedTime(t: T, value?: number): string {
+  return t('{hours} h {minutes} min', splitMinutes(value ?? 0));
 }
 
-function minutes(value?: number) {
-  if (!value) return '0h 0m';
-  const h = Math.floor(value / 60);
-  const m = value % 60;
-  return `${h}h ${m}m`;
-}
-
-function formatCurrency(amount: number, currency: string) {
-  return `${currency} ${amount.toLocaleString('en', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
-}
-
-function tenureLabel(months: number) {
-  if (months < 12) return `${months}mo`;
-  const y = Math.floor(months / 12);
-  const m = months % 12;
-  return m > 0 ? `${y}y ${m}mo` : `${y}yr${y > 1 ? 's' : ''}`;
-}
-
-function formatDate(dateStr: string) {
-  try {
-    return new Date(dateStr).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
-  } catch {
-    return dateStr;
-  }
+function tenureLabel(t: T, months: number): string {
+  if (months < 12) return t('{months} months of service', { months });
+  const years = Math.floor(months / 12);
+  const rest = months % 12;
+  return rest > 0
+    ? t('{years} years {months} months of service', { years, months: rest })
+    : t('{years} years of service', { years });
 }
 
 // ── Leave balance bar ────────────────────────────────────────────────────────
 
 function LeaveBar({ name, available, entitled, statutoryDays }: { name: string; available: number; entitled: number; statutoryDays?: number | null }) {
+  const { t } = useLocale();
+  const fx = useFormat();
   if (statutoryDays != null) {
     // Saudi statutory event leave is granted by law per event, not drawn from a balance, so its
     // "available" can read negative while a request is pending. Show the entitlement instead.
@@ -62,20 +58,24 @@ function LeaveBar({ name, available, entitled, statutoryDays }: { name: string; 
       <div className="space-y-1.5">
         <div className="flex items-center justify-between text-xs">
           <span className="font-medium text-slate-700 dark:text-slate-200">{name}</span>
-          <span className="tabular-nums text-emerald-700 dark:text-emerald-300">Statutory entitlement: {statutoryDays} days per event</span>
+          <span className="tabular-nums text-emerald-700 dark:text-emerald-300">
+            {t('Statutory entitlement: {days} days per event', { days: fx.number(statutoryDays) })}
+          </span>
         </div>
       </div>
     );
   }
   const pct = entitled > 0 ? Math.round((available / entitled) * 100) : 0;
   const color = pct >= 60 ? 'bg-emerald-500' : pct >= 30 ? 'bg-amber-500' : 'bg-rose-500';
+  const one = (n: number) => fx.number(n, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between text-xs">
         <span className="font-medium text-slate-700 dark:text-slate-200">{name}</span>
         <span className="tabular-nums text-slate-500 dark:text-slate-400">
-          <span className="font-semibold text-slate-800 dark:text-white">{available.toFixed(1)}</span>
-          {entitled > 0 && <span> / {entitled.toFixed(1)} days</span>}
+          {entitled > 0
+            ? t('{available} of {entitled} days', { available: one(available), entitled: one(entitled) })
+            : t('{available} days', { available: one(available) })}
         </span>
       </div>
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-white/[0.07]">
@@ -110,7 +110,7 @@ function KpiCard({
           <p className="text-sm text-slate-400 dark:text-slate-500">{emptyText}</p>
         ) : (
           <>
-            <div className="text-xl font-extrabold leading-tight text-slate-900 dark:text-white tabular-nums">{value}</div>
+            <div className="text-xl font-extrabold leading-tight text-slate-900 dark:text-white tabular-nums"><bdi>{value}</bdi></div>
             {sub && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 leading-snug">{sub}</p>}
             {sub2 && <p className="text-xs text-slate-400 dark:text-slate-500 leading-snug">{sub2}</p>}
           </>
@@ -135,6 +135,7 @@ function KpiCard({
 // ── Star rating display ───────────────────────────────────────────────────────
 
 function StarRating({ rating }: { rating: number }) {
+  const fx = useFormat();
   const full = Math.floor(rating);
   const half = rating % 1 >= 0.4;
   return (
@@ -145,7 +146,7 @@ function StarRating({ rating }: { rating: number }) {
           className={`h-3.5 w-3.5 ${i <= full ? 'fill-amber-400 text-amber-400' : i === full + 1 && half ? 'fill-amber-200 text-amber-400' : 'text-slate-200 dark:text-slate-700'}`}
         />
       ))}
-      <span className="ms-1 text-xs font-semibold text-slate-700 dark:text-slate-200">{rating.toFixed(1)}</span>
+      <span className="ms-1 text-xs font-semibold text-slate-700 dark:text-slate-200">{fx.number(rating, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</span>
     </span>
   );
 }
@@ -153,12 +154,13 @@ function StarRating({ rating }: { rating: number }) {
 // ── Goals progress bar ────────────────────────────────────────────────────────
 
 function GoalsBar({ done, total }: { done: number; total: number }) {
+  const { t } = useLocale();
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between text-xs">
-        <span className="text-slate-500 dark:text-slate-400">Goals complete</span>
-        <span className="font-semibold text-slate-800 dark:text-white">{done}/{total}</span>
+        <span className="text-slate-500 dark:text-slate-400">{t('Goals complete')}</span>
+        <span className="font-semibold text-slate-800 dark:text-white">{t('{done} of {total}', { done, total })}</span>
       </div>
       <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-white/[0.07]">
         {/* eslint-disable-next-line react/forbid-dom-props */}
@@ -171,6 +173,8 @@ function GoalsBar({ done, total }: { done: number; total: number }) {
 // ── My Roster card (own shifts only) ──────────────────────────────────────────
 
 function MyShiftsCard() {
+  const { t } = useLocale();
+  const fx = useFormat();
   const [shifts, setShifts] = useState<EssRosterEntry[] | null>(null);
 
   useEffect(() => {
@@ -183,24 +187,22 @@ function MyShiftsCard() {
     <section className="rounded-xl border border-slate-100 bg-white dark:border-white/[0.07] dark:bg-white/[0.03]">
       <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5 dark:border-white/[0.07]">
         <p className="flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-white">
-          <Calendar className="h-4 w-4" /> My Upcoming Shifts
+          <Calendar className="h-4 w-4" /> {t('My Upcoming Shifts')}
         </p>
-        <span className="text-[10px] font-medium uppercase tracking-wide text-slate-400">Next 2 weeks</span>
+        <span className="text-[10px] font-medium uppercase tracking-wide text-slate-400">{t('Next 2 weeks')}</span>
       </div>
       <div className="p-5">
         {shifts === null ? (
-          <p className="text-sm text-slate-400 dark:text-slate-500">Loading…</p>
+          <p className="text-sm text-slate-400 dark:text-slate-500">{t('Loading…')}</p>
         ) : shifts.length === 0 ? (
-          <p className="text-sm text-slate-400 dark:text-slate-500">No shifts scheduled. Your roster will appear here once published.</p>
+          <p className="text-sm text-slate-400 dark:text-slate-500">{t('No shifts scheduled. Your roster will appear here once published.')}</p>
         ) : (
           <ul className="space-y-2">
             {shifts.map((s) => (
               <li key={s.id} className="flex items-center gap-3 rounded-lg border border-slate-100 px-3 py-2 dark:border-white/[0.06]">
                 <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: s.shiftColor || '#2F6BFF' }} />
                 <span className="text-sm font-medium text-slate-800 dark:text-slate-200">{s.shiftName}</span>
-                <span className="ms-auto text-xs text-slate-500 dark:text-slate-400">
-                  {new Date(s.date).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}
-                </span>
+                <span className="ms-auto text-xs text-slate-500 dark:text-slate-400">{fx.date(s.date, 'weekdayDate')}</span>
               </li>
             ))}
           </ul>
@@ -218,6 +220,9 @@ function MyShiftsCard() {
 // to the bank that asked for it.
 
 function MyDocumentsCard() {
+  const { t, locale } = useLocale();
+  const fx = useFormat();
+  const canWrite = useCanWriteEss();
   const [types, setTypes] = useState<EssLetterType[] | null>(null);
   const [requests, setRequests] = useState<EssDocumentRequest[]>([]);
   const [letterType, setLetterType] = useState('');
@@ -229,6 +234,12 @@ function MyDocumentsCard() {
   const [error, setError] = useState('');
   const [note, setNote] = useState('');
 
+  const typeName = (code: string) => {
+    const ty = types?.find((x) => x.letterType === code);
+    if (!ty) return code;
+    return locale === 'ar' && ty.nameAr ? ty.nameAr : ty.nameEn;
+  };
+
   const refresh = async () => {
     try { setRequests(await essDocumentsApi.list()); } catch { /* non-blocking */ }
   };
@@ -236,7 +247,7 @@ function MyDocumentsCard() {
   useEffect(() => {
     let cancelled = false;
     essDocumentsApi.types()
-      .then((t) => { if (!cancelled) { setTypes(t); if (t.length > 0) setLetterType(t[0].letterType); } })
+      .then((list) => { if (!cancelled) { setTypes(list); if (list.length > 0) setLetterType(list[0].letterType); } })
       .catch(() => { if (!cancelled) setTypes([]); });
     void refresh();
     return () => { cancelled = true; };
@@ -247,12 +258,12 @@ function MyDocumentsCard() {
     setBusy(true); setError(''); setNote('');
     try {
       await essDocumentsApi.create({ letterType, language, purpose, addresseeName: addressee });
-      setNote('Requested. HR will issue it and it will appear below to download.');
+      setNote(t('Requested. HR will issue it and it will appear below to download.'));
       setPurpose(''); setAddressee('');
       await refresh();
     } catch (e) {
       const detail = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setError(detail ?? 'The request could not be submitted. Please try again.');
+      setError(detail ?? t('The request could not be submitted. Please try again.'));
     } finally {
       setBusy(false);
     }
@@ -261,26 +272,30 @@ function MyDocumentsCard() {
   const download = async (id: string) => {
     setDownloading(id);
     try { await essDocumentsApi.download(id); }
-    catch { setError('That document could not be downloaded. Please contact HR.'); }
+    catch { setError(t('That document could not be downloaded. Please contact HR.')); }
     finally { setDownloading(null); }
   };
+
+  const field = 'w-full rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-2.5 text-sm text-slate-900 placeholder-slate-400 outline-none transition focus:border-sapphire/50 focus:ring-2 focus:ring-sapphire/10 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white dark:placeholder-slate-600';
 
   return (
     <section className="rounded-xl border border-slate-100 bg-white dark:border-white/[0.07] dark:bg-white/[0.03]">
       <div className="border-b border-slate-100 px-5 py-3.5 dark:border-white/[0.07]">
         <p className="flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-white">
-          <FileSignature className="h-4 w-4" /> Request a Document
+          <FileSignature className="h-4 w-4" /> {t('Request a Document')}
         </p>
       </div>
       <div className="space-y-3 p-5">
         {types === null ? (
           <p className="flex items-center gap-2 text-sm text-slate-400 dark:text-slate-500">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading…
+            <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t('Loading…')}
           </p>
         ) : types.length === 0 ? (
           <p className="text-sm text-slate-400 dark:text-slate-500">
-            Your organisation has not set up HR letters yet. Raise an HR request instead and someone will help.
+            {t('Your organisation has not set up HR letters yet. Raise an HR request instead and someone will help.')}
           </p>
+        ) : !canWrite ? (
+          <EssReadOnly />
         ) : (
           <>
             {error && (
@@ -294,36 +309,16 @@ function MyDocumentsCard() {
               </p>
             )}
 
-            <select
-              value={letterType}
-              onChange={(e) => setLetterType(e.target.value)}
-              aria-label="Document type"
-              className="w-full rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-2.5 text-sm text-slate-900 outline-none transition focus:border-sapphire/50 focus:ring-2 focus:ring-sapphire/10 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white"
-            >
-              {types.map((t) => <option key={t.letterType} value={t.letterType}>{t.nameEn} — {t.nameAr}</option>)}
+            <select value={letterType} onChange={(e) => setLetterType(e.target.value)} aria-label={t('Document type')} className={field}>
+              {types.map((ty) => <option key={ty.letterType} value={ty.letterType}>{locale === 'ar' && ty.nameAr ? ty.nameAr : ty.nameEn}</option>)}
             </select>
-            <select
-              value={language}
-              onChange={(e) => setLanguage(e.target.value)}
-              aria-label="Language"
-              className="w-full rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-2.5 text-sm text-slate-900 outline-none transition focus:border-sapphire/50 focus:ring-2 focus:ring-sapphire/10 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white"
-            >
-              <option value="bilingual">Bilingual (English + Arabic)</option>
-              <option value="en">English only</option>
-              <option value="ar">Arabic only</option>
+            <select value={language} onChange={(e) => setLanguage(e.target.value)} aria-label={t('Language')} className={field}>
+              <option value="bilingual">{t('Bilingual (English and Arabic)')}</option>
+              <option value="en">{t('English only')}</option>
+              <option value="ar">{t('Arabic only')}</option>
             </select>
-            <input
-              value={purpose}
-              onChange={(e) => setPurpose(e.target.value)}
-              placeholder="What do you need it for? e.g. a bank loan"
-              className="w-full rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-2.5 text-sm text-slate-900 placeholder-slate-400 outline-none transition focus:border-sapphire/50 focus:ring-2 focus:ring-sapphire/10 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white dark:placeholder-slate-600"
-            />
-            <input
-              value={addressee}
-              onChange={(e) => setAddressee(e.target.value)}
-              placeholder="Addressed to (optional) e.g. Riyad Bank"
-              className="w-full rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-2.5 text-sm text-slate-900 placeholder-slate-400 outline-none transition focus:border-sapphire/50 focus:ring-2 focus:ring-sapphire/10 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white dark:placeholder-slate-600"
-            />
+            <input value={purpose} onChange={(e) => setPurpose(e.target.value)} placeholder={t('What do you need it for? For example, a bank loan')} className={field} />
+            <input value={addressee} onChange={(e) => setAddressee(e.target.value)} placeholder={t('Addressed to (optional), for example Riyad Bank')} className={field} />
             <button
               type="button"
               onClick={submit}
@@ -331,21 +326,21 @@ function MyDocumentsCard() {
               className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-slate-900 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:opacity-50 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-100"
             >
               {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-              {busy ? 'Requesting…' : 'Request document'}
+              {busy ? t('Requesting…') : t('Request document')}
             </button>
           </>
         )}
 
         {requests.length > 0 && (
           <div className="space-y-2 border-t border-slate-100 pt-3 dark:border-white/[0.07]">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">My Documents</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{t('My Documents')}</p>
             {requests.map((r) => (
               <div key={r.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-100 px-3 py-2 dark:border-white/[0.07]">
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{r.letterType}</p>
+                  <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{typeName(r.letterType)}</p>
                   <p className="truncate text-xs text-slate-400 dark:text-slate-500">
-                    {r.referenceNumber ?? new Date(r.createdAtUtc).toLocaleDateString()}
-                    {r.status === 'Declined' && r.decisionNote ? ` — ${r.decisionNote}` : ''}
+                    <bdi>{r.referenceNumber ?? fx.date(r.createdAtUtc)}</bdi>
+                    {r.status === 'Declined' && r.decisionNote ? <> · <bdi>{r.decisionNote}</bdi></> : null}
                   </p>
                 </div>
                 {r.isIssued ? (
@@ -355,14 +350,14 @@ function MyDocumentsCard() {
                     disabled={downloading !== null}
                     className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50 dark:border-white/[0.08] dark:text-slate-200 dark:hover:bg-white/[0.04]"
                   >
-                    {downloading === r.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />} PDF
+                    {downloading === r.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />} {t('Download PDF')}
                   </button>
                 ) : (
                   <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
                     r.status === 'Declined'
                       ? 'bg-rose-50 text-rose-600 dark:bg-rose-500/10 dark:text-rose-400'
                       : 'bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400'}`}>
-                    {r.status}
+                    {enumLabel(t, 'Status', r.status)}
                   </span>
                 )}
               </div>
@@ -416,13 +411,15 @@ function AnnouncementCard({ title, body }: { title: string; body: string }) {
 // ── Attendance status pill ────────────────────────────────────────────────────
 
 function AttendancePill({ status, worked, missing }: { status?: string; worked?: number; missing?: boolean }) {
-  if (!status) return <span className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-500 dark:bg-white/[0.07] dark:text-slate-400">No record today</span>;
+  const { t } = useLocale();
+  if (!status) return <span className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-500 dark:bg-white/[0.07] dark:text-slate-400">{t('No record today')}</span>;
+  const label = enumLabel(t, 'AttendanceStatus', status);
   return (
     <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${
       missing ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400' : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
     }`}>
       {missing ? <AlertCircle className="h-3.5 w-3.5" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
-      {status}{worked ? ` · ${minutes(worked)}` : ''}
+      {worked ? t('{status}, {time} worked', { status: label, time: workedTime(t, worked) }) : label}
     </span>
   );
 }
@@ -430,6 +427,7 @@ function AttendancePill({ status, worked, missing }: { status?: string; worked?:
 // ── Profile completeness bar ──────────────────────────────────────────────────
 
 function CompletenessBar({ score }: { score: number }) {
+  const { t } = useLocale();
   const pct = Math.round(score);
   const color = pct >= 80 ? 'bg-emerald-500' : pct >= 50 ? 'bg-amber-500' : 'bg-rose-500';
   return (
@@ -438,7 +436,7 @@ function CompletenessBar({ score }: { score: number }) {
         {/* eslint-disable-next-line react/forbid-dom-props */}
         <div className={`h-full rounded-full transition-all duration-700 ${color}`} style={{ width: `${Math.min(100, pct)}%` }} />
       </div>
-      <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">{pct}% profile</span>
+      <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">{t('Profile {pct}% complete', { pct })}</span>
     </div>
   );
 }
@@ -473,54 +471,33 @@ function DashboardSkeleton() {
 
 export function EmployeeSelfServicePage() {
   const { user } = useAuth();
+  const { t, locale } = useLocale();
+  const fx = useFormat();
+  const canWrite = useCanWriteEss();
+  const { isFeatureEnabled } = useFeatureFlags();
   const router = useRouter();
   const [dashboard, setDashboard] = useState<EssDashboard | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([]);
 
   // AI assistant
   const [question, setQuestion] = useState('');
   const [answer, setAnswer] = useState('');
   const [asking, setAsking] = useState(false);
 
-  // HR request
-  const [ticketSubject, setTicketSubject] = useState('');
-  const [ticketMessage, setTicketMessage] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
+  // HR requests: the latest few, read here; raised and answered on /ess/requests.
   const [myRequests, setMyRequests] = useState<EssHrRequest[]>([]);
-  const [openThread, setOpenThread] = useState<EssHrRequestDetail | null>(null);
-  const [threadLoading, setThreadLoading] = useState(false);
-  const [replyText, setReplyText] = useState('');
-  const [replying, setReplying] = useState(false);
-
-  const loadRequests = async () => {
-    try { setMyRequests(await essApi.hrRequests()); } catch { /* non-blocking */ }
-  };
-
-  const openTicket = async (id: string) => {
-    setThreadLoading(true); setOpenThread(null); setReplyText('');
-    try { setOpenThread(await essApi.hrRequestDetail(id)); } catch { /* ignore */ }
-    finally { setThreadLoading(false); }
-  };
-
-  const sendReply = async () => {
-    if (!openThread || !replyText.trim()) return;
-    setReplying(true);
-    try {
-      await essApi.addHrRequestComment(openThread.request.id, replyText.trim());
-      setReplyText('');
-      setOpenThread(await essApi.hrRequestDetail(openThread.request.id));
-      await loadRequests();
-    } finally { setReplying(false); }
-  };
 
   const load = async () => {
     setLoading(true); setError('');
-    try { setDashboard(await essApi.dashboard()); await loadRequests(); }
-    catch (err: unknown) {
+    try {
+      setDashboard(await essApi.dashboard());
+      try { setMyRequests(await essApi.hrRequests()); } catch { /* non-blocking */ }
+      try { setLeaveTypes(await essActionsApi.leaveTypes()); } catch { /* names stay as stored */ }
+    } catch (err: unknown) {
       const e = err as { response?: { data?: { message?: string } } };
-      setError(e.response?.data?.message ?? 'Unable to load your workspace.');
+      setError(e.response?.data?.message ?? t('Unable to load your workspace.'));
     } finally { setLoading(false); }
   };
 
@@ -532,19 +509,14 @@ export function EmployeeSelfServicePage() {
     try { const res = await essApi.askAi(question); setAnswer(res.answer); }
     catch (err: unknown) {
       const e = err as { response?: { data?: { message?: string } } };
-      setAnswer(e.response?.data?.message ?? 'The assistant could not answer right now.');
+      setAnswer(e.response?.data?.message ?? t('The assistant could not answer right now.'));
     } finally { setAsking(false); }
   };
 
-  const createTicket = async () => {
-    if (!ticketSubject.trim() || !ticketMessage.trim()) return;
-    setSubmitting(true);
-    try {
-      await essApi.createHrRequest({ categoryName: 'General HR', subject: ticketSubject, description: ticketMessage, priority: 'Normal' });
-      setTicketSubject(''); setTicketMessage(''); setSubmitted(true);
-      setTimeout(() => setSubmitted(false), 4000);
-      await loadRequests();
-    } finally { setSubmitting(false); }
+  /** A leave type's name in the viewer's language, where the leave types carry an Arabic name. */
+  const leaveName = (id: string | null, stored: string) => {
+    const ty = leaveTypes.find((x) => (id ? x.id === id : x.nameEn === stored));
+    return locale === 'ar' && ty?.nameAr ? ty.nameAr : stored;
   };
 
   if (loading) return <DashboardSkeleton />;
@@ -552,7 +524,7 @@ export function EmployeeSelfServicePage() {
   if (error || !dashboard) {
     return (
       <div className="rounded-xl border border-rose-200 bg-rose-50 p-6 text-sm text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200">
-        {error || 'ESS dashboard was empty.'}
+        {error || t('Your self-service workspace is empty.')}
       </div>
     );
   }
@@ -563,13 +535,17 @@ export function EmployeeSelfServicePage() {
   const primaryLeave = accruing.find((b) =>
     b.leaveTypeName.toLowerCase().includes('annual') || b.leaveTypeName.toLowerCase().includes('casual')
   ) ?? accruing[0];
-  const firstName = (dashboard.profile.fullName ?? user?.fullName ?? 'there').split(' ')[0];
+  const firstName = (dashboard.profile.fullName ?? user?.fullName ?? '').split(' ')[0];
   const ps = dashboard.payrollSnapshot;
   const perf = dashboard.performanceSnapshot;
   const loans = dashboard.loansSummary;
   const loanGroups = dashboard.loanSummaries ?? (loans ? [loans] : []);
   const nextLeave = dashboard.nextApprovedLeave;
   const totalUpcoming = (nextLeave ? 1 : 0) + dashboard.documentAlerts.length + dashboard.actionItems.length;
+  const one = (n: number) => fx.number(n, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  const wholeMoney = (n: number, currency: string) => fx.money(n, currency, { decimals: 0 });
+  const otHours = fx.number(dashboard.overtimeHoursThisMonth);
+  const recentRequests = myRequests.slice(0, 3);
 
   return (
     <div className="mx-auto max-w-[1400px] space-y-6">
@@ -605,21 +581,21 @@ export function EmployeeSelfServicePage() {
             </div>
 
             <div className="min-w-0">
-              <p className="text-[11px] font-bold uppercase tracking-widest text-sapphire dark:text-cyanAccent">{todayLabel()}</p>
+              <p className="text-[11px] font-bold uppercase tracking-widest text-sapphire dark:text-cyanAccent">{fx.date(new Date(), 'full')}</p>
               <h1 className="mt-0.5 text-2xl font-extrabold tracking-tight text-slate-900 dark:text-white">
-                {greeting()}, {firstName}
+                {greeting(t, firstName)}
               </h1>
               <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
-                {dashboard.profile.jobTitle || 'Employee'}
-                {dashboard.profile.department ? ` · ${dashboard.profile.department}` : ''}
-                {dashboard.profile.employeeCode ? ` · ${dashboard.profile.employeeCode}` : ''}
+                <bdi>{dashboard.profile.jobTitle || t('Employee')}</bdi>
+                {dashboard.profile.department ? <> · <bdi>{dashboard.profile.department}</bdi></> : null}
+                {dashboard.profile.employeeCode ? <> · <bdi>{dashboard.profile.employeeCode}</bdi></> : null}
               </p>
 
               {/* Tenure badge */}
               {dashboard.tenureMonths > 0 && (
                 <span className="mt-2 inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-2.5 py-0.5 text-[11px] font-semibold text-blue-600 dark:text-blue-400">
                   <BadgeCheck className="h-3 w-3" />
-                  {tenureLabel(dashboard.tenureMonths)} tenure
+                  {tenureLabel(t, dashboard.tenureMonths)}
                 </span>
               )}
 
@@ -631,33 +607,37 @@ export function EmployeeSelfServicePage() {
           {/* Hero action buttons + today's status */}
           <div className="flex flex-col gap-3 lg:items-end">
             <div className="flex flex-wrap gap-2">
+              {canWrite && (
+                <button
+                  type="button"
+                  onClick={() => router.push(ESS_LEAVE_PATH)}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-sapphire px-4 py-2 text-sm font-semibold text-white hover:bg-sapphire/90 transition dark:bg-cyanAccent dark:text-slate-900"
+                >
+                  <CalendarOff className="h-4 w-4" /> {t('Apply Leave')}
+                </button>
+              )}
               <button
                 type="button"
-                onClick={() => router.push('/leave')}
-                className="inline-flex items-center gap-1.5 rounded-xl bg-sapphire px-4 py-2 text-sm font-semibold text-white hover:bg-sapphire/90 transition dark:bg-cyanAccent dark:text-slate-900"
-              >
-                <CalendarOff className="h-4 w-4" /> Apply Leave
-              </button>
-              <button
-                type="button"
-                onClick={() => router.push('/payroll')}
+                onClick={() => router.push(ESS_PAYSLIPS_PATH)}
                 className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition dark:border-white/[0.12] dark:bg-white/[0.04] dark:text-slate-200 dark:hover:bg-white/[0.08]"
               >
-                <FileText className="h-4 w-4" /> View Payslip
+                <FileText className="h-4 w-4" /> {t('View Payslip')}
               </button>
+              {canWrite && isFeatureEnabled('overtime') && (
+                <button
+                  type="button"
+                  onClick={() => router.push(ESS_OVERTIME_PATH)}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition dark:border-white/[0.12] dark:bg-white/[0.04] dark:text-slate-200 dark:hover:bg-white/[0.08]"
+                >
+                  <Zap className="h-4 w-4" /> {t('OT Request')}
+                </button>
+              )}
               <button
                 type="button"
-                onClick={() => router.push('/overtime')}
+                onClick={() => router.push(ESS_REQUESTS_PATH)}
                 className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition dark:border-white/[0.12] dark:bg-white/[0.04] dark:text-slate-200 dark:hover:bg-white/[0.08]"
               >
-                <Zap className="h-4 w-4" /> OT Request
-              </button>
-              <button
-                type="button"
-                onClick={() => router.push('/hr-requests')}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition dark:border-white/[0.12] dark:bg-white/[0.04] dark:text-slate-200 dark:hover:bg-white/[0.08]"
-              >
-                <ClipboardList className="h-4 w-4" /> My Requests
+                <ClipboardList className="h-4 w-4" /> {t('My Requests')}
               </button>
             </div>
 
@@ -678,46 +658,51 @@ export function EmployeeSelfServicePage() {
         <KpiCard
           icon={CalendarOff}
           iconBg="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-          label="Leave Balance"
-          value={primaryLeave ? `${primaryLeave.available.toFixed(1)}d` : '—'}
-          sub={primaryLeave?.leaveTypeName ?? 'No leave types'}
-          sub2={primaryLeave ? `of ${primaryLeave.entitled.toFixed(1)} days entitled` : undefined}
-          onClick={() => router.push('/leave')}
-          emptyText={dashboard.leaveBalances.length === 0 ? 'No leave balances configured' : undefined}
+          label={t('Leave Balance')}
+          value={primaryLeave ? t('{days} days', { days: one(primaryLeave.available) }) : '—'}
+          sub={primaryLeave ? leaveName(primaryLeave.leaveTypeId, primaryLeave.leaveTypeName) : t('No leave types')}
+          sub2={primaryLeave ? t('Out of {days} days entitled', { days: one(primaryLeave.entitled) }) : undefined}
+          onClick={() => router.push(ESS_LEAVE_PATH)}
+          emptyText={dashboard.leaveBalances.length === 0 ? t('No leave balances set up yet') : undefined}
         />
 
         {/* Attendance KPI */}
         <KpiCard
           icon={Clock}
           iconBg="bg-blue-500/10 text-blue-600 dark:text-blue-400"
-          label="Today's Attendance"
-          value={attendance?.status ?? 'Not yet'}
-          sub={attendance ? minutes(attendance.totalWorkedMinutes) : 'No punch today'}
-          sub2={attendance?.missingPunch ? 'Missing punch — please regularize' : attendance?.lateMinutes ? `Late ${attendance.lateMinutes}m` : attendance ? 'On time' : undefined}
-          emptyText={!attendance ? 'No attendance record for today' : undefined}
+          label={t("Today's Attendance")}
+          value={attendance ? enumLabel(t, 'AttendanceStatus', attendance.status) : t('Not yet')}
+          sub={attendance ? workedTime(t, attendance.totalWorkedMinutes) : t('No punch today')}
+          sub2={attendance?.missingPunch
+            ? t('Missing punch. Please ask for a correction.')
+            : attendance?.lateMinutes ? t('Late by {minutes} min', { minutes: attendance.lateMinutes })
+              : attendance ? t('On time') : undefined}
+          emptyText={!attendance ? t('No attendance record for today') : undefined}
         />
 
         {/* Payslip KPI */}
         <KpiCard
           icon={Banknote}
           iconBg="bg-violet-500/10 text-violet-600 dark:text-violet-400"
-          label="Last Payslip"
-          value={ps ? formatCurrency(ps.netSalary, ps.currency) : '—'}
-          sub={ps?.period ?? undefined}
-          sub2={ps?.nextPayrollDate ? `Next payroll: ${formatDate(ps.nextPayrollDate)}` : undefined}
-          onClick={() => router.push('/payroll')}
-          emptyText={!ps ? 'No finalised payslips yet' : undefined}
+          label={t('Last Payslip')}
+          value={ps ? wholeMoney(ps.netSalary, ps.currency) : '—'}
+          sub={ps?.period ? fx.period(ps.period) : undefined}
+          sub2={ps?.nextPayrollDate ? t('Next payroll: {date}', { date: fx.date(ps.nextPayrollDate) }) : undefined}
+          onClick={() => router.push(ESS_PAYSLIPS_PATH)}
+          emptyText={!ps ? t('No finalised payslips yet') : undefined}
         />
 
         {/* Loans / OT KPI */}
         <KpiCard
           icon={CreditCard}
           iconBg="bg-rose-500/10 text-rose-600 dark:text-rose-400"
-          label="My Loans"
-          value={loanGroups.length ? loanGroups.map(group => formatCurrency(group.totalOutstanding, group.currency)).join(' · ') : '—'}
-          sub={loanGroups.length ? `${loanGroups.reduce((sum, group) => sum + group.activeLoanCount, 0)} active loans` : 'View applications and loan history'}
-          sub2={dashboard.overtimeHoursThisMonth > 0 ? `${dashboard.overtimeHoursThisMonth}h overtime this month` : undefined}
-          emptyText={loanGroups.length === 0 && dashboard.overtimeHoursThisMonth === 0 ? 'No active loans or overtime this month' : undefined}
+          label={t('My Loans')}
+          value={loanGroups.length ? loanGroups.map((group) => wholeMoney(group.totalOutstanding, group.currency)).join(' · ') : '—'}
+          sub={loanGroups.length
+            ? t('{count} active loans', { count: loanGroups.reduce((sum, group) => sum + group.activeLoanCount, 0) })
+            : t('View applications and loan history')}
+          sub2={dashboard.overtimeHoursThisMonth > 0 ? t('{hours} h overtime this month', { hours: otHours }) : undefined}
+          emptyText={loanGroups.length === 0 && dashboard.overtimeHoursThisMonth === 0 ? t('No active loans or overtime this month') : undefined}
           onClick={() => router.push('/loans?mine=true')}
         />
       </div>
@@ -731,19 +716,19 @@ export function EmployeeSelfServicePage() {
             <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-sapphire/10 dark:bg-cyanAccent/10">
               <TrendingUp className="h-3.5 w-3.5 text-sapphire dark:text-cyanAccent" />
             </div>
-            <p className="text-sm font-semibold text-slate-900 dark:text-white">Performance &amp; KPIs</p>
+            <p className="text-sm font-semibold text-slate-900 dark:text-white">{t('Performance and goals')}</p>
           </div>
           <div className="p-5 space-y-4">
             {perf ? (
               <>
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Current Cycle</p>
+                    <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Current cycle')}</p>
                     <p className="mt-0.5 text-sm font-semibold text-slate-900 dark:text-white">{perf.cycleName}</p>
                   </div>
                   {perf.lastRating !== null && (
                     <div className="text-end">
-                      <p className="text-xs text-slate-400 dark:text-slate-500">Last rating</p>
+                      <p className="text-xs text-slate-400 dark:text-slate-500">{t('Last rating')}</p>
                       <StarRating rating={Number(perf.lastRating)} />
                     </div>
                   )}
@@ -752,12 +737,12 @@ export function EmployeeSelfServicePage() {
                 <div className="flex items-center gap-4 pt-1">
                   <div className="flex items-center gap-1.5">
                     <Target className="h-3.5 w-3.5 text-slate-400" />
-                    <span className="text-xs text-slate-500 dark:text-slate-400">{perf.goalsCompleted} of {perf.goalsTotal} goals done</span>
+                    <span className="text-xs text-slate-500 dark:text-slate-400">{t('{done} of {total} goals done', { done: perf.goalsCompleted, total: perf.goalsTotal })}</span>
                   </div>
                   {dashboard.overtimeHoursThisMonth > 0 && (
                     <div className="flex items-center gap-1.5">
                       <Zap className="h-3.5 w-3.5 text-amber-500" />
-                      <span className="text-xs text-slate-500 dark:text-slate-400">{dashboard.overtimeHoursThisMonth}h OT this month</span>
+                      <span className="text-xs text-slate-500 dark:text-slate-400">{t('{hours} h overtime this month', { hours: otHours })}</span>
                     </div>
                   )}
                 </div>
@@ -765,11 +750,9 @@ export function EmployeeSelfServicePage() {
             ) : (
               <div className="flex flex-col items-center justify-center py-6 text-center gap-2">
                 <Target className="h-8 w-8 text-slate-200 dark:text-slate-700" />
-                <p className="text-sm text-slate-400 dark:text-slate-500">No active performance cycle</p>
+                <p className="text-sm text-slate-400 dark:text-slate-500">{t('No active performance cycle')}</p>
                 {dashboard.overtimeHoursThisMonth > 0 && (
-                  <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">
-                    <span className="font-semibold text-amber-600 dark:text-amber-400">{dashboard.overtimeHoursThisMonth}h</span> overtime logged this month
-                  </p>
+                  <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">{t('{hours} h overtime this month', { hours: otHours })}</p>
                 )}
               </div>
             )}
@@ -783,25 +766,25 @@ export function EmployeeSelfServicePage() {
               <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-amber-500/10">
                 <Calendar className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
               </div>
-              <p className="text-sm font-semibold text-slate-900 dark:text-white">Upcoming &amp; Alerts</p>
+              <p className="text-sm font-semibold text-slate-900 dark:text-white">{t('Upcoming and alerts')}</p>
             </div>
             {totalUpcoming > 0 && (
               <span className="rounded-full bg-rose-500/10 px-2 py-0.5 text-[10px] font-bold text-rose-600 dark:text-rose-400">
-                {totalUpcoming} item{totalUpcoming !== 1 ? 's' : ''}
+                {t('{count} items', { count: totalUpcoming })}
               </span>
             )}
           </div>
           <div className="space-y-3.5 p-5">
             {totalUpcoming === 0 ? (
-              <p className="text-sm text-slate-400 dark:text-slate-500">No upcoming items or alerts.</p>
+              <p className="text-sm text-slate-400 dark:text-slate-500">{t('No upcoming items or alerts.')}</p>
             ) : (
               <>
                 {nextLeave && (
                   <UpcomingRow
                     dot="bg-emerald-500"
-                    label={`Leave: ${formatDate(nextLeave.startDate)} – ${formatDate(nextLeave.endDate)}`}
-                    sub={`${nextLeave.leaveTypeName} · ${nextLeave.days} day${nextLeave.days !== 1 ? 's' : ''}`}
-                    badge="Approved"
+                    label={t('Leave from {start} to {end}', { start: fx.date(nextLeave.startDate), end: fx.date(nextLeave.endDate) })}
+                    sub={t('{type}, {days} days', { type: leaveName(null, nextLeave.leaveTypeName), days: fx.number(nextLeave.days) })}
+                    badge={t('Approved')}
                     badgeColor="bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
                   />
                 )}
@@ -809,9 +792,9 @@ export function EmployeeSelfServicePage() {
                   <UpcomingRow
                     key={doc.id}
                     dot="bg-rose-500"
-                    label={`${doc.documentType} expiring`}
-                    sub={doc.expiryDate ? `Expires ${formatDate(doc.expiryDate)}` : 'Expiry date not set'}
-                    badge="Alert"
+                    label={t('{document} is expiring', { document: doc.documentType })}
+                    sub={doc.expiryDate ? t('Expires on {date}', { date: fx.date(doc.expiryDate) }) : t('Expiry date not set')}
+                    badge={t('Alert')}
                     badgeColor="bg-rose-500/10 text-rose-700 dark:text-rose-400"
                   />
                 ))}
@@ -820,17 +803,17 @@ export function EmployeeSelfServicePage() {
                     key={item.id}
                     dot="bg-amber-500"
                     label={item.title}
-                    sub={item.dueAtUtc ? `Due ${formatDate(item.dueAtUtc)}` : item.category}
-                    badge="Open"
+                    sub={item.dueAtUtc ? t('Due on {date}', { date: fx.date(item.dueAtUtc) }) : item.category}
+                    badge={t('Open')}
                     badgeColor="bg-amber-500/10 text-amber-700 dark:text-amber-400"
                   />
                 ))}
                 {dashboard.pendingRequests > 0 && (
                   <UpcomingRow
                     dot="bg-blue-500"
-                    label={`${dashboard.pendingRequests} pending request${dashboard.pendingRequests !== 1 ? 's' : ''}`}
-                    sub="HR requests awaiting action"
-                    badge={`${dashboard.pendingRequests}`}
+                    label={t('{count} pending requests', { count: dashboard.pendingRequests })}
+                    sub={t('HR requests waiting for action')}
+                    badge={fx.number(dashboard.pendingRequests)}
                     badgeColor="bg-blue-500/10 text-blue-700 dark:text-blue-400"
                   />
                 )}
@@ -843,20 +826,20 @@ export function EmployeeSelfServicePage() {
       {/* ═══ ROW 3: Leave Balances (all types) ══════════════════════════════ */}
       <section className="rounded-xl border border-slate-100 bg-white dark:border-white/[0.07] dark:bg-white/[0.03]">
         <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5 dark:border-white/[0.07]">
-          <p className="text-sm font-semibold text-slate-900 dark:text-white">Leave Balances</p>
-          <button type="button" onClick={() => router.push('/leave')} className="text-[11px] font-medium text-sapphire hover:underline dark:text-cyanAccent">
-            Request leave
+          <p className="text-sm font-semibold text-slate-900 dark:text-white">{t('Leave balances')}</p>
+          <button type="button" onClick={() => router.push(ESS_LEAVE_PATH)} className="text-[11px] font-medium text-sapphire hover:underline dark:text-cyanAccent">
+            {t('Request leave')}
           </button>
         </div>
         <div className="p-5">
           {dashboard.leaveBalances.length === 0 ? (
-            <p className="text-sm text-slate-400 dark:text-slate-500">No leave balances configured for this year.</p>
+            <p className="text-sm text-slate-400 dark:text-slate-500">{t('No leave balances have been set up for you this year.')}</p>
           ) : (
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {dashboard.leaveBalances.map((b) => (
                 <LeaveBar
                   key={b.leaveTypeId}
-                  name={b.leaveTypeName}
+                  name={leaveName(b.leaveTypeId, b.leaveTypeName)}
                   available={b.available}
                   entitled={b.entitled ?? b.available}
                   statutoryDays={b.statutoryEntitlementDays}
@@ -880,9 +863,9 @@ export function EmployeeSelfServicePage() {
           {(dashboard.actionItems.length > 0 || dashboard.documentAlerts.length > 0) && (
             <section className="rounded-xl border border-slate-100 bg-white dark:border-white/[0.07] dark:bg-white/[0.03]">
               <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5 dark:border-white/[0.07]">
-                <p className="text-sm font-semibold text-slate-900 dark:text-white">Action Center</p>
+                <p className="text-sm font-semibold text-slate-900 dark:text-white">{t('Action Center')}</p>
                 <span className="rounded-full bg-rose-500/10 px-2 py-0.5 text-[10px] font-bold text-rose-600 dark:text-rose-400">
-                  {dashboard.actionItems.length + dashboard.documentAlerts.length} open
+                  {t('{count} open', { count: dashboard.actionItems.length + dashboard.documentAlerts.length })}
                 </span>
               </div>
               <div className="divide-y divide-slate-50 dark:divide-white/[0.04]">
@@ -894,10 +877,14 @@ export function EmployeeSelfServicePage() {
                       </div>
                       <div className="min-w-0">
                         <p className="text-sm font-medium text-slate-900 dark:text-white truncate">{doc.documentType}</p>
-                        <p className="text-xs text-slate-500 dark:text-slate-400 truncate">{doc.fileName || 'Document'} · expires {doc.expiryDate ? formatDate(doc.expiryDate) : 'not set'}</p>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                          {doc.expiryDate
+                            ? t('{file}, expires on {date}', { file: doc.fileName || t('Document'), date: fx.date(doc.expiryDate) })
+                            : t('{file}, no expiry date set', { file: doc.fileName || t('Document') })}
+                        </p>
                       </div>
                     </div>
-                    <StatusChip label={doc.approvalStatus} />
+                    <StatusChip label={enumLabel(t, 'ApprovalStatus', doc.approvalStatus)} />
                   </div>
                 ))}
                 {dashboard.actionItems.map((item) => (
@@ -911,7 +898,7 @@ export function EmployeeSelfServicePage() {
                         <p className="text-xs text-slate-500 dark:text-slate-400">{item.category}</p>
                       </div>
                     </div>
-                    <StatusChip label={item.dueAtUtc ? 'Due' : 'Open'} />
+                    <StatusChip label={item.dueAtUtc ? t('Due') : t('Open')} />
                   </div>
                 ))}
               </div>
@@ -924,19 +911,19 @@ export function EmployeeSelfServicePage() {
               <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-sapphire/10 dark:bg-cyanAccent/10">
                 <MessageSquareText className="h-4 w-4 text-sapphire dark:text-cyanAccent" />
               </div>
-              <p className="text-sm font-semibold text-slate-900 dark:text-white">Kody the HR Assistant</p>
+              <p className="text-sm font-semibold text-slate-900 dark:text-white">{t('Kody the HR Assistant')}</p>
             </div>
             <div className="space-y-3 p-5">
               <textarea
                 value={question}
                 onChange={(e) => setQuestion(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) askAi(); }}
-                placeholder="Ask anything — leave balance, policies, payslip dates…"
+                placeholder={t('Ask anything: your leave balance, policies, payslip dates…')}
                 rows={3}
                 className="w-full resize-none rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-sm text-slate-900 placeholder-slate-400 outline-none transition focus:border-sapphire/50 focus:ring-2 focus:ring-sapphire/10 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white dark:placeholder-slate-600 dark:focus:border-cyanAccent/40"
               />
               <div className="flex items-center justify-between gap-3">
-                <p className="text-[10px] text-slate-400 dark:text-slate-600">Cmd+Enter to send</p>
+                <p className="text-[10px] text-slate-400 dark:text-slate-600">{t('Press Cmd+Enter to send')}</p>
                 <button
                   type="button"
                   onClick={askAi}
@@ -944,7 +931,7 @@ export function EmployeeSelfServicePage() {
                   className="inline-flex items-center gap-1.5 rounded-lg bg-sapphire px-4 py-2 text-sm font-semibold text-white transition hover:bg-sapphire/90 disabled:opacity-50 dark:bg-cyanAccent dark:text-slate-900"
                 >
                   {asking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                  {asking ? 'Thinking…' : 'Ask'}
+                  {asking ? t('Thinking…') : t('Ask Kody')}
                 </button>
               </div>
               {answer && (
@@ -962,75 +949,43 @@ export function EmployeeSelfServicePage() {
           {/* Announcements */}
           <section className="rounded-xl border border-slate-100 bg-white dark:border-white/[0.07] dark:bg-white/[0.03]">
             <div className="border-b border-slate-100 px-5 py-3.5 dark:border-white/[0.07]">
-              <p className="text-sm font-semibold text-slate-900 dark:text-white">Announcements</p>
+              <p className="text-sm font-semibold text-slate-900 dark:text-white">{t('Announcements')}</p>
             </div>
             <div className="space-y-2.5 p-5">
               {dashboard.announcements.length === 0 ? (
-                <p className="text-sm text-slate-400 dark:text-slate-500">No active announcements.</p>
+                <p className="text-sm text-slate-400 dark:text-slate-500">{t('No active announcements.')}</p>
               ) : dashboard.announcements.map((a) => (
                 <AnnouncementCard key={a.id} title={a.title} body={a.body} />
               ))}
             </div>
           </section>
 
-          {/* HR request */}
-          <section className="rounded-xl border border-slate-100 bg-white dark:border-white/[0.07] dark:bg-white/[0.03]">
-            <div className="border-b border-slate-100 px-5 py-3.5 dark:border-white/[0.07]">
-              <p className="text-sm font-semibold text-slate-900 dark:text-white">Submit HR Request</p>
-            </div>
-            <div className="space-y-3 p-5">
-              {submitted && (
-                <div className="flex items-center gap-2 rounded-lg bg-emerald-500/10 px-3 py-2 text-sm font-medium text-emerald-600 dark:text-emerald-400">
-                  <CheckCircle2 className="h-4 w-4 shrink-0" /> Request submitted successfully!
-                </div>
-              )}
-              <input
-                value={ticketSubject}
-                onChange={(e) => setTicketSubject(e.target.value)}
-                placeholder="Subject"
-                className="w-full rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-2.5 text-sm text-slate-900 placeholder-slate-400 outline-none transition focus:border-sapphire/50 focus:ring-2 focus:ring-sapphire/10 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white dark:placeholder-slate-600"
-              />
-              <textarea
-                value={ticketMessage}
-                onChange={(e) => setTicketMessage(e.target.value)}
-                placeholder="What do you need from HR?"
-                rows={3}
-                className="w-full resize-none rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-2.5 text-sm text-slate-900 placeholder-slate-400 outline-none transition focus:border-sapphire/50 focus:ring-2 focus:ring-sapphire/10 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white dark:placeholder-slate-600"
-              />
-              <button
-                type="button"
-                onClick={createTicket}
-                disabled={submitting || !ticketSubject.trim() || !ticketMessage.trim()}
-                className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-slate-900 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:opacity-50 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-100"
-              >
-                {submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                {submitting ? 'Submitting…' : 'Submit request'}
+          {/* HR requests: raised, followed and answered on the employee's own requests page */}
+          <section className="rounded-xl border border-slate-100 bg-white dark:border-white/[0.07] dark:bg-white/[0.03]" data-testid="ess-home-hr-requests">
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5 dark:border-white/[0.07]">
+              <p className="text-sm font-semibold text-slate-900 dark:text-white">{t('My HR Requests')}</p>
+              <button type="button" onClick={() => router.push(ESS_REQUESTS_PATH)} className="text-[11px] font-medium text-sapphire hover:underline dark:text-cyanAccent">
+                {canWrite ? t('Raise a request') : t('Open my requests')}
               </button>
-
-              {myRequests.length > 0 && (
-                <div className="space-y-2 border-t border-slate-100 pt-3 dark:border-white/[0.07]">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">My Requests</p>
-                  {myRequests.map((r) => {
-                    const tone = r.status === 'Closed' || r.status === 'Resolved'
-                      ? 'bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-400'
-                      : r.isOverdue
-                        ? 'bg-rose-50 text-rose-600 dark:bg-rose-500/10 dark:text-rose-400'
-                        : r.hrResponded
-                          ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400'
-                          : 'bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400';
-                    return (
-                      <button key={r.id} type="button" onClick={() => openTicket(r.id)}
-                        className="flex w-full items-center justify-between gap-2 rounded-lg border border-slate-100 px-3 py-2 text-start hover:bg-slate-50 dark:border-white/[0.07] dark:hover:bg-white/[0.03]">
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{r.subject}</p>
-                          <p className="truncate text-xs text-slate-400">{new Date(r.createdAtUtc).toLocaleDateString()}</p>
-                        </div>
-                        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${tone}`}>{r.responseStatus}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
+            </div>
+            <div className="space-y-2 p-5">
+              {recentRequests.length === 0 ? (
+                <p className="text-sm text-slate-400 dark:text-slate-500">{t('You have not raised any requests yet.')}</p>
+              ) : recentRequests.map((r) => {
+                const s = hrRequestStatus(r.responseStatus);
+                return (
+                  <button key={r.id} type="button" onClick={() => router.push(ESS_REQUESTS_PATH)}
+                    className="flex w-full items-center justify-between gap-2 rounded-lg border border-slate-100 px-3 py-2 text-start hover:bg-slate-50 dark:border-white/[0.07] dark:hover:bg-white/[0.03]">
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-medium text-slate-800 dark:text-slate-200">{r.subject}</span>
+                      <span className="block truncate text-xs text-slate-400">
+                        {t('{category}, raised on {date}', { category: t(r.categoryName), date: fx.date(r.createdAtUtc) })}
+                      </span>
+                    </span>
+                    <StatusChip label={t(s.label)} tone={s.tone} dot />
+                  </button>
+                );
+              })}
             </div>
           </section>
 
@@ -1039,8 +994,8 @@ export function EmployeeSelfServicePage() {
           {/* Quick navigation cards */}
           <div className="grid grid-cols-2 gap-2">
             {[
-              { icon: CalendarOff, label: 'Request Leave', path: '/leave', bg: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400', border: 'border-emerald-100 dark:border-emerald-500/20' },
-              { icon: FileText, label: 'My Payslips', path: '/payroll', bg: 'bg-violet-500/10 text-violet-700 dark:text-violet-400', border: 'border-violet-100 dark:border-violet-500/20' },
+              { icon: CalendarOff, label: 'Request Leave', path: ESS_LEAVE_PATH, bg: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400', border: 'border-emerald-100 dark:border-emerald-500/20' },
+              { icon: FileText, label: 'My Payslips', path: ESS_PAYSLIPS_PATH, bg: 'bg-violet-500/10 text-violet-700 dark:text-violet-400', border: 'border-violet-100 dark:border-violet-500/20' },
               { icon: FileText, label: 'Jawazat Requests', path: '/ess/jawazat', bg: 'bg-sapphire/10 text-sapphire dark:text-cyanAccent', border: 'border-blue-100 dark:border-blue-500/20' },
             ].map(({ icon: Icon, label, path, bg, border }) => (
               <button
@@ -1052,62 +1007,13 @@ export function EmployeeSelfServicePage() {
                 <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${bg}`}>
                   <Icon className="h-3.5 w-3.5" />
                 </div>
-                <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">{label}</span>
-                <ChevronRight className="ms-auto h-3.5 w-3.5 text-slate-300 dark:text-slate-600" />
+                <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">{t(label)}</span>
+                <ChevronRight className="ms-auto h-3.5 w-3.5 text-slate-300 rtl:-scale-x-100 dark:text-slate-600" />
               </button>
             ))}
           </div>
         </div>
       </div>
-
-      {/* HR request thread modal */}
-      {(openThread || threadLoading) && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" onClick={() => { setOpenThread(null); setThreadLoading(false); }}>
-          <div className="flex max-h-[80vh] w-full max-w-lg flex-col rounded-2xl bg-white shadow-xl dark:bg-slate-900" onClick={(e) => e.stopPropagation()}>
-            {threadLoading || !openThread ? (
-              <div className="flex items-center justify-center p-10"><Loader2 className="h-5 w-5 animate-spin text-slate-400" /></div>
-            ) : (
-              <>
-                <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-4 dark:border-white/[0.07]">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold text-slate-900 dark:text-white">{openThread.request.subject}</p>
-                    <p className="mt-0.5 text-xs text-slate-400">{openThread.responseStatus}</p>
-                  </div>
-                  <button type="button" aria-label="Close" onClick={() => setOpenThread(null)} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
-                </div>
-                <div className="flex-1 space-y-3 overflow-y-auto px-5 py-4">
-                  <div className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700 dark:bg-white/[0.04] dark:text-slate-300">{openThread.request.description}</div>
-                  {openThread.comments.length === 0 && <p className="text-center text-xs text-slate-400">No replies yet. HR will respond here.</p>}
-                  {openThread.comments.map((c) => {
-                    const fromHr = c.authorType === 'HR';
-                    return (
-                      <div key={c.id} className={`flex ${fromHr ? 'justify-start' : 'justify-end'}`}>
-                        <div className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm ${fromHr ? 'bg-sapphire/10 text-slate-800 dark:bg-sapphire/20 dark:text-slate-100' : 'bg-slate-900 text-white dark:bg-white dark:text-slate-900'}`}>
-                          <p className="mb-0.5 text-[10px] font-semibold opacity-70">{fromHr ? (c.authorName || 'HR') : 'You'} · {new Date(c.createdAtUtc).toLocaleString()}</p>
-                          <p className="whitespace-pre-wrap">{c.comment}</p>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="flex items-center gap-2 border-t border-slate-100 px-4 py-3 dark:border-white/[0.07]">
-                  <input
-                    value={replyText}
-                    onChange={(e) => setReplyText(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendReply(); } }}
-                    placeholder="Reply to HR…"
-                    className="flex-1 rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-2 text-sm text-slate-900 outline-none focus:border-sapphire/50 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white"
-                  />
-                  <button type="button" aria-label="Send reply" onClick={sendReply} disabled={replying || !replyText.trim()}
-                    className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 dark:bg-white dark:text-slate-900">
-                    {replying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
