@@ -26,13 +26,14 @@ function statusOf(err: unknown): number | undefined {
 
 /**
  * Classify a failed `/me` call.
- *  - 401  → 'signed-out' (the session is over; clear it as before);
+ *  - 401 or 403 → 'signed-out' (the session is over or this token may not use the tenant app —
+ *    a Retry would only get the same answer, so the user must not be held on the offline screen);
  *  - no HTTP response at all (offline, DNS, CORS, timeout, refresh could not be reached) → 'network';
- *  - any other status (5xx, a proxy's 404 during a deploy, an unexpected 4xx) → 'server'.
+ *  - any other status (5xx, a proxy's 404 during a deploy, a 429) → 'server'.
  */
 export function classifyMeFailure(err: unknown): MeFailureOutcome {
   const status = statusOf(err);
-  if (status === 401) return 'signed-out';
+  if (status === 401 || status === 403) return 'signed-out';
   if (status === undefined) return 'network';
   return 'server';
 }
@@ -41,13 +42,16 @@ export function classifyMeFailure(err: unknown): MeFailureOutcome {
  * Did the token refresh fail because the server REFUSED the refresh token (the session is truly
  * over), rather than because the server could not be reached or errored?
  *
- * A missing refresh token, or a 4xx answer from /api/auth/refresh, is a definite refusal. A network
- * error or a 5xx is not: the refresh token may well still be valid, so the session must be kept.
+ * A missing refresh token, or a 400/401/403 from /api/auth/refresh, is a definite refusal. Anything
+ * else is not: a network error, a 5xx, a 429 (auth_refresh is rate-limited), a 408, or a proxy's 404
+ * mid-deploy says nothing about the refresh token, which may well still be valid — keep the session.
  */
+const REFRESH_REFUSED_STATUSES = new Set([400, 401, 403]);
+
 export function isRefreshRefused(err: unknown): boolean {
   if ((err as { noRefreshToken?: boolean } | null)?.noRefreshToken) return true;
   const status = statusOf(err);
-  return status !== undefined && status >= 400 && status < 500;
+  return status !== undefined && REFRESH_REFUSED_STATUSES.has(status);
 }
 
 /** The auth state after a `/me` attempt, as a pure transition (see AuthContext). */

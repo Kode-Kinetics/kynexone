@@ -11,7 +11,7 @@ interface ProtectedRouteProps {
 }
 
 export function ProtectedRoute({ children, requiredPermissions }: ProtectedRouteProps) {
-  const { user, isLoading, authError, retryAuth, hasPermission } = useAuth();
+  const { user, isLoading, authError, retryAuth, logout, hasPermission } = useAuth();
   const router = useRouter();
 
   // Not a 401 (offline, a deploy's 502s): keep the session and show the offline state, never /login.
@@ -26,7 +26,7 @@ export function ProtectedRoute({ children, requiredPermissions }: ProtectedRoute
     }
   }, [user, requiredPermissions, hasPermission, router]);
 
-  if (!isLoading && !user && authError) return <ServerUnreachable reason={authError} onRetry={retryAuth} />;
+  if (!isLoading && !user && authError) return <ServerUnreachable reason={authError} onRetry={retryAuth} onSignOut={logout} />;
 
   if (isLoading || !user) {
     return (

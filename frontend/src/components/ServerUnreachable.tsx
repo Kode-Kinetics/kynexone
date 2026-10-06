@@ -20,8 +20,9 @@ function documentLocale(): LocaleCode {
   return (lang && lang in LOCALE_DICTS ? lang : 'en') as LocaleCode;
 }
 
-export function ServerUnreachable({ reason, onRetry }: { reason: AuthLoadError; onRetry: () => Promise<void> }) {
+export function ServerUnreachable({ reason, onRetry, onSignOut }: { reason: AuthLoadError; onRetry: () => Promise<void>; onSignOut: () => Promise<void> }) {
   const [retrying, setRetrying] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
   const locale = documentLocale();
   const t = (key: string) => translate(locale, key);
 
@@ -31,6 +32,17 @@ export function ServerUnreachable({ reason, onRetry }: { reason: AuthLoadError; 
       await onRetry();
     } finally {
       setRetrying(false);
+    }
+  };
+
+  // A way out when the outage persists, or on a shared computer: logout() clears the session
+  // locally even when the server cannot be told, and the shell then goes to the sign-in page.
+  const signOut = async () => {
+    setSigningOut(true);
+    try {
+      await onSignOut();
+    } finally {
+      setSigningOut(false);
     }
   };
 
@@ -45,9 +57,15 @@ export function ServerUnreachable({ reason, onRetry }: { reason: AuthLoadError; 
             : t('KynexOne is not responding normally. This usually clears within a minute. Retry shortly.')}
         </p>
         <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">{t('You are still signed in. Nothing you saved has been lost.')}</p>
-        <button type="button" className="btn-primary mt-6" onClick={retry} disabled={retrying}>
-          {retrying ? t('Retrying…') : t('Retry')}
-        </button>
+        <div className="mt-6 flex flex-wrap justify-center gap-3">
+          <button type="button" className="btn-primary" onClick={retry} disabled={retrying || signingOut}>
+            {retrying ? t('Retrying…') : t('Retry')}
+          </button>
+          <button type="button" className="btn-secondary" onClick={signOut} disabled={retrying || signingOut}>
+            {t('Sign out')}
+          </button>
+        </div>
+        <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">{t('If this keeps happening, you can sign out and sign in again later.')}</p>
       </div>
     </div>
   );

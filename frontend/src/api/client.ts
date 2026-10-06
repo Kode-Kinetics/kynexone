@@ -180,6 +180,9 @@ export function notifyApiError(err: unknown, fallback = 'Something went wrong. P
 export function apiErrorReason(err: unknown, fallback: string): string {
   const e = err as { isAxiosError?: boolean; response?: { status?: number; data?: unknown } } | null;
   if (e?.isAxiosError && !e.response) return 'The server could not be reached. Check your connection, then retry.';
+  // A 5xx body is server exception text, not a reason for the user: keep the caller's sentence.
+  const status = e?.response?.status;
+  if (status != null && status >= 500) return fallback;
   const data = e?.response?.data;
   const sentence = (v: unknown): string | null => (typeof v === 'string' && v.trim() && !/^\s*</.test(v) && v.length < 500 ? v.trim() : null);
   if (typeof data === 'string') return sentence(data) ?? fallback;

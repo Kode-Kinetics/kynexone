@@ -388,3 +388,31 @@ test('a 401 from the session check still ends the session and goes to sign-in', 
   await expect(page).toHaveURL(/\/login/, { timeout: 15_000 });
   expect(await page.evaluate(() => localStorage.getItem('zayra_access_token'))).toBeNull();
 });
+
+test('the offline screen offers Sign out, which ends the session and goes to sign-in', async ({ page }) => {
+  await page.addInitScript(() => { if (!sessionStorage.getItem('seeded')) { localStorage.setItem('zayra_access_token', 'fixture'); sessionStorage.setItem('seeded', '1'); } });
+  await page.route('**/api/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/auth/me' || path === '/api/auth/logout') return route.abort('internetdisconnected');
+    return route.fulfill({ json: [] });
+  });
+  await page.goto('/loans');
+  const offline = page.getByTestId('server-unreachable');
+  await expect(offline).toContainText('If this keeps happening, you can sign out', { timeout: 15_000 });
+  await offline.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await expect(page).toHaveURL(/\/login/, { timeout: 15_000 });
+  expect(await page.evaluate(() => localStorage.getItem('zayra_access_token'))).toBeNull();
+});
+
+test('a 403 from the session check ends the session instead of trapping the user offline', async ({ page }) => {
+  await page.addInitScript(() => { if (!sessionStorage.getItem('seeded')) { localStorage.setItem('zayra_access_token', 'fixture'); sessionStorage.setItem('seeded', '1'); } });
+  await page.route('**/api/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/auth/me') return route.fulfill({ status: 403, json: { code: 'forbidden', message: 'This account cannot use the tenant app.' } });
+    return route.fulfill({ json: [] });
+  });
+  await page.goto('/loans');
+  await expect(page).toHaveURL(/\/login/, { timeout: 15_000 });
+  await expect(page.getByTestId('server-unreachable')).toHaveCount(0);
+  expect(await page.evaluate(() => localStorage.getItem('zayra_access_token'))).toBeNull();
+});

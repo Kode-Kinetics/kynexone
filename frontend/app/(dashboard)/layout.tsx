@@ -12,7 +12,7 @@ import { applyTheme, getStoredTheme } from '@/src/utils/theme';
 import type { ThemeMode } from '@/src/types/ui';
 
 function Shell({ children }: { children: React.ReactNode }) {
-  const { user, isLoading, authError, retryAuth } = useAuth();
+  const { user, isLoading, authError, retryAuth, logout } = useAuth();
   const router = useRouter();
   const [theme, setTheme] = useState<ThemeMode>(() => getStoredTheme());
 
@@ -24,7 +24,7 @@ function Shell({ children }: { children: React.ReactNode }) {
     if (!isLoading && !user && !authError) router.replace('/login');
   }, [isLoading, user, authError, router]);
 
-  if (!isLoading && !user && authError) return <ServerUnreachable reason={authError} onRetry={retryAuth} />;
+  if (!isLoading && !user && authError) return <ServerUnreachable reason={authError} onRetry={retryAuth} onSignOut={logout} />;
 
   if (isLoading || !user) {
     return (

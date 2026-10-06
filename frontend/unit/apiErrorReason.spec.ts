@@ -34,3 +34,9 @@ test('no response at all says the server could not be reached', () => {
 test('a non-HTTP error (a clipboard failure) keeps the fallback', () => {
   expect(apiErrorReason(new Error('denied'), FALLBACK)).toBe(FALLBACK);
 });
+
+test('server exception text from a 5xx is never shown; the fallback is', () => {
+  expect(apiErrorReason(http(500, { message: 'NullReferenceException: Object reference not set to an instance of an object.' }), FALLBACK)).toBe(FALLBACK);
+  expect(apiErrorReason(http(503, 'Service temporarily overloaded at node 7'), FALLBACK)).toBe(FALLBACK);
+  expect(apiErrorReason(http(502, { detail: 'upstream connect error' }), FALLBACK)).toBe(FALLBACK);
+});
