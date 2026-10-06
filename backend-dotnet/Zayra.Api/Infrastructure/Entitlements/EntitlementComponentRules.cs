@@ -143,6 +143,12 @@ public static class EntitlementComponentRules
         return codes;
     }
 
-    /// <summary>A company may skip (not offer) a component only when it carries no statutory floor.</summary>
-    public static bool CanBeSkipped(EntitlementComponentRule rule) => !rule.IsFloor && !rule.IsLoanFacility;
+    /// <summary>
+    /// A company may skip (not offer) a component only when it carries no statutory floor, is not a loan facility (loans
+    /// keep <c>loan_policies.is_offered</c>), and is not cash wage that payroll reads (QiwaWage: HOUSING, TRANSPORT,
+    /// OTHER_ALLOWANCES) — a company pay_components row for a paid component would override the group row inside
+    /// payroll, so "not offered" there is a pay change, not a benefit choice. R1 refuses it with wage_component_not_skippable.
+    /// </summary>
+    public static bool CanBeSkipped(EntitlementComponentRule rule) =>
+        !rule.IsFloor && !rule.IsLoanFacility && rule.Class != PayEntitlementClasses.QiwaWage;
 }
