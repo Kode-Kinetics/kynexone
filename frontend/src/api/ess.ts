@@ -134,7 +134,65 @@ export const essApi = {
   markNotificationRead: (id: string) => client.patch(`/api/ess/notifications/${id}/read`),
   myRoster: (from: string, to: string) =>
     client.get<EssRosterEntry[]>('/api/ess/my-roster', { params: { from, to } }).then((r) => r.data),
+  /** The caller's own finalised payslips, newest period first. */
+  payslips: () => client.get<EssPayslipSummary[]>('/api/ess/payslips').then((r) => r.data),
+  /** One of the caller's own payslips, with its lines. A colleague's id answers 404. */
+  payslipDetail: (id: string) => client.get<EssPayslipDetail>(`/api/ess/payslips/${id}`).then((r) => r.data),
+  /** Streams the caller's own payslip PDF and saves it. */
+  downloadPayslip: (id: string, filename: string) =>
+    client.get(`/api/ess/payslips/${id}/download`, { responseType: 'blob' }).then((r) => {
+      const url = URL.createObjectURL(new Blob([r.data], { type: 'application/pdf' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    }),
 };
+
+export interface EssPayslipSummary {
+  id: string;
+  runId: string;
+  year: number;
+  month: number;
+  periodLabel: string;
+  currency: string;
+  runType: string;
+  grossSalary: number;
+  totalDeductions: number;
+  netSalary: number;
+}
+
+/**
+ * Line types, as the backend's PayslipLineTypes. An EmployerContribution line (e.g. the employer's
+ * GOSI occupational hazard) is an employer cost: it is never part of totalDeductions.
+ */
+export type EssPayslipLineType = 'Earning' | 'Deduction' | 'EmployerContribution' | 'Net';
+
+export interface EssPayslipLine {
+  name: string;
+  amount: number;
+  type: EssPayslipLineType | string;
+}
+
+export interface EssPayslipDetail {
+  id: string;
+  year: number;
+  month: number;
+  periodLabel: string;
+  currency: string;
+  runType: string;
+  grossSalary: number;
+  totalDeductions: number;
+  netSalary: number;
+  /** True when gross − deductions = net. */
+  reconciled: boolean;
+  lines: EssPayslipLine[];
+  ytdGross: number;
+  ytdNet: number;
+  /** Paid by the employer on top of the salary. Not part of totalDeductions. */
+  employerContributions?: number;
+}
 
 export interface EssRosterEntry {
   id: string;

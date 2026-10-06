@@ -418,9 +418,11 @@ public class EmployeeSelfServiceController : ControllerBase
         if (run is null || run.Status == "Voided") return NotFound();
 
         var (items, _) = await BuildPayslipLinesAsync(tenantId, employeeId, slip, cancellationToken);
-        var gross = items.Where(i => i.Type == "Earning").Sum(i => i.Amount);
-        var deductions = items.Where(i => i.Type == "Deduction").Sum(i => i.Amount);
-        var netLines = items.Where(i => i.Type == "Net").ToList();
+        var gross = items.Where(i => i.Type == PayslipLineTypes.Earning).Sum(i => i.Amount);
+        // Employee deductions only. Employer contributions are listed separately and never reduce pay.
+        var deductions = items.Where(i => i.Type == PayslipLineTypes.Deduction).Sum(i => i.Amount);
+        var employerContributions = items.Where(i => i.Type == PayslipLineTypes.EmployerContribution).Sum(i => i.Amount);
+        var netLines = items.Where(i => i.Type == PayslipLineTypes.Net).ToList();
         var net = netLines.Count > 0 ? netLines.Sum(i => i.Amount) : gross - deductions;
         var currency = await ResolvePayslipCurrencyAsync(tenantId, employeeId, cancellationToken);
 
@@ -431,7 +433,7 @@ public class EmployeeSelfServiceController : ControllerBase
             slip.Id, run.Year, run.Month, PeriodLabel(run.Year, run.Month), currency, run.RunType,
             gross, deductions, net, Math.Abs(gross - deductions - net) < 0.01m,
             items.Select(i => new EssPayslipLineDto(i.Name, i.Amount, i.Type)).ToList(),
-            slip.YtdGross, slip.YtdNet));
+            slip.YtdGross, slip.YtdNet, employerContributions));
     }
 
     private static string PeriodLabel(int year, int month) =>
@@ -459,9 +461,22 @@ public class EmployeeSelfServiceController : ControllerBase
             ? await _db.PayslipComponents.AsNoTracking().Where(x => x.TenantId == tenantId && x.PayslipId == payslip.Id).ToListAsync(cancellationToken)
             : new List<PayslipComponent>();
 
+        // Payslips generated before employer contributions had their own line type stored them as
+        // "Deduction" — that is how an employer's 2% occupational hazard came to be shown, and totalled,
+        // as money taken from the employee. The run's own PayrollDeduction rows carry the authoritative
+        // IsEmployerContribution flag, so those stored lines are moved to the employer section here.
+        var employerLines = components.Any(c => c.ComponentType == PayslipLineTypes.Deduction)
+            ? (await _db.PayrollDeductions.AsNoTracking()
+                .Where(d => d.TenantId == tenantId && d.PayrollRunId == slip.RunId && d.EmployeeId == employeeId && d.IsEmployerContribution)
+                .Select(d => new { d.ComponentName, d.Amount })
+                .ToListAsync(cancellationToken))
+                .Select(d => (d.ComponentName, d.Amount)).ToList()
+            : new List<(string, decimal)>();
+
         // Fallback: build components from the slip summary if payslip detail rows don't exist
         var items = components.Count > 0
-            ? components.Select(c => new PayslipLineItem(c.ComponentName, c.Amount, c.ComponentType)).ToList()
+            ? PayslipLineTypes.ReclassifyLegacyEmployerLines(
+                components.Select(c => new PayslipLineItem(c.ComponentName, c.Amount, c.ComponentType)), employerLines)
             : new List<PayslipLineItem>
             {
                 new("Basic Salary", slip.BasicSalary, "Earning"),
@@ -1549,4 +1564,7 @@ public record EssPayslipLineDto(string Name, decimal Amount, string Type);
 public record EssPayslipDetailDto(
     Guid Id, int Year, int Month, string PeriodLabel, string Currency, string RunType,
     decimal GrossSalary, decimal TotalDeductions, decimal NetSalary, bool Reconciled,
-    IReadOnlyList<EssPayslipLineDto> Lines, decimal YtdGross, decimal YtdNet);
+    IReadOnlyList<EssPayslipLineDto> Lines, decimal YtdGross, decimal YtdNet,
+    // What the employer paid on top of the salary (lines of type "EmployerContribution"). NOT part of
+    // TotalDeductions: GrossSalary − TotalDeductions = NetSalary.
+    decimal EmployerContributions = 0m);
