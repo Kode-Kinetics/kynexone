@@ -28,10 +28,9 @@ public sealed record RenewalRuleSet(
     /// <summary>
     /// Days a term may start AFTER the employee's joining date and still count as the original contract (R4 review P1-2).
     /// Default 0: the first term is the original only when it starts on the joining date. Effective-dated like every rule;
-    /// a tenant row may widen it (0–31). Seeding the platform row belongs to <c>StatutoryRuleSeeder</c> (R0); an absent
-    /// row reads as 0.
+    /// a tenant row may widen it (0–31). The platform row is seeded by <c>StatutoryRuleSeeder</c>; an absent row reads as 0.
     /// </summary>
-    public const string OriginalTermJoiningToleranceKey = "contracts.original_term_joining_tolerance_days";
+    public const string OriginalTermJoiningToleranceKey = RenewalRuleKeys.OriginalTermJoiningToleranceDays;
 
     /// <summary>The seeded platform values, used when nothing is on file.</summary>
     public static RenewalRuleSet Defaults { get; } = new(
@@ -41,7 +40,7 @@ public sealed record RenewalRuleSet(
     public static async Task<RenewalRuleSet> LoadAsync(ZayraDbContext db, Guid tenantId, DateOnly asOf, CancellationToken ct)
     {
         var cutoff = asOf.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
-        var keys = RenewalRuleKeys.All.Append(OriginalTermJoiningToleranceKey).ToArray();
+        var keys = RenewalRuleKeys.All;
         // Platform defaults have TenantId NULL, which the tenant filter hides: read this tenant's overrides and the
         // platform rows through the sanctioned bypass, each pinned to exactly one owner — never another tenant's rows.
         var rows = new List<RuleRow>();

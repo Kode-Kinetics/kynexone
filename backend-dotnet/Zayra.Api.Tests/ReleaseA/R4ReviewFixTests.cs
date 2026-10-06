@@ -145,6 +145,46 @@ public class R4ReviewFixTests
             .Should().Be(ChainGapReasons.CompanyChanged);
     }
 
+    [Fact]
+    public async Task JoiningTolerance_IsSeededAtZero_ReadFromTheSeededRow_AndATenantMayOverrideIt()
+    {
+        var seeded = Zayra.Api.Infrastructure.Seed.StatutoryRuleSeeder.BuildRules()
+            .Single(r => r.RuleKey == RenewalRuleKeys.OriginalTermJoiningToleranceDays);
+        (seeded.RuleValue, seeded.TenantId, seeded.CountryCode).Should().Be(("0", (Guid?)null, Zayra.Api.Application.CountryPack.CountryCodes.Saudi));
+
+        await using var db = InMemory();
+        db.StatutoryRules.AddRange(Zayra.Api.Infrastructure.Seed.StatutoryRuleSeeder.BuildRules());
+        await db.SaveChangesAsync();
+        var tenantId = Guid.NewGuid();
+        var platform = await RenewalRuleSet.LoadAsync(db, tenantId, Today, default);
+        platform.OriginalTermJoiningToleranceDays.Should().Be(0);
+        platform.FellBack.Should().NotContain(RenewalRuleKeys.OriginalTermJoiningToleranceDays, "the seeded row is on file");
+
+        // The value comes from the row, not a hard-coded default: change the platform row and it is read.
+        (await db.StatutoryRules.SingleAsync(r => r.RuleKey == RenewalRuleKeys.OriginalTermJoiningToleranceDays)).RuleValue = "5";
+        await db.SaveChangesAsync();
+        (await RenewalRuleSet.LoadAsync(db, tenantId, Today, default)).OriginalTermJoiningToleranceDays.Should().Be(5);
+
+        // A tenant row overrides the platform row.
+        db.StatutoryRules.Add(new StatutoryRule
+        {
+            TenantId = tenantId, CountryCode = seeded.CountryCode, Jurisdiction = seeded.Jurisdiction, RuleKey = seeded.RuleKey,
+            RuleValue = "3", DataType = "int", EffectiveFrom = seeded.EffectiveFrom,
+        });
+        await db.SaveChangesAsync();
+        (await RenewalRuleSet.LoadAsync(db, tenantId, Today, default)).OriginalTermJoiningToleranceDays.Should().Be(3);
+    }
+
+    [Theory]
+    [InlineData("0", true)]
+    [InlineData("31", true)]
+    [InlineData("-1", false)]
+    [InlineData("32", false)]
+    [InlineData("two", false)]
+    [InlineData("", false)]
+    public void JoiningToleranceOverride_IsAWholeNumberFrom0To31(string value, bool valid) =>
+        (RenewalRuleKeys.ValidateOverride(RenewalRuleKeys.OriginalTermJoiningToleranceDays, value) is null).Should().Be(valid);
+
     // ── P2-4: a cancelled review never hides an Active contract ───────────────────────────────────
 
     [Fact]
