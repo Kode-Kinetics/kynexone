@@ -168,6 +168,21 @@ public sealed class PackageReviewRound4PostgresTests(PostgresFixture fixture)
         Assert.Equal(2, await RowCountAsync(s)); // starts 2 days after joining, inside the tenant's 3-day tolerance
     }
 
+    // ── Round 5: a joining date edited forward does not make a second contract a "new hire" ──
+    [Fact]
+    public async Task AJoiningDateEditedForward_DoesNotMakeASecondContractANewHire()
+    {
+        var tomorrow = Today.AddDays(1);
+        var s = await SeedAsync(seed => seed.Mohammed.JoiningDate = tomorrow.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc));
+        var second = new EmployeeContract { TenantId = s.TenantId, CompanyId = s.Company.Id, EmployeeId = s.Mohammed.PublicId, EmployeeName = "M",
+            ContractNumber = "CON-R5", Status = "PendingApproval", StartDate = tomorrow, EndDate = new DateOnly(2027, 10, 6),
+            BasicSalary = 8000m, CurrencyCode = "SAR", WorkerNationalityClass = WorkerNationalityClasses.NonSaudi };
+        await using (var db = fixture.CreateDb()) { db.EmployeeContracts.Add(second); await db.SaveChangesAsync(); }
+        await using (var db = fixture.CreateDb())
+            Assert.IsType<OkObjectResult>(await Contracts(db, s, Today).UpdateStatus(second.Id, new UpdateContractStatusRequest("Active", "HR"), default));
+        Assert.Equal(0, await RowCountAsync(s)); // the running CON-1 has no confirmed benefits, so everything is proposed
+    }
+
     // ── Hunt: a previous term with only SOME benefits confirmed ──
     [Fact]
     public async Task APredecessorsConfirmationCountsPerBenefit_TheUnconfirmedOneIsProposed()

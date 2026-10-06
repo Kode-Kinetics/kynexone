@@ -116,7 +116,9 @@ public static class DirectFreezeBasis
 
     public sealed record Basis(bool NewHireTerm, bool HasPredecessor, IReadOnlySet<string> PredecessorConfirmed)
     {
-        public bool Allows(string componentCode) => NewHireTerm || PredecessorConfirmed.Contains(componentCode);
+        // A new-hire term only counts when no earlier term exists: a joining date edited forward must not turn a second
+        // contract for someone already employed into a "new hire" (review round 5).
+        public bool Allows(string componentCode) => (NewHireTerm && !HasPredecessor) || PredecessorConfirmed.Contains(componentCode);
 
         /// <summary>Why a benefit cannot be written directly: a previous term without it confirmed, or earlier service on no term.</summary>
         public string Reason => HasPredecessor ? PackageReasons.PredecessorUnconfirmed : PackageReasons.EarlierServiceUnconfirmed;
