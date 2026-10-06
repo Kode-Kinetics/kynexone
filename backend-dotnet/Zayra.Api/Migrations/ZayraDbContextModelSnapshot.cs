@@ -699,6 +699,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("mfa_failed_count");
 
+                    b.Property<long?>("MfaLastTotpStep")
+                        .HasColumnType("bigint")
+                        .HasColumnName("mfa_last_totp_step");
+
                     b.Property<DateTime?>("MfaLastVerifiedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("mfa_last_verified_at_utc");
@@ -21976,6 +21980,15 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("mfa_enabled");
 
+                    b.Property<long?>("MfaLastTotpStep")
+                        .HasColumnType("bigint")
+                        .HasColumnName("mfa_last_totp_step");
+
+                    b.Property<string>("MfaRecoveryCodeHashes")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("mfa_recovery_code_hashes");
+
                     b.Property<string>("MfaSecretEncrypted")
                         .HasMaxLength(1024)
                         .HasColumnType("character varying(1024)")
@@ -23781,6 +23794,10 @@ namespace Zayra.Api.Migrations
                     b.Property<bool>("PasswordRequireUppercase")
                         .HasColumnType("boolean")
                         .HasColumnName("password_require_uppercase");
+
+                    b.Property<DateTime?>("PrivilegedMfaEnforceFromUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("privileged_mfa_enforce_from_utc");
 
                     b.Property<int>("RefreshTokenExpiryDays")
                         .HasColumnType("integer")

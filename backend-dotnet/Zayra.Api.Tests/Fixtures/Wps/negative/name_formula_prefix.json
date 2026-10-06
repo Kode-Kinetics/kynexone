@@ -1,0 +1,10 @@
+{
+  "expectedCode": "name_formula_prefix",
+  "patch": {
+    "rows": {
+      "0": {
+        "name": "=HYPERLINK(1)"
+      }
+    }
+  }
+}

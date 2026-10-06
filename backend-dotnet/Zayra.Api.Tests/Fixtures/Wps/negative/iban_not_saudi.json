@@ -1,0 +1,10 @@
+{
+  "expectedCode": "iban_not_saudi",
+  "patch": {
+    "rows": {
+      "0": {
+        "iban": "AE070331234567890123456"
+      }
+    }
+  }
+}

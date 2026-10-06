@@ -272,7 +272,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidIssuer = jwtOptions.Issuer,
             ValidAudiences = new[] { jwtOptions.TenantAudience, jwtOptions.PlatformAudience },
             IssuerSigningKey = signingKey,
-            ClockSkew = TimeSpan.FromMinutes(1)
+            ClockSkew = Zayra.Api.Infrastructure.Auth.PrivilegedMfaPolicy.JwtClockSkew
         };
         options.Events = new JwtBearerEvents
         {
@@ -322,6 +322,13 @@ builder.Services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationH
 builder.Services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationMiddlewareResultHandler, Zayra.Api.Infrastructure.Authorization.PermissionAwareAuthorizationResultHandler>();
 
 builder.Services.AddScoped<IPasswordHasher, Pbkdf2PasswordHasher>();
+// One process-wide bound on concurrent 600k-iteration PBKDF2 work (logins, dummy checks, re-hashes).
+builder.Services.AddSingleton(sp => Zayra.Api.Infrastructure.Auth.PasswordVerificationGate.FromConfiguration(
+    sp.GetRequiredService<IConfiguration>()));
+// Per-account attempt and per-address failure budgets, checked before any hashing.
+builder.Services.AddSingleton(sp => Zayra.Api.Infrastructure.Auth.LoginAbuseGuard.FromConfiguration(
+    sp.GetRequiredService<IConfiguration>(),
+    sp.GetRequiredService<Microsoft.AspNetCore.DataProtection.IDataProtectionProvider>()));
 builder.Services.AddScoped<ITokenService, JwtTokenService>();
 builder.Services.AddScoped<IAuditService, AuditService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Auth.TotpService>();
@@ -456,13 +463,25 @@ builder.Services.AddDataProtection()
     .SetApplicationName("Zayra.Api")
     .PersistKeysToDbContext<ZayraDbContext>();
 
-// Qiwa API adapter: live HTTP client when QIWA_USE_LIVE_ADAPTER=true, sandbox mock otherwise.
+// Qiwa API adapter. HARD-DISABLED unless QIWA_USE_LIVE_ADAPTER=true AND a Qiwa partner agreement is
+// recorded (Qiwa:PartnerAgreementReference). The switch alone registers the refusing adapter: no
+// network call, 501 on every Qiwa write, never "Filed with Qiwa". See QiwaLiveAdapterPolicy.
 builder.Services.AddSingleton<QiwaOAuthTokenCache>();
 builder.Services.AddHttpClient("qiwa", c => c.BaseAddress = new Uri("https://api.qiwa.tech"));
-if (string.Equals(Environment.GetEnvironmentVariable("QIWA_USE_LIVE_ADAPTER"), "true", StringComparison.OrdinalIgnoreCase))
-    builder.Services.AddSingleton<IQiwaApiAdapter, LiveQiwaApiAdapter>();
-else
-    builder.Services.AddSingleton<IQiwaApiAdapter, SandboxQiwaApiAdapter>();
+switch (QiwaLiveAdapterPolicy.Decide(builder.Configuration))
+{
+    case QiwaLiveAdapterPolicy.Mode.Live:
+        builder.Services.AddSingleton<IQiwaApiAdapter, LiveQiwaApiAdapter>();
+        break;
+    case QiwaLiveAdapterPolicy.Mode.RefusedLive:
+        Console.Error.WriteLine("[startup] QIWA_USE_LIVE_ADAPTER=true but no Qiwa partner agreement is recorded "
+            + $"({QiwaLiveAdapterPolicy.PartnerAgreementKey}); live Qiwa calls are REFUSED.");
+        builder.Services.AddSingleton<IQiwaApiAdapter, RefusedLiveQiwaApiAdapter>();
+        break;
+    default:
+        builder.Services.AddSingleton<IQiwaApiAdapter, SandboxQiwaApiAdapter>();
+        break;
+}
 builder.Services.AddHostedService<QiwaSyncWorker>();
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Operations.WorkerHeartbeatReporter>();
 builder.Services.AddHostedService<Zayra.Api.Infrastructure.Reports.ReportScheduleWorker>();
@@ -478,6 +497,9 @@ builder.Services.AddSingleton<Zayra.Api.Infrastructure.Pricing.QuoteNotification
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Pricing.QuoteNotificationBudget>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Pricing.QuoteNotificationSender>();
 builder.Services.AddHostedService<Zayra.Api.Infrastructure.Pricing.QuoteNotificationWorker>();
+// Platform operators' security notices (no tenant outbox for them): sign-in enqueues, this sends.
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Auth.PlatformSecurityNoticeQueue>();
+builder.Services.AddHostedService<Zayra.Api.Infrastructure.Auth.PlatformSecurityNoticeWorker>();
 
 // F3 — durable background jobs (job store + per-item checkpoints + leased, fenced worker). Runs on
 // every instance: claims are FOR UPDATE SKIP LOCKED with a lease token, so old and new instances share
@@ -628,13 +650,20 @@ builder.Services.AddScoped<Zayra.Api.Application.CountryPack.ICountryPackResolve
 // Limits are configurable via RateLimit:* in appsettings / env vars.
 // Default policy: login 10 req/60s per IP, refresh 30 req/60s per IP, platform login 5 req/60s per IP.
 var rl = builder.Configuration.GetSection("RateLimit");
+// Partition key: the proxy-asserted client IP when Proxy:ClientIpSecret is configured and presented,
+// otherwise RemoteIpAddress exactly as before (ClientIpResolver).
+var clientIpSecret = builder.Configuration[Zayra.Api.Infrastructure.Http.ClientIpResolver.SecretConfigKey];
+string RateLimitPartitionKey(HttpContext ctx) =>
+    Zayra.Api.Infrastructure.Http.ClientIpResolver.Resolve(ctx, clientIpSecret);
 builder.Services.AddRateLimiter(o =>
 {
     o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    // Same 429 shape as sign-in refusals: JSON { error, message } and a Retry-After.
+    o.OnRejected = Zayra.Api.Infrastructure.Http.RateLimitRejection.WriteAsync;
 
     o.AddPolicy("auth_login", ctx =>
         RateLimitPartition.GetFixedWindowLimiter(
-            ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            RateLimitPartitionKey(ctx),
             _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit              = rl.GetValue("LoginPermitLimit", 10),
@@ -645,7 +674,7 @@ builder.Services.AddRateLimiter(o =>
 
     o.AddPolicy("auth_refresh", ctx =>
         RateLimitPartition.GetFixedWindowLimiter(
-            ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            RateLimitPartitionKey(ctx),
             _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit              = rl.GetValue("RefreshPermitLimit", 30),
@@ -656,7 +685,7 @@ builder.Services.AddRateLimiter(o =>
 
     o.AddPolicy("platform_login", ctx =>
         RateLimitPartition.GetFixedWindowLimiter(
-            ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            RateLimitPartitionKey(ctx),
             _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit              = rl.GetValue("PlatformLoginPermitLimit", 5),
@@ -671,7 +700,7 @@ builder.Services.AddRateLimiter(o =>
     // could account for the attempt. The credential itself still has an exact five-attempt cap.
     o.AddPolicy("platform_mfa_verify", ctx =>
         RateLimitPartition.GetFixedWindowLimiter(
-            ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            RateLimitPartitionKey(ctx),
             _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit              = rl.GetValue("PlatformMfaVerifyPermitLimit", 10),
@@ -684,7 +713,7 @@ builder.Services.AddRateLimiter(o =>
     // prevent spam / storage-exhaustion since these insert rows without any auth.
     o.AddPolicy("public_write", ctx =>
         RateLimitPartition.GetFixedWindowLimiter(
-            ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            RateLimitPartitionKey(ctx),
             _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit              = rl.GetValue("PublicWritePermitLimit", 5),
@@ -797,6 +826,10 @@ app.MapGet("/health/live", () => Results.Ok(new
     commit = BuildInfo.Commit
 })).AllowAnonymous();
 
+// /health/ready is Render's healthCheckPath, so it must stay anonymous — but anonymous means the
+// whole internet. It answers status + pendingMigrations and nothing else (PublicReadiness); the full
+// evidence (tenant counts, worker names, SMTP/Qiwa modes, queues) is at /health/ready/details for
+// platform operators only. Both compute the status with the same rule, so they cannot disagree.
 app.MapGet("/health/ready", async (ZayraDbContext db, IConfiguration config, ILoggerFactory lf, ShutdownDrain drain, CancellationToken ct) =>
 {
     // Shutting down: tell the balancer to stop routing here before the server stops accepting.
@@ -804,47 +837,19 @@ app.MapGet("/health/ready", async (ZayraDbContext db, IConfiguration config, ILo
     if (drain.IsDraining)
         return Results.Json(new { status = "draining", utc = DateTime.UtcNow }, statusCode: StatusCodes.Status503ServiceUnavailable);
 
+    var evidence = await ProductionReadinessEvidence.BuildReadinessAsync(db, config, ct, includeDetail: false);
+    if (evidence.Status == "ready") return Results.Ok(PublicReadiness.From(evidence));
+    LogReadinessRefusal(evidence, lf);
+    return Results.Json(PublicReadiness.From(evidence), statusCode: StatusCodes.Status503ServiceUnavailable);
+}).AllowAnonymous();
+
+app.MapGet("/health/ready/details", async (ZayraDbContext db, IConfiguration config, ILoggerFactory lf, CancellationToken ct) =>
+{
     var evidence = await ProductionReadinessEvidence.BuildReadinessAsync(db, config, ct);
     if (evidence.Status == "ready") return Results.Ok(evidence);
-
-    // SAY WHY. This gate refused three consecutive production deploys on 2026-09-23 and no log line
-    // anywhere named the term that failed: Render's health check reads the 503 status and discards the
-    // body, the body is the ONLY place the evidence existed, and a failed deploy's instance cannot be
-    // reached from outside to ask it. Fifteen minutes of "503" in the log told us nothing except that
-    // it was unhappy. A gate that can refuse a release must be able to state its reason where an
-    // operator will find it.
-    var failing = new List<string>();
-    if (!evidence.Dependencies.Database.Healthy) failing.Add("database unreachable");
-    if (evidence.PendingMigrations != 0)
-        failing.Add(evidence.PendingMigrations < 0
-            ? "migration parity UNKNOWN (-1): neither compiled migrations nor Migrations.manifest were readable in this image"
-            : $"{evidence.PendingMigrations} migration(s) in this build are not applied to this database");
-    // The worker term is only MEASURED when the database is healthy and migrations are in parity;
-    // otherwise BuildReadinessAsync substitutes WorkerFleetReadiness.Unavailable, which hardcodes
-    // "all six missing" without reading a single heartbeat row. Reporting that as a worker outage
-    // cost hours on 2026-09-23: three deploys were investigated as a dead worker fleet when the
-    // fleet had never been looked at. Only name workers when the number is real.
-    var workersWereMeasured = evidence.Dependencies.Database.Healthy && evidence.PendingMigrations == 0;
-    if (!workersWereMeasured)
-        failing.Add("workers NOT EVALUATED (short-circuited by the terms above — the worker counts "
-                    + "in this response are placeholders, not measurements)");
-    else if (!evidence.Dependencies.Workers.Healthy)
-        failing.Add("workers: " + string.Join(", ", evidence.Dependencies.Workers.Workers
-            .Where(w => w.Status is not ("healthy" or "starting"))
-            .Select(w => $"{w.Name}={w.Status}")));
-
-    lf.CreateLogger("Readiness").LogWarning(
-        "[READINESS-NOT-READY] /health/ready is refusing traffic because: {Failing}. "
-        + "db={DbHealthy} pendingMigrations={Pending} workers(healthy/starting/stale/failed/missing)="
-        + "{H}/{S}/{St}/{F}/{M}",
-        failing.Count > 0 ? string.Join(" | ", failing) : "no individual term failed — the status rule changed",
-        evidence.Dependencies.Database.Healthy, evidence.PendingMigrations,
-        evidence.Dependencies.Workers.HealthyCount, evidence.Dependencies.Workers.StartingCount,
-        evidence.Dependencies.Workers.StaleCount, evidence.Dependencies.Workers.FailedCount,
-        evidence.Dependencies.Workers.MissingCount);
-
+    LogReadinessRefusal(evidence, lf);
     return Results.Json(evidence, statusCode: StatusCodes.Status503ServiceUnavailable);
-}).AllowAnonymous();
+}).RequireAuthorization("PlatformAdmin");
 
 app.MapGet("/health/telemetry", async (ZayraDbContext db, IConfiguration config, ILoggerFactory loggerFactory, CancellationToken ct) =>
 {
@@ -867,7 +872,10 @@ app.MapGet("/health/telemetry", async (ZayraDbContext db, IConfiguration config,
             utc = DateTime.UtcNow,
         }, statusCode: StatusCodes.Status503ServiceUnavailable);
     }
-}).RequireAuthorization();
+    // Platform operators only. Its queue counters are cross-tenant aggregates (BuildQueueHealthAsync
+    // runs under SystemScopeContext), so "any signed-in user" let one customer's employee read
+    // platform-wide delivery and queue volumes.
+}).RequireAuthorization("PlatformAdmin");
 
 app.MapGet("/health", async (ZayraDbContext db, ILoggerFactory loggerFactory) =>
 {
@@ -879,9 +887,11 @@ app.MapGet("/health", async (ZayraDbContext db, ILoggerFactory loggerFactory) =>
         if (conn.State != System.Data.ConnectionState.Open)
             await conn.OpenAsync();
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = current_schema()";
-        var tableCount = Convert.ToInt32(await cmd.ExecuteScalarAsync());
-        return Results.Ok(new { status = "healthy", utc = DateTime.UtcNow, db = "connected", tables = tableCount });
+        // A plain round trip. The schema's table count used to be returned here, to anyone:
+        // nothing needs it, and it fingerprints the schema version for an anonymous caller.
+        cmd.CommandText = "SELECT 1";
+        await cmd.ExecuteScalarAsync();
+        return Results.Ok(new { status = "healthy", utc = DateTime.UtcNow, db = "connected" });
     }
     catch (Exception ex)
     {
@@ -966,6 +976,20 @@ using (var scope = app.Services.CreateScope())
             dbContext.ChangeTracker.Clear();
         }
     }
+
+    // Say what MFA break-glass will do, once, where an operator reading the boot log will see it —
+    // and loudly when the variable is set but ignored (unparseable, past, or beyond the 7-day cap).
+    var (breakGlassWarn, breakGlassMessage) = Zayra.Api.Infrastructure.Auth.PrivilegedMfaPolicy
+        .DescribeBreakGlass(app.Configuration, DateTime.UtcNow);
+    if (breakGlassWarn) logger.LogWarning("{BreakGlass}", breakGlassMessage);
+    else logger.LogInformation("{BreakGlass}", breakGlassMessage);
+
+    if (string.IsNullOrEmpty(app.Configuration[Zayra.Api.Infrastructure.Http.ClientIpResolver.SecretConfigKey]))
+        logger.LogWarning(
+            "[LOGIN-THROTTLE] Proxy:ClientIpSecret is not set: the API cannot tell real client IPs from the web "
+            + "proxy's, so the per-IP sign-in failure budget is SKIPPED for proxied traffic (per-account limits "
+            + "still apply). Set Proxy__ClientIpSecret here and PROXY_CLIENT_IP_SECRET on Vercel — see "
+            + "docs/MFA_ENFORCEMENT.md, \"Real client IP\".");
 
     var authSeeder = scope.ServiceProvider.GetRequiredService<IAuthSeeder>();
     await TrySeedAsync("AuthSeeder", () => authSeeder.SeedAsync(), logger);
@@ -1073,6 +1097,45 @@ app.Run();
 // of this file and reports success or failure to the Render pre-deploy job; app.Run() returns only
 // on graceful shutdown, which is a clean exit.
 return 0;
+
+// SAY WHY. This gate refused three consecutive production deploys on 2026-09-23 and no log line
+// anywhere named the term that failed: Render's health check reads the 503 status and discards the
+// body, the body is the ONLY place the evidence existed, and a failed deploy's instance cannot be
+// reached from outside to ask it. Fifteen minutes of "503" in the log told us nothing except that
+// it was unhappy. A gate that can refuse a release must be able to state its reason where an
+// operator will find it — and now that the public body is minimal, the log is the only place.
+static void LogReadinessRefusal(ReadinessEvidence evidence, ILoggerFactory lf)
+{
+    var failing = new List<string>();
+    if (!evidence.Dependencies.Database.Healthy) failing.Add("database unreachable");
+    if (evidence.PendingMigrations != 0)
+        failing.Add(evidence.PendingMigrations < 0
+            ? "migration parity UNKNOWN (-1): neither compiled migrations nor Migrations.manifest were readable in this image"
+            : $"{evidence.PendingMigrations} migration(s) in this build are not applied to this database");
+    // The worker term is only MEASURED when the database is healthy and migrations are in parity;
+    // otherwise BuildReadinessAsync substitutes WorkerFleetReadiness.Unavailable, which hardcodes
+    // "all six missing" without reading a single heartbeat row. Reporting that as a worker outage
+    // cost hours on 2026-09-23: three deploys were investigated as a dead worker fleet when the
+    // fleet had never been looked at. Only name workers when the number is real.
+    var workersWereMeasured = evidence.Dependencies.Database.Healthy && evidence.PendingMigrations == 0;
+    if (!workersWereMeasured)
+        failing.Add("workers NOT EVALUATED (short-circuited by the terms above — the worker counts "
+                    + "in this response are placeholders, not measurements)");
+    else if (!evidence.Dependencies.Workers.Healthy)
+        failing.Add("workers: " + string.Join(", ", evidence.Dependencies.Workers.Workers
+            .Where(w => w.Status is not ("healthy" or "starting"))
+            .Select(w => $"{w.Name}={w.Status}")));
+
+    lf.CreateLogger("Readiness").LogWarning(
+        "[READINESS-NOT-READY] /health/ready is refusing traffic because: {Failing}. "
+        + "db={DbHealthy} pendingMigrations={Pending} workers(healthy/starting/stale/failed/missing)="
+        + "{H}/{S}/{St}/{F}/{M}",
+        failing.Count > 0 ? string.Join(" | ", failing) : "no individual term failed — the status rule changed",
+        evidence.Dependencies.Database.Healthy, evidence.PendingMigrations,
+        evidence.Dependencies.Workers.HealthyCount, evidence.Dependencies.Workers.StartingCount,
+        evidence.Dependencies.Workers.StaleCount, evidence.Dependencies.Workers.FailedCount,
+        evidence.Dependencies.Workers.MissingCount);
+}
 
 // Top-level statements generate an INTERNAL Program class. WebApplicationFactory<Program> in
 // Zayra.Api.Tests boots THIS file — the real middleware order, the real JWT TokenValidationParameters,

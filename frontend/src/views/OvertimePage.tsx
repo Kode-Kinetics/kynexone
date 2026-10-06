@@ -23,6 +23,7 @@ import {
   type OvertimeCapException,
 } from '../api/overtime';
 
+import { EnumLabel, type EnumName } from '../components/EnumLabel';
 // ── Shared helpers ──────────────────────────────────────────────────────────────
 
 const today = new Date().toISOString().slice(0, 10);
@@ -61,9 +62,9 @@ const STATUS_COLOR: Record<string, string> = {
   PendingPayroll: 'bg-sky-50 text-sky-700 dark:bg-sky-500/10 dark:text-sky-400',
 };
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({ status, enumName = 'OvertimeStatus' }: { status: string; enumName?: EnumName }) {
   const cls = STATUS_COLOR[status] ?? 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400';
-  return <span className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium ${cls}`}>{status.replace(/([A-Z])/g, ' $1').trim()}</span>;
+  return <span className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium ${cls}`}><EnumLabel enum={enumName} value={status} /></span>;
 }
 
 function KpiCard({ label, value, sub, icon: Icon, color }: {

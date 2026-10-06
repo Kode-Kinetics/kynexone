@@ -1303,6 +1303,11 @@ public class EmployeesController : ControllerBase
                     stagedPayrollEntities.Add(payrollProfile);
                     payrollProfilesCreated++;
                     payrollArtifactsChanged = true;
+                    // A NEW employee's bank details are initial data entry, but no second person has seen them:
+                    // say so, so they are confirmed with the employee before the first salary is sent.
+                    if (!string.IsNullOrEmpty(ibanRaw) || !string.IsNullOrEmpty(accountRaw) || !string.IsNullOrEmpty(routingRaw))
+                        warnings.Add($"Employee {emp.EmployeeCode}: bank details (IBAN/account/routing code) were set by this import " +
+                                     "without a second review. Verify them with the employee before their first payroll.");
                 }
                 // ── ONE SET OF BANK DETAILS, IN BOTH HOMES ──────────────────────────────────────────────
                 // The WPS/SIF export pays from the payroll profile; the employee record, its readiness snapshot

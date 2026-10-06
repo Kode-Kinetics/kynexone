@@ -17,7 +17,7 @@ import type {
   FinanceGlEntry, AuditLogEntry,
 } from '../api/loans';
 import { Modal } from '../components/Modal';
-import { useTenantSettings } from '../contexts/TenantSettingsContext';
+import { useTenantSettings, useTenantSettingsContext } from '../contexts/TenantSettingsContext';
 import { EmployeeSearchSelect } from '../components/EmployeeSearchSelect';
 import type { EmployeeSelection } from '../components/EmployeeSearchSelect';
 import { employeesApi } from '../api/employees';
@@ -32,8 +32,10 @@ import { useCompany } from '../contexts/CompanyContext';
 import { useLocale } from '../contexts/LocaleContext';
 import { LoanLimitCard } from '../components/loans/LoanLimitCard';
 import { LoadFailedRow } from '../components/ui/LoadFailedRow';
-import { fillTemplate, isGradeBlocked, isLoanTypeNotOffered, localName, reasonKeyFor } from '../lib/gradeLoanLimits';
+import { isGradeBlocked, isLoanTypeNotOffered, localName, reasonKeyFor } from '../lib/gradeLoanLimits';
 
+import { EnumLabel, type EnumName } from '../components/EnumLabel';
+import { useFormat } from '../hooks/useFormat';
 type Tab = 'loans' | 'loanPayments' | 'loanPolicies' | 'loanTypes' | 'advances' | 'advancePolicy' | 'bonusTypes' | 'bonusBatches' | 'auditReport';
 
 const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
@@ -50,7 +52,7 @@ const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({ status, enumName = 'LoanStatus' }: { status: string; enumName?: EnumName }) {
   const colors: Record<string, string> = {
     Active: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
     Approved: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
@@ -67,7 +69,7 @@ function StatusBadge({ status }: { status: string }) {
   };
   return (
     <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${colors[status] ?? 'bg-slate-100 text-slate-500'}`}>
-      {status}
+      <EnumLabel enum={enumName} value={status} />
     </span>
   );
 }
@@ -172,7 +174,8 @@ function LoanTypesTab() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  const fmt = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: currencyCode, minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  const fx = useFormat();
+  const fmt = (n: number) => fx.plain.money(n, currencyCode, { decimals: 0 });
 
   const [loadError, setLoadError] = useState<unknown>(null);
   const load = useCallback(async () => {
@@ -268,7 +271,8 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
   const staff = user?.roles.some(role => ['Admin', 'Finance', 'Finance Approver', 'HR Manager', 'HR Director', 'Manager'].includes(role)) ?? false;
   const canManagePayments = user?.roles.some(role => ['Admin', 'Finance'].includes(role)) ?? false;
   const { currencyCode } = useTenantSettings();
-  const fmt = (n: number, currency: string) => n.toLocaleString('en-US', { style: 'currency', currency });
+  const fx = useFormat();
+  const fmt = (n: number, currency: string) => fx.plain.money(n, currency);
   const [items, setItems] = useState<EmployeeLoan[]>([]);
   const [total, setTotal] = useState(0);
   const [loadError, setLoadError] = useState<unknown>(null);
@@ -534,7 +538,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
               : <div role="status" className="space-y-1 text-sm">
                 <p className={checkedEligibility.eligible ? 'text-emerald-700' : 'text-amber-700'}>{t(checkedEligibility.eligible ? 'Eligible to apply' : 'Not eligible for this request')}</p>
                 <LoanLimitCard eligibility={checkedEligibility} self={self} />
-                <p>{checkedEligibility.maxAvailableAmount == null ? t('No fixed amount limit') : fillTemplate(t('Maximum available: {amount}'), { amount: checkedEligibility.maxAvailableAmount.toLocaleString('en-US') })} · {fillTemplate(t('Policy version {version}'), { version: checkedEligibility.policyVersion ?? '—' })}</p>
+                <p>{checkedEligibility.maxAvailableAmount == null ? t('No fixed amount limit') : t('Maximum available: {amount}', { amount: fx.money(checkedEligibility.maxAvailableAmount, checkedEligibility.currency ?? null) })} · {t('Policy version {version}', { version: checkedEligibility.policyVersion ?? '—' })}</p>
                 {otherReasons.map(reason => <p key={reason}>{reason}</p>)}
                 {!checkedEligibility.eligible && checkedEligibility.canRequestException && !gradeBlocked && <label className="flex items-center gap-2"><input type="checkbox" checked={requestException} onChange={e => setRequestException(e.target.checked)} />{t('Request an HR Director policy exception')}</label>}
                 {gradeBlocked && <p className="text-xs text-slate-500">{t('Grade limits cannot be overridden by a policy exception.')}</p>}
@@ -733,7 +737,8 @@ function AdvancePolicyTab() {
 
 function AdvancesTab() {
   const { currencyCode } = useTenantSettings();
-  const fmt = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: currencyCode });
+  const fx = useFormat();
+  const fmt = (n: number) => fx.plain.money(n, currencyCode);
   const [items, setItems] = useState<SalaryAdvance[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -1192,8 +1197,13 @@ function BonusTypesTab() {
 // ── Bonus Batches ─────────────────────────────────────────────────────────────
 
 function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
-  const { currencyCode } = useTenantSettings();
-  const fmt = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: currencyCode });
+  // A bonus batch has no currency of its own; it is paid in the tenant's. Until the tenant's
+  // settings load, that currency is unknown (the context's 'USD' is a placeholder), so amounts
+  // are shown bare rather than labelled with a guess.
+  const { settings: { currencyCode }, loaded: settingsLoaded } = useTenantSettingsContext();
+  const batchCurrency = settingsLoaded ? currencyCode : null;
+  const fx = useFormat();
+  const fmt = (n: number) => fx.plain.money(n, batchCurrency);
   const [items, setItems] = useState<BonusBatch[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -1498,7 +1508,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
           <div className="space-y-3">
             <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-800 dark:bg-emerald-900/20">
               <p className="font-semibold text-emerald-700 dark:text-emerald-300">{bulkResult.added} employees added</p>
-              <p className="text-sm text-emerald-600 dark:text-emerald-400 mt-1">Total bonus: {bulkResult.totalNetAdded.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+              <p className="text-sm text-emerald-600 dark:text-emerald-400 mt-1">Total bonus: {fx.plain.money(bulkResult.totalNetAdded, batchCurrency)}</p>
             </div>
             {(bulkResult.skippedDuplicate + bulkResult.skippedMinService + bulkResult.skippedNoSalary) > 0 && (
               <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-900/20 text-sm space-y-1">
@@ -1573,7 +1583,8 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
 
 function AuditReportTab() {
   const { currencyCode } = useTenantSettings();
-  const fmt = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: currencyCode });
+  const fx = useFormat();
+  const fmt = (n: number) => fx.plain.money(n, currencyCode);
   const [loanAudit, setLoanAudit] = useState<any>(null);
   const [advanceAudit, setAdvanceAudit] = useState<any>(null);
   const [bonusAudit, setBonusAudit] = useState<any>(null);
@@ -1603,7 +1614,9 @@ function AuditReportTab() {
             <p className="font-semibold text-emerald-700 dark:text-emerald-400">Finance Module — Audit Ready</p>
             <p className="text-xs text-emerald-600 dark:text-emerald-300 mt-0.5">
               All financial transactions are recorded with double-entry GL journal entries, immutable audit trails, and reconciliation checks.
-              Report generated: {new Date().toLocaleString('en-US', { timeZone: 'America/New_York', dateStyle: 'medium', timeStyle: 'short' })} EST
+              {/* Was hard-coded to America/New_York and labelled EST for every tenant; now the tenant's
+                  zone, named, so a reader in another zone knows which clock the time is on. */}
+              Report generated: {fx.dateTime(new Date())} ({fx.zone()})
             </p>
           </div>
         </div>
@@ -1742,7 +1755,8 @@ export function LoansPage() {
   const ownAccounts = mine || !canViewTeam;
   const canManagePayments = user?.roles.some(role => ['Admin', 'Finance', 'Finance Approver'].includes(role)) ?? false;
   const { currencyCode } = useTenantSettings();
-  const fmt = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: currencyCode });
+  const fx = useFormat();
+  const fmt = (n: number) => fx.plain.money(n, currencyCode);
   const [activeTab, setActiveTab] = useState<Tab>('loans');
   const [loanTypes, setLoanTypes] = useState<LoanType[]>([]);
   const [bonusTypes, setBonusTypes] = useState<BonusType[]>([]);

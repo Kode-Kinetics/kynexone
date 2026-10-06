@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { RefreshQueue } from './refreshQueue';
 import { isRefreshRefused } from '../lib/authLoadState';
+import { clearSessionKeepingLocale } from './clearSession';
 
 // In the browser, use relative URLs so Next.js proxy handles CORS.
 // On the server (SSR), we need the absolute URL since there's no proxy.
@@ -144,7 +145,7 @@ client.interceptors.response.use(
       // (offline, a deploy's 502s) the refresh token may still be good: keep the session and let
       // the caller show "can't reach the server" instead of signing the user out over a blip.
       if (!isRefreshRefused(refreshError)) return Promise.reject(refreshError);
-      localStorage.clear();
+      clearSessionKeepingLocale();
       window.location.href = '/login';
       // The original 401: callers (AuthContext's /me) read it as a definite "signed out".
       return Promise.reject(err);

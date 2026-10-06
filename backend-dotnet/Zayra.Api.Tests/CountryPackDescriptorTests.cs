@@ -24,7 +24,8 @@ public class CountryPackDescriptorTests
         Assert.Contains("Annuities", desc.SocialInsuranceDescription);
         Assert.Contains("0.75%", desc.SocialInsuranceDescription);  // SANED
         Assert.Contains("Art. 84", desc.EosbFormula);
-        Assert.Equal("mudad-xml", desc.WpsFormat);
+        Assert.Equal(Zayra.Api.Infrastructure.Payroll.WpsConformance.KsaPayrollRegisterFormat, desc.WpsFormat);
+        Assert.DoesNotContain("Mudad", desc.WpsFormatLabel);
         Assert.Equal("Nitaqat", desc.NationalizationScheme);
         Assert.True(desc.CountryNameAr.Length > 0);
     }

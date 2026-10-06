@@ -38,6 +38,8 @@ import { requestFailureReason } from '../lib/requestFailure';
 import { StatutoryLeaveHistory } from '../components/StatutoryLeaveHistory';
 import { isSaudiStatutoryLeave, isCalendarSpanLeave, isDeclarableLeave } from '../lib/ksaStatutoryLeave';
 
+import { EnumLabel, type EnumName } from '../components/EnumLabel';
+import { describeApiError } from '../lib/apiError';
 // ── Leave import/export helpers ───────────────────────────────────────────────
 
 const leaveTypesImportExport = {
@@ -98,10 +100,9 @@ const STATUS_COLORS: Record<string, string> = {
   Processed: 'bg-teal-50 text-teal-700 dark:bg-teal-500/10 dark:text-teal-400',
 };
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({ status, enumName = 'LeaveRequestStatus' }: { status: string; enumName?: EnumName }) {
   const cls = STATUS_COLORS[status] ?? 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400';
-  const label = status.replace(/([A-Z])/g, ' $1').trim();
-  return <span className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium ${cls}`}>{label}</span>;
+  return <span className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium ${cls}`}><EnumLabel enum={enumName} value={status} /></span>;
 }
 
 // ── Shared UI ─────────────────────────────────────────────────────────────────
@@ -444,7 +445,7 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
                   // statutory figure instead of a red balance.
                   <div className="mb-3 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300">
                     <p className="font-semibold">{t('Statutory entitlement')}</p>
-                    <p className="text-xs">{t('{days} days per event, set by Saudi labour law.').replace('{days}', String(b.statutoryEntitlementDays))}</p>
+                    <p className="text-xs">{t('{days} days per event, set by Saudi labour law.', { days: b.statutoryEntitlementDays })}</p>
                   </div>
                 ) : (
                 <div className="mb-3 h-2 rounded-full bg-slate-100 dark:bg-white/10">
@@ -626,7 +627,7 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
             <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-500/20 dark:bg-emerald-500/10">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium text-slate-700 dark:text-slate-300">{t('Statutory entitlement')}</span>
-                <span className="text-lg font-bold tabular-nums text-emerald-600 dark:text-emerald-400">{t('{days} days per event').replace('{days}', String(balance.statutoryEntitlementDays))}</span>
+                <span className="text-lg font-bold tabular-nums text-emerald-600 dark:text-emerald-400">{t('{days} days per event', { days: balance.statutoryEntitlementDays })}</span>
               </div>
             </div>
           )}
@@ -1335,6 +1336,7 @@ const BLANK_HOLIDAY_FORM = { nameEn: '', nameAr: '', date: '', hijriDate: '', ho
 const BLANK_CAL_FORM = { name: '', countryCode: 'UAE', calendarYear: new Date().getFullYear() };
 
 function HolidayCalendarTab() {
+  const { t } = useLocale();
   const [calendars, setCalendars] = useState<PublicHolidayCalendar[]>([]);
   const [selected, setSelected] = useState<PublicHolidayCalendar | null>(null);
   const [holidays, setHolidays] = useState<PublicHoliday[]>([]);
@@ -1370,11 +1372,8 @@ function HolidayCalendarTab() {
   }, [selected]);
 
   // ── error helper ──
-  const apiErr = (err: unknown) => {
-    const ax = err as { response?: { status?: number; data?: unknown } };
-    if (ax?.response) return `${ax.response.status}: ${JSON.stringify(ax.response.data)}`;
-    return String(err);
-  };
+  // One translated sentence, never the raw response body (lib/apiError.ts).
+  const apiErr = (err: unknown) => describeApiError(err, t);
 
   // ── Calendar save (create or edit) ──
   const saveCal = async () => {
@@ -1388,7 +1387,7 @@ function HolidayCalendarTab() {
         await reloadCalendars();
       }
       setCalModal('none');
-    } catch (err) { alert(`Failed: ${apiErr(err)}`); }
+    } catch (err) { alert(t('The change was not saved: {reason}', { reason: apiErr(err) })); }
   };
 
   const openEditCal = (c: PublicHolidayCalendar) => {
@@ -1402,7 +1401,7 @@ function HolidayCalendarTab() {
       await holidayCalendarApi.deleteCalendar(c.id);
       if (selected?.id === c.id) { setSelected(null); setHolidays([]); }
       await reloadCalendars();
-    } catch (err) { alert(`Failed: ${apiErr(err)}`); }
+    } catch (err) { alert(t('The change was not saved: {reason}', { reason: apiErr(err) })); }
   };
 
   // Normalise date from API (DateOnly → "YYYY-MM-DD" for <input type=date>)
@@ -1434,7 +1433,7 @@ function HolidayCalendarTab() {
       setHolidayModal('none');
       setEditingHoliday(null);
       await reloadHolidays(selected);
-    } catch (err) { alert(`Failed: ${apiErr(err)}`); }
+    } catch (err) { alert(t('The change was not saved: {reason}', { reason: apiErr(err) })); }
   };
 
   const openEditHoliday = (h: PublicHoliday) => {
@@ -1459,7 +1458,7 @@ function HolidayCalendarTab() {
     try {
       await holidayCalendarApi.deleteHoliday(h.id);
       setHolidays(prev => prev.filter(x => x.id !== h.id));
-    } catch (err) { alert(`Failed: ${apiErr(err)}`); }
+    } catch (err) { alert(t('The change was not saved: {reason}', { reason: apiErr(err) })); }
   };
 
   const openAddHoliday = () => {

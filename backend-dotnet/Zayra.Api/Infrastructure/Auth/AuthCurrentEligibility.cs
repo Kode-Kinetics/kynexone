@@ -18,13 +18,25 @@ internal static class AuthCurrentEligibility
     public static AuthEligibilityDecision ForPasswordEntry(
         User? user,
         bool ssoOnly,
-        DateTime nowUtc) => Evaluate(user, ssoOnly, policy: null, requireSessionMfa: false, nowUtc);
+        DateTime nowUtc) => Evaluate(user, ssoOnly, policy: null, requireSessionMfa: false, nowUtc, ignoreFailureLockout: false);
 
+    /// <param name="ignoreFailureLockout">
+    /// True only where an ACTIVE failed-password lockout must not refuse: a sign-in from the owner's
+    /// trusted known device (it bypasses the lockout without clearing it), and per-request validation
+    /// of a session whose security stamp postdates the lockout (TenantSessionSecurity). An admin lock
+    /// is not affected: it sets Status = Locked, which is refused above this check.
+    /// </param>
     public static AuthEligibilityDecision ForSession(
         User? user,
         bool ssoOnly,
         SecuritySetting? policy,
-        DateTime nowUtc) => Evaluate(user, ssoOnly, policy, requireSessionMfa: true, nowUtc);
+        DateTime nowUtc,
+        bool ignoreFailureLockout = false) => Evaluate(user, ssoOnly, policy, requireSessionMfa: true, nowUtc, ignoreFailureLockout);
+
+    /// <summary>True while a failed-password lockout is in force.</summary>
+    public static bool IsFailureLockoutActive(User user, DateTime nowUtc)
+        => (user.IsLocked && (!user.LockoutEnd.HasValue || user.LockoutEnd > nowUtc))
+           || (user.LockoutEnd.HasValue && user.LockoutEnd > nowUtc);
 
     public static bool IsSsoOnly(User user, TenantIdentityProviderSetting? setting)
     {
@@ -48,7 +60,8 @@ internal static class AuthCurrentEligibility
         bool ssoOnly,
         SecuritySetting? policy,
         bool requireSessionMfa,
-        DateTime nowUtc)
+        DateTime nowUtc,
+        bool ignoreFailureLockout)
     {
         if (user?.Tenant is null) return AuthEligibilityDecision.Deny("user_not_found");
         if (user.IsDeleted) return AuthEligibilityDecision.Deny("user_deleted");
@@ -57,8 +70,7 @@ internal static class AuthCurrentEligibility
         if (!string.Equals(user.Status, "Active", StringComparison.Ordinal))
             return AuthEligibilityDecision.Deny("user_status_blocked");
         if (!user.IsEmailConfirmed) return AuthEligibilityDecision.Deny("email_unconfirmed");
-        if ((user.IsLocked && (!user.LockoutEnd.HasValue || user.LockoutEnd > nowUtc))
-            || (user.LockoutEnd.HasValue && user.LockoutEnd > nowUtc))
+        if (!ignoreFailureLockout && IsFailureLockoutActive(user, nowUtc))
             return AuthEligibilityDecision.Deny("account_locked");
 
         var primary = PrimaryAccess(user);

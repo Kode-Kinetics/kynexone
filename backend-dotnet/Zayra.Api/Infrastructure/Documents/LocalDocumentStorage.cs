@@ -11,6 +11,14 @@ public interface IDocumentStorage
     Task<byte[]> GetBytesAsync(Guid tenantId, string storageUrl, CancellationToken ct = default);
 
     // Local-only: resolves a storage URL to an absolute file path. S3DocumentStorage throws NotSupportedException.
+
+    /// <summary>
+    /// Best-effort removal of an object this process stored but whose database row did not commit, so a
+    /// failed write leaves no orphan. Tenant ownership is enforced exactly as for reads. Returns false
+    /// when nothing was removed; never throws for a missing object. Stores that cannot delete keep the
+    /// default (no-op).
+    /// </summary>
+    Task<bool> TryDeleteAsync(Guid tenantId, string storageUrl, CancellationToken ct = default) => Task.FromResult(false);
 }
 
 public class LocalDocumentStorage : IDocumentStorage
@@ -40,6 +48,14 @@ public class LocalDocumentStorage : IDocumentStorage
         var path = ResolveTenantPath(tenantId, storageUrl);
         if (!File.Exists(path)) throw new FileNotFoundException($"Stored document not found: {storageUrl}");
         return File.ReadAllBytesAsync(path, ct);
+    }
+
+    public Task<bool> TryDeleteAsync(Guid tenantId, string storageUrl, CancellationToken ct = default)
+    {
+        var path = ResolveTenantPath(tenantId, storageUrl);
+        if (!File.Exists(path)) return Task.FromResult(false);
+        File.Delete(path);
+        return Task.FromResult(true);
     }
 
     public string ResolvePath(string storageUrl)
