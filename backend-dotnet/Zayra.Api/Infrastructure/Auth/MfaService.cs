@@ -1077,7 +1077,9 @@ public class MfaService : IMfaService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _log?.LogWarning(ex, "MFA enrolment notice could not be sent (tenant {TenantId}).", r.TenantId);
+            // Exception type only: an SMTP exception's message can carry the recipient address.
+            _log?.LogWarning("MFA enrolment notice could not be sent (tenant {TenantId}, {ExceptionType}).",
+                r.TenantId, ex.GetType().Name);
         }
     }
 
@@ -1101,7 +1103,9 @@ public class MfaService : IMfaService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _log?.LogWarning(ex, "MFA {Kind} notice for a platform operator could not be sent.", kind);
+            // Exception type only: an SMTP exception's message can carry the recipient address.
+            _log?.LogWarning("MFA {Kind} notice for a platform operator could not be sent ({ExceptionType}).",
+                kind, ex.GetType().Name);
         }
     }
 

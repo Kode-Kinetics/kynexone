@@ -81,8 +81,9 @@ public sealed class PlatformSecurityNoticeWorker(
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                log.LogWarning(ex, "Security notice {Kind} for platform user {PlatformUserId} could not be sent.",
-                    notice.Kind, notice.PlatformUserId);
+                // Exception type only: an SMTP exception's message can carry the recipient address.
+                log.LogWarning("Security notice {Kind} for platform user {PlatformUserId} could not be sent ({ExceptionType}).",
+                    notice.Kind, notice.PlatformUserId, ex.GetType().Name);
             }
         }
     }
