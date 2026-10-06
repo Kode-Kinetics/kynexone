@@ -2,7 +2,9 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
+using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Auth;
 
 namespace Zayra.Api.Controllers;
@@ -26,6 +28,7 @@ public class MfaController : ControllerBase
     /// The provisioning URI contains the base32 secret; it must only be shown once.</summary>
     [HttpPost("setup")]
     [Authorize]
+    [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<IActionResult> InitiateSetup(CancellationToken ct)
     {
         var userId = GetUserId();
@@ -63,6 +66,7 @@ public class MfaController : ControllerBase
     [HttpPost("enrollment/setup")]
     [AllowAnonymous]
     [EnableRateLimiting("auth_login")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<IActionResult> InitiateEnrollmentSetup([FromBody] MfaEnrollmentSetupRequest request, CancellationToken ct)
     {
         var dto = await _mfa.InitiateEnrollmentSetupAsync(request.EnrollmentToken, ct);
@@ -85,6 +89,71 @@ public class MfaController : ControllerBase
         return ok ? NoContent() : Unauthorized(new { message = "Invalid or expired MFA enrollment challenge." });
     }
 
+    // ── Mandatory-MFA status and self-service enrolment ──────────────────────
+
+    /// <summary>
+    /// Whether the signed-in user must use MFA, and from when. Drives the "set up two-step sign-in"
+    /// prompt shown during the grace period before <see cref="PrivilegedMfaPolicy"/> enforcement.
+    /// </summary>
+    [HttpGet("status")]
+    [Authorize]
+    public async Task<IActionResult> Status(
+        [FromServices] ZayraDbContext db, [FromServices] IConfiguration config, CancellationToken ct)
+    {
+        var userId = GetUserId();
+        var tenantId = GetTenantId();
+        if (userId is null || tenantId is null) return Unauthorized();
+
+        var user = await db.Users.AsNoTracking()
+            .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
+            .Include(x => x.PermissionOverrides)
+            .Include(x => x.EmployeeUserAccounts)
+            .Include(x => x.EntityAccesses)
+            .AsSplitQuery()
+            .SingleOrDefaultAsync(x => x.Id == userId && x.TenantId == tenantId && !x.IsDeleted, ct);
+        if (user is null) return Unauthorized();
+        var policy = await db.SecuritySettings.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId, ct);
+        var state = await PrivilegedMfaPolicy.ForTenantUserAsync(db, config, user, policy, DateTime.UtcNow, ct);
+        var enrolled = PrivilegedMfaPolicy.IsTenantUserEnrolled(user);
+
+        return Ok(new MfaStatusDto(
+            Enabled: enrolled,
+            Required: policy?.MfaRequired == true || state.Status != PrivilegedMfaStatus.NotRequired,
+            RequiredBecause: policy?.MfaRequired == true ? "workspace_policy"
+                : state.Status != PrivilegedMfaStatus.NotRequired ? "privileged_role" : null,
+            EnforceFromUtc: state.Status == PrivilegedMfaStatus.NotRequired ? null : state.EnforceFromUtc,
+            Enforced: state.Status == PrivilegedMfaStatus.Enforced || (policy?.MfaRequired == true && !enrolled),
+            PromptToEnroll: !enrolled && (state.ShouldPrompt || policy?.MfaRequired == true)));
+    }
+
+    /// <summary>
+    /// Starts first-time enrolment from a signed-in session: returns the same setup-only enrolment
+    /// token the login flow issues, so the client reuses the sign-in page's enrolment screen.
+    /// Completing it rotates the session stamp, which signs this session out; the user then signs in
+    /// with their code.
+    /// </summary>
+    [HttpPost("enrollment/start")]
+    [Authorize]
+    [EnableRateLimiting("auth_login")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
+    public async Task<IActionResult> StartEnrollment([FromServices] ZayraDbContext db, CancellationToken ct)
+    {
+        var userId = GetUserId();
+        var tenantId = GetTenantId();
+        if (userId is null || tenantId is null) return Unauthorized();
+        var enrolled = await db.Users.AsNoTracking()
+            .Where(x => x.Id == userId && x.TenantId == tenantId && !x.IsDeleted)
+            .Select(x => (bool?)(x.MFAEnabled || x.MfaSecretEncrypted != null))
+            .SingleOrDefaultAsync(ct);
+        if (enrolled is null) return Unauthorized();
+        if (enrolled.Value)
+            return Conflict(new { message = "MFA is already configured. Use the approved recovery flow to replace a factor." });
+
+        var token = await _mfa.CreateEnrollmentChallengeAsync(
+            userId.Value, tenantId.Value, HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty, ct);
+        return Ok(new { enrollmentToken = token, expiresInSeconds = 300 });
+    }
+
     // ── Challenge verify (unauthenticated — the challenge token IS the auth) ──
 
     /// <summary>Verifies the MFA challenge token + TOTP code issued during login.
@@ -92,6 +161,7 @@ public class MfaController : ControllerBase
     [HttpPost("challenge/verify")]
     [AllowAnonymous]
     [EnableRateLimiting("auth_login")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<IActionResult> VerifyChallenge([FromBody] MfaChallengeVerifyRequest request, CancellationToken ct)
     {
         try
@@ -99,8 +169,10 @@ public class MfaController : ControllerBase
             var response = await _authService.CompleteMfaLoginAsync(
                 request.ChallengeToken,
                 request.TotpCode,
-                GetContext(),
+                GetContext() with { KnownDeviceToken = LoginAbuseGuard.KnownDeviceCookie(Request, "tenant") },
                 ct);
+            // The sign-in is complete: remember this browser for the account (LoginAbuseGuard).
+            LoginAbuseGuard.AppendKnownDeviceCookie(Response, "tenant", response.KnownDeviceToken);
             return Ok(response);
         }
         catch (UnauthorizedAccessException ex)

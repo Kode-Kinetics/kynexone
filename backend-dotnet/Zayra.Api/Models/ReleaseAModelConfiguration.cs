@@ -25,8 +25,8 @@ internal static class ReleaseAModelConfiguration
 
     /// <summary>The value-shape rule shared by grade cells and employee rows: the primary value column for each
     /// type is present, and the columns that belong to another type are absent. coverage_tier and quantity are
-    /// also allowed as qualifiers (a Quantity ticket carries its class; an Amount education allowance its
-    /// child count).</summary>
+    /// also allowed as qualifiers (a Quantity ticket carries its class). The education child cap is not a quantity:
+    /// it is max_dependants with dependant_scope Children.</summary>
     internal const string ValueShapeSql =
         "(value_type = 'Amount' AND amount IS NOT NULL AND amount >= 0 AND rate IS NULL)"
         + " OR (value_type = 'PercentOfBasic' AND rate IS NOT NULL AND rate > 0 AND rate <= 1 AND amount IS NULL)"
@@ -50,7 +50,9 @@ internal static class ReleaseAModelConfiguration
         + " WHEN state = 'ReadyToApply' THEN expiring_end_date"
         + " ELSE notice_due_on END";
 
-    internal static void Configure(ModelBuilder modelBuilder)
+    /// <param name="isNpgsql">PostgreSQL (production, migrations) maps the case's row version onto the xmin system
+    /// column. SQLite and InMemory — used only by the unit suite — have no xmin, so the token is not mapped there.</param>
+    internal static void Configure(ModelBuilder modelBuilder, bool isNpgsql = true)
     {
         // ── FK targets on existing tables (each named by the FK that needs it) ──────────────────────
         modelBuilder.Entity<EmployeeDocument>().HasAlternateKey(x => new { x.TenantId, x.Id });       // evidence/consent FKs
@@ -247,6 +249,16 @@ internal static class ReleaseAModelConfiguration
                 t.HasCheckConstraint("ck_contract_renewal_cases__closed_iff_terminal",
                     "(closed_at IS NULL) = (state NOT IN " + TerminalStatesIn + ")");
                 t.HasCheckConstraint("ck_contract_renewal_cases__hold_iff_reason", "(state = 'OnHold') = (hold_reason IS NOT NULL)");
+                // T20 releases a hold back to exactly the state it came from (never skipping T2 for an unconfirmed case).
+                t.HasCheckConstraint("ck_contract_renewal_cases__hold_iff_held_from", "(state = 'OnHold') = (held_from_state IS NOT NULL)");
+                t.HasCheckConstraint("ck_contract_renewal_cases__held_from_state",
+                    "held_from_state IS NULL OR held_from_state IN " + In(RenewalStates.All.Where(s => !RenewalStates.IsTerminal(s) && s != RenewalStates.OnHold)));
+                // T10 paper path: the signed document, and a second user who is not the one who recorded it.
+                t.HasCheckConstraint("ck_contract_renewal_cases__paper_response_two_people",
+                    "response_channel IS NULL OR response_channel <> 'PaperUpload' OR employee_response_confirmed_by IS NULL"
+                    + " OR (employee_responded_by_user_id IS NOT NULL AND employee_response_confirmed_by <> employee_responded_by_user_id)");
+                t.HasCheckConstraint("ck_contract_renewal_cases__response_document_is_paper",
+                    "employee_response_document_id IS NULL OR (response_channel IS NOT NULL AND response_channel = 'PaperUpload')");
                 t.HasCheckConstraint("ck_contract_renewal_cases__hold_reason",
                     "hold_reason IS NULL OR hold_reason IN " + In(RenewalHoldReasons.All));
                 // DEVIATION (plan: "state = 'NeedsConfirmation' OR notice_due_on IS NOT NULL"): T19/T21 let an unconfirmed
@@ -301,6 +313,8 @@ internal static class ReleaseAModelConfiguration
             entity.Property(x => x.EmployeeResponse).HasMaxLength(12);
             entity.Property(x => x.ResponseChannel).HasMaxLength(12);
             entity.Property(x => x.HoldReason).HasMaxLength(20);
+            entity.Property(x => x.HeldFromState).HasMaxLength(20);
+            entity.Property(x => x.EmployeeAcceptanceRequired).HasDefaultValue(true).ValueGeneratedNever();
             entity.Property(x => x.OfferSha256).HasColumnType("character(64)");
             entity.Property(x => x.OfferCostDeltaMonthly).HasPrecision(18, 2);
             entity.Property(x => x.QiwaRequired).HasDefaultValue(true).ValueGeneratedNever();
@@ -311,7 +325,8 @@ internal static class ReleaseAModelConfiguration
             entity.Property(x => x.ApplyIdempotencyKey).HasMaxLength(100);
             entity.Property(x => x.NextHardDeadline).HasComputedColumnSql(NextHardDeadlineSql, stored: true);
             // PostgreSQL's xmin system column: every state change is a compare-and-set on the row version.
-            entity.Property(x => x.Version).HasColumnName("xmin").HasColumnType("xid").IsRowVersion();
+            if (isNpgsql) entity.Property(x => x.Version).HasColumnName("xmin").HasColumnType("xid").IsRowVersion();
+            else entity.Ignore(x => x.Version);
             // One case per expiring term — this is also what makes the daily opener idempotent (T1).
             entity.HasIndex(x => new { x.TenantId, x.ExpiringContractId }).IsUnique()
                 .HasDatabaseName("ux_contract_renewal_cases__expiring_contract");
@@ -337,6 +352,8 @@ internal static class ReleaseAModelConfiguration
             entity.HasOne<EmployeeDocument>().WithMany().HasForeignKey(x => new { x.TenantId, x.QiwaEvidenceDocumentId })
                 .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
             entity.HasOne<EmployeeDocument>().WithMany().HasForeignKey(x => new { x.TenantId, x.NonRenewalNoticeDocumentId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<EmployeeDocument>().WithMany().HasForeignKey(x => new { x.TenantId, x.EmployeeResponseDocumentId })
                 .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
         });
     }

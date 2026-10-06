@@ -148,7 +148,10 @@ public record PayrollDeductionLineDto(
     string Code,
     string Name,
     decimal Amount,
-    string Source);
+    string Source,
+    // An employer cost line (e.g. GOSI-OH-ER). It does NOT reduce net pay and is not part of Deductions:
+    // Σ lines where !IsEmployerContribution = Deductions.
+    bool IsEmployerContribution = false);
 
 public record PayrollSlipDto(
     Guid Id,

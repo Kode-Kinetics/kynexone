@@ -35,6 +35,9 @@ public static class PayrollValidationEngine
     /// </summary>
     private const decimal DefaultGosiCoveredWageCeiling = 45_000m;
 
+    /// <summary>Rule 5c — the employee is paid by bank with imported bank details nobody has confirmed (Warning).</summary>
+    public const string ImportedBankDetailsUnverified = "IMPORTED_BANK_DETAILS_UNVERIFIED";
+
     /// <summary>F02 — a Saudi national's slip was computed with no known GOSI cohort (Warning).</summary>
     public const string GosiCohortNotRecorded = "GOSI_COHORT_NOT_RECORDED";
 
@@ -451,6 +454,16 @@ public static class PayrollValidationEngine
                     "For a Saudi payroll run, confirm the bank account is held in Saudi Arabia.",
                     slip.EmployeeId);
 
+            // Rule 5c: bank details a NEW employee was imported with, which no second person has confirmed yet
+            // (EmployeeImportGap.BankDetailsUnverified). A Warning: the details may well be right, but the run
+            // is about to send money to them, so HR confirms them (or corrects them) before Lock.
+            if (!paidOutsideBankFile && slip.NetSalary > 0m && ctx.UnverifiedImportedBankDetails.Contains(slip.EmployeeId))
+                Warn(ImportedBankDetailsUnverified,
+                    $"Employee {slip.EmployeeCode}'s bank details came from an employee import and have not been confirmed " +
+                    "by a second person. Verify them with the employee, then confirm them on the employee's record " +
+                    "(People → the employee → Confirm bank details) before this run is locked.",
+                    slip.EmployeeId);
+
             // Rule 5b: MOL ID required for KSA regulatory reporting
             if (isKsa)
             {
@@ -669,6 +682,12 @@ public sealed record PayrollValidationContext(
 {
     // Set from Process/Validate to enable Rules 10+11.
     // Default to empty so existing callers that don't supply these are safe.
+
+    /// <summary>
+    /// Rule 5c — employees with an open <see cref="EmployeeImportGap.BankDetailsUnverified"/> gap. MUST be
+    /// populated identically by Process and by /validate (which replaces the stored results wholesale).
+    /// </summary>
+    public IReadOnlySet<int> UnverifiedImportedBankDetails { get; init; } = new HashSet<int>();
 
     /// <summary>Total approved OT hours per employee in this pay period.</summary>
     public IReadOnlyDictionary<int, decimal> OvertimeHoursByEmployee { get; init; } =

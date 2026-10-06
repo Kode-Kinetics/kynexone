@@ -115,18 +115,18 @@ public class RenewalRulesTests
     [Fact]
     public void Deadlines_FromTheSeededDefaults()
     {
-        var d = RenewalDeadlineFormulas.Compute(new DateOnly(2026, 12, 31), null, new RenewalDeadlineRules());
+        var d = RenewalDeadlineFormulas.Compute(new DateOnly(2026, 1, 1), new DateOnly(2026, 12, 31), null, new RenewalDeadlineRules());
         d.NoticeDueOn.Should().Be(new DateOnly(2026, 11, 1));      // end − 60
         d.OfferDueOn.Should().Be(new DateOnly(2026, 10, 18));      // notice − 14
         d.QiwaSubmitDueOn.Should().Be(new DateOnly(2026, 12, 1));  // end − 30
         d.QiwaGateDueOn.Should().Be(new DateOnly(2026, 12, 24));   // end − 7
-        d.OpensOn.Should().Be(new DateOnly(2026, 9, 2));           // end − 120
+        d.OpensOn.Should().Be(new DateOnly(2026, 9, 2));           // end − max(120, 60 + 14 + 14)
     }
 
     [Fact]
     public void Deadlines_UseTheContractsOwnNoticeDays_AndTenantRules()
     {
-        var d = RenewalDeadlineFormulas.Compute(new DateOnly(2027, 1, 31), 90,
+        var d = RenewalDeadlineFormulas.Compute(new DateOnly(2026, 2, 1), new DateOnly(2027, 1, 31), 90,
             new RenewalDeadlineRules(RenewalLeadDays: 150, OfferLeadDays: 21, QiwaSubmitLeadDays: 45, QiwaGateLeadDays: 10));
         d.NoticeDueOn.Should().Be(new DateOnly(2026, 11, 2));
         d.OfferDueOn.Should().Be(new DateOnly(2026, 10, 12));
@@ -136,12 +136,59 @@ public class RenewalRulesTests
         d.OfferDueOn.Should().BeBefore(d.NoticeDueOn, "the database CHECK requires offer_due_on < notice_due_on");
     }
 
-    [Fact]
-    public void Deadlines_RefuseNegativeNotice()
+    [Theory]
+    [InlineData(106, 2026, 8, 19)] // 106 + 14 + 14 = 134 > 120: opens early enough to prepare the offer
+    [InlineData(120, 2026, 8, 5)]  // 120 + 14 + 14 = 148
+    [InlineData(150, 2026, 7, 6)]  // 150 + 14 + 14 = 178
+    public void LongNoticePeriods_OpenTheCaseEarlier(int noticeDays, int y, int m, int d)
     {
-        var act = () => RenewalDeadlineFormulas.Compute(new DateOnly(2027, 1, 31), -1, new RenewalDeadlineRules());
-        act.Should().Throw<ArgumentOutOfRangeException>();
+        var deadlines = RenewalDeadlineFormulas.Compute(new DateOnly(2025, 1, 1), new DateOnly(2026, 12, 31), noticeDays, new RenewalDeadlineRules());
+        deadlines.OpensOn.Should().Be(new DateOnly(y, m, d));
+        deadlines.OpensOn.Should().BeBefore(deadlines.OfferDueOn);
+        deadlines.OfferDueOn.Should().BeBefore(deadlines.NoticeDueOn);
     }
+
+    [Fact]
+    public void AShortTerm_NeverOpensBeforeItStarts()
+    {
+        var d = RenewalDeadlineFormulas.Compute(new DateOnly(2026, 11, 1), new DateOnly(2026, 12, 31), null, new RenewalDeadlineRules());
+        d.OpensOn.Should().Be(new DateOnly(2026, 11, 1));
+        d.NoticeDueOn.Should().Be(new DateOnly(2026, 11, 1));
+        d.OfferDueOn.Should().BeBefore(d.NoticeDueOn, "the offer stays before the notice; a passed date is shown, not an error");
+    }
+
+    [Fact]
+    public void Deadlines_RefuseZeroOrNegativeLeads_AndBackwardsTerms()
+    {
+        var start = new DateOnly(2026, 1, 1);
+        var end = new DateOnly(2026, 12, 31);
+        foreach (var act in new Action[]
+                 {
+                     () => RenewalDeadlineFormulas.Compute(start, end, 0, new RenewalDeadlineRules()),
+                     () => RenewalDeadlineFormulas.Compute(start, end, -1, new RenewalDeadlineRules()),
+                     () => RenewalDeadlineFormulas.Compute(start, end, null, new RenewalDeadlineRules(OfferLeadDays: 0)),
+                     () => RenewalDeadlineFormulas.Compute(start, end, null, new RenewalDeadlineRules(RenewalLeadDays: 0)),
+                     () => RenewalDeadlineFormulas.Compute(start, end, null, new RenewalDeadlineRules(OpenMarginDays: 0)),
+                     () => RenewalDeadlineFormulas.Compute(end, start, null, new RenewalDeadlineRules()),
+                 })
+            act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Theory]
+    [InlineData("contracts.offer_lead_days", "0", false)]
+    [InlineData("contracts.offer_lead_days", "-3", false)]
+    [InlineData("contracts.offer_lead_days", "14.5", false)]
+    [InlineData("contracts.offer_lead_days", "21", true)]
+    [InlineData("contracts.default_non_renewal_notice_days", "0", false)]
+    [InlineData("contracts.open_margin_days", "7", true)]
+    [InlineData("ksa.art55.reading", "lenient", true)]
+    [InlineData("ksa.art55.reading", "strict", false)]
+    [InlineData("contracts.as_is_requires_employee_acceptance", "no", false)]
+    [InlineData("ksa.unified_contract_from", "2025-10-06", true)]
+    [InlineData("ksa.unified_contract_from", "06/10/2025", false)]
+    [InlineData("gosi.employee_rate", "anything", true)] // not a Release A key: left to the unit gate
+    public void TenantOverrides_AreValidatedWhenSaved(string key, string value, bool valid) =>
+        (RenewalRuleKeys.ValidateOverride(key, value) is null).Should().Be(valid);
 
     [Fact]
     public void QiwaRespondBy_IsTheSentDatePlusTheWindow() =>
@@ -161,6 +208,9 @@ public class RenewalRulesTests
     [InlineData(2026, 1, 1, 12, 2026, 12, 31)]
     [InlineData(2027, 3, 1, 12, 2028, 2, 29)]  // leap year end
     [InlineData(2026, 1, 31, 24, 2028, 1, 30)]
+    [InlineData(2026, 1, 31, 1, 2026, 2, 28)]  // no 31 Feb: the term ends on the last day of February
+    [InlineData(2028, 2, 29, 12, 2029, 2, 28)] // no 29 Feb 2029
+    [InlineData(2026, 3, 31, 1, 2026, 4, 30)]
     public void TermEnd_IsStartPlusMonthsMinusOneDay(int y, int m, int d, int months, int ey, int em, int ed) =>
         ContractTermMath.EndOf(new DateOnly(y, m, d), months).Should().Be(new DateOnly(ey, em, ed));
 

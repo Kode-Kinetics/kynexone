@@ -64,8 +64,8 @@ import { TransliterateButton } from '../components/TransliterateButton';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
+import { useT } from '../hooks/useT';
 import { useReleaseA } from '../lib/releaseA';
-import { useLocale } from '../contexts/LocaleContext';
 import Link from 'next/link';
 
 type Tab = 'aiSetup' | 'establishment' | 'companies' | 'branches' | 'departments' | 'designations' | 'grades' | 'costCenters'
@@ -864,7 +864,7 @@ function GradesTab() {
   // Release A (R1): grade benefits live in Benefits by grade. For a release_a tenant the pay-scale lines are frozen:
   // not shown for editing and never written (the API refuses them with 409); the rows are kept and importable there.
   const benefitsByGrade = useReleaseA();
-  const { t } = useLocale();
+  const t = useT();
   const [items, setItems] = useState<GradeDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -956,7 +956,7 @@ function GradesTab() {
             <FormField label="Level"><input type="number" value={form.level} onChange={(e) => f('level', Number(e.target.value))} className="input w-full" /></FormField>
           </div>
           <FormField label="Name" required><input value={form.name} onChange={(e) => f('name', e.target.value)} className="input w-full" placeholder="Professional Grade 5" /></FormField>
-          <FormField label="Name (Arabic, optional)"><input dir="rtl" lang="ar" value={form.nameAr ?? ''} onChange={(e) => f('nameAr', e.target.value)} className="input w-full" placeholder="الدرجة المهنية 5" /></FormField>
+          <FormField label={t('Name (Arabic, optional)')}><input dir="rtl" lang="ar" value={form.nameAr ?? ''} onChange={(e) => f('nameAr', e.target.value)} className="input w-full" placeholder="الدرجة المهنية 5" /></FormField>
           <FormField label="Band"><input value={form.band ?? ''} onChange={(e) => f('band', e.target.value)} className="input w-full" placeholder="Professional" /></FormField>
 
           {/* Pay scale band */}

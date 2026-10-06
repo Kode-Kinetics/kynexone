@@ -10,9 +10,11 @@
 import type { DashboardFull } from '../../api/dashboard';
 import { Bars3D, Ring3D } from './charts/Visuals';
 import { useT } from '../../hooks/useT';
+import { useFormat } from '../../hooks/useFormat';
 
 export function Composition({ data }: { data: DashboardFull }) {
   const t = useT();
+  const f = useFormat();
   const s = data.summary;
   const mix = [...data.overview.workforceMix].sort((a, b) => b.value - a.value);
   const mixTotal = mix.reduce((n, m) => n + m.value, 0);
@@ -22,7 +24,7 @@ export function Composition({ data }: { data: DashboardFull }) {
     <section aria-labelledby="comp-heading" className="wg-card flex min-w-0 flex-col gap-3 p-5">
       <header>
         <h2 id="comp-heading" className="text-[15px] font-semibold text-slate-900 dark:text-white">{t('Headcount by department')}</h2>
-        <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-400">{s.activeEmployees.toLocaleString()} {t('active employees across')} {depts.length} {depts.length === 1 ? t('department') : t('departments')}, {t('now')}</p>
+        <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-400">{t('{count, plural, one {# active employee} other {# active employees}} across {departments, plural, one {# department} other {# departments}}, now', { count: s.activeEmployees, departments: depts.length })}</p>
       </header>
 
       {depts.length === 0 ? (
@@ -38,7 +40,7 @@ export function Composition({ data }: { data: DashboardFull }) {
       {/* Employment mix: the largest type against the rest, when there is a real split. */}
       {mix.length >= 2 ? (
         <div className="mt-auto flex flex-wrap items-center gap-4 rounded-xl border border-[color:var(--wg-line)] bg-[color:var(--wg-surface-2)] p-4">
-          <Ring3D a={mix[0].value} b={mixTotal - mix[0].value} center={`${Math.round((mix[0].value / mixTotal) * 100)}%`} sub={mix[0].name.toLowerCase()}
+          <Ring3D a={mix[0].value} b={mixTotal - mix[0].value} center={f.percent((mix[0].value / mixTotal) * 100)} sub={mix[0].name.toLowerCase()}
             label={`${t('Employment type')}: ${mix.map((m) => `${m.name} ${m.value}`).join(', ')}`} />
           <ul className="flex min-w-[140px] flex-1 flex-col gap-1.5 text-[13px]">
             {mix.slice(0, 4).map((m, i) => (
@@ -50,7 +52,7 @@ export function Composition({ data }: { data: DashboardFull }) {
           </ul>
         </div>
       ) : mix.length === 1 ? (
-        <p className="mt-auto text-[13px] text-slate-700 dark:text-slate-300">{t('All')} {mixTotal} {t('active employees are')} <b className="font-semibold text-slate-900 dark:text-white">{mix[0].name.toLowerCase()}</b>.</p>
+        <p className="mt-auto text-[13px] text-slate-700 dark:text-slate-300">{t('All {count} active employees are {type}.', { count: mixTotal, type: mix[0].name.toLowerCase() })}</p>
       ) : null}
     </section>
   );

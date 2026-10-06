@@ -22,6 +22,8 @@ using Zayra.Api.Models;
 using DocumentRequest = Zayra.Api.Models.EmployeeDocumentRequest;
 
 
+using Zayra.Api.Infrastructure.Common;
+
 namespace Zayra.Api.Controllers;
 
 [ApiController]
@@ -100,7 +102,7 @@ public class EmployeeSelfServiceController : ControllerBase
         var pendingLeave = await _db.LeaveRequests.CountAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Status.Contains("Pending"), cancellationToken);
         var documentAlerts = await _db.EmployeeDocuments.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && !x.IsDeleted && x.ExpiryDate != null && x.ExpiryDate <= today.AddDays(60)
-                        && !RestrictedEmployeeDocumentTypes.All.Contains(x.DocumentType))
+                        && !RestrictedEmployeeDocumentTypes.Lowered.Contains(x.DocumentType.Trim().ToLower()))
             .OrderBy(x => x.ExpiryDate)
             .Take(5)
             .Select(x => new ESSDocumentDto(x.Id, x.DocumentType, x.FileName, x.ExpiryDate, x.ApprovalStatus))
@@ -113,14 +115,30 @@ public class EmployeeSelfServiceController : ControllerBase
         ESSPayrollSnapshotDto? payrollSnapshot = null;
         try
         {
-            var lastSlip = await _db.PayrollSlips.AsNoTracking()
-                .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Status == "Final")
-                .OrderByDescending(x => x.RunId)
+            // The latest slip by PERIOD, chosen the way GET /api/ess/payslips orders them (year, month, then
+            // the run's creation time; a voided run's slip is skipped). It used to be ordered by RunId, a
+            // GUID, so the "Last payslip" card showed an arbitrary month.
+            var latest = await (
+                    from slip in _db.PayrollSlips.AsNoTracking()
+                        .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Status == "Final")
+                    join r in _db.PayrollRuns.AsNoTracking().Where(r => r.TenantId == tenantId)
+                        on slip.RunId equals r.Id into runs
+                    from r in runs.DefaultIfEmpty()
+                    where r == null || r.Status != "Voided"
+                    select new
+                    {
+                        Slip = slip,
+                        Run = r,
+                        Year = r == null ? 0 : r.Year,
+                        Month = r == null ? 0 : r.Month,
+                        RunCreatedAtUtc = r == null ? DateTime.MinValue : r.CreatedAtUtc,
+                    })
+                .OrderByDescending(x => x.Year).ThenByDescending(x => x.Month).ThenByDescending(x => x.RunCreatedAtUtc)
                 .FirstOrDefaultAsync(cancellationToken);
+            var lastSlip = latest?.Slip;
             if (lastSlip is not null)
             {
-                var run = await _db.PayrollRuns.AsNoTracking()
-                    .FirstOrDefaultAsync(x => x.Id == lastSlip.RunId, cancellationToken);
+                var run = latest!.Run;
                 var salaryAsOf = run is null
                     ? DateOnly.FromDateTime(DateTime.UtcNow)
                     : new DateOnly(run.Year, run.Month, DateTime.DaysInMonth(run.Year, run.Month));
@@ -419,20 +437,32 @@ public class EmployeeSelfServiceController : ControllerBase
         if (run is null || run.Status == "Voided") return NotFound();
 
         var (items, _) = await BuildPayslipLinesAsync(tenantId, employeeId, slip, cancellationToken);
-        var gross = items.Where(i => i.Type == "Earning").Sum(i => i.Amount);
-        var deductions = items.Where(i => i.Type == "Deduction").Sum(i => i.Amount);
-        var netLines = items.Where(i => i.Type == "Net").ToList();
+        var gross = items.Where(i => i.Type == PayslipLineTypes.Earning).Sum(i => i.Amount);
+        // Employee deductions only. Employer contributions are listed separately and never reduce pay.
+        var deductions = items.Where(i => i.Type == PayslipLineTypes.Deduction).Sum(i => i.Amount);
+        var employerContributions = items.Where(i => i.Type == PayslipLineTypes.EmployerContribution).Sum(i => i.Amount);
+        var netLines = items.Where(i => i.Type == PayslipLineTypes.Net).ToList();
         var net = netLines.Count > 0 ? netLines.Sum(i => i.Amount) : gross - deductions;
         var currency = await ResolvePayslipCurrencyAsync(tenantId, employeeId, cancellationToken);
 
         _db.EmployeePayslipAccessLogs.Add(new EmployeePayslipAccessLog { TenantId = tenantId, EmployeeId = employeeId, PayslipId = id, Action = "View", UserId = GetUserId() });
         await _db.SaveChangesAsync(cancellationToken);
 
+        // The Arabic name of each line where the pay-component catalogue has one (matched by its English
+        // name, which is what the line carries). Lines with no catalogue entry keep only their English name.
+        var lineNames = items.Select(i => i.Name).Distinct().ToList();
+        var arabicNames = (await _db.PayComponents.AsNoTracking()
+                .Where(c => c.TenantId == tenantId && lineNames.Contains(c.NameEn) && c.NameAr != "")
+                .Select(c => new { c.NameEn, c.NameAr, c.CompanyId })
+                .ToListAsync(cancellationToken))
+            .GroupBy(c => c.NameEn)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(c => c.CompanyId != null).First().NameAr);
+
         return Ok(new EssPayslipDetailDto(
             slip.Id, run.Year, run.Month, PeriodLabel(run.Year, run.Month), currency, run.RunType,
             gross, deductions, net, Math.Abs(gross - deductions - net) < 0.01m,
-            items.Select(i => new EssPayslipLineDto(i.Name, i.Amount, i.Type)).ToList(),
-            slip.YtdGross, slip.YtdNet));
+            items.Select(i => new EssPayslipLineDto(i.Name, i.Amount, i.Type, arabicNames.GetValueOrDefault(i.Name))).ToList(),
+            slip.YtdGross, slip.YtdNet, employerContributions));
     }
 
     private static string PeriodLabel(int year, int month) =>
@@ -460,9 +490,22 @@ public class EmployeeSelfServiceController : ControllerBase
             ? await _db.PayslipComponents.AsNoTracking().Where(x => x.TenantId == tenantId && x.PayslipId == payslip.Id).ToListAsync(cancellationToken)
             : new List<PayslipComponent>();
 
+        // Payslips generated before employer contributions had their own line type stored them as
+        // "Deduction" — that is how an employer's 2% occupational hazard came to be shown, and totalled,
+        // as money taken from the employee. The run's own PayrollDeduction rows carry the authoritative
+        // IsEmployerContribution flag, so those stored lines are moved to the employer section here.
+        var employerLines = components.Any(c => c.ComponentType == PayslipLineTypes.Deduction)
+            ? (await _db.PayrollDeductions.AsNoTracking()
+                .Where(d => d.TenantId == tenantId && d.PayrollRunId == slip.RunId && d.EmployeeId == employeeId && d.IsEmployerContribution)
+                .Select(d => new { d.ComponentName, d.Amount })
+                .ToListAsync(cancellationToken))
+                .Select(d => (d.ComponentName, d.Amount)).ToList()
+            : new List<(string, decimal)>();
+
         // Fallback: build components from the slip summary if payslip detail rows don't exist
         var items = components.Count > 0
-            ? components.Select(c => new PayslipLineItem(c.ComponentName, c.Amount, c.ComponentType)).ToList()
+            ? PayslipLineTypes.ReclassifyLegacyEmployerLines(
+                components.Select(c => new PayslipLineItem(c.ComponentName, c.Amount, c.ComponentType)), employerLines)
             : new List<PayslipLineItem>
             {
                 new("Basic Salary", slip.BasicSalary, "Earning"),
@@ -638,7 +681,7 @@ public class EmployeeSelfServiceController : ControllerBase
         // Release A: HR evidence types (Qiwa evidence, loan-deduction consent, non-renewal notice) are never self-service documents.
         var documents = await _db.EmployeeDocuments.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && !x.IsDeleted
-                        && !RestrictedEmployeeDocumentTypes.All.Contains(x.DocumentType))
+                        && !RestrictedEmployeeDocumentTypes.Lowered.Contains(x.DocumentType.Trim().ToLower()))
             .OrderBy(x => x.DocumentType)
             .Select(x => new ESSDocumentDto(x.Id, x.DocumentType, x.FileName, x.ExpiryDate, x.ApprovalStatus))
             .ToListAsync(cancellationToken);
@@ -651,6 +694,8 @@ public class EmployeeSelfServiceController : ControllerBase
     {
         var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken, requireWrite: true);
         if (!essOk) return BadRequest(new { message = ctxError });
+        if (RestrictedEmployeeDocumentTypes.IsRestricted(request.DocumentType))
+            return BadRequest(new { message = RestrictedEmployeeDocumentTypes.SelfServiceRefusal });
         var normalizedStorage = request.StorageUrl.Replace('\\', '/');
         var localPrefix = $"storage/documents/{tenantId:N}/";
         var objectPrefix = $"{tenantId:N}/documents/";
@@ -696,6 +741,8 @@ public class EmployeeSelfServiceController : ControllerBase
         var documentType = form.DocumentType?.Trim() ?? string.Empty;
         if (documentType.Length == 0) return BadRequest(new { message = "documentType is required." });
         if (documentType.Length > 100 || documentType.Any(char.IsControl)) return BadRequest(new { message = "documentType must be at most 100 characters." });
+        if (RestrictedEmployeeDocumentTypes.IsRestricted(documentType))
+            return BadRequest(new { message = RestrictedEmployeeDocumentTypes.SelfServiceRefusal });
         var documentNumber = form.DocumentNumber?.Trim();
         if (documentNumber is { Length: > 64 }) return BadRequest(new { message = "documentNumber must be at most 64 characters." });
         if (form.ExpiryDate is { } expiry && expiry < DateOnly.FromDateTime(DateTime.UtcNow))
@@ -745,7 +792,7 @@ public class EmployeeSelfServiceController : ControllerBase
         var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
         if (!essOk) return BadRequest(new { message = ctxError });
         var document = await _db.EmployeeDocuments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Id == id && !x.IsDeleted
-            && !RestrictedEmployeeDocumentTypes.All.Contains(x.DocumentType), cancellationToken);
+            && !RestrictedEmployeeDocumentTypes.Lowered.Contains(x.DocumentType.Trim().ToLower()), cancellationToken);
         if (document is null) return NotFound();
         byte[] bytes;
         try { bytes = await Storage.GetBytesAsync(tenantId, document.StorageUrl, cancellationToken); }
@@ -1201,7 +1248,7 @@ public class EmployeeSelfServiceController : ControllerBase
         // POST /api/ess/documents) — never bytes, never a storage key, never a colleague's document.
         if (request.AttachmentDocumentId is { } attachmentId
             && !await _db.EmployeeDocuments.AsNoTracking().AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Id == attachmentId && !x.IsDeleted
-                && !RestrictedEmployeeDocumentTypes.All.Contains(x.DocumentType), cancellationToken))
+                && !RestrictedEmployeeDocumentTypes.Lowered.Contains(x.DocumentType.Trim().ToLower()), cancellationToken))
             return BadRequest(new { message = "The attachment was not found among your documents." });
         var slaHours = category?.DefaultSlaHours ?? 48;
         var hrRequest = new HRRequest
@@ -1332,7 +1379,7 @@ public class EmployeeSelfServiceController : ControllerBase
         if (!essOk) return BadRequest(new { message = ctxError });
         return Ok(await _db.EmployeeDocuments.AsNoTracking()
             .Where(x => x.TenantId == tenantId && (x.EmployeeId == employeeId || x.DocumentType.Contains("Policy")) && !x.IsDeleted
-                        && !RestrictedEmployeeDocumentTypes.All.Contains(x.DocumentType))
+                        && !RestrictedEmployeeDocumentTypes.Lowered.Contains(x.DocumentType.Trim().ToLower()))
             .Select(x => new ESSDocumentDto(x.Id, x.DocumentType, x.FileName, x.ExpiryDate, x.ApprovalStatus))
             .ToListAsync(cancellationToken));
     }
@@ -1367,7 +1414,7 @@ public class EmployeeSelfServiceController : ControllerBase
         var leaveAvailable = await _db.EmployeeLeaveBalances.Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Year == DateTime.UtcNow.Year).SumAsync(x => Math.Max(x.Entitled, x.Accrued) + x.CarriedForward + x.ManualAdjustment - x.Used - x.Pending - x.Encashed - x.Expired, cancellationToken);
         var openTickets = await _db.HRRequests.CountAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Status != "Closed", cancellationToken);
         var expiringDocs = await _db.EmployeeDocuments.CountAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && !x.IsDeleted && x.ExpiryDate != null && x.ExpiryDate <= DateOnly.FromDateTime(DateTime.UtcNow.AddDays(60))
-            && !RestrictedEmployeeDocumentTypes.All.Contains(x.DocumentType), cancellationToken);
+            && !RestrictedEmployeeDocumentTypes.Lowered.Contains(x.DocumentType.Trim().ToLower()), cancellationToken);
         var answer = $"I can only use your own KynexOne employee data. Current snapshot: leave available {leaveAvailable:0.##} days, open HR requests {openTickets}, documents expiring in 60 days {expiringDocs}. I cannot approve, reject, or expose another employee's data.";
         _db.EmployeeAIQueryLogs.Add(new EmployeeAIQueryLog { TenantId = tenantId, EmployeeId = employeeId, Question = request.Question, Answer = answer, UserId = GetUserId() });
         await _db.SaveChangesAsync(cancellationToken);
@@ -1418,28 +1465,13 @@ public class EmployeeSelfServiceController : ControllerBase
         if (!Guid.TryParse(tenantClaim, out var tenantId))
             return (false, default, default, "Tenant claim is missing. Please log in again.");
 
-        // Fast path: JWT already has the employee_id claim (user was invited via employee invite flow)
-        if (int.TryParse(User.FindFirstValue("employee_id"), out var empId))
-            return (true, tenantId, empId, null);
-
-        // Fallback: match by email — handles users created via "Create User" whose email
-        // matches an employee record in the same tenant (WorkEmail or PersonalEmail)
-        var email = User.FindFirstValue("email") ?? User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
-        if (!string.IsNullOrWhiteSpace(email))
-        {
-            var normalizedEmail = email.Trim().ToUpperInvariant();
-            var matches = await _db.Employees.AsNoTracking()
-                .Where(x => x.TenantId == tenantId && !x.IsDeleted &&
-                    (x.WorkEmail.ToUpper() == normalizedEmail || x.PersonalEmail.ToUpper() == normalizedEmail))
-                .Select(x => x.Id).Take(2).ToListAsync(cancellationToken);
-            if (matches.Count == 1)
-                return (true, tenantId, matches[0], null);
-            if (matches.Count > 1)
-                return (false, default, default, "Multiple employee records match this email. Ask HR to link your account explicitly.");
-        }
+        // The same lookup the data scope uses (CallerEmployeeResolver): the employee_id claim from the
+        // explicit login-to-employee link, for an employee that exists in this tenant. No email guessing.
+        if (await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId, cancellationToken) is int linked)
+            return (true, tenantId, linked, null);
 
         return (false, default, default,
-            "No employee record found for your account. Ensure an employee profile exists in the People module with the same email address as your login, or ask HR to link your account via User Management → Invite Employee.");
+            "Your login is not linked to an employee record. Ask HR to link your account via User Management → Invite Employee.");
     }
 
     private bool HasPermission(string permission) => User.Claims.Any(x => x.Type == "permission" && x.Value == permission);
@@ -1551,9 +1583,12 @@ public record EssPayslipSummaryDto(
     decimal ArrearsAmount, decimal EmployeeStatutoryTotal, decimal LoanDeductions,
     decimal YtdGross, decimal YtdNet);
 
-public record EssPayslipLineDto(string Name, decimal Amount, string Type);
+public record EssPayslipLineDto(string Name, decimal Amount, string Type, string? NameAr = null);
 
 public record EssPayslipDetailDto(
     Guid Id, int Year, int Month, string PeriodLabel, string Currency, string RunType,
     decimal GrossSalary, decimal TotalDeductions, decimal NetSalary, bool Reconciled,
-    IReadOnlyList<EssPayslipLineDto> Lines, decimal YtdGross, decimal YtdNet);
+    IReadOnlyList<EssPayslipLineDto> Lines, decimal YtdGross, decimal YtdNet,
+    // What the employer paid on top of the salary (lines of type "EmployerContribution"). NOT part of
+    // TotalDeductions: GrossSalary − TotalDeductions = NetSalary.
+    decimal EmployerContributions = 0m);

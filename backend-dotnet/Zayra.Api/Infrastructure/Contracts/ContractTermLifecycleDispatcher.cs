@@ -13,6 +13,9 @@ public interface IContractTermLifecycleDispatcher
     /// the release_a flag: their contract activation is exactly what it was.
     /// </summary>
     Task OnActivatedAsync(EmployeeContract contract, CancellationToken ct);
+
+    /// <summary>An Active term ended (terminated, expired, superseded, separated). Same flag gate and unit of work.</summary>
+    Task OnEndedAsync(EmployeeContract contract, string reason, CancellationToken ct);
 }
 
 /// <summary>Release A owner: R0 (integration owner). The hooks themselves belong to R2 and R4.</summary>
@@ -35,5 +38,15 @@ public sealed class ContractTermLifecycleDispatcher : IContractTermLifecycleDisp
         // because the frozen package belongs to a term whose place in the chain is known.
         foreach (var hook in _hooks)
             await hook.OnActivatedAsync(contract, ct);
+    }
+
+    public async Task OnEndedAsync(EmployeeContract contract, string reason, CancellationToken ct)
+    {
+        if (!ContractEndReasons.All.Contains(reason))
+            throw new ArgumentOutOfRangeException(nameof(reason), reason, "Not a contract end reason.");
+        var state = await _modules.GetStateAsync(contract.TenantId, ct);
+        if (!state.IsEnabled(FeatureKeys.ReleaseA)) return;
+        foreach (var hook in _hooks)
+            await hook.OnEndedAsync(contract, reason, ct);
     }
 }

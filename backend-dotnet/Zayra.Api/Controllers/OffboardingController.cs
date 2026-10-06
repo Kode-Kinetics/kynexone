@@ -30,13 +30,32 @@ public class OffboardingController : ControllerBase
     private readonly ZayraDbContext _db;
     private readonly IAuditService _audit;
     private readonly IEmployeeActivationGuard _activationGuard;
-    public OffboardingController(ZayraDbContext db, IAuditService? audit = null, IEmployeeActivationGuard? activationGuard = null)
+    private readonly Zayra.Api.Infrastructure.Contracts.IContractTermLifecycleDispatcher? _termLifecycle;
+
+    public OffboardingController(ZayraDbContext db, IAuditService? audit = null, IEmployeeActivationGuard? activationGuard = null,
+        Zayra.Api.Infrastructure.Contracts.IContractTermLifecycleDispatcher? termLifecycle = null)
     {
         _db = db;
+        _termLifecycle = termLifecycle;
         // Mirror EmployeesController's ApprovalWorkflowService default: DI always supplies the audit
         // service in production; the optional fallback keeps direct-construction call sites working.
         _audit = audit ?? new Zayra.Api.Infrastructure.Audit.AuditService(db);
         _activationGuard = activationGuard ?? new EmployeeActivationGuard(db);
+    }
+
+    /// <summary>
+    /// Release A: completing the offboarding is the separation, so every Active term of the employee ends with
+    /// <see cref="Zayra.Api.Application.Entitlements.ContractEndReasons.Separated"/> — an open renewal case is cancelled
+    /// (T21) by the hooks, in the caller's SaveChanges. A no-op for tenants without release_a.
+    /// </summary>
+    private async Task EndContractTermsOnSeparationAsync(Guid tenantId, Guid employeePublicId, CancellationToken ct)
+    {
+        if (_termLifecycle is null) return;
+        var terms = await _db.EmployeeContracts
+            .Where(c => c.TenantId == tenantId && c.EmployeeId == employeePublicId && c.Status == "Active" && !c.IsDeleted)
+            .ToListAsync(ct);
+        foreach (var term in terms)
+            await _termLifecycle.OnEndedAsync(term, Zayra.Api.Application.Entitlements.ContractEndReasons.Separated, ct);
     }
 
     // Role-gate bypass sweep (LegacyRoleGateBypassSweepTests): the role list resolved to employees.read, so every staff role (line Manager, Recruiter,
@@ -598,6 +617,7 @@ public class OffboardingController : ControllerBase
             off.UpdatedAtUtc = completedAtUtc;
             graph.Employee.Status = "Archived";
             graph.Employee.UpdatedAtUtc = completedAtUtc;
+            await EndContractTermsOnSeparationAsync(tenantId, graph.Employee.PublicId, token);
             StageAccessRevocation(graph, this.GetUserId(), unlinkAccount: true, completedAtUtc,
                 HttpContext.Connection.RemoteIpAddress?.ToString());
 
@@ -693,6 +713,7 @@ public class OffboardingController : ControllerBase
         {
             emp.Status = "Archived";
             emp.UpdatedAtUtc = DateTime.UtcNow;
+            await EndContractTermsOnSeparationAsync(off.TenantId, emp.PublicId, ct);
             // Still unconditional and still unlinks: archiving IS the end of the employment, and the
             // revocation is idempotent when the checklist already ran it.
             await RevokeEmployeeAccessAsync(emp, this.GetUserId(), unlinkAccount: true, ct);

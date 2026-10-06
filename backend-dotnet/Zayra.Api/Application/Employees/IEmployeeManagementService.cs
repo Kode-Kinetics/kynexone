@@ -35,7 +35,9 @@ public interface IEmployeeManagementService
     /// <inheritdoc cref="CreateAsync" path="/param[@name='includeSensitive']"/>
     Task<EmployeeDetailDto?> TerminateAsync(Guid tenantId, int employeeId, EmployeeStatusChangeRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false);
     Task<EmployeeHeadcountReportDto> HeadcountAsync(Guid tenantId, CancellationToken cancellationToken);
-    Task<IReadOnlyCollection<EmployeeExpiringDocumentDto>> ExpiringDocumentsAsync(Guid tenantId, int days, CancellationToken cancellationToken);
-    Task<IReadOnlyCollection<EmployeeMissingDocumentsReportDto>> MissingDocumentsAsync(Guid tenantId, CancellationToken cancellationToken);
+    /// <param name="visibleEmployeeIds">The caller's data scope (<c>DataScope.AllowedEmployeeIds</c>); null is org-wide.</param>
+    Task<IReadOnlyCollection<EmployeeExpiringDocumentDto>> ExpiringDocumentsAsync(Guid tenantId, int days, CancellationToken cancellationToken, IReadOnlyCollection<int>? visibleEmployeeIds = null);
+    /// <param name="visibleEmployeeIds">The caller's data scope (<c>DataScope.AllowedEmployeeIds</c>); null is org-wide.</param>
+    Task<IReadOnlyCollection<EmployeeMissingDocumentsReportDto>> MissingDocumentsAsync(Guid tenantId, CancellationToken cancellationToken, IReadOnlyCollection<int>? visibleEmployeeIds = null);
     Task<EmployeeStatusSummaryDto> StatusSummaryAsync(Guid tenantId, CancellationToken cancellationToken);
 }

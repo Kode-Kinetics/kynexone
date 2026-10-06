@@ -586,6 +586,10 @@ public static class StatutoryRuleSeeder
             "[COUNSEL] Default notice, in days before the end date, for not renewing a fixed-term contract when the contract "
             + "states none. Without notice served by then the contract renews on its terms (Art.74(2))."));
         list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "contracts.open_margin_days", "14", "int", eff07,
+            "[PRODUCT] Preparation days before the offer is due. A case opens no later than end − (notice + offer lead + "
+            + "this margin), so a contract with a long notice period still opens in time."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
             "contracts.as_is_requires_employee_acceptance", "true", "bool", eff07,
             "[COUNSEL] Owner decision: the employee accepts every renewal in the app, including an unchanged one. A tenant "
             + "may switch this off for unchanged (fast-lane) renewals only on counsel's advice."));

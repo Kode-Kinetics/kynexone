@@ -6,6 +6,8 @@ import { useSearchParams } from 'next/navigation';
 import { employeesApi, notActivatableFromError, possibleDuplicateFromError, deriveWorkEmailLocalPart, assembleWorkEmail } from '../api/employees';
 import type { EmployeeCreateRequest, EmployeeDetail, EmployeeListItem, EmployeeReadiness, EmployeeNotActivatable, DuplicateMatch, DuplicateCheckRequest, BulkActionRequest, BulkActionResult, BulkSelectAllFilter, DeriveWorkEmailResponse } from '../api/employees';
 import { useAuth } from '../contexts/AuthContext';
+import { useLocale } from '../contexts/LocaleContext';
+import { describeApiError } from '../lib/apiError';
 import { ExEmployeesTable } from './ExEmployeesTable';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { ReadinessBadge, hasExpiringId } from '../components/ReadinessBadge';
@@ -82,6 +84,7 @@ const GAP_FILTER_LABELS: Record<string, string> = {
   'link:supervisor': 'Supervisors unresolved',
   'pay:salaryHeld': 'Salaries held',
   'pay:salaryReview': 'Salaries for review',
+  'pay:bankUnverified': 'Imported bank details to verify',
   'org:company': 'Company unassigned',
   'org:department': 'New departments',
   'org:branch': 'New branches',
@@ -241,6 +244,7 @@ interface EmployeeUsageData {
 }
 
 export function EmployeesPage() {
+  const { t } = useLocale();
   const searchParams = useSearchParams();
   const { currencyCode } = useTenantSettings();
   const { hasPermission } = useAuth();
@@ -340,6 +344,10 @@ export function EmployeesPage() {
   const [dupResolving, setDupResolving] = useState(false);
   const [dupReason, setDupReason] = useState('');
   const [dupNotice, setDupNotice] = useState('');
+  // Imported bank details waiting for a second person (pay:bankUnverified): how they were checked, and state.
+  const [bankNote, setBankNote] = useState('');
+  const [bankNotice, setBankNotice] = useState('');
+  const [bankConfirming, setBankConfirming] = useState(false);
   // "Merge" from the create warning abandons the draft and opens the existing record for editing —
   // this holds the id until its detail has loaded, then an effect opens the edit modal.
   const [autoEditId, setAutoEditId] = useState<number | null>(null);
@@ -955,6 +963,30 @@ export function EmployeesPage() {
       setDupNotice((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Could not update the flag. Try again.');
     } finally {
       setDupResolving(false);
+    }
+  };
+
+  // Imported bank details: shown while the open record carries the pay:bankUnverified flag.
+  const bankFlag = useMemo(
+    () => (readiness?.recommended ?? []).find((i) => i.key === 'pay:bankUnverified') ?? null,
+    [readiness],
+  );
+  useEffect(() => { setBankNote(''); setBankNotice(''); }, [detail?.id]);
+  const confirmBankDetails = async () => {
+    if (!selectedId) return;
+    if (!bankNote.trim()) { setBankNotice(t('Say how you checked them, for example "matches the bank letter".')); return; }
+    setBankConfirming(true);
+    setBankNotice('');
+    try {
+      await employeesApi.confirmImportedBankDetails(selectedId, bankNote.trim());
+      setBankNote('');
+      setActionNotice(t('Bank details confirmed. Payroll will no longer warn about them.'));
+      await openDetail(selectedId, true);
+      await load();
+    } catch (e: unknown) {
+      setBankNotice(describeApiError(e, t));
+    } finally {
+      setBankConfirming(false);
     }
   };
 
@@ -1640,6 +1672,31 @@ export function EmployeesPage() {
                       <div className="flex justify-end">
                         <button type="button" disabled={dupResolving} onClick={confirmDistinct} className="btn-primary h-8 px-3 text-xs disabled:opacity-60">
                           {dupResolving ? 'Saving…' : 'Confirm distinct person'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Imported bank details nobody has checked yet. A second person confirms them with the
+                    employee; until then every payroll run that pays this person by bank warns before Lock. */}
+                {bankFlag && (
+                  <div className="rounded-lg border border-amber-300 bg-amber-50/60 p-3 dark:border-amber-500/40 dark:bg-amber-500/[0.06]">
+                    <p className="text-sm font-bold text-amber-800 dark:text-amber-300">{bankFlag.label ? t(bankFlag.label) : t('Imported bank details not yet verified')}</p>
+                    <p className="mt-1 text-xs text-amber-800/90 dark:text-amber-300/90">
+                      {t('These bank details came from an employee import and nobody else has checked them. Confirm them with the employee before their first payroll. The person who imported them cannot confirm them.')}
+                    </p>
+                    <div className="mt-2.5 space-y-1.5">
+                      <input
+                        value={bankNote}
+                        onChange={(e) => setBankNote(e.target.value)}
+                        placeholder={t('How you checked them (required)')}
+                        className="input w-full text-xs"
+                      />
+                      {bankNotice && <p className="text-[11px] font-medium text-rose-600 dark:text-rose-400">{bankNotice}</p>}
+                      <div className="flex justify-end">
+                        <button type="button" disabled={bankConfirming} onClick={confirmBankDetails} className="btn-primary h-8 px-3 text-xs disabled:opacity-60">
+                          {bankConfirming ? t('Saving…') : t('Confirm bank details')}
                         </button>
                       </div>
                     </div>

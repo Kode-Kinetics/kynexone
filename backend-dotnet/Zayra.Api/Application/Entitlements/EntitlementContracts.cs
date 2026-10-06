@@ -45,10 +45,19 @@ public sealed record EmployeePackage(
 /// <param name="Source">A <see cref="PackageLineSources"/> value: where the figure was read from.</param>
 /// <param name="Offered">False when the employee's company skips this component.</param>
 /// <param name="MonthlyCash">Cash per month this line pays (QiwaWage lines only); NULL for non-cash lines.</param>
+/// <param name="Quantity">A count (tickets per period). Never the education child cap.</param>
 /// <param name="DependantScope">A <see cref="DependantScopes"/> value.</param>
+/// <param name="MaxDependants">The most dependants covered. Education: the child cap is here (scope Children), not in Quantity.</param>
 /// <param name="DependantsCovered">How many of the employee's recorded dependants this line covers today.</param>
 /// <param name="GradeStandardDiffers">The grade's standard now differs from the frozen value — "reviewed at renewal".</param>
 /// <param name="ReasonCode">Why the line is not eligible or not offered, as a block code; NULL when it is.</param>
+/// <param name="MaxOutstandingAmount">Facility only: the most that may be owed at once (e.g. one housing advance).</param>
+/// <param name="ResolvedAmount">The cash figure the line comes to today, for a Facility or a rate (e.g. 3 × housing = SAR 6,000;
+/// 25% of basic = SAR 2,000). NULL when the line is not a sum of money.</param>
+/// <param name="EligibleFrom">When an ineligible line becomes eligible by a criterion (service months, end of probation);
+/// NULL when eligible now or never by date.</param>
+/// <param name="StandardValue">The grade's standard for this component today (the company cell where one exists), so the
+/// offer editor and the "Why?" popover can show it beside the frozen value; NULL when the grade has no cell.</param>
 public sealed record PackageLine(
     string ComponentCode,
     string Class,
@@ -70,7 +79,27 @@ public sealed record PackageLine(
     Guid? EmployeeEntitlementId,
     bool IsCompanyOverride,
     bool GradeStandardDiffers,
-    string? ReasonCode);
+    string? ReasonCode,
+    decimal? MaxOutstandingAmount,
+    decimal? ResolvedAmount,
+    DateOnly? EligibleFrom,
+    GradeStandardLine? StandardValue);
+
+/// <summary>
+/// The one rule for comparing rates (plan §1.2, round 2). Grade cells and frozen rows store <c>rate</c> as numeric(9,4);
+/// the salary row stores housing/transport rates as numeric(9,6). Every comparison across them — notably
+/// <see cref="PackageLine.GradeStandardDiffers"/> — rounds both sides to 4 decimal places first, so 0.250000 and 0.2500
+/// are the same rate and storage precision never reads as a difference.
+/// </summary>
+public static class EntitlementRates
+{
+    public const int ComparisonScale = 4;
+
+    public static decimal? Normalise(decimal? rate) =>
+        rate is { } r ? Math.Round(r, ComparisonScale, MidpointRounding.AwayFromZero) : null;
+
+    public static bool Same(decimal? a, decimal? b) => Normalise(a) == Normalise(b);
+}
 
 /// <summary>Value set of <see cref="PackageLine.Source"/>.</summary>
 public static class PackageLineSources
@@ -86,7 +115,8 @@ public static class PackageLineSources
     public static readonly string[] All = [Salary, ContractFrozen, GradeStandard, Facility];
 }
 
-/// <summary>One grade cell in force for a company (the company override where one exists).</summary>
+/// <summary>One grade cell in force for a company (the company override where one exists). Quantity is a count (tickets);
+/// the education child cap is <c>MaxDependants</c> with scope Children.</summary>
 public sealed record GradeStandardLine(
     string ComponentCode,
     string Class,
@@ -180,13 +210,46 @@ public static class RenewalLineActions
 }
 
 /// <summary>
-/// Called when a contract term becomes Active (ContractsController.UpdateStatus → Active), inside the same unit
-/// of work, only for tenants with the <c>release_a</c> flag on. Registered as <c>IEnumerable</c>: R2 freezes
-/// the package, R4 stamps the chain. Implementations add entities to the context; they never SaveChanges.
+/// Called when a contract term starts or stops being the term in force, inside the same unit of work, only for
+/// tenants with the <c>release_a</c> flag on. Registered as <c>IEnumerable</c>: R2 freezes / closes the package, R4
+/// stamps the chain and cancels an open case (T21). Implementations add or change entities; they never SaveChanges.
+/// Callers: ContractsController (UpdateStatus, Supersede) and the migration import of contracts.
 /// </summary>
 public interface IContractTermLifecycle
 {
+    /// <summary>The term became Active (UpdateStatus → Active, or imported as / changed to Active).</summary>
     Task OnActivatedAsync(EmployeeContract contract, CancellationToken ct);
+
+    /// <summary>
+    /// An Active term ended: <paramref name="reason"/> is a <see cref="ContractEndReasons"/> value. What a hook may do
+    /// depends on the reason (CTO decision):
+    /// <list type="bullet">
+    /// <item><b>Terminated, Separated, Superseded</b> — the employment or the term really ended: an open renewal case for
+    /// it is cancelled (T21) and the package rows are closed.</item>
+    /// <item><b>Expired</b> — NEVER cancels an open case and never closes the package. An expired fixed-term contract
+    /// with the employee still working renews by operation of law (Art. 74(2); Art. 37/55); the holdover (T22, R6)
+    /// writes the provisional successor term. A hook may only record the event (e.g. flag "expired with no outcome").</item>
+    /// </list>
+    /// </summary>
+    Task OnEndedAsync(EmployeeContract contract, string reason, CancellationToken ct);
+}
+
+/// <summary>Why an Active term stopped being in force. See <see cref="IContractTermLifecycle.OnEndedAsync"/>.</summary>
+public static class ContractEndReasons
+{
+    /// <summary>ContractsController.UpdateStatus → Terminated. Cancels an open case (T21).</summary>
+    public const string Terminated = "Terminated";
+    /// <summary>ContractsController.UpdateStatus → Expired (and the import). Record only: NEVER cancels a case (Art. 74(2)).</summary>
+    public const string Expired = "Expired";
+    /// <summary>ContractsController.Supersede (and the import). Cancels an open case (T21).</summary>
+    public const string Superseded = "Superseded";
+    /// <summary>OffboardingController completion (the separation is final: settlement paid, employee archived), for
+    /// every Active term of the employee. Cancels an open case (T21).</summary>
+    public const string Separated = "Separated";
+
+    /// <summary>The reasons that cancel an open renewal case (T21). Expired is deliberately absent.</summary>
+    public static readonly string[] CancelOpenCase = [Terminated, Separated, Superseded];
+    public static readonly string[] All = [Terminated, Expired, Superseded, Separated];
 }
 
 /// <summary>The four renewal deadlines of an expiring term, from statutory_rules (tenant row overrides platform). Slice R4.</summary>

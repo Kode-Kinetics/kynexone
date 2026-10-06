@@ -268,7 +268,11 @@ namespace Zayra.Api.Migrations
                     employee_responded_at = table.Column<DateTime>(type: "timestamp with time zone", nullable: true),
                     employee_responded_by_user_id = table.Column<Guid>(type: "uuid", nullable: true),
                     response_channel = table.Column<string>(type: "character varying(12)", maxLength: 12, nullable: true),
+                    employee_response_document_id = table.Column<Guid>(type: "uuid", nullable: true),
+                    employee_response_confirmed_by = table.Column<Guid>(type: "uuid", nullable: true),
+                    employee_acceptance_required = table.Column<bool>(type: "boolean", nullable: false, defaultValue: true),
                     hold_reason = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: true),
+                    held_from_state = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: true),
                     renewal_batch_id = table.Column<Guid>(type: "uuid", nullable: true),
                     current_approval_request_id = table.Column<Guid>(type: "uuid", nullable: true),
                     offer_version = table.Column<short>(type: "smallint", nullable: false),
@@ -310,6 +314,8 @@ namespace Zayra.Api.Migrations
                     table.CheckConstraint("ck_contract_renewal_cases__deadlines_once_confirmed", "state IN ('NeedsConfirmation','OnHold','Cancelled') OR notice_due_on IS NOT NULL");
                     table.CheckConstraint("ck_contract_renewal_cases__employee_response", "employee_response IS NULL OR (employee_response IN ('Accepted','Declined','NoResponse') AND employee_responded_at IS NOT NULL AND response_channel IS NOT NULL)");
                     table.CheckConstraint("ck_contract_renewal_cases__fallback_if_rejected", "fallback_if_rejected IS NULL OR fallback_if_rejected IN ('RenewAsIs','NonRenew')");
+                    table.CheckConstraint("ck_contract_renewal_cases__held_from_state", "held_from_state IS NULL OR held_from_state IN ('NeedsConfirmation','Open','AwaitingManager','OfferInPreparation','InApproval','OfferSent','Accepted','QiwaPending','ReadyToApply')");
+                    table.CheckConstraint("ck_contract_renewal_cases__hold_iff_held_from", "(state = 'OnHold') = (held_from_state IS NOT NULL)");
                     table.CheckConstraint("ck_contract_renewal_cases__hold_iff_reason", "(state = 'OnHold') = (hold_reason IS NOT NULL)");
                     table.CheckConstraint("ck_contract_renewal_cases__hold_reason", "hold_reason IS NULL OR hold_reason IN ('Resignation','UnpaidLeave','Abroad','Transfer','LabourDispute')");
                     table.CheckConstraint("ck_contract_renewal_cases__non_renewed_on_time", "state <> 'NonRenewed' OR (non_renewal_notice_served_on IS NOT NULL AND notice_due_on IS NOT NULL AND non_renewal_notice_served_on <= notice_due_on)");
@@ -317,11 +323,13 @@ namespace Zayra.Api.Migrations
                     table.CheckConstraint("ck_contract_renewal_cases__notice_channel", "non_renewal_notice_channel IS NULL OR non_renewal_notice_channel IN ('Qiwa','Written')");
                     table.CheckConstraint("ck_contract_renewal_cases__offer_before_notice", "offer_due_on IS NULL OR notice_due_on IS NULL OR offer_due_on < notice_due_on");
                     table.CheckConstraint("ck_contract_renewal_cases__offer_version", "offer_version >= 0");
+                    table.CheckConstraint("ck_contract_renewal_cases__paper_response_two_people", "response_channel IS NULL OR response_channel <> 'PaperUpload' OR employee_response_confirmed_by IS NULL OR (employee_responded_by_user_id IS NOT NULL AND employee_response_confirmed_by <> employee_responded_by_user_id)");
                     table.CheckConstraint("ck_contract_renewal_cases__qiwa_attempts", "qiwa_attempts >= 0");
                     table.CheckConstraint("ck_contract_renewal_cases__qiwa_evidence_outcome", "qiwa_evidence_outcome IS NULL OR qiwa_evidence_outcome IN ('Approved','Rejected','ChangesRequested','NoResponse')");
                     table.CheckConstraint("ck_contract_renewal_cases__qiwa_evidence_two_people", "qiwa_evidence_verified_by IS NULL OR (qiwa_evidence_recorded_by IS NOT NULL AND qiwa_evidence_verified_by <> qiwa_evidence_recorded_by)");
                     table.CheckConstraint("ck_contract_renewal_cases__recommended_action", "recommended_action IS NULL OR recommended_action IN ('RenewAsIs','RenewWithChanges','ConvertIndefinite','NonRenew')");
                     table.CheckConstraint("ck_contract_renewal_cases__response_channel", "response_channel IS NULL OR response_channel IN ('ESS','PaperUpload')");
+                    table.CheckConstraint("ck_contract_renewal_cases__response_document_is_paper", "employee_response_document_id IS NULL OR (response_channel IS NOT NULL AND response_channel = 'PaperUpload')");
                     table.CheckConstraint("ck_contract_renewal_cases__state", "state IN ('NeedsConfirmation','Open','AwaitingManager','OfferInPreparation','InApproval','OfferSent','Accepted','QiwaPending','ReadyToApply','Applied','NonRenewed','Cancelled','OnHold')");
                     table.CheckConstraint("ck_contract_renewal_cases__term_months", "term_months IS NULL OR term_months > 0");
                     table.CheckConstraint("ck_contract_renewal_cases__worker_nationality_class", "worker_nationality_class IN ('Saudi','NonSaudi')");
@@ -354,6 +362,12 @@ namespace Zayra.Api.Migrations
                         columns: x => new { x.tenant_id, x.employee_id, x.resulting_contract_id },
                         principalTable: "employee_contracts",
                         principalColumns: new[] { "tenant_id", "employee_id", "id" },
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_contract_renewal_cases_employee_documents_tenant_id_employe~",
+                        columns: x => new { x.tenant_id, x.employee_response_document_id },
+                        principalTable: "employee_documents",
+                        principalColumns: new[] { "tenant_id", "id" },
                         onDelete: ReferentialAction.Restrict);
                     table.ForeignKey(
                         name: "FK_contract_renewal_cases_employee_documents_tenant_id_non_ren~",
@@ -693,6 +707,11 @@ namespace Zayra.Api.Migrations
                 name: "IX_contract_renewal_cases_tenant_id_employee_id_resulting_cont~",
                 table: "contract_renewal_cases",
                 columns: new[] { "tenant_id", "employee_id", "resulting_contract_id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_contract_renewal_cases_tenant_id_employee_response_document~",
+                table: "contract_renewal_cases",
+                columns: new[] { "tenant_id", "employee_response_document_id" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_contract_renewal_cases_tenant_id_non_renewal_notice_documen~",
@@ -1327,18 +1346,79 @@ namespace Zayra.Api.Migrations
             """;
 
         /// <summary>
-        /// The money and legal path of the renewal state machine (rev T11), enforced by the database: a case is created
-        /// Open or NeedsConfirmation; a closed case never moves again; Accepted only from OfferSent, by the employee's
-        /// response to the offer version that was sent (the sha cannot change on the way in); Applied only from
-        /// ReadyToApply with its result, its idempotency key and — when a Qiwa step is required — verified, approving
-        /// evidence; NonRenewed only from ReadyToApply with a notice served by the notice date and its document.
+        /// The money and legal path of the renewal state machine (rev T11), enforced by the database:
+        /// <list type="bullet">
+        /// <item>a case is created Open or NeedsConfirmation, for the company and tenant of its expiring contract, and
+        /// its identity (tenant, company, employee, expiring contract) never changes;</item>
+        /// <item>a closed case never changes at all; a hold records where it came from, keeps that while held, and is
+        /// released back there (or cancelled);</item>
+        /// <item>Accepted only from OfferSent, by a response to the offer version that was sent — in the app by the
+        /// employee, or on paper with the signed document confirmed by a second user;</item>
+        /// <item>ReadyToApply only from Accepted when no Qiwa step is required, or from QiwaPending with verified approving
+        /// evidence when a Qiwa step is required (renewal; T16) — or with none when it is not (fast-lane RenewAsIs with
+        /// both counsel toggles off; T16b) — or a notice served by the notice date (non-renewal);</item>
+        /// <item>Applied only from ReadyToApply, with its result and idempotency key, an Approved approval whose payload
+        /// hash is the offer's (or an Approved batch), the employee's acceptance unless it was waived, and verified Qiwa
+        /// evidence when required; NonRenewed only from ReadyToApply, approved, with the notice served on time.</item>
+        /// </list>
+        /// Errors start with a block-reason code from ReleaseABlockReasons (or RENEWAL_TRANSITION) for the API to map.
         /// </summary>
         internal const string CreateRenewalTransitionGuardSql = """
             CREATE OR REPLACE FUNCTION contract_renewal_cases_transition_guard() RETURNS trigger LANGUAGE plpgsql AS $fn$
+            DECLARE
+                a record;
             BEGIN
                 IF TG_OP = 'INSERT' THEN
                     IF NEW.state NOT IN ('Open', 'NeedsConfirmation') THEN
                         RAISE EXCEPTION 'RENEWAL_TRANSITION: a renewal case opens as Open or NeedsConfirmation, not %', NEW.state
+                            USING ERRCODE = '23514';
+                    END IF;
+                    PERFORM 1 FROM employee_contracts c
+                     WHERE c.tenant_id = NEW.tenant_id AND c.employee_id = NEW.employee_id AND c.id = NEW.expiring_contract_id
+                       AND c.company_id = NEW.company_id;
+                    IF NOT FOUND THEN
+                        RAISE EXCEPTION 'RENEWAL_NO_COMPANY: case % is not for the company on its expiring contract', NEW.id
+                            USING ERRCODE = '23514';
+                    END IF;
+                    PERFORM 1 FROM companies co WHERE co.id = NEW.company_id AND co.tenant_id = NEW.tenant_id;
+                    IF NOT FOUND THEN
+                        RAISE EXCEPTION 'RENEWAL_NO_COMPANY: case % names a company of another tenant', NEW.id
+                            USING ERRCODE = '23514';
+                    END IF;
+                    RETURN NEW;
+                END IF;
+
+                IF (NEW.tenant_id, NEW.company_id, NEW.employee_id, NEW.expiring_contract_id)
+                   IS DISTINCT FROM (OLD.tenant_id, OLD.company_id, OLD.employee_id, OLD.expiring_contract_id) THEN
+                    RAISE EXCEPTION 'RENEWAL_TRANSITION: the tenant, company, employee and expiring contract of case % are fixed', OLD.id
+                        USING ERRCODE = '23514';
+                END IF;
+                -- A closed case is history: nothing on it changes (there are no audit-only columns on this table; the
+                -- audit trail lives in audit_logs). next_hard_deadline is generated, so it is left out of the comparison.
+                IF OLD.state IN ('Applied', 'NonRenewed', 'Cancelled') THEN
+                    IF (to_jsonb(NEW) - 'next_hard_deadline') IS DISTINCT FROM (to_jsonb(OLD) - 'next_hard_deadline') THEN
+                        RAISE EXCEPTION 'RENEWAL_TRANSITION: case % is closed (%) and cannot change', OLD.id, OLD.state
+                            USING ERRCODE = '23514';
+                    END IF;
+                    RETURN NEW;
+                END IF;
+                IF OLD.state = 'OnHold' THEN
+                    IF NEW.state = 'OnHold' THEN
+                        IF NEW.held_from_state IS DISTINCT FROM OLD.held_from_state THEN
+                            RAISE EXCEPTION 'RENEWAL_TRANSITION: case % stays held from % until it is released', OLD.id, OLD.held_from_state
+                                USING ERRCODE = '23514';
+                        END IF;
+                        RETURN NEW;
+                    END IF;
+                    IF NEW.state <> 'Cancelled' AND NEW.state IS DISTINCT FROM OLD.held_from_state THEN
+                        RAISE EXCEPTION 'RENEWAL_TRANSITION: case % was held from % and is released back there, not to %', OLD.id, OLD.held_from_state, NEW.state
+                            USING ERRCODE = '23514';
+                    END IF;
+                    RETURN NEW;
+                END IF;
+                IF NEW.state = 'OnHold' THEN
+                    IF NEW.held_from_state IS DISTINCT FROM OLD.state THEN
+                        RAISE EXCEPTION 'RENEWAL_TRANSITION: a hold on case % must record the state it was taken from (%)', OLD.id, OLD.state
                             USING ERRCODE = '23514';
                     END IF;
                     RETURN NEW;
@@ -1346,44 +1426,100 @@ namespace Zayra.Api.Migrations
                 IF NEW.state IS NOT DISTINCT FROM OLD.state THEN
                     RETURN NEW;
                 END IF;
-                IF OLD.state IN ('Applied', 'NonRenewed', 'Cancelled') THEN
-                    RAISE EXCEPTION 'RENEWAL_TRANSITION: case % is closed (%) and cannot move to %', OLD.id, OLD.state, NEW.state
-                        USING ERRCODE = '23514';
-                END IF;
+
                 IF NEW.state = 'Accepted' THEN
-                    IF OLD.state <> 'OfferSent'
-                       OR NEW.employee_response IS DISTINCT FROM 'Accepted'
-                       OR NEW.employee_responded_at IS NULL OR NEW.response_channel IS NULL
-                       OR NEW.offer_sha256 IS NULL OR NEW.offer_sha256 IS DISTINCT FROM OLD.offer_sha256 THEN
-                        RAISE EXCEPTION 'RENEWAL_TRANSITION: case % can be accepted only from OfferSent, by a response to the offer that was sent', OLD.id
+                    IF OLD.state <> 'OfferSent' OR NEW.employee_response IS DISTINCT FROM 'Accepted'
+                       OR NEW.employee_responded_at IS NULL OR NEW.employee_responded_by_user_id IS NULL OR NEW.response_channel IS NULL THEN
+                        RAISE EXCEPTION 'RENEWAL_TRANSITION: case % can be accepted only from OfferSent, by a recorded response', OLD.id
                             USING ERRCODE = '23514';
                     END IF;
-                ELSIF NEW.state = 'Applied' THEN
-                    IF OLD.state <> 'ReadyToApply'
-                       OR NEW.contract_action IS NULL OR NEW.contract_action NOT IN ('RenewAsIs', 'RenewWithChanges', 'ConvertIndefinite')
-                       OR NEW.resulting_contract_id IS NULL OR NEW.applied_by IS NULL OR NEW.applied_at IS NULL
-                       OR NEW.apply_idempotency_key IS NULL THEN
-                        RAISE EXCEPTION 'RENEWAL_TRANSITION: case % can be applied only from ReadyToApply, with its new term and an idempotency key', OLD.id
+                    IF NEW.offer_sha256 IS NULL OR NEW.offer_sha256 IS DISTINCT FROM OLD.offer_sha256 THEN
+                        RAISE EXCEPTION 'RENEWAL_OFFER_STALE: case % was accepted against an offer version that was not the one sent', OLD.id
                             USING ERRCODE = '23514';
                     END IF;
-                    IF NEW.qiwa_required AND (NEW.qiwa_evidence_document_id IS NULL OR NEW.qiwa_evidence_verified_by IS NULL
-                                              OR NEW.qiwa_evidence_outcome IS DISTINCT FROM 'Approved') THEN
-                        RAISE EXCEPTION 'RENEWAL_TRANSITION: case % needs verified Qiwa evidence of approval before it is applied', OLD.id
+                    IF NEW.response_channel = 'PaperUpload'
+                       AND (NEW.employee_response_document_id IS NULL OR NEW.employee_response_confirmed_by IS NULL
+                            OR NEW.employee_response_confirmed_by = NEW.employee_responded_by_user_id) THEN
+                        RAISE EXCEPTION 'RENEWAL_TRANSITION: a paper acceptance on case % needs the signed document and a second user''s confirmation', OLD.id
                             USING ERRCODE = '23514';
                     END IF;
-                ELSIF NEW.state = 'NonRenewed' THEN
-                    IF OLD.state <> 'ReadyToApply' OR NEW.contract_action IS DISTINCT FROM 'NonRenew'
-                       OR NEW.non_renewal_notice_served_on IS NULL OR NEW.notice_due_on IS NULL
-                       OR NEW.non_renewal_notice_served_on > NEW.notice_due_on OR NEW.non_renewal_notice_document_id IS NULL THEN
-                        RAISE EXCEPTION 'RENEWAL_TRANSITION: case % can end in non-renewal only from ReadyToApply, with notice served by the notice date', OLD.id
+                ELSIF NEW.state = 'ReadyToApply' THEN
+                    IF OLD.state = 'Accepted' THEN
+                        IF NEW.qiwa_required THEN
+                            RAISE EXCEPTION 'APPLY_QIWA_EVIDENCE_MISSING: case % needs its Qiwa step before it is ready to apply', OLD.id
+                                USING ERRCODE = '23514';
+                        END IF;
+                    ELSIF OLD.state = 'QiwaPending' THEN
+                        IF NEW.contract_action = 'NonRenew' THEN
+                            IF NEW.non_renewal_notice_served_on IS NULL OR NEW.notice_due_on IS NULL
+                               OR NEW.non_renewal_notice_served_on > NEW.notice_due_on THEN
+                                RAISE EXCEPTION 'RENEWAL_NOTICE_SERVED_LATE: case % has no non-renewal notice served by the notice date', OLD.id
+                                    USING ERRCODE = '23514';
+                            END IF;
+                        ELSIF NEW.qiwa_required AND (NEW.qiwa_evidence_document_id IS NULL OR NEW.qiwa_evidence_verified_by IS NULL
+                              OR NEW.qiwa_evidence_outcome IS DISTINCT FROM 'Approved') THEN
+                            RAISE EXCEPTION 'APPLY_QIWA_EVIDENCE_MISSING: case % needs verified Qiwa evidence of approval', OLD.id
+                                USING ERRCODE = '23514';
+                        END IF;
+                    ELSE
+                        RAISE EXCEPTION 'RENEWAL_TRANSITION: case % becomes ready to apply only from Accepted or QiwaPending, not %', OLD.id, OLD.state
                             USING ERRCODE = '23514';
+                    END IF;
+                ELSIF NEW.state IN ('Applied', 'NonRenewed') THEN
+                    IF OLD.state <> 'ReadyToApply' THEN
+                        RAISE EXCEPTION 'RENEWAL_TRANSITION: case % is applied only from ReadyToApply, not %', OLD.id, OLD.state
+                            USING ERRCODE = '23514';
+                    END IF;
+                    IF NEW.current_approval_request_id IS NOT NULL THEN
+                        SELECT status, payload_sha256 INTO a FROM approval_requests
+                         WHERE tenant_id = NEW.tenant_id AND id = NEW.current_approval_request_id;
+                        IF a.status IS DISTINCT FROM 'Approved' OR a.payload_sha256 IS DISTINCT FROM NEW.offer_sha256 THEN
+                            RAISE EXCEPTION 'RENEWAL_OFFER_STALE: case % was not approved in the version being applied', OLD.id
+                                USING ERRCODE = '23514';
+                        END IF;
+                    ELSIF NEW.renewal_batch_id IS NOT NULL THEN
+                        SELECT status INTO a FROM approval_requests WHERE tenant_id = NEW.tenant_id AND id = NEW.renewal_batch_id;
+                        IF a.status IS DISTINCT FROM 'Approved' THEN
+                            RAISE EXCEPTION 'RENEWAL_TRANSITION: the batch approval of case % is not approved', OLD.id
+                                USING ERRCODE = '23514';
+                        END IF;
+                    ELSE
+                        RAISE EXCEPTION 'RENEWAL_TRANSITION: case % has no approval to apply', OLD.id
+                            USING ERRCODE = '23514';
+                    END IF;
+                    IF NEW.state = 'Applied' THEN
+                        IF NEW.contract_action IS NULL OR NEW.contract_action NOT IN ('RenewAsIs', 'RenewWithChanges', 'ConvertIndefinite')
+                           OR NEW.resulting_contract_id IS NULL OR NEW.applied_by IS NULL OR NEW.applied_at IS NULL
+                           OR NEW.apply_idempotency_key IS NULL THEN
+                            RAISE EXCEPTION 'RENEWAL_TRANSITION: case % is applied with its new term, its applier and an idempotency key', OLD.id
+                                USING ERRCODE = '23514';
+                        END IF;
+                        IF NEW.employee_acceptance_required AND NEW.employee_response IS DISTINCT FROM 'Accepted' THEN
+                            RAISE EXCEPTION 'RENEWAL_TRANSITION: case % needs the employee''s acceptance before it is applied', OLD.id
+                                USING ERRCODE = '23514';
+                        END IF;
+                        IF NEW.qiwa_required AND (NEW.qiwa_evidence_document_id IS NULL OR NEW.qiwa_evidence_verified_by IS NULL
+                                                  OR NEW.qiwa_evidence_outcome IS DISTINCT FROM 'Approved') THEN
+                            RAISE EXCEPTION 'APPLY_QIWA_EVIDENCE_MISSING: case % needs verified Qiwa evidence of approval before it is applied', OLD.id
+                                USING ERRCODE = '23514';
+                        END IF;
+                    ELSE
+                        IF NEW.contract_action IS DISTINCT FROM 'NonRenew' OR NEW.non_renewal_notice_document_id IS NULL THEN
+                            RAISE EXCEPTION 'RENEWAL_TRANSITION: case % ends in non-renewal only as a NonRenew action with its notice document', OLD.id
+                                USING ERRCODE = '23514';
+                        END IF;
+                        IF NEW.non_renewal_notice_served_on IS NULL OR NEW.notice_due_on IS NULL
+                           OR NEW.non_renewal_notice_served_on > NEW.notice_due_on THEN
+                            RAISE EXCEPTION 'RENEWAL_NOTICE_SERVED_LATE: case % has no non-renewal notice served by the notice date', OLD.id
+                                USING ERRCODE = '23514';
+                        END IF;
                     END IF;
                 END IF;
                 RETURN NEW;
             END
             $fn$;
             CREATE TRIGGER trg_contract_renewal_cases__transition_guard
-                BEFORE INSERT OR UPDATE OF state ON contract_renewal_cases
+                BEFORE INSERT OR UPDATE ON contract_renewal_cases
                 FOR EACH ROW EXECUTE FUNCTION contract_renewal_cases_transition_guard();
             """;
     }

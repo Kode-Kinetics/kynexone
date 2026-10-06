@@ -68,10 +68,15 @@ function Wait({ r }: { r: Row }) {
   return (
     <span className="flex w-full max-w-[140px] flex-col gap-1">
       <span className={`text-xs font-semibold tabular-nums ${r.over ? 'text-rose-700 dark:text-rose-400' : 'text-slate-800 dark:text-slate-200'}`}>
-        {ageLabel(r.ageH)}
-        <span className="font-normal text-slate-600 dark:text-slate-400">
-          {r.hasDue ? (r.over ? `, ${ageLabel(-(r.dueH as number))} ${t('overdue')}` : `, ${t('due in')} ${ageLabel(r.dueH as number)}`) : r.over ? ` (${t('over 3 days')})` : ''}
-        </span>
+        {ageLabel(r.ageH, t)}
+        {(r.hasDue || r.over) && (
+          <span className="font-normal text-slate-600 dark:text-slate-400">
+            {' · '}
+            {r.hasDue
+              ? (r.over ? t('{time} overdue', { time: ageLabel(-(r.dueH as number), t) }) : t('Due in {time}', { time: ageLabel(r.dueH as number, t) }))
+              : t('Over 3 days')}
+          </span>
+        )}
       </span>
       <span className="block h-[5px] rounded-full bg-[color:var(--viz-track)]" aria-hidden>
         <span className="block h-[5px] rounded-full" ref={(n) => { if (n) { n.style.width = `${Math.max(4, pct * 100)}%`; n.style.background = bar; } }} />
@@ -96,8 +101,10 @@ export function ApprovalsTable({ queue, pending, loading, compact, dense = false
           </h2>
           {!loading && rows.length > 0 && (
             <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-400">
-              {overCount > 0 ? `${overCount} ${anyDue ? t('past their due date') : t('waiting over 3 days')}. ` : ''}
-              {t('Oldest waiting')} {ageLabel(rows[0].ageH)}.
+              {overCount > 0 ? `${anyDue
+                ? t('{count, plural, one {# is past its due date.} other {# are past their due date.}}', { count: overCount })
+                : t('{count, plural, one {# has waited over 3 days.} other {# have waited over 3 days.}}', { count: overCount })} ` : ''}
+              {t('Oldest waiting {age}.', { age: ageLabel(rows[0].ageH, t) })}
             </p>
           )}
         </div>
@@ -119,7 +126,7 @@ export function ApprovalsTable({ queue, pending, loading, compact, dense = false
               <span className="flex min-w-0 flex-1 flex-col gap-1">
                 <span className="truncate text-sm font-semibold text-slate-900 dark:text-white">{r.name}</span>
                 <span className="flex flex-wrap items-center gap-1.5 text-xs">
-                  <span className={`rounded-full px-2 py-0.5 font-semibold ${CHIP[r.chip]}`}>{r.kind}</span>
+                  <span className={`rounded-full px-2 py-0.5 font-semibold ${CHIP[r.chip]}`}>{t(r.kind)}</span>
                   {r.detail && <span className="text-slate-700 dark:text-slate-300">{r.detail}</span>}
                 </span>
                 <Wait r={r} />
@@ -155,7 +162,7 @@ export function ApprovalsTable({ queue, pending, loading, compact, dense = false
                   </td>
                   <td className="pe-3">
                     <span className="flex flex-col items-start gap-1">
-                      <span title={r.kind} className={`max-w-full truncate rounded-full px-2 py-0.5 text-xs font-semibold ${CHIP[r.chip]}`}>{r.kind}</span>
+                      <span title={t(r.kind)} className={`max-w-full truncate rounded-full px-2 py-0.5 text-xs font-semibold ${CHIP[r.chip]}`}>{t(r.kind)}</span>
                       {r.detail && <span className="text-xs text-slate-700 dark:text-slate-300 2xl:hidden">{r.detail}</span>}
                     </span>
                   </td>
@@ -163,7 +170,7 @@ export function ApprovalsTable({ queue, pending, loading, compact, dense = false
                   <td className="pe-3"><Wait r={r} /></td>
                   <td className="text-end">
                     <Link href="/approvals" className="wg-press inline-flex h-8 items-center rounded-lg border border-indigo-200 px-2.5 text-xs font-semibold text-indigo-800 hover:bg-indigo-50 dark:border-indigo-400/30 dark:text-indigo-200 dark:hover:bg-indigo-500/10">
-                      {t('Review')}<span className="sr-only"> {r.kind} {t('for')} {r.name}</span>
+                      {t('Review')}<span className="sr-only"> {t('{kind} for {name}', { kind: t(r.kind), name: r.name })}</span>
                     </Link>
                   </td>
                 </tr>
@@ -172,7 +179,7 @@ export function ApprovalsTable({ queue, pending, loading, compact, dense = false
           </table>
           {pending > Math.min(rows.length, dense ? 4 : 6) && (
             <Link href="/approvals" className="mt-2 inline-flex items-center gap-1 text-[13px] font-semibold text-sapphire hover:underline dark:text-blue-300">
-              {t('View all')} {pending} <ArrowRight className="h-3.5 w-3.5" aria-hidden />
+              {t('View all {count}', { count: pending })} <ArrowRight className="h-3.5 w-3.5" aria-hidden />
             </Link>
           )}
         </div>

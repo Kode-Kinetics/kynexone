@@ -22,6 +22,9 @@ public static class RenewalStateMachine
     private static readonly string[] NonTerminal =
         RenewalStates.All.Where(s => !RenewalStates.IsTerminal(s)).ToArray();
 
+    /// <summary>The states a case can be put on hold from — and therefore released back to (T19/T20).</summary>
+    public static readonly IReadOnlyList<string> Holdable = NonTerminal.Where(s => s != RenewalStates.OnHold).ToArray();
+
     /// <summary>Every legal transition, in plan order.</summary>
     public static readonly IReadOnlyList<Transition> Transitions = Build();
 
@@ -46,13 +49,19 @@ public static class RenewalStateMachine
             new("T14", RenewalStates.QiwaPending, RenewalStates.QiwaPending, "Resend after a lapse or no response"),
             new("T15", RenewalStates.QiwaPending, RenewalStates.OfferInPreparation, "Evidence shows the employee rejected or asked for changes in Qiwa"),
             new("T16", RenewalStates.QiwaPending, RenewalStates.ReadyToApply, "Evidence recorded by one user, verified by another"),
+            // Same pair as T16, its own row so the reason is on record: a fast-lane RenewAsIs approved straight to
+            // QiwaPending (T9) when both counsel toggles waive the Qiwa step has no evidence to wait for.
+            new("T16b", RenewalStates.QiwaPending, RenewalStates.ReadyToApply, "No Qiwa step required (qiwa_required = false)"),
             new("T17", RenewalStates.ReadyToApply, RenewalStates.Applied, "Apply (Idempotency-Key)"),
             new("T18", RenewalStates.ReadyToApply, RenewalStates.NonRenewed, "Apply non-renewal; notice served on time"),
-            new("T20", RenewalStates.OnHold, RenewalStates.Open, "HR releases the hold"),
         };
-        // T19: any non-terminal state → OnHold (with a hold reason). T21: any non-terminal state → Cancelled.
-        foreach (var from in NonTerminal.Where(s => s != RenewalStates.OnHold))
-            list.Add(new("T19", from, RenewalStates.OnHold, "HR puts the case on hold (hold_reason)"));
+        // T19: any non-terminal state → OnHold (hold_reason, held_from_state = that state).
+        // T20: OnHold → exactly the state it was held from (never skipping T2 for an unconfirmed case).
+        // T21: any non-terminal state → Cancelled.
+        foreach (var from in Holdable)
+            list.Add(new("T19", from, RenewalStates.OnHold, "HR puts the case on hold (hold_reason; held_from_state records where from)"));
+        foreach (var back in Holdable)
+            list.Add(new("T20", RenewalStates.OnHold, back, "HR releases the hold back to held_from_state"));
         foreach (var from in NonTerminal)
             list.Add(new("T21", from, RenewalStates.Cancelled, "Separation, transfer, termination or supersede"));
         return list;
@@ -73,7 +82,19 @@ public static class RenewalStateMachine
     public static IReadOnlyList<string> NextStates(string from) =>
         Transitions.Where(t => t.From == from).Select(t => t.To).Distinct().ToList();
 
-    /// <summary>Throws <see cref="RenewalTransitionException"/> unless <paramref name="from"/> → <paramref name="to"/> is in the table.</summary>
+    /// <summary>
+    /// The only legal release of a hold: back to <paramref name="heldFromState"/> (T20). Throws when the case is not
+    /// on hold or the recorded state is not one a hold can come from. Use it instead of choosing a target state.
+    /// </summary>
+    public static string ReleaseTarget(string currentState, string? heldFromState)
+    {
+        if (currentState != RenewalStates.OnHold || heldFromState is null || !Holdable.Contains(heldFromState))
+            throw new RenewalTransitionException(currentState, heldFromState ?? "(unknown)");
+        return heldFromState;
+    }
+
+    /// <summary>Throws <see cref="RenewalTransitionException"/> unless <paramref name="from"/> → <paramref name="to"/> is in the table.
+    /// For a release from OnHold use <see cref="ReleaseTarget"/>: the table allows every holdable state, the case only one.</summary>
     public static Transition EnsureCanTransition(string from, string to) =>
         Find(from, to) ?? throw new RenewalTransitionException(from, to);
 

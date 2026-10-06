@@ -7,7 +7,8 @@ namespace Zayra.Api.Tests.ReleaseA;
 /// <summary>
 /// The 13-state renewal machine (plan §1.3). The expected table is written out here independently of the
 /// implementation, so a transition added to or dropped from <see cref="RenewalStateMachine"/> fails this test:
-/// every legal pair passes, every one of the other 169 − 37 pairs throws.
+/// every legal pair passes, every one of the other 169 − 45 pairs throws. Round 2: a hold is released back to the
+/// state it came from (T20 to each holdable state, chosen by <see cref="RenewalStateMachine.ReleaseTarget"/>).
 /// </summary>
 public class RenewalStateMachineTests
 {
@@ -36,9 +37,10 @@ public class RenewalStateMachineTests
         (QP, RTA),         // T16
         (RTA, Applied),    // T17
         (RTA, NonRenewed), // T18
-        (Hold, Open),      // T20
         // T19: every non-terminal state except OnHold itself → OnHold
         (NC, Hold), (Open, Hold), (AM, Hold), (OIP, Hold), (IA, Hold), (OS, Hold), (Acc, Hold), (QP, Hold), (RTA, Hold),
+        // T20: OnHold → back to the state it was held from (each holdable state)
+        (Hold, NC), (Hold, Open), (Hold, AM), (Hold, OIP), (Hold, IA), (Hold, OS), (Hold, Acc), (Hold, QP), (Hold, RTA),
         // T21: every non-terminal state → Cancelled
         (NC, Cancelled), (Open, Cancelled), (AM, Cancelled), (OIP, Cancelled), (IA, Cancelled), (OS, Cancelled),
         (Acc, Cancelled), (QP, Cancelled), (RTA, Cancelled), (Hold, Cancelled),
@@ -52,7 +54,7 @@ public class RenewalStateMachineTests
     {
         RenewalStates.All.Should().HaveCount(13).And.OnlyHaveUniqueItems();
         RenewalStates.Terminal.Should().BeEquivalentTo([Applied, NonRenewed, Cancelled]);
-        Expected.Should().HaveCount(37).And.OnlyHaveUniqueItems();
+        Expected.Should().HaveCount(45).And.OnlyHaveUniqueItems();
     }
 
     [Theory]
@@ -73,6 +75,28 @@ public class RenewalStateMachineTests
     }
 
     [Fact]
+    public void TheTableHas48Rows_AndAWaivedQiwaStepCanReachReadyToApply()
+    {
+        // 2 × T1, T2–T18 (17), T16b, 9 × T19, 9 × T20, 10 × T21. Pairs: 45 (T16b shares T16's pair).
+        RenewalStateMachine.Transitions.Should().HaveCount(48);
+        RenewalStateMachine.Transitions.Where(t => t.From == QP && t.To == RTA).Select(t => t.Id).Should().Equal("T16", "T16b");
+        RenewalStateMachine.EnsureCanTransition(QP, RTA).Id.Should().Be("T16");
+    }
+
+    [Fact]
+    public void AHold_IsReleasedExactlyWhereItCameFrom()
+    {
+        RenewalStateMachine.ReleaseTarget(Hold, NC).Should().Be(NC, "an unconfirmed case never skips T2 by being held");
+        RenewalStateMachine.ReleaseTarget(Hold, IA).Should().Be(IA);
+        foreach (var bad in new (string Current, string? HeldFrom)[] { (Open, Open), (Hold, null), (Hold, Hold), (Hold, Applied) })
+        {
+            var act = () => RenewalStateMachine.ReleaseTarget(bad.Current, bad.HeldFrom);
+            act.Should().Throw<RenewalTransitionException>($"{bad.Current} held from {bad.HeldFrom ?? "nothing"}");
+        }
+        RenewalStateMachine.Holdable.Should().HaveCount(9).And.NotContain(Hold).And.NotContain(RenewalStates.Terminal);
+    }
+
+    [Fact]
     public void TerminalStates_HaveNoWayOut()
     {
         foreach (var terminal in RenewalStates.Terminal)
@@ -89,10 +113,13 @@ public class RenewalStateMachineTests
     [Fact]
     public void TheMoneyAndLegalPath_HasExactlyOneWayIn()
     {
-        // These three are also enforced by the database trigger; the machine must agree with it.
-        Expected.Where(t => t.To == Acc).Select(t => t.From).Should().Equal(OS);
-        Expected.Where(t => t.To == Applied).Select(t => t.From).Should().Equal(RTA);
-        Expected.Where(t => t.To == NonRenewed).Select(t => t.From).Should().Equal(RTA);
+        // These are also enforced by the database trigger; the machine must agree with it. A release from OnHold only
+        // returns a case to where it already was, so it is not a way in.
+        var forward = Expected.Where(t => t.From != Hold).ToList();
+        forward.Where(t => t.To == Acc).Select(t => t.From).Should().Equal(OS);
+        forward.Where(t => t.To == RTA).Select(t => t.From).Should().BeEquivalentTo([Acc, QP]);
+        forward.Where(t => t.To == Applied).Select(t => t.From).Should().Equal(RTA);
+        forward.Where(t => t.To == NonRenewed).Select(t => t.From).Should().Equal(RTA);
     }
 
     [Theory]
