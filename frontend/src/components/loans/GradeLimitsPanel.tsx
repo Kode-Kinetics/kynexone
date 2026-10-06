@@ -5,6 +5,7 @@ import { gradeLoanLimitsApi, type CompanyWithoutPolicy, type GradeLoanLimitRow }
 import type { LoanType } from '../../api/loans';
 import { useCompany } from '../../contexts/CompanyContext';
 import { useLocale } from '../../contexts/LocaleContext';
+import { useFormat } from '../../hooks/useFormat';
 import { useTenantSettings } from '../../contexts/TenantSettingsContext';
 import { loanErrorMessage, localDateToday } from '../../lib/loanWorkflow';
 import {
@@ -60,7 +61,8 @@ export function GradeLimitsPanel({ loanTypes, companies, initialLoanTypeId, onGr
   useEffect(() => { if (!isGroupScope && !companyId && companies[0]) setCompanyId(companies[0].id); }, [isGroupScope, companyId, companies]);
 
   const loanType = loanTypes.find(type => type.id === loanTypeId);
-  const money = useCallback((n: number) => n.toLocaleString('en-US', { style: 'currency', currency: currencyCode, maximumFractionDigits: 2 }), [currencyCode]);
+  const fx = useFormat();
+  const money = useCallback((n: number) => fx.money(n, currencyCode), [fx, currencyCode]);
 
   const applyRows = useCallback((rows: GradeLoanLimitRow[]) => {
     const next = [...rows].sort((a, b) => a.level - b.level).map(draftFromRow);
