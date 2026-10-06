@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Configuration;
 using Zayra.Api.Infrastructure.Qiwa;
 using Zayra.Api.Models;
 
@@ -37,19 +38,71 @@ public class QiwaController : ControllerBase
     public const string LiveNotConfiguredCode = "qiwa_live_adapter_not_configured";
 
     public const string LiveNotConfiguredMessage =
-        "This deployment is running the Qiwa SANDBOX SIMULATOR, which makes no network calls and "
-        + "files nothing with Qiwa or MHRSD. Saving a 'production' Qiwa configuration here would be "
-        + "stored but never applied, and the compliance screens would report filings that never "
-        + "happened. Set QIWA_USE_LIVE_ADAPTER=true on the API service and restart it, then save "
-        + "production credentials. Until then, configure the connection as 'sandbox'.";
+        "This server runs the Qiwa data check only: it makes no network calls and files nothing with "
+        + "Qiwa or MHRSD. Saving a 'production' Qiwa configuration here would be stored but never "
+        + "applied. Sending anything to Qiwa needs a signed Qiwa partner agreement recorded by the platform "
+        + "operator. Until then, keep the connection as 'sandbox' and record changes in Qiwa itself.";
+
+    /// <summary>Machine-readable code for "the OAuth credential form is switched off on this server".</summary>
+    public const string CredentialsDisabledCode = "qiwa_credentials_disabled";
+
+    public const string DataCheckNotice =
+        "Qiwa data check: this checks your employee records against what Qiwa requires. Nothing is sent "
+        + "to Qiwa or MHRSD, and no employee record is filed. Record contract and employee changes in "
+        + "Qiwa itself.";
 
     private readonly IQiwaIntegrationService _qiwa;
     private readonly IQiwaApiAdapter _adapter;
+    private readonly IConfiguration? _configuration;
 
-    public QiwaController(IQiwaIntegrationService qiwa, IQiwaApiAdapter adapter)
+    public QiwaController(IQiwaIntegrationService qiwa, IQiwaApiAdapter adapter, IConfiguration? configuration = null)
     {
         _qiwa = qiwa;
         _adapter = adapter;
+        _configuration = configuration;
+    }
+
+    /// <summary>
+    /// 501 when QIWA_USE_LIVE_ADAPTER asked for live calls and no partner agreement is on file. Every
+    /// endpoint that would send something to Qiwa checks this first, so the refused adapter is never
+    /// even asked.
+    /// </summary>
+    private IActionResult? RefuseIfLiveAdapterRefused()
+    {
+        if (_adapter is not RefusedLiveQiwaApiAdapter) return null;
+        return StatusCode(StatusCodes.Status501NotImplemented, new
+        {
+            code = QiwaLiveAdapterPolicy.RefusedCode,
+            message = QiwaLiveAdapterPolicy.RefusedMessage,
+            runtimeAdapter = _adapter.AdapterName,
+            filesWithQiwa = false,
+        });
+    }
+
+    /// <summary>Machine-readable code for "nothing can be sent to Qiwa from this server, so nothing is queued".</summary>
+    public const string SyncUnavailableCode = "qiwa_sync_unavailable";
+
+    public const string SyncUnavailableMessage =
+        "Nothing is sent to Qiwa from this server, so there is nothing to queue or retry. Use the Qiwa data "
+        + "check to see which employee records are incomplete, and record changes in Qiwa itself.";
+
+    /// <summary>
+    /// Sync, bulk sync and retry only make sense when the partner-agreement adapter is running. Without it,
+    /// a queued item could only ever end in a dead letter (and flip the connection to ConfigurationError for
+    /// want of credentials no one can enter), which reads as "Qiwa checks need attention" with nothing to
+    /// fix. So they are refused up front: 501 from the refused-live adapter (its own code), 409 otherwise.
+    /// </summary>
+    private IActionResult? RefuseIfNothingCanBeSent()
+    {
+        if (RefuseIfLiveAdapterRefused() is { } refusedLive) return refusedLive;
+        if (_adapter.IsLiveIntegration) return null;
+        return Conflict(new
+        {
+            code = SyncUnavailableCode,
+            message = SyncUnavailableMessage,
+            runtimeAdapter = _adapter.AdapterName,
+            filesWithQiwa = false,
+        });
     }
 
     /// <summary>
@@ -85,11 +138,11 @@ public class QiwaController : ControllerBase
         // two disagreed silently before: a tenant row could say "production" while the process had
         // only ever run the simulator. The screen needs the truth about what will actually happen.
         var live = _adapter.IsLiveIntegration;
-        var simulationNotice = live
-            ? null
-            : "Qiwa integration is running in SIMULATION. No employee record is filed with Qiwa or "
-              + "MHRSD, and no request leaves this server. Set QIWA_USE_LIVE_ADAPTER=true and supply "
-              + "live credentials to file for real.";
+        var simulationNotice = live ? null : DataCheckNotice;
+        // Operator-owned flag, default OFF. The OAuth form only makes sense once a partner agreement
+        // exists; until then it invites customers to paste secrets into a path that files nothing.
+        var credentialFormEnabled = QiwaLiveAdapterPolicy.CredentialFormEnabled(_configuration);
+        var liveAdapterRefused = _adapter is RefusedLiveQiwaApiAdapter;
 
         var connection = await _qiwa.GetConnectionStatusAsync(RequireTenant(), cancellationToken);
         if (connection is null)
@@ -101,6 +154,9 @@ public class QiwaController : ControllerBase
                 isLiveIntegration = live,
                 filesWithQiwa = live,
                 simulationNotice,
+                integrationMode = QiwaSyncLogStatuses.ModeLabel(live),
+                credentialFormEnabled,
+                liveAdapterRefused,
             });
 
         return Ok(new
@@ -121,6 +177,9 @@ public class QiwaController : ControllerBase
             isLiveIntegration = live,
             filesWithQiwa = live,
             simulationNotice,
+            integrationMode = QiwaSyncLogStatuses.ModeLabel(live),
+            credentialFormEnabled,
+            liveAdapterRefused,
             // Loud, specific case: the tenant believes it is configured for production and the
             // process cannot honour that. Stored configuration that no runtime path applies.
             configurationIgnored = !live
@@ -145,6 +204,8 @@ public class QiwaController : ControllerBase
         // Refuse BEFORE the write. Storing a production connection this process will never honour
         // is how a customer comes to believe their workforce is filed when it is not.
         if (RefuseIfLiveUnsupported(request.Environment) is { } refusal) return refusal;
+        if (string.Equals(request.Environment, "production", StringComparison.OrdinalIgnoreCase)
+            && RefuseIfLiveAdapterRefused() is { } refusedLive) return refusedLive;
 
         try
         {
@@ -169,6 +230,17 @@ public class QiwaController : ControllerBase
     public async Task<IActionResult> SaveCredentials([FromBody] QiwaCredentialRequest request, CancellationToken cancellationToken)
     {
         if (!HasPermission("qiwa.configure")) return Forbid();
+
+        if (!QiwaLiveAdapterPolicy.CredentialFormEnabled(_configuration))
+            return StatusCode(StatusCodes.Status501NotImplemented, new
+            {
+                code = CredentialsDisabledCode,
+                message = "Qiwa API credentials are not accepted on this server. Live Qiwa calls need a signed "
+                          + "partner agreement, and the platform operator has not switched credential entry on. "
+                          + "Nothing was saved.",
+                filesWithQiwa = false,
+            });
+        if (RefuseIfLiveAdapterRefused() is { } refusedLive) return refusedLive;
 
         if (string.IsNullOrWhiteSpace(request.ClientId) || string.IsNullOrWhiteSpace(request.ClientSecret))
             return BadRequest(new { error = "credentials_required", message = "ClientId and ClientSecret are required." });
@@ -238,7 +310,7 @@ public class QiwaController : ControllerBase
             summary.LastSimulatedSync,
             runtimeAdapter = _adapter.AdapterName,
             isLiveIntegration = live,
-            integrationMode = live ? "Live" : QiwaSyncLogStatuses.SimulatedLabel,
+            integrationMode = QiwaSyncLogStatuses.ModeLabel(live),
         });
     }
 
@@ -252,6 +324,7 @@ public class QiwaController : ControllerBase
     public async Task<IActionResult> EnqueueSync(int employeeId, [FromQuery] string direction = "Push", CancellationToken cancellationToken = default)
     {
         if (!HasPermission("qiwa.sync")) return Forbid();
+        if (RefuseIfNothingCanBeSent() is { } refused) return refused;
 
         if (direction is not ("Push" or "Pull"))
             return BadRequest(new { error = "invalid_direction", message = "Direction must be 'Push' or 'Pull'." });
@@ -287,6 +360,7 @@ public class QiwaController : ControllerBase
     public async Task<IActionResult> EnqueueBulkSync(CancellationToken cancellationToken)
     {
         if (!HasPermission("qiwa.sync")) return Forbid();
+        if (RefuseIfNothingCanBeSent() is { } refused) return refused;
 
         var result = await _qiwa.EnqueueBulkSyncAsync(
             RequireTenant(), "ManualBulk", GetUserId(), cancellationToken);
@@ -308,6 +382,7 @@ public class QiwaController : ControllerBase
     public async Task<IActionResult> RetryDeadLetter(Guid syncLogId, CancellationToken cancellationToken)
     {
         if (!HasPermission("qiwa.sync")) return Forbid();
+        if (RefuseIfNothingCanBeSent() is { } refused) return refused;
 
         try
         {

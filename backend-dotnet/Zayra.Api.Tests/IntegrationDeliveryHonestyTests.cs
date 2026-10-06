@@ -229,7 +229,7 @@ public sealed class IntegrationDeliveryHonestyTests
 
         json.Should().Contain("\"mode\":\"sandbox_adapter\"");
         json.Should().Contain("\"simulated\":true");
-        json.Should().Contain("Simulated (sandbox)");
+        json.Should().Contain("Qiwa data check only (nothing sent to Qiwa)");
     }
 
     // ── Qiwa: a simulator's result is never a Success ──────────────────────────────────────────
@@ -566,9 +566,9 @@ public sealed class IntegrationDeliveryHonestyTests
             await controller.GetComplianceSummary(CancellationToken.None)).Value, Web);
 
         logs.Should().NotContain("\"status\":\"Success\"");
-        System.Text.RegularExpressions.Regex.Matches(logs, "\"statusLabel\":\"Simulated \\(sandbox\\)\"").Count.Should().Be(2);
+        System.Text.RegularExpressions.Regex.Matches(logs, "\"statusLabel\":\"Qiwa data check only \\(nothing sent to Qiwa\\)\"").Count.Should().Be(2);
         logs.Should().Contain("\"filedWithQiwa\":false").And.NotContain("\"filedWithQiwa\":true");
-        summary.Should().Contain("\"lastSuccessfulSync\":null").And.Contain("\"integrationMode\":\"Simulated (sandbox)\"");
+        summary.Should().Contain("\"lastSuccessfulSync\":null").And.Contain("\"integrationMode\":\"Qiwa data check only (nothing sent to Qiwa)\"");
         summary.Should().Contain("\"isLiveIntegration\":false");
     }
 
@@ -593,7 +593,7 @@ public sealed class IntegrationDeliveryHonestyTests
         var simulated = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db),
             new SandboxQiwaApiAdapter(NullLogger<SandboxQiwaApiAdapter>.Instance)).BuildAsync(tenantId, CancellationToken.None);
         simulated.Qiwa.IsLiveIntegration.Should().BeFalse();
-        simulated.Qiwa.IntegrationMode.Should().Be("Simulated (sandbox)");
+        simulated.Qiwa.IntegrationMode.Should().Be("Qiwa data check only (nothing sent to Qiwa)");
         simulated.Qiwa.LastSuccessfulSync.Should().BeCloseTo(filedAt, TimeSpan.FromSeconds(1));
         simulated.Qiwa.LastSimulatedSync.Should().NotBeNull();
         simulated.ActionItems.Should().Contain(a => a.Id == "qiwa_simulated" && !a.CanAct);
@@ -601,7 +601,8 @@ public sealed class IntegrationDeliveryHonestyTests
         var live = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db), new LiveStubAdapter())
             .BuildAsync(tenantId, CancellationToken.None);
         live.Qiwa.IsLiveIntegration.Should().BeTrue();
-        live.Qiwa.IntegrationMode.Should().Be("Live");
+        live.Qiwa.IntegrationMode.Should().Be(QiwaSyncLogStatuses.PartnerIntegrationLabel);
+        live.Qiwa.IntegrationMode.Should().NotContain("Live").And.NotContain("Connected").And.NotContain("Synced");
         live.ActionItems.Should().NotContain(a => a.Id == "qiwa_simulated");
     }
 

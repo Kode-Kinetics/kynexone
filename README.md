@@ -4,6 +4,8 @@
 
 AI-Powered HRM and Workforce Operating System.
 
+Developed by [Kode Kinetics](https://www.kodekinetics.com/). Visit the company website for business enquiries; use this repository for technical documentation and development.
+
 ## Stack
 - Frontend: Next.js (App Router) + TypeScript + Tailwind CSS — deployed on Vercel
 - Enterprise API: .NET 8 Web API + EF Core — deployed on Render

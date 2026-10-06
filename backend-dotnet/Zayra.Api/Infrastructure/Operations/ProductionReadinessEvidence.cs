@@ -249,7 +249,11 @@ public static class ProductionReadinessEvidence
             .Select(_ => new
             {
                 QiwaPending = db.QiwaSyncLogs.Count(x => x.Status == QiwaSyncLogStatuses.Pending || x.Status == QiwaSyncLogStatuses.Processing),
-                QiwaDeadLetter = db.QiwaSyncLogs.Count(x => x.Status == QiwaSyncLogStatuses.DeadLetter),
+                // Credential-only dead letters (written before sync refused to queue unsendable work) are not
+                // an actionable check; see QiwaSyncLogStatuses.IsCredentialsDeadLetter.
+                QiwaDeadLetter = db.QiwaSyncLogs.Count(x => x.Status == QiwaSyncLogStatuses.DeadLetter
+                    && x.DeadLetterReason != QiwaSyncLogStatuses.MissingClientIdReason
+                    && x.DeadLetterReason != QiwaSyncLogStatuses.MissingSecretReason),
                 NotificationsPending = db.NotificationDeliveries.Count(x => x.Outcome == DeliveryOutcomes.Queued || x.Outcome == DeliveryOutcomes.Sending),
                 // Terminal failures that are NOT dead letters: refused on the first try, or unconfirmed.
                 NotificationsFailed = db.NotificationDeliveries.Count(x => x.Outcome == DeliveryOutcomes.Failed || x.Outcome == DeliveryOutcomes.Unknown),
@@ -316,19 +320,23 @@ public static class ProductionReadinessEvidence
     }
 
     /// <summary>The label every surface uses for the sandbox adapter's results. One string, one place.</summary>
-    public const string QiwaSimulatedLabel = "Simulated (sandbox)";
+    public const string QiwaSimulatedLabel = QiwaSyncLogStatuses.SimulatedLabel;
 
     public static DependencyMode QiwaDependency(IConfiguration config)
     {
-        var live = (config["QIWA_USE_LIVE_ADAPTER"] ?? Environment.GetEnvironmentVariable("QIWA_USE_LIVE_ADAPTER"))
-            ?.Equals("true", StringComparison.OrdinalIgnoreCase) == true;
         // F09: "sandbox_adapter / configured:false" read like a missing setting, not like a
-        // simulator producing results. It now says what it is.
-        return live
-            ? new DependencyMode("live_adapter", true)
-            : new DependencyMode("sandbox_adapter", false, Simulated: true,
+        // simulator producing results. It now says what it is — and the live switch alone is no longer
+        // "live": without a recorded partner agreement the live adapter is refused.
+        return Zayra.Api.Infrastructure.Qiwa.QiwaLiveAdapterPolicy.Decide(config) switch
+        {
+            Zayra.Api.Infrastructure.Qiwa.QiwaLiveAdapterPolicy.Mode.Live => new DependencyMode("live_adapter", true),
+            Zayra.Api.Infrastructure.Qiwa.QiwaLiveAdapterPolicy.Mode.RefusedLive => new DependencyMode("live_adapter_refused", false, Simulated: true,
+                Detail: $"{QiwaSimulatedLabel}: QIWA_USE_LIVE_ADAPTER is set but no Qiwa partner agreement is recorded, "
+                        + "so live calls are refused. No request reaches Qiwa and nothing is filed with MHRSD."),
+            _ => new DependencyMode("sandbox_adapter", false, Simulated: true,
                 Detail: $"{QiwaSimulatedLabel}: this server runs the Qiwa simulator. No request reaches Qiwa and "
-                        + "nothing is filed with MHRSD. Set QIWA_USE_LIVE_ADAPTER=true with live credentials to file for real.");
+                        + "nothing is filed with MHRSD. Live calls need a signed Qiwa partner agreement."),
+        };
     }
 
     /// <summary>
