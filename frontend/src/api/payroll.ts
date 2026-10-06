@@ -1,4 +1,5 @@
 import client from './client';
+import { requireList } from '../lib/listResponse';
 import { fetchAllPages } from '../lib/paging';
 import type { PagedResult } from './organization';
 
@@ -761,7 +762,7 @@ export const payrollApi = {
 
   // ── Payroll Command Center ────────────────────────────────────────────────
   listCompanies: () =>
-    client.get<PayrollCompany[]>('/api/payroll/companies').then((r) => r.data),
+    client.get<PayrollCompany[]>('/api/payroll/companies').then((r) => requireList<PayrollCompany>(r.data, 'payroll companies')),
 
   getOverview: (params: { companyId?: string; year?: number; month?: number } = {}) =>
     client.get<PayrollOverview>('/api/payroll/overview', { params }).then((r) => r.data),

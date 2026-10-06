@@ -5,21 +5,26 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { AppLayout } from '@/src/layouts/AppLayout';
 import { ModuleGate } from '@/src/components/ModuleGate';
+import { ServerUnreachable } from '@/src/components/ServerUnreachable';
 import { TenantSettingsProvider } from '@/src/contexts/TenantSettingsContext';
 import { CurrentCompanyProvider } from '@/src/contexts/CompanyContext';
 import { applyTheme, getStoredTheme } from '@/src/utils/theme';
 import type { ThemeMode } from '@/src/types/ui';
 
 function Shell({ children }: { children: React.ReactNode }) {
-  const { user, isLoading } = useAuth();
+  const { user, isLoading, authError, retryAuth } = useAuth();
   const router = useRouter();
   const [theme, setTheme] = useState<ThemeMode>(() => getStoredTheme());
 
   useEffect(() => { applyTheme(theme); }, [theme]);
 
+  // A failed session check that was NOT a 401 (offline, a deploy's 502s) keeps the session and
+  // shows the offline state below; only a signed-out user is sent to /login.
   useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
-  }, [isLoading, user, router]);
+    if (!isLoading && !user && !authError) router.replace('/login');
+  }, [isLoading, user, authError, router]);
+
+  if (!isLoading && !user && authError) return <ServerUnreachable reason={authError} onRetry={retryAuth} />;
 
   if (isLoading || !user) {
     return (

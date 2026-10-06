@@ -1,4 +1,5 @@
 import client from './client';
+import { requireList } from '../lib/listResponse';
 import { fetchAllPages } from '../lib/paging';
 import type { PagedResult } from './organization';
 
@@ -316,7 +317,7 @@ export interface LeaveDashboard {
 
 export const leaveTypesApi = {
   list: () =>
-    client.get<LeaveType[]>('/api/leave/types').then(r => r.data),
+    client.get<LeaveType[]>('/api/leave/types').then(r => requireList<LeaveType>(r.data, 'leave types')),
   create: (body: { code: string; nameEn: string; nameAr?: string; category: string; isPaid: boolean; isHalfDayAllowed: boolean; isHourlyAllowed: boolean; requiresAttachment: boolean; requiresReason: boolean; maxConsecutiveDays: number; colorCode?: string; sortOrder?: number }) =>
     client.post<LeaveType>('/api/leave/types', body).then(r => r.data),
   update: (id: string, body: object) =>

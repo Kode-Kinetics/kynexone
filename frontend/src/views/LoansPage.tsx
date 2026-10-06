@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { notifyApiError } from '../api/client';
+import { apiErrorReason, notifyApiError } from '../api/client';
 import { TransliterateButton } from '../components/TransliterateButton';
 import {
   CreditCard, DollarSign, Gift, Plus, CheckCircle, XCircle,
@@ -31,6 +31,7 @@ import { loanGovernanceApi, loanOfferingsApi, type LoanEligibility, type Offered
 import { useCompany } from '../contexts/CompanyContext';
 import { useLocale } from '../contexts/LocaleContext';
 import { LoanLimitCard } from '../components/loans/LoanLimitCard';
+import { LoadFailedRow } from '../components/ui/LoadFailedRow';
 import { fillTemplate, isGradeBlocked, isLoanTypeNotOffered, localName, reasonKeyFor } from '../lib/gradeLoanLimits';
 
 type Tab = 'loans' | 'loanPayments' | 'loanPolicies' | 'loanTypes' | 'advances' | 'advancePolicy' | 'bonusTypes' | 'bonusBatches' | 'auditReport';
@@ -173,9 +174,10 @@ function LoanTypesTab() {
 
   const fmt = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: currencyCode, minimumFractionDigits: 0, maximumFractionDigits: 0 });
 
+  const [loadError, setLoadError] = useState<unknown>(null);
   const load = useCallback(async () => {
     setLoading(true);
-    try { setItems(await loanTypesApi.list()); } catch { /**/ }
+    try { setItems(await loanTypesApi.list()); setLoadError(null); } catch (e) { setItems([]); setLoadError(e); }
     finally { setLoading(false); }
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -184,7 +186,7 @@ function LoanTypesTab() {
     if (!form.code.trim() || !form.nameEn.trim()) { setError('Code and name are required'); return; }
     setSaving(true); setError('');
     try { await loanTypesApi.create(form); setModalOpen(false); load(); }
-    catch { setError('Failed to save.'); }
+    catch (e) { setError(apiErrorReason(e, 'Failed to save.')); }
     finally { setSaving(false); }
   };
   const f = (key: string, v: string | boolean | number) => setForm(x => ({ ...x, [key]: v }));
@@ -209,6 +211,8 @@ function LoanTypesTab() {
             <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
               {loading ? (
                 <tr><td colSpan={9} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
+              ) : loadError != null ? (
+                <LoadFailedRow colSpan={9} error={loadError} onRetry={() => { void load(); }} />
               ) : items.length === 0 ? (
                 <tr><td colSpan={9} className="py-12 text-center text-slate-400">No loan types yet</td></tr>
               ) : items.map((t) => (
@@ -267,6 +271,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
   const fmt = (n: number, currency: string) => n.toLocaleString('en-US', { style: 'currency', currency });
   const [items, setItems] = useState<EmployeeLoan[]>([]);
   const [total, setTotal] = useState(0);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [loading, setLoading] = useState(true);
   const [filterStatus, setFilterStatus] = useState('');
   const [page, setPage] = useState(1);
@@ -362,7 +367,8 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
 
   const load = useCallback(async () => {
     setLoading(true);
-    try { const r = await loansApi.list({ mine, status: filterStatus || undefined, page, pageSize }); setItems(r.items); setTotal(r.total); } catch (e) { setError(loanErrorMessage(e, 'Unable to load loans.')); }
+    try { const r = await loansApi.list({ mine, status: filterStatus || undefined, page, pageSize }); setItems(r.items); setTotal(r.total); setLoadError(null); }
+    catch (e) { setItems([]); setTotal(0); setLoadError(e); } // the table's failed-load row says why and offers Retry
     finally { setLoading(false); }
   }, [filterStatus, page, mine]);
   useEffect(() => { load(); }, [load]);
@@ -451,6 +457,8 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
             <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
               {loading ? (
                 <tr><td colSpan={9} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
+              ) : loadError != null ? (
+                <LoadFailedRow colSpan={9} error={loadError} onRetry={() => { void load(); }} />
               ) : items.length === 0 ? (
                 <tr><td colSpan={9} className="py-12 text-center text-slate-400">No loans found</td></tr>
               ) : items.map((l) => (
@@ -686,7 +694,7 @@ function AdvancePolicyTab() {
   const save = async () => {
     setSaving(true); setError(''); setSuccess(false);
     try { const p = await advancePolicyApi.upsert(form); setPolicy(p); setForm({ ...p }); setSuccess(true); }
-    catch { setError('Failed to save policy.'); }
+    catch (e) { setError(apiErrorReason(e, 'Failed to save policy.')); }
     finally { setSaving(false); }
   };
   const f = (key: string, v: string | boolean | number) => setForm(x => ({ ...x, [key]: v }));
@@ -771,7 +779,7 @@ function AdvancesTab() {
     if (!selected) return;
     setSaving(true); setError('');
     try { await advancesApi.approve(selected.id, approveForm); setApproveModal(false); load(); }
-    catch { setError('Failed to approve.'); }
+    catch (e) { setError(apiErrorReason(e, 'Failed to approve.')); }
     finally { setSaving(false); }
   };
 
@@ -779,7 +787,7 @@ function AdvancesTab() {
     if (!selected) return;
     setSaving(true); setError('');
     try { await advancesApi.reject(selected.id, rejectReason); setRejectModal(false); load(); }
-    catch { setError('Failed to reject.'); }
+    catch (e) { setError(apiErrorReason(e, 'Failed to reject.')); }
     finally { setSaving(false); }
   };
 
@@ -1229,7 +1237,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
     if (!createForm.bonusTypeId || !createForm.batchName.trim() || !createForm.paymentPeriod.trim() || !createForm.paymentDate) { setError('All fields are required'); return; }
     setSaving(true); setError('');
     try { await bonusBatchesApi.create(createForm); setCreateModal(false); load(); }
-    catch { setError('Failed to create batch.'); }
+    catch (e) { setError(apiErrorReason(e, 'Failed to create batch.')); }
     finally { setSaving(false); }
   };
 
@@ -1245,7 +1253,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
       });
       setAddResult({ grossBonusAmount: r.grossBonusAmount, taxWithheld: r.taxWithheld, netBonusAmount: r.netBonusAmount });
       const d = await bonusBatchesApi.get(selected.batch.id); setSelected(d);
-    } catch { setError('Failed to add employee.'); }
+    } catch (e) { setError(apiErrorReason(e, 'Failed to add employee.')); }
     finally { setSaving(false); }
   };
 
@@ -1275,7 +1283,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
     if (!editBatchId) return;
     setSaving(true); setError('');
     try { await bonusBatchesApi.update(editBatchId, editBatchForm); setEditBatchModal(false); load(); }
-    catch { setError('Failed to update batch.'); }
+    catch (e) { setError(apiErrorReason(e, 'Failed to update batch.')); }
     finally { setSaving(false); }
   };
 
@@ -1303,7 +1311,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
       setBulkResult(r);
       const d = await bonusBatchesApi.get(selected.batch.id); setSelected(d);
       load();
-    } catch { setError('Bulk add failed.'); }
+    } catch (e) { setError(apiErrorReason(e, 'Bulk add failed.')); }
     finally { setSaving(false); }
   };
 

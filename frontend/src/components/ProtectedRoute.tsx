@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/src/contexts/AuthContext';
+import { ServerUnreachable } from '@/src/components/ServerUnreachable';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
@@ -10,12 +11,13 @@ interface ProtectedRouteProps {
 }
 
 export function ProtectedRoute({ children, requiredPermissions }: ProtectedRouteProps) {
-  const { user, isLoading, hasPermission } = useAuth();
+  const { user, isLoading, authError, retryAuth, hasPermission } = useAuth();
   const router = useRouter();
 
+  // Not a 401 (offline, a deploy's 502s): keep the session and show the offline state, never /login.
   useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
-  }, [isLoading, user, router]);
+    if (!isLoading && !user && !authError) router.replace('/login');
+  }, [isLoading, user, authError, router]);
 
   useEffect(() => {
     if (user && requiredPermissions?.length) {
@@ -23,6 +25,8 @@ export function ProtectedRoute({ children, requiredPermissions }: ProtectedRoute
       if (!hasAccess) router.replace('/dashboard');
     }
   }, [user, requiredPermissions, hasPermission, router]);
+
+  if (!isLoading && !user && authError) return <ServerUnreachable reason={authError} onRetry={retryAuth} />;
 
   if (isLoading || !user) {
     return (

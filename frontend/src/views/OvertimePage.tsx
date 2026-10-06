@@ -9,6 +9,8 @@ import { useEffect, useState } from 'react';
 import { usePagedList } from '../hooks/usePagedList';
 import { ListWindowFooter } from '../components/ListWindowFooter';
 import { requestFailureReason } from '../lib/requestFailure';
+import { apiErrorReason, notifyApiError } from '../api/client';
+import { LoadFailedNotice } from '../components/ui/LoadFailedRow';
 import {
   AlertTriangle, BarChart2, Calculator, CheckCircle2, Clock3, FileClock,
   Layers3, Plus, RefreshCw, Settings, TimerReset, TrendingUp,
@@ -434,12 +436,12 @@ function TeamOTTab() {
   const count = list.total ?? requests.length;
 
   const approve = async (r: OvertimeRequest) => {
-    try { await overtimeApi.approve(r.id, r.requestedMinutes, 'Approved'); load(); } catch { alert('Approval failed.'); }
+    try { await overtimeApi.approve(r.id, r.requestedMinutes, 'Approved'); load(); } catch (e) { notifyApiError(e, 'Approval failed.'); }
   };
   const reject = async (r: OvertimeRequest) => {
     const notes = prompt('Rejection reason:');
     if (notes === null) return;
-    try { await overtimeApi.reject(r.id, notes); load(); } catch { alert('Rejection failed.'); }
+    try { await overtimeApi.reject(r.id, notes); load(); } catch (e) { notifyApiError(e, 'Rejection failed.'); }
   };
 
   return (
@@ -492,6 +494,10 @@ function TeamOTTab() {
 
 function ApprovalsTab({ isAdmin, isHRManager, isManager }: { isAdmin: boolean; isHRManager: boolean; isManager: boolean }) {
   const isFinalApprover = isAdmin || isHRManager;
+  // Approve/forward and reject are `overtime.approve` on the API (OvertimeController). A Supervisor
+  // sees this queue but does not hold the key, so the buttons only ever returned 403.
+  const { hasPermission } = useAuth();
+  const canDecide = hasPermission('overtime.approve');
   const [requests, setRequests] = useState<OvertimeRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [approveModal, setApproveModal] = useState<OvertimeRequest | null>(null);
@@ -500,6 +506,8 @@ function ApprovalsTab({ isAdmin, isHRManager, isManager }: { isAdmin: boolean; i
   const [rejectModal, setRejectModal] = useState<OvertimeRequest | null>(null);
   const [rejectNotes, setRejectNotes] = useState('');
   const [saving, setSaving] = useState(false);
+  // A failed load says so; "No pending overtime approvals" after a failure would tell an approver the queue is clear.
+  const [loadError, setLoadError] = useState<unknown>(null);
 
   const load = async () => {
     setLoading(true);
@@ -515,7 +523,8 @@ function ApprovalsTab({ isAdmin, isHRManager, isManager }: { isAdmin: boolean; i
         const status = isHRManager ? 'PendingHR' : 'PendingManager';
         setRequests(await overtimeApi.allRequests({ status }));
       }
-    } catch { /* ignore */ }
+      setLoadError(null);
+    } catch (e) { setRequests([]); setLoadError(e); }
     setLoading(false);
   };
   useEffect(() => { load(); }, []);
@@ -534,7 +543,7 @@ function ApprovalsTab({ isAdmin, isHRManager, isManager }: { isAdmin: boolean; i
       await overtimeApi.approve(approveModal.id, mins, approveNotes || undefined);
       setApproveModal(null);
       load();
-    } catch { alert('Approval failed.'); }
+    } catch (e) { notifyApiError(e, 'Approval failed.'); }
     setSaving(false);
   };
 
@@ -545,7 +554,7 @@ function ApprovalsTab({ isAdmin, isHRManager, isManager }: { isAdmin: boolean; i
       await overtimeApi.reject(rejectModal.id, rejectNotes || undefined);
       setRejectModal(null);
       load();
-    } catch { alert('Rejection failed.'); }
+    } catch (e) { notifyApiError(e, 'Rejection failed.'); }
     setSaving(false);
   };
 
@@ -565,6 +574,8 @@ function ApprovalsTab({ isAdmin, isHRManager, isManager }: { isAdmin: boolean; i
 
       {loading ? (
         <p className="text-sm text-slate-400">Loading…</p>
+      ) : loadError != null ? (
+        <div className="surface"><LoadFailedNotice error={loadError} onRetry={() => { void load(); }} /></div>
       ) : requests.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <CheckCircle2 className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
@@ -596,12 +607,12 @@ function ApprovalsTab({ isAdmin, isHRManager, isManager }: { isAdmin: boolean; i
                   </div>
                   {r.reason && <p className="mt-2 text-xs text-slate-500">"{r.reason}"</p>}
                 </div>
-                <div className="flex shrink-0 gap-2">
+                {canDecide && <div className="flex shrink-0 gap-2">
                   <button type="button" className={btn.ghost} onClick={() => { setRejectModal(r); setRejectNotes(''); }}>Reject</button>
                   <button type="button" className={btn.primary} onClick={() => openApprove(r)}>
                     {isFinalApprover ? 'Approve' : 'Forward to HR'}
                   </button>
-                </div>
+                </div>}
               </div>
             </div>
           ))}
@@ -681,7 +692,7 @@ function CreatePolicyModal({ onClose, onSaved }: { onClose: () => void; onSaved:
   const save = async () => {
     if (!form.code || !form.name) { setError('Code and name are required.'); return; }
     setSaving(true); setError('');
-    try { await overtimeApi.createPolicy(form); onSaved(); } catch { setError('Save failed.'); setSaving(false); }
+    try { await overtimeApi.createPolicy(form); onSaved(); } catch (e) { setError(apiErrorReason(e, 'Save failed.')); setSaving(false); }
   };
 
   return (
