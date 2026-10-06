@@ -8,21 +8,33 @@
  * read as "not known to be live", never as live.
  */
 
-export const QIWA_SIMULATED_LABEL = 'Simulated (sandbox)';
+/** Matches the server's QiwaSyncLogStatuses.SimulatedLabel. A readiness check, never a filing. */
+export const QIWA_SIMULATED_LABEL = 'Qiwa data check only (nothing sent to Qiwa)';
 
-/** "Live" only when the server positively says it files with Qiwa. Absent or false is a simulation. */
+/** Only shown when the server runs a partner-agreement adapter. Never "Live". */
+export const QIWA_PARTNER_LABEL = 'Qiwa partner integration (agreement on file)';
+
+/**
+ * The integration mode as a screen shows it. Absent or false is a data check. No Qiwa label anywhere
+ * says "Live", "Connected", "Synced" or "Filed with Qiwa": the product has no verified Qiwa API.
+ */
 export function qiwaModeLabel(isLiveIntegration: boolean | null | undefined): string {
-  return isLiveIntegration === true ? 'Live' : QIWA_SIMULATED_LABEL;
+  return isLiveIntegration === true ? QIWA_PARTNER_LABEL : QIWA_SIMULATED_LABEL;
 }
 
-/** Connection badge text. The worker stores "Simulated"; it is never shortened to look like "Connected". */
-export function qiwaConnectionLabel(status: string): string {
+/**
+ * Connection badge text. Stored statuses are translated; none is shown raw. A stored "Connected" is
+ * only believed when the running server says it is a partner integration (isLiveIntegration).
+ */
+export function qiwaConnectionLabel(status: string, isLiveIntegration?: boolean | null): string {
   switch (status) {
     case 'Simulated': return QIWA_SIMULATED_LABEL;
-    case 'NotConfigured': return 'Not configured';
-    case 'ConfigurationError': return 'Configuration error';
-    case 'ApiError': return 'Qiwa API error';
-    default: return status;
+    case 'Connected': return isLiveIntegration === true ? 'Partner API responding' : QIWA_SIMULATED_LABEL;
+    case 'Disconnected': return 'Not set up';
+    case 'NotConfigured': return 'Not set up';
+    case 'ConfigurationError': return 'Setup incomplete';
+    case 'ApiError': return 'Qiwa partner API error';
+    default: return 'Qiwa data check';
   }
 }
 
@@ -86,6 +98,6 @@ export function deliveryAttentionSummary(counts: DeliveryCounts | null | undefin
   add(counts.failed, 'failed', 'failed');
   add(counts.notConfigured, 'not sent (not set up)', 'not sent (not set up)');
   add(counts.reportsDeadLetter, 'scheduled report gave up', 'scheduled reports gave up');
-  add(counts.qiwaDeadLetter, 'Qiwa sync gave up', 'Qiwa syncs gave up');
+  add(counts.qiwaDeadLetter, 'Qiwa check needs attention', 'Qiwa checks need attention');
   return parts.length === 0 ? 'No undelivered messages recorded.' : `Needs attention: ${parts.join(', ')}.`;
 }

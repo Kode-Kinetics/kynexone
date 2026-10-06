@@ -797,6 +797,37 @@ async function ensureComplianceProfiles(
   return created;
 }
 
+// ── Saudi establishment (MOL) ID ─────────────────────────────────────────────────────────────
+
+/**
+ * The Saudi MOL establishment ID, entered the way an operator enters it: Setup → Compliance (GCC
+ * settings) for country SA. The KSA payroll register and bank file REFUSE to print a placeholder
+ * establishment ("0000000000") any more, so a Saudi tenant with none configured cannot generate a
+ * wage file — correctly. Only the establishment ID is set: every toggle is left OFF and the work week
+ * blank, which is exactly how the product behaves with no row at all, so no other spec's readiness,
+ * end-of-service or work-week behaviour changes. The ID is synthetic (labour office 7, a per-tenant
+ * sequence), well-formed and never all zeros.
+ */
+async function ensureSaudiEstablishment(
+  adminToken: string, fixture: FixtureTenant, companies: Array<{ code: string; id: string; countryCode: string }>,
+): Promise<string> {
+  if (!companies.some((c) => c.countryCode === 'SA')) return 'no Saudi company';
+  let seq = 0;
+  for (const ch of fixture.slug) seq = (seq * 31 + ch.charCodeAt(0)) % 9_000_000;
+  const establishmentId = `7-${1_000_000 + seq}`;
+  expectOk(await call('POST', '/api/admin/gcc-settings', {
+    token: adminToken,
+    body: {
+      countryCode: 'SA', wpsEnabled: false, wpsAgentId: establishmentId, wpsMolCode: '', sifEnabled: false,
+      eosbEnabled: false, eosbYears1To5Rate: 0, eosbYearsAbove5Rate: 0, eosbMinYears: 0,
+      workWeek: '', weekendDays: '', visaTrackingEnabled: false, visaAlertDays: 0,
+      iqamaRequired: false, iqamaAlertDays: 0, emiratesIdRequired: false,
+      ramadanHoursEnabled: false, ramadanReducedHoursPerDay: 0,
+    },
+  }), `set the Saudi establishment ID for '${fixture.slug}'`, [200, 201]);
+  return `establishment ${establishmentId}`;
+}
+
 // ── Leave, attendance and the approval queue ──────────────────────────────────────────────────
 
 /**
@@ -1278,6 +1309,7 @@ export async function provisionWorld(baseUrl: string): Promise<ProvisionResult> 
     const hrData = await ensureLeaveAndAttendance(adminToken, fixture, companies);
     const defaults = await ensureTenantDefaults(adminToken, fixture.slug);
     const profiles = await ensureComplianceProfiles(adminToken, companies);
+    const establishment = await ensureSaudiEstablishment(adminToken, fixture, companies);
     const payroll = fixture.payroll ? await ensurePayrollRuns(fixture, adminToken, companies) : 'no payroll';
     manifest.tenants.push({ slug: fixture.slug, tenantId, companies });
     console.log(
@@ -1285,7 +1317,7 @@ export async function provisionWorld(baseUrl: string): Promise<ProvisionResult> 
       + `${fixture.users.length + 1} users (${portalLogins} employee portal login(s)), `
       + `${active} active employees, `
       + `${salaries} salary assignment(s), ${defaults}, ${profiles} compliance profile(s), `
-      + `${documents}, ${hrData}, ${payroll}.`,
+      + `${documents}, ${hrData}, ${establishment}, ${payroll}.`,
     );
   }
 

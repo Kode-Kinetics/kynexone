@@ -205,7 +205,7 @@ public class KsaPackTests
     // ── WPS Mudad XML golden-file test ────────────────────────────────────────
 
     [Fact]
-    public async Task KsaWps_MudadXml_StructureIsValid()
+    public async Task KsaPayrollRegister_StructureIsValid()
     {
         var exporter = new KsaWageProtectionExporter();
         var employee = new WpsEmployee(
@@ -220,7 +220,7 @@ public class KsaPackTests
 
         var result = await exporter.ExportAsync(input);
 
-        Assert.Equal("mudad-xml", result.Format);
+        Assert.Equal(Zayra.Api.Infrastructure.Payroll.WpsConformance.KsaPayrollRegisterFormat, result.Format);
         Assert.Equal(1, result.RecordCount);
         Assert.True(result.FileBytes.Length > 0);
         Assert.EndsWith(".xml", result.FileName);
@@ -231,8 +231,8 @@ public class KsaPackTests
         doc.LoadXml(xml);
 
         Assert.NotNull(doc.DocumentElement);
-        Assert.Equal("MudadWPS", doc.DocumentElement!.Name);
-        Assert.Equal("MUD-001",  doc.SelectSingleNode("//Header/EmployerID")!.InnerText);
+        Assert.Equal("PayrollRegister", doc.DocumentElement!.Name);
+        Assert.Equal("MUD-001",  doc.SelectSingleNode("//Header/MolEstablishmentId")!.InnerText);
         Assert.Equal("2026-06",  doc.SelectSingleNode("//Header/Period")!.InnerText);
         Assert.Equal("1",        doc.SelectSingleNode("//Header/RecordCount")!.InnerText);
         Assert.NotNull(doc.SelectSingleNode("//Employees/Employee"));

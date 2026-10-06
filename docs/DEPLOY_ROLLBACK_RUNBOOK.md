@@ -148,6 +148,86 @@ harmful.
 - Never promote an image whose migration has not been applied — the `/health/ready` gate (and the
   optional `preDeployCommand`) enforce this automatically, but confirm manually after any manual deploy.
 
+## Pre-deploy checklist — KSA WPS pilot
+
+1. **Nationality audit.** Run the read-only query in the next section and hand the list to payroll
+   (past payslips of those employees carried no employee GOSI; nothing is recomputed automatically).
+2. **Bank-file settings per legal entity:** MOL establishment ID (as shown in Qiwa), the 16-digit ANB
+   main account, organisation name and three address lines, company name, narrative, batch type; the
+   10-digit national unified number if ANB auto-WPS is on. If a GCC WPS agent ID is also set it must equal
+   the MOL establishment ID, or the export is refused.
+3. **Pay-redirection guard.** A pending approval-gated change to IBAN, beneficiary details, account
+   number or routing code blocks the bank export for that employee. A CSV import never writes bank
+   details for an EXISTING employee (they go to approval); a NEW employee's imported bank details are
+   flagged in the import warnings for verification before the first payroll.
+3a. **Beneficiary BIC.** One resolver serves pre-lock, export and the SIF check: the approved
+   `Employee.WpsBankDetails.bicCode`, else the payroll profile's `BankRoutingCode` (case-insensitive). An
+   ANB-to-ANB credit needs a 16-digit ANB account number with BIC `ARNBSARI` in either place.
+4. **Cash / cheque employees are supported at go-live** — there is no "no cash/cheque" condition. Set
+   payment method `Cash` or `Cheque` on the payroll profile. The flow:
+   - warned before Lock (`PAID_OUTSIDE_BANK_FILE`, stronger `…_WITH_IBAN` when a valid IBAN is on file) and
+     acknowledged by count at Approve; the acknowledged list is sealed into the approval;
+   - if the list changes after approval, Lock sends the run back for approval (re-validating alone does not
+     make it lockable); otherwise Lock freezes the methods and the batch reads them from there;
+   - the bank batch settles only its own employees; each cash/cheque wage is recorded per employee
+     ("Record payment outside the bank file") — serialized per batch, once per employee — and can be
+     reversed with a reason (not by the employee, not after Reconciled) and recorded again;
+   - Salaries Payable (2100) is clear, and the batch can reach Reconciled, only after the bank batch is
+     settled and every outside payment is recorded;
+   - a run locked before this release falls back to the live profile, but batch creation first lists the
+     cash/cheque employees and requires `expectedOutsideBankCount`.
+   Cash wages count against Mudad WPS compliance.
+5. **Two payroll users with `payroll.export`** per legal entity: the person who generates the bank/WPS
+   file or uploads the evidence cannot mark the batch Accepted.
+6. Leave `QIWA_USE_LIVE_ADAPTER` unset (Qiwa data check only).
+
+### Final settlements and the Art. 92/93 cap
+
+A final-settlement run recovers an outstanding loan or advance through the ordinary `LOAN_EMI` /
+`ADVANCE_EMI` lines, which are debt-type. Recovering a large balance from one final wage can therefore
+exceed half of that wage and raise `DEDUCTIONS_EXCEED_HALF_WAGE`, blocking Approve and Lock. Either
+reschedule the recovery (leave the remainder as a receivable) and re-process, or have an approver who is
+neither the run's preparer nor the leaver override it citing a labour court / commission decision or
+other lawful written basis, with its reference (`documentReference`). The bank export honours that
+override. No legal conclusion about when set-off is permitted is built into the product.
+
+## Saudi nationality normaliser — pre/post-deploy diagnostic (read-only)
+
+GOSI used to recognise only `SA`, `SAU`, `Saudi`, `Saudi Arabia`, `Saudi Arabian`, compared without
+trimming. The shared normaliser (`Infrastructure/Compliance/SaudiNationality.cs`) also accepts `KSA`,
+`SaudiArabia`, `Kingdom of Saudi Arabia` and the Arabic `سعودي` / `سعودى` / `سعودية` / `السعودية` /
+`المملكة العربية السعودية`, and trims. Employees recorded with one of
+the newly recognised values were classified as expatriates: **their past payslips carried no employee GOSI.**
+From the next processed run they are Saudi. **Do not recompute or edit filed/locked payslips;** take the
+list to payroll and the GOSI portal for a reviewed correction.
+
+Run on the production database (SELECT only) to count and list those employees:
+
+```sql
+-- Employees whose nationality is newly classified as Saudi (was NonSaudi before this release).
+SELECT tenant_id, company_id, id AS employee_id, employee_code, status, nationality
+FROM employees
+WHERE NOT is_deleted
+  AND (lower(btrim(nationality)) IN ('ksa', 'saudiarabia', 'kingdom of saudi arabia',
+                                     'سعودي', 'سعودى', 'سعودية', 'السعودية', 'المملكة العربية السعودية')
+       OR (nationality <> btrim(nationality)
+           AND lower(btrim(nationality)) IN ('sa', 'sau', 'saudi', 'saudi arabia', 'saudi arabian')))
+ORDER BY tenant_id, company_id, employee_code;
+
+-- Count only, per tenant.
+SELECT tenant_id, count(*) AS newly_saudi
+FROM employees
+WHERE NOT is_deleted
+  AND (lower(btrim(nationality)) IN ('ksa', 'saudiarabia', 'kingdom of saudi arabia',
+                                     'سعودي', 'سعودى', 'سعودية', 'السعودية', 'المملكة العربية السعودية')
+       OR (nationality <> btrim(nationality)
+           AND lower(btrim(nationality)) IN ('sa', 'sau', 'saudi', 'saudi arabia', 'saudi arabian')))
+GROUP BY tenant_id;
+```
+
+The second branch catches previously recognised spellings stored with surrounding spaces (the old
+comparison did not trim). Zero rows means no past payslip was affected.
+
 ## Invariants
 - **Schema leads code.** Migrations apply in `migrate-backend` before the deploy hook fires.
 - **Single trigger.** `autoDeploy: false`; the CI hook is the only deploy path.

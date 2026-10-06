@@ -1,0 +1,23 @@
+{
+  "description": "A clean two-person Saudi wage file: one Saudi national (ID 1...) paid into Al Rajhi, one expatriate (Iqama 2...) paid into ANB with an Arabic-only name. Every KSA wage-file rule passes. Synthetic data.",
+  "header": {
+    "molEstablishmentId": "7-1234567",
+    "currency": "SAR",
+    "fileReference": "2026100101",
+    "autoWpsUpload": true,
+    "nationalUnifiedNo": "7001234567"
+  },
+  "usedReferences": ["2026090101"],
+  "rows": [
+    {
+      "employeeRef": 1, "label": "E1", "nationality": "Saudi", "molId": "1012345678",
+      "iban": "SA0380000000608010167519", "bankBic": "RJHISARI", "name": "Omar Test",
+      "gross": 6750.00, "basic": 5000.00, "housing": 1250.00, "net": 6300.00, "slipDeductions": 450.00
+    },
+    {
+      "employeeRef": 2, "label": "E2", "nationality": "Egyptian", "molId": "2012345678",
+      "iban": "SA1130100000608010167519", "bankBic": "ARNBSARI", "name": "سارة أحمد",
+      "gross": 5250.50, "basic": 4000.50, "housing": 1000.00, "net": 5250.50, "slipDeductions": 0.00
+    }
+  ]
+}

@@ -157,8 +157,11 @@ public sealed class EmployeeImportRepairSensitiveFieldsPostgresTests(PostgresFix
         var tenant = await PostgresFixture.SeedMinimalTenant(db);
         var csv = "EmployeeCode,FullName,BankName,IBAN,AccountNumber,BankRoutingCode,JoiningDate\n"
                   + $"NEW-1,Brand New,First Bank,{FileIban},123456,RTG-1,2024-01-01\n";
-        Json(await HrOfficer(db, tenant).Import(new EmployeesController.ImportEmployeesRequest(csv), default))
-            .GetProperty("created").GetInt32().Should().Be(1);
+        var imported = Json(await HrOfficer(db, tenant).Import(new EmployeesController.ImportEmployeesRequest(csv), default));
+        imported.GetProperty("created").GetInt32().Should().Be(1);
+        imported.GetProperty("warnings").EnumerateArray().Select(w => w.GetString())
+            .Should().Contain(w => w!.Contains("NEW-1") && w.Contains("before their first payroll"),
+                "bank details nobody else has reviewed are flagged for first-payroll verification");
 
         db.ChangeTracker.Clear();
         var emp = await db.Employees.SingleAsync(e => e.TenantId == tenant && e.EmployeeCode == "NEW-1");

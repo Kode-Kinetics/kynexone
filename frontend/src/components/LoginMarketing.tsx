@@ -75,8 +75,12 @@ import { useEffect, useRef, useState } from 'react';
    Each row is evidenced in this repository:
      KSA   Infrastructure/CountryPack/Ksa/{KsaCalculators,KsaDescriptor,
            KsaWageProtectionExporter,KsaLocalizationProfile}.cs — GOSI rates,
-           the Mudad WPS XML exporter, the Saudization/Nitaqat ratio, and
-           Controllers/QiwaController.cs + Infrastructure/Qiwa/.
+           the Saudization/Nitaqat ratio; Infrastructure/Payroll/SaudiBankExports
+           (the ANB Connect payroll file, validated against the WPS field rules
+           in KsaWageFileRules.cs); and the Qiwa data check in
+           Controllers/QiwaController.cs. NOT claimed: a Mudad file (Mudad takes
+           only the bank-signed file) or any live Qiwa sync (there is no verified
+           Qiwa API; live calls are refused without a partner agreement).
      UAE   Infrastructure/CountryPack/Uae/* — GPSSA calculator, SIF exporter,
            Emiratisation tracking (UaeDescriptor.cs).
      QAT   Infrastructure/CountryPack/Qatar/* — GRSIA calculator (Law 24/2002),
@@ -154,8 +158,8 @@ const ROWS: Row[] = [
     kind: 'pack',
     name: 'Saudi Arabia',
     nameAr: 'السعودية',
-    items: ['GOSI', 'Qiwa', 'Mudad', 'Nitaqat'],
-    itemsAr: ['التأمينات', 'قوى', 'مدد', 'نطاقات'],
+    items: ['GOSI', 'Nitaqat', 'ANB payroll file', 'Qiwa data check'],
+    itemsAr: ['التأمينات', 'نطاقات', 'ملف رواتب البنك', 'فحص بيانات قوى'],
     heads: 612,
   },
   {
@@ -223,8 +227,9 @@ const ROWS: Row[] = [
      behind. Same kind as the three above ('wide': typeset as the claim's
      serif, never a headcount), and the same evidence rule — each is in this
      repository:
-       WPS   Infrastructure/CountryPack/{Ksa,Uae,Qatar} wage-protection exporters
-             (Mudad XML, the UAE SIF, Qatar's WPS file)
+       WPS   Infrastructure/Payroll/SaudiBankExports (ANB Connect payroll file
+             with the WPS fields), Infrastructure/CountryPack/{Uae,Qatar}
+             wage-protection exporters (the UAE SIF, Qatar's WPS file)
        EOS   Controllers/OffboardingController.cs, PayrollController.cs
        APR   Controllers/ApprovalWorkflowsController.cs; maker-checker on the
              payroll run in PayrollController.cs
@@ -238,10 +243,10 @@ const ROWS: Row[] = [
     extra: true,
     name: 'WPS files',
     nameAr: 'ملفات حماية الأجور',
-    /* KsaWageProtectionExporter (Mudad), UaeWageProtectionExporter (SIF),
-       QatarWageProtectionExporter */
-    items: ['Mudad file', 'UAE SIF', 'Qatar WPS'],
-    itemsAr: ['ملف مدد', 'ملف SIF الإماراتي', 'حماية الأجور القطري'],
+    /* AnbConnectCsvGenerator + KsaWageFileRules (Saudi bank file with WPS
+       fields), UaeWageProtectionExporter (SIF), QatarWageProtectionExporter */
+    items: ['ANB file, WPS fields', 'UAE SIF', 'Qatar WPS'],
+    itemsAr: ['ملف البنك بحقول الأجور', 'ملف SIF الإماراتي', 'حماية الأجور القطري'],
   },
   {
     code: 'EOS',
@@ -393,8 +398,8 @@ const EN: Copy = {
     + 'every Gulf market — an Arabic interface whose layout mirrors rather than '
     + 'only its strings being translated, the Hijri calendar alongside the '
     + 'Gregorian one, and a currency per company inside one group. Six more '
-    + 'capabilities turn past on the drum: wage-protection files (the Mudad '
-    + 'file, the UAE SIF and Qatar WPS); end-of-service calculated at exit, with '
+    + 'capabilities turn past on the drum: wage files (a Saudi bank payroll file '
+    + 'for ANB with the WPS fields, the UAE SIF and Qatar WPS); end-of-service calculated at exit, with '
     + 'final settlement and leave encashment; maker-checker approvals on payroll, '
     + 'leave and HR requests, and delegation; geofenced attendance with shifts, '
     + 'overtime and timesheets; employee self-service on web and mobile for '

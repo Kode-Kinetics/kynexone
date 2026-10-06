@@ -144,7 +144,9 @@ public class SyntheticWorkforcePlanningSimulationTests
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["REDIS_URL"] = "localhost:6379",
-                ["QIWA_USE_LIVE_ADAPTER"] = "true"
+                ["QIWA_USE_LIVE_ADAPTER"] = "true",
+                // WS3: the switch alone is refused; live needs a recorded Qiwa partner agreement.
+                ["Qiwa:PartnerAgreementReference"] = "TEST-PARTNER-AGREEMENT"
             })
             .Build();
 
