@@ -179,6 +179,20 @@ internal sealed class TransactionHeldAdvisoryLease : IAsyncDisposable
                 "The advisory lease protecting this operation was lost; stopping before any unserialised work.");
     }
 
+    /// <summary>
+    /// Non-throwing <see cref="EnsureHeldAsync"/>: pings the lease transaction and returns whether it is
+    /// still alive. For a sweep to check at its end, so a lease that died after the last per-row
+    /// <see cref="IsLost"/> check (the keepalive only notices every 30s) is not reported as a clean run.
+    /// Always true for the no-op lease of a non-PostgreSQL provider.
+    /// </summary>
+    public async Task<bool> IsStillHeldAsync(CancellationToken ct)
+    {
+        if (_transaction is null) return true;
+        if (_disposed) return false;
+        if (IsPastMaxAge) _lost = true;
+        return await PingAsync(ct);
+    }
+
     private bool IsPastMaxAge => System.Diagnostics.Stopwatch.GetElapsedTime(_acquiredAt) >= _maxAge;
 
     /// <summary>Never faults: any failure marks the lease lost, and DisposeAsync still rolls back.</summary>

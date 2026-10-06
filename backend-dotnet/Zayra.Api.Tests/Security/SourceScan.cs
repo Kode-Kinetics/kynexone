@@ -105,5 +105,152 @@ internal static partial class SourceScan
     internal static string StripSqlComments(string text) =>
         SqlLineComment().Replace(BlockComment().Replace(text, " "), string.Empty);
 
+    // ── Literal-aware lexing ──────────────────────────────────────────────────
+
+    /// <summary>Index just past the C# string/char literal starting at <paramref name="i"/>, or -1.</summary>
+    internal static int SkipLiteral(string s, int i)
+    {
+        var j = i;
+        while (j < s.Length && (s[j] == '$' || s[j] == '@')) j++;
+        if (j >= s.Length) return -1;
+        if (s[j] == '\'' && j == i)
+        {
+            var k = j + 1;
+            while (k < s.Length && s[k] != '\'') k += s[k] == '\\' ? 2 : 1;
+            return Math.Min(s.Length, k + 1);
+        }
+        if (s[j] != '"') return -1;
+        var verbatim = s.AsSpan(i, j - i).Contains('@');
+        var interpolated = s.AsSpan(i, j - i).Contains('$');
+        var quotes = 0;
+        while (j + quotes < s.Length && s[j + quotes] == '"') quotes++;
+        if (quotes >= 3)
+        {
+            var close = s.IndexOf(new string('"', quotes), j + quotes, StringComparison.Ordinal);
+            return close < 0 ? s.Length : close + quotes;
+        }
+        var p = j + 1;
+        while (p < s.Length)
+        {
+            if (verbatim && s[p] == '"' && p + 1 < s.Length && s[p + 1] == '"') { p += 2; continue; }
+            if (!verbatim && s[p] == '\\') { p += 2; continue; }
+            if (interpolated && s[p] == '{')
+            {
+                if (p + 1 < s.Length && s[p + 1] == '{') { p += 2; continue; }
+                p = InterpolationHoleEnd(s, p) + 1;   // a hole may hold literals with their own quotes
+                continue;
+            }
+            if (s[p] == '"') return p + 1;
+            p++;
+        }
+        return s.Length;
+    }
+
+    private static int InterpolationHoleEnd(string s, int open)
+    {
+        var depth = 0;
+        for (var i = open; i < s.Length;)
+        {
+            var end = SkipLiteral(s, i);
+            if (end > i) { i = end; continue; }
+            if (s[i] == '{') depth++;
+            else if (s[i] == '}' && --depth == 0) return i;
+            i++;
+        }
+        return s.Length - 1;
+    }
+
+    /// <summary>
+    /// The literals blanked to <c>""</c>, except that the code inside an interpolated literal's holes
+    /// is kept (as <c>"" hole ""</c>), so <c>$"{user.Email}"</c> still exposes <c>user.Email</c>.
+    /// </summary>
+    internal static string BlankLiteralsKeepHoles(string s)
+    {
+        var sb = new System.Text.StringBuilder(s.Length);
+        for (var i = 0; i < s.Length;)
+        {
+            var end = SkipLiteral(s, i);
+            if (end <= i) { sb.Append(s[i++]); continue; }
+            sb.Append("\"\"");
+            var literal = s[i..end];
+            var prefix = literal.IndexOf('"');
+            if (literal.AsSpan(0, prefix).Contains('$'))
+            {
+                for (var p = prefix; p < literal.Length; p++)
+                {
+                    if (literal[p] != '{') continue;
+                    if (p + 1 < literal.Length && literal[p + 1] == '{') { p++; continue; }
+                    var close = InterpolationHoleEnd(literal, p);
+                    sb.Append(' ').Append(BlankLiteralsKeepHoles(literal[(p + 1)..close])).Append(' ');
+                    p = close;
+                }
+            }
+            i = end;
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>The comma-separated arguments of an argument list, split at depth zero, literals intact.</summary>
+    internal static List<string> SplitTopLevel(string args)
+    {
+        var parts = new List<string>();
+        var depth = 0;
+        var start = 0;
+        for (var i = 0; i < args.Length;)
+        {
+            var end = SkipLiteral(args, i);
+            if (end > i) { i = end; continue; }
+            var c = args[i];
+            if (c is '(' or '{' or '[') depth++;
+            else if (c is ')' or '}' or ']') depth--;
+            else if (c == ',' && depth == 0) { parts.Add(args[start..i].Trim()); start = i + 1; }
+            i++;
+        }
+        if (args[start..].Trim().Length > 0) parts.Add(args[start..].Trim());
+        return parts;
+    }
+
+    internal static string BlankLiterals(string s)
+    {
+        var sb = new System.Text.StringBuilder(s.Length);
+        for (var i = 0; i < s.Length;)
+        {
+            var end = SkipLiteral(s, i);
+            if (end > i) { sb.Append("\"\""); i = end; }
+            else sb.Append(s[i++]);
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>Index of the bracket closing the one at <paramref name="open"/>, skipping literals.</summary>
+    internal static int MatchingClose(string s, int open, char o, char c)
+    {
+        var depth = 0;
+        for (var i = open; i < s.Length;)
+        {
+            var end = SkipLiteral(s, i);
+            if (end > i) { i = end; continue; }
+            if (s[i] == o) depth++;
+            else if (s[i] == c && --depth == 0) return i;
+            i++;
+        }
+        return s.Length - 1;
+    }
+
+    internal static int NextTopLevel(string s, int from, char target)
+    {
+        var depth = 0;
+        for (var i = from; i < s.Length;)
+        {
+            var end = SkipLiteral(s, i);
+            if (end > i) { i = end; continue; }
+            if (s[i] is '(' or '{' or '[') depth++;
+            else if (s[i] is ')' or '}' or ']') depth--;
+            else if (s[i] == target && depth == 0) return i;
+            i++;
+        }
+        return s.Length - 1;
+    }
+
     internal static int LineOf(string text, int index) => text.AsSpan(0, index).Count('\n') + 1;
 }

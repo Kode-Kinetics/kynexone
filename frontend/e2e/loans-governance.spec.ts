@@ -125,6 +125,39 @@ test('HR creates an immutable company policy version with its approval route', a
   expect(policy.companyId).toBe('company-1'); expect(policy.allowedRepaymentMethods).toEqual(['BankTransfer']); expect(policy.allowedRepaymentFrequencies).toContain('Quarterly'); expect(policy.isOffered).not.toBe(false); expect(errors).toEqual([]);
 });
 
+// Owner decision: HR Director manages loan policies. Its seeded bundle has loans.read and employees.approve (the
+// API's second key on the four policy gates) but no loans.write or loans.policy_manage, so boot it with exactly that.
+const hrDirectorMe = { id: 'hr-director', employeeId: 17, tenantId: 'tenant-1', tenantSlug: 'fixture', fullName: 'Huda Director', roles: ['HR Director'], permissions: ['loans.read', 'employees.read', 'employees.approve', 'organization.read'], companies: [{ id: 'company-1', name: 'Acme Arabia', code: 'ACME', countryCode: 'SA', isActive: true }] };
+const gradeRow = { gradeId: 'grade-1', gradeCode: 'G1', gradeName: 'Grade One', gradeNameAr: null, level: 1, cellId: null, eligible: false, valueType: null, amount: null, rate: null, maxOutstandingAmount: null, effectiveFrom: null, isCompanyOverride: false };
+
+test('HR Director sees every loan policy edit control, enabled', async ({ page }) => {
+  const errors = await boot(page, 'HR Director', path => {
+    if (path === '/api/auth/me') return hrDirectorMe;
+    if (path.endsWith('/policies')) return [];
+    if (path === '/api/finance/loans/grade-limits') return [gradeRow];
+  });
+  await page.getByRole('button', { name: 'Loan Policies', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'New Policy Version', exact: true })).toBeEnabled();
+  const offerings = page.getByRole('region', { name: 'Loan types offered' });
+  await expect(offerings.getByRole('checkbox', { name: 'Offered' })).toBeEnabled();
+  const grid = page.getByRole('region', { name: 'Limits by grade' });
+  await expect(grid.getByRole('checkbox', { name: 'Limit this loan type by grade' })).toBeEnabled();
+  await expect(grid.getByRole('combobox', { name: 'Eligible — Grade One' })).toBeEnabled();
+  expect(errors).toEqual([]);
+});
+
+for (const role of ['Finance', 'Finance Approver']) {
+  test(`${role} gets no loan policy edit controls`, async ({ page }) => {
+    const errors = await boot(page, role, () => undefined);
+    await expect(page.getByRole('button', { name: 'Loans', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Loan Policies', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'New Policy Version', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('region', { name: 'Loan types offered' })).toHaveCount(0);
+    await expect(page.getByRole('region', { name: 'Limits by grade' })).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+}
+
 test('Finance records a failed line, retries it, and requests audited corrections', async ({ page }, info) => {
   let correctionReviewer = false;
   const loan = { ...originalLoan, status: 'Approved', disbursementDate: undefined as string | undefined, outstandingBalance: 0, totalRepaid: 0 };

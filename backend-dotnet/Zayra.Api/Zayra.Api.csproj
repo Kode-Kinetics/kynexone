@@ -53,5 +53,17 @@
          the Debian aspnet:8.0 runtime image without needing fontconfig/libfreetype apt packages. -->
     <PackageReference Include="SkiaSharp" Version="3.119.2" />
     <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="3.119.2" />
+    <!-- Observability foundation. Registered only when OTEL_EXPORTER_OTLP_ENDPOINT is set
+         (Infrastructure/Operations/Observability.cs); otherwise nothing listens and nothing is
+         exported. 1.19.x targets net8.0, but OpenTelemetry.Api pulls in
+         System.Diagnostics.DiagnosticSource 10.0, which replaces the framework copy whether or not an
+         endpoint is set (supported; covered by the full test suite). Check memory before enabling export
+         on a 512MB instance. Npgsql 8 emits its own "Npgsql" ActivitySource and
+         Meter, subscribed by name, so no Npgsql.OpenTelemetry package (and no Npgsql bump) is needed. -->
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.19.1" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.19.1" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.19.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.19.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.19.0" />
   </ItemGroup>
 </Project>

@@ -2604,12 +2604,12 @@ public class PlatformController : ControllerBase
             }
             catch (Exception ex)
             {
-                _log.LogWarning(ex, "Platform password reset email failed for {Email}. Token saved.", user.Email);
+                _log.LogWarning("Platform password reset email failed for user {UserId} ({ErrorType}). Token saved.", user.Id, ex.GetType().Name);
             }
         }
         else
         {
-            _log.LogInformation("SMTP not configured — reset token saved for {Email}, no email sent.", user.Email);
+            _log.LogInformation("SMTP not configured — reset token saved for user {UserId}, no email sent.", user.Id);
         }
 
         // The old message told the operator to "share the reset link directly" while showing no

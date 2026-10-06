@@ -85,21 +85,36 @@ public static class ProductionReadinessEvidence
                 && nowUtc - x.UpdatedAtUtc <= TimeSpan.FromMinutes(5));
             var failed = instances.FirstOrDefault(x => x.Status == WorkerHeartbeatStatuses.Failed
                 && nowUtc - x.UpdatedAtUtc <= maxAge);
-            var effective = healthy ?? starting ?? failed ?? latest;
+            // Skipped (another instance held the sweep lease) and Interrupted (lease lost part-way) are
+            // visible but do not fail readiness: /health/ready is Render's health check, and a sweep that
+            // is running elsewhere, or that resumes next tick, is no reason to pull this instance.
+            var skipped = instances.FirstOrDefault(x => x.Status == WorkerHeartbeatStatuses.Skipped
+                && nowUtc - x.UpdatedAtUtc <= maxAge);
+            var interrupted = instances.FirstOrDefault(x => x.Status == WorkerHeartbeatStatuses.Interrupted
+                && nowUtc - x.UpdatedAtUtc <= maxAge);
+            var effective = healthy ?? starting ?? failed ?? interrupted ?? skipped ?? latest;
             var state = healthy is not null ? "healthy"
                 : starting is not null ? "starting"
                 : failed is not null ? "failed"
+                : interrupted is not null ? "interrupted"
+                : skipped is not null ? "skipped"
                 : "stale";
-            statuses.Add(new WorkerReadiness(name, state, effective.LastSucceededAtUtc, effective.UpdatedAtUtc));
+            var reason = state is "failed" or "interrupted" or "skipped" && !string.IsNullOrEmpty(effective.LastErrorCode)
+                ? effective.LastErrorCode : null;
+            statuses.Add(new WorkerReadiness(name, state, effective.LastSucceededAtUtc, effective.UpdatedAtUtc, reason));
         }
         return new WorkerFleetReadiness(
-            statuses.All(x => x.Status is "healthy" or "starting"),
+            statuses.All(x => x.Status is "healthy" or "starting" or "skipped" or "interrupted"),
             statuses.Count(x => x.Status == "healthy"),
             statuses.Count(x => x.Status == "starting"),
             statuses.Count(x => x.Status == "stale"),
             statuses.Count(x => x.Status == "failed"),
             statuses.Count(x => x.Status == "missing"),
-            statuses);
+            statuses)
+        {
+            SkippedCount = statuses.Count(x => x.Status == "skipped"),
+            InterruptedCount = statuses.Count(x => x.Status == "interrupted"),
+        };
     }
 
     /// <summary>
@@ -434,6 +449,12 @@ public sealed record WorkerFleetReadiness(
     int MissingCount,
     IReadOnlyList<WorkerReadiness> Workers)
 {
+    /// <summary>Workers whose freshest evidence is a skipped sweep (another instance holds the lease).</summary>
+    public int SkippedCount { get; init; }
+
+    /// <summary>Workers whose freshest evidence is a sweep that stopped part-way (lease lost).</summary>
+    public int InterruptedCount { get; init; }
+
     /// <summary>
     /// The fleet was NOT MEASURED, because an earlier term — the database probe or migration parity —
     /// already decided the answer (see BuildReadinessAsync). Every count is zero and every worker reads
@@ -450,7 +471,8 @@ public sealed record WorkerFleetReadiness(
         ProductionWorkerNames.All.Select(x => new WorkerReadiness(x, "not_evaluated", null, null)).ToList());
 }
 
-public sealed record WorkerReadiness(string Name, string Status, DateTime? LastSucceededAtUtc, DateTime? UpdatedAtUtc);
+/// <param name="Reason">For failed / interrupted / skipped: the heartbeat's reason code (e.g. <c>lease_held_elsewhere</c>).</param>
+public sealed record WorkerReadiness(string Name, string Status, DateTime? LastSucceededAtUtc, DateTime? UpdatedAtUtc, string? Reason = null);
 
 /// <summary>
 /// Queue counters. F09 added the six trailing fields: a delivery that gave up after its retries

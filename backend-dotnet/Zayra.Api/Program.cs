@@ -60,6 +60,10 @@ if (MigrateOnlyEntryPoint.ShouldHandle(args))
 
 var builder = WebApplication.CreateBuilder(args);
 
+// JSON console logs (traceId + tenantId via scopes) outside Development; OpenTelemetry OTLP export
+// only when OTEL_EXPORTER_OTLP_ENDPOINT is set — otherwise nothing is registered. See Observability.
+builder.AddKynexObservability();
+
 // Recovery and invitation credentials are delivered as browser links. A
 // non-development deployment must never emit a relative or insecure link into
 // email/admin responses; fail the release before any credential can be issued.
@@ -119,6 +123,15 @@ builder.Host.UseDefaultServiceProvider(options =>
     options.ValidateOnBuild = true;
     options.ValidateScopes  = true;
 });
+
+// ── Graceful drain (multi-instance / zero-downtime deploys) ──────────────────
+// On SIGTERM /health/ready flips to 503 first, the instance keeps serving for
+// Shutdown:ReadinessDrainSeconds (default 0) while the balancer notices, then the server stops
+// accepting and in-flight requests get the rest of Shutdown:TimeoutSeconds (default 30; the drain
+// runs inside it and is capped to leave them at least 10s). /health/live is unchanged.
+builder.Services.AddSingleton<ShutdownDrain>();
+builder.Services.Configure<HostOptions>(options =>
+    options.ShutdownTimeout = ShutdownDrain.ShutdownTimeout(builder.Configuration));
 
 // ── P3: JWT audience prod fail-fast ──────────────────────────────────────────
 // Dev defaults are intentionally left in appsettings.json for zero-config local dev.
@@ -726,6 +739,8 @@ builder.Services.AddSwaggerGen(options =>
 
 var app = builder.Build();
 
+app.Services.GetRequiredService<ShutdownDrain>().Attach(app.Lifetime);
+
 if (trustForwardedHeaders)
     app.UseForwardedHeaders();
 
@@ -777,6 +792,7 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 app.UseAuthentication();
+app.UseTenantLogScope();
 // Per-route audience segregation (defence-in-depth): reject platform-audience tokens on tenant
 // /api/* routes so a platform token can never exercise the cross-tenant read bypass on tenant data.
 // Placed AFTER UseAuthentication (User is populated) and BEFORE UseAuthorization (runs first).
@@ -802,8 +818,13 @@ app.MapGet("/health/live", () => Results.Ok(new
 // whole internet. It answers status + pendingMigrations and nothing else (PublicReadiness); the full
 // evidence (tenant counts, worker names, SMTP/Qiwa modes, queues) is at /health/ready/details for
 // platform operators only. Both compute the status with the same rule, so they cannot disagree.
-app.MapGet("/health/ready", async (ZayraDbContext db, IConfiguration config, ILoggerFactory lf, CancellationToken ct) =>
+app.MapGet("/health/ready", async (ZayraDbContext db, IConfiguration config, ILoggerFactory lf, ShutdownDrain drain, CancellationToken ct) =>
 {
+    // Shutting down: tell the balancer to stop routing here before the server stops accepting.
+    // Answered without touching the database, so a drain never waits on a slow dependency.
+    if (drain.IsDraining)
+        return Results.Json(new { status = "draining", utc = DateTime.UtcNow }, statusCode: StatusCodes.Status503ServiceUnavailable);
+
     var evidence = await ProductionReadinessEvidence.BuildReadinessAsync(db, config, ct, includeDetail: false);
     if (evidence.Status == "ready") return Results.Ok(PublicReadiness.From(evidence));
     LogReadinessRefusal(evidence, lf);
