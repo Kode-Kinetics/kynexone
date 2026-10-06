@@ -1,4 +1,7 @@
 import client from './client';
+import { fetchAllPages } from '../lib/paging';
+import type { LeaveRequest, LeaveType } from './leave';
+import type { OvertimeRequest, OvertimeType } from './overtime';
 
 export interface EssDashboard {
   profile: {
@@ -83,6 +86,7 @@ export interface EssNotification {
 }
 
 export interface HrRequestPayload {
+  categoryId?: string;
   categoryName?: string;
   subject: string;
   description: string;
@@ -202,3 +206,76 @@ export interface EssRosterEntry {
   shiftCode: string;
   shiftColor: string;
 }
+
+// ── Self-service actions ──────────────────────────────────────────────────────
+// Everything an employee does from /ess/leave, /ess/overtime and /ess/requests, through the endpoints
+// the mobile app already uses. None needs an HR permission and each is limited to the caller's own
+// record on the server: the /api/ess/* endpoints by the ESS context (the caller's own employee),
+// /api/leave/requests and /api/overtime/requests by the caller's data scope (an Employee's scope is
+// their own record; cancel refuses anyone else's request). The list calls still pass the caller's own
+// id, so a manager or HR user who opens their own self-service page sees their requests, not the
+// team's or the whole company's that their wider scope would otherwise return.
+
+export interface EssBalance {
+  leaveTypeId: string;
+  leaveTypeName: string;
+  entitled: number;
+  used: number;
+  pending: number;
+  available: number;
+  /** Saudi statutory event leave: statutory days per event, shown instead of `available`. */
+  statutoryEntitlementDays?: number | null;
+}
+
+export interface EssLeaveApplication {
+  leaveTypeId: string;
+  startDate: string;
+  endDate: string;
+  dayType?: 'Full' | 'Half';
+  reason: string;
+  statutoryEventDate?: string;
+  separateEventReason?: string;
+}
+
+export interface EssOvertimeApplication {
+  workDate: string;
+  startTimeUtc: string;
+  endTimeUtc: string;
+  reason: string;
+  overtimeTypeId?: string;
+}
+
+export interface EssHrRequestCategory {
+  id: string;
+  name: string;
+  code: string;
+  defaultSlaHours: number;
+  isActive: boolean;
+}
+
+export const essActionsApi = {
+  /** The caller's own employee id, as the ESS context resolves it (used when the login carries none). */
+  ownEmployeeId: () => client.get<{ id: number }>('/api/ess/profile').then((r) => r.data.id),
+
+  leaveBalances: () => client.get<EssBalance[]>('/api/ess/leave/balance').then((r) => r.data),
+  leaveTypes: () => client.get<LeaveType[]>('/api/leave/types').then((r) => r.data.filter((x) => x.isActive)),
+  /** The caller's own leave requests, every page. */
+  myLeaveRequests: (employeeId: number) =>
+    fetchAllPages((page, pageSize) =>
+      client.get<{ items: LeaveRequest[]; total: number; page: number }>('/api/leave/requests', { params: { employeeId, page, pageSize } }).then((r) => r.data)),
+  /** Submitted through the ESS endpoint: same balance, overlap and approval routing as HR-side requests. */
+  applyLeave: (body: EssLeaveApplication) => client.post<LeaveRequest>('/api/ess/leave/request', body).then((r) => r.data),
+  /** Cancels one of the caller's own requests (the server refuses anyone else's). */
+  cancelLeave: (id: string, reason: string) => client.post<LeaveRequest>(`/api/leave/requests/${id}/cancel`, { reason }).then((r) => r.data),
+
+  overtimeTypes: () => client.get<OvertimeType[]>('/api/overtime/types').then((r) => r.data.filter((x) => x.isActive)),
+  /** The caller's own overtime requests, every page. */
+  myOvertime: (employeeId: number) =>
+    fetchAllPages((page, pageSize) =>
+      client.get<{ items: OvertimeRequest[]; total: number; page: number }>('/api/overtime/requests', { params: { employeeId, page, pageSize } }).then((r) => r.data)),
+  /** The server refuses an employee id outside the caller's scope; for an Employee that is anyone but themselves. */
+  requestOvertime: (employeeId: number, body: EssOvertimeApplication) =>
+    client.post<OvertimeRequest>('/api/overtime/requests', { ...body, employeeId, source: 'SelfService' }).then((r) => r.data),
+
+  hrRequestCategories: () => client.get<EssHrRequestCategory[]>('/api/hr-requests/categories').then((r) => r.data.filter((x) => x.isActive)),
+};

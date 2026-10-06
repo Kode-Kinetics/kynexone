@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { ESS_PAYSLIPS_PATH } from '../lib/essPayslip';
+import { ESS_LEAVE_PATH, ESS_OVERTIME_PATH, ESS_REQUESTS_PATH } from '../lib/essSelfService';
 import { essApi, type EssDashboard, type EssHrRequest, type EssHrRequestDetail, type EssRosterEntry } from '../api/ess';
 import { essDocumentsApi, type EssDocumentRequest, type EssLetterType } from '../api/hrLetters';
 import { useAuth } from '../contexts/AuthContext';
@@ -634,7 +635,7 @@ export function EmployeeSelfServicePage() {
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
-                onClick={() => router.push('/leave')}
+                onClick={() => router.push(ESS_LEAVE_PATH)}
                 className="inline-flex items-center gap-1.5 rounded-xl bg-sapphire px-4 py-2 text-sm font-semibold text-white hover:bg-sapphire/90 transition dark:bg-cyanAccent dark:text-slate-900"
               >
                 <CalendarOff className="h-4 w-4" /> Apply Leave
@@ -648,14 +649,14 @@ export function EmployeeSelfServicePage() {
               </button>
               <button
                 type="button"
-                onClick={() => router.push('/overtime')}
+                onClick={() => router.push(ESS_OVERTIME_PATH)}
                 className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition dark:border-white/[0.12] dark:bg-white/[0.04] dark:text-slate-200 dark:hover:bg-white/[0.08]"
               >
                 <Zap className="h-4 w-4" /> OT Request
               </button>
               <button
                 type="button"
-                onClick={() => router.push('/hr-requests')}
+                onClick={() => router.push(ESS_REQUESTS_PATH)}
                 className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition dark:border-white/[0.12] dark:bg-white/[0.04] dark:text-slate-200 dark:hover:bg-white/[0.08]"
               >
                 <ClipboardList className="h-4 w-4" /> My Requests
@@ -683,7 +684,7 @@ export function EmployeeSelfServicePage() {
           value={primaryLeave ? `${primaryLeave.available.toFixed(1)}d` : '—'}
           sub={primaryLeave?.leaveTypeName ?? 'No leave types'}
           sub2={primaryLeave ? `of ${primaryLeave.entitled.toFixed(1)} days entitled` : undefined}
-          onClick={() => router.push('/leave')}
+          onClick={() => router.push(ESS_LEAVE_PATH)}
           emptyText={dashboard.leaveBalances.length === 0 ? 'No leave balances configured' : undefined}
         />
 
@@ -845,7 +846,7 @@ export function EmployeeSelfServicePage() {
       <section className="rounded-xl border border-slate-100 bg-white dark:border-white/[0.07] dark:bg-white/[0.03]">
         <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5 dark:border-white/[0.07]">
           <p className="text-sm font-semibold text-slate-900 dark:text-white">Leave Balances</p>
-          <button type="button" onClick={() => router.push('/leave')} className="text-[11px] font-medium text-sapphire hover:underline dark:text-cyanAccent">
+          <button type="button" onClick={() => router.push(ESS_LEAVE_PATH)} className="text-[11px] font-medium text-sapphire hover:underline dark:text-cyanAccent">
             Request leave
           </button>
         </div>
@@ -1040,7 +1041,7 @@ export function EmployeeSelfServicePage() {
           {/* Quick navigation cards */}
           <div className="grid grid-cols-2 gap-2">
             {[
-              { icon: CalendarOff, label: 'Request Leave', path: '/leave', bg: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400', border: 'border-emerald-100 dark:border-emerald-500/20' },
+              { icon: CalendarOff, label: 'Request Leave', path: ESS_LEAVE_PATH, bg: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400', border: 'border-emerald-100 dark:border-emerald-500/20' },
               { icon: FileText, label: 'My Payslips', path: ESS_PAYSLIPS_PATH, bg: 'bg-violet-500/10 text-violet-700 dark:text-violet-400', border: 'border-violet-100 dark:border-violet-500/20' },
               { icon: FileText, label: 'Jawazat Requests', path: '/ess/jawazat', bg: 'bg-sapphire/10 text-sapphire dark:text-cyanAccent', border: 'border-blue-100 dark:border-blue-500/20' },
             ].map(({ icon: Icon, label, path, bg, border }) => (
