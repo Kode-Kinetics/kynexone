@@ -57,6 +57,8 @@ export interface MatrixCellInput {
 export interface PublishMatrixResult {
   dryRun: boolean; published: number; unchanged: number; reverted: number;
   affectedNow: number; affectedAtRenewal: number; gapsRemaining: number; matrix: EntitlementMatrix | null;
+  /** Values that had not started yet and that nothing used, replaced on their own start date. */
+  superseded?: number;
 }
 
 export interface MatrixCellError {

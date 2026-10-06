@@ -17,6 +17,7 @@ using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Entitlements;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Data;
@@ -1343,7 +1344,8 @@ public class EmployeesController : ControllerBase
                 if (heldSalaryCodes.Contains(payrollCode)) continue;
 
                 var grade = emp.GradeId is not null ? lookups.GradeById.GetValueOrDefault(emp.GradeId.Value) : null;
-                var structure = await ResolveImportSalaryStructureAsync(tenantId, emp.CompanyId, grade, structureCodeRaw, currency, importStructures, ct);
+                var structure = await ResolveImportSalaryStructureAsync(tenantId, emp.CompanyId, grade, structureCodeRaw, currency, importStructures, ct,
+                    DateOnly.FromDateTime(emp.JoiningDate), warnings);
                 var assignment = new EmployeeSalaryStructure
                 {
                     TenantId = tenantId, EmployeeId = emp.Id, SalaryStructureId = structure.Id,
@@ -2012,9 +2014,12 @@ public class EmployeesController : ControllerBase
     /// <param name="importStructures">Structures already resolved or staged by THIS import. A query cannot see an
     /// Added-but-unsaved row, so without it every row of a grade staged its own copy of the same (company, code)
     /// structure — 250 duplicates in a 250-row file, all saved in one transaction.</param>
+    /// <param name="asOf">The date the grade standard is read on (Release A: the matrix in force then).</param>
+    /// <param name="warnings">Release A: where an allowance the grade has no matrix value for is reported.</param>
     private async Task<SalaryStructure> ResolveImportSalaryStructureAsync(Guid tenantId, Guid? companyId, Grade? grade,
         string requestedCode, string currency,
-        IDictionary<(Guid TenantId, Guid? CompanyId, string Code), SalaryStructure> importStructures, CancellationToken ct)
+        IDictionary<(Guid TenantId, Guid? CompanyId, string Code), SalaryStructure> importStructures, CancellationToken ct,
+        DateOnly? asOf = null, ICollection<string>? warnings = null)
     {
         var code = string.IsNullOrWhiteSpace(requestedCode)
             ? grade is not null ? $"GRADE-{grade.Code}" : "EMPLOYEE-IMPORT"
@@ -2045,7 +2050,19 @@ public class EmployeesController : ControllerBase
         _db.SalaryStructures.Add(structure);
         importStructures[key] = structure;
 
-        if (grade is not null)
+        // Release A: one fact in one place. A release_a tenant's grade standard is the matrix (Benefits by grade), never the
+        // frozen legacy pay scale. An allowance the grade has no value for gets no line — it is reported, not guessed.
+        if (grade is not null && await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId, ct))
+        {
+            var on = asOf ?? DateOnly.FromDateTime(DateTime.UtcNow);
+            var allowances = await EntitlementMatrixService.CashAllowancesAsync(_db, tenantId, grade.Id, companyId, on, ct);
+            _db.SalaryComponents.AddRange(EntitlementMatrixService.SalaryComponentsFor(allowances, tenantId, structure.Id));
+            foreach (var missing in allowances.Where(a => a.Missing))
+                warnings?.Add($"Salary structure {code}: grade {grade.Code} has no {EntitlementComponentRules.For(missing.ComponentCode)?.NameEn.ToLowerInvariant() ?? missing.ComponentCode} "
+                    + $"in Benefits by grade on {on:yyyy-MM-dd}, so the structure has no line for it. Each employee's own figure from the file is kept; "
+                    + "set the grade's value in Benefits by grade.");
+        }
+        else if (grade is not null)
         {
             var components = await _db.GradePayScaleComponents
                 .AsNoTracking()

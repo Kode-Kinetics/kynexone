@@ -86,8 +86,14 @@ public class EntitlementMatrixPostgresTests(PostgresFixture fixture)
         // The payroll engine never sees a benefit row or its company switch.
         await using var read = fixture.CreateDb();
         var all = await read.PayComponents.IgnoreQueryFilters().AsNoTracking().Where(p => p.TenantId == seed.TenantId && !p.IsDeleted).ToListAsync();
-        PayComponentEngine.ResolveInEffect(all.Where(p => p.CompanyId == null || p.CompanyId == seed.CompanyId), seed.TenantId, NextMonth)
-            .Select(p => p.Code).Should().NotContain(["EDUCATION", "AIR_TICKET", "MEDICAL", "PER_DIEM"]);
+        var companyPays = PayComponentEngine.ResolveInEffect(all.Where(p => p.CompanyId == null || p.CompanyId == seed.CompanyId), seed.TenantId, NextMonth)
+            .Select(p => (p.Code, p.ComponentType, p.Value)).ToList();
+        var groupPays = PayComponentEngine.ResolveInEffect(all.Where(p => p.CompanyId == null), seed.TenantId, NextMonth)
+            .Select(p => (p.Code, p.ComponentType, p.Value)).ToList();
+        companyPays.Should().BeEquivalentTo(groupPays, "the company's benefit switch changes nothing payroll pays");
+        companyPays.Select(p => (p.Code, p.ComponentType)).Should().BeEquivalentTo(
+            all.Where(p => p.CompanyId == null && p.IsActive && p.IsInEffect(NextMonth) && !PayComponentEngine.IsNonPaying(p)).Select(p => (p.Code, p.ComponentType)),
+            "exactly the tenant's paying catalogue — no benefit, facility or company switch");
     }
 
     [Fact]

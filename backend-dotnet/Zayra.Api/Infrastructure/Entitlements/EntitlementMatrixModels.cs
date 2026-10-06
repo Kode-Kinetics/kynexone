@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Contracts;
+using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Entitlements;
 
@@ -97,9 +98,11 @@ public sealed record MatrixCellError(Guid GradeId, string ComponentCode, string 
 /// <param name="AffectedNow">Employees whose package changes on the effective date (facilities, read when used).</param>
 /// <param name="AffectedAtRenewal">Employees who get the change at their next contract year (wage standard and contract benefits;
 /// a running contract year keeps the package it was fixed with).</param>
+/// <param name="Superseded">Values that had not started yet and that nothing used, replaced on their own start date
+/// (audited as <c>entitlements.matrix.superseded</c>).</param>
 public sealed record PublishMatrixResult(
     bool DryRun, int Published, int Unchanged, int Reverted, int AffectedNow, int AffectedAtRenewal, int GapsRemaining,
-    EntitlementMatrixDto? Matrix);
+    EntitlementMatrixDto? Matrix, int Superseded = 0);
 
 /// <summary>One legacy row and what the import does with it.</summary>
 /// <param name="Source">PayScale (grade_pay_scale_components) or Eligibility (benefit_eligibility_rules).</param>
@@ -110,3 +113,25 @@ public sealed record LegacyImportItem(
     MatrixCellInput? Cell);
 
 public sealed record LegacyImportResult(bool Committed, DateOnly EffectiveFrom, int ToImport, int Skipped, int Imported, IReadOnlyList<LegacyImportItem> Items);
+
+/// <summary>
+/// One cash wage allowance (housing, transport, other) of a grade's standard on a date, as salary prefill reads it for a
+/// release_a tenant — the matrix, never the frozen legacy pay scale. <c>Missing</c>: the grade has no value in force.
+/// </summary>
+public sealed record GradeCashAllowance(string ComponentCode, string Field, string? ValueType, decimal? Amount, decimal? Rate, bool Eligible, bool Missing)
+{
+    /// <summary>The monthly cash it comes to on <paramref name="basic"/>: the amount; the rate × basic (to the halala);
+    /// 0 when it is provided in kind or not offered to the grade. NULL when the grade has no value, or a percentage has no
+    /// basic salary to apply to — never guessed.</summary>
+    public decimal? MonthlyCash(decimal basic)
+    {
+        if (Missing) return null;
+        if (!Eligible || ValueType == GradeEntitlementValueTypes.InKind || ValueType == GradeEntitlementValueTypes.EligibilityOnly) return 0m;
+        return ValueType switch
+        {
+            GradeEntitlementValueTypes.Amount => Amount,
+            GradeEntitlementValueTypes.PercentOfBasic when Rate is decimal r && basic > 0 => Math.Round(basic * r, 2, MidpointRounding.AwayFromZero),
+            _ => null,
+        };
+    }
+}

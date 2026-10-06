@@ -11,6 +11,7 @@ import { useLocale } from '../../contexts/LocaleContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { LegacyImportPanel } from './LegacyImportPanel';
 import { fillTemplate, localName } from '../../lib/gradeLoanLimits';
+import { numberLocale } from '../../lib/format';
 import { loanErrorMessage } from '../../lib/loanWorkflow';
 import {
   FLOOR_PROBLEM, applyFromGradeUpward, applySameForAll, blankDraft, cellKey, dependantKeys, draftFromCell, draftProblem, groupKeys, groupOrder,
@@ -61,7 +62,7 @@ export function EntitlementMatrix({ companies }: { companies: { id: string; name
 
   const currency = matrix?.currency ?? '';
   const money = useCallback((n: number) => (Number.isFinite(n)
-    ? `${currency ? `${currency} ` : ''}${n.toLocaleString(locale === 'ar' ? 'ar-SA' : 'en-US', { maximumFractionDigits: 2 })}` : '—'), [currency, locale]);
+    ? `${currency ? `${currency} ` : ''}${n.toLocaleString(numberLocale(locale), { maximumFractionDigits: 2 })}` : '—'), [currency, locale]);
   // Values that are i18n keys (a class, who is covered) are translated; numbers and formatted amounts are not.
   const say = useCallback((parts: SummaryPart[]) => parts.reduce((text, p, i) => {
     const piece = p.raw ?? fillTemplate(t(p.key ?? ''), Object.fromEntries(Object.entries(p.values ?? {})
@@ -244,6 +245,7 @@ export function EntitlementMatrix({ companies }: { companies: { id: string; name
             <p>{fillTemplate(t('Publishing for: {scope}. Values are never edited in place: the value in force ends the day before and the new one starts.'), { scope: companyLabel })}</p>
             {changed.length > 0 && impact && <p role="status" className="font-medium text-slate-700 dark:text-slate-200">
               {fillTemplate(t('Reaches {now} employee(s) on that date and {later} at their next contract year.'), { now: impact.affectedNow, later: impact.affectedAtRenewal })}
+              {(impact.superseded ?? 0) > 0 && <span className="block font-normal">{fillTemplate(t('{count} value(s) that have not started yet will be replaced on their start date.'), { count: impact.superseded ?? 0 })}</span>}
             </p>}
             {changed.length > 0 && impactError && <p role="alert" className="text-amber-800 dark:text-amber-200">{impactError}</p>}
             {problems.length > 0 && <p className="text-red-600">{fillTemplate(t('{count} change(s) need correcting first.'), { count: problems.length })}</p>}
@@ -329,11 +331,13 @@ function MatrixRow({ component: c, grades, drafts, original, gapKeys, offering, 
 function loanSummary(cell: MatrixCell | undefined, money: (n: number) => string, t: (k: string) => string) {
   if (!cell) return t('Not set');
   if (!cell.eligible) return t('Not eligible');
-  const outstanding = cell.maxOutstandingAmount !== null ? ` · ${fillTemplate(t('at most {amount} owed'), { amount: money(cell.maxOutstandingAmount) })}` : '';
-  if (cell.valueType === 'Amount' && cell.amount !== null) return fillTemplate(t('Up to {amount}'), { amount: money(cell.amount) }) + outstanding;
+  // One sentence per shape, the outstanding cap included, so Arabic can order it.
+  const owed = cell.maxOutstandingAmount !== null ? { owed: money(cell.maxOutstandingAmount) } : null;
+  if (cell.valueType === 'Amount' && cell.amount !== null)
+    return fillTemplate(t(owed ? 'Up to {amount}, at most {owed} owed' : 'Up to {amount}'), { amount: money(cell.amount), ...owed });
   if (cell.rate !== null && cell.valueType.startsWith('MultipleOf'))
-    return fillTemplate(t('Up to {rate} {basis}'), { rate: cell.rate, basis: t(valueTypeKeys[cell.valueType]) }) + outstanding;
-  return t('Eligible') + outstanding;
+    return fillTemplate(t(owed ? 'Up to {rate} {basis}, at most {owed} owed' : 'Up to {rate} {basis}'), { rate: cell.rate, basis: t(valueTypeKeys[cell.valueType]), ...owed });
+  return owed ? fillTemplate(t('Eligible, at most {owed} owed'), owed) : t('Eligible');
 }
 
 function OfferingSwitch({ code, name, companyId, offering, today, onChanged }: {
@@ -358,7 +362,7 @@ function OfferingSwitch({ code, name, companyId, offering, today, onChanged }: {
     {t(stop ? 'Skip for this company' : 'Offer again in this company')}
   </button>;
   return <div className="mt-2 space-y-2 rounded-lg border border-slate-200 p-2 text-xs font-normal dark:border-white/10">
-    <p>{fillTemplate(t(stop ? 'Stop offering {benefit} in this company from:' : 'Offer {benefit} in this company again from:'), { benefit: name })}</p>
+    <p>{fillTemplate(t(stop ? 'Choose the month this company stops offering {benefit}.' : 'Choose the month this company offers {benefit} again.'), { benefit: name })}</p>
     <select className="select w-full" value={from} onChange={e => setFrom(e.target.value)} aria-label={t('First month')}>
       {months.map(m => <option key={m} value={m}>{m}</option>)}
     </select>
@@ -420,7 +424,7 @@ function CellEditor({ draft: d, component: c, grade, companyView, hasCompanyValu
             {c.allowedValueTypes.map(v => <option key={v} value={v}>{t(valueTypeKeys[v] ?? v)}</option>)}
           </select>
         </label>
-        {d.valueType === 'Amount' && <label className="text-sm">{fillTemplate(t('Amount ({currency})'), { currency: currency || t('company currency') })}
+        {d.valueType === 'Amount' && <label className="text-sm">{currency ? fillTemplate(t('Amount ({currency})'), { currency }) : t('Amount (company currency)')}
           <input type="number" min="0" step="0.01" inputMode="decimal" className="input mt-1 w-full" value={d.amount} onChange={e => onChange({ amount: e.target.value })} />
         </label>}
         {d.valueType === 'PercentOfBasic' && <label className="text-sm">{t('Percent of basic salary')}

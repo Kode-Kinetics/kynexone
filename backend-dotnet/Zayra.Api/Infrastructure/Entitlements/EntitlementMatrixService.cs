@@ -7,6 +7,7 @@ using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Finance;
+using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Infrastructure.Seed;
 using Zayra.Api.Models;
 
@@ -35,6 +36,8 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
     public const string LockScope = "entitlements.matrix";
     public const string AuditPublished = "entitlements.matrix.published";
     public const string AuditReverted = "entitlements.matrix.reverted_to_group";
+    /// <summary>A not-yet-started version that nothing cites, replaced (or dropped for the group default) on its own start date.</summary>
+    public const string AuditSuperseded = "entitlements.matrix.superseded";
     public const string AuditSkipped = "entitlements.offering.skipped";
     public const string AuditOffered = "entitlements.offering.offered";
     public const string SourceRuleMatrix = "BenefitsByGradeMatrix";
@@ -69,6 +72,54 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
     public static Task<bool> ReleaseAEnabledAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct) =>
         db.TenantFeatureFlags.AsNoTracking()
             .AnyAsync(f => f.TenantId == tenantId && f.FeatureKey == FeatureKeys.ReleaseA && f.IsEnabled, ct);
+
+    /// <summary>The cash wage allowances salary prefill reads, and the salary-record field each one fills.</summary>
+    public static readonly IReadOnlyList<(string Code, string Field)> CashAllowances =
+    [
+        (EntitlementComponentRules.Housing, "HousingAllowance"),
+        (EntitlementComponentRules.Transport, "TransportAllowance"),
+        (EntitlementComponentRules.OtherAllowances, "OtherAllowance"),
+    ];
+
+    /// <summary>
+    /// One fact in one place: for a release_a tenant, a grade's cash allowances come from the matrix (the company cell over
+    /// the group cell, in force on <paramref name="asOf"/>) — never from the frozen <c>grade_pay_scale_components</c>.
+    /// Every allowance is returned; one the grade has no value for is <c>Missing</c>, for the caller to ask for, not guess.
+    /// </summary>
+    public static async Task<IReadOnlyList<GradeCashAllowance>> CashAllowancesAsync(ZayraDbContext db, Guid tid, Guid gradeId, Guid? companyId,
+        DateOnly asOf, CancellationToken ct)
+    {
+        var codes = CashAllowances.Select(c => c.Code).ToArray();
+        var cells = await ScopedBypass.TenantWide(db.GradeEntitlements, tid,
+                "Salary prefill reads the group cell and the employee's company cell; the caller authorised the employee.")
+            .AsNoTracking()
+            .Where(x => x.GradeId == gradeId && codes.Contains(x.PayComponentCode) && (x.CompanyId == null || x.CompanyId == companyId)
+                && x.EffectiveFrom <= asOf && (x.EffectiveTo == null || x.EffectiveTo >= asOf))
+            .ToListAsync(ct);
+        return CashAllowances.Select(a =>
+        {
+            var cell = cells.Where(c => c.PayComponentCode == a.Code).OrderByDescending(c => c.CompanyId.HasValue).FirstOrDefault();
+            return cell == null
+                ? new GradeCashAllowance(a.Code, a.Field, null, null, null, false, Missing: true)
+                : new GradeCashAllowance(a.Code, a.Field, cell.ValueType, cell.Amount, cell.Rate, cell.Eligible, Missing: false);
+        }).ToList();
+    }
+
+    /// <summary>The salary-structure lines a grade's matrix cash allowances describe (an amount, or a percentage of basic).
+    /// In kind, not offered and missing allowances have no line.</summary>
+    public static IEnumerable<SalaryComponent> SalaryComponentsFor(IEnumerable<GradeCashAllowance> allowances, Guid tid, Guid structureId) =>
+        allowances
+            .Where(a => !a.Missing && a.Eligible
+                && (a.ValueType == GradeEntitlementValueTypes.Amount || a.ValueType == GradeEntitlementValueTypes.PercentOfBasic))
+            .Select(a => new SalaryComponent
+            {
+                TenantId = tid, SalaryStructureId = structureId, Code = a.ComponentCode,
+                Name = EntitlementComponentRules.For(a.ComponentCode)?.NameEn ?? a.ComponentCode,
+                ComponentType = PayComponentTypes.Earning,
+                CalculationType = a.ValueType == GradeEntitlementValueTypes.PercentOfBasic ? "PercentOfBasic" : "Fixed",
+                Amount = a.ValueType == GradeEntitlementValueTypes.Amount ? a.Amount ?? 0m : 0m,
+                Percentage = a.ValueType == GradeEntitlementValueTypes.PercentOfBasic ? Math.Round((a.Rate ?? 0m) * 100m, 4) : 0m,
+            });
 
     /// <summary>A wage component pays through payroll, so a company row for it would shadow the payroll catalogue.
     /// The matrix therefore never writes a skip marker for one; "Not offered" cells express it instead.</summary>
@@ -292,9 +343,25 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
             .Where(x => codes.Contains(x.PayComponentCode) && x.CompanyId == req.CompanyId && gradeIds.Contains(x.GradeId))
             .ToListAsync(ct);
 
+        // A version that starts on the publish date can be replaced only while it is still a plan: it starts after today
+        // and nothing has been fixed from it (an employee package row or a loan decision cites it). Anything else is
+        // history and is never overwritten — the correction is published from the next day.
+        var sameDayIds = existing.Where(x => x.EffectiveFrom == req.EffectiveFrom).Select(x => x.Id).ToList();
+        var cited = sameDayIds.Count == 0 || req.EffectiveFrom <= today
+            ? new HashSet<Guid>()
+            : (await ScopedBypass.TenantWide(db.EmployeeEntitlements, tid, "Whether a not-yet-started grade cell is cited by any employee package, in any company.")
+                    .AsNoTracking().Where(x => x.GradeEntitlementId != null && sameDayIds.Contains(x.GradeEntitlementId.Value))
+                    .Select(x => x.GradeEntitlementId!.Value).ToListAsync(ct))
+                .Concat(await ScopedBypass.TenantWide(db.EmployeeLoans, tid, "Whether a not-yet-started grade cell is cited by any loan decision, in any company.")
+                    .AsNoTracking().Where(x => x.GradeEntitlementId != null && sameDayIds.Contains(x.GradeEntitlementId.Value))
+                    .Select(x => x.GradeEntitlementId!.Value).ToListAsync(ct))
+                .ToHashSet();
+        bool CanSupersede(GradeEntitlement v) => req.EffectiveFrom > today && !cited.Contains(v.Id);
+
         var closes = new List<GradeEntitlement>();
         var inserts = new List<(GradeEntitlement Cell, GradeEntitlement? Previous)>();
         var reverted = new List<GradeEntitlement>();
+        var superseded = new List<(GradeEntitlement Old, GradeEntitlement? Replacement)>();
         var unchanged = 0;
         foreach (var (input, rule, grade) in accepted)
         {
@@ -308,28 +375,55 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
             {
                 if (current == null) { unchanged++; continue; }
                 if (current.EffectiveFrom == req.EffectiveFrom)
-                    return Conflict("same_day_version_exists",
-                        $"{grade.Name}'s own {rule.NameEn.ToLowerInvariant()} value starts {req.EffectiveFrom:yyyy-MM-dd}. Values are never overwritten; publish the change from the next day.");
+                {
+                    if (!CanSupersede(current))
+                        return Conflict("same_day_version_exists",
+                            $"{grade.Name}'s own {rule.NameEn.ToLowerInvariant()} value starts {req.EffectiveFrom:yyyy-MM-dd} and is already in use. Values in use are never overwritten; publish the change from the next day.");
+                    superseded.Add((current, null));
+                    continue;
+                }
                 reverted.Add(current);
                 continue;
             }
             var next = NewCell(tid, req.CompanyId, grade.Id, rule, input, req.EffectiveFrom, sourceRule, actor.UserId);
             if (current != null && SameValues(current, next)) { unchanged++; continue; }
             if (current != null && current.EffectiveFrom == req.EffectiveFrom)
-                return Conflict("same_day_version_exists",
-                    $"{grade.Name} already has a {rule.NameEn.ToLowerInvariant()} value starting {req.EffectiveFrom:yyyy-MM-dd}. Values are never overwritten; publish the correction from the next day.");
+            {
+                if (!CanSupersede(current))
+                    return Conflict("same_day_version_exists",
+                        $"{grade.Name} already has a {rule.NameEn.ToLowerInvariant()} value starting {req.EffectiveFrom:yyyy-MM-dd} that is already in force or in use. Values in use are never overwritten; publish the correction from the next day.");
+                superseded.Add((current, next));
+                inserts.Add((next, current));
+                continue;
+            }
             if (current != null) closes.Add(current);
             inserts.Add((next, current));
         }
 
         var touched = inserts.Select(i => (i.Cell.GradeId, i.Cell.PayComponentCode))
-            .Concat(reverted.Select(r => (r.GradeId, r.PayComponentCode))).Distinct().ToList();
+            .Concat(reverted.Select(r => (r.GradeId, r.PayComponentCode)))
+            .Concat(superseded.Select(r => (r.Old.GradeId, r.Old.PayComponentCode))).Distinct().ToList();
         var (affectedNow, affectedAtRenewal) = await ImpactAsync(tid, req.CompanyId, req.EffectiveFrom, touched, ct);
+        // A superseded plan with no replacement (a company plan dropped for the group default) counts as reverted.
+        var revertedCount = reverted.Count + superseded.Count(x => x.Replacement == null);
 
         if (dryRun)
-            return Ok(new PublishMatrixResult(true, inserts.Count, unchanged, reverted.Count, affectedNow, affectedAtRenewal, 0, null));
+            return Ok(new PublishMatrixResult(true, inserts.Count, unchanged, revertedCount, affectedNow, affectedAtRenewal, 0, null, superseded.Count));
 
         await PayComponentSeeder.EnsureEntitlementCatalogAsync(db, tid, ct);
+        foreach (var (old, replacement) in superseded)
+        {
+            // Not yet started and cited by nothing: the plan is removed (the audit row keeps every figure it had), and the
+            // replacement — if any — is inserted below, after this save, so the no-overlap EXCLUDE never sees both.
+            db.GradeEntitlements.Remove(old);
+            db.AuditLogs.Add(Audit(actor, req.CompanyId, AuditSuperseded, old.Id, new
+            {
+                componentCode = old.PayComponentCode, old.GradeId, old.CompanyId, old.EffectiveFrom, sourceRule,
+                previous = Snapshot(old),
+                replacedBy = replacement?.Id,
+                groupDefaultFrom = replacement == null ? req.EffectiveFrom : (DateOnly?)null,
+            }));
+        }
         foreach (var current in closes) current.EffectiveTo = req.EffectiveFrom.AddDays(-1);
         foreach (var cell in reverted)
         {
@@ -356,9 +450,11 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
         await db.SaveChangesAsync(ct);
 
         var matrix = await ReadAsync(tid, req.CompanyId, req.EffectiveFrom, ct);
-        if (matrix.Gaps.Count > 0 && await NotifyGapsAsync(tid, req.CompanyId, matrix.Gaps.Count, ct) > 0)
+        // Only a gap with nothing published for it is "not set"; one whose value starts later is already on its way.
+        var unset = matrix.Gaps.Count(g => g.ScheduledFrom == null);
+        if (unset > 0 && await NotifyGapsAsync(tid, req.CompanyId, unset, ct) > 0)
             await db.SaveChangesAsync(ct);
-        return Ok(new PublishMatrixResult(false, inserts.Count, unchanged, reverted.Count, affectedNow, affectedAtRenewal, matrix.Gaps.Count, matrix));
+        return Ok(new PublishMatrixResult(false, inserts.Count, unchanged, revertedCount, affectedNow, affectedAtRenewal, matrix.Gaps.Count, matrix, superseded.Count));
     }
 
     /// <summary>
@@ -486,10 +582,24 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
 
             await PayComponentSeeder.EnsureEntitlementCatalogAsync(db, tid, ct);
             await db.SaveChangesAsync(ct);
-            var template = await ScopedBypass.TenantWide(db.PayComponents, tid, "The group catalogue row is the template for a company switch.")
-                .AsNoTracking().FirstOrDefaultAsync(x => x.CompanyId == null && x.Code == rule.Code && !x.IsDeleted, ct);
+            // The template is the catalogue row of the benefit's OWN type. A tenant can also hold a paying row under the same
+            // code (a legacy Earning AIR_TICKET, say); copying that one would write a company Earning with no value, which
+            // ResolveInEffect would prefer over the group row — and payroll would pay 0. So: same type, non-paying, or refuse.
+            var sameCode = await ScopedBypass.TenantWide(db.PayComponents, tid, "The group catalogue rows of one code, and this company's; company access checked above.")
+                .AsNoTracking().Where(x => (x.CompanyId == null || x.CompanyId == req.CompanyId) && x.Code == rule.Code && !x.IsDeleted)
+                .ToListAsync(ct);
+            var template = sameCode.FirstOrDefault(x => x.CompanyId == null && x.ComponentType == rule.ComponentType);
             if (template == null)
                 return Conflict("catalogue_row_missing", "This benefit isn't in your pay component catalogue yet.");
+            if (!req.Offered && (!PayComponentEngine.IsNonPaying(template)
+                    || sameCode.Any(x => x.IsActive && x.IsOffered && !PayComponentEngine.IsNonPaying(x))))
+            {
+                var reason = BlockReasonDto.For(ReleaseABlockReasons.EntitlementSkipPaidCode)!;
+                return new MatrixResult(StatusCodes.Status409Conflict, new
+                {
+                    error = ReleaseABlockReasons.EntitlementSkipPaidCode, message = reason.TitleEn + ". " + reason.WhyEn, reason,
+                });
+            }
             var rows = await ScopedBypass.TenantWide(db.PayComponents, tid, "A company's own versions of a catalogue code; company access checked above.")
                 .Where(x => x.CompanyId == req.CompanyId && x.Code == rule.Code && x.ComponentType == template.ComponentType)
                 .ToListAsync(ct);
@@ -631,11 +741,14 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
         if (Normalise(line.ComponentCode) is "BASIC" or "BASICSALARY")
             return (null, "basic_salary", "Basic salary is set on the salary record and the grade's pay range, not in the benefits matrix.", null);
         var code = MapLegacyCode(line.ComponentCode) ?? MapLegacyCode(line.ComponentName);
+        // Only an Earning line is an allowance the employee is paid. A Benefit or Deduction line under a matching name
+        // (a housing deduction, a medical benefit line) is not a grade standard, whatever it is called.
+        if (!string.Equals((line.ComponentType ?? string.Empty).Trim(), PayComponentTypes.Earning, StringComparison.OrdinalIgnoreCase))
+            return (code, "not_an_allowance", "This line is not an allowance paid to the employee, so it is not a grade benefit value. Set the value in the matrix if one applies.", null);
         if (code == null) return (null, "no_matching_benefit", "No benefit in the matrix matches this line.", null);
         if (!line.IsActive) return (code, "inactive_line", "This line was switched off.", null);
         var percent = line.CalculationType == "PercentOfBasic";
         var monthly = string.Equals(line.Frequency, "Monthly", StringComparison.OrdinalIgnoreCase);
-        var annual = string.Equals(line.Frequency, "Annual", StringComparison.OrdinalIgnoreCase);
         var cell = new MatrixCellInput { GradeId = line.GradeId, ComponentCode = code, Eligible = true, Note = "Imported from the grade pay scale" };
         switch (code)
         {
@@ -655,12 +768,10 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
                 }
                 return (code, null, null, cell);
             case EntitlementComponentRules.Education:
-                if (percent || !annual || line.Amount <= 0)
-                    return (code, "needs_annual_amount", "Education is a yearly amount per child. Enter it in the matrix.", null);
-                cell.ValueType = GradeEntitlementValueTypes.Amount;
-                cell.Amount = line.Amount;
-                cell.DependantScope = DependantScopes.Children;
-                return (code, null, null, cell);
+                // The matrix holds education as a yearly amount PER CHILD with a child cap. A pay-scale line holds one
+                // figure and says neither whether it is per child nor for how many, so it is never imported as one.
+                return (code, "needs_per_child_and_cap",
+                    "Education is a yearly amount per child, up to a number of children. The old line has one figure and doesn't say either, so enter both in the matrix.", null);
             case EntitlementComponentRules.AirTicket:
                 return (code, "needs_ticket_details", "A ticket needs a count, a class and who travels. Set them in the matrix.", null);
             case EntitlementComponentRules.Medical:
@@ -803,7 +914,8 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
     /// <summary>
     /// How many current employees the change reaches, and when. Facilities (per diem) are read when used, so they change
     /// on the effective date; the wage standard and contract benefits reach an employee at their next contract year (a
-    /// running year keeps the package fixed for it). A group change skips companies with their own value for that cell.
+    /// running year keeps the package fixed for it). A group change skips companies with their own value for that cell,
+    /// and no change reaches a company that does not offer the benefit on the effective date (a skip marker in force).
     /// </summary>
     private async Task<(int Now, int AtRenewal)> ImpactAsync(Guid tid, Guid? companyId, DateOnly from,
         List<(Guid GradeId, string Code)> touched, CancellationToken ct)
@@ -823,6 +935,14 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
                 .Select(x => new { x.GradeId, x.PayComponentCode, x.CompanyId }).ToListAsync(ct))
                 .Select(x => (x.GradeId, x.PayComponentCode, x.CompanyId)).ToHashSet()
             : [];
+        var codes = touched.Select(t => t.Code).Distinct().ToArray();
+        var skipped = (await ScopedBypass.TenantWide(db.PayComponents, tid, "A change does not reach a company that does not offer the benefit.")
+                .AsNoTracking()
+                .Where(x => x.CompanyId != null && !x.IsDeleted && !x.IsOffered && codes.Contains(x.Code)
+                    && (companyId == null || x.CompanyId == companyId)
+                    && (x.EffectiveFrom == null || x.EffectiveFrom <= from) && (x.EffectiveTo == null || x.EffectiveTo >= from))
+                .Select(x => new { x.Code, x.CompanyId }).ToListAsync(ct))
+            .Select(x => (x.Code, x.CompanyId)).ToHashSet();
         var now = new HashSet<int>();
         var atRenewal = new HashSet<int>();
         foreach (var (gradeId, code) in touched)
@@ -831,6 +951,7 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
             foreach (var e in employees.Where(e => e.GradeId == gradeId))
             {
                 if (companyId is null && overrides.Contains((gradeId, code, e.CompanyId))) continue;
+                if (skipped.Contains((code, e.CompanyId))) continue;
                 (facility ? now : atRenewal).Add(e.Id);
             }
         }

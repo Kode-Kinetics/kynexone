@@ -59,6 +59,8 @@ public static class ReleaseABlockReasons
     public const string EntitlementProposalSameUser = "ENTITLEMENT_PROPOSAL_SAME_USER";
     public const string EntitlementProposalDocumentRequired = "ENTITLEMENT_PROPOSAL_DOCUMENT_REQUIRED";
     public const string EntitlementProposalClosed = "ENTITLEMENT_PROPOSAL_CLOSED";
+    // R1 fix round (review of PR #193)
+    public const string EntitlementSkipPaidCode = "ENTITLEMENT_SKIP_PAID_CODE";
 
     private const string HrManager = "HR Manager";
     private const string HrDirector = "HR Director";
@@ -325,6 +327,13 @@ public static class ReleaseABlockReasons
             "No action needed.",
             "لا يلزم أي إجراء.",
             HrManager),
+        new BlockReason(EntitlementSkipPaidCode,
+            "Also paid through payroll", "تُصرف أيضاً عبر الرواتب",
+            "Your pay components include a paid line with the same code as this benefit. Switching the benefit off for a company would not stop that payment, so the switch is refused rather than leave the two disagreeing.",
+            "تتضمن مكونات الرواتب بنداً مدفوعاً بنفس رمز هذه الميزة، وإيقاف الميزة لمنشأة لن يوقف ذلك الدفع، لذلك رُفض الإيقاف حتى لا يتعارض الأمران.",
+            "Ask payroll to retire or rename the paid pay component first, or mark the grades 'Not offered' for this company in Benefits by grade.",
+            "اطلب من الرواتب إيقاف بند الدفع أو تغيير رمزه أولاً، أو حدّد الدرجات «غير مقدَّمة» لهذه المنشأة في المزايا حسب الدرجة.",
+            PayrollManager),
     }.ToDictionary(r => r.Code, StringComparer.Ordinal);
 
     /// <summary>The catalogue entry for a code. Throws for an unknown code: an unexplained refusal is a defect.</summary>

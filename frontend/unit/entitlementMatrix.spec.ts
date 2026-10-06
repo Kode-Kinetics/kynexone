@@ -3,7 +3,7 @@ import type { MatrixCell, MatrixComponent, MatrixGrade } from '../src/api/entitl
 import { LOCALE_DICTS } from '../src/i18n/translations';
 import {
   FLOOR_PROBLEM, applyFromGradeUpward, applySameForAll, blankDraft, cellKey, dependantKeys, draftFromCell, draftProblem, groupKeys,
-  inputFromDraft, markRestNotOffered, monthStarts, percentFromRate, periodChoiceKeys, periodSuffixKeys, summarise, tierKeys, type CellDraft,
+  inputFromDraft, markRestNotOffered, monthStarts, percentFromRate, periodChoiceKeys, amountPeriodKeys, quantityPeriodKeys, summarise, tierKeys, type CellDraft,
 } from '../src/lib/entitlementMatrix';
 
 // Release A R1 — the pure rules behind Benefits by grade, with the Masar Holding demo values (plan §5).
@@ -71,13 +71,13 @@ test('values are checked before they reach the server', () => {
 test('the Masar G4 ticket and education read as plain words', () => {
   const ticket = draftFromCell(TICKET, 'g4', cell({ componentCode: 'AIR_TICKET', valueType: 'Quantity', rate: null, quantity: 1, coverageTier: 'Economy',
     dependantScope: 'Family', maxDependants: 3, limitPeriod: 'Annual', nationalityScope: 'NonSaudi', nationalityBasis: 'Home-leave ticket per contract' }));
-  expect(text(ticket)).toBe('{count} × {class} | a year | {who}, up to {count} | Non-Saudi employees');
+  expect(text(ticket)).toBe('{count} × {class} a year | {who}, up to {count} | Non-Saudi employees');
   expect(inputFromDraft(ticket)).toMatchObject({ quantity: 1, coverageTier: 'Economy', dependantScope: 'Family', maxDependants: 3,
     nationalityScope: 'NonSaudi', nationalityBasis: 'Home-leave ticket per contract', amount: null });
   const education = draftFromCell(EDUCATION, 'g4', cell({ componentCode: 'EDUCATION', valueType: 'Amount', rate: null, amount: 10000,
     dependantScope: 'Children', maxDependants: 2, limitPeriod: 'Annual' }));
-  expect(text(education)).toBe('SAR 10,000 | a year | {who}, up to {count}');
-  expect(summarise(education, sar)[1].attach).toBe(true);
+  expect(text(education)).toBe('{amount} a year | {who}, up to {count}');
+  expect(summarise(education, sar)[0].values).toEqual({ amount: 'SAR 10,000' });
   expect(text({ ...blankDraft(PER_DIEM, 'g1') })).toBe('Not set');
   expect(text(draftFromCell(PER_DIEM, 'g1', cell({ eligible: false, valueType: 'EligibilityOnly', rate: null })))).toBe('Not offered');
 });
@@ -107,7 +107,7 @@ test('offering changes start on the first of a month', () => {
 
 test('every word the matrix can show has Arabic', () => {
   const keys = [
-    ...Object.values(tierKeys), ...Object.values(periodSuffixKeys), ...Object.values(periodChoiceKeys), ...Object.values(dependantKeys), ...Object.values(groupKeys),
+    ...Object.values(tierKeys), ...Object.values(amountPeriodKeys), ...Object.values(quantityPeriodKeys), ...Object.values(periodChoiceKeys), ...Object.values(dependantKeys), ...Object.values(groupKeys),
     'Not set', 'Not offered', 'Provided in kind', '{percent}% of basic', '{count} × {class}', '{who}, up to {count}', 'After probation',
     'Saudi employees', 'Non-Saudi employees', 'After {months} months of service', 'Group default from the effective date',
     'Enter a positive amount with at most two decimals.', 'Enter a percentage of basic salary above 0 and at most 100.',

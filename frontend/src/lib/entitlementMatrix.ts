@@ -136,8 +136,15 @@ export const tierKeys: Record<string, string> = {
   CchiBasic: 'Basic class (CCHI)', C: 'Class C', B: 'Class B', A: 'Class A', VIP: 'VIP class', Economy: 'Economy', Business: 'Business',
 };
 
-export const periodSuffixKeys: Record<string, string> = {
-  Monthly: 'a month', Annual: 'a year', PerDay: 'a day', PerTerm: 'per contract year', Lifetime: 'once',
+/** An amount with the period it resets on, as ONE sentence (Arabic cannot reorder a suffix glued on). Monthly and
+ * per-contract-year amounts read without a suffix, as before. */
+export const amountPeriodKeys: Record<string, string> = {
+  Annual: '{amount} a year', PerDay: '{amount} a day', Lifetime: '{amount} once',
+};
+
+/** A count of a class (tickets) with the period it resets on, as one sentence. */
+export const quantityPeriodKeys: Record<string, string> = {
+  Annual: '{count} × {class} a year', PerDay: '{count} × {class} a day', Lifetime: '{count} × {class} once',
 };
 
 /** The "Resets" picker's choices. */
@@ -155,18 +162,18 @@ export function summarise(d: CellDraft, money: (n: number) => string): SummaryPa
   if (d.state === 'notOffered') return [{ key: 'Not offered' }];
   if (d.state === 'groupDefault') return [{ key: 'Group default from the effective date' }];
   const parts: SummaryPart[] = [];
-  const per = d.limitPeriod && d.limitPeriod !== 'Monthly' && d.limitPeriod !== 'PerTerm' ? periodSuffixKeys[d.limitPeriod] : null;
+  const period = d.limitPeriod && d.limitPeriod !== 'Monthly' && d.limitPeriod !== 'PerTerm' ? d.limitPeriod : null;
   switch (d.valueType) {
     case 'Amount':
-      parts.push({ raw: money(Number(d.amount)) });
-      if (per) parts.push({ key: per, attach: true });
+      parts.push(period && amountPeriodKeys[period]
+        ? { key: amountPeriodKeys[period], values: { amount: money(Number(d.amount)) } }
+        : { raw: money(Number(d.amount)) });
       break;
     case 'PercentOfBasic': parts.push({ key: '{percent}% of basic', values: { percent: d.percent } }); break;
     case 'InKind': parts.push({ key: 'Provided in kind' }); break;
     case 'CoverageTier': parts.push({ key: tierKeys[d.coverageTier] ?? d.coverageTier }); break;
     case 'Quantity':
-      parts.push({ key: '{count} × {class}', values: { count: d.quantity, class: tierKeys[d.coverageTier] ?? '' } });
-      if (per) parts.push({ key: per, attach: true });
+      parts.push({ key: (period && quantityPeriodKeys[period]) || '{count} × {class}', values: { count: d.quantity, class: tierKeys[d.coverageTier] ?? '' } });
       break;
     default: parts.push({ key: 'Eligible' });
   }

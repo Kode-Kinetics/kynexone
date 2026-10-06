@@ -94,8 +94,7 @@ public class EntitlementMatrixTests
         var versions = await h.Db.GradeEntitlements.Where(c => c.GradeId == h.G[3].Id && c.PayComponentCode == "HOUSING").OrderBy(c => c.EffectiveFrom).ToListAsync();
         versions.Select(v => (v.Rate, v.EffectiveFrom, v.EffectiveTo)).Should().Equal((0.25m, Nov1, (DateOnly?)Dec1.AddDays(-1)), (0.30m, Dec1, (DateOnly?)null));
 
-        // The same day again is refused (values are never overwritten), as is a date before a scheduled version.
-        Status(await h.PublishGroup(Dec1, [H.Pct(h.G[3], "HOUSING", 0.35m)])).Should().Be(409);
+        // A date before a scheduled version is refused, as is a past date. (The same day again: see SameDayRepublish_….)
         Error(await h.PublishGroup(Nov1.AddDays(10), [H.Pct(h.G[3], "HOUSING", 0.35m)])).Should().Be("later_version_exists");
         Error(await h.PublishGroup(Today.AddDays(-1), [H.Pct(h.G[3], "HOUSING", 0.35m)])).Should().Be("effective_from_in_past");
         Error(await h.PublishGroup(Dec1, [])).Should().Be("no_cells");
@@ -387,6 +386,7 @@ public class EntitlementMatrixTests
         h.PayScale(h.G[2], "INSURANCE", "Medical", "Fixed", amount: 3000m, frequency: "Annual");
         h.PayScale(h.G[4], "EDUCATION", "School fees", "Fixed", amount: 10_000m, frequency: "Annual");
         h.PayScale(h.G[4], "HOUSING", "Housing", "Fixed", amount: 0m);
+        h.PayScale(h.G[5], "HOUSING", "Housing deduction", "Fixed", amount: 300m, type: "Deduction");
         var plan = new BenefitPlan { TenantId = h.Tid, Code = "MED-VIP", Name = "VIP medical", PlanType = "Medical" };
         h.Db.BenefitPlans.Add(plan);
         h.Db.BenefitEligibilityRules.Add(new BenefitEligibilityRule { TenantId = h.Tid, BenefitPlanId = plan.Id, GradeId = h.G[5].Id, EffectiveFrom = Today });
@@ -403,28 +403,215 @@ public class EntitlementMatrixTests
             ("G2", "BASIC", "Skip", "basic_salary"),
             ("G2", "TICKET", "Skip", "needs_ticket_details"),
             ("G2", "INSURANCE", "Skip", "needs_medical_class"),
-            ("G4", "EDUCATION", "Import", null),
+            // A yearly school-fees figure says neither "per child" nor "for how many": listed for review, never imported.
+            ("G4", "EDUCATION", "Skip", "needs_per_child_and_cap"),
             ("G4", "HOUSING", "Skip", "zero_amount"),
+            // A deduction line with an allowance's name is not an allowance.
+            ("G5", "HOUSING", "Skip", "not_an_allowance"),
             ("G5", "MED-VIP", "Skip", "eligibility_only"),
         });
-        preview.ToImport.Should().Be(3);
+        preview.ToImport.Should().Be(2);
 
         var commit = Ok<LegacyImportResult>(await h.Controller().ImportLegacy(h.Service, commit: true, effectiveFrom: Nov1, default));
         commit.Committed.Should().BeTrue();
-        commit.Imported.Should().Be(3);
+        commit.Imported.Should().Be(2);
         commit.Items.Select(i => (i.SourceId, i.Outcome, i.ComponentCode)).Should().Equal(preview.Items.Select(i => (i.SourceId, i.Outcome, i.ComponentCode)));
         var cells = await h.Db.GradeEntitlements.ToListAsync();
         cells.Should().OnlyContain(c => c.SourceRule == EntitlementMatrixService.SourceRuleImport && c.CompanyId == null && c.EffectiveFrom == Nov1);
+        cells.Select(c => (c.GradeId, c.PayComponentCode)).Should().BeEquivalentTo([(h.G[2].Id, "HOUSING"), (h.G[2].Id, "TRANSPORT")]);
         cells.Single(c => c.PayComponentCode == "HOUSING").Rate.Should().Be(0.25m);
-        cells.Single(c => c.PayComponentCode == "EDUCATION").Should().Match<GradeEntitlement>(c => c.Amount == 10_000m && c.DependantScope == "Children" && c.LimitPeriod == "Annual");
+        cells.Should().NotContain(c => c.PayComponentCode == "EDUCATION");
 
         // Nothing legacy is changed or dropped, and a second import finds the cells already set.
-        (await h.Db.GradePayScaleComponents.CountAsync()).Should().Be(7);
+        (await h.Db.GradePayScaleComponents.CountAsync()).Should().Be(8);
         (await h.Db.BenefitEligibilityRules.CountAsync()).Should().Be(1);
         var again = Ok<LegacyImportResult>(await h.Controller().ImportLegacy(h.Service, commit: true, effectiveFrom: Nov1, default));
         again.Imported.Should().Be(0);
-        again.Items.Where(i => i.Source == "PayScale" && i.Outcome == "Skip" && i.ReasonCode == "already_set").Should().HaveCount(3);
-        (await h.Db.GradeEntitlements.CountAsync()).Should().Be(3);
+        again.Items.Where(i => i.Source == "PayScale" && i.Outcome == "Skip" && i.ReasonCode == "already_set").Should().HaveCount(2);
+        (await h.Db.GradeEntitlements.CountAsync()).Should().Be(2);
+    }
+
+    [Fact]
+    public void MapPayScaleLine_SkipsEveryNonEarningLine_AndNeverImportsEducation()
+    {
+        var grade = Guid.NewGuid();
+        GradePayScaleComponent Line(string code, string type, string calc = "Fixed", decimal amount = 500m, string frequency = "Monthly") =>
+            new() { GradeId = grade, ComponentCode = code, ComponentName = code, ComponentType = type, CalculationType = calc, Amount = amount, Frequency = frequency };
+        foreach (var type in new[] { "Deduction", "Benefit", "EmployerContribution", "" })
+            EntitlementMatrixService.MapPayScaleLine(Line("TRANSPORT", type)).Should().Match<(string? Code, string? ReasonCode, string? Reason, MatrixCellInput? Cell)>(
+                m => m.ReasonCode == "not_an_allowance" && m.Cell == null, type);
+        EntitlementMatrixService.MapPayScaleLine(Line("TRANSPORT", "earning")).Cell!.Amount.Should().Be(500m, "the type is compared without case");
+        foreach (var (calc, frequency) in new[] { ("Fixed", "Annual"), ("Fixed", "Monthly"), ("PercentOfBasic", "Annual") })
+            EntitlementMatrixService.MapPayScaleLine(Line("EDUCATION", "Earning", calc, 12_000m, frequency))
+                .Should().Match<(string? Code, string? ReasonCode, string? Reason, MatrixCellInput? Cell)>(m => m.ReasonCode == "needs_per_child_and_cap" && m.Cell == null);
+    }
+
+    // ── R1 fix round: same-day re-publish, impact and gap counts, the paid-code skip ─────────────
+
+    [Fact]
+    public async Task SameDayRepublish_SupersedesAFutureVersionNothingUses_AuditsIt_AndRefusesOneInUseOrInForce()
+    {
+        await using var h = await H.Create();
+        Ok<PublishMatrixResult>(await h.PublishGroup(Nov1, h.MasarGrid()));
+        Ok<PublishMatrixResult>(await h.PublishGroup(Dec1, [H.Pct(h.G[3], "HOUSING", 0.30m)]));
+
+        // Dec 1 has not started and nothing cites it: the correction replaces it on its own start date.
+        var dry = Ok<PublishMatrixResult>(await h.PublishGroup(Dec1, [H.Pct(h.G[3], "HOUSING", 0.35m)], dryRun: true));
+        (dry.Published, dry.Superseded).Should().Be((1, 1));
+        (await h.Db.AuditLogs.CountAsync(a => a.Action == EntitlementMatrixService.AuditSuperseded)).Should().Be(0, "a dry run writes nothing");
+        var fix = Ok<PublishMatrixResult>(await h.PublishGroup(Dec1, [H.Pct(h.G[3], "HOUSING", 0.35m)]));
+        (fix.Published, fix.Superseded).Should().Be((1, 1));
+        var versions = await h.Db.GradeEntitlements.Where(c => c.GradeId == h.G[3].Id && c.PayComponentCode == "HOUSING").OrderBy(c => c.EffectiveFrom).ToListAsync();
+        versions.Select(v => (v.Rate, v.EffectiveFrom, v.EffectiveTo)).Should().Equal((0.25m, Nov1, (DateOnly?)Dec1.AddDays(-1)), (0.35m, Dec1, (DateOnly?)null));
+        var audit = await h.Db.AuditLogs.SingleAsync(a => a.Action == EntitlementMatrixService.AuditSuperseded);
+        audit.Metadata.Should().Contain("0.30").And.Contain(versions[1].Id.ToString());
+
+        // Once an employee package cites it, it is history: the correction goes from the next day.
+        h.Db.EmployeeEntitlements.Add(new EmployeeEntitlement { TenantId = h.Tid, CompanyId = h.Facility.Id, GradeEntitlementId = versions[1].Id,
+            PayComponentCode = "HOUSING", EntitlementClass = "Contractual", ValueType = "PercentOfBasic", Rate = 0.35m, Source = "GradeDefault",
+            EffectiveFrom = Dec1 });
+        await h.Db.SaveChangesAsync();
+        Error(await h.PublishGroup(Dec1, [H.Pct(h.G[3], "HOUSING", 0.40m)])).Should().Be("same_day_version_exists");
+
+        // A version that starts today is in force: never replaced.
+        Ok<PublishMatrixResult>(await h.PublishCompany(h.Logistics, Today, [H.Amount(h.G[1], "PER_DIEM", 160m)]));
+        Error(await h.PublishCompany(h.Logistics, Today, [H.Amount(h.G[1], "PER_DIEM", 170m)])).Should().Be("same_day_version_exists");
+
+        // A company's not-yet-started own value dropped for the group default on its start date: removed, counted as reverted.
+        Ok<PublishMatrixResult>(await h.PublishCompany(h.Logistics, Dec1, [H.Amount(h.G[2], "PER_DIEM", 210m)]));
+        var revert = Ok<PublishMatrixResult>(await h.PublishCompany(h.Logistics, Dec1,
+            [new MatrixCellInput { GradeId = h.G[2].Id, ComponentCode = "PER_DIEM", UseGroupDefault = true }]));
+        (revert.Reverted, revert.Superseded).Should().Be((1, 1));
+        (await h.Db.GradeEntitlements.AnyAsync(c => c.CompanyId == h.Logistics.Id && c.GradeId == h.G[2].Id)).Should().BeFalse();
+        Mode(await h.Read(h.Logistics.Id, Dec1), "PER_DIEM").Should().Be(EntitlementMatrixService.Modes.Tailored, "G1 keeps its own value");
+        (await h.Read(h.Logistics.Id, Dec1)).Cells.Single(c => c.GradeId == h.G[2].Id && c.ComponentCode == "PER_DIEM").Inherited.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Impact_LeavesOutACompanyThatDoesNotOfferTheBenefit_OnTheEffectiveDate()
+    {
+        await using var h = await H.Create();
+        h.Employee(h.Facility, h.G[4]); h.Employee(h.Logistics, h.G[4]); h.Employee(h.Logistics, h.G[4]);
+        await h.Db.SaveChangesAsync();
+        Ok<MatrixOfferingDto>(await h.SetOffering(h.Logistics, "EDUCATION", offered: false, Dec1));
+
+        var education = H.Amount(h.G[4], "EDUCATION", 12_000m); education.DependantScope = "Children"; education.MaxDependants = 2;
+        // From 1 Nov Logistics still offers Education; from 1 Dec it does not, so only Facility Services' G4 is reached.
+        Ok<PublishMatrixResult>(await h.PublishGroup(Nov1, [education], dryRun: true)).AffectedAtRenewal.Should().Be(3);
+        Ok<PublishMatrixResult>(await h.PublishGroup(Dec1, [education], dryRun: true)).AffectedAtRenewal.Should().Be(1);
+        var own = await h.Controller().Publish(h.Service, new PublishMatrixRequest(h.Logistics.Id, Dec1, [education]), true, default);
+        Ok<PublishMatrixResult>(own).AffectedAtRenewal.Should().Be(0, "Logistics does not offer Education from 1 Dec");
+    }
+
+    [Fact]
+    public async Task GapNotification_CountsOnlyValuesWithNothingPublished()
+    {
+        await using var h = await H.Create();
+        h.Staff("HR Director");
+        await h.Db.SaveChangesAsync();
+        // The whole grid from 1 Dec, then one Logistics value from 1 Nov: as of 1 Nov, 34 gaps remain for Logistics, all
+        // with a value starting 1 Dec — none of them is "not set", so nobody is told they are.
+        Ok<PublishMatrixResult>(await h.PublishGroup(Dec1, h.MasarGrid()));
+        var result = Ok<PublishMatrixResult>(await h.PublishCompany(h.Logistics, Nov1, [H.Amount(h.G[1], "PER_DIEM", 140m)]));
+        result.GapsRemaining.Should().Be(34);
+        (await h.Db.Notifications.CountAsync()).Should().Be(0, "every remaining gap already has a value starting 1 Dec");
+
+        h.Db.Grades.Add(new Grade { TenantId = h.Tid, Code = "G6", Name = "Director", Level = 60 });
+        await h.Db.SaveChangesAsync();
+        Ok<PublishMatrixResult>(await h.PublishCompany(h.Logistics, Dec1, [H.Amount(h.G[1], "PER_DIEM", 155m)]));
+        (await h.Db.Notifications.SingleAsync()).Message.Should().StartWith("7 benefit value(s)", "only G6's seven are unset");
+    }
+
+    [Fact]
+    public async Task SkippingABenefit_IsRefusedWhileAPaidPayComponentSharesItsCode()
+    {
+        await using var h = await H.Create();
+        h.Db.PayComponents.Add(new PayComponent { TenantId = h.Tid, Code = "AIR_TICKET", NameEn = "Ticket allowance", NameAr = "بدل تذاكر",
+            ComponentType = PayComponentTypes.Earning, CalcMethod = PayComponentCalcMethods.Fixed, Value = 1_500m });
+        await h.Db.SaveChangesAsync();
+
+        var result = await h.SetOffering(h.Logistics, "AIR_TICKET", offered: false, Nov1);
+        Status(result).Should().Be(409);
+        Error(result).Should().Be(ReleaseABlockReasons.EntitlementSkipPaidCode);
+        Json(result).GetProperty("reason").GetProperty("titleAr").GetString().Should().NotBeNullOrWhiteSpace();
+        (await h.Db.PayComponents.AnyAsync(p => p.CompanyId != null)).Should().BeFalse("no company row of any type is written");
+        // A benefit with no paid twin is still switched off as before.
+        Ok<MatrixOfferingDto>(await h.SetOffering(h.Logistics, "EDUCATION", offered: false, Nov1));
+        Mode(await h.Read(h.Logistics.Id, Nov1), "EDUCATION").Should().Be(EntitlementMatrixService.Modes.Skipped);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task EmployeeImport_GradeSalaryStructure_ReadsTheMatrixForReleaseA_AndTheLegacyScaleOtherwise(bool releaseA)
+    {
+        await using var h = await H.Create();
+        h.Db.Tenants.Add(new Tenant { Id = h.Tid, Name = "Masar", Slug = $"m-{h.Tid:N}" });
+        h.Db.TenantSubscriptions.Add(new TenantSubscription { TenantId = h.Tid, MaxEmployees = 100, Plan = "Enterprise", Status = "Active" });
+        h.PayScale(h.G[3], "HOUSING", "Housing", "Fixed", amount: 9_999m);
+        if (!releaseA) h.Db.TenantFeatureFlags.Remove(await h.Db.TenantFeatureFlags.SingleAsync());
+        await h.Db.SaveChangesAsync();
+        if (releaseA) Ok<PublishMatrixResult>(await h.PublishGroup(Today, [H.Pct(h.G[3], "HOUSING", 0.25m), H.NotOffered(h.G[3], "OTHER_ALLOWANCES")]));
+
+        var import = HrmHierarchyTests.BuildImportControllerInternal(h.Db, h.Tid);
+        var csv = $"EmployeeCode,FullName,Grade,JoiningDate,BasicSalary,HousingAllowance\nM1,Imported Supervisor,G3,{Today:yyyy-MM-dd},8000,2000\n";
+        var result = Assert.IsType<OkObjectResult>(await import.Import(new EmployeesController.ImportEmployeesRequest(csv), default));
+
+        var structure = await h.Db.SalaryStructures.SingleAsync(s => s.Code == "GRADE-G3");
+        var lines = await h.Db.SalaryComponents.Where(c => c.SalaryStructureId == structure.Id).ToListAsync();
+        var assignment = await h.Db.EmployeeSalaryStructures.SingleAsync();
+        (assignment.BasicSalary, assignment.HousingAllowance).Should().Be((8_000m, 2_000m), "each employee's own figures from the file are kept");
+        if (releaseA)
+        {
+            lines.Select(l => (l.Code, l.CalculationType, l.Percentage)).Should().Equal([("HOUSING", "PercentOfBasic", 25m)],
+                "the matrix, not the frozen 9,999 legacy line; not-offered and missing allowances get no line");
+            JsonSerializer.Serialize(result.Value).Should().Contain("no transport allowance in Benefits by grade");
+        }
+        else lines.Select(l => (l.Code, l.Amount)).Should().Equal([("HOUSING", 9_999m)], "a tenant without Release A is unchanged");
+    }
+
+    /// <summary>
+    /// The browser lane's route mocks (frontend/e2e/fixtures/benefits-by-grade/*.json) are these read models, serialized as
+    /// the API serializes them. Set KYNEX_R1_FIXTURES_DIR to that folder to regenerate them; the assertions always run.
+    /// </summary>
+    [Fact]
+    public async Task BrowserLaneFixtures_AreTheRealReadModels()
+    {
+        await using var h = await H.Create();
+        h.Employee(h.Facility, h.G[3]); h.Employee(h.Facility, h.G[3]); h.Employee(h.Logistics, h.G[3]); h.Employee(h.Facility, h.G[5]);
+        h.PayScale(h.G[2], "HOUSING", "Housing", "PercentOfBasic", percentage: 25m);
+        h.PayScale(h.G[2], "TRANSPORT", "Transport", "Fixed", amount: 500m);
+        h.PayScale(h.G[2], "BASIC", "Basic", "Fixed", amount: 8000m);
+        h.PayScale(h.G[2], "TICKET", "Air ticket", "Fixed", amount: 2400m, frequency: "Annual");
+        h.PayScale(h.G[4], "EDUCATION", "School fees", "Fixed", amount: 10_000m, frequency: "Annual");
+        h.PayScale(h.G[5], "HOUSING", "Housing deduction", "Fixed", amount: 300m, type: "Deduction");
+        await h.Db.SaveChangesAsync();
+        // In force today, less three cells (G2 transport, G4 ticket, G5 per diem) so the grid shows what a gap looks like and
+        // the legacy G2 transport line has somewhere to go.
+        Ok<PublishMatrixResult>(await h.PublishGroup(Today, h.MasarGrid()
+            .Where(c => !(c.GradeId == h.G[2].Id && c.ComponentCode == "TRANSPORT") && !(c.GradeId == h.G[4].Id && c.ComponentCode == "AIR_TICKET")
+                && !(c.GradeId == h.G[5].Id && c.ComponentCode == "PER_DIEM")).ToList()));
+        Ok<PublishMatrixResult>(await h.PublishCompany(h.Logistics, Today, [H.Amount(h.G[1], "PER_DIEM", 200m)]));
+        Ok<MatrixOfferingDto>(await h.SetOffering(h.Logistics, "EDUCATION", offered: false, Nov1));
+        Ok<PublishMatrixResult>(await h.PublishGroup(Nov1, [H.Pct(h.G[3], "HOUSING", 0.30m)]));
+
+        var group = await h.Read(null, Today);
+        var logistics = await h.Read(h.Logistics.Id, Today);
+        var dryRun = Ok<PublishMatrixResult>(await h.PublishGroup(Nov1, [H.Pct(h.G[3], "HOUSING", 0.35m), H.Amount(h.G[5], "PER_DIEM", 500m)], dryRun: true));
+        var legacy = Ok<LegacyImportResult>(await h.Controller().ImportLegacy(h.Service, commit: false, effectiveFrom: Today, default));
+
+        group.Gaps.Should().HaveCount(3);
+        legacy.ToImport.Should().Be(1, "G2 transport; G2 housing is already set in the grid");
+        logistics.Offerings.Single(o => o.ComponentCode == "EDUCATION").ChangesOn.Should().Be(Nov1);
+        (dryRun.Superseded, dryRun.AffectedNow, dryRun.AffectedAtRenewal).Should().Be((1, 1, 3));
+        legacy.Items.Select(i => i.ReasonCode).Should().Contain(["not_an_allowance", "needs_per_child_and_cap", "basic_salary", "needs_ticket_details"]);
+
+        if (Environment.GetEnvironmentVariable("KYNEX_R1_FIXTURES_DIR") is not { Length: > 0 } dir) return;
+        Directory.CreateDirectory(dir);
+        var json = new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true };
+        var companies = new[] { new { id = h.Facility.Id, name = h.Facility.LegalNameEn }, new { id = h.Logistics.Id, name = h.Logistics.LegalNameEn } };
+        foreach (var (name, body) in new (string, object)[] { ("matrix-group", group), ("matrix-logistics", logistics), ("publish-dry-run", dryRun), ("legacy-preview", legacy), ("companies", companies) })
+            await File.WriteAllTextAsync(Path.Combine(dir, name + ".json"), JsonSerializer.Serialize(body, json) + "\n");
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────────────────────────
@@ -527,9 +714,10 @@ public class EntitlementMatrixTests
             return user;
         }
 
-        public void PayScale(Grade grade, string code, string name, string calc, decimal amount = 0, decimal percentage = 0, string frequency = "Monthly") =>
+        public void PayScale(Grade grade, string code, string name, string calc, decimal amount = 0, decimal percentage = 0, string frequency = "Monthly",
+            string type = "Earning") =>
             Db.GradePayScaleComponents.Add(new GradePayScaleComponent { TenantId = Tid, GradeId = grade.Id, ComponentCode = code, ComponentName = name,
-                CalculationType = calc, Amount = amount, Percentage = percentage, Frequency = frequency });
+                ComponentType = type, CalculationType = calc, Amount = amount, Percentage = percentage, Frequency = frequency });
 
         // ── cell builders ──
         public static MatrixCellInput Amount(Grade g, string code, decimal amount) =>
