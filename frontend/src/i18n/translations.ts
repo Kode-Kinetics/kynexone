@@ -15,6 +15,13 @@ type Dict = Record<string, string>;
 
 // ── English (base) ────────────────────────────────────────────────────────────
 const en: Dict = {
+  'Say how you checked them, for example "matches the bank letter".': 'Say how you checked them, for example "matches the bank letter".',
+  'Bank details confirmed. Payroll will no longer warn about them.': 'Bank details confirmed. Payroll will no longer warn about them.',
+  'Imported bank details not yet verified': 'Imported bank details not yet verified',
+  'Imported bank details to verify': 'Imported bank details to verify',
+  'These bank details came from an employee import and nobody else has checked them. Confirm them with the employee before their first payroll. The person who imported them cannot confirm them.': 'These bank details came from an employee import and nobody else has checked them. Confirm them with the employee before their first payroll. The person who imported them cannot confirm them.',
+  'How you checked them (required)': 'How you checked them (required)',
+  'Confirm bank details': 'Confirm bank details',
   'Kody': 'Kody',
   'HR Assistant': 'HR Assistant',
   'Kody the HR Assistant': 'Kody the HR Assistant',
@@ -1055,6 +1062,13 @@ const en: Dict = {
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
 const ar: Dict = {
+  'Say how you checked them, for example "matches the bank letter".': 'اذكر كيف تحققت منها، مثلاً «مطابقة لخطاب البنك».',
+  'Bank details confirmed. Payroll will no longer warn about them.': 'تم تأكيد البيانات البنكية. لن يُنبّه الرواتب بشأنها بعد الآن.',
+  'Imported bank details not yet verified': 'بيانات بنكية مستوردة لم يتم التحقق منها بعد',
+  'Imported bank details to verify': 'بيانات بنكية مستوردة بانتظار التحقق',
+  'These bank details came from an employee import and nobody else has checked them. Confirm them with the employee before their first payroll. The person who imported them cannot confirm them.': 'وصلت هذه البيانات البنكية من استيراد الموظفين ولم يتحقق منها أحد آخر. أكّدها مع الموظف قبل أول مسير رواتب له. لا يمكن لمن استوردها أن يؤكدها.',
+  'How you checked them (required)': 'كيف تحققت منها (مطلوب)',
+  'Confirm bank details': 'تأكيد البيانات البنكية',
   'Kody': 'Kody',
   'HR Assistant': 'مساعد الموارد البشرية',
   'Kody the HR Assistant': 'Kody، مساعد الموارد البشرية',
