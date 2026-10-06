@@ -52,5 +52,7 @@ public interface IAttendanceService
     Task<IReadOnlyCollection<AttendanceDailyDto>> ReportMissingPunchAsync(Guid tenantId, DateOnly from, DateOnly to, CancellationToken ct);
     Task<IReadOnlyCollection<AttendancePayrollSummaryDto>> PayrollSummaryAsync(Guid tenantId, DateOnly from, DateOnly to, CancellationToken ct);
     Task<IReadOnlyCollection<AttendanceDeviceSyncDto>> DeviceSyncReportAsync(Guid tenantId, CancellationToken ct, bool revealSecrets = true);
-    Task<IReadOnlyCollection<AttendanceAIInsight>> GenerateInsightsAsync(Guid tenantId, CancellationToken ct);
+    /// <param name="visibleEmployeeIds">The caller's data scope (<c>DataScope.AllowedEmployeeIds</c>); null is org-wide.
+    /// Generation always covers the tenant; only the returned insights are scoped.</param>
+    Task<IReadOnlyCollection<AttendanceAIInsight>> GenerateInsightsAsync(Guid tenantId, CancellationToken ct, IReadOnlyCollection<int>? visibleEmployeeIds = null);
 }

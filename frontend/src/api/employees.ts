@@ -792,6 +792,13 @@ export const employeesApi = {
   resolveDuplicate: (id: number, body: ResolveDuplicateRequest) =>
     client.post(`/api/employees/${id}/resolve-duplicate`, body).then((r) => r.data),
 
+  /**
+   * Confirm bank details an import set for a new employee (clears the pay:bankUnverified flag, audited).
+   * The server refuses the person who imported them and the employee themselves.
+   */
+  confirmImportedBankDetails: (id: number, note: string) =>
+    client.post(`/api/employees/${id}/bank-details/confirm`, { note }).then((r) => r.data),
+
   /** Sends only the changed fields; sensitive fields (salary, passport, bank…) return 202 and go to an approval workflow. */
   update: (id: number, effectiveDate: string, changes: Record<string, unknown>) =>
     client.put(`/api/employees/${id}`, { effectiveDate, changes }),

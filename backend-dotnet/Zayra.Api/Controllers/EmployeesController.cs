@@ -1307,9 +1307,15 @@ public class EmployeesController : ControllerBase
                     payrollArtifactsChanged = true;
                     // A NEW employee's bank details are initial data entry, but no second person has seen them:
                     // say so, so they are confirmed with the employee before the first salary is sent.
+                    // Persisted as a typed gap too (not only this response), so HR can find it on the employee's
+                    // readiness checklist, payroll validation can warn on it, and confirming it is audited.
                     if (!string.IsNullOrEmpty(ibanRaw) || !string.IsNullOrEmpty(accountRaw) || !string.IsNullOrEmpty(routingRaw))
-                        warnings.Add($"Employee {emp.EmployeeCode}: bank details (IBAN/account/routing code) were set by this import " +
-                                     "without a second review. Verify them with the employee before their first payroll.");
+                    {
+                        const string bankDetail = "Bank details (IBAN/account/routing code) were set by an import without a second " +
+                                                  "review. Verify them with the employee before their first payroll.";
+                        warnings.Add($"Employee {emp.EmployeeCode}: {bankDetail}");
+                        gapsByCode[payrollCode].Add(new ImportGap(EmployeeImportGap.BankDetailsUnverified, "pay", bankDetail, null));
+                    }
                 }
                 // ── ONE SET OF BANK DETAILS, IN BOTH HOMES ──────────────────────────────────────────────
                 // The WPS/SIF export pays from the payroll profile; the employee record, its readiness snapshot
@@ -4428,6 +4434,67 @@ public class EmployeesController : ControllerBase
         return BadRequest(new { message = "resolution must be 'distinct', 'merge', or 'unmerge'." });
     }
 
+    /// <summary>
+    /// Clears the "imported bank details not yet verified" flag (<see cref="EmployeeImportGap.BankDetailsUnverified"/>)
+    /// once HR has confirmed the IBAN/account with the employee. A second-person check, so it is refused to the
+    /// user who created the imported payroll profile and to the employee themselves, and to a caller who cannot
+    /// see the bank details being confirmed. Audited with the caller's note.
+    /// </summary>
+    [HttpPost("{id:int}/bank-details/confirm")]
+    [HasPermission("employees.write")]
+    public async Task<IActionResult> ConfirmImportedBankDetails(int id, [FromBody] ConfirmBankDetailsRequest req, CancellationToken ct)
+    {
+        var tenantId = RequireTenant();
+        if (!await CanAccessEmployeeAsync(id, ct)) return Forbid();
+        if (!CanViewSensitive())
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = "bank_details_not_visible",
+                message = "Confirming bank details needs a role that can see them (employees.sensitive)." });
+        if (string.IsNullOrWhiteSpace(req.Note))
+            return BadRequest(new { error = "note_required", message = "Say how the bank details were confirmed (for example, with the employee's bank letter)." });
+
+        var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, ct);
+        if (employee is null) return NotFound();
+        var open = await _db.EmployeeImportGaps
+            .Where(g => g.TenantId == tenantId && g.EmployeeId == id && g.ResolvedAtUtc == null
+                        && g.GapType == EmployeeImportGap.BankDetailsUnverified)
+            .ToListAsync(ct);
+        if (open.Count == 0)
+            return Conflict(new { error = "nothing_to_confirm", message = "This employee has no imported bank details waiting to be confirmed." });
+
+        // Who imported them: the imported payroll profile's CreatedBy, AND the actor on each import's commit
+        // marker (employee.import_committed, EntityId = the batch id), which is written in the import's own
+        // transaction. If neither names anyone, the second-person check cannot be made, so it is refused
+        // (fail closed) rather than letting an unknown importer confirm their own data.
+        var callerId = GetUserId();
+        var importers = new HashSet<Guid>();
+        var profileCreatedBy = await _db.EmployeePayrollProfiles.AsNoTracking()
+            .Where(p => p.TenantId == tenantId && p.EmployeeId == id && !p.IsDeleted && p.CreatedBy != null)
+            .Select(p => p.CreatedBy!.Value).ToListAsync(ct);
+        importers.UnionWith(profileCreatedBy);
+        var batchIds = open.Select(g => g.ImportBatchId.ToString()).Distinct().ToList();
+        var markerActors = await _db.AuditLogs.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.Action == ImportCommittedAction && a.EntityName == ImportBatchEntityName
+                        && a.EntityId != null && batchIds.Contains(a.EntityId) && a.UserId != null)
+            .Select(a => a.UserId!.Value).ToListAsync(ct);
+        importers.UnionWith(markerActors);
+        if (importers.Count == 0)
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = "importer_unknown",
+                message = "The import that set these bank details does not record who ran it, so a second-person check is not possible. "
+                        + "Re-enter the bank details through the normal change approval instead." });
+        if (callerId is null || importers.Contains(callerId.Value) || callerId == employee.UserAccountId)
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = "second_person_required",
+                message = "Imported bank details must be confirmed by someone other than the person who imported them or the employee." });
+
+        // ONE SaveChanges: AuditService adds its row to this same request-scoped context and saves, so the gap
+        // resolution and the audit row commit together or not at all.
+        var now = DateTime.UtcNow;
+        foreach (var g in open) g.ResolvedAtUtc = now;
+        await _audit.WriteAsync("employee.imported_bank_details_confirmed", "Employee", id.ToString(), Context(),
+            JsonSerializer.Serialize(new { note = req.Note.Trim(), clearedGaps = open.Count, importBatchIds = open.Select(g => g.ImportBatchId).Distinct() }), ct);
+        await RefreshReadinessByIdAsync(tenantId, id, ct);   // display badge only, best-effort
+        return Ok(new { confirmed = true, clearedGaps = open.Count });
+    }
+
     /// <summary>Refresh one employee's denormalized readiness badge after a dup-flag change (fold via the
     /// service's snapshot path). Best-effort — display only; the activation gate always recomputes live.</summary>
     private async Task RefreshReadinessByIdAsync(Guid tenantId, int id, CancellationToken ct)
@@ -4651,14 +4718,21 @@ public class EmployeesController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer,Auditor")]
     public async Task<ActionResult<IReadOnlyCollection<EmployeeExpiringDocumentDto>>> ExpiringDocuments([FromServices] IEmployeeManagementService employeeManagement, [FromQuery] int days = 60, CancellationToken cancellationToken = default)
     {
-        return Ok(await employeeManagement.ExpiringDocumentsAsync(RequireTenant(), days, cancellationToken));
+        // DATA SCOPE: names with document expiry, so a team-scoped caller (a Manager or Supervisor reaching
+        // this through employees.read) sees their reporting line, and a company-scoped caller their companies.
+        var tenantId = RequireTenant();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
+        return Ok(await employeeManagement.ExpiringDocumentsAsync(tenantId, days, cancellationToken, scope.AllowedEmployeeIds));
     }
 
     [HttpGet("reports/missing-documents")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer,Auditor")]
     public async Task<ActionResult<IReadOnlyCollection<EmployeeMissingDocumentsReportDto>>> MissingDocuments([FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
-        return Ok(await employeeManagement.MissingDocumentsAsync(RequireTenant(), cancellationToken));
+        // DATA SCOPE: same rule as expiring-documents above.
+        var tenantId = RequireTenant();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
+        return Ok(await employeeManagement.MissingDocumentsAsync(tenantId, cancellationToken, scope.AllowedEmployeeIds));
     }
 
     [HttpGet("reports/status-summary")]
@@ -5879,6 +5953,7 @@ public record DeriveWorkEmailResponse(
     string Domain, string Pattern, string LocalPart, string WorkEmail, bool Unique, string? Suggestion, string Status);
 
 public record ResolveDuplicateRequest(string Resolution, int? IntoEmployeeId, string? Reason);
+public record ConfirmBankDetailsRequest(string? Note);
 
 /// <summary>Read-only Ex-Employees archive row. Directory + lifecycle metadata only — no salary,
 /// bank, or statutory-identity fields (parity with the People list's non-sensitive projection).</summary>
