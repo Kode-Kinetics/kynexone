@@ -117,7 +117,7 @@ public class ScopeFilteringTests
             .GetMethod(methodName, BindingFlags.Public | BindingFlags.Instance);
         method.Should().NotBeNull($"method {methodName} must exist on AttendanceController");
 
-        var attr = method!.GetCustomAttribute<AuthorizeAttribute>();
+        var attr = method!.GetCustomAttributes<AuthorizeAttribute>().FirstOrDefault(a => !string.IsNullOrWhiteSpace(a.Roles));
         attr.Should().NotBeNull($"{methodName} must have an [Authorize(Roles=...)] attribute");
 
         var declared = attr!.Roles!.Split(',').Select(r => r.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase);

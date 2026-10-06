@@ -188,13 +188,17 @@ public static class PayComponentEngine
     /// existed — so a single override row on an unseeded tenant silently dropped BASIC, HOUSING, statutory
     /// and every other line from every payslip. With no rows at all this is the pre-F2 compiled fallback,
     /// byte-for-byte.</item>
+    /// <item>Facility components (a grade loan limit, <see cref="PayEntitlementClasses.Facility"/>) are dropped
+    /// here. They are entitlements, not pay: they carry no amount and must never reach a payslip, a WPS file,
+    /// the EOSB wage or the catalog a run is built from. Their non-paying <see cref="PayComponentTypes.Facility"/>
+    /// type already keeps them out of <see cref="Compute"/>; this filter makes that independent of the type.</item>
     /// </list>
     /// </summary>
     public static IReadOnlyList<PayComponent> ResolveInEffect(
         IEnumerable<PayComponent> scopeRows, Guid tenantId, DateOnly periodStart)
     {
         var rows = scopeRows
-            .Where(c => c.IsActive && !c.IsDeleted && c.IsInEffect(periodStart))
+            .Where(c => c.IsActive && !c.IsDeleted && c.IsInEffect(periodStart) && !IsFacility(c))
             .ToList();
         // (component, rank): persisted company row 2 > persisted tenant default 1 > compiled seed 0.
         var candidates = rows.Select(c => (C: c, Rank: c.CompanyId != null ? 2 : 1));
@@ -209,6 +213,10 @@ public static class PayComponentEngine
                 .First().C)
             .ToList();
     }
+
+    /// <summary>True for a non-paying entitlement component (see <see cref="ResolveInEffect"/>).</summary>
+    public static bool IsFacility(PayComponent c) =>
+        c.EntitlementClass == PayEntitlementClasses.Facility || c.ComponentType == PayComponentTypes.Facility;
 
     private static decimal StructureFieldValue(PayComponent c, PayComponentContext ctx) => c.StructureField switch
     {

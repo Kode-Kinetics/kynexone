@@ -272,11 +272,14 @@ export interface GradeDto {
   maxSalary: number;
   currency: string;
   isActive: boolean;
+  /** Optional Arabic display name; the UI falls back to name. */
+  nameAr?: string | null;
 }
 
 export interface GradeRequest {
   code: string;
   name: string;
+  nameAr?: string | null;
   band?: string;
   level: number;
   minSalary?: number;

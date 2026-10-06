@@ -349,15 +349,27 @@ public class AdvancesController : ControllerBase
 
     // ── Audit & Reconciliation Report ────────────────────────────────────────
 
+    // The role list resolves to loans.read, which the seeded line Manager also holds (for their own team's
+    // loans), and this report read every advance in the tenant with the employee's name and amounts. It now
+    // applies the caller's data scope, as List and LoansController.AuditReport do: an org-wide finance or HR
+    // reader sees the book, a line Manager sees only their reporting line.
     [HttpGet("audit")]
     [Authorize(Roles = "Admin,Finance,HR Manager")]
     public async Task<IActionResult> AuditReport(CancellationToken ct)
     {
         var tid = GetTenantId();
-        var advances = await _db.SalaryAdvances.Where(x => x.TenantId == tid && !x.IsDeleted)
-            .OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct);
+        var scope = await _scopeService.ResolveAsync(User, tid, ct);
+        var q = _db.SalaryAdvances.Where(x => x.TenantId == tid && !x.IsDeleted);
+        if (!scope.IsUnrestricted)
+        {
+            var allowedEmployeeIds = scope.AllowedEmployeeIds!.ToArray();
+            q = q.Where(x => x.EmployeeIntId.HasValue && allowedEmployeeIds.Contains(x.EmployeeIntId.Value));
+        }
+        var advances = await q.OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct);
+        var advanceIds = advances.Select(x => x.Id).ToArray();
         var glEntries = await _db.FinanceGlEntries
-            .Where(x => x.TenantId == tid && x.SourceModule == "Advance").ToListAsync(ct);
+            .Where(x => x.TenantId == tid && x.SourceModule == "Advance"
+                && (scope.IsUnrestricted || advanceIds.Contains(x.SourceEntityId))).ToListAsync(ct);
 
         return Ok(new
         {

@@ -9,24 +9,62 @@
         "src/views/EmployeeSelfServicePage.tsx  hardcoded: 60 → 62",
         "new fragment key: \"no event date\""
       ]
+    },
+    {
+      "pinnedAt": "2026-10-06",
+      "reason": "Merge of main #174 (grade loan limits): 16 fragment keys (15 lower-case clauses and one list lead-in ending in ':') ('up to {amount} per loan', 'the company loan policy', …) arrived with main. They are inserted into whole-sentence keys such as 'The limit that applies: {limit}.' and 'Your limit ({grade})', so rewriting them means redesigning the limit card's sentences; that is left to the loans Wave.",
+      "increases": [
+        "new fragment key: \"These companies have no loan policy for this loan type. Once it is limited by grade, their employees can no longer apply for it:\"",
+        "new fragment key: \"months of basic salary\"",
+        "new fragment key: \"months of gross salary\"",
+        "new fragment key: \"no per-loan grade limit\"",
+        "new fragment key: \"since {date}\"",
+        "new fragment key: \"the company loan policy\"",
+        "new fragment key: \"the company policy's limit on instalments as a share of salary\"",
+        "new fragment key: \"the company policy's maximum loan amount\"",
+        "new fragment key: \"the company policy's maximum number of open loans\"",
+        "new fragment key: \"the company policy's salary multiple\"",
+        "new fragment key: \"the company policy's total outstanding maximum\"",
+        "new fragment key: \"this employee's grade's per-loan maximum\"",
+        "new fragment key: \"this employee's grade's total outstanding maximum\"",
+        "new fragment key: \"up to {amount} per loan\"",
+        "new fragment key: \"your grade's per-loan maximum\"",
+        "new fragment key: \"your grade's total outstanding maximum\""
+      ]
     }
   ],
   "totals": {
-    "hardcoded": 5773,
+    "hardcoded": 5758,
     "rawStatus": 61,
     "locale": 226,
     "icons": 0,
     "files": 126
   },
   "fragmentKeys": [
+    "These companies have no loan policy for this loan type. Once it is limited by grade, their employees can no longer apply for it:",
     "companies in group",
     "e.g. Approved by management for Q3 expansion",
     "frozen",
     "levels without a budget are uncontrolled (\"—\"), an explicit 0 freezes the level, and the total approved headcount never hard-blocks — only level budgets do.",
+    "months of basic salary",
+    "months of gross salary",
     "no event date",
+    "no per-loan grade limit",
     "not set",
     "over-establishment: {n}",
-    "uncontrolled"
+    "since {date}",
+    "the company loan policy",
+    "the company policy's limit on instalments as a share of salary",
+    "the company policy's maximum loan amount",
+    "the company policy's maximum number of open loans",
+    "the company policy's salary multiple",
+    "the company policy's total outstanding maximum",
+    "this employee's grade's per-loan maximum",
+    "this employee's grade's total outstanding maximum",
+    "uncontrolled",
+    "up to {amount} per loan",
+    "your grade's per-loan maximum",
+    "your grade's total outstanding maximum"
   ],
   "files": {
     "app/(dashboard)/compliance-profiles/page.tsx": {
@@ -401,7 +439,7 @@
       "locale": 3
     },
     "src/views/LoansPage.tsx": {
-      "hardcoded": 287,
+      "hardcoded": 272,
       "rawStatus": 1,
       "locale": 2
     },

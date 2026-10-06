@@ -27,12 +27,14 @@ import { LoanPaymentsTab } from '../components/loans/LoanPaymentsTab';
 import { LoanPoliciesTab } from '../components/loans/LoanPoliciesTab';
 import { LoanLifecyclePanel } from '../components/loans/LoanLifecyclePanel';
 import { LoanAccountSummary, LoanStatement } from '../components/loans/LoanStatement';
-import { loanGovernanceApi, type LoanEligibility } from '../api/loanGovernance';
+import { loanGovernanceApi, loanOfferingsApi, type LoanEligibility, type OfferedLoanType } from '../api/loanGovernance';
 import { useCompany } from '../contexts/CompanyContext';
+import { useLocale } from '../contexts/LocaleContext';
+import { LoanLimitCard } from '../components/loans/LoanLimitCard';
+import { isGradeBlocked, isLoanTypeNotOffered, localName, reasonKeyFor } from '../lib/gradeLoanLimits';
 
 import { EnumLabel, type EnumName } from '../components/EnumLabel';
 import { useFormat } from '../hooks/useFormat';
-import { useT } from '../hooks/useT';
 type Tab = 'loans' | 'loanPayments' | 'loanPolicies' | 'loanTypes' | 'advances' | 'advancePolicy' | 'bonusTypes' | 'bonusBatches' | 'auditReport';
 
 const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
@@ -266,7 +268,6 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
   const canManagePayments = user?.roles.some(role => ['Admin', 'Finance'].includes(role)) ?? false;
   const { currencyCode } = useTenantSettings();
   const fx = useFormat();
-  const t = useT();
   const fmt = (n: number, currency: string) => fx.plain.money(n, currency);
   const [items, setItems] = useState<EmployeeLoan[]>([]);
   const [total, setTotal] = useState(0);
@@ -294,11 +295,72 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
   const applicantId = selectedEmployee?.intId ?? (mine || !staff ? user?.employeeId : undefined);
   const eligibilityKey = JSON.stringify([applicantId, createForm.loanTypeId, createForm.requestedAmount, createForm.requestedInstallments, createForm.repaymentMethod]);
   const [checkedKey, setCheckedKey] = useState('');
+  const { t, locale } = useLocale();
+  const self = mine || !staff;
+  const checkedEligibility = eligibility && checkedKey === eligibilityKey ? eligibility : null;
+  // The loan types this applicant is OFFERED (server-decided per company: explicit switch, policy, interest).
+  // Null while unknown (HR has not picked the employee yet, or the list failed) — then every type is listed
+  // and the server's "not offered" code still blocks the request.
+  const [offeredTypesSettled, setOfferedTypesSettled] = useState(false);
+  const [offeredTypes, setOfferedTypes] = useState<{ applicant: number | undefined; list: OfferedLoanType[] } | null>(null);
+  useEffect(() => {
+    if (!createModal || (!applicantId && staff && !mine)) return;
+    let cancelled = false;
+    loanOfferingsApi.offeredTypes(applicantId)
+      // Anything but a list (an older API without this endpoint, a proxy error page) means "unknown": list every
+      // type and let the server's own "not offered" refusal decide, rather than hiding all types or crashing.
+      .then(list => { if (!cancelled) setOfferedTypes(Array.isArray(list) ? { applicant: applicantId, list } : null); })
+      .catch(() => { if (!cancelled) setOfferedTypes(null); })
+      .finally(() => { if (!cancelled) setOfferedTypesSettled(true); });
+    return () => { cancelled = true; };
+  }, [createModal, applicantId, staff, mine]);
+  const currentOffered = offeredTypes && offeredTypes.applicant === applicantId ? offeredTypes.list : null;
+  // Unknown offerings (the list failed or came back malformed): list the interest-free types and say the server
+  // will confirm on selection — its "not offered" refusal still applies. Interest-bearing types are never offered.
+  const offeringsUnknown = createModal && offeredTypes === null && !(!applicantId && staff && !mine) && offeredTypesSettled;
+  const selectableTypes = currentOffered
+    ? loanTypes.filter(type => currentOffered.some(o => o.loanTypeId === type.id && o.offered))
+    : loanTypes.filter(type => type.isInterestFree && !type.interestRate);
+  const noTypesOffered = !!currentOffered && selectableTypes.length === 0;
+  useEffect(() => {
+    // A type the applicant is not offered can never stay selected.
+    if (currentOffered && createForm.loanTypeId && !selectableTypes.some(type => type.id === createForm.loanTypeId))
+      setCreateForm(x => ({ ...x, loanTypeId: selectableTypes[0]?.id ?? '' }));
+  }, [currentOffered, selectableTypes, createForm.loanTypeId]);
+  const typeName = (type: LoanType) => localName(locale, type.nameEn, type.nameAr);
+  // Limits preview: fetched as soon as a loan type (and, for HR on behalf, an employee) is chosen,
+  // so the applicant sees their limit before typing an amount. The full check still needs the amount.
+  const [preview, setPreview] = useState<{ key: string; result: LoanEligibility } | null>(null);
+  const previewKey = JSON.stringify([applicantId, createForm.loanTypeId]);
+  useEffect(() => {
+    if (!createModal || !createForm.loanTypeId || (!applicantId && staff && !mine)) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      loanGovernanceApi.preview({ employeeIntId: applicantId, loanTypeId: createForm.loanTypeId })
+        .then(result => { if (!cancelled) setPreview({ key: previewKey, result }); })
+        .catch(() => { if (!cancelled) setPreview(null); }); // A preview is a convenience; Check Eligibility reports errors.
+    }, 350);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [createModal, createForm.loanTypeId, applicantId, staff, mine, previewKey]);
+  const currentPreview = preview?.key === previewKey ? preview.result : null;
+  const notOffered = isLoanTypeNotOffered(checkedEligibility) || isLoanTypeNotOffered(currentPreview);
+  // Grade limits are hard: no policy exception can lift them.
+  const gradeBlocked = isGradeBlocked(checkedEligibility);
+  const canSubmit = !!checkedEligibility && !notOffered && !gradeBlocked
+    && (checkedEligibility.eligible || (requestException && !!checkedEligibility.canRequestException));
+  // Reasons the limit card already explains in plain words (grade refusals, "not offered") are not repeated.
+  // Reasons the limit card already explains (grade refusals) and "not offered" are not repeated. Every other
+  // reason is shown from its CODE, in the UI language — never the server's English sentence or the raw code.
+  const otherReasons = checkedEligibility
+    ? Array.from(new Set((checkedEligibility.codes ?? []).filter(code => !code.startsWith('Grade') && code !== 'LoanTypeNotOffered')
+      .map(code => t(reasonKeyFor(code, self)))))
+    : [];
+  const notOfferedText = t(self ? "Loans of this type aren't offered by your company." : "Loans of this type aren't offered by this employee's company.");
   const checkEligibility = async () => {
-    if ((!applicantId && staff && !mine) || !createForm.loanTypeId || createForm.requestedAmount <= 0) { setError('Select the employee, loan type and requested amount first.'); return; }
+    if ((!applicantId && staff && !mine) || !createForm.loanTypeId || createForm.requestedAmount <= 0) { setError(t('Select the employee, loan type and requested amount first.')); return; }
     setCheckingEligibility(true); setError('');
     try { setEligibility(await loanGovernanceApi.eligibility({ employeeIntId: applicantId, loanTypeId: createForm.loanTypeId, amount: createForm.requestedAmount, installments: createForm.requestedInstallments, repaymentMethod: createForm.repaymentMethod })); setCheckedKey(eligibilityKey); }
-    catch (e) { setError(loanErrorMessage(e, 'Unable to check eligibility.')); }
+    catch (e) { setError(loanErrorMessage(e, t('Unable to check eligibility.'))); }
     finally { setCheckingEligibility(false); }
   };
 
@@ -315,9 +377,9 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
   };
 
   const createLoan = async () => {
-    if ((!applicantId && staff && !mine) || !createForm.loanTypeId) { setError('Select an employee and loan type'); return; }
-    if (checkedKey !== eligibilityKey || !(eligibility?.eligible || (requestException && eligibility?.canRequestException))) { setError('Check eligibility for the current request before submitting.'); return; }
-    if (createForm.requestedAmount <= 0 || !Number.isInteger(createForm.requestedInstallments) || createForm.requestedInstallments < 1) { setError('Enter a positive amount and a whole number of installments.'); return; }
+    if ((!applicantId && staff && !mine) || !createForm.loanTypeId) { setError(t('Select an employee and loan type')); return; }
+    if (!canSubmit || !eligibility) { setError(notOffered || gradeBlocked ? t('This request cannot be submitted. The reason is shown under Check Eligibility.') : t('Check eligibility for the current request before submitting.')); return; }
+    if (createForm.requestedAmount <= 0 || !Number.isInteger(createForm.requestedInstallments) || createForm.requestedInstallments < 1) { setError(t('Enter a positive amount and a whole number of installments.')); return; }
     setSaving(true); setError('');
     try {
       await loansApi.create({
@@ -377,8 +439,8 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
             <option value="">All Statuses</option>
             {['Pending', 'Approved', 'Active', 'Overdue', 'Settled', 'Rejected', 'Closed'].map((s) => <option key={s} value={s}>{s === 'Approved' ? 'Approved — awaiting payment' : s}</option>)}
           </select>
-          <button type="button" onClick={() => { setCreateForm({ loanTypeId: loanTypes[0]?.id ?? '', requestedAmount: 0, requestedInstallments: 12, repaymentMethod: 'BankTransfer', notes: '' }); setSelectedEmployee(null); setEligibility(null); setRequestException(false); setCheckedKey(''); setError(''); setCreateModal(true); }} className="btn-primary">
-            <Plus className="h-4 w-4" /> New Loan Request
+          <button type="button" onClick={() => { setCreateForm({ loanTypeId: loanTypes[0]?.id ?? '', requestedAmount: 0, requestedInstallments: 12, repaymentMethod: 'BankTransfer', notes: '' }); setSelectedEmployee(null); setEligibility(null); setPreview(null); setOfferedTypes(null); setOfferedTypesSettled(false); setRequestException(false); setCheckedKey(''); setError(''); setCreateModal(true); }} className="btn-primary">
+            <Plus className="h-4 w-4" /> {t('New Loan Request')}
           </button>
         </div>
         <div className="surface overflow-x-auto">
@@ -424,37 +486,57 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
       </div>
 
       {/* Create Loan Modal */}
-      <Modal isOpen={createModal} title="New Loan Request" onClose={() => setCreateModal(false)} size="lg"
-        footer={<><button type="button" onClick={() => setCreateModal(false)} className="btn-secondary">Cancel</button><button type="button" onClick={createLoan} disabled={saving || checkingEligibility || checkedKey !== eligibilityKey || !(eligibility?.eligible || (requestException && eligibility?.canRequestException))} className="btn-primary disabled:opacity-60">{saving ? 'Submitting…' : 'Submit Request'}</button></>}>
+      <Modal isOpen={createModal} title={t('New Loan Request')} onClose={() => setCreateModal(false)} size="lg"
+        footer={<><button type="button" onClick={() => setCreateModal(false)} className="btn-secondary">{t('Cancel')}</button>{!notOffered && !noTypesOffered && <button type="button" onClick={createLoan} disabled={saving || checkingEligibility || !canSubmit} className="btn-primary disabled:opacity-60">{saving ? t('Submitting…') : t('Submit Request')}</button>}</>}>
         <FormError error={error} />
         <div className="space-y-3">
-          <FormField label="Employee" required>
-            {mine || !staff ? <p className="text-sm font-semibold">{user?.fullName}</p> : <EmployeeSearchSelect value={selectedEmployee} onChange={setSelectedEmployee} required />}
+          <FormField label={t('Employee')} required>
+            {self ? <p className="text-sm font-semibold">{user?.fullName}</p> : <EmployeeSearchSelect value={selectedEmployee} onChange={setSelectedEmployee} required />}
           </FormField>
-          <div className="grid grid-cols-2 gap-3">
-            <FormField label="Loan Type" required>
-              <select value={createForm.loanTypeId} onChange={(e) => setCreateForm(x => ({ ...x, loanTypeId: e.target.value }))} className="select w-full" title="Loan Type">
-                <option value="">Select type</option>
-                {loanTypes.map((t) => <option key={t.id} value={t.id}>{t.nameEn} {t.isInterestFree ? '(Interest-Free)' : `(${t.interestRate}%)`}</option>)}
+          {noTypesOffered && <p role="status" className="rounded-md border border-amber-300 bg-amber-50 p-2 text-sm font-semibold text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
+            {t(self ? 'No loan types are offered by your company right now.' : "No loan types are offered by this employee's company right now.")}
+          </p>}
+          {offeringsUnknown && <p role="status" className="text-xs text-slate-500">{t("We couldn't confirm which loan types your company offers; we'll check when you choose one.")}</p>}
+          {!noTypesOffered && <div className="grid grid-cols-2 gap-3">
+            <FormField label={t('Loan Type')} required>
+              <select value={createForm.loanTypeId} onChange={(e) => setCreateForm(x => ({ ...x, loanTypeId: e.target.value }))} className="select w-full" title={t('Loan Type')}>
+                <option value="">{t('Select type')}</option>
+                {selectableTypes.map((type) => <option key={type.id} value={type.id}>{typeName(type)} {type.isInterestFree ? `(${t('Interest-free')})` : `(${type.interestRate}%)`}</option>)}
               </select>
             </FormField>
-            <FormField label="Amount (employee company currency)" required>
-              <input type="number" value={createForm.requestedAmount} onChange={(e) => setCreateForm(x => ({ ...x, requestedAmount: Number(e.target.value) }))} className="input w-full" title="Requested Amount" min="1" />
+            <FormField label={t('Amount (employee company currency)')} required>
+              <input type="number" value={createForm.requestedAmount} onChange={(e) => setCreateForm(x => ({ ...x, requestedAmount: Number(e.target.value) }))} className="input w-full" title={t('Requested amount')} min="1" />
             </FormField>
-            <FormField label="Installments">
-              <input type="number" value={createForm.requestedInstallments} onChange={(e) => setCreateForm(x => ({ ...x, requestedInstallments: Number(e.target.value) }))} className="input w-full" title="Requested Installments" min="1" />
+            <FormField label={t('Installments')}>
+              <input type="number" value={createForm.requestedInstallments} onChange={(e) => setCreateForm(x => ({ ...x, requestedInstallments: Number(e.target.value) }))} className="input w-full" title={t('Requested installments')} min="1" />
             </FormField>
-            <FormField label="Repayment method" required>
-              <select title="Repayment method" className="select w-full" value={createForm.repaymentMethod} onChange={e => setCreateForm(x => ({ ...x, repaymentMethod: e.target.value as LoanRepaymentMethod }))}>
-                {Object.entries(repaymentMethodLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            <FormField label={t('Repayment method')} required>
+              <select title={t('Repayment method')} className="select w-full" value={createForm.repaymentMethod} onChange={e => setCreateForm(x => ({ ...x, repaymentMethod: e.target.value as LoanRepaymentMethod }))}>
+                {Object.entries(repaymentMethodLabels).map(([value, label]) => <option key={value} value={value}>{t(label)}</option>)}
               </select>
-              <p className="mt-1 text-xs text-slate-500">{createForm.repaymentMethod === 'PayrollDeduction' ? 'Installments will be deducted from salary after disbursement.' : 'Finance records each repayment separately from payroll.'}</p>
+              <p className="mt-1 text-xs text-slate-500">{t(createForm.repaymentMethod === 'PayrollDeduction' ? 'Installments will be deducted from salary after disbursement.' : 'Finance records each repayment separately from payroll.')}</p>
             </FormField>
-            <FormField label="Notes">
-              <textarea value={createForm.notes} onChange={(e) => setCreateForm(x => ({ ...x, notes: e.target.value }))} className="input w-full" rows={2} title="Notes" />
+            <FormField label={t('Notes')}>
+              <textarea value={createForm.notes} onChange={(e) => setCreateForm(x => ({ ...x, notes: e.target.value }))} className="input w-full" rows={2} title={t('Notes')} />
             </FormField>
-          </div>
-          <div className="space-y-2 rounded-lg border border-slate-200 p-3 dark:border-white/10"><button className="btn-secondary" disabled={checkingEligibility || saving} onClick={checkEligibility}>{checkingEligibility ? t('Checking…') : t('Check Eligibility')}</button>{eligibility && checkedKey === eligibilityKey && <div role="status" className="space-y-1 text-sm"><p className={eligibility.eligible ? 'text-emerald-700' : 'text-amber-700'}>{eligibility.eligible ? t('Eligible to apply') : t('Not eligible for this request')}</p><p>{eligibility.maxAvailableAmount == null ? t('No fixed amount limit') : t('Maximum available: {amount}', { amount: fx.number(eligibility.maxAvailableAmount) })} · {t('Policy v{version}', { version: eligibility.policyVersion == null ? '—' : String(eligibility.policyVersion) })}</p>{eligibility.reasons.map((reason, index) => <p key={reason}>{reason}{eligibility.codes?.[index] ? ` (${eligibility.codes[index]})` : ''}</p>)}{!eligibility.eligible && eligibility.canRequestException && <label className="flex items-center gap-2"><input type="checkbox" checked={requestException} onChange={e => setRequestException(e.target.checked)} />{t('Request an HR Director policy exception')}</label>}<p className="text-xs text-slate-500">{t('Approval starts with HR Manager. Policy exceptions need a separate independent approval before the loan can proceed.')}</p></div>}</div>
+          </div>}
+          {!noTypesOffered && <div className="space-y-2 rounded-lg border border-slate-200 p-3 dark:border-white/10">
+            <button className="btn-secondary" disabled={checkingEligibility || saving} onClick={checkEligibility}>{checkingEligibility ? t('Checking…') : t('Check Eligibility')}</button>
+            {!checkedEligibility && currentPreview && (notOffered
+              ? <p role="status" className="text-sm font-semibold text-amber-700 dark:text-amber-300">{notOfferedText}</p>
+              : <LoanLimitCard eligibility={currentPreview} self={self} />)}
+            {checkedEligibility && (notOffered
+              ? <p role="status" className="text-sm font-semibold text-amber-700 dark:text-amber-300">{notOfferedText}</p>
+              : <div role="status" className="space-y-1 text-sm">
+                <p className={checkedEligibility.eligible ? 'text-emerald-700' : 'text-amber-700'}>{t(checkedEligibility.eligible ? 'Eligible to apply' : 'Not eligible for this request')}</p>
+                <LoanLimitCard eligibility={checkedEligibility} self={self} />
+                <p>{checkedEligibility.maxAvailableAmount == null ? t('No fixed amount limit') : t('Maximum available: {amount}', { amount: fx.money(checkedEligibility.maxAvailableAmount, checkedEligibility.currency ?? null) })} · {t('Policy version {version}', { version: checkedEligibility.policyVersion ?? '—' })}</p>
+                {otherReasons.map(reason => <p key={reason}>{reason}</p>)}
+                {!checkedEligibility.eligible && checkedEligibility.canRequestException && !gradeBlocked && <label className="flex items-center gap-2"><input type="checkbox" checked={requestException} onChange={e => setRequestException(e.target.checked)} />{t('Request an HR Director policy exception')}</label>}
+                {gradeBlocked && <p className="text-xs text-slate-500">{t('Grade limits cannot be overridden by a policy exception.')}</p>}
+                <p className="text-xs text-slate-500">{t('Approval starts with HR Manager. Policy exceptions need a separate independent approval before the loan can proceed.')}</p>
+              </div>)}
+          </div>}
         </div>
       </Modal>
 
@@ -1731,7 +1813,7 @@ export function LoansPage() {
       <div>
         {activeTab === 'loans' && <LoansTab key={`${companyVersion}-${ownAccounts}`} mine={ownAccounts} loanTypes={loanTypes} onPayments={() => setActiveTab('loanPayments')} onChanged={refreshSummary} />}
         {activeTab === 'loanPayments' && canManagePayments && <LoanPaymentsTab key={companyVersion} onChanged={refreshSummary} />}
-        {activeTab === 'loanPolicies' && canConfigurePolicies && <LoanPoliciesTab key={companyVersion} loanTypes={loanTypes} />}
+        {activeTab === 'loanPolicies' && canConfigurePolicies && <LoanPoliciesTab key={companyVersion} loanTypes={loanTypes} onGradeLimitedChanged={(id, gradeLimited) => setLoanTypes(list => list.map(type => (type.id === id ? { ...type, gradeLimited } : type)))} />}
         {activeTab === 'loanTypes' && <LoanTypesTab />}
         {activeTab === 'advances' && <AdvancesTab />}
         {activeTab === 'advancePolicy' && <AdvancePolicyTab />}
