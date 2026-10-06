@@ -30,7 +30,7 @@ public sealed class EmployeePackageController : ControllerBase
     /// <summary>Audit entity of a proposal decision. EntityId = "{batchId:N}:{contractId:N}"; the batch is the job id.
     /// employee_entitlements has no batch column (and R2 adds no migration), so the batch and the document are recorded
     /// here, with the ids of the rows written.</summary>
-    public const string ProposalAuditEntity = "ContractPackageProposal";
+    public const string ProposalAuditEntity = PackageProposals.AuditEntity;
 
     private readonly ZayraDbContext _db;
     private readonly IEntitlementResolver _resolver;
@@ -98,7 +98,7 @@ public sealed class EmployeePackageController : ControllerBase
                 FreezePreview? preview;
                 try { preview = await writer.PreviewAsync(tid, contract.Id, ct); }
                 catch (EntitlementWriteRefusedException) { preview = null; }
-                if (preview is { Running: true, ProposableRows: > 0 }) next = ContractPackageNextActions.ProposeBenefits;
+                if (preview is { NeedsProposal: true, ProposableRows: > 0 }) next = ContractPackageNextActions.ProposeBenefits;
             }
             if (next is not null) result.Add(new ContractPackageStatusDto(contract.Id, employee.Id, next));
         }
@@ -127,6 +127,13 @@ public sealed class EmployeePackageController : ControllerBase
         if (await OpenProposalAsync(tid, contract.Id, ct) is not null)
             return Refused(PackageReasons.ProposalOpen, "A proposed package for this term is waiting for a decision.");
         var writer = new EntitlementWriter(_db, _clock, _resolver);
+        try
+        {
+            if ((await writer.PreviewAsync(tid, contract.Id, ct)) is { NeedsProposal: true, FreezableRows: 0 })
+                return Refused(PackageReasons.PredecessorUnconfirmed,
+                    "The employee's previous contract has no confirmed benefits. Propose this contract's benefits, and another HR user confirms them.");
+        }
+        catch (EntitlementWriteRefusedException ex) { return Refused(ex.Code, ex.Message); }
         return await WriteAsync(async () =>
         {
             var result = await FinanceDecisionSerializer.SerializeAsync(_db, FinanceDecisionSerializer.ScopeEmployeePackage, tid, employee.PublicId, async () =>
@@ -218,7 +225,8 @@ public sealed class EmployeePackageController : ControllerBase
         if (this.GetTenantId() is not Guid tid) return Unauthorized();
         var (proposal, employee, failure) = await OpenProposalForDecisionAsync(tid, batchId, req.ContractId, ct);
         if (failure is not null) return failure;
-        if (req.DocumentId is not Guid documentId || !await IsSignedContractAsync(tid, employee!.Id, req.ContractId, documentId, ct))
+        var job = await BatchAsync(tid, batchId, ct);
+        if (req.DocumentId is not Guid documentId || !await IsSignedContractAsync(tid, employee!.Id, req.ContractId, documentId, job?.CreatedByUserId, ct))
             return Refused(PackageReasons.ProposalDocumentRequired, "Choose the employee's signed contract from their documents.", StatusCodes.Status400BadRequest);
         var writer = new EntitlementWriter(_db, _clock, _resolver);
         return await WriteAsync(async () =>
@@ -293,52 +301,33 @@ public sealed class EmployeePackageController : ControllerBase
             throw new EntitlementWriteRefusedException(PackageReasons.ProposalClosed, "This proposal was already decided.");
     }
 
-    /// <summary>The signed contract: the term's own file, or a contract-type document on this employee's file.</summary>
-    private async Task<bool> IsSignedContractAsync(Guid tid, int employeeId, Guid contractId, Guid documentId, CancellationToken ct)
+    /// <summary>
+    /// The signed contract: the term's own file (its FileUrl), or a contract-type document on this employee's file that was
+    /// NOT uploaded by the person who asked for the proposal — evidence the requester supplied cannot be their own check.
+    /// </summary>
+    private async Task<bool> IsSignedContractAsync(Guid tid, int employeeId, Guid contractId, Guid documentId, Guid? requester, CancellationToken ct)
     {
         var document = await _db.EmployeeDocuments.AsNoTracking()
             .Where(x => x.TenantId == tid && x.Id == documentId && x.EmployeeId == employeeId && !x.IsDeleted)
-            .Select(x => new EmployeeDocumentView(x.DocumentType, x.StorageUrl)).FirstOrDefaultAsync(ct);
+            .Select(x => new { x.DocumentType, x.StorageUrl, x.UploadedBy }).FirstOrDefaultAsync(ct);
         if (document is null) return false;
         var fileUrl = await _db.EmployeeContracts.AsNoTracking().Where(x => x.TenantId == tid && x.Id == contractId)
             .Select(x => x.FileUrl).FirstOrDefaultAsync(ct);
-        return SignedContractDocuments.Matches(document, fileUrl);
+        if (!string.IsNullOrWhiteSpace(fileUrl) && string.Equals(document.StorageUrl, fileUrl, StringComparison.Ordinal)) return true;
+        return SignedContractDocuments.IsContractType(document.DocumentType) && document.UploadedBy is not null && document.UploadedBy != requester;
     }
 
     /// <summary>The open (undecided) proposal for one term, from the newest run that proposed something for it.</summary>
-    private async Task<OpenProposal?> OpenProposalAsync(Guid tid, Guid contractId, CancellationToken ct)
-    {
-        var key = PackageFreezeJobHandler.ItemKey(contractId);
-        var items = await (from item in _db.BackgroundJobItems.AsNoTracking()
-                           join job in _db.BackgroundJobs.AsNoTracking() on item.JobId equals job.Id
-                           where item.TenantId == tid && job.TenantId == tid && job.JobType == PackageFreezeJobHandler.JobType && item.ItemKey == key
-                           orderby item.CreatedAtUtc descending
-                           select new { item.JobId, item.ResultJson, job.CreatedByUserId }).Take(5).ToListAsync(ct);
-        foreach (var item in items)
-        {
-            if (PackageFreezeJobHandler.ReadProposal(item.ResultJson) is not { } proposal) continue;
-            if ((await DecisionsAsync(tid, item.JobId, ct)).ContainsKey(contractId)) continue;
-            return new OpenProposal(item.JobId, item.CreatedByUserId, proposal);
-        }
-        return null;
-    }
+    private async Task<OpenProposal?> OpenProposalAsync(Guid tid, Guid contractId, CancellationToken ct) =>
+        (await PackageProposals.OpenAsync(_db, tid, contractId, ct)).FirstOrDefault();
+
+    private Task<Dictionary<Guid, string>> DecisionsAsync(Guid tid, Guid batchId, CancellationToken ct) =>
+        PackageProposals.DecisionsAsync(_db, tid, batchId, ct);
+
+    private static string ProposalKey(Guid batchId, Guid contractId) => PackageProposals.Key(batchId, contractId);
 
     private Task<BackgroundJob?> BatchAsync(Guid tid, Guid batchId, CancellationToken ct) =>
         _db.BackgroundJobs.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == batchId && x.JobType == PackageFreezeJobHandler.JobType, ct);
-
-    /// <summary>The decision per term of one run. The FIRST decision recorded stands (the lock makes a second one impossible;
-    /// the order is still explicit rather than whatever the database returns first).</summary>
-    private async Task<Dictionary<Guid, string>> DecisionsAsync(Guid tid, Guid batchId, CancellationToken ct)
-    {
-        var prefix = $"{batchId:N}:";
-        var logs = await _db.ComplianceAuditLogs.AsNoTracking()
-            .Where(x => x.TenantId == tid && x.EntityType == ProposalAuditEntity && x.EntityId.StartsWith(prefix))
-            .Select(x => new { x.EntityId, x.Action, x.CreatedAtUtc, x.Id }).ToListAsync(ct);
-        return logs.GroupBy(x => Guid.ParseExact(x.EntityId[prefix.Length..], "N"))
-            .ToDictionary(g => g.Key, g => g.OrderBy(x => x.CreatedAtUtc).ThenBy(x => x.Id).First().Action);
-    }
-
-    private static string ProposalKey(Guid batchId, Guid contractId) => $"{batchId:N}:{contractId:N}";
 
     private static IEnumerable<object> Skips(IEnumerable<FreezeSkip> skips) =>
         skips.Select(s => new { s.ComponentCode, s.Code, reason = PackageReasons.Describe(s.Code) });
@@ -398,7 +387,6 @@ public sealed record ContractPackageStatusDto(Guid ContractId, int EmployeeId, s
 public sealed record PackageBulkFreezeRequest(Guid CompanyId);
 public sealed record ConfirmProposalRequest(Guid ContractId, Guid? DocumentId);
 public sealed record RejectProposalRequest(Guid ContractId, string? Reason);
-public sealed record OpenProposal(Guid BatchId, Guid? RequestedBy, FreezeProposal Proposal);
 
 /// <summary>HR view: the package plus what each line is based on (the grade cell, the frozen row, the term, the salary row).</summary>
 public sealed record EmployeePackageView(
@@ -437,7 +425,7 @@ public sealed record EmployeePackageView(
                 proposal?.Proposal.Rows.Any(r => r.ComponentCode == l.ComponentCode) == true ? PackageReasons.ProposalOpen
                 : skips.GetValueOrDefault(l.ComponentCode)
                   ?? preview?.BlockedCode
-                  ?? (preview?.Running == true ? PackageReasons.TermRunningNeedsProposal : null)))
+                  ?? (preview?.NeedsProposal == true ? (preview.Running ? PackageReasons.TermRunningNeedsProposal : PackageReasons.PredecessorUnconfirmed) : null)))
             .ToList();
         var freezeStatus = new PackageFreezeStatusDto(frozen.Count, contractLines.Count, notFixed, preview?.BlockedCode, preview?.PossibleFrom);
         var codes = package.Lines.Select(l => l.ReasonCode).Concat(package.BlockCodes).OfType<string>().Distinct();
@@ -460,7 +448,7 @@ public sealed record EmployeePackageView(
             resolved.Reasons.Where(r => r.Value.Criterion is not null).ToDictionary(r => r.Key, r => r.Value.Criterion!),
             // Offered only when it can succeed now: a "Fix" that would just repeat a skip is never shown.
             proposal is null && preview is { Running: false, BlockedCode: null, FreezableRows: > 0 },
-            proposal is null && preview is { Running: true, ProposableRows: > 0 },
+            proposal is null && preview is { NeedsProposal: true, ProposableRows: > 0 },
             freezeStatus,
             c.Dependants.Count,
             proposal is null ? null : new PackageProposalDto(proposal.BatchId, proposal.RequestedBy is Guid r && r == viewer,

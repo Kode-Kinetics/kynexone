@@ -59,8 +59,10 @@ public sealed record FreezeProposal(
 /// <param name="BlockedCode">Set when the freeze would be refused outright (a predecessor benefit that never took effect).</param>
 /// <param name="ProposableRows">Rows the four-eyes proposal path would propose now.</param>
 /// <param name="Running">The term started before today, so a package from the grade table needs a proposal.</param>
+/// <param name="NeedsProposal">A package from the grade table for this term needs a second person: the term is running, or the
+/// employee's previous term has no confirmed package.</param>
 public sealed record FreezePreview(int FreezableRows, IReadOnlyList<FreezeSkip> Skips, string? BlockedCode, DateOnly? PossibleFrom,
-    int ProposableRows, bool Running);
+    int ProposableRows, bool Running, bool NeedsProposal = false);
 
 /// <summary>
 /// The ONLY writer of <c>employee_entitlements</c> (<see cref="IEntitlementWriter"/>). It stages rows on the caller's context
@@ -118,7 +120,7 @@ public sealed class EntitlementWriter : IEntitlementWriter
         var plan = await PlanAsync(tenantId, contractId, PlanMode.Freeze, ct);
         var proposal = await PlanAsync(tenantId, contractId, PlanMode.Propose, ct);
         return new FreezePreview(plan.Proposal?.Rows.Count ?? 0, plan.Proposal?.Skips ?? [], plan.Blocked?.Code, plan.Blocked?.PossibleFrom,
-            proposal.Proposal?.Rows.Count ?? 0, plan.Running);
+            proposal.Proposal?.Rows.Count ?? 0, plan.Running, plan.NeedsProposal);
     }
 
     /// <summary>
@@ -139,6 +141,10 @@ public sealed class EntitlementWriter : IEntitlementWriter
     public async Task<IReadOnlyList<EmployeeEntitlement>> WriteConfirmedProposalAsync(Guid tenantId, FreezeProposal proposal, CancellationToken ct)
     {
         var contract = await InForceContractAsync(tenantId, proposal.ContractId, ct);
+        // A proposal is confirmed only onto a term still in force: never onto one terminated, expired or replaced since.
+        if (contract.Status != "Active")
+            throw new EntitlementWriteRefusedException(PackageReasons.ContractNotInForce,
+                $"The contract is {contract.Status}, so its proposed benefits can no longer be confirmed.");
         await LockAsync(tenantId, contract.EmployeeId, ct);
         var done = await DoneComponentsAsync(tenantId, contract.EmployeeId, contract.Id, ct);
         var existing = await ExistingRowsAsync(tenantId, contract.EmployeeId, ct);
@@ -154,8 +160,13 @@ public sealed class EntitlementWriter : IEntitlementWriter
             written.Add(Stage(tenantId, target, row, EntitlementSources.Migrated, EntitlementVerificationStates.Verified));
         }
         LastSkips = skips;
-        if (written.Count == 0 && proposal.Rows.Count > 0 && proposal.Rows.All(r => done.Contains(r.ComponentCode)))
-            throw new EntitlementWriteRefusedException(PackageReasons.ProposalClosed, "This term already has every proposed benefit.");
+        // Nothing to write: refuse with the reason that stopped most of it, and leave the proposal open (nothing is recorded).
+        if (written.Count == 0)
+        {
+            var dominant = skips.GroupBy(x => x.Code).OrderByDescending(g => g.Count()).ThenBy(g => g.Key, StringComparer.Ordinal)
+                .Select(g => g.Key).FirstOrDefault() ?? PackageReasons.ProposalClosed;
+            throw new EntitlementWriteRefusedException(dominant, "None of the proposed benefits can be written now.");
+        }
         return written;
     }
 
@@ -177,17 +188,46 @@ public sealed class EntitlementWriter : IEntitlementWriter
                 ContractEndReasons.Terminated or ContractEndReasons.Separated => await _clock.TodayAsync(tenantId, ct),
                 _ => null,
             };
-        if (closeOn is not DateOnly on) return 0;
-        var open = await Rows(tenantId).Where(x => x.EmployeeId == contract.EmployeeId && x.ContractId == contract.Id
-            && (x.EffectiveTo == null || x.EffectiveTo > on)).ToListAsync(ct);
-        var neverInEffect = open.Where(x => x.EffectiveFrom > on).ToList();
-        if (neverInEffect.Count > 0)
+        var open = closeOn is DateOnly day
+            ? await Rows(tenantId).Where(x => x.EmployeeId == contract.EmployeeId && x.ContractId == contract.Id
+                && (x.EffectiveTo == null || x.EffectiveTo > day)).ToListAsync(ct)
+            : [];
+        var neverInEffect = open.Where(x => x.EffectiveFrom > closeOn).ToList();
+        // A termination that would leave a never-started benefit live is refused (rows are never removed). A separation is
+        // never refused — offboarding must complete — and such a row is left for the R0b void (backlog); it is past no date
+        // anyone is paid on, because the employee is gone.
+        if (neverInEffect.Count > 0 && reason != ContractEndReasons.Separated)
+        {
+            var possible = neverInEffect.Max(x => x.EffectiveFrom);
             throw new EntitlementLifecycleBlockedException(PackageReasons.RowNeverTookEffect,
-                $"This term has fixed benefits that start on {neverInEffect.Min(x => x.EffectiveFrom):yyyy-MM-dd}, after the day it would end. "
-                + "Fixed benefits are never removed, so the term can be ended from that date.",
-                neverInEffect.Select(x => x.PayComponentCode).Distinct().ToList(), neverInEffect.Min(x => x.EffectiveFrom));
-        foreach (var row in open) row.EffectiveTo = on;
-        return open.Count;
+                $"This contract has fixed benefits that start on {neverInEffect.Min(x => x.EffectiveFrom):yyyy-MM-dd}, after the day it would end. "
+                + $"Fixed benefits are never removed, so the contract stays in force as it is and can be ended from {possible:yyyy-MM-dd}.",
+                neverInEffect.Select(x => x.PayComponentCode).Distinct().ToList(), possible);
+        }
+        foreach (var row in open.Where(x => x.EffectiveFrom <= closeOn)) row.EffectiveTo = closeOn;
+        // Nobody may confirm benefits onto a term that is over: every proposal still waiting for it is closed, audited.
+        await PackageProposals.CloseForEndedTermAsync(_db, tenantId, contract, reason, ct);
+        return open.Count - (reason == ContractEndReasons.Separated ? neverInEffect.Count : 0);
+    }
+
+    /// <summary>
+    /// Whether replacing a term with a version starting <paramref name="newStart"/> would need a never-started benefit removed
+    /// (it starts on or after the later of the new start and today). Checked by Supersede BEFORE anything changes, so a refused
+    /// amendment leaves the current version in force. NULL when the replacement can go ahead.
+    /// </summary>
+    public static async Task<EntitlementLifecycleBlockedException?> ReplacementBlockAsync(ZayraDbContext db, Guid tenantId, Guid contractId,
+        DateOnly newStart, DateOnly today, CancellationToken ct)
+    {
+        var from = newStart >= today ? newStart : today;
+        var rows = await ScopedBypass.TenantWide(db.EmployeeEntitlements, tenantId, "The current version's own fixed rows.")
+            .AsNoTracking().Where(x => x.ContractId == contractId && (x.EffectiveTo == null || x.EffectiveTo >= from) && x.EffectiveFrom >= from)
+            .Select(x => new { x.PayComponentCode, x.EffectiveFrom }).ToListAsync(ct);
+        if (rows.Count == 0) return null;
+        var possible = rows.Max(x => x.EffectiveFrom).AddDays(1);
+        return new EntitlementLifecycleBlockedException(PackageReasons.RowNeverTookEffect,
+            $"The current version has fixed benefits starting on {rows.Min(x => x.EffectiveFrom):yyyy-MM-dd}, which have not started yet. "
+            + $"Fixed benefits are never removed, so the current version stays in force; a replacement can start from {possible:yyyy-MM-dd}.",
+            rows.Select(x => x.PayComponentCode).Distinct().ToList(), possible);
     }
 
     // ── Planning ───────────────────────────────────────────────────────────────────────────────────
@@ -195,7 +235,7 @@ public sealed class EntitlementWriter : IEntitlementWriter
     private enum PlanMode { Freeze, Propose }
 
     private sealed record Plan(bool AlreadyFrozen, bool Running, FreezeProposal? Proposal,
-        IReadOnlyList<(EmployeeEntitlement Row, DateOnly CloseOn)> Closes, EntitlementLifecycleBlockedException? Blocked);
+        IReadOnlyList<(EmployeeEntitlement Row, DateOnly CloseOn)> Closes, EntitlementLifecycleBlockedException? Blocked, bool NeedsProposal = false);
 
     private async Task<Plan> PlanAsync(Guid tenantId, Guid contractId, PlanMode mode, CancellationToken ct)
     {
@@ -216,6 +256,12 @@ public sealed class EntitlementWriter : IEntitlementWriter
         var employee = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId, "The contract's own employee, to read their grade.")
             .AsNoTracking().FirstOrDefaultAsync(x => x.PublicId == contract.EmployeeId && !x.IsDeleted, ct);
         if (employee is null || (contract.EndDate is DateOnly end && from > end)) return new Plan(done.Count > 0, running, empty, [], null);
+
+        // Four eyes: a package from the grade table is written directly only for a term not yet started that is the
+        // employee's first, or whose previous term had a confirmed package. Otherwise it is proposed and a second person
+        // confirms it against the signed contract — whichever route created the term (activation, supersede, import).
+        var predecessorUnconfirmed = !running && await PredecessorUnconfirmedAsync(tenantId, contract, ct);
+        var needsProposal = running || predecessorUnconfirmed;
 
         var existing = await ExistingRowsAsync(tenantId, contract.EmployeeId, ct);
         var rows = new List<ProposedRow>();
@@ -273,8 +319,12 @@ public sealed class EntitlementWriter : IEntitlementWriter
                 { skips.Add(new FreezeSkip(cell.ComponentCode, n.Code)); continue; }
                 if (Overlaps(existing, cell.ComponentCode, contract.Id, from, contract.EndDate) is not null)
                 { skips.Add(new FreezeSkip(cell.ComponentCode, PackageReasons.TermOverlap)); continue; }
-                // A running term's package from the grade table needs a second person (the proposal path).
-                if (running && mode == PlanMode.Freeze) { skips.Add(new FreezeSkip(cell.ComponentCode, PackageReasons.TermRunningNeedsProposal)); continue; }
+                // A package from the grade table that needs a second person goes through the proposal path.
+                if (needsProposal && mode == PlanMode.Freeze)
+                {
+                    skips.Add(new FreezeSkip(cell.ComponentCode, running ? PackageReasons.TermRunningNeedsProposal : PackageReasons.PredecessorUnconfirmed));
+                    continue;
+                }
                 decimal? resolved = cell.ValueType == GradeEntitlementValueTypes.Amount ? cell.Amount : null;
                 Guid? basis = null;
                 if (cell.ValueType == GradeEntitlementValueTypes.PercentOfBasic)
@@ -290,7 +340,26 @@ public sealed class EntitlementWriter : IEntitlementWriter
         }
         LastSkips = skips;
         return new Plan(done.Count > 0, running,
-            new FreezeProposal(contract.Id, contract.EmployeeId, employee.Id, companyId, from, contract.EndDate, rows, skips), closes, null);
+            new FreezeProposal(contract.Id, contract.EmployeeId, employee.Id, companyId, from, contract.EndDate, rows, skips), closes, null,
+            needsProposal && carried.Count == 0);
+    }
+
+    /// <summary>
+    /// The employee had a term in force before this one (an earlier start, or the version this one replaces) and that term
+    /// has no confirmed package: its benefits were never checked against a signed contract, so this term's are not written
+    /// from the grade table by one person either.
+    /// </summary>
+    private async Task<bool> PredecessorUnconfirmedAsync(Guid tenantId, EmployeeContract contract, CancellationToken ct)
+    {
+        var earlier = await ScopedBypass.TenantWide(_db.EmployeeContracts, tenantId, "The employee's own earlier terms.")
+            .AsNoTracking()
+            .Where(x => x.EmployeeId == contract.EmployeeId && x.Id != contract.Id && !x.IsDeleted
+                && (x.Status == "Active" || x.Status == "Expired" || x.Status == "Terminated" || x.Status == "Superseded")
+                && (x.StartDate < contract.StartDate || x.Id == contract.PreviousVersionId))
+            .OrderByDescending(x => x.Id == contract.PreviousVersionId).ThenByDescending(x => x.StartDate)
+            .Select(x => x.Id).FirstOrDefaultAsync(ct);
+        if (earlier == Guid.Empty) return false;
+        return !await Rows(tenantId).AnyAsync(x => x.ContractId == earlier && x.VerificationState == EntitlementVerificationStates.Verified, ct);
     }
 
     private EmployeeEntitlement Stage(Guid tenantId, FreezeProposal target, ProposedRow row, string source, string verification)

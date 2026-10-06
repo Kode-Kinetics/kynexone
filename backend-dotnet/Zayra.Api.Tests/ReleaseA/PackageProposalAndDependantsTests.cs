@@ -89,10 +89,15 @@ public sealed class PackageProposalAndDependantsTests
 
         var passport = new EmployeeDocument { TenantId = s.TenantId, CompanyId = s.Company.Id, EmployeeId = s.Mohammed.Id,
             DocumentType = "Passport", FileName = "passport.pdf", StorageUrl = "p" };
+        var byRequester = new EmployeeDocument { TenantId = s.TenantId, CompanyId = s.Company.Id, EmployeeId = s.Mohammed.Id,
+            DocumentType = "Contract", FileName = "uploaded-by-requester.pdf", StorageUrl = "r", UploadedBy = requester };
         var contractDoc = new EmployeeDocument { TenantId = s.TenantId, CompanyId = s.Company.Id, EmployeeId = s.Mohammed.Id,
-            DocumentType = "Contract", FileName = "signed.pdf", StorageUrl = "x" };
-        db.EmployeeDocuments.AddRange(passport, contractDoc);
+            DocumentType = "Contract", FileName = "signed.pdf", StorageUrl = "x", UploadedBy = Guid.NewGuid() };
+        db.EmployeeDocuments.AddRange(passport, byRequester, contractDoc);
         await db.SaveChangesAsync();
+        var ownEvidence = await Package(db, s, checker).ConfirmProposal(batch, new ConfirmProposalRequest(s.Term.Id, byRequester.Id), default);
+        JsonSerializer.Serialize(((ObjectResult)ownEvidence).Value).Should().Contain(PackageReasons.ProposalDocumentRequired,
+            "a contract the requester uploaded is not a second person's evidence");
         var notAContract = await Package(db, s, checker).ConfirmProposal(batch, new ConfirmProposalRequest(s.Term.Id, passport.Id), default);
         JsonSerializer.Serialize(((ObjectResult)notAContract).Value).Should().Contain(PackageReasons.ProposalDocumentRequired,
             "only the signed contract counts, not any document on file");

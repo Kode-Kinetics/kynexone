@@ -142,6 +142,10 @@ harmful.
   benefit, a stamped contract chain, a salary basis or Qiwa confirmation, an approval payload, a loan consent, or a
   grade cell using a Release A value type or criterion) — take a Neon branch and fix forward instead. Order: image →
   flag → schema `Down`.
+- **Release A R2 dependants soft delete (`20261008000200_ReleaseAR2DependantsSoftDelete`).** Expand-only: adds
+  `employee_dependents.is_deleted` (default false), `deleted_at_utc` and `deleted_by`. Roll it back before R0's migration.
+  Its `Down()` refuses (`R2_DEPENDANTS_SOFT_DELETED`) while any removed dependant exists, because dropping the column would
+  make every removed dependant covered again. Restore or purge those rows deliberately (with HR sign-off), or fix forward.
 
 ### 3. Re-verify before restoring traffic
 - `/health/ready` must read `ready` with `pendingMigrations: 0`.

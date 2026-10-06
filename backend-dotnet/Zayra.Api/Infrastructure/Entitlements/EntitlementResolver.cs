@@ -136,14 +136,22 @@ public sealed class EntitlementResolver : IEntitlementResolver
         else standard = await GradeStandardAsync(tenantId, gradeId, companyId, asOf, ct);
         var byCode = standard.ToDictionary(s => s.ComponentCode, StringComparer.OrdinalIgnoreCase);
 
-        // Only verified rows are the fixed package. An unverified row is a proposal, never "fixed for this contract year".
-        var frozen = contract is null ? [] : await ScopedBypass.TenantWide(_db.EmployeeEntitlements, tenantId,
+        // Only verified rows are the fixed package (an unverified row is a proposal, never "fixed"). Rows are read across the
+        // employee's terms for the date — after a back-dated amendment the predecessor still owns the days before the
+        // successor's first row (the EXCLUDE guarantees one row per benefit per day) — except a terminated term's rows past
+        // its termination day.
+        var rowsOnDate = await ScopedBypass.TenantWide(_db.EmployeeEntitlements, tenantId,
                 "The employee's own frozen package; the caller has already been authorised for this employee.")
             .AsNoTracking()
-            .Where(x => x.EmployeeId == employee.PublicId && x.ContractId == contract.Id
-                && x.VerificationState == EntitlementVerificationStates.Verified
+            .Where(x => x.EmployeeId == employee.PublicId && x.VerificationState == EntitlementVerificationStates.Verified
                 && x.EffectiveFrom <= asOf && (x.EffectiveTo == null || x.EffectiveTo >= asOf))
             .ToListAsync(ct);
+        var rowContractIds = rowsOnDate.Select(x => x.ContractId).Distinct().ToList();
+        var rowContracts = rowContractIds.Count == 0 ? [] : await ScopedBypass.TenantWide(_db.EmployeeContracts, tenantId, "The terms those rows belong to.")
+            .AsNoTracking().Where(x => rowContractIds.Contains(x.Id)).ToListAsync(ct);
+        var rowTerminations = await ContractTerminationDates.ForAsync(_db, tenantId, rowContracts, ct);
+        var endedOn = rowContracts.ToDictionary(x => x.Id, x => x.Status == "Terminated" ? ContractTerminationDates.LastDay(x, rowTerminations) : null);
+        var frozen = rowsOnDate.Where(x => endedOn.GetValueOrDefault(x.ContractId) is not DateOnly last || last >= asOf).ToList();
         var frozenByCode = frozen.GroupBy(x => x.PayComponentCode, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.EffectiveFrom).First(), StringComparer.OrdinalIgnoreCase);
         var citedIds = frozen.Where(x => x.GradeEntitlementId != null).Select(x => x.GradeEntitlementId!.Value).ToList();
@@ -411,8 +419,8 @@ public sealed class EntitlementResolver : IEntitlementResolver
     // ── Reads ───────────────────────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// The term in force on the date. A Terminated term ends on the day it was terminated (its UpdatedAtUtc, which the status
-    /// change stamps), not on its original end date: after that day it carries no package, whatever rows it still has.
+    /// The term in force on the date. A Terminated term ends on the day it was terminated (its termination audit row, the
+    /// same rule as R4's chain census), not on its original end date: after that day it carries no package.
     /// </summary>
     private async Task<EmployeeContract?> ContractInForceAsync(Guid tenantId, Guid employeePublicId, DateOnly asOf, CancellationToken ct)
     {
@@ -423,8 +431,8 @@ public sealed class EntitlementResolver : IEntitlementResolver
                 && x.StartDate <= asOf && (x.EndDate == null || x.EndDate >= asOf))
             .OrderByDescending(x => x.StartDate).ThenByDescending(x => x.Version)
             .Take(5).ToListAsync(ct);
-        return candidates.FirstOrDefault(x => x.Status != "Terminated"
-            || (x.UpdatedAtUtc is DateTime ended && DateOnly.FromDateTime(ended) >= asOf));
+        var terminated = await ContractTerminationDates.ForAsync(_db, tenantId, candidates, ct);
+        return candidates.FirstOrDefault(x => ContractTerminationDates.LastDay(x, terminated) is not DateOnly last || last >= asOf);
     }
 
     /// <summary>The salary row in force on <paramref name="asOf"/> (the rule GradeLoanLimitResolver applies).</summary>

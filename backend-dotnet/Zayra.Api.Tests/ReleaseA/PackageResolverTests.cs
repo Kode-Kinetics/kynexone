@@ -527,7 +527,10 @@ public sealed class PackageResolverTests
         await Writer(db).FreezeTermAsync(s.TenantId, s.Term.Id, default);
         await db.SaveChangesAsync();
         var term = await db.EmployeeContracts.SingleAsync(x => x.Id == s.Term.Id);
-        (term.Status, term.UpdatedAtUtc) = ("Terminated", new DateTime(2026, 9, 30, 9, 0, 0, DateTimeKind.Utc));
+        // The termination day is the audited status change (as ContractsController writes it), never UpdatedAtUtc.
+        (term.Status, term.UpdatedAtUtc) = ("Terminated", new DateTime(2026, 12, 20, 9, 0, 0, DateTimeKind.Utc));
+        db.ComplianceAuditLogs.Add(new ComplianceAuditLog { TenantId = s.TenantId, EntityType = "Contract", EntityId = s.Term.Id.ToString(),
+            Action = "StatusChanged", MetadataJson = "{\"from\":\"Active\",\"to\":\"Terminated\"}", CreatedAtUtc = new DateTime(2026, 9, 30, 9, 0, 0, DateTimeKind.Utc) });
         await db.SaveChangesAsync();
 
         Line(await new EntitlementResolver(db).ResolveAsync(s.TenantId, s.Mohammed.Id, new DateOnly(2026, 9, 30), default), "MEDICAL")

@@ -50,6 +50,7 @@ public static class PackageReasons
     public const string TermRunningNeedsProposal = "ENTITLEMENT_TERM_RUNNING_NEEDS_PROPOSAL";
     public const string ProposalOpen = "ENTITLEMENT_PROPOSAL_OPEN";
     public const string ProposalRequesterUnknown = "ENTITLEMENT_PROPOSAL_REQUESTER_UNKNOWN";
+    public const string PredecessorUnconfirmed = "ENTITLEMENT_PREDECESSOR_UNCONFIRMED";
     // The stable message prefixes R0's triggers raise (SQLSTATE 23514), each mapped to its own code by FromDatabase.
     public const string OutsideTerm = "ENTITLEMENT_OUTSIDE_TERM";
     public const string CompanyMismatch = "ENTITLEMENT_COMPANY_MISMATCH";
@@ -63,10 +64,15 @@ public static class PackageReasons
     {
         new BlockReason(RowNeverTookEffect,
             "A fixed benefit has not started yet", "توجد ميزة مثبتة لم تبدأ بعد",
-            "This term has a fixed benefit that starts on or after the day of this change, so it never took effect. Fixed benefits are never removed, so the change cannot be made yet.",
-            "لهذا العقد ميزة مثبتة تبدأ في يوم هذا التغيير أو بعده، فلم تُطبَّق بعد. والمزايا المثبتة لا تُحذف، لذلك لا يمكن إجراء التغيير الآن.",
-            "Make the change from the date shown, or ask the system owner to remove the unused benefit.",
-            "أجرِ التغيير من التاريخ الظاهر، أو اطلب من مالك النظام حذف الميزة غير المستخدمة.", HrDirector),
+            "This contract has a fixed benefit that starts on or after the day of this change, so it has not taken effect. Fixed benefits are never removed, so the contract stays as it is for now.",
+            "لهذا العقد ميزة مثبتة تبدأ في يوم هذا التغيير أو بعده، فلم تُطبَّق بعد. والمزايا المثبتة لا تُحذف، لذلك يبقى العقد كما هو حالياً.",
+            "Make the change on or after the date shown. Until then the contract and its benefits stay exactly as they are.",
+            "أجرِ التغيير في التاريخ الظاهر أو بعده، وحتى ذلك الحين يبقى العقد ومزاياه كما هي تماماً.", HrManager),
+        new BlockReason(PredecessorUnconfirmed,
+            "Needs a second person's check", "يحتاج إلى تحقق شخص آخر",
+            "The employee's previous contract has no confirmed benefits, so this contract's benefits are taken from the grade table only as a proposal that another HR user checks against the signed contract.",
+            "لا توجد مزايا مؤكدة للعقد السابق للموظف، لذلك تؤخذ مزايا هذا العقد من جدول الدرجات كمقترح فقط يراجعه مستخدم آخر في الموارد البشرية مقابل العقد الموقّع.",
+            "Propose the benefits, then ask another HR user to confirm them.", "اقترح المزايا ثم اطلب من مستخدم آخر في الموارد البشرية تأكيدها.", HrManager),
         new BlockReason(TermRunningNeedsProposal,
             "Needs a second person's check", "يحتاج إلى تحقق شخص آخر",
             "This contract term has already started, so its benefits are taken from the grade table only as a proposal that another HR user checks against the signed contract.",
@@ -139,7 +145,7 @@ public static class PackageReasons
         ReleaseABlockReasons.EntitlementFloorHousing, ReleaseABlockReasons.EntitlementFloorTransport,
         NotInGrade, HousingInKind, SalaryMissing, NationalityUnconfirmed, LoanPolicyBlocks, ContractNotInForce, ContractNotFound,
         RowInTheWay, TermOverlap, ProposalSameUser, ProposalDocumentRequired, ProposalClosed,
-        RowNeverTookEffect, TermRunningNeedsProposal, ProposalOpen, ProposalRequesterUnknown,
+        RowNeverTookEffect, TermRunningNeedsProposal, ProposalOpen, ProposalRequesterUnknown, PredecessorUnconfirmed,
         OutsideTerm, CompanyMismatch, BasisNotOwnSalary, CarriedDiffers, CarriedOverlaps, CloseOnly,
     ];
 }

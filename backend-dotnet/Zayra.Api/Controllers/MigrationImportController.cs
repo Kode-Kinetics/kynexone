@@ -414,7 +414,7 @@ public sealed partial class MigrationImportController : ControllerBase
                     "payrollOpeningBalances" => await UpsertPayrollOpeningBalanceAsync(row, tenantId, cutover, result, ct),
                     "benefitsEnrollments" => await UpsertBenefitsEnrollmentAsync(row, tenantId, result, ct),
                     "documentManifests" => await UpsertDocumentManifestAsync(row, tenantId, ct),
-                    "contracts" => await UpsertContractAsync(row, tenantId, ct),
+                    "contracts" => await UpsertContractIsolatedAsync(row, tenantId, ct),
                     "reconciliationSignoffs" => AddReconciliationSignoff(row, result),
                     _ => throw new InvalidOperationException($"Unsupported section '{section}'.")
                 };
@@ -864,6 +864,46 @@ public sealed partial class MigrationImportController : ControllerBase
         if (!await _db.EmployeeDocumentVersions.AnyAsync(x => x.TenantId == tenantId && x.EmployeeDocumentId == item.Id && x.VersionNumber == version, ct))
             _db.EmployeeDocumentVersions.Add(new EmployeeDocumentVersion { TenantId = tenantId, EmployeeDocumentId = item.Id, VersionNumber = version, FileName = fileName, ContentType = item.ContentType, StorageUrl = storageUrl, CreatedBy = UserId() });
         return created ? "created" : "updated";
+    }
+
+    /// <summary>
+    /// Release A: one contract row is one unit — its own transaction under the per-employee package lock (so it cannot race
+    /// an activation or a freeze for the same employee), saved on its own. A row the lifecycle hooks refuse (or that fails
+    /// in any way) is rolled back AND removed from the change tracker, so the section's later save never writes half of it.
+    /// </summary>
+    private async Task<string> UpsertContractIsolatedAsync(Dictionary<string, string> row, Guid tenantId, CancellationToken ct)
+    {
+        var before = _db.ChangeTracker.Entries().Select(e => (e.Entity, e.State)).ToList();
+        try
+        {
+            if (!_db.Database.IsRelational()) return await UpsertContractAsync(row, tenantId, ct);
+            var employee = await Employee(row, tenantId, ct);
+            var strategy = _db.Database.CreateExecutionStrategy();
+            return await strategy.ExecuteAsync(async () =>
+            {
+                await using var tx = await _db.Database.BeginTransactionAsync(ct);
+                await Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.AcquireAsync(_db,
+                    Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.ScopeEmployeePackage, tenantId, employee.PublicId, ct);
+                var action = await UpsertContractAsync(row, tenantId, ct);
+                await _db.SaveChangesAsync(ct);
+                await tx.CommitAsync(ct);
+                return action;
+            });
+        }
+        catch
+        {
+            var known = before.Select(b => b.Entity).ToHashSet(ReferenceEqualityComparer.Instance);
+            foreach (var entry in _db.ChangeTracker.Entries().ToList())
+            {
+                if (!known.Contains(entry.Entity)) { entry.State = EntityState.Detached; continue; }
+                if (entry.State == EntityState.Modified)
+                {
+                    entry.CurrentValues.SetValues(entry.OriginalValues);
+                    entry.State = EntityState.Unchanged;
+                }
+            }
+            throw;
+        }
     }
 
     private async Task<string> UpsertContractAsync(Dictionary<string, string> row, Guid tenantId, CancellationToken ct)

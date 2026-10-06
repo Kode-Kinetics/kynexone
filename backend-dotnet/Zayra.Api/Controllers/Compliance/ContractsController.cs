@@ -31,14 +31,18 @@ public class ContractsController : ControllerBase
 
     private readonly ZayraDbContext _db;
     private readonly Zayra.Api.Infrastructure.Contracts.IContractTermLifecycleDispatcher? _termLifecycle;
+    private readonly Zayra.Api.Application.Common.ITenantClock? _clock;
 
     /// <param name="termLifecycle">Release A term-activation hooks (chain stamp, package freeze). Optional so direct
     /// constructions keep compiling; the dispatcher itself is a no-op unless the tenant has release_a on.</param>
+    /// <param name="clock">Tenant-local "today" for the Release A replacement check (UTC date when absent).</param>
     public ContractsController(ZayraDbContext db,
-        Zayra.Api.Infrastructure.Contracts.IContractTermLifecycleDispatcher? termLifecycle = null)
+        Zayra.Api.Infrastructure.Contracts.IContractTermLifecycleDispatcher? termLifecycle = null,
+        Zayra.Api.Application.Common.ITenantClock? clock = null)
     {
         _db = db;
         _termLifecycle = termLifecycle;
+        _clock = clock;
     }
 
     private Guid GetTenantId() =>
@@ -369,6 +373,12 @@ public class ContractsController : ControllerBase
                 error = "renewal_case_open",
                 message = "This contract has an open renewal review. Finish or cancel the renewal before replacing the contract.",
             });
+
+        // Release A: refuse BEFORE anything changes when the replacement would need a fixed benefit that has not started
+        // removed (the database never removes one) — the current version then simply stays in force.
+        var today = _clock is not null ? await _clock.TodayAsync(tid, ct) : DateOnly.FromDateTime(DateTime.UtcNow);
+        if (await Zayra.Api.Infrastructure.Entitlements.EntitlementWriter.ReplacementBlockAsync(_db, tid, old.Id, req.StartDate, today, ct) is { } blocked)
+            return PackageConflict(blocked.Code, blocked.Message, blocked.PossibleFrom);
 
         old.Status = "Superseded";
         old.UpdatedAtUtc = DateTime.UtcNow;

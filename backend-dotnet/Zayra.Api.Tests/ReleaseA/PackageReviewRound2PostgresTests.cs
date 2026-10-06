@@ -31,7 +31,7 @@ public sealed class PackageReviewRound2PostgresTests(PostgresFixture fixture)
     {
         var dispatcher = new ContractTermLifecycleDispatcher([new PackageFreezeOnActivation(Writer(db, today))],
             new TenantModuleService(db, new MemoryCache(new MemoryCacheOptions())));
-        return new ContractsController(db, dispatcher)
+        return new ContractsController(db, dispatcher, new FixedTenantClock(today))
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(
                 [new Claim("tenant_id", s.TenantId.ToString()), new Claim(ClaimTypes.NameIdentifier, s.UserId.ToString()),
@@ -58,10 +58,10 @@ public sealed class PackageReviewRound2PostgresTests(PostgresFixture fixture)
         return await Contracts(db2, s, today).UpdateStatus(contractId, new UpdateContractStatusRequest("Active", "HR Lead"), default);
     }
 
-    private async Task<EmployeeContract> SupersedeAsync(PackageSeed s, Guid contractId, DateOnly start, decimal basic = 8000m)
+    private async Task<EmployeeContract> SupersedeAsync(PackageSeed s, Guid contractId, DateOnly start, DateOnly? today = null, decimal basic = 8000m)
     {
         await using var db = fixture.CreateDb();
-        var result = await Contracts(db, s, Today).Supersede(contractId,
+        var result = await Contracts(db, s, today ?? Today).Supersede(contractId,
             new CreateContractRequest(s.Mohammed.PublicId, null, null, null, start, PackageSeed.TermEnd, basic, "SAR", null, null, null), default);
         return (EmployeeContract)Assert.IsType<OkObjectResult>(result).Value!;
     }
@@ -91,7 +91,7 @@ public sealed class PackageReviewRound2PostgresTests(PostgresFixture fixture)
     }
 
     [Fact]
-    public async Task ASameDayAmendment_IsRefusedWith409_NotSilentlyDroppingThePackage_AndWorksTheNextDay()
+    public async Task ASameDayAmendment_IsRefusedAtSupersede_TheCurrentVersionStaysInForce_AndTheNextDayItWorks()
     {
         var s = await SeedAsync();
         // The running term's package came the four-eyes way: proposed and confirmed today, from today.
@@ -101,17 +101,26 @@ public sealed class PackageReviewRound2PostgresTests(PostgresFixture fixture)
             await writer.WriteConfirmedProposalAsync(s.TenantId, (await writer.ProposeAsync(s.TenantId, s.Term.Id, default))!, default);
             await db.SaveChangesAsync();
         }
-        var v2 = await SupersedeAsync(s, s.Term.Id, Today);
-
-        var refused = await ActivateAsync(s, v2.Id, Today);
-        Assert.Equal(PackageReasons.RowNeverTookEffect, Code(refused));
-        Assert.Equal("PendingApproval", await StatusAsync(v2.Id));
         await using (var db = fixture.CreateDb())
-            Assert.All(await db.EmployeeEntitlements.Where(x => x.ContractId == s.Term.Id).ToListAsync(), r => Assert.Equal((DateOnly?)PackageSeed.TermEnd, r.EffectiveTo)); // untouched
-
-        // From the next day the same activation closes today's rows and carries them forward.
+        {
+            var refused = await Contracts(db, s, Today).Supersede(s.Term.Id,
+                new CreateContractRequest(s.Mohammed.PublicId, null, null, null, Today, PackageSeed.TermEnd, 8000m, "SAR", null, null, null), default);
+            Assert.Equal(PackageReasons.RowNeverTookEffect, Code(refused));
+            Assert.Contains("\"possibleFrom\":\"2026-10-07\"", JsonSerializer.Serialize(((ObjectResult)refused).Value));
+        }
+        // Nothing changed: the current version is still the one in force, with its package.
+        Assert.Equal("Active", await StatusAsync(s.Term.Id));
         await using (var db = fixture.CreateDb())
-            Assert.IsType<OkObjectResult>(await Contracts(db, s, Today.AddDays(1)).UpdateStatus(v2.Id, new UpdateContractStatusRequest("Active", "HR Lead"), default));
+        {
+            Assert.Equal(1, await db.EmployeeContracts.CountAsync(x => x.TenantId == s.TenantId && x.EmployeeId == s.Mohammed.PublicId));
+            var package = await new EntitlementResolver(db).ResolveAsync(s.TenantId, s.Mohammed.Id, Today, default);
+            Assert.Equal(s.Term.Id, package.ContractId);
+            Assert.Contains(package.Lines, l => l.ComponentCode == "MEDICAL" && l.Source == "ContractFrozen");
+        }
+
+        // Recovery: from the next day the amendment goes through and carries the package forward.
+        var v2 = await SupersedeAsync(s, s.Term.Id, Today.AddDays(1), Today.AddDays(1));
+        Assert.IsType<OkObjectResult>(await ActivateAsync(s, v2.Id, Today.AddDays(1)));
         await using var verify = fixture.CreateDb();
         Assert.All(await verify.EmployeeEntitlements.Where(x => x.ContractId == s.Term.Id).ToListAsync(), r => Assert.Equal((DateOnly?)Today, r.EffectiveTo));
         var carried = await verify.EmployeeEntitlements.Where(x => x.ContractId == v2.Id).ToListAsync();
@@ -120,15 +129,18 @@ public sealed class PackageReviewRound2PostgresTests(PostgresFixture fixture)
     }
 
     [Fact]
-    public async Task CorrectingATermBeforeItStarts_WithTheSameStart_IsRefusedWith409()
+    public async Task CorrectingATermBeforeItStarts_WithTheSameStart_IsRefusedAtSupersede_BeforeAnythingChanges()
     {
         var s = await SeedAsync();
         await using (var db = fixture.CreateDb())
         { await Writer(db, PackageSeed.FreezeDay).FreezeTermAsync(s.TenantId, s.Term.Id, default); await db.SaveChangesAsync(); }
-        var v2 = await SupersedeAsync(s, s.Term.Id, PackageSeed.TermStart);
-        var refused = await ActivateAsync(s, v2.Id, PackageSeed.FreezeDay);
-        Assert.Equal(PackageReasons.RowNeverTookEffect, Code(refused));
-        Assert.Equal("PendingApproval", await StatusAsync(v2.Id));
+        await using (var db = fixture.CreateDb())
+        {
+            var refused = await Contracts(db, s, PackageSeed.FreezeDay).Supersede(s.Term.Id,
+                new CreateContractRequest(s.Mohammed.PublicId, null, null, null, PackageSeed.TermStart, PackageSeed.TermEnd, 8000m, "SAR", null, null, null), default);
+            Assert.Equal(PackageReasons.RowNeverTookEffect, Code(refused));
+        }
+        Assert.Equal("Active", await StatusAsync(s.Term.Id)); // refused before anything changed
     }
 
     [Fact]
