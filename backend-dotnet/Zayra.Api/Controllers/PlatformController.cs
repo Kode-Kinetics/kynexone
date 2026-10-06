@@ -1145,6 +1145,11 @@ public class PlatformController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
         FeatureFlagGuardFilter.InvalidateCache(_cache, tenantId, featureKey);
+        // Release A: switching release_a on installs the renewal approval chains at once (insert-if-absent), rather
+        // than waiting for the next boot's backfill. A no-op until R5 registers the renewal producers.
+        if (req.IsEnabled && featureKey == FeatureKeys.ReleaseA
+            && await Zayra.Api.Infrastructure.Seed.TenantProvisioningBundle.InstallDefaultApprovalWorkflowsAsync(_db, tenantId, ct) > 0)
+            await _db.SaveChangesAsync(ct);
         return Ok(flag);
     }
 
@@ -4403,8 +4408,9 @@ public class PlatformController : ControllerBase
         {
             // The relay's own words are the single most useful thing here ("535 authentication
             // failed", "relay access denied"), so they are surfaced rather than swallowed.
-            // The exception carries the relay's own message; the host is not re-logged as text.
-            _log.LogWarning(ex, "Platform SMTP test failed on port {Port}.", smtp.Port);
+            // The operator sees the relay's message in the response; the log keeps the type only, because
+            // an SMTP exception message routinely names the recipient ("550 <x@y>: mailbox unavailable").
+            _log.LogWarning("Platform SMTP test failed on port {Port} ({ErrorType}).", smtp.Port, ex.GetType().Name);
             return Ok(new
             {
                 sent = false,

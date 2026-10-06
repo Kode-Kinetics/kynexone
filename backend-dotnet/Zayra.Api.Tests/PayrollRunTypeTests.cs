@@ -763,6 +763,44 @@ public class PayrollRunTypeTests
             .Should().BeOfType<OkObjectResult>();
     }
 
+    /// <summary>Imported bank details nobody has confirmed are a pre-lock Warning on Process and on /validate,
+    /// and confirming them (the gap resolved) clears it.</summary>
+    [Fact]
+    public async Task UnverifiedImportedBankDetails_AreAWarningUntilConfirmed()
+    {
+        var (db, conn) = CreateSqliteDb();
+        await using var _ = conn; await using var __ = db;
+        var tenantId = Guid.NewGuid();
+        var (companyId, a, b) = await SeedCompanyAndEmployees(db, tenantId);
+        var gap = new EmployeeImportGap
+        {
+            TenantId = tenantId, CompanyId = companyId, ImportBatchId = Guid.NewGuid(), EmployeeId = a.Id,
+            GapType = EmployeeImportGap.BankDetailsUnverified, GapCategory = "pay", Detail = "imported",
+        };
+        db.EmployeeImportGaps.Add(gap);
+        var run = AddRun(db, tenantId, companyId, 2026, 6);
+        await db.SaveChangesAsync();
+        var ctrl = MakeCtrl(db, tenantId);
+
+        (await ctrl.Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        var afterProcess = await db.PayrollValidationResults.AsNoTracking()
+            .Where(v => v.PayrollRunId == run.Id && v.Code == Zayra.Api.Infrastructure.Payroll.PayrollValidationEngine.ImportedBankDetailsUnverified).ToListAsync();
+        afterProcess.Should().ContainSingle().Which.Should().Match<PayrollValidationResult>(v => v.EmployeeId == a.Id && v.Severity == "Warning");
+
+        (await ctrl.Validate(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        (await db.PayrollValidationResults.AsNoTracking()
+            .CountAsync(v => v.PayrollRunId == run.Id && v.Code == Zayra.Api.Infrastructure.Payroll.PayrollValidationEngine.ImportedBankDetailsUnverified && v.EmployeeId == a.Id))
+            .Should().Be(1, "/validate replaces the results wholesale, so it must raise the same warning Process did");
+
+        db.ChangeTracker.Clear();
+        (await db.EmployeeImportGaps.SingleAsync(g => g.Id == gap.Id)).ResolvedAtUtc = DateTime.UtcNow;
+        await db.SaveChangesAsync();
+        (await ctrl.Validate(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        (await db.PayrollValidationResults.AsNoTracking()
+            .AnyAsync(v => v.PayrollRunId == run.Id && v.Code == Zayra.Api.Infrastructure.Payroll.PayrollValidationEngine.ImportedBankDetailsUnverified))
+            .Should().BeFalse("confirmed bank details no longer warn");
+    }
+
     // ── 10. M3: a bonus is consumed by exactly one run ─────────────────────────
 
     [Fact]

@@ -357,7 +357,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
           style={{ top: tip.top, insetInlineStart: tip.left }}>
           <span aria-hidden className="absolute -start-[5px] top-1/2 h-2.5 w-2.5 -translate-y-1/2 rotate-45 border-b border-s border-slate-200/80 bg-white dark:border-white/10 dark:bg-slate-900" />
           <span className="block text-[13px] font-semibold text-slate-900 dark:text-white">{tip.label}</span>
-          <span className="mt-0.5 block text-xs leading-snug text-slate-600 dark:text-slate-300">{tip.hint}</span>
+          <span className="mt-0.5 block text-xs leading-snug text-slate-600 dark:text-slate-300">{t(tip.hint)}</span>
         </div>
       )}
     </>

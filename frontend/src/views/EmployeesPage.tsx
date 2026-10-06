@@ -6,11 +6,16 @@ import { useSearchParams } from 'next/navigation';
 import { employeesApi, notActivatableFromError, possibleDuplicateFromError, deriveWorkEmailLocalPart, assembleWorkEmail } from '../api/employees';
 import type { EmployeeCreateRequest, EmployeeDetail, EmployeeListItem, EmployeeReadiness, EmployeeNotActivatable, DuplicateMatch, DuplicateCheckRequest, BulkActionRequest, BulkActionResult, BulkSelectAllFilter, DeriveWorkEmailResponse } from '../api/employees';
 import { useAuth } from '../contexts/AuthContext';
+import { useLocale } from '../contexts/LocaleContext';
+import { describeApiError } from '../lib/apiError';
 import { ExEmployeesTable } from './ExEmployeesTable';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { ReadinessBadge, hasExpiringId } from '../components/ReadinessBadge';
 import { ReadinessChecklist, type ReadinessFixMode } from '../components/ReadinessChecklist';
 import { GosiCohortPanel } from '../components/GosiCohortPanel';
+import { EmployeePackagePanel } from '../components/entitlements/EmployeePackagePanel';
+import { EmployeeDeductionsPanel } from '../components/deductions/EmployeeDeductionsPanel';
+import { useReleaseA } from '../lib/releaseA';
 import client from '../api/client';
 import { createLatestRequestGate, runLatest } from '../lib/latestRequest';
 import { createUrlSeed } from '../lib/urlSeed';
@@ -65,7 +70,7 @@ import {
 import type { EmployeeEditField, ResolvedFieldCatalog } from '../api/employeeFieldCatalog';
 
 type StatusFilter = '' | 'Draft' | 'Pre-boarding' | 'Active' | 'Probation' | 'Confirmed' | 'On leave' | 'Suspended' | 'Resigned' | 'Notice period' | 'Terminated' | 'Retired' | 'Absconded' | 'Inactive' | 'Blacklisted';
-type DetailTab = 'personal' | 'employment' | 'payroll' | 'compliance' | 'documents' | 'history' | 'transfers';
+type DetailTab = 'personal' | 'employment' | 'payroll' | 'package' | 'deductions' | 'compliance' | 'documents' | 'history' | 'transfers';
 type EditField = EmployeeEditField;
 
 const statusOptions: StatusFilter[] = ['', 'Draft', 'Pre-boarding', 'Active', 'Probation', 'Confirmed', 'On leave', 'Suspended', 'Resigned', 'Notice period', 'Terminated', 'Retired', 'Absconded', 'Inactive', 'Blacklisted'];
@@ -79,6 +84,7 @@ const GAP_FILTER_LABELS: Record<string, string> = {
   'link:supervisor': 'Supervisors unresolved',
   'pay:salaryHeld': 'Salaries held',
   'pay:salaryReview': 'Salaries for review',
+  'pay:bankUnverified': 'Imported bank details to verify',
   'org:company': 'Company unassigned',
   'org:department': 'New departments',
   'org:branch': 'New branches',
@@ -103,10 +109,13 @@ const BULK_REASON_LABELS: Record<string, string> = {
 };
 const bulkReasonLabel = (reason?: string | null) => (reason ? BULK_REASON_LABELS[reason] ?? reason : 'Skipped');
 
-const tabs: { id: DetailTab; label: string }[] = [
+// releaseA: shown only when the tenant has the release_a flag on (Release A slices R2 and R3 own the panels).
+const tabs: { id: DetailTab; label: string; releaseA?: boolean }[] = [
   { id: 'personal', label: 'Personal Information' },
   { id: 'employment', label: 'Employment Information' },
   { id: 'payroll', label: 'Payroll Profile' },
+  { id: 'package', label: 'Package', releaseA: true },
+  { id: 'deductions', label: 'Deductions', releaseA: true },
   { id: 'compliance', label: 'Compliance' },
   { id: 'documents', label: 'Documents' },
   { id: 'history', label: 'History' },
@@ -235,6 +244,7 @@ interface EmployeeUsageData {
 }
 
 export function EmployeesPage() {
+  const { t } = useLocale();
   const searchParams = useSearchParams();
   const { currencyCode } = useTenantSettings();
   const { hasPermission } = useAuth();
@@ -286,6 +296,8 @@ export function EmployeesPage() {
   const [readiness, setReadiness] = useState<EmployeeReadiness | null>(null);
   const [blockedPanel, setBlockedPanel] = useState<EmployeeNotActivatable | null>(null);
   const [activeTab, setActiveTab] = useState<DetailTab>('personal');
+  const releaseA = useReleaseA();
+  const visibleTabs = useMemo(() => tabs.filter((tab) => !tab.releaseA || releaseA), [releaseA]);
   const [statusReason, setStatusReason] = useState('');
   const [newStatus, setNewStatus] = useState<StatusFilter>('Active');
   const [transferReason, setTransferReason] = useState('');
@@ -332,6 +344,10 @@ export function EmployeesPage() {
   const [dupResolving, setDupResolving] = useState(false);
   const [dupReason, setDupReason] = useState('');
   const [dupNotice, setDupNotice] = useState('');
+  // Imported bank details waiting for a second person (pay:bankUnverified): how they were checked, and state.
+  const [bankNote, setBankNote] = useState('');
+  const [bankNotice, setBankNotice] = useState('');
+  const [bankConfirming, setBankConfirming] = useState(false);
   // "Merge" from the create warning abandons the draft and opens the existing record for editing —
   // this holds the id until its detail has loaded, then an effect opens the edit modal.
   const [autoEditId, setAutoEditId] = useState<number | null>(null);
@@ -955,6 +971,30 @@ export function EmployeesPage() {
     }
   };
 
+  // Imported bank details: shown while the open record carries the pay:bankUnverified flag.
+  const bankFlag = useMemo(
+    () => (readiness?.recommended ?? []).find((i) => i.key === 'pay:bankUnverified') ?? null,
+    [readiness],
+  );
+  useEffect(() => { setBankNote(''); setBankNotice(''); }, [detail?.id]);
+  const confirmBankDetails = async () => {
+    if (!selectedId) return;
+    if (!bankNote.trim()) { setBankNotice(t('Say how you checked them, for example "matches the bank letter".')); return; }
+    setBankConfirming(true);
+    setBankNotice('');
+    try {
+      await employeesApi.confirmImportedBankDetails(selectedId, bankNote.trim());
+      setBankNote('');
+      setActionNotice(t('Bank details confirmed. Payroll will no longer warn about them.'));
+      await openDetail(selectedId, true);
+      await load();
+    } catch (e: unknown) {
+      setBankNotice(describeApiError(e, t));
+    } finally {
+      setBankConfirming(false);
+    }
+  };
+
   // Merge this record into an existing one. First slice = link + soft-remove (server-side); this is
   // workflow-destructive (pending approvals cancelled, payroll footprint deactivated), so it is
   // gated behind an explicit confirm and offered only for STRONG (near-certain) matches.
@@ -1547,7 +1587,7 @@ export function EmployeesPage() {
                   </button>
                 </div>
                 <div className="mt-4 flex gap-1 overflow-x-auto">
-                  {tabs.map((tab) => (
+                  {visibleTabs.map((tab) => (
                     <button key={tab.id} type="button" onClick={() => setActiveTab(tab.id)} className={`whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-semibold ${activeTab === tab.id ? 'bg-sapphire text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.07]'}`}>
                       {tab.label}
                     </button>
@@ -1644,6 +1684,31 @@ export function EmployeesPage() {
                   </div>
                 )}
 
+                {/* Imported bank details nobody has checked yet. A second person confirms them with the
+                    employee; until then every payroll run that pays this person by bank warns before Lock. */}
+                {bankFlag && (
+                  <div className="rounded-lg border border-amber-300 bg-amber-50/60 p-3 dark:border-amber-500/40 dark:bg-amber-500/[0.06]">
+                    <p className="text-sm font-bold text-amber-800 dark:text-amber-300">{bankFlag.label ? t(bankFlag.label) : t('Imported bank details not yet verified')}</p>
+                    <p className="mt-1 text-xs text-amber-800/90 dark:text-amber-300/90">
+                      {t('These bank details came from an employee import and nobody else has checked them. Confirm them with the employee before their first payroll. The person who imported them cannot confirm them.')}
+                    </p>
+                    <div className="mt-2.5 space-y-1.5">
+                      <input
+                        value={bankNote}
+                        onChange={(e) => setBankNote(e.target.value)}
+                        placeholder={t('How you checked them (required)')}
+                        className="input w-full text-xs"
+                      />
+                      {bankNotice && <p className="text-[11px] font-medium text-rose-600 dark:text-rose-400">{bankNotice}</p>}
+                      <div className="flex justify-end">
+                        <button type="button" disabled={bankConfirming} onClick={confirmBankDetails} className="btn-primary h-8 px-3 text-xs disabled:opacity-60">
+                          {bankConfirming ? t('Saving…') : t('Confirm bank details')}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {activeTab === 'personal' && (
                   <DetailGrid rows={[
                     ['English name', selectedEmployee.englishName],
@@ -1686,6 +1751,8 @@ export function EmployeesPage() {
                     <GosiCohortPanel key={detail!.id} employee={detail!} />
                   </>
                 )}
+                {releaseA && activeTab === 'package' && <EmployeePackagePanel key={detail!.id} employee={detail!} />}
+                {releaseA && activeTab === 'deductions' && <EmployeeDeductionsPanel key={detail!.id} employee={detail!} />}
                 {activeTab === 'compliance' && (
                   <div className="space-y-2">
                     {detail!.complianceRecords.length === 0 && <SmallEmpty label="No compliance records saved" />}

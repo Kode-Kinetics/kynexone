@@ -72,7 +72,14 @@ public class TableBudgetRatchetTests
         // loan limits by grade, and the home for later grade entitlements. No existing table carries an
         // effective-dated, per-grade, per-component value with a no-overlap guarantee. HR/Finance own it;
         // retained with the loan ledger (84 months), since loans keep a witness id into it.
-        DeclaredDbSets().Should().HaveCount(328,
+        // Release A (R0, rev 8.3.2 — the only two new tables of the release):
+        // EmployeeEntitlements: the Contractual package frozen per contract term (Art. 59 acquired rights); the salary
+        // row may hold only QiwaWage cash and a grade cell is today's standard, not a signed term, so no existing table
+        // can carry it. HR owns it; retained as labour-law evidence (class S, with employee_contracts).
+        // ContractRenewalCases: one review per expiring term (precedent final_settlements) — offer, approvals, employee
+        // acceptance, Qiwa evidence and Apply; no existing table holds a case with these legal deadlines. HR owns it;
+        // retained as labour-law evidence (class S).
+        DeclaredDbSets().Should().HaveCount(330,
             "the live schema is 328 tables and the approved rebuild target is 76 " +
             "(TARGET_SCHEMA.md). If this number moved, say so in the PR and update it here");
     }

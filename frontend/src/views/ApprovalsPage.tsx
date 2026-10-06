@@ -10,6 +10,7 @@ import { EstablishmentBlockedModal } from '../components/EstablishmentBlockedMod
 import { Modal } from '../components/Modal';
 import { StatusChip } from '../components/StatusChip';
 import { StatutoryLeaveHistory } from '../components/StatutoryLeaveHistory';
+import { approvalDetailRenderers } from '../components/approvals/approvalDetailRenderers';
 import { leaveRequestsApi } from '../api/leave';
 import type { StatutoryLeaveContext } from '../api/leave';
 
@@ -425,6 +426,11 @@ export function ApprovalsPage() {
               </div>
             </div>
             <StatutoryLeaveHistory context={statutoryContext} />
+            {(() => {
+              // Entity-specific detail (e.g. a renewal offer's before → after), registered per entityName.
+              const Detail = approvalDetailRenderers[selected.entityName];
+              return Detail ? <Detail request={selected} /> : null;
+            })()}
             {selected.decisions.length > 0 && (
               <div>
                 <p className="mb-1 text-xs font-bold uppercase tracking-wide text-slate-400 dark:text-slate-500">Decision History</p>

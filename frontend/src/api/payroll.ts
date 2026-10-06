@@ -91,7 +91,8 @@ export interface PayrollSlip {
   employeeStatutoryTotal: number;
   employerStatutoryTotal: number;
   // Deduction breakdown lines (code, name, amount, source)
-  deductionLines?: { code: string; name: string; amount: number; source: string }[];
+  /** isEmployerContribution lines are employer costs: they are NOT part of `deductions`. */
+  deductionLines?: { code: string; name: string; amount: number; source: string; isEmployerContribution?: boolean }[];
   // Compliance fields (populated during payroll processing)
   loanDeductions: number;
   ytdGross: number;

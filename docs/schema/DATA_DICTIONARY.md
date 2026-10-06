@@ -781,6 +781,43 @@ schema names a column but not its type, the type is inferred from `CONVENTIONS.m
 
 ---
 
+## S. Grade entitlements and contract renewal (rev 8.3.2 — Release A, live bridge)
+
+Not part of the 76: `TARGET_SCHEMA.md` revision 8.3.2 takes the target to 80 and these are three of the four
+(the fourth, `employee_salary_components`, is deferred to Release B). They ship on the **live** EF schema first
+(migrations `20261006000100_AddGradeLoanLimits` and `20261007000100_ReleaseAEntitlementsAndRenewals`); the
+baseline SQL, V2 model and parity test follow in the programme's step A. Live column names; RLS is a target rule —
+the live bridge uses the `ITenantOwned` / `ICompanyScoped` query filters.
+
+### `grade_entitlements`
+- **Purpose** — what each grade is entitled to under one pay component code (housing, transport, ticket, medical tier, education, per diem, loan limits), tenant-wide or per company, effective-dated.
+- **Tier** T (optional company override) · **Domain** Entitlements · **RLS** shape (a)
+- **Keys** — `grade_id`, `pay_component_code`, `company_id` (NULL = tenant-wide) + generated `company_key`, `entitlement_class`, `eligible`, `value_type` (`Amount`/`PercentOfBasic`/`MultipleOfBasic`/`MultipleOfGross`/`MultipleOfHousing`/`InKind`/`CoverageTier`/`Quantity`/`EligibilityOnly`), `amount`, `rate`, `max_outstanding_amount` (Facility only), `coverage_tier`, `quantity`, `dependant_scope`, `max_dependants`, `limit_period`, criteria `min_service_months`/`after_probation`/`nationality_scope` + `nationality_basis` (required unless `Any`), `effective_from`/`effective_to`
+- **Rel** — `grade_id → grades` (N:1, RESTRICT), `company_id → companies` (N:1, RESTRICT); FK target `UNIQUE (tenant_id, id, pay_component_code)` for `employee_entitlements`
+- **Constraint** — gist no-overlap per (tenant, company scope, grade, component); shape CHECKs; close-only (publish closes the row in force and inserts a new one).
+- **Lifecycle** — written by the matrix publish and the L1 grade-limits grid; never updated in place.
+- **Retention** `S` — loans and frozen packages keep a witness id into it.
+
+### `employee_entitlements`
+- **Purpose** — the Contractual package (and per-employee Facility overrides) frozen for one contract term, so a later grade-table change never rewrites a signed package (Art. 59). Wage cash never lives here; the salary row is the only home of QiwaWage cash.
+- **Tier** C · **Domain** Entitlements · **RLS** shape (a) + company scope
+- **Keys** — `company_id` NOT NULL, `employee_id` (the employee **PublicId**), `contract_id`, `pay_component_code`, `entitlement_class` (`Contractual`/`Facility`), value columns as `grade_entitlements`, `resolved_amount` + `resolved_basis_salary_id` (witnesses), `source` (`GradeDefault`/`Exception`/`Correction`/`Migrated`/`Carried`), `verification_state` (`Unverified`/`Verified`), `grade_entitlement_id`, `approval_request_id`, `renewal_case_id`, `carried_from_entitlement_id`, `correction_basis_document_id`, `effective_from`/`effective_to`
+- **Rel** — `(tenant, employee, contract) → employee_contracts` (RESTRICT), `(tenant, employee) → employees(public_id)` (RESTRICT), `(tenant, grade_entitlement_id, code) → grade_entitlements` (RESTRICT), `approval_request_id → approval_requests`, `renewal_case_id → contract_renewal_cases`, `carried_from → employee_entitlements` (self), `resolved_basis_salary_id → employee_salary_structures`, `correction_basis_document_id → employee_documents` — all RESTRICT
+- **Constraint** — gist no-overlap per (tenant, employee, component); provenance CHECKs (approval ⇔ Exception/Correction, origin ⇔ Carried, document ⇔ Correction, witness ⇔ PercentOfBasic); close-only trigger (values frozen, `effective_to` shortens only, confirm once, never deleted); deferred two-sided containment trigger (inside the term, contract not Draft/Superseded, same company; a Carried row equals its origin).
+- **Lifecycle** — written only by `IEntitlementWriter` (freeze at activation, renewal Apply, holdover carry); closed at the term's end.
+- **Retention** `S` — labour-law evidence of what was agreed for each term.
+
+### `contract_renewal_cases`
+- **Purpose** — the review of one expiring contract term: allowed actions (Arts. 37/55), deadlines, offer and approvals, the employee's acceptance, the Qiwa evidence check and Apply (precedent: `final_settlements`).
+- **Tier** C · **Domain** Contracts · **RLS** shape (a) + company scope
+- **Keys** — `company_id` NOT NULL, `employee_id` (PublicId), `expiring_contract_id` (UNIQUE per tenant), `expiring_end_date`, `worker_nationality_class`, `allowed_actions text[]`, `state` (13 states, `RenewalStateMachine`), `contract_action`, `offer_version`/`offer_sha256`, the four frozen deadlines, Qiwa request/evidence columns (verifier ≠ recorder), non-renewal notice columns, `resulting_contract_id`, generated `next_hard_deadline`, `opened_at`/`closed_at`, `xmin` concurrency
+- **Rel** — `(tenant, employee, expiring_contract_id)` and `(tenant, employee, resulting_contract_id) → employee_contracts`, `(tenant, employee) → employees(public_id)`, `current_approval_request_id`/`renewal_batch_id → approval_requests`, `qiwa_rule_id → statutory_rules`, evidence/notice documents `→ employee_documents` — all RESTRICT
+- **Constraint** — CHECKs on every value set, closed ⇔ terminal, hold ⇔ reason, offer before notice, non-Saudi never offers ConvertIndefinite, action ∈ allowed; BEFORE trigger on state validates entry into Accepted, Applied and NonRenewed and that a closed case never moves.
+- **Lifecycle** — opened by the daily job at end − 120 days; closed Applied, NonRenewed or Cancelled.
+- **Retention** `S` — the record of a renewal decision and its notice.
+
+---
+
 ## Views (not tables)
 
 | View | Definition | Replaces |

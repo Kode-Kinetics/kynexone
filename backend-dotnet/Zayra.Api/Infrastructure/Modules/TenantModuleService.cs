@@ -104,13 +104,21 @@ public sealed class TenantModuleService : ITenantModuleService
             .Select(f => f.FeatureKey)
             .ToListAsync(ct);
 
+        // Opt-in features are off unless explicitly enabled — the one place the absent-row default flips.
+        var optInKeys = OptInFeatures.Keys.ToArray();
+        var enabledOptIn = await _db.TenantFeatureFlags
+            .AsNoTracking()
+            .Where(f => f.TenantId == tenantId && f.IsEnabled && optInKeys.Contains(f.FeatureKey))
+            .Select(f => f.FeatureKey)
+            .ToListAsync(ct);
+
         var countryCode = await _db.TenantLocalizationSettings
             .AsNoTracking()
             .Where(l => l.TenantId == tenantId)
             .Select(l => l.CountryCode)
             .FirstOrDefaultAsync(ct);
 
-        var state = Build(storedDisabled, countryCode);
+        var state = Build(storedDisabled, countryCode, enabledOptIn);
 
         // Only cache if the generation still holds. If a write landed while this read was in
         // flight, this result is already stale and must not be published.
@@ -125,9 +133,11 @@ public sealed class TenantModuleService : ITenantModuleService
     /// without a database — the in-memory/Postgres divergence that has bitten this codebase before
     /// cannot reach a function that touches neither.
     /// </summary>
-    public static TenantModuleState Build(IEnumerable<string> storedDisabledKeys, string? countryCode)
+    public static TenantModuleState Build(
+        IEnumerable<string> storedDisabledKeys, string? countryCode, IEnumerable<string>? enabledOptInKeys = null)
     {
         var stored = new HashSet<string>(storedDisabledKeys, StringComparer.Ordinal);
+        var enabledOptIn = new HashSet<string>(enabledOptInKeys ?? [], StringComparer.Ordinal);
 
         // A stored `false` only counts if the tenant is permitted to disable that module.
         // Resolving the dependency (`ObligationArisesFrom`) against the STORED set rather than the
@@ -151,6 +161,12 @@ public sealed class TenantModuleService : ITenantModuleService
             var decision = ModuleCatalog.CanDisable(module, countryCode, StoredEnabled);
             if (decision.IsAllowed) effective.Add(key);
             // else: locked — the stored `false` is deliberately not honoured.
+        }
+
+        // An opt-in feature (OptInFeatures) is disabled unless its row says IsEnabled = true.
+        foreach (var key in OptInFeatures.Keys)
+        {
+            if (!enabledOptIn.Contains(key)) effective.Add(key);
         }
 
         return new TenantModuleState

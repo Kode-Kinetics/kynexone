@@ -334,6 +334,58 @@ public class EssSelfServiceW2DTests
     // S2 / S3 / S6 — nobody reaches another employee's data (404, not 403)
     // ═════════════════════════════════════════════════════════════════════════
 
+    /// <summary>
+    /// Release A: HR evidence types (Qiwa evidence, loan-deduction consent, non-renewal notice) are restricted. They
+    /// belong to the employee's file but never appear in, or download through, self-service — they reach HR through
+    /// the renewal case or the loan, where each download is audited.
+    /// </summary>
+    [Fact]
+    public async Task Restricted_HR_evidence_documents_are_never_listed_or_downloadable_in_self_service()
+    {
+        using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var me = SeedEmployee(db, tenantId, "E1");
+        var storage = new MemoryStorage();
+        storage.Objects[$"{tenantId:N}/documents/own.pdf"] = PdfBytes;
+        foreach (var type in RestrictedEmployeeDocumentTypes.All.Append("Contract"))
+            db.EmployeeDocuments.Add(new EmployeeDocument
+            {
+                TenantId = tenantId, EmployeeId = me.Id, DocumentType = type, FileName = $"{type}.pdf",
+                StorageUrl = $"{tenantId:N}/documents/own.pdf", ContentType = "application/pdf",
+            });
+        await db.SaveChangesAsync();
+
+        var listed = (await Ess(db, storage, tenantId, me.Id).Documents(CancellationToken.None)).Result
+            .Should().BeOfType<OkObjectResult>().Subject.Value.Should().BeAssignableTo<IEnumerable<ESSDocumentDto>>().Subject;
+        listed.Select(d => d.DocumentType).Should().Equal("Contract");
+
+        // Not by upload either, in any spelling: an employee cannot plant HR evidence in their own file.
+        foreach (var spelling in new[] { "QiwaEvidence", "qiwaevidence", " NonRenewalNotice ", "LOANDEDUCTIONCONSENT" })
+        {
+            var refused = await Ess(db, storage, tenantId, me.Id).UploadDocumentFile(new EssDocumentUploadForm
+            { File = FormFile(PdfBytes, "x.pdf", "application/pdf"), DocumentType = spelling }, CancellationToken.None);
+            refused.Result.Should().BeOfType<BadRequestObjectResult>(spelling);
+        }
+        // A row stored in another spelling (an import, a legacy writer) is still hidden.
+        db.EmployeeDocuments.Add(new EmployeeDocument
+        {
+            TenantId = tenantId, EmployeeId = me.Id, DocumentType = "qiwaevidence", FileName = "lower.pdf",
+            StorageUrl = $"{tenantId:N}/documents/own.pdf", ContentType = "application/pdf",
+        });
+        await db.SaveChangesAsync();
+        ((await Ess(db, storage, tenantId, me.Id).Documents(CancellationToken.None)).Result as OkObjectResult)!.Value
+            .As<IEnumerable<ESSDocumentDto>>().Select(d => d.DocumentType).Should().Equal("Contract");
+
+        foreach (var doc in await db.EmployeeDocuments.ToListAsync())
+        {
+            var result = await Ess(db, storage, tenantId, me.Id).DownloadDocument(doc.Id, CancellationToken.None);
+            if (RestrictedEmployeeDocumentTypes.IsRestricted(doc.DocumentType))
+                result.Should().BeOfType<NotFoundResult>(doc.DocumentType);
+            else
+                result.Should().BeOfType<FileContentResult>();
+        }
+    }
+
     [Fact]
     public async Task Document_download_returns_own_file_and_404_for_a_colleagues_document()
     {
@@ -358,9 +410,10 @@ public class EssSelfServiceW2DTests
         (await Ess(db, storage, tenantId, me.Id).DownloadDocument(Guid.NewGuid(), CancellationToken.None))
             .Should().BeOfType<NotFoundResult>();
 
-        // Same employee id, other tenant: still 404.
+        // Same employee id, other tenant: refused before any lookup. The claimed employee does not exist in
+        // that tenant, so the caller is linked to no one there (CallerEmployeeResolver) and gets no file.
         (await Ess(db, storage, Guid.NewGuid(), me.Id).DownloadDocument(mine.Id, CancellationToken.None))
-            .Should().BeOfType<NotFoundResult>();
+            .Should().BeOfType<BadRequestObjectResult>();
     }
 
     [Fact]
