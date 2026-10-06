@@ -1,4 +1,5 @@
 import client from './client';
+import { requireList } from '../lib/listResponse';
 import type { LoanRepaymentMethod } from './loans';
 
 export interface LoanPolicyInput {
@@ -192,7 +193,7 @@ export interface LoanCorrectionRequest {
   createdAtUtc: string; decisionReason?: string;
 }
 export const loanGovernanceApi = {
-  policies: (params: { companyId?: string; loanTypeId?: string } = {}) => client.get<LoanPolicy[]>('/api/finance/loans/policies', { params }).then(r => r.data),
+  policies: (params: { companyId?: string; loanTypeId?: string } = {}) => client.get<LoanPolicy[]>('/api/finance/loans/policies', { params }).then(r => requireList<LoanPolicy>(r.data, 'loan policies')),
   createPolicy: (body: LoanPolicyInput) => client.post<LoanPolicy>('/api/finance/loans/policies', body).then(r => r.data),
   eligibility: (params: { employeeIntId?: number; loanTypeId: string; amount: number; installments: number; repaymentMethod: LoanRepaymentMethod }) => client.get<LoanEligibility>('/api/finance/loans/eligibility', { params }).then(r => r.data),
   /** Limits-only preview for a chosen loan type: no amount or instalments, so only the limits (gradeLimit, available, bindingLimit) are meaningful. */

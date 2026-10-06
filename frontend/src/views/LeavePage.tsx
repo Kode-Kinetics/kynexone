@@ -24,7 +24,7 @@ import type {
 } from '../api/leave';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { InfoTip } from '../components/InfoTip';
-import client, { notifyApiError } from '../api/client';
+import client, { apiErrorReason, notifyApiError } from '../api/client';
 import { companiesApi, branchesApi } from '../api/organization';
 import type { CompanyDto, BranchDto } from '../api/organization';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
@@ -394,7 +394,7 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
     try {
       await leaveBalancesApi.adjust({ employeeId: adjustModal.employeeId, leaveTypeId: adjustModal.leaveTypeId, year, amount: Number(adjAmount), reason: adjReason });
       setAdjustModal(null); setAdjAmount(''); setAdjReason(''); load();
-    } catch { alert('Adjustment failed.'); }
+    } catch (e) { notifyApiError(e, 'Adjustment failed.'); }
   };
 
   return (
@@ -726,10 +726,10 @@ function MyRequestsTab() {
   useEffect(load, [statusFilter, list.reload]);
   const requestCount = list.total ?? requests.length;
 
-  const withdraw = async (id: string) => { try { await leaveRequestsApi.withdraw(id); load(); } catch { alert('Withdrawal failed.'); } };
+  const withdraw = async (id: string) => { try { await leaveRequestsApi.withdraw(id); load(); } catch (e) { notifyApiError(e, 'Withdrawal failed.'); } };
   const cancel = async () => {
     if (!cancelModal || !cancelReason) return;
-    try { await leaveRequestsApi.cancel(cancelModal.id, cancelReason); setCancelModal(null); load(); } catch { alert('Cancellation failed.'); }
+    try { await leaveRequestsApi.cancel(cancelModal.id, cancelReason); setCancelModal(null); load(); } catch (e) { notifyApiError(e, 'Cancellation failed.'); }
   };
 
   return (
@@ -809,35 +809,43 @@ function MyRequestsTab() {
 // ── Approvals Tab ─────────────────────────────────────────────────────────────
 
 function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
+  // Approve and reject are `leave.approve` on the API (LeaveRequestsController). An HR Officer or a
+  // Supervisor can see this queue but not decide it, so they get the queue without the buttons.
+  const { hasPermission } = useAuth();
+  const canDecide = hasPermission('leave.approve');
   const [requests, setRequests] = useState<LeaveRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [rejectModal, setRejectModal] = useState<LeaveRequest | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [history, setHistory] = useState<Record<string, StatutoryLeaveContext>>({});
+  // A failed load says so; "No pending approvals" after a failure would tell a manager the queue is clear.
+  const [loadError, setLoadError] = useState<unknown>(null);
 
   const load = () => {
     setLoading(true);
     // The whole queue: an approver used to see only the first 25 pending requests.
     leaveRequestsApi.listAll({ status: 'PendingManagerApproval', ...groupFilter }).then(all => {
-      setRequests(all); setLoading(false);
+      setRequests(all); setLoadError(null); setLoading(false);
       // Saudi statutory leave is decided with the employee's earlier leave of the same kind in view.
       if (all.length > 0)
         leaveRequestsApi.statutoryHistory(all.map(r => r.id)).then(setHistory).catch(() => setHistory({}));
       else setHistory({});
-    }).catch(() => setLoading(false));
+    }).catch(e => { setRequests([]); setLoadError(e); setLoading(false); });
   };
   useEffect(load, [groupFilter.companyId, groupFilter.branchId]);
 
-  const approve = async (id: string) => { try { await leaveRequestsApi.approve(id); load(); } catch { alert('Approval failed.'); } };
+  const approve = async (id: string) => { try { await leaveRequestsApi.approve(id); load(); } catch (e) { notifyApiError(e, 'Approval failed.'); } };
   const reject = async () => {
     if (!rejectModal || !rejectReason) return;
-    try { await leaveRequestsApi.reject(rejectModal.id, rejectReason); setRejectModal(null); load(); } catch { alert('Rejection failed.'); }
+    try { await leaveRequestsApi.reject(rejectModal.id, rejectReason); setRejectModal(null); load(); } catch (e) { notifyApiError(e, 'Rejection failed.'); }
   };
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-slate-500 dark:text-slate-400">{requests.length} pending approval{requests.length !== 1 ? 's' : ''}</p>
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : requests.length === 0 ? (
+      {loadError == null && <p className="text-sm text-slate-500 dark:text-slate-400">{requests.length} pending approval{requests.length !== 1 ? 's' : ''}</p>}
+      {loading ? <p className="text-sm text-slate-400">Loading…</p> : loadError != null ? (
+        <LoadFailure what="Pending approvals" error={loadError} />
+      ) : requests.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <CheckCircle className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
           <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No pending approvals</p>
@@ -861,10 +869,10 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
                 </div>
                 <div className="flex shrink-0 flex-col items-end gap-2">
                   <p className="text-xs text-slate-400">Submitted {fmtDate(r.submittedAtUtc)}</p>
-                  <div className="flex gap-2">
+                  {canDecide && <div className="flex gap-2">
                     <button type="button" className={btn.ghost} onClick={() => { setRejectModal(r); setRejectReason(''); }}>Reject</button>
                     <button type="button" className={btn.primary} onClick={() => approve(r.id)}>Approve</button>
-                  </div>
+                  </div>}
                 </div>
               </div>
             </div>
@@ -992,7 +1000,7 @@ function CreateLeaveTypeModal({ onClose, onSaved }: { onClose: () => void; onSav
   const save = async () => {
     if (!form.code || !form.nameEn) { setError('Code and English name are required.'); return; }
     setSaving(true); setError('');
-    try { await leaveTypesApi.create(form); onSaved(); } catch { setError('Save failed.'); setSaving(false); }
+    try { await leaveTypesApi.create(form); onSaved(); } catch (e) { setError(apiErrorReason(e, 'Save failed.')); setSaving(false); }
   };
 
   return (
@@ -1035,9 +1043,16 @@ function LeaveTypesTab() {
   const [types, setTypes] = useState<LeaveType[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
-  const load = () => { setLoading(true); leaveTypesApi.list().then(setTypes).catch(() => {}).finally(() => setLoading(false)); };
+  const [loadError, setLoadError] = useState<unknown>(null);
+  const load = () => {
+    setLoading(true);
+    leaveTypesApi.list()
+      .then(rows => { setTypes(rows); setLoadError(null); })
+      .catch(e => { setTypes([]); setLoadError(e); })
+      .finally(() => setLoading(false));
+  };
   useEffect(load, []);
-  const del = async (id: string) => { if (!confirm('Deactivate this leave type?')) return; try { await leaveTypesApi.delete(id); load(); } catch { alert('Failed.'); } };
+  const del = async (id: string) => { if (!confirm('Deactivate this leave type?')) return; try { await leaveTypesApi.delete(id); load(); } catch (e) { notifyApiError(e, 'The leave type could not be deactivated.'); } };
 
   return (
     <div className="space-y-4">
@@ -1050,7 +1065,7 @@ function LeaveTypesTab() {
         />
         <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> New Leave Type</button>
       </div>
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : (
+      {loading ? <p className="text-sm text-slate-400">Loading…</p> : loadError != null ? <LoadFailure what="Leave types" error={loadError} /> : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {types.map(t => (
             <div key={t.id} className="surface p-4">
@@ -1133,7 +1148,7 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
         await leavePoliciesApi.create(form);
       }
       onSaved();
-    } catch { setError('Save failed.'); setSaving(false); }
+    } catch (e) { setError(apiErrorReason(e, 'Save failed.')); setSaving(false); }
   };
 
   return (
@@ -1256,7 +1271,7 @@ function PoliciesTab() {
 
   const archive = async (id: string, name: string) => {
     if (!confirm(`Archive "${name}"? It will no longer be applied to new requests.`)) return;
-    try { await leavePoliciesApi.delete(id); load(); } catch { alert('Failed to archive policy.'); }
+    try { await leavePoliciesApi.delete(id); load(); } catch (e) { notifyApiError(e, 'Failed to archive policy.'); }
   };
 
   return (
@@ -1802,11 +1817,11 @@ function CompOffTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
     if (!form.employeeId || !form.workedDate || !form.daysEarned) return;
     setSaving(true);
     try { await compOffApi.create({ employeeId: Number(form.employeeId), workedDate: form.workedDate, workType: form.workType, hoursWorked: Number(form.hoursWorked), daysEarned: Number(form.daysEarned), expiryDate: form.expiryDate || undefined }); setShowCreate(false); load(); }
-    catch { alert('Failed.'); }
+    catch (e) { notifyApiError(e, 'The comp-off credit could not be saved.'); }
     setSaving(false);
   };
 
-  const approve = async (id: string) => { try { await compOffApi.approve(id); load(); } catch { alert('Failed.'); } };
+  const approve = async (id: string) => { try { await compOffApi.approve(id); load(); } catch (e) { notifyApiError(e, 'The comp-off credit could not be approved.'); } };
 
   return (
     <div className="space-y-4">
@@ -1882,7 +1897,7 @@ function AbsencesTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
   const regularize = async () => {
     if (!regModal || !regReason) return;
     try { await absenceApi.submitRegularization({ employeeId: regModal.employeeId, absenceRecordId: regModal.id, reason: regReason }); setRegModal(null); load(); }
-    catch { alert('Failed.'); }
+    catch (e) { notifyApiError(e, 'The regularization request could not be submitted.'); }
   };
 
   return (
@@ -2003,8 +2018,8 @@ function AIInsightsTab() {
   const load = () => { void list.reload(); };
   useEffect(load, [list.reload]);
 
-  const generate = async () => { setGenerating(true); try { await leaveAIApi.generate(); load(); } catch { alert('Generation failed.'); } setGenerating(false); };
-  const ack = async (id: string) => { try { await leaveAIApi.acknowledge(id); load(); } catch { alert('Failed.'); } };
+  const generate = async () => { setGenerating(true); try { await leaveAIApi.generate(); load(); } catch (e) { notifyApiError(e, 'Generation failed.'); } setGenerating(false); };
+  const ack = async (id: string) => { try { await leaveAIApi.acknowledge(id); load(); } catch (e) { notifyApiError(e, 'The insight could not be acknowledged.'); } };
 
   const SEV_CARD: Record<string, string> = {
     Info: 'border-blue-200 bg-blue-50 dark:border-blue-500/20 dark:bg-blue-500/10',
