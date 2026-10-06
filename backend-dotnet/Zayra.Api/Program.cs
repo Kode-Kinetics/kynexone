@@ -521,6 +521,11 @@ builder.Services.AddSingleton(Zayra.Api.Infrastructure.Employees.EffectiveChange
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.EffectiveChangeJobHandler>();
 builder.Services.AddHostedService<Zayra.Api.Infrastructure.Employees.EffectiveChangeScheduler>();
 
+// Release A (grade entitlements, contract-year package, contract renewals, deductions statement). Every service
+// is registered in one extension owned by the integration owner, so the slices never edit this file. Each Release A
+// surface is also gated per tenant by the release_a opt-in flag (OptInFeatures): off unless the platform enables it.
+Zayra.Api.Infrastructure.ReleaseA.ReleaseAServiceCollectionExtensions.AddReleaseA(builder.Services);
+
 // HttpClient's default timeout is 100s. Left unset, a slow or wedged model call blocked a
 // user-facing request for a minute and a half before anything degraded. Callers that can fall
 // back (setup assistant, advisory) impose their own, tighter budget on top of this ceiling.
