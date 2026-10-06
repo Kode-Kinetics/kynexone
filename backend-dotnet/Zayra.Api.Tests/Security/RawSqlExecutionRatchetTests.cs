@@ -66,12 +66,16 @@ public class RawSqlExecutionRatchetTests
         // Jawazat creation idempotency and company-scope tests cover the governed ticket producer.
         ["Infrastructure/Jawazat/JawazatWorkflowService.cs"] = 1,
         ["Infrastructure/Organization/EstablishmentGuardService.cs"] = 1,
+        // (LeaveService's second site, below, is a parameterized pg_advisory_xact_lock keyed on tenant +
+        // employee that serialises leave submission and final approval. No row writes;
+        // KsaStatutoryLeaveConcurrencyPostgresTests proves two simultaneous Hajj submissions yield one.)
 
         // ── Real statements. Each one's WHERE clause IS its tenant boundary. ─────────────────
 
         // Interpolated, and parameterised on the tenant/employee being processed.
         ["Infrastructure/Attendance/AttendanceService.cs"] = 1,
-        ["Infrastructure/Leave/LeaveService.cs"] = 1,
+        // 1 -> 2: + the per-employee leave advisory lock (see the note under advisory locks above).
+        ["Infrastructure/Leave/LeaveService.cs"] = 2,
 
         // 2 -> 1. The survivor is the Admin role_permissions backfill: a set-based INSERT that is
         // cross-tenant BY DESIGN (every tenant's Admin role gets every permission — that is the

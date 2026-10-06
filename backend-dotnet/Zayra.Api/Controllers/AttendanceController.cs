@@ -8,6 +8,7 @@ using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -44,6 +45,9 @@ public class AttendanceController : ControllerBase
         return Ok(new { date = summary.Date, totalActive = summary.ActiveEmployees, present = summary.Present, absent = summary.Absent, onLeave = 0, late = summary.Late });
     }
 
+    /// <summary>Device secrets (header values, secret parameters, URL credentials) are shown only to a caller who may configure devices.</summary>
+    private bool CanConfigureDevices => User.HasPermission(AttendanceDeviceDto.ConfigurePermission);
+
     [HttpGet("devices")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
     public async Task<PagedResult<AttendanceDeviceDto>> Devices([FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken ct = default)
@@ -51,34 +55,38 @@ public class AttendanceController : ControllerBase
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
         var result = await _attendance.GetDevicesAsync(RequireTenant(), page, pageSize, ct);
-        return new PagedResult<AttendanceDeviceDto>(result.Items.Select(AttendanceDeviceDto.Project).ToList(), result.Total, result.Page, result.PageSize);
+        return new PagedResult<AttendanceDeviceDto>(result.Items.Select(d => AttendanceDeviceDto.Project(d, CanConfigureDevices)).ToList(), result.Total, result.Page, result.PageSize);
     }
 
     [HttpGet("devices/{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
     public async Task<ActionResult<AttendanceDeviceDto>> Device(Guid id, CancellationToken ct) =>
-        await _attendance.GetDeviceAsync(RequireTenant(), id, ct) is { } device ? Ok(AttendanceDeviceDto.Project(device)) : NotFound();
+        await _attendance.GetDeviceAsync(RequireTenant(), id, ct) is { } device ? Ok(AttendanceDeviceDto.Project(device, CanConfigureDevices)) : NotFound();
 
+    // Role-gate bypass sweep (LegacyRoleGateBypassSweepTests): a device and its key are a channel that imports punches for any employee into payroll. These resolved to
+    // attendance.write, which a Supervisor holds; attendance.bulk_import is the punch-import key the named HR roles hold.
     [HttpPost("devices")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("attendance.bulk_import")]
     public async Task<ActionResult<AttendanceDeviceDto>> CreateDevice(AttendanceDeviceRequest request, CancellationToken ct)
     {
         try
         {
             var device = await _attendance.CreateDeviceAsync(RequireTenant(), request, Context(), ct);
-            return Created($"/api/attendance/devices/{device.Id}", AttendanceDeviceDto.Project(device));
+            return Created($"/api/attendance/devices/{device.Id}", AttendanceDeviceDto.Project(device, CanConfigureDevices));
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
     [HttpPut("devices/{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("attendance.bulk_import")]
     public async Task<ActionResult<AttendanceDeviceDto>> UpdateDevice(Guid id, AttendanceDeviceRequest request, CancellationToken ct)
     {
         try
         {
             var device = await _attendance.UpdateDeviceAsync(RequireTenant(), id, request, Context(), ct);
-            return device is null ? NotFound() : Ok(AttendanceDeviceDto.Project(device));
+            return device is null ? NotFound() : Ok(AttendanceDeviceDto.Project(device, CanConfigureDevices));
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
@@ -91,12 +99,14 @@ public class AttendanceController : ControllerBase
     [HttpPost("devices/{id:guid}/test-connection")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: DeviceId, SyncMethod, Status, StartedAtUtc, CompletedAtUtc, RawEventsReceived, RawEventsProcessed, ErrorMessage. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
+    [HasPermission("attendance.bulk_import")]
     public async Task<ActionResult<AttendanceDeviceSyncLog>> TestConnection(Guid id, CancellationToken ct) =>
         await _attendance.TestConnectionAsync(RequireTenant(), id, Context(), ct) is { } log ? Ok(log) : NotFound();
 
     [HttpPost("devices/{id:guid}/sync")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: DeviceId, SyncMethod, Status, StartedAtUtc, CompletedAtUtc, RawEventsReceived, RawEventsProcessed, ErrorMessage. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
+    [HasPermission("attendance.bulk_import")]
     public async Task<ActionResult<AttendanceDeviceSyncLog>> Sync(Guid id, CancellationToken ct) =>
         await _attendance.SyncDeviceAsync(RequireTenant(), id, Context(), ct) is { } log ? Ok(log) : NotFound();
 
@@ -109,6 +119,7 @@ public class AttendanceController : ControllerBase
     /// <summary>Generate (or rotate) a device API key. Plaintext is returned ONCE; only its hash is stored.</summary>
     [HttpPost("devices/{id:guid}/generate-key")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("attendance.bulk_import")]
     public async Task<ActionResult<DeviceKeyResult>> GenerateDeviceKey(Guid id, CancellationToken ct) =>
         await _attendance.GenerateDeviceKeyAsync(RequireTenant(), id, Context(), ct) is { } r ? Ok(r) : NotFound();
 

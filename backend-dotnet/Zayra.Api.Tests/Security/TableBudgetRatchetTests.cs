@@ -68,8 +68,12 @@ public class TableBudgetRatchetTests
         // LoanChangeRequest captures maker/checker authorization for policy exceptions,
         // rescheduling and monetary reversals, not a replacement for the immutable ledger.
         // HR/Finance own it, with the same 84-month loan-record retention requirement.
-        DeclaredDbSets().Should().HaveCount(327,
-            "the live schema is 327 tables and the approved rebuild target is 76 " +
+        // GradeEntitlements (slice L1): per-grade entitlement cells keyed by pay component — first used for
+        // loan limits by grade, and the home for later grade entitlements. No existing table carries an
+        // effective-dated, per-grade, per-component value with a no-overlap guarantee. HR/Finance own it;
+        // retained with the loan ledger (84 months), since loans keep a witness id into it.
+        DeclaredDbSets().Should().HaveCount(328,
+            "the live schema is 328 tables and the approved rebuild target is 76 " +
             "(TARGET_SCHEMA.md). If this number moved, say so in the PR and update it here");
     }
 
