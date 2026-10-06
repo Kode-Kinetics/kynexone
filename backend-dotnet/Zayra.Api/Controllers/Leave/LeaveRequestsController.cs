@@ -92,7 +92,39 @@ public class LeaveRequestsController : ControllerBase
             .OrderBy(a => a.StepNumber)
             .ToListAsync(ct);
 
-        return Ok(new { request, approvals });
+        // The approver decides a Saudi statutory leave (maternity, Hajj, bereavement…) with the
+        // employee's earlier leave of the same kind in view.
+        var statutory = (await _leaveService.GetKsaStatutoryLeaveHistoryAsync(tenantId.Value, new[] { id }, ct)).GetValueOrDefault(id);
+        var statutoryHistory = statutory?.History ?? Array.Empty<StatutoryLeaveHistoryItem>();
+
+        return Ok(new { request, approvals, statutoryHistory, statutory });
+    }
+
+    /// <summary>
+    /// The approver's view of KSA statutory leave history for several requests at once (the approvals
+    /// queue): for each request that is statutory leave, the employee's other leave of that kind and
+    /// whether it is the same statutory event. Requests the caller cannot see are omitted.
+    /// </summary>
+    [HttpGet("statutory-history")]
+    public async Task<IActionResult> StatutoryHistory([FromQuery] string? ids, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        var requested = (ids ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(x => Guid.TryParse(x, out var g) ? g : Guid.Empty)
+            .Where(g => g != Guid.Empty).Distinct().Take(200).ToList();
+        if (requested.Count == 0) return Ok(new Dictionary<Guid, StatutoryLeaveContext>());
+
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        var visible = (await _db.LeaveRequests.AsNoTracking()
+                .Where(r => r.TenantId == tenantId && requested.Contains(r.Id))
+                .Select(r => new { r.Id, r.EmployeeId })
+                .ToListAsync(ct))
+            .Where(r => scope.CanAccessEmployee(r.EmployeeId))
+            .Select(r => r.Id)
+            .ToList();
+        return Ok(await _leaveService.GetKsaStatutoryLeaveHistoryAsync(tenantId.Value, visible, ct));
     }
 
     [HttpPost]
@@ -181,7 +213,9 @@ public class LeaveRequestsController : ControllerBase
             AttachmentPath = attachmentPath,
             DelegateEmployeeId = delegateEmployee?.Id,
             DelegateEmployeeName = delegateEmployee?.FullName ?? string.Empty,
-            PayrollImpact = leaveType.IsPaid ? "Full" : "None"
+            PayrollImpact = leaveType.IsPaid ? "Full" : "None",
+            StatutoryEventDate = req.StatutoryEventDate,
+            SeparateEventReason = req.SeparateEventReason,
         };
 
         try
@@ -764,7 +798,11 @@ public record SubmitLeaveRequestRequest(
     int? DelegateEmployeeId = null,
     string? DelegateEmployeeName = null,
     // W2-D (S1): id of an EmployeeDocument owned by the leave's employee; resolved to AttachmentPath.
-    Guid? AttachmentDocumentId = null);
+    Guid? AttachmentDocumentId = null,
+    // KSA statutory leave: the date of the event (death, birth, marriage), and — to declare this a
+    // separate event from earlier leave of the same kind — the reason. Ignored for other leave.
+    DateOnly? StatutoryEventDate = null,
+    string? SeparateEventReason = null);
 
 public record ApproveLeaveRequest(string? Notes);
 public record RejectLeaveRequestBody(string Reason);

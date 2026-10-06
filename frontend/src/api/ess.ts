@@ -27,6 +27,8 @@ export interface EssDashboard {
     used: number;
     pending: number;
     available: number;
+    /** Saudi statutory event leave: statutory days per event, shown instead of `available`. */
+    statutoryEntitlementDays?: number | null;
   }>;
   pendingRequests: number;
   documentAlerts: EssDocument[];

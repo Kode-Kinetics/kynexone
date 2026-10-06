@@ -233,7 +233,7 @@ public class EmployeeSelfServiceController : ControllerBase
         return Ok(new ESSDashboardDto(
             new ESSProfileSummaryDto(employee.Id, employee.EmployeeCode, employee.FullName, employee.JobTitle, employee.Department, employee.ProfilePhotoUrl, employee.ProfileCompletenessScore),
             attendance,
-            leaveBalances.Select(x => new ESSLeaveBalanceDto(x.LeaveTypeId, x.LeaveTypeName, x.Entitled, x.Used, x.Pending, x.Available)).ToList(),
+            await EssBalancesAsync(tenantId, employeeId, leaveBalances, cancellationToken),
             pendingRequests + pendingLeave,
             documentAlerts,
             announcements.Select(ToAnnouncementDto).ToList(),
@@ -562,7 +562,16 @@ public class EmployeeSelfServiceController : ControllerBase
         var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
         if (!essOk) return BadRequest(new { message = ctxError });
         var balances = await _db.EmployeeLeaveBalances.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Year == DateTime.UtcNow.Year).ToListAsync(cancellationToken);
-        return Ok(balances.Select(x => new ESSLeaveBalanceDto(x.LeaveTypeId, x.LeaveTypeName, x.Entitled, x.Used, x.Pending, x.Available)).ToList());
+        return Ok(await EssBalancesAsync(tenantId, employeeId, balances, cancellationToken));
+    }
+
+    private async Task<List<ESSLeaveBalanceDto>> EssBalancesAsync(
+        Guid tenantId, int employeeId, IReadOnlyCollection<EmployeeLeaveBalance> balances, CancellationToken ct)
+    {
+        var statutory = await _leaveService.GetKsaStatutoryEntitlementsAsync(
+            tenantId, balances.Select(b => (employeeId, b.LeaveTypeId)).Distinct().ToList(), ct);
+        return balances.Select(x => new ESSLeaveBalanceDto(x.LeaveTypeId, x.LeaveTypeName, x.Entitled, x.Used, x.Pending, x.Available,
+            statutory.TryGetValue((employeeId, x.LeaveTypeId), out var days) ? days : null)).ToList();
     }
 
     [HttpPost("leave/request")]
@@ -594,6 +603,8 @@ public class EmployeeSelfServiceController : ControllerBase
             EndDate = request.EndDate,
             DayType = request.DayType ?? "Full",
             Reason = request.Reason,
+            StatutoryEventDate = request.StatutoryEventDate,
+            SeparateEventReason = request.SeparateEventReason,
             PayrollImpact = leaveType.IsPaid ? "Full" : "None",
         };
         try
@@ -1433,7 +1444,12 @@ public class EmployeeSelfServiceController : ControllerBase
 }
 
 public record ESSProfileSummaryDto(int EmployeeId, string EmployeeCode, string FullName, string JobTitle, string Department, string ProfilePhotoUrl, decimal ProfileCompletenessScore);
-public record ESSLeaveBalanceDto(Guid LeaveTypeId, string LeaveTypeName, decimal Entitled, decimal Used, decimal Pending, decimal Available);
+/// <param name="StatutoryEntitlementDays">Set for KSA statutory event leave (maternity, Hajj, marriage…):
+/// the statutory days per event. Such leave is not drawn from the balance, so show this figure as
+/// "Statutory entitlement" rather than <paramref name="Available"/>, which can read negative while a
+/// request is pending.</param>
+public record ESSLeaveBalanceDto(Guid LeaveTypeId, string LeaveTypeName, decimal Entitled, decimal Used, decimal Pending, decimal Available,
+    decimal? StatutoryEntitlementDays = null);
 public record ESSDocumentDto(Guid Id, string DocumentType, string FileName, DateOnly? ExpiryDate, string ApprovalStatus);
 public record ESSAnnouncementDto(Guid Id, string Title, string Body, string Audience, DateTime PublishedAtUtc);
 public record ESSNotificationDto(Guid Id, string Title, string Body, string NotificationType, bool IsRead, DateTime CreatedAtUtc);
@@ -1464,7 +1480,11 @@ public record ESSDashboardDto(
 public record ProfileChangeRequestDto(Dictionary<string, object?> Changes, string? Reason);
 public record ProfileChangeDecisionDto(string? Notes);
 public record ESSAttendanceRegularizationDto(DateOnly WorkDate, string RequestType, DateTime? RequestedInUtc, DateTime? RequestedOutUtc, string Reason);
-public record ESSLeaveRequestDto(Guid LeaveTypeId, DateOnly StartDate, DateOnly EndDate, string? DayType, string Reason);
+/// <param name="StatutoryEventDate">KSA statutory leave: the date of the event (death, birth, marriage).</param>
+/// <param name="SeparateEventReason">KSA bereavement, birth or marriage leave: why this is a separate event
+/// from earlier leave of the same kind. Requires <paramref name="StatutoryEventDate"/>.</param>
+public record ESSLeaveRequestDto(Guid LeaveTypeId, DateOnly StartDate, DateOnly EndDate, string? DayType, string Reason,
+    DateOnly? StatutoryEventDate = null, string? SeparateEventReason = null);
 public record ESSDocumentUploadDto(string DocumentType, string FileName, string ContentType, string StorageUrl, DateOnly? ExpiryDate, bool IsRequired);
 public record EssLetterTypeDto(string LetterType, string NameEn, string NameAr);
 public record EssDocumentRequestDto(string LetterType, string? Language, string? Purpose, string? AddresseeName);

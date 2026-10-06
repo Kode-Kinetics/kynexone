@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Data.Common;
 using System.Text.RegularExpressions;
 using DotNet.Testcontainers.Builders;
@@ -311,16 +312,41 @@ public sealed partial class AdvisoryLockTransactionPoolingPostgresTests : IClass
     [Fact]
     public async Task MigrationImportLease_KeepaliveOutlivesAShortIdleCeiling_AndHoldsNoXminHorizon()
     {
-        var ceiling = TimeSpan.FromSeconds(2);
+        // The property under test is "outlives the ceiling", so the wait only needs to pass it.
+        // The ceiling is wide against the ping interval (25x) because the pings ride the shared
+        // thread pool: on a loaded runner a 2 s ceiling with 300 ms pings left only 1.7 s of slack
+        // and failed on a harness stall, not on the lease. Production runs 30 min / 30 s.
+        var ceiling = TimeSpan.FromSeconds(5);
         var key = Random.Shared.NextInt64();
+        // Monotonic stamps of each renewal; the diagnosis below reads them, the wall clock can jump.
+        var pings = new System.Collections.Concurrent.ConcurrentQueue<long>();
+        var start = Stopwatch.GetTimestamp();
         await using var db = _fx.CreatePooledDb();
         var lease = (await TransactionHeldAdvisoryLease.TryAcquireAsync(
-            db, key, new TransactionHeldAdvisoryLease.LeaseOptions(ceiling, TimeSpan.FromMilliseconds(300)), CancellationToken.None))!;
+            db, key,
+            new TransactionHeldAdvisoryLease.LeaseOptions(ceiling, TimeSpan.FromMilliseconds(200))
+            {
+                BeforeKeepalive = () => { pings.Enqueue(Stopwatch.GetTimestamp()); return Task.CompletedTask; },
+            },
+            CancellationToken.None))!;
+        var acquired = Stopwatch.GetTimestamp();
         await using (lease)
         {
-            // A "section" twice as long as the idle ceiling, doing no work on the lease connection.
+            // A "section" two ceilings long, doing no work on the lease connection. The wait gives
+            // the after-the-ceiling check the same slack the lease itself has (one full ceiling):
+            // a shorter wait re-creates the flake this test was widened to remove.
             await Task.Delay(ceiling * 2);
-            (await _fx.GrantedAdvisoryLocksAsync(key)).Should().Be(1, "the keepalive kept the lease transaction from idling out");
+            var stamps = pings.ToArray();
+            var because = $"pings: {stamps.Length}, lease lost: {lease.IsLost}, largest gap between renewals: "
+                + $"{LargestGapMs(start, stamps):N0} ms against a {ceiling.TotalMilliseconds:N0} ms ceiling. "
+                + "No pings or a lost lease means the keepalive is broken; one gap near the ceiling with "
+                + "steady pings either side means the test harness stalled";
+
+            // The renewals themselves, not only the end state: the lease must still be renewing
+            // after the first ceiling window has passed, and no gap may reach the ceiling.
+            stamps.Should().Contain(t => Stopwatch.GetElapsedTime(acquired, t) > ceiling, because);
+            LargestGapMs(start, stamps).Should().BeLessThan(ceiling.TotalMilliseconds, because);
+            (await _fx.GrantedAdvisoryLocksAsync(key)).Should().Be(1, because);
             await lease.EnsureHeldAsync(CancellationToken.None);
 
             var (xid, xmin) = await _fx.LockHolderXidAndXminAsync(key);
@@ -547,6 +573,18 @@ public sealed partial class AdvisoryLockTransactionPoolingPostgresTests : IClass
         {
             await lease.DisposeAsync();
         }
+    }
+
+    private static double LargestGapMs(long start, IEnumerable<long> pings)
+    {
+        var largest = 0.0;
+        var previous = start;
+        foreach (var ping in pings.Append(Stopwatch.GetTimestamp()))
+        {
+            largest = Math.Max(largest, Stopwatch.GetElapsedTime(previous, ping).TotalMilliseconds);
+            previous = ping;
+        }
+        return largest;
     }
 
     private async Task<Guid> SeedTenantAsync()
