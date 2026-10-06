@@ -19,7 +19,7 @@ public interface IAttendanceService
 
     Task<AttendanceRawEvent> PushEventAsync(Guid tenantId, AttendanceRawEventRequest request, RequestContext context, CancellationToken ct);
     Task<AttendanceImportBatch> ImportCsvAsync(Guid tenantId, ImportAttendanceRequest request, RequestContext context, CancellationToken ct);
-    Task<PagedResult<AttendanceRawEvent>> GetRawEventsAsync(Guid tenantId, DateOnly? from, DateOnly? to, int? employeeId, bool? processed, int page, int pageSize, CancellationToken ct);
+    Task<PagedResult<AttendanceRawEvent>> GetRawEventsAsync(Guid tenantId, DateOnly? from, DateOnly? to, int? employeeId, bool? processed, int page, int pageSize, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null);
 
     Task<int> ProcessAsync(Guid tenantId, ProcessAttendanceRequest request, RequestContext context, CancellationToken ct);
 

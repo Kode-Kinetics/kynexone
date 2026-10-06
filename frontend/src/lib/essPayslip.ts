@@ -57,3 +57,12 @@ export function payslipMonthLabel(year: number, month: number, locale: string, f
   const tag = locale === 'ar' ? 'ar-u-nu-latn' : locale;
   return new Intl.DateTimeFormat(tag, { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(Date.UTC(year, month - 1, 1)));
 }
+
+/**
+ * A payslip line's name for the viewer: the pay component's Arabic name in Arabic when the catalogue has
+ * one, otherwise the translated name of a standard line (Basic Salary, Net Pay…), otherwise as stored.
+ */
+export function payslipLineName(line: { name: string; nameAr?: string | null }, locale: string, translate: (key: string) => string): string {
+  if (locale !== 'ar') return line.name;
+  return line.nameAr?.trim() || translate(line.name);
+}

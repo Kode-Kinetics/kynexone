@@ -1,45 +1,33 @@
-using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
+using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Common;
 
-public enum CallerEmployeeMatch { Linked, NotLinked, Ambiguous }
-
 /// <summary>
-/// Which employee record the signed-in caller IS. One lookup for the data scope and for self-service, so the
-/// two can never disagree: the <c>employee_id</c> claim when the login carries one, otherwise the single
-/// employee whose work or personal email matches the login's email, compared case-insensitively. Two matches
-/// are ambiguous and resolve to no employee — never to "the first one".
+/// Which employee record the signed-in caller IS: the <c>employee_id</c> claim, which the token service
+/// issues only from the explicit login-to-employee link (EmployeeUserAccounts), and only while that
+/// employee exists, is not deleted and belongs to the caller's tenant. One lookup for the data scope,
+/// self-service, mobile, notifications and performance, so they cannot disagree about who the caller is.
 ///
-/// <para>The data scope used to compare the lower-cased login email with the stored email as written, so a
-/// WorkEmail with capitals resolved in self-service but not in the data scope; and it took the first of
-/// several matches.</para>
+/// <para>There is deliberately NO email fallback. Matching the login's email against an employee's work or
+/// personal email let an email binding stand in for the link, and an employee's personal email can be
+/// changed through an approved self-service profile request, so it could bind a different login to that
+/// record. A login without the link is linked by HR (User Management → Invite Employee), not guessed.</para>
 /// </summary>
 public static class CallerEmployeeResolver
 {
-    public static async Task<(int? EmployeeId, CallerEmployeeMatch Match)> ResolveAsync(
-        ZayraDbContext db, ClaimsPrincipal caller, Guid tenantId, CancellationToken ct)
+    /// <param name="tenantId">The caller's tenant (from their token); an employee of any other tenant never resolves.</param>
+    /// <param name="requireActive">Also require the employee's status to be Active (mobile mutations).</param>
+    public static async Task<int?> ResolveAsync(
+        ZayraDbContext db, ClaimsPrincipal caller, Guid tenantId, CancellationToken ct, bool requireActive = false)
     {
-        if (int.TryParse(caller.FindFirstValue("employee_id"), out var claimed))
-            return (claimed, CallerEmployeeMatch.Linked);
+        if (!int.TryParse(caller.FindFirstValue("employee_id"), out var claimed)) return null;
 
-        var email = caller.FindFirstValue(JwtRegisteredClaimNames.Email) ?? caller.FindFirstValue(ClaimTypes.Email);
-        if (string.IsNullOrWhiteSpace(email)) return (null, CallerEmployeeMatch.NotLinked);
-
-        var normalized = email.Trim().ToUpperInvariant();
-        var matches = await db.Employees.AsNoTracking()
-            .Where(e => e.TenantId == tenantId && !e.IsDeleted
-                && (e.WorkEmail.ToUpper() == normalized || e.PersonalEmail.ToUpper() == normalized))
-            .Select(e => e.Id)
-            .Take(2)
-            .ToListAsync(ct);
-        return matches.Count switch
-        {
-            1 => (matches[0], CallerEmployeeMatch.Linked),
-            0 => (null, CallerEmployeeMatch.NotLinked),
-            _ => (null, CallerEmployeeMatch.Ambiguous),
-        };
+        var exists = await db.Employees.AsNoTracking().AnyAsync(e =>
+            e.Id == claimed && e.TenantId == tenantId && !e.IsDeleted
+            && (!requireActive || e.Status == EmployeeStatuses.Active), ct);
+        return exists ? claimed : null;
     }
 }

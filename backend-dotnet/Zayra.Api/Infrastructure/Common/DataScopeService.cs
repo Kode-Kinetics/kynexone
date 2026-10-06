@@ -158,7 +158,7 @@ public class DataScopeService : IDataScopeService
     }
 
     private async Task<int?> ResolveCallerEmployeeIdAsync(ClaimsPrincipal caller, Guid tenantId, CancellationToken ct)
-        => (await CallerEmployeeResolver.ResolveAsync(_db, caller, tenantId, ct)).EmployeeId;
+        => await CallerEmployeeResolver.ResolveAsync(_db, caller, tenantId, ct);
 
     private async Task AddReportingTreeAsync(Guid tenantId, int managerId, HashSet<int> result, CancellationToken ct)
     {

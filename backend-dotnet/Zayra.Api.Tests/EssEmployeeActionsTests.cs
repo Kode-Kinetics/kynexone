@@ -392,40 +392,143 @@ public class EssEmployeeActionsTests
     }
 
     /// <summary>
-    /// The data scope compared the lower-cased login email with the stored email as written; self-service
-    /// compared both upper-cased. A WorkEmail with capitals resolved in self-service and not in the data scope.
-    /// Both now use CallerEmployeeResolver.
+    /// Only the explicit link (the employee_id claim the token service issues from EmployeeUserAccounts)
+    /// says who the caller is. An email match used to stand in for it, and an employee's personal email can
+    /// be changed through an approved self-service request, which could bind another login to the record.
     /// </summary>
     [Fact]
-    public async Task ALoginEmail_ResolvesToTheSameEmployee_InTheDataScopeAndInSelfService_WhateverItsCase()
+    public async Task AMatchingEmail_NeverLinksALogin_InTheDataScopeOrInSelfService()
     {
         var w = await SeedAsync();
-        foreach (var login in new[] { "asif.khan@masar.sa", "ASIF.KHAN@MASAR.SA", " Asif.Khan@Masar.SA " })
+        foreach (var login in new[] { "Asif.Khan@Masar.SA", "asif.khan@masar.sa" })
         {
             var caller = UnclaimedCaller(w, login);
-            var scope = await new DataScopeService(w.Db).ResolveAsync(caller, w.TenantId, CancellationToken.None);
-            scope.CallerEmployeeId.Should().Be(w.Me.Id, $"the data scope must find {login}");
-
+            (await new DataScopeService(w.Db).ResolveAsync(caller, w.TenantId, CancellationToken.None)).CallerEmployeeId.Should().BeNull();
             var ess = Ess(w);
             ess.ControllerContext.HttpContext.User = caller;
-            var profile = (await ess.Profile(CancellationToken.None)).Result.Should().BeOfType<OkObjectResult>().Subject;
-            ((EssEmployeeProfileDto)profile.Value!).Id.Should().Be(w.Me.Id, $"self-service must find {login}");
+            (await ess.Profile(CancellationToken.None)).Result.Should().BeOfType<BadRequestObjectResult>();
         }
     }
 
     [Fact]
-    public async Task AnEmailMatchingTwoEmployees_ResolvesToNoOne_InBoth()
+    public async Task AClaimedEmployee_ThatIsDeletedOrInAnotherTenant_IsNoOne()
     {
         var w = await SeedAsync();
-        w.Colleague.PersonalEmail = "asif.khan@masar.sa";
+        ClaimsPrincipal Claiming(int employeeId) => new(new ClaimsIdentity(new[]
+        {
+            new Claim("tenant_id", w.TenantId.ToString()), new Claim("employee_id", employeeId.ToString()),
+            new Claim("permission", "ess.read"),
+        }, "Test"));
+
+        (await CallerEmployeeResolver.ResolveAsync(w.Db, Claiming(w.Me.Id), w.TenantId, CancellationToken.None)).Should().Be(w.Me.Id);
+        (await CallerEmployeeResolver.ResolveAsync(w.Db, Claiming(w.Me.Id), Guid.NewGuid(), CancellationToken.None))
+            .Should().BeNull("the claimed employee is not in that tenant");
+        (await CallerEmployeeResolver.ResolveAsync(w.Db, Claiming(987_654), w.TenantId, CancellationToken.None)).Should().BeNull("no such employee");
+
+        w.Colleague.IsDeleted = true;
         w.Db.Employees.Update(w.Colleague);
         await w.Db.SaveChangesAsync();
-        var caller = UnclaimedCaller(w, "asif.khan@masar.sa");
+        (await CallerEmployeeResolver.ResolveAsync(w.Db, Claiming(w.Colleague.Id), w.TenantId, CancellationToken.None)).Should().BeNull("deleted");
+        (await new DataScopeService(w.Db).ResolveAsync(Claiming(w.Colleague.Id), w.TenantId, CancellationToken.None))
+            .AllowedEmployeeIds.Should().BeEmpty();
+    }
 
-        (await new DataScopeService(w.Db).ResolveAsync(caller, w.TenantId, CancellationToken.None)).CallerEmployeeId.Should().BeNull();
-        var ess = Ess(w);
-        ess.ControllerContext.HttpContext.User = caller;
-        (await ess.Profile(CancellationToken.None)).Result.Should().BeOfType<BadRequestObjectResult>();
+    /// <summary>
+    /// A company-scoped HR login with no employee record of its own (hr@alm-dairy-ksa). Its scope is the set of
+    /// its company's employees and no caller id. Raw punches used to collapse that set to the caller's own id,
+    /// which is none: 0 raw punches beside 21 daily rows. Every list must show the company and nothing outside.
+    /// </summary>
+    [Fact]
+    public async Task ACompanyScopedHrLogin_WithNoEmployeeRecord_SeesItsCompany_OnRawDailyAndLeave_AndNothingElse()
+    {
+        var w = await SeedAsync();
+        var mine = new Company { TenantId = w.TenantId, LegalNameEn = "Alm Dairy KSA" };
+        var other = new Company { TenantId = w.TenantId, LegalNameEn = "Sister Co" };
+        w.Db.Companies.AddRange(mine, other);
+        w.Me.CompanyId = mine.Id;
+        w.Colleague.CompanyId = other.Id;
+        w.Db.Employees.UpdateRange(w.Me, w.Colleague);
+        var day = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-1);
+        foreach (var e in new[] { w.Me, w.Colleague })
+        {
+            w.Db.AttendanceRawEvents.Add(new AttendanceRawEvent { TenantId = w.TenantId, EmployeeId = e.Id, PunchTimestampUtc = day.ToDateTime(new TimeOnly(8, 0), DateTimeKind.Utc), PunchDirection = "In" });
+            w.Db.AttendanceDailyRecords.Add(new AttendanceDailyRecord { TenantId = w.TenantId, EmployeeId = e.Id, EmployeeName = e.FullName, WorkDate = day, Status = "Present" });
+        }
+        await w.Db.SaveChangesAsync();
+
+        var hr = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim("tenant_id", w.TenantId.ToString()), new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+            new Claim(ClaimTypes.Role, "HR Manager"),
+            new Claim("entity_scope", System.Text.Json.JsonSerializer.Serialize(new { v = 2, m = "companies", c = new[] { mine.Id } })),
+        }.Concat(new[] { "employees.read", "employees.write", "attendance.read", "leave.read", "overtime.read" }.Select(p => new Claim("permission", p))), "Test"));
+
+        var scope = await new DataScopeService(w.Db).ResolveAsync(hr, w.TenantId, CancellationToken.None);
+        scope.CallerEmployeeId.Should().BeNull();
+        scope.AllowedEmployeeIds.Should().BeEquivalentTo(new[] { w.Me.Id });
+        scope.Constrain(w.Colleague.Id).Should().Be(((int?)null, (IReadOnlyCollection<int>?)Array.Empty<int>()),
+            "an employee outside the company is nothing, never everyone");
+
+        var attendance = As(new AttendanceController(
+            new Zayra.Api.Infrastructure.Attendance.AttendanceService(w.Db, new NullNotifications(), new StubHttpClientFactory()),
+            new DataScopeService(w.Db), new HrmHierarchyService(w.Db, new AuditService(w.Db)), w.Db), hr);
+        var raw = await attendance.Raw(day, day, null, null, 1, 100, CancellationToken.None);
+        raw.Items.Select(x => x.EmployeeId).Should().Equal(new int?[] { w.Me.Id }, "the company's punches, as daily shows");
+        (await attendance.Raw(day, day, w.Colleague.Id, null, 1, 100, CancellationToken.None)).Items.Should().BeEmpty();
+        var daily = await attendance.Daily(day, day, null, null, 1, 100, CancellationToken.None);
+        daily.Items.Select(x => x.EmployeeId).Should().Equal(w.Me.Id);
+
+        var leave = (await As(new LeaveRequestsController(w.Db, Leave(w.Db), new DataScopeService(w.Db), new NullNotifications()), hr)
+            .List(null, null, null, null, null, null, null, null, 1, 100, CancellationToken.None)).Should().BeOfType<OkObjectResult>().Subject;
+        ((PagedResult<LeaveRequest>)leave.Value!).Items.Should().NotBeEmpty().And.OnlyContain(r => r.EmployeeId == w.Me.Id);
+        var outside = (await As(new LeaveRequestsController(w.Db, Leave(w.Db), new DataScopeService(w.Db), new NullNotifications()), hr)
+            .List(null, w.Colleague.Id, null, null, null, null, null, null, 1, 100, CancellationToken.None)).Should().BeOfType<OkObjectResult>().Subject;
+        ((PagedResult<LeaveRequest>)outside.Value!).Items.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The ess.write gate holds on the server, not only in the page. Filing overtime for yourself and cancelling
+    /// your own leave are self-service (ess.write); doing it for anyone else is administration (overtime.write,
+    /// leave.write or leave.cancel). Seeded personas that hold neither, linked to their own employee record.
+    /// </summary>
+    [Theory]
+    [InlineData("Auditor")]
+    [InlineData("Recruiter")]
+    [InlineData("Payroll Officer")]
+    public async Task PersonasWithoutEssWrite_CannotFileOvertime_OrCancelLeave_ForThemselvesOrOthers(string role)
+    {
+        var w = await SeedAsync();
+        var permissions = await SeededRoleBundles.PermissionsOfAsync(w.Db, w.TenantId, role);
+        permissions.Should().NotContain(new[] { "ess.write", "overtime.write", "leave.write", "leave.cancel" });
+        w.Db.OvertimePolicies.Add(new OvertimePolicy { TenantId = w.TenantId, Name = "Standard", IsActive = true, RoundingRule = "None" });
+        var start = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(70);
+        var own = new LeaveRequest
+        {
+            TenantId = w.TenantId, EmployeeId = w.Me.Id, EmployeeName = w.Me.FullName, LeaveTypeId = w.Annual.Id, LeaveTypeName = w.Annual.NameEn,
+            StartDate = start, EndDate = start, DayType = "Full", Reason = "Own", Status = "Submitted",
+        };
+        w.Db.LeaveRequests.Add(own);
+        await w.Db.SaveChangesAsync();
+        var caller = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim("tenant_id", w.TenantId.ToString()), new Claim(ClaimTypes.NameIdentifier, w.Me.UserAccountId!.Value.ToString()),
+            new Claim(ClaimTypes.Role, role), new Claim("employee_id", w.Me.Id.ToString()), new Claim("is_group_scope", "true"),
+        }.Concat(permissions.Select(p => new Claim("permission", p))), "Test"));
+
+        var day = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-3);
+        var at = day.ToDateTime(new TimeOnly(18, 0), DateTimeKind.Utc);
+        var overtime = As(new OvertimeController(w.Db, new DataScopeService(w.Db), new HrmHierarchyService(w.Db, new AuditService(w.Db))), caller);
+        foreach (var target in new[] { w.Me.Id, w.Colleague.Id })
+        {
+            var before = await w.Db.OvertimeRequests.CountAsync();
+            var result = (await overtime.CreateRequest(new OvertimeRequestCreate(target, null, null, day, at, at.AddHours(2), "SelfService", "Late shift"), CancellationToken.None)).Result;
+            result.Should().BeOfType<ForbidResult>($"{role} filing overtime for employee {target}");
+            (await w.Db.OvertimeRequests.CountAsync()).Should().Be(before);
+        }
+
+        (await As(new LeaveRequestsController(w.Db, Leave(w.Db), new DataScopeService(w.Db), new NullNotifications()), caller)
+            .Cancel(own.Id, new CancelLeaveRequest("mine"), CancellationToken.None)).Should().BeOfType<ForbidResult>();
+        (await w.Db.LeaveRequests.AsNoTracking().SingleAsync(r => r.Id == own.Id)).Status.Should().Be("Submitted");
     }
 
     /// <summary>

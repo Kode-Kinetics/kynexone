@@ -82,10 +82,8 @@ public class EssBenefitsController : ControllerBase
     private async Task<(int? EmployeeId, string Error)> ResolveCallerEmployeeIdAsync(Guid tenantId, CancellationToken ct)
     {
         // The same lookup as the data scope and the rest of self-service (CallerEmployeeResolver).
-        var (employeeId, match) = await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId, ct);
-        if (employeeId is int linked) return (linked, string.Empty);
-        return match == CallerEmployeeMatch.Ambiguous
-            ? (null, "Multiple employee records match this email. Ask HR to link your account explicitly.")
+        return await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId, ct) is int linked
+            ? (linked, string.Empty)
             : (null, "Your user account is not linked to an employee record. Ask HR to link your account via User Management → Invite Employee.");
     }
 

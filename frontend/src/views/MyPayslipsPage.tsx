@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, Download, FileText, RefreshCw } from 'lucide-react';
 import { essApi, type EssPayslipDetail, type EssPayslipLine, type EssPayslipSummary } from '@/src/api/ess';
 import { useLocale } from '@/src/contexts/LocaleContext';
-import { payslipMonthLabel, payslipSections } from '@/src/lib/essPayslip';
+import { payslipLineName, payslipMonthLabel, payslipSections } from '@/src/lib/essPayslip';
 
 const money = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -203,6 +203,7 @@ function LineBlock({ title, lines, totalLabel, total, currency, empty, muted }: 
   empty?: string;
   muted?: boolean;
 }) {
+  const { t, locale } = useLocale();
   return (
     <div className={`rounded-xl border p-3 ${muted ? 'border-dashed border-slate-300 dark:border-white/[0.12]' : 'border-slate-200 dark:border-white/[0.06]'}`}>
       <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">{title}</h3>
@@ -212,7 +213,7 @@ function LineBlock({ title, lines, totalLabel, total, currency, empty, muted }: 
         <dl className="space-y-1 text-sm">
           {lines.map((l, i) => (
             <div key={`${l.name}-${i}`} className="flex justify-between gap-2">
-              <dt className="text-slate-700 dark:text-slate-200">{l.name}</dt>
+              <dt className="text-slate-700 dark:text-slate-200">{payslipLineName(l, locale, t)}</dt>
               <dd className="font-mono tabular-nums text-slate-800 dark:text-slate-100">{money(l.amount)}</dd>
             </div>
           ))}

@@ -586,7 +586,7 @@ public class AttendanceService : IAttendanceService
         return batch;
     }
 
-    public async Task<PagedResult<AttendanceRawEvent>> GetRawEventsAsync(Guid tenantId, DateOnly? from, DateOnly? to, int? employeeId, bool? processed, int page, int pageSize, CancellationToken ct)
+    public async Task<PagedResult<AttendanceRawEvent>> GetRawEventsAsync(Guid tenantId, DateOnly? from, DateOnly? to, int? employeeId, bool? processed, int page, int pageSize, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null)
     {
         var query = _db.AttendanceRawEvents.Where(x => x.TenantId == tenantId);
         if (from is not null)
@@ -599,7 +599,10 @@ public class AttendanceService : IAttendanceService
             var end = to.Value.AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
             query = query.Where(x => x.PunchTimestampUtc < end);
         }
-        if (employeeId is not null) query = query.Where(x => x.EmployeeId == employeeId);
+        // A scoped caller's set (an empty set means nothing). A punch not yet matched to an employee has
+        // no EmployeeId and is outside every set, so only an unrestricted caller sees unmatched punches.
+        if (scopeIds is not null) query = query.Where(x => x.EmployeeId != null && scopeIds.Contains(x.EmployeeId.Value));
+        else if (employeeId is not null) query = query.Where(x => x.EmployeeId == employeeId);
         if (processed is not null) query = query.Where(x => x.IsProcessed == processed);
         var total = await query.CountAsync(ct);
         var items = await query.OrderByDescending(x => x.PunchTimestampUtc).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);

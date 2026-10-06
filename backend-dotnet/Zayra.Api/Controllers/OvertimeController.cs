@@ -125,6 +125,11 @@ public class OvertimeController : ControllerBase
         var tenantId = RequireTenant();
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         if (!scope.CanAccessEmployee(req.EmployeeId)) return Forbid();
+        // Filing for yourself is self-service (ess.write); filing for anyone else is overtime administration
+        // (overtime.write). Data scope alone used to decide, so an ess.read-only login (an HR Assistant, an
+        // Auditor) could file overtime for itself, and an org-scoped login for anyone, with no write key.
+        var forSelf = scope.CallerEmployeeId == req.EmployeeId;
+        if (!(User.HasPermission("overtime.write") || (forSelf && User.HasPermission("ess.write")))) return Forbid();
         var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == req.EmployeeId && !x.IsDeleted, ct);
         if (employee is null) return BadRequest(new { message = "Employee not found." });
         if (req.EndTimeUtc <= req.StartTimeUtc) return BadRequest(new { message = "End time must be after start time." });

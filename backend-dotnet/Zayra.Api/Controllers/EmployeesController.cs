@@ -29,6 +29,8 @@ using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Models;
 
+using Zayra.Api.Infrastructure.Common;
+
 namespace Zayra.Api.Controllers;
 
 [ApiController]
@@ -4861,15 +4863,8 @@ public class EmployeesController : ControllerBase
         return Ok(transfer);
     }
 
-    private async Task<int?> GetCallerEmployeeId(CancellationToken cancellationToken)
-    {
-        var userId = GetUserId();
-        if (userId is null) return null;
-        return await _db.Employees.AsNoTracking()
-            .Where(e => e.TenantId == RequireTenant() && !e.IsDeleted && e.UserAccountId == userId)
-            .Select(e => (int?)e.Id)
-            .FirstOrDefaultAsync(cancellationToken);
-    }
+    private Task<int?> GetCallerEmployeeId(CancellationToken cancellationToken) =>
+        CallerEmployeeResolver.ResolveAsync(_db, User, RequireTenant(), cancellationToken);
 
     // ── Employee draft lifecycle helpers ─────────────────────────────────────────────────────────
 

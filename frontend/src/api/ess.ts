@@ -177,6 +177,8 @@ export interface EssPayslipLine {
   name: string;
   amount: number;
   type: EssPayslipLineType | string;
+  /** The pay component's Arabic name, when the catalogue has one. */
+  nameAr?: string | null;
 }
 
 export interface EssPayslipDetail {
