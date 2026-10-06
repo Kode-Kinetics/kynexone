@@ -60,6 +60,7 @@ public class LeaveBalancesController : ControllerBase
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
             .ToListAsync(ct);
+        await MarkStatutoryEntitlementsAsync(tenantId.Value, items, ct);
 
         return Ok(new PagedResult<EmployeeLeaveBalance>(items, total, page, pageSize));
     }
@@ -79,8 +80,23 @@ public class LeaveBalancesController : ControllerBase
             .Where(b => b.TenantId == tenantId && b.EmployeeId == employeeId && b.Year == year)
             .OrderBy(b => b.LeaveTypeName)
             .ToListAsync(ct);
+        await MarkStatutoryEntitlementsAsync(tenantId.Value, balances, ct);
 
         return Ok(balances);
+    }
+
+    /// <summary>
+    /// KSA statutory event leave (maternity, Hajj, marriage…) is granted by the statute per event, not
+    /// drawn from this balance, so its Available can read negative while a request is pending. Stamp
+    /// the statutory figure on those rows so the screen says "Statutory entitlement" instead.
+    /// </summary>
+    private async Task MarkStatutoryEntitlementsAsync(Guid tenantId, IReadOnlyCollection<EmployeeLeaveBalance> balances, CancellationToken ct)
+    {
+        // One lookup for the whole page: countries and leave types are resolved once, not per employee.
+        var figures = await _leaveService.GetKsaStatutoryEntitlementsAsync(
+            tenantId, balances.Select(b => (b.EmployeeId, b.LeaveTypeId)).Distinct().ToList(), ct);
+        foreach (var b in balances)
+            if (figures.TryGetValue((b.EmployeeId, b.LeaveTypeId), out var days)) b.StatutoryEntitlementDays = days;
     }
 
     [HttpPost("adjust")]

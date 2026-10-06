@@ -49,6 +49,13 @@ public class LeavePolicy : ITenantOwned, ICompanyScoped
     public bool PublicHolidaysIncluded { get; set; }
     public string PayrollImpact { get; set; } = "Full";
     public Guid? ApprovalWorkflowId { get; set; }
+    /// <summary>
+    /// The company's own, explicit choice to grant Hajj leave beyond KSA Labour Law Art. 114's
+    /// eligibility — before two consecutive years of service, or more than once. Off by default, so
+    /// the statute's conditions apply unless a person has deliberately chosen to be more generous.
+    /// Read only for a Hajj leave type; it never shortens or lowers anything.
+    /// </summary>
+    public bool AllowsHajjBeyondStatutoryEligibility { get; set; }
     public string Status { get; set; } = "Draft";
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
@@ -109,6 +116,15 @@ public class EmployeeLeaveBalance : ITenantOwned
     /// the earned-to-date figure instead is a product decision, not an arithmetic one.</para>
     /// </summary>
     public decimal Granted => Math.Max(Entitled, Accrued);
+
+    /// <summary>
+    /// Not stored. Set by the read endpoints for a KSA statutory event leave (maternity, Hajj,
+    /// marriage…): the statutory days per event. Such leave is not drawn from an accrued balance, so
+    /// <see cref="Available"/> can read negative while a request is pending; screens show this figure
+    /// as "Statutory entitlement" instead of a red balance.
+    /// </summary>
+    [System.ComponentModel.DataAnnotations.Schema.NotMapped]
+    public decimal? StatutoryEntitlementDays { get; set; }
 
     /// <summary>
     /// THE definition of a leave balance. Every screen, report, sufficiency check and settlement must
@@ -172,6 +188,24 @@ public class LeaveRequest : ITenantOwned, ICompanyScopedOperational
     public DateTime? SubmittedAtUtc { get; set; }
     public DateTime? DecidedAtUtc { get; set; }
     public DateTime? CancelledAtUtc { get; set; }
+    /// <summary>
+    /// The KSA statutory special leave this request was submitted as (a <c>KsaStatutoryLeaveKind</c>
+    /// name: Maternity, Hajj, Marriage…), or null for any other leave. Stamped at submission, when the
+    /// employee's Saudi entity and the leave type were checked, and read at approval and cancellation
+    /// so a later change of company or leave-type name cannot change how this request is settled.
+    /// </summary>
+    public string? StatutoryLeaveKind { get; set; }
+    /// <summary>
+    /// The date of the event a KSA statutory leave is for (the marriage, the death, the birth), when
+    /// the requester gives one. Requests with an event date are grouped into statutory events by it.
+    /// </summary>
+    public DateOnly? StatutoryEventDate { get; set; }
+    /// <summary>
+    /// The requester's reason for declaring this leave a SEPARATE statutory event from earlier leave
+    /// of the same kind (e.g. a second death in the family). Only for bereavement, sibling bereavement,
+    /// birth and marriage leave; shown to the approver beside the history. Null when not declared.
+    /// </summary>
+    public string? SeparateEventReason { get; set; }
 }
 
 public class LeaveApproval : ITenantOwned
