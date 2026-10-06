@@ -269,11 +269,14 @@ public class RatesController : ControllerBase
     }
 
     /// <summary>Maker-checker activation: a SECOND person approves the pending override. Enforces
-    /// maker ≠ checker on the single most financially/compliance-material write in the design.</summary>
+    /// maker ≠ checker on the single most financially/compliance-material write in the design.
+    /// The checker needs the same key as the maker, payroll.rates.statutory_override. It used to need only
+    /// approvals.decide, which every line Manager, Finance and Payroll Manager holds for ordinary request
+    /// queues, so any of them could switch on a company-wide statutory payroll rate.</summary>
     [HttpPost("statutory/override/{id:guid}/approve")]
     public async Task<IActionResult> ApproveStatutoryOverride(Guid id, CancellationToken ct)
     {
-        if (!HasPermission("approvals.decide")) return Forbid();
+        if (!HasPermission("payroll.rates.statutory_override")) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
         // IgnoreQueryFilters is intentional: system/config read — scope authorised above (or seeder), WHERE re-applies exact tenant+company scope; never reads another tenant.
         var row = await _db.CompanyStatutoryOverrides.IgnoreQueryFilters().FirstOrDefaultAsync(o => o.TenantId == tid && o.Id == id && !o.IsDeleted, ct);
@@ -282,7 +285,8 @@ public class RatesController : ControllerBase
         if (row.Status != PendingApproval) return BadRequest(new { message = $"Override is not pending approval (status={row.Status})." });
 
         var approver = this.GetUserId();
-        if (approver is not null && approver == row.CreatedBy)
+        // An unattributed caller cannot be shown to differ from the maker, so it cannot be the checker.
+        if (approver is null || approver == row.CreatedBy)
             return BadRequest(new { message = "Maker-checker: the approver must be a different person from the creator." });
 
         row.Status = CompanyPolicyStatuses.Active;
