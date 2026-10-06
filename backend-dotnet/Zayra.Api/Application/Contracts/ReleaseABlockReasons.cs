@@ -59,11 +59,11 @@ public static class ReleaseABlockReasons
     public const string EntitlementProposalSameUser = "ENTITLEMENT_PROPOSAL_SAME_USER";
     public const string EntitlementProposalDocumentRequired = "ENTITLEMENT_PROPOSAL_DOCUMENT_REQUIRED";
     public const string EntitlementProposalClosed = "ENTITLEMENT_PROPOSAL_CLOSED";
+
     // R4 review (PR #191)
     public const string RenewalContractStillActive = "RENEWAL_CONTRACT_STILL_ACTIVE";
     public const string RenewalCaseChanged = "RENEWAL_CASE_CHANGED";
     public const string RenewalCaseInProgress = "RENEWAL_CASE_IN_PROGRESS";
-
     private const string HrManager = "HR Manager";
     private const string HrDirector = "HR Director";
     private const string PayrollManager = "Payroll Manager";
@@ -328,6 +328,7 @@ public static class ReleaseABlockReasons
             "سبق تأكيد هذه الباقة المقترحة أو رفضها، أو أن العقد مثبتة باقته بالفعل.",
             "No action needed.",
             "لا يلزم أي إجراء.",
+            HrManager),
         new BlockReason(RenewalContractStillActive,
             "The contract is still in force", "العقد ما زال سارياً",
             "A renewal review can be cancelled only once its contract has ended. While the contract is in force its review must stay visible, because the renewal deadlines keep running.",
