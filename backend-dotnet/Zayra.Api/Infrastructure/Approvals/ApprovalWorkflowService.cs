@@ -80,6 +80,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
 
     public async Task<ApprovalWorkflowDto> CreateWorkflowAsync(Guid tenantId, ApprovalWorkflowRequest request, RequestContext context, CancellationToken cancellationToken)
     {
+        EnsureRoleStepsNameARole(request);
         await EnsureWorkflowCodeUnique(tenantId, request.Code, null, cancellationToken);
         await EnsureScopeUnambiguousAsync(tenantId, request, null, cancellationToken);
         var workflow = new ApprovalWorkflow { TenantId = tenantId };
@@ -94,6 +95,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     {
         var workflow = await _db.ApprovalWorkflows.Include(x => x.Steps).FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (workflow is null) return null;
+        EnsureRoleStepsNameARole(request);
         await EnsureWorkflowCodeUnique(tenantId, request.Code, id, cancellationToken);
         await EnsureScopeUnambiguousAsync(tenantId, request, id, cancellationToken);
         _db.ApprovalWorkflowSteps.RemoveRange(workflow.Steps);
@@ -571,6 +573,25 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         return JawazatApprovalSync.IsJawazat(approval)
             ? await GetRequestAsync(tenantId, approval.Id, context, cancellationToken)
             : (await GetRequestAsync(tenantId, approval.Id, cancellationToken))!;
+    }
+
+    /// <summary>
+    /// A Role step must name a role. A blank or "Any" role made the step decidable by every approvals.decide
+    /// holder (now: every manager.approve holder) in the tenant. New saves are refused; workflows already saved
+    /// that way still load and route, so live requests are not stranded.
+    /// </summary>
+    internal static void EnsureRoleStepsNameARole(ApprovalWorkflowRequest request)
+    {
+        foreach (var step in request.Steps ?? Array.Empty<ApprovalWorkflowStepRequest>())
+        {
+            var type = string.IsNullOrWhiteSpace(step.ApproverType) ? "Role" : step.ApproverType.Trim();
+            if (!type.Equals("Role", StringComparison.OrdinalIgnoreCase)) continue;
+            var role = (step.ApproverRole ?? string.Empty).Trim();
+            if (role.Length == 0 || role.Equals("Any", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    $"Step {step.StepOrder} ('{Clean(step.StepName)}') is a Role step and must name the role that decides it, " +
+                    "for example HR Manager. A blank or \"Any\" role would let any approver in the company decide it.");
+        }
     }
 
     private static void Apply(ApprovalWorkflow workflow, ApprovalWorkflowRequest request, Guid tenantId)

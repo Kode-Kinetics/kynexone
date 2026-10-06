@@ -22,8 +22,11 @@ public sealed class NamedButLockedGateFixTests
         // "...Lifecycle" resolved to loans.policy_manage ("cycle"): HR Director, Finance and Finance Approver were refused.
         { typeof(LoansController), nameof(LoansController.RefreshLoanLifecycle), new[] { "Employee", "Manager", "Recruiter", "Payroll Officer" }, new[] { "HR Director", "Finance", "Finance Approver", "HR Manager", "Admin" } },
         { typeof(LoansController), nameof(LoansController.ReviewLoanLifecycle), new[] { "Finance", "Finance Approver", "Manager", "Payroll Manager" }, new[] { "HR Director", "HR Manager", "Admin" } },
-        // The whole-tenant people export: Payroll Officer and Auditor are dropped from the list, not granted the key.
-        { typeof(EmployeesController), nameof(EmployeesController.Export), new[] { "Payroll Officer", "Auditor", "Manager", "Recruiter" }, new[] { "HR Officer", "HR Manager", "Admin" } },
+        // The whole-tenant people export (owner decision): employees.write only. Compliance Officer, which reached it
+        // through the inferred employees.documents, is closed; Payroll Officer and Auditor are dropped from the list.
+        { typeof(EmployeesController), nameof(EmployeesController.Export), new[] { "Compliance Officer", "Payroll Officer", "Auditor", "Manager", "Recruiter" }, new[] { "HR Officer", "HR Manager", "HR Director", "Admin" } },
+        // Compliance Officer keeps People Search.
+        { typeof(EmployeesController), nameof(EmployeesController.Search), new[] { "Employee" }, new[] { "Compliance Officer", "HR Officer" } },
     };
 
     [Theory]

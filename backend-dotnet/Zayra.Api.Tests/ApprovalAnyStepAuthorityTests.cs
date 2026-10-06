@@ -98,6 +98,42 @@ public class ApprovalAnyStepAuthorityTests
         (await db.Employees.AsNoTracking().SingleAsync(e => e.Id == subjectId)).BankIban.Should().Be("SA1111111111111111111111");
     }
 
+    [Theory]
+    [InlineData("Any", "Role")]
+    [InlineData("any", null)]       // a blank ApproverType is a Role step
+    [InlineData("  ", "Role")]
+    public async Task SavingARoleStepWithABlankOrAnyRole_IsRefused(string role, string? type)
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var request = new ApprovalWorkflowRequest("TRANSFER-ANY", "Transfer", "EmployeeTransferRequest", true,
+            new[] { new ApprovalWorkflowStepRequest(1, "Anyone", role, type) });
+
+        var create = () => Service(db).CreateWorkflowAsync(tenantId, request, Context(tenantId, Guid.NewGuid(), "Admin", new[] { "approvals.manage" }), CancellationToken.None);
+
+        await create.Should().ThrowAsync<InvalidOperationException>().WithMessage("Step 1 ('Anyone') is a Role step and must name the role*");
+        (await db.ApprovalWorkflows.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task UpdatingAnExistingAnyWorkflow_MustNameARole_ButTheSavedWorkflowStillRoutes()
+    {
+        await using var db = CreateDb();
+        var f = await SeedIbanChangeAsync(db, "Any");   // saved before the rule, as live tenants have
+        var workflowId = (await db.ApprovalRequests.SingleAsync()).WorkflowId;
+        var admin = Context(f.TenantId, Guid.NewGuid(), "Admin", new[] { "approvals.manage" });
+
+        var keepAny = () => Service(db).UpdateWorkflowAsync(f.TenantId, workflowId, new ApprovalWorkflowRequest("EMPLOYEE-CHANGE", "Change",
+            nameof(EmployeeChangeRequest), true, new[] { new ApprovalWorkflowStepRequest(1, "Anyone", "Any", "Role") }), admin, CancellationToken.None);
+        await keepAny.Should().ThrowAsync<InvalidOperationException>();
+
+        // The saved "Any" step still loads and its pending request can still be decided by an approver.
+        (await Service(db).GetWorkflowAsync(f.TenantId, workflowId, CancellationToken.None)).Should().NotBeNull();
+        var decided = await Service(db).DecideAsync(f.TenantId, f.ApprovalId, new ApprovalDecisionRequest("Approve", "ok"),
+            Context(f.TenantId, Guid.NewGuid(), "HR Manager", new[] { "approvals.decide", "manager.approve" }), CancellationToken.None);
+        decided!.Status.Should().Be("Approved");
+    }
+
     // ── fixture ──────────────────────────────────────────────────────────────────
 
     private sealed record Fixture(Guid TenantId, Guid ApprovalId, int SubjectId);

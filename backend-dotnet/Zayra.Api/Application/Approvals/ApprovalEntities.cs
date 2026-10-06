@@ -39,7 +39,7 @@ public static class ApprovalEntities
             [nameof(LeaveRequest)] = "submitting a leave request",
             // EmployeesController.RequestChange → IApprovalWorkflowService.CreateRequestAsync.
             [nameof(EmployeeChangeRequest)] = "requesting a governed employee change",
-            // RequisitionsController.Submit → IRecruitmentService.CreateApprovalRequestAsync.
+            // RequisitionsController.Submit → IApprovalWorkflowService.CreateRequestAsync.
             ["ManpowerRequisition"] = "submitting a manpower requisition",
             // TimesheetService.SubmitAsync → IApprovalWorkflowService.CreateRequestAsync.
             [TimesheetConstants.ApprovalEntityName] = "submitting a timesheet",

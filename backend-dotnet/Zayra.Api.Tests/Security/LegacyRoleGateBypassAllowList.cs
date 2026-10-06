@@ -298,7 +298,6 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         ("GET Employees.ExperienceLetter", "HR Director", SeniorHr),
         ("GET Employees.ExpiringDocuments", "Payroll Manager,Finance,Finance Approver,Compliance Officer,Manager,Supervisor,Recruiter,HR Assistant", OpenUnscopedNames),
         ("GET Employees.ExpiringDocuments", "HR Director", SeniorHr),
-        ("GET Employees.Export", "Compliance Officer", OrgReadByDesign),
         ("GET Employees.Export", "HR Director", SeniorHr),
         ("GET Employees.FieldCatalog", "Payroll Manager,Finance,Finance Approver,Compliance Officer,Recruiter,HR Assistant,Auditor", OrgReadByDesign),
         ("GET Employees.FieldCatalog", "Manager,Supervisor", TeamScopedRead),
@@ -726,7 +725,8 @@ public sealed partial class LegacyRoleGateBypassSweepTests
 
     /// <summary>
     /// Roles a gate NAMES that can never pass it (they hold none of its keys), each with a decision for the owner:
-    /// GRANT the key, or DROP the role from the role list. Nothing here grants a permission; this is a to-do list.
+    /// GRANT the key, DROP the role from the role list, or KEEP it as deliberate (with why). Nothing here grants a
+    /// permission; this is a to-do list for the owner.
     /// "GRANT none (prefer explicit gate)" marks a resolver mis-mapping, where an explicit [HasPermission] is the fix.
     /// </summary>
     internal static readonly (string Endpoint, string Roles, string Decision)[] NamedButLocked =
@@ -754,7 +754,7 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         ("POST Applications.Reject", "HR Manager,HR Officer", "GRANT recruitment.approve: owner decision. The gate names these roles for this work but their seeded bundles omit the key."),
         ("POST Applications.ScheduleInterview", "HR Manager,HR Officer", "GRANT recruitment.write: owner decision. The gate names these roles for this work but their seeded bundles omit the key."),
         ("POST Applications.SendOffer", "HR Manager", "GRANT recruitment.write: owner decision. The gate names these roles for this work but their seeded bundles omit the key."),
-        ("POST ApprovalWorkflows.Decide", "Payroll Officer", "DROP Payroll Officer: maker role; it holds approvals.read only by design."),
+        ("POST ApprovalWorkflows.Decide", "Payroll Officer", "KEEP Payroll Officer (deliberate): the bare role holds approvals.read only, and the ManagerPortal access mode adds approvals.decide on purpose. CanDecideRequestAsync then limits them to steps routed to the Payroll Officer role or assigned to them by name. Do not drop."),
         ("POST Assessments.CreateTemplate", "HR Manager", "GRANT recruitment.write: owner decision. The gate names these roles for this work but their seeded bundles omit the key."),
         ("GET Assessments.List", "HR Manager,HR Officer", "GRANT recruitment.read: owner decision. The gate names these roles for this work but their seeded bundles omit the key."),
         ("PATCH Assessments.RecordResult", "HR Manager", "GRANT recruitment.write: owner decision. The gate names these roles for this work but their seeded bundles omit the key."),

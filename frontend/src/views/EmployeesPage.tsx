@@ -237,7 +237,7 @@ interface EmployeeUsageData {
 export function EmployeesPage() {
   const searchParams = useSearchParams();
   const { currencyCode } = useTenantSettings();
-  const { hasPermission, hasRole } = useAuth();
+  const { hasPermission } = useAuth();
   const { companies: accessibleCompanies, selectedCompanyId } = useCompany();
   const [employees, setEmployees] = useState<EmployeeListItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -465,7 +465,8 @@ export function EmployeesPage() {
   const canBulkActivate = hasPermission('employees.approve');
   const canBulkDeactivate = hasPermission('employees.write');
   const canBulkDelete = hasPermission('employees.delete');
-  const canBulkExport = ['Admin', 'HR Manager', 'HR Officer', 'Payroll Officer', 'Auditor'].some((r) => hasRole(r));
+  // Same audience as the API's people export: employees.write.
+  const canBulkExport = hasPermission('employees.write');
 
   // Header select-all checkbox drives "select all on THIS page" (tri-state).
   useEffect(() => {
@@ -1269,8 +1270,8 @@ export function EmployeesPage() {
             <>
               <ImportExportToolbar
                 entityName="Employees"
-                // The whole-tenant people export: the API requires employees.documents.
-                onExport={hasPermission('employees.documents') ? employeesImportExport.export : undefined}
+                // The whole-tenant people export: the API requires employees.write.
+                onExport={hasPermission('employees.write') ? employeesImportExport.export : undefined}
                 onDownloadTemplate={employeesImportExport.template}
                 onImport={async (csv, importKey) => { const r = await employeesApi.import(csv, importKey); await load(); return r; }}
                 onPreview={(csv) => employeesApi.importPreview(csv)}

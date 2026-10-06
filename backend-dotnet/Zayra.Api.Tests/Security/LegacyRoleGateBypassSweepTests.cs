@@ -204,7 +204,8 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         var resolved = listed.Where(x => !currentPairs.Contains(x)).Select(x => $"{x.Endpoint} | {x.Item2}").ToList();
         resolved.Should().BeEmpty("these NamedButLocked entries are resolved; delete them:\n" + string.Join('\n', resolved));
         NamedButLocked.Select(e => (e.Endpoint, e.Decision)).Should().OnlyHaveUniqueItems();
-        NamedButLocked.Should().OnlyContain(e => e.Decision.StartsWith("GRANT ", StringComparison.Ordinal) || e.Decision.StartsWith("DROP ", StringComparison.Ordinal));
+        NamedButLocked.Should().OnlyContain(e => e.Decision.StartsWith("GRANT ", StringComparison.Ordinal)
+            || e.Decision.StartsWith("DROP ", StringComparison.Ordinal) || e.Decision.StartsWith("KEEP ", StringComparison.Ordinal));
     }
 
     [Fact]
