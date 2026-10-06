@@ -9,7 +9,7 @@ using Zayra.Api.Models;
 namespace Zayra.Api.Tests;
 
 /// <summary>
-/// The AddGradeLoanLimits migration itself, on a fresh PostgreSQL 16 built by the real migration chain (the
+/// The AddGradeLoanLimits (20261006000100) and AddGradeNameArAndLoanOffering (20261006000200) migrations themselves, on a fresh PostgreSQL 16 built by the real migration chain (the
 /// shared fixture uses EnsureCreated, which cannot prove the migration). Upgrades a database holding
 /// pre-slice rows, then proves: btree_gist is installed, the EXCLUDE exists and matches the DDL the test
 /// fixture applies, old rows read as unclassified / not grade-limited, the shape CHECKs reject bad cells, and
@@ -19,6 +19,9 @@ namespace Zayra.Api.Tests;
 public sealed class GradeLoanLimitMigrationPostgresTests
 {
     private const string Previous = "20261004191027_AddLoanJournalEvidenceAndJawazatPolicy";
+    /// <summary>The migration immediately before this slice's two (20261006000100, 20261006000200): rolling back to it
+    /// runs exactly their Down() methods. Leave (#176) sorts first, matching production's apply order.</summary>
+    private const string BeforeGradeLimits = "20261005204934_AddKsaStatutoryLeaveFields";
     private const string Tenant = "10000000-0000-0000-0000-0000000000a1";
 
     [Fact]
@@ -95,9 +98,20 @@ public sealed class GradeLoanLimitMigrationPostgresTests
         await db.Database.ExecuteSqlRawAsync("DELETE FROM loan_policies WHERE tenant_id = '" + Tenant + "' AND created_by_offering_switch");
         await db.Database.ExecuteSqlRawAsync("DELETE FROM loan_policies WHERE tenant_id = '" + Tenant + "'");
 
-        var rollback = await Assert.ThrowsAsync<Npgsql.PostgresException>(() => migrator.MigrateAsync(Previous));
+        var rollback = await Assert.ThrowsAsync<Npgsql.PostgresException>(() => migrator.MigrateAsync(BeforeGradeLimits));
         Assert.Equal(Npgsql.PostgresErrorCodes.RaiseException, rollback.SqlState);
         Assert.Equal(2L, await ScalarAsync<long>(db, "SELECT count(*) FROM grade_entitlements"));
+
+        // With the evidence gone, both Down()s run cleanly back to the leave migration, and the slice reapplies.
+        await db.Database.ExecuteSqlRawAsync("DELETE FROM grade_entitlements");
+        await migrator.MigrateAsync(BeforeGradeLimits);
+        Assert.Equal(0L, await ScalarAsync<long>(db, "SELECT count(*) FROM information_schema.tables WHERE table_name = 'grade_entitlements'"));
+        Assert.Equal("20261005204934_AddKsaStatutoryLeaveFields", await ScalarAsync<string>(db,
+            "SELECT \"MigrationId\" FROM \"__EFMigrationsHistory\" ORDER BY \"MigrationId\" DESC LIMIT 1"));
+        await migrator.MigrateAsync();
+        Assert.Equal("20261006000200_AddGradeNameArAndLoanOffering", await ScalarAsync<string>(db,
+            "SELECT \"MigrationId\" FROM \"__EFMigrationsHistory\" ORDER BY \"MigrationId\" DESC LIMIT 1"));
+        Assert.Equal(1L, await ScalarAsync<long>(db, "SELECT count(*) FROM pg_constraint WHERE conname = 'ex_grade_entitlements__no_overlap'"));
     }
 
     /// <summary>

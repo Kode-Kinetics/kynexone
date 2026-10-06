@@ -12,8 +12,8 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Migrations
 {
     [DbContext(typeof(ZayraDbContext))]
-    [Migration("20261005194352_AddGradeLoanLimits")]
-    partial class AddGradeLoanLimits
+    [Migration("20261006000200_AddGradeNameArAndLoanOffering")]
+    partial class AddGradeNameArAndLoanOffering
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -12779,6 +12779,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("name");
 
+                    b.Property<string>("NameAr")
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("name_ar");
+
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
@@ -14771,6 +14776,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("accrual_method");
 
+                    b.Property<bool>("AllowsHajjBeyondStatutoryEligibility")
+                        .HasColumnType("boolean")
+                        .HasColumnName("allows_hajj_beyond_statutory_eligibility");
+
                     b.Property<decimal>("AnnualEntitlementDays")
                         .HasPrecision(6, 2)
                         .HasColumnType("numeric(6,2)")
@@ -15077,6 +15086,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("reason");
 
+                    b.Property<string>("SeparateEventReason")
+                        .HasColumnType("text")
+                        .HasColumnName("separate_event_reason");
+
                     b.Property<string>("RejectionReason")
                         .IsRequired()
                         .HasColumnType("text")
@@ -15094,6 +15107,15 @@ namespace Zayra.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("status");
+
+                    b.Property<DateOnly?>("StatutoryEventDate")
+                        .HasColumnType("date")
+                        .HasColumnName("statutory_event_date");
+
+                    b.Property<string>("StatutoryLeaveKind")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("statutory_leave_kind");
 
                     b.Property<DateTime?>("SubmittedAtUtc")
                         .HasColumnType("timestamp with time zone")
@@ -15792,6 +15814,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("cooldown_months_after_repayment");
 
+                    b.Property<Guid?>("CopiedFromPolicyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("copied_from_policy_id");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -15800,9 +15826,20 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
+                    b.Property<bool>("CreatedByOfferingSwitch")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("created_by_offering_switch");
+
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean")
                         .HasColumnName("is_active");
+
+                    b.Property<bool>("IsOffered")
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_offered");
 
                     b.Property<Guid>("LoanTypeId")
                         .HasColumnType("uuid")
@@ -15861,6 +15898,8 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "CompanyId");
 
+                    b.HasIndex("TenantId", "CopiedFromPolicyId");
+
                     b.HasIndex("TenantId", "LoanTypeId");
 
                     b.HasIndex("TenantId", "CompanyId", "LoanTypeId")
@@ -15871,7 +15910,12 @@ namespace Zayra.Api.Migrations
                         .IsUnique()
                         .HasFilter("company_id IS NOT NULL");
 
-                    b.ToTable("loan_policies", (string)null);
+                    b.ToTable("loan_policies", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_loan_policies__copied_from_only_on_switch", "copied_from_policy_id IS NULL OR created_by_offering_switch");
+
+                            t.HasCheckConstraint("ck_loan_policies__switch_stub_not_offered", "NOT created_by_offering_switch OR NOT is_offered");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.LoanRepayment", b =>
@@ -25842,6 +25886,15 @@ namespace Zayra.Api.Migrations
                         .HasPrincipalKey("TenantId", "Id")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.LoanPolicy", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.LoanPolicy", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "CopiedFromPolicyId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.LoanRepayment", b =>

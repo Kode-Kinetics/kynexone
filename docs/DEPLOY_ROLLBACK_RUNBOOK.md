@@ -93,7 +93,7 @@ harmful.
   `job_applications`, `offer_letters`. No pre-existing column or row is touched; the only data lost
   is the new company assignments (re-derivable by `CompanyScopeBackfill` on the next boot).
 
-- **Grade loan limits (`AddGradeLoanLimits`, `AddGradeNameArAndLoanOffering`).** Rolling the *app* back to
+- **Grade loan limits (`20261006000100_AddGradeLoanLimits`, `20261006000200_AddGradeNameArAndLoanOffering`).** Rolling the *app* back to
   a release before grade limits leaves the columns in place but **stops enforcing them**: loan types with
   "Limit this loan type by grade" on, and companies that switched a loan type off, accept requests on policy
   rules alone until the release is restored. Take a Neon branch before rolling back, and list what is
@@ -101,7 +101,7 @@ harmful.
   `SELECT company_id, loan_type_id FROM loan_policies WHERE is_active AND NOT is_offered`. Both
   `Down()` migrations refuse to run while those rows exist.
 
-- **Before deploying `AddGradeNameArAndLoanOffering` (owner runs this; agents never touch production).** The
+- **Before deploying `20261006000200_AddGradeNameArAndLoanOffering` (owner runs this; agents never touch production).** The
   migration adds `ck_loan_types__interest_free` as `NOT VALID`: legacy rows survive, but any edit to an
   interest-bearing loan type is refused from then on. List them first, read-only:
 
