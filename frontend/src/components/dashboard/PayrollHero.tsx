@@ -138,7 +138,7 @@ export function PayrollHero({ data, payrollEnabled, dense = false, currency = nu
             </dl>
           </div>
           {ran.length >= 2 && trendCurrency ? (
-            <HeroTrend points={series.map((p) => ({ ...p, label: f.period(p.label, 'short') }))} format={(v) => f.moneyCompact(v, null)} unit={trendCurrency} label={t('Net payroll by month ({currency})', { currency: trendCurrency })} height={dense ? 172 : 190} />
+            <HeroTrend points={series.map((p) => ({ ...p, label: f.period(p.label, 'short') }))} format={(v) => f.moneyCompact(v, null)} unit={trendCurrency} label={t('Net payroll by month, {currency}', { currency: trendCurrency })} height={dense ? 172 : 190} />
           ) : (
             <div className="flex flex-col gap-2 pt-1">
               <GrossSplit net={run.totalNet} deductions={run.totalDeductions} employer={run.employerContributions ?? null} format={money} />

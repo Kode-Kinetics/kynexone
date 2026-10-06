@@ -85,7 +85,7 @@ export function AttendanceHeatmap({ data }: { data: DashboardFull }) {
                 {d.cells.map((c) => {
                   const h = heatStyle(c.rate);
                   const l = dayLabel(c.date, f);
-                  const when = c.date === today ? t('{date}, so far', { date: l.full }) : l.full;
+                  const when = c.date === today ? t('{date} (so far today)', { date: l.full }) : l.full;
                   const cellLabel = c.rate == null
                     ? t('{department}, {date}: nobody rostered', { department: d.name, date: when })
                     : t('{department}, {date}: {rate}, {attended} of {rostered} attended', { department: d.name, date: when, rate: f.percent(c.rate), attended: c.attended, rostered: c.rostered });

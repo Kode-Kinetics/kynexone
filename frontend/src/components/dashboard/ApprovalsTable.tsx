@@ -104,7 +104,7 @@ export function ApprovalsTable({ queue, pending, loading, compact, dense = false
               {overCount > 0 ? `${anyDue
                 ? t('{count, plural, one {# is past its due date.} other {# are past their due date.}}', { count: overCount })
                 : t('{count, plural, one {# has waited over 3 days.} other {# have waited over 3 days.}}', { count: overCount })} ` : ''}
-              {t('Oldest waiting: {age}.', { age: ageLabel(rows[0].ageH, t) })}
+              {t('Oldest waiting {age}.', { age: ageLabel(rows[0].ageH, t) })}
             </p>
           )}
         </div>

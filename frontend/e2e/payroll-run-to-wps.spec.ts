@@ -327,7 +327,7 @@ test.describe('Payroll — run to WPS file', () => {
 
         // POSITIVE: the run advanced and the chain records the maker's level.
         await expect(
-          approvalCard(maker).getByText('Pending Finance Review', { exact: true }),
+          approvalCard(maker).getByText('Pending finance review', { exact: true }),
           "the maker's approval must advance the run to Pending Finance Review",
         ).toBeVisible({ timeout: 30_000 });
         await expect(
@@ -385,7 +385,7 @@ test.describe('Payroll — run to WPS file', () => {
         const financeRunId = await selectRun(finance, 'Select payroll run to approve', period);
         expect(financeRunId, 'both personas must be acting on the same run').toBe(runId);
 
-        await expect(approvalCard(finance).getByText('Pending Finance Review', { exact: true })).toBeVisible();
+        await expect(approvalCard(finance).getByText('Pending finance review', { exact: true })).toBeVisible();
         // Role-discriminating positive control: send-back is rendered only for Finance/Admin on a
         // PendingFinanceReview run, and was proved absent for the maker in step 2.
         await expect(
@@ -630,8 +630,8 @@ test.describe('Payroll — run to WPS file', () => {
         await expect(filedCard).toBeVisible({ timeout: 30_000 });
         await expect(
           filedCard,
-          'a batch with a generated wage file must read as File Generated',
-        ).toContainText('File Generated');
+          'a batch with a generated wage file must read as File generated',
+        ).toContainText('File generated');
         await expect(
           filedCard,
           "the filed batch must still show the run's net-pay total",
