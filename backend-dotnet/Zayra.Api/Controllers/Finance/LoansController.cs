@@ -53,11 +53,22 @@ public partial class LoansController : ControllerBase
         if (req.RepaymentFrequency is not ("Monthly" or "Weekly" or "BiWeekly" or "Quarterly"))
             return BadRequest("Repayment frequency must be Monthly, Weekly, BiWeekly, or Quarterly.");
         if (!req.IsInterestFree || req.InterestRate != 0)
-            return BadRequest("This workflow supports interest-free loans only.");
+            return BadRequest(new { error = LoanEligibilityCodes.InterestNotPermitted, message = LoanEligibilityCodes.InterestNotPermittedText });
         if (req.MaxInstallments is < 1 or > 600 || req.MinServiceMonths is < 0 or > 600 || req.MaxAmount < 0 || decimal.Round(req.MaxAmount, 2) != req.MaxAmount || req.MaxAmount > 999999999999.99m)
             return BadRequest("Set 1–600 maximum installments and a nonnegative two-decimal maximum amount.");
+        if (string.IsNullOrWhiteSpace(req.Code) || req.Code.Trim().Length > 50)
+            return BadRequest(new { error = "invalid_code", message = "Enter a loan type code of up to 50 characters." });
         if (await _db.LoanTypes.AnyAsync(x => x.TenantId == tid && x.Code == req.Code && !x.IsDeleted, ct))
             return Conflict("Loan type code already exists.");
+        // Codes that differ only in case or punctuation ("Personal", "PERSONAL", "per-sonal") would share one
+        // grade-limit code (LOAN_<CODE>) and so one grade grid. Refuse them here, in plain language.
+        var facilityCode = GradeLoanLimitResolver.FacilityCodeFor(req.Code);
+        var similar = (await _db.LoanTypes.AsNoTracking().Where(x => x.TenantId == tid && !x.IsDeleted)
+                .Select(x => new { x.Code, x.NameEn, x.EntitlementComponentCode }).ToListAsync(ct))
+            .FirstOrDefault(x => GradeLoanLimitResolver.FacilityCodeFor(x.Code) == facilityCode || x.EntitlementComponentCode == facilityCode);
+        if (similar != null)
+            return Conflict(new { error = "loan_type_code_too_similar",
+                message = $"The code {req.Code.Trim()} is too similar to the existing loan type {similar.NameEn} ({similar.Code}). Choose a code that differs by more than case or punctuation." });
         var t = new LoanType
         {
             TenantId = tid, Code = req.Code, NameEn = req.NameEn, NameAr = req.NameAr ?? string.Empty,
@@ -234,13 +245,25 @@ public partial class LoansController : ControllerBase
         if (req.RepaymentMethod == "PayrollDeduction" && loanType.RepaymentFrequency != "Monthly")
             return BadRequest("Payroll deduction supports monthly loans. Use separate repayments for this frequency.");
         if (!loanType.IsInterestFree || loanType.InterestRate != 0)
-            return BadRequest("Interest-bearing loans require a configured interest schedule and are not supported by this workflow.");
+            return BadRequest(new { error = LoanEligibilityCodes.InterestNotPermitted, message = LoanEligibilityCodes.InterestNotPermittedText });
+        // Evaluated inside the tenant's loan-creation lock (finance.loan-create), so the grade's outstanding
+        // total includes every application committed before this one and none can be counted twice.
         var assessment = await new LoanEligibilityService(_db).EvaluateAsync(tid, employee, loanType,
             req.RequestedAmount, req.RequestedInstallments, req.RepaymentMethod, ct: ct);
         var policy = JsonSerializer.Deserialize<LoanPolicy>(assessment.PolicySnapshotJson)!;
-        var exceptionCodes = new[] { "MinService", "Probation", "AmountLimit", "ConcurrentLoans", "Cooldown", "SalaryAffordability", "ContractType" };
+        // Grade and legal codes are deliberately absent: an exception request can never waive them.
+        var exceptionCodes = LoanLifecycleService.ExceptionCodes;
         if (!assessment.Eligible && !(req.RequestPolicyException && policy.AllowExceptions && assessment.Codes.All(exceptionCodes.Contains)))
-            return BadRequest(new { error = "loan_ineligible", assessment.Reasons, assessment.Codes, assessment.MaxAvailableAmount });
+        {
+            if (assessment.Codes.Contains(GradeLimitCodes.NotConfigured))
+            {
+                await new GradeLoanLimitResolver(_db).NotifyLimitNotConfiguredAsync(tid, employee, loanType, ct);
+                await _db.SaveChangesAsync(ct);
+            }
+            return BadRequest(new { error = "loan_ineligible", assessment.Reasons, assessment.Codes, assessment.MaxAvailableAmount,
+                gradeLimit = GradeLimitDto(assessment.GradeLimit), assessment.Available, assessment.BindingLimit, limitBreakdowns = assessment.Limits,
+                currency = await GlAccountResolver.ResolveCurrencyAsync(_db, tid, employee.CompanyId, ct) });
+        }
 
         var loanNumber = $"LN-{DateTime.UtcNow.Year}-{Guid.NewGuid().ToString("N")[..10].ToUpperInvariant()}";
 
@@ -258,6 +281,7 @@ public partial class LoansController : ControllerBase
             CreatedBy = uid, PolicyId = assessment.PolicyId, PolicyVersion = assessment.PolicyVersion,
             PolicySnapshotJson = assessment.PolicySnapshotJson, EligibilitySnapshotJson = JsonSerializer.Serialize(assessment),
         };
+        LoanEligibilityService.StampGradeWitness(loan, assessment);
         _db.EmployeeLoans.Add(loan);
 
         _db.LoanApprovals.Add(new LoanApproval { TenantId = tid, LoanId = loan.Id, StepOrder = 1, ApproverRole = "HR Manager" });
@@ -430,8 +454,11 @@ public partial class LoansController : ControllerBase
             if (employee == null || type == null) return Conflict("Employee or loan type requires HR review.");
             var assessment = await new LoanEligibilityService(_db).EvaluateAsync(tid, employee, type, amount, installmentCount,
                 loan.RepaymentMethod, loan.Id, loan.PolicySnapshotJson, ct);
-            if (!assessment.Eligible) return BadRequest(new { error = "loan_ineligible", assessment.Reasons, assessment.Codes });
+            if (!assessment.Eligible) return BadRequest(new { error = "loan_ineligible", assessment.Reasons, assessment.Codes,
+                gradeLimit = GradeLimitDto(assessment.GradeLimit), assessment.Available, assessment.BindingLimit, limitBreakdowns = assessment.Limits });
             loan.EligibilitySnapshotJson = JsonSerializer.Serialize(assessment);
+            // The approver's re-check is the decision of record: refresh the grade witnesses to what it saw.
+            LoanEligibilityService.StampGradeWitness(loan, assessment);
         }
 
         var oldStatus = approval.Status;

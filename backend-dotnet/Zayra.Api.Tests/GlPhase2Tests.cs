@@ -396,12 +396,16 @@ public class GlPhase2Tests
         // Pending (not Active) → resolution still returns the platform default.
         (await resolver.ResolveDecimalAsync(tid, company, "SAU", "KSA-mainland", "gosi.saudi_employee_rate", ef)).Should().Be(0.09m);
 
+        // approvals.decide (every line Manager holds it) is not the key: the checker needs the override key.
+        var genericApprover = RatesCtrl(db, tid, new[] { "approvals.decide" }, uid: Guid.NewGuid());
+        (await genericApprover.ApproveStatutoryOverride(id, CancellationToken.None)).Should().BeOfType<ForbidResult>();
+
         // Maker cannot approve their own override.
-        var selfApprove = RatesCtrl(db, tid, new[] { "approvals.decide" }, uid: maker);
+        var selfApprove = RatesCtrl(db, tid, new[] { "payroll.rates.statutory_override" }, uid: maker);
         (await selfApprove.ApproveStatutoryOverride(id, CancellationToken.None)).Should().BeOfType<BadRequestObjectResult>();
 
         // A second person approves → Active.
-        var checker = RatesCtrl(db, tid, new[] { "approvals.decide" }, uid: Guid.NewGuid());
+        var checker = RatesCtrl(db, tid, new[] { "payroll.rates.statutory_override" }, uid: Guid.NewGuid());
         (await checker.ApproveStatutoryOverride(id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
 
         // Now the company override wins over the platform default.

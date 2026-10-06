@@ -54,7 +54,19 @@ function formatDate(dateStr: string) {
 
 // ── Leave balance bar ────────────────────────────────────────────────────────
 
-function LeaveBar({ name, available, entitled }: { name: string; available: number; entitled: number }) {
+function LeaveBar({ name, available, entitled, statutoryDays }: { name: string; available: number; entitled: number; statutoryDays?: number | null }) {
+  if (statutoryDays != null) {
+    // Saudi statutory event leave is granted by law per event, not drawn from a balance, so its
+    // "available" can read negative while a request is pending. Show the entitlement instead.
+    return (
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between text-xs">
+          <span className="font-medium text-slate-700 dark:text-slate-200">{name}</span>
+          <span className="tabular-nums text-emerald-700 dark:text-emerald-300">Statutory entitlement: {statutoryDays} days per event</span>
+        </div>
+      </div>
+    );
+  }
   const pct = entitled > 0 ? Math.round((available / entitled) * 100) : 0;
   const color = pct >= 60 ? 'bg-emerald-500' : pct >= 30 ? 'bg-amber-500' : 'bg-rose-500';
   return (
@@ -546,9 +558,11 @@ export function EmployeeSelfServicePage() {
   }
 
   const attendance = dashboard.attendanceToday;
-  const primaryLeave = dashboard.leaveBalances.find((b) =>
+  // The headline balance is an accruing one; a Saudi statutory event leave has no balance to headline.
+  const accruing = dashboard.leaveBalances.filter((b) => b.statutoryEntitlementDays == null);
+  const primaryLeave = accruing.find((b) =>
     b.leaveTypeName.toLowerCase().includes('annual') || b.leaveTypeName.toLowerCase().includes('casual')
-  ) ?? dashboard.leaveBalances[0];
+  ) ?? accruing[0];
   const firstName = (dashboard.profile.fullName ?? user?.fullName ?? 'there').split(' ')[0];
   const ps = dashboard.payrollSnapshot;
   const perf = dashboard.performanceSnapshot;
@@ -845,6 +859,7 @@ export function EmployeeSelfServicePage() {
                   name={b.leaveTypeName}
                   available={b.available}
                   entitled={b.entitled ?? b.available}
+                  statutoryDays={b.statutoryEntitlementDays}
                 />
               ))}
             </div>

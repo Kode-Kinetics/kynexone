@@ -663,6 +663,58 @@ public class SetupAssistantTemplateTests
         unpaid.AnnualEntitlementDays.Should().Be(0m);
     }
 
+    // ── KSA statutory special leave (Arts. 113, 114, 151, 160) ────────────────
+
+    [Fact]
+    public async Task SaudiDraft_CarriesEveryStatutoryLeave_AtItsStatutoryLength()
+    {
+        // Maternity used to be drafted at 70 days, the "10 weeks" Art. 151 gave before Royal Decree
+        // M/44. From 19 Feb 2025 it is 12 weeks; the others were missing from the draft entirely.
+        var result = await Generate(Profile(country: "SA"), statutory: KsaRules());
+
+        var types = result.Draft.LeaveTypes.ToDictionary(t => t.Code);
+        var policies = result.Draft.LeavePolicies.ToDictionary(p => p.LeaveTypeCode);
+        foreach (var (code, days) in new[]
+                 {
+                     ("MAT", 84), ("PAT", 3), ("MARRIAGE", 5), ("BEREAVEMENT", 5), ("HAJJ", 10), ("IDDAH", 130),
+                 })
+        {
+            types.Should().ContainKey(code);
+            types[code].MaxConsecutiveDays.Should().Be(days, code);
+            types[code].IsPaid.Should().BeTrue(code);
+            policies[code].AnnualEntitlementDays.Should().Be(days, code);
+            policies[code].PayrollImpact.Should().Be("Full", code);
+        }
+
+        // 12 weeks and four months ten days are calendar spans; the day-count leaves stay on working days.
+        policies["MAT"].WeekendsIncluded.Should().BeTrue();
+        policies["MAT"].PublicHolidaysIncluded.Should().BeTrue();
+        policies["IDDAH"].WeekendsIncluded.Should().BeTrue();
+        policies["MARRIAGE"].WeekendsIncluded.Should().BeFalse();
+
+        result.Notes.Should().Contain(n => n.Contains("Art. 151") && n.Contains("84"));
+        result.Notes.Should().Contain(n => n.Contains("Exam leave (Art. 115)"));
+    }
+
+    [Fact]
+    public async Task SaudiDraft_TakesTheStatutoryLengthFromThePlatformRule()
+    {
+        var rules = new StubStatutory(("leave.annual_base_days", "21"), ("leave.maternity_days", "91"));
+        var result = await Generate(Profile(country: "SA"), statutory: rules);
+
+        result.Draft.LeaveTypes.Single(t => t.Code == "MAT").MaxConsecutiveDays.Should().Be(91);
+    }
+
+    [Fact]
+    public async Task NonSaudiDraft_IsNotGivenTheSaudiStatutoryLeave()
+    {
+        var result = await Generate(Profile(country: "GB", currency: "GBP"));
+
+        result.Draft.LeaveTypes.Single(t => t.Code == "MAT").MaxConsecutiveDays.Should().Be(70,
+            "the Saudi floor must not reach another jurisdiction; this figure is unchanged for it");
+        result.Draft.LeaveTypes.Select(t => t.Code).Should().NotContain(new[] { "MARRIAGE", "BEREAVEMENT", "IDDAH", "HAJJ" });
+    }
+
     [Fact]
     public async Task LeavePolicies_AreSkippedWhenLeaveTypesAre()
     {

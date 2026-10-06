@@ -20,6 +20,7 @@ public sealed class ComplianceReminderWorker : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<ComplianceReminderWorker> _log;
     private readonly WorkerHeartbeatReporter? _heartbeat;
+    private readonly SweepOutcomeReporter _outcomes;
 
     public ComplianceReminderWorker(IServiceScopeFactory scopeFactory, ILogger<ComplianceReminderWorker> log,
         WorkerHeartbeatReporter? heartbeat = null)
@@ -27,6 +28,7 @@ public sealed class ComplianceReminderWorker : BackgroundService
         _scopeFactory = scopeFactory;
         _log = log;
         _heartbeat = heartbeat;
+        _outcomes = new SweepOutcomeReporter(ProductionWorkerNames.ComplianceReminders, log, heartbeat);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -40,7 +42,10 @@ public sealed class ComplianceReminderWorker : BackgroundService
             try
             {
                 await DrainOnceAsync(stoppingToken);
-                if (_heartbeat is not null) await _heartbeat.SucceededAsync(ProductionWorkerNames.ComplianceReminders, stoppingToken);
+                // Only a sweep that held its lease to the end is a success. A skipped one (another
+                // instance holds the lease) or an interrupted one (lease lost part-way) is reported as
+                // such, never as Healthy.
+                await _outcomes.ReportAsync(LastSweepOutcome, stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
             catch (Exception ex)
@@ -56,12 +61,31 @@ public sealed class ComplianceReminderWorker : BackgroundService
         }
     }
 
+    /// <summary>
+    /// What the last <see cref="DrainOnceAsync"/> did: completed, skipped (another instance held the
+    /// sweep lease) or stopped part-way because the lease was lost.
+    /// </summary>
+    public SweepOutcome LastSweepOutcome { get; private set; }
+
     /// <summary>Exposed for focused tests and operational one-shot execution.</summary>
     public async Task<int> DrainOnceAsync(CancellationToken ct)
     {
+        LastSweepOutcome = SweepOutcome.Completed;
         await using var scope = _scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
         var notifications = scope.ServiceProvider.GetRequiredService<INotificationService>();
+
+        // One instance per sweep across the cluster. The outbox dedupe key already refuses a second
+        // delivery, but two concurrent sweeps would still both resolve, render and race every due row.
+        // Skipping is not a failure (the instance holding the lease is doing the work), but it is not
+        // this instance's success either; ExecuteAsync reports it as Skipped.
+        await using var lease = await SingletonWorkerLease.TryAcquireAsync(db, ProductionWorkerNames.ComplianceReminders, ct);
+        if (lease is null)
+        {
+            LastSweepOutcome = SweepOutcome.Skipped;
+            return 0;
+        }
+
         var now = DateTime.UtcNow;
 
         // Background services run in system scope, so every query pins TenantId again downstream.
@@ -75,7 +99,7 @@ public sealed class ComplianceReminderWorker : BackgroundService
         var completed = 0;
         foreach (var reminder in due)
         {
-            if (ct.IsCancellationRequested) break;
+            if (ct.IsCancellationRequested || lease.IsLost) break;
 
             // EmployeeId is the stable Employee.PublicId. Never infer a subject from EmployeeName.
             var employee = await db.Employees.AsNoTracking()
@@ -127,7 +151,11 @@ public sealed class ComplianceReminderWorker : BackgroundService
             completed++;
         }
 
+        // Rows already enqueued are recorded either way: their outbox rows exist, and a later sweep
+        // would only find them by outbox evidence anyway.
         if (completed > 0) await db.SaveChangesAsync(ct);
+        // The keepalive notices a dead lease only every 30s, so check once more before calling it clean.
+        if (lease.IsLost || !await lease.IsStillHeldAsync(ct)) LastSweepOutcome = SweepOutcome.LeaseLost;
         return completed;
     }
 }

@@ -8,6 +8,7 @@ using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -44,6 +45,9 @@ public class AttendanceController : ControllerBase
         return Ok(new { date = summary.Date, totalActive = summary.ActiveEmployees, present = summary.Present, absent = summary.Absent, onLeave = 0, late = summary.Late });
     }
 
+    /// <summary>Device secrets (header values, secret parameters, URL credentials) are shown only to a caller who may configure devices.</summary>
+    private bool CanConfigureDevices => User.HasPermission(AttendanceDeviceDto.ConfigurePermission);
+
     [HttpGet("devices")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
     public async Task<PagedResult<AttendanceDeviceDto>> Devices([FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken ct = default)
@@ -51,34 +55,38 @@ public class AttendanceController : ControllerBase
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
         var result = await _attendance.GetDevicesAsync(RequireTenant(), page, pageSize, ct);
-        return new PagedResult<AttendanceDeviceDto>(result.Items.Select(AttendanceDeviceDto.Project).ToList(), result.Total, result.Page, result.PageSize);
+        return new PagedResult<AttendanceDeviceDto>(result.Items.Select(d => AttendanceDeviceDto.Project(d, CanConfigureDevices)).ToList(), result.Total, result.Page, result.PageSize);
     }
 
     [HttpGet("devices/{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
     public async Task<ActionResult<AttendanceDeviceDto>> Device(Guid id, CancellationToken ct) =>
-        await _attendance.GetDeviceAsync(RequireTenant(), id, ct) is { } device ? Ok(AttendanceDeviceDto.Project(device)) : NotFound();
+        await _attendance.GetDeviceAsync(RequireTenant(), id, ct) is { } device ? Ok(AttendanceDeviceDto.Project(device, CanConfigureDevices)) : NotFound();
 
+    // Role-gate bypass sweep (LegacyRoleGateBypassSweepTests): a device and its key are a channel that imports punches for any employee into payroll. These resolved to
+    // attendance.write, which a Supervisor holds; attendance.bulk_import is the punch-import key the named HR roles hold.
     [HttpPost("devices")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("attendance.bulk_import")]
     public async Task<ActionResult<AttendanceDeviceDto>> CreateDevice(AttendanceDeviceRequest request, CancellationToken ct)
     {
         try
         {
             var device = await _attendance.CreateDeviceAsync(RequireTenant(), request, Context(), ct);
-            return Created($"/api/attendance/devices/{device.Id}", AttendanceDeviceDto.Project(device));
+            return Created($"/api/attendance/devices/{device.Id}", AttendanceDeviceDto.Project(device, CanConfigureDevices));
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
     [HttpPut("devices/{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("attendance.bulk_import")]
     public async Task<ActionResult<AttendanceDeviceDto>> UpdateDevice(Guid id, AttendanceDeviceRequest request, CancellationToken ct)
     {
         try
         {
             var device = await _attendance.UpdateDeviceAsync(RequireTenant(), id, request, Context(), ct);
-            return device is null ? NotFound() : Ok(AttendanceDeviceDto.Project(device));
+            return device is null ? NotFound() : Ok(AttendanceDeviceDto.Project(device, CanConfigureDevices));
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
@@ -91,12 +99,14 @@ public class AttendanceController : ControllerBase
     [HttpPost("devices/{id:guid}/test-connection")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: DeviceId, SyncMethod, Status, StartedAtUtc, CompletedAtUtc, RawEventsReceived, RawEventsProcessed, ErrorMessage. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
+    [HasPermission("attendance.bulk_import")]
     public async Task<ActionResult<AttendanceDeviceSyncLog>> TestConnection(Guid id, CancellationToken ct) =>
         await _attendance.TestConnectionAsync(RequireTenant(), id, Context(), ct) is { } log ? Ok(log) : NotFound();
 
     [HttpPost("devices/{id:guid}/sync")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: DeviceId, SyncMethod, Status, StartedAtUtc, CompletedAtUtc, RawEventsReceived, RawEventsProcessed, ErrorMessage. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
+    [HasPermission("attendance.bulk_import")]
     public async Task<ActionResult<AttendanceDeviceSyncLog>> Sync(Guid id, CancellationToken ct) =>
         await _attendance.SyncDeviceAsync(RequireTenant(), id, Context(), ct) is { } log ? Ok(log) : NotFound();
 
@@ -104,11 +114,12 @@ public class AttendanceController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: DeviceId, SyncMethod, Status, StartedAtUtc, CompletedAtUtc, RawEventsReceived, RawEventsProcessed, ErrorMessage. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public Task<IReadOnlyCollection<AttendanceDeviceSyncLog>> SyncLogs(Guid id, CancellationToken ct) =>
-        _attendance.GetSyncLogsAsync(RequireTenant(), id, ct);
+        _attendance.GetSyncLogsAsync(RequireTenant(), id, ct, CanConfigureDevices);
 
     /// <summary>Generate (or rotate) a device API key. Plaintext is returned ONCE; only its hash is stored.</summary>
     [HttpPost("devices/{id:guid}/generate-key")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("attendance.bulk_import")]
     public async Task<ActionResult<DeviceKeyResult>> GenerateDeviceKey(Guid id, CancellationToken ct) =>
         await _attendance.GenerateDeviceKeyAsync(RequireTenant(), id, Context(), ct) is { } r ? Ok(r) : NotFound();
 
@@ -241,9 +252,14 @@ public class AttendanceController : ControllerBase
             RequestedByUserId: GetUserId(),
             IpAddress: HttpContext.Connection.RemoteIpAddress?.ToString(),
             UserAgent: Request.Headers.UserAgent.ToString());
-        var key = string.IsNullOrWhiteSpace(idempotencyKey)
-            ? Infrastructure.Attendance.AttendanceProcessingJobHandler.DefaultIdempotencyKey(payload)
-            : "client:" + idempotencyKey.Trim();
+        // A caller with a restricted data scope (a Mobile-mode employee, a Supervisor) gets ONE active job per
+        // employee: a fresh Idempotency-Key or date range per request would otherwise let them queue jobs
+        // without limit. A later request returns the queued/running job until it finishes.
+        var key = !scope.IsUnrestricted
+            ? $"scoped:{request.EmployeeId}:{GetUserId()}"
+            : string.IsNullOrWhiteSpace(idempotencyKey)
+                ? Infrastructure.Attendance.AttendanceProcessingJobHandler.DefaultIdempotencyKey(payload)
+                : "client:" + idempotencyKey.Trim();
 
         var result = await jobs.EnqueueAsync(tenantId, Infrastructure.Attendance.AttendanceProcessingJobHandler.JobType,
             key, payload, GetUserId(), ct);
@@ -319,6 +335,10 @@ public class AttendanceController : ControllerBase
 
     [HttpPost("regularization/{id:guid}/approve")]
     [Authorize(Roles = "Admin,HR Director,HR Manager,Manager,Supervisor")]
+    // The resolver maps "approve"/"reject" on Attendance to attendance.lock, which the named line Manager and
+    // Supervisor do not hold, so they were refused their own team's regularizations. A line manager decides with
+    // manager.approve; HR keeps attendance.lock. The body's data-scope check is unchanged.
+    [HasPermission("attendance.lock", "manager.approve")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: WorkDate, RequestType, correction timestamps, free-text Reason, Status. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public async Task<ActionResult<AttendanceRegularizationRequest>> ApproveRegularization(Guid id, RegularizationDecisionRequest request, CancellationToken ct)
     {
@@ -340,6 +360,7 @@ public class AttendanceController : ControllerBase
 
     [HttpPost("regularization/{id:guid}/reject")]
     [Authorize(Roles = "Admin,HR Director,HR Manager,Manager,Supervisor")]
+    [HasPermission("attendance.lock", "manager.approve")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: WorkDate, RequestType, correction timestamps, free-text Reason, Status. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public async Task<ActionResult<AttendanceRegularizationRequest>> RejectRegularization(Guid id, RegularizationDecisionRequest request, CancellationToken ct)
     {
@@ -426,7 +447,7 @@ public class AttendanceController : ControllerBase
     [HttpGet("reports/device-sync")]
     [Authorize(Roles = "Admin,HR Director,HR Manager,HR Officer,Auditor")]
     public Task<IReadOnlyCollection<AttendanceDeviceSyncDto>> ReportDeviceSync(CancellationToken ct) =>
-        _attendance.DeviceSyncReportAsync(RequireTenant(), ct);
+        _attendance.DeviceSyncReportAsync(RequireTenant(), ct, CanConfigureDevices);
 
     [HttpGet("ai/insights")]
     [Authorize(Roles = "Admin,HR Director,HR Manager")]

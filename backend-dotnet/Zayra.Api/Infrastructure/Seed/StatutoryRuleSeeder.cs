@@ -433,6 +433,80 @@ public static class StatutoryRuleSeeder
             + "employee relative to statute, which is the safe direction to be wrong in, and because it matches "
             + "the base the existing unpaid-leave deduction already uses. Move to 'wage' on a written opinion."));
 
+        // ── KSA Arts. 113 / 114 / 151 / 160 — statutory special leave ──────────
+        // Fixed-span entitlements, each a FLOOR. Read by KsaStatutorySpecialLeave.ResolveFloorAsync
+        // with tenantId null, so a tenant row cannot lower them; KsaSpecialLeaveDefaults holds the same
+        // figures as the fallback for an unseeded database.
+        // Sources (fetched 2026-10-05): the amended Arts. 113 and 151 from
+        // hrsd.gov.sa/sites/default/files/2025-03/Amendments%20to%20Labor%20Law%20Articles.pdf; the
+        // unamended Arts. 114 and 160 from hrsd.gov.sa/sites/default/files/2023-02/Labor.pdf.
+        // Royal Decree M/44 is in force from 2025-02-19 (effM44). Where it changed a figure, the old row
+        // ends at effM44 (EffectiveTo is exclusive) and a new row starts there, so a leave that started
+        // before the amendment still resolves to the figure in force when it started.
+        var effM44 = new DateTime(2025, 2, 19, 0, 0, 0, DateTimeKind.Utc);
+        list.Add(RuleUntil(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.maternity_days", "70", "decimal", eff07, effM44,
+            "[CERT] KSA Art.151(1) before Royal Decree M/44: \"fully paid maternity leave for a period of 10 weeks\" "
+            + "(70 days). Superseded from 2025-02-19."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.maternity_days", "84", "decimal", effM44,
+            "[CERT] KSA Art.151(1) as amended by Royal Decree M/44 (in force 2025-02-19): \"a fully paid maternity "
+            + "leave of (twelve) weeks, of which the six weeks following childbirth are mandatory\" — 84 calendar days. "
+            + "A FLOOR. If childbirth is later than expected and fewer than six weeks remain, the shortfall is unpaid "
+            + "leave, extendable by one unpaid month; that extension is not part of this figure. [COUNSEL] A maternity "
+            + "leave already in progress on 2025-02-19 is given the amended 84 days (the more favourable of the figures "
+            + "in force on its first and last day); M/44 has no transitional provision, so confirm this reading."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.paternity_days", "3", "decimal", eff07,
+            "[CERT] KSA Art.113: three days fully paid on the birth of a child. Royal Decree M/44 (2025-02-19) kept "
+            + "the three days and added that they are taken within seven days of the birth (not yet enforced)."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.marriage_days", "5", "decimal", eff07,
+            "[CERT] KSA Art.113: five days fully paid upon the worker's marriage. Unchanged by Royal Decree M/44."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.bereavement_days", "5", "decimal", eff07,
+            "[CERT] KSA Art.113: five days fully paid on the death of a spouse, an ascendant or a descendant. "
+            + "Royal Decree M/44 added that the days run from the date of the incident."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.bereavement_sibling_days", "3", "decimal", effM44,
+            "[CERT] KSA Art.113 as amended by Royal Decree M/44 (in force 2025-02-19): three days fully paid on the "
+            + "death of a brother or sister. There was no such entitlement before that date."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.hajj_min_days", "10", "decimal", eff07,
+            "[CERT] KSA Art.114: Hajj leave of \"not less than 10 days and not more than 15 days, including Eid "
+            + "Al-Adha holiday\", paid, once in the worker's service. The 10 is the FLOOR."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.hajj_max_days", "15", "decimal", eff07,
+            "[CERT] KSA Art.114: the statutory upper bound of Hajj leave. Recorded, not enforced: an employer may "
+            + "lawfully grant more."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.hajj_min_service_years", "2", "decimal", eff07,
+            "[CERT] KSA Art.114: eligibility requires \"at least two consecutive years of service with the employer\", "
+            + "and the leave is granted once in the worker's service if Hajj was not performed before. Recorded, NOT "
+            + "YET ENFORCED by the leave engine — the approver must check both conditions."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.iddah_muslim_days", "130", "decimal", eff07,
+            "[COUNSEL] KSA Art.160(1): a Muslim female worker whose husband dies is entitled to iddah leave with full "
+            + "pay \"for a period of not less than four months and 10 days starting from date of death\"; if pregnant "
+            + "it may be extended without pay until delivery. Expressed as 130 calendar days; four Gregorian months and "
+            + "ten days is 130–133 days depending on the months spanned, so confirm the counting basis."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.event_date_max_lead_days", "30", "decimal", eff07,
+            "[COUNSEL] How many days before a bereavement, sibling-bereavement, birth or marriage leave starts the "
+            + "event itself may be. Bounds the event date an employee gives (and so a declared separate event). NOT a "
+            + "figure in the Labour Law: Art. 113 counts these leaves from the date of the incident and the birth leave "
+            + "within seven days of it, but names no outer limit. 30 is a product default — counsel must confirm it."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.event_date_max_lead_days.paternity", "7", "decimal", effM44,
+            "[COUNSEL] Birth (paternity) leave's own event-date limit, read before the general 30-day one: Art. 113 as "
+            + "amended by Royal Decree M/44 (in force 2025-02-19) has the three days taken \"within seven days\" of the "
+            + "birth. A birth date more than 7 days before the leave starts is refused. Confirm whether the seven days "
+            + "bind the start of the leave (implemented) or its last day."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "leave.iddah_non_muslim_days", "15", "decimal", eff07,
+            "[CERT] KSA Art.160(2): a non-Muslim female worker whose husband dies is entitled to fifteen days with "
+            + "full pay."));
+
         // ── S1/A1 + A8 — KSA EOSB wage base and service period ────────────────
         // Art. 84 M/51 awards on the LAST WAGE; Art. 2 defines wage as "the basic wage plus all other
         // due increments". The statutory FLOOR (basic + housing) is compiled into KsaEndOfServiceCalculator
