@@ -873,9 +873,10 @@ public sealed partial class MigrationImportController : ControllerBase
         var item = await _db.EmployeeContracts.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.ContractNumber == contractNumber && !x.IsDeleted, ct);
         var created = item is null;
         // Release A: a term under renewal review is changed only by the renewal itself, never by a re-import.
-        if (!created && await _db.ContractRenewalCases.AnyAsync(c => c.TenantId == tenantId && c.ExpiringContractId == item!.Id && c.ClosedAt == null, ct))
+        // The review belongs to the TERM: any version of it (an amendment carries the review) is guarded the same way.
+        if (!created && await Zayra.Api.Infrastructure.Contracts.RenewalTermVersions.HasOpenReviewAsync(_db, tenantId, item!, ct))
             throw new InvalidOperationException(
-                $"Contract '{contractNumber}' has an open renewal review. Finish or cancel the renewal before re-importing it.");
+                $"Contract '{contractNumber}' has an open renewal review. Finish the renewal review before re-importing this contract.");
         var previousStatus = item?.Status;
         item ??= new EmployeeContract { TenantId = tenantId, ContractNumber = contractNumber, CompanyId = employee.CompanyId };
         item.EmployeeId = employee.PublicId;

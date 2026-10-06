@@ -12,21 +12,25 @@ namespace Zayra.Api.Infrastructure.Contracts;
 public sealed record RenewalCarryDecision(ContractRenewalCase? Case, string? RefusalCode, string? RefusalEn, string? RefusalAr, bool Extends);
 
 /// <summary>
-/// Supersede carries the case (R4 re-review P1-2, CTO decision). A renewal review belongs to the TERM, so amending an
-/// Active term while its review is open moves the review onto the new version in the same transaction:
+/// Supersede carries the case (R4 re-review P1-2, CTO decision; timing per re-verification P2). A renewal review belongs
+/// to the TERM. Amending an Active term while its review is open is checked at Supersede (<see cref="DecideAsync"/>), and
+/// the review moves onto the new version only when that version is ACTIVATED (<see cref="CarryOnActivationAsync"/>, from
+/// the activation hook) — an unsigned draft changes nothing on the review, the radar or the reconciliation:
 /// <list type="bullet">
-/// <item>An amendment that does not extend the end date keeps the review's state and options; its deadlines and Next
-///   line are re-computed from the new version, and the move is audited.</item>
-/// <item>An amendment that extends the end date is a renewal decision taken outside the review — the chain rule marks it
-///   unconfirmed (<see cref="ChainGapReasons.ExtendsTerm"/>) — so the review keeps its state but loses its options until
-///   HR confirms the history ("Contract history not confirmed"). The database fixes a case's state transitions, and no
-///   move back to NeedsConfirmation exists, so this is how "needs confirmation" is expressed for a case already open.
-///   Refused once an action has been chosen (RENEWAL_CASE_IN_PROGRESS).</item>
-/// <item>A new contract that starts after the term ends, or makes it indefinite, is not an amendment: it is the renewal
-///   itself, which the review decides. Refused while the review is open.</item>
+/// <item>Same end date: the review keeps its state and options; deadlines and Next are re-computed (still anchored on the
+///   term's first version), and the move is audited.</item>
+/// <item>Later end date: an extension is a renewal decision taken outside the review (the chain rule marks it unconfirmed,
+///   <see cref="ChainGapReasons.ExtendsTerm"/>), so the review keeps its state but loses its options until HR confirms the
+///   history. The database fixes a case's transitions and has no move back to NeedsConfirmation, so this is how "needs
+///   confirmation" is expressed for a case already open.</item>
+/// <item>Earlier end date: options and deadlines are re-derived from the shortened term; a notice date that has already
+///   passed withdraws non-renewal (RENEWAL_NOTICE_DATE_PASSED), shown alike on the radar, the drawer and the options.</item>
+/// <item>Changing the end date once an action has been chosen is refused at Supersede (RENEWAL_CASE_IN_PROGRESS); a new
+///   contract that starts after the term ends, or makes it indefinite, is the renewal itself and is refused while the
+///   review is open.</item>
 /// </list>
-/// The case keeps the contract it was opened on (its identity is fixed); readers follow the term to its current version
-/// through <see cref="RenewalTermVersions"/>. Slice R4.
+/// The case keeps the contract it was opened on (its identity is fixed); readers follow the term to its current
+/// activated version through <see cref="RenewalTermVersions"/>. Slice R4.
 /// </summary>
 public static class RenewalCaseCarry
 {
@@ -35,12 +39,7 @@ public static class RenewalCaseCarry
     public static async Task<RenewalCarryDecision> DecideAsync(ZayraDbContext db, Guid tenantId, EmployeeContract old, DateOnly newStart,
         DateOnly? newEnd, CancellationToken ct)
     {
-        var open = await db.ContractRenewalCases
-            .Where(c => c.TenantId == tenantId && c.EmployeeId == old.EmployeeId && c.ClosedAt == null)
-            .ToListAsync(ct);
-        if (open.Count == 0) return new RenewalCarryDecision(null, null, null, null, false);
-        var versions = await RenewalTermVersions.LoadAsync(db, tenantId, old.EmployeeId, ct);
-        var review = open.FirstOrDefault(c => c.ExpiringContractId == old.Id || versions.SameTerm(c.ExpiringContractId, old.Id));
+        var review = await OpenReviewOfTermAsync(db, tenantId, old, ct);
         if (review is null) return new RenewalCarryDecision(null, null, null, null, false);
 
         if (old.EndDate is not { } oldEnd || newStart > oldEnd || newEnd is null)
@@ -49,20 +48,50 @@ public static class RenewalCaseCarry
                 "لهذا العقد مراجعة تجديد مفتوحة. العقد الجديد الذي يبدأ بعد انتهاء هذا العقد أو التحويل إلى عقد غير محدد المدة تقرره مراجعة التجديد نفسها. عدّل العقد ضمن مدته الحالية، أو أكمل المراجعة.",
                 false);
         var extends = newEnd.Value > oldEnd;
-        if (extends && !IsUndecided(review))
-            return new RenewalCarryDecision(review, ReleaseABlockReasons.RenewalCaseInProgress, null, null, true);
+        if (newEnd.Value != oldEnd && !IsUndecided(review))
+            return new RenewalCarryDecision(review, ReleaseABlockReasons.RenewalCaseInProgress, null, null, extends);
         return new RenewalCarryDecision(review, null, null, null, extends);
     }
 
-    /// <summary>Moves the review onto <paramref name="newVersion"/> (stages only; the caller saves with the supersede).</summary>
-    public static void Carry(ZayraDbContext db, RenewalCarryDecision decision, EmployeeContract newVersion, RenewalRuleSet rules, DateOnly today,
-        Guid? actorUserId, string actorName)
+    /// <summary>
+    /// The activation hook's half: <paramref name="activated"/> (an amendment) became the term in force, so its open review
+    /// is re-baselined onto it. Stages only (the activation's SaveChanges commits it). Returns whether a review moved.
+    /// </summary>
+    public static async Task<bool> CarryOnActivationAsync(ZayraDbContext db, EmployeeContract activated, DateOnly today, CancellationToken ct)
     {
-        if (decision.Case is null) return;
-        RenewalCaseOpener.Rebaseline(db, decision.Case, newVersion, rules, today,
-            decision.Extends ? "AmendmentExtendsTerm" : "AmendedVersion", actorUserId, actorName,
-            decision.Extends ? RebaselineActions.Clear : RebaselineActions.Keep,
-            new { carriedToVersion = newVersion.Id, newVersion.ContractNumber, reason = decision.Extends ? ChainGapReasons.ExtendsTerm : null });
+        if (activated.EndDate is not { } end) return false;
+        var review = await OpenReviewOfTermAsync(db, activated.TenantId, activated, ct);
+        if (review is null || review.ExpiringContractId == activated.Id) return false;
+        var versions = await RenewalTermVersions.LoadAsync(db, activated.TenantId, activated.EmployeeId, ct);
+        var rules = await RenewalRuleSet.LoadAsync(db, activated.TenantId, today, ct);
+        var mode = end == review.ExpiringEndDate ? RebaselineActions.Keep
+            : end > review.ExpiringEndDate ? RebaselineActions.Clear
+            : RebaselineActions.Derive;
+        // Supersede refuses a change of end date once an action is chosen; one chosen while the amendment waited for
+        // activation keeps its options (only the dates move) and is flagged for HR in the audit row.
+        var decided = !IsUndecided(review);
+        // The move itself is always on record; the re-baseline adds its own row when it changed anything.
+        db.ComplianceAuditLogs.Add(RenewalCaseOpener.Audit(activated.TenantId, review, "CarriedToVersion", null, "kynexone:amendment-activated",
+            new { fromVersion = versions.Current(review.ExpiringContractId)?.Id ?? review.ExpiringContractId, toVersion = activated.Id,
+                activated.ContractNumber, mode = mode.ToString(), needsReview = decided && mode != RebaselineActions.Keep }));
+        RenewalCaseOpener.Rebaseline(db, review, activated, rules, today,
+            mode switch { RebaselineActions.Keep => "AmendedVersion", RebaselineActions.Clear => "AmendmentExtendsTerm", _ => "AmendmentShortensTerm" },
+            null, "kynexone:amendment-activated", decided ? RebaselineActions.Keep : mode,
+            new { carriedToVersion = activated.Id, activated.ContractNumber, reason = mode == RebaselineActions.Clear ? ChainGapReasons.ExtendsTerm : null,
+                needsReview = decided && mode != RebaselineActions.Keep },
+            versions.TermStartedOn(activated.Id));
+        return true;
+    }
+
+    private static async Task<ContractRenewalCase?> OpenReviewOfTermAsync(ZayraDbContext db, Guid tenantId, EmployeeContract contract, CancellationToken ct)
+    {
+        var open = await db.ContractRenewalCases
+            .Where(c => c.TenantId == tenantId && c.EmployeeId == contract.EmployeeId && c.ClosedAt == null)
+            .ToListAsync(ct);
+        if (open.Count == 0) return null;
+        var versions = await RenewalTermVersions.LoadAsync(db, tenantId, contract.EmployeeId, ct);
+        return open.FirstOrDefault(c => c.ExpiringContractId == contract.Id || versions.SameTerm(c.ExpiringContractId, contract.Id))
+               ?? (contract.PreviousVersionId is { } prev ? open.FirstOrDefault(c => versions.SameTerm(c.ExpiringContractId, prev)) : null);
     }
 
     private static bool IsUndecided(ContractRenewalCase c) =>

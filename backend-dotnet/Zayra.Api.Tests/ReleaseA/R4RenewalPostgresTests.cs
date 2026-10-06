@@ -246,9 +246,27 @@ public sealed class R4RenewalPostgresTests(PostgresFixture fx)
             var review = await db.ContractRenewalCases.IgnoreQueryFilters().SingleAsync(c => c.TenantId == t.Tenant);
             (review.State, review.ClosedAt, review.ExpiringContractId).Should().Be((RenewalStates.Open, (DateTime?)null, t.Contract));
         }
-        // The next daily run neither cancels the review (its first version is Superseded) nor opens a second one.
+        // While the amendment is a draft, the daily run neither cancels the review (its first version shows Superseded)
+        // nor opens a second one.
+        await RunJobAsync(sp, t.Tenant, "carry-day-2-draft");
         await using (var db = fx.CreateDb())
-            await db.Database.ExecuteSqlRawAsync("UPDATE employee_contracts SET status = 'Active' WHERE id = {0}", newVersion.Id);
+            (await db.ContractRenewalCases.IgnoreQueryFilters().SingleAsync(c => c.TenantId == t.Tenant)).State.Should().Be(RenewalStates.Open);
+
+        // Activated through the real endpoint (UpdateStatus with the Release A hooks): the review is carried, under the
+        // real transition guard, and the next run still finds exactly one open review.
+        await using (var db = fx.CreateDb())
+        {
+            var dispatcher = new ContractTermLifecycleDispatcher(
+                [new ContractChainStamper(db, Microsoft.Extensions.Logging.Abstractions.NullLogger<ContractChainStamper>.Instance, new FixedClock(Today))],
+                new TenantModuleService(db, new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions())));
+            var contracts = new Controllers.Compliance.ContractsController(db, dispatcher) { ControllerContext = ControllerCtx(t.Tenant) };
+            (await contracts.UpdateStatus(newVersion.Id, new Controllers.Compliance.UpdateContractStatusRequest("PendingApproval", null), default))
+                .Should().BeOfType<Microsoft.AspNetCore.Mvc.OkObjectResult>();
+            (await contracts.UpdateStatus(newVersion.Id, new Controllers.Compliance.UpdateContractStatusRequest("Active", "HR Lead"), default))
+                .Should().BeOfType<Microsoft.AspNetCore.Mvc.OkObjectResult>();
+        }
+        await using (var db = fx.CreateDb())
+            (await AuditAsync(db, t.Tenant, "CarriedToVersion")).Should().Be(1);
         await RunJobAsync(sp, t.Tenant, "carry-day-2");
         await using (var db = fx.CreateDb())
         {

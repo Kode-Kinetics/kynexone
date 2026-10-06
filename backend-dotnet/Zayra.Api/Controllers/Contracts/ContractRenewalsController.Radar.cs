@@ -22,7 +22,8 @@ public sealed record RenewalOpenNowRequest(Guid? CompanyId);
 /// <summary>
 /// POST chain/confirm body: HR states the term's place in the chain (T2). <paramref name="RenewedFromContractId"/> is the
 /// term this one renews when it is on file; <paramref name="RenewalNumber"/> counts renewals before this term (0 = the
-/// original), including any made before the system held the contracts.
+/// original), including any made before the system held the contracts. <paramref name="AcknowledgeContradiction"/> is HR's
+/// explicit "I've checked" when the history contradicts the nearest earlier history HR already recorded.
 /// </summary>
 public sealed record ChainConfirmRequest(
     Guid? RenewedFromContractId,
@@ -30,7 +31,8 @@ public sealed record ChainConfirmRequest(
     string WorkerNationalityClass,
     bool AutoRenew,
     short? NonRenewalNoticeDays,
-    short RenewalNumber);
+    short RenewalNumber,
+    bool AcknowledgeContradiction = false);
 
 /// <summary>One term in an employee's contract history, as the chain drawer lists it.</summary>
 public sealed record ChainTermDto(
@@ -163,8 +165,31 @@ public sealed partial class ContractRenewalsController
                                 "يوجد عقد آخر مسجل بالفعل على أنه تجديد لذلك العقد.", StatusCodes.Status409Conflict);
                     }
 
+                    // The nearest earlier history HR already recorded must agree with this one (same chain start, a higher
+                    // renewal number for a later term) — or HR says explicitly that it has checked the contradiction.
+                    var recorded = terms.Where(t => t.Id != contract.Id && t.ChainSource == ChainSources.Recorded && t.StartDate < contract.StartDate
+                                                    && t.RenewalNumber is not null && t.ChainStartedOn is not null)
+                        .OrderByDescending(t => t.StartDate).FirstOrDefault();
+                    if (recorded is not null && !req.AcknowledgeContradiction)
+                    {
+                        var minimum = recorded.RenewalNumber!.Value + (versions.SameTerm(recorded.Id, contract.Id) ? 0 : 1);
+                        if (req.ChainStartedOn != recorded.ChainStartedOn || req.RenewalNumber < minimum)
+                            return StatusCode(StatusCodes.Status409Conflict, new
+                            {
+                                error = "chain_contradicts_recorded_history",
+                                message = $"This contradicts the history already recorded for {recorded.ContractNumber}: renewal #{recorded.RenewalNumber}, "
+                                          + $"chain from {recorded.ChainStartedOn:yyyy-MM-dd}. Check the signed contracts, then confirm again with \"I've checked\".",
+                                messageAr = $"يتعارض هذا مع السجل المؤكد سابقاً للعقد {recorded.ContractNumber}: التجديد رقم {recorded.RenewalNumber}، "
+                                            + $"وبداية السلسلة {recorded.ChainStartedOn:yyyy-MM-dd}. راجع العقود الموقعة، ثم أكّد مرة أخرى مع اختيار \"تحققت من ذلك\".",
+                                recorded = new { recorded.Id, recorded.ContractNumber, recorded.RenewalNumber, recorded.ChainStartedOn },
+                            });
+                    }
+
+                    string Sig(EmployeeContract t) => string.Join("|", t.RenewedFromContractId, t.RenewalNumber, t.ChainStartedOn, t.ChainSource,
+                        t.WorkerNationalityClass, t.AutoRenew, t.NonRenewalNoticeDays);
                     var before = new { contract.RenewedFromContractId, contract.RenewalNumber, contract.ChainStartedOn, contract.WorkerNationalityClass,
                         contract.AutoRenew, contract.NonRenewalNoticeDays, contract.ChainSource };
+                    var signatures = terms.ToDictionary(t => t.Id, Sig);
                     // Clear the later Derived stamps first so the recorded history is what they are derived from.
                     foreach (var d in descendants) ContractChainLinker.ClearDerived(d);
                     if (req.RenewedFromContractId is { } claimedPrevious)
@@ -177,7 +202,6 @@ public sealed partial class ContractRenewalsController
                     contract.WorkerNationalityClass = req.WorkerNationalityClass;
                     contract.AutoRenew = req.AutoRenew;
                     contract.NonRenewalNoticeDays = req.NonRenewalNoticeDays;
-                    contract.UpdatedAtUtc = DateTime.UtcNow;
 
                     var rules = await RenewalRuleSet.LoadAsync(_db, tenantId, today, ct);
                     var stamps = await ContractChainCensus.LinkEmployeeAsync(_db, tenantId, target.EmployeeId, terms, rules, ct);
@@ -186,23 +210,32 @@ public sealed partial class ContractRenewalsController
                     {
                         if (stamps.TryGetValue(d.Id, out var stamp)) ContractChainLinker.Apply(d, stamp);
                         if (d.WorkerNationalityClass is null) d.WorkerNationalityClass = contract.WorkerNationalityClass;
-                        d.UpdatedAtUtc = DateTime.UtcNow;
-                        rederived.Add(new { d.Id, d.ContractNumber, d.RenewalNumber, d.ChainStartedOn });
                     }
-                    _db.ComplianceAuditLogs.Add(new ComplianceAuditLog
+                    // Only what actually changed is touched and audited: re-confirming the same history writes nothing.
+                    var changed = false;
+                    foreach (var t in terms.Where(t => Sig(t) != signatures[t.Id]))
                     {
-                        TenantId = tenantId, EntityType = "Contract", EntityId = contract.Id.ToString(), EmployeeId = contract.EmployeeId,
-                        Action = "ChainConfirmed", PerformedByUserId = CurrentUserId(), PerformedByName = ActorName(),
-                        MetadataJson = JsonSerializer.Serialize(new { before, after = req, rederived }),
-                    });
+                        t.UpdatedAtUtc = DateTime.UtcNow;
+                        changed = true;
+                        if (t.Id != contract.Id) rederived.Add(new { t.Id, t.ContractNumber, t.RenewalNumber, t.ChainStartedOn });
+                    }
+                    if (changed)
+                        _db.ComplianceAuditLogs.Add(new ComplianceAuditLog
+                        {
+                            TenantId = tenantId, EntityType = "Contract", EntityId = contract.Id.ToString(), EmployeeId = contract.EmployeeId,
+                            Action = "ChainConfirmed", PerformedByUserId = CurrentUserId(), PerformedByName = ActorName(),
+                            MetadataJson = JsonSerializer.Serialize(new { before, after = req, rederived, acknowledgedContradiction = req.AcknowledgeContradiction }),
+                        });
                     // Every open review of an affected term — including one still waiting in NeedsConfirmation — is
                     // re-baselined on its term's CURRENT version (T2 when its history is now confirmed).
                     foreach (var c in affectedCases)
                     {
                         var currentId = versions.Current(c.ExpiringContractId)?.Id ?? c.ExpiringContractId;
                         if (terms.FirstOrDefault(t => t.Id == currentId) is not { } current) continue;
-                        RenewalCaseOpener.Rebaseline(_db, c, current, rules, today,
-                            versions.SameTerm(c.ExpiringContractId, contract.Id) ? "ChainConfirmed" : "EarlierTermConfirmed", CurrentUserId(), ActorName());
+                        if (RenewalCaseOpener.Rebaseline(_db, c, current, rules, today,
+                                versions.SameTerm(c.ExpiringContractId, contract.Id) ? "ChainConfirmed" : "EarlierTermConfirmed", CurrentUserId(), ActorName(),
+                                termStartedOn: versions.TermStartedOn(current.Id)))
+                            changed = true;
                     }
                     await _db.SaveChangesAsync(ct);
                     return null;
@@ -255,8 +288,10 @@ public sealed partial class ContractRenewalsController
                 // Held from NeedsConfirmation while HR confirmed the history: T2 now, as its own row change in this
                 // transaction (the database checks each move separately).
                 if (c.State != RenewalStates.NeedsConfirmation) return;
+                var currentId = (await RenewalTermVersions.LoadAsync(_db, c.TenantId, c.EmployeeId, token)).Current(c.ExpiringContractId)?.Id
+                                ?? c.ExpiringContractId;
                 var contract = await _db.EmployeeContracts.AsNoTracking()
-                    .FirstOrDefaultAsync(x => x.TenantId == c.TenantId && x.Id == c.ExpiringContractId, token);
+                    .FirstOrDefaultAsync(x => x.TenantId == c.TenantId && x.Id == currentId, token);
                 if (contract is null || !AllowedActionsDeriver.IsChainConfirmed(contract) || c.AllowedActions.Length == 0) return;
                 var t2 = RenewalCaseTransitions.ChainConfirmed(c);
                 _db.ComplianceAuditLogs.Add(RenewalCaseOpener.Audit(c.TenantId, c, "Confirmed", CurrentUserId(), ActorName(),
@@ -280,8 +315,9 @@ public sealed partial class ContractRenewalsController
             async (c, token) =>
             {
                 // The term's CURRENT version decides (an amendment carries the review).
-                var current = (await RenewalTermVersions.LoadAsync(_db, c.TenantId, c.EmployeeId, token)).Current(c.ExpiringContractId);
-                return current?.IsDeleted == false && current.Status == "Active"
+                var termVersions = await RenewalTermVersions.LoadAsync(_db, c.TenantId, c.EmployeeId, token);
+                var current = termVersions.Current(c.ExpiringContractId);
+                return current is not null && termVersions.InForce(current.Id)
                     ? Refuse(StatusCodes.Status409Conflict, ReleaseABlockReasons.RenewalContractStillActive)
                     : current?.IsDeleted == false && current.Status == "Expired"
                         ? Refuse(StatusCodes.Status409Conflict, ReleaseABlockReasons.RenewalHoldoverPending)
@@ -384,7 +420,10 @@ public sealed partial class ContractRenewalsController
                 .Where(c => c.TenantId == tenantId && c.EmployeeId == contract.EmployeeId).ToListAsync(ct))
             .Where(c => versions.SameTerm(c.ExpiringContractId, contractId))
             .OrderBy(c => c.ClosedAt != null).ThenByDescending(c => c.OpenedAt).FirstOrDefault();
-        var view = RenewalCaseReadModel.Clone(contract, renewal?.WorkerNationalityClass ?? contract.WorkerNationalityClass ?? employeeClass);
+        // Anchored on the term's first version: an amendment does not shorten the term or reset the Art. 55 count.
+        var view = RenewalCaseOpener.Anchored(
+            RenewalCaseReadModel.Clone(contract, renewal?.WorkerNationalityClass ?? contract.WorkerNationalityClass ?? employeeClass),
+            versions.TermStartedOn(contract.Id));
 
         IReadOnlyList<string> actions = [];
         IReadOnlyList<string> blocks = [];

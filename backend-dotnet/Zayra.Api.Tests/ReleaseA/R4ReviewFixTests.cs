@@ -306,7 +306,10 @@ public class R4ReviewFixTests
             ("T0", (short?)2, (DateOnly?)new DateOnly(2022, 1, 1), ChainSources.Recorded),
             ("T1", (short?)3, (DateOnly?)new DateOnly(2022, 1, 1), ChainSources.Derived),
             ("T2", (short?)4, (DateOnly?)new DateOnly(2022, 1, 1), ChainSources.Derived));
-        (await db.ComplianceAuditLogs.CountAsync(a => a.Action == "Rebaselined")).Should().Be(1);
+        // T2's review already offered exactly Convert / Non-renew (threshold either way): nothing changed, so no
+        // re-baseline row — only the confirmation itself is on record.
+        (await db.ComplianceAuditLogs.CountAsync(a => a.Action == "Rebaselined")).Should().Be(0);
+        (await db.ComplianceAuditLogs.CountAsync(a => a.Action == "ChainConfirmed")).Should().Be(1);
 
         // Once T2's review has an action chosen, the history underneath it cannot be changed.
         var review = await db.ContractRenewalCases.SingleAsync();

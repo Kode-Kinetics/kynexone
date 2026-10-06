@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Entitlements;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
@@ -20,14 +21,37 @@ public sealed class ContractChainStamper : IContractTermLifecycle
 {
     private readonly ZayraDbContext _db;
     private readonly ILogger<ContractChainStamper> _log;
+    private readonly ITenantClock? _clock;
 
-    public ContractChainStamper(ZayraDbContext db, ILogger<ContractChainStamper> log)
+    /// <param name="clock">Tenant-local today for the review re-baseline (always injected by DI; optional only so
+    /// direct constructions in tests compile — they then use the UTC date).</param>
+    public ContractChainStamper(ZayraDbContext db, ILogger<ContractChainStamper> log, ITenantClock? clock = null)
     {
         _db = db;
         _log = log;
+        _clock = clock;
     }
 
     public async Task OnActivatedAsync(EmployeeContract contract, CancellationToken ct)
+    {
+        await StampAsync(contract, ct);
+        // An activated amendment carries its term's open review onto itself (RenewalCaseCarry).
+        try
+        {
+            var today = _clock is not null ? await _clock.TodayAsync(contract.TenantId, ct) : DateOnly.FromDateTime(DateTime.UtcNow);
+            await RenewalCaseCarry.CarryOnActivationAsync(_db, contract, today, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Renewal review not carried onto activated contract {ContractId}; the daily job re-baselines it.", contract.Id);
+        }
+    }
+
+    private async Task StampAsync(EmployeeContract contract, CancellationToken ct)
     {
         try
         {

@@ -92,7 +92,8 @@ public sealed class RenewalCaseJobHandler : IBackgroundJobHandler
         foreach (var c in open)
         {
             if (versions.Current(c.ExpiringContractId) is not { } contract) continue;
-            if (contract.IsDeleted || EndedStatuses.Contains(contract.Status))
+            // Superseded by an amendment still waiting to be activated is NOT ended: the old version stays in force.
+            if (contract.IsDeleted || (EndedStatuses.Contains(contract.Status) && !versions.InForce(contract.Id)))
             {
                 if (await context.RunItemAsync($"reconcile:{c.Id:N}:ended",
                         itemCt => CancelForEndedContractAsync(context, c.Id, c.EmployeeId, itemCt)))
@@ -194,6 +195,7 @@ public sealed class RenewalCaseJobHandler : IBackgroundJobHandler
             .FirstOrDefaultAsync(x => x.TenantId == context.TenantId && x.Id == currentVersionId, ct);
         if (contract?.EndDate is null) return;
         var rules = await RenewalRuleSet.LoadAsync(db, context.TenantId, today, ct);
-        RenewalCaseOpener.Rebaseline(db, c, contract, rules, today, why, null, SystemActor);
+        var versions = await RenewalTermVersions.LoadAsync(db, context.TenantId, c.EmployeeId, ct);
+        RenewalCaseOpener.Rebaseline(db, c, contract, rules, today, why, null, SystemActor, termStartedOn: versions.TermStartedOn(contract.Id));
     }
 }

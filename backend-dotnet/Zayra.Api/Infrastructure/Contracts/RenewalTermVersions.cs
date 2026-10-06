@@ -43,6 +43,18 @@ public sealed class RenewalTermVersions
 
     public TermVersionRow? Find(Guid id) => _byId.GetValueOrDefault(id);
 
+    /// <summary>Whether any version of <paramref name="contract"/>'s term has an open renewal review.</summary>
+    public static async Task<bool> HasOpenReviewAsync(ZayraDbContext db, Guid tenantId, EmployeeContract contract, CancellationToken ct)
+    {
+        var open = await db.ContractRenewalCases.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.EmployeeId == contract.EmployeeId && c.ClosedAt == null)
+            .Select(c => c.ExpiringContractId).ToListAsync(ct);
+        if (open.Count == 0) return false;
+        if (open.Contains(contract.Id)) return true;
+        var versions = await LoadAsync(db, tenantId, contract.EmployeeId, ct);
+        return open.Any(id => versions.SameTerm(id, contract.Id));
+    }
+
     /// <summary>The first version of the term <paramref name="id"/> belongs to.</summary>
     public Guid Root(Guid id)
     {
@@ -53,18 +65,40 @@ public sealed class RenewalTermVersions
         return current;
     }
 
-    /// <summary>The latest, not-deleted version of the term <paramref name="id"/> belongs to (itself when never amended).</summary>
+    /// <summary>
+    /// The latest ACTIVATED, not-deleted version of the term <paramref name="id"/> belongs to (itself when never amended).
+    /// A drafted amendment (Draft / PendingApproval) is not the term in force until it is activated: until then the
+    /// review, the radar and the reconciliation stay on the version that was in force (R4 re-verification P2).
+    /// </summary>
     public TermVersionRow? Current(Guid id)
     {
         if (!_byId.TryGetValue(id, out var row)) return null;
         var seen = new HashSet<Guid> { id };
         while (true)
         {
-            var next = _children[row.Id].Where(c => !c.IsDeleted && seen.Add(c.Id)).OrderByDescending(c => c.Version).FirstOrDefault();
+            var next = _children[row.Id].Where(c => !c.IsDeleted && WasActivated(c.Status) && seen.Add(c.Id))
+                .OrderByDescending(c => c.Version).FirstOrDefault();
             if (next is null) return row;
             row = next;
         }
     }
+
+    /// <summary>An amendment of this version has been drafted but not activated yet (the radar's "amendment drafted" note).</summary>
+    public bool HasPendingAmendment(Guid id) =>
+        Current(id) is { } current && _children[current.Id].Any(c => !c.IsDeleted && !WasActivated(c.Status));
+
+    /// <summary>
+    /// The version is the term in force: Active, or Superseded only by an amendment still waiting to be activated (the
+    /// old version stays in force until its replacement takes effect).
+    /// </summary>
+    public bool InForce(Guid id) =>
+        _byId.TryGetValue(id, out var row) && !row.IsDeleted && Current(id)?.Id == id
+        && (row.Status == "Active" || (row.Status == "Superseded" && HasPendingAmendment(id)));
+
+    /// <summary>The start of the term's FIRST version: the anchor its length and renewal deadlines are measured from.</summary>
+    public DateOnly? TermStartedOn(Guid id) => Find(Root(id))?.StartDate;
+
+    private static bool WasActivated(string status) => status is "Active" or "Expired" or "Terminated" or "Superseded";
 
     /// <summary>Whether <paramref name="a"/> and <paramref name="b"/> are versions of the same term.</summary>
     public bool SameTerm(Guid a, Guid b) => Root(a) == Root(b);

@@ -188,6 +188,8 @@ const en = [
   'Show the contracts with an open review',
   'Show the contracts with only a closed review',
   'Show the contracts without a review',
+  'I have checked the signed contracts: save this history anyway',
+  'Amendment drafted: the review moves to it once it is activated.',
 ] as const;
 
 const ar: Record<(typeof en)[number], string> = {
@@ -360,6 +362,8 @@ const ar: Record<(typeof en)[number], string> = {
   'Show the contracts with an open review': 'عرض العقود التي لها مراجعة مفتوحة',
   'Show the contracts with only a closed review': 'عرض العقود التي لها مراجعة مغلقة فقط',
   'Show the contracts without a review': 'عرض العقود التي ليس لها مراجعة',
+  'I have checked the signed contracts: save this history anyway': 'تحققت من العقود الموقعة: احفظ هذا السجل على أي حال',
+  'Amendment drafted: the review moves to it once it is activated.': 'تمت صياغة تعديل: تنتقل المراجعة إليه عند تفعيله.',
 };
 
 export const renewals: ReleaseADict = {

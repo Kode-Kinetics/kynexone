@@ -14,6 +14,7 @@ public sealed record RenewalDeadlinesDto(
 
 /// <summary>One dashboard row (and the head of the full case DTO).</summary>
 /// <param name="FastLaneEligible">R5's batch "renew on current terms" may take it (<see cref="RenewalNextStep.FastLaneEligible"/>).</param>
+/// <param name="AmendmentPending">An amendment of the term is drafted but not activated: nothing changes until it is.</param>
 public sealed record RenewalCaseItemDto(
     Guid CaseId,
     Guid ContractId,
@@ -36,7 +37,8 @@ public sealed record RenewalCaseItemDto(
     IReadOnlyList<RenewalBadge> Badges,
     IReadOnlyList<BlockReason> BlockReasons,
     RenewalDeadlinesDto Deadlines,
-    bool FastLaneEligible);
+    bool FastLaneEligible,
+    bool AmendmentPending = false);
 
 /// <summary>The shared case DTO (R4 dashboard drawer, R5 offer editor, R6 response / Qiwa / apply).</summary>
 public sealed record RenewalCaseDto(
@@ -222,7 +224,8 @@ public static class RenewalCaseReadModel
         var contract = await ScopedBypass.TenantWide(db.EmployeeContracts, tenantId,
                 "Renewal case DTO reads the reviewed term's current version (it may have been amended); tenant pinned.")
             .AsNoTracking().FirstAsync(x => x.Id == currentId, ct);
-        var view = Clone(contract, c.WorkerNationalityClass);
+        // Anchored on the term's FIRST version: an amendment does not change the term's length or the Art. 55 count.
+        var view = RenewalCaseOpener.Anchored(Clone(contract, c.WorkerNationalityClass), versions.TermStartedOn(contract.Id));
         var derived = c.NoticeDueOn is { } notice ? AllowedActionsDeriver.Derive(view, notice, today, rules)
             : new AllowedActionsResult(c.AllowedActions, RenewalNextStep.IsArt55Threshold(c), [], view.RenewalNumber, null);
         var meter = AllowedActionsDeriver.Meter(view, derived with { ThresholdReached = RenewalNextStep.IsArt55Threshold(c) }, rules);
@@ -274,7 +277,7 @@ public static class RenewalCaseReadModel
                 c.AllowedActions, c.ContractAction, contract?.RenewalNumber, contract?.ChainStartedOn,
                 RenewalNextStep.Next(c, today), badges, blockReasons,
                 new RenewalDeadlinesDto(c.OfferDueOn, c.NoticeDueOn, c.QiwaSubmitDueOn, c.QiwaGateDueOn, c.QiwaRespondByOn, c.NextHardDeadline),
-                RenewalNextStep.FastLaneEligible(c, today, leaving)));
+                RenewalNextStep.FastLaneEligible(c, today, leaving), versions.HasPendingAmendment(c.ExpiringContractId)));
         }
         return list;
     }

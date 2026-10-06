@@ -6,7 +6,7 @@ import { renewalsApi, type ContractChain, type NationalityClass } from '../../ap
 import { useLocale } from '../../contexts/LocaleContext';
 import { useFormat } from '../../hooks/useFormat';
 import { EnumLabel } from '../EnumLabel';
-import { actionKeys, blockText, fill, formatDay, gapReasonKeys, linkKindKeys } from '../../lib/renewalRadar';
+import { actionKeys, blockText, fill, formatDay, gapReasonKeys, linkKindKeys, renewalErrorText } from '../../lib/renewalRadar';
 import { Modal } from '../Modal';
 
 /** One meter row: used of max, filled in proportion, red once the limit is reached. */
@@ -68,6 +68,10 @@ export function ChainDrawer({ contractId, canManage, onClose, onChanged }: {
   const earlier = chain?.terms.filter((x) => current && x.startDate < current.startDate) ?? [];
   const mayConfirm = canManage && chain != null && (!chain.confirmed || chain.nationalityClass == null || chain.caseState === 'NeedsConfirmation');
 
+  // Set when the server says the history contradicts what HR recorded earlier: HR must tick "I've checked" to proceed.
+  const [contradiction, setContradiction] = useState<string | null>(null);
+  const [checked, setChecked] = useState(false);
+
   const save = async () => {
     if (!contractId || !form.nationality || !form.chainStartedOn) return;
     setSaving(true);
@@ -79,10 +83,19 @@ export function ChainDrawer({ contractId, canManage, onClose, onChanged }: {
         autoRenew: form.autoRenew,
         nonRenewalNoticeDays: form.noticeDays === '' ? null : Number(form.noticeDays),
         renewalNumber: Number(form.renewalNumber),
+        acknowledgeContradiction: contradiction != null && checked,
       });
       setChain(updated);
+      setContradiction(null);
+      setChecked(false);
       onChanged();
     } catch (err) {
+      const data = (err as { response?: { data?: { error?: string } } })?.response?.data;
+      if (data?.error === 'chain_contradicts_recorded_history') {
+        setContradiction(renewalErrorText(err, locale, t('The contract history could not be saved.')));
+        setChecked(false);
+        return;
+      }
       notifyRenewalError(err, locale, t('The contract history could not be saved.'));
     } finally {
       setSaving(false);
@@ -204,7 +217,16 @@ export function ChainDrawer({ contractId, canManage, onClose, onChanged }: {
                   {t('Renews automatically unless notice is served')}
                 </label>
               </div>
-              <button type="button" disabled={saving || !form.nationality || !form.chainStartedOn} onClick={() => void save()}
+              {contradiction && (
+                <div role="alert" className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
+                  <p>{contradiction}</p>
+                  <label className="flex items-center gap-2">
+                    <input type="checkbox" checked={checked} onChange={(e) => setChecked(e.target.checked)} />
+                    {t('I have checked the signed contracts: save this history anyway')}
+                  </label>
+                </div>
+              )}
+              <button type="button" disabled={saving || !form.nationality || !form.chainStartedOn || (contradiction != null && !checked)} onClick={() => void save()}
                 className="rounded-lg bg-sapphire px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50">
                 {saving ? t('Saving…') : t('Confirm history')}
               </button>

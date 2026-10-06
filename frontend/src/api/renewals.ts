@@ -73,6 +73,8 @@ export interface RenewalCaseItem {
   blockReasons: BlockReason[];
   deadlines: RenewalDeadlines;
   fastLaneEligible: boolean;
+  /** An amendment of the term is drafted but not activated yet: nothing changes until it is. */
+  amendmentPending?: boolean;
 }
 
 export interface RenewalBucket {
@@ -199,6 +201,8 @@ export interface ChainConfirmInput {
   autoRenew: boolean;
   nonRenewalNoticeDays: number | null;
   renewalNumber: number;
+  /** HR's explicit "I've checked" when the history contradicts what was recorded for an earlier contract. */
+  acknowledgeContradiction?: boolean;
 }
 
 export const renewalsApi = {

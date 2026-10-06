@@ -220,6 +220,11 @@ export function Radar(props: RadarProps) {
                         <span className="block text-xs text-slate-500 dark:text-slate-400">
                           {item.employee.code} · {companyName(item, locale)}
                         </span>
+                        {item.amendmentPending && (
+                          <span className="block text-xs text-slate-500 dark:text-slate-400">
+                            {t('Amendment drafted: the review moves to it once it is activated.')}
+                          </span>
+                        )}
                         <div className="mt-1.5 flex flex-wrap gap-1">
                           {item.badges.map((b) => <StatusChip key={b.code} label={badgeText(b, t)} tone={badgeTone(b.code)} />)}
                         </div>

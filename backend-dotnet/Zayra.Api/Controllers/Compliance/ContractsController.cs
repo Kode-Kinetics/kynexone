@@ -335,8 +335,9 @@ public class ContractsController : ControllerBase
             return BadRequest(new { error = "invalid_contract_dates", message = "The replacement contract must start on or after the prior start date and end on or after its start date." });
         if (req.BasicSalary < 0m)
             return BadRequest(new { error = "invalid_basic_salary", message = "Basic salary cannot be negative." });
-        // Release A: an open renewal review follows its term (RenewalCaseCarry). An amendment within the term carries the
-        // review onto the new version in this same SaveChanges; a new term after the end is the renewal's own decision.
+        // Release A: an open renewal review follows its term (RenewalCaseCarry). An amendment within the term is allowed and
+        // the review moves onto the new version when that version is activated; a new term after the end is the renewal's
+        // own decision, and a changed end date once an action is chosen is refused.
         var carry = await Zayra.Api.Infrastructure.Contracts.RenewalCaseCarry.DecideAsync(_db, tid, old, req.StartDate, req.EndDate, ct);
         if (carry.RefusalCode == Zayra.Api.Application.Contracts.ReleaseABlockReasons.RenewalCaseInProgress)
         {
@@ -375,12 +376,6 @@ public class ContractsController : ControllerBase
         };
 
         _db.EmployeeContracts.Add(newContract);
-        if (carry.Case is not null)
-        {
-            var today = DateOnly.FromDateTime(DateTime.UtcNow);
-            var rules = await Zayra.Api.Infrastructure.Contracts.RenewalRuleSet.LoadAsync(_db, tid, today, ct);
-            Zayra.Api.Infrastructure.Contracts.RenewalCaseCarry.Carry(_db, carry, newContract, rules, today, GetUserId(), GetUserName());
-        }
 
         _db.ComplianceAuditLogs.Add(new ComplianceAuditLog
         {
@@ -390,15 +385,7 @@ public class ContractsController : ControllerBase
             MetadataJson = System.Text.Json.JsonSerializer.Serialize(new { previousId = id, newVersion = newContract.Version }),
         });
 
-        try
-        {
-            await _db.SaveChangesAsync(ct);
-        }
-        catch (DbUpdateException) when (carry.Case is not null)
-        {
-            var reason = Zayra.Api.Application.Contracts.ReleaseABlockReasons.All[Zayra.Api.Application.Contracts.ReleaseABlockReasons.RenewalCaseChanged];
-            return Conflict(new { error = reason.Code, reason, message = reason.WhyEn, messageAr = reason.WhyAr });
-        }
+        await _db.SaveChangesAsync(ct);
         return Ok(newContract);
     }
 }

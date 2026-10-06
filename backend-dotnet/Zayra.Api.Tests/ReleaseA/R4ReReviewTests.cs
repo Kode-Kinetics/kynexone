@@ -65,55 +65,6 @@ public class R4ReReviewTests
     // ── P1-2: Supersede carries the case (real endpoint) ─────────────────────────────────────────
 
     [Fact]
-    public async Task AnAmendmentWithinTheTerm_CarriesTheReview_KeepingItsStateAndOptions()
-    {
-        await using var db = InMemory();
-        var (tenantId, emp, term, review) = await SeedReviewedTermAsync(db, RenewalStates.OfferInPreparation);
-        var contracts = new ContractsController(db) { ControllerContext = Ctx(tenantId) };
-
-        // A salary change from 1 Jun, same end date.
-        var amended = await contracts.Supersede(term.Id, new CreateContractRequest(emp.PublicId, null, null, null, new DateOnly(2026, 6, 1),
-            new DateOnly(2026, 12, 31), 9000m, null, null, null, null), default);
-        var newVersion = amended.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<EmployeeContract>().Subject;
-
-        var carried = await db.ContractRenewalCases.SingleAsync();
-        (carried.State, carried.ExpiringContractId, carried.ExpiringEndDate).Should().Be((RenewalStates.OfferInPreparation, term.Id, new DateOnly(2026, 12, 31)));
-        carried.AllowedActions.Should().BeEquivalentTo(review.AllowedActions);
-        (await db.ComplianceAuditLogs.SingleAsync(l => l.EntityId == carried.Id.ToString() && l.Action == "Rebaselined")).MetadataJson
-            .Should().Contain("AmendedVersion").And.Contain(newVersion.Id.ToString());
-
-        // The radar shows the review on the term's current version, and no second "due without a review" for it.
-        var radar = await RenewalCaseReadModel.RadarAsync(db, Opener(db), tenantId, null, 120, Today, default);
-        radar.Items.Single().ContractId.Should().Be(newVersion.Id);
-        radar.Exceptions.ExpiringWithoutCase.Should().BeEmpty();
-        (await Opener(db).OpenOneAsync(tenantId, newVersion.Id, Today, null, "test", default)).Result.Should().Be(RenewalOpenOutcome.AlreadyOpen);
-    }
-
-    [Fact]
-    public async Task AnAmendmentThatExtendsTheTerm_WithdrawsTheOptions_AndIsRefusedOnceAnActionIsChosen()
-    {
-        await using var db = InMemory();
-        var (tenantId, emp, term, _) = await SeedReviewedTermAsync(db, RenewalStates.Open);
-        var contracts = new ContractsController(db) { ControllerContext = Ctx(tenantId) };
-        var extend = new CreateContractRequest(emp.PublicId, null, null, null, new DateOnly(2026, 6, 1), new DateOnly(2027, 6, 30), 9000m,
-            null, null, null, null);
-
-        (await contracts.Supersede(term.Id, extend, default)).Should().BeOfType<OkObjectResult>();
-        var review = await db.ContractRenewalCases.SingleAsync();
-        (review.State, review.ExpiringEndDate).Should().Be((RenewalStates.Open, new DateOnly(2027, 6, 30)));
-        review.AllowedActions.Should().BeEmpty("an extension is a renewal decision: HR confirms the history first");
-        (await db.ComplianceAuditLogs.SingleAsync(l => l.EntityId == review.Id.ToString() && l.Action == "Rebaselined")).MetadataJson
-            .Should().Contain(ChainGapReasons.ExtendsTerm);
-
-        // A review with an action chosen is not changed underneath.
-        await using var db2 = InMemory();
-        var (tenant2, emp2, term2, _) = await SeedReviewedTermAsync(db2, RenewalStates.OfferInPreparation, ContractActions.RenewAsIs);
-        var refused = await new ContractsController(db2) { ControllerContext = Ctx(tenant2) }.Supersede(term2.Id,
-            extend with { EmployeeId = emp2.PublicId }, default);
-        ErrorOf(refused, 409).Should().Be(ReleaseABlockReasons.RenewalCaseInProgress);
-    }
-
-    [Fact]
     public async Task ANewTermAfterTheEnd_IsTheRenewalsOwnDecision_RefusedWithAnArabicMessage()
     {
         await using var db = InMemory();
