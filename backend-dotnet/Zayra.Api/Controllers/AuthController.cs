@@ -20,9 +20,11 @@ public class AuthController : ControllerBase
         _abuse = abuse;
     }
 
-    private IActionResult Refused(string error, string message)
+    private IActionResult Refused(string error, string message, int? retryAfterSeconds = null)
     {
-        Response.Headers.RetryAfter = Zayra.Api.Infrastructure.Auth.LoginAbuseGuard.JitteredRetryAfterSeconds();
+        Response.Headers.RetryAfter = retryAfterSeconds is { } seconds
+            ? seconds.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : Zayra.Api.Infrastructure.Auth.LoginAbuseGuard.JitteredRetryAfterSeconds();
         return StatusCode(StatusCodes.Status429TooManyRequests, new { error, message });
     }
 
@@ -38,18 +40,22 @@ public class AuthController : ControllerBase
         var client = _abuse?.Client(HttpContext);
         var tenant = request.TenantSlug ?? string.Empty;
         var email = request.Email ?? string.Empty;
-        if (_abuse is not null && client is { } address)
+        if (_abuse is not null && client is { } address
+            && _abuse.TryBeginFromAddress("tenant", tenant, email, address, DateTime.UtcNow) is { } refusal)
         {
-            var knownDevice = _abuse.RequestCarriesKnownDevice(Request, "tenant", tenant, email);
-            if (_abuse.TryBegin("tenant", tenant, email, address, knownDevice, DateTime.UtcNow) is { } refusal)
-            {
-                var (error, message) = Zayra.Api.Infrastructure.Auth.LoginAbuseGuard.Describe(refusal);
-                return Refused(error, message);
-            }
+            var retry = _abuse.RetryAfterSeconds(refusal, "tenant", tenant, email, address, DateTime.UtcNow);
+            var (error, message) = Zayra.Api.Infrastructure.Auth.LoginAbuseGuard.Describe(refusal, retry);
+            return Refused(error, message, retry);
         }
         try
         {
-            var result = await _authService.LoginAsync(request, GetContext(), cancellationToken);
+            // The account-wide cap and the known-device lockout bypass need the account, so they are
+            // decided inside LoginAsync — still before any hashing.
+            var context = GetContext() with
+            {
+                KnownDeviceToken = Zayra.Api.Infrastructure.Auth.LoginAbuseGuard.KnownDeviceCookie(Request, "tenant"),
+            };
+            var result = await _authService.LoginAsync(request, context, cancellationToken);
             if (result.RequiresMfa)
                 return Ok(new { mfaRequired = true, challengeToken = result.Challenge!.ChallengeToken, expiresInSeconds = result.Challenge.ExpiresInSeconds });
             if (result.RequiresMfaEnrollment)
@@ -60,8 +66,13 @@ public class AuthController : ControllerBase
                     expiresInSeconds = result.EnrollmentChallenge.ExpiresInSeconds,
                     message = "Your organization requires multi-factor authentication. Please set up MFA to continue."
                 });
-            _abuse?.AppendKnownDeviceCookie(Response, "tenant", tenant, email);
+            Zayra.Api.Infrastructure.Auth.LoginAbuseGuard.AppendKnownDeviceCookie(Response, "tenant", result.Tokens?.KnownDeviceToken);
             return Ok(result.Tokens);
+        }
+        catch (Zayra.Api.Infrastructure.Auth.LoginRefusedException ex)
+        {
+            var (error, message) = Zayra.Api.Infrastructure.Auth.LoginAbuseGuard.Describe(ex.Refusal, ex.RetryAfterSeconds);
+            return Refused(error, message, ex.RetryAfterSeconds);
         }
         catch (UnauthorizedAccessException ex)
         {

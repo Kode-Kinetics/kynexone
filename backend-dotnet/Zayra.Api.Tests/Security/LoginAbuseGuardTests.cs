@@ -115,7 +115,11 @@ public sealed class LoginAbuseGuardTests
         ClientIpResolver.ResolveAddress(Ctx(proxy, ("x-vercel-id", "fra1::abc")), null).Source.Should().Be(ClientIpSource.UnverifiedProxy);
         ClientIpResolver.ResolveAddress(Ctx(proxy, (ClientIpResolver.ViaProxyHeader, "1"),
                 (ClientIpResolver.ClientIpHeader, "198.51.100.7"), (ClientIpResolver.SecretHeader, "wrong")), "s3cret")
-            .Should().Be(new ClientAddress(proxy, ClientIpSource.UnverifiedProxy), "wrong secret");
+            .Should().Be(new ClientAddress(proxy, ClientIpSource.Direct),
+                "with a secret configured, a proxy claim without it is a direct caller and keeps the per-IP budget");
+        foreach (var marker in new[] { ClientIpResolver.ViaProxyHeader, "x-vercel-id", "x-vercel-forwarded-for" })
+            ClientIpResolver.ResolveAddress(Ctx(proxy, (marker, "1")), "s3cret").Source
+                .Should().Be(ClientIpSource.Direct, $"{marker} without the secret proves nothing once a secret exists");
         ClientIpResolver.ResolveAddress(Ctx(proxy, (ClientIpResolver.ViaProxyHeader, "1"),
                 (ClientIpResolver.ClientIpHeader, "198.51.100.7"), (ClientIpResolver.SecretHeader, "s3cret")), "s3cret")
             .Should().Be(new ClientAddress("198.51.100.7", ClientIpSource.AuthenticatedProxy));
@@ -127,19 +131,61 @@ public sealed class LoginAbuseGuardTests
     // ── Known device ────────────────────────────────────────────────────────────────────────
 
     [Fact]
-    public void KnownDeviceToken_IsBoundToTheAccount_AndExpires()
+    public void KnownDeviceToken_IsBoundToTheAccount_ThePrincipalAndTheCredentials_AndExpires()
     {
         using var guard = Guard();
-        var token = guard.IssueKnownDeviceToken("tenant", "acme", "u@acme.test", DateTime.UtcNow)!;
+        var id = Guid.NewGuid();
+        var version = LoginAbuseGuard.CredentialVersion("PBKDF2$600000$salt$key", false, null);
+        var token = guard.IssueKnownDeviceToken("tenant", "acme", "u@acme.test", id, version, DateTime.UtcNow)!;
 
-        guard.IsKnownDevice(token, "tenant", "ACME", "U@acme.test").Should().BeTrue();
-        guard.IsKnownDevice(token, "tenant", "acme", "other@acme.test").Should().BeFalse("bound to one account");
-        guard.IsKnownDevice(token, "platform", "platform", "u@acme.test").Should().BeFalse("bound to one scope");
-        guard.IsKnownDevice(token[..^4] + "AAAA", "tenant", "acme", "u@acme.test").Should().BeFalse("tampered");
-        guard.IsKnownDevice(guard.IssueKnownDeviceToken("tenant", "acme", "u@acme.test", DateTime.UtcNow.AddDays(-91)),
-            "tenant", "acme", "u@acme.test").Should().BeFalse("older than 90 days");
+        guard.IsKnownDevice(token, "tenant", "ACME", "U@acme.test", id, version).Should().BeTrue();
+        guard.IsKnownDevice(token, "tenant", "acme", "other@acme.test", id, version).Should().BeFalse("bound to one account");
+        guard.IsKnownDevice(token, "platform", "platform", "u@acme.test", id, version).Should().BeFalse("bound to one scope");
+        guard.IsKnownDevice(token, "tenant", "acme", "u@acme.test", Guid.NewGuid(), version)
+            .Should().BeFalse("a re-created user has a new id");
+        guard.IsKnownDevice(token, "tenant", "acme", "u@acme.test", id,
+            LoginAbuseGuard.CredentialVersion("PBKDF2$600000$salt$NEWKEY", false, null)).Should().BeFalse("password changed");
+        guard.IsKnownDevice(token, "tenant", "acme", "u@acme.test", id,
+            LoginAbuseGuard.CredentialVersion("PBKDF2$600000$salt$key", true, T0)).Should().BeFalse("MFA enrolled since");
+        LoginAbuseGuard.CredentialVersion("h", true, T0).Should().NotBe(LoginAbuseGuard.CredentialVersion("h", true, T0.AddTicks(10)),
+            "re-enrolling MFA (new configured time) is a new credential");
+        guard.IsKnownDevice(token[..^4] + "AAAA", "tenant", "acme", "u@acme.test", id, version).Should().BeFalse("tampered");
+        guard.IsKnownDevice(guard.IssueKnownDeviceToken("tenant", "acme", "u@acme.test", id, version, DateTime.UtcNow.AddDays(-91)),
+            "tenant", "acme", "u@acme.test", id, version).Should().BeFalse("older than 90 days");
         using var otherRing = new LoginAbuseGuard(dataProtection: DataProtectionProvider.Create("another-key-ring"));
-        otherRing.IsKnownDevice(token, "tenant", "acme", "u@acme.test").Should().BeFalse();
+        otherRing.IsKnownDevice(token, "tenant", "acme", "u@acme.test", id, version).Should().BeFalse();
+    }
+
+    [Fact]
+    public void AKnownDeviceThatKeepsGuessing_StopsBeingTrusted()
+    {
+        using var guard = Guard();
+        for (var i = 0; i < LoginAbuseGuard.KnownDeviceFailureLimit - 1; i++)
+            guard.RecordKnownDeviceFailure("tenant", "acme", "u@acme.test", T0);
+        guard.KnownDeviceStillTrusted("tenant", "acme", "u@acme.test", T0).Should().BeTrue();
+        guard.RecordKnownDeviceFailure("tenant", "acme", "u@acme.test", T0);
+        guard.KnownDeviceStillTrusted("tenant", "acme", "u@acme.test", T0).Should().BeFalse(
+            "a stolen cookie is not an unlimited guessing licence");
+    }
+
+    [Fact]
+    public void RetryAfterSeconds_IsTheTimeUntilTheBlockingWindowFrees_AndTheWordsMatchIt()
+    {
+        using var guard = Guard(accountIp: 2);
+        guard.TryBegin("tenant", "acme", "u@acme.test", DirectA, false, T0).Should().BeNull();
+        guard.TryBegin("tenant", "acme", "u@acme.test", DirectA, false, T0.AddMinutes(5)).Should().BeNull();
+        var refusal = guard.TryBegin("tenant", "acme", "u@acme.test", DirectA, false, T0.AddMinutes(6));
+        refusal.Should().Be(LoginRefusal.AccountLimit);
+        guard.RetryAfterSeconds(refusal!.Value, "tenant", "acme", "u@acme.test", DirectA, T0.AddMinutes(6))
+            .Should().Be(9 * 60, "the oldest attempt (T0) leaves the 15-minute window at T0+15");
+
+        LoginAbuseGuard.WaitPhrase(10).Should().Be("in a few seconds");
+        LoginAbuseGuard.WaitPhrase(11).Should().Be("in about a minute");
+        LoginAbuseGuard.WaitPhrase(90).Should().Be("in about a minute");
+        LoginAbuseGuard.WaitPhrase(91).Should().Be("in a few minutes");
+        LoginAbuseGuard.Describe(LoginRefusal.IpFailureBudget, 5).Message.Should().EndWith("in a few seconds.");
+        new PasswordVerificationBusyException().Message.Should().Contain("in a few seconds",
+            "the gate's Retry-After is 2-6 s, so its words say so");
     }
 
     [Fact]
@@ -175,7 +221,7 @@ public sealed class LoginAbuseGuardTests
     {
         var hasher = new CountingHasher();
         await using var db = kit.NewDb();
-        var controller = new AuthController(kit.Auth(db, hasher), guard) { ControllerContext = new ControllerContext { HttpContext = http } };
+        var controller = new AuthController(kit.Auth(db, hasher, abuse: guard), guard) { ControllerContext = new ControllerContext { HttpContext = http } };
         var result = await controller.Login(new LoginRequest(email, password, AuthHardeningTestKit.TenantSlug), CancellationToken.None);
         return (result, hasher.Calls, controller.Response);
     }
@@ -196,7 +242,10 @@ public sealed class LoginAbuseGuardTests
         refused.Result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(429);
         ErrorCode(refused.Result).Should().Be("account_rate_limited");
         refused.Hashing.Should().Be(0, "the refusal comes before any PBKDF2 work");
-        int.Parse(refused.Response.Headers.RetryAfter.ToString()).Should().BeInRange(2, 6);
+        var retry = int.Parse(refused.Response.Headers.RetryAfter.ToString());
+        retry.Should().BeInRange(14 * 60, 15 * 60, "Retry-After is when the account's window actually frees up");
+        ((ObjectResult)refused.Result).Value!.GetType().GetProperty("message")!.GetValue(((ObjectResult)refused.Result).Value)
+            .Should().Be("Too many sign-in attempts for this account. Please try again in a few minutes.");
 
         (await TenantLogin(kit, guard, "victim@hardening.local", Password, Http("198.51.100.9"))).Result
             .Should().BeOfType<OkObjectResult>("the victim signs in from their own address");

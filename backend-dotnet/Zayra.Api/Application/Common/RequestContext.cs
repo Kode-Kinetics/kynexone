@@ -6,4 +6,8 @@ public record RequestContext(
     Guid? UserId = null,
     Guid? TenantId = null,
     IReadOnlyCollection<string>? Roles = null,
-    IReadOnlyCollection<string>? Permissions = null);
+    IReadOnlyCollection<string>? Permissions = null)
+{
+    /// <summary>The known-device cookie presented with a sign-in, validated against the account by AuthService.</summary>
+    public string? KnownDeviceToken { get; init; }
+}

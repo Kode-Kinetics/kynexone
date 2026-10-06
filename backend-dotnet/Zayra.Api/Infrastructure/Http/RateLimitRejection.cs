@@ -14,16 +14,18 @@ namespace Zayra.Api.Infrastructure.Http;
 public static class RateLimitRejection
 {
     public const string Error = "rate_limited";
-    public const string Message = "The service is busy. Please try again in a few seconds.";
+    public static string MessageFor(int retryAfterSeconds)
+        => $"Too many requests. Please try again {LoginAbuseGuard.WaitPhrase(retryAfterSeconds)}.";
 
     public static async ValueTask WriteAsync(OnRejectedContext context, CancellationToken cancellationToken)
     {
         var response = context.HttpContext.Response;
         response.StatusCode = StatusCodes.Status429TooManyRequests;
-        response.Headers.RetryAfter =
-            context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter)
-                ? Math.Max(1, (int)Math.Ceiling(retryAfter.TotalSeconds)).ToString(CultureInfo.InvariantCulture)
-                : LoginAbuseGuard.JitteredRetryAfterSeconds();
-        await response.WriteAsJsonAsync(new { error = Error, message = Message }, cancellationToken);
+        var seconds = context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter)
+            ? Math.Max(1, (int)Math.Ceiling(retryAfter.TotalSeconds))
+            : int.Parse(LoginAbuseGuard.JitteredRetryAfterSeconds(), CultureInfo.InvariantCulture);
+        response.Headers.RetryAfter = seconds.ToString(CultureInfo.InvariantCulture);
+        // The words match the header: "in a few seconds" only when the wait really is that short.
+        await response.WriteAsJsonAsync(new { error = Error, message = MessageFor(seconds) }, cancellationToken);
     }
 }

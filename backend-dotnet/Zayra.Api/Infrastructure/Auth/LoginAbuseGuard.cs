@@ -82,26 +82,39 @@ public sealed class LoginAbuseGuard : IDisposable
     public ClientAddress Client(HttpContext context) => ClientIpResolver.ResolveAddress(context, _proxySecret);
 
     /// <summary>
-    /// Decides whether a sign-in may proceed and, if so, records the attempt against both account
-    /// budgets. A refused attempt is not recorded, so a refused caller cannot extend the window.
+    /// First gate, before the account is even looked up: the address's unknown-account failure
+    /// budget, then this account's attempts from this address. Records the per-address attempt when
+    /// allowed; a refused attempt is not recorded, so a refused caller cannot extend the window.
     /// </summary>
-    public LoginRefusal? TryBegin(string scope, string tenant, string email, ClientAddress client, bool knownDevice, DateTime nowUtc)
+    public LoginRefusal? TryBeginFromAddress(string scope, string tenant, string email, ClientAddress client, DateTime nowUtc)
     {
         if (client.IdentifiesOneClient
             && _windows.TryGetValue(IpKey(client.Ip), out SlidingWindow? failures)
             && failures!.Count(nowUtc) >= _ipFailureLimit)
             return LoginRefusal.IpFailureBudget;
 
-        var account = AccountKey(scope, tenant, email);
-        var perAddress = Window($"{account}|ip|{client.Ip}", _accountWindow);
-        var overall = Window(account, _accountWindow);
+        var perAddress = Window($"{AccountKey(scope, tenant, email)}|ip|{client.Ip}", _accountWindow);
         if (perAddress.Count(nowUtc) >= _accountIpLimit) return LoginRefusal.AccountLimit;
-        if (!knownDevice && overall.Count(nowUtc) >= _accountLimit) return LoginRefusal.AccountLimit;
-
         perAddress.Add(nowUtc);
+        return null;
+    }
+
+    /// <summary>
+    /// Second gate, once the account (if any) is loaded and the known-device cookie validated against
+    /// it: the account-wide cap, which a trusted known device skips. Still before any hashing.
+    /// </summary>
+    public LoginRefusal? TryBeginAccountWide(string scope, string tenant, string email, bool knownDevice, DateTime nowUtc)
+    {
+        var overall = Window(AccountKey(scope, tenant, email), _accountWindow);
+        if (!knownDevice && overall.Count(nowUtc) >= _accountLimit) return LoginRefusal.AccountLimit;
         overall.Add(nowUtc);
         return null;
     }
+
+    /// <summary>Both gates at once, for callers that have no account to load (and in tests).</summary>
+    public LoginRefusal? TryBegin(string scope, string tenant, string email, ClientAddress client, bool knownDevice, DateTime nowUtc)
+        => TryBeginFromAddress(scope, tenant, email, client, nowUtc)
+           ?? TryBeginAccountWide(scope, tenant, email, knownDevice, nowUtc);
 
     /// <summary>Counts a failed sign-in against an account that does not exist, when the address is trustworthy.</summary>
     public void RecordUnknownAccountFailure(ClientAddress client, DateTime nowUtc)
@@ -111,15 +124,29 @@ public sealed class LoginAbuseGuard : IDisposable
 
     // ── Known device ────────────────────────────────────────────────────────────────────────
 
-    public string? IssueKnownDeviceToken(string scope, string tenant, string email, DateTime nowUtc)
-        => _knownDevice?.Protect(AccountKey(scope, tenant, email), nowUtc + KnownDeviceLifetime);
+    /// <summary>Wrong passwords from a known device before it stops being trusted (per account, 15 min).</summary>
+    public const int KnownDeviceFailureLimit = 10;
 
-    public bool IsKnownDevice(string? token, string scope, string tenant, string email)
+    /// <summary>
+    /// Credential version bound into a known-device token: a short fingerprint of the current password
+    /// hash and the MFA enrolment state. Changing the password, resetting or re-enrolling MFA, or
+    /// re-creating the user (new id, also in the payload) invalidates every cookie issued before.
+    /// </summary>
+    public static string CredentialVersion(string passwordHash, bool mfaEnabled, DateTime? mfaConfiguredAtUtc)
+    {
+        var material = $"{passwordHash}|{(mfaEnabled ? 1 : 0)}|{mfaConfiguredAtUtc?.Ticks ?? 0}";
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(material)))[..16];
+    }
+
+    public string? IssueKnownDeviceToken(string scope, string tenant, string email, Guid principalId, string credentialVersion, DateTime nowUtc)
+        => _knownDevice?.Protect(Payload(scope, tenant, email, principalId, credentialVersion), nowUtc + KnownDeviceLifetime);
+
+    public bool IsKnownDevice(string? token, string scope, string tenant, string email, Guid principalId, string credentialVersion)
     {
         if (_knownDevice is null || string.IsNullOrEmpty(token)) return false;
         try
         {
-            return string.Equals(_knownDevice.Unprotect(token), AccountKey(scope, tenant, email), StringComparison.Ordinal);
+            return string.Equals(_knownDevice.Unprotect(token), Payload(scope, tenant, email, principalId, credentialVersion), StringComparison.Ordinal);
         }
         catch (System.Security.Cryptography.CryptographicException)
         {
@@ -128,13 +155,30 @@ public sealed class LoginAbuseGuard : IDisposable
     }
 
     /// <summary>
-    /// Sets the known-device cookie after a successful sign-in: HttpOnly, Secure, SameSite=Strict,
-    /// scoped to the sign-in path, protected by the Data Protection key ring and bound to the account.
+    /// A known device is trusted (lockout and account-wide cap bypass) only while it has fewer than
+    /// <see cref="KnownDeviceFailureLimit"/> recent wrong passwords — so a stolen cookie is not an
+    /// unlimited guessing licence.
     /// </summary>
-    public void AppendKnownDeviceCookie(HttpResponse response, string scope, string tenant, string email)
+    public bool KnownDeviceStillTrusted(string scope, string tenant, string email, DateTime nowUtc)
+        => !_windows.TryGetValue($"{AccountKey(scope, tenant, email)}|kdfail", out SlidingWindow? failures)
+           || failures!.Count(nowUtc) < KnownDeviceFailureLimit;
+
+    /// <summary>A wrong password from a known device: counted here, never toward the account lockout.</summary>
+    public void RecordKnownDeviceFailure(string scope, string tenant, string email, DateTime nowUtc)
+        => Window($"{AccountKey(scope, tenant, email)}|kdfail", _accountWindow).Add(nowUtc);
+
+    /// <summary>The token's raw cookie value for <paramref name="scope"/>, if the request carries one.</summary>
+    public static string? KnownDeviceCookie(HttpRequest request, string scope)
+        => request.Cookies[scope == "platform" ? PlatformKnownDeviceCookie : TenantKnownDeviceCookie];
+
+    /// <summary>
+    /// Sets the known-device cookie after a successful sign-in: HttpOnly, Secure, SameSite=Strict,
+    /// scoped to the sign-in path, protected by the Data Protection key ring and bound to the account,
+    /// the principal id and the credential version.
+    /// </summary>
+    public static void AppendKnownDeviceCookie(HttpResponse response, string scope, string? token)
     {
-        var token = IssueKnownDeviceToken(scope, tenant, email, DateTime.UtcNow);
-        if (token is null) return;
+        if (string.IsNullOrEmpty(token)) return;
         var platform = scope == "platform";
         response.Cookies.Append(platform ? PlatformKnownDeviceCookie : TenantKnownDeviceCookie, token, new CookieOptions
         {
@@ -147,9 +191,8 @@ public sealed class LoginAbuseGuard : IDisposable
         });
     }
 
-    public bool RequestCarriesKnownDevice(HttpRequest request, string scope, string tenant, string email)
-        => IsKnownDevice(request.Cookies[scope == "platform" ? PlatformKnownDeviceCookie : TenantKnownDeviceCookie],
-            scope, tenant, email);
+    private static string Payload(string scope, string tenant, string email, Guid principalId, string credentialVersion)
+        => $"{AccountKey(scope, tenant, email)}|{principalId:N}|{credentialVersion}";
 
     // ── Responses ───────────────────────────────────────────────────────────────────────────
 
@@ -157,13 +200,44 @@ public sealed class LoginAbuseGuard : IDisposable
     public static string JitteredRetryAfterSeconds()
         => System.Security.Cryptography.RandomNumberGenerator.GetInt32(2, 7).ToString(System.Globalization.CultureInfo.InvariantCulture);
 
-    /// <summary>Stable error codes clients branch on (the sign-in page words each differently).</summary>
-    public static (string Error, string Message) Describe(LoginRefusal refusal) => refusal switch
+    /// <summary>
+    /// The wait, in words, for a Retry-After of <paramref name="seconds"/>: the server's messages and
+    /// the sign-in pages use the same thresholds so the two never disagree.
+    /// </summary>
+    public static string WaitPhrase(int seconds) => seconds switch
+    {
+        <= 10 => "in a few seconds",
+        <= 90 => "in about a minute",
+        _ => "in a few minutes",
+    };
+
+    /// <summary>
+    /// Seconds until the window that refused this caller lets one more attempt through — the honest
+    /// Retry-After for an account or address refusal (never less than 1).
+    /// </summary>
+    public int RetryAfterSeconds(LoginRefusal refusal, string scope, string tenant, string email, ClientAddress? client, DateTime nowUtc)
+    {
+        var account = AccountKey(scope, tenant, email);
+        var waits = refusal == LoginRefusal.IpFailureBudget
+            ? new[] { Wait(client is { } c ? IpKey(c.Ip) : null, _ipFailureLimit, nowUtc) }
+            : new[]
+            {
+                Wait(client is { } c2 ? $"{account}|ip|{c2.Ip}" : null, _accountIpLimit, nowUtc),
+                Wait(account, _accountLimit, nowUtc),
+            };
+        return Math.Max(1, (int)Math.Ceiling(waits.Max().TotalSeconds));
+    }
+
+    private TimeSpan Wait(string? key, int limit, DateTime nowUtc)
+        => key is not null && _windows.TryGetValue(key, out SlidingWindow? w) ? w!.TimeUntilBelow(limit, nowUtc) : TimeSpan.Zero;
+
+    /// <summary>Stable error codes clients branch on, and a message whose wait matches Retry-After.</summary>
+    public static (string Error, string Message) Describe(LoginRefusal refusal, int retryAfterSeconds) => refusal switch
     {
         LoginRefusal.AccountLimit => ("account_rate_limited",
-            "Too many sign-in attempts for this account. Please wait a few minutes and try again."),
+            $"Too many sign-in attempts for this account. Please try again {WaitPhrase(retryAfterSeconds)}."),
         _ => ("ip_failure_budget",
-            "Too many failed sign-ins from your network. Please wait a few minutes and try again."),
+            $"Too many failed sign-ins from your network. Please try again {WaitPhrase(retryAfterSeconds)}."),
     };
 
     public const string BusyError = "sign_in_busy";
@@ -202,6 +276,19 @@ public sealed class LoginAbuseGuard : IDisposable
             {
                 Trim(now);
                 return _hits.Count;
+            }
+        }
+
+        /// <summary>How long until fewer than <paramref name="limit"/> hits remain in the window.</summary>
+        public TimeSpan TimeUntilBelow(int limit, DateTime now)
+        {
+            lock (_hits)
+            {
+                Trim(now);
+                if (_hits.Count < limit) return TimeSpan.Zero;
+                var freeing = _hits.ElementAt(_hits.Count - limit); // the hit whose expiry gets us under
+                var wait = freeing + window - now;
+                return wait > TimeSpan.Zero ? wait : TimeSpan.Zero;
             }
         }
 

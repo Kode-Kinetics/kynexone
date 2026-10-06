@@ -4,7 +4,7 @@ namespace Zayra.Api.Infrastructure.Auth;
 
 /// <summary>Raised when the password-hashing gate stays full past its short wait. Mapped to 429.</summary>
 public sealed class PasswordVerificationBusyException()
-    : Exception("Sign-in is busy. Please try again in a moment.");
+    : Exception("The sign-in service is busy. Please try again in a few seconds."); // Retry-After is 2–6 s
 
 /// <summary>
 /// Bounds how many 600k-iteration PBKDF2 computations (verify or re-hash) run at once in this process.

@@ -66,7 +66,7 @@ internal sealed class AuthHardeningTestKit : IAsyncDisposable
     });
 
     public AuthService Auth(ZayraDbContext db, IPasswordHasher? hasher = null, IConfiguration? config = null,
-        PasswordVerificationGate? gate = null)
+        PasswordVerificationGate? gate = null, LoginAbuseGuard? abuse = null)
     {
         var tokens = new JwtTokenService(Jwt);
         var audit = new AuditService(db);
@@ -81,7 +81,8 @@ internal sealed class AuthHardeningTestKit : IAsyncDisposable
             Totp,
             NullLogger<AuthService>.Instance,
             config ?? new ConfigurationBuilder().Build(),
-            gate);
+            gate,
+            abuse);
     }
 
     public MfaService Mfa(ZayraDbContext db, IEmailService? email = null)

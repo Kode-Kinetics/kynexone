@@ -104,22 +104,14 @@ public class PlatformController : ControllerBase
         // account overall (unless a known device), and the address's unknown-account failure budget.
         var client = _loginAbuse?.Client(HttpContext);
         var email = req.Email ?? string.Empty;
-        if (_loginAbuse is not null && client is { } address)
-        {
-            var knownDevice = _loginAbuse.RequestCarriesKnownDevice(Request, "platform", "platform", email);
-            if (_loginAbuse.TryBegin("platform", "platform", email, address, knownDevice, DateTime.UtcNow) is { } refusal)
-            {
-                var (error, message) = LoginAbuseGuard.Describe(refusal);
-                return PlatformRefused(error, message);
-            }
-        }
+        if (_loginAbuse is not null && client is { } address
+            && _loginAbuse.TryBeginFromAddress("platform", "platform", email, address, DateTime.UtcNow) is { } refusal)
+            return PlatformRefusal(refusal, email, address);
         try
         {
             var result = await LoginCoreAsync(req, ct);
             if (client is { } address2 && HttpContext.Items.ContainsKey(UnknownPlatformAccountItem))
                 _loginAbuse?.RecordUnknownAccountFailure(address2, DateTime.UtcNow);
-            if (HttpContext.Items.ContainsKey(PlatformSessionIssuedItem))
-                _loginAbuse?.AppendKnownDeviceCookie(Response, "platform", "platform", email);
             return result;
         }
         catch (PasswordVerificationBusyException ex)
@@ -129,12 +121,26 @@ public class PlatformController : ControllerBase
     }
 
     private const string UnknownPlatformAccountItem = "kx.platform.unknown_account";
-    private const string PlatformSessionIssuedItem = "kx.platform.session_issued";
 
-    private IActionResult PlatformRefused(string error, string message)
+    /// <summary>Sets the known-device cookie for <paramref name="user"/>'s current credentials.</summary>
+    private void RememberPlatformDevice(PlatformUser user)
+        => LoginAbuseGuard.AppendKnownDeviceCookie(Response, "platform", _loginAbuse?.IssueKnownDeviceToken(
+            "platform", "platform", user.Email, user.Id,
+            LoginAbuseGuard.CredentialVersion(user.PasswordHash, user.MfaEnabled, user.MfaConfiguredAtUtc), DateTime.UtcNow));
+
+    private IActionResult PlatformRefused(string error, string message, int? retryAfterSeconds = null)
     {
-        Response.Headers.RetryAfter = LoginAbuseGuard.JitteredRetryAfterSeconds();
+        Response.Headers.RetryAfter = retryAfterSeconds is { } seconds
+            ? seconds.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : LoginAbuseGuard.JitteredRetryAfterSeconds();
         return StatusCode(StatusCodes.Status429TooManyRequests, new { error, message });
+    }
+
+    private IActionResult PlatformRefusal(LoginRefusal refusal, string email, Zayra.Api.Infrastructure.Http.ClientAddress? client)
+    {
+        var retry = _loginAbuse!.RetryAfterSeconds(refusal, "platform", "platform", email, client, DateTime.UtcNow);
+        var (error, message) = LoginAbuseGuard.Describe(refusal, retry);
+        return PlatformRefused(error, message, retry);
     }
 
     /// <summary>Same PBKDF2 work as a real check, so a miss is not distinguishable by timing.</summary>
@@ -163,8 +169,20 @@ public class PlatformController : ControllerBase
                 return Unauthorized(new { message = "Invalid platform admin credentials." });
             }
 
-            // Brute-force lockout (see PlatformUser.FailedLoginCount): reject while a lockout is active.
-            if (dbUser.LockoutEndUtc.HasValue && dbUser.LockoutEndUtc > DateTime.UtcNow)
+            // Known device (LoginAbuseGuard): a cookie issued to THIS operator for their current
+            // credentials, from a browser that has not been guessing. It lifts the account-wide cap
+            // and the lockout below, never the per-address limit.
+            var attemptAtUtc = DateTime.UtcNow;
+            var knownDevice = _loginAbuse is not null
+                && _loginAbuse.IsKnownDevice(LoginAbuseGuard.KnownDeviceCookie(Request, "platform"), "platform", "platform",
+                    req.Email, dbUser.Id, LoginAbuseGuard.CredentialVersion(dbUser.PasswordHash, dbUser.MfaEnabled, dbUser.MfaConfiguredAtUtc))
+                && _loginAbuse.KnownDeviceStillTrusted("platform", "platform", req.Email, attemptAtUtc);
+            if (_loginAbuse?.TryBeginAccountWide("platform", "platform", req.Email, knownDevice, attemptAtUtc) is { } accountRefusal)
+                return PlatformRefusal(accountRefusal, req.Email, null);
+
+            // Brute-force lockout (see PlatformUser.FailedLoginCount): reject while a lockout is active —
+            // except for a trusted known device, so a stranger cannot lock the owner out of their own browser.
+            if (dbUser.LockoutEndUtc.HasValue && dbUser.LockoutEndUtc > DateTime.UtcNow && !knownDevice)
             {
                 await VerifyDummyPasswordAsync(req.Password, ct);
                 _db.LoginActivities.Add(new LoginActivity
@@ -182,6 +200,20 @@ public class PlatformController : ControllerBase
             if (!await PasswordVerificationGate.RunAsync(_passwordGate,
                     () => _passwordHasher.Verify(req.Password, storedHash), ct))
             {
+                if (knownDevice)
+                {
+                    // Counted against the device, never toward the unknown-device lockout.
+                    _loginAbuse!.RecordKnownDeviceFailure("platform", "platform", req.Email, DateTime.UtcNow);
+                    _db.LoginActivities.Add(new LoginActivity
+                    {
+                        UserId = dbUser.Id, EmailAttempted = dbUser.Email,
+                        EventType = LoginEventTypes.PlatformLoginFailed, FailureReason = "password_mismatch_known_device",
+                        IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+                        UserAgent = HttpContext.Request.Headers.UserAgent.ToString(),
+                    });
+                    await _db.SaveChangesAsync(ct);
+                    return Unauthorized(new { message = "Invalid platform admin credentials." });
+                }
                 dbUser.FailedLoginCount++;
                 if (dbUser.FailedLoginCount >= PlatformUser.MaxFailedLogins)
                     dbUser.LockoutEndUtc = DateTime.UtcNow.AddMinutes(PlatformUser.LockoutMinutes);
@@ -257,6 +289,8 @@ public class PlatformController : ControllerBase
             // request must never materialize a privileged principal or mint its first session.
             // Once any platform principal exists, an unknown email is indistinguishable from a
             // wrong password (401), so this endpoint is not an account-enumeration oracle.
+            if (_loginAbuse?.TryBeginAccountWide("platform", "platform", req.Email, false, DateTime.UtcNow) is { } unknownRefusal)
+                return PlatformRefusal(unknownRefusal, req.Email, null);
             await VerifyDummyPasswordAsync(req.Password, ct);
             HttpContext.Items[UnknownPlatformAccountItem] = true;
             if (await _db.PlatformUsers.AnyAsync(ct))
@@ -280,7 +314,7 @@ public class PlatformController : ControllerBase
         });
         await _db.SaveChangesAsync(ct);
 
-        HttpContext.Items[PlatformSessionIssuedItem] = true;
+        RememberPlatformDevice(authenticatedUser);
         return Ok(CreatePlatformToken(authenticatedUser, sessionExpiry));
     }
 
@@ -435,7 +469,7 @@ public class PlatformController : ControllerBase
                 null),
             ct);
         if (pu is null) return Unauthorized(new { message = "Invalid or expired recovery code." });
-        _loginAbuse?.AppendKnownDeviceCookie(Response, "platform", "platform", pu.Email);
+        RememberPlatformDevice(pu);
         return Ok(CreatePlatformToken(pu));
     }
 
@@ -469,7 +503,7 @@ public class PlatformController : ControllerBase
                 null),
             ct);
         if (pu is null) return Unauthorized(new { message = "Invalid or expired MFA challenge." });
-        _loginAbuse?.AppendKnownDeviceCookie(Response, "platform", "platform", pu.Email);
+        RememberPlatformDevice(pu);
         return Ok(CreatePlatformToken(pu));
     }
 

@@ -35,14 +35,18 @@ public sealed class RateLimitRejectionTests
         response.ContentType.Should().StartWith("application/json");
         body.GetProperty("error").GetString().Should().Be("rate_limited");
         body.GetProperty("message").GetString().Should().NotBeNullOrWhiteSpace();
-        int.Parse(response.Headers.RetryAfter.ToString()).Should().BeInRange(1, 30);
+        var seconds = int.Parse(response.Headers.RetryAfter.ToString());
+        seconds.Should().BeInRange(11, 30);
+        body.GetProperty("message").GetString().Should().EndWith("in about a minute.",
+            "the message's wait matches its Retry-After");
     }
 
     [Fact]
     public async Task WithoutLimiterMetadata_RetryAfterIsJittered()
     {
-        var (response, _) = await Reject(new NoMetadataLease());
+        var (response, body) = await Reject(new NoMetadataLease());
         int.Parse(response.Headers.RetryAfter.ToString()).Should().BeInRange(2, 6);
+        body.GetProperty("message").GetString().Should().EndWith("in a few seconds.");
     }
 
     private sealed class NoMetadataLease : RateLimitLease

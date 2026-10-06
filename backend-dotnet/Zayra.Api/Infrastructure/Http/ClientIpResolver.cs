@@ -38,8 +38,9 @@ public static class ClientIpResolver
     /// <item><see cref="ClientIpSource.UnverifiedProxy"/> — it came through the proxy without the
     /// secret: <c>RemoteIpAddress</c> is the proxy's, shared by every web user.</item>
     /// </list>
-    /// The proxy markers are not authenticated, so a direct caller can claim to be proxied; the only
-    /// thing that buys is exemption from per-IP budgets, never from per-account limits.
+    /// The proxy markers are not authenticated. With no secret configured a direct caller can claim to
+    /// be proxied, which only buys exemption from per-IP budgets, never from per-account limits; with a
+    /// secret configured a marker without the secret is treated as Direct.
     /// </summary>
     public static ClientAddress ResolveAddress(HttpContext context, string? configuredSecret)
     {
@@ -54,6 +55,11 @@ public static class ClientIpResolver
                 return new ClientAddress(ip.ToString(), ClientIpSource.AuthenticatedProxy);
         }
 
+        // Once a secret is configured, the real proxy always presents it, so a request that merely
+        // CLAIMS to be proxied without it is a direct caller — and is held to the per-IP budget. Only
+        // with no secret configured do the (unauthenticated) markers mean "shared proxy address".
+        if (!string.IsNullOrEmpty(configuredSecret))
+            return new ClientAddress(remote, ClientIpSource.Direct);
         var proxied = context.Request.Headers.ContainsKey(ViaProxyHeader)
                       || context.Request.Headers.ContainsKey("x-vercel-id")
                       || context.Request.Headers.ContainsKey("x-vercel-forwarded-for");

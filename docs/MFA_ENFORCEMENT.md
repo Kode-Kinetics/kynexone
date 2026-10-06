@@ -81,7 +81,10 @@ Every factor change is audited (`auth.mfa.enabled`, `platform.auth.tenant_mfa_di
 ## Sign-in abuse controls
 
 Checked before any password hashing (`LoginAbuseGuard`), on tenant and platform sign-in. Every
-429 carries a jittered `Retry-After` of 2–6 s and a JSON `{ error, message }`:
+429 carries a JSON `{ error, message }` and a `Retry-After`: for an account or address limit, the
+time until that window actually frees; for the hashing gate and unknown cases, a jittered 2–6 s. The
+message's wording follows the header (≤ 10 s "in a few seconds", ≤ 90 s "in about a minute", longer
+"in a few minutes"), and the sign-in pages derive their wording the same way.
 
 | Control | Default | `error` | Config (`Auth__LoginThrottle__…`) |
 |---|---|---|---|
@@ -94,13 +97,21 @@ Checked before any password hashing (`LoginAbuseGuard`), on tenant and platform 
   secret (below), or a request that did not come through the web proxy. Without the secret every
   browser request arrives from the proxy's address, so the budget is skipped for it (per-account
   limits still apply) and the API logs `[LOGIN-THROTTLE]` at boot; the CI deploy env gate warns too.
-  The proxy marker (`X-KynexOne-Via-Proxy`) is unauthenticated: a direct caller claiming it only
-  escapes the per-IP budget, never the per-account limits.
+  The proxy marker (`X-KynexOne-Via-Proxy`, also `x-vercel-id`/`x-vercel-forwarded-for`) is
+  unauthenticated: with no secret configured a direct caller claiming it only escapes the per-IP
+  budget, never the per-account limits; **once the secret is configured, a marker without it is
+  treated as a direct caller** and keeps the per-IP budget.
 - **Known device:** a successful sign-in sets `kx_known_device` (platform: `kx_platform_known_device`),
   an HttpOnly, Secure, SameSite=Strict cookie scoped to the sign-in path, protected by the Data
-  Protection key ring, bound to the account and valid 90 days. It exempts that browser from the
-  account-wide cap only, so a stranger guessing from many IPs cannot lock the owner out of their own
-  browser. The mobile app does not carry it yet (it cannot read HttpOnly cookies); it gets the per-IP
+  Protection key ring and valid 90 days. It is bound to the account, the user id and a credential
+  version (a fingerprint of the current password hash and MFA enrolment), so a password change, an MFA
+  reset or re-enrolment, or re-creating the user revokes every earlier cookie. A trusted known device:
+  - skips the account-wide cap (never the per-address limit);
+  - gets through the **database lockout** (5 failures → 15 min) with the right password, and the
+    success clears the lockout and the counter — so a stranger cannot lock the owner out of their own
+    browser. The lockout for unknown devices is unchanged;
+  - does not add its own wrong passwords to that lockout; they are recorded
+    (`password_mismatch_known_device`) and after 10 in 15 minutes the device stops being trusted. The mobile app does not carry it yet (it cannot read HttpOnly cookies); it gets the per-IP
   limit only.
 - Not done yet: a CAPTCHA/step-up challenge for the account-wide cap (follow-up).
 - State is in-process (one API instance). The per-IP rate limits in `render.yaml`

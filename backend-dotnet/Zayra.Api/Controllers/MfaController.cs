@@ -16,13 +16,10 @@ public class MfaController : ControllerBase
     private readonly IMfaService _mfa;
     private readonly IAuthService _authService;
 
-    private readonly LoginAbuseGuard? _abuse;
-
-    public MfaController(IMfaService mfa, IAuthService authService, LoginAbuseGuard? abuse = null)
+    public MfaController(IMfaService mfa, IAuthService authService)
     {
         _mfa = mfa;
         _authService = authService;
-        _abuse = abuse;
     }
 
     // ── Setup ─────────────────────────────────────────────────────────────────
@@ -175,7 +172,7 @@ public class MfaController : ControllerBase
                 GetContext(),
                 ct);
             // The sign-in is complete: remember this browser for the account (LoginAbuseGuard).
-            _abuse?.AppendKnownDeviceCookie(Response, "tenant", response.User.TenantSlug, response.User.Email);
+            LoginAbuseGuard.AppendKnownDeviceCookie(Response, "tenant", response.KnownDeviceToken);
             return Ok(response);
         }
         catch (UnauthorizedAccessException ex)

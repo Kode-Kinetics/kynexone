@@ -123,7 +123,15 @@ public record AuthResponse(
     string AccessToken,
     string RefreshToken,
     DateTime ExpiresAtUtc,
-    AuthUserDto User);
+    AuthUserDto User)
+{
+    /// <summary>
+    /// Known-device token for the HttpOnly cookie the sign-in endpoint sets (LoginAbuseGuard). Never
+    /// serialised: the browser must not be able to read it.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? KnownDeviceToken { get; init; }
+}
 
 public record CompanyAccessDto(Guid Id, string Name, string Code, string CountryCode, bool IsActive);
 

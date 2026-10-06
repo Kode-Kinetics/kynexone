@@ -30,9 +30,11 @@ public class AuthService : IAuthService
     private readonly string _appUrl;
     private readonly IConfiguration? _configuration;
     private readonly PasswordVerificationGate? _passwordGate;
+    private readonly LoginAbuseGuard? _abuse;
 
-    public AuthService(ZayraDbContext db, IPasswordHasher passwordHasher, ITokenService tokenService, IAuditService auditService, IEmailService emailService, IOptions<JwtOptions> jwtOptions, IMfaService mfaService, TotpService totp, ILogger<AuthService> log, IConfiguration? configuration = null, PasswordVerificationGate? passwordGate = null)
+    public AuthService(ZayraDbContext db, IPasswordHasher passwordHasher, ITokenService tokenService, IAuditService auditService, IEmailService emailService, IOptions<JwtOptions> jwtOptions, IMfaService mfaService, TotpService totp, ILogger<AuthService> log, IConfiguration? configuration = null, PasswordVerificationGate? passwordGate = null, LoginAbuseGuard? abuse = null)
     {
+        _abuse = abuse;
         _passwordGate = passwordGate;
         _db = db;
         _passwordHasher = passwordHasher;
@@ -60,6 +62,18 @@ public class AuthService : IAuthService
         var failReason = entryEligibility.Allowed || entryEligibility.Reason == "account_locked"
             ? null
             : entryEligibility.Reason;
+
+        // Known device: the browser holds a cookie issued to THIS account at a previous successful
+        // sign-in, for its current password and MFA state, and has not been guessing since. It lifts
+        // the account-wide attempt cap and the database lockout (below) — never the per-address limit.
+        var attemptAtUtc = DateTime.UtcNow;
+        var knownDevice = user is not null && _abuse is not null
+            && _abuse.IsKnownDevice(context.KnownDeviceToken, "tenant", tenantSlug, request.Email, user.Id,
+                LoginAbuseGuard.CredentialVersion(user.PasswordHash, user.MFAEnabled, user.MfaConfiguredAtUtc))
+            && _abuse.KnownDeviceStillTrusted("tenant", tenantSlug, request.Email, attemptAtUtc);
+        if (_abuse?.TryBeginAccountWide("tenant", tenantSlug, request.Email, knownDevice, attemptAtUtc) is { } refusal)
+            throw new LoginRefusedException(refusal,
+                _abuse.RetryAfterSeconds(refusal, "tenant", tenantSlug, request.Email, null, attemptAtUtc));
 
         if (failReason is not null)
         {
@@ -91,9 +105,12 @@ public class AuthService : IAuthService
         int maxAttempts    = sec?.MaxFailedLoginAttempts  ?? 5;
         int lockoutMinutes = sec?.LockoutDurationMinutes  ?? 15;
 
-        // Phase 3 — check existing lockout before attempting password verification
-        if ((user!.IsLocked && (!user.LockoutEnd.HasValue || user.LockoutEnd > DateTime.UtcNow))
-            || (user.LockoutEnd.HasValue && user.LockoutEnd > DateTime.UtcNow))
+        // Phase 3 — check existing lockout before attempting password verification. A trusted known
+        // device goes on to the password check: the lockout exists to stop strangers guessing, and
+        // letting it lock the owner out of their own browser made it a weapon against them.
+        var lockoutActive = (user!.IsLocked && (!user.LockoutEnd.HasValue || user.LockoutEnd > DateTime.UtcNow))
+            || (user.LockoutEnd.HasValue && user.LockoutEnd > DateTime.UtcNow);
+        if (lockoutActive && !knownDevice)
         {
             await VerifyDummyAsync(request.Password, cancellationToken);
             _log.LogWarning("Login blocked — lockout active until {LockoutEnd} for {Email}", user.LockoutEnd, request.Email);
@@ -118,6 +135,23 @@ public class AuthService : IAuthService
         if (!await PasswordVerificationGate.RunAsync(_passwordGate,
                 () => _passwordHasher.Verify(request.Password, storedHash), cancellationToken))
         {
+            if (knownDevice)
+            {
+                // Counted against the device (it stops being trusted after repeated misses), but never
+                // toward the lockout that applies to unknown devices.
+                _abuse!.RecordKnownDeviceFailure("tenant", tenantSlug, request.Email, DateTime.UtcNow);
+                _db.LoginActivities.Add(new LoginActivity
+                {
+                    TenantId = user.TenantId, UserId = user.Id, EmailAttempted = request.Email,
+                    EventType = LoginEventTypes.LoginFailed, FailureReason = "password_mismatch_known_device",
+                    IpAddress = context.IpAddress, UserAgent = context.UserAgent,
+                });
+                await _db.SaveChangesAsync(cancellationToken);
+                await _auditService.WriteAsync("auth.login_failed", "User", user.Id.ToString(),
+                    context with { UserId = user.Id, TenantId = user.TenantId },
+                    $"{{\"email\":\"{request.Email}\",\"reason\":\"password_mismatch_known_device\"}}", cancellationToken);
+                throw new UnauthorizedAccessException("Invalid email, password, or tenant.");
+            }
             user.FailedLoginCount++;
 
             bool nowLocked = user.FailedLoginCount >= maxAttempts;
@@ -155,6 +189,19 @@ public class AuthService : IAuthService
         var verifiedPasswordHash = user.PasswordHash;
         if (_passwordHasher.NeedsRehash(verifiedPasswordHash))
             verifiedPasswordHash = await UpgradePasswordHashAsync(user, request.Password, cancellationToken);
+
+        // Phase 4a' — the owner proved the password from a trusted known device: lift the lockout
+        // an attacker caused, and reset the counter, before any challenge or session is issued.
+        if (knownDevice && (lockoutActive || user.FailedLoginCount > 0 || user.IsLocked))
+        {
+            user.IsLocked = false;
+            user.LockoutEnd = null;
+            user.FailedLoginCount = 0;
+            await _db.SaveChangesAsync(cancellationToken);
+            await _auditService.WriteAsync("auth.lockout_cleared_known_device", "User", user.Id.ToString(),
+                context with { UserId = user.Id, TenantId = user.TenantId }, null, cancellationToken);
+            verifiedPasswordHash = user.PasswordHash;
+        }
 
         // Phase 4b — MFA challenge: if the user has TOTP enabled, issue a short-lived challenge
         // token instead of full session tokens. Full tokens are only issued after the TOTP code
@@ -205,15 +252,25 @@ public class AuthService : IAuthService
         // Phase 5 — successful password-only issuance is re-authorized under the same tenant/user
         // serialization anchors used by MFA completion and refresh. The refresh row, activity and
         // central audit commit together; the pre-lock read above is never issuance authority.
-        return new AuthLoginResult(
-            await CompletePasswordOnlyLoginAsync(
-                user.Id,
-                tenantSlug,
-                verifiedPasswordHash,
-                context,
-                cancellationToken),
-            null);
+        var issued = await CompletePasswordOnlyLoginAsync(
+            user.Id,
+            tenantSlug,
+            verifiedPasswordHash,
+            context,
+            cancellationToken);
+        return new AuthLoginResult(issued with
+        {
+            KnownDeviceToken = _abuse?.IssueKnownDeviceToken("tenant", tenantSlug, user.Email, user.Id,
+                LoginAbuseGuard.CredentialVersion(verifiedPasswordHash, false, null), DateTime.UtcNow),
+        }, null);
     }
+
+    /// <summary>Attaches the known-device token for a just-completed sign-in of <paramref name="user"/>.</summary>
+    private AuthResponse WithKnownDevice(AuthResponse response, User user) => response with
+    {
+        KnownDeviceToken = user.Tenant is null ? null : _abuse?.IssueKnownDeviceToken("tenant", user.Tenant.Slug, user.Email, user.Id,
+            LoginAbuseGuard.CredentialVersion(user.PasswordHash, user.MFAEnabled, user.MfaConfiguredAtUtc), DateTime.UtcNow),
+    };
 
     public async Task<AuthResponse> RefreshAsync(
         RefreshTokenRequest request,
@@ -1183,7 +1240,7 @@ public class AuthService : IAuthService
                 auditContext,
                 loginAuditMetadata));
             await _db.SaveChangesAsync(ct);
-            preparedResponse = BuildAuthResponse(user, refreshRaw);
+            preparedResponse = WithKnownDevice(BuildAuthResponse(user, refreshRaw), user);
             succeeded = true;
             return true;
         }
@@ -1281,7 +1338,7 @@ public class AuthService : IAuthService
             || !committedUser.MFAEnabled
             || string.IsNullOrWhiteSpace(committedUser.MfaSecretEncrypted))
             throw new UnauthorizedAccessException("Invalid or expired MFA challenge.");
-        return BuildAuthResponse(committedUser, refreshRaw);
+        return WithKnownDevice(BuildAuthResponse(committedUser, refreshRaw), committedUser);
     }
 
     /// <summary>
