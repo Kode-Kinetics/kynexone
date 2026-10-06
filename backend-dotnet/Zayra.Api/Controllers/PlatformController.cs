@@ -49,6 +49,7 @@ public class PlatformController : ControllerBase
     private readonly string _appUrl;
     private readonly PasswordVerificationGate? _passwordGate;
     private readonly LoginAbuseGuard? _loginAbuse;
+    private readonly PlatformSecurityNoticeQueue? _securityNotices;
 
     /// <summary>
     /// Key read (never written) by the <c>/platform/health</c> distributed-cache probe. Carries the
@@ -70,8 +71,10 @@ public class PlatformController : ControllerBase
         ILogger<PlatformController> log,
         IMemoryCache cache,
         PasswordVerificationGate? passwordGate = null,
-        LoginAbuseGuard? loginAbuse = null)
+        LoginAbuseGuard? loginAbuse = null,
+        PlatformSecurityNoticeQueue? securityNotices = null)
     {
+        _securityNotices = securityNotices;
         _passwordGate = passwordGate;
         _loginAbuse = loginAbuse;
         _db = db;
@@ -142,7 +145,7 @@ public class PlatformController : ControllerBase
     /// names and validates this browser's known-device cookie for them, so a known device that got
     /// through an active lockout at the password step gets through it here too (without clearing it).
     /// </summary>
-    private async Task<(RequestContext Context, Guid? Device, bool LockoutBypass)> PlatformSecondFactorContextAsync(
+    private async Task<(RequestContext Context, Guid? Device, DateTime? LockoutBypass)> PlatformSecondFactorContextAsync(
         string challengeToken, CancellationToken ct)
     {
         var context = new RequestContext(
@@ -150,32 +153,24 @@ public class PlatformController : ControllerBase
             HttpContext.Request.Headers.UserAgent.ToString(), null, null);
         if (_loginAbuse is null
             || !AuthChallengeTokenCodec.TryParse(challengeToken, AuthChallengeTokenCodec.PlatformLoginPurpose, out var envelope))
-            return (context, null, false);
+            return (context, null, null);
         var pu = await _db.PlatformUsers.AsNoTracking().FirstOrDefaultAsync(x => x.Id == envelope.PrincipalId, ct);
-        if (pu is null) return (context, null, false);
+        if (pu is null) return (context, null, null);
         var device = ReadPlatformKnownDevice(pu, pu.Email);
         var trusted = PlatformDeviceTrusted(device, pu.Email);
-        var bypass = trusted && pu.LockoutEndUtc > DateTime.UtcNow;
-        return (context with { KnownDeviceVerified = trusted }, device, bypass);
+        DateTime? bypassed = trusted && pu.LockoutEndUtc > DateTime.UtcNow ? pu.LockoutEndUtc : null;
+        return (context with { KnownDeviceVerified = trusted }, device, bypassed);
     }
 
     private bool PlatformDeviceTrusted(Guid? device, string email)
         => device is { } d && _loginAbuse!.KnownDeviceStillTrusted("platform", "platform", email, d, DateTime.UtcNow);
 
-    /// <summary>Best-effort security notice to an operator through the platform relay. Logs ids only.</summary>
-    private async Task NotifyOperatorAsync(PlatformUser user, string subject, string text, string kind, CancellationToken ct)
-    {
-        try
-        {
-            var html = $"<p>Hello {System.Net.WebUtility.HtmlEncode(user.FullName)},</p><p>{System.Net.WebUtility.HtmlEncode(text)}</p>";
-            var result = await _emailService.DeliverPlatformAsync(user.Email, user.FullName, subject, html, cancellationToken: ct);
-            _log.LogInformation("Security notice {Kind} for platform user {PlatformUserId}: {Outcome}.", kind, user.Id, result.Status);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _log.LogWarning(ex, "Security notice {Kind} for platform user {PlatformUserId} could not be sent.", kind, user.Id);
-        }
-    }
+    /// <summary>
+    /// Queues a security notice for an operator (<see cref="PlatformSecurityNoticeQueue"/>): sign-in
+    /// never waits on SMTP, and a notice with a dedupe key goes out at most once.
+    /// </summary>
+    private void NotifyOperator(PlatformUser user, string subject, string text, string kind, string? dedupeKey = null)
+        => _securityNotices?.TryEnqueue(new PlatformSecurityNotice(user.Id, user.Email, user.FullName, subject, text, kind), dedupeKey);
 
     private IActionResult PlatformRefused(string error, string message, int? retryAfterSeconds = null)
     {
@@ -276,10 +271,10 @@ public class PlatformController : ControllerBase
                             dbUser.Id.ToString(), audit, $"{{\"failures\":{LoginAbuseGuard.KnownDeviceFailureLimit}}}"));
                     await _db.SaveChangesAsync(ct);
                     if (distrusted)
-                        await NotifyOperatorAsync(dbUser, "Repeated wrong passwords on your KynexOne platform account",
+                        NotifyOperator(dbUser, "Repeated wrong passwords on your KynexOne platform account",
                             $"{LoginAbuseGuard.KnownDeviceFailureLimit} wrong passwords were entered for your account from a browser "
                             + "you had signed in with before. That browser is no longer trusted to get past a lockout.",
-                            "known-device-distrusted", ct);
+                            "known-device-distrusted", $"distrusted|{dbUser.Id:N}|{platformDevice!.Value:N}|{now:yyyyMMddHH}");
                     return Unauthorized(new { message = "Invalid platform admin credentials." });
                 }
                 dbUser.FailedLoginCount++;
@@ -308,11 +303,11 @@ public class PlatformController : ControllerBase
                     "PlatformUser", dbUser.Id.ToString(),
                     new RequestContext(_loginAbuse!.Client(HttpContext).Ip, HttpContext.Request.Headers.UserAgent.ToString(), null, null),
                     $"{{\"lockoutEnd\":\"{dbUser.LockoutEndUtc:O}\"}}"));
-                await NotifyOperatorAsync(dbUser, "Your KynexOne platform account is locked by failed sign-ins",
+                NotifyOperator(dbUser, "Your KynexOne platform account is locked by failed sign-ins",
                     "Your account was locked after repeated wrong passwords from a device you have not used before. You signed "
                     + "in from a browser you had used before, so you were let through; the lock stays in place for everyone "
                     + "else until it expires. If the failed attempts were not you, change your password.",
-                    "lockout-bypassed", ct);
+                    "lockout-bypassed", $"bypass|{dbUser.Id:N}|{dbUser.LockoutEndUtc?.Ticks ?? 0}"); // one per lockout
             }
             else
             {
@@ -401,7 +396,8 @@ public class PlatformController : ControllerBase
         await _db.SaveChangesAsync(ct);
 
         RememberPlatformDevice(authenticatedUser, signInDevice);
-        return Ok(CreatePlatformToken(authenticatedUser, sessionExpiry, lockoutBypass: bypassingLockout));
+        return Ok(CreatePlatformToken(authenticatedUser, sessionExpiry,
+            lockoutBypassedUntil: bypassingLockout ? authenticatedUser.LockoutEndUtc : null));
     }
 
     private async Task UpgradePlatformPasswordHashAsync(PlatformUser user, string password, CancellationToken ct)
@@ -549,7 +545,7 @@ public class PlatformController : ControllerBase
         var pu = await _mfa.CompletePlatformChallengeWithRecoveryCodeAsync(request.ChallengeToken, request.RecoveryCode, context, ct);
         if (pu is null) return Unauthorized(new { message = "Invalid or expired recovery code." });
         RememberPlatformDevice(pu, device);
-        return Ok(CreatePlatformToken(pu, lockoutBypass: bypass));
+        return Ok(CreatePlatformToken(pu, lockoutBypassedUntil: bypass));
     }
 
     /// <summary>Replaces every recovery code (old ones stop working). Requires a current TOTP code.</summary>
@@ -576,7 +572,7 @@ public class PlatformController : ControllerBase
         var pu = await _mfa.CompletePlatformChallengeAsync(request.ChallengeToken, request.TotpCode, context, ct);
         if (pu is null) return Unauthorized(new { message = "Invalid or expired MFA challenge." });
         RememberPlatformDevice(pu, device);
-        return Ok(CreatePlatformToken(pu, lockoutBypass: bypass));
+        return Ok(CreatePlatformToken(pu, lockoutBypassedUntil: bypass));
     }
 
     [HttpPost("auth/mfa/disable")]
@@ -619,7 +615,9 @@ public class PlatformController : ControllerBase
     /// validation (PlatformSessionSecurity) then does not refuse it for the lockout it bypassed.</summary>
     internal const string LockoutBypassClaim = "kx_lockout_bypass";
 
-    private object CreatePlatformToken(PlatformUser user, DateTime? expiresAtUtc = null, bool lockoutBypass = false)
+    /// <param name="lockoutBypassedUntil">The LockoutEndUtc this session bypassed; recorded in the claim so
+    /// a later, longer lockout (new attacker failures) is NOT bypassed by the same token.</param>
+    private object CreatePlatformToken(PlatformUser user, DateTime? expiresAtUtc = null, DateTime? lockoutBypassedUntil = null)
     {
         if (!user.UpdatedAtUtc.HasValue)
             throw new InvalidOperationException("Platform user session stamp was not initialized.");
@@ -635,7 +633,8 @@ public class PlatformController : ControllerBase
             new(PlatformSessionSecurity.SessionStampClaim, PlatformSessionSecurity.StampValue(user.UpdatedAtUtc.Value)),
             new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
         };
-        if (lockoutBypass) claims.Add(new Claim(LockoutBypassClaim, "1"));
+        if (lockoutBypassedUntil is { } bypassed)
+            claims.Add(new Claim(LockoutBypassClaim, PlatformSessionSecurity.LockoutClaimValue(bypassed)));
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwt.SigningKey));
         var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
         var token = new JwtSecurityToken(_jwt.Issuer, _jwt.PlatformAudience, claims, expires: expiresAt, signingCredentials: credentials);

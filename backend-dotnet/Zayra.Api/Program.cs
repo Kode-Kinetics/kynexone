@@ -472,6 +472,9 @@ builder.Services.AddSingleton<Zayra.Api.Infrastructure.Pricing.QuoteNotification
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Pricing.QuoteNotificationBudget>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Pricing.QuoteNotificationSender>();
 builder.Services.AddHostedService<Zayra.Api.Infrastructure.Pricing.QuoteNotificationWorker>();
+// Platform operators' security notices (no tenant outbox for them): sign-in enqueues, this sends.
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Auth.PlatformSecurityNoticeQueue>();
+builder.Services.AddHostedService<Zayra.Api.Infrastructure.Auth.PlatformSecurityNoticeWorker>();
 
 // F3 — durable background jobs (job store + per-item checkpoints + leased, fenced worker). Runs on
 // every instance: claims are FOR UPDATE SKIP LOCKED with a lease token, so old and new instances share

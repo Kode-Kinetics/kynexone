@@ -31,10 +31,12 @@ public class AuthService : IAuthService
     private readonly IConfiguration? _configuration;
     private readonly PasswordVerificationGate? _passwordGate;
     private readonly LoginAbuseGuard? _abuse;
+    private readonly Zayra.Api.Infrastructure.Notifications.INotificationService? _notifications;
 
-    public AuthService(ZayraDbContext db, IPasswordHasher passwordHasher, ITokenService tokenService, IAuditService auditService, IEmailService emailService, IOptions<JwtOptions> jwtOptions, IMfaService mfaService, TotpService totp, ILogger<AuthService> log, IConfiguration? configuration = null, PasswordVerificationGate? passwordGate = null, LoginAbuseGuard? abuse = null)
+    public AuthService(ZayraDbContext db, IPasswordHasher passwordHasher, ITokenService tokenService, IAuditService auditService, IEmailService emailService, IOptions<JwtOptions> jwtOptions, IMfaService mfaService, TotpService totp, ILogger<AuthService> log, IConfiguration? configuration = null, PasswordVerificationGate? passwordGate = null, LoginAbuseGuard? abuse = null, Zayra.Api.Infrastructure.Notifications.INotificationService? notifications = null)
     {
         _abuse = abuse;
+        _notifications = notifications;
         _passwordGate = passwordGate;
         _db = db;
         _passwordHasher = passwordHasher;
@@ -153,10 +155,12 @@ public class AuthService : IAuthService
                     await _auditService.WriteAsync("auth.known_device_distrusted", "User", user.Id.ToString(),
                         context with { UserId = user.Id, TenantId = user.TenantId },
                         $"{{\"failures\":{LoginAbuseGuard.KnownDeviceFailureLimit}}}", cancellationToken);
-                    await NotifyAccountOwnerAsync(user, "Repeated wrong passwords on your KynexOne account",
+                    await NotifyAccountOwnerAsync(user, "security.known_device_distrusted",
+                        $"{user.Id:N}:{cookieDevice!.Value:N}:{DateTime.UtcNow:yyyyMMddHH}",
+                        "Repeated wrong passwords on your KynexOne account",
                         $"{LoginAbuseGuard.KnownDeviceFailureLimit} wrong passwords were entered for your account from a "
                         + "browser you had signed in with before. That browser is no longer trusted to get past a lockout.",
-                        "known-device-distrusted", cancellationToken);
+                        cancellationToken);
                 }
                 throw new UnauthorizedAccessException("Invalid email, password, or tenant.");
             }
@@ -207,11 +211,14 @@ public class AuthService : IAuthService
             await _auditService.WriteAsync("auth.lockout_bypassed_known_device", "User", user.Id.ToString(),
                 context with { UserId = user.Id, TenantId = user.TenantId },
                 $"{{\"lockoutEnd\":\"{user.LockoutEnd:O}\"}}", cancellationToken);
-            await NotifyAccountOwnerAsync(user, "Your KynexOne account is locked by failed sign-ins",
+            // One notice per lockout: the lockout's end time is part of the event's identity.
+            await NotifyAccountOwnerAsync(user, "security.lockout_bypassed_known_device",
+                $"{user.Id:N}:{user.LockoutEnd?.Ticks ?? 0}",
+                "Your KynexOne account is locked by failed sign-ins",
                 "Your account was locked after repeated wrong passwords from a device you have not used before. "
                 + "You signed in from a browser you had used before, so you were let through; the lock stays in place "
                 + "for everyone else until it expires. If the failed attempts were not you, change your password.",
-                "lockout-bypassed", cancellationToken);
+                cancellationToken);
         }
 
         // Phase 4b — MFA challenge: if the user has TOTP enabled, issue a short-lived challenge
@@ -296,19 +303,28 @@ public class AuthService : IAuthService
             existingDevice ?? Guid.NewGuid(), DateTime.UtcNow),
     };
 
-    /// <summary>Best-effort security notice to the account owner through the tenant relay. Logs ids only.</summary>
-    private async Task NotifyAccountOwnerAsync(User user, string subject, string text, string kind, CancellationToken ct)
+    /// <summary>
+    /// Security notice to the account owner through the tenant notification OUTBOX: this only writes
+    /// the delivery rows (no network I/O), NotificationDeliveryWorker sends them, so sign-in never waits
+    /// on SMTP. <paramref name="dedupeId"/> is the business identity of the event (e.g. this lockout):
+    /// the outbox's (tenant, dedupe key) index and an in-process first-notice check both keep it to
+    /// one email. Logs ids only.
+    /// </summary>
+    private async Task NotifyAccountOwnerAsync(User user, string eventCode, string dedupeId, string subject, string text, CancellationToken ct)
     {
-        try
+        if (_notifications is null) return;
+        if (_abuse is not null && !_abuse.FirstNotice($"tenant|{eventCode}|{dedupeId}", TimeSpan.FromDays(1))) return;
+        var queued = await _notifications.EnqueueAsync(new Zayra.Api.Infrastructure.Notifications.NotificationRequest
         {
-            var html = $"<p>Hello {System.Net.WebUtility.HtmlEncode(user.FullName)},</p><p>{System.Net.WebUtility.HtmlEncode(text)}</p>";
-            var result = await _emailService.DeliverAsync(user.TenantId, user.Email, user.FullName, subject, html, cancellationToken: ct);
-            _log.LogInformation("Security notice {Kind} for user {UserId}: {Outcome}.", kind, user.Id, result.Status);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _log.LogWarning(ex, "Security notice {Kind} for user {UserId} could not be sent.", kind, user.Id);
-        }
+            TenantId = user.TenantId,
+            UserId = user.Id,
+            EventCode = eventCode,
+            EntityName = "User",
+            EntityId = dedupeId,
+            Title = subject,
+            Message = text,
+        }, ct);
+        _log.LogInformation("Security notice {EventCode} for user {UserId}: {Count} delivery row(s) queued.", eventCode, user.Id, queued.Count);
     }
 
     public async Task<AuthResponse> RefreshAsync(

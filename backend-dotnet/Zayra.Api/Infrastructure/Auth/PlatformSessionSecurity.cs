@@ -41,6 +41,14 @@ public static class PlatformSessionSecurity
     public static string StampValue(DateTime value)
         => (TruncateToDatabasePrecision(value).Ticks / 10).ToString(CultureInfo.InvariantCulture);
 
+    /// <summary>The bypass claim's value: the bypassed LockoutEndUtc in microseconds (database precision).</summary>
+    public static string LockoutClaimValue(DateTime lockoutEndUtc)
+        => (TruncateToDatabasePrecision(lockoutEndUtc).Ticks / 10).ToString(CultureInfo.InvariantCulture);
+
+    internal static bool BypassCovers(string? claimValue, DateTime currentLockoutEndUtc)
+        => long.TryParse(claimValue, NumberStyles.None, CultureInfo.InvariantCulture, out var bypassedMicros)
+           && TruncateToDatabasePrecision(currentLockoutEndUtc).Ticks / 10 <= bypassedMicros;
+
     public static async Task<bool> IsCurrentAsync(
         ClaimsPrincipal principal,
         ZayraDbContext db,
@@ -65,10 +73,11 @@ public static class PlatformSessionSecurity
         return current is not null
             && current.IsActive
             && PlatformRoles.All.Contains(current.Role)
-            // A session issued through a known-device lockout bypass carries LockoutBypassClaim and
-            // is not refused for the lockout it bypassed; every other session still is.
+            // A session issued through a known-device lockout bypass carries LockoutBypassClaim with
+            // the LockoutEndUtc it bypassed. It is accepted only while the current lockout ends at that
+            // moment or earlier: a NEW, longer lockout (more attacker failures) is not bypassed by it.
             && (!current.LockoutEndUtc.HasValue || current.LockoutEndUtc <= DateTime.UtcNow
-                || principal.HasClaim(Zayra.Api.Controllers.PlatformController.LockoutBypassClaim, "1"))
+                || BypassCovers(principal.FindFirstValue(Zayra.Api.Controllers.PlatformController.LockoutBypassClaim), current.LockoutEndUtc.Value))
             && string.Equals(current.Role, claimedRole, StringComparison.Ordinal)
             && current.UpdatedAtUtc.HasValue
             && string.Equals(StampValue(current.UpdatedAtUtc.Value), claimedStamp, StringComparison.Ordinal);

@@ -56,10 +56,10 @@ public sealed class KnownDeviceLockoutTests
 
     private static async Task<(IActionResult Result, HttpResponse Response)> Tenant(
         AuthHardeningTestKit kit, LoginAbuseGuard guard, string password, string remote, string? cookie = null,
-        IEmailService? email = null)
+        RecordingNotifications? outbox = null)
     {
         await using var db = kit.NewDb();
-        var controller = new AuthController(kit.Auth(db, abuse: guard, email: email), guard)
+        var controller = new AuthController(kit.Auth(db, abuse: guard, notifications: outbox), guard)
         {
             ControllerContext = new ControllerContext
             {
@@ -90,7 +90,7 @@ public sealed class KnownDeviceLockoutTests
         await using var kit = await AuthHardeningTestKit.CreateAsync();
         await kit.SeedUserAsync("victim@hardening.local", new Pbkdf2PasswordHasher().Hash(Password), roleName: null);
         using var guard = Guard();
-        var email = new RecordingEmail();
+        var outbox = new RecordingNotifications();
         var first = await Tenant(kit, guard, Password, "198.51.100.10");
         var cookie = CookieValue(first.Response, LoginAbuseGuard.TenantKnownDeviceCookie);
         (await TenantSessionIsCurrent(kit, first.Result)).Should().BeTrue();
@@ -100,7 +100,7 @@ public sealed class KnownDeviceLockoutTests
         locked.Locked.Should().BeTrue("five misses from an unknown device lock the account, exactly as before");
         (await TenantSessionIsCurrent(kit, first.Result)).Should().BeFalse("the lockout still ends sessions issued before it");
 
-        var owner = await Tenant(kit, guard, Password, "198.51.100.10", cookie, email);
+        var owner = await Tenant(kit, guard, Password, "198.51.100.10", cookie, outbox);
         owner.Result.Should().BeOfType<OkObjectResult>("the owner's known device gets through the lockout");
         (await TenantSessionIsCurrent(kit, owner.Result)).Should().BeTrue("and the session it got works during the lockout");
         (await TenantState(kit)).Should().Be(locked, "the lockout and the shared counter are NOT cleared");
@@ -110,7 +110,10 @@ public sealed class KnownDeviceLockoutTests
 
         await using (var db = kit.NewDb())
             (await db.AuditLogs.IgnoreQueryFilters().AnyAsync(a => a.Action == "auth.lockout_bypassed_known_device")).Should().BeTrue();
-        email.Sent.Should().ContainSingle(m => m.To == "victim@hardening.local" && m.Subject.Contains("locked"));
+        (await Tenant(kit, guard, Password, "198.51.100.10", cookie, outbox)).Result.Should().BeOfType<OkObjectResult>();
+        outbox.Requests.Should().ContainSingle("one notice per lockout, however often the owner signs in during it")
+            .Which.EventCode.Should().Be("security.lockout_bypassed_known_device");
+        outbox.Requests[0].UserId.Should().NotBeNull("it goes to the account owner through the tenant outbox");
 
         // Once the lockout expires, a normal success resets the counter as before.
         await using (var db = kit.NewDb())
@@ -130,14 +133,14 @@ public sealed class KnownDeviceLockoutTests
         await using var kit = await AuthHardeningTestKit.CreateAsync();
         await kit.SeedUserAsync("victim@hardening.local", new Pbkdf2PasswordHasher().Hash(Password), roleName: null);
         using var guard = Guard();
-        var email = new RecordingEmail();
+        var outbox = new RecordingNotifications();
         var stolen = CookieValue((await Tenant(kit, guard, Password, "198.51.100.10")).Response, LoginAbuseGuard.TenantKnownDeviceCookie);
         var ownersOtherDevice = CookieValue((await Tenant(kit, guard, Password, "198.51.100.11")).Response, LoginAbuseGuard.TenantKnownDeviceCookie);
 
         for (var i = 0; i < LoginAbuseGuard.KnownDeviceFailureLimit; i++)
-            (await Tenant(kit, guard, "thief-guess", "198.51.100.10", stolen, email)).Result.Should().BeOfType<UnauthorizedObjectResult>();
+            (await Tenant(kit, guard, "thief-guess", "198.51.100.10", stolen, outbox)).Result.Should().BeOfType<UnauthorizedObjectResult>();
         (await TenantState(kit)).Failed.Should().Be(0, "known-device misses never count toward the account lockout");
-        email.Sent.Should().ContainSingle(m => m.Subject.Contains("Repeated wrong passwords"), "the owner is warned once, at the limit");
+        outbox.Requests.Should().ContainSingle(r => r.EventCode == "security.known_device_distrusted", "the owner is warned once, at the limit");
 
         // Lock the account from an unknown device; the stolen cookie no longer bypasses it…
         for (var i = 0; i < 5; i++) await Tenant(kit, guard, "attacker-guess", "203.0.113.66");
@@ -170,7 +173,7 @@ public sealed class KnownDeviceLockoutTests
 
     private static async Task<(IActionResult Result, HttpResponse Response)> Platform(
         AuthHardeningTestKit kit, LoginAbuseGuard guard, string password, string remote, string? cookie = null,
-        IEmailService? email = null, string address = "owner@platform.test")
+        PlatformSecurityNoticeQueue? notices = null, string address = "owner@platform.test")
     {
         await using var db = kit.NewDb();
         var hasher = new Pbkdf2PasswordHasher();
@@ -178,11 +181,11 @@ public sealed class KnownDeviceLockoutTests
         var tokens = new JwtTokenService(jwt);
         var config = new ConfigurationBuilder().Build();
         var controller = new PlatformController(
-            db, jwt, hasher, new FakeAuthSeeder(db, hasher), tokens, email ?? new FakePlatformEmailService(), config,
+            db, jwt, hasher, new FakeAuthSeeder(db, hasher), tokens, new FakePlatformEmailService(), config,
             kit.Mfa(db), new AccessManagementService(db, hasher, new AuditService(db), tokens, config),
             NullLogger<PlatformController>.Instance,
             new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()),
-            passwordGate: null, loginAbuse: guard)
+            passwordGate: null, loginAbuse: guard, securityNotices: notices)
         {
             ControllerContext = new ControllerContext { HttpContext = Http(remote, LoginAbuseGuard.PlatformKnownDeviceCookie, cookie) },
         };
@@ -221,7 +224,7 @@ public sealed class KnownDeviceLockoutTests
         await using var kit = await AuthHardeningTestKit.CreateAsync();
         await SeedOwnerAsync(kit);
         using var guard = Guard();
-        var email = new RecordingEmail();
+        using var notices = new PlatformSecurityNoticeQueue();
         var first = await Platform(kit, guard, Password, "198.51.100.10");
         var cookie = CookieValue(first.Response, LoginAbuseGuard.PlatformKnownDeviceCookie);
 
@@ -230,13 +233,16 @@ public sealed class KnownDeviceLockoutTests
         locked.Until.Should().BeAfter(DateTime.UtcNow);
         (await PlatformSessionIsCurrent(kit, first.Result)).Should().BeFalse("the lockout still ends sessions issued before it");
 
-        var owner = await Platform(kit, guard, Password, "198.51.100.10", cookie, email);
+        var owner = await Platform(kit, guard, Password, "198.51.100.10", cookie, notices);
         owner.Result.Should().BeOfType<OkObjectResult>();
         (await PlatformSessionIsCurrent(kit, owner.Result)).Should().BeTrue("the bypass session works during the lockout");
         (await PlatformState(kit)).Should().Be(locked, "the lockout and the shared counter are NOT cleared");
         (await Platform(kit, guard, Password, "203.0.113.66")).Result.Should().BeOfType<UnauthorizedObjectResult>(
             "a correct password from an unknown device is still refused until expiry");
-        email.Sent.Should().ContainSingle(m => m.To == "owner@platform.test" && m.Subject.Contains("locked"));
+        (await Platform(kit, guard, Password, "198.51.100.10", cookie, notices)).Result.Should().BeOfType<OkObjectResult>();
+        var queued = Drain(notices);
+        queued.Should().ContainSingle("one notice per lockout, queued off the sign-in path")
+            .Which.Should().Match<PlatformSecurityNotice>(n => n.Kind == "lockout-bypassed" && n.Email == "owner@platform.test");
         await using var db = kit.NewDb();
         (await db.AuditLogs.IgnoreQueryFilters().AnyAsync(a => a.Action == "platform.auth.lockout_bypassed_known_device")).Should().BeTrue();
     }
@@ -247,19 +253,57 @@ public sealed class KnownDeviceLockoutTests
         await using var kit = await AuthHardeningTestKit.CreateAsync();
         await SeedOwnerAsync(kit);
         using var guard = Guard();
-        var email = new RecordingEmail();
+        using var notices = new PlatformSecurityNoticeQueue();
         var cookie = CookieValue((await Platform(kit, guard, Password, "198.51.100.10")).Response, LoginAbuseGuard.PlatformKnownDeviceCookie);
 
         for (var i = 0; i < LoginAbuseGuard.KnownDeviceFailureLimit; i++)
-            await Platform(kit, guard, "typo", "198.51.100.10", cookie, email);
+            await Platform(kit, guard, "typo", "198.51.100.10", cookie, notices);
         (await PlatformState(kit)).Failed.Should().Be(0);
-        email.Sent.Should().ContainSingle(m => m.Subject.Contains("Repeated wrong passwords"));
+        Drain(notices).Should().ContainSingle(n => n.Kind == "known-device-distrusted");
 
         await using var db = kit.NewDb();
         (await db.LoginActivities.AsNoTracking().Where(a => a.FailureReason == "password_mismatch_known_device")
             .Select(a => a.IpAddress).ToListAsync()).Should().HaveCount(5).And.OnlyContain(ip => ip == "198.51.100.10");
         (await db.AuditLogs.IgnoreQueryFilters().CountAsync(a => a.Action == "platform.auth.login_failed"
             && a.Metadata!.Contains("password_mismatch_known_device"))).Should().Be(5, "the same audit row as the tenant path");
+    }
+
+    private static List<PlatformSecurityNotice> Drain(PlatformSecurityNoticeQueue queue)
+    {
+        var items = new List<PlatformSecurityNotice>();
+        while (queue.Reader.TryRead(out var n)) items.Add(n);
+        return items;
+    }
+
+    [Fact]
+    public async Task Platform_TheBypassClaimCoversOnlyTheLockoutItBypassed()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        await SeedOwnerAsync(kit);
+        using var guard = Guard();
+        var cookie = CookieValue((await Platform(kit, guard, Password, "198.51.100.10")).Response, LoginAbuseGuard.PlatformKnownDeviceCookie);
+        for (var i = 0; i < PlatformUser.MaxFailedLogins; i++) await Platform(kit, guard, "attacker-guess", "203.0.113.66");
+        var bypass = (await Platform(kit, guard, Password, "198.51.100.10", cookie)).Result;
+        (await PlatformSessionIsCurrent(kit, bypass)).Should().BeTrue();
+
+        async Task SetLockoutEnd(DateTime? until)
+        {
+            await using var db = kit.NewDb();
+            await db.PlatformUsers.Where(p => p.Email == "owner@platform.test")
+                .ExecuteUpdateAsync(x => x.SetProperty(p => p.LockoutEndUtc, until));
+        }
+
+        var original = (await PlatformState(kit)).Until!.Value;
+        await SetLockoutEnd(original.AddMinutes(-5));
+        (await PlatformSessionIsCurrent(kit, bypass)).Should().BeTrue("an earlier end is the same lockout or less");
+        await SetLockoutEnd(original.AddMinutes(30));
+        (await PlatformSessionIsCurrent(kit, bypass)).Should().BeFalse(
+            "a NEW, longer lockout (more attacker failures) is not covered by the old bypass");
+        await SetLockoutEnd(null);
+        (await PlatformSessionIsCurrent(kit, bypass)).Should().BeTrue("no lockout, no restriction");
+
+        PlatformSessionSecurity.BypassCovers("not-a-number", original).Should().BeFalse();
+        PlatformSessionSecurity.BypassCovers(PlatformSessionSecurity.LockoutClaimValue(original), original).Should().BeTrue();
     }
 
     [Fact]

@@ -111,9 +111,12 @@ the same way.
   - **bypasses** the **database lockout** (5 failures → 15 min) with the right password (and MFA
     where required) **without clearing it or resetting the shared counter**: the owner gets in, an
     attacker on an unknown device stays locked out until it expires. Audited as
-    `auth.lockout_bypassed_known_device` (platform: `platform.auth.…`) and the owner is emailed. The
-    bypass session keeps working during the lockout (tenant: its security stamp postdates the
-    lockout; platform: it carries `kx_lockout_bypass`); sessions issued before the lockout still end;
+    `auth.lockout_bypassed_known_device` (platform: `platform.auth.…`) and the owner is emailed once
+    per lockout (tenant: through the notification outbox; platform: through an in-process notice
+    queue — sign-in never waits on SMTP). The bypass session keeps working during the lockout
+    (tenant: its security stamp postdates the lockout; platform: it carries `kx_lockout_bypass`
+    bound to the bypassed lockout's end, so a new, longer lockout is not covered); sessions issued
+    before the lockout still end;
   - does not add its own wrong passwords to that lockout. They are recorded
     (`password_mismatch_known_device`, with the client IP and an audit row) and counted against that
     **device** (a per-device id in the token): after 5 in 15 minutes it stops being trusted and the

@@ -219,6 +219,20 @@ public sealed class LoginAbuseGuard : IDisposable
     private static string Payload(string scope, string tenant, string email, Guid principalId, string credentialVersion, Guid deviceId)
         => $"{AccountKey(scope, tenant, email)}|{principalId:N}|{credentialVersion}|{deviceId:N}";
 
+    /// <summary>
+    /// True the first time <paramref name="key"/> is seen (until it ages out of the bounded cache):
+    /// lets callers send at most one notice per event, e.g. one "locked out" email per lockout.
+    /// </summary>
+    public bool FirstNotice(string key, TimeSpan remember)
+    {
+        lock (_windows)
+        {
+            if (_windows.TryGetValue("notice|" + key, out _)) return false;
+            _windows.Set("notice|" + key, true, new MemoryCacheEntryOptions { Size = 1, AbsoluteExpirationRelativeToNow = remember });
+            return true;
+        }
+    }
+
     // ── Responses ───────────────────────────────────────────────────────────────────────────
 
     /// <summary>A random 2–6 s Retry-After, so refused clients do not come back in lock-step.</summary>

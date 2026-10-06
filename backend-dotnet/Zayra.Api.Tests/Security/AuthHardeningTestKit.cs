@@ -66,7 +66,8 @@ internal sealed class AuthHardeningTestKit : IAsyncDisposable
     });
 
     public AuthService Auth(ZayraDbContext db, IPasswordHasher? hasher = null, IConfiguration? config = null,
-        PasswordVerificationGate? gate = null, LoginAbuseGuard? abuse = null, IEmailService? email = null)
+        PasswordVerificationGate? gate = null, LoginAbuseGuard? abuse = null, IEmailService? email = null,
+        Zayra.Api.Infrastructure.Notifications.INotificationService? notifications = null)
     {
         var tokens = new JwtTokenService(Jwt);
         var audit = new AuditService(db);
@@ -82,7 +83,8 @@ internal sealed class AuthHardeningTestKit : IAsyncDisposable
             NullLogger<AuthService>.Instance,
             config ?? new ConfigurationBuilder().Build(),
             gate,
-            abuse);
+            abuse,
+            notifications);
     }
 
     public MfaService Mfa(ZayraDbContext db, IEmailService? email = null)
@@ -218,4 +220,23 @@ internal sealed class RecordingEmail : IEmailService
     }
 
     public Task<bool> IsConfiguredAsync(CancellationToken cancellationToken = default) => Task.FromResult(true);
+}
+
+/// <summary>Records outbox requests (the tenant notification outbox), without any delivery.</summary>
+internal sealed class RecordingNotifications : Zayra.Api.Infrastructure.Notifications.INotificationService
+{
+    public List<Zayra.Api.Infrastructure.Notifications.NotificationRequest> Requests { get; } = [];
+
+    public Task NotifyAsync(Guid tenantId, Guid? userId, string title, string message, string entityName, string? entityId, CancellationToken cancellationToken)
+        => Task.CompletedTask;
+
+    public Task SendEmailAsync(Guid tenantId, string templateCode, string toAddress, string toName, Dictionary<string, string> variables, CancellationToken cancellationToken)
+        => Task.CompletedTask;
+
+    public Task<IReadOnlyList<Zayra.Api.Models.NotificationDelivery>> EnqueueAsync(
+        Zayra.Api.Infrastructure.Notifications.NotificationRequest request, CancellationToken cancellationToken)
+    {
+        Requests.Add(request);
+        return Task.FromResult<IReadOnlyList<Zayra.Api.Models.NotificationDelivery>>([]);
+    }
 }
