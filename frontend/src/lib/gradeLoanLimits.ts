@@ -2,6 +2,7 @@ import type {
   CompanyWithoutPolicy, GradeLimitReasonCode, GradeLoanLimitInput, GradeLoanLimitRow, GradeMissingLimit,
   LoanBindingLimit, LoanEligibility, LoanLimitBreakdown,
 } from '../api/loanGovernance';
+import { createFormatter } from './format';
 
 /** Limit basis the admin picks per grade. "No per-loan cap" is an empty per-loan figure, not a basis. */
 export type GradeLimitBasis = 'Amount' | 'MultipleOfBasic' | 'MultipleOfGross';
@@ -302,9 +303,11 @@ export function companiesWithoutPolicyFromError(error: unknown): CompanyWithoutP
     : [];
 }
 
-/** Formats an amount in the response's own currency. With no currency, a plain number — never a guessed one. */
-export function moneyFormatter(currency: string | null | undefined): (n: number) => string {
-  return currency
-    ? (n: number) => n.toLocaleString('en-US', { style: 'currency', currency, maximumFractionDigits: 2 })
-    : (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+/**
+ * Formats an amount in the response's own currency, in the viewer's language (lib/format.ts: Latin
+ * digits, the currency's symbol). With no currency, a plain number — never a guessed one.
+ */
+export function moneyFormatter(currency: string | null | undefined, locale: string = 'en'): (n: number) => string {
+  const f = createFormatter({ locale });
+  return (n: number) => f.money(n, currency || null);
 }

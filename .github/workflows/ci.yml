@@ -105,10 +105,12 @@ jobs:
         run: npx playwright test -c e2e/playwright.browserless.config.ts
         working-directory: frontend
 
-      # Pure-function unit specs (no browser, no stack). Includes the loan-limit specs that run against the
-      # backend's REAL eligibility JSON (unit/fixtures), which GradeLoanLimitTests keeps in step with the API.
-      - name: Frontend unit specs
-        run: npx playwright test -c playwright.unit.config.ts
+      # Pure-function unit tests (playwright.unit.config.ts: no browser, no stack), then the same
+      # suite under a viewer zone east of Riyadh: calendar dates must not slip a day (lib/format.ts).
+      # Includes the loan-limit specs that run against the backend's REAL eligibility JSON
+      # (unit/fixtures), which GradeLoanLimitTests keeps in step with the API.
+      - name: Frontend unit tests (also under TZ=Asia/Karachi)
+        run: npm run test:unit && npm run test:unit:tz
         working-directory: frontend
 
   # ── Security gate: secret scan ────────────────────────────────────────────────

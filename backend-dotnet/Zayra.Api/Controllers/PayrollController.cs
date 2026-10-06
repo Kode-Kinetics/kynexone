@@ -3873,13 +3873,13 @@ public class PayrollController : ControllerBase
         // Load deduction lines for this page of slips to build the breakdown.
         var deductionsByEmployee = await _db.PayrollDeductions.AsNoTracking()
             .Where(d => d.TenantId == tenantId && d.PayrollRunId == id && employeeIds.Contains(d.EmployeeId))
-            .Select(d => new { d.EmployeeId, d.ComponentCode, d.ComponentName, d.Amount, d.Source })
+            .Select(d => new { d.EmployeeId, d.ComponentCode, d.ComponentName, d.Amount, d.Source, d.IsEmployerContribution })
             .ToListAsync(cancellationToken);
         var linesByEmployee = deductionsByEmployee
             .GroupBy(d => d.EmployeeId)
             .ToDictionary(
                 g => g.Key,
-                g => (IReadOnlyList<PayrollDeductionLineDto>)g.Select(d => new PayrollDeductionLineDto(d.ComponentCode, d.ComponentName, d.Amount, d.Source)).ToList());
+                g => (IReadOnlyList<PayrollDeductionLineDto>)g.Select(d => new PayrollDeductionLineDto(d.ComponentCode, d.ComponentName, d.Amount, d.Source, d.IsEmployerContribution)).ToList());
         return Ok(new PagedResult<PayrollSlipDto>(
             items.Select(s => PayrollSlipDto.Project(s, true, linesByEmployee.TryGetValue(s.EmployeeId, out var dl) ? dl : null)).ToList(),
             total, page, pageSize));
@@ -5125,8 +5125,15 @@ public class PayrollController : ControllerBase
             }
             foreach (var e in earnings.Where(x => x.EmployeeId == slip.EmployeeId))
                 _db.PayslipComponents.Add(new PayslipComponent { TenantId = tenantId, PayslipId = payslip.Id, ComponentType = "Earning", ComponentName = e.ComponentName, Amount = e.Amount });
+            // An employer contribution (e.g. GOSI-OH-ER) is an employer cost, not money taken from the
+            // employee: it is stored under its own type so no payslip ever counts it as a deduction.
             foreach (var d in deductions.Where(x => x.EmployeeId == slip.EmployeeId))
-                _db.PayslipComponents.Add(new PayslipComponent { TenantId = tenantId, PayslipId = payslip.Id, ComponentType = "Deduction", ComponentName = d.ComponentName, Amount = d.Amount });
+                _db.PayslipComponents.Add(new PayslipComponent
+                {
+                    TenantId = tenantId, PayslipId = payslip.Id,
+                    ComponentType = d.IsEmployerContribution ? PayslipLineTypes.EmployerContribution : PayslipLineTypes.Deduction,
+                    ComponentName = d.ComponentName, Amount = d.Amount,
+                });
             _db.PayslipComponents.Add(new PayslipComponent { TenantId = tenantId, PayslipId = payslip.Id, ComponentType = "Net", ComponentName = "Net pay", Amount = slip.NetSalary });
 
             // Both branches are tracked entities (existingPayslips is loaded WITHOUT AsNoTracking, new rows

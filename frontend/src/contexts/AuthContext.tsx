@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { authApi, isMfaChallenge, isMfaEnrollment } from '../api/auth';
 import type { AuthUser } from '../api/auth';
+import { clearSessionKeepingLocale } from '../api/clearSession';
 
 // Returned when the backend requires a TOTP code before issuing full tokens.
 export interface MfaPendingState {
@@ -55,9 +56,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     authApi
       .me()
       .then(setUser)
-      .catch(() => {
-        localStorage.removeItem('zayra_access_token');
-        localStorage.removeItem('zayra_refresh_token');
+      .catch((err: { response?: { status?: number } }) => {
+        // Only a definite "not signed in" ends the session. A network error or a 5xx (a deploy's
+        // ~38 s of 502s, a cold start) must not sign the user out and wipe their workspace; the
+        // API client already clears the session itself when a 401 cannot be refreshed.
+        if (err?.response?.status === 401) clearSessionKeepingLocale();
       })
       .finally(() => setIsLoading(false));
   }, []);
@@ -98,9 +101,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const { enrollmentToken, expiresInSeconds } = await authApi.mfaEnrollmentStart();
     // NOT authApi.logout(): logout rotates the session stamp, and the enrolment token is bound to
     // the current stamp, so it would be dead on arrival. Completing enrolment rotates the stamp
-    // itself, which ends this session server-side; here we only drop the local copy.
-    localStorage.removeItem('zayra_access_token');
-    localStorage.removeItem('zayra_refresh_token');
+    // itself, which ends this session server-side; here we only drop the local copy, the same way
+    // every other session exit does (the display language survives, nothing else of this user does).
+    clearSessionKeepingLocale();
     setUser(null);
     setMfaPending(null);
     setMfaEnrollmentPending({ enrollmentToken, expiresInSeconds });
@@ -113,8 +116,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // ignore
     }
-    localStorage.removeItem('zayra_access_token');
-    localStorage.removeItem('zayra_refresh_token');
+    // Same wipe as an expired session: a shared computer keeps nothing of this user's
+    // (search history, company selection, import history), only the display language.
+    clearSessionKeepingLocale();
     setUser(null);
     setMfaPending(null);
     setMfaEnrollmentPending(null);
