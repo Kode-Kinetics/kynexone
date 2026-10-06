@@ -106,11 +106,15 @@ public sealed class DeductionStatementService(ZayraDbContext db) : IDeductionSta
                 .Select(i => new { i.AdvanceId, i.DueDate }).ToListAsync(ct))
             .GroupBy(i => i.AdvanceId).ToDictionary(g => g.Key, g => g.Min(i => i.DueDate));
 
+        var typeIds = loans.Select(l => l.LoanTypeId).Distinct().ToList();
+        var arabic = await db.LoanTypes.AsNoTracking().Where(t => t.TenantId == tenantId && typeIds.Contains(t.Id))
+            .ToDictionaryAsync(t => t.Id, t => t.NameAr, ct);
         return new DeductionBalances(
             loans.Select(l => new DebtBalance(l.Id, l.LoanNumber, l.LoanTypeName, l.Currency, l.OutstandingBalance, l.InstallmentAmount,
                 Remaining(l.OutstandingBalance, l.InstallmentAmount), Math.Max(l.ApprovedInstallments, 0),
                 loanNext.TryGetValue(l.Id, out var n) ? n : null, l.ConsentDocumentId.HasValue,
-                l.RepaymentMethod == "PayrollDeduction")).ToList(),
+                l.RepaymentMethod == "PayrollDeduction",
+                arabic.TryGetValue(l.LoanTypeId, out var ar) && !string.IsNullOrWhiteSpace(ar) ? ar : null)).ToList(),
             advances.Select(a => new DebtBalance(a.Id, a.AdvanceNumber, "Salary advance", null, a.OutstandingBalance, a.InstallmentAmount,
                 Remaining(a.OutstandingBalance, a.InstallmentAmount), Math.Max(a.Installments, 0),
                 advanceNext.TryGetValue(a.Id, out var n) ? n : null, null, true)).ToList());
@@ -132,9 +136,26 @@ public sealed class DeductionStatementService(ZayraDbContext db) : IDeductionSta
         var runIds = slips.Select(s => s.Slip.RunId).Distinct().ToList();
         var employeeIds = slips.Select(s => s.Slip.EmployeeId).Distinct().ToList();
 
+        // The Art. 93 limit belongs to the PAY PERIOD: every other non-voided run of the same month (off-cycle,
+        // supplementary, correction) shares it. Their slips are loaded with the employee's own.
+        var periods = slips.Where(s => s.Run is not null).Select(s => s.Run!.Year * 12 + s.Run.Month).Distinct().ToList();
+        var periodRuns = periods.Count == 0
+            ? []
+            : await db.PayrollRuns.AsNoTracking()
+                .Where(r => r.TenantId == tenantId && r.Status != VoidedStatus && periods.Contains(r.Year * 12 + r.Month))
+                .Select(r => new PeriodRun(r.Id, r.Year * 12 + r.Month)).ToListAsync(ct);
+        var siblingRunIds = periodRuns.Select(r => r.Id).Where(id => !runIds.Contains(id)).ToList();
+        var siblingSlips = siblingRunIds.Count == 0
+            ? []
+            : await db.PayrollSlips.AsNoTracking()
+                .Where(s => s.TenantId == tenantId && siblingRunIds.Contains(s.RunId) && employeeIds.Contains(s.EmployeeId))
+                .ToListAsync(ct);
+        var livePeriodOf = periodRuns.ToDictionary(r => r.Id, r => r.Period);
+        var allRunIds = runIds.Concat(siblingRunIds).ToList();
+
         // Employee-side lines only: an employer contribution (e.g. the employer's GOSI share) is not taken from pay.
         var lines = await db.PayrollDeductions.AsNoTracking()
-            .Where(d => d.TenantId == tenantId && runIds.Contains(d.PayrollRunId) && employeeIds.Contains(d.EmployeeId)
+            .Where(d => d.TenantId == tenantId && allRunIds.Contains(d.PayrollRunId) && employeeIds.Contains(d.EmployeeId)
                         && !d.IsEmployerContribution)
             .ToListAsync(ct);
         var witnesses = await db.PayrollRunConsumptions.AsNoTracking()
@@ -148,6 +169,12 @@ public sealed class DeductionStatementService(ZayraDbContext db) : IDeductionSta
         var advances = await db.SalaryAdvances.AsNoTracking()
             .Where(a => a.TenantId == tenantId && nullableEmployeeIds.Contains(a.EmployeeIntId))
             .ToListAsync(ct);
+        var loanTypeIds = loans.Select(l => l.LoanTypeId).Distinct().ToList();
+        var arabicTypeNames = loanTypeIds.Count == 0
+            ? new Dictionary<Guid, string>()
+            : await db.LoanTypes.AsNoTracking()
+                .Where(t => t.TenantId == tenantId && loanTypeIds.Contains(t.Id))
+                .ToDictionaryAsync(t => t.Id, t => t.NameAr, ct);
         var loanIds = loans.Select(l => l.Id).ToList();
         var advanceIds = advances.Select(a => a.Id).ToList();
         var nullableRunIds = runIds.Select(id => (Guid?)id).ToList();
@@ -157,15 +184,21 @@ public sealed class DeductionStatementService(ZayraDbContext db) : IDeductionSta
         var advanceInstalments = await db.AdvanceInstallments.AsNoTracking()
             .Where(i => i.TenantId == tenantId && advanceIds.Contains(i.AdvanceId) && nullableRunIds.Contains(i.PayrollRunId))
             .ToListAsync(ct);
+        // Art. 92's fallback basis when a loan carries no cap_base_wage witness: the salary structure in force.
+        var structures = await db.EmployeeSalaryStructures.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && employeeIds.Contains(x.EmployeeId) && x.IsActive)
+            .ToListAsync(ct);
 
         var facts = new Dictionary<Guid, DebtFacts>();
         foreach (var l in loans)
             facts[l.Id] = new DebtFacts(l.Id, l.LoanNumber, l.LoanTypeName, Math.Max(l.ApprovedInstallments, 0), l.InstallmentAmount,
-                l.ConsentDocumentId.HasValue, IsAdvance: false);
+                l.ConsentDocumentId.HasValue, IsAdvance: false, l.CapBaseWage,
+                arabicTypeNames.TryGetValue(l.LoanTypeId, out var ar) && !string.IsNullOrWhiteSpace(ar) ? ar : null);
         foreach (var a in advances)
             facts[a.Id] = new DebtFacts(a.Id, a.AdvanceNumber, "Salary advance", Math.Max(a.Installments, 0), a.InstallmentAmount,
                 null, IsAdvance: true);
 
+        var allSlips = siblingSlips.Concat(slips.Select(x => x.Slip)).DistinctBy(x => x.Id).ToList();
         var currencies = new Dictionary<Guid, string>();
         var result = new List<DeductionStatementDetail>(slips.Count);
         foreach (var (slip, run) in slips)
@@ -179,16 +212,39 @@ public sealed class DeductionStatementService(ZayraDbContext db) : IDeductionSta
             var advanceTakes = Takes(empWitnesses, PayrollConsumptionArtifacts.Advance,
                 advanceInstalments.Where(i => i.PayrollRunId == slip.RunId && empAdvanceIds.Contains(i.AdvanceId)).Select(i => (i.AdvanceId, i.AmountPaid)));
 
-            var statement = DeductionStatementBuilder.Build(slip, run?.Year ?? 0, run?.Month ?? 0, empLines, loanTakes, advanceTakes, facts);
+            var voided = run?.Status == VoidedStatus;
+            int? period = run is null ? null : run.Year * 12 + run.Month;
+            // The same employee's slips on the period's OTHER non-voided runs. None for a voided run: it no longer applies.
+            var siblings = voided || period is null
+                ? []
+                : allSlips.Where(o => o.EmployeeId == slip.EmployeeId && o.RunId != slip.RunId
+                                      && livePeriodOf.TryGetValue(o.RunId, out var p) && p == period).ToList();
+            var siblingRuns = siblings.Select(o => o.RunId).ToHashSet();
+            var siblingLines = lines.Where(d => d.EmployeeId == slip.EmployeeId && siblingRuns.Contains(d.PayrollRunId)).ToList();
+            var periodEnd = run is null ? DateOnly.MaxValue : new DateOnly(run.Year, run.Month, DateTime.DaysInMonth(run.Year, run.Month));
+            var structure = structures.Where(x => x.EmployeeId == slip.EmployeeId && x.EffectiveDate <= periodEnd)
+                .OrderByDescending(x => x.EffectiveDate).ThenByDescending(x => x.CreatedAtUtc).FirstOrDefault();
+            var structureWage = Zayra.Api.Infrastructure.Finance.LoanEligibilityService.MonthlyWage(structure);
+
+            var context = new StatementPeriod(
+                OtherRunsDebt: siblingLines.Where(WageDeductionClassification.IsDebtType).Sum(l => l.Amount),
+                OtherRunsWageDue: siblings.Sum(o => WageDeductionClassification.WageDue(o.GrossSalary, siblingLines.Where(d => d.PayrollRunId == o.RunId))),
+                OtherRuns: siblingRuns.Count,
+                StructureWage: structureWage > 0m ? structureWage : null,
+                Voided: voided);
+            var statement = DeductionStatementBuilder.Build(slip, run?.Year ?? 0, run?.Month ?? 0, empLines, loanTakes, advanceTakes, facts, context);
             var companyKey = slip.CompanyId ?? Guid.Empty;
             if (!currencies.TryGetValue(companyKey, out var currency))
                 currencies[companyKey] = currency = await GlAccountResolver.ResolveCurrencyAsync(db, tenantId, slip.CompanyId, ct);
             var debts = statement.Lines.Where(l => l.LoanId is Guid id && facts.ContainsKey(id))
                 .Select(l => facts[l.LoanId!.Value]).DistinctBy(f => f.Id).ToDictionary(f => f.Id);
-            result.Add(new DeductionStatementDetail(statement, slip, run, currency, debts));
+            result.Add(new DeductionStatementDetail(statement, slip, run, currency, debts, context,
+                empLines.Where(WageDeductionClassification.IsWageReduction).Sum(l => l.Amount)));
         }
         return result;
     }
+
+    private sealed record PeriodRun(Guid Id, int Period);
 
     /// <summary>Per-debt amounts one run took for one employee: the witnesses when the run wrote them, else the schedule
     /// rows the run stamped. Never both (a witnessed run also stamps its schedule rows).</summary>
@@ -216,10 +272,23 @@ public sealed record DeductionStatementDetail(
     PayrollSlip Slip,
     PayrollRun? Run,
     string Currency,
-    IReadOnlyDictionary<Guid, DebtFacts> Debts);
+    IReadOnlyDictionary<Guid, DebtFacts> Debts,
+    StatementPeriod Period,
+    decimal PayNotEarned)
+{
+    /// <summary>Within / Near / Over / NeedsReview / Voided (<see cref="CapStatuses"/>).</summary>
+    public string CapStatus => DeductionStatementBuilder.CapStatus(Statement, Period.Voided);
+}
+
+/// <summary>What the statement knows beyond its own slip: the period's other non-voided runs (the limit is per pay period),
+/// the salary-structure wage (Art. 92's fallback basis), and whether this slip's run was voided.</summary>
+public sealed record StatementPeriod(decimal OtherRunsDebt = 0m, decimal OtherRunsWageDue = 0m, int OtherRuns = 0,
+    decimal? StructureWage = null, bool Voided = false);
 
 /// <summary>The facts of one loan or advance a statement line belongs to.</summary>
-public sealed record DebtFacts(Guid Id, string Number, string TypeName, int InstalmentsTotal, decimal Instalment, bool? ConsentOnFile, bool IsAdvance);
+/// <param name="CapBaseWage">The wage the loan's 10% test was computed against at request/approval (the Art. 92 basis).</param>
+public sealed record DebtFacts(Guid Id, string Number, string TypeName, int InstalmentsTotal, decimal Instalment, bool? ConsentOnFile, bool IsAdvance,
+    decimal? CapBaseWage = null, string? TypeNameAr = null);
 
 /// <summary>What one run took from one loan or advance, and the balance before (null when no witness recorded it).</summary>
 public sealed record DebtTake(Guid DebtId, decimal Amount, decimal? PriorOutstanding);
@@ -229,7 +298,7 @@ public sealed record DeductionBalances(IReadOnlyList<DebtBalance> Loans, IReadOn
 /// <param name="ConsentOnFile">Loans only: the employee's written consent to an instalment above 10% of the wage.</param>
 /// <param name="DeductedFromPay">True when the instalment is taken through payroll.</param>
 public sealed record DebtBalance(Guid Id, string Number, string TypeName, string? Currency, decimal Outstanding, decimal Instalment,
-    int? InstalmentsRemaining, int InstalmentsTotal, DateOnly? NextDueOn, bool? ConsentOnFile, bool DeductedFromPay);
+    int? InstalmentsRemaining, int InstalmentsTotal, DateOnly? NextDueOn, bool? ConsentOnFile, bool DeductedFromPay, string? TypeNameAr = null);
 
 /// <summary>The pure part of the statement: categories, legal basis, the per-loan split, the cap and its flags.</summary>
 public static class DeductionStatementBuilder
@@ -250,10 +319,21 @@ public static class DeductionStatementBuilder
     public const string AdvanceCode = "ADVANCE_EMI";
     private const decimal Cent = 0.005m;
 
+    /// <summary>The statement for one slip on its own (no other runs in the period, no structure wage).</summary>
     public static DeductionStatement Build(PayrollSlip slip, int year, int month, IReadOnlyList<PayrollDeduction> lines,
-        IReadOnlyList<DebtTake> loanTakes, IReadOnlyList<DebtTake> advanceTakes, IReadOnlyDictionary<Guid, DebtFacts> facts)
+        IReadOnlyList<DebtTake> loanTakes, IReadOnlyList<DebtTake> advanceTakes, IReadOnlyDictionary<Guid, DebtFacts> facts) =>
+        Build(slip, year, month, lines, loanTakes, advanceTakes, facts, new StatementPeriod());
+
+    /// <summary>Component code of the line that carries the debt deducted on the period's other runs.</summary>
+    public const string OtherRunsCode = "OTHER_RUNS_THIS_PERIOD";
+
+    public static DeductionStatement Build(PayrollSlip slip, int year, int month, IReadOnlyList<PayrollDeduction> lines,
+        IReadOnlyList<DebtTake> loanTakes, IReadOnlyList<DebtTake> advanceTakes, IReadOnlyDictionary<Guid, DebtFacts> facts,
+        StatementPeriod period)
     {
-        var wage = slip.GrossSalary;
+        // Art. 93 wage due: gross minus pay not earned (absence/LOP, unpaid leave) — one definition, shared with the
+        // validation engine and the bank export — over the period's non-voided runs.
+        var wage = WageDeductionClassification.WageDue(slip.GrossSalary, lines) + period.OtherRunsWageDue;
         var flags = new List<string>();
         void Flag(string code) { if (!flags.Contains(code)) flags.Add(code); }
         var output = new List<DeductionStatementLine>();
@@ -283,42 +363,74 @@ public static class DeductionStatementBuilder
                 // Cannot attribute the aggregate to loans: show it as one total and assume no balance.
                 Flag(ReleaseABlockReasons.DeductionSplitUnreconciled);
                 output.Add(new DeductionStatementLine(code, emi[0].ComponentName, category, total, counts, basis,
-                    null, null, null, Percent(total, wage), null));
+                    null, null, null, Share(total, period.StructureWage), null));
                 continue;
             }
             foreach (var take in positive)
             {
                 facts.TryGetValue(take.DebtId, out var debt);
                 decimal? balanceAfter = take.PriorOutstanding is decimal prior ? Math.Max(0m, prior - take.Amount) : null;
-                var pct = Percent(take.Amount, wage);
+                // Art. 92's 10% is against the wage the loan was assessed on (its cap_base_wage witness), falling back to
+                // the salary structure — never this slip's gross. Compared unrounded: 10.0004% is above 10%.
+                var basisWage = debt?.CapBaseWage is > 0m ? debt.CapBaseWage : period.StructureWage;
                 bool? consent = isAdvance ? null : debt?.ConsentOnFile ?? false;
-                if (!isAdvance && consent != true && (pct is null || pct > DeductionStatementService.LoanConsentThresholdPercent))
+                if (!isAdvance && consent != true && AboveConsentThreshold(take.Amount, basisWage))
                     Flag(ReleaseABlockReasons.LoanInstalmentOver10PctNoConsent);
                 output.Add(new DeductionStatementLine(code, debt?.TypeName ?? emi[0].ComponentName, category, take.Amount, counts, basis,
-                    take.DebtId, balanceAfter, DeductionStatementService.Remaining(balanceAfter, debt?.Instalment ?? 0m), pct, consent));
+                    take.DebtId, balanceAfter, DeductionStatementService.Remaining(balanceAfter, debt?.Instalment ?? 0m),
+                    Share(take.Amount, basisWage), consent));
             }
         }
 
+        // Every employee-side line must be on the statement. Lines that do not add up to the slip's own deductions total
+        // (a summary-only slip) can never read as "within the limit".
+        if (Math.Abs(output.Sum(l => l.Amount) - slip.Deductions) >= 0.01m)
+            Flag(ReleaseABlockReasons.DeductionLinesMissing);
+
+        if (period.OtherRunsDebt > 0m)
+            output.Add(new DeductionStatementLine(OtherRunsCode, string.Empty, DeductionCategories.Other, period.OtherRunsDebt, true,
+                DeductionLegalBasis.OtherRunsThisPeriod, null, null, null, null, null));
+
         var debtTotal = output.Where(l => l.CountsTowardCap).Sum(l => l.Amount);
-        var capLimit = wage / 2m;
-        if (WageDeductionClassification.ExceedsHalfWage(debtTotal, wage) || (wage <= 0m && debtTotal > 0m))
+        var capLimit = WageDeductionClassification.HalfWageLimit(wage);
+        if (WageDeductionClassification.ExceedsHalfWage(debtTotal, wage))
             Flag(ReleaseABlockReasons.DeductionsOverHalfWage);
+        // A voided run no longer applies: no flags, no advice.
+        if (period.Voided) flags.Clear();
         // Over-the-limit first: it is the one a payroll manager must act on before Lock.
         var ordered = flags.OrderBy(f => f == ReleaseABlockReasons.DeductionsOverHalfWage ? 0 : 1).ToList();
         return new DeductionStatement(slip.Id, slip.EmployeeId, year, month, wage, debtTotal, capLimit, capLimit - debtTotal,
             output, ordered);
     }
 
-    /// <summary>Within / Near / Over the Art. 93 limit. Near = more than <see cref="DeductionStatementService.NearCapShareOfLimit"/>
-    /// of the limit used.</summary>
-    public static string CapStatus(DeductionStatement s)
+    /// <summary>Within / Near / Over / NeedsReview / Voided. Near = more than <see cref="DeductionStatementService.NearCapShareOfLimit"/>
+    /// of the limit used; NeedsReview = the lines do not add up to the slip, so "within" cannot be claimed.</summary>
+    public static string CapStatus(DeductionStatement s, bool voided = false)
     {
+        if (voided) return CapStatuses.Voided;
         if (s.Flags.Contains(ReleaseABlockReasons.DeductionsOverHalfWage)) return CapStatuses.Over;
+        if (s.Flags.Contains(ReleaseABlockReasons.DeductionLinesMissing)) return CapStatuses.NeedsReview;
         return s.CapLimit > 0m && s.DebtTotal > s.CapLimit * DeductionStatementService.NearCapShareOfLimit ? CapStatuses.Near : CapStatuses.Within;
     }
 
-    /// <summary>An amount as a percentage (0–100) of the wage, to two decimals; null when there is no wage.</summary>
-    public static decimal? Percent(decimal amount, decimal wage) => wage > 0m ? Math.Round(amount / wage * 100m, 2) : null;
+    /// <summary>The exception-first rule, identical on the server's nearCap filter and in the UI: anything not plainly within
+    /// the limit, or carrying a flag. A voided run is never an exception.</summary>
+    public static bool NeedsAttention(string capStatus, IReadOnlyCollection<string> flags) =>
+        capStatus != CapStatuses.Voided && (capStatus != CapStatuses.Within || flags.Count > 0);
+
+    /// <summary>Art. 92: an instalment above 10% of the basis wage — or with no known basis (fail-closed). Unrounded.</summary>
+    public static bool AboveConsentThreshold(decimal instalment, decimal? basisWage) =>
+        basisWage is not decimal w || w <= 0m || instalment > w * DeductionStatementService.LoanConsentThresholdPercent / 100m;
+
+    /// <summary>An amount as a percentage (0–100) of a basis, UNROUNDED (display floors it); null without a basis.</summary>
+    public static decimal? Share(decimal amount, decimal? basis) => basis is > 0m ? amount / basis.Value * 100m : null;
+
+    /// <summary>A percentage for display: floored to two decimals, so 50.009% never shows as 50.01% and 10.0004% never
+    /// rounds past what it is.</summary>
+    public static decimal? FloorPercent(decimal? pct) => pct is decimal p ? decimal.Floor(p * 100m) / 100m : null;
+
+    /// <summary>Debt as a percentage (0–100) of the wage due, floored for display; null when there is no wage.</summary>
+    public static decimal? Percent(decimal amount, decimal wage) => FloorPercent(Share(amount, wage));
 
     private static bool IsEmi(PayrollDeduction l) =>
         string.Equals(l.Source, WageDeductionClassification.LoanSource, StringComparison.Ordinal)
@@ -376,6 +488,10 @@ public static class CapStatuses
     public const string Within = "Within";
     public const string Near = "Near";
     public const string Over = "Over";
+    /// <summary>The lines do not reconcile to the slip's deductions total, so "within" cannot be shown.</summary>
+    public const string NeedsReview = "NeedsReview";
+    /// <summary>The run was voided: the statement no longer applies.</summary>
+    public const string Voided = "Voided";
 }
 
 /// <summary>
@@ -394,7 +510,9 @@ public static class DeductionLegalBasis
     public const string Unclassified = "A payroll adjustment of a type the system does not recognise.";
     public const string OverpaymentRecovery = "Recovery of pay overpaid in an earlier payroll run.";
     public const string Other = "Another deduction recorded on the payslip.";
+    public const string OtherRunsThisPeriod = "Debt deductions on the other payroll runs for the same month. The limit applies to the whole month.";
 
     public static readonly string[] All =
-        [Statutory, EmployerLoan, SalaryAdvance, Absence, Penalty, CourtOrder, PayCorrection, Unclassified, OverpaymentRecovery, Other];
+        [Statutory, EmployerLoan, SalaryAdvance, Absence, Penalty, CourtOrder, PayCorrection, Unclassified, OverpaymentRecovery, Other,
+            OtherRunsThisPeriod];
 }

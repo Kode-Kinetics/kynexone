@@ -21,6 +21,7 @@ const pairs: [string, string][] = [
   ['A payroll adjustment of a type the system does not recognise.', 'تسوية رواتب من نوع لا يعرفه النظام.'],
   ['Recovery of pay overpaid in an earlier payroll run.', 'استرداد أجر صُرف بالزيادة في مسير رواتب سابق.'],
   ['Another deduction recorded on the payslip.', 'استقطاع آخر مسجّل في مسير الرواتب.'],
+  ['Debt deductions on the other payroll runs for the same month. The limit applies to the whole month.', 'استقطاعات الديون في مسيرات الرواتب الأخرى للشهر نفسه، فالحد يسري على الشهر كاملاً.'],
 
   // Categories and limit status
   ['Social insurance and other deductions required by law', 'التأمينات الاجتماعية وغيرها من الاستقطاعات النظامية'],
@@ -109,6 +110,24 @@ const pairs: [string, string][] = [
   ["Upload the employee's signed consent", 'ارفع موافقة الموظف الموقّعة'],
   ['It is kept on the employee’s file as HR evidence and is not shown in self-service.', 'تُحفظ في ملف الموظف كمستند إثبات لدى الموارد البشرية ولا تظهر في الخدمة الذاتية.'],
   ['The consent could not be uploaded. Please try again.', 'تعذّر رفع الموافقة. يرجى المحاولة مرة أخرى.'],
+  ['Signed consent on file (Article 92).', 'الموافقة الموقّعة محفوظة (المادة 92).'],
+  ['Written consent (Article 92)', 'الموافقة الكتابية (المادة 92)'],
+  ['If your instalment is above 10% of your wage, this request can be approved only with your signed consent.', 'إذا تجاوز قسطك 10% من أجرك فلا يمكن اعتماد هذا الطلب إلا بموافقتك الموقّعة.'],
+  ["If the instalment is above 10% of the employee's wage, this request can be approved only with the employee's signed consent.", 'إذا تجاوز القسط 10% من أجر الموظف فلا يمكن اعتماد هذا الطلب إلا بموافقة الموظف الموقّعة.'],
+  ['Upload your signed consent', 'ارفع موافقتك الموقّعة'],
+
+  // Review round
+  ['Voided, no longer applies', 'ملغى، لم يعد ساريًا'],
+  ['This payroll run was voided, so its deductions were reversed and nothing here needs action.', 'أُلغي مسير الرواتب هذا، فعُكست استقطاعاته ولا يلزم أي إجراء هنا.'],
+  ["This payslip can't be broken down yet. Ask HR.", 'لا يمكن تفصيل هذا المسير بعد. تواصل مع الموارد البشرية.'],
+  ['Wage due (after absence)', 'الأجر المستحق (بعد الغياب)'],
+  ['Gross pay {gross} minus pay not earned for absence {absence}.', 'إجمالي الأجر {gross} مخصوماً منه الأجر غير المستحق عن الغياب {absence}.'],
+  ['Includes {count, plural, one {# other payroll run} other {# other payroll runs}} this month: the limit covers the whole month.', 'يشمل {count, plural, one {مسير رواتب آخر} two {مسيرَي رواتب آخرين} few {# مسيرات رواتب أخرى} many {# مسير رواتب آخر} other {# مسير رواتب آخر}} هذا الشهر، فالحد يسري على الشهر كاملاً.'],
+  ['Counting the limit on the wage after absence is pending legal confirmation.', 'احتساب الحد على الأجر بعد الغياب بانتظار التأكيد القانوني.'],
+  ['GOSI annuities, employee share', 'المعاشات (التأمينات الاجتماعية)، حصة الموظف'],
+  ['SANED unemployment insurance, employee share', 'ساند للتعطل عن العمل، حصة الموظف'],
+  ['GOSI occupational hazards, employee share', 'الأخطار المهنية (التأمينات الاجتماعية)، حصة الموظف'],
+  ['Other payroll runs this month', 'مسيرات رواتب أخرى هذا الشهر'],
 ];
 
 export const deductions: ReleaseADict = {

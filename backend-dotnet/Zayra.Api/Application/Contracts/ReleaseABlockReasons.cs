@@ -62,6 +62,7 @@ public static class ReleaseABlockReasons
     // R3 deductions statement (PR for slice R3): flags a statement raises instead of guessing.
     public const string DeductionUnclassifiedCounted = "DEDUCTION_UNCLASSIFIED_COUNTED";
     public const string DeductionSplitUnreconciled = "DEDUCTION_SPLIT_UNRECONCILED";
+    public const string DeductionLinesMissing = "DEDUCTION_LINES_MISSING";
 
     private const string HrManager = "HR Manager";
     private const string HrDirector = "HR Director";
@@ -334,6 +335,13 @@ public static class ReleaseABlockReasons
             "مبلغ القرض أو السلفة في هذا المسير لا يطابق الأقساط المسجّلة على كل قرض في هذا التشغيل، لذلك يُعرض كمبلغ واحد دون افتراض أي رصيد.",
             "Check the loan schedules for this month against the payroll run, and correct the schedule or re-process the run.",
             "راجع جداول أقساط القروض لهذا الشهر مقابل مسير الرواتب، ثم صحّح الجدول أو أعد معالجة المسير.",
+            PayrollManager),
+        new BlockReason(DeductionLinesMissing,
+            "This payslip can't be broken down yet", "لا يمكن تفصيل هذا المسير بعد",
+            "The payslip's deduction lines do not add up to its deductions total, so it cannot be shown which deductions count toward the 50% limit. Nothing is assumed to be within it.",
+            "بنود الاستقطاع في هذا المسير لا تطابق إجمالي استقطاعاته، لذلك لا يمكن بيان ما يُحتسب منها ضمن حد الـ 50%، ولا يُفترض أنه ضمن الحد.",
+            "Re-process the payroll run so every deduction is recorded as its own line, then check the limit again.",
+            "أعد معالجة مسير الرواتب ليُسجَّل كل استقطاع كبند مستقل، ثم تحقق من الحد مرة أخرى.",
             PayrollManager),
         new BlockReason(EntitlementProposalClosed,
             "Already decided", "تم البت فيها",

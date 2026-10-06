@@ -18,8 +18,8 @@ const fmt = {
 const loan = (over: Partial<DeductionLine> = {}): DeductionLine => ({
   componentCode: 'LOAN_EMI', label: 'Personal loan', category: 'EmployerLoan', amount: 400, countsTowardCap: true,
   legalBasisKey: 'Repayment of a loan from the employer (Article 92). Each instalment may be at most 10% of the wage unless the employee agreed in writing.',
-  loanId: 'l1', loanNumber: null, loanType: 'Loan', balanceAfter: 2400, instalmentsRemaining: 6, instalmentsTotal: 12,
-  percentOfWage: 8.3, consentOnFile: false, ...over,
+  loanId: 'l1', loanNumber: null, loanType: 'Loan', loanTypeAr: null, balanceAfter: 2400, instalmentsRemaining: 6, instalmentsTotal: 12,
+  percentOfWage: 8.3, aboveConsentThreshold: null, consentOnFile: false, ...over,
 });
 
 test("the employee's loan line reads as the plan's sentence", () => {
@@ -65,9 +65,27 @@ test('every legal-basis key the API sends is translated', () => {
   const source = fs.readFileSync(path.join(__dirname, '../../backend-dotnet/Zayra.Api/Infrastructure/Payroll/DeductionStatementService.cs'), 'utf8');
   const block = source.slice(source.indexOf('public static class DeductionLegalBasis'));
   const keys = Array.from(block.matchAll(/public const string \w+ = "((?:[^"\\]|\\.)*)";/g)).map((m) => m[1]);
-  expect(keys.length).toBe(10);
+  expect(keys.length).toBe(11);
   for (const key of keys) {
     expect(deductions.en[key], key).toBe(key);
     expect(deductions.ar[key], key).toMatch(/[؀-ۿ]/);
   }
+});
+
+test('the exception rule matches the server: flagged or not plainly within, never voided', async () => {
+  const { needsAttention } = await import('../src/lib/deductions');
+  expect(needsAttention('Within', [])).toBe(false);
+  expect(needsAttention('Within', ['DEDUCTION_SPLIT_UNRECONCILED'])).toBe(true);
+  expect(needsAttention('NeedsReview', ['DEDUCTION_LINES_MISSING'])).toBe(true);
+  expect(needsAttention('Voided', [])).toBe(false);
+});
+
+test('the unrounded consent answer wins over the floored percentage shown', () => {
+  expect(exceedsConsentThreshold(loan({ percentOfWage: 10, aboveConsentThreshold: true }))).toBe(true);
+  expect(exceedsConsentThreshold(loan({ percentOfWage: 9.99, aboveConsentThreshold: false }))).toBe(false);
+});
+
+test('a loan type is named in Arabic when the tenant gave one', () => {
+  const s = lineSentence(loan({ loanType: 'Personal', loanTypeAr: 'قرض شخصي' }), { ...fmt, locale: 'ar' });
+  expect(String(s.params?.type)).toBe('قرض شخصي');
 });

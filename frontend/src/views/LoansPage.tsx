@@ -32,6 +32,7 @@ import { useCompany } from '../contexts/CompanyContext';
 import { useLocale } from '../contexts/LocaleContext';
 import { LoanLimitCard } from '../components/loans/LoanLimitCard';
 import { LoanConsentStep } from '../components/deductions/LoanConsentStep';
+import { LoanConsentAttach } from '../components/deductions/LoanConsentAttach';
 import { isGradeBlocked, isLoanTypeNotOffered, localName, reasonKeyFor } from '../lib/gradeLoanLimits';
 
 import { EnumLabel, type EnumName } from '../components/EnumLabel';
@@ -562,6 +563,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
         {selected && (
           <div className="space-y-4">
             <LoanStatement detail={selected} />
+            <LoanConsentAttach loan={selected.loan} self={self} onAttached={() => { void loansApi.get(selected.loan.id).then(setSelected); load(); }} />
             {selected.loan.reviewRequired && <p role="status" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-200">HR review required: {selected.loan.reviewReason || 'Employment details have changed.'} Open Reviews &amp; Changes for the review history and next action.</p>}
             <p className="rounded-lg bg-blue-50 p-3 text-sm text-blue-800 dark:bg-blue-900/20 dark:text-blue-200">
               {selected.loan.status === 'Approved' ? 'Approved and awaiting disbursement. Finance must process this loan in Loan Payments and confirm the completed payment.' : selected.loan.status === 'Pending' ? 'Awaiting the next approval decision. Approval does not send funds.' : selected.loan.status === 'Active' ? `Repayment method: ${repaymentMethodLabels[selected.loan.repaymentMethod]}. ${selected.loan.repaymentMethod === 'PayrollDeduction' ? 'Scheduled installments are collected through payroll.' : 'Finance records receipts after payments are received.'}` : `Repayment method: ${repaymentMethodLabels[selected.loan.repaymentMethod]}.`}

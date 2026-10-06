@@ -24,7 +24,14 @@ function Breakdown({ payslipId }: { payslipId: string }) {
     deductionsApi.myPayslip(payslipId).then((s) => { if (!cancelled) setStatement(s); }).catch(() => { if (!cancelled) setStatement(null); });
     return () => { cancelled = true; };
   }, [payslipId]);
-  if (!statement || statement.lines.length === 0) return null;
+  if (!statement) return null;
+  // A slip whose lines are missing is said so, never shown as an empty breakdown.
+  if (statement.lines.length === 0 || !statement.reconciles)
+    return (
+      <p role="status" data-testid="payslip-deductions-breakdown" className="rounded-xl bg-amber-50 p-3 text-sm font-medium text-amber-900 dark:bg-amber-500/10 dark:text-amber-200">
+        {t("This payslip can't be broken down yet. Ask HR.")}
+      </p>
+    );
   return (
     <details className="rounded-xl border border-slate-200 p-3 dark:border-white/10" data-testid="payslip-deductions-breakdown">
       <summary className="cursor-pointer text-sm font-semibold text-slate-800 dark:text-slate-100">{t('Why each deduction is made')}</summary>

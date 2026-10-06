@@ -143,8 +143,9 @@ for (const lang of ['en', 'ar'] as const) {
         return undefined;
       });
       await page.goto(`/people?employeeId=${employeeId}`);
-      // The profile's tab strip renders its labels untranslated today (EmployeesPage, outside this slice), so it is "Deductions" in both.
-      await page.getByRole('button', { name: /^(Deductions|الاستقطاعات)$/ }).click();
+      // The tab strip scrolls sideways; on a phone in RTL Playwright cannot scroll the tab into its viewport, so it is
+      // clicked by its DOM event (a person swipes the strip).
+      await page.getByRole('button', { name: lang === 'ar' ? 'الاستقطاعات' : 'Deductions', exact: true }).dispatchEvent('click');
       const panel = page.getByTestId('employee-deductions-panel');
       await expect(panel.getByTestId('balance')).toHaveCount(2);
       await expect(panel.getByTestId('deduction-statement')).toBeVisible();
@@ -213,8 +214,43 @@ for (const lang of ['en', 'ar'] as const) {
       await expect.poll(() => created?.consentDocumentId).toBe('consent-doc-1');
       expect(errors).toEqual([]);
     });
+
+    test('Pending loan: the signed consent is attached so the approver can approve it', async ({ page }, info) => {
+      let attached = false;
+      const pending = { ...PENDING_LOAN };
+      const errors = await boot(page, lang, HR, (p, method) => {
+        if (p === '/api/finance/loans/types') return [LOAN_TYPE];
+        if (p === '/api/finance/loans' && method === 'GET') return { items: [{ ...pending, consentOnFile: attached }], total: 1 };
+        if (p === `/api/finance/loans/${pending.id}`) return {
+          loan: { ...pending, consentOnFile: attached }, installments: [], repayments: [], glEntries: [], auditLogs: [],
+          approvals: [{ id: 'a-1', loanId: pending.id, stepOrder: 1, approverRole: 'HR Manager', status: 'Pending', approvedByName: '', comments: '' }],
+        };
+        if (p === `/api/finance/loans/${pending.id}/consent` && method === 'POST') { attached = true; return { ...pending, consentOnFile: true }; }
+        if (p.endsWith('/changes') || p.endsWith('/corrections') || p.endsWith('/bonuses/types')) return [];
+        if (p.endsWith('/audit')) return {};
+        return undefined;
+      });
+      await page.goto('/loans');
+      await page.getByRole('button', { name: `View loan ${pending.loanNumber}` }).click();
+      const attach = page.getByRole('dialog').getByTestId('loan-consent-attach');
+      await expect(attach).toBeVisible();
+      await snap(page, 'loan-pending-consent-attach', lang, info.project.name);
+      await attach.locator('input[type=file]').setInputFiles({ name: 'consent.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4 consent') });
+      await expect(page.getByRole('dialog').getByTestId('loan-consent-on-file')).toBeVisible();
+      expect(attached).toBe(true);
+      await snap(page, 'loan-pending-consent-on-file', lang, info.project.name);
+      expect(errors).toEqual([]);
+    });
   });
 }
+
+const PENDING_LOAN = {
+  id: 'loan-7', employeeId: 'emp-7', employeeName: FIXTURE.slipWithLoans.employeeName, loanTypeId: 'type-1', loanTypeName: 'Personal',
+  loanNumber: 'LN-2026-PENDING', requestedAmount: 12000, approvedAmount: 0, requestedInstallments: 6, approvedInstallments: 0,
+  installmentAmount: 0, repaymentFrequency: 'Monthly', repaymentMethod: 'PayrollDeduction', currency: 'SAR', totalRepaid: 0,
+  outstandingBalance: 0, status: 'Pending', notes: '', isLockedByPayroll: false, createdAtUtc: '2026-10-01T00:00:00Z',
+  policyVersion: 1, collectionStatus: 'Normal', reviewRequired: false, consentOnFile: false,
+};
 
 const LOAN_TYPE = { id: 'type-1', nameEn: 'Personal', code: 'PERSONAL', isInterestFree: true, interestRate: 0, isActive: true, maxAmount: 50000, maxInstallments: 24, repaymentFrequency: 'Monthly', minServiceMonths: 0 };
 const ELIGIBILITY = {

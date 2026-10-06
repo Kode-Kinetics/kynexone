@@ -56,7 +56,8 @@ public sealed class DeductionStatementsController(ZayraDbContext db, IDataScopeS
         var details = await Statements.ForRunAsync(tenantId, runId, scope.AllowedEmployeeIds, ct);
         if (details is null) return NotFound();
         var rows = details.Select(RunDeductionRowDto.From);
-        if (nearCap == true) rows = rows.Where(r => r.CapStatus != CapStatuses.Within);
+        // The same exception rule as the screen: anything not plainly within the limit, or carrying a flag.
+        if (nearCap == true) rows = rows.Where(r => DeductionStatementBuilder.NeedsAttention(r.CapStatus, r.Flags));
         return Ok(rows.ToList());
     }
 
@@ -81,14 +82,19 @@ public sealed class DeductionStatementsController(ZayraDbContext db, IDataScopeS
 
 // ── Response shapes (shared with EssDeductionsController) ──────────────────────────────────────────────
 
-/// <param name="DebtPercentOfWage">Debt-type total ÷ wage due, 0–100; null when there is no wage.</param>
-/// <param name="CapStatus">Within / Near / Over (<see cref="CapStatuses"/>); Near = more than 80% of the limit used.</param>
-/// <param name="NotCountedTotal">Deductions outside the limit (GOSI, absence, corrections, …).</param>
-/// <param name="SlipDeductionTotal">The payslip's own deductions total; <paramref name="Reconciles"/> says the lines add up to it.</param>
+/// <param name="WageDue">Art. 93 wage due: gross minus pay not earned (absence, unpaid leave), over the month's non-voided runs.
+/// The worker-protective reading, pending legal confirmation (owner's counsel list).</param>
+/// <param name="DebtPercentOfWage">Debt-type total ÷ wage due, 0–100, floored to two decimals; null when there is no wage.</param>
+/// <param name="CapStatus">Within / Near / Over / NeedsReview / Voided (<see cref="CapStatuses"/>); Near = more than 80% of the
+/// limit used; NeedsReview = the lines do not add up to the slip; Voided = the run no longer applies (no flags, no advice).</param>
+/// <param name="NotCountedTotal">This slip's deductions outside the limit (GOSI, absence, corrections, …).</param>
+/// <param name="SlipDeductionTotal">The payslip's own deductions total; <paramref name="Reconciles"/> says its lines add up to it.</param>
+/// <param name="OtherRuns">Other non-voided payroll runs this month; their wage due and debt are inside the figures.</param>
 /// <param name="Reasons">Each flag as a sentence: title, why, fix — EN and AR. The UI never shows a raw code.</param>
 public sealed record DeductionStatementDto(
     Guid SlipId, Guid RunId, int EmployeeId, string EmployeeCode, string EmployeeName, int Year, int Month,
     string? RunStatus, string? RunType, string SlipStatus, string Currency,
+    decimal GrossPay, decimal PayNotEarned, decimal OtherRunsWageDue, decimal OtherRunsDebt, int OtherRuns,
     decimal WageDue, decimal DebtTotal, decimal CapLimit, decimal Headroom, decimal? DebtPercentOfWage, string CapStatus,
     decimal NotCountedTotal, decimal SlipDeductionTotal, bool Reconciles,
     IReadOnlyList<DeductionLineDto> Lines, IReadOnlyList<string> Flags, IReadOnlyList<BlockReason> Reasons)
@@ -96,12 +102,14 @@ public sealed record DeductionStatementDto(
     public static DeductionStatementDto From(DeductionStatementDetail d)
     {
         var s = d.Statement;
-        var all = s.Lines.Sum(l => l.Amount);
+        var own = s.Lines.Where(l => l.ComponentCode != DeductionStatementBuilder.OtherRunsCode).ToList();
+        var ownTotal = own.Sum(l => l.Amount);
         return new DeductionStatementDto(s.SlipId, d.Slip.RunId, s.EmployeeId, d.Slip.EmployeeCode, d.Slip.EmployeeName, s.Year, s.Month,
             d.Run?.Status, d.Run?.RunType, d.Slip.Status, d.Currency,
+            Money(d.Slip.GrossSalary), Money(d.PayNotEarned), Money(d.Period.OtherRunsWageDue), Money(d.Period.OtherRunsDebt), d.Period.OtherRuns,
             Money(s.WageDue), Money(s.DebtTotal), Money(s.CapLimit), Money(s.Headroom),
-            DeductionStatementBuilder.Percent(s.DebtTotal, s.WageDue), DeductionStatementBuilder.CapStatus(s),
-            Money(all - s.DebtTotal), Money(d.Slip.Deductions), Math.Abs(all - d.Slip.Deductions) < 0.01m,
+            DeductionStatementBuilder.Percent(s.DebtTotal, s.WageDue), d.CapStatus,
+            Money(own.Where(l => !l.CountsTowardCap).Sum(l => l.Amount)), Money(d.Slip.Deductions), Math.Abs(ownTotal - d.Slip.Deductions) < 0.01m,
             s.Lines.Select(l => DeductionLineDto.From(l, d.Debts)).ToList(),
             s.Flags, s.Flags.Where(ReleaseABlockReasons.All.ContainsKey).Select(ReleaseABlockReasons.Get).ToList());
     }
@@ -111,45 +119,52 @@ public sealed record DeductionStatementDto(
 
 /// <param name="LegalBasisKey">An i18n key (src/i18n/releaseA/deductions.ts), never free text.</param>
 /// <param name="InstalmentsRemaining">At the loan's instalment, after this payslip; null when the balance is unknown.</param>
-/// <param name="PercentOfWage">Loan/advance lines: this instalment ÷ the wage due, 0–100.</param>
+/// <param name="PercentOfWage">Loan/advance lines: this instalment ÷ the Art. 92 basis (the loan's cap_base_wage witness, else
+/// the salary structure), 0–100, floored to two decimals for display.</param>
+/// <param name="AboveConsentThreshold">Employer loans: the UNROUNDED instalment is above 10% of that basis (or the basis is unknown).</param>
 /// <param name="ConsentOnFile">Employer loans: the employee's written consent to an instalment above 10% is on file.</param>
 public sealed record DeductionLineDto(
     string ComponentCode, string Label, string Category, decimal Amount, bool CountsTowardCap, string LegalBasisKey,
-    Guid? LoanId, string? LoanNumber, string? LoanType, decimal? BalanceAfter, int? InstalmentsRemaining, int? InstalmentsTotal,
-    decimal? PercentOfWage, bool? ConsentOnFile)
+    Guid? LoanId, string? LoanNumber, string? LoanType, string? LoanTypeAr, decimal? BalanceAfter, int? InstalmentsRemaining,
+    int? InstalmentsTotal, decimal? PercentOfWage, bool? AboveConsentThreshold, bool? ConsentOnFile)
 {
     public static DeductionLineDto From(DeductionStatementLine l, IReadOnlyDictionary<Guid, DebtFacts> debts)
     {
         DebtFacts? debt = l.LoanId is Guid id && debts.TryGetValue(id, out var f) ? f : null;
+        bool? above = l.Category == DeductionCategories.EmployerLoan && l.LoanId is not null
+            ? l.PercentOfWage is not decimal pct || pct > DeductionStatementService.LoanConsentThresholdPercent
+            : null;
         return new DeductionLineDto(l.ComponentCode, l.Label, l.Category, DeductionStatementDto.Money(l.Amount), l.CountsTowardCap,
-            l.LegalBasisKey, l.LoanId, debt?.Number, debt?.TypeName,
+            l.LegalBasisKey, l.LoanId, debt?.Number, debt?.TypeName, debt?.TypeNameAr,
             l.BalanceAfter is decimal b ? DeductionStatementDto.Money(b) : null, l.InstalmentsRemaining,
-            debt is { InstalmentsTotal: > 0 } ? debt.InstalmentsTotal : null, l.PercentOfWage, l.ConsentOnFile);
+            debt is { InstalmentsTotal: > 0 } ? debt.InstalmentsTotal : null, DeductionStatementBuilder.FloorPercent(l.PercentOfWage),
+            above, l.ConsentOnFile);
     }
 }
 
 /// <summary>One row of the run view: an employee against the Art. 93 limit.</summary>
+/// <param name="Reconciles">The slip's lines add up to its deductions total; false shows as NeedsReview, never Within.</param>
 public sealed record RunDeductionRowDto(
-    Guid SlipId, int EmployeeId, string EmployeeCode, string EmployeeName, string Currency,
+    Guid SlipId, int EmployeeId, string EmployeeCode, string EmployeeName, string Currency, string? RunStatus,
     decimal WageDue, decimal DebtTotal, decimal CapLimit, decimal Headroom, decimal? DebtPercentOfWage, string CapStatus,
-    IReadOnlyList<string> Flags)
+    bool Reconciles, IReadOnlyList<string> Flags)
 {
     public static RunDeductionRowDto From(DeductionStatementDetail d)
     {
         var s = d.Statement;
-        return new RunDeductionRowDto(s.SlipId, s.EmployeeId, d.Slip.EmployeeCode, d.Slip.EmployeeName, d.Currency,
+        return new RunDeductionRowDto(s.SlipId, s.EmployeeId, d.Slip.EmployeeCode, d.Slip.EmployeeName, d.Currency, d.Run?.Status,
             DeductionStatementDto.Money(s.WageDue), DeductionStatementDto.Money(s.DebtTotal), DeductionStatementDto.Money(s.CapLimit),
-            DeductionStatementDto.Money(s.Headroom), DeductionStatementBuilder.Percent(s.DebtTotal, s.WageDue),
-            DeductionStatementBuilder.CapStatus(s), s.Flags);
+            DeductionStatementDto.Money(s.Headroom), DeductionStatementBuilder.Percent(s.DebtTotal, s.WageDue), d.CapStatus,
+            !s.Flags.Contains(ReleaseABlockReasons.DeductionLinesMissing), s.Flags);
     }
 }
 
 /// <param name="LoanNo">The loan (or advance) number shown to people.</param>
 /// <param name="Remaining">Instalments left at the current instalment.</param>
-public sealed record DebtBalanceDto(Guid Id, string LoanNo, string Type, string? Currency, decimal Outstanding, decimal Instalment,
+public sealed record DebtBalanceDto(Guid Id, string LoanNo, string Type, string? TypeAr, string? Currency, decimal Outstanding, decimal Instalment,
     int? Remaining, int? InstalmentsTotal, DateOnly? NextDueOn, bool? ConsentOnFile, bool DeductedFromPay)
 {
-    public static DebtBalanceDto From(DebtBalance b) => new(b.Id, b.Number, b.TypeName, b.Currency,
+    public static DebtBalanceDto From(DebtBalance b) => new(b.Id, b.Number, b.TypeName, b.TypeNameAr, b.Currency,
         DeductionStatementDto.Money(b.Outstanding), DeductionStatementDto.Money(b.Instalment), b.InstalmentsRemaining,
         b.InstalmentsTotal > 0 ? b.InstalmentsTotal : null, b.NextDueOn, b.ConsentOnFile, b.DeductedFromPay);
 }

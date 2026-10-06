@@ -7,6 +7,7 @@ using Zayra.Api.Application.Entitlements;
 using Zayra.Api.Controllers.Payroll;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Common;
 using Zayra.Api.Infrastructure.Filters;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
@@ -32,7 +33,7 @@ public sealed class EssDeductionsController(ZayraDbContext db) : ControllerBase
     [HasPermission("ess.read")]
     public async Task<IActionResult> MyDeductions([FromServices] ITenantClock clock, [FromQuery] int months = 6, CancellationToken ct = default)
     {
-        if (Caller() is not (Guid tenantId, int employeeId)) return SelfServiceRefusal();
+        if (await CallerAsync(ct) is not (Guid tenantId, int employeeId)) return SelfServiceRefusal();
         var today = await clock.TodayAsync(tenantId, ct);
         var details = await Statements.ForEmployeeAsync(tenantId, employeeId, months, DeductionAudience.Employee, today, ct);
         var balances = await Statements.BalancesAsync(tenantId, employeeId, ct);
@@ -44,7 +45,7 @@ public sealed class EssDeductionsController(ZayraDbContext db) : ControllerBase
     [HasPermission("ess.read")]
     public async Task<IActionResult> PayslipDeductions(Guid id, CancellationToken ct)
     {
-        if (Caller() is not (Guid tenantId, int employeeId)) return SelfServiceRefusal();
+        if (await CallerAsync(ct) is not (Guid tenantId, int employeeId)) return SelfServiceRefusal();
         // Ownership first: a colleague's slip is indistinguishable from a missing one.
         var own = await db.PayrollSlips.AsNoTracking()
             .AnyAsync(s => s.TenantId == tenantId && s.Id == id && s.EmployeeId == employeeId, ct);
@@ -59,14 +60,15 @@ public sealed class EssDeductionsController(ZayraDbContext db) : ControllerBase
         return Ok(DeductionStatementDto.From(detail));
     }
 
-    /// <summary>The caller's tenant and own employee id, from the token only. Null for an account that cannot use self-service.</summary>
-    private (Guid TenantId, int EmployeeId)? Caller()
+    /// <summary>The caller's tenant and own employee, via <see cref="CallerEmployeeResolver"/>: the token's employee_id, and only
+    /// while that employee still exists in the caller's tenant (a deleted employee's live token reads nothing). Null for an
+    /// account that cannot use self-service.</summary>
+    private async Task<(Guid TenantId, int EmployeeId)?> CallerAsync(CancellationToken ct)
     {
         var accessMode = User.FindFirstValue("access_mode") ?? string.Empty;
         if (accessMode is "NoLogin" or "KioskOnly") return null;
         if (!Guid.TryParse(User.FindFirstValue("tenant_id"), out var tenantId)) return null;
-        if (!int.TryParse(User.FindFirstValue("employee_id"), out var employeeId) || employeeId <= 0) return null;
-        return (tenantId, employeeId);
+        return await CallerEmployeeResolver.ResolveAsync(db, User, tenantId, ct) is int employeeId ? (tenantId, employeeId) : null;
     }
 
     private ObjectResult SelfServiceRefusal() => StatusCode(StatusCodes.Status403Forbidden, new

@@ -1583,7 +1583,7 @@ export function EmployeesPage() {
                 <div className="mt-4 flex gap-1 overflow-x-auto">
                   {visibleTabs.map((tab) => (
                     <button key={tab.id} type="button" onClick={() => setActiveTab(tab.id)} className={`whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-semibold ${activeTab === tab.id ? 'bg-sapphire text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.07]'}`}>
-                      {tab.label}
+                      {t(tab.label)}
                     </button>
                   ))}
                 </div>

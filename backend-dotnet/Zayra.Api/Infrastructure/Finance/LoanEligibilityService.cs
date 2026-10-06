@@ -119,11 +119,8 @@ public sealed class LoanEligibilityService(ZayraDbContext db)
         }
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var currency = await GlAccountResolver.ResolveCurrencyAsync(db, tid, employee.CompanyId, ct);
-        var salary = await db.Set<EmployeeSalaryStructure>().AsNoTracking()
-            .Where(x => x.TenantId == tid && x.EmployeeId == employee.Id && x.IsActive && x.EffectiveDate <= today)
-            .OrderByDescending(x => x.EffectiveDate).ThenByDescending(x => x.CreatedAtUtc).FirstOrDefaultAsync(ct);
-        var monthlySalary = salary == null ? 0 : salary.BasicSalary + salary.HousingAllowance + salary.TransportAllowance
-            + salary.FoodAllowance + salary.MobileAllowance + salary.OtherAllowance;
+        var salary = await SalaryAsOfAsync(tid, employee.Id, today, ct);
+        var monthlySalary = MonthlyWage(salary);
         var notice = await db.Set<EmployeeOffboarding>().AnyAsync(x => x.TenantId == tid && x.EmployeeId == employee.Id && x.Status == "InProgress", ct);
         var statuses = ReadList(policy.AllowedEmploymentStatusesJson, Refuse);
         var contracts = ReadList(policy.AllowedContractTypesJson, Refuse);
@@ -265,6 +262,31 @@ public sealed class LoanEligibilityService(ZayraDbContext db)
             policy.Id == Guid.Empty ? null : policy.Id, policy.Version == 0 ? null : policy.Version,
             JsonSerializer.Serialize(policy), "{}", monthlySalary, committedAmount,
             grade, available, gradeBlocksOutright ? null : binding?.Limit, limits, art92);
+    }
+
+    /// <summary>The employee's salary structure in force on <paramref name="asOf"/> (latest active row), or null.</summary>
+    private Task<EmployeeSalaryStructure?> SalaryAsOfAsync(Guid tid, int employeeId, DateOnly asOf, CancellationToken ct) =>
+        db.Set<EmployeeSalaryStructure>().AsNoTracking()
+            .Where(x => x.TenantId == tid && x.EmployeeId == employeeId && x.IsActive && x.EffectiveDate <= asOf)
+            .OrderByDescending(x => x.EffectiveDate).ThenByDescending(x => x.CreatedAtUtc).FirstOrDefaultAsync(ct);
+
+    /// <summary>The monthly wage of a salary structure (basic + every fixed allowance); 0 for none.</summary>
+    public static decimal MonthlyWage(EmployeeSalaryStructure? s) => s == null ? 0 : s.BasicSalary + s.HousingAllowance
+        + s.TransportAllowance + s.FoodAllowance + s.MobileAllowance + s.OtherAllowance;
+
+    /// <summary>
+    /// Art. 92 for an instalment that is not a new request — a reschedule, a switch to payroll collection, a consent
+    /// attached to a pending loan. Same rule and the same wage as <see cref="EvaluateAsync"/>: the salary in force today,
+    /// usable only in the company's loan currency; an unknown wage requires consent.
+    /// </summary>
+    public async Task<LoanArt92Check> Art92ForInstalmentAsync(Guid tid, Employee employee, decimal monthlyInstalment,
+        string repaymentMethod, CancellationToken ct)
+    {
+        var currency = await GlAccountResolver.ResolveCurrencyAsync(db, tid, employee.CompanyId, ct);
+        var salary = await SalaryAsOfAsync(tid, employee.Id, DateOnly.FromDateTime(DateTime.UtcNow), ct);
+        var wage = MonthlyWage(salary);
+        var usable = salary != null && wage > 0 && string.Equals(salary.Currency, currency, StringComparison.OrdinalIgnoreCase);
+        return LoanArt92Check.Evaluate(monthlyInstalment, usable ? wage : null, repaymentMethod == "PayrollDeduction");
     }
 
     /// <summary>Stamps the grade witnesses onto a loan from an assessment (at request, and again at the

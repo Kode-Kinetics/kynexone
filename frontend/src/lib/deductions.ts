@@ -27,7 +27,28 @@ export const CAP_STATUS_LABEL: Record<CapStatus, string> = {
   Within: msg('Within the limit'),
   Near: msg('Near the limit'),
   Over: msg('Over the limit'),
+  NeedsReview: msg('Needs a look'),
+  Voided: msg('Voided, no longer applies'),
 };
+
+/** Component codes whose payslip label is translated here (the payroll pack names them in English). */
+export const COMPONENT_LABEL: Record<string, string> = {
+  'GOSI-ANN-EE': msg('GOSI annuities, employee share'),
+  'GOSI-SANED-EE': msg('SANED unemployment insurance, employee share'),
+  'GOSI-OH-EE': msg('GOSI occupational hazards, employee share'),
+  OTHER_RUNS_THIS_PERIOD: msg('Other payroll runs this month'),
+};
+
+/** The exception-first rule, the same as the server's nearCap filter: not plainly within the limit, or flagged. A voided
+ * run is never an exception. */
+export function needsAttention(capStatus: CapStatus, flags: string[]): boolean {
+  return capStatus !== 'Voided' && (capStatus !== 'Within' || flags.length > 0);
+}
+
+/** A loan type in the reader's language: its Arabic name when the tenant gave one. */
+export function loanTypeName(line: Pick<DeductionLine, 'loanType' | 'loanTypeAr'>, locale: string): string | null {
+  return locale === 'ar' && line.loanTypeAr ? line.loanTypeAr : line.loanType;
+}
 
 /** Art. 92: above this share of the wage a loan instalment needs written consent. */
 export const CONSENT_THRESHOLD_PERCENT = 10;
@@ -37,6 +58,8 @@ export interface Formatters {
   percent: (n: number) => string;
   /** Translates a nested label (a category, "Salary advance") before it is placed inside a sentence. */
   tr: (key: string) => string;
+  /** The reader's language, for names the tenant gave in Arabic (loan types). */
+  locale?: string;
 }
 
 /** The main sentence for one line. Loan and advance lines say what is left; others say what they are. */
@@ -44,7 +67,7 @@ export function lineSentence(line: DeductionLine, fmt: Formatters): Sentence {
   const isDebt = line.category === 'EmployerLoan' || line.category === 'SalaryAdvance';
   const amount = fmt.money(line.amount);
   if (!isDebt || line.loanId == null) return { key: CATEGORY_LABEL[line.category] };
-  const type = line.category === 'SalaryAdvance' ? fmt.tr(msg('Salary advance')) : (line.loanType || fmt.tr(msg('Employer loan')));
+  const type = line.category === 'SalaryAdvance' ? fmt.tr(msg('Salary advance')) : (loanTypeName(line, fmt.locale ?? 'en') || fmt.tr(msg('Employer loan')));
   const named = line.loanNumber ? `${type} ${line.loanNumber}` : type;
   if (line.balanceAfter == null || line.instalmentsRemaining == null)
     return { key: msg('{type} instalment of {amount}. The balance after this payslip could not be confirmed.'), params: { type: named, amount } };
@@ -75,10 +98,12 @@ export function consentSentences(line: DeductionLine, audience: Audience, fmt: F
   return out;
 }
 
-/** True when an employer-loan instalment is above 10% of the wage, or the wage is unknown (fail-closed). */
+/** True when an employer-loan instalment is above 10% of its Art. 92 basis, or the basis is unknown (fail-closed). The server
+ * judges it unrounded (1,000.04 on 10,000 is above), so its answer wins over the floored percentage shown. */
 export function exceedsConsentThreshold(line: DeductionLine): boolean {
-  return line.category === 'EmployerLoan' && line.loanId != null
-    && (line.percentOfWage == null || line.percentOfWage > CONSENT_THRESHOLD_PERCENT);
+  if (line.category !== 'EmployerLoan' || line.loanId == null) return false;
+  if (line.aboveConsentThreshold != null) return line.aboveConsentThreshold;
+  return line.percentOfWage == null || line.percentOfWage > CONSENT_THRESHOLD_PERCENT;
 }
 
 /** Whether the line counts toward the Art. 93 half-wage limit, in words. */

@@ -7,7 +7,8 @@ import client from './client';
  */
 
 export type DeductionCategory = 'Statutory' | 'EmployerLoan' | 'SalaryAdvance' | 'Absence' | 'PenaltyOrAdjustment' | 'CourtOrder' | 'Other';
-export type CapStatus = 'Within' | 'Near' | 'Over';
+/** NeedsReview: the lines do not add up to the slip, so 'within' cannot be shown. Voided: the run no longer applies. */
+export type CapStatus = 'Within' | 'Near' | 'Over' | 'NeedsReview' | 'Voided';
 
 /** One reason a statement is flagged, as sentences in both languages. The UI never shows the code. */
 export interface DeductionBlockReason {
@@ -29,11 +30,15 @@ export interface DeductionLine {
   loanId: string | null;
   loanNumber: string | null;
   loanType: string | null;
+  /** The loan type's Arabic name, when the tenant gave one. */
+  loanTypeAr: string | null;
   balanceAfter: number | null;
   instalmentsRemaining: number | null;
   instalmentsTotal: number | null;
-  /** This instalment ÷ the wage due, 0–100. */
+  /** This instalment ÷ the Art. 92 basis (the loan's wage witness, else the salary structure), 0–100, floored for display. */
   percentOfWage: number | null;
+  /** Employer loans: the unrounded instalment is above 10% of that basis (or the basis is unknown). */
+  aboveConsentThreshold: boolean | null;
   /** Employer loans: written consent to an instalment above 10% is on file. */
   consentOnFile: boolean | null;
 }
@@ -50,6 +55,14 @@ export interface DeductionStatement {
   runType: string | null;
   slipStatus: string;
   currency: string;
+  grossPay: number;
+  /** Absence / loss of pay and unpaid leave on this slip: pay not earned, taken off the wage due. */
+  payNotEarned: number;
+  otherRunsWageDue: number;
+  otherRunsDebt: number;
+  /** Other non-voided payroll runs this month: the limit covers the whole month. */
+  otherRuns: number;
+  /** Art. 93 wage due: gross minus pay not earned, over the month's runs (pending legal confirmation). */
   wageDue: number;
   /** Deductions that count toward the Art. 93 limit. */
   debtTotal: number;
@@ -75,12 +88,15 @@ export interface RunDeductionRow {
   employeeCode: string;
   employeeName: string;
   currency: string;
+  runStatus: string | null;
   wageDue: number;
   debtTotal: number;
   capLimit: number;
   headroom: number;
   debtPercentOfWage: number | null;
   capStatus: CapStatus;
+  /** The slip's lines add up to its deductions total. */
+  reconciles: boolean;
   flags: string[];
 }
 
@@ -88,6 +104,7 @@ export interface DebtBalance {
   id: string;
   loanNo: string;
   type: string;
+  typeAr: string | null;
   currency: string | null;
   outstanding: number;
   instalment: number;

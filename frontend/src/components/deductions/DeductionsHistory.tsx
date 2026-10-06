@@ -73,9 +73,9 @@ export function DeductionsHistory({ data, audience, months }: { data: EmployeeDe
 }
 
 function BalanceRow({ balance: b, advance, audience, money }: { balance: DebtBalance; advance: boolean; audience: Audience; money: (n: number) => string }) {
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   const fx = useFormat();
-  const type = advance ? t('Salary advance') : b.type;
+  const type = advance ? t('Salary advance') : (locale === 'ar' && b.typeAr ? b.typeAr : b.type);
   return (
     <li className="py-2.5 text-sm" data-testid="balance">
       <div className="flex items-start justify-between gap-3">

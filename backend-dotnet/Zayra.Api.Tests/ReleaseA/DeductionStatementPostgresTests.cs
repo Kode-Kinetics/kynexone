@@ -52,6 +52,7 @@ public class DeductionStatementPostgresTests(PostgresFixture fixture)
         Assert.Equal(loans[w.LoanA].OutstandingBalance, a.BalanceAfter);
         Assert.Equal(loans[w.LoanB].OutstandingBalance, b.BalanceAfter);
         Assert.Equal(4_400m, a.BalanceAfter);
+        Assert.Equal("قرض شخصي", detail.Debts[w.LoanA].TypeNameAr);
         Assert.Equal(11, a.InstalmentsRemaining);
         Assert.Equal(4, b.InstalmentsRemaining);
         Assert.Equal(4_800m, b.BalanceAfter);
@@ -60,13 +61,13 @@ public class DeductionStatementPostgresTests(PostgresFixture fixture)
         Assert.DoesNotContain(ReleaseABlockReasons.LoanInstalmentOver10PctNoConsent, s.Flags); // above 10% WITH consent
         Assert.All(loanLines, l => Assert.True(l.CountsTowardCap));
         Assert.All(loanLines, l => Assert.Equal(DeductionLegalBasis.EmployerLoan, l.LegalBasisKey));
-        Assert.Equal(Math.Round(400m / slip.GrossSalary * 100m, 2), a.PercentOfWage);
+        Assert.Equal(400m / 11_000m * 100m, a.PercentOfWage); // basis: the salary structure (no cap_base_wage witness on loan A)
         Assert.False(a.ConsentOnFile);
 
         // Every number drills to the persisted lines: the statement adds up to the slip's own deductions total.
         Assert.Equal(slip.Deductions, Math.Round(s.Lines.Sum(l => l.Amount), 2));
         Assert.Equal(s.Lines.Where(l => l.CountsTowardCap).Sum(l => l.Amount), s.DebtTotal);
-        Assert.Equal(slip.GrossSalary / 2m, s.CapLimit);
+        Assert.Equal(slip.GrossSalary / 2m, s.CapLimit); // no absence: wage due = gross
         Assert.Contains(s.Lines, l => l.Category == DeductionCategories.Statutory && l.Amount > 0m);
         Assert.DoesNotContain(s.Lines, l => l.Category == DeductionCategories.Statutory && l.CountsTowardCap); // GOSI: #177
         Assert.True(DeductionStatementDto.From(detail).Reconciles);
@@ -99,6 +100,9 @@ public class DeductionStatementPostgresTests(PostgresFixture fixture)
             Assert.Single(mine.Statements);
             Assert.Equal(2, mine.Balances.Loans.Count);
 
+            // A voided run no longer applies: HR sees it as such, with no flags and no advice …
+            var hrVoid = HrController(db, Hr(w.TenantId, w.CompanyId));
+            // (run voided below)
             // A voided run disappears from self-service.
             var run = await db.PayrollRuns.SingleAsync(r => r.Id == w.RunId);
             run.Status = "Voided";
@@ -106,6 +110,22 @@ public class DeductionStatementPostgresTests(PostgresFixture fixture)
             Assert.IsType<NotFoundResult>(await Ess(db, w, w.EmployeeId).PayslipDeductions(own.Id, default));
             var afterVoid = (EmployeeDeductionsDto)((OkObjectResult)await Ess(db, w, w.EmployeeId).MyDeductions(new FixedClock(), 12, default)).Value!;
             Assert.Empty(afterVoid.Statements);
+            var colleagueVoided = (DeductionStatementDto)((OkObjectResult)await hrVoid.ForSlip(colleague.Id, default)).Value!;
+            Assert.Equal(CapStatuses.Voided, colleagueVoided.CapStatus);
+            Assert.Empty(colleagueVoided.Flags);
+            Assert.Empty(colleagueVoided.Reasons);
+            var voidRows = (List<RunDeductionRowDto>)((OkObjectResult)await hrVoid.ForRun(w.RunId, true, default)).Value!;
+            Assert.Empty(voidRows); // nothing to act on in a voided run
+            Assert.All((List<RunDeductionRowDto>)((OkObjectResult)await hrVoid.ForRun(w.RunId, null, default)).Value!,
+                r => Assert.Equal("Voided", r.RunStatus));
+
+            // A deleted employee's still-live token reads nothing.
+            run.Status = "Locked";
+            var employee = await db.Employees.SingleAsync(e => e.Id == w.EmployeeId);
+            employee.IsDeleted = true;
+            await db.SaveChangesAsync();
+            var refused = Assert.IsType<ObjectResult>(await Ess(db, w, w.EmployeeId).MyDeductions(new FixedClock(), 12, default));
+            Assert.Equal(403, refused.StatusCode);
         }
     }
 
@@ -152,6 +172,54 @@ public class DeductionStatementPostgresTests(PostgresFixture fixture)
             Assert.Single(employee.Statements); // HR sees the in-progress run, with its status
             Assert.Equal("Processed", employee.Statements[0].RunStatus);
         }
+    }
+
+    [Fact]
+    public async Task OffCycleRunInTheSameMonth_SharesTheLimit()
+    {
+        var w = await SeedAndProcessAsync();
+        await using var db = fixture.CreateDb();
+        var regular = await db.PayrollRuns.SingleAsync(r => r.Id == w.RunId);
+        var offCycle = new PayrollRun
+        {
+            TenantId = w.TenantId, CompanyId = w.CompanyId, Year = regular.Year, Month = regular.Month, Status = "Processed",
+            RunType = PayrollRunTypes.OffCycle, IncludesRecurringPay = false, CreatedAtUtc = new DateTime(2026, 6, 20, 0, 0, 0, DateTimeKind.Utc),
+        };
+        var voidedOther = new PayrollRun
+        {
+            TenantId = w.TenantId, CompanyId = w.CompanyId, Year = regular.Year, Month = regular.Month, Status = "Voided",
+            RunType = PayrollRunTypes.Supplementary, IncludesRecurringPay = false, CreatedAtUtc = new DateTime(2026, 6, 21, 0, 0, 0, DateTimeKind.Utc),
+        };
+        db.PayrollRuns.AddRange(offCycle, voidedOther);
+        foreach (var run in new[] { offCycle, voidedOther })
+        {
+            db.PayrollSlips.Add(new PayrollSlip
+            {
+                TenantId = w.TenantId, CompanyId = w.CompanyId, RunId = run.Id, EmployeeId = w.EmployeeId, EmployeeCode = "MS-1",
+                EmployeeName = "Mohammed Al-Qahtani", GrossSalary = 2_000m, OtherAllowances = 2_000m, Deductions = 700m, NetSalary = 1_300m,
+            });
+            db.PayrollDeductions.Add(new PayrollDeduction
+            {
+                TenantId = w.TenantId, CompanyId = w.CompanyId, PayrollRunId = run.Id, EmployeeId = w.EmployeeId,
+                ComponentCode = "ADJ_PENALTY", ComponentName = "Penalty", Amount = 700m, Source = "Adjustment",
+            });
+        }
+        await db.SaveChangesAsync();
+
+        var slip = await db.PayrollSlips.SingleAsync(s => s.RunId == w.RunId && s.EmployeeId == w.EmployeeId);
+        var detail = (await new DeductionStatementService(db).DetailForSlipAsync(w.TenantId, slip.Id, DeductionAudience.Hr, default))!;
+        Assert.Equal(1, detail.Period.OtherRuns); // the voided supplementary run does not count
+        Assert.Equal(700m, detail.Period.OtherRunsDebt);
+        Assert.Equal(slip.GrossSalary + 2_000m, detail.Statement.WageDue);
+        Assert.Equal(1_600m + 700m, detail.Statement.DebtTotal);
+        Assert.Equal(700m, detail.Statement.Lines.Single(l => l.ComponentCode == DeductionStatementBuilder.OtherRunsCode).Amount);
+        Assert.True(DeductionStatementDto.From(detail).Reconciles); // the other run's line is not this slip's
+
+        // And the off-cycle slip sees the regular run's 1,600 the same way.
+        var offSlip = await db.PayrollSlips.SingleAsync(s => s.RunId == offCycle.Id);
+        var off = (await new DeductionStatementService(db).DetailForSlipAsync(w.TenantId, offSlip.Id, DeductionAudience.Hr, default))!;
+        Assert.Equal(1_600m, off.Period.OtherRunsDebt);
+        Assert.Equal(detail.Statement.DebtTotal, off.Statement.DebtTotal);
     }
 
     /// <summary>
@@ -247,8 +315,11 @@ public class DeductionStatementPostgresTests(PostgresFixture fixture)
                     TenantId = tenantId, EmployeeId = e.Id, Iban = "SA4420000001234567891234", MolId = $"MOL-{Guid.NewGuid():N}", SalaryCurrency = "SAR",
                 });
             }
+            var type = new LoanType { TenantId = tenantId, Code = $"PL-{Guid.NewGuid():N}"[..10], NameEn = "Personal loan", NameAr = "قرض شخصي", MaxInstallments = 24 };
+            db.LoanTypes.Add(type);
             var a = Loan(tenantId, company.Id, emp, "LN-R3-A", instalment: 400m, outstanding: 4_800m, count: 12);
             var b = Loan(tenantId, company.Id, emp, "LN-R3-B", instalment: 1_200m, outstanding: 6_000m, count: 5);
+            a.LoanTypeId = b.LoanTypeId = type.Id;
             // B's instalment is 10.9% of the 11,000 wage: lawful only with the employee's signed consent (Art. 92).
             var consent = new EmployeeDocument
             {

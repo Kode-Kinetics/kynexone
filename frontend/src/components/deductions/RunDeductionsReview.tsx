@@ -6,6 +6,7 @@ import { deductionsApi, type DeductionStatement, type RunDeductionRow } from '..
 import { useLocale } from '../../contexts/LocaleContext';
 import { useFormat } from '../../hooks/useFormat';
 import { useReleaseA } from '../../lib/releaseA';
+import { needsAttention } from '../../lib/deductions';
 import { CapStatusChip, DeductionStatementView } from './DeductionStatementView';
 import { DeductionsDrawer } from './DeductionsDrawer';
 
@@ -52,7 +53,8 @@ function RunDeductionsReviewBody({ runId }: { runId: string }) {
 
   const over = useMemo(() => rows?.filter((r) => r.capStatus === 'Over').length ?? 0, [rows]);
   const near = useMemo(() => rows?.filter((r) => r.capStatus === 'Near').length ?? 0, [rows]);
-  const shown = useMemo(() => (rows ?? []).filter((r) => filter === 'all' || r.capStatus !== 'Within' || r.flags.length > 0), [rows, filter]);
+  const shown = useMemo(() => (rows ?? []).filter((r) => filter === 'all' || needsAttention(r.capStatus, r.flags)), [rows, filter]);
+  const voidedRun = (rows ?? []).some((r) => r.runStatus === 'Voided');
 
   return (
     <section className="border-t border-slate-100 px-4 py-4 dark:border-white/[0.07]" data-testid="run-deductions-review" aria-labelledby={`deductions-check-${runId}`}>
@@ -86,7 +88,8 @@ function RunDeductionsReviewBody({ runId }: { runId: string }) {
           </p>
           {shown.length === 0 ? (
             <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-              {filter === 'attention' ? t('No employee in this run is near or over the limit.') : t('No payslips in this run yet.')}
+              {voidedRun ? t('This payroll run was voided, so its deductions were reversed and nothing here needs action.')
+                : filter === 'attention' ? t('No employee in this run is near or over the limit.') : t('No payslips in this run yet.')}
             </p>
           ) : (
             <div className="mt-2 overflow-x-auto">
@@ -115,7 +118,7 @@ function RunDeductionsReviewBody({ runId }: { runId: string }) {
                       <td className={`px-2 py-2 text-end font-mono tabular-nums ${r.headroom < 0 ? 'text-rose-700 dark:text-rose-300' : ''}`}>{fx.money(r.headroom, r.currency)}</td>
                       <td className="px-2 py-2">
                         <CapStatusChip status={r.capStatus} />
-                        {r.flags.some((f) => f !== 'DEDUCTIONS_OVER_HALF_WAGE') && (
+                        {r.capStatus !== 'NeedsReview' && r.flags.some((f) => f !== 'DEDUCTIONS_OVER_HALF_WAGE') && (
                           <p className="mt-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300">{t('Needs a look')}</p>
                         )}
                       </td>

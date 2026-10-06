@@ -626,15 +626,20 @@ public static class PayrollValidationEngine
         // reference of its written basis; the bank export honours that override.
         if (isKsa)
         {
+            // PER SLIP for now. The limit belongs to the pay period, so an off-cycle or supplementary run in the same
+            // month shares it; the deductions statement (DeductionStatementService) already sums the period's non-voided
+            // runs. Moving this rule to the period is queued as a separate engine change.
             var debtByEmp = WageDeductionClassification.DebtTotalsByEmployee(ctx.Deductions);
             foreach (var slip in ctx.Slips.GroupBy(s => s.EmployeeId).Select(g => g.First()))
             {
                 var debt = debtByEmp.GetValueOrDefault(slip.EmployeeId);
-                if (!WageDeductionClassification.ExceedsHalfWage(debt, slip.GrossSalary)) continue;
+                // Wage due = gross minus absence/LOP and unpaid leave (one definition, WageDeductionClassification.WageDue).
+                var wageDue = WageDeductionClassification.WageDue(slip.GrossSalary, ctx.Deductions.Where(d => d.EmployeeId == slip.EmployeeId));
+                if (!WageDeductionClassification.ExceedsHalfWage(debt, wageDue)) continue;
                 Err(WageDeductionClassification.DeductionsExceedHalfWageCode,
                     $"Employee {slip.EmployeeCode}: loan, advance, penalty and damages deductions ({debt:N2}) are more " +
-                    $"than half of the wage due ({slip.GrossSalary:N2}). Saudi Labour Law Art. 92/93 caps them at 50% " +
-                    "(statutory GOSI, absence and unpaid leave are not counted). Reschedule the instalment or reduce the " +
+                    $"than half of the wage due after absence ({wageDue:N2}). Saudi Labour Law Art. 92/93 caps them at 50% " +
+                    "(statutory GOSI is not counted; absence and unpaid leave reduce the wage due). Reschedule the instalment or reduce the " +
                     "deduction and re-process, or override it citing " + WageDeductionClassification.CapOverrideGrounds +
                     " and its reference.",
                     slip.EmployeeId);

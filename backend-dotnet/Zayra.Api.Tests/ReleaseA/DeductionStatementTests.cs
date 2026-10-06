@@ -31,8 +31,12 @@ public class DeductionStatementTests
     private static PayrollDeduction Line(string code, decimal amount, string source, bool employer = false, string? gl = null) =>
         new() { ComponentCode = code, ComponentName = code, Amount = amount, Source = source, IsEmployerContribution = employer, GlDriverKey = gl, EmployeeId = 7 };
 
+    /// <summary>A slip whose deductions total is its employee-side lines (a fully itemised payslip).</summary>
+    private static PayrollSlip SlipFor(decimal gross, params PayrollDeduction[] lines) =>
+        Slip(gross, lines.Where(l => !l.IsEmployerContribution).Sum(l => l.Amount));
+
     private static DeductionStatement Build(decimal gross, params PayrollDeduction[] lines) =>
-        DeductionStatementBuilder.Build(Slip(gross), 2026, 6, lines, [], [], NoDebts);
+        DeductionStatementBuilder.Build(SlipFor(gross, lines), 2026, 6, lines, [], [], NoDebts);
 
     [Fact]
     public void Absence_IsShownButNotCounted_AndGosiIsNotCounted()
@@ -109,10 +113,10 @@ public class DeductionStatementTests
         var a = Guid.NewGuid(); var b = Guid.NewGuid();
         var debts = new Dictionary<Guid, DebtFacts>
         {
-            [a] = new(a, "LN-1", "Personal", 12, 400m, ConsentOnFile: false, IsAdvance: false),
-            [b] = new(b, "LN-2", "Housing", 10, 1_500m, ConsentOnFile: true, IsAdvance: false),
+            [a] = new(a, "LN-1", "Personal", 12, 400m, ConsentOnFile: false, IsAdvance: false, CapBaseWage: 10_000m),
+            [b] = new(b, "LN-2", "Housing", 10, 1_500m, ConsentOnFile: true, IsAdvance: false, CapBaseWage: 10_000m),
         };
-        var s = DeductionStatementBuilder.Build(Slip(10_000m), 2026, 6, [Line("LOAN_EMI", 1_900m, "Loan")],
+        var s = DeductionStatementBuilder.Build(Slip(10_000m, 1_900m), 2026, 6, [Line("LOAN_EMI", 1_900m, "Loan")],
             [new DebtTake(a, 400m, 2_800m), new DebtTake(b, 1_500m, 15_000m)], [], debts);
         Assert.Equal(1_900m, s.Lines.Sum(l => l.Amount));
         var la = s.Lines.Single(l => l.LoanId == a);
@@ -129,8 +133,8 @@ public class DeductionStatementTests
     public void LoanAbove10PercentWithoutConsent_IsFlagged()
     {
         var a = Guid.NewGuid();
-        var debts = new Dictionary<Guid, DebtFacts> { [a] = new(a, "LN-1", "Personal", 6, 1_100m, false, false) };
-        var s = DeductionStatementBuilder.Build(Slip(10_000m), 2026, 6, [Line("LOAN_EMI", 1_100m, "Loan")],
+        var debts = new Dictionary<Guid, DebtFacts> { [a] = new(a, "LN-1", "Personal", 6, 1_100m, false, false, CapBaseWage: 10_000m) };
+        var s = DeductionStatementBuilder.Build(Slip(10_000m, 1_100m), 2026, 6, [Line("LOAN_EMI", 1_100m, "Loan")],
             [new DebtTake(a, 1_100m, 6_600m)], [], debts);
         Assert.Contains(ReleaseABlockReasons.LoanInstalmentOver10PctNoConsent, s.Flags);
     }
@@ -139,7 +143,7 @@ public class DeductionStatementTests
     public void SplitThatDoesNotAddUp_StaysOneTotal_AndAssumesNoBalance()
     {
         var a = Guid.NewGuid();
-        var s = DeductionStatementBuilder.Build(Slip(10_000m), 2026, 6, [Line("LOAN_EMI", 1_000m, "Loan")],
+        var s = DeductionStatementBuilder.Build(Slip(10_000m, 1_000m), 2026, 6, [Line("LOAN_EMI", 1_000m, "Loan")],
             [new DebtTake(a, 400m, 4_800m)], [], NoDebts);
         var line = Assert.Single(s.Lines);
         Assert.Null(line.LoanId);
@@ -154,9 +158,112 @@ public class DeductionStatementTests
     {
         // The frontend dictionary is the other half of this contract (unit/releaseA.deductions.spec.ts).
         Assert.Equal(DeductionLegalBasis.All.Length, DeductionLegalBasis.All.Distinct().Count());
+        Assert.Equal(11, DeductionLegalBasis.All.Length);
         Assert.All(DeductionLegalBasis.All, k => Assert.Matches("^[A-Z].*\\.$", k));
-        foreach (var code in new[] { ReleaseABlockReasons.DeductionUnclassifiedCounted, ReleaseABlockReasons.DeductionSplitUnreconciled })
+        foreach (var code in new[] { ReleaseABlockReasons.DeductionUnclassifiedCounted, ReleaseABlockReasons.DeductionSplitUnreconciled,
+                     ReleaseABlockReasons.DeductionLinesMissing })
             Assert.Equal(code, ReleaseABlockReasons.Get(code).Code);
+    }
+
+    // ── Review round: wage due, summary-only slips, voided runs, Art. 92 basis, the period, rounding ───────────────
+
+    [Fact]
+    public void WageDue_IsGrossAfterAbsence_Probe_11000Gross_5000Lop_4000Loan_IsOver()
+    {
+        var lop = Line("LOP_DEDUCTION", 5_000m, "Attendance");
+        var loan = Line("ADJ_PENALTY", 4_000m, "Adjustment");
+        var s = Build(11_000m, lop, loan);
+        Assert.Equal(6_000m, s.WageDue);
+        Assert.Equal(3_000m, s.CapLimit);
+        Assert.Equal(CapStatuses.Over, DeductionStatementBuilder.CapStatus(s));
+        // One definition: the validation engine and the bank export ask the same question and get the same answer.
+        var wageDue = WageDeductionClassification.WageDue(11_000m, [lop, loan]);
+        Assert.True(WageDeductionClassification.ExceedsHalfWage(4_000m, wageDue));
+        Assert.False(WageDeductionClassification.ExceedsHalfWage(4_000m, 11_000m)); // the old gross reading let it through
+    }
+
+    [Theory]
+    [InlineData(9_999.99, 5_000.00, true)]   // limit 4,999.99 (half of 9,999.99 rounded DOWN)
+    [InlineData(10_000.00, 4_999.99, false)]
+    [InlineData(10_000.00, 5_000.00, false)]
+    public void Limit_IsRoundedDownToTheCent(double wage, double debt, bool over)
+    {
+        Assert.Equal(over, WageDeductionClassification.ExceedsHalfWage((decimal)debt, (decimal)wage));
+        var s = Build((decimal)wage, Line("ADJ_PENALTY", (decimal)debt, "Adjustment"));
+        Assert.Equal(over, s.Flags.Contains(ReleaseABlockReasons.DeductionsOverHalfWage));
+        Assert.Equal(decimal.Floor((decimal)wage / 2m * 100m) / 100m, s.CapLimit);
+    }
+
+    [Fact]
+    public void DisplayedPercent_IsFloored()
+    {
+        Assert.Equal(50.00m, DeductionStatementBuilder.Percent(5_000.99m, 10_000m)); // 50.0099% shows 50.00, never 50.01
+        Assert.Equal(49.99m, DeductionStatementBuilder.Percent(4_999.99m, 10_000m));
+    }
+
+    [Fact]
+    public void ZeroWage_AnyDebtIsOver_FailClosed()
+    {
+        Assert.True(WageDeductionClassification.ExceedsHalfWage(0.01m, 0m));
+        Assert.False(WageDeductionClassification.ExceedsHalfWage(0m, 0m));
+    }
+
+    [Fact]
+    public void SummaryOnlySlip_IsFlagged_AndNeverWithin()
+    {
+        // The header says 2,000 of deductions; the only line on file is 500.
+        var s = DeductionStatementBuilder.Build(Slip(10_000m, 2_000m), 2026, 6, [Line("ADJ_PENALTY", 500m, "Adjustment")], [], [], NoDebts);
+        Assert.Contains(ReleaseABlockReasons.DeductionLinesMissing, s.Flags);
+        Assert.Equal(CapStatuses.NeedsReview, DeductionStatementBuilder.CapStatus(s));
+        Assert.True(DeductionStatementBuilder.NeedsAttention(CapStatuses.NeedsReview, s.Flags));
+        Assert.Equal("This payslip can't be broken down yet", ReleaseABlockReasons.Get(ReleaseABlockReasons.DeductionLinesMissing).TitleEn);
+    }
+
+    [Fact]
+    public void VoidedRun_NoLongerApplies_NoFlagsNoAdvice()
+    {
+        var slip = Slip(1_000m, 900m);
+        var s = DeductionStatementBuilder.Build(slip, 2026, 6, [Line("ADJ_MISC", 900m, "Adjustment")], [], [], NoDebts,
+            new StatementPeriod(Voided: true));
+        Assert.Empty(s.Flags);
+        Assert.Equal(CapStatuses.Voided, DeductionStatementBuilder.CapStatus(s, voided: true));
+        Assert.False(DeductionStatementBuilder.NeedsAttention(CapStatuses.Voided, s.Flags));
+    }
+
+    [Fact]
+    public void Art92_ComparesTheLoansOwnWageWitness_Unrounded()
+    {
+        var a = Guid.NewGuid();
+        // The witness says 10,000; this slip's gross is 20,000 (a bonus month) — the basis is the witness, not the slip.
+        var debts = new Dictionary<Guid, DebtFacts> { [a] = new(a, "LN-1", "Personal", 6, 1_000.04m, false, false, CapBaseWage: 10_000m) };
+        var s = DeductionStatementBuilder.Build(Slip(20_000m, 1_000.04m), 2026, 6, [Line("LOAN_EMI", 1_000.04m, "Loan")],
+            [new DebtTake(a, 1_000.04m, 6_000m)], [], debts);
+        Assert.Contains(ReleaseABlockReasons.LoanInstalmentOver10PctNoConsent, s.Flags);
+        Assert.True(LoanArt92Check.Evaluate(1_000.04m, 10_000m, true).RequiresConsent); // same answer as at the request
+        var dto = Zayra.Api.Controllers.Payroll.DeductionLineDto.From(s.Lines.Single(), debts);
+        Assert.Equal(10.00m, dto.PercentOfWage); // floored for display …
+        Assert.True(dto.AboveConsentThreshold);   // … but judged unrounded
+
+        // No witness: the salary structure is the basis.
+        var noWitness = new Dictionary<Guid, DebtFacts> { [a] = new(a, "LN-1", "Personal", 6, 900m, false, false) };
+        var s2 = DeductionStatementBuilder.Build(Slip(20_000m, 900m), 2026, 6, [Line("LOAN_EMI", 900m, "Loan")],
+            [new DebtTake(a, 900m, 6_000m)], [], noWitness, new StatementPeriod(StructureWage: 10_000m));
+        Assert.DoesNotContain(ReleaseABlockReasons.LoanInstalmentOver10PctNoConsent, s2.Flags);
+        Assert.Equal(9m, s2.Lines.Single().PercentOfWage);
+    }
+
+    [Fact]
+    public void ThePeriodsOtherRuns_ShareTheLimit_AndShowAsTheirOwnLine()
+    {
+        var s = DeductionStatementBuilder.Build(Slip(10_000m, 4_000m), 2026, 6, [Line("ADJ_PENALTY", 4_000m, "Adjustment")], [], [], NoDebts,
+            new StatementPeriod(OtherRunsDebt: 1_500m, OtherRunsWageDue: 1_000m, OtherRuns: 1));
+        Assert.Equal(11_000m, s.WageDue);
+        Assert.Equal(5_500m, s.DebtTotal);
+        var other = s.Lines.Single(l => l.ComponentCode == DeductionStatementBuilder.OtherRunsCode);
+        Assert.True(other.CountsTowardCap);
+        Assert.Equal(DeductionLegalBasis.OtherRunsThisPeriod, other.LegalBasisKey);
+        Assert.Equal(CapStatuses.Near, DeductionStatementBuilder.CapStatus(s)); // 5,500 of 5,500 is not over …
+        Assert.DoesNotContain(ReleaseABlockReasons.DeductionLinesMissing, s.Flags); // … and the slip's own lines still reconcile
     }
 
     // ── Art. 92: loan instalment above 10% of the wage needs written consent (Release A tenants only) ────────────
@@ -234,6 +341,95 @@ public class DeductionStatementTests
         Assert.Equal("Pending", loan.Status);
     }
 
+    [Fact]
+    public async Task PendingLoanAbove10Percent_IsRefusedAtApproval_UntilTheBorrowerAttachesConsent()
+    {
+        await using var h = await LoanHarness.Create(releaseA: false);
+        // Requested before the tenant had Release A: 2,000 a month on a 10,000 wage (20%), no consent.
+        Assert.IsType<OkObjectResult>(await h.Hr().CreateLoan(
+            new CreateLoanRequest(h.Employee.PublicId, "", h.Type.Id, 12_000m, 6, null, h.Employee.Id, "PayrollDeduction"), default));
+        await h.SetReleaseA(true);
+        var loan = await h.Db.EmployeeLoans.SingleAsync();
+        var step = await h.Db.LoanApprovals.SingleAsync();
+        var approve = new ApprovalDecisionRequest("Approved", null, null, null, null);
+
+        var refused = Assert.IsType<BadRequestObjectResult>(await h.Hr().DecideApproval(loan.Id, step.Id, approve, default));
+        Assert.Equal(ReleaseABlockReasons.LoanInstalmentOver10PctNoConsent, JsonSerializer.SerializeToElement(refused.Value).GetProperty("error").GetString());
+
+        // A colleague cannot attach a consent to someone else's loan; the borrower can, by uploading the signed form.
+        var file = new FormFile(new MemoryStream("%PDF-1.4 consent"u8.ToArray()), 0, 16, "file", "consent.pdf") { Headers = new HeaderDictionary(), ContentType = "application/pdf" };
+        Assert.IsType<NotFoundResult>(await h.Borrower(h.Colleague).AttachLoanConsent(loan.Id, new LoanConsentForm { File = file }, h.Employees(), default));
+        var attached = Assert.IsType<OkObjectResult>(await h.Borrower().AttachLoanConsent(loan.Id, new LoanConsentForm { File = file }, h.Employees(), default));
+        Assert.True(((Zayra.Api.Application.Finance.EmployeeLoanDto)attached.Value!).ConsentOnFile);
+        await h.Db.Entry(loan).ReloadAsync();
+        var consent = await h.Db.EmployeeDocuments.SingleAsync(d => d.Id == loan.ConsentDocumentId);
+        Assert.Equal(RestrictedEmployeeDocumentTypes.LoanDeductionConsent, consent.DocumentType);
+        Assert.Equal(h.Employee.Id, consent.EmployeeId);
+        Assert.Equal(10_000m, loan.CapBaseWage);
+        Assert.True(await h.Db.LoanAuditLogs.AnyAsync(a => a.LoanId == loan.Id && a.Action == "Art92ConsentAttached"));
+
+        Assert.IsType<OkObjectResult>(await h.Hr().DecideApproval(loan.Id, step.Id, approve, default));
+        Assert.Equal("Approved", loan.Status);
+    }
+
+    [Fact]
+    public async Task Hr_AttachesAConsentAlreadyOnFile_ButNotAnotherEmployeesOrOnceDecided()
+    {
+        await using var h = await LoanHarness.Create(releaseA: false);
+        Assert.IsType<OkObjectResult>(await h.Hr().CreateLoan(
+            new CreateLoanRequest(h.Employee.PublicId, "", h.Type.Id, 12_000m, 6, null, h.Employee.Id, "PayrollDeduction"), default));
+        await h.SetReleaseA(true);
+        var loan = await h.Db.EmployeeLoans.SingleAsync();
+        var colleagues = h.Document(h.Colleague.Id, RestrictedEmployeeDocumentTypes.LoanDeductionConsent);
+        var own = h.Document(h.Employee.Id, RestrictedEmployeeDocumentTypes.LoanDeductionConsent);
+        await h.Db.SaveChangesAsync();
+
+        Assert.IsType<BadRequestObjectResult>(await h.Hr().AttachLoanConsent(loan.Id, new LoanConsentForm { DocumentId = colleagues.Id }, h.Employees(), default));
+        // The borrower may only upload; naming an existing document is HR's.
+        Assert.IsType<NotFoundResult>(await h.Borrower().AttachLoanConsent(loan.Id, new LoanConsentForm { DocumentId = own.Id }, h.Employees(), default));
+        Assert.IsType<OkObjectResult>(await h.Hr().AttachLoanConsent(loan.Id, new LoanConsentForm { DocumentId = own.Id }, h.Employees(), default));
+        Assert.Equal(own.Id, (await h.Db.EmployeeLoans.SingleAsync()).ConsentDocumentId);
+
+        loan.Status = "Rejected";
+        await h.Db.SaveChangesAsync();
+        Assert.IsType<ConflictObjectResult>(await h.Hr().AttachLoanConsent(loan.Id, new LoanConsentForm { DocumentId = own.Id }, h.Employees(), default));
+    }
+
+    [Fact]
+    public async Task SwitchingALoanToPayrollCollection_ReRunsTheTenPercentCheck()
+    {
+        await using var h = await LoanHarness.Create(releaseA: true);
+        // A disbursed loan repaid by bank transfer: 2,000 a month on a 10,000 wage (20%), no consent.
+        var loan = new EmployeeLoan
+        {
+            TenantId = h.Tid, CompanyId = h.Employee.CompanyId, EmployeeIntId = h.Employee.Id, EmployeeId = h.Employee.PublicId,
+            LoanTypeId = h.Type.Id, LoanNumber = "LN-SWITCH", Status = "Active", RepaymentMethod = "BankTransfer", Currency = "SAR",
+            RequestedAmount = 12_000m, ApprovedAmount = 12_000m, RequestedInstallments = 6, ApprovedInstallments = 6,
+            InstallmentAmount = 2_000m, OutstandingBalance = 12_000m, DisbursementDate = new DateOnly(2026, 9, 1), RepaymentFrequency = "Monthly",
+        };
+        h.Db.EmployeeLoans.Add(loan);
+        await h.Db.SaveChangesAsync();
+
+        var request = new LoanChangeRequestInput("CollectionMethod", "Move repayments onto payroll", RepaymentMethod: "PayrollDeduction",
+            ReconciliationReference: "RECON-1", ConfirmNoPayrollCollection: true);
+        var refused = Assert.IsType<BadRequestObjectResult>(await h.Finance().RequestLoanChange(loan.Id, request, default));
+        Assert.Equal(ReleaseABlockReasons.LoanInstalmentOver10PctNoConsent, JsonSerializer.SerializeToElement(refused.Value).GetProperty("error").GetString());
+
+        // The decision re-checks too: a pending switch recorded any other way cannot be approved past Art. 92.
+        var change = new LoanChangeRequest
+        {
+            TenantId = h.Tid, CompanyId = loan.CompanyId, LoanId = loan.Id, ChangeType = "CollectionMethod", Reason = "Legacy row",
+            RequestedRepaymentMethod = "PayrollDeduction", Reference = "RECON-2", OutstandingBalanceAtRequest = loan.OutstandingBalance,
+            CreatedBy = Guid.NewGuid(),
+        };
+        h.Db.Add(change);
+        await h.Db.SaveChangesAsync();
+        var decided = Assert.IsType<BadRequestObjectResult>(await h.Finance().DecideLoanChange(loan.Id, change.Id,
+            new LoanChangeDecisionRequest("Approved", "Independent review"), default));
+        Assert.Equal(ReleaseABlockReasons.LoanInstalmentOver10PctNoConsent, JsonSerializer.SerializeToElement(decided.Value).GetProperty("error").GetString());
+        Assert.Equal("BankTransfer", (await h.Db.EmployeeLoans.SingleAsync()).RepaymentMethod);
+    }
+
     private sealed class LoanHarness : IAsyncDisposable
     {
         public ZayraDbContext Db { get; } = new(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
@@ -262,13 +458,25 @@ public class DeductionStatementTests
                 TenantId = h.Tid, CompanyId = c.Id, LoanTypeId = h.Type.Id, MaxAmount = 50_000, MaxInstallments = 24, MaxConcurrentLoans = 5,
                 AllowedRepaymentMethodsJson = "[\"BankTransfer\",\"PayrollDeduction\"]",
             });
-            if (releaseA) h.Db.TenantFeatureFlags.Add(new TenantFeatureFlag { TenantId = h.Tid, FeatureKey = FeatureKeys.ReleaseA, IsEnabled = true });
-            await h.Db.SaveChangesAsync();
-            h._services = new ServiceCollection()
-                .AddSingleton<ITenantModuleService>(new TenantModuleService(h.Db, new MemoryCache(new MemoryCacheOptions())))
-                .BuildServiceProvider();
+            await h.SetReleaseA(releaseA);
             return h;
         }
+
+        /// <summary>Switches the tenant's release_a flag (a fresh module cache, as after the platform toggle).</summary>
+        public async Task SetReleaseA(bool on)
+        {
+            var row = await Db.TenantFeatureFlags.FirstOrDefaultAsync(f => f.TenantId == Tid && f.FeatureKey == FeatureKeys.ReleaseA);
+            if (row is null) Db.TenantFeatureFlags.Add(new TenantFeatureFlag { TenantId = Tid, FeatureKey = FeatureKeys.ReleaseA, IsEnabled = on });
+            else row.IsEnabled = on;
+            await Db.SaveChangesAsync();
+            _services = new ServiceCollection()
+                .AddSingleton<ITenantModuleService>(new TenantModuleService(Db, new MemoryCache(new MemoryCacheOptions())))
+                .BuildServiceProvider();
+        }
+
+        public Zayra.Api.Application.Employees.IEmployeeManagementService Employees() =>
+            new Zayra.Api.Infrastructure.Employees.EmployeeManagementService(Db, new Zayra.Api.Infrastructure.Audit.AuditService(Db),
+                new Zayra.Api.Tests.NullDocumentStorage(), new F2NullNotifications());
 
         public EmployeeDocument Document(int employeeId, string type)
         {
@@ -277,7 +485,11 @@ public class DeductionStatementTests
             return d;
         }
 
-        public LoansController Hr() => new(Db, new OrgScope())
+        public LoansController Hr() => As(Guid.NewGuid(), "HR Manager", "loans.write");
+        public LoansController Finance() => As(Guid.NewGuid(), "Finance", "loans.write");
+        public LoansController Borrower(Employee? who = null) => As((who ?? Employee).UserAccountId!.Value, "Employee", "loans.self");
+
+        private LoansController As(Guid userId, string role, string permission) => new(Db, new OrgScope())
         {
             ControllerContext = new ControllerContext
             {
@@ -286,8 +498,8 @@ public class DeductionStatementTests
                     RequestServices = _services,
                     User = new ClaimsPrincipal(new ClaimsIdentity(new[]
                     {
-                        new Claim("tenant_id", Tid.ToString()), new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
-                        new Claim(ClaimTypes.Role, "HR Manager"), new Claim("permission", "loans.write"),
+                        new Claim("tenant_id", Tid.ToString()), new Claim(ClaimTypes.NameIdentifier, userId.ToString()),
+                        new Claim(ClaimTypes.Role, role), new Claim("permission", permission),
                     }, "test")),
                 },
             },
