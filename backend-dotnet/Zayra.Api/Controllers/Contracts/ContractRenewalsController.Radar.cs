@@ -237,7 +237,20 @@ public sealed partial class ContractRenewalsController
     [HttpPost("{caseId:guid}/release")]
     [HasPermission("contracts.renewal.manage")]
     public Task<IActionResult> Release(Guid caseId, CancellationToken ct) =>
-        MoveAsync(caseId, "Released", ct, (c, _) => Task.FromResult<IActionResult?>(null), RenewalCaseTransitions.Release, new { });
+        MoveAsync(caseId, "Released", ct, (c, _) => Task.FromResult<IActionResult?>(null), RenewalCaseTransitions.Release, new { },
+            after: async (c, token) =>
+            {
+                // Held from NeedsConfirmation while HR confirmed the history: T2 now, as its own row change in this
+                // transaction (the database checks each move separately).
+                if (c.State != RenewalStates.NeedsConfirmation) return;
+                var contract = await _db.EmployeeContracts.AsNoTracking()
+                    .FirstOrDefaultAsync(x => x.TenantId == c.TenantId && x.Id == c.ExpiringContractId, token);
+                if (contract is null || !AllowedActionsDeriver.IsChainConfirmed(contract) || c.AllowedActions.Length == 0) return;
+                var t2 = RenewalCaseTransitions.ChainConfirmed(c);
+                _db.ComplianceAuditLogs.Add(RenewalCaseOpener.Audit(c.TenantId, c, "Confirmed", CurrentUserId(), ActorName(),
+                    new { transition = t2, from = RenewalStates.NeedsConfirmation, to = c.State, why = "HistoryConfirmedWhileHeld" }));
+                await _db.SaveChangesAsync(token);
+            });
 
     /// <summary>
     /// POST /api/contracts/renewals/{caseId}/cancel {reason} — T21, only once the contract is no longer in force. While it
@@ -269,7 +282,8 @@ public sealed partial class ContractRenewalsController
     /// </summary>
     private async Task<IActionResult> MoveAsync(Guid caseId, string action, CancellationToken ct,
         Func<ContractRenewalCase, CancellationToken, Task<IActionResult?>> precondition,
-        Func<ContractRenewalCase, RenewalStateMachine.Transition> move, object metadata)
+        Func<ContractRenewalCase, RenewalStateMachine.Transition> move, object metadata,
+        Func<ContractRenewalCase, CancellationToken, Task>? after = null)
     {
         var tenantId = RequireTenant();
         var head = await _db.ContractRenewalCases.AsNoTracking()
@@ -294,6 +308,7 @@ public sealed partial class ContractRenewalsController
                     _db.ComplianceAuditLogs.Add(RenewalCaseOpener.Audit(tenantId, c, action, CurrentUserId(), ActorName(),
                         new { transition = transition.Id, from, to = c.State, detail = metadata }));
                     await _db.SaveChangesAsync(ct);
+                    if (after is not null) await after(c, ct);
                     return null;
                 }, ct);
             if (refusal is not null) return refusal;

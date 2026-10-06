@@ -45,23 +45,15 @@ public static class RenewalCaseTransitions
     }
 
     /// <summary>
-    /// T2 once the chain is confirmed: NeedsConfirmation → Open. A case on hold FROM NeedsConfirmation stays on hold and
-    /// will now release to Open. Returns the transition id, or NULL when there was nothing to move.
+    /// T2 once the chain is confirmed: NeedsConfirmation → Open. A case on hold is left exactly as it is — the database
+    /// keeps held_from_state frozen while held — and takes T2 right after its release (<see cref="ReleaseThenConfirm"/>).
+    /// Returns the transition id, or NULL when there was nothing to move.
     /// </summary>
     public static string? ChainConfirmed(ContractRenewalCase c)
     {
-        if (c.State == RenewalStates.NeedsConfirmation)
-        {
-            var t = RenewalStateMachine.EnsureCanTransition(RenewalStates.NeedsConfirmation, RenewalStates.Open);
-            c.State = RenewalStates.Open;
-            return t.Id;
-        }
-        if (c.State == RenewalStates.OnHold && c.HeldFromState == RenewalStates.NeedsConfirmation)
-        {
-            var t = RenewalStateMachine.EnsureCanTransition(RenewalStates.NeedsConfirmation, RenewalStates.Open);
-            c.HeldFromState = RenewalStates.Open;
-            return t.Id;
-        }
-        return null;
+        if (c.State != RenewalStates.NeedsConfirmation) return null;
+        var t = RenewalStateMachine.EnsureCanTransition(RenewalStates.NeedsConfirmation, RenewalStates.Open);
+        c.State = RenewalStates.Open;
+        return t.Id;
     }
 }

@@ -183,20 +183,75 @@ public sealed class R4RenewalPostgresTests(PostgresFixture fx)
             .Which.ConstraintName.Should().Be("ck_contract_renewal_cases__non_saudi_never_converts");
     }
 
+    [Fact]
+    public async Task HistoryConfirmedWhileHeld_KeepsTheHoldFrozen_AndTheReleaseTakesT2_UnderTheRealTransitionGuard()
+    {
+        // Joined in 2019, first contract on file starts 2026: the chain is unconfirmed, so the case opens NeedsConfirmation.
+        var t = await SeedTenantAsync(new DateTime(2019, 5, 1, 0, 0, 0, DateTimeKind.Utc));
+        await using var sp = BuildProvider();
+        await using (var scope = sp.CreateAsyncScope())
+            await scope.ServiceProvider.GetRequiredService<RenewalCaseOpener>().OpenOneAsync(t.Tenant, t.Contract, Today, null, "test", default);
+        Guid caseId;
+        await using (var db = fx.CreateDb())
+        {
+            var c = await db.ContractRenewalCases.IgnoreQueryFilters().SingleAsync(x => x.TenantId == t.Tenant);
+            c.State.Should().Be(RenewalStates.NeedsConfirmation);
+            caseId = c.Id;
+        }
+
+        await using (var db = fx.CreateDb())
+        {
+            var controller = Controller(db, t.Tenant);
+            (await controller.Hold(caseId, new Controllers.Contracts.RenewalHoldRequest(RenewalHoldReasons.Abroad, null), default))
+                .Should().BeOfType<Microsoft.AspNetCore.Mvc.OkObjectResult>();
+        }
+        await using (var db = fx.CreateDb())
+        {
+            var result = await Controller(db, t.Tenant).ConfirmChain(t.Contract,
+                new Controllers.Contracts.ChainConfirmRequest(null, new DateOnly(2019, 5, 1), WorkerNationalityClasses.NonSaudi, true, null, 6),
+                new RenewalCaseOpener(db, new ContractChainCensus(db)), default);
+            result.Result.Should().BeOfType<Microsoft.AspNetCore.Mvc.OkObjectResult>();
+        }
+        await using (var db = fx.CreateDb())
+        {
+            var held = await db.ContractRenewalCases.IgnoreQueryFilters().SingleAsync(x => x.Id == caseId);
+            (held.State, held.HeldFromState).Should().Be((RenewalStates.OnHold, RenewalStates.NeedsConfirmation), "a hold stays frozen while held");
+            held.AllowedActions.Should().Contain(ContractActions.RenewAsIs);
+            (await Controller(db, t.Tenant).Release(caseId, default)).Should().BeOfType<Microsoft.AspNetCore.Mvc.OkObjectResult>();
+        }
+        await using (var db = fx.CreateDb())
+            (await db.ContractRenewalCases.IgnoreQueryFilters().SingleAsync(x => x.Id == caseId)).State.Should().Be(RenewalStates.Open);
+    }
+
+    private static Controllers.Contracts.ContractRenewalsController Controller(ZayraDbContext db, Guid tenantId) => new(db, new FixedClock(Today))
+    {
+        ControllerContext = new Microsoft.AspNetCore.Mvc.ControllerContext
+        {
+            HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext
+            {
+                User = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(
+                [
+                    new System.Security.Claims.Claim("tenant_id", tenantId.ToString()),
+                    new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+                ], "Test")),
+            },
+        },
+    };
+
     // ── harness ────────────────────────────────────────────────────────────────────────────────
 
     private sealed record Seeded(Guid Tenant, Guid Contract, Guid HrManager, Guid HrDirector);
 
     /// <summary>A release_a tenant with one company, an HR Manager and an HR Director (group scope), and one non-Saudi
     /// employee whose first fixed-term contract runs 1 Jan – 31 Dec 2026.</summary>
-    private async Task<Seeded> SeedTenantAsync()
+    private async Task<Seeded> SeedTenantAsync(DateTime? joining = null)
     {
         await using var db = fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
         var company = new Company { TenantId = tenantId, LegalNameEn = "Masar Facility Services", CountryCode = "SAU", Jurisdiction = "KSA-mainland",
             RegistrationNumber = $"CR-{Guid.NewGuid():N}", DefaultCurrency = "SAR", IsActive = true };
         var employee = new Employee { TenantId = tenantId, CompanyId = company.Id, EmployeeCode = "R-1", FullName = "Ramon Dela Cruz",
-            Nationality = "Filipino", Status = "Active", JoiningDate = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc) };
+            Nationality = "Filipino", Status = "Active", JoiningDate = joining ?? new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc) };
         db.AddRange(company, employee, new TenantFeatureFlag { TenantId = tenantId, FeatureKey = FeatureKeys.ReleaseA, IsEnabled = true });
         var hrManager = User(tenantId, "hr-manager");
         var hrDirector = User(tenantId, "hr-director");
