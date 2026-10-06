@@ -410,9 +410,10 @@ public class EssSelfServiceW2DTests
         (await Ess(db, storage, tenantId, me.Id).DownloadDocument(Guid.NewGuid(), CancellationToken.None))
             .Should().BeOfType<NotFoundResult>();
 
-        // Same employee id, other tenant: still 404.
+        // Same employee id, other tenant: refused before any lookup. The claimed employee does not exist in
+        // that tenant, so the caller is linked to no one there (CallerEmployeeResolver) and gets no file.
         (await Ess(db, storage, Guid.NewGuid(), me.Id).DownloadDocument(mine.Id, CancellationToken.None))
-            .Should().BeOfType<NotFoundResult>();
+            .Should().BeOfType<BadRequestObjectResult>();
     }
 
     [Fact]

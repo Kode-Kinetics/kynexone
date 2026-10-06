@@ -1126,21 +1126,30 @@ public class EmployeeManagementService : IEmployeeManagementService
             await employees.GroupBy(x => x.Status).Select(x => new EmployeeGroupCountDto(x.Key, x.Count())).ToListAsync(cancellationToken));
     }
 
-    public async Task<IReadOnlyCollection<EmployeeExpiringDocumentDto>> ExpiringDocumentsAsync(Guid tenantId, int days, CancellationToken cancellationToken)
+    public async Task<IReadOnlyCollection<EmployeeExpiringDocumentDto>> ExpiringDocumentsAsync(Guid tenantId, int days, CancellationToken cancellationToken, IReadOnlyCollection<int>? visibleEmployeeIds = null)
     {
         var until = DateOnly.FromDateTime(DateTime.UtcNow.Date).AddDays(Math.Clamp(days, 1, 365));
-        return await _db.EmployeeDocuments.AsNoTracking()
+        var rows = _db.EmployeeDocuments.AsNoTracking()
             .Where(x => x.TenantId == tenantId && !x.IsDeleted && x.EmployeeId != null && x.ExpiryDate != null && x.ExpiryDate <= until)
             .Join(_db.Employees.AsNoTracking(), d => d.EmployeeId!.Value, e => e.Id, (d, e) => new { d, e })
-            .Where(x => x.e.TenantId == tenantId && !x.e.IsDeleted)
+            .Where(x => x.e.TenantId == tenantId && !x.e.IsDeleted);
+        if (visibleEmployeeIds is not null) rows = rows.Where(x => visibleEmployeeIds.Contains(x.e.Id));
+        return await rows
             .Select(x => new EmployeeExpiringDocumentDto(x.e.Id, x.e.EmployeeCode, x.e.FullName, x.d.DocumentType, x.d.ExpiryDate))
             .ToListAsync(cancellationToken);
     }
 
-    public async Task<IReadOnlyCollection<EmployeeMissingDocumentsReportDto>> MissingDocumentsAsync(Guid tenantId, CancellationToken cancellationToken)
+    public async Task<IReadOnlyCollection<EmployeeMissingDocumentsReportDto>> MissingDocumentsAsync(Guid tenantId, CancellationToken cancellationToken, IReadOnlyCollection<int>? visibleEmployeeIds = null)
     {
-        var employees = await _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync(cancellationToken);
-        var docs = await _db.EmployeeDocuments.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId != null && !x.IsDeleted).ToListAsync(cancellationToken);
+        var employeeQuery = _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted);
+        var docQuery = _db.EmployeeDocuments.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId != null && !x.IsDeleted);
+        if (visibleEmployeeIds is not null)
+        {
+            employeeQuery = employeeQuery.Where(x => visibleEmployeeIds.Contains(x.Id));
+            docQuery = docQuery.Where(x => visibleEmployeeIds.Contains(x.EmployeeId!.Value));
+        }
+        var employees = await employeeQuery.ToListAsync(cancellationToken);
+        var docs = await docQuery.ToListAsync(cancellationToken);
         return employees.Select(employee =>
         {
             var existing = docs.Where(x => x.EmployeeId == employee.Id).Select(x => x.DocumentType).ToHashSet(StringComparer.OrdinalIgnoreCase);

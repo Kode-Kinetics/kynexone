@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Leave;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Models;
 
@@ -344,12 +345,16 @@ public class LeaveRequestsController : ControllerBase
         // Authorization: Admin and HR Manager can cancel any request in the tenant.
         // All others must be cancelling their own request.
         var isAdminOrHr = User.IsInRole("Admin") || User.IsInRole("HR Manager");
-        if (!isAdminOrHr)
-        {
-            var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
-            if (scope.CallerEmployeeId != leaveRequest.EmployeeId)
-                return Forbid();
-        }
+        var cancelScope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        var ownRequest = cancelScope.CallerEmployeeId == leaveRequest.EmployeeId;
+        if (!isAdminOrHr && !ownRequest)
+            return Forbid();
+        // Cancelling your own request is self-service (ess.write); anyone else's is leave administration
+        // (leave.write or leave.cancel). The role and ownership checks alone let an ess.read-only login
+        // cancel its own leave.
+        var canAdministerLeave = User.HasPermission("leave.write") || User.HasPermission("leave.cancel");
+        if (!(canAdministerLeave || (ownRequest && User.HasPermission("ess.write"))))
+            return Forbid();
 
         var cancelledByName = User.Identity?.Name ?? this.GetUserId()?.ToString() ?? "Employee";
 

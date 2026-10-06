@@ -26,10 +26,10 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         DisabledStub,
         SameAudienceAsSiblings,
         HrOfficerHrOperations,
-        OpenUnscopedNames,
         DeviceReadMasked,
         DeviceOpsRead,
         TenantDirectoryRead,
+        HrOfficerFilesOnBehalf,
     }
 
     internal static readonly IReadOnlyDictionary<Reason, string> Reasons = new Dictionary<Reason, string>
@@ -48,10 +48,10 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         [DisabledStub] = "The action is a stub that always returns 409 (company_status_change_disabled).",
         [SameAudienceAsSiblings] = "Payroll Manager is already named on Create/Update of the same tax policies, and Update can already archive one.",
         [HrOfficerHrOperations] = "HR Officer is HR staff holding this module's write key and the UI exposes these HR screens to it. P2: narrowing tenant HR configuration to the HR-manager tier is a product decision.",
-        [OpenUnscopedNames] = "OPEN P2: per-employee names with document-expiry or missed-punch data, not data-scoped. No money, salary or bank data. Follow-up: apply DataScope.",
         [DeviceReadMasked] = "Device configuration read only: auth credentials are never serialised and custom header values, secret-looking device parameters and endpoint URL credentials/query are masked for callers without attendance.bulk_import.",
         [DeviceOpsRead] = "NOT data-scoped: every device's sync status and logs in the tenant (device name, vendor, timestamps, event counts, error text). No employee pay, contact or identity data; the endpoint URL's credentials and query are redacted for callers without attendance.bulk_import.",
         [TenantDirectoryRead] = "NOT data-scoped: the whole org chart within the caller's company scope (employee code, name, designation, reporting line). No pay, contact or identity data. A Supervisor sees the tenant's structure, not just their team.",
+        [HrOfficerFilesOnBehalf] = "HR Officer files leave and overtime on employees' behalf (leave.write, overtime.write, an owner decision). Raising overtime requests from processed attendance is the same filing, limited by DataScope to the employees the officer can reach, and capped by the overtime policy.",
     };
 
     internal static readonly (string Endpoint, string Roles, Reason Why)[] AllowList =
@@ -113,7 +113,8 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         ("GET Attendance.Devices", "HR Director", SeniorHr),
         ("POST Attendance.GenerateDeviceKey", "HR Director", SeniorHr),
         ("POST Attendance.Import", "HR Director", SeniorHr),
-        ("GET Attendance.Insights", "Payroll Manager,HR Officer,Payroll Officer,Manager,Supervisor,HR Assistant,Auditor", OpenUnscopedNames),
+        ("GET Attendance.Insights", "Payroll Manager,HR Officer,Payroll Officer,HR Assistant,Auditor", OrgReadByDesign),
+        ("GET Attendance.Insights", "Manager,Supervisor", TeamScopedRead),
         ("GET Attendance.PendingRegularization", "Payroll Manager,HR Officer,Payroll Officer,HR Assistant,Auditor", OrgReadByDesign),
         ("POST Attendance.Process", "Supervisor,Employee+Mobile", AttendanceProcessScoped),
         ("POST Attendance.ProcessInBackground", "Supervisor,Employee+Mobile", AttendanceProcessScoped),
@@ -296,7 +297,8 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         ("GET Employees.ExEmployees", "Manager,Supervisor", TeamScopedRead),
         ("GET Employees.ExEmployees", "HR Director", SeniorHr),
         ("GET Employees.ExperienceLetter", "HR Director", SeniorHr),
-        ("GET Employees.ExpiringDocuments", "Payroll Manager,Finance,Finance Approver,Compliance Officer,Manager,Supervisor,Recruiter,HR Assistant", OpenUnscopedNames),
+        ("GET Employees.ExpiringDocuments", "Payroll Manager,Finance,Finance Approver,Compliance Officer,Recruiter,HR Assistant", OrgReadByDesign),
+        ("GET Employees.ExpiringDocuments", "Manager,Supervisor", TeamScopedRead),
         ("GET Employees.ExpiringDocuments", "HR Director", SeniorHr),
         ("GET Employees.Export", "HR Director", SeniorHr),
         ("GET Employees.FieldCatalog", "Payroll Manager,Finance,Finance Approver,Compliance Officer,Recruiter,HR Assistant,Auditor", OrgReadByDesign),
@@ -310,7 +312,8 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         ("GET Employees.ImportTemplate", "Payroll Manager,Payroll Officer,Finance,Finance Approver,Compliance Officer,Recruiter,HR Assistant,Auditor", OrgReadByDesign),
         ("GET Employees.ImportTemplate", "Manager,Supervisor", TeamScopedRead),
         ("GET Employees.ImportTemplate", "HR Director", SeniorHr),
-        ("GET Employees.MissingDocuments", "Payroll Manager,Finance,Finance Approver,Compliance Officer,Manager,Supervisor,Recruiter,HR Assistant", OpenUnscopedNames),
+        ("GET Employees.MissingDocuments", "Payroll Manager,Finance,Finance Approver,Compliance Officer,Recruiter,HR Assistant", OrgReadByDesign),
+        ("GET Employees.MissingDocuments", "Manager,Supervisor", TeamScopedRead),
         ("GET Employees.MissingDocuments", "HR Director", SeniorHr),
         ("GET Employees.OrgChart", "Payroll Manager,Payroll Officer,Finance,Finance Approver,Compliance Officer,Recruiter,HR Assistant", OrgReadByDesign),
         ("GET Employees.OrgChart", "Supervisor", TenantDirectoryRead),
@@ -577,6 +580,7 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         ("POST Overtime.CreatePolicy", "HR Director", SeniorHr),
         ("POST Overtime.CreateType", "HR Director", SeniorHr),
         ("POST Overtime.DetectFromAttendance", "HR Director", SeniorHr),
+        ("POST Overtime.DetectFromAttendance", "HR Officer", HrOfficerFilesOnBehalf),
         ("GET Overtime.PayrollReview", "Finance Approver", PayrollFinanceTier),
         ("GET Overtime.PayrollReview", "HR Director", SeniorHr),
         ("POST Overtime.Reject", "HR Director", SeniorHr),
