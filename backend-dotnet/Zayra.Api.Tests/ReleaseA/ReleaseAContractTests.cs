@@ -128,13 +128,11 @@ public class ReleaseAContractTests
     [Fact]
     public async Task Stubs_ThrowUntilTheirSliceLands_ExceptTheActivationHooks_WhichNeverBlockActivation()
     {
-        await new EntitlementResolver().Invoking(r => r.ResolveAsync(Guid.NewGuid(), 1, new DateOnly(2026, 10, 6), default))
-            .Should().ThrowAsync<NotImplementedException>();
-        await new EntitlementWriter().Invoking(w => w.FreezeTermAsync(Guid.NewGuid(), Guid.NewGuid(), default))
-            .Should().ThrowAsync<NotImplementedException>();
+        // R2 landed: the resolver and writer are real (Release A R2 tests). Its activation hook must still never block
+        // activation, even when the writer fails.
         var contract = new EmployeeContract { TenantId = Guid.NewGuid() };
         await new ContractChainStamper().Invoking(h => h.OnActivatedAsync(contract, default)).Should().NotThrowAsync();
-        await new PackageFreezeOnActivation().Invoking(h => h.OnActivatedAsync(contract, default)).Should().NotThrowAsync();
+        await new PackageFreezeOnActivation(new ThrowingWriter()).Invoking(h => h.OnActivatedAsync(contract, default)).Should().NotThrowAsync();
     }
 
     // ── Value sets the database spells (CHECK literals == C# constants) ──────────────────────────
@@ -434,6 +432,14 @@ public class ReleaseAContractTests
         openCase.ClosedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
         (await controller.Supersede(contract.Id, replacement, default)).Should().NotBeOfType<ConflictObjectResult>();
+    }
+
+    private sealed class ThrowingWriter : IEntitlementWriter
+    {
+        public Task<FreezeResult> FreezeTermAsync(Guid tenantId, Guid contractId, CancellationToken ct) => throw new InvalidOperationException("boom");
+        public Task ApplyRenewalAsync(Guid tenantId, RenewalApplyPlan plan, CancellationToken ct) => throw new InvalidOperationException("boom");
+        public Task CarryToProvisionalAsync(Guid tenantId, Guid fromContractId, Guid provisionalContractId, CancellationToken ct) =>
+            throw new InvalidOperationException("boom");
     }
 
     private sealed class RecordingHook : IContractTermLifecycle
