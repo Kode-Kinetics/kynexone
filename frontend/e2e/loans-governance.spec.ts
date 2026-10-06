@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 
+const housingType = { id: 'type-0', nameEn: 'Housing', code: 'HOUSING', isInterestFree: true, isActive: true, maxAmount: 50000, maxInstallments: 60, repaymentFrequency: 'Monthly', minServiceMonths: 12 };
 const loanType = { id: 'type-1', nameEn: 'Personal', code: 'PERSONAL', isInterestFree: true, isActive: true, maxAmount: 10000, maxInstallments: 24, repaymentFrequency: 'Monthly', minServiceMonths: 0 };
 const originalLoan = { id: 'loan-1', employeeId: 'employee-1', employeeName: 'Amira Mansour', loanTypeId: 'type-1', loanTypeName: 'Personal', loanNumber: 'LN-001', requestedAmount: 1000, approvedAmount: 1000, requestedInstallments: 2, approvedInstallments: 2, installmentAmount: 500, repaymentFrequency: 'Monthly', repaymentMethod: 'BankTransfer', currency: 'SAR', disbursementDate: '2026-09-01', totalRepaid: 0, outstandingBalance: 1000, status: 'Overdue', notes: '', isLockedByPayroll: false, createdAtUtc: '2026-09-01T00:00:00Z', policyVersion: 1, collectionStatus: 'Normal', reviewRequired: false };
 
@@ -50,10 +51,13 @@ async function boot(page: Page, role: string, handler: (path: string, method: st
     if (response !== undefined) return route.fulfill({ json: response });
     if (path === '/api/auth/me') return route.fulfill({ json: { id: 'user-1', employeeId: 17, tenantId: 'tenant-1', tenantSlug: 'fixture', fullName: 'Amira Mansour', roles: [role], permissions: ['loans.read', 'loans.write'], companies: [{ id: 'company-1', name: 'Acme Arabia', code: 'ACME', countryCode: 'SA', isActive: true }] } });
     if (path === '/api/tenant-admin/localization') return route.fulfill({ json: { currencyCode: 'USD' } });
-    if (path === '/api/finance/loans/types') return route.fulfill({ json: [loanType] });
+    if (path === '/api/finance/loans/types') return route.fulfill({ json: [housingType, loanType] });
     // Slice L1 endpoints, in their real (array) shapes: the request form lists only offered types, and Loan
     // Policies shows the per-company offerings and the limits-by-grade grid.
-    if (path === '/api/finance/loans/types/offered') return route.fulfill({ json: [{ loanTypeId: loanType.id, code: loanType.code, nameEn: loanType.nameEn, nameAr: 'قرض شخصي', gradeLimited: false, offered: true, reasonCode: null, reasonText: null }] });
+    if (path === '/api/finance/loans/types/offered') return route.fulfill({ json: [
+      { loanTypeId: housingType.id, code: housingType.code, nameEn: housingType.nameEn, nameAr: 'قرض سكن', gradeLimited: true, offered: false, reasonCode: 'LoanTypeNotOffered', reasonText: "Loans of this type aren't offered by your company." },
+      { loanTypeId: loanType.id, code: loanType.code, nameEn: loanType.nameEn, nameAr: 'قرض شخصي', gradeLimited: false, offered: true, reasonCode: null, reasonText: null },
+    ] });
     if (path === '/api/finance/loans/offerings') return route.fulfill({ json: [{ loanTypeId: loanType.id, code: loanType.code, nameEn: loanType.nameEn, nameAr: '', gradeLimited: false, companyId: 'company-1', offered: true, source: 'LoanTypeBaseline', policyId: null, policyVersion: null, detachedFromGroupPolicy: false }] });
     if (path === '/api/finance/loans/grade-limits') return route.fulfill({ json: [] });
     if (path === '/api/finance/loans') return route.fulfill({ json: { items: [originalLoan], total: 1 } });
@@ -86,7 +90,11 @@ test('employee sees own loan statement and can submit an eligible application', 
   await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).last().click();
   await page.getByRole('button', { name: 'New Loan Request' }).click();
   await expect(page.getByPlaceholder('Search by name or code…')).toHaveCount(0);
-  await expect(page.getByRole('dialog').getByTitle('Loan Type')).toHaveValue('type-1');   // from /types/offered
+  // Two types exist; /types/offered offers only the second, so only it is listed — and it is preselected.
+  const typeSelect = page.getByRole('dialog').getByTitle('Loan Type');
+  await expect(typeSelect.locator('option')).toHaveText(['Select type', 'Personal (Interest-free)']);
+  await expect(typeSelect).toHaveValue('type-1');
+  await expect(page.getByText("We couldn't confirm which loan types", { exact: false })).toHaveCount(0);
   await page.getByTitle('Requested Amount').fill('1200');
   await expect(page.getByRole('button', { name: 'Submit Request', exact: true })).toBeDisabled();
   await page.getByRole('button', { name: 'Check Eligibility', exact: true }).click();
@@ -213,6 +221,34 @@ test('policy exception application requires an explicit employee request', async
   await page.getByRole('button', { name: 'Submit Request', exact: true }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   expect(submitted.requestPolicyException).toBe(true); expect(errors).toEqual([]);
+});
+
+test('when the offered-types list is unusable, every interest-free type is listed with a plain note', async ({ page }) => {
+  const legacyInterest = { ...loanType, id: 'type-9', nameEn: 'Legacy interest', code: 'LEGACY', isInterestFree: false, interestRate: 3 };
+  const errors = await boot(page, 'Employee', path => {
+    if (path === '/api/finance/loans/types/offered') return { items: [] };            // malformed: not a list
+    if (path === '/api/finance/loans/types') return [housingType, loanType, legacyInterest];
+  });
+  await page.getByRole('button', { name: 'New Loan Request' }).click();
+  await expect(page.getByText("We couldn't confirm which loan types your company offers; we'll check when you choose one.")).toBeVisible();
+  await expect(page.getByRole('dialog').getByTitle('Loan Type').locator('option'))
+    .toHaveText(['Select type', 'Housing (Interest-free)', 'Personal (Interest-free)']);   // never the interest-bearing one
+  await expect(page.getByRole('button', { name: 'Check Eligibility', exact: true })).toBeVisible();
+  await expect(page.getByText('Something went wrong')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test('a malformed offerings response shows the load error, not a false empty list', async ({ page }) => {
+  const errors = await boot(page, 'HR Manager', path => {
+    if (path === '/api/finance/loans/offerings') return { items: [] };                 // malformed: not a list
+    if (path.endsWith('/policies')) return [];
+  });
+  await page.getByRole('button', { name: 'Loan Policies', exact: true }).click();
+  const panel = page.getByRole('region', { name: 'Loan types offered' });
+  await expect(panel.getByRole('alert')).toHaveText('Unable to load which loan types this company offers.');
+  await expect(panel.getByText('No loan types yet', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'New Policy Version', exact: true })).toBeVisible();
+  expect(errors).toEqual([]);
 });
 
 test('cancelled or waived schedule history does not create a collectible balance', async ({ page }) => {

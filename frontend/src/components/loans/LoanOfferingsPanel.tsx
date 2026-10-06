@@ -30,7 +30,12 @@ export function LoanOfferingsPanel({ companyId, companyName }: { companyId: stri
   const load = useCallback(async () => {
     const mine = ++seq.current;
     if (!companyId) { setRows([]); return; }
-    try { const list = await loanOfferingsApi.list(companyId); if (mine === seq.current) setRows(Array.isArray(list) ? list : []); }
+    try {
+      const list = await loanOfferingsApi.list(companyId);
+      // Anything but a list is a failed load, never "no loan types": an empty list would read as a fact.
+      if (!Array.isArray(list)) throw new Error('Unexpected offerings response');
+      if (mine === seq.current) { setRows(list); setError(''); }
+    }
     catch (e) { if (mine === seq.current) setError(loanErrorMessage(e, t('Unable to load which loan types this company offers.'))); }
   }, [companyId, t]);
   useEffect(() => { setError(''); void load(); }, [load]);
@@ -56,7 +61,7 @@ export function LoanOfferingsPanel({ companyId, companyName }: { companyId: stri
     <p className="text-xs text-slate-500">{t('Requests already submitted can still be approved after you switch a type off.')}</p>
     {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
     {notice && <p role="status" className="text-sm text-amber-700 dark:text-amber-300">{notice}</p>}
-    {rows.length === 0 ? <p className="text-sm text-slate-500">{t('No loan types yet')}</p>
+    {error && rows.length === 0 ? null : rows.length === 0 ? <p className="text-sm text-slate-500">{t('No loan types yet')}</p>
       : <ul className="divide-y divide-slate-100 dark:divide-white/10">{rows.map(row => <li key={row.loanTypeId} className="flex flex-wrap items-center justify-between gap-2 py-2">
         <div>
           <p className="text-sm font-medium">{localName(locale, row.nameEn, row.nameAr)}</p>

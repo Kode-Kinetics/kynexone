@@ -297,6 +297,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
   // The loan types this applicant is OFFERED (server-decided per company: explicit switch, policy, interest).
   // Null while unknown (HR has not picked the employee yet, or the list failed) — then every type is listed
   // and the server's "not offered" code still blocks the request.
+  const [offeredTypesSettled, setOfferedTypesSettled] = useState(false);
   const [offeredTypes, setOfferedTypes] = useState<{ applicant: number | undefined; list: OfferedLoanType[] } | null>(null);
   useEffect(() => {
     if (!createModal || (!applicantId && staff && !mine)) return;
@@ -305,13 +306,17 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
       // Anything but a list (an older API without this endpoint, a proxy error page) means "unknown": list every
       // type and let the server's own "not offered" refusal decide, rather than hiding all types or crashing.
       .then(list => { if (!cancelled) setOfferedTypes(Array.isArray(list) ? { applicant: applicantId, list } : null); })
-      .catch(() => { if (!cancelled) setOfferedTypes(null); });
+      .catch(() => { if (!cancelled) setOfferedTypes(null); })
+      .finally(() => { if (!cancelled) setOfferedTypesSettled(true); });
     return () => { cancelled = true; };
   }, [createModal, applicantId, staff, mine]);
   const currentOffered = offeredTypes && offeredTypes.applicant === applicantId ? offeredTypes.list : null;
+  // Unknown offerings (the list failed or came back malformed): list the interest-free types and say the server
+  // will confirm on selection — its "not offered" refusal still applies. Interest-bearing types are never offered.
+  const offeringsUnknown = createModal && offeredTypes === null && !(!applicantId && staff && !mine) && offeredTypesSettled;
   const selectableTypes = currentOffered
     ? loanTypes.filter(type => currentOffered.some(o => o.loanTypeId === type.id && o.offered))
-    : loanTypes;
+    : loanTypes.filter(type => type.isInterestFree && !type.interestRate);
   const noTypesOffered = !!currentOffered && selectableTypes.length === 0;
   useEffect(() => {
     // A type the applicant is not offered can never stay selected.
@@ -430,7 +435,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
             <option value="">All Statuses</option>
             {['Pending', 'Approved', 'Active', 'Overdue', 'Settled', 'Rejected', 'Closed'].map((s) => <option key={s} value={s}>{s === 'Approved' ? 'Approved — awaiting payment' : s}</option>)}
           </select>
-          <button type="button" onClick={() => { setCreateForm({ loanTypeId: loanTypes[0]?.id ?? '', requestedAmount: 0, requestedInstallments: 12, repaymentMethod: 'BankTransfer', notes: '' }); setSelectedEmployee(null); setEligibility(null); setPreview(null); setOfferedTypes(null); setRequestException(false); setCheckedKey(''); setError(''); setCreateModal(true); }} className="btn-primary">
+          <button type="button" onClick={() => { setCreateForm({ loanTypeId: loanTypes[0]?.id ?? '', requestedAmount: 0, requestedInstallments: 12, repaymentMethod: 'BankTransfer', notes: '' }); setSelectedEmployee(null); setEligibility(null); setPreview(null); setOfferedTypes(null); setOfferedTypesSettled(false); setRequestException(false); setCheckedKey(''); setError(''); setCreateModal(true); }} className="btn-primary">
             <Plus className="h-4 w-4" /> {t('New Loan Request')}
           </button>
         </div>
@@ -487,6 +492,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
           {noTypesOffered && <p role="status" className="rounded-md border border-amber-300 bg-amber-50 p-2 text-sm font-semibold text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
             {t(self ? 'No loan types are offered by your company right now.' : "No loan types are offered by this employee's company right now.")}
           </p>}
+          {offeringsUnknown && <p role="status" className="text-xs text-slate-500">{t("We couldn't confirm which loan types your company offers; we'll check when you choose one.")}</p>}
           {!noTypesOffered && <div className="grid grid-cols-2 gap-3">
             <FormField label={t('Loan Type')} required>
               <select value={createForm.loanTypeId} onChange={(e) => setCreateForm(x => ({ ...x, loanTypeId: e.target.value }))} className="select w-full" title={t('Loan Type')}>

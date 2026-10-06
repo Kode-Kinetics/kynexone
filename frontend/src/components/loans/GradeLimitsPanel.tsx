@@ -63,7 +63,7 @@ export function GradeLimitsPanel({ loanTypes, companies, initialLoanTypeId, onGr
   const money = useCallback((n: number) => n.toLocaleString('en-US', { style: 'currency', currency: currencyCode, maximumFractionDigits: 2 }), [currencyCode]);
 
   const applyRows = useCallback((rows: GradeLoanLimitRow[]) => {
-    const next = (Array.isArray(rows) ? [...rows] : []).sort((a, b) => a.level - b.level).map(draftFromRow);
+    const next = [...rows].sort((a, b) => a.level - b.level).map(draftFromRow);
     setDrafts(next);
     setHelperGradeId(current => (next.some(d => d.gradeId === current) ? current : next[0]?.gradeId ?? ''));
   }, []);
@@ -78,6 +78,8 @@ export function GradeLimitsPanel({ loanTypes, companies, initialLoanTypeId, onGr
     try {
       const rows = await gradeLoanLimitsApi.list({ loanTypeId, companyId: companyId || undefined, asOf: asOf || undefined }, controller.signal);
       if (seq !== requestSeq.current) return;
+      // Anything but a list is a failed load, never "no grades": an empty grid would read as a fact.
+      if (!Array.isArray(rows)) throw new Error('Unexpected grade-limits response');
       applyRows(rows);
     } catch (e) {
       if (seq !== requestSeq.current || controller.signal.aborted) return;
@@ -107,7 +109,7 @@ export function GradeLimitsPanel({ loanTypes, companies, initialLoanTypeId, onGr
       abortRef.current?.abort();
       requestSeq.current++;
       setLoading(false);
-      if (result?.rows) applyRows(result.rows); else await load(effectiveFrom);
+      if (Array.isArray(result?.rows)) applyRows(result.rows); else await load(effectiveFrom);
       setViewAsOf(effectiveFrom > localDateToday() ? effectiveFrom : null);
       setNotice(fillTemplate(t('Published limits for {count} grade(s), starting {date}. Loans already requested keep the limit they were assessed against.'), { count: result?.changed ?? changed.length, date: effectiveFrom }));
     } catch (e) { setError(loanErrorMessage(e, t('Unable to publish the grade limits.'))); }

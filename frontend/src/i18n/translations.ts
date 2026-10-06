@@ -663,6 +663,7 @@ const en: Dict = {
   "This company now has its own policy; group changes no longer apply.": "This company now has its own policy; group changes no longer apply.",
   "Your grade's loan limit is a fixed amount set for all companies, but the companies pay in different currencies. HR needs to set your company's own limit before you can apply.": "Your grade's loan limit is a fixed amount set for all companies, but the companies pay in different currencies. HR needs to set your company's own limit before you can apply.",
   "This grade's loan limit is a fixed amount set for all companies, but the companies pay in different currencies. Set this employee's company's own limit in Loan Policies → Limits by grade.": "This grade's loan limit is a fixed amount set for all companies, but the companies pay in different currencies. Set this employee's company's own limit in Loan Policies → Limits by grade.",
+  "We couldn't confirm which loan types your company offers; we'll check when you choose one.": "We couldn't confirm which loan types your company offers; we'll check when you choose one.",
 };
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
@@ -1326,6 +1327,7 @@ const ar: Dict = {
   "This company now has its own policy; group changes no longer apply.": "أصبحت لهذه الشركة سياستها الخاصة؛ ولم تعد تغييرات سياسة المجموعة تنطبق عليها.",
   "Your grade's loan limit is a fixed amount set for all companies, but the companies pay in different currencies. HR needs to set your company's own limit before you can apply.": "حد القرض لدرجتك مبلغ ثابت لجميع الشركات، لكن الشركات تدفع بعملات مختلفة. يجب أن تحدد الموارد البشرية حداً خاصاً بشركتك قبل أن تتمكن من التقديم.",
   "This grade's loan limit is a fixed amount set for all companies, but the companies pay in different currencies. Set this employee's company's own limit in Loan Policies → Limits by grade.": "حد القرض لهذه الدرجة مبلغ ثابت لجميع الشركات، لكن الشركات تدفع بعملات مختلفة. حدّد حداً خاصاً بشركة هذا الموظف في سياسات القروض ← الحدود حسب الدرجة.",
+  "We couldn't confirm which loan types your company offers; we'll check when you choose one.": "تعذّر التأكد من أنواع القروض التي تقدمها شركتك؛ سنتحقق عند اختيارك لأحدها.",
 };
 
 // ── French ────────────────────────────────────────────────────────────────────
