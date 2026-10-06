@@ -8,7 +8,7 @@ import { useLocale } from '../../contexts/LocaleContext';
 import { useTenantSettings } from '../../contexts/TenantSettingsContext';
 import { loanErrorMessage, localDateToday } from '../../lib/loanWorkflow';
 import {
-  applyFromGradeUpward, applySameForAll, companiesWithoutPolicyFromError, draftFromRow, draftProblem, fillTemplate, inputFromDraft, localName,
+  applyFromGradeUpward, applySameForAll, companiesWithoutPolicyFromError, draftFromRow, draftProblem, fillTemplate, inputFromDraft, isHousingAdvance, localName,
   missingGradesFromError, unsetGradeNames, type GradeEligibilityChoice, type GradeLimitBasis, type GradeLimitDraft,
 } from '../../lib/gradeLoanLimits';
 
@@ -16,6 +16,7 @@ const basisKeys: Record<GradeLimitBasis, string> = {
   Amount: 'Fixed amount',
   MultipleOfBasic: '× basic salary',
   MultipleOfGross: '× gross salary',
+  MultipleOfHousing: '× housing allowance',
 };
 
 /**
@@ -222,14 +223,15 @@ export function GradeLimitsPanel({ loanTypes, companies, initialLoanTypeId, onGr
                 </td>
                 <td className="p-2">
                   <select className="select" aria-label={fillTemplate(t('Limit basis — {grade}'), { grade: gradeLabel(d) })} disabled={figuresDisabled} value={d.basis} onChange={e => update(d.gradeId, { basis: e.target.value as GradeLimitBasis })}>
-                    {(Object.keys(basisKeys) as GradeLimitBasis[]).map(basis => <option key={basis} value={basis}>{t(basisKeys[basis])}</option>)}
+                    {(Object.keys(basisKeys) as GradeLimitBasis[]).filter(basis => basis !== 'MultipleOfHousing' || isHousingAdvance(loanType?.code) || d.basis === basis)
+                      .map(basis => <option key={basis} value={basis}>{t(basisKeys[basis])}</option>)}
                   </select>
                 </td>
                 <td className="p-2">
                   <input type="number" min="0" step={d.basis === 'Amount' ? '0.01' : '0.25'} inputMode="decimal" className="input w-32" disabled={figuresDisabled}
                     aria-label={fillTemplate(t('Per-loan maximum — {grade}'), { grade: gradeLabel(d) })}
                     placeholder={figuresDisabled ? '—' : t('No limit')} value={d.perLoan} onChange={e => update(d.gradeId, { perLoan: e.target.value })} />
-                  {!figuresDisabled && <span className="block text-xs text-slate-500">{d.basis === 'Amount' ? currencyCode : t(d.basis === 'MultipleOfBasic' ? 'months of basic salary' : 'months of gross salary')}</span>}
+                  {!figuresDisabled && <span className="block text-xs text-slate-500">{d.basis === 'Amount' ? currencyCode : t(d.basis === 'MultipleOfBasic' ? 'months of basic salary' : d.basis === 'MultipleOfHousing' ? 'months of housing allowance' : 'months of gross salary')}</span>}
                 </td>
                 <td className="p-2">
                   <input type="number" min="0" step="0.01" inputMode="decimal" className="input w-32" disabled={figuresDisabled}

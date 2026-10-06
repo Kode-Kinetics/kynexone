@@ -107,6 +107,12 @@ const pairs: Array<[string, string]> = [
   ['Loading the package', 'جارٍ تحميل الباقة'],
   ['You do not have access to this employee’s package.', 'لا تملك صلاحية الاطلاع على باقة هذا الموظف.'],
 
+  // Loans: the housing advance as a multiple of the housing allowance (L1 grid and eligibility card)
+  ['× housing allowance', '× بدل السكن'],
+  ['months of housing allowance', 'أشهر من بدل السكن'],
+  ['Eligible up to {available} = {multiple} × housing allowance {salary}', 'مؤهل حتى {available} = {multiple} × بدل السكن {salary}'],
+  ['Eligible up to {available} = {multiple} × housing allowance {salary} − outstanding {outstanding}', 'مؤهل حتى {available} = {multiple} × بدل السكن {salary} − المستحق {outstanding}'],
+
   // Employee app
   ['Your package could not be loaded.', 'تعذّر تحميل باقتك.'],
   ['Load my package again', 'إعادة تحميل باقتي'],

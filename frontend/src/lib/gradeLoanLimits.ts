@@ -4,7 +4,11 @@ import type {
 } from '../api/loanGovernance';
 
 /** Limit basis the admin picks per grade. "No per-loan cap" is an empty per-loan figure, not a basis. */
-export type GradeLimitBasis = 'Amount' | 'MultipleOfBasic' | 'MultipleOfGross';
+export type GradeLimitBasis = 'Amount' | 'MultipleOfBasic' | 'MultipleOfGross' | 'MultipleOfHousing';
+
+/** Release A (R2): × housing allowance is offered only for the housing advance (EntitlementComponentRules). */
+export const isHousingAdvance = (loanTypeCode: string | null | undefined) =>
+  (loanTypeCode ?? '').toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '') === 'HOUSING_ADVANCE';
 
 /** Eligibility as edited: 'unset' only exists for a grade with no limit in force yet. */
 export type GradeEligibilityChoice = 'unset' | 'yes' | 'no';
@@ -133,7 +137,7 @@ export function fillTemplate(template: string, values: Record<string, string | n
 export function draftFromRow(row: GradeLoanLimitRow): GradeLimitDraft {
   // Arabic grade names are display-only: callers pick gradeNameAr via localName().
   const hasCell = !!row.cellId;
-  const basis: GradeLimitBasis = row.valueType === 'MultipleOfBasic' || row.valueType === 'MultipleOfGross' ? row.valueType : 'Amount';
+  const basis: GradeLimitBasis = row.valueType === 'MultipleOfBasic' || row.valueType === 'MultipleOfGross' || row.valueType === 'MultipleOfHousing' ? row.valueType : 'Amount';
   const perLoanValue = row.valueType === 'Amount' ? row.amount : basis !== 'Amount' ? row.rate : null;
   return {
     gradeId: row.gradeId, gradeCode: row.gradeCode, gradeName: row.gradeName, gradeNameAr: row.gradeNameAr ?? null, level: row.level,
@@ -243,6 +247,13 @@ export function breakdownExplanation(breakdown: LoanLimitBreakdown, money: (n: n
         : 'Eligible up to {available} over {installments} instalments: instalments can be up to {cap} a month ({percent}% of salary {salary})',
       values,
     };
+  }
+  if (breakdown.basis === 'MultipleOfHousing' && breakdown.multiple != null && breakdown.salaryBasisAmount != null) {
+    values.multiple = String(breakdown.multiple);
+    values.salary = money(breakdown.salaryBasisAmount);
+    return { key: hasOutstanding
+      ? 'Eligible up to {available} = {multiple} × housing allowance {salary} − outstanding {outstanding}'
+      : 'Eligible up to {available} = {multiple} × housing allowance {salary}', values };
   }
   if ((breakdown.basis === 'MultipleOfBasic' || breakdown.basis === 'MultipleOfGross') && breakdown.multiple != null && breakdown.salaryBasisAmount != null) {
     values.multiple = String(breakdown.multiple);

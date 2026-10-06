@@ -88,3 +88,13 @@ test('every string the package screens translate has an Arabic entry', () => {
   }
   expect(Object.keys(packageStrings.ar)).toEqual(Object.keys(packageStrings.en));
 });
+
+test('the loan form explains the housing advance as a multiple of the housing allowance, and the grid offers it only there', async () => {
+  const { breakdownExplanation, fillTemplate, isHousingAdvance } = await import('../src/lib/gradeLoanLimits');
+  const sentence = breakdownExplanation({ limit: 'GradePerLoan', basis: 'MultipleOfHousing', multiple: 3, salaryBasisAmount: 2000, cap: 6000,
+    outstandingNow: null, available: 6000, unit: 'Principal' }, (n) => `SAR ${n.toLocaleString('en-US')}`)!;
+  expect(fillTemplate(translate('en', sentence.key), sentence.values)).toBe('Eligible up to SAR 6,000 = 3 × housing allowance SAR 2,000');
+  expect(translate('ar', sentence.key)).toContain('بدل السكن');
+  expect([isHousingAdvance('HOUSING_ADVANCE'), isHousingAdvance('housing-advance'), isHousingAdvance('Housing'), isHousingAdvance('PERSONAL')])
+    .toEqual([true, true, false, false]);
+});
