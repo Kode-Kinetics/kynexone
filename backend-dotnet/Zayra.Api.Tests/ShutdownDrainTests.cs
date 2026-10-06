@@ -24,14 +24,12 @@ namespace Zayra.Api.Tests;
 public sealed class ShutdownDrainTests
 {
     [Fact]
-    public void Defaults_AreNoDrainDelayInAnyEnvironment_AndThirtySecondShutdown()
+    public void Defaults_AreNoDrainDelay_AndThirtySecondShutdown()
     {
         var empty = new ConfigurationBuilder().Build();
-        new ShutdownDrain(empty, new Env(Environments.Production), NullLogger<ShutdownDrain>.Instance)
+        new ShutdownDrain(empty, NullLogger<ShutdownDrain>.Instance)
             .ReadinessDrainDelay.Should().Be(TimeSpan.Zero,
                 "a single instance with no deploy overlap gains nothing from a drain delay; it is opt-in");
-        new ShutdownDrain(empty, new Env(Environments.Development), NullLogger<ShutdownDrain>.Instance)
-            .ReadinessDrainDelay.Should().Be(TimeSpan.Zero);
         ShutdownDrain.ShutdownTimeout(empty).Should().Be(TimeSpan.FromSeconds(30));
 
         var tuned = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
@@ -39,7 +37,7 @@ public sealed class ShutdownDrainTests
             ["Shutdown:ReadinessDrainSeconds"] = "12",
             ["Shutdown:TimeoutSeconds"] = "45",
         }).Build();
-        new ShutdownDrain(tuned, new Env(Environments.Production), NullLogger<ShutdownDrain>.Instance)
+        new ShutdownDrain(tuned, NullLogger<ShutdownDrain>.Instance)
             .ReadinessDrainDelay.Should().Be(TimeSpan.FromSeconds(12));
         ShutdownDrain.ShutdownTimeout(tuned).Should().Be(TimeSpan.FromSeconds(45));
     }
@@ -140,12 +138,43 @@ public sealed class ShutdownDrainTests
         await stopping.WaitAsync(TimeSpan.FromSeconds(30));
     }
 
-    private sealed class Env(string name) : IHostEnvironment
+    /// <summary>
+    /// Host.StopAsync starts the ShutdownTimeout clock before it raises Stopping, so the drain delay is
+    /// spent INSIDE the timeout. Whatever is configured, the delay plus the in-flight allowance must fit.
+    /// </summary>
+    [Theory]
+    [InlineData(0, 30)]
+    [InlineData(5, 30)]
+    [InlineData(20, 30)]
+    [InlineData(25, 30)]
+    [InlineData(120, 30)]
+    [InlineData(5, 10)]
+    [InlineData(5, 1)]
+    [InlineData(120, 300)]
+    [InlineData(-5, 30)]
+    public void DrainDelayPlusInFlightAllowance_StaysWithinShutdownTimeout(int drainSeconds, int timeoutSeconds)
     {
-        public string EnvironmentName { get; set; } = name;
-        public string ApplicationName { get; set; } = "test";
-        public string ContentRootPath { get; set; } = AppContext.BaseDirectory;
-        public Microsoft.Extensions.FileProviders.IFileProvider ContentRootFileProvider { get; set; } =
-            new Microsoft.Extensions.FileProviders.NullFileProvider();
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Shutdown:ReadinessDrainSeconds"] = drainSeconds.ToString(),
+            ["Shutdown:TimeoutSeconds"] = timeoutSeconds.ToString(),
+        }).Build();
+        var timeout = ShutdownDrain.ShutdownTimeout(config);
+        var delay = new ShutdownDrain(config, NullLogger<ShutdownDrain>.Instance).ReadinessDrainDelay;
+        var allowance = ShutdownDrain.InFlightAllowance < timeout ? ShutdownDrain.InFlightAllowance : timeout;
+
+        delay.Should().BeGreaterThanOrEqualTo(TimeSpan.Zero);
+        (delay + allowance).Should().BeLessThanOrEqualTo(timeout,
+            "in-flight requests must keep at least the allowance (or the whole timeout, if shorter)");
+        if (drainSeconds >= 0 && TimeSpan.FromSeconds(drainSeconds) + allowance <= timeout)
+            delay.Should().Be(TimeSpan.FromSeconds(drainSeconds), "a request that already fits is not changed");
+    }
+
+    [Fact]
+    public void TheDefaultsLeaveTheWholeTimeoutToInFlightRequests()
+    {
+        var empty = new ConfigurationBuilder().Build();
+        (new ShutdownDrain(empty, NullLogger<ShutdownDrain>.Instance).ReadinessDrainDelay + ShutdownDrain.InFlightAllowance)
+            .Should().BeLessThanOrEqualTo(ShutdownDrain.ShutdownTimeout(empty));
     }
 }

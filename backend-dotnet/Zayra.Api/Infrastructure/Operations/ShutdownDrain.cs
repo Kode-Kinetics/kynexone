@@ -8,34 +8,54 @@ namespace Zayra.Api.Infrastructure.Operations;
 /// <see cref="IsDraining"/>, so <c>/health/ready</c> answers 503 and the load balancer stops routing new
 /// requests here, and (2) holds shutdown for <see cref="ReadinessDrainDelay"/> while this instance keeps
 /// serving whatever the balancer still sends during its next health-check interval. After that the host
-/// stops the server, which refuses new connections and waits up to <c>HostOptions.ShutdownTimeout</c> for
-/// in-flight requests to finish.</para>
+/// stops the server, which refuses new connections and waits for whatever is left of
+/// <c>HostOptions.ShutdownTimeout</c> for in-flight requests to finish.</para>
 ///
 /// <para>The callback blocks deliberately: <c>ApplicationLifetime.StopApplication</c> runs Stopping
 /// callbacks synchronously under a lock, and <c>Host.StopAsync</c> calls it before stopping any hosted
 /// service, so the server cannot stop until the delay has elapsed. <c>/health/live</c> is unaffected:
 /// a draining instance is alive and must not be restarted.</para>
 ///
-/// <para>Budget: the platform's kill grace period must cover delay + ShutdownTimeout (defaults 5s + 30s; the delay defaults to 0 in Development).
-/// Both are configurable: <c>Shutdown:ReadinessDrainSeconds</c> and <c>Shutdown:TimeoutSeconds</c>.</para>
+/// <para>Budget. <c>Host.StopAsync</c> starts the <c>HostOptions.ShutdownTimeout</c> clock BEFORE it raises
+/// Stopping, so the drain delay is spent inside that timeout, not on top of it: in-flight requests get
+/// <c>ShutdownTimeout - ReadinessDrainDelay</c>. The delay is therefore capped so that at least
+/// <see cref="InFlightAllowance"/> is always left for them (or the whole timeout, if it is shorter).
+/// Defaults everywhere: delay 0, timeout 30s, so the platform's kill grace period must cover 30s.
+/// Configure with <c>Shutdown:ReadinessDrainSeconds</c> and <c>Shutdown:TimeoutSeconds</c>.</para>
 /// </summary>
 public sealed class ShutdownDrain
 {
-    // Off by default: on a single instance with no overlap (Render with a disk today) the delay only adds
-    // downtime. Set Shutdown__ReadinessDrainSeconds (e.g. 5) once two or more instances sit behind a balancer.
+    // Off by default in every environment: on a single instance with no overlap (Render with a disk
+    // today) the delay only adds downtime. Set Shutdown__ReadinessDrainSeconds (e.g. 5) once two or more
+    // instances sit behind a balancer.
     public const int DefaultReadinessDrainSeconds = 0;
     public const int DefaultShutdownTimeoutSeconds = 30;
+
+    /// <summary>The part of <see cref="ShutdownTimeout"/> the drain delay may never consume.</summary>
+    public static readonly TimeSpan InFlightAllowance = TimeSpan.FromSeconds(10);
 
     private readonly ILogger<ShutdownDrain> _log;
     private volatile bool _draining;
 
-    public ShutdownDrain(IConfiguration configuration, IHostEnvironment environment, ILogger<ShutdownDrain> log)
+    public ShutdownDrain(IConfiguration configuration, ILogger<ShutdownDrain> log)
     {
         _log = log;
-        // Development (local runs, the in-process test host) has no balancer to drain from; waiting
-        // there only slows every Ctrl+C and every test-host dispose.
-        var seconds = configuration.GetValue("Shutdown:ReadinessDrainSeconds", DefaultReadinessDrainSeconds);
-        ReadinessDrainDelay = TimeSpan.FromSeconds(Math.Clamp(seconds, 0, 120));
+        var requested = TimeSpan.FromSeconds(Math.Clamp(
+            configuration.GetValue("Shutdown:ReadinessDrainSeconds", DefaultReadinessDrainSeconds), 0, 120));
+        ReadinessDrainDelay = CapDrainDelay(requested, ShutdownTimeout(configuration));
+        if (ReadinessDrainDelay < requested)
+            _log.LogWarning(
+                "Shutdown:ReadinessDrainSeconds {RequestedSeconds}s capped to {DelaySeconds}s so in-flight requests keep at least {AllowanceSeconds}s of the {TimeoutSeconds}s shutdown timeout.",
+                requested.TotalSeconds, ReadinessDrainDelay.TotalSeconds, InFlightAllowance.TotalSeconds,
+                ShutdownTimeout(configuration).TotalSeconds);
+    }
+
+    /// <summary>The longest drain delay that still leaves in-flight requests their allowance.</summary>
+    public static TimeSpan CapDrainDelay(TimeSpan requested, TimeSpan shutdownTimeout)
+    {
+        var allowance = InFlightAllowance < shutdownTimeout ? InFlightAllowance : shutdownTimeout;
+        var max = shutdownTimeout - allowance;
+        return requested < TimeSpan.Zero ? TimeSpan.Zero : requested > max ? max : requested;
     }
 
     public TimeSpan ReadinessDrainDelay { get; }

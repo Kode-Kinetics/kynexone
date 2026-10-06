@@ -5,8 +5,14 @@ using Zayra.Api.Infrastructure.Operations;
 namespace Zayra.Api.Infrastructure.Finance;
 
 /// <summary>Refreshes operational risk flags without changing principal, terms, or repayment mode.</summary>
+/// <remarks>
+/// Reports no heartbeat (it is not one of <see cref="Models.ProductionWorkerNames"/>), so a skipped or
+/// interrupted sweep is visible in the logs only: Information per skip, Warning from the third in a row.
+/// </remarks>
 public sealed class LoanLifecycleWorker(IServiceScopeFactory scopes, ILogger<LoanLifecycleWorker> logger) : BackgroundService
 {
+    private readonly SweepOutcomeReporter _outcomes = new(SingletonWorkerNames.LoanLifecycle, logger, heartbeat: null);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromMinutes(1));
@@ -14,7 +20,8 @@ public sealed class LoanLifecycleWorker(IServiceScopeFactory scopes, ILogger<Loa
         {
             try
             {
-                await RunOnceAsync(stoppingToken);
+                var result = await RunOnceAsync(stoppingToken);
+                await _outcomes.ReportAsync(result.Outcome, stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
             catch (Exception ex) { logger.LogError(ex, "Loan lifecycle monitoring failed; next cycle will retry"); }
@@ -22,21 +29,17 @@ public sealed class LoanLifecycleWorker(IServiceScopeFactory scopes, ILogger<Loa
     }
 
     /// <summary>
-    /// One sweep. Returns the number of loans refreshed, or null when another instance holds the
-    /// sweep lease and this tick was skipped. Exposed for tests and one-shot execution.
+    /// One sweep: what it did, and how many loans it refreshed (0 when another instance holds the
+    /// sweep lease and this tick was skipped). Exposed for tests and one-shot execution.
     /// </summary>
-    internal async Task<int?> RunOnceAsync(CancellationToken stoppingToken)
+    internal async Task<(SweepOutcome Outcome, int Refreshed)> RunOnceAsync(CancellationToken stoppingToken)
     {
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
         // One instance per sweep across the cluster; the per-loan lock below still serializes each
         // loan against request-path decisions.
         await using var lease = await SingletonWorkerLease.TryAcquireAsync(db, SingletonWorkerNames.LoanLifecycle, stoppingToken);
-        if (lease is null)
-        {
-            logger.LogDebug("Loan lifecycle sweep skipped: another instance holds the sweep lease.");
-            return null;
-        }
+        if (lease is null) return (SweepOutcome.Skipped, 0);
 
         // No HTTP principal: the context's established trusted-system scope applies.
         // Each financial mutation below is still explicitly tenant-bound and loan-locked.
@@ -64,6 +67,7 @@ public sealed class LoanLifecycleWorker(IServiceScopeFactory scopes, ILogger<Loa
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { throw; }
             catch (Exception ex) { logger.LogError(ex, "Loan lifecycle refresh failed for {LoanId}", key.Id); }
         }
-        return refreshed;
+        var outcome = lease.IsLost || !await lease.IsStillHeldAsync(stoppingToken) ? SweepOutcome.LeaseLost : SweepOutcome.Completed;
+        return (outcome, refreshed);
     }
 }

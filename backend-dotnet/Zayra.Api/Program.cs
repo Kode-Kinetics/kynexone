@@ -126,8 +126,9 @@ builder.Host.UseDefaultServiceProvider(options =>
 
 // ── Graceful drain (multi-instance / zero-downtime deploys) ──────────────────
 // On SIGTERM /health/ready flips to 503 first, the instance keeps serving for
-// Shutdown:ReadinessDrainSeconds while the balancer notices, then the server stops accepting and
-// in-flight requests get up to Shutdown:TimeoutSeconds to finish. /health/live is unchanged.
+// Shutdown:ReadinessDrainSeconds (default 0) while the balancer notices, then the server stops
+// accepting and in-flight requests get the rest of Shutdown:TimeoutSeconds (default 30; the drain
+// runs inside it and is capped to leave them at least 10s). /health/live is unchanged.
 builder.Services.AddSingleton<ShutdownDrain>();
 builder.Services.Configure<HostOptions>(options =>
     options.ShutdownTimeout = ShutdownDrain.ShutdownTimeout(builder.Configuration));

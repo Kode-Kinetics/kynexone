@@ -149,16 +149,86 @@ public sealed class SingletonWorkerLeasePostgresTests(PostgresFixture fixture)
         await using (var held = await SingletonWorkerLease.TryAcquireAsync(holder, SingletonWorkerNames.LoanLifecycle, CancellationToken.None))
         {
             held.Should().NotBeNull();
-            (await worker.RunOnceAsync(CancellationToken.None)).Should().BeNull("the tick is skipped, not run");
+            (await worker.RunOnceAsync(CancellationToken.None)).Outcome.Should().Be(SweepOutcome.Skipped, "the tick is skipped, not run");
         }
 
-        (await worker.RunOnceAsync(CancellationToken.None)).Should().NotBeNull("the lease is free again");
+        (await worker.RunOnceAsync(CancellationToken.None)).Outcome.Should().Be(SweepOutcome.Completed, "the lease is free again");
+    }
+
+    /// <summary>
+    /// The lease's connection dies mid-sweep (here: terminated by the server, as an idle-ceiling kill or
+    /// a network drop would). The keepalive only notices every 30s, so without the end-of-sweep check
+    /// the sweep would finish and report a clean run it did not have.
+    /// </summary>
+    [Fact]
+    public async Task ComplianceReminderSweep_ThatLosesItsLeaseMidway_ReportsLeaseLost_NotCompleted()
+    {
+        var (_, reminderId) = await SeedDueReminderAsync();
+        var gate = new FirstCommandGate("compliance_reminders");
+        await using var provider = BuildProvider(gate);
+        var worker = ReminderWorker(provider);
+
+        var sweep = Task.Run(() => worker.DrainOnceAsync(CancellationToken.None));
+        await gate.Reached.Task.WaitAsync(TimeSpan.FromSeconds(60));
+        (await TerminateLeaseHolderAsync(ProductionWorkerNames.ComplianceReminders)).Should().Be(1);
+        gate.Release.SetResult();
+        await sweep;
+
+        worker.LastSweepOutcome.Should().Be(SweepOutcome.LeaseLost);
+        await using var verify = fixture.CreateDb();
+        (await verify.ComplianceReminders.AsNoTracking().SingleAsync(r => r.Id == reminderId)).Status
+            .Should().Be("Sent", "rows already enqueued before the loss are still recorded");
+    }
+
+    [Fact]
+    public async Task ComplianceReminderSweep_ReportsSkippedAndCompleted()
+    {
+        await using var provider = BuildProvider();
+        var worker = ReminderWorker(provider);
+        await using (var holder = fixture.CreateDb())
+        await using (var held = await SingletonWorkerLease.TryAcquireAsync(holder, ProductionWorkerNames.ComplianceReminders, CancellationToken.None))
+        {
+            await worker.DrainOnceAsync(CancellationToken.None);
+            worker.LastSweepOutcome.Should().Be(SweepOutcome.Skipped);
+        }
+        await worker.DrainOnceAsync(CancellationToken.None);
+        worker.LastSweepOutcome.Should().Be(SweepOutcome.Completed);
+    }
+
+    [Fact]
+    public async Task AiInsightCycle_ThatLosesItsLeaseMidway_ReportsLeaseLost_NotCompleted()
+    {
+        var tenantId = await SeedTenantMissingSalarySetupAsync();
+        var gate = new InsertGate(tenantId);
+        await using var provider = BuildProvider(gate);
+
+        var cycle = Task.Run(() => InsightEngine(provider).AnalyzeOnceAsync(CancellationToken.None));
+        await gate.Reached.Task.WaitAsync(TimeSpan.FromSeconds(60));
+        (await TerminateLeaseHolderAsync(ProductionWorkerNames.AiInsights)).Should().Be(1);
+        gate.Release.SetResult();
+
+        (await cycle).Should().Be(SweepOutcome.LeaseLost);
+    }
+
+    /// <summary>Kills the server session holding the sweep's advisory lock (a 64-bit key: classid = high word, objid = low word).</summary>
+    private async Task<int> TerminateLeaseHolderAsync(string workerName)
+    {
+        var key = SingletonWorkerLease.LockKey(workerName);
+        await using var admin = fixture.CreateDb();
+        var hi = (long)(uint)(key >> 32);
+        var lo = (long)(uint)key;
+        return await admin.Database.SqlQuery<int>($"""
+            SELECT count(*)::int AS "Value" FROM (
+                SELECT pg_terminate_backend(pid) FROM pg_locks
+                WHERE locktype = 'advisory' AND granted AND objsubid = 1
+                  AND classid::bigint = {hi} AND objid::bigint = {lo}) t
+            """).SingleAsync();
     }
 
     // ── Harness ───────────────────────────────────────────────────────────────
 
     /// <summary>One DI container per simulated API instance, each with its own DbContexts.</summary>
-    private ServiceProvider BuildProvider(InsertGate? gate = null)
+    private ServiceProvider BuildProvider(DbCommandInterceptor? gate = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -248,6 +318,22 @@ public sealed class SingletonWorkerLeasePostgresTests(PostgresFixture fixture)
                 && command.Parameters.Cast<DbParameter>().Any(p => p.Value is Guid g && g == tenantId)
                 && Reached.TrySetResult())
                 await Release.Task.WaitAsync(TimeSpan.FromSeconds(60), ct);
+        }
+    }
+
+    /// <summary>Freezes the first command whose SQL mentions <paramref name="table"/> until the test releases it.</summary>
+    private sealed class FirstCommandGate(string table) : DbCommandInterceptor
+    {
+        public TaskCompletionSource Reached { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains(table, StringComparison.OrdinalIgnoreCase) && Reached.TrySetResult())
+                await Release.Task.WaitAsync(TimeSpan.FromSeconds(60), cancellationToken);
+            return result;
         }
     }
 

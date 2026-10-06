@@ -13,7 +13,10 @@
 # into the browser bundle and resolves the /api rewrite in next.config.ts at build time. Changing it
 # means rebuilding the image.
 
-ARG NODE_IMAGE=node:24-alpine
+# Pinned by digest (the multi-arch index, so amd64 and arm64 both resolve) for a reproducible build.
+# Resolved 2026-10-05 with `docker buildx imagetools inspect node:24-alpine`; bump it deliberately,
+# the same way, to pick up Node and Alpine security patches.
+ARG NODE_IMAGE=node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1
 
 # ── deps: exact lockfile install, cached on package*.json only ──────────────────
 FROM ${NODE_IMAGE} AS deps
@@ -48,6 +51,10 @@ ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     PORT=5173 \
     HOSTNAME=0.0.0.0
+# Also at runtime, so the commit can be read from the running container (`docker inspect`, env),
+# not only from the /build-info route baked in at build time.
+ARG BUILD_COMMIT=
+ENV BUILD_COMMIT=${BUILD_COMMIT}
 
 COPY --from=build --chown=node:node /app/.next/standalone ./
 COPY --from=build --chown=node:node /app/.next/static ./.next/static

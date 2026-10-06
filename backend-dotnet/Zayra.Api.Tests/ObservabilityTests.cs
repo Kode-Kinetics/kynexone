@@ -71,6 +71,109 @@ public sealed class ObservabilityTests
         (await received.WaitAsync(TimeSpan.FromSeconds(15))).Should().Be("/v1/traces");
     }
 
+    /// <summary>
+    /// With the endpoint unset the OpenTelemetry assemblies must not even load. In-process that cannot be
+    /// observed directly (this test assembly references OpenTelemetry itself), so it is proved
+    /// structurally: the JIT loads an assembly when it compiles a method whose IL names one of its
+    /// members or types, so no method, field or closure of <see cref="Observability"/> may name an
+    /// OpenTelemetry type, and the only way out is a NoInlining call into
+    /// <see cref="OpenTelemetryRegistration"/>.
+    /// </summary>
+    [Fact]
+    public void ObservabilityNamesNoOpenTelemetryType_OnlyANoInliningCallReachesIt()
+    {
+        var observability = typeof(Observability);
+        var types = new[] { observability }.Concat(observability.GetNestedTypes(AllMembers)).ToList();
+        var offenders = new List<string>();
+        foreach (var type in types)
+        {
+            foreach (var field in type.GetFields(AllMembers))
+                if (MentionsOpenTelemetry(field.FieldType)) offenders.Add($"{type.Name}.{field.Name}: {field.FieldType}");
+            foreach (var method in type.GetMethods(AllMembers).Cast<System.Reflection.MethodBase>().Concat(type.GetConstructors(AllMembers)))
+            {
+                if (method.DeclaringType != type) continue;
+                var body = method.GetMethodBody();
+                if (body is null) continue;
+                foreach (var local in body.LocalVariables)
+                    if (MentionsOpenTelemetry(local.LocalType)) offenders.Add($"{type.Name}.{method.Name}: local {local.LocalType}");
+                foreach (var member in ReferencedMembers(method))
+                    if (MentionsOpenTelemetry(member)) offenders.Add($"{type.Name}.{method.Name}: {member.DeclaringType}.{member.Name}");
+            }
+        }
+        offenders.Should().BeEmpty("naming an OpenTelemetry type here loads its assembly even when no endpoint is set");
+
+        var bridge = observability.GetMethod("RegisterOpenTelemetry", AllMembers)!;
+        bridge.MethodImplementationFlags.Should().HaveFlag(System.Reflection.MethodImplAttributes.NoInlining);
+        ReferencedMembers(observability.GetMethod(nameof(Observability.AddKynexObservability))!)
+            .Should().Contain(bridge, "AddKynexObservability reaches OpenTelemetry only through the out-of-line bridge");
+        ReferencedMembers(bridge).Should().Contain(typeof(OpenTelemetryRegistration).GetMethod("Register"));
+        ReferencedMembers(typeof(OpenTelemetryRegistration).GetMethod("Register")!)
+            .Should().Contain(m => MentionsOpenTelemetry(m), "the check above would be vacuous if it could not see OpenTelemetry references");
+    }
+
+    private const System.Reflection.BindingFlags AllMembers = System.Reflection.BindingFlags.Public
+        | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance
+        | System.Reflection.BindingFlags.DeclaredOnly;
+
+    private static bool MentionsOpenTelemetry(Type? type) =>
+        type is not null && (IsOpenTelemetryAssembly(type.Assembly)
+            || (type.IsGenericType && type.GetGenericArguments().Any(MentionsOpenTelemetry))
+            || (type.HasElementType && MentionsOpenTelemetry(type.GetElementType())));
+
+    private static bool MentionsOpenTelemetry(System.Reflection.MemberInfo member) =>
+        MentionsOpenTelemetry(member.DeclaringType)
+        || (member is System.Reflection.MethodInfo m && (MentionsOpenTelemetry(m.ReturnType)
+            || m.GetParameters().Any(p => MentionsOpenTelemetry(p.ParameterType))
+            || (m.IsGenericMethod && m.GetGenericArguments().Any(MentionsOpenTelemetry))))
+        || (member is System.Reflection.FieldInfo f && MentionsOpenTelemetry(f.FieldType))
+        || (member is Type t && MentionsOpenTelemetry(t));
+
+    private static bool IsOpenTelemetryAssembly(System.Reflection.Assembly assembly) =>
+        assembly.GetName().Name?.StartsWith("OpenTelemetry", StringComparison.Ordinal) == true
+        || assembly.GetName().Name == "Npgsql.OpenTelemetry";
+
+    private static readonly Dictionary<short, System.Reflection.Emit.OpCode> OpCodesByValue =
+        typeof(System.Reflection.Emit.OpCodes).GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+            .Select(f => (System.Reflection.Emit.OpCode)f.GetValue(null)!)
+            .ToDictionary(o => o.Value);
+
+    /// <summary>Every method, field and type token in a method's IL, resolved.</summary>
+    private static List<System.Reflection.MemberInfo> ReferencedMembers(System.Reflection.MethodBase method)
+    {
+        var members = new List<System.Reflection.MemberInfo>();
+        var il = method.GetMethodBody()?.GetILAsByteArray() ?? [];
+        var typeArgs = method.DeclaringType?.IsGenericType == true ? method.DeclaringType.GetGenericArguments() : null;
+        var methodArgs = method.IsGenericMethod ? method.GetGenericArguments() : null;
+        for (var i = 0; i < il.Length;)
+        {
+            short value = il[i++];
+            if (value == 0xFE) value = (short)(0xFE00 | il[i++]);
+            var op = OpCodesByValue[value];
+            switch (op.OperandType)
+            {
+                case System.Reflection.Emit.OperandType.InlineMethod:
+                case System.Reflection.Emit.OperandType.InlineField:
+                case System.Reflection.Emit.OperandType.InlineType:
+                case System.Reflection.Emit.OperandType.InlineTok:
+                    var token = BitConverter.ToInt32(il, i);
+                    var resolved = method.Module.ResolveMember(token, typeArgs, methodArgs);
+                    if (resolved is not null) members.Add(resolved);
+                    i += 4;
+                    break;
+                case System.Reflection.Emit.OperandType.InlineNone: break;
+                case System.Reflection.Emit.OperandType.ShortInlineBrTarget:
+                case System.Reflection.Emit.OperandType.ShortInlineI:
+                case System.Reflection.Emit.OperandType.ShortInlineVar: i += 1; break;
+                case System.Reflection.Emit.OperandType.InlineVar: i += 2; break;
+                case System.Reflection.Emit.OperandType.InlineI8:
+                case System.Reflection.Emit.OperandType.InlineR: i += 8; break;
+                case System.Reflection.Emit.OperandType.InlineSwitch: i += 4 + 4 * BitConverter.ToInt32(il, i); break;
+                default: i += 4; break;
+            }
+        }
+        return members;
+    }
+
     private static int FreePort()
     {
         var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);

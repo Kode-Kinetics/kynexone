@@ -36,7 +36,8 @@ tenant-wide `42703`/`42P01` outages. Read this before promoting or reverting a b
    `Shutdown__ReadinessDrainSeconds` (default 0 — set it to about 5 only once two or more instances
    sit behind a balancer; on today's single Render instance with a disk it would only add downtime),
    then stops accepting and gives in-flight requests up to `Shutdown__TimeoutSeconds` (default 30).
-   The drain delay runs inside that timeout, not on top of it, so the worst case is about 30s;
+   The drain delay runs inside that timeout, not on top of it, and is capped to leave in-flight
+   requests at least 10s of it, so the worst case is about 30s;
    Render's default `maxShutdownDelaySeconds` is 30. `/health/live` is unchanged. See `ShutdownDrain.cs`.
 
    **Rolling back a migration.** Running a migration's `Down` (`dotnet ef database update <previous>`)

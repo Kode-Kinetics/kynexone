@@ -2,11 +2,8 @@ using System.Diagnostics;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Logging.Console;
-using OpenTelemetry.Logs;
-using OpenTelemetry.Metrics;
-using OpenTelemetry.Resources;
-using OpenTelemetry.Trace;
 
 namespace Zayra.Api.Infrastructure.Operations;
 
@@ -47,30 +44,18 @@ public static class Observability
 
         if (!IsOtlpConfigured(builder.Configuration)) return builder;
 
-        builder.Services.AddOpenTelemetry()
-            .ConfigureResource(resource => resource.AddService(
-                serviceName: ServiceName, serviceVersion: BuildInfo.Commit, serviceInstanceId: Environment.MachineName))
-            .WithTracing(tracing => tracing
-                .AddAspNetCoreInstrumentation(options =>
-                    // Health probes run every few seconds per instance; they are noise, not traffic.
-                    options.Filter = context => !context.Request.Path.StartsWithSegments("/health"))
-                .AddHttpClientInstrumentation()
-                .AddSource(NpgsqlSource)
-                .AddOtlpExporter())
-            .WithMetrics(metrics => metrics
-                .AddAspNetCoreInstrumentation()
-                .AddHttpClientInstrumentation()
-                .AddRuntimeInstrumentation()
-                .AddMeter(NpgsqlSource)
-                .AddOtlpExporter())
-            .WithLogging(logging => logging.AddOtlpExporter(), options =>
-            {
-                options.IncludeScopes = true;
-                options.IncludeFormattedMessage = true;
-            });
-
+        RegisterOpenTelemetry(builder.Services);
         return builder;
     }
+
+    /// <summary>
+    /// The only path into the OpenTelemetry assemblies. Kept out of line, and its body in a separate
+    /// class (whose lambdas get their own closure class), so that JIT-compiling
+    /// <see cref="AddKynexObservability"/> — or anything else in this class — never resolves an
+    /// OpenTelemetry type: with the endpoint unset, none of those assemblies is even loaded.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void RegisterOpenTelemetry(IServiceCollection services) => OpenTelemetryRegistration.Register(services);
 
     private static void ConfigureConsoleLogging(WebApplicationBuilder builder)
     {
