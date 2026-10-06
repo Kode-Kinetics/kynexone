@@ -78,4 +78,24 @@ public static class ApprovalUnblock
                       && db.Permissions.Any(p => p.Id == rp.PermissionId && p.Key == permissionKey))
             select ur.UserId).AnyAsync(ct);
     }
+
+    /// <summary>Another active user whose roles grant <paramref name="permissionKey"/> AND at least one of
+    /// <paramref name="anyOf"/> (for an "Any" approval step: approvals.decide plus manager.approve or override).</summary>
+    public static Task<bool> AnyOtherUserWithPermissionAndAnyOfAsync(ZayraDbContext db, Guid tenantId, string permissionKey,
+        IReadOnlyCollection<string> anyOf, IReadOnlyCollection<Guid> excluded, CancellationToken ct)
+    {
+        var excludedIds = excluded.ToArray();
+        var alternatives = anyOf.ToArray();
+        var userRoles =
+            from ur in db.UserRoles.AsNoTracking()
+            join u in db.Users.AsNoTracking() on ur.UserId equals u.Id
+            join r in db.Roles.AsNoTracking() on ur.RoleId equals r.Id
+            where u.TenantId == tenantId && r.TenantId == tenantId && u.IsActive && !u.IsDeleted && !excludedIds.Contains(u.Id)
+            select new { ur.UserId, r.Id };
+        var withKey = userRoles.Where(x => db.RolePermissions.Any(rp => rp.RoleId == x.Id
+            && db.Permissions.Any(p => p.Id == rp.PermissionId && p.Key == permissionKey))).Select(x => x.UserId);
+        var withAlternative = userRoles.Where(x => db.RolePermissions.Any(rp => rp.RoleId == x.Id
+            && db.Permissions.Any(p => p.Id == rp.PermissionId && alternatives.Contains(p.Key)))).Select(x => x.UserId);
+        return withKey.Where(id => withAlternative.Contains(id)).AnyAsync(ct);
+    }
 }

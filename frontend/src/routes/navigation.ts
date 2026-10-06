@@ -65,7 +65,7 @@ export const navigationGroups: NavGroup[] = [
       { label: 'Loans & Advances', icon: Landmark, path: '/loans', requiredPermissions: ['loans.self', 'loans.read', 'loans.write'] },
       { label: 'Benefits', icon: HeartPulse, path: '/benefits', requiredPermissions: ['employees.write'] },
       { label: 'Recruitment', icon: BriefcaseBusiness, path: '/recruitment', requiredPermissions: ['recruitment.read', 'recruitment.write'], requiredFeatureKey: 'recruitment' },
-      { label: 'Offboarding', icon: UserMinus, path: '/offboarding', requiredPermissions: ['employees.read', 'employees.write'] },
+      { label: 'Offboarding', icon: UserMinus, path: '/offboarding', requiredPermissions: ['employees.write', 'payroll.approve'] },
       // Any performance key opens it; the page then shows each audience its own tabs (lib/performanceAccess).
       { label: 'Performance', icon: BarChart3, path: '/performance', requiredPermissions: PERFORMANCE_MODULE_PERMISSIONS, requiredFeatureKey: 'performance' },
       { label: 'Compliance', icon: ShieldCheck, path: '/compliance', requiredPermissions: ['compliance.read', 'compliance.write'], requiredFeatureKey: 'compliance' },

@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -113,12 +114,8 @@ public class HRRequestCenterController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
-        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
-
-        var query = _db.HRRequests.Where(r => r.TenantId == tenantId);
-        query = ScopeGovernedRequests(query);
-        if (!scope.IsUnrestricted)
-            query = query.Where(r => scope.AllowedEmployeeIds!.Contains(r.EmployeeId));
+        var reader = await ReaderAsync(tenantId.Value, ct);
+        var query = ReadableRequests(tenantId.Value, reader);
         if (employeeId.HasValue) query = query.Where(r => r.EmployeeId == employeeId.Value);
         if (!string.IsNullOrWhiteSpace(status)) query = query.Where(r => r.Status == status);
         if (!string.IsNullOrWhiteSpace(priority)) query = query.Where(r => r.Priority == priority);
@@ -130,7 +127,7 @@ public class HRRequestCenterController : ControllerBase
             .Take(pageSize)
             .ToListAsync(ct);
 
-        return Ok(new PagedResult<HRRequest>(items, total, page, pageSize));
+        return Ok(new PagedResult<HrRequestDto>(items.Select(r => HrRequestDto.Project(r, reader.MaySeeDetails(r))).ToList(), total, page, pageSize));
     }
 
     [HttpGet("{id:guid}")]
@@ -146,9 +143,12 @@ public class HRRequestCenterController : ControllerBase
         if (request.JawazatDataJson is not null && (request.CompanyId is null || !this.GetEntityScope().CanAccessCompany(request.CompanyId)))
             return Forbid();
 
-        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
-        if (!scope.CanAccessEmployee(request.EmployeeId))
+        var reader = await ReaderAsync(tenantId.Value, ct);
+        if (!reader.MayList(request))
             return Forbid();
+        if (!reader.MaySeeDetails(request))
+            // Metadata only: the free text, the conversation and the attachments are for HR and the requester.
+            return Ok(new { request = HrRequestDto.Project(request, false), comments = Array.Empty<HRRequestComment>(), attachments = Array.Empty<HRRequestAttachment>() });
 
         var comments = await _db.HRRequestComments
             .Where(c => c.TenantId == tenantId && c.HRRequestId == id)
@@ -159,7 +159,7 @@ public class HRRequestCenterController : ControllerBase
             .Where(a => a.TenantId == tenantId && a.HRRequestId == id)
             .ToListAsync(ct);
 
-        return Ok(new { request, comments, attachments });
+        return Ok(new { request = HrRequestDto.Project(request, true), comments, attachments });
     }
 
     [HttpPost]
@@ -277,19 +277,19 @@ public class HRRequestCenterController : ControllerBase
 
     // ── Dashboard ───────────────────────────────────────────────────────────
 
+    // The HR desk's queue. The role list resolved to employees.read, which every staff role holds, so a
+    // Recruiter, Finance or Auditor read the five latest requests org-wide with their free text and
+    // Jawazat travel data. employees.write is what the named HR roles hold.
     [HttpGet("dashboard")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.write")]
     public async Task<IActionResult> Dashboard(CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
-        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
-        var allowedIds = scope.IsUnrestricted ? null : scope.AllowedEmployeeIds!.ToList();
-
-        var dashboardQuery = _db.HRRequests.Where(r => r.TenantId == tenantId);
-        dashboardQuery = ScopeGovernedRequests(dashboardQuery);
-        if (allowedIds is not null) dashboardQuery = dashboardQuery.Where(r => allowedIds.Contains(r.EmployeeId));
+        var reader = await ReaderAsync(tenantId.Value, ct);
+        var dashboardQuery = ReadableRequests(tenantId.Value, reader);
         var open = await dashboardQuery.CountAsync(r => r.Status == "Open", ct);
         var inProgress = await dashboardQuery.CountAsync(r => r.Status == "InProgress", ct);
         var resolved = await dashboardQuery.CountAsync(r => r.Status == "Resolved", ct);
@@ -301,7 +301,58 @@ public class HRRequestCenterController : ControllerBase
             .Take(5)
             .ToListAsync(ct);
 
-        return Ok(new { open, inProgress, resolved, overdue, recentRequests });
+        return Ok(new { open, inProgress, resolved, overdue,
+            recentRequests = recentRequests.Select(r => HrRequestDto.Project(r, reader.MaySeeDetails(r))).ToList() });
+    }
+
+    /// <summary>
+    /// Who is reading the request queue, and how much of it they may see.
+    /// <list type="bullet">
+    /// <item>HR (employees.write): the existing data and company scope, with every field.</item>
+    /// <item>A line manager (a Team, DirectReports or Department data scope): their reporting line's requests,
+    /// but the free text and Jawazat data only on their own requests.</item>
+    /// <item>Anyone else, including roles whose data scope is Organization only because they read employee
+    /// records (Recruiter, Finance, Payroll, Compliance, Auditor...): their own requests only. This is decided on
+    /// the scope's LEVEL, not on whether it is unrestricted: a company-scoped org reader's Organization scope is
+    /// materialised into an id list (DataScopeService.ApplyCompanyBoundaryAsync) and is not a reporting line.</item>
+    /// </list>
+    /// </summary>
+    private sealed record RequestReader(bool IsHr, DataScope Scope, int? OwnEmployeeId)
+    {
+        public bool IsLineManager => Scope.Level is DataScopeLevel.Team or DataScopeLevel.DirectReports or DataScopeLevel.Department;
+
+        public bool IsOwn(HRRequest r) => OwnEmployeeId.HasValue && r.EmployeeId == OwnEmployeeId.Value;
+
+        public bool MaySeeDetails(HRRequest r) => IsHr || IsOwn(r);
+
+        public bool MayList(HRRequest r) => IsHr
+            ? Scope.CanAccessEmployee(r.EmployeeId)
+            : IsOwn(r) || (IsLineManager && Scope.CanAccessEmployee(r.EmployeeId));
+    }
+
+    private async Task<RequestReader> ReaderAsync(Guid tenantId, CancellationToken ct)
+    {
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        var isHr = User.HasPermission("employees.write");
+        int? own = scope.CallerEmployeeId;
+        if (own is null && int.TryParse(User.FindFirstValue("employee_id"), out var claimed)) own = claimed;
+        if (own is null && this.GetUserId() is { } uid)
+            own = await _db.Employees.AsNoTracking()
+                .Where(e => e.TenantId == tenantId && e.UserAccountId == uid && !e.IsDeleted)
+                .Select(e => (int?)e.Id).FirstOrDefaultAsync(ct);
+        return new RequestReader(isHr, scope, own);
+    }
+
+    private IQueryable<HRRequest> ReadableRequests(Guid tenantId, RequestReader reader)
+    {
+        var query = ScopeGovernedRequests(_db.HRRequests.Where(r => r.TenantId == tenantId));
+        var own = reader.OwnEmployeeId ?? int.MinValue;
+        if (reader.IsHr)
+            return reader.Scope.IsUnrestricted ? query : query.Where(r => reader.Scope.AllowedEmployeeIds!.Contains(r.EmployeeId));
+        if (!reader.IsLineManager || reader.Scope.IsUnrestricted)
+            return query.Where(r => r.EmployeeId == own);
+        var team = reader.Scope.AllowedEmployeeIds!;
+        return query.Where(r => r.EmployeeId == own || team.Contains(r.EmployeeId));
     }
 
     private IQueryable<HRRequest> ScopeGovernedRequests(IQueryable<HRRequest> query)
@@ -311,6 +362,23 @@ public class HRRequestCenterController : ControllerBase
         return query.Where(r => r.JawazatDataJson == null || (r.CompanyId != null
             && (companyScope.IsGroupLevel || companies.Contains(r.CompanyId.Value))));
     }
+}
+
+/// <summary>
+/// The HR request as the request center returns it. <see cref="Description"/> and <see cref="JawazatDataJson"/>
+/// are filled only for HR and for the request's own employee; for anyone else they are empty and
+/// <see cref="DetailsRedacted"/> is true.
+/// </summary>
+public sealed record HrRequestDto(
+    Guid Id, Guid TenantId, int EmployeeId, Guid? CompanyId, Guid? CategoryId, string CategoryName, string Subject,
+    string Description, string Priority, string Status, DateTime DueAtUtc, DateTime CreatedAtUtc,
+    Guid? ApprovalRequestId, bool IsJawazatRequest, string? JawazatDataJson, Guid? AttachmentDocumentId, bool DetailsRedacted)
+{
+    public static HrRequestDto Project(HRRequest r, bool withDetails) => new(
+        r.Id, r.TenantId, r.EmployeeId, r.CompanyId, r.CategoryId, r.CategoryName, r.Subject,
+        withDetails ? r.Description : string.Empty, r.Priority, r.Status, r.DueAtUtc, r.CreatedAtUtc,
+        r.ApprovalRequestId, r.JawazatDataJson is not null, withDetails ? r.JawazatDataJson : null,
+        withDetails ? r.AttachmentDocumentId : null, !withDetails);
 }
 
 public record CreateHRCategoryRequest(string Name, string Code, int? DefaultSlaHours);
