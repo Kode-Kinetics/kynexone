@@ -451,9 +451,14 @@ public class AttendanceController : ControllerBase
 
     [HttpGet("ai/insights")]
     [Authorize(Roles = "Admin,HR Director,HR Manager")]
-    [AllowEntityReturn("Flat entity — no navigation properties. Fields: InsightType, Severity, Title, Summary (AI-generated analysis text), EmployeeId (int FK), DataJson (contains only aggregate metrics: {count, since} — no salary/bank/passport/ID), IsAcknowledged. Restricted to Admin/HR Director/HR Manager; employees cannot call this endpoint.")]
-    public Task<IReadOnlyCollection<AttendanceAIInsight>> Insights(CancellationToken ct) =>
-        _attendance.GenerateInsightsAsync(RequireTenant(), ct);
+    [AllowEntityReturn("Flat entity — no navigation properties. Fields: InsightType, Severity, Title, Summary (AI-generated analysis text), EmployeeId (int FK), DataJson (contains only aggregate metrics: {count, since} — no salary/bank/passport/ID), IsAcknowledged. Role-gated, and data-scoped: a team-scoped caller sees insights about their own reporting line only.")]
+    public async Task<IReadOnlyCollection<AttendanceAIInsight>> Insights(CancellationToken ct)
+    {
+        // DATA SCOPE: each insight names an employee (Summary carries the name), so a Manager or Supervisor
+        // reaching this through attendance.read sees their team's, never the tenant's.
+        var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
+        return await _attendance.GenerateInsightsAsync(RequireTenant(), ct, scope.AllowedEmployeeIds);
+    }
 
     private Guid RequireTenant() => Guid.Parse(User.FindFirstValue("tenant_id")!);
 

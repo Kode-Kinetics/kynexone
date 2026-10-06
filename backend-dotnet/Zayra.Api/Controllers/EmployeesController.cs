@@ -4644,14 +4644,21 @@ public class EmployeesController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer,Auditor")]
     public async Task<ActionResult<IReadOnlyCollection<EmployeeExpiringDocumentDto>>> ExpiringDocuments([FromServices] IEmployeeManagementService employeeManagement, [FromQuery] int days = 60, CancellationToken cancellationToken = default)
     {
-        return Ok(await employeeManagement.ExpiringDocumentsAsync(RequireTenant(), days, cancellationToken));
+        // DATA SCOPE: names with document expiry, so a team-scoped caller (a Manager or Supervisor reaching
+        // this through employees.read) sees their reporting line, and a company-scoped caller their companies.
+        var tenantId = RequireTenant();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
+        return Ok(await employeeManagement.ExpiringDocumentsAsync(tenantId, days, cancellationToken, scope.AllowedEmployeeIds));
     }
 
     [HttpGet("reports/missing-documents")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer,Auditor")]
     public async Task<ActionResult<IReadOnlyCollection<EmployeeMissingDocumentsReportDto>>> MissingDocuments([FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
-        return Ok(await employeeManagement.MissingDocumentsAsync(RequireTenant(), cancellationToken));
+        // DATA SCOPE: same rule as expiring-documents above.
+        var tenantId = RequireTenant();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
+        return Ok(await employeeManagement.MissingDocumentsAsync(tenantId, cancellationToken, scope.AllowedEmployeeIds));
     }
 
     [HttpGet("reports/status-summary")]
