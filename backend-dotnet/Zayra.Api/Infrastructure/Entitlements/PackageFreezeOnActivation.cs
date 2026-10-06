@@ -35,8 +35,9 @@ public sealed class PackageFreezeOnActivation : IContractTermLifecycle
         {
             var result = await _writer.FreezeTermAsync(contract.TenantId, contract.Id, ct);
             var skips = (_writer as EntitlementWriter)?.LastSkips ?? [];
-            _log.LogInformation("Package freeze on activation of contract {ContractId}: frozen={Frozen} already={Already} rows={Rows} skipped={Skipped}",
-                contract.Id, result.Frozen, result.AlreadyFrozen, result.RowsWritten, string.Join(",", skips.Select(s => $"{s.ComponentCode}:{s.Code}")));
+            // Counts only: the per-benefit skip reasons go to the package view and the audit trail, not the log.
+            _log.LogInformation("Package freeze on activation of contract {ContractId}: frozen={Frozen} already={Already} rows={Rows} skipped={SkippedCount}",
+                contract.Id, result.Frozen, result.AlreadyFrozen, result.RowsWritten, skips.Count);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
