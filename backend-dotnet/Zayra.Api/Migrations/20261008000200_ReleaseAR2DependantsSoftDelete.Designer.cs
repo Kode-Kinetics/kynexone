@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Zayra.Api.Data;
@@ -11,9 +12,11 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Migrations
 {
     [DbContext(typeof(ZayraDbContext))]
-    partial class ZayraDbContextModelSnapshot : ModelSnapshot
+    [Migration("20261008000200_ReleaseAR2DependantsSoftDelete")]
+    partial class ReleaseAR2DependantsSoftDelete
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -8967,11 +8970,6 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("numeric(14,2)")
                         .HasColumnName("basic_salary");
 
-                    b.Property<string>("ChainSource")
-                        .HasMaxLength(10)
-                        .HasColumnType("character varying(10)")
-                        .HasColumnName("chain_source");
-
                     b.Property<DateOnly?>("ChainStartedOn")
                         .HasColumnType("date")
                         .HasColumnName("chain_started_on");
@@ -9132,12 +9130,6 @@ namespace Zayra.Api.Migrations
 
                     b.ToTable("employee_contracts", null, t =>
                         {
-                            t.HasCheckConstraint("ck_employee_contracts__chain_pair", "(renewal_number IS NULL) = (chain_started_on IS NULL)");
-
-                            t.HasCheckConstraint("ck_employee_contracts__chain_source", "chain_source IS NULL OR chain_source IN ('Derived','Recorded')");
-
-                            t.HasCheckConstraint("ck_employee_contracts__chain_starts_by_term_start", "chain_started_on IS NULL OR chain_started_on <= start_date");
-
                             t.HasCheckConstraint("ck_employee_contracts__non_renewal_notice_days", "non_renewal_notice_days IS NULL OR non_renewal_notice_days >= 0");
 
                             t.HasCheckConstraint("ck_employee_contracts__not_renewed_from_itself", "renewed_from_contract_id IS NULL OR renewed_from_contract_id <> id");
@@ -9147,8 +9139,6 @@ namespace Zayra.Api.Migrations
                             t.HasCheckConstraint("ck_employee_contracts__provisional_has_no_renewal_number", "provisional_basis IS NULL OR renewal_number IS NULL");
 
                             t.HasCheckConstraint("ck_employee_contracts__renewal_number", "renewal_number IS NULL OR renewal_number >= 0");
-
-                            t.HasCheckConstraint("ck_employee_contracts__renewed_from_counts", "renewed_from_contract_id IS NULL OR renewal_number >= 1 OR provisional_basis IS NOT NULL");
 
                             t.HasCheckConstraint("ck_employee_contracts__worker_nationality_class", "worker_nationality_class IS NULL OR worker_nationality_class IN ('Saudi','NonSaudi')");
                         });

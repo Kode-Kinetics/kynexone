@@ -31,15 +31,14 @@ public class ContractsController : ControllerBase
 
     private readonly ZayraDbContext _db;
     private readonly Zayra.Api.Infrastructure.Contracts.IContractTermLifecycleDispatcher? _termLifecycle;
+    private readonly Zayra.Api.Application.Common.ITenantClock? _clock;
 
     /// <param name="termLifecycle">Release A term-activation hooks (chain stamp, package freeze). Optional so direct
     /// constructions keep compiling; the dispatcher itself is a no-op unless the tenant has release_a on.</param>
-    private readonly ITenantClock? _clock;
-
-    /// <param name="clock">Tenant-local today (Riyadh for Saudi tenants). Injected by DI; optional only so direct
-    /// constructions keep compiling — they fall back to the UTC date.</param>
+    /// <param name="clock">Tenant-local "today" for the Release A replacement check (UTC date when absent).</param>
     public ContractsController(ZayraDbContext db,
-        Zayra.Api.Infrastructure.Contracts.IContractTermLifecycleDispatcher? termLifecycle = null, ITenantClock? clock = null)
+        Zayra.Api.Infrastructure.Contracts.IContractTermLifecycleDispatcher? termLifecycle = null,
+        Zayra.Api.Application.Common.ITenantClock? clock = null)
     {
         _db = db;
         _termLifecycle = termLifecycle;
@@ -258,6 +257,33 @@ public class ContractsController : ControllerBase
     public async Task<IActionResult> UpdateStatus(Guid id, [FromBody] UpdateContractStatusRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
+        // Release A: every change to a term's status runs under the per-employee package lock, in one transaction, so two
+        // activations (or an activation and a freeze) for the same employee cannot both pass the writer's overlap check.
+        var employeeId = await _db.EmployeeContracts.AsNoTracking()
+            .Where(x => x.Id == id && x.TenantId == tid && !x.IsDeleted).Select(x => (Guid?)x.EmployeeId).FirstOrDefaultAsync(ct);
+        if (employeeId is null) return NotFound();
+        try
+        {
+            return await Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.SerializeAsync(_db,
+                Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.ScopeEmployeePackage, tid, employeeId.Value,
+                () => UpdateStatusCoreAsync(id, req, tid, ct), ct);
+        }
+        catch (Zayra.Api.Infrastructure.Entitlements.EntitlementLifecycleBlockedException ex)
+        {
+            return PackageConflict(ex.Code, ex.Message, ex.PossibleFrom);
+        }
+        catch (Exception ex) when (Zayra.Api.Infrastructure.Entitlements.PackageReasons.FromDatabase(ex) is { } code)
+        {
+            // A DbUpdateException at SaveChanges, or a bare PostgresException from a deferred trigger at COMMIT.
+            return PackageConflict(code, "The contract's benefits don't fit this change.", null);
+        }
+    }
+
+    private ObjectResult PackageConflict(string code, string message, DateOnly? possibleFrom) =>
+        Conflict(new { error = code, message, possibleFrom, reason = Zayra.Api.Infrastructure.Entitlements.PackageReasons.Describe(code) });
+
+    private async Task<IActionResult> UpdateStatusCoreAsync(Guid id, UpdateContractStatusRequest req, Guid tid, CancellationToken ct)
+    {
         var contract = await _db.EmployeeContracts
             .FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (contract == null) return NotFound();
@@ -326,6 +352,29 @@ public class ContractsController : ControllerBase
     public async Task<IActionResult> Supersede(Guid id, [FromBody] CreateContractRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
+        // Release A: under the per-employee package lock, in one transaction — a supersede and a proposal confirm (or an
+        // activation) for the same employee are serialised, so neither commits onto a term the other just replaced.
+        var employeeId = await _db.EmployeeContracts.AsNoTracking()
+            .Where(x => x.Id == id && x.TenantId == tid && !x.IsDeleted).Select(x => (Guid?)x.EmployeeId).FirstOrDefaultAsync(ct);
+        if (employeeId is null) return NotFound();
+        try
+        {
+            return await Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.SerializeAsync(_db,
+                Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.ScopeEmployeePackage, tid, employeeId.Value,
+                () => SupersedeCoreAsync(id, req, tid, ct), ct);
+        }
+        catch (Zayra.Api.Infrastructure.Entitlements.EntitlementLifecycleBlockedException ex)
+        {
+            return PackageConflict(ex.Code, ex.Message, ex.PossibleFrom);
+        }
+        catch (Exception ex) when (Zayra.Api.Infrastructure.Entitlements.PackageReasons.FromDatabase(ex) is { } code)
+        {
+            return PackageConflict(code, "The contract's benefits don't fit this change.", null);
+        }
+    }
+
+    private async Task<IActionResult> SupersedeCoreAsync(Guid id, CreateContractRequest req, Guid tid, CancellationToken ct)
+    {
         var old = await _db.EmployeeContracts
             .FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (old == null) return NotFound();
@@ -353,6 +402,12 @@ public class ContractsController : ControllerBase
         if (carry.RefusalCode is not null)
             return Conflict(new { error = carry.RefusalCode, message = carry.RefusalEn, messageAr = carry.RefusalAr });
 
+        // Release A: refuse BEFORE anything changes when the replacement would need a fixed benefit that has not started
+        // removed (the database never removes one) — the current version then simply stays in force.
+        var today = _clock is not null ? await _clock.TodayAsync(tid, ct) : DateOnly.FromDateTime(DateTime.UtcNow);
+        if (await Zayra.Api.Infrastructure.Entitlements.EntitlementWriter.ReplacementBlockAsync(_db, tid, old.Id, req.StartDate, today, ct) is { } blocked)
+            return PackageConflict(blocked.Code, blocked.Message, blocked.PossibleFrom);
+
         old.Status = "Superseded";
         old.UpdatedAtUtc = DateTime.UtcNow;
         if (_termLifecycle is not null)
@@ -375,6 +430,8 @@ public class ContractsController : ControllerBase
             Version = old.Version + 1,
             PreviousVersionId = old.Id,
             CreatedByUserId = GetUserId(),
+            // Release A: an amendment is the same worker under the same chain — keep the stamped nationality class, so
+            // nationality-scoped benefits are not "needs confirmation" on every new version.
             // The same term's renewal terms carry over to the new version (Release A).
             AutoRenew = old.AutoRenew,
             NonRenewalNoticeDays = old.NonRenewalNoticeDays,

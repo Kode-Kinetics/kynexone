@@ -33,7 +33,8 @@ public sealed class R0bChainSourceMigrationPostgresTests
         await using var db = new ZayraDbContext(options);
         var migrator = db.Database.GetInfrastructure().GetRequiredService<IMigrator>();
         var all = db.Database.GetMigrations().ToList();
-        Assert.Equal(ThisMigration, all[^1]);
+        // Later migrations (R2's dependants soft delete, …) may follow; this one only has to be applied after R0.
+        Assert.Contains(ThisMigration, all);
         var before = all[all.IndexOf(ThisMigration) - 1];
         Assert.Equal("20261007000100_ReleaseAEntitlementsAndRenewals", before);
 
