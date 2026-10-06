@@ -1266,7 +1266,7 @@ public class AttendanceService : IAttendanceService
         device.SyncMethod = Clean(request.SyncMethod, "Manual upload");
         device.SyncFrequency = Clean(request.SyncFrequency, "Manual");
         device.AuthType = Clean(request.AuthType, "None");
-        device.AuthCredentialsJson = CleanJson(request.AuthCredentialsJson) ?? "{}";
+        device.AuthCredentialsJson = AttendanceDeviceDto.MergeBlankCredentials(device.AuthCredentialsJson, CleanJson(request.AuthCredentialsJson), device.AuthType);
         device.CustomHeadersJson = AttendanceDeviceDto.MergeMaskedJsonValues(device.CustomHeadersJson, CleanJson(request.CustomHeadersJson));
         device.DeviceParametersJson = AttendanceDeviceDto.MergeMaskedJsonValues(device.DeviceParametersJson, CleanJson(request.DeviceParametersJson));
         device.FieldMappingsJson = CleanJson(request.FieldMappingsJson) ?? "{}";

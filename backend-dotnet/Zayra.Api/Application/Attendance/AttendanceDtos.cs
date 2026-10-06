@@ -126,6 +126,37 @@ public record AttendanceDeviceDto(
         return JsonSerializer.Serialize(merged);
     }
 
+    /// <summary>
+    /// The auth credentials to store on an update. The API never returns stored credentials (only
+    /// <see cref="HasCredentials"/>), so an edit form saves them blank; storing that would wipe the device's
+    /// login on every edit. A blank or masked value keeps the stored value for that field, and an empty object
+    /// keeps the stored credentials whole. Only switching the auth type to "None" clears them.
+    /// </summary>
+    public static string MergeBlankCredentials(string? stored, string incoming, string authType)
+    {
+        if (string.Equals(authType, "None", StringComparison.OrdinalIgnoreCase)) return "{}";
+        Dictionary<string, JsonElement> current;
+        try { current = string.IsNullOrWhiteSpace(stored) ? new() : JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(stored) ?? new(); }
+        catch (JsonException) { return incoming; }
+        if (current.Count == 0) return incoming;
+
+        Dictionary<string, JsonElement>? next;
+        try { next = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(incoming); }
+        catch (JsonException) { return incoming; }
+        if (next is null || next.Count == 0) return stored!;
+
+        var merged = new Dictionary<string, JsonElement>(next);
+        foreach (var (name, value) in next)
+        {
+            var blank = value.ValueKind is JsonValueKind.Null
+                || (value.ValueKind == JsonValueKind.String && (string.IsNullOrEmpty(value.GetString()) || value.GetString() == MaskedHeaderValue));
+            if (!blank) continue;
+            if (current.TryGetValue(name, out var kept)) merged[name] = kept;
+            else merged.Remove(name);
+        }
+        return JsonSerializer.Serialize(merged);
+    }
+
     /// <summary>The URL without its userinfo (user:password@) or query string (?api_key=...), each replaced by
     /// the mask. A value that is not an absolute URL but carries '@' or '?' is masked whole.</summary>
     public static string RedactEndpointUrl(string? url)
