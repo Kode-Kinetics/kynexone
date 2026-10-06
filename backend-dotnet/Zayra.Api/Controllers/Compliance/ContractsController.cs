@@ -272,8 +272,9 @@ public class ContractsController : ControllerBase
         {
             return PackageConflict(ex.Code, ex.Message, ex.PossibleFrom);
         }
-        catch (DbUpdateException ex) when (Zayra.Api.Infrastructure.Entitlements.PackageReasons.FromDatabase(ex) is { } code)
+        catch (Exception ex) when (Zayra.Api.Infrastructure.Entitlements.PackageReasons.FromDatabase(ex) is { } code)
         {
+            // A DbUpdateException at SaveChanges, or a bare PostgresException from a deferred trigger at COMMIT.
             return PackageConflict(code, "The contract's benefits don't fit this change.", null);
         }
     }
@@ -350,6 +351,29 @@ public class ContractsController : ControllerBase
     public async Task<IActionResult> Supersede(Guid id, [FromBody] CreateContractRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
+        // Release A: under the per-employee package lock, in one transaction — a supersede and a proposal confirm (or an
+        // activation) for the same employee are serialised, so neither commits onto a term the other just replaced.
+        var employeeId = await _db.EmployeeContracts.AsNoTracking()
+            .Where(x => x.Id == id && x.TenantId == tid && !x.IsDeleted).Select(x => (Guid?)x.EmployeeId).FirstOrDefaultAsync(ct);
+        if (employeeId is null) return NotFound();
+        try
+        {
+            return await Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.SerializeAsync(_db,
+                Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.ScopeEmployeePackage, tid, employeeId.Value,
+                () => SupersedeCoreAsync(id, req, tid, ct), ct);
+        }
+        catch (Zayra.Api.Infrastructure.Entitlements.EntitlementLifecycleBlockedException ex)
+        {
+            return PackageConflict(ex.Code, ex.Message, ex.PossibleFrom);
+        }
+        catch (Exception ex) when (Zayra.Api.Infrastructure.Entitlements.PackageReasons.FromDatabase(ex) is { } code)
+        {
+            return PackageConflict(code, "The contract's benefits don't fit this change.", null);
+        }
+    }
+
+    private async Task<IActionResult> SupersedeCoreAsync(Guid id, CreateContractRequest req, Guid tid, CancellationToken ct)
+    {
         var old = await _db.EmployeeContracts
             .FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (old == null) return NotFound();

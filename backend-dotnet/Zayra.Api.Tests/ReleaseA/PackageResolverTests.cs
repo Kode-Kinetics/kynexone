@@ -155,7 +155,7 @@ public sealed class PackageResolverTests
         var (db, s) = await SeededAsync(seed =>
         {
             seed.Term.WorkerNationalityClass = WorkerNationalityClasses.Saudi; // the term's own stamp, never the free-text nationality
-            seed.Cells["PER_DIEM"].MinServiceMonths = 24;
+            seed.Cells["PER_DIEM"].MinServiceMonths = 12;
         });
         await using var _ = db;
         var detailed = await new EntitlementResolver(db).ResolveDetailedAsync(s.TenantId, s.Mohammed.Id, Today, default);
@@ -166,7 +166,7 @@ public sealed class PackageResolverTests
         (perDiem.ReasonCode, perDiem.EligibleFrom).Should().Be((ReleaseABlockReasons.EntitlementNotEligibleCriteria, (DateOnly?)new DateOnly(2027, 2, 1)));
         detailed.Reasons["PER_DIEM"].Criterion.Should().Be(PackageCriteria.ServiceMonths);
         (await new EntitlementResolver(db).ResolveAsync(s.TenantId, s.Mohammed.Id, new DateOnly(2027, 2, 1), default))
-            .Lines.Single(l => l.ComponentCode == "PER_DIEM").Eligible.Should().BeTrue("24 months after 1 Feb 2025");
+            .Lines.Single(l => l.ComponentCode == "PER_DIEM").Eligible.Should().BeTrue("12 months after joining on 1 Feb 2026");
         // A nationality-excluded benefit is not frozen; the medical floor always is.
         await Writer(db).FreezeTermAsync(s.TenantId, s.Term.Id, default);
         db.ChangeTracker.Entries<EmployeeEntitlement>().Select(e => e.Entity.PayComponentCode).Should().BeEquivalentTo("MEDICAL");
@@ -543,7 +543,7 @@ public sealed class PackageResolverTests
     [Fact]
     public async Task TheHousingAdvanceHonoursTheDateAsked_ThroughTheLoanFormsOwnRules()
     {
-        var (db, s) = await SeededAsync(seed => seed.HousingAdvance.MinServiceMonths = 24); // joined 1 Feb 2025
+        var (db, s) = await SeededAsync(seed => seed.HousingAdvance.MinServiceMonths = 12); // joined 1 Feb 2026
         await using var _ = db;
         var october = Line(await new EntitlementResolver(db).ResolveAsync(s.TenantId, s.Mohammed.Id, Today, default), "LOAN_HOUSING_ADVANCE");
         (october.Eligible, october.ReasonCode).Should().Be((false, ReleaseABlockReasons.EntitlementNotEligibleCriteria));

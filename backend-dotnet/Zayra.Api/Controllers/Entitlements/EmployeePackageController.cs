@@ -129,9 +129,12 @@ public sealed class EmployeePackageController : ControllerBase
         var writer = new EntitlementWriter(_db, _clock, _resolver);
         try
         {
-            if ((await writer.PreviewAsync(tid, contract.Id, ct)) is { NeedsProposal: true, FreezableRows: 0 })
-                return Refused(PackageReasons.PredecessorUnconfirmed,
-                    "The employee's previous contract has no confirmed benefits. Propose this contract's benefits, and another HR user confirms them.");
+            if ((await writer.PreviewAsync(tid, contract.Id, ct)) is { NeedsProposal: true, FreezableRows: 0 } waiting)
+            {
+                var code = waiting.Skips.Select(x => x.Code).FirstOrDefault(c => c is PackageReasons.PredecessorUnconfirmed
+                    or PackageReasons.EarlierServiceUnconfirmed or PackageReasons.TermRunningNeedsProposal) ?? PackageReasons.EarlierServiceUnconfirmed;
+                return Refused(code, "This contract's benefits need a second person: propose them, and another HR user confirms them.");
+            }
         }
         catch (EntitlementWriteRefusedException ex) { return Refused(ex.Code, ex.Message); }
         return await WriteAsync(async () =>
@@ -302,8 +305,8 @@ public sealed class EmployeePackageController : ControllerBase
     }
 
     /// <summary>
-    /// The signed contract: the term's own file (its FileUrl), or a contract-type document on this employee's file that was
-    /// NOT uploaded by the person who asked for the proposal — evidence the requester supplied cannot be their own check.
+    /// The signed contract: the term's own file (its FileUrl) or a contract-type document on this employee's file — in both
+    /// cases uploaded by a known person who is NOT the one who asked for the proposal.
     /// </summary>
     private async Task<bool> IsSignedContractAsync(Guid tid, int employeeId, Guid contractId, Guid documentId, Guid? requester, CancellationToken ct)
     {
@@ -313,8 +316,11 @@ public sealed class EmployeePackageController : ControllerBase
         if (document is null) return false;
         var fileUrl = await _db.EmployeeContracts.AsNoTracking().Where(x => x.TenantId == tid && x.Id == contractId)
             .Select(x => x.FileUrl).FirstOrDefaultAsync(ct);
-        if (!string.IsNullOrWhiteSpace(fileUrl) && string.Equals(document.StorageUrl, fileUrl, StringComparison.Ordinal)) return true;
-        return SignedContractDocuments.IsContractType(document.DocumentType) && document.UploadedBy is not null && document.UploadedBy != requester;
+        // Whichever way it matches (the term's own file, or a contract-type document), evidence the requester supplied is
+        // never their own second check: the uploader must be known and must not be the requester.
+        if (document.UploadedBy is null || document.UploadedBy == requester) return false;
+        return (!string.IsNullOrWhiteSpace(fileUrl) && string.Equals(document.StorageUrl, fileUrl, StringComparison.Ordinal))
+            || SignedContractDocuments.IsContractType(document.DocumentType);
     }
 
     /// <summary>The open (undecided) proposal for one term, from the newest run that proposed something for it.</summary>
@@ -342,8 +348,9 @@ public sealed class EmployeePackageController : ControllerBase
                 components = ex.Components, reason = PackageReasons.Describe(ex.Code) });
         }
         catch (EntitlementWriteRefusedException ex) { return Refused(ex.Code, ex.Message); }
-        catch (DbUpdateException ex) when (PackageReasons.FromDatabase(ex) is { } code)
+        catch (Exception ex) when (PackageReasons.FromDatabase(ex) is { } code)
         {
+            // A DbUpdateException at SaveChanges, or a bare PostgresException from a deferred trigger at COMMIT.
             return Refused(code, "The package doesn't fit this contract term.");
         }
     }

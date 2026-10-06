@@ -100,3 +100,95 @@ public static class ContractTerminationDates
         contract.Status == "Terminated" && terminated.TryGetValue(contract.Id, out var t) && (contract.EndDate is null || t < contract.EndDate.Value)
             ? t : contract.EndDate;
 }
+
+/// <summary>
+/// When ONE person may write a term's package straight from the grade table (four eyes, review rounds 3–4). Only for a term
+/// not yet started, and per benefit only when either the term is a genuine new hire's — it starts on or before the
+/// employee's joining date plus the tenant's original-term joining tolerance (R4's rule key) — or the employee's previous
+/// term has that benefit confirmed (a Verified row). Everything else is proposed, and a second HR user confirms it. The
+/// joining date is the one fact this trusts; editing it needs employees.write and is audited (employee history), and a
+/// change after a direct freeze raises <see cref="PackageReasons.JoiningDateChanged"/> on the package (never a re-freeze).
+/// </summary>
+public static class DirectFreezeBasis
+{
+    /// <summary>R4's key (PR #191, RenewalRuleKeys.OriginalTermJoiningToleranceDays): 0–31 days, default 0.</summary>
+    public const string JoiningToleranceRuleKey = "contracts.original_term_joining_tolerance_days";
+
+    public sealed record Basis(bool NewHireTerm, bool HasPredecessor, IReadOnlySet<string> PredecessorConfirmed)
+    {
+        public bool Allows(string componentCode) => NewHireTerm || PredecessorConfirmed.Contains(componentCode);
+
+        /// <summary>Why a benefit cannot be written directly: a previous term without it confirmed, or earlier service on no term.</summary>
+        public string Reason => HasPredecessor ? PackageReasons.PredecessorUnconfirmed : PackageReasons.EarlierServiceUnconfirmed;
+    }
+
+    public static async Task<Basis> ForAsync(ZayraDbContext db, Guid tenantId, Employee employee, EmployeeContract contract, CancellationToken ct)
+    {
+        var tolerance = await JoiningToleranceDaysAsync(db, tenantId, ct);
+        var joined = employee.JoiningDate == default ? (DateOnly?)null : DateOnly.FromDateTime(employee.JoiningDate);
+        var newHire = joined is DateOnly j && contract.StartDate <= j.AddDays(tolerance);
+
+        var predecessor = await ScopedBypass.TenantWide(db.EmployeeContracts, tenantId, "The employee's own earlier terms.")
+            .AsNoTracking()
+            .Where(x => x.EmployeeId == contract.EmployeeId && x.Id != contract.Id && !x.IsDeleted
+                && (x.Status == "Active" || x.Status == "Expired" || x.Status == "Terminated" || x.Status == "Superseded")
+                && (x.StartDate < contract.StartDate || x.Id == contract.PreviousVersionId))
+            .OrderByDescending(x => x.Id == contract.PreviousVersionId).ThenByDescending(x => x.StartDate)
+            .Select(x => x.Id).FirstOrDefaultAsync(ct);
+        IReadOnlySet<string> confirmed = predecessor == Guid.Empty ? new HashSet<string>()
+            : (await ScopedBypass.TenantWide(db.EmployeeEntitlements, tenantId, "The previous term's confirmed rows.")
+                .AsNoTracking().Where(x => x.ContractId == predecessor && x.VerificationState == EntitlementVerificationStates.Verified)
+                .Select(x => x.PayComponentCode).ToListAsync(ct)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return new Basis(newHire, predecessor != Guid.Empty, confirmed);
+    }
+
+    /// <summary>The tenant's row overrides the platform row; clamped to 0–31 (R4 validates the same range when saved).</summary>
+    public static async Task<int> JoiningToleranceDaysAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        var rows = await ScopedBypass.NullableTenantWide(db.StatutoryRules, tenantId, "The tenant's own joining-tolerance override.")
+            .AsNoTracking().Where(r => r.RuleKey == JoiningToleranceRuleKey && r.EffectiveFrom <= now && (r.EffectiveTo == null || r.EffectiveTo > now))
+            .Select(r => r.RuleValue).ToListAsync(ct);
+        if (rows.Count == 0)
+            rows = await ScopedBypass.NullableTenantWide(db.StatutoryRules, null, "The platform default joining tolerance.")
+                .AsNoTracking().Where(r => r.RuleKey == JoiningToleranceRuleKey && r.EffectiveFrom <= now && (r.EffectiveTo == null || r.EffectiveTo > now))
+                .Select(r => r.RuleValue).ToListAsync(ct);
+        return rows.Select(v => int.TryParse(v, out var d) ? d : 0).Select(d => Math.Clamp(d, 0, 31)).DefaultIfEmpty(0).Max();
+    }
+}
+
+/// <summary>
+/// Separation (offboarding complete) ends the employee's Active terms: each becomes Terminated on the day (reason
+/// Separated in its audit row, which is the termination date the resolver reads), and its package and open proposals
+/// are closed through the same lifecycle path as a termination. A never-started benefit cannot be removed (R0's close-only
+/// trigger); because the term is Terminated, the resolver never shows it past the termination day. Release A tenants only.
+/// </summary>
+public static class SeparationTermEnder
+{
+    public static async Task<int> EndActiveTermsAsync(ZayraDbContext db, Contracts.IContractTermLifecycleDispatcher? lifecycle, Guid tenantId,
+        Guid employeePublicId, Guid? performedBy, CancellationToken ct)
+    {
+        if (lifecycle is null) return 0;
+        var releaseA = await db.TenantFeatureFlags.AsNoTracking()
+            .AnyAsync(f => f.TenantId == tenantId && f.FeatureKey == FeatureKeys.ReleaseA && f.IsEnabled, ct);
+        var terms = await db.EmployeeContracts
+            .Where(c => c.TenantId == tenantId && c.EmployeeId == employeePublicId && c.Status == "Active" && !c.IsDeleted)
+            .ToListAsync(ct);
+        foreach (var term in terms)
+        {
+            if (releaseA)
+            {
+                term.Status = "Terminated";
+                term.UpdatedAtUtc = DateTime.UtcNow;
+                db.ComplianceAuditLogs.Add(new ComplianceAuditLog
+                {
+                    TenantId = tenantId, EntityType = "Contract", EntityId = term.Id.ToString(), EmployeeId = employeePublicId,
+                    Action = "StatusChanged", PerformedByUserId = performedBy, PerformedByName = "offboarding",
+                    MetadataJson = JsonSerializer.Serialize(new { from = "Active", to = "Terminated", reason = Application.Entitlements.ContractEndReasons.Separated }),
+                });
+            }
+            await lifecycle.OnEndedAsync(term, Application.Entitlements.ContractEndReasons.Separated, ct);
+        }
+        return terms.Count;
+    }
+}

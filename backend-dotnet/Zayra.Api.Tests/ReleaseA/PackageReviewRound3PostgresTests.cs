@@ -253,7 +253,8 @@ public sealed class PackageReviewRound3PostgresTests(PostgresFixture fixture)
             }), default);
             dto = (MigrationReconciliationDto)Assert.IsType<OkObjectResult>(result.Result).Value!;
         }
-        Assert.Contains(dto.Errors, e => e.Contains("never removed"));
+        // A term with fixed benefits is never re-stated by an import: termination goes through the contract screen.
+        Assert.Contains(dto.Errors, e => e.Contains("cannot change its start date or status"));
         await using var verify = fixture.CreateDb();
         Assert.Equal("Active", await verify.EmployeeContracts.Where(x => x.Id == s.Term.Id).Select(x => x.Status).SingleAsync());
         Assert.All(await verify.EmployeeEntitlements.Where(x => x.ContractId == s.Term.Id).ToListAsync(), r => Assert.Equal((DateOnly?)PackageSeed.TermEnd, r.EffectiveTo));

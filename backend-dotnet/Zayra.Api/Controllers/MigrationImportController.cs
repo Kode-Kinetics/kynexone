@@ -917,6 +917,14 @@ public sealed partial class MigrationImportController : ControllerBase
             throw new InvalidOperationException(
                 $"Contract '{contractNumber}' has an open renewal review. Finish or cancel the renewal before re-importing it.");
         var previousStatus = item?.Status;
+        // Release A: an import never re-dates or re-states a term that already has fixed or proposed benefits — that is how a
+        // running term was turned into a "future" one and frozen by one person. Those changes go through Supersede (or
+        // Terminate) on the contract screen, which the package rules govern.
+        if (!created && (DateReq(row, "StartDate") != item!.StartDate || !string.Equals(Val(row, "Status", "Active"), item.Status, StringComparison.Ordinal))
+            && (await _db.EmployeeEntitlements.AnyAsync(x => x.TenantId == tenantId && x.ContractId == item.Id, ct)
+                || (await Zayra.Api.Infrastructure.Entitlements.PackageProposals.OpenAsync(_db, tenantId, item.Id, ct)).Count > 0))
+            throw new InvalidOperationException(
+                $"Contract '{contractNumber}' has fixed or proposed benefits, so the import cannot change its start date or status. Use Supersede or Terminate on the contract screen.");
         item ??= new EmployeeContract { TenantId = tenantId, ContractNumber = contractNumber, CompanyId = employee.CompanyId };
         item.EmployeeId = employee.PublicId;
         item.EmployeeName = employee.FullName;

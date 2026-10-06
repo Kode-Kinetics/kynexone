@@ -51,6 +51,9 @@ public static class PackageReasons
     public const string ProposalOpen = "ENTITLEMENT_PROPOSAL_OPEN";
     public const string ProposalRequesterUnknown = "ENTITLEMENT_PROPOSAL_REQUESTER_UNKNOWN";
     public const string PredecessorUnconfirmed = "ENTITLEMENT_PREDECESSOR_UNCONFIRMED";
+    public const string EarlierServiceUnconfirmed = "ENTITLEMENT_EARLIER_SERVICE_UNCONFIRMED";
+    public const string JoiningDateChanged = "ENTITLEMENT_JOINING_DATE_CHANGED";
+    public const string TermHasPackage = "ENTITLEMENT_TERM_HAS_PACKAGE";
     // The stable message prefixes R0's triggers raise (SQLSTATE 23514), each mapped to its own code by FromDatabase.
     public const string OutsideTerm = "ENTITLEMENT_OUTSIDE_TERM";
     public const string CompanyMismatch = "ENTITLEMENT_COMPANY_MISMATCH";
@@ -73,6 +76,22 @@ public static class PackageReasons
             "The employee's previous contract has no confirmed benefits, so this contract's benefits are taken from the grade table only as a proposal that another HR user checks against the signed contract.",
             "لا توجد مزايا مؤكدة للعقد السابق للموظف، لذلك تؤخذ مزايا هذا العقد من جدول الدرجات كمقترح فقط يراجعه مستخدم آخر في الموارد البشرية مقابل العقد الموقّع.",
             "Propose the benefits, then ask another HR user to confirm them.", "اقترح المزايا ثم اطلب من مستخدم آخر في الموارد البشرية تأكيدها.", HrManager),
+        new BlockReason(EarlierServiceUnconfirmed,
+            "Needs a second person's check", "يحتاج إلى تحقق شخص آخر",
+            "The employee joined before this contract and no confirmed benefits from an earlier contract are on file, so this contract's benefits are taken from the grade table only as a proposal that another HR user checks against the signed contract.",
+            "التحق الموظف قبل هذا العقد ولا توجد مزايا مؤكدة من عقد سابق، لذلك تؤخذ مزايا هذا العقد من جدول الدرجات كمقترح فقط يراجعه مستخدم آخر في الموارد البشرية مقابل العقد الموقّع.",
+            "Propose the benefits, then ask another HR user to confirm them.", "اقترح المزايا ثم اطلب من مستخدم آخر في الموارد البشرية تأكيدها.", HrManager),
+        new BlockReason(JoiningDateChanged,
+            "Joining date changed after the benefits were fixed", "تغيّر تاريخ الالتحاق بعد تثبيت المزايا",
+            "These benefits were fixed from the grade table as a new hire's, but the employee's joining date now says they joined earlier. Nothing was changed automatically.",
+            "ثُبّتت هذه المزايا من جدول الدرجات على أنها لموظف جديد، لكن تاريخ الالتحاق يشير الآن إلى التحاق أبكر، ولم يُغيَّر شيء تلقائياً.",
+            "Check the joining date in the employee's history and the signed contract; correct whichever is wrong.",
+            "راجع تاريخ الالتحاق في سجل الموظف والعقد الموقّع، وصحّح الخطأ منهما.", HrDirector),
+        new BlockReason(TermHasPackage,
+            "Change it through the contract screen", "عدّله من شاشة العقود",
+            "This contract already has fixed or proposed benefits, so the import cannot change its start date or status.",
+            "لهذا العقد مزايا مثبتة أو مقترحة، لذلك لا يمكن للاستيراد تغيير تاريخ بدايته أو حالته.",
+            "Use Supersede (or Terminate) on the contract screen.", "استخدم الاستبدال (أو الإنهاء) من شاشة العقود.", HrManager),
         new BlockReason(TermRunningNeedsProposal,
             "Needs a second person's check", "يحتاج إلى تحقق شخص آخر",
             "This contract term has already started, so its benefits are taken from the grade table only as a proposal that another HR user checks against the signed contract.",
@@ -124,7 +143,8 @@ public static class PackageReasons
     /// </summary>
     public static string? FromDatabase(Exception exception)
     {
-        if (exception.InnerException is not Npgsql.PostgresException pg) return null;
+        // At COMMIT the deferred containment trigger raises a bare PostgresException (no DbUpdateException around it).
+        if ((exception as Npgsql.PostgresException ?? exception.InnerException as Npgsql.PostgresException) is not { } pg) return null;
         if (pg.SqlState == Npgsql.PostgresErrorCodes.ExclusionViolation) return TermOverlap;
         if (pg.SqlState != Npgsql.PostgresErrorCodes.CheckViolation) return null;
         var match = System.Text.RegularExpressions.Regex.Match(pg.MessageText ?? string.Empty, "^(ENTITLEMENT_[A-Z_]+):");
@@ -146,6 +166,7 @@ public static class PackageReasons
         NotInGrade, HousingInKind, SalaryMissing, NationalityUnconfirmed, LoanPolicyBlocks, ContractNotInForce, ContractNotFound,
         RowInTheWay, TermOverlap, ProposalSameUser, ProposalDocumentRequired, ProposalClosed,
         RowNeverTookEffect, TermRunningNeedsProposal, ProposalOpen, ProposalRequesterUnknown, PredecessorUnconfirmed,
+        EarlierServiceUnconfirmed, JoiningDateChanged, TermHasPackage,
         OutsideTerm, CompanyMismatch, BasisNotOwnSalary, CarriedDiffers, CarriedOverlaps, CloseOnly,
     ];
 }

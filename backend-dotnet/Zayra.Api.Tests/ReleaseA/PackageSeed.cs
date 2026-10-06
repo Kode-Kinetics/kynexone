@@ -81,8 +81,10 @@ public sealed class PackageSeed
     private Employee Person(string code, Guid companyId, Guid userId) => new()
     {
         TenantId = Tenant.Id, CompanyId = companyId, EmployeeCode = code, FullName = $"Employee {code}", Nationality = "Egyptian",
-        SaudiOrNonSaudi = "Non-Saudi", ContractType = "Fixed", Status = "Active", JoiningDate = new DateTime(2025, 2, 1, 0, 0, 0, DateTimeKind.Utc),
-        ProbationEndDate = new DateOnly(2025, 5, 1), GradeId = Grade.Id, UserAccountId = userId,
+        SaudiOrNonSaudi = "Non-Saudi", ContractType = "Fixed", Status = "Active",
+        // A genuine new hire: joined on the first day of the term (a direct freeze from the grade table is allowed only then).
+        JoiningDate = new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc),
+        ProbationEndDate = new DateOnly(2026, 5, 1), GradeId = Grade.Id, UserAccountId = userId,
     };
 
     public GradeEntitlement Cell(string code, string cls, string valueType, decimal? amount = null, decimal? rate = null, string? tier = null,

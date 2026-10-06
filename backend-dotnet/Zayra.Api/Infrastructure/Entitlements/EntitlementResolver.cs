@@ -193,6 +193,16 @@ public sealed class EntitlementResolver : IEntitlementResolver
             if (reason is not null) reasons[code] = reason;
         }
 
+        // A package one person froze as a new hire's must still be one: if the joining date has since moved earlier, say so
+        // (coded, on the panel). Nothing is re-frozen or changed automatically — the joining-date edit is audited.
+        var directRows = contract is null ? [] : frozen.Where(x => x.ContractId == contract.Id && x.Source == EntitlementSources.GradeDefault
+            && x.CarriedFromEntitlementId == null && x.RenewalCaseId == null).ToList();
+        if (directRows.Count > 0)
+        {
+            var basis = await DirectFreezeBasis.ForAsync(_db, tenantId, employee, contract!, ct);
+            if (directRows.Any(x => !basis.Allows(x.PayComponentCode))) blocks.Add(PackageReasons.JoiningDateChanged);
+        }
+
         var catalogueOrder = EntitlementComponentRules.Catalogue.Select(r => r.Code).ToList();
         static int Rank(int index) => index < 0 ? 99 : index;
         var ordered = lines

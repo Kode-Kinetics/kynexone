@@ -257,11 +257,11 @@ public sealed class EntitlementWriter : IEntitlementWriter
             .AsNoTracking().FirstOrDefaultAsync(x => x.PublicId == contract.EmployeeId && !x.IsDeleted, ct);
         if (employee is null || (contract.EndDate is DateOnly end && from > end)) return new Plan(done.Count > 0, running, empty, [], null);
 
-        // Four eyes: a package from the grade table is written directly only for a term not yet started that is the
-        // employee's first, or whose previous term had a confirmed package. Otherwise it is proposed and a second person
-        // confirms it against the signed contract — whichever route created the term (activation, supersede, import).
-        var predecessorUnconfirmed = !running && await PredecessorUnconfirmedAsync(tenantId, contract, ct);
-        var needsProposal = running || predecessorUnconfirmed;
+        // Four eyes (DirectFreezeBasis): from the grade table, one person writes only a not-yet-started term's benefit that
+        // is a genuine new hire's, or that the previous term had confirmed. Everything else is proposed and a second person
+        // confirms it — whichever route created or re-dated the term (activation, supersede, import).
+        var direct = await DirectFreezeBasis.ForAsync(_db, tenantId, employee, contract, ct);
+        var needsProposal = running;
 
         var existing = await ExistingRowsAsync(tenantId, contract.EmployeeId, ct);
         var rows = new List<ProposedRow>();
@@ -320,10 +320,14 @@ public sealed class EntitlementWriter : IEntitlementWriter
                 if (Overlaps(existing, cell.ComponentCode, contract.Id, from, contract.EndDate) is not null)
                 { skips.Add(new FreezeSkip(cell.ComponentCode, PackageReasons.TermOverlap)); continue; }
                 // A package from the grade table that needs a second person goes through the proposal path.
-                if (needsProposal && mode == PlanMode.Freeze)
+                if (running || !direct.Allows(cell.ComponentCode))
                 {
-                    skips.Add(new FreezeSkip(cell.ComponentCode, running ? PackageReasons.TermRunningNeedsProposal : PackageReasons.PredecessorUnconfirmed));
-                    continue;
+                    needsProposal = true;
+                    if (mode == PlanMode.Freeze)
+                    {
+                        skips.Add(new FreezeSkip(cell.ComponentCode, running ? PackageReasons.TermRunningNeedsProposal : direct.Reason));
+                        continue;
+                    }
                 }
                 decimal? resolved = cell.ValueType == GradeEntitlementValueTypes.Amount ? cell.Amount : null;
                 Guid? basis = null;
@@ -342,24 +346,6 @@ public sealed class EntitlementWriter : IEntitlementWriter
         return new Plan(done.Count > 0, running,
             new FreezeProposal(contract.Id, contract.EmployeeId, employee.Id, companyId, from, contract.EndDate, rows, skips), closes, null,
             needsProposal && carried.Count == 0);
-    }
-
-    /// <summary>
-    /// The employee had a term in force before this one (an earlier start, or the version this one replaces) and that term
-    /// has no confirmed package: its benefits were never checked against a signed contract, so this term's are not written
-    /// from the grade table by one person either.
-    /// </summary>
-    private async Task<bool> PredecessorUnconfirmedAsync(Guid tenantId, EmployeeContract contract, CancellationToken ct)
-    {
-        var earlier = await ScopedBypass.TenantWide(_db.EmployeeContracts, tenantId, "The employee's own earlier terms.")
-            .AsNoTracking()
-            .Where(x => x.EmployeeId == contract.EmployeeId && x.Id != contract.Id && !x.IsDeleted
-                && (x.Status == "Active" || x.Status == "Expired" || x.Status == "Terminated" || x.Status == "Superseded")
-                && (x.StartDate < contract.StartDate || x.Id == contract.PreviousVersionId))
-            .OrderByDescending(x => x.Id == contract.PreviousVersionId).ThenByDescending(x => x.StartDate)
-            .Select(x => x.Id).FirstOrDefaultAsync(ct);
-        if (earlier == Guid.Empty) return false;
-        return !await Rows(tenantId).AnyAsync(x => x.ContractId == earlier && x.VerificationState == EntitlementVerificationStates.Verified, ct);
     }
 
     private EmployeeEntitlement Stage(Guid tenantId, FreezeProposal target, ProposedRow row, string source, string verification)
