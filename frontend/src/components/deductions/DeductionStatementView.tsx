@@ -108,6 +108,7 @@ export function DeductionStatementView({ statement, audience, showHeader = true 
         <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400" data-testid="cap-wage-note">
           {t('Gross pay {gross} minus pay not earned for absence {absence}.', { gross: fmt.money(statement.grossPay), absence: fmt.money(statement.payNotEarned) })}
           {statement.otherRuns > 0 && <> {t('Includes {count, plural, one {# other payroll run} other {# other payroll runs}} this month: the limit covers the whole month.', { count: statement.otherRuns })}</>}
+          {audience === 'hr' && statement.otherRunsNotFinal > 0 && <> {t('{count, plural, one {# of them is} other {# of them are}} not final yet.', { count: statement.otherRunsNotFinal })}</>}
           {' '}{t('Counting the limit on the wage after absence is pending legal confirmation.')}
         </p>
         {!voided && !cannotBreakDown && <p className="mt-2 text-xs text-slate-700 dark:text-slate-200">{t(summary.key, summary.params)}</p>}

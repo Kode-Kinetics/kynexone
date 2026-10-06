@@ -37,8 +37,11 @@ public sealed record LoanArt92Check(decimal Instalment, decimal? WageDue, decima
     public static LoanArt92Check Evaluate(decimal monthlyInstalment, decimal? wage, bool deductedFromPay)
     {
         var knownWage = wage is > 0m ? wage : null;
-        decimal? pct = knownWage is decimal w ? Math.Round(monthlyInstalment / w * 100m, 2) : null;
         var above = knownWage is not decimal ww || monthlyInstalment > ww * ThresholdPercent / 100m;
+        // Shown next to "above 10%": rounded away from the threshold so the label never contradicts the verdict.
+        decimal? pct = knownWage is decimal w
+            ? Zayra.Api.Infrastructure.Payroll.DeductionStatementBuilder.DisplayShare(monthlyInstalment / w * 100m, ThresholdPercent)
+            : null;
         return new LoanArt92Check(Math.Round(monthlyInstalment, 2), knownWage, pct, deductedFromPay && above, deductedFromPay);
     }
 }

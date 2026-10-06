@@ -60,8 +60,10 @@ export interface DeductionStatement {
   payNotEarned: number;
   otherRunsWageDue: number;
   otherRunsDebt: number;
-  /** Other non-voided payroll runs this month: the limit covers the whole month. */
+  /** Other non-voided payroll runs this month: the limit covers the whole month (an employee sees only locked ones). */
   otherRuns: number;
+  /** HR only: how many of those runs are still in progress. */
+  otherRunsNotFinal: number;
   /** Art. 93 wage due: gross minus pay not earned, over the month's runs (pending legal confirmation). */
   wageDue: number;
   /** Deductions that count toward the Art. 93 limit. */

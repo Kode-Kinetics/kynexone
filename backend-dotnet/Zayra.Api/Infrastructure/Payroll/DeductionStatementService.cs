@@ -45,7 +45,7 @@ public sealed class DeductionStatementService(ZayraDbContext db) : IDeductionSta
         if (slip is null) return null;
         var run = await db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(r => r.TenantId == tenantId && r.Id == slip.RunId, ct);
         if (who == DeductionAudience.Employee && !VisibleToEmployee(slip, run)) return null;
-        return (await BuildAsync(tenantId, [(slip, run)], ct)).Single();
+        return (await BuildAsync(tenantId, [(slip, run)], who, ct)).Single();
     }
 
     /// <summary>Every slip of one run the caller may see (<paramref name="allowedEmployeeIds"/> null = all in scope).
@@ -58,7 +58,7 @@ public sealed class DeductionStatementService(ZayraDbContext db) : IDeductionSta
         var query = db.PayrollSlips.AsNoTracking().Where(s => s.TenantId == tenantId && s.RunId == runId);
         if (allowedEmployeeIds is not null) query = query.Where(s => allowedEmployeeIds.Contains(s.EmployeeId));
         var slips = await query.OrderBy(s => s.EmployeeCode).ThenBy(s => s.EmployeeId).ToListAsync(ct);
-        return await BuildAsync(tenantId, slips.Select(s => (s, (PayrollRun?)run)).ToList(), ct);
+        return await BuildAsync(tenantId, slips.Select(s => (s, (PayrollRun?)run)).ToList(), DeductionAudience.Hr, ct);
     }
 
     /// <summary>One employee's statements for the last <paramref name="months"/> pay periods, newest first. Voided runs are
@@ -80,7 +80,7 @@ public sealed class DeductionStatementService(ZayraDbContext db) : IDeductionSta
             .Where(x => who == DeductionAudience.Hr || VisibleToEmployee(x.slip, x.run))
             .OrderByDescending(x => x.run.Year).ThenByDescending(x => x.run.Month).ThenByDescending(x => x.run.CreatedAtUtc)
             .Select(x => (x.slip, (PayrollRun?)x.run)).ToList();
-        return await BuildAsync(tenantId, ordered, ct);
+        return await BuildAsync(tenantId, ordered, who, ct);
     }
 
     /// <summary>The employee's open loans and advances today: what is owed, the instalment, and what is left.</summary>
@@ -130,7 +130,7 @@ public sealed class DeductionStatementService(ZayraDbContext db) : IDeductionSta
         slip.Status == FinalSlipStatus && run is not null && run.Status != VoidedStatus;
 
     private async Task<IReadOnlyList<DeductionStatementDetail>> BuildAsync(Guid tenantId,
-        IReadOnlyList<(PayrollSlip Slip, PayrollRun? Run)> slips, CancellationToken ct)
+        IReadOnlyList<(PayrollSlip Slip, PayrollRun? Run)> slips, DeductionAudience who, CancellationToken ct)
     {
         if (slips.Count == 0) return [];
         var runIds = slips.Select(s => s.Slip.RunId).Distinct().ToList();
@@ -215,10 +215,13 @@ public sealed class DeductionStatementService(ZayraDbContext db) : IDeductionSta
             var voided = run?.Status == VoidedStatus;
             int? period = run is null ? null : run.Year * 12 + run.Month;
             // The same employee's slips on the period's OTHER non-voided runs. None for a voided run: it no longer applies.
+            // An employee sees another run's debt and wage only once it is final (locked); HR sees in-progress runs too,
+            // counted and labelled as not final yet.
             var siblings = voided || period is null
                 ? []
                 : allSlips.Where(o => o.EmployeeId == slip.EmployeeId && o.RunId != slip.RunId
-                                      && livePeriodOf.TryGetValue(o.RunId, out var p) && p == period).ToList();
+                                      && livePeriodOf.TryGetValue(o.RunId, out var p) && p == period
+                                      && (who == DeductionAudience.Hr || o.Status == FinalSlipStatus)).ToList();
             var siblingRuns = siblings.Select(o => o.RunId).ToHashSet();
             var siblingLines = lines.Where(d => d.EmployeeId == slip.EmployeeId && siblingRuns.Contains(d.PayrollRunId)).ToList();
             var periodEnd = run is null ? DateOnly.MaxValue : new DateOnly(run.Year, run.Month, DateTime.DaysInMonth(run.Year, run.Month));
@@ -230,6 +233,7 @@ public sealed class DeductionStatementService(ZayraDbContext db) : IDeductionSta
                 OtherRunsDebt: siblingLines.Where(WageDeductionClassification.IsDebtType).Sum(l => l.Amount),
                 OtherRunsWageDue: siblings.Sum(o => WageDeductionClassification.WageDue(o.GrossSalary, siblingLines.Where(d => d.PayrollRunId == o.RunId))),
                 OtherRuns: siblingRuns.Count,
+                OtherRunsNotFinal: siblings.Where(o => o.Status != FinalSlipStatus).Select(o => o.RunId).Distinct().Count(),
                 StructureWage: structureWage > 0m ? structureWage : null,
                 Voided: voided);
             var statement = DeductionStatementBuilder.Build(slip, run?.Year ?? 0, run?.Month ?? 0, empLines, loanTakes, advanceTakes, facts, context);
@@ -282,8 +286,9 @@ public sealed record DeductionStatementDetail(
 
 /// <summary>What the statement knows beyond its own slip: the period's other non-voided runs (the limit is per pay period),
 /// the salary-structure wage (Art. 92's fallback basis), and whether this slip's run was voided.</summary>
+/// <param name="OtherRunsNotFinal">Of <paramref name="OtherRuns"/>, those not locked yet (HR only; an employee never sees them).</param>
 public sealed record StatementPeriod(decimal OtherRunsDebt = 0m, decimal OtherRunsWageDue = 0m, int OtherRuns = 0,
-    decimal? StructureWage = null, bool Voided = false);
+    decimal? StructureWage = null, bool Voided = false, int OtherRunsNotFinal = 0);
 
 /// <summary>The facts of one loan or advance a statement line belongs to.</summary>
 /// <param name="CapBaseWage">The wage the loan's 10% test was computed against at request/approval (the Art. 92 basis).</param>
@@ -428,6 +433,12 @@ public static class DeductionStatementBuilder
     /// <summary>A percentage for display: floored to two decimals, so 50.009% never shows as 50.01% and 10.0004% never
     /// rounds past what it is.</summary>
     public static decimal? FloorPercent(decimal? pct) => pct is decimal p ? decimal.Floor(p * 100m) / 100m : null;
+
+    /// <summary>A share shown next to a threshold it was judged against: rounded AWAY from the threshold to two decimals,
+    /// so the label always agrees with the verdict — 10.0004% judged above 10% shows 10.01%, never "10%".</summary>
+    public static decimal? DisplayShare(decimal? pct, decimal threshold) => pct is not decimal p ? null
+        : p > threshold ? Math.Max(decimal.Ceiling(p * 100m) / 100m, threshold + 0.01m)
+        : decimal.Floor(p * 100m) / 100m;
 
     /// <summary>Debt as a percentage (0–100) of the wage due, floored for display; null when there is no wage.</summary>
     public static decimal? Percent(decimal amount, decimal wage) => FloorPercent(Share(amount, wage));

@@ -30,11 +30,18 @@ public partial class LoansController
     /// <summary>The refusal when the Art. 92 consent is missing or is not a consent on this employee's file; null when the
     /// request may proceed. A consent document that is offered is always checked, required or not.</summary>
     private async Task<IActionResult?> Art92RefusalAsync(Guid tenantId, int employeeId, LoanArt92Check? art92,
-        Guid? consentDocumentId, CancellationToken ct)
+        Guid? consentDocumentId, CancellationToken ct, Guid? forLoanId = null)
     {
         if (consentDocumentId is Guid documentId && !await ConsentOnFileAsync(tenantId, employeeId, documentId, ct))
             return BadRequest(Art92Refusal(art92,
                 "The consent document was not found on this employee's file as a signed loan-deduction consent."));
+        // One consent, one loan: a document already standing as another loan's consent cannot be reused.
+        if (consentDocumentId is Guid used && await _db.EmployeeLoans.AsNoTracking().AnyAsync(l => l.TenantId == tenantId
+                && l.ConsentDocumentId == used && (forLoanId == null || l.Id != forLoanId), ct))
+        {
+            var reason = ReleaseABlockReasons.Get(ReleaseABlockReasons.LoanConsentAlreadyUsed);
+            return BadRequest(new { error = reason.Code, reason, message = reason.WhyEn });
+        }
         if (art92 is { RequiresConsent: true } && consentDocumentId is null)
             return BadRequest(Art92Refusal(art92, null));
         return null;
@@ -89,7 +96,7 @@ public partial class LoansController
             Guid documentId;
             if (form.DocumentId is Guid existing)
             {
-                if (await Art92RefusalAsync(tid, employeeId, null, existing, ct) is { } refusal) return refusal;
+                if (await Art92RefusalAsync(tid, employeeId, null, existing, ct, loan.Id) is { } refusal) return refusal;
                 documentId = existing;
             }
             else
@@ -137,7 +144,7 @@ public partial class LoansController
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == loan.EmployeeIntId && !x.IsDeleted, ct);
         if (employee is null) return Conflict("Employee requires HR review before the instalment can change.");
         var art92 = await new LoanEligibilityService(_db).Art92ForInstalmentAsync(tid, employee, monthlyInstalment, repaymentMethod, ct);
-        return await Art92RefusalAsync(tid, employee.Id, art92, loan.ConsentDocumentId, ct);
+        return await Art92RefusalAsync(tid, employee.Id, art92, loan.ConsentDocumentId, ct, loan.Id);
     }
 
     /// <summary>The eligibility response's <c>art92</c> block. The wage (and the share, which reveals it) only to callers who

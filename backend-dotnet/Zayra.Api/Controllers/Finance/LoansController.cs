@@ -468,7 +468,7 @@ public partial class LoansController : ControllerBase
             // Art. 92 again at approval: the approved terms (fewer instalments = a larger one) are what will be deducted.
             if (await ReleaseAEnabledAsync(tid, ct))
             {
-                if (await Art92RefusalAsync(tid, employee.Id, assessment.Art92, loan.ConsentDocumentId, ct) is { } art92Refusal)
+                if (await Art92RefusalAsync(tid, employee.Id, assessment.Art92, loan.ConsentDocumentId, ct, loan.Id) is { } art92Refusal)
                     return art92Refusal;
                 loan.CapBaseWage = assessment.Art92?.WageDue;
             }

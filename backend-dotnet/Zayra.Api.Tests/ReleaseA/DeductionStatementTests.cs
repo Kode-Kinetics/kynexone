@@ -241,8 +241,10 @@ public class DeductionStatementTests
         Assert.Contains(ReleaseABlockReasons.LoanInstalmentOver10PctNoConsent, s.Flags);
         Assert.True(LoanArt92Check.Evaluate(1_000.04m, 10_000m, true).RequiresConsent); // same answer as at the request
         var dto = Zayra.Api.Controllers.Payroll.DeductionLineDto.From(s.Lines.Single(), debts);
-        Assert.Equal(10.00m, dto.PercentOfWage); // floored for display …
-        Assert.True(dto.AboveConsentThreshold);   // … but judged unrounded
+        Assert.True(dto.AboveConsentThreshold);   // judged unrounded …
+        Assert.Equal(10.01m, dto.PercentOfWage); // … and the label agrees: never "10%" next to "above 10%"
+        Assert.Equal(10.01m, LoanArt92Check.Evaluate(1_000.04m, 10_000m, true).Pct);
+        Assert.Equal(10m, LoanArt92Check.Evaluate(1_000m, 10_000m, true).Pct);
 
         // No witness: the salary structure is the basis.
         var noWitness = new Dictionary<Guid, DebtFacts> { [a] = new(a, "LN-1", "Personal", 6, 900m, false, false) };
@@ -393,6 +395,31 @@ public class DeductionStatementTests
         loan.Status = "Rejected";
         await h.Db.SaveChangesAsync();
         Assert.IsType<ConflictObjectResult>(await h.Hr().AttachLoanConsent(loan.Id, new LoanConsentForm { DocumentId = own.Id }, h.Employees(), default));
+    }
+
+    [Fact]
+    public async Task OneConsentDocument_StandsForOneLoanOnly()
+    {
+        await using var h = await LoanHarness.Create(releaseA: false);
+        var request = new CreateLoanRequest(h.Employee.PublicId, "", h.Type.Id, 6_000m, 6, null, h.Employee.Id, "PayrollDeduction");
+        Assert.IsType<OkObjectResult>(await h.Hr().CreateLoan(request, default));
+        Assert.IsType<OkObjectResult>(await h.Hr().CreateLoan(request, default));
+        await h.SetReleaseA(true);
+        var loans = await h.Db.EmployeeLoans.OrderBy(l => l.CreatedAtUtc).ToListAsync();
+        var consent = h.Document(h.Employee.Id, RestrictedEmployeeDocumentTypes.LoanDeductionConsent);
+        await h.Db.SaveChangesAsync();
+
+        Assert.IsType<OkObjectResult>(await h.Hr().AttachLoanConsent(loans[0].Id, new LoanConsentForm { DocumentId = consent.Id }, h.Employees(), default));
+        // Re-attaching to the same loan is harmless; using it for a second loan is refused with a coded reason.
+        Assert.IsType<OkObjectResult>(await h.Hr().AttachLoanConsent(loans[0].Id, new LoanConsentForm { DocumentId = consent.Id }, h.Employees(), default));
+        var refused = Assert.IsType<BadRequestObjectResult>(await h.Hr().AttachLoanConsent(loans[1].Id, new LoanConsentForm { DocumentId = consent.Id }, h.Employees(), default));
+        Assert.Equal(ReleaseABlockReasons.LoanConsentAlreadyUsed, JsonSerializer.SerializeToElement(refused.Value).GetProperty("error").GetString());
+        var newRequest = Assert.IsType<BadRequestObjectResult>(await h.Hr().CreateLoan(request with { RequestedAmount = 12_000m, ConsentDocumentId = consent.Id }, default));
+        Assert.Equal(ReleaseABlockReasons.LoanConsentAlreadyUsed, JsonSerializer.SerializeToElement(newRequest.Value).GetProperty("error").GetString());
+        Assert.Null((await h.Db.EmployeeLoans.SingleAsync(l => l.Id == loans[1].Id)).ConsentDocumentId);
+        // The loan that owns it still approves.
+        var step = await h.Db.LoanApprovals.FirstAsync(a => a.LoanId == loans[0].Id);
+        Assert.IsType<OkObjectResult>(await h.Hr().DecideApproval(loans[0].Id, step.Id, new ApprovalDecisionRequest("Approved", null, null, null, null), default));
     }
 
     [Fact]

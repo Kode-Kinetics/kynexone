@@ -215,6 +215,24 @@ public class DeductionStatementPostgresTests(PostgresFixture fixture)
         Assert.Equal(700m, detail.Statement.Lines.Single(l => l.ComponentCode == DeductionStatementBuilder.OtherRunsCode).Amount);
         Assert.True(DeductionStatementDto.From(detail).Reconciles); // the other run's line is not this slip's
 
+        // HR counts the in-progress off-cycle run and says it is not final yet.
+        Assert.Equal(1, detail.Period.OtherRunsNotFinal);
+        Assert.Equal(1, DeductionStatementDto.From(detail).OtherRunsNotFinal);
+
+        // An employee sees another run's debt and wage only once it is locked.
+        await LockAsync(db, w.RunId);
+        var mine = (await new DeductionStatementService(db).DetailForSlipAsync(w.TenantId, slip.Id, DeductionAudience.Employee, default))!;
+        Assert.Equal(0, mine.Period.OtherRuns);
+        Assert.Equal(0m, mine.Period.OtherRunsDebt);
+        Assert.Equal(slip.GrossSalary, mine.Statement.WageDue);
+        Assert.DoesNotContain(mine.Statement.Lines, l => l.ComponentCode == DeductionStatementBuilder.OtherRunsCode);
+        var offFinal = await db.PayrollSlips.SingleAsync(s => s.RunId == offCycle.Id);
+        offFinal.Status = "Final";
+        await db.SaveChangesAsync();
+        mine = (await new DeductionStatementService(db).DetailForSlipAsync(w.TenantId, slip.Id, DeductionAudience.Employee, default))!;
+        Assert.Equal(700m, mine.Period.OtherRunsDebt);
+        Assert.Equal(0, mine.Period.OtherRunsNotFinal);
+
         // And the off-cycle slip sees the regular run's 1,600 the same way.
         var offSlip = await db.PayrollSlips.SingleAsync(s => s.RunId == offCycle.Id);
         var off = (await new DeductionStatementService(db).DetailForSlipAsync(w.TenantId, offSlip.Id, DeductionAudience.Hr, default))!;

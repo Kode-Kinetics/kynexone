@@ -89,12 +89,14 @@ public sealed class DeductionStatementsController(ZayraDbContext db, IDataScopeS
 /// limit used; NeedsReview = the lines do not add up to the slip; Voided = the run no longer applies (no flags, no advice).</param>
 /// <param name="NotCountedTotal">This slip's deductions outside the limit (GOSI, absence, corrections, …).</param>
 /// <param name="SlipDeductionTotal">The payslip's own deductions total; <paramref name="Reconciles"/> says its lines add up to it.</param>
-/// <param name="OtherRuns">Other non-voided payroll runs this month; their wage due and debt are inside the figures.</param>
+/// <param name="OtherRuns">Other non-voided payroll runs this month; their wage due and debt are inside the figures. An employee
+/// statement counts only locked ones.</param>
+/// <param name="OtherRunsNotFinal">HR only: how many of those runs are still in progress (not locked).</param>
 /// <param name="Reasons">Each flag as a sentence: title, why, fix — EN and AR. The UI never shows a raw code.</param>
 public sealed record DeductionStatementDto(
     Guid SlipId, Guid RunId, int EmployeeId, string EmployeeCode, string EmployeeName, int Year, int Month,
     string? RunStatus, string? RunType, string SlipStatus, string Currency,
-    decimal GrossPay, decimal PayNotEarned, decimal OtherRunsWageDue, decimal OtherRunsDebt, int OtherRuns,
+    decimal GrossPay, decimal PayNotEarned, decimal OtherRunsWageDue, decimal OtherRunsDebt, int OtherRuns, int OtherRunsNotFinal,
     decimal WageDue, decimal DebtTotal, decimal CapLimit, decimal Headroom, decimal? DebtPercentOfWage, string CapStatus,
     decimal NotCountedTotal, decimal SlipDeductionTotal, bool Reconciles,
     IReadOnlyList<DeductionLineDto> Lines, IReadOnlyList<string> Flags, IReadOnlyList<BlockReason> Reasons)
@@ -107,6 +109,7 @@ public sealed record DeductionStatementDto(
         return new DeductionStatementDto(s.SlipId, d.Slip.RunId, s.EmployeeId, d.Slip.EmployeeCode, d.Slip.EmployeeName, s.Year, s.Month,
             d.Run?.Status, d.Run?.RunType, d.Slip.Status, d.Currency,
             Money(d.Slip.GrossSalary), Money(d.PayNotEarned), Money(d.Period.OtherRunsWageDue), Money(d.Period.OtherRunsDebt), d.Period.OtherRuns,
+            d.Period.OtherRunsNotFinal,
             Money(s.WageDue), Money(s.DebtTotal), Money(s.CapLimit), Money(s.Headroom),
             DeductionStatementBuilder.Percent(s.DebtTotal, s.WageDue), d.CapStatus,
             Money(own.Where(l => !l.CountsTowardCap).Sum(l => l.Amount)), Money(d.Slip.Deductions), Math.Abs(ownTotal - d.Slip.Deductions) < 0.01m,
@@ -120,7 +123,8 @@ public sealed record DeductionStatementDto(
 /// <param name="LegalBasisKey">An i18n key (src/i18n/releaseA/deductions.ts), never free text.</param>
 /// <param name="InstalmentsRemaining">At the loan's instalment, after this payslip; null when the balance is unknown.</param>
 /// <param name="PercentOfWage">Loan/advance lines: this instalment ÷ the Art. 92 basis (the loan's cap_base_wage witness, else
-/// the salary structure), 0–100, floored to two decimals for display.</param>
+/// the salary structure), 0–100, two decimals, rounded away from 10% for employer loans so the label agrees with
+/// <paramref name="AboveConsentThreshold"/> (10.0004% shows 10.01%); floored otherwise.</param>
 /// <param name="AboveConsentThreshold">Employer loans: the UNROUNDED instalment is above 10% of that basis (or the basis is unknown).</param>
 /// <param name="ConsentOnFile">Employer loans: the employee's written consent to an instalment above 10% is on file.</param>
 public sealed record DeductionLineDto(
@@ -137,7 +141,10 @@ public sealed record DeductionLineDto(
         return new DeductionLineDto(l.ComponentCode, l.Label, l.Category, DeductionStatementDto.Money(l.Amount), l.CountsTowardCap,
             l.LegalBasisKey, l.LoanId, debt?.Number, debt?.TypeName, debt?.TypeNameAr,
             l.BalanceAfter is decimal b ? DeductionStatementDto.Money(b) : null, l.InstalmentsRemaining,
-            debt is { InstalmentsTotal: > 0 } ? debt.InstalmentsTotal : null, DeductionStatementBuilder.FloorPercent(l.PercentOfWage),
+            debt is { InstalmentsTotal: > 0 } ? debt.InstalmentsTotal : null,
+            above is not null
+                ? DeductionStatementBuilder.DisplayShare(l.PercentOfWage, DeductionStatementService.LoanConsentThresholdPercent)
+                : DeductionStatementBuilder.FloorPercent(l.PercentOfWage),
             above, l.ConsentOnFile);
     }
 }

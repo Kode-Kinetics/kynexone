@@ -63,6 +63,7 @@ public static class ReleaseABlockReasons
     public const string DeductionUnclassifiedCounted = "DEDUCTION_UNCLASSIFIED_COUNTED";
     public const string DeductionSplitUnreconciled = "DEDUCTION_SPLIT_UNRECONCILED";
     public const string DeductionLinesMissing = "DEDUCTION_LINES_MISSING";
+    public const string LoanConsentAlreadyUsed = "LOAN_CONSENT_ALREADY_USED";
 
     private const string HrManager = "HR Manager";
     private const string HrDirector = "HR Director";
@@ -336,6 +337,13 @@ public static class ReleaseABlockReasons
             "Check the loan schedules for this month against the payroll run, and correct the schedule or re-process the run.",
             "راجع جداول أقساط القروض لهذا الشهر مقابل مسير الرواتب، ثم صحّح الجدول أو أعد معالجة المسير.",
             PayrollManager),
+        new BlockReason(LoanConsentAlreadyUsed,
+            "Consent already used for another loan", "الموافقة مستخدمة لقرض آخر",
+            "A signed consent covers one loan. This document is already the consent on another loan, so it cannot also stand for this one.",
+            "الموافقة الموقّعة تخص قرضاً واحداً، وهذا المستند هو موافقة قرض آخر بالفعل، فلا يمكن أن يكون موافقة لهذا القرض أيضاً.",
+            "Ask the employee to sign a consent for this loan and upload it.",
+            "اطلب من الموظف توقيع موافقة لهذا القرض ثم ارفعها.",
+            HrManager),
         new BlockReason(DeductionLinesMissing,
             "This payslip can't be broken down yet", "لا يمكن تفصيل هذا المسير بعد",
             "The payslip's deduction lines do not add up to its deductions total, so it cannot be shown which deductions count toward the 50% limit. Nothing is assumed to be within it.",

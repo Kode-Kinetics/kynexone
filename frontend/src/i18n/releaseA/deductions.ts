@@ -128,6 +128,7 @@ const pairs: [string, string][] = [
   ['SANED unemployment insurance, employee share', 'ساند للتعطل عن العمل، حصة الموظف'],
   ['GOSI occupational hazards, employee share', 'الأخطار المهنية (التأمينات الاجتماعية)، حصة الموظف'],
   ['Other payroll runs this month', 'مسيرات رواتب أخرى هذا الشهر'],
+  ['{count, plural, one {# of them is} other {# of them are}} not final yet.', '{count, plural, one {واحد منها} two {اثنان منها} few {# منها} many {# منها} other {# منها}} غير نهائي بعد.'],
 ];
 
 export const deductions: ReleaseADict = {
