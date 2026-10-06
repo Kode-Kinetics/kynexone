@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { authApi, isMfaChallenge, isMfaEnrollment } from '../api/auth';
 import type { AuthUser } from '../api/auth';
+import { afterMeFailure, afterMeSuccess, type AuthLoadError } from '../lib/authLoadState';
 import { clearSessionKeepingLocale } from '../api/clearSession';
 
 // Returned when the backend requires a TOTP code before issuing full tokens.
@@ -21,6 +22,14 @@ export type LoginOutcome = 'authenticated' | 'mfa' | 'mfa-enroll';
 interface AuthContextValue {
   user: AuthUser | null;
   isLoading: boolean;
+  /**
+   * Set when the session could not be confirmed for a reason OTHER than being signed out: the
+   * server could not be reached ('network') or answered with an error ('server'). The tokens are
+   * kept; screens show "can't reach the server" with a Retry instead of redirecting to /login.
+   */
+  authError: AuthLoadError | null;
+  /** Re-run the session check (`/me`) after an authError. */
+  retryAuth: () => Promise<void>;
   mfaPending: MfaPendingState | null;
   mfaEnrollmentPending: MfaEnrollmentPendingState | null;
   /** Normal credential login. Returns mfaPending state when TOTP is required. */
@@ -43,6 +52,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [mfaPending, setMfaPending] = useState<MfaPendingState | null>(null);
   const [mfaEnrollmentPending, setMfaEnrollmentPending] = useState<MfaEnrollmentPendingState | null>(null);
 
+  const [authError, setAuthError] = useState<AuthLoadError | null>(null);
+
+  // Ask the server who the user is. Only a 401 ends the session (lib/authLoadState.ts): a network
+  // error or a 5xx keeps the tokens and sets authError, so an outage never signs anyone out.
+  const loadUser = useCallback(async () => {
+    let next;
+    try {
+      next = afterMeSuccess(await authApi.me());
+    } catch (err) {
+      next = afterMeFailure<AuthUser>(err);
+    }
+    if (next.clearSession) clearSessionKeepingLocale();
+    setUser(next.user);
+    setAuthError(next.authError);
+  }, []);
+
   useEffect(() => {
     if (['/login', '/reset-password', '/accept-invitation'].includes(window.location.pathname)) {
       setIsLoading(false);
@@ -53,17 +78,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setIsLoading(false);
       return;
     }
-    authApi
-      .me()
-      .then(setUser)
-      .catch((err: { response?: { status?: number } }) => {
-        // Only a definite "not signed in" ends the session. A network error or a 5xx (a deploy's
-        // ~38 s of 502s, a cold start) must not sign the user out and wipe their workspace; the
-        // API client already clears the session itself when a 401 cannot be refreshed.
-        if (err?.response?.status === 401) clearSessionKeepingLocale();
-      })
-      .finally(() => setIsLoading(false));
-  }, []);
+    loadUser().finally(() => setIsLoading(false));
+  }, [loadUser]);
+
+  // The offline screen shows its own "Retrying…" state, so a retry does not flip isLoading (which
+  // would swap that screen for a bare spinner and back).
+  const retryAuth = loadUser;
 
   const login = useCallback(async (email: string, password: string, tenantSlug: string) => {
     const res = await authApi.login(email, password, tenantSlug);
@@ -83,6 +103,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('zayra_refresh_token', res.refreshToken);
     setMfaPending(null);
     setMfaEnrollmentPending(null);
+    setAuthError(null);
     setUser(res.user);
     return 'authenticated';
   }, []);
@@ -94,6 +115,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('zayra_refresh_token', res.refreshToken);
     setMfaPending(null);
     setMfaEnrollmentPending(null);
+    setAuthError(null);
     setUser(res.user);
   }, [mfaPending]);
 
@@ -120,6 +142,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // (search history, company selection, import history), only the display language.
     clearSessionKeepingLocale();
     setUser(null);
+    setAuthError(null);
     setMfaPending(null);
     setMfaEnrollmentPending(null);
   }, []);
@@ -135,7 +158,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <AuthContext.Provider value={{ user, isLoading, mfaPending, mfaEnrollmentPending, login, verifyMfaChallenge, beginMfaEnrollment, logout, hasPermission, hasRole }}>
+    <AuthContext.Provider value={{ user, isLoading, authError, retryAuth, mfaPending, mfaEnrollmentPending, login, verifyMfaChallenge, beginMfaEnrollment, logout, hasPermission, hasRole }}>
       {children}
     </AuthContext.Provider>
   );

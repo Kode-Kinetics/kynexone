@@ -298,7 +298,8 @@ export function ApprovalsPage() {
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
               {loading && <tr><td colSpan={6} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>}
-              {!loading && requests.length === 0 && (
+              {/* A failed load shows the error above, never "No approvals found": an empty queue it is not. */}
+              {!loading && !error && requests.length === 0 && (
                 <tr>
                   <td colSpan={6} className="py-16 text-center">
                     <ShieldCheck className="mx-auto mb-3 h-10 w-10 text-slate-200 dark:text-slate-700" />

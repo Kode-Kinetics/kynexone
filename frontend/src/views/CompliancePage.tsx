@@ -140,6 +140,10 @@ function DashboardTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
 // ── Contracts Tab ─────────────────────────────────────────────────────────────
 
 function ContractsTab() {
+  // Creating a contract is `compliance.write` on the API (ContractsController.Create); a read-only
+  // compliance user (Auditor) was offered "New Contract" and only ever got a 403.
+  const { hasPermission } = useAuth();
+  const canCreate = hasPermission('compliance.write');
   const [statusFilter, setStatusFilter] = useState('');
   // Every contract, not the server's first 20: an active contract past its end date is acted on
   // from this register ("Mark expired"), so one on a later page would silently never be.
@@ -158,7 +162,6 @@ function ContractsTab() {
 
   // Release A: an active contract whose benefits wait for a second person gets one next action on its row.
   const releaseA = useReleaseA();
-  const { hasPermission } = useAuth();
   const [packageStatus, setPackageStatus] = useState<Record<string, ContractPackageStatus>>({});
   const [proposing, setProposing] = useState<string | null>(null);
   const activeIds = contracts.filter((c) => c.status === 'Active').map((c) => c.id).join(',');
@@ -218,13 +221,13 @@ function ContractsTab() {
           {['Draft', 'PendingApproval', 'Active', 'Expired', 'Terminated', 'Superseded'].map(s => <option key={s}>{s}</option>)}
         </select>
         {!loading && list.error == null && <RecordCount n={contracts.length} noun="contract" />}
-        <button type="button" onClick={() => setShowCreate(v => !v)}
+        {canCreate && <button type="button" onClick={() => setShowCreate(v => !v)}
           className="ms-auto flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-xs font-medium text-white hover:bg-sapphire/90">
           <Plus className="h-3.5 w-3.5" /> New Contract
-        </button>
+        </button>}
       </div>
 
-      {showCreate && (
+      {canCreate && showCreate && (
         <div className="surface p-4 space-y-3">
           <h4 className="text-sm font-semibold text-slate-800 dark:text-white">New Employee Contract</h4>
           <div className="grid grid-cols-2 gap-3">

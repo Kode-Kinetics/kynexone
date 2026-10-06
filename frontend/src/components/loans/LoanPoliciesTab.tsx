@@ -7,6 +7,7 @@ import { companiesApi, type CompanyDto } from '../../api/organization';
 import { useCompany } from '../../contexts/CompanyContext';
 import { loanErrorMessage, repaymentMethodLabels } from '../../lib/loanWorkflow';
 import { Modal } from '../Modal';
+import { LoadFailedRow } from '../ui/LoadFailedRow';
 import { useT } from '../../hooks/useT';
 import { GradeLimitsPanel } from './GradeLimitsPanel';
 import { LoanOfferingsPanel } from './LoanOfferingsPanel';
@@ -46,10 +47,16 @@ export function LoanPoliciesTab({ loanTypes, onGradeLimitedChanged }: { loanType
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [contractTypesText, setContractTypesText] = useState('');
+  // A failed load (including a reply that is not a list) is shown as a failure, never as
+  // "No policy versions": an empty table would tell HR there is no policy when the server did not answer.
+  const [loadError, setLoadError] = useState<unknown>(null);
   const load = useCallback(async () => {
-    if (!companyId) { setPolicies([]); return; }
-    try { setPolicies(await loanGovernanceApi.policies({ companyId, loanTypeId: typeId || undefined })); }
-    catch (e) { setError(loanErrorMessage(e, 'Unable to load company loan policies.')); }
+    if (!companyId) { setPolicies([]); setLoadError(null); return; }
+    try {
+      setPolicies(await loanGovernanceApi.policies({ companyId, loanTypeId: typeId || undefined }));
+      setLoadError(null);
+    }
+    catch (e) { setPolicies([]); setLoadError(e); } // the table's failed-load row says why and offers Retry
   }, [companyId, typeId]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
@@ -69,7 +76,7 @@ export function LoanPoliciesTab({ loanTypes, onGradeLimitedChanged }: { loanType
     {error && !open && <p role="alert" className="text-sm text-red-600">{error}</p>}
     {notice && <p role="status" className="text-sm text-emerald-700">{notice}</p>}
     <div className="flex flex-wrap gap-3"><label className="text-sm">Company<select className="select ms-2" value={companyId} onChange={e => setCompanyId(e.target.value)}><option value="">Select company</option>{companies.map(c => <option key={c.id} value={c.id}>{c.legalNameEn}</option>)}</select></label><label className="text-sm">Loan type<select className="select ms-2" value={typeId} onChange={e => setTypeId(e.target.value)}><option value="">All types</option>{loanTypes.map(t => <option key={t.id} value={t.id}>{t.nameEn}</option>)}</select></label></div>
-    <div className="surface overflow-x-auto"><table className="w-full text-sm"><thead><tr>{['Policy', 'Type', 'Version', 'Limits', 'Approval route', 'Status', ''].map((label, i) => <th key={i} className="p-3 text-start text-xs text-slate-500">{label}</th>)}</tr></thead><tbody>{policies.length === 0 ? <tr><td colSpan={7} className="p-6 text-center text-slate-500">No policy versions for this selection.</td></tr> : policies.map(policy => <tr key={policy.id} className="border-t border-slate-100 dark:border-white/10"><td className="p-3">{policy.policyName}</td><td className="p-3">{loanTypes.find(type => type.id === policy.loanTypeId)?.nameEn ?? policy.loanTypeId}</td><td className="p-3">v{policy.version}</td><td className="p-3">{policy.maxInstallments} installments · {policy.maxConcurrentLoans} concurrent</td><td className="p-3">HR Manager{policy.additionalApprovalThreshold > 0 ? ` → ${policy.additionalApproverRole} above ${policy.additionalApprovalThreshold.toLocaleString()}` : ''}</td><td className="p-3">{policy.isActive ? 'Active' : 'Inactive'}</td><td className="p-3"><button className="text-sapphire" onClick={() => begin(policy)}>Review / New Version</button></td></tr>)}</tbody></table></div>
+    <div className="surface overflow-x-auto"><table className="w-full text-sm"><thead><tr>{['Policy', 'Type', 'Version', 'Limits', 'Approval route', 'Status', ''].map((label, i) => <th key={i} className="p-3 text-start text-xs text-slate-500">{label}</th>)}</tr></thead><tbody>{loadError != null ? <LoadFailedRow colSpan={7} error={loadError} onRetry={() => { void load(); }} /> : policies.length === 0 ? <tr><td colSpan={7} className="p-6 text-center text-slate-500">No policy versions for this selection.</td></tr> : policies.map(policy => <tr key={policy.id} className="border-t border-slate-100 dark:border-white/10"><td className="p-3">{policy.policyName}</td><td className="p-3">{loanTypes.find(type => type.id === policy.loanTypeId)?.nameEn ?? policy.loanTypeId}</td><td className="p-3">v{policy.version}</td><td className="p-3">{policy.maxInstallments} installments · {policy.maxConcurrentLoans} concurrent</td><td className="p-3">HR Manager{policy.additionalApprovalThreshold > 0 ? ` → ${policy.additionalApproverRole} above ${policy.additionalApprovalThreshold.toLocaleString()}` : ''}</td><td className="p-3">{policy.isActive ? 'Active' : 'Inactive'}</td><td className="p-3"><button className="text-sapphire" onClick={() => begin(policy)}>Review / New Version</button></td></tr>)}</tbody></table></div>
     <Modal isOpen={open} title="New Company Loan Policy Version" size="lg" onClose={() => !saving && setOpen(false)} footer={<><button className="btn-secondary" disabled={saving} onClick={() => setOpen(false)}>Cancel</button><button className="btn-primary" disabled={saving} onClick={save}>{saving ? 'Saving…' : 'Create Policy Version'}</button></>}>
       <div className="space-y-4">{error && <p role="alert" className="text-sm text-red-600">{error}</p>}<p className="text-sm text-slate-500">Amount limits use the employee company currency. Zero monetary or salary limits mean no additional limit; zero additional approval threshold disables the extra approval. Publishing makes this the active version.</p>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

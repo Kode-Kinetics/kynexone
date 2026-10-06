@@ -12,6 +12,8 @@
  * (`pageWindowText`), so it is never mistaken for the whole list.
  */
 
+import { requirePage } from './listResponse';
+
 export const API_MAX_PAGE_SIZE = 100;
 
 export interface PageOf<T> {
@@ -35,11 +37,13 @@ export async function fetchAllPages<T>(
 ): Promise<T[]> {
   const all: T[] = [];
   for (let page = 1; page <= maxPages; page++) {
-    const result = await fetchPage(page, pageSize);
+    // A reply that is not `{ items: [...] }` (a proxy's HTML page, null) is a failed load, never
+    // "the list is empty" — `result.items ?? []` used to end the loop with zero rows.
+    const result = requirePage<PageOf<T>>(await fetchPage(page, pageSize));
     if (typeof result.page === 'number' && result.page !== page) {
       throw new Error(`The list endpoint returned page ${result.page} when page ${page} was requested.`);
     }
-    const items = result.items ?? [];
+    const items = result.items;
     all.push(...items);
     if (items.length === 0) return all;
     const total = typeof result.total === 'number' && Number.isFinite(result.total) ? result.total : null;

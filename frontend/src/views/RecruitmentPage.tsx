@@ -9,7 +9,7 @@ import {
   Target, BookOpen, Award, TrendingUp, LayoutGrid, Wand2, Sparkles,
 } from 'lucide-react';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
-import client, { notifyApiError } from '../api/client';
+import client, { apiErrorReason, notifyApiError } from '../api/client';
 
 // ── Recruitment import/export helpers ─────────────────────────────────────────
 
@@ -46,6 +46,7 @@ import { ListWindowFooter } from '../components/ListWindowFooter';
 import { usePagedList } from '../hooks/usePagedList';
 import { requestFailureReason } from '../lib/requestFailure';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
+import { useAuth } from '../contexts/AuthContext';
 import {
   HIRE_THROUGH_OFFER_HINT, assessmentScoreLabel, assessmentScoreMax, canRecordAssessmentResult,
   canSendOffer, nextPipelineStage, offerCreationFailure, parseAssessmentScore,
@@ -467,6 +468,10 @@ function CreateReqModal({ onClose, onSaved }: CreateReqModalProps) {
 // ── Requisitions Tab ───────────────────────────────────────────────────────────
 
 function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerRequisition) => void }) {
+  // Approving or rejecting a requisition is `recruitment.approve` on the API (RequisitionsController).
+  // A Recruiter holds recruitment.read/write only, so these buttons only ever returned 403 for them.
+  const { hasPermission } = useAuth();
+  const canDecide = hasPermission('recruitment.approve');
   const [statusFilter, setStatusFilter] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
   const [acting, setActing] = useState<string | null>(null);
@@ -547,7 +552,7 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
                         Submit
                       </button>
                     )}
-                    {(r.status === 'Submitted' || r.status === 'PendingApproval') && (
+                    {canDecide && (r.status === 'Submitted' || r.status === 'PendingApproval') && (
                       <>
                         <button type="button" disabled={acting === r.id} onClick={() => approve(r.id)} className="rounded-lg bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-600 hover:bg-emerald-100 disabled:opacity-50 dark:bg-emerald-500/10 dark:text-emerald-400">Approve</button>
                         <button type="button" disabled={acting === r.id} onClick={() => reject(r.id)} className="rounded-lg bg-rose-50 px-2.5 py-1 text-xs font-medium text-rose-600 hover:bg-rose-100 disabled:opacity-50 dark:bg-rose-500/10 dark:text-rose-400">Reject</button>
@@ -625,7 +630,7 @@ function CreateOpeningModal({ requisition, onClose, onSaved }: {
         location: form.location, assignedHrName: form.assignedHrName,
       });
       onSaved();
-    } catch { setError('Failed to create opening.'); setSaving(false); }
+    } catch (e) { setError(apiErrorReason(e, 'Failed to create opening.')); setSaving(false); }
   };
 
   return createPortal(
