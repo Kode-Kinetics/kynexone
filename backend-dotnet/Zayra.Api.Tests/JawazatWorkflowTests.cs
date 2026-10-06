@@ -224,7 +224,7 @@ public class JawazatWorkflowTests
                 new Claim(ClaimTypes.Role, "HR Manager"), new Claim("is_group_scope", "true")], "test")) } }
         };
         var list = Assert.IsType<OkObjectResult>(await controller.List(null, null, null, ct: default));
-        var page = Assert.IsType<PagedResult<HRRequest>>(list.Value);
+        var page = Assert.IsType<PagedResult<HrRequestDto>>(list.Value);
         Assert.Empty(page.Items);
         Assert.IsType<ForbidResult>(await controller.Get(created.Id, default));
         Assert.IsType<ForbidResult>(await controller.AddComment(created.Id, new AddCommentRequest(created.EmployeeId, "Outside scope"), default));

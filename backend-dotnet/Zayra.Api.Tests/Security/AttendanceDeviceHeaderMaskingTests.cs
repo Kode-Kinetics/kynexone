@@ -69,6 +69,29 @@ public sealed class AttendanceDeviceHeaderMaskingTests
     }
 
     [Theory]
+    [InlineData("Manager", false)]
+    [InlineData("Supervisor", false)]
+    [InlineData("Payroll Officer", false)]
+    [InlineData("HR Manager", true)]
+    public async Task SyncLogsAndTheSyncReport_RedactTheEndpointUrlForNonConfigurers(string role, bool reveals)
+    {
+        var (db, tenantId) = await NewTenantAsync("device-logs");
+        var device = await SeedDeviceAsync(db, tenantId);
+        db.AttendanceDeviceSyncLogs.Add(new AttendanceDeviceSyncLog
+        {
+            TenantId = tenantId, DeviceId = device.Id, Status = "Failed", StartedAtUtc = DateTime.UtcNow,
+            ErrorMessage = $"Connection timed out after 10 seconds. Check device IP/endpoint: {StoredUrl}",
+        });
+        await db.SaveChangesAsync();
+        var controller = Controller(db, await CallerAsync(db, tenantId, role));
+
+        var text = JsonSerializer.Serialize(await controller.SyncLogs(device.Id, Ct)) + JsonSerializer.Serialize(await controller.ReportDeviceSync(Ct));
+
+        if (reveals) text.Should().Contain(UrlPassword);
+        else text.Should().NotContain(UrlPassword).And.NotContain(QueryKey).And.Contain("device.example.com");
+    }
+
+    [Theory]
     [InlineData("HR Manager")]
     [InlineData("Admin")]
     public async Task ADeviceConfigurer_StillSeesHeaderValues_SoTheEditFormWorks(string role)
@@ -145,6 +168,63 @@ public sealed class AttendanceDeviceHeaderMaskingTests
         stored.Should().Equal(new Dictionary<string, string> { ["X-Api-Key"] = Secret, ["X-Site"] = "riyadh-2" });
     }
 
+    // ── Auth credentials: never returned, so an edit form saves them blank ─────────────────────────
+
+    [Theory]
+    [InlineData("{\"username\":\"\",\"password\":\"\"}")]   // what the edit form sends: the API never returned them
+    [InlineData("{}")]
+    [InlineData("{\"username\":\"\u2022\u2022\u2022\u2022\",\"password\":null}")]
+    public async Task EditingADevice_WithBlankCredentials_KeepsTheStoredLogin(string sentCredentials)
+    {
+        var (db, tenantId) = await NewTenantAsync("device-creds-keep");
+        var device = await SeedDeviceAsync(db, tenantId, "BasicAuth", "{\"username\":\"ops\",\"password\":\"s3cret\"}");
+        var controller = Controller(db, await CallerAsync(db, tenantId, "HR Manager"));
+
+        var result = await controller.UpdateDevice(device.Id, Request(device.CustomHeadersJson, device.DeviceParametersJson, StoredUrl, "BasicAuth", sentCredentials), Ct);
+
+        result.Result.Should().BeOfType<OkObjectResult>();
+        StoredCredentials(db, device.Id).Should().Equal(new Dictionary<string, string> { ["username"] = "ops", ["password"] = "s3cret" });
+    }
+
+    [Fact]
+    public async Task EditingADevice_WithANewPassword_ChangesOnlyThePassword()
+    {
+        var (db, tenantId) = await NewTenantAsync("device-creds-change");
+        var device = await SeedDeviceAsync(db, tenantId, "BasicAuth", "{\"username\":\"ops\",\"password\":\"s3cret\"}");
+        var controller = Controller(db, await CallerAsync(db, tenantId, "HR Manager"));
+
+        await controller.UpdateDevice(device.Id, Request(device.CustomHeadersJson, device.DeviceParametersJson, StoredUrl, "BasicAuth", "{\"username\":\"\",\"password\":\"rotated\"}"), Ct);
+
+        StoredCredentials(db, device.Id).Should().Equal(new Dictionary<string, string> { ["username"] = "ops", ["password"] = "rotated" });
+    }
+
+    [Fact]
+    public async Task SwitchingAuthTypeToNone_ClearsTheStoredLogin()
+    {
+        var (db, tenantId) = await NewTenantAsync("device-creds-clear");
+        var device = await SeedDeviceAsync(db, tenantId, "BasicAuth", "{\"username\":\"ops\",\"password\":\"s3cret\"}");
+        var controller = Controller(db, await CallerAsync(db, tenantId, "HR Manager"));
+
+        await controller.UpdateDevice(device.Id, Request(device.CustomHeadersJson, device.DeviceParametersJson, StoredUrl, "None", "{}"), Ct);
+
+        StoredCredentials(db, device.Id).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task SwitchingToAnotherAuthScheme_DropsTheOldSchemesCredentials()
+    {
+        var (db, tenantId) = await NewTenantAsync("device-creds-switch");
+        var device = await SeedDeviceAsync(db, tenantId, "BasicAuth", "{\"username\":\"ops\",\"password\":\"s3cret\"}");
+        var controller = Controller(db, await CallerAsync(db, tenantId, "HR Manager"));
+
+        await controller.UpdateDevice(device.Id, Request(device.CustomHeadersJson, device.DeviceParametersJson, StoredUrl, "Bearer", "{\"token\":\"\"}"), Ct);
+
+        StoredCredentials(db, device.Id).Should().NotContainKey("password").And.NotContainKey("username");
+    }
+
+    private static Dictionary<string, string> StoredCredentials(ZayraDbContext db, Guid id) =>
+        JsonSerializer.Deserialize<Dictionary<string, string>>(db.AttendanceDevices.AsNoTracking().Single(d => d.Id == id).AuthCredentialsJson)!;
+
     [Theory]
     [InlineData(null, "{}")]
     [InlineData("", "{}")]
@@ -155,14 +235,16 @@ public sealed class AttendanceDeviceHeaderMaskingTests
 
     // ── helpers ────────────────────────────────────────────────────────────────────────────────────
 
-    private static AttendanceDeviceRequest Request(string customHeadersJson, string? parametersJson = null, string? endpointUrl = null) => new(
+    private static AttendanceDeviceRequest Request(string customHeadersJson, string? parametersJson = null, string? endpointUrl = null,
+        string authType = "None", string? authCredentialsJson = null) => new(
         "Gate 1", "Biometric", "ZK", "SN-1", null, "Riyadh", "10.0.0.1", endpointUrl ?? "https://device.example.com", 443,
-        null, "Pull API", "Hourly", "None", null, customHeadersJson, parametersJson, null, null);
+        null, "Pull API", "Hourly", authType, authCredentialsJson, customHeadersJson, parametersJson, null, null);
 
-    private static async Task<AttendanceDevice> SeedDeviceAsync(ZayraDbContext db, Guid tenantId)
+    private static async Task<AttendanceDevice> SeedDeviceAsync(ZayraDbContext db, Guid tenantId, string authType = "None", string authCredentialsJson = "{}")
     {
         var device = new AttendanceDevice
         {
+            AuthType = authType, AuthCredentialsJson = authCredentialsJson,
             TenantId = tenantId, DeviceName = "Gate 1", DeviceType = "Biometric", Vendor = "ZK", SerialNumber = "SN-1",
             CustomHeadersJson = JsonSerializer.Serialize(new Dictionary<string, string> { ["X-Api-Key"] = Secret, ["X-Site"] = "riyadh-1" }),
             DeviceParametersJson = JsonSerializer.Serialize(new Dictionary<string, string>

@@ -352,6 +352,7 @@ public class EmployeeBulkActionTests
     [InlineData("activate", "employees.approve")]
     [InlineData("deactivate", "employees.write")]
     [InlineData("delete", "employees.delete")]
+    [InlineData("export", "employees.write")]
     public async Task Action_WithoutItsPermission_Is403(string action, string requiredPerm)
     {
         await using var db = CreateDb();
@@ -364,13 +365,19 @@ public class EmployeeBulkActionTests
         (await controller.BulkAction(req, Service(db), CancellationToken.None)).Should().BeOfType<ForbidResult>();
     }
 
-    [Fact]
-    public async Task Export_WithoutAllowedRole_Is403()
+    [Theory]
+    [InlineData("Manager")]
+    [InlineData("Payroll Officer")]
+    [InlineData("Auditor")]
+    [InlineData("Compliance Officer")]
+    public async Task Export_WithoutEmployeesWrite_Is403(string role)
     {
+        // The bulk export has the same audience as the full people export: employees.write. A role name no
+        // longer opens it (Payroll Officer and Auditor used to be listed by name).
         await using var db = CreateDb();
         var o = await SeedOrg(db);
         var e = Emp(db, o, complete: true);
-        var controller = Controller(db, o.TenantId, role: "Manager"); // Manager may Search but not Export
+        var controller = Controller(db, o.TenantId, permissions: new[] { "employees.read", "employees.documents" }, role: role);
         (await controller.BulkAction(Ids("export", new[] { e.Id }), Service(db), CancellationToken.None))
             .Should().BeOfType<ForbidResult>();
     }
