@@ -37,19 +37,23 @@ public class StatutoryRateUnitTests
     private static readonly DateOnly Period = new(2026, 1, 31);
 
     // ── 1. The mistyped percentage, refused at every write path ──────────────────────────────
+    //
+    // These controller tests use a GPSSA contribution key: a tenant write of any GOSI rate is now refused
+    // outright as statutory (GOSI_RATE_IS_STATUTORY — see PilotPayrollCorrectnessPostgresTests), so the
+    // unit gate is exercised on a key a tenant may still write. The band and the refusal are the same.
 
     [Fact]
     public async Task StatutoryRulesApi_RefusesARateTypedAsAPercentage()
     {
         using var db = MakeDb();
-        Seed(db, "gosi.saudi_employee_rate", "0.09");
+        Seed(db, "gpssa.national_employee_rate", "0.09");
         await db.SaveChangesAsync();
 
         var ctrl = StatutoryRulesControllerFor(db);
 
         // "9" meaning 9%. The stored platform default beside it is "0.09".
         var result = await ctrl.Create(new CreateStatutoryRuleRequest(
-            CountryCodes.Saudi, Jurisdictions.KsaMainland, "gosi.saudi_employee_rate",
+            CountryCodes.Saudi, Jurisdictions.KsaMainland, "gpssa.national_employee_rate",
             "9", "decimal", "Annual GOSI circular update", new DateTime(2026, 1, 1), null),
             CancellationToken.None);
 
@@ -72,7 +76,7 @@ public class StatutoryRateUnitTests
     public async Task StatutoryRulesApi_RefusesAPercentageOnSupersede()
     {
         using var db = MakeDb();
-        var prior = Seed(db, "gosi.saudi_employee_rate", "0.09", tenantId: TenantId);
+        var prior = Seed(db, "gpssa.national_employee_rate", "0.09", tenantId: TenantId);
         await db.SaveChangesAsync();
 
         var ctrl = StatutoryRulesControllerFor(db);
@@ -91,11 +95,11 @@ public class StatutoryRateUnitTests
     public async Task StatutoryRulesApi_AcceptsTheSameRateWrittenAsAFraction()
     {
         using var db = MakeDb();
-        Seed(db, "gosi.saudi_employee_rate", "0.09");
+        Seed(db, "gpssa.national_employee_rate", "0.09");
         await db.SaveChangesAsync();
 
         var result = await StatutoryRulesControllerFor(db).Create(new CreateStatutoryRuleRequest(
-            CountryCodes.Saudi, Jurisdictions.KsaMainland, "gosi.saudi_employee_rate",
+            CountryCodes.Saudi, Jurisdictions.KsaMainland, "gpssa.national_employee_rate",
             "0.0975", "decimal", "2026 circular", new DateTime(2026, 1, 1), null),
             CancellationToken.None);
 

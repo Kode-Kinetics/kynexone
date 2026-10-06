@@ -54,15 +54,22 @@ public class PilotPayrollCorrectnessPostgresTests
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = Principal(tenantId) } },
         };
+        // "9" for the GOSI rate: a tenant cannot set a GOSI rate at all, so it is refused as statutory.
         var result = await ctrl.Create(new CreateStatutoryRuleRequest(
             CountryCodes.Saudi, Jurisdictions.KsaMainland, RuleKeys.GosiSaudiEmployeeRate,
             "9", "decimal", "Typed from the GOSI circular", new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc), null),
             CancellationToken.None);
+        AssertGosiRefusal(result.Result);
 
-        var bad = result.Result.Should().BeOfType<BadRequestObjectResult>().Subject;
+        // "35" meaning 35% for a rate a tenant MAY override is refused for its unit, with a code.
+        var mistyped = await ctrl.Create(new CreateStatutoryRuleRequest(
+            CountryCodes.Saudi, Jurisdictions.KsaMainland, "nitaqat.default_target_ratio",
+            "35", "decimal", "Typed as a percentage", new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc), null),
+            CancellationToken.None);
+        var bad = mistyped.Result.Should().BeOfType<BadRequestObjectResult>().Subject;
         Prop<string>(bad.Value!, "code").Should().Be(StatutoryValueUnits.UnitRefusalCode,
             "a client must be able to branch on WHY the value was refused, not parse prose");
-        Prop<string>(bad.Value!, "message").Should().Contain("0.09").And.Contain("Nothing has been saved");
+        Prop<string>(bad.Value!, "message").Should().Contain("0.35").And.Contain("Nothing has been saved");
 
         (await db.StatutoryRules.IgnoreQueryFilters().AnyAsync(r => r.TenantId == tenantId))
             .Should().BeFalse("a refused rate must not be written anywhere");
@@ -170,6 +177,183 @@ public class PilotPayrollCorrectnessPostgresTests
         var report = await new GosiReadinessReportService(db, reader).BuildAsync(tenantId, CancellationToken.None);
         report.Employees.Single(e => e.EmployeeId == employee.Id).EmployeeContributionTotal
             .Should().Be(1_218.75m, "the statutory 9% + 0.75% applies, not the stale 20% row nobody pays on");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  1b. GOSI rates and the ceiling are statutory — no tenant can set them
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Every tenant-level write path refuses a GOSI rate or ceiling with 422 GOSI_RATE_IS_STATUTORY
+    /// (EN + AR), even when the value is a perfectly well-formed fraction — because payroll would never
+    /// read it. A non-GOSI statutory key is still accepted, so the guard is not a blanket ban.
+    /// </summary>
+    [Fact]
+    public async Task GosiStatutory_EveryTenantWritePath_IsRefusedWithACode()
+    {
+        await using var db = _fx.CreateDb();
+        await StatutoryRuleSeeder.SeedAsync(db, NullLogger.Instance);
+        var (tenantId, company) = await SeedTenantAndCompany(db);
+        var reader = new StatutoryRuleReader(db);
+        var ef = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        // 1. /api/statutory-rules — create, for a rate and for the ceiling.
+        var stat = WithUser(new StatutoryRulesController(db), tenantId);
+        AssertGosiRefusal((await stat.Create(new CreateStatutoryRuleRequest(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            RuleKeys.GosiSaudiEmployeeRate, "0.10", "decimal", "board decision", ef, null), CancellationToken.None)).Result);
+        AssertGosiRefusal((await stat.Create(new CreateStatutoryRuleRequest(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            KsaGosiWageBounds.CeilingRuleKey, "60000", "decimal", "board decision", ef, null), CancellationToken.None)).Result);
+
+        // ...and supersede of a row saved before the guard existed.
+        var legacy = new StatutoryRule
+        {
+            TenantId = tenantId, CountryCode = CountryCodes.Saudi, Jurisdiction = Jurisdictions.KsaMainland,
+            RuleKey = RuleKeys.GosiSanedRate, RuleValue = "0.01", DataType = "decimal", EffectiveFrom = ef,
+        };
+        db.StatutoryRules.Add(legacy);
+        await db.SaveChangesAsync();
+        AssertGosiRefusal((await stat.Update(legacy.Id, new UpdateStatutoryRuleRequest("0.012", "again", ef.AddMonths(1), null),
+            CancellationToken.None)).Result);
+
+        // A non-GOSI statutory key is still overridable.
+        (await stat.Create(new CreateStatutoryRuleRequest(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "ot.standard_multiplier", "1.75", "decimal", "company policy above statute", ef, null), CancellationToken.None))
+            .Result.Should().BeOfType<CreatedAtActionResult>();
+
+        // 2. Company statutory override (maker-checker): refused at request…
+        var rates = WithUser(new RatesController(db, reader, new StatutoryRateResolver(db, reader)), tenantId);
+        AssertGosiRefusal(await rates.CreateStatutoryOverride(new StatutoryOverrideRequest(
+            company.Id, CountryCodes.Saudi, Jurisdictions.KsaMainland, RuleKeys.GosiSaudiEmployerRate, "0.10",
+            new DateOnly(2026, 1, 1), "board decision", new DateOnly(2026, 12, 31)), CancellationToken.None));
+
+        // …and at approval, for a request made before the guard existed.
+        var pending = new CompanyStatutoryOverride
+        {
+            TenantId = tenantId, CompanyId = company.Id, CountryCode = CountryCodes.Saudi, Jurisdiction = Jurisdictions.KsaMainland,
+            RuleKey = RuleKeys.GosiSaudiEmployerRate, OverrideValue = "0.10", DataType = "decimal",
+            EffectiveFrom = new DateOnly(2026, 1, 1), ReviewBy = new DateOnly(2026, 12, 31), Reason = "legacy",
+            Status = "PendingApproval", CreatedBy = Guid.NewGuid(),
+        };
+        db.CompanyStatutoryOverrides.Add(pending);
+        await db.SaveChangesAsync();
+        AssertGosiRefusal(await rates.ApproveStatutoryOverride(pending.Id, CancellationToken.None));
+        (await db.CompanyStatutoryOverrides.AsNoTracking().SingleAsync(o => o.Id == pending.Id)).Status
+            .Should().Be("PendingApproval", "nothing can be approved and then ignored");
+
+        // 3. Setup assistant apply.
+        var setup = WithUser(new SetupAssistantController(db, new _PilotNoSetupPreview(), new Zayra.Api.Infrastructure.Audit.AuditService(db)), tenantId);
+        var draft = Zayra.Api.Application.Setup.SetupDraft.Empty() with
+        {
+            StatutoryRules = [new Zayra.Api.Application.Setup.DraftStatutoryRule("gosi.employee_rate", "0.0975", "decimal", "wizard")],
+        };
+        AssertGosiRefusal(await setup.Apply(new ApplySetupRequest(draft, "SA", "SAR"), CancellationToken.None));
+
+        // 4. Tenant-admin country rules.
+        var admin = WithUser(new TenantAdminController(db), tenantId);
+        AssertGosiRefusal(await admin.CreateCountryRule(new CreateCountryRuleRequest(
+            "SAU", RuleKeys.GosiExpOhRate, "0.03", "decimal", "hazard", true, ef, null), CancellationToken.None));
+
+        // Only the pre-seeded legacy rows exist; every refused write wrote nothing.
+        (await db.StatutoryRules.IgnoreQueryFilters().CountAsync(r => r.TenantId == tenantId && r.RuleKey.StartsWith("gosi.")))
+            .Should().Be(1);
+        (await db.CountryPayrollRules.IgnoreQueryFilters().AnyAsync(r => r.TenantId == tenantId && r.RuleKey.StartsWith("gosi.")))
+            .Should().BeFalse();
+        (await db.CompanyStatutoryOverrides.IgnoreQueryFilters().CountAsync(r => r.TenantId == tenantId)).Should().Be(1);
+    }
+
+    /// <summary>
+    /// Override rows saved before the guard — in all three tenant stores, ACTIVE and generous — change
+    /// nothing on the payslip, which deducts the GOSI-published 9% + 0.75%. They are kept, the readiness
+    /// report and dashboard warn about them, and the runbook query lists them.
+    /// </summary>
+    [Fact]
+    public async Task GosiStatutory_ExistingOverrideRows_DoNotTouchThePayslip_AndAreWarnedAbout()
+    {
+        await using var db = _fx.CreateDb();
+        await StatutoryRuleSeeder.SeedAsync(db, NullLogger.Instance);
+        await GosiRuleSeeder.SeedDefaultsAsync(db, NullLogger.Instance);
+        var reader = new StatutoryRuleReader(db);
+        var (tenantId, company) = await SeedTenantAndCompany(db);
+        var employee = await SeedEmployee(db, tenantId, company, "Saudi", 10_000m, 2_500m,
+            joining: new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        var ef = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        db.StatutoryRules.Add(new StatutoryRule
+        {
+            TenantId = tenantId, CountryCode = CountryCodes.Saudi, Jurisdiction = Jurisdictions.KsaMainland,
+            RuleKey = RuleKeys.GosiSaudiEmployeeRate, RuleValue = "0.20", DataType = "decimal", EffectiveFrom = ef,
+        });
+        db.CompanyStatutoryOverrides.Add(new CompanyStatutoryOverride
+        {
+            TenantId = tenantId, CompanyId = company.Id, CountryCode = CountryCodes.Saudi, Jurisdiction = Jurisdictions.KsaMainland,
+            RuleKey = KsaGosiWageBounds.CeilingRuleKey, OverrideValue = "5000", DataType = "decimal",
+            EffectiveFrom = new DateOnly(2020, 1, 1), ReviewBy = new DateOnly(2030, 1, 1), Reason = "legacy",
+            Status = "Active", CreatedBy = Guid.NewGuid(), ApprovedBy = Guid.NewGuid(),
+        });
+        db.CountryPayrollRules.Add(new CountryPayrollRule
+        {
+            TenantId = tenantId, CountryCode = "SAU", RuleKey = RuleKeys.GosiSanedRate, RuleValue = "0.05",
+            DataType = "decimal", EffectiveFrom = ef,
+        });
+        await db.SaveChangesAsync();
+
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var run = await NewRun(db, tenantId, company, today.Year, today.Month);
+        (await Payroll(db, tenantId, reader).Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        var gosi = await db.PayrollDeductions.AsNoTracking()
+            .Where(d => d.PayrollRunId == run.Id && d.EmployeeId == employee.Id && d.ComponentCode.StartsWith("GOSI"))
+            .ToListAsync();
+        gosi.Where(d => !d.IsEmployerContribution).Sum(d => d.Amount).Should().Be(1_218.75m,
+            "9% + 0.75% of 12,500 — not the 20% rate, the 5% SANED or the 5,000 ceiling saved at tenant level");
+        gosi.Where(d => d.IsEmployerContribution).Sum(d => d.Amount).Should().Be(1_468.75m);
+
+        // The readiness report says so, plainly.
+        var report = await new GosiReadinessReportService(db, reader).BuildAsync(tenantId, CancellationToken.None);
+        var warning = report.TenantWarnings.Should().ContainSingle(w => w.Code == GosiStatutoryValues.IgnoredOverrideWarningCode).Subject;
+        warning.Message.Should().Contain("saved but never applied").And.Contain("GOSI-published rate")
+            .And.Contain(RuleKeys.GosiSaudiEmployeeRate).And.Contain(KsaGosiWageBounds.CeilingRuleKey).And.Contain(RuleKeys.GosiSanedRate);
+
+        // The rows are kept…
+        (await db.StatutoryRules.IgnoreQueryFilters().AnyAsync(r => r.TenantId == tenantId && r.RuleKey == RuleKeys.GosiSaudiEmployeeRate))
+            .Should().BeTrue("existing override rows are an audit record and are not deleted");
+
+        // …and the runbook's read-only query lists all three, exactly as written in the runbook.
+        var sql = RunbookGosiOverrideQuery();
+        var conn = db.Database.GetDbConnection();
+        if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        var sources = new List<string>();
+        await using (var reader2 = await cmd.ExecuteReaderAsync())
+            while (await reader2.ReadAsync())
+                if (reader2.GetGuid(reader2.GetOrdinal("tenant_id")) == tenantId)
+                    sources.Add(reader2.GetString(reader2.GetOrdinal("source")));
+        sources.Should().BeEquivalentTo(new[] { "statutory_rules", "company_statutory_overrides", "country_payroll_rules" });
+    }
+
+    private static string RunbookGosiOverrideQuery()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "docs", "DEPLOY_ROLLBACK_RUNBOOK.md"))) dir = dir.Parent;
+        dir.Should().NotBeNull("the runbook must be reachable from the test run");
+        var text = File.ReadAllText(Path.Combine(dir!.FullName, "docs", "DEPLOY_ROLLBACK_RUNBOOK.md"));
+        var section = text[text.IndexOf("## GOSI tenant overrides that were saved but never applied", StringComparison.Ordinal)..];
+        var start = section.IndexOf("```sql", StringComparison.Ordinal) + "```sql".Length;
+        return section[start..section.IndexOf("```", start, StringComparison.Ordinal)];
+    }
+
+    private static void AssertGosiRefusal(IActionResult? result)
+    {
+        var refused = result.Should().BeOfType<UnprocessableEntityObjectResult>().Subject;
+        Prop<string>(refused.Value!, "code").Should().Be(GosiStatutoryValues.RefusalCode);
+        Prop<string>(refused.Value!, "message").Should().Contain("GOSI publishes").And.Contain("Nothing has been saved");
+        Prop<string>(refused.Value!, "messageAr").Should().Contain("للتأمينات الاجتماعية");
+    }
+
+    private static T WithUser<T>(T controller, Guid tenantId) where T : ControllerBase
+    {
+        controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = Principal(tenantId) } };
+        return controller;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -488,6 +672,7 @@ public class PilotPayrollCorrectnessPostgresTests
         new Claim("permission", "payroll.read"),
         new Claim("permission", "payroll.write"),
         new Claim("permission", "payroll.rates.statutory_override"),
+        new Claim("permission", "organization.setup.apply"),
     }, "Test"));
 
     private static T Prop<T>(object value, string name) =>
@@ -519,6 +704,13 @@ file sealed class _PilotKsaResolver : ICountryPackResolver
     public INationalizationTracker ResolveNationalizationTracker(string cc, string j) => new DefaultNationalizationTracker();
     public ILocalizationProfile ResolveLocalizationProfile(string cc, string j) => new DefaultLocalizationProfile();
     public ICountryPackDescriptor ResolveDescriptor(string cc, string j) => new DefaultCountryPackDescriptor();
+}
+
+file sealed class _PilotNoSetupPreview : Zayra.Api.Application.Setup.ISetupAssistantService
+{
+    public Task<Zayra.Api.Application.Setup.SetupPreviewResult> GenerateAsync(
+        Zayra.Api.Application.Setup.SetupRequester requester, Zayra.Api.Application.Setup.CompanyProfile profile, CancellationToken ct)
+        => Task.FromResult(new Zayra.Api.Application.Setup.SetupPreviewResult(Zayra.Api.Application.Setup.SetupDraft.Empty(), [], "test"));
 }
 
 file sealed class _PilotLetters : ILetterService

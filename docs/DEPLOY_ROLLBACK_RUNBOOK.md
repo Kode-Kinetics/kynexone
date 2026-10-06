@@ -228,6 +228,42 @@ GROUP BY tenant_id;
 The second branch catches previously recognised spellings stored with surrounding spaces (the old
 comparison did not trim). Zero rows means no past payslip was affected.
 
+## GOSI tenant overrides that were saved but never applied (read-only)
+
+GOSI contribution rates and the contributory-wage ceiling/floor are statutory. Payroll reads only the
+platform row (`statutory_rules`, `tenant_id IS NULL`). Before `GOSI_RATE_IS_STATUTORY` refused them,
+four write paths accepted a tenant value for these keys:
+- `/api/statutory-rules`
+- the company statutory-override maker-checker
+- the setup assistant
+- tenant-admin country rules
+
+Nothing ever read those values. **Do not delete these rows** — they are the record of what was attempted.
+The GOSI readiness report and the Saudi compliance dashboard warn about them per tenant. To list them
+(SELECT only):
+
+```sql
+-- Tenant-level GOSI rate/ceiling values payroll has never applied. Same predicate as
+-- GosiStatutoryValues.IsStatutory: gosi.*_rate, or gosi.covered_wage_*.
+WITH gosi AS (
+  SELECT 'statutory_rules' AS source, tenant_id, NULL::uuid AS company_id, id, rule_key, rule_value AS value, NULL AS status
+  FROM statutory_rules WHERE tenant_id IS NOT NULL
+  UNION ALL
+  SELECT 'company_statutory_overrides', tenant_id, company_id, id, rule_key, override_value, status
+  FROM company_statutory_overrides WHERE NOT is_deleted
+  UNION ALL
+  SELECT 'country_payroll_rules', tenant_id, NULL::uuid, id, rule_key, rule_value, NULL
+  FROM country_payroll_rules
+)
+SELECT * FROM gosi
+WHERE lower(rule_key) LIKE 'gosi.%'
+  AND (lower(rule_key) LIKE '%\_rate' OR lower(rule_key) LIKE 'gosi.covered\_wage\_%')
+ORDER BY tenant_id, source, rule_key;
+```
+
+Zero rows means no tenant ever believed it had changed a GOSI rate. For any rows returned, tell the tenant
+that the GOSI-published rate was applied throughout.
+
 ## Invariants
 - **Schema leads code.** Migrations apply in `migrate-backend` before the deploy hook fires.
 - **Single trigger.** `autoDeploy: false`; the CI hook is the only deploy path.

@@ -228,6 +228,11 @@ public class RatesController : ControllerBase
         if (string.IsNullOrWhiteSpace(req.CountryCode) || string.IsNullOrWhiteSpace(req.RuleKey)) return BadRequest(new { message = "countryCode and ruleKey are required." });
         if (req.ReviewBy is null) return BadRequest(new { message = "reviewBy (expiry/review date) is required so the override cannot silently outlive its justification." });
         if (string.IsNullOrWhiteSpace(req.OverrideValue)) return BadRequest(new { message = "overrideValue is required." });
+        // GOSI rates and the contributory-wage ceiling are STATUTORY: payroll reads the platform row
+        // only, so a tenant value here would be saved and never applied. Refused with a code.
+        // See Infrastructure/Payroll/GosiStatutoryValues.cs.
+        if (GosiStatutoryValues.TenantWriteRefusal(req.RuleKey) is { } gosiRefusal)
+            return UnprocessableEntity(gosiRefusal);
 
         // UNIT GATE. OverrideValue is free text and StatutoryRateResolver hands it straight to the
         // payroll calculators ahead of the platform default, so this is the highest-consequence
@@ -283,6 +288,10 @@ public class RatesController : ControllerBase
         if (row is null) return NotFound();
         if (ScopeError(row.CompanyId) is { } err) return err;
         if (row.Status != PendingApproval) return BadRequest(new { message = $"Override is not pending approval (status={row.Status})." });
+        // A GOSI override requested before the request-side guard existed must not become Active: it
+        // would be approved, audited and then ignored by payroll. Refused at approval too.
+        if (GosiStatutoryValues.TenantWriteRefusal(row.RuleKey) is { } gosiRefusal)
+            return UnprocessableEntity(gosiRefusal);
 
         var approver = this.GetUserId();
         // An unattributed caller cannot be shown to differ from the maker, so it cannot be the checker.

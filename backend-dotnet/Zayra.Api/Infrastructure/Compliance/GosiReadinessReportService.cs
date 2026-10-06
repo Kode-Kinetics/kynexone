@@ -166,7 +166,22 @@ public sealed class GosiReadinessReportService
                 + $"('{GosiContributoryWageBasis.CeilingRuleKey}' = {ceiling:N0} SAR on {periodDate:yyyy-MM-dd}) — "
                 + "the same base and the same ceiling the payslip deducts on.",
             EmployeesAtWageCeiling: ceilingBoundCount,
-            Employees:      rows);
+            Employees:      rows)
+        {
+            TenantWarnings = await IgnoredGosiOverridesAsync(tenantId, ct),
+        };
+    }
+
+    /// <summary>
+    /// GOSI rate/ceiling values this tenant saved before such writes were refused. Payroll reads the
+    /// platform row only, so they were saved and never applied; surfaced so nobody believes they are in force.
+    /// </summary>
+    private async Task<IReadOnlyList<GosiIssueDto>> IgnoredGosiOverridesAsync(Guid tenantId, CancellationToken ct)
+    {
+        var ignored = await GosiStatutoryValues.FindIgnoredTenantOverridesAsync(_db, tenantId, ct);
+        return ignored.Count == 0
+            ? Array.Empty<GosiIssueDto>()
+            : new[] { new GosiIssueDto(GosiStatutoryValues.IgnoredOverrideWarningCode, GosiStatutoryValues.IgnoredOverrideWarning(ignored)) };
     }
 }
 
@@ -187,7 +202,14 @@ public record GosiReadinessReport(
     string                               ContributoryWageBasis,
     // How many employees had the ceiling bind. Zero means it never applied.
     int                                  EmployeesAtWageCeiling,
-    IReadOnlyList<GosiEmployeeReadinessRow> Employees);
+    IReadOnlyList<GosiEmployeeReadinessRow> Employees)
+{
+    /// <summary>
+    /// Tenant-level findings that are not about one employee — today, GOSI rate/ceiling values this
+    /// tenant saved before such writes were refused, which payroll has never applied.
+    /// </summary>
+    public IReadOnlyList<GosiIssueDto> TenantWarnings { get; init; } = Array.Empty<GosiIssueDto>();
+}
 
 public record GosiEmployeeReadinessRow(
     int                                  EmployeeId,

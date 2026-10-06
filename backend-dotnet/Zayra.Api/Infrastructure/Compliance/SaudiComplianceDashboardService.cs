@@ -241,6 +241,10 @@ public sealed class SaudiComplianceDashboardService
             warnings.Add("Company GOSI employer ID is not set.");
         if (gccCount > 0)
             warnings.Add($"{Plural(gccCount, "GCC employee", "GCC employees")} — contribution rates pending legal confirmation.");
+        // GOSI rate/ceiling values saved at tenant level are never applied by payroll (GosiStatutoryValues).
+        var ignoredGosiOverrides = await GosiStatutoryValues.FindIgnoredTenantOverridesAsync(_db, tenantId, ct);
+        if (ignoredGosiOverrides.Count > 0)
+            warnings.Add(GosiStatutoryValues.IgnoredOverrideWarning(ignoredGosiOverrides));
 
         return new GosiDashboardSection(
             missingRef, missingEmpId, employerIdConfigured,

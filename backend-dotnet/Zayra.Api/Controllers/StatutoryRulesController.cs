@@ -128,6 +128,11 @@ public class StatutoryRulesController : ControllerBase
             return BadRequest("CountryCode, RuleKey, and RuleValue are required.");
         if (string.IsNullOrWhiteSpace(req.Description))
             return BadRequest("A reason (Description) is required for a statutory override.");
+        // GOSI rates and the contributory-wage ceiling are STATUTORY: payroll reads the platform row
+        // only, so a tenant value here would be saved and never applied. Refused with a code.
+        // See Infrastructure/Payroll/GosiStatutoryValues.cs.
+        if (GosiStatutoryValues.TenantWriteRefusal(req.RuleKey) is { } gosiRefusal)
+            return UnprocessableEntity(gosiRefusal);
 
         var cc = req.CountryCode.ToUpperInvariant();
         var jur = req.Jurisdiction ?? string.Empty;
@@ -198,6 +203,11 @@ public class StatutoryRulesController : ControllerBase
         var prior = await _db.StatutoryRules
             .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (prior is null) return NotFound();
+        // GOSI rates and the contributory-wage ceiling are STATUTORY: payroll reads the platform row
+        // only, so a tenant value here would be saved and never applied. Refused with a code.
+        // See Infrastructure/Payroll/GosiStatutoryValues.cs.
+        if (GosiStatutoryValues.TenantWriteRefusal(prior.RuleKey) is { } gosiRefusal)
+            return UnprocessableEntity(gosiRefusal);
 
         // Same unit gate as Create — a supersede writes a new effective-dated value and is the
         // path an operator actually uses to change a rate.
