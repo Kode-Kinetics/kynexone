@@ -81,5 +81,17 @@ public sealed record PackageViewContext(
     }
 }
 
+/// <summary>Resolver helpers for the screens.</summary>
+public static class PackageResolution
+{
+    /// <summary>The package with each line's reason detail (the criterion behind ENTITLEMENT_NOT_ELIGIBLE_CRITERIA).</summary>
+    public static async Task<ResolvedPackage> ResolveDetailedAsync(this IEntitlementResolver resolver, Guid tenantId, int employeeId,
+        DateOnly asOf, CancellationToken ct) =>
+        resolver is EntitlementResolver concrete
+            ? await concrete.ResolveDetailedAsync(tenantId, employeeId, asOf, ct)
+            : new ResolvedPackage(await resolver.ResolveAsync(tenantId, employeeId, asOf, ct),
+                new Dictionary<string, PackageReason>());
+}
+
 /// <summary>A component's display name in English and Arabic.</summary>
 public sealed record ComponentLabel(string En, string Ar);

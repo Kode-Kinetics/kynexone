@@ -32,6 +32,8 @@ public sealed class PackageSeed
     public EmployeeContract ColleagueTerm { get; }
     public EmployeeSalaryStructure Salary { get; }
     public LoanType HousingAdvance { get; }
+    /// <summary>The company's housing-advance policy: the loan form (and so the package) refuses a grade-limited type without one.</summary>
+    public LoanPolicy HousingAdvancePolicy { get; }
     public Guid UserId { get; } = Guid.NewGuid();
     public Guid ColleagueUserId { get; } = Guid.NewGuid();
     public Dictionary<string, GradeEntitlement> Cells { get; } = new();
@@ -48,15 +50,19 @@ public sealed class PackageSeed
         Mohammed = Person("E-1", Company.Id, UserId);
         Colleague = Person("E-2", OtherCompany.Id, ColleagueUserId);
         Term = new EmployeeContract { TenantId = Tenant.Id, CompanyId = Company.Id, EmployeeId = Mohammed.PublicId, EmployeeName = "Mohammed",
-            ContractNumber = "CON-1", Status = "Active", StartDate = TermStart, EndDate = TermEnd, BasicSalary = 8000m, CurrencyCode = "SAR" };
+            ContractNumber = "CON-1", Status = "Active", StartDate = TermStart, EndDate = TermEnd, BasicSalary = 8000m, CurrencyCode = "SAR",
+            WorkerNationalityClass = WorkerNationalityClasses.NonSaudi };
         ColleagueTerm = new EmployeeContract { TenantId = Tenant.Id, CompanyId = OtherCompany.Id, EmployeeId = Colleague.PublicId, EmployeeName = "Colleague",
-            ContractNumber = "CON-2", Status = "Active", StartDate = TermStart, EndDate = TermEnd, BasicSalary = 6000m, CurrencyCode = "SAR" };
+            ContractNumber = "CON-2", Status = "Active", StartDate = TermStart, EndDate = TermEnd, BasicSalary = 6000m, CurrencyCode = "SAR",
+            WorkerNationalityClass = WorkerNationalityClasses.NonSaudi };
         Salary = new EmployeeSalaryStructure { TenantId = Tenant.Id, EmployeeId = 0, SalaryStructureId = Guid.NewGuid(), BasicSalary = 8000m,
             HousingBasis = AllowanceBases.PercentOfBasic, HousingRate = 0.25m, HousingAllowance = 2000m, TransportAllowance = 800m,
             Currency = "SAR", EffectiveDate = TermStart };
         HousingAdvance = new LoanType { TenantId = Tenant.Id, Code = "HOUSING_ADVANCE", NameEn = "Housing advance", NameAr = "سلفة السكن",
             MaxAmount = 50_000m, GradeLimited = true, EntitlementComponentCode = "LOAN_HOUSING_ADVANCE", IsActive = true };
 
+        HousingAdvancePolicy = new LoanPolicy { TenantId = Tenant.Id, LoanTypeId = HousingAdvance.Id, CompanyId = Company.Id, PolicyName = "Housing advance",
+            MaxAmount = 50_000m, MaxInstallments = 12, MaxConcurrentLoans = 1, IsActive = true, IsOffered = true };
         Cell("HOUSING", PayEntitlementClasses.QiwaWage, GradeEntitlementValueTypes.PercentOfBasic, rate: 0.25m, period: EntitlementLimitPeriods.Monthly);
         Cell("TRANSPORT", PayEntitlementClasses.QiwaWage, GradeEntitlementValueTypes.PercentOfBasic, rate: 0.10m, period: EntitlementLimitPeriods.Monthly);
         Cell("MEDICAL", PayEntitlementClasses.Contractual, GradeEntitlementValueTypes.CoverageTier, tier: CoverageTiers.B,
@@ -97,12 +103,12 @@ public sealed class PackageSeed
         db.AddRange(Tenant, Company, OtherCompany, Grade, Mohammed, Colleague);
         await db.SaveChangesAsync();
         Salary.EmployeeId = Mohammed.Id;
-        db.AddRange(Term, ColleagueTerm, Salary, HousingAdvance);
+        db.AddRange(Term, ColleagueTerm, Salary, HousingAdvance, HousingAdvancePolicy);
         db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure { TenantId = Tenant.Id, EmployeeId = Colleague.Id, SalaryStructureId = Guid.NewGuid(),
             BasicSalary = 6000m, HousingAllowance = 1500m, TransportAllowance = 600m, Currency = "SAR", EffectiveDate = TermStart });
         db.EmployeeDependents.AddRange(
-            new EmployeeDependent { TenantId = Tenant.Id, EmployeeId = Mohammed.Id, FullName = "Wife", Relationship = "Wife", DateOfBirth = new DateOnly(1990, 1, 1) },
-            new EmployeeDependent { TenantId = Tenant.Id, EmployeeId = Mohammed.Id, FullName = "Son", Relationship = "Son", DateOfBirth = new DateOnly(2015, 1, 1) },
+            new EmployeeDependent { TenantId = Tenant.Id, EmployeeId = Mohammed.Id, FullName = "Wife", Relationship = "Spouse", DateOfBirth = new DateOnly(1990, 1, 1) },
+            new EmployeeDependent { TenantId = Tenant.Id, EmployeeId = Mohammed.Id, FullName = "Son", Relationship = "Child", DateOfBirth = new DateOnly(2015, 1, 1) },
             new EmployeeDependent { TenantId = Tenant.Id, EmployeeId = Mohammed.Id, FullName = "Daughter", Relationship = "Daughter", DateOfBirth = new DateOnly(2018, 1, 1) },
             new EmployeeDependent { TenantId = Tenant.Id, EmployeeId = Mohammed.Id, FullName = "Father", Relationship = "Father" });
         db.GradeEntitlements.AddRange(Cells.Values);

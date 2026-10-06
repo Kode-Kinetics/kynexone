@@ -80,13 +80,17 @@ public sealed class PackageResolverTests
         (ticket.Source, ticket.Quantity, ticket.CoverageTier, ticket.DependantsCovered).Should().Be((PackageLineSources.ContractFrozen, (short)1, CoverageTiers.Economy, 0));
 
         var education = Line(package, "EDUCATION");
-        (education.Source, education.Eligible, education.ReasonCode).Should().Be((PackageLineSources.GradeStandard, false, PackageReasonCodes.NotInGrade));
+        (education.Source, education.Eligible, education.ReasonCode).Should().Be((PackageLineSources.GradeStandard, false, PackageReasons.NotInGrade));
 
         var perDiem = Line(package, "PER_DIEM");
         (perDiem.Source, perDiem.Amount, perDiem.LimitPeriod).Should().Be((PackageLineSources.Facility, 250m, EntitlementLimitPeriods.PerDay));
 
         var advance = Line(package, "LOAN_HOUSING_ADVANCE");
-        (advance.Source, advance.Eligible, advance.Amount, advance.Rate).Should().Be((PackageLineSources.Facility, true, 6000m, 3m));
+        (advance.Source, advance.Eligible, advance.ResolvedAmount, advance.Rate).Should().Be((PackageLineSources.Facility, true, 6000m, 3m));
+        advance.StandardValue!.GradeEntitlementId.Should().Be(s.Cells["LOAN_HOUSING_ADVANCE"].Id);
+        housing.ResolvedAmount.Should().Be(2000m);
+        medical.StandardValue!.CoverageTier.Should().Be(CoverageTiers.B, "the grade's standard rides beside the frozen value");
+        package.Lines.Where(l => !l.Eligible || !l.Offered).Should().OnlyContain(l => l.ReasonCode != null, "a line that is not given always says why");
 
         var order = new[] { PayEntitlementClasses.QiwaWage, PayEntitlementClasses.Contractual, PayEntitlementClasses.Facility };
         package.Lines.Select(l => Array.IndexOf(order, l.Class)).Should().BeInAscendingOrder("pay, then contract benefits, then facilities");
@@ -110,7 +114,7 @@ public sealed class PackageResolverTests
         var perDiem = Line(package, "PER_DIEM");
         (perDiem.Amount, perDiem.IsCompanyOverride).Should().Be((200m, true));
         var ticket = Line(package, "AIR_TICKET");
-        (ticket.Offered, ticket.Eligible, ticket.ReasonCode).Should().Be((false, false, PackageReasonCodes.NotOfferedByCompany));
+        (ticket.Offered, ticket.Eligible, ticket.ReasonCode).Should().Be((false, false, ReleaseABlockReasons.EntitlementNotOfferedByCompany));
 
         // The colleague's company does not skip it and has no override.
         var colleague = await resolver.ResolveAsync(s.TenantId, s.Colleague.Id, Today, default);
@@ -148,14 +152,17 @@ public sealed class PackageResolverTests
     {
         var (db, s) = await SeededAsync(seed =>
         {
-            seed.Mohammed.SaudiOrNonSaudi = "Saudi";
-            seed.Mohammed.Nationality = "Saudi";
+            seed.Term.WorkerNationalityClass = WorkerNationalityClasses.Saudi; // the term's own stamp, never the free-text nationality
             seed.Cells["PER_DIEM"].MinServiceMonths = 24;
         });
         await using var _ = db;
-        var package = await new EntitlementResolver(db).ResolveAsync(s.TenantId, s.Mohammed.Id, Today, default);
-        Line(package, "AIR_TICKET").ReasonCode.Should().Be(PackageReasonCodes.Nationality);
-        Line(package, "PER_DIEM").ReasonCode.Should().Be(PackageReasonCodes.ServiceMonths);
+        var detailed = await new EntitlementResolver(db).ResolveDetailedAsync(s.TenantId, s.Mohammed.Id, Today, default);
+        var package = detailed.Package;
+        Line(package, "AIR_TICKET").ReasonCode.Should().Be(ReleaseABlockReasons.EntitlementNotEligibleCriteria);
+        detailed.Reasons["AIR_TICKET"].Criterion.Should().Be(PackageCriteria.Nationality);
+        var perDiem = Line(package, "PER_DIEM");
+        (perDiem.ReasonCode, perDiem.EligibleFrom).Should().Be((ReleaseABlockReasons.EntitlementNotEligibleCriteria, (DateOnly?)new DateOnly(2027, 2, 1)));
+        detailed.Reasons["PER_DIEM"].Criterion.Should().Be(PackageCriteria.ServiceMonths);
         (await new EntitlementResolver(db).ResolveAsync(s.TenantId, s.Mohammed.Id, new DateOnly(2027, 2, 1), default))
             .Lines.Single(l => l.ComponentCode == "PER_DIEM").Eligible.Should().BeTrue("24 months after 1 Feb 2025");
         // A nationality-excluded benefit is not frozen; the medical floor always is.
@@ -194,7 +201,7 @@ public sealed class PackageResolverTests
         await using var _ = db;
         var package = await new EntitlementResolver(db).ResolveAsync(s.TenantId, s.Mohammed.Id, Today, default);
         var advance = Line(package, "LOAN_HOUSING_ADVANCE");
-        (advance.Eligible, advance.Amount, advance.ReasonCode).Should().Be((false, (decimal?)null, PackageReasonCodes.HousingInKind));
+        (advance.Eligible, advance.ResolvedAmount, advance.ReasonCode).Should().Be((false, (decimal?)null, PackageReasons.HousingInKind));
         var housing = Line(package, "HOUSING");
         (housing.ValueType, housing.MonthlyCash, housing.ReasonCode).Should().Be((GradeEntitlementValueTypes.InKind, 0m, (string?)null),
             "in kind is provision under Art. 61, not a floor breach");
@@ -237,23 +244,65 @@ public sealed class PackageResolverTests
     }
 
     [Fact]
-    public async Task Freeze_BeforeTheTermStarts_FixesItFromTheStart_AndTheBulkPathMarksRowsToConfirm()
+    public async Task Freeze_BeforeTheTermStarts_FixesItFromTheStart_AndAProposalStagesNothing()
     {
         var (db, s) = await SeededAsync();
         await using var _ = db;
         await Writer(db, new DateOnly(2026, 1, 20)).FreezeTermAsync(s.TenantId, s.Term.Id, default);
         db.ChangeTracker.Entries<EmployeeEntitlement>().Should().OnlyContain(e => e.Entity.EffectiveFrom == PackageSeed.TermStart);
+        await db.SaveChangesAsync();
 
+        // The bulk path proposes: nothing is staged until HR confirms against the signed contract.
+        var proposal = await Writer(db).ProposeAsync(s.TenantId, s.ColleagueTerm.Id, default);
+        proposal!.Rows.Select(r => r.ComponentCode).Should().BeEquivalentTo("MEDICAL", "AIR_TICKET");
+        db.ChangeTracker.Entries<EmployeeEntitlement>().Should().NotContain(e => e.State == EntityState.Added);
+        (await Writer(db).ProposeAsync(s.TenantId, s.Term.Id, default)).Should().BeNull("Mohammed's term is already frozen");
+
+        var written = await Writer(db).WriteConfirmedProposalAsync(s.TenantId, proposal, default);
         await db.SaveChangesAsync();
-        var colleague = await Writer(db).FreezeExistingAsync(s.TenantId, s.ColleagueTerm.Id, default);
-        colleague.Frozen.Should().BeTrue();
+        written.Should().HaveCount(2).And.OnlyContain(r => r.Source == EntitlementSources.Migrated && r.VerificationState == EntitlementVerificationStates.Verified);
+        await Writer(db).Invoking(w => w.WriteConfirmedProposalAsync(s.TenantId, proposal, default))
+            .Should().ThrowAsync<EntitlementWriteRefusedException>().Where(e => e.Code == PackageReasons.ProposalClosed);
+    }
+
+    [Fact]
+    public async Task UnverifiedRows_AreNeverPresentedAsFixed()
+    {
+        var (db, s) = await SeededAsync();
+        await using var _ = db;
+        db.EmployeeEntitlements.Add(new EmployeeEntitlement { TenantId = s.TenantId, CompanyId = s.Company.Id, EmployeeId = s.Mohammed.PublicId,
+            ContractId = s.Term.Id, PayComponentCode = "MEDICAL", ValueType = GradeEntitlementValueTypes.CoverageTier, CoverageTier = CoverageTiers.Vip,
+            DependantScope = DependantScopes.Family, Source = EntitlementSources.Migrated, VerificationState = EntitlementVerificationStates.Unverified,
+            EffectiveFrom = PackageSeed.TermStart, EffectiveTo = PackageSeed.TermEnd });
         await db.SaveChangesAsync();
-        var migrated = await db.EmployeeEntitlements.Where(x => x.ContractId == s.ColleagueTerm.Id).ToListAsync();
-        migrated.Should().OnlyContain(r => r.Source == EntitlementSources.Migrated && r.VerificationState == EntitlementVerificationStates.Unverified);
-        (await Writer(db).ConfirmMigratedAsync(s.TenantId, s.Colleague.PublicId, s.ColleagueTerm.Id, default)).Should().Be(migrated.Count);
-        await db.SaveChangesAsync();
-        (await db.EmployeeEntitlements.Where(x => x.ContractId == s.ColleagueTerm.Id).AllAsync(r => r.VerificationState == EntitlementVerificationStates.Verified))
-            .Should().BeTrue();
+        var medical = Line(await new EntitlementResolver(db).ResolveAsync(s.TenantId, s.Mohammed.Id, Today, default), "MEDICAL");
+        (medical.Source, medical.CoverageTier, medical.EmployeeEntitlementId).Should().Be((PackageLineSources.GradeStandard, CoverageTiers.B, (Guid?)null));
+    }
+
+    [Fact]
+    public async Task NationalityScopedBenefit_WithNoClassOnTheTerm_NeedsConfirmation_AndIsNotFrozen()
+    {
+        var (db, s) = await SeededAsync(seed => seed.Term.WorkerNationalityClass = null);
+        await using var _ = db;
+        var detailed = await new EntitlementResolver(db).ResolveDetailedAsync(s.TenantId, s.Mohammed.Id, Today, default);
+        Line(detailed.Package, "AIR_TICKET").ReasonCode.Should().Be(PackageReasons.NationalityUnconfirmed);
+        detailed.Package.BlockCodes.Should().Contain(PackageReasons.NationalityUnconfirmed);
+        var writer = Writer(db);
+        await writer.FreezeTermAsync(s.TenantId, s.Term.Id, default);
+        writer.LastSkips.Should().ContainSingle(x => x.ComponentCode == "AIR_TICKET" && x.Code == PackageReasons.NationalityUnconfirmed);
+        db.ChangeTracker.Entries<EmployeeEntitlement>().Select(e => e.Entity.PayComponentCode).Should().BeEquivalentTo("MEDICAL");
+    }
+
+    [Fact]
+    public void EveryReasonCode_IsDescribed_InEnglishAndArabic()
+    {
+        foreach (var code in PackageReasons.All)
+        {
+            var reason = PackageReasons.Describe(code);
+            reason.Should().NotBeNull(code);
+            new[] { reason!.TitleEn, reason.TitleAr, reason.WhyEn, reason.WhyAr, reason.FixEn, reason.FixAr }.Should().OnlyContain(t => t.Length > 3, code);
+        }
+        PackageReasons.Pending.Keys.Should().NotIntersectWith(ReleaseABlockReasons.All.Keys, "a code R0 adds must be deleted from Pending");
     }
 
     [Theory]
@@ -266,7 +315,7 @@ public sealed class PackageResolverTests
         await using var _ = db;
         var refused = await Writer(db).Invoking(w => w.FreezeTermAsync(s.TenantId, s.Term.Id, default))
             .Should().ThrowAsync<EntitlementWriteRefusedException>();
-        refused.Which.Code.Should().Be(EntitlementWriteRefusedException.ContractNotInForce);
+        refused.Which.Code.Should().Be(PackageReasons.ContractNotInForce);
         db.ChangeTracker.Entries<EmployeeEntitlement>().Should().BeEmpty();
     }
 
@@ -383,7 +432,7 @@ public sealed class PackageResolverTests
         result.Lines.Single(l => l.ComponentCode == "MEDICAL").DependantsCovered.Should().Be(3);
         result.Lines.Single(l => l.ComponentCode == "MEDICAL").LabelAr.Should().Be("التأمين الطبي", "names come from the catalogue, never a raw code");
         result.Lines.Single(l => l.ComponentCode == "LOAN_HOUSING_ADVANCE").Should().BeEquivalentTo(
-            new { LabelAr = "سلفة السكن", Group = "facility", Amount = 6000m }, o => o.ExcludingMissingMembers());
+            new { LabelAr = "سلفة السكن", Group = "facility", ResolvedAmount = 6000m }, o => o.ExcludingMissingMembers());
 
         // The colleague's login sees the colleague's package; nothing in the route can point elsewhere.
         var other = Bind(new EssPackageController(db, new EntitlementResolver(db), new FixedTenantClock(Today), new NoDeadlines()),

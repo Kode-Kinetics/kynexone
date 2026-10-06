@@ -98,7 +98,7 @@ public sealed class PackageFreezePostgresTests(PostgresFixture fixture)
         db.EmployeeContracts.Add(draft);
         await db.SaveChangesAsync();
         var ex = await Assert.ThrowsAsync<EntitlementWriteRefusedException>(() => FreezeAsync(db, s, draft.Id));
-        Assert.Equal(EntitlementWriteRefusedException.ContractNotInForce, ex.Code);
+        Assert.Equal(PackageReasons.ContractNotInForce, ex.Code);
         Assert.False(await db.EmployeeEntitlements.AnyAsync(x => x.TenantId == s.TenantId));
     }
 

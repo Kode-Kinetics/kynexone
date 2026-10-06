@@ -49,7 +49,8 @@ public sealed class EssPackageController : ControllerBase
             return Conflict(new { error = "no_employee_record", message = "Your login is not linked to an employee record, so there is no package to show. Ask HR to link it." });
 
         var today = await _clock.TodayAsync(tid, ct);
-        var package = await _resolver.ResolveAsync(tid, employeeId.Value, today, ct);
+        var resolved = await _resolver.ResolveDetailedAsync(tid, employeeId.Value, today, ct);
+        var package = resolved.Package;
         var context = await PackageViewContext.LoadAsync(_db, tid, package, ct);
         DateOnly? reviewOpensOn = null;
         if (context.Contract is { EndDate: not null } contract)
@@ -58,7 +59,7 @@ public sealed class EssPackageController : ControllerBase
             try { reviewOpensOn = (await _deadlines.ComputeAsync(tid, contract, ct)).OpensOn; }
             catch (Exception ex) when (ex is NotImplementedException or InvalidOperationException) { }
         }
-        return Ok(EssPackageDto.From(package, context, reviewOpensOn));
+        return Ok(EssPackageDto.From(resolved, context, reviewOpensOn));
     }
 
     /// <summary>The employee linked to the signed-in user: the signed employee_id claim, else the user-account link.</summary>
@@ -88,11 +89,14 @@ public sealed record EssPackageDto(
     int DependantsOnFile,
     IReadOnlyList<EssPackageLineDto> Lines)
 {
-    public static EssPackageDto From(EmployeePackage package, PackageViewContext c, DateOnly? reviewOpensOn) =>
+    public static EssPackageDto From(ResolvedPackage resolved, PackageViewContext c, DateOnly? reviewOpensOn) => From(resolved.Package, resolved, c, reviewOpensOn);
+
+    private static EssPackageDto From(EmployeePackage package, ResolvedPackage resolved, PackageViewContext c, DateOnly? reviewOpensOn) =>
         new(package.AsOf, c.Currency, c.Grade?.Name, c.Grade?.NameAr, c.Company?.LegalNameEn, c.Company?.LegalNameAr,
             c.Contract?.StartDate, package.TermEndsOn, reviewOpensOn,
             c.Dependants.Count(d => PackageRules.IsSpouse(d.Relationship) || PackageRules.IsChild(d.Relationship)),
-            package.Lines.Select(line => EssPackageLineDto.From(line, c)).ToList());
+            package.Lines.Select(line => EssPackageLineDto.From(line, c,
+                resolved.Reasons.TryGetValue(line.ComponentCode, out var r) ? r.Criterion : null)).ToList());
 }
 
 /// <param name="Why">What the value is based on, in words the employee can check — never an id.</param>
@@ -115,9 +119,12 @@ public sealed record EssPackageLineDto(
     int DependantsCovered,
     string? LimitPeriod,
     string? ReasonCode,
+    string? ReasonCriterion,
+    DateOnly? EligibleFrom,
+    decimal? ResolvedAmount,
     EssPackageWhyDto Why)
 {
-    public static EssPackageLineDto From(PackageLine line, PackageViewContext c)
+    public static EssPackageLineDto From(PackageLine line, PackageViewContext c, string? criterion)
     {
         var group = line.Class switch
         {
@@ -137,9 +144,13 @@ public sealed record EssPackageLineDto(
                 line.IsCompanyOverride, cell?.EffectiveFrom, null),
         };
         var label = c.Labels.TryGetValue(line.ComponentCode, out var l) ? l : new ComponentLabel(line.ComponentCode, line.ComponentCode);
-        return new EssPackageLineDto(line.ComponentCode, label.En, label.Ar, group, line.Eligible, line.Offered, line.Source == PackageLineSources.ContractFrozen,
+        // "Fixed for this contract year" only for a row that is frozen AND verified (the resolver returns ContractFrozen for
+        // nothing else); a proposal or an unverified row reads as the grade standard, not yet fixed.
+        var isFixed = line.Source == PackageLineSources.ContractFrozen && row is { VerificationState: EntitlementVerificationStates.Verified };
+        return new EssPackageLineDto(line.ComponentCode, label.En, label.Ar, group, line.Eligible, line.Offered, isFixed,
             line.ValueType, line.Amount, line.Rate, line.MonthlyCash, line.CoverageTier, line.Quantity, line.DependantScope, line.MaxDependants,
-            line.DependantsCovered, line.LimitPeriod, line.ReasonCode, why);
+            line.DependantsCovered, line.LimitPeriod, line.ReasonCode, criterion, line.EligibleFrom, line.ResolvedAmount,
+            isFixed || line.Source != PackageLineSources.ContractFrozen ? why : why with { Basis = "grade" });
     }
 }
 
