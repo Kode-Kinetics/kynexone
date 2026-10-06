@@ -208,16 +208,16 @@ export interface ChainConfirmInput {
 export const renewalsApi = {
   radar: (params: { companyId?: string; days?: number } = {}) =>
     client.get<RenewalRadar>('/api/contracts/renewals/radar', { params }).then((r) => r.data),
-  getCase: (caseId: string) => client.get<RenewalCase>(`/api/contracts/renewals/${caseId}`).then((r) => r.data),
-  chain: (contractId: string) => client.get<ContractChain>(`/api/contracts/${contractId}/chain`).then((r) => r.data),
+  getCase: (caseId: string) => client.get<RenewalCase>(`/api/contracts/renewals/${encodeURIComponent(caseId)}`).then((r) => r.data),
+  chain: (contractId: string) => client.get<ContractChain>(`/api/contracts/${encodeURIComponent(contractId)}/chain`).then((r) => r.data),
   confirmChain: (contractId: string, body: ChainConfirmInput) =>
-    client.post<ContractChain>(`/api/contracts/${contractId}/chain/confirm`, body).then((r) => r.data),
+    client.post<ContractChain>(`/api/contracts/${encodeURIComponent(contractId)}/chain/confirm`, body).then((r) => r.data),
   openNow: (companyId?: string) =>
     client.post<{ opened: number; alreadyOpen: number; notOpened: { contractId: string; reason: string }[] }>(
       '/api/contracts/renewals/open-now', { companyId: companyId ?? null }).then((r) => r.data),
   hold: (caseId: string, reason: HoldReason, note?: string) =>
-    client.post<RenewalCase>(`/api/contracts/renewals/${caseId}/hold`, { reason, note: note ?? null }).then((r) => r.data),
-  release: (caseId: string) => client.post<RenewalCase>(`/api/contracts/renewals/${caseId}/release`).then((r) => r.data),
+    client.post<RenewalCase>(`/api/contracts/renewals/${encodeURIComponent(caseId)}/hold`, { reason, note: note ?? null }).then((r) => r.data),
+  release: (caseId: string) => client.post<RenewalCase>(`/api/contracts/renewals/${encodeURIComponent(caseId)}/release`).then((r) => r.data),
   cancel: (caseId: string, reason: string) =>
-    client.post<RenewalCase>(`/api/contracts/renewals/${caseId}/cancel`, { reason }).then((r) => r.data),
+    client.post<RenewalCase>(`/api/contracts/renewals/${encodeURIComponent(caseId)}/cancel`, { reason }).then((r) => r.data),
 };
