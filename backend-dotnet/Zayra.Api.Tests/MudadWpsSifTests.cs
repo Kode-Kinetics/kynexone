@@ -82,7 +82,7 @@ public class MudadWpsSifTests
     // ── Root structure ────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task ValidInput_RootElement_IsMudadWpsWithVersion()
+    public async Task ValidInput_RootElement_IsInternalPayrollRegisterWithVersion()
     {
         var emp   = Emp("EMP-001", SaudiIban1, SaudiNationalId);
         var input = BuildInput(new[] { emp });
@@ -91,19 +91,20 @@ public class MudadWpsSifTests
 
         var doc  = ParseXml(result.FileBytes);
         var root = doc.DocumentElement!;
-        Assert.Equal("MudadWPS", root.LocalName);
+        Assert.Equal("PayrollRegister", root.LocalName);
+        Assert.Equal("true", root.Attributes!["NotABankOrWpsFile"]!.Value);
         Assert.Equal("1.0", root.GetAttribute("Version"));
     }
 
     [Fact]
-    public async Task ValidInput_FormatVersion_IsMudadXml()
+    public async Task ValidInput_FormatVersion_IsKsaPayrollRegister()
     {
         var emp   = Emp("EMP-001", SaudiIban1, SaudiNationalId);
         var input = BuildInput(new[] { emp });
 
         var result = await Exporter().ExportAsync(input);
 
-        Assert.Equal("mudad-xml", result.Format);
+        Assert.Equal(Zayra.Api.Infrastructure.Payroll.WpsConformance.KsaPayrollRegisterFormat, result.Format);
     }
 
     // ── Header assertions ─────────────────────────────────────────────────────
@@ -119,9 +120,8 @@ public class MudadWpsSifTests
         var header = doc.SelectSingleNode("//Header")!;
 
         Assert.NotNull(header);
-        Assert.NotNull(header.SelectSingleNode("EmployerID"));
+        Assert.NotNull(header.SelectSingleNode("MolEstablishmentId"));
         Assert.NotNull(header.SelectSingleNode("EmployerName"));
-        Assert.NotNull(header.SelectSingleNode("EmployerIBAN"));
         Assert.NotNull(header.SelectSingleNode("Period"));
         Assert.NotNull(header.SelectSingleNode("RecordCount"));
         Assert.NotNull(header.SelectSingleNode("TotalNetPay"));
@@ -136,7 +136,7 @@ public class MudadWpsSifTests
         var result = await Exporter().ExportAsync(input);
         var doc    = ParseXml(result.FileBytes);
 
-        Assert.Equal("ESTAB9001", doc.SelectSingleNode("//Header/EmployerID")!.InnerText);
+        Assert.Equal("ESTAB9001", doc.SelectSingleNode("//Header/MolEstablishmentId")!.InnerText);
     }
 
     [Fact]
@@ -248,7 +248,7 @@ public class MudadWpsSifTests
         var node   = doc.SelectSingleNode("//Employees/Employee[1]")!;
 
         // All required child elements must exist.
-        foreach (var field in new[] { "EmpCode", "FullNameEn", "NationalID", "Nationality",
+        foreach (var field in new[] { "EmpCode", "FullNameEn", "GovernmentId", "Nationality",
                                       "IBAN", "BankCode", "BasicSalary", "Housing",
                                       "Transport", "OtherAllow", "GrossSalary", "NetPay" })
         {
@@ -257,7 +257,7 @@ public class MudadWpsSifTests
 
         // Value assertions.
         Assert.Equal("EMP-010",          node.SelectSingleNode("EmpCode")!.InnerText);
-        Assert.Equal(IqamaId1,           node.SelectSingleNode("NationalID")!.InnerText);
+        Assert.Equal(IqamaId1,           node.SelectSingleNode("GovernmentId")!.InnerText);
         Assert.Equal(SaudiIban1,         node.SelectSingleNode("IBAN")!.InnerText);
         Assert.Equal("8000.00",          node.SelectSingleNode("BasicSalary")!.InnerText);
         Assert.Equal("2000.00",          node.SelectSingleNode("Housing")!.InnerText);
@@ -341,14 +341,17 @@ public class MudadWpsSifTests
     // ── File metadata ─────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task ExportResult_FileName_ContainsEstablishmentAndPeriod()
+    public async Task ExportResult_FileName_SaysInternalRegister_AndPeriod()
     {
         var emp   = Emp("EMP-001", SaudiIban1, SaudiNationalId);
         var input = BuildInput(new[] { emp }, year: 2026, month: 6, establishmentId: "ESTAB0042");
 
         var result = await Exporter().ExportAsync(input);
 
-        Assert.Contains("ESTAB0042", result.FileName);
+        // The file name is what a person sees in their downloads folder: it must not say WPS or Mudad
+        // as a claim, and must say it is an internal register.
+        Assert.StartsWith("payroll-register_INTERNAL-not-a-bank-or-WPS-file_", result.FileName);
+        Assert.DoesNotContain("mudad", result.FileName, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("202606",    result.FileName);
         Assert.EndsWith(".xml",      result.FileName);
     }
@@ -384,7 +387,9 @@ public class MudadWpsSifTests
         var xml    = System.Text.Encoding.UTF8.GetString(result.FileBytes);
 
         // Structural presence
-        Assert.Contains("<MudadWPS",      xml);
+        Assert.Contains("<PayrollRegister", xml);
+        Assert.DoesNotContain("<Mudad", xml);
+        Assert.DoesNotContain("0000000000", xml);
         Assert.Contains("<Header>",       xml);
         Assert.Contains("<RecordCount>2", xml);
         Assert.Contains("<Employees>",    xml);

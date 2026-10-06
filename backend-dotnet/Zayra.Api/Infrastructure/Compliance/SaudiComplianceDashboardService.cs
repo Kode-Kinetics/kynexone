@@ -85,7 +85,10 @@ public sealed class SaudiComplianceDashboardService
 
         var failedCount = await _db.QiwaSyncLogs
             .CountAsync(l => l.TenantId == tenantId &&
-                             (l.Status == QiwaSyncLogStatuses.Failed || l.Status == QiwaSyncLogStatuses.DeadLetter), ct);
+                             (l.Status == QiwaSyncLogStatuses.Failed
+                              || (l.Status == QiwaSyncLogStatuses.DeadLetter
+                                  && l.DeadLetterReason != QiwaSyncLogStatuses.MissingClientIdReason
+                                  && l.DeadLetterReason != QiwaSyncLogStatuses.MissingSecretReason)), ct);
 
         // F09: "Last sync" used to be the newest "Success" row — under the sandbox adapter, a
         // simulation. The real filing and the simulator run are now separate fields.
@@ -99,7 +102,7 @@ public sealed class SaudiComplianceDashboardService
             total, ready, blocked.Count, percent,
             failedCount, lastFiled, blocked,
             IsLiveIntegration: live,
-            IntegrationMode: live ? "Live" : QiwaSyncLogStatuses.SimulatedLabel,
+            IntegrationMode: QiwaSyncLogStatuses.ModeLabel(live),
             LastSimulatedSync: lastSimulated);
     }
 
@@ -407,10 +410,10 @@ public sealed class SaudiComplianceDashboardService
             items.Add(new(
                 "qiwa_simulated",
                 "High", "QIWA",
-                "QIWA is a simulation on this server: nothing is filed with Qiwa",
-                "This server runs the Qiwa sandbox simulator. Sync results are labelled Simulated (sandbox); no employee record has been sent to Qiwa or MHRSD.",
+                "Qiwa data check only: nothing is sent to Qiwa",
+                "This server checks your employee records against what Qiwa requires. It does not send anything to Qiwa or MHRSD, so a passed check is not a Qiwa filing.",
                 0,
-                "Ask your platform administrator to enable the live Qiwa adapter before relying on QIWA status for an inspection.",
+                "Record contract and employee changes in Qiwa itself, and keep the Qiwa confirmation as evidence before relying on Qiwa status for an inspection.",
                 "/saudi-compliance?tab=configure&section=qiwa",
                 "compliance.read", false, evaluatedAt));
         }
@@ -588,7 +591,7 @@ public record QiwaDashboardSection(
     IReadOnlyList<BlockedEmployee> BlockedEmployees,
     /// <summary>F09 — false whenever this server runs the sandbox simulator.</summary>
     bool IsLiveIntegration = false,
-    /// <summary>"Live" or "Simulated (sandbox)" — the label every screen shows.</summary>
+    /// <summary><see cref="QiwaSyncLogStatuses.ModeLabel"/> — the label every screen shows.</summary>
     string IntegrationMode = QiwaSyncLogStatuses.SimulatedLabel,
     /// <summary>The last simulator run. Nothing was filed.</summary>
     DateTime? LastSimulatedSync = null);

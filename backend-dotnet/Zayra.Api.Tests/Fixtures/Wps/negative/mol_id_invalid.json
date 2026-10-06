@@ -1,0 +1,10 @@
+{
+  "expectedCode": "mol_id_invalid",
+  "patch": {
+    "rows": {
+      "0": {
+        "molId": "10123456"
+      }
+    }
+  }
+}

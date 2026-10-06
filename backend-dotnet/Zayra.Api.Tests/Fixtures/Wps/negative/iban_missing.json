@@ -1,0 +1,10 @@
+{
+  "expectedCode": "iban_missing",
+  "patch": {
+    "rows": {
+      "0": {
+        "iban": ""
+      }
+    }
+  }
+}

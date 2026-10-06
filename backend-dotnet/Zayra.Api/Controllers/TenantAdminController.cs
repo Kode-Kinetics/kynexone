@@ -136,10 +136,27 @@ public class TenantAdminController : ControllerBase
 
     // ── Localization ─────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// The tenant's localization, or — before sign-in — the anonymous placeholder.
+    ///
+    /// <para><c>stated</c> says which. It is true only when a real tenant was resolved (from the
+    /// caller's token, or from <c>slug</c>); the client applies tenant values such as the default
+    /// language only then. Before it existed, the anonymous placeholder was indistinguishable from a
+    /// tenant's answer, and the web client treated "no tenant" as "this tenant speaks English".</para>
+    ///
+    /// <para>A bearer token that is present but invalid (expired, wrong key) gets 401, not the
+    /// anonymous placeholder: the caller is a signed-in user whose token needs refreshing, and the
+    /// client's interceptor refreshes and retries. Serving the placeholder there would silently
+    /// replace the tenant's settings with blanks.</para>
+    /// </summary>
     [HttpGet("localization")]
     [AllowAnonymous] // needed for initial load before auth
     public async Task<IActionResult> GetLocalization([FromQuery] string? slug, CancellationToken ct)
     {
+        var authorization = Request.Headers.Authorization.ToString();
+        if (authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) && User.Identity?.IsAuthenticated != true)
+            return Unauthorized(new { code = "invalid_token", message = "The access token is invalid or expired." });
+
         Guid? tenantId = this.GetTenantId();
 
         if (tenantId is null && !string.IsNullOrWhiteSpace(slug))
@@ -149,12 +166,12 @@ public class TenantAdminController : ControllerBase
             tenantId = tenant?.Id;
         }
 
-        if (tenantId is null) return Ok(await UnstatedLocalizationAsync(null, ct));
+        if (tenantId is null) return Ok(LocalizationResponse.From(await UnstatedLocalizationAsync(null, ct), stated: false));
 
         var loc = await _db.TenantLocalizationSettings
             .FirstOrDefaultAsync(l => l.TenantId == tenantId, ct);
 
-        return Ok(loc ?? await UnstatedLocalizationAsync(tenantId.Value, ct));
+        return Ok(LocalizationResponse.From(loc ?? await UnstatedLocalizationAsync(tenantId.Value, ct), stated: true));
     }
 
     /// <summary>
@@ -486,3 +503,29 @@ public record CreateCountryRuleRequest(
     string CountryCode, string RuleKey, string RuleValue,
     string? DataType, string? Description, bool? IsOverride,
     DateTime? EffectiveFrom, DateTime? EffectiveTo);
+
+/// <summary>
+/// GET /api/tenant-admin/localization: the <see cref="TenantLocalizationSetting"/> fields, unchanged
+/// in name and shape, plus <see cref="Stated"/> — true only when the answer is a real tenant's (its
+/// row, or what its companies imply), false for the anonymous placeholder.
+/// </summary>
+public sealed record LocalizationResponse(
+    Guid Id,
+    Guid TenantId,
+    string DefaultLanguage,
+    bool RtlEnabled,
+    string CalendarSystem,
+    string DefaultTimezone,
+    string DateFormat,
+    string CurrencyCode,
+    string CountryCode,
+    string WeekStartDay,
+    string WorkWeek,
+    bool HijriDatesEnabled,
+    DateTime UpdatedAtUtc,
+    bool Stated)
+{
+    public static LocalizationResponse From(TenantLocalizationSetting s, bool stated) => new(
+        s.Id, s.TenantId, s.DefaultLanguage, s.RtlEnabled, s.CalendarSystem, s.DefaultTimezone, s.DateFormat,
+        s.CurrencyCode, s.CountryCode, s.WeekStartDay, s.WorkWeek, s.HijriDatesEnabled, s.UpdatedAtUtc, stated);
+}

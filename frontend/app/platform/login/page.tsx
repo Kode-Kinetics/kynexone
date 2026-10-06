@@ -3,16 +3,25 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { AlertCircle, Eye, EyeOff, Lock, ShieldCheck, Activity, Users } from 'lucide-react';
-import { platformApi } from '@/src/api/platform';
+import { platformApi, PLATFORM_PENDING_ENROLLMENT_KEY } from '@/src/api/platform';
 import { Logo } from '@/src/components/Logo';
+import { waitPhrase } from '@/src/lib/retryAfter';
 
-type ErrorKind = 'invalid_credentials' | 'not_configured' | 'network' | null;
+type ErrorKind = 'invalid_credentials' | 'not_configured' | 'network' | 'busy' | 'rate_limited' | 'invalid_code' | 'enrollment_expired' | null;
 
-function errorMessage(kind: ErrorKind): string {
+/** credentials → (mfa | enroll). `enroll` is reached from sign-in once two-step sign-in is mandatory,
+ *  or from the console's "set up now" prompt via sessionStorage. */
+type Step = 'credentials' | 'mfa' | 'enroll' | 'codes';
+
+function errorMessage(kind: ErrorKind, when = 'in a few seconds'): string {
   switch (kind) {
     case 'invalid_credentials': return 'Invalid platform admin credentials. Please check your email and password.';
     case 'not_configured': return 'Platform admin access is not configured on this server. Set PLATFORM_ADMIN_EMAIL and PLATFORM_ADMIN_PASSWORD environment variables.';
     case 'network': return 'Cannot reach the server. Check that the backend is running and reachable.';
+    case 'busy': return `The sign-in service is busy — try again ${when}.`;
+    case 'rate_limited': return `Too many sign-in attempts. Please try again ${when}.`;
+    case 'invalid_code': return 'That code was not accepted. Check your authenticator app and try again.';
+    case 'enrollment_expired': return 'This setup session has expired. Sign in again to restart setup.';
     default: return '';
   }
 }
@@ -32,25 +41,117 @@ export default function PlatformLoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [errorKind, setErrorKind] = useState<ErrorKind>(null);
   const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState<Step>('credentials');
+  const [challengeToken, setChallengeToken] = useState('');
+  const [enrollmentToken, setEnrollmentToken] = useState('');
+  const [enrollmentSecret, setEnrollmentSecret] = useState('');
+  const [enrollmentUri, setEnrollmentUri] = useState('');
+  const [totpCode, setTotpCode] = useState('');
+  const [info, setInfo] = useState('');
+  const [retryWhen, setRetryWhen] = useState('in a few seconds');
+  const [useRecoveryCode, setUseRecoveryCode] = useState(false);
+  const [recoveryCode, setRecoveryCode] = useState('');
+  const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
 
   useEffect(() => {
-    if (typeof window !== 'undefined' && localStorage.getItem('platform_access_token')) {
+    if (typeof window === 'undefined') return;
+    let pending: string | null = null;
+    try {
+      pending = sessionStorage.getItem(PLATFORM_PENDING_ENROLLMENT_KEY);
+      sessionStorage.removeItem(PLATFORM_PENDING_ENROLLMENT_KEY);
+    } catch { /* storage unavailable */ }
+    if (pending) { void beginEnrollment(pending); return; }
+    if (localStorage.getItem('platform_access_token')) {
       router.replace('/platform/dashboard');
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
+
+  async function beginEnrollment(token: string) {
+    setStep('enroll');
+    setEnrollmentToken(token);
+    setEnrollmentSecret('');
+    setEnrollmentUri('');
+    setTotpCode('');
+    setErrorKind(null);
+    try {
+      const { provisioningUri } = await platformApi.mfaEnrollmentSetup(token);
+      setEnrollmentUri(provisioningUri);
+      setEnrollmentSecret(new URL(provisioningUri).searchParams.get('secret') ?? '');
+    } catch {
+      setErrorKind('enrollment_expired');
+    }
+  }
+
+  function backToCredentials() {
+    setStep('credentials');
+    setTotpCode('');
+    setChallengeToken('');
+    setEnrollmentToken('');
+    setUseRecoveryCode(false);
+    setRecoveryCode('');
+  }
+
+  async function handleMfa(e: React.FormEvent) {
+    e.preventDefault();
+    setErrorKind(null);
+    setLoading(true);
+    try {
+      const { token } = useRecoveryCode
+        ? await platformApi.mfaRecoveryVerify(challengeToken, recoveryCode)
+        : await platformApi.mfaChallengeVerify(challengeToken, totpCode);
+      localStorage.setItem('platform_access_token', token);
+      router.replace('/platform/dashboard');
+    } catch {
+      setErrorKind('invalid_code');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleEnroll(e: React.FormEvent) {
+    e.preventDefault();
+    setErrorKind(null);
+    setLoading(true);
+    try {
+      const { recoveryCodes: codes } = await platformApi.mfaEnrollmentVerifySetup(enrollmentToken, enrollmentSecret, totpCode);
+      setRecoveryCodes(codes ?? []);
+      setStep('codes');
+    } catch {
+      setErrorKind('invalid_code');
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setErrorKind(null);
     setLoading(true);
     try {
-      const { token } = await platformApi.login(email, password);
-      localStorage.setItem('platform_access_token', token);
+      const res = await platformApi.login(email, password);
+      if ('mfaRequired' in res && res.mfaRequired) {
+        setChallengeToken(res.challengeToken);
+        setTotpCode('');
+        setStep('mfa');
+        return;
+      }
+      if ('mfaEnrollmentRequired' in res && res.mfaEnrollmentRequired) {
+        await beginEnrollment(res.enrollmentToken);
+        return;
+      }
+      if (!('token' in res)) throw new Error('Unexpected sign-in response.');
+      localStorage.setItem('platform_access_token', res.token);
       router.replace('/platform/dashboard');
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status;
       if (status === 401) setErrorKind('invalid_credentials');
       else if (status === 503) setErrorKind('not_configured');
+      else if (status === 429) {
+        const res = (err as { response?: { data?: { error?: string }; headers?: Record<string, unknown> } })?.response;
+        setRetryWhen(waitPhrase(res?.headers?.['retry-after']));
+        setErrorKind(res?.data?.error === 'account_rate_limited' || res?.data?.error === 'ip_failure_budget' ? 'rate_limited' : 'busy');
+      }
       else if (!(err as { response?: unknown })?.response) setErrorKind('network');
       else setErrorKind('invalid_credentials');
     } finally {
@@ -155,6 +256,102 @@ export default function PlatformLoginPage() {
               Enter your internal operator credentials to continue.
             </p>
 
+            {step === 'mfa' && (
+              <form onSubmit={handleMfa} className="mt-8 space-y-5">
+                {useRecoveryCode ? (
+                  <div>
+                    <label htmlFor="platform-mfa-recovery" className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                      Recovery code
+                    </label>
+                    <input id="platform-mfa-recovery" type="text" dir="ltr" autoComplete="off" autoFocus required
+                      value={recoveryCode} onChange={e => setRecoveryCode(e.target.value)}
+                      placeholder="XXXX-XXXX-XXXX-XXXX-XXXX" className="pa-input font-mono" />
+                    <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">Each recovery code works once.</p>
+                  </div>
+                ) : (
+                  <div>
+                    <label htmlFor="platform-mfa-code" className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                      Authentication code
+                    </label>
+                    <input id="platform-mfa-code" type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} dir="ltr"
+                      value={totpCode} onChange={e => setTotpCode(e.target.value.replace(/\D/g, ''))}
+                      autoComplete="one-time-code" autoFocus required placeholder="000000" className="pa-input" />
+                    <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">Enter the 6-digit code from your authenticator app.</p>
+                  </div>
+                )}
+                {errorKind && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{errorMessage(errorKind, retryWhen)}</p>}
+                <button type="submit"
+                  disabled={loading || (useRecoveryCode ? recoveryCode.replace(/[^A-Za-z0-9]/g, '').length !== 20 : totpCode.length !== 6)}
+                  className="pa-btn disabled:cursor-not-allowed disabled:opacity-60">
+                  {loading ? 'Verifying…' : 'Verify and sign in'}
+                </button>
+                <button type="button" onClick={() => { setUseRecoveryCode(v => !v); setErrorKind(null); }}
+                  className="w-full text-sm text-slate-500 underline-offset-2 hover:underline dark:text-slate-400">
+                  {useRecoveryCode ? 'Use my authenticator app instead' : 'Lost your device? Use a recovery code'}
+                </button>
+                <button type="button" onClick={backToCredentials} className="w-full text-sm text-slate-500 underline-offset-2 hover:underline dark:text-slate-400">
+                  Back to sign in
+                </button>
+              </form>
+            )}
+
+            {step === 'enroll' && (
+              <form onSubmit={handleEnroll} className="mt-8 space-y-5">
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+                  Two-step sign-in is required for platform operators. Add this account to your authenticator app, then enter the 6-digit code it shows.
+                </div>
+                {enrollmentSecret && (
+                  <div>
+                    <label htmlFor="platform-mfa-setup-key" className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                      Setup key
+                    </label>
+                    <input id="platform-mfa-setup-key" readOnly value={enrollmentSecret} dir="ltr" className="pa-input font-mono text-xs" />
+                  </div>
+                )}
+                {enrollmentUri && <p dir="ltr" className="break-all text-xs text-slate-500 dark:text-slate-400">{enrollmentUri}</p>}
+                <div>
+                  <label htmlFor="platform-mfa-enroll-code" className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                    Authentication code
+                  </label>
+                  <input id="platform-mfa-enroll-code" type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} dir="ltr"
+                    value={totpCode} onChange={e => setTotpCode(e.target.value.replace(/\D/g, ''))}
+                    autoComplete="one-time-code" required placeholder="000000" className="pa-input" />
+                </div>
+                {errorKind && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{errorMessage(errorKind, retryWhen)}</p>}
+                <button type="submit" disabled={loading || totpCode.length !== 6 || !enrollmentSecret} className="pa-btn disabled:cursor-not-allowed disabled:opacity-60">
+                  {loading ? 'Enabling…' : 'Turn on two-step sign-in'}
+                </button>
+                <button type="button" onClick={backToCredentials} className="w-full text-sm text-slate-500 underline-offset-2 hover:underline dark:text-slate-400">
+                  Back to sign in
+                </button>
+              </form>
+            )}
+
+            {step === 'codes' && (
+              <div className="mt-8 space-y-5">
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300">
+                  Two-step sign-in is on. Save these recovery codes somewhere safe. Each one signs you in once if you lose your
+                  authenticator. They are shown only now.
+                </div>
+                <ul dir="ltr" aria-label="Recovery codes" className="grid grid-cols-1 gap-2 sm:grid-cols-2 rounded-lg border border-slate-200 bg-white p-4 font-mono text-sm text-slate-800 dark:border-white/10 dark:bg-white/5 dark:text-slate-100">
+                  {recoveryCodes.map(code => <li key={code}>{code}</li>)}
+                </ul>
+                <button type="button" className="pa-btn"
+                  onClick={() => {
+                    setRecoveryCodes([]);
+                    backToCredentials();
+                    setInfo('Sign in again with your password and a code from your app.');
+                  }}>
+                  I have saved my recovery codes
+                </button>
+              </div>
+            )}
+
+            {step === 'credentials' && info && (
+              <p role="status" className="mt-6 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300">{info}</p>
+            )}
+
+            {step === 'credentials' && (
             <form onSubmit={handleSubmit} className="mt-8 space-y-5">
               <div>
                 <label htmlFor="platform-email" className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
@@ -177,7 +374,7 @@ export default function PlatformLoginPage() {
                   <label htmlFor="platform-password" className="block text-sm font-medium text-slate-700 dark:text-slate-300">
                     Password
                   </label>
-                  <span className="text-xs text-slate-400 dark:text-slate-500">Not for tenant users</span>
+                  <span className="text-xs text-slate-500 dark:text-slate-400">Not for tenant users</span>
                 </div>
                 <div className="relative">
                   <input
@@ -205,7 +402,7 @@ export default function PlatformLoginPage() {
               {errorKind && (
                 <div className="flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 dark:border-red-500/20 dark:bg-red-500/[0.08]">
                   <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
-                  <p className="text-sm leading-relaxed text-red-700 dark:text-red-400">{errorMessage(errorKind)}</p>
+                  <p className="text-sm leading-relaxed text-red-700 dark:text-red-400">{errorMessage(errorKind, retryWhen)}</p>
                 </div>
               )}
 
@@ -215,11 +412,12 @@ export default function PlatformLoginPage() {
                   : 'Sign in'}
               </button>
             </form>
+            )}
 
             <div className="mt-8 flex flex-wrap items-center gap-2 border-t border-slate-200 pt-6 dark:border-white/10">
               <ShieldCheck className="h-4 w-4 text-slate-400" aria-hidden />
               {['Audit-logged', 'MFA-aware', 'Tenant-safe'].map((pill) => (
-                <span key={pill} className="text-xs font-medium text-slate-400 after:mx-1.5 after:text-slate-300 after:content-['·'] last:after:content-['']">
+                <span key={pill} className="text-xs font-medium text-slate-500 after:mx-1.5 after:text-slate-300 after:content-['·'] last:after:content-[''] dark:text-slate-400">
                   {pill}
                 </span>
               ))}
@@ -227,7 +425,7 @@ export default function PlatformLoginPage() {
 
             <p className="mt-6 text-center text-sm text-slate-500 dark:text-slate-400">
               Tenant workspace login?{' '}
-              <a href="/login" className="font-medium text-sapphire underline underline-offset-2 hover:text-blue-700 dark:text-sky-400">
+              <a href="/login" className="font-medium text-blue-700 underline underline-offset-2 hover:text-blue-800 dark:text-sky-400 dark:hover:text-sky-300">
                 Sign in here
               </a>
             </p>
@@ -249,11 +447,12 @@ export default function PlatformLoginPage() {
         }
         .pa-input::placeholder { color: #94a3b8; }
         .pa-input:focus { border-color: #2f6bff; box-shadow: 0 0 0 3px rgba(47,107,255,0.14); }
-        @media (prefers-color-scheme: dark) {
-          .pa-input { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.12); color: #f1f5f9; }
-          .pa-input::placeholder { color: rgba(255,255,255,0.28); }
-          .pa-input:focus { border-color: #5eebff; box-shadow: 0 0 0 3px rgba(94,235,255,0.16); }
-        }
+        /* Dark follows the .dark class like every dark: utility on this page (tailwind darkMode:
+           'class'). A prefers-color-scheme query here painted light text on the still-light form
+           for anyone whose OS is in dark mode: 1.04:1, the typed email/code all but invisible. */
+        .dark .pa-input { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.12); color: #f1f5f9; }
+        .dark .pa-input::placeholder { color: rgba(255,255,255,0.28); }
+        .dark .pa-input:focus { border-color: #5eebff; box-shadow: 0 0 0 3px rgba(94,235,255,0.16); }
         .pa-btn {
           position: relative; display: flex; align-items: center; justify-content: center; gap: 8px;
           width: 100%; overflow: hidden; border-radius: 10px;

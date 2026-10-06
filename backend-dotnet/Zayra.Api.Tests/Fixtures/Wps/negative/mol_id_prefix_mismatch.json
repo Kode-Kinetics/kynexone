@@ -1,0 +1,10 @@
+{
+  "expectedCode": "mol_id_prefix_mismatch",
+  "patch": {
+    "rows": {
+      "0": {
+        "molId": "2098765432"
+      }
+    }
+  }
+}

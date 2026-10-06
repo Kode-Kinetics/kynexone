@@ -875,11 +875,6 @@ public class DashboardController : ControllerBase
     private static string DepartmentLabel(string? department) =>
         string.IsNullOrWhiteSpace(department) ? "Unassigned" : department.Trim();
 
-    private static readonly HashSet<string> SaudiNationalities = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "SA", "SAU", "Saudi", "Saudi Arabia",
-    };
-
     // ── Analytics (cached part of /full) ──────────────────────────────────────────────────────
 
     /// <summary>
@@ -1039,7 +1034,7 @@ public class DashboardController : ControllerBase
         {
             var key = g.Key?.Trim();
             if (string.IsNullOrEmpty(key)) unknown += g.Count;
-            else if (SaudiNationalities.Contains(key)) saudi += g.Count;
+            else if (Infrastructure.Compliance.SaudiNationality.IsSaudi(key)) saudi += g.Count;
             else nonSaudi += g.Count;
         }
         decimal? pct = saudi + nonSaudi > 0 ? Math.Round(saudi * 100m / (saudi + nonSaudi), 1) : null;

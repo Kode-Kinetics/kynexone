@@ -152,6 +152,8 @@ export interface AuditLogItem {
   metadata?: string;
   userId?: string;
   createdAtUtc: string;
+  /** True when metadata, IP and user agent were withheld (caller lacks security.manage). */
+  rawDetailRedacted?: boolean;
 }
 
 export interface PagedResult<T> {

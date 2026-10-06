@@ -5,6 +5,8 @@ import {
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { useTranslation } from 'react-i18next';
+import { reloadAppAsync } from 'expo';
+import { setLanguage } from '@/config/i18n';
 import { useAuthStore } from '@/auth/authStore';
 import { APP_VERSION, COLORS } from '@/config';
 import { FEATURES } from '@/config/features';
@@ -58,7 +60,7 @@ function SectionHeader({ title }: { title: string }) {
 
 export default function SettingsScreen() {
   const navigation = useNavigation<any>();
-  const { i18n } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { user, logout } = useAuthStore();
   const [biometricEnabled, setBiometricEnabled] = useState(false);
   const [pushEnabled, setPushEnabled] = useState(false);
@@ -92,13 +94,24 @@ export default function SettingsScreen() {
 
   const toggleLanguage = async () => {
     const newLang = i18n.language === 'ar' ? 'en' : 'ar';
-    await i18n.changeLanguage(newLang);
-    // Note: RTL change requires app restart in production
-    // I18nManager.forceRTL(newLang === 'ar');
-    Alert.alert(
-      'Language Changed',
-      newLang === 'ar' ? 'تم التغيير إلى العربية' : 'Changed to English',
-    );
+    // Translates now, persists the choice, and sets the native direction (config/i18n.ts).
+    const { restartRequired } = await setLanguage(newLang);
+    if (!restartRequired) {
+      Alert.alert(t('settings.languageChanged'), newLang === 'ar' ? t('settings.changedToArabic') : t('settings.changedToEnglish'));
+      return;
+    }
+    // React Native fixes the layout direction per process: Arabic text in a left-to-right layout
+    // (or the reverse) until the app restarts. Offer the restart rather than leave it half-flipped.
+    Alert.alert(t('settings.restartTitle'), t('settings.restartBody'), [
+      { text: t('settings.later'), style: 'cancel' },
+      {
+        text: t('settings.restartNow'),
+        onPress: () => {
+          reloadAppAsync('Language direction changed').catch((error) =>
+            console.warn('[Settings] Reload failed; the direction applies on next launch:', error));
+        },
+      },
+    ]);
   };
 
   const handleLogout = () => {
@@ -178,7 +191,7 @@ export default function SettingsScreen() {
         <View style={{ backgroundColor: '#fff', marginHorizontal: 16, borderRadius: 14, overflow: 'hidden' }}>
           <SettingRow
             icon="🌐"
-            title="Language"
+            title={t('settings.language')}
             subtitle={i18n.language === 'ar' ? 'العربية' : 'English'}
             onPress={toggleLanguage}
             rightElement={

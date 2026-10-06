@@ -137,18 +137,20 @@ public class CountryPackFrameworkTests
     }
 
     [Fact]
-    public void Resolver_WpsExporters_ThreeCountriesProduceDifferentFormats()
+    public async Task Resolver_WpsExporters_ThreeCountriesProduceDifferentFormats()
     {
-        var ksaExp   = new KsaWageProtectionExporter();
-        var uaeExp   = new UaeWageProtectionExporter();
-        var qatarExp = new QatarWageProtectionExporter();
+        // The format each exporter ACTUALLY writes — not a literal list that can go stale (it used to
+        // say "mudad-xml" long after the KSA exporter stopped producing it).
+        var input = new WageProtectionExportInput(
+            Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 2026, 9, "7-1234567", string.Empty, "Co", string.Empty,
+            Array.Empty<WpsEmployee>());
+        var formats = new List<string>();
+        foreach (IWageProtectionExporter exporter in new IWageProtectionExporter[]
+                 { new KsaWageProtectionExporter(), new UaeWageProtectionExporter(), new QatarWageProtectionExporter() })
+            formats.Add((await exporter.ExportAsync(input, CancellationToken.None)).Format);
 
-        // Formats are compile-time constants — verify all three are distinct
-        // (no two countries accidentally share the same WPS file format)
-        var formats = new[] { "mudad-xml", "mohre-sif", "qcb-sif" };
         Assert.Distinct(formats);
-        Assert.IsType<KsaWageProtectionExporter>(ksaExp);
-        Assert.IsType<UaeWageProtectionExporter>(uaeExp);
-        Assert.IsType<QatarWageProtectionExporter>(qatarExp);
+        Assert.Equal(Zayra.Api.Infrastructure.Payroll.WpsConformance.KsaPayrollRegisterFormat, formats[0]);
+        Assert.Equal(new[] { "mohre-sif", "qcb-sif" }, formats.Skip(1));
     }
 }

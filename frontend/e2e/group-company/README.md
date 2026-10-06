@@ -130,7 +130,7 @@ npx playwright test e2e/group-company --list    # parse check, no run
 | Variable | Default | Used for |
 |---|---|---|
 | `PLAYWRIGHT_BASE_URL` | `http://localhost:5173` | frontend baseURL |
-| `E2E_GROUP_PASSWORD` | `GroupDemo123!x` outside CI; generated per run in CI | every group-tenant user |
+| `E2E_GROUP_PASSWORD` | a local-only default in `e2e/world.ts` outside CI; generated per run in CI | every group-tenant user |
 | `PLATFORM_ADMIN_EMAIL` | **none** — must match the API process | the platform owner, and the bootstrap |
 | `PLATFORM_ADMIN_PASSWORD` | **none** — must match the API process; generated per run in CI | the platform owner, and the bootstrap |
 
@@ -140,7 +140,7 @@ retired and the preflight refuses them. The full contract is in docs/CHROME_SECU
 
 ## Provisioned test data (frontend/e2e/bootstrap, declared in frontend/e2e/world.ts)
 
-Password for **all** users below: `E2E_GROUP_PASSWORD` (`GroupDemo123!x` locally). Tenant slug doubles as the
+Password for **all** users below: `E2E_GROUP_PASSWORD` (local default in `e2e/world.ts`). Tenant slug doubles as the
 login "Workspace" field. Employee codes follow `<COMPANY-CODE>-E<number>`.
 
 ### Tenants (AccountType = Group)

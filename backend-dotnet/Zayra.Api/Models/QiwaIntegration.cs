@@ -171,8 +171,14 @@ public static class QiwaSyncLogStatuses
     /// </summary>
     public const string Simulated  = "Simulated";
 
-    /// <summary>What every screen calls a simulated result.</summary>
-    public const string SimulatedLabel = "Simulated (sandbox)";
+    /// <summary>What every screen calls a simulated result: a readiness check, never a filing.</summary>
+    public const string SimulatedLabel = "Qiwa data check only (nothing sent to Qiwa)";
+
+    /// <summary>The mode label when (and only when) a partner-agreement live adapter is running.</summary>
+    public const string PartnerIntegrationLabel = "Qiwa partner integration (agreement on file)";
+
+    /// <summary>The integration mode as a screen shows it. Never "Live", "Connected" or "Synced".</summary>
+    public static string ModeLabel(bool isLiveIntegration) => isLiveIntegration ? PartnerIntegrationLabel : SimulatedLabel;
 
     /// <summary>
     /// Rows written before F09 say "Success" but carry the simulator's envelope; this marker in
@@ -191,13 +197,26 @@ public static class QiwaSyncLogStatuses
     public static string Normalise(string status, string? responsePayloadJson) =>
         IsSimulated(status, responsePayloadJson) ? Simulated : status;
 
+    /// <summary>Dead-letter reasons the worker writes when a tenant has no usable Qiwa credentials.</summary>
+    public const string MissingClientIdReason = "Missing QIWA client ID — credentials not configured for this tenant.";
+    public const string MissingSecretReason = "QIWA client secret missing or could not be decrypted.";
+
+    /// <summary>
+    /// A dead letter caused only by absent credentials. Before the sync endpoints refused to queue work no
+    /// server could send, the data-check deployment wrote these for every queued push. They are not a data
+    /// problem anyone can fix in an employee record, so they are not counted as "Qiwa checks need attention".
+    /// </summary>
+    public static bool IsCredentialsDeadLetter(string? status, string? deadLetterReason) =>
+        string.Equals(status, DeadLetter, StringComparison.Ordinal)
+        && (deadLetterReason == MissingClientIdReason || deadLetterReason == MissingSecretReason);
+
     /// <summary>One plain-language label per status.</summary>
     public static string Describe(string status, string? responsePayloadJson) => Normalise(status, responsePayloadJson) switch
     {
         Simulated => SimulatedLabel,
-        Success => "Filed with Qiwa",
-        Pending => "Waiting to send",
-        Processing => "Sending to Qiwa",
+        Success => "Accepted by the Qiwa partner API",
+        Pending => "Queued",
+        Processing => "In progress",
         Failed => "Failed, will retry",
         DeadLetter => "Gave up: needs attention",
         Skipped => "Skipped",

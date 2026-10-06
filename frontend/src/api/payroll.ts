@@ -168,6 +168,9 @@ export interface PayrollValidationOverrideReport {
   overridableCodes: string[];
   /** Codes that can never be overridden — these must be fixed at source. */
   nonOverridableCodes: string[];
+  /** Employees paid by cash/cheque (outside the bank/WPS file); acknowledged by count at Approve. */
+  paidOutsideBankFile?: { employeeId: number; code: string; message: string }[];
+  mudadNote?: string;
 }
 
 export interface AuditIntegrityFailure {
@@ -236,6 +239,53 @@ export interface PayrollPaymentBatch {
   wpsSubmissionReference: string | null;
   wpsRejectionReason: string | null;
   createdAtUtc: string;
+  /** Stored Mudad/WPS acceptance evidence for this batch. Accepted needs at least one. */
+  acceptanceEvidenceCount?: number;
+  /** True when the run's legal entity is Saudi: the bank file is the ANB instruction. */
+  isSaudi?: boolean;
+  /** What the "generate" button below actually produces, in plain words. */
+  generatedFileLabel?: string;
+  /** The lifecycle status that applies (a frozen ANB instruction counts as Generated). Server-computed. */
+  effectiveWpsStatus?: string;
+  /** Plain-language status, e.g. "Accepted — evidence attached (not verified by Mudad)". */
+  wpsStatusLabel?: string;
+  /** The statuses an operator may pick next. The server owns the transition table; the screen never copies it. */
+  allowedNextStatuses?: string[];
+  /** The newest stored acceptance evidence, which marking Accepted refers to. */
+  latestEvidenceId?: string | null;
+  /** Set when THIS viewer may not record Accepted (they generated the file or uploaded the evidence). */
+  acceptBlockedReason?: string | null;
+  /** Payslips left out of this bank batch (cash/cheque, zero net), with amount and reason. */
+  paymentExclusions?: PaymentBatchExclusion[];
+  excludedTotal?: number;
+  /** Shown when the batch leaves cash/cheque wages out of the bank/WPS file. */
+  mudadNote?: string | null;
+}
+
+export interface PaymentBatchExclusion {
+  employeeId: number;
+  employeeCode: string;
+  amount: number;
+  reasonCode: string;
+  reason: string;
+  /** A cash/cheque wage whose payment can be recorded against this batch. */
+  canRecordOutsidePayment?: boolean;
+  outsidePaymentRecorded?: boolean;
+}
+
+export type WpsEvidenceKind = 'bank_output_file' | 'mudad_compliance_screenshot';
+
+export interface WpsEvidence {
+  evidenceId: string;
+  batchId: string;
+  kind: WpsEvidenceKind;
+  kindLabel: string;
+  sha256: string;
+  sizeBytes: number;
+  contentType: string;
+  fileName: string;
+  note: string | null;
+  uploadedAtUtc: string;
 }
 
 export interface PayrollPaymentRecord {
@@ -549,13 +599,14 @@ export const payrollApi = {
   // cash count, so a client that silently echoes the server's number back would be no control.
   approveRun: (
     id: string,
-    body: { notes?: string; expectedExcludedCount?: number | null; expectedOverriddenCount?: number | null } = {},
+    body: { notes?: string; expectedExcludedCount?: number | null; expectedOverriddenCount?: number | null; expectedOutsideBankCount?: number | null } = {},
   ) =>
     client
       .post<PayrollRun>(`/api/payroll/runs/${id}/approve`, {
         notes: body.notes,
         expectedExcludedCount: body.expectedExcludedCount ?? null,
         expectedOverriddenCount: body.expectedOverriddenCount ?? null,
+        expectedOutsideBankCount: body.expectedOutsideBankCount ?? null,
       })
       .then((r) => r.data),
 
@@ -569,9 +620,9 @@ export const payrollApi = {
     client.get<PayrollValidationOverrideReport>(`/api/payroll/runs/${id}/validation-overrides`).then((r) => r.data),
 
   /** Clears ONE blocking validation error, durably, with a mandatory reason on the audit chain. */
-  resolveValidationResult: (runId: string, resultId: string, reason: string) =>
+  resolveValidationResult: (runId: string, resultId: string, reason: string, documentReference?: string) =>
     client
-      .post<{ message?: string }>(`/api/payroll/runs/${runId}/validation/${resultId}/resolve`, { reason })
+      .post<{ message?: string }>(`/api/payroll/runs/${runId}/validation/${resultId}/resolve`, { reason, documentReference })
       .then((r) => r.data),
 
   /**
@@ -685,8 +736,11 @@ export const payrollApi = {
 
   // currency omitted by default so the backend resolves it from the tenant's company currency.
   // Pass an explicit currency only to override.
-  createPaymentBatch: (runId: string, paymentMethod = 'WPS', currency?: string) =>
-    client.post<PayrollPaymentBatch>(`/api/payroll/runs/${runId}/payment-batches`, { paymentMethod, ...(currency ? { currency } : {}) }).then((r) => r.data),
+  createPaymentBatch: (runId: string, paymentMethod = 'WPS', currency?: string, expectedOutsideBankCount?: number) =>
+    client.post<PayrollPaymentBatch>(`/api/payroll/runs/${runId}/payment-batches`, {
+      paymentMethod, ...(currency ? { currency } : {}),
+      ...(expectedOutsideBankCount !== undefined ? { expectedOutsideBankCount } : {}),
+    }).then((r) => r.data),
 
   listPaymentBatches: (runId?: string) =>
     client.get<PayrollPaymentBatch[]>('/api/payroll/payment-batches', { params: runId ? { runId } : undefined }).then((r) => r.data),
@@ -697,8 +751,30 @@ export const payrollApi = {
   generateWpsFile: (batchId: string) =>
     client.post<WPSFileBatch>(`/api/payroll/payment-batches/${batchId}/wps-file`).then((r) => r.data),
 
-  updateWpsStatus: (batchId: string, body: { status: string; reference?: string; notes?: string }) =>
-    client.post<{ batchId: string; wpsStatus: string }>(`/api/payroll/payment-batches/${batchId}/wps-status`, body).then((r) => r.data),
+  updateWpsStatus: (batchId: string, body: { status: string; reference?: string; notes?: string; evidenceId?: string }) =>
+    client.post<{ batchId: string; wpsStatus: string; wpsStatusLabel?: string }>(`/api/payroll/payment-batches/${batchId}/wps-status`, body).then((r) => r.data),
+
+  /** Records a cash/cheque wage paid outside the bank file (clears its share of Salaries Payable). */
+  recordOutsidePayment: (batchId: string, body: { employeeId: number; method: 'Cash' | 'Cheque'; reference: string; paidDate?: string }) =>
+    client.post(`/api/payroll/payment-batches/${batchId}/outside-payments`, body).then((r) => r.data),
+
+  /** Reverses a recorded outside-the-bank-file payment (e.g. a bounced cheque); a reason is required. */
+  reverseOutsidePayment: (batchId: string, employeeId: number, reason: string) =>
+    client.post(`/api/payroll/payment-batches/${batchId}/outside-payments/${employeeId}/reverse`, { reason }).then((r) => r.data),
+
+  /** Stores proof of Mudad/WPS acceptance. The server hashes the bytes it receives (SHA-256). */
+  uploadWpsEvidence: (batchId: string, kind: WpsEvidenceKind, file: File, note?: string) => {
+    const form = new FormData();
+    form.append('kind', kind);
+    form.append('file', file);
+    if (note) form.append('note', note);
+    return client.post<WpsEvidence>(`/api/payroll/payment-batches/${batchId}/wps-evidence`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }).then((r) => r.data);
+  },
+
+  listWpsEvidence: (batchId: string) =>
+    client.get<WpsEvidence[]>(`/api/payroll/payment-batches/${batchId}/wps-evidence`).then((r) => r.data),
 
   settlePaymentBatch: (batchId: string, body: { reference?: string; paidDate?: string }) =>
     client.post<{ batchId: string; runId: string; wpsStatus: string; settled: number }>(`/api/payroll/payment-batches/${batchId}/settle`, body).then((r) => r.data),

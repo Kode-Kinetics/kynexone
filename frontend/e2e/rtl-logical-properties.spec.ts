@@ -211,7 +211,13 @@ test.describe('RTL logical-property ratchet', () => {
     // dir must exist on the server-rendered html, and be corrected before first paint —
     // LocaleProvider's effect runs too late and only inside the tenant shell.
     expect(layout).toContain('dir="ltr"');
-    expect(layout).toContain("localStorage.getItem('kynexone-locale')");
+    expect(layout).toContain('LOCALE_BOOT');
+    // The boot script reads the user's explicit choice (versioned key; the legacy
+    // 'kynexone-locale' was written on every mount, so it is not a choice) and then the
+    // tenant default LocaleProvider cached.
+    const boot = fs.readFileSync(path.join(FRONTEND_ROOT, 'src/i18n/localeBoot.ts'), 'utf8');
+    expect(boot).toContain("LOCALE_CHOICE_KEY = 'kynexone-locale-choice-v2'");
+    expect(boot).toContain('s.getItem(\'${LOCALE_CHOICE_KEY}\')');
     expect(layout).toContain('suppressHydrationWarning');
     // Inter has no Arabic coverage; without a fallback the Arabic UI renders in whatever
     // the OS happens to supply.

@@ -1,0 +1,10 @@
+{
+  "expectedCode": "iban_not_upper_case",
+  "patch": {
+    "rows": {
+      "0": {
+        "iban": "sa0380000000608010167519"
+      }
+    }
+  }
+}
