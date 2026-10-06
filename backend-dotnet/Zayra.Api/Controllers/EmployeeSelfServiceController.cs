@@ -9,6 +9,7 @@ using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Infrastructure.Notifications;
@@ -286,8 +287,14 @@ public class EmployeeSelfServiceController : ControllerBase
         return Created($"/api/ess/profile-change-request/{change.Id}", change);
     }
 
+    // The HR queue of every employee's requested personal-detail changes, and the decisions on it.
+    // The role list alone is not the gate: the legacy role handler lets a module permission satisfy it,
+    // and on this controller that permission was ess.read (list) or manager.approve (decide), so any
+    // employee could read the tenant's queue and any line manager could apply a change tenant-wide.
+    // employees.write is what the named HR roles hold and what an employee or line manager does not.
     [HttpGet("profile-change-requests")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.write")]
     public async Task<IActionResult> ProfileChangeRequests(CancellationToken cancellationToken)
     {
         var tenantId = Guid.Parse(User.FindFirstValue("tenant_id")!);
@@ -300,6 +307,7 @@ public class EmployeeSelfServiceController : ControllerBase
 
     [HttpPost("profile-change-requests/{id:guid}/approve")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.write")]
     public async Task<IActionResult> ApproveProfileChange(Guid id, ProfileChangeDecisionDto request, CancellationToken cancellationToken)
     {
         var tenantId = Guid.Parse(User.FindFirstValue("tenant_id")!);
@@ -333,6 +341,7 @@ public class EmployeeSelfServiceController : ControllerBase
 
     [HttpPost("profile-change-requests/{id:guid}/reject")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.write")]
     public async Task<IActionResult> RejectProfileChange(Guid id, ProfileChangeDecisionDto request, CancellationToken cancellationToken)
     {
         var tenantId = Guid.Parse(User.FindFirstValue("tenant_id")!);

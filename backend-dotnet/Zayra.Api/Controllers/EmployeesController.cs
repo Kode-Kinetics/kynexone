@@ -4732,13 +4732,16 @@ public class EmployeesController : ControllerBase
     /// template, bilingual, stored unique reference, register row. The routes and the response
     /// shape are unchanged, so nothing calling them has to move.</para>
     /// </summary>
+    // Role-gate bypass sweep (LegacyRoleGateBypassSweepTests): issuing a registered letter (appointment letter states salary) resolved to employees.read; HR roles hold employees.write.
     [HttpGet("{id:int}/letters/appointment")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.write")]
     public Task<IActionResult> AppointmentLetter(int id, [FromQuery] string language = HrLetterLanguages.Bilingual, CancellationToken cancellationToken = default)
         => IssueRegisteredLetterAsync(id, HrLetterTypes.AppointmentLetter, language, cancellationToken);
 
     [HttpGet("{id:int}/letters/experience")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.write")]
     public Task<IActionResult> ExperienceLetter(int id, [FromQuery] string language = HrLetterLanguages.Bilingual, CancellationToken cancellationToken = default)
         => IssueRegisteredLetterAsync(id, HrLetterTypes.ExperienceCertificate, language, cancellationToken);
 

@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Models;
 
@@ -273,8 +274,11 @@ public class HrLettersController : ControllerBase
     /// reprint. No new register row and no new reference — a reference identifies a document,
     /// not a download.
     /// </summary>
+    // Role-gate bypass sweep (LegacyRoleGateBypassSweepTests): reprints salary certificates and transfer letters (salary, IBAN, national id). Resolved to employees.read,
+    // so a line Manager or Recruiter could pull them; the named HR roles hold employees.write.
     [HttpGet("register/{id:guid}/pdf")]
     [Authorize(Roles = HrRoles)]
+    [HasPermission("employees.write")]
     public async Task<IActionResult> Reprint(Guid id, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();

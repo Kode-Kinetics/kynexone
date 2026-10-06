@@ -1,10 +1,13 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Leave;
 using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Data;
+using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Leave;
@@ -143,8 +146,16 @@ public class EncashmentController : ControllerBase
         return Created($"/api/leave/encashment/{encashmentRequest.Id}", encashmentRequest);
     }
 
+    // Explicit permission gates on every decision below. The role lists alone were satisfiable by the
+    // permission the legacy resolver infers for this controller (leave.approve / leave.policy_manage),
+    // and the seeded line Manager holds leave.approve, so a Manager could take both decisions and write
+    // an Approved PayrollAdjustment into a payroll run. Each step now needs the key of the function that
+    // owns it: HR's decision is employees.approve (the HR-approval key; HR Manager, HR Director, Admin),
+    // payroll's decision and its reversal are payroll.approve (Payroll Manager, HR Manager, Finance
+    // Approver, Admin). Neither is held by a line Manager or an employee.
     [HttpPost("{id:guid}/hr-approve")]
     [Authorize(Roles = "HR Manager,Admin")]
+    [HasPermission("employees.approve")]
     public async Task<IActionResult> HRApprove(Guid id, [FromBody] EncashmentDecisionRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -159,9 +170,16 @@ public class EncashmentController : ControllerBase
         if (encashment.Status != LeaveEncashmentStatuses.Pending)
             return BadRequest(new { message = "Only pending requests can be HR-approved." });
 
+        var verdict = ApprovalDecisionGuard.Evaluate(DecisionSpec(encashment, LeaveEncashmentStatuses.Pending,
+            await CallerIsSubjectAsync(tenantId.Value, encashment, ct), approvedEarlierStep: false));
+        if (!verdict.Passed) return StatusCode(StatusCodes.Status403Forbidden, new { message = verdict.Message });
+
         encashment.Status = LeaveEncashmentStatuses.HRApproved;
         encashment.DecisionVersion++;
         encashment.HRNotes = req.Notes ?? string.Empty;
+        // Who took the HR step. LeaveEncashmentRequest has no decider column, so the audit trail is the
+        // record the payroll step reads to keep one person from deciding both steps.
+        AddDecisionAudit(tenantId.Value, encashment, HrApprovedAuditAction);
         try { await _db.SaveChangesAsync(ct); }
         catch (DbUpdateConcurrencyException)
         {
@@ -172,6 +190,7 @@ public class EncashmentController : ControllerBase
 
     [HttpPost("{id:guid}/payroll-approve")]
     [Authorize(Roles = "Admin,Payroll Officer,Payroll Manager")]
+    [HasPermission("payroll.approve")]
     public async Task<IActionResult> PayrollApprove(Guid id, [FromBody] EncashmentDecisionRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -187,6 +206,11 @@ public class EncashmentController : ControllerBase
             return BadRequest(new { message = "Only HR-approved requests can be payroll-approved." });
         if (!req.PayrollRunId.HasValue || req.PayrollRunId == Guid.Empty)
             return BadRequest(new { message = "A target payrollRunId must be selected by the payroll approver." });
+
+        var verdict = ApprovalDecisionGuard.Evaluate(DecisionSpec(encashment, LeaveEncashmentStatuses.HRApproved,
+            await CallerIsSubjectAsync(tenantId.Value, encashment, ct),
+            await CallerTookHrStepAsync(tenantId.Value, encashment, ct)));
+        if (!verdict.Passed) return StatusCode(StatusCodes.Status403Forbidden, new { message = verdict.Message });
 
         var targetRun = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(r =>
             r.TenantId == tenantId && r.Id == req.PayrollRunId.Value, ct);
@@ -248,6 +272,7 @@ public class EncashmentController : ControllerBase
         };
         _db.PayrollAdjustments.Add(adjustment);
         encashment.PayrollAdjustmentId = adjustment.Id;
+        AddDecisionAudit(tenantId.Value, encashment, PayrollApprovedAuditAction);
 
         try
         {
@@ -269,6 +294,7 @@ public class EncashmentController : ControllerBase
 
     [HttpPost("{id:guid}/reject")]
     [Authorize(Roles = "HR Manager,Admin")]
+    [HasPermission("employees.approve")]
     public async Task<IActionResult> Reject(Guid id, [FromBody] EncashmentDecisionRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -304,6 +330,7 @@ public class EncashmentController : ControllerBase
 
     [HttpPost("{id:guid}/void")]
     [Authorize(Roles = "Admin,Payroll Manager")]
+    [HasPermission("payroll.approve")]
     public async Task<IActionResult> Void(Guid id, [FromBody] EncashmentVoidRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -367,6 +394,70 @@ public class EncashmentController : ControllerBase
         }
         return Ok(encashment);
     }
+
+    internal const string HrApprovedAuditAction = "leave.encashment.hr_approved";
+    internal const string PayrollApprovedAuditAction = "leave.encashment.payroll_approved";
+
+    /// <summary>
+    /// Strict separation of duties for the two encashment decisions, through the shared checklist.
+    /// The status gate is already answered by the caller (with its own message), so the spec restates it.
+    /// </summary>
+    private static ApprovalDecisionSpec DecisionSpec(
+        LeaveEncashmentRequest encashment, string openStatus, bool subjectIsDecider, bool approvedEarlierStep) => new()
+    {
+        Decision = "Approved",
+        AllowedDecisions = Array.Empty<string>(),
+        Step = null,
+        ParentLabel = "leave encashment",
+        ParentExists = true,
+        ParentStatus = encashment.Status,
+        ParentStatusesAllowingDecision = new[] { openStatus },
+        Lock = ApprovalLock.None,
+        // DECLARED ABSENCE: LeaveEncashmentRequest records no creator, so maker != checker cannot be
+        // checked without a migration. The subject and earlier-step bars below cover the self-dealing case.
+        MakerChecker = MakerCheckerRule.None,
+        SubjectSeparation = new SubjectSeparationRule(subjectIsDecider, null,
+            "Segregation of duties: you cannot approve a leave encashment paid to you."),
+        EarlierStepSeparation = new EarlierStepRule(approvedEarlierStep,
+            "Segregation of duties: you took the HR approval on this encashment, so a different person must take the payroll approval."),
+    };
+
+    /// <summary>True when the caller is the employee the encashment pays.</summary>
+    private async Task<bool> CallerIsSubjectAsync(Guid tenantId, LeaveEncashmentRequest encashment, CancellationToken ct)
+    {
+        if (int.TryParse(User.FindFirst("employee_id")?.Value, out var ownEmployeeId) && ownEmployeeId == encashment.EmployeeId)
+            return true;
+        var uid = this.GetUserId();
+        return uid.HasValue && await _db.Employees.AsNoTracking().AnyAsync(e =>
+            e.TenantId == tenantId && e.Id == encashment.EmployeeId && e.UserAccountId == uid, ct);
+    }
+
+    /// <summary>True when the audit trail records the caller taking this encashment's HR step.</summary>
+    private async Task<bool> CallerTookHrStepAsync(Guid tenantId, LeaveEncashmentRequest encashment, CancellationToken ct)
+    {
+        var uid = this.GetUserId();
+        var entityId = encashment.Id.ToString();
+        return uid.HasValue && await _db.AuditLogs.AsNoTracking().AnyAsync(a =>
+            a.TenantId == tenantId && a.EntityName == nameof(LeaveEncashmentRequest) && a.EntityId == entityId
+            && a.Action == HrApprovedAuditAction && a.UserId == uid, ct);
+    }
+
+    private void AddDecisionAudit(Guid tenantId, LeaveEncashmentRequest encashment, string action) =>
+        _db.AuditLogs.Add(new AuditLog
+        {
+            TenantId = tenantId,
+            CompanyId = encashment.CompanyId,
+            UserId = this.GetUserId(),
+            Action = action,
+            EntityName = nameof(LeaveEncashmentRequest),
+            EntityId = encashment.Id.ToString(),
+            IpAddress = HttpContext?.Connection.RemoteIpAddress?.ToString(),
+            Metadata = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                encashment.EmployeeId, encashment.TotalAmount, encashment.Currency, encashment.PayrollRunId,
+            }),
+            CreatedAtUtc = DateTime.UtcNow,
+        });
 
     private async Task<IActionResult?> ValidateTargetRunAsync(
         Guid tenantId, LeaveEncashmentRequest encashment, PayrollRun run, CancellationToken ct)

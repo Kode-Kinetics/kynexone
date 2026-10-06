@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Leave;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 
 namespace Zayra.Api.Controllers.Leave;
 
@@ -249,8 +250,10 @@ public class LeaveReportsController : ControllerBase
     }
 
     // Salary-linked liability data — restricted to HR/Finance/Payroll roles only
+    // Role-gate bypass sweep (LegacyRoleGateBypassSweepTests): per-employee daily salary. Resolved to leave.read (line Managers, Supervisors, HR Assistant); the named HR, payroll and finance roles hold one of these.
     [HttpGet("liability")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer,Payroll Manager,Finance Approver,Auditor")]
+    [HasPermission("payroll.read", "employees.write")]
     public async Task<IActionResult> Liability(
         [FromQuery] int? year, [FromQuery] Guid? companyId, [FromQuery] Guid? branchId, CancellationToken ct = default)
     {
