@@ -101,9 +101,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const { enrollmentToken, expiresInSeconds } = await authApi.mfaEnrollmentStart();
     // NOT authApi.logout(): logout rotates the session stamp, and the enrolment token is bound to
     // the current stamp, so it would be dead on arrival. Completing enrolment rotates the stamp
-    // itself, which ends this session server-side; here we only drop the local copy.
-    localStorage.removeItem('zayra_access_token');
-    localStorage.removeItem('zayra_refresh_token');
+    // itself, which ends this session server-side; here we only drop the local copy, the same way
+    // every other session exit does (the display language survives, nothing else of this user does).
+    clearSessionKeepingLocale();
     setUser(null);
     setMfaPending(null);
     setMfaEnrollmentPending({ enrollmentToken, expiresInSeconds });
