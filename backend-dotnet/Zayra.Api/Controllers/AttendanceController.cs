@@ -175,11 +175,10 @@ public class AttendanceController : ControllerBase
         pageSize = Math.Clamp(pageSize, 1, 100);
         var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
         var (singleId, setFilter) = scope.Constrain(employeeId);
-        // This service takes a single employeeId (no set-filter overload). For a scoped caller
-        // who requested no specific employee, Constrain yields a set — fail closed to the
-        // caller's own record rather than leaking the whole team.
-        var scopedEmployeeId = setFilter is not null ? scope.CallerEmployeeId : singleId;
-        return await _attendance.GetRawEventsAsync(RequireTenant(), from, to, scopedEmployeeId, processed, page, pageSize, ct);
+        // The scope's set when it has one (a team, a company's employees, or empty for a caller with no
+        // record), exactly as daily() filters. It used to collapse a set to the caller's OWN id, which gave
+        // a company-scoped HR user with no employee record nothing, or before that, everything.
+        return await _attendance.GetRawEventsAsync(RequireTenant(), from, to, singleId, processed, page, pageSize, ct, setFilter);
     }
 
     [HttpGet]

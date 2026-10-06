@@ -15,6 +15,8 @@ using Zayra.Api.Models;
 using Zayra.Api.Application.Jawazat;
 using Zayra.Api.Infrastructure.Jawazat;
 
+using Zayra.Api.Infrastructure.Common;
+
 namespace Zayra.Api.Infrastructure.Approvals;
 
 public class ApprovalWorkflowService : IApprovalWorkflowService
@@ -790,8 +792,17 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         if (context.UserId is not Guid userId) return DecisionBar.None;
         if (approval.RequestedByUserId == userId) return DecisionBar.Requester;
         var subject = approval.RequestedForEmployeeId ?? await ResolveSubjectEmployeeIdAsync(approval, cancellationToken);
-        if (subject is int subjectId && (await SubjectUserIdsAsync(approval.TenantId, subjectId, cancellationToken)).Contains(userId))
-            return DecisionBar.Subject;
+        if (subject is int subjectId)
+        {
+            if ((await SubjectUserIdsAsync(approval.TenantId, subjectId, cancellationToken)).Contains(userId))
+                return DecisionBar.Subject;
+            // EITHER link marks the subject: the login rows above (Employee.UserAccountId and the account
+            // links), OR the employee the caller's own token is linked to (CallerEmployeeResolver, the lookup
+            // every other surface uses). This bar only ever gets stricter; neither lookup can clear it.
+            if (_http?.HttpContext?.User is { Identity.IsAuthenticated: true } principal
+                && await CallerEmployeeResolver.ResolveAsync(_db, principal, approval.TenantId, cancellationToken) == subjectId)
+                return DecisionBar.Subject;
+        }
         // Every load of a request for a decision or a listing includes its decision ledger.
         if (approval.Decisions.Any(x => x.DecidedByUserId == userId)) return DecisionBar.DecidedEarlierStep;
         return DecisionBar.None;

@@ -10,6 +10,8 @@ using Zayra.Api.Application.Performance;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
+using Zayra.Api.Infrastructure.Common;
+
 namespace Zayra.Api.Controllers.Performance;
 
 /// <summary>
@@ -638,22 +640,11 @@ public class ReviewsController : ControllerBase
     /// <summary>
     /// The caller's OWN employee record, whatever their data scope. A scoped caller's scope already names it.
     /// An organisation-wide scope (HR, Admin) does not, so it is read the way <c>DataScopeService</c>
-    /// reads it for everyone else: the <c>employee_id</c> claim, then a work or personal email that matches
-    /// exactly one employee in the tenant. Null when the account is not linked to an employee.
+    /// reads it for everyone else (<see cref="CallerEmployeeResolver"/>: the employee_id claim from the explicit
+    /// login link). Null when the account is not linked to an employee.
     /// </summary>
-    private async Task<int?> OwnEmployeeIdAsync(DataScope scope, Guid tenantId, CancellationToken ct)
-    {
-        if (scope.CallerEmployeeId is int self) return self;
-        if (int.TryParse(User.FindFirstValue("employee_id"), out var linked)) return linked;
-
-        var email = User.FindFirstValue(JwtRegisteredClaimNames.Email) ?? User.FindFirstValue(ClaimTypes.Email);
-        if (string.IsNullOrWhiteSpace(email)) return null;
-        var normalised = email.Trim().ToLowerInvariant();
-        var matches = await _db.Employees.AsNoTracking()
-            .Where(e => e.TenantId == tenantId && !e.IsDeleted && (e.WorkEmail == normalised || e.PersonalEmail == normalised))
-            .Select(e => e.Id).Take(2).ToListAsync(ct);
-        return matches.Count == 1 ? matches[0] : null;
-    }
+    private async Task<int?> OwnEmployeeIdAsync(DataScope scope, Guid tenantId, CancellationToken ct) =>
+        scope.CallerEmployeeId ?? await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId, ct);
 }
 
 // ── DTOs ───────────────────────────────────────────────────────────────────────

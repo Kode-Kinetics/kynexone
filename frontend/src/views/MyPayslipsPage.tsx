@@ -5,7 +5,7 @@ import { AlertTriangle, Download, FileText, RefreshCw } from 'lucide-react';
 import { essApi, type EssPayslipDetail, type EssPayslipLine, type EssPayslipSummary } from '@/src/api/ess';
 import { useLocale } from '@/src/contexts/LocaleContext';
 import { useFormat } from '@/src/hooks/useFormat';
-import { payslipSections } from '@/src/lib/essPayslip';
+import { payslipLineName, payslipMonthLabel, payslipSections } from '@/src/lib/essPayslip';
 import { PayslipDeductionsBreakdown } from '@/src/components/deductions/PayslipDeductionsBreakdown';
 
 /** Two-decimal amounts in the viewer's number format; the currency code is printed beside it. */
@@ -26,7 +26,7 @@ function errorMessage(e: unknown, t: (k: string) => string, fallback: string) {
  * are never part of the deductions total.
  */
 export function MyPayslipsPage() {
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   const money = useMoney();
   const [slips, setSlips] = useState<EssPayslipSummary[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -122,7 +122,7 @@ export function MyPayslipsPage() {
                         ? 'bg-sapphire/10 font-semibold text-sapphire dark:bg-cyanAccent/10 dark:text-cyanAccent'
                         : 'text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-white/[0.04]'}`}
                     >
-                      <span>{s.periodLabel || '—'}</span>
+                      <span>{payslipMonthLabel(s.year, s.month, locale, s.periodLabel)}</span>
                       <span className="font-mono text-xs tabular-nums">{s.currency} {money(s.netSalary)}</span>
                     </button>
                   </li>
@@ -152,7 +152,7 @@ function PayslipDetailView({ detail, downloading, downloadError, onDownload }: {
   downloadError: string | null;
   onDownload: () => void;
 }) {
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   const money = useMoney();
   const s = payslipSections(detail.lines);
   const cur = detail.currency;
@@ -160,7 +160,7 @@ function PayslipDetailView({ detail, downloading, downloadError, onDownload }: {
   return (
     <div className="space-y-4" data-testid="my-payslip-detail">
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <h2 className="text-base font-bold text-slate-800 dark:text-slate-100">{detail.periodLabel}</h2>
+        <h2 className="text-base font-bold text-slate-800 dark:text-slate-100">{payslipMonthLabel(detail.year, detail.month, locale, detail.periodLabel)}</h2>
         <button
           type="button"
           onClick={onDownload}
@@ -212,6 +212,7 @@ function LineBlock({ title, lines, totalLabel, total, currency, empty, muted }: 
   empty?: string;
   muted?: boolean;
 }) {
+  const { t, locale } = useLocale();
   const money = useMoney();
   return (
     <div className={`rounded-xl border p-3 ${muted ? 'border-dashed border-slate-300 dark:border-white/[0.12]' : 'border-slate-200 dark:border-white/[0.06]'}`}>
@@ -222,7 +223,7 @@ function LineBlock({ title, lines, totalLabel, total, currency, empty, muted }: 
         <dl className="space-y-1 text-sm">
           {lines.map((l, i) => (
             <div key={`${l.name}-${i}`} className="flex justify-between gap-2">
-              <dt className="text-slate-700 dark:text-slate-200">{l.name}</dt>
+              <dt className="text-slate-700 dark:text-slate-200">{payslipLineName(l, locale, t)}</dt>
               <dd className="font-mono tabular-nums text-slate-800 dark:text-slate-100">{money(l.amount)}</dd>
             </div>
           ))}

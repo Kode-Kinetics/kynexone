@@ -8,6 +8,8 @@ using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Models;
 
+using Zayra.Api.Infrastructure.Common;
+
 namespace Zayra.Api.Controllers;
 
 [ApiController]
@@ -330,16 +332,6 @@ public class NotificationsController : ControllerBase
     }
 
     /// <summary>Caller's own employee id, scoped to the caller's tenant. Mirrors MobileController.</summary>
-    private async Task<int?> ResolveCallerEmployeeIdAsync(Guid tenantId, CancellationToken ct)
-    {
-        if (int.TryParse(User.FindFirstValue("employee_id"), out var empId)) return empId;
-
-        var email = User.FindFirstValue("email") ?? User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(email)) return null;
-        var normalized = email.Trim().ToUpperInvariant();
-        var employee = await _db.Employees.AsNoTracking()
-            .FirstOrDefaultAsync(x => x.TenantId == tenantId && !x.IsDeleted
-                && (x.WorkEmail.ToUpper() == normalized || x.PersonalEmail.ToUpper() == normalized), ct);
-        return employee?.Id;
-    }
+    private Task<int?> ResolveCallerEmployeeIdAsync(Guid tenantId, CancellationToken ct) =>
+        CallerEmployeeResolver.ResolveAsync(_db, User, tenantId, ct);
 }

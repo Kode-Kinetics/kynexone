@@ -6,6 +6,8 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
+using Zayra.Api.Infrastructure.Common;
+
 namespace Zayra.Api.Controllers;
 
 /// <summary>
@@ -29,34 +31,14 @@ public class MobileController : ControllerBase
     public MobileController(ZayraDbContext db) => _db = db;
 
     /// <summary>
-    /// Resolves the authenticated caller's own employee id from the JWT (employee_id claim, with a
-    /// work/personal-email fallback), scoped to the caller's tenant. Returns null when the account is
+    /// Resolves the authenticated caller's own employee id from the JWT (employee_id claim from the
+    /// explicit login link, via CallerEmployeeResolver), scoped to the caller's tenant. Returns null when the account is
     /// not linked to an employee record in this tenant. Mirrors EmployeeSelfServiceController.
     /// </summary>
-    private async Task<int?> ResolveCallerEmployeeIdAsync(Guid tenantId, CancellationToken ct)
-    {
-        if (int.TryParse(User.FindFirstValue("employee_id"), out var empId))
-        {
-            // A JWT claim is an identifier, not proof that the employee still exists in this tenant.
-            // Validate it so a stale/cross-tenant/unlinked session cannot mutate mobile resources.
-            var linked = await _db.Employees.AsNoTracking()
-                .AnyAsync(x => x.TenantId == tenantId && x.Id == empId && !x.IsDeleted
-                    && x.Status == EmployeeStatuses.Active, ct);
-            return linked ? empId : null;
-        }
-
-        var email = User.FindFirstValue("email") ?? User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
-        if (!string.IsNullOrWhiteSpace(email))
-        {
-            var normalizedEmail = email.Trim().ToUpperInvariant();
-            var employee = await _db.Employees.AsNoTracking()
-                .FirstOrDefaultAsync(x => x.TenantId == tenantId && !x.IsDeleted &&
-                    x.Status == EmployeeStatuses.Active &&
-                    (x.WorkEmail.ToUpper() == normalizedEmail || x.PersonalEmail.ToUpper() == normalizedEmail), ct);
-            if (employee is not null) return employee.Id;
-        }
-        return null;
-    }
+    private Task<int?> ResolveCallerEmployeeIdAsync(Guid tenantId, CancellationToken ct) =>
+        // The shared lookup (claim from the explicit link, employee present in this tenant), plus Active:
+        // a JWT claim is an identifier, not proof that the employee may still act.
+        CallerEmployeeResolver.ResolveAsync(_db, User, tenantId, ct, requireActive: true);
 
     // ── Device Registration ──────────────────────────────────────────────────
 

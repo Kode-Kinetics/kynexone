@@ -414,7 +414,8 @@ public static class ModuleCatalog
                 "Pre-authorisation and approval of extra hours. Statutory overtime pay is a payroll "
                 + "pay component and is unaffected by this switch.",
             RoutePrefixes = ["/api/overtime"],
-            NavPaths = ["/overtime"],
+            // The employee's own overtime page goes with the module, as /ess/benefits does with Benefits.
+            NavPaths = ["/overtime", "/ess/overtime"],
             NotificationCategories = [NotificationCategories.Overtime],
         },
         new ModuleDefinition
