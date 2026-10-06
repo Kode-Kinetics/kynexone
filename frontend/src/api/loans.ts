@@ -15,6 +15,10 @@ export interface LoanType {
   minServiceMonths: number;
   requiresApproval: boolean;
   isActive: boolean;
+  /** When true, every active grade needs a limit for this type and grade limits are enforced. */
+  gradeLimited?: boolean;
+  /** Facility component that carries the grade limits (LOAN_<Code>); set once grade limiting is enabled. */
+  entitlementComponentCode?: string | null;
 }
 
 export interface EmployeeLoan {

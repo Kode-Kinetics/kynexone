@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Zayra.Api.Data;
@@ -11,9 +12,11 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Migrations
 {
     [DbContext(typeof(ZayraDbContext))]
-    partial class ZayraDbContextModelSnapshot : ModelSnapshot
+    [Migration("20261006000100_AddGradeLoanLimits")]
+    partial class AddGradeLoanLimits
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -12776,11 +12779,6 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("name");
 
-                    b.Property<string>("NameAr")
-                        .HasMaxLength(120)
-                        .HasColumnType("character varying(120)")
-                        .HasColumnName("name_ar");
-
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
@@ -15811,10 +15809,6 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("cooldown_months_after_repayment");
 
-                    b.Property<Guid?>("CopiedFromPolicyId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("copied_from_policy_id");
-
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -15823,20 +15817,9 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
-                    b.Property<bool>("CreatedByOfferingSwitch")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false)
-                        .HasColumnName("created_by_offering_switch");
-
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean")
                         .HasColumnName("is_active");
-
-                    b.Property<bool>("IsOffered")
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(true)
-                        .HasColumnName("is_offered");
 
                     b.Property<Guid>("LoanTypeId")
                         .HasColumnType("uuid")
@@ -15895,8 +15878,6 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "CompanyId");
 
-                    b.HasIndex("TenantId", "CopiedFromPolicyId");
-
                     b.HasIndex("TenantId", "LoanTypeId");
 
                     b.HasIndex("TenantId", "CompanyId", "LoanTypeId")
@@ -15907,12 +15888,7 @@ namespace Zayra.Api.Migrations
                         .IsUnique()
                         .HasFilter("company_id IS NOT NULL");
 
-                    b.ToTable("loan_policies", null, t =>
-                        {
-                            t.HasCheckConstraint("ck_loan_policies__copied_from_only_on_switch", "copied_from_policy_id IS NULL OR created_by_offering_switch");
-
-                            t.HasCheckConstraint("ck_loan_policies__switch_stub_not_offered", "NOT created_by_offering_switch OR NOT is_offered");
-                        });
+                    b.ToTable("loan_policies", (string)null);
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.LoanRepayment", b =>
@@ -25883,15 +25859,6 @@ namespace Zayra.Api.Migrations
                         .HasPrincipalKey("TenantId", "Id")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
-                });
-
-            modelBuilder.Entity("Zayra.Api.Models.LoanPolicy", b =>
-                {
-                    b.HasOne("Zayra.Api.Models.LoanPolicy", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId", "CopiedFromPolicyId")
-                        .HasPrincipalKey("TenantId", "Id")
-                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.LoanRepayment", b =>
