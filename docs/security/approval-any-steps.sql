@@ -12,6 +12,8 @@
 --    Act: confirm each is being handled by HR or Admin. Requisitions submitted before #181 appear here
 --    (they were created without routing); they stay decidable by HR Manager, Manager, HR Director or Admin.
 --    For an employee change (EmployeeChangeRequest: IBAN, salary, bank), check who is expected to decide it.
+--    configured_role shows what the workflow step was set to: a finance role there (Finance, Finance Approver,
+--    Payroll Manager) means that request now waits for HR or Admin instead of Finance.
 SELECT
     r.tenant_id,
     r.id                    AS approval_request_id,
@@ -21,8 +23,12 @@ SELECT
     r.current_step_order,
     r.current_approver_type,
     r.current_approver_role,
+    ws.approver_type        AS configured_type,
+    ws.approver_role        AS configured_role,
     r.created_at_utc
 FROM approval_requests r
+LEFT JOIN approval_workflow_steps ws
+       ON ws.workflow_id = r.workflow_id AND ws.step_order = r.current_step_order
 WHERE r.status = 'Pending'
   AND r.current_approver_user_id IS NULL
   AND r.current_approver_employee_id IS NULL
