@@ -136,7 +136,10 @@ public sealed class LoginAbuseGuardTests
         using var guard = Guard();
         var id = Guid.NewGuid();
         var version = LoginAbuseGuard.CredentialVersion("PBKDF2$600000$salt$key", false, null);
-        var token = guard.IssueKnownDeviceToken("tenant", "acme", "u@acme.test", id, version, DateTime.UtcNow)!;
+        var device = Guid.NewGuid();
+        var token = guard.IssueKnownDeviceToken("tenant", "acme", "u@acme.test", id, version, device, DateTime.UtcNow)!;
+        guard.TryReadKnownDevice(token, "tenant", "acme", "u@acme.test", id, version, out var read).Should().BeTrue();
+        read.Should().Be(device, "the token carries a stable per-device id");
 
         guard.IsKnownDevice(token, "tenant", "ACME", "U@acme.test", id, version).Should().BeTrue();
         guard.IsKnownDevice(token, "tenant", "acme", "other@acme.test", id, version).Should().BeFalse("bound to one account");
@@ -150,22 +153,29 @@ public sealed class LoginAbuseGuardTests
         LoginAbuseGuard.CredentialVersion("h", true, T0).Should().NotBe(LoginAbuseGuard.CredentialVersion("h", true, T0.AddTicks(10)),
             "re-enrolling MFA (new configured time) is a new credential");
         guard.IsKnownDevice(token[..^4] + "AAAA", "tenant", "acme", "u@acme.test", id, version).Should().BeFalse("tampered");
-        guard.IsKnownDevice(guard.IssueKnownDeviceToken("tenant", "acme", "u@acme.test", id, version, DateTime.UtcNow.AddDays(-91)),
+        guard.IsKnownDevice(guard.IssueKnownDeviceToken("tenant", "acme", "u@acme.test", id, version, device, DateTime.UtcNow.AddDays(-91)),
             "tenant", "acme", "u@acme.test", id, version).Should().BeFalse("older than 90 days");
         using var otherRing = new LoginAbuseGuard(dataProtection: DataProtectionProvider.Create("another-key-ring"));
         otherRing.IsKnownDevice(token, "tenant", "acme", "u@acme.test", id, version).Should().BeFalse();
     }
 
     [Fact]
-    public void AKnownDeviceThatKeepsGuessing_StopsBeingTrusted()
+    public void AKnownDeviceThatKeepsGuessing_StopsBeingTrusted_WithoutTouchingTheOwnersOtherDevices()
     {
+        LoginAbuseGuard.KnownDeviceFailureLimit.Should().Be(5);
         using var guard = Guard();
+        var stolen = Guid.NewGuid();
+        var other = Guid.NewGuid();
         for (var i = 0; i < LoginAbuseGuard.KnownDeviceFailureLimit - 1; i++)
-            guard.RecordKnownDeviceFailure("tenant", "acme", "u@acme.test", T0);
-        guard.KnownDeviceStillTrusted("tenant", "acme", "u@acme.test", T0).Should().BeTrue();
-        guard.RecordKnownDeviceFailure("tenant", "acme", "u@acme.test", T0);
-        guard.KnownDeviceStillTrusted("tenant", "acme", "u@acme.test", T0).Should().BeFalse(
+            guard.RecordKnownDeviceFailure("tenant", "acme", "u@acme.test", stolen, T0).Should().BeFalse();
+        guard.KnownDeviceStillTrusted("tenant", "acme", "u@acme.test", stolen, T0).Should().BeTrue();
+        guard.RecordKnownDeviceFailure("tenant", "acme", "u@acme.test", stolen, T0)
+            .Should().BeTrue("reaching the limit is reported once, so the owner can be warned");
+        guard.KnownDeviceStillTrusted("tenant", "acme", "u@acme.test", stolen, T0).Should().BeFalse(
             "a stolen cookie is not an unlimited guessing licence");
+        guard.KnownDeviceStillTrusted("tenant", "acme", "u@acme.test", other, T0).Should().BeTrue(
+            "misses are counted per device");
+        guard.RecordKnownDeviceFailure("tenant", "acme", "u@acme.test", stolen, T0).Should().BeFalse("only the crossing is reported");
     }
 
     [Fact]
@@ -183,6 +193,9 @@ public sealed class LoginAbuseGuardTests
         LoginAbuseGuard.WaitPhrase(11).Should().Be("in about a minute");
         LoginAbuseGuard.WaitPhrase(90).Should().Be("in about a minute");
         LoginAbuseGuard.WaitPhrase(91).Should().Be("in a few minutes");
+        LoginAbuseGuard.WaitPhrase(300).Should().Be("in a few minutes");
+        LoginAbuseGuard.WaitPhrase(301).Should().Be("in about 6 minutes");
+        LoginAbuseGuard.WaitPhrase(15 * 60).Should().Be("in about 15 minutes");
         LoginAbuseGuard.Describe(LoginRefusal.IpFailureBudget, 5).Message.Should().EndWith("in a few seconds.");
         new PasswordVerificationBusyException().Message.Should().Contain("in a few seconds",
             "the gate's Retry-After is 2-6 s, so its words say so");
@@ -245,7 +258,7 @@ public sealed class LoginAbuseGuardTests
         var retry = int.Parse(refused.Response.Headers.RetryAfter.ToString());
         retry.Should().BeInRange(14 * 60, 15 * 60, "Retry-After is when the account's window actually frees up");
         ((ObjectResult)refused.Result).Value!.GetType().GetProperty("message")!.GetValue(((ObjectResult)refused.Result).Value)
-            .Should().Be("Too many sign-in attempts for this account. Please try again in a few minutes.");
+            .Should().Be("Too many sign-in attempts for this account. Please try again in about 15 minutes.");
 
         (await TenantLogin(kit, guard, "victim@hardening.local", Password, Http("198.51.100.9"))).Result
             .Should().BeOfType<OkObjectResult>("the victim signs in from their own address");

@@ -632,7 +632,9 @@ public class MfaService : IMfaService
 
             var stateReason = !pu.IsActive ? "platform_user_inactive"
                 : !PlatformRoles.All.Contains(pu.Role) ? "platform_role_invalid"
-                : pu.LockoutEndUtc > completedAtUtc ? "platform_account_locked"
+                // A known device the endpoint already validated gets through an active lockout
+                // (without clearing it); everyone else is refused while it lasts.
+                : pu.LockoutEndUtc > completedAtUtc && !context.KnownDeviceVerified ? "platform_account_locked"
                 : !pu.UpdatedAtUtc.HasValue ? "platform_stamp_missing"
                 : !string.Equals(envelope.SessionStamp, PlatformSessionSecurity.StampValue(pu.UpdatedAtUtc.Value), StringComparison.Ordinal) ? "platform_stamp_changed"
                 : !pu.MfaEnabled || string.IsNullOrWhiteSpace(pu.MfaSecretEncrypted) ? "platform_mfa_state_invalid"
@@ -711,7 +713,8 @@ public class MfaService : IMfaService
 
             challenge.UsedAtUtc = completedAtUtc;
             pu.MfaLastTotpStep = matchedStep;
-            pu.FailedLoginCount = 0;
+            if (!(context.KnownDeviceVerified && pu.LockoutEndUtc > completedAtUtc))
+                pu.FailedLoginCount = 0; // a bypass of an active lockout leaves the shared counter alone
             pu.LastLoginAtUtc = completedAtUtc;
             pu.LastLoginIp = context.IpAddress;
             _db.LoginActivities.Add(new LoginActivity
@@ -770,7 +773,7 @@ public class MfaService : IMfaService
             && committed.IsActive
             && committed.UpdatedAtUtc.HasValue
             && PlatformRoles.All.Contains(committed.Role)
-            && (!committed.LockoutEndUtc.HasValue || committed.LockoutEndUtc <= DateTime.UtcNow)
+            && (!committed.LockoutEndUtc.HasValue || committed.LockoutEndUtc <= DateTime.UtcNow || context.KnownDeviceVerified)
             && string.Equals(envelope.SessionStamp, PlatformSessionSecurity.StampValue(committed.UpdatedAtUtc.Value), StringComparison.Ordinal)
                 ? committed
                 : null;
@@ -1169,7 +1172,7 @@ public class MfaService : IMfaService
                 || challenge.FailedAttempts >= MfaChallengeToken.MaxAttempts
                 || !pu.IsActive
                 || !PlatformRoles.All.Contains(pu.Role)
-                || pu.LockoutEndUtc > completedAtUtc
+                || (pu.LockoutEndUtc > completedAtUtc && !context.KnownDeviceVerified)
                 || !pu.UpdatedAtUtc.HasValue
                 || !string.Equals(envelope.SessionStamp, PlatformSessionSecurity.StampValue(pu.UpdatedAtUtc.Value), StringComparison.Ordinal)
                 || !pu.MfaEnabled)
@@ -1199,7 +1202,8 @@ public class MfaService : IMfaService
             remaining.RemoveAt(index);
             pu.MfaRecoveryCodeHashes = remaining.Count == 0 ? null : string.Join('\n', remaining);
             challenge.UsedAtUtc = completedAtUtc;
-            pu.FailedLoginCount = 0;
+            if (!(context.KnownDeviceVerified && pu.LockoutEndUtc > completedAtUtc))
+                pu.FailedLoginCount = 0; // a bypass of an active lockout leaves the shared counter alone
             pu.LastLoginAtUtc = completedAtUtc;
             pu.LastLoginIp = context.IpAddress;
             _db.LoginActivities.Add(new LoginActivity

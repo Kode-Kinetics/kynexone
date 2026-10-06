@@ -65,7 +65,10 @@ public static class PlatformSessionSecurity
         return current is not null
             && current.IsActive
             && PlatformRoles.All.Contains(current.Role)
-            && (!current.LockoutEndUtc.HasValue || current.LockoutEndUtc <= DateTime.UtcNow)
+            // A session issued through a known-device lockout bypass carries LockoutBypassClaim and
+            // is not refused for the lockout it bypassed; every other session still is.
+            && (!current.LockoutEndUtc.HasValue || current.LockoutEndUtc <= DateTime.UtcNow
+                || principal.HasClaim(Zayra.Api.Controllers.PlatformController.LockoutBypassClaim, "1"))
             && string.Equals(current.Role, claimedRole, StringComparison.Ordinal)
             && current.UpdatedAtUtc.HasValue
             && string.Equals(StampValue(current.UpdatedAtUtc.Value), claimedStamp, StringComparison.Ordinal);

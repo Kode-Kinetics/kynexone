@@ -169,7 +169,7 @@ public class MfaController : ControllerBase
             var response = await _authService.CompleteMfaLoginAsync(
                 request.ChallengeToken,
                 request.TotpCode,
-                GetContext(),
+                GetContext() with { KnownDeviceToken = LoginAbuseGuard.KnownDeviceCookie(Request, "tenant") },
                 ct);
             // The sign-in is complete: remember this browser for the account (LoginAbuseGuard).
             LoginAbuseGuard.AppendKnownDeviceCookie(Response, "tenant", response.KnownDeviceToken);

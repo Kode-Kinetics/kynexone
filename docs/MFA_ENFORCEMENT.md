@@ -83,8 +83,9 @@ Every factor change is audited (`auth.mfa.enabled`, `platform.auth.tenant_mfa_di
 Checked before any password hashing (`LoginAbuseGuard`), on tenant and platform sign-in. Every
 429 carries a JSON `{ error, message }` and a `Retry-After`: for an account or address limit, the
 time until that window actually frees; for the hashing gate and unknown cases, a jittered 2–6 s. The
-message's wording follows the header (≤ 10 s "in a few seconds", ≤ 90 s "in about a minute", longer
-"in a few minutes"), and the sign-in pages derive their wording the same way.
+message's wording follows the header (≤ 10 s "in a few seconds", ≤ 90 s "in about a minute",
+≤ 5 min "in a few minutes", longer "in about N minutes"), and the sign-in pages derive their wording
+the same way.
 
 | Control | Default | `error` | Config (`Auth__LoginThrottle__…`) |
 |---|---|---|---|
@@ -107,11 +108,16 @@ message's wording follows the header (≤ 10 s "in a few seconds", ≤ 90 s "in 
   version (a fingerprint of the current password hash and MFA enrolment), so a password change, an MFA
   reset or re-enrolment, or re-creating the user revokes every earlier cookie. A trusted known device:
   - skips the account-wide cap (never the per-address limit);
-  - gets through the **database lockout** (5 failures → 15 min) with the right password, and the
-    success clears the lockout and the counter — so a stranger cannot lock the owner out of their own
-    browser. The lockout for unknown devices is unchanged;
-  - does not add its own wrong passwords to that lockout; they are recorded
-    (`password_mismatch_known_device`) and after 10 in 15 minutes the device stops being trusted. The mobile app does not carry it yet (it cannot read HttpOnly cookies); it gets the per-IP
+  - **bypasses** the **database lockout** (5 failures → 15 min) with the right password (and MFA
+    where required) **without clearing it or resetting the shared counter**: the owner gets in, an
+    attacker on an unknown device stays locked out until it expires. Audited as
+    `auth.lockout_bypassed_known_device` (platform: `platform.auth.…`) and the owner is emailed. The
+    bypass session keeps working during the lockout (tenant: its security stamp postdates the
+    lockout; platform: it carries `kx_lockout_bypass`); sessions issued before the lockout still end;
+  - does not add its own wrong passwords to that lockout. They are recorded
+    (`password_mismatch_known_device`, with the client IP and an audit row) and counted against that
+    **device** (a per-device id in the token): after 5 in 15 minutes it stops being trusted and the
+    owner is emailed, without affecting the owner's other devices. The mobile app does not carry it yet (it cannot read HttpOnly cookies); it gets the per-IP
   limit only.
 - Not done yet: a CAPTCHA/step-up challenge for the account-wide cap (follow-up).
 - State is in-process (one API instance). The per-IP rate limits in `render.yaml`

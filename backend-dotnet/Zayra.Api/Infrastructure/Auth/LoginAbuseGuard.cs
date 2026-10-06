@@ -124,8 +124,8 @@ public sealed class LoginAbuseGuard : IDisposable
 
     // ── Known device ────────────────────────────────────────────────────────────────────────
 
-    /// <summary>Wrong passwords from a known device before it stops being trusted (per account, 15 min).</summary>
-    public const int KnownDeviceFailureLimit = 10;
+    /// <summary>Wrong passwords from ONE known device before that device stops being trusted (15 min).</summary>
+    public const int KnownDeviceFailureLimit = 5;
 
     /// <summary>
     /// Credential version bound into a known-device token: a short fingerprint of the current password
@@ -138,34 +138,59 @@ public sealed class LoginAbuseGuard : IDisposable
         return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(material)))[..16];
     }
 
-    public string? IssueKnownDeviceToken(string scope, string tenant, string email, Guid principalId, string credentialVersion, DateTime nowUtc)
-        => _knownDevice?.Protect(Payload(scope, tenant, email, principalId, credentialVersion), nowUtc + KnownDeviceLifetime);
+    /// <param name="deviceId">The device's stable id: reuse the one from a still-valid cookie, or pass
+    /// <see cref="Guid.NewGuid"/> for a browser seen for the first time.</param>
+    public string? IssueKnownDeviceToken(string scope, string tenant, string email, Guid principalId, string credentialVersion,
+        Guid deviceId, DateTime nowUtc)
+        => _knownDevice?.Protect(Payload(scope, tenant, email, principalId, credentialVersion, deviceId), nowUtc + KnownDeviceLifetime);
 
-    public bool IsKnownDevice(string? token, string scope, string tenant, string email, Guid principalId, string credentialVersion)
+    /// <summary>Validates a token for this account and credential version and returns its device id.</summary>
+    public bool TryReadKnownDevice(string? token, string scope, string tenant, string email, Guid principalId,
+        string credentialVersion, out Guid deviceId)
     {
+        deviceId = Guid.Empty;
         if (_knownDevice is null || string.IsNullOrEmpty(token)) return false;
+        string payload;
         try
         {
-            return string.Equals(_knownDevice.Unprotect(token), Payload(scope, tenant, email, principalId, credentialVersion), StringComparison.Ordinal);
+            payload = _knownDevice.Unprotect(token);
         }
         catch (System.Security.Cryptography.CryptographicException)
         {
             return false; // tampered, expired, or from another key ring
         }
+        var prefix = Payload(scope, tenant, email, principalId, credentialVersion, Guid.Empty)[..^32];
+        if (!payload.StartsWith(prefix, StringComparison.Ordinal)
+            || !Guid.TryParseExact(payload[prefix.Length..], "N", out deviceId))
+            return false;
+        return true;
     }
 
+    public bool IsKnownDevice(string? token, string scope, string tenant, string email, Guid principalId, string credentialVersion)
+        => TryReadKnownDevice(token, scope, tenant, email, principalId, credentialVersion, out _);
+
     /// <summary>
-    /// A known device is trusted (lockout and account-wide cap bypass) only while it has fewer than
-    /// <see cref="KnownDeviceFailureLimit"/> recent wrong passwords — so a stolen cookie is not an
-    /// unlimited guessing licence.
+    /// A known device is trusted (lockout bypass, account-wide cap) only while IT has fewer than
+    /// <see cref="KnownDeviceFailureLimit"/> recent wrong passwords. Keyed per device, so a stolen
+    /// cookie that keeps guessing loses its own trust without touching the owner's other devices.
     /// </summary>
-    public bool KnownDeviceStillTrusted(string scope, string tenant, string email, DateTime nowUtc)
-        => !_windows.TryGetValue($"{AccountKey(scope, tenant, email)}|kdfail", out SlidingWindow? failures)
+    public bool KnownDeviceStillTrusted(string scope, string tenant, string email, Guid deviceId, DateTime nowUtc)
+        => !_windows.TryGetValue(DeviceFailureKey(scope, tenant, email, deviceId), out SlidingWindow? failures)
            || failures!.Count(nowUtc) < KnownDeviceFailureLimit;
 
-    /// <summary>A wrong password from a known device: counted here, never toward the account lockout.</summary>
-    public void RecordKnownDeviceFailure(string scope, string tenant, string email, DateTime nowUtc)
-        => Window($"{AccountKey(scope, tenant, email)}|kdfail", _accountWindow).Add(nowUtc);
+    /// <summary>
+    /// A wrong password from a known device: counted against that device, never toward the account
+    /// lockout. Returns true exactly when this miss reaches the limit (the moment to warn the owner).
+    /// </summary>
+    public bool RecordKnownDeviceFailure(string scope, string tenant, string email, Guid deviceId, DateTime nowUtc)
+    {
+        var window = Window(DeviceFailureKey(scope, tenant, email, deviceId), _accountWindow);
+        window.Add(nowUtc);
+        return window.Count(nowUtc) == KnownDeviceFailureLimit;
+    }
+
+    private static string DeviceFailureKey(string scope, string tenant, string email, Guid deviceId)
+        => $"{AccountKey(scope, tenant, email)}|kdfail|{deviceId:N}";
 
     /// <summary>The token's raw cookie value for <paramref name="scope"/>, if the request carries one.</summary>
     public static string? KnownDeviceCookie(HttpRequest request, string scope)
@@ -191,8 +216,8 @@ public sealed class LoginAbuseGuard : IDisposable
         });
     }
 
-    private static string Payload(string scope, string tenant, string email, Guid principalId, string credentialVersion)
-        => $"{AccountKey(scope, tenant, email)}|{principalId:N}|{credentialVersion}";
+    private static string Payload(string scope, string tenant, string email, Guid principalId, string credentialVersion, Guid deviceId)
+        => $"{AccountKey(scope, tenant, email)}|{principalId:N}|{credentialVersion}|{deviceId:N}";
 
     // ── Responses ───────────────────────────────────────────────────────────────────────────
 
@@ -208,7 +233,8 @@ public sealed class LoginAbuseGuard : IDisposable
     {
         <= 10 => "in a few seconds",
         <= 90 => "in about a minute",
-        _ => "in a few minutes",
+        <= 300 => "in a few minutes",
+        _ => $"in about {(int)Math.Ceiling(seconds / 60.0)} minutes",
     };
 
     /// <summary>
