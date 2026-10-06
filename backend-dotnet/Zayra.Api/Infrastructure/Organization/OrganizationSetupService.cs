@@ -511,6 +511,7 @@ public class OrganizationSetupService : IOrganizationSetupService
     {
         grade.Code = OrgCodes.Normalize(request.Code);
         grade.Name = Clean(request.Name);
+        grade.NameAr = string.IsNullOrWhiteSpace(request.NameAr) ? null : request.NameAr.Trim();
         grade.Band = Clean(request.Band);
         grade.Level = request.Level;
 

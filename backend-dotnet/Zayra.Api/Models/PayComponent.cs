@@ -126,6 +126,16 @@ public class PayComponent : ITenantOwned, ICompanyScoped
     public Guid? CreatedBy { get; set; }
     public DateTime? UpdatedAtUtc { get; set; }
     public Guid? UpdatedBy { get; set; }
+
+    /// <summary>What kind of entitlement this component represents. See <see cref="PayEntitlementClasses"/>.
+    /// <c>Facility</c> components (e.g. a grade loan limit) are NEVER paid: they carry no amount, use the
+    /// non-paying <see cref="PayComponentTypes.Facility"/> type, and <see cref="Infrastructure.Payroll.PayComponentEngine.ResolveInEffect"/>
+    /// drops them before a payroll run or the catalog can see them.</summary>
+    public string EntitlementClass { get; set; } = PayEntitlementClasses.None;
+
+    /// <summary>The statutory minimum this component helps satisfy. See <see cref="PayStatutoryFloors"/>.
+    /// Classification only in this release; no engine reads it yet.</summary>
+    public string StatutoryFloor { get; set; } = PayStatutoryFloors.None;
 }
 
 public static class PayComponentTypes
@@ -133,6 +143,30 @@ public static class PayComponentTypes
     public const string Earning = "Earning";
     public const string Deduction = "Deduction";
     public const string EmployerContribution = "EmployerContribution";
+    /// <summary>A non-paying entitlement (a loan facility). Outside the payroll engine's vocabulary on
+    /// purpose: <c>PayComponentEngine.Compute</c> only emits Earning / Deduction / EmployerContribution.</summary>
+    public const string Facility = "Facility";
+}
+
+/// <summary>Value set of <c>pay_components.entitlement_class</c> (CHECK ck_pay_components__entitlement_class).</summary>
+public static class PayEntitlementClasses
+{
+    public const string None = "None";
+    public const string QiwaWage = "QiwaWage";
+    public const string Contractual = "Contractual";
+    public const string Facility = "Facility";
+    public static readonly string[] All = [None, QiwaWage, Contractual, Facility];
+}
+
+/// <summary>Value set of <c>pay_components.statutory_floor</c> (CHECK ck_pay_components__statutory_floor).</summary>
+public static class PayStatutoryFloors
+{
+    public const string None = "None";
+    public const string Housing = "Housing";
+    public const string Transport = "Transport";
+    public const string Medical = "Medical";
+    public const string Art40 = "Art40";
+    public static readonly string[] All = [None, Housing, Transport, Medical, Art40];
 }
 
 public static class PayComponentCalcMethods

@@ -67,9 +67,9 @@ public class ApprovalSubjectSeparationTests
             Context(f.TenantId, f.SubjectUserId, ["Employee"]), CancellationToken.None);
         await bySubject.Should().ThrowAsync<InvalidOperationException>().WithMessage("Segregation of duties*");
 
-        // "Any" itself is unchanged for everyone else — live workflows keep routing as before.
+        // Anyone else who may approve (approvals.decide plus manager.approve) still can: live workflows keep routing.
         var byColleague = await Service(db).DecideAsync(f.TenantId, f.RequestId, new ApprovalDecisionRequest("Approve", "ok"),
-            Context(f.TenantId, Guid.NewGuid(), ["Employee"]), CancellationToken.None);
+            Context(f.TenantId, Guid.NewGuid(), ["Manager"], ["approvals.read", "approvals.decide", "manager.approve"]), CancellationToken.None);
         byColleague!.Status.Should().Be("Approved");
     }
 

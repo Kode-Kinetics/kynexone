@@ -879,7 +879,7 @@ function GradesTab() {
   const openNew = () => { setEditing(null); setForm(emptyGrade()); setPayScale([]); setError(''); setModalOpen(true); };
   const openEdit = async (g: GradeDto) => {
     setEditing(g);
-    setForm({ code: g.code, name: g.name, band: g.band, level: g.level, minSalary: g.minSalary, midSalary: g.midSalary, maxSalary: g.maxSalary, currency: g.currency, isActive: g.isActive });
+    setForm({ code: g.code, name: g.name, nameAr: g.nameAr ?? '', band: g.band, level: g.level, minSalary: g.minSalary, midSalary: g.midSalary, maxSalary: g.maxSalary, currency: g.currency, isActive: g.isActive });
     setPayScale([]);
     setError('');
     setModalOpen(true);
@@ -949,6 +949,7 @@ function GradesTab() {
             <FormField label="Level"><input type="number" value={form.level} onChange={(e) => f('level', Number(e.target.value))} className="input w-full" /></FormField>
           </div>
           <FormField label="Name" required><input value={form.name} onChange={(e) => f('name', e.target.value)} className="input w-full" placeholder="Professional Grade 5" /></FormField>
+          <FormField label="Name (Arabic, optional)"><input dir="rtl" lang="ar" value={form.nameAr ?? ''} onChange={(e) => f('nameAr', e.target.value)} className="input w-full" placeholder="الدرجة المهنية 5" /></FormField>
           <FormField label="Band"><input value={form.band ?? ''} onChange={(e) => f('band', e.target.value)} className="input w-full" placeholder="Professional" /></FormField>
 
           {/* Pay scale band */}
@@ -2227,7 +2228,7 @@ const emptyDesig = (): DesignationRequest => ({
 });
 
 const emptyGrade = (): GradeRequest => ({
-  code: '', name: '', band: '', level: 0,
+  code: '', name: '', nameAr: '', band: '', level: 0,
   minSalary: 0, midSalary: 0, maxSalary: 0, currency: 'SAR', isActive: true,
 });
 

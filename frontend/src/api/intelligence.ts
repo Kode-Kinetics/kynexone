@@ -89,6 +89,9 @@ export interface HRRequest {
   status: string;
   dueAtUtc: string;
   createdAtUtc: string;
+  /** True when the caller is neither HR nor the requester: description and Jawazat data are withheld. */
+  detailsRedacted?: boolean;
+  isJawazatRequest?: boolean;
 }
 
 export interface HRRequestComment {

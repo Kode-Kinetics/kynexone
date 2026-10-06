@@ -80,6 +80,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
 
     public async Task<ApprovalWorkflowDto> CreateWorkflowAsync(Guid tenantId, ApprovalWorkflowRequest request, RequestContext context, CancellationToken cancellationToken)
     {
+        EnsureRoleStepsNameARole(request);
         await EnsureWorkflowCodeUnique(tenantId, request.Code, null, cancellationToken);
         await EnsureScopeUnambiguousAsync(tenantId, request, null, cancellationToken);
         var workflow = new ApprovalWorkflow { TenantId = tenantId };
@@ -94,6 +95,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     {
         var workflow = await _db.ApprovalWorkflows.Include(x => x.Steps).FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (workflow is null) return null;
+        EnsureRoleStepsNameARole(request);
         await EnsureWorkflowCodeUnique(tenantId, request.Code, id, cancellationToken);
         await EnsureScopeUnambiguousAsync(tenantId, request, id, cancellationToken);
         _db.ApprovalWorkflowSteps.RemoveRange(workflow.Steps);
@@ -342,11 +344,12 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         var key = $"{role}|{string.Join(",", excludedIds)}";
         if (cache.TryGetValue(key, out var known)) return known;
 
-        // An empty or "Any" role is open to anyone CanDecideRequestAsync admits, but deciding also needs the
-        // approvals.decide permission, so only holders of it count as someone who could unblock the request.
+        // An empty or "Any" role is open to approvals.decide holders who also hold manager.approve or
+        // approvals.override (CanDecideRequestAsync), so only they count as someone who could unblock it.
         var anyRole = role.Length == 0 || role.Equals("Any", StringComparison.OrdinalIgnoreCase);
         var exists = anyRole
-            ? await ApprovalUnblock.AnyOtherUserWithPermissionAsync(_db, approval.TenantId, "approvals.decide", excludedIds, cancellationToken)
+            ? await ApprovalUnblock.AnyOtherUserWithPermissionAndAnyOfAsync(_db, approval.TenantId, "approvals.decide",
+                new[] { AnyStepApproverPermission, "approvals.override" }, excludedIds, cancellationToken)
             : await ApprovalUnblock.AnyOtherUserInRolesAsync(_db, approval.TenantId, new[] { role }, orOverride: true, excludedIds, cancellationToken);
         cache[key] = exists;
         return exists;
@@ -572,6 +575,25 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             : (await GetRequestAsync(tenantId, approval.Id, cancellationToken))!;
     }
 
+    /// <summary>
+    /// A Role step must name a role. A blank or "Any" role made the step decidable by every approvals.decide
+    /// holder (now: every manager.approve holder) in the tenant. New saves are refused; workflows already saved
+    /// that way still load and route, so live requests are not stranded.
+    /// </summary>
+    internal static void EnsureRoleStepsNameARole(ApprovalWorkflowRequest request)
+    {
+        foreach (var step in request.Steps ?? Array.Empty<ApprovalWorkflowStepRequest>())
+        {
+            var type = string.IsNullOrWhiteSpace(step.ApproverType) ? "Role" : step.ApproverType.Trim();
+            if (!type.Equals("Role", StringComparison.OrdinalIgnoreCase)) continue;
+            var role = (step.ApproverRole ?? string.Empty).Trim();
+            if (role.Length == 0 || role.Equals("Any", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    $"Step {step.StepOrder} ('{Clean(step.StepName)}') is a Role step and must name the role that decides it, " +
+                    "for example HR Manager. A blank or \"Any\" role would let any approver in the company decide it.");
+        }
+    }
+
     private static void Apply(ApprovalWorkflow workflow, ApprovalWorkflowRequest request, Guid tenantId)
     {
         workflow.Code = Clean(request.Code).ToUpperInvariant();
@@ -788,6 +810,9 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
 
     /// <param name="separationOfDuties">False only for visibility: a subject or earlier-step decider
     /// who is routed this step may still SEE it (and be told why they cannot decide it).</param>
+    /// <summary>The key an "Any" (unassigned) approval step requires besides approvals.decide.</summary>
+    internal const string AnyStepApproverPermission = "manager.approve";
+
     private async Task<bool> CanDecideRequestAsync(ApprovalRequest approval, RequestContext? context, CancellationToken cancellationToken,
         bool separationOfDuties = true)
     {
@@ -816,7 +841,11 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
 
         var requiredRole = Clean(approval.CurrentApproverRole);
         if (string.IsNullOrWhiteSpace(requiredRole) || requiredRole.Equals("Any", StringComparison.OrdinalIgnoreCase))
-            return true;
+            // An unassigned ("Any") step was open to every approvals.decide holder in the tenant: Payroll Manager,
+            // Finance, Finance Approver and ManagerPortal employees could approve an employee's IBAN or salary
+            // change. It now needs an approver's key on top of approvals.decide and the bars above.
+            // (approvals.override already returned true above.)
+            return permissions.Any(x => x.Equals(AnyStepApproverPermission, StringComparison.OrdinalIgnoreCase));
         var roles = context.Roles ?? Array.Empty<string>();
         return roles.Any(x => x.Equals(requiredRole, StringComparison.OrdinalIgnoreCase));
     }

@@ -61,7 +61,9 @@ public sealed class LiveQiwaApiAdapter : IQiwaApiAdapter
             var body = await resp.Content.ReadAsStringAsync(ct);
             if (!resp.IsSuccessStatusCode)
             {
-                _log.LogError("Qiwa token request failed: {Status} {Body}", (int)resp.StatusCode, body);
+                // Never the raw body: an identity provider may echo the client id or request back.
+                // The OAuth "error" code is enough to tell bad credentials from an outage.
+                _log.LogError("Qiwa token request failed: {Status} {OAuthError}", (int)resp.StatusCode, OAuthErrorCode(body));
                 return null;
             }
 
@@ -73,6 +75,25 @@ public sealed class LiveQiwaApiAdapter : IQiwaApiAdapter
             _log.LogError(ex, "Qiwa token acquisition threw.");
             return null;
         }
+    }
+
+    /// <summary>The RFC 6749 §5.2 <c>error</c> code from a token error response, or a placeholder.</summary>
+    internal static string OAuthErrorCode(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("error", out var error)
+                && error.ValueKind == JsonValueKind.String)
+            {
+                var code = error.GetString() ?? string.Empty;
+                // Spec codes are short snake_case tokens; anything else is not echoed.
+                if (code.Length <= 64 && code.All(c => char.IsAsciiLetterOrDigit(c) || c == '_')) return code;
+            }
+        }
+        catch (JsonException) { }
+        return "unparsed";
     }
 
     public async Task<QiwaApiResult> PushEmployeeAsync(string accessToken, QiwaEmployeePayload payload, Guid idempotencyKey, CancellationToken ct)

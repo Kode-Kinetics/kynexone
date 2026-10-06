@@ -264,8 +264,13 @@ public class EmployeesController : ControllerBase
         "ResidencyIssueDate", "IdNumber", "SponsorName", "ContractReference", "WorkPermitReference", "QiwaEmployeeReference"
     };
 
+    // Whole-tenant people export (PII, plus payroll and bank columns with employees.sensitive). Owner decision: only
+    // the HR roles that maintain the records (employees.write: Admin, HR Director, HR Manager, HR Officer). The
+    // resolver inferred employees.documents, which also let Compliance Officer export the whole tenant; Payroll
+    // Officer and Auditor were named but never held that key. Compliance keeps People Search.
     [HttpGet("export")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer,Auditor")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.write")]
     public async Task<IActionResult> Export(CancellationToken ct)
     {
         var tenantId = RequireTenant();
@@ -3881,7 +3886,6 @@ public class EmployeesController : ControllerBase
     // independently (no outer transaction) so one failure never rolls back the others, and every row
     // resets the change-tracker so a guard-rejected mutation can never be flushed by a later row.
     private const int BulkActionMaxIds = 5000;
-    private static readonly string[] BulkExportRoles = { "Admin", "HR Manager", "HR Officer", "Payroll Officer", "Auditor" };
     private static readonly HashSet<string> BulkDeactivateTargets = new(StringComparer.OrdinalIgnoreCase) { "Suspended", "Inactive" };
 
     public sealed record BulkSelectAllFilter(string? Search, string? Status, string? Readiness, Guid? ImportBatchId, string? GapType);
@@ -3916,7 +3920,8 @@ public class EmployeesController : ControllerBase
             "activate" => User.HasPermission("employees.approve"),
             "deactivate" => User.HasPermission("employees.write"),
             "delete" => User.HasPermission("employees.delete"),
-            "export" => BulkExportRoles.Any(r => User.IsInRole(r)),
+            // The same audience as the full people export (GET export): employees.write.
+            "export" => User.HasPermission("employees.write"),
             _ => false,
         };
         if (!permitted) return Forbid();
@@ -4737,13 +4742,16 @@ public class EmployeesController : ControllerBase
     /// template, bilingual, stored unique reference, register row. The routes and the response
     /// shape are unchanged, so nothing calling them has to move.</para>
     /// </summary>
+    // Role-gate bypass sweep (LegacyRoleGateBypassSweepTests): issuing a registered letter (appointment letter states salary) resolved to employees.read; HR roles hold employees.write.
     [HttpGet("{id:int}/letters/appointment")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.write")]
     public Task<IActionResult> AppointmentLetter(int id, [FromQuery] string language = HrLetterLanguages.Bilingual, CancellationToken cancellationToken = default)
         => IssueRegisteredLetterAsync(id, HrLetterTypes.AppointmentLetter, language, cancellationToken);
 
     [HttpGet("{id:int}/letters/experience")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.write")]
     public Task<IActionResult> ExperienceLetter(int id, [FromQuery] string language = HrLetterLanguages.Bilingual, CancellationToken cancellationToken = default)
         => IssueRegisteredLetterAsync(id, HrLetterTypes.ExperienceCertificate, language, cancellationToken);
 

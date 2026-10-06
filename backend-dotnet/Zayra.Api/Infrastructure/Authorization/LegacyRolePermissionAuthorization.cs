@@ -19,8 +19,8 @@ public sealed class PermissionAwareRolesAuthorizationHandler
         AuthorizationHandlerContext context, RolesAuthorizationRequirement requirement)
     {
         if (context.Resource is HttpContext http
-            && LegacyRolePermissionResolver.Resolve(http) is { } permission
-            && HasPermission(context.User, permission))
+            && LegacyRolePermissionResolver.ResolveAny(http) is { } permissions
+            && permissions.Any(p => HasPermission(context.User, p)))
             context.Succeed(requirement);
         return Task.CompletedTask;
     }
@@ -37,10 +37,10 @@ public sealed class PermissionAwareAuthorizationResultHandler : IAuthorizationMi
 
     public Task HandleAsync(RequestDelegate next, HttpContext context, AuthorizationPolicy policy, PolicyAuthorizationResult result)
     {
-        var required = LegacyRolePermissionResolver.Resolve(context);
+        var required = LegacyRolePermissionResolver.ResolveAny(context);
         if (required is not null
             && context.User.Identity?.IsAuthenticated == true
-            && !PermissionAwareRolesAuthorizationHandler.HasPermission(context.User, required))
+            && !required.Any(p => PermissionAwareRolesAuthorizationHandler.HasPermission(context.User, p)))
             result = PolicyAuthorizationResult.Forbid();
         return _fallback.HandleAsync(next, context, policy, result);
     }
@@ -164,7 +164,15 @@ public static class LegacyRolePermissionResolver
             ["Probation.Create"] = PerformanceSetup,
         };
 
-    public static string? Resolve(HttpContext context)
+    public static string? Resolve(HttpContext context) => ResolveAny(context)?[0];
+
+    /// <summary>
+    /// The permissions that satisfy (and are required alongside) the endpoint's legacy role gate. An explicit
+    /// <c>[HasPermission(a, b)]</c> keeps its ANY-of meaning here: the caller needs one of its keys, exactly as
+    /// <see cref="PermissionAuthorizationHandler"/> evaluates the same attribute. Without explicit metadata it
+    /// is the single key inferred from controller and action.
+    /// </summary>
+    public static IReadOnlyList<string>? ResolveAny(HttpContext context)
     {
         var endpoint = context.GetEndpoint();
         if (endpoint is null || !endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>().Any(x => !string.IsNullOrWhiteSpace(x.Roles)))
@@ -174,13 +182,17 @@ public static class LegacyRolePermissionResolver
         var explicitPermission = endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>()
             .Select(x => x.Policy).FirstOrDefault(x => x?.StartsWith(HasPermissionAttribute.PolicyPrefix, StringComparison.Ordinal) == true);
         if (explicitPermission is not null)
-            return explicitPermission[HasPermissionAttribute.PolicyPrefix.Length..].Split('|', StringSplitOptions.RemoveEmptyEntries)[0];
+        {
+            var keys = explicitPermission[HasPermissionAttribute.PolicyPrefix.Length..]
+                .Split(HasPermissionAttribute.Separator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            return keys.Length == 0 ? null : keys;
+        }
 
         var action = endpoint.Metadata.GetMetadata<ControllerActionDescriptor>();
         if (action is null) return null;
         var methods = endpoint.Metadata.GetMetadata<Microsoft.AspNetCore.Routing.HttpMethodMetadata>()?.HttpMethods
                       ?? Array.Empty<string>();
-        return Resolve(action.ControllerName, action.ActionName, methods);
+        return Resolve(action.ControllerName, action.ActionName, methods) is { } inferred ? new[] { inferred } : null;
     }
 
     public static string? Resolve(string controller, string action, IReadOnlyList<string> httpMethods)

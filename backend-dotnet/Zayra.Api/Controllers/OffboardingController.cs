@@ -39,8 +39,11 @@ public class OffboardingController : ControllerBase
         _activationGuard = activationGuard ?? new EmployeeActivationGuard(db);
     }
 
+    // Role-gate bypass sweep (LegacyRoleGateBypassSweepTests): the role list resolved to employees.read, so every staff role (line Manager, Recruiter,
+    // HR Assistant...) read every exit interview in the tenant. HR, plus the payroll approvers who record settlement payments here.
     [HttpGet]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.write", "payroll.approve")]
     public async Task<IActionResult> List([FromQuery] string? status, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
@@ -52,6 +55,7 @@ public class OffboardingController : ControllerBase
 
     [HttpGet("{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.write", "payroll.approve")]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
@@ -62,6 +66,7 @@ public class OffboardingController : ControllerBase
     /// <summary>Attrition insight: in-notice/completed counts, avg exit rating, and reasons breakdown.</summary>
     [HttpGet("summary")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.write", "payroll.approve")]
     public async Task<IActionResult> Summary(CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
