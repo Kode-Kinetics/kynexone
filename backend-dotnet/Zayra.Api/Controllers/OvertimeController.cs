@@ -7,6 +7,7 @@ using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Application.WorkWeek;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.CountryPack;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Infrastructure.WorkWeek;
@@ -409,9 +410,11 @@ public class OvertimeController : ControllerBase
         return Ok(request);
     }
 
+    // Role-gate bypass sweep (LegacyRoleGateBypassSweepTests): per-employee overtime pay, unscoped. Resolved to overtime.read (line Managers, Supervisors); every named role holds payroll.read.
     [HttpGet("payroll-review")]
     [Authorize(Roles = "Admin,HR Manager,Payroll Officer,Payroll Manager,Auditor")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: OvertimeRequestId, EmployeeId, PayrollRunId, Hours, Amount, Status. Payroll-role consumers require this data to process overtime pay. No bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
+    [HasPermission("payroll.read")]
     public async Task<ActionResult<IReadOnlyCollection<OvertimePayrollImpact>>> PayrollReview(CancellationToken ct)
     {
         var tenantId = RequireTenant();
