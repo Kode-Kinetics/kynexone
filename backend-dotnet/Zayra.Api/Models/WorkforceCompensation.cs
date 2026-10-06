@@ -323,6 +323,25 @@ public class EmployeeSalaryStructure : ITenantOwned
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? CreatedBy { get; set; }
+
+    // ── Release A (rev 8.3.2 §6): how housing and transport are given, and the Qiwa confirmation ──
+    // Art. 61: housing and transport are provided in cash or in kind, never neither. The CHECKs pair each
+    // basis with its rate and pin the allowance: PercentOfBasic ⇒ allowance = round(basic × rate, 2);
+    // InKind ⇒ allowance = 0. Existing rows default to Amount, which is what they always meant.
+
+    /// <summary>See <see cref="AllowanceBases"/>.</summary>
+    public string HousingBasis { get; set; } = AllowanceBases.Amount;
+    public decimal? HousingRate { get; set; }
+    /// <summary>See <see cref="AllowanceBases"/>.</summary>
+    public string TransportBasis { get; set; } = AllowanceBases.Amount;
+    public decimal? TransportRate { get; set; }
+
+    /// <summary>The day this row was confirmed to match the Qiwa contract. Set once, with its evidence.</summary>
+    public DateOnly? QiwaConfirmedOn { get; set; }
+    public Guid? QiwaEvidenceDocumentId { get; set; }
+
+    /// <summary>The renewal case whose Apply wrote this row, if any.</summary>
+    public Guid? RenewalCaseId { get; set; }
 }
 
 public class PayrollGroup : ITenantOwned

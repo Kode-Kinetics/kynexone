@@ -139,6 +139,12 @@ public class EmployeeLoan : ITenantOwned, ICompanyScopedOperational
     public Guid? GradeEntitlementId { get; set; }
     public decimal? GradePerLoanCap { get; set; }
     public decimal? GradeOutstandingCap { get; set; }
+
+    // ── Release A (Art. 92): an instalment above 10% of the wage needs the employee's written consent ──
+    /// <summary>The employee's signed LoanDeductionConsent document (restricted type).</summary>
+    public Guid? ConsentDocumentId { get; set; }
+    /// <summary>Witness: the monthly wage the 10% test was computed against.</summary>
+    public decimal? CapBaseWage { get; set; }
 }
 
 public class LoanDisbursementBatch : ITenantOwned, ICompanyScopedOperational

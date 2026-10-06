@@ -132,6 +132,17 @@ harmful.
   Zero rows is expected (the API has refused interest since before this release). Once any rows are cleaned,
   `ALTER TABLE loan_types VALIDATE CONSTRAINT ck_loan_types__interest_free;` makes the rule cover history too.
 
+- **Release A foundation (`20261007000100_ReleaseAEntitlementsAndRenewals`).** Additive only: two new tables
+  (`employee_entitlements`, `contract_renewal_cases`), nullable or defaulted columns on `pay_components`,
+  `grade_entitlements`, `employee_contracts`, `employee_salary_structures`, `approval_requests` and `employee_loans`,
+  and four triggers. Every Release A surface is behind the per-tenant `release_a` opt-in flag, which is **off** unless
+  the platform enables it, so rolling the *app* back is safe for every tenant that never had it on. For a tenant that
+  did, switch the flag off first (`PUT /api/platform/tenants/{id}/features/release_a {"isEnabled": false}`), then roll
+  back the image. `Down()` refuses while any Release A data exists (a frozen package, a renewal case, a skipped
+  benefit, a stamped contract chain, a salary basis or Qiwa confirmation, an approval payload, a loan consent, or a
+  grade cell using a Release A value type or criterion) — take a Neon branch and fix forward instead. Order: image →
+  flag → schema `Down`.
+
 ### 3. Re-verify before restoring traffic
 - `/health/ready` must read `ready` with `pendingMigrations: 0`.
 - Never promote an image whose migration has not been applied — the `/health/ready` gate (and the

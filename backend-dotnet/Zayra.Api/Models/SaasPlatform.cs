@@ -112,6 +112,12 @@ public static class FeatureKeys
     public const string RiskScores              = "risk_scores";
     public const string HijriCalendar           = "hijri_calendar";
     public const string PayslipTemplateDesigner = "payslip_template_designer";
+    /// <summary>
+    /// Release A (grade entitlements, contract-year package, contract renewals, deductions statement). OPT-IN:
+    /// unlike every module key, an absent row means OFF. Switched on per tenant by the platform team
+    /// (PUT /api/platform/tenants/{id}/features/release_a), never from Tenant Admin. See OptInFeatures.
+    /// </summary>
+    public const string ReleaseA = "release_a";
 }
 
 // ── Tenant Subscription ───────────────────────────────────────────────────────

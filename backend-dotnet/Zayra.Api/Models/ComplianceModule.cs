@@ -75,6 +75,31 @@ public class EmployeeContract : ITenantOwned, ICompanyScopedOperational
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAtUtc { get; set; }
     public bool IsDeleted { get; set; }
+
+    // ── Release A: the renewal chain (rev 8.3.2 §6) ─────────────────────────────────────────────
+    // One row = one term. These are stamped by the chain census / ContractChainStamper (slice R4) and
+    // by Apply (slice R6); nothing is ever assumed — an unlinkable chain opens its case NeedsConfirmation.
+
+    /// <summary>The term this one renews (same employee). UNIQUE per tenant: a term is renewed at most once.</summary>
+    public Guid? RenewedFromContractId { get; set; }
+
+    /// <summary>Confirmed renewals before this term (0 = the original). Assigned at confirmation; NULL on a provisional term.</summary>
+    public short? RenewalNumber { get; set; }
+
+    /// <summary>Start of the continuous chain (Art. 55 four-year count, Art. 56 continuous service).</summary>
+    public DateOnly? ChainStartedOn { get; set; }
+
+    /// <summary>Saudi or NonSaudi for this term, frozen. See <see cref="WorkerNationalityClasses"/>.</summary>
+    public string? WorkerNationalityClass { get; set; }
+
+    /// <summary>The contract renews on its own terms unless notice is served (Art. 74(2)).</summary>
+    public bool AutoRenew { get; set; } = true;
+
+    /// <summary>Days before the end date by which a non-renewal notice must be served. NULL = the statutory default.</summary>
+    public short? NonRenewalNoticeDays { get; set; }
+
+    /// <summary>Set on a provisional successor term written by the holdover job. See <see cref="ProvisionalBases"/>.</summary>
+    public string? ProvisionalBasis { get; set; }
 }
 
 // ── Compliance Requirement ─────────────────────────────────────────────────────

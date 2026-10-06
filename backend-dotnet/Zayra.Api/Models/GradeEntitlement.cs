@@ -8,8 +8,9 @@ namespace Zayra.Api.Models;
 ///
 /// <para><b>Capability.</b> Grade-based loan limits (slice L1): the Facility component <c>LOAN_&lt;type&gt;</c>
 /// carries, per grade, whether the grade may borrow, a per-loan maximum and a total-outstanding maximum.
-/// The same table is the home of later grade entitlements (housing, ticket, medical tier), which is why it
-/// is keyed by a component code rather than by loan type.</para>
+/// Release A widens it to every benefit (housing, transport, ticket, medical tier, education, per diem):
+/// value types, coverage tier, quantity, dependants and the three permitted criteria (service months,
+/// after probation, nationality with its legal basis).</para>
 ///
 /// <para><b>Close-only.</b> A row's values are never updated. Publishing a new value closes the row in
 /// effect (<c>EffectiveTo = newFrom − 1</c>) and inserts a new one, in one transaction, so a loan's
@@ -47,6 +48,38 @@ public class GradeEntitlement : ITenantOwned, ICompanyScoped
     /// <summary>Facility only: the most this grade may owe on this component at once.</summary>
     public decimal? MaxOutstandingAmount { get; set; }
 
+    // ── Release A (rev 8.3.2 §2.1): the columns every non-loan benefit needs ──────────────────────
+    // Value sets: CoverageTiers, DependantScopes, EntitlementLimitPeriods, NationalityScopes. The
+    // per-component rules (which value types and dependants a code allows, its floor) live in
+    // Infrastructure/Entitlements/EntitlementComponentRules — the database enforces the shape only.
+
+    /// <summary>Medical class (CchiBasic … VIP) or ticket class (Economy, Business).</summary>
+    public string? CoverageTier { get; set; }
+
+    /// <summary>A count: tickets per period, or the most children an education allowance covers.</summary>
+    public short? Quantity { get; set; }
+
+    /// <summary>Who besides the employee the benefit covers. A coverage basis, never an eligibility criterion.</summary>
+    public string DependantScope { get; set; } = DependantScopes.None;
+
+    /// <summary>The most dependants covered (NULL = every dependant in scope).</summary>
+    public short? MaxDependants { get; set; }
+
+    /// <summary>When the allowance resets. See <see cref="EntitlementLimitPeriods"/>.</summary>
+    public string? LimitPeriod { get; set; }
+
+    /// <summary>Criterion: months of service before the benefit applies.</summary>
+    public short? MinServiceMonths { get; set; }
+
+    /// <summary>Criterion: only once probation has ended. Never true for a Medical floor component.</summary>
+    public bool AfterProbation { get; set; }
+
+    /// <summary>Criterion: nationality. Anything but Any must record its legal basis (Art. 61(4) non-discrimination).</summary>
+    public string NationalityScope { get; set; } = NationalityScopes.Any;
+
+    /// <summary>The recorded legal basis for a nationality-scoped cell.</summary>
+    public string? NationalityBasis { get; set; }
+
     public string? Note { get; set; }
     public string? SourceRule { get; set; }
     public DateOnly EffectiveFrom { get; set; }
@@ -57,14 +90,73 @@ public class GradeEntitlement : ITenantOwned, ICompanyScoped
     public bool IsInEffect(DateOnly on) => EffectiveFrom <= on && (EffectiveTo is null || EffectiveTo.Value >= on);
 }
 
-/// <summary>Value set of <c>grade_entitlements.value_type</c> (CHECK ck_grade_entitlements__value_type).</summary>
+/// <summary>Value set of <c>grade_entitlements.value_type</c> and <c>employee_entitlements.value_type</c>
+/// (CHECK ck_grade_entitlements__value_type / ck_employee_entitlements__value_type).</summary>
 public static class GradeEntitlementValueTypes
 {
     public const string Amount = "Amount";
+    /// <summary>A fraction of monthly basic, 0 &lt; rate ≤ 1 (0.25 = 25%).</summary>
+    public const string PercentOfBasic = "PercentOfBasic";
     public const string MultipleOfBasic = "MultipleOfBasic";
     public const string MultipleOfGross = "MultipleOfGross";
+    /// <summary>A multiple of the monthly housing allowance (the housing advance).</summary>
+    public const string MultipleOfHousing = "MultipleOfHousing";
+    /// <summary>Provided in kind (accommodation, a company bus). Counts as provision under Art. 61.</summary>
+    public const string InKind = "InKind";
+    public const string CoverageTier = "CoverageTier";
+    public const string Quantity = "Quantity";
     public const string EligibilityOnly = "EligibilityOnly";
-    public static readonly string[] All = [Amount, MultipleOfBasic, MultipleOfGross, EligibilityOnly];
+    public static readonly string[] All =
+        [Amount, PercentOfBasic, MultipleOfBasic, MultipleOfGross, MultipleOfHousing, InKind, CoverageTier, Quantity, EligibilityOnly];
+    public static readonly string[] Multiples = [MultipleOfBasic, MultipleOfGross, MultipleOfHousing];
+}
+
+/// <summary>Value set of <c>coverage_tier</c>. Medical tiers are ordered: CchiBasic &lt; C &lt; B &lt; A &lt; VIP.</summary>
+public static class CoverageTiers
+{
+    public const string CchiBasic = "CchiBasic";
+    public const string C = "C";
+    public const string B = "B";
+    public const string A = "A";
+    public const string Vip = "VIP";
+    public const string Economy = "Economy";
+    public const string Business = "Business";
+    public static readonly string[] All = [CchiBasic, C, B, A, Vip, Economy, Business];
+    public static readonly string[] Medical = [CchiBasic, C, B, A, Vip];
+    public static readonly string[] Travel = [Economy, Business];
+
+    /// <summary>Rank of a medical tier (0 = CchiBasic), or -1 when it is not a medical tier.</summary>
+    public static int MedicalRank(string? tier) => tier is null ? -1 : Array.IndexOf(Medical, tier);
+}
+
+/// <summary>Value set of <c>dependant_scope</c>.</summary>
+public static class DependantScopes
+{
+    public const string None = "None";
+    public const string Spouse = "Spouse";
+    public const string Children = "Children";
+    public const string Family = "Family";
+    public static readonly string[] All = [None, Spouse, Children, Family];
+}
+
+/// <summary>Value set of <c>limit_period</c>: when an allowance resets.</summary>
+public static class EntitlementLimitPeriods
+{
+    public const string PerTerm = "PerTerm";
+    public const string Monthly = "Monthly";
+    public const string Annual = "Annual";
+    public const string PerDay = "PerDay";
+    public const string Lifetime = "Lifetime";
+    public static readonly string[] All = [PerTerm, Monthly, Annual, PerDay, Lifetime];
+}
+
+/// <summary>Value set of <c>nationality_scope</c>.</summary>
+public static class NationalityScopes
+{
+    public const string Any = "Any";
+    public const string Saudi = "Saudi";
+    public const string NonSaudi = "NonSaudi";
+    public static readonly string[] All = [Any, Saudi, NonSaudi];
 }
 
 /// <summary>
