@@ -20,8 +20,12 @@ public class ImportedBankDetailsVerificationTests
 {
     private const string ValidSaudiIban = "SA4420000001234567891234";
 
-    private static ZayraDbContext NewDb() =>
-        new(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
+    private static ZayraDbContext NewDb(params Microsoft.EntityFrameworkCore.Diagnostics.IInterceptor[] interceptors)
+    {
+        var options = new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString());
+        if (interceptors.Length > 0) options.AddInterceptors(interceptors);
+        return new ZayraDbContext(options.Options);
+    }
 
     private static async Task<Guid> SeedTenant(ZayraDbContext db)
     {
@@ -38,9 +42,10 @@ public class ImportedBankDetailsVerificationTests
         return id;
     }
 
-    private static async Task<(ZayraDbContext Db, Guid Tenant, EmployeesController Importer, Employee WithIban, Employee WithoutBank)> ImportTwoAsync()
+    private static async Task<(ZayraDbContext Db, Guid Tenant, EmployeesController Importer, Employee WithIban, Employee WithoutBank)> ImportTwoAsync(
+        params Microsoft.EntityFrameworkCore.Diagnostics.IInterceptor[] interceptors)
     {
-        var db = NewDb();
+        var db = NewDb(interceptors);
         var tenantId = await SeedTenant(db);
         var importer = Hr(db, tenantId);
         var csv =
@@ -117,6 +122,68 @@ public class ImportedBankDetailsVerificationTests
         (await reviewer.ConfirmImportedBankDetails(withIban.Id, new ConfirmBankDetailsRequest("mine"), CancellationToken.None))
             .Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(403);
         (await OpenBankGaps(db, withIban.Id)).Should().ContainSingle();
+    }
+
+    /// <summary>The profile's CreatedBy is not the only record of who imported: the import's commit marker
+    /// names the actor too, so a profile with no CreatedBy does not let the importer through.</summary>
+    [Fact]
+    public async Task With_no_profile_creator_the_import_marker_still_identifies_the_importer()
+    {
+        var (db, tenantId, importer, withIban, _) = await ImportTwoAsync();
+        (await db.EmployeePayrollProfiles.SingleAsync(p => p.EmployeeId == withIban.Id)).CreatedBy = null;
+        await db.SaveChangesAsync();
+
+        (await importer.ConfirmImportedBankDetails(withIban.Id, new ConfirmBankDetailsRequest("checked"), CancellationToken.None))
+            .Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(403);
+        (await OpenBankGaps(db, withIban.Id)).Should().ContainSingle();
+
+        (await Hr(db, tenantId).ConfirmImportedBankDetails(withIban.Id, new ConfirmBankDetailsRequest("checked"), CancellationToken.None))
+            .Should().BeOfType<OkObjectResult>("someone else can still confirm");
+    }
+
+    [Fact]
+    public async Task With_no_record_of_the_importer_at_all_confirmation_is_refused()
+    {
+        // A flag whose import left no commit marker (the audit log is append-only, so this is a batch id with no
+        // marker) on an employee with no imported payroll profile: nothing names the importer.
+        var (db, tenantId, _, _, orphan) = await ImportTwoAsync();
+        db.EmployeeImportGaps.Add(new EmployeeImportGap
+        {
+            TenantId = tenantId, ImportBatchId = Guid.NewGuid(), EmployeeId = orphan.Id,
+            GapType = EmployeeImportGap.BankDetailsUnverified, GapCategory = "pay", Detail = "legacy",
+        });
+        await db.SaveChangesAsync();
+
+        var refused = await Hr(db, tenantId).ConfirmImportedBankDetails(orphan.Id, new ConfirmBankDetailsRequest("checked"), CancellationToken.None);
+
+        var result = refused.Should().BeOfType<ObjectResult>().Subject;
+        result.StatusCode.Should().Be(403, "an unknown importer fails closed: the second-person check cannot be made");
+        result.Value!.ToString().Should().Contain("importer_unknown");
+        (await OpenBankGaps(db, orphan.Id)).Should().ContainSingle();
+    }
+
+    private sealed class FailOnConfirmAudit : Microsoft.EntityFrameworkCore.Diagnostics.SaveChangesInterceptor
+    {
+        public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int>> SavingChangesAsync(
+            Microsoft.EntityFrameworkCore.Diagnostics.DbContextEventData eventData,
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result, CancellationToken ct = default)
+        {
+            if (eventData.Context!.ChangeTracker.Entries<AuditLog>()
+                .Any(e => e.State == EntityState.Added && e.Entity.Action == "employee.imported_bank_details_confirmed"))
+                throw new DbUpdateException("Injected audit failure");
+            return base.SavingChangesAsync(eventData, result, ct);
+        }
+    }
+
+    [Fact]
+    public async Task If_the_audit_row_cannot_be_written_the_flag_stays_open()
+    {
+        var (db, tenantId, _, withIban, _) = await ImportTwoAsync(new FailOnConfirmAudit());
+
+        var act = () => Hr(db, tenantId).ConfirmImportedBankDetails(withIban.Id, new ConfirmBankDetailsRequest("checked"), CancellationToken.None);
+
+        await act.Should().ThrowAsync<DbUpdateException>();
+        (await OpenBankGaps(db, withIban.Id)).Should().ContainSingle("the gap is cleared in the same save as its audit row, or not at all");
     }
 
     // ── The pre-lock rule itself ────────────────────────────────────────────────────────────

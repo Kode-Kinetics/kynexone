@@ -4432,8 +4432,6 @@ public class EmployeesController : ControllerBase
         return BadRequest(new { message = "resolution must be 'distinct', 'merge', or 'unmerge'." });
     }
 
-    /// <summary>Refresh one employee's denormalized readiness badge after a dup-flag change (fold via the
-    /// service's snapshot path). Best-effort — display only; the activation gate always recomputes live.</summary>
     /// <summary>
     /// Clears the "imported bank details not yet verified" flag (<see cref="EmployeeImportGap.BankDetailsUnverified"/>)
     /// once HR has confirmed the IBAN/account with the employee. A second-person check, so it is refused to the
@@ -4461,23 +4459,42 @@ public class EmployeesController : ControllerBase
         if (open.Count == 0)
             return Conflict(new { error = "nothing_to_confirm", message = "This employee has no imported bank details waiting to be confirmed." });
 
+        // Who imported them: the imported payroll profile's CreatedBy, AND the actor on each import's commit
+        // marker (employee.import_committed, EntityId = the batch id), which is written in the import's own
+        // transaction. If neither names anyone, the second-person check cannot be made, so it is refused
+        // (fail closed) rather than letting an unknown importer confirm their own data.
         var callerId = GetUserId();
-        var importedBy = await _db.EmployeePayrollProfiles.AsNoTracking()
-            .Where(p => p.TenantId == tenantId && p.EmployeeId == id && !p.IsDeleted)
-            .Select(p => p.CreatedBy).FirstOrDefaultAsync(ct);
-        if (callerId is null || callerId == importedBy || callerId == employee.UserAccountId)
+        var importers = new HashSet<Guid>();
+        var profileCreatedBy = await _db.EmployeePayrollProfiles.AsNoTracking()
+            .Where(p => p.TenantId == tenantId && p.EmployeeId == id && !p.IsDeleted && p.CreatedBy != null)
+            .Select(p => p.CreatedBy!.Value).ToListAsync(ct);
+        importers.UnionWith(profileCreatedBy);
+        var batchIds = open.Select(g => g.ImportBatchId.ToString()).Distinct().ToList();
+        var markerActors = await _db.AuditLogs.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.Action == ImportCommittedAction && a.EntityName == ImportBatchEntityName
+                        && a.EntityId != null && batchIds.Contains(a.EntityId) && a.UserId != null)
+            .Select(a => a.UserId!.Value).ToListAsync(ct);
+        importers.UnionWith(markerActors);
+        if (importers.Count == 0)
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = "importer_unknown",
+                message = "The import that set these bank details does not record who ran it, so a second-person check is not possible. "
+                        + "Re-enter the bank details through the normal change approval instead." });
+        if (callerId is null || importers.Contains(callerId.Value) || callerId == employee.UserAccountId)
             return StatusCode(StatusCodes.Status403Forbidden, new { error = "second_person_required",
                 message = "Imported bank details must be confirmed by someone other than the person who imported them or the employee." });
 
+        // ONE SaveChanges: AuditService adds its row to this same request-scoped context and saves, so the gap
+        // resolution and the audit row commit together or not at all.
         var now = DateTime.UtcNow;
         foreach (var g in open) g.ResolvedAtUtc = now;
-        await _db.SaveChangesAsync(ct);
-        await RefreshReadinessByIdAsync(tenantId, id, ct);
         await _audit.WriteAsync("employee.imported_bank_details_confirmed", "Employee", id.ToString(), Context(),
             JsonSerializer.Serialize(new { note = req.Note.Trim(), clearedGaps = open.Count, importBatchIds = open.Select(g => g.ImportBatchId).Distinct() }), ct);
+        await RefreshReadinessByIdAsync(tenantId, id, ct);   // display badge only, best-effort
         return Ok(new { confirmed = true, clearedGaps = open.Count });
     }
 
+    /// <summary>Refresh one employee's denormalized readiness badge after a dup-flag change (fold via the
+    /// service's snapshot path). Best-effort — display only; the activation gate always recomputes live.</summary>
     private async Task RefreshReadinessByIdAsync(Guid tenantId, int id, CancellationToken ct)
     {
         try
