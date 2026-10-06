@@ -180,6 +180,25 @@ public sealed partial class PersonalDataLoggingRatchetTests
             catch (Exception ex) { _log.LogWarning("send threw {Detail}", $"{ex}"); }
             """).Offences.Should().ContainSingle("a second catch clause is scanned too, and an interpolated hole still logs it");
 
+        // Every send shape the review named is recognised as a send path.
+        foreach (var send in new[]
+                 {
+                     "await _notifications.SendEmailAsync(t, code, to, name, vars, ct);",
+                     "await _emailSender.SendAsync(message, ct);",
+                     "await smtp.SendAsync(mime, ct);",
+                     "await _sms.SendAsync(phone, text, ct);",
+                     "await _mailer.SendMailAsync(mail);",
+                     "await SendWelcomeEmailAsync(user, ct);",
+                     "await _whatsApp.SendTemplateAsync(to, tpl, ct);",
+                     "await _SMTP.SendAsync(mime, ct);",
+                 })
+        {
+            var scanned = SendPathCatchOffences(
+                "try { " + send + " }\ncatch (Exception ex) { _log.LogWarning(ex, \"send failed for {Id}\", id); }");
+            scanned.Catches.Should().Be(1, $"'{send}' is a send");
+            scanned.Offences.Should().ContainSingle($"logging the exception around '{send}' leaks the recipient");
+        }
+
         var typeOnly = SendPathCatchOffences("""
             try { await _emailService.SendAsync(t, user.Email, n, s, h); }
             catch (Exception ex) { _log.LogWarning("Reset email failed for {UserId} ({ErrorType})", user.Id, ex.GetType().Name); }
@@ -195,8 +214,14 @@ public sealed partial class PersonalDataLoggingRatchetTests
         notASend.Offences.Should().BeEmpty();
     }
 
-    /// <summary>A call that sends, or probes, an email or notification channel.</summary>
-    [GeneratedRegex(@"\b(?:Deliver(?:Platform)?Async|SendPlatformAsync|SendCoreAsync|DeliverToRecipientsAsync)\s*\(|\b_?email(?:Service)?\s*\.\s*\w+Async\s*\(|\bProvider\s*\.\s*\w+Async\s*\(|\bdispatchers\b")]
+    /// <summary>
+    /// A call that sends, or probes, an email or notification channel: any async call on a receiver whose name
+    /// mentions email/mail/smtp/sms/whatsapp/notif (<c>_emailService.SendAsync</c>, <c>smtp.SendAsync</c>,
+    /// <c>_notifications.SendEmailAsync</c>, <c>_mailer.SendMailAsync</c>, <c>_sms.SendAsync</c>), any
+    /// <c>Send…Email/Mail/Sms…Async(</c> call, the delivery helpers by name, a provider call, and the
+    /// notification dispatcher loop. Case-insensitive.
+    /// </summary>
+    [GeneratedRegex(@"\b\w*(?:email|mail|smtp|sms|whatsapp|notif)\w*\s*\.\s*\w+Async\s*\(|\bSend\w*(?:Email|Mail|Sms)\w*Async\s*\(|\b(?:Deliver(?:Platform)?Async|SendPlatformAsync|SendCoreAsync|DeliverToRecipientsAsync)\s*\(|\bProvider\s*\.\s*\w+Async\s*\(|\bdispatchers\b", RegexOptions.IgnoreCase)]
     private static partial Regex SendCall();
 
     [GeneratedRegex(@"\btry\s*\{")]
