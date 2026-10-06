@@ -228,6 +228,35 @@ GROUP BY tenant_id;
 The second branch catches previously recognised spellings stored with surrounding spaces (the old
 comparison did not trim). Zero rows means no past payslip was affected.
 
+## Stored full IBANs — post-deploy diagnostic (read-only)
+
+Before the pilot-sensitive-leaks release, an `INVALID_IBAN` payroll validation finding wrote the whole
+IBAN into `payroll_validation_results.message`, and the migration import wrote legacy history values into
+`employee_histories.old_value` / `new_value` unmasked. New rows carry only the last 4 characters
+(`IBAN ***1234 is invalid: …`). **Existing rows are not rewritten by the release.** A run's findings are
+replaced the next time it is validated or processed; locked runs keep theirs. Count what is left with
+these queries (SELECT only), then decide on a reviewed clean-up:
+
+```sql
+-- Validation findings whose message still holds an IBAN-shaped value (2 letters, 2 digits, 11-30 alphanumerics).
+SELECT tenant_id, code, count(*) AS rows_with_iban
+FROM payroll_validation_results
+WHERE message ~ '\m[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\M'
+GROUP BY tenant_id, code
+ORDER BY tenant_id, code;
+
+-- Employee history values that still hold an IBAN-shaped value.
+SELECT tenant_id, field_name, count(*) AS rows_with_iban
+FROM employee_histories
+WHERE old_value ~ '\m[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\M'
+   OR new_value ~ '\m[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\M'
+GROUP BY tenant_id, field_name
+ORDER BY tenant_id, field_name;
+```
+
+Zero rows means nothing is left to clean up. The pattern is deliberately broad, so review what it finds
+before acting on it. `PayrollIbanMaskingPostgresTests` runs the same pattern, so keep the two in sync.
+
 ## Invariants
 - **Schema leads code.** Migrations apply in `migrate-backend` before the deploy hook fires.
 - **Single trigger.** `autoDeploy: false`; the CI hook is the only deploy path.

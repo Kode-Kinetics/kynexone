@@ -9,7 +9,7 @@ namespace Zayra.Api.Application.Employees;
 /// Produces the ONLY permitted JSON snapshot of an Employee for history/audit rows.
 /// Raw JsonSerializer.Serialize(employee) is forbidden for persistence — it leaks salary,
 /// IBAN, Iqama, passport, national IDs and medical data into EmployeeHistory.SnapshotJson,
-/// bypassing EmployeeSensitiveMask (which only guards API read paths).
+/// bypassing the API read-path mask (EmployeeDetailDto.Project).
 /// Identity/banking numbers keep their last 4 characters, salary becomes a deterministic
 /// change marker, and free-text medical/disciplinary content is redacted entirely.
 /// </summary>
@@ -35,8 +35,22 @@ public static class EmployeeSafeSnapshot
         nameof(Employee.TerminationReason), nameof(Employee.BankName)
     };
 
+    // Names a history row may carry for the same facts when it did not come from this model: the migration
+    // import takes FieldName verbatim from a legacy system ("IBAN", "Iqama", "BasicSalary"), and the payroll
+    // profile's own columns (Iban, AccountNumber, MolId) are not Employee properties.
+    private static readonly string[] MaskedIdAliases =
+    {
+        nameof(EmployeePayrollProfile.Iban), nameof(EmployeePayrollProfile.AccountNumber), nameof(EmployeePayrollProfile.MolId),
+        "Iqama", "NationalId", "NationalIdNumber", "Passport", "BankAccount", "BankAccountNumber",
+    };
+
+    private static readonly HashSet<string> SalaryFieldNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        nameof(Employee.Salary), "BasicSalary", "GrossSalary", "NetSalary", "MonthlySalary",
+    };
+
     private static readonly HashSet<string> SensitiveFieldNames = new(
-        MaskedIdFields.Concat(RedactedFields).Append(nameof(Employee.Salary)),
+        MaskedIdFields.Concat(RedactedFields).Concat(MaskedIdAliases),
         StringComparer.OrdinalIgnoreCase);
 
     public static string Serialize(Employee employee)
@@ -68,8 +82,8 @@ public static class EmployeeSafeSnapshot
     public static string SanitizeFieldValue(string fieldName, string value)
     {
         if (string.IsNullOrEmpty(value)) return value;
-        if (fieldName.Equals(nameof(Employee.Salary), StringComparison.OrdinalIgnoreCase))
+        if (SalaryFieldNames.Contains(fieldName.Trim()))
             return SensitiveValueMask.HashMarker(value);
-        return SensitiveFieldNames.Contains(fieldName) ? SensitiveValueMask.MaskId(value) : value;
+        return SensitiveFieldNames.Contains(fieldName.Trim()) ? SensitiveValueMask.MaskId(value) : value;
     }
 }

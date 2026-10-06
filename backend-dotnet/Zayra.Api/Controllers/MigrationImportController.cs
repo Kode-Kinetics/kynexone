@@ -687,8 +687,9 @@ public sealed partial class MigrationImportController : ControllerBase
             && x.FieldName == fieldName && x.EffectiveDate == effectiveDate && x.Reason == reason, ct);
         var created = item is null;
         item ??= new EmployeeHistory { TenantId = tenantId, EmployeeId = employee.Id, EventType = eventType, FieldName = fieldName, EffectiveDate = effectiveDate };
-        item.OldValue = Val(row, "OldValue");
-        item.NewValue = Val(row, "NewValue");
+        // Same fail-safe as every other history writer: an imported IBAN / Iqama / salary change lands masked.
+        item.OldValue = EmployeeSafeSnapshot.SanitizeFieldValue(fieldName, Val(row, "OldValue"));
+        item.NewValue = EmployeeSafeSnapshot.SanitizeFieldValue(fieldName, Val(row, "NewValue"));
         item.Reason = reason;
         item.CreatedByUserId = UserId();
         // EmployeeSafeSnapshot deliberately excludes salary, banking, and government identifiers.

@@ -1257,7 +1257,7 @@ public class EmployeesController : ControllerBase
                 // ── A NEW employee: initial data entry, the same as POST /api/employees (bank and salary included). ──
                 var ibanRaw = rowData.GetValueOrDefault("IBAN", string.Empty).Trim();
                 if (!string.IsNullOrWhiteSpace(ibanRaw) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(ibanRaw))
-                    warnings.Add($"Employee {emp.EmployeeCode}: IBAN '{ibanRaw}' fails country format/length or the ISO 13616 mod-97 checksum — imported, but it must be corrected before this employee can be included in a payroll run.");
+                    warnings.Add($"Employee {emp.EmployeeCode}: {Zayra.Api.Infrastructure.Payroll.IbanValidator.Describe(ibanRaw)}. Imported, but it must be corrected before this employee can be included in a payroll run.");
                 var bankNameRaw = rowData.GetValueOrDefault("BankName", string.Empty).Trim();
                 var molIdRaw = rowData.GetValueOrDefault("MolId", string.Empty).Trim();
                 var accountRaw = rowData.GetValueOrDefault("AccountNumber", string.Empty).Trim();
@@ -2349,7 +2349,7 @@ public class EmployeesController : ControllerBase
             // Use the real ISO 13616 mod-97 check (not just structure) so a bad checksum is caught in
             // preview, matching what the payroll-run/WPS gate enforces later.
             if (!string.IsNullOrEmpty(ibanPreview) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(ibanPreview))
-                rowWarnings.Add($"IBAN '{ibanPreview}' is invalid — country format/length or ISO 13616 mod-97 validation failed; it will be stored as-is but must be corrected before this employee can be paid via WPS");
+                rowWarnings.Add($"{Zayra.Api.Infrastructure.Payroll.IbanValidator.Describe(ibanPreview)}. It will be stored as-is but must be corrected before this employee can be paid via WPS");
 
             bool hasErrors = rowErrors.Count > 0;
 
@@ -5904,8 +5904,12 @@ public class EmployeesController : ControllerBase
             ? string.Equals(a.GetString()?.Trim(), b.GetString()?.Trim(), StringComparison.Ordinal)
             : a.GetRawText() == b.GetRawText());
 
-    private bool CanEditSensitive() => User.IsInRole("Admin") || User.IsInRole("HR Manager") || User.HasClaim("permission", "employees.sensitive");
-    private bool CanViewSensitive() => CanEditSensitive() || User.IsInRole("Payroll Officer") || User.HasClaim("permission", "employees.sensitive");
+    // Sensitive fields (salary, IBAN, identity numbers) are gated on the effective employees.sensitive permission
+    // ONLY. A role NAME is never a grant: a tenant can create a custom role called "Payroll Officer" without the
+    // permission, and a per-user Deny of employees.sensitive must mask an Admin too. The permission is also what
+    // PrivilegedMfaPolicy counts, so a name-based grant would also have shown IBANs to a user MFA never covered.
+    private bool CanEditSensitive() => User.HasPermission("employees.sensitive");
+    private bool CanViewSensitive() => User.HasPermission("employees.sensitive");
     private Task Notify(string title, string message, string entity, string? entityId, CancellationToken cancellationToken) => _notifications.NotifyAsync(RequireTenant(), null, title, message, entity, entityId, cancellationToken);
 
     private EmployeeListItemDto ToListItem(Employee employee) => new(employee.Id, employee.EmployeeCode, employee.FullName, employee.ArabicName, employee.Department, employee.Designation, employee.Branch, employee.ManagerEmployeeId, employee.Status, employee.ProfileCompletenessScore, employee.VisaExpiryDate, employee.PassportExpiryDate, employee.ReadinessState, employee.ActivationBlockersCount, employee.PublicId);

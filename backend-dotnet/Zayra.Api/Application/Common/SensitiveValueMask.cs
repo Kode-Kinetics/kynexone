@@ -6,8 +6,8 @@ namespace Zayra.Api.Application.Common;
 
 /// <summary>
 /// Masking primitives for sensitive values that must never be persisted or logged raw
-/// (audit/history snapshots, LLM payloads). Complements EmployeeSensitiveMask, which
-/// clears fields on API read paths — these helpers preserve auditability (last-4 masks,
+/// (audit/history snapshots, validation/import messages, LLM payloads). API read paths mask
+/// by projection instead (EmployeeDetailDto.Project) — these helpers preserve auditability (last-4 masks,
 /// deterministic change markers) without storing the raw value anywhere.
 /// </summary>
 public static class SensitiveValueMask
