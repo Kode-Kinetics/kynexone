@@ -200,8 +200,8 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         missing.Should().BeEmpty(
             "a role named on this gate can never pass it; add it to NamedButLocked with a decision:\n" + string.Join('\n', missing));
         var currentPairs = current.Select(x => (x.Endpoint, x.Role)).ToHashSet();
-        listed.Where(x => !currentPairs.Contains(x)).Select(x => $"{x.Endpoint} | {x.Item2}").Should().BeEmpty(
-            "these NamedButLocked entries are resolved; delete them");
+        var resolved = listed.Where(x => !currentPairs.Contains(x)).Select(x => $"{x.Endpoint} | {x.Item2}").ToList();
+        resolved.Should().BeEmpty("these NamedButLocked entries are resolved; delete them:\n" + string.Join('\n', resolved));
         NamedButLocked.Select(e => (e.Endpoint, e.Decision)).Should().OnlyHaveUniqueItems();
         NamedButLocked.Should().OnlyContain(e => e.Decision.StartsWith("GRANT ", StringComparison.Ordinal) || e.Decision.StartsWith("DROP ", StringComparison.Ordinal));
     }

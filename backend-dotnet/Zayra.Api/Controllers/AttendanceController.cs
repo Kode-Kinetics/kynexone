@@ -330,6 +330,10 @@ public class AttendanceController : ControllerBase
 
     [HttpPost("regularization/{id:guid}/approve")]
     [Authorize(Roles = "Admin,HR Director,HR Manager,Manager,Supervisor")]
+    // The resolver maps "approve"/"reject" on Attendance to attendance.lock, which the named line Manager and
+    // Supervisor do not hold, so they were refused their own team's regularizations. A line manager decides with
+    // manager.approve; HR keeps attendance.lock. The body's data-scope check is unchanged.
+    [HasPermission("attendance.lock", "manager.approve")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: WorkDate, RequestType, correction timestamps, free-text Reason, Status. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public async Task<ActionResult<AttendanceRegularizationRequest>> ApproveRegularization(Guid id, RegularizationDecisionRequest request, CancellationToken ct)
     {
@@ -351,6 +355,7 @@ public class AttendanceController : ControllerBase
 
     [HttpPost("regularization/{id:guid}/reject")]
     [Authorize(Roles = "Admin,HR Director,HR Manager,Manager,Supervisor")]
+    [HasPermission("attendance.lock", "manager.approve")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: WorkDate, RequestType, correction timestamps, free-text Reason, Status. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public async Task<ActionResult<AttendanceRegularizationRequest>> RejectRegularization(Guid id, RegularizationDecisionRequest request, CancellationToken ct)
     {

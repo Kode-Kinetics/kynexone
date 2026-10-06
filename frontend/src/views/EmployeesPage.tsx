@@ -1269,7 +1269,8 @@ export function EmployeesPage() {
             <>
               <ImportExportToolbar
                 entityName="Employees"
-                onExport={employeesImportExport.export}
+                // The whole-tenant people export: the API requires employees.documents.
+                onExport={hasPermission('employees.documents') ? employeesImportExport.export : undefined}
                 onDownloadTemplate={employeesImportExport.template}
                 onImport={async (csv, importKey) => { const r = await employeesApi.import(csv, importKey); await load(); return r; }}
                 onPreview={(csv) => employeesApi.importPreview(csv)}

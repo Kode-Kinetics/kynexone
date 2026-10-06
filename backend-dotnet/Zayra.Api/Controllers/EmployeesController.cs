@@ -264,8 +264,11 @@ public class EmployeesController : ControllerBase
         "ResidencyIssueDate", "IdNumber", "SponsorName", "ContractReference", "WorkPermitReference", "QiwaEmployeeReference"
     };
 
+    // Whole-tenant people export (PII, plus payroll and bank columns with employees.sensitive). Payroll Officer and
+    // Auditor were named here but never held the key this resolves to (employees.documents), so they were always
+    // refused; they are dropped from the list rather than given a tenant-wide PII export.
     [HttpGet("export")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer,Auditor")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     public async Task<IActionResult> Export(CancellationToken ct)
     {
         var tenantId = RequireTenant();
