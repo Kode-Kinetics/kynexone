@@ -45,6 +45,9 @@ public class AttendanceController : ControllerBase
         return Ok(new { date = summary.Date, totalActive = summary.ActiveEmployees, present = summary.Present, absent = summary.Absent, onLeave = 0, late = summary.Late });
     }
 
+    /// <summary>Header values on a device are credentials; only a caller who may configure devices sees them.</summary>
+    private bool CanConfigureDevices => User.HasPermission(AttendanceDeviceDto.ConfigurePermission);
+
     [HttpGet("devices")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
     public async Task<PagedResult<AttendanceDeviceDto>> Devices([FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken ct = default)
@@ -52,13 +55,13 @@ public class AttendanceController : ControllerBase
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
         var result = await _attendance.GetDevicesAsync(RequireTenant(), page, pageSize, ct);
-        return new PagedResult<AttendanceDeviceDto>(result.Items.Select(AttendanceDeviceDto.Project).ToList(), result.Total, result.Page, result.PageSize);
+        return new PagedResult<AttendanceDeviceDto>(result.Items.Select(d => AttendanceDeviceDto.Project(d, CanConfigureDevices)).ToList(), result.Total, result.Page, result.PageSize);
     }
 
     [HttpGet("devices/{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
     public async Task<ActionResult<AttendanceDeviceDto>> Device(Guid id, CancellationToken ct) =>
-        await _attendance.GetDeviceAsync(RequireTenant(), id, ct) is { } device ? Ok(AttendanceDeviceDto.Project(device)) : NotFound();
+        await _attendance.GetDeviceAsync(RequireTenant(), id, ct) is { } device ? Ok(AttendanceDeviceDto.Project(device, CanConfigureDevices)) : NotFound();
 
     // Role-gate bypass sweep (LegacyRoleGateBypassSweepTests): a device and its key are a channel that imports punches for any employee into payroll. These resolved to
     // attendance.write, which a Supervisor holds; attendance.bulk_import is the punch-import key the named HR roles hold.
@@ -70,7 +73,7 @@ public class AttendanceController : ControllerBase
         try
         {
             var device = await _attendance.CreateDeviceAsync(RequireTenant(), request, Context(), ct);
-            return Created($"/api/attendance/devices/{device.Id}", AttendanceDeviceDto.Project(device));
+            return Created($"/api/attendance/devices/{device.Id}", AttendanceDeviceDto.Project(device, CanConfigureDevices));
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
@@ -83,7 +86,7 @@ public class AttendanceController : ControllerBase
         try
         {
             var device = await _attendance.UpdateDeviceAsync(RequireTenant(), id, request, Context(), ct);
-            return device is null ? NotFound() : Ok(AttendanceDeviceDto.Project(device));
+            return device is null ? NotFound() : Ok(AttendanceDeviceDto.Project(device, CanConfigureDevices));
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }

@@ -1,11 +1,14 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Application.Attendance;
 
 /// <summary>
 /// Safe projection of AttendanceDevice — AuthCredentialsJson is omitted; replaced by HasCredentials bool.
-/// Raw device credentials must never be serialised in API responses.
+/// Raw device credentials must never be serialised in API responses. CustomHeadersJson can carry credentials
+/// too (an API key header), so its VALUES are shown only to a caller who may configure devices
+/// (attendance.bulk_import); anyone else gets the header names with <see cref="MaskedHeaderValue"/>.
 /// </summary>
 public record AttendanceDeviceDto(
     Guid Id,
@@ -40,13 +43,66 @@ public record AttendanceDeviceDto(
     Guid? DeletedBy,
     bool HasCredentials)
 {
-    public static AttendanceDeviceDto Project(AttendanceDevice d) => new(
+    /// <summary>Stands in for a custom header value the caller may not see. The device update path treats it
+    /// as "unchanged", so a form that round-trips it cannot overwrite the stored credential.</summary>
+    public const string MaskedHeaderValue = "••••";
+
+    /// <summary>The key that may see and change device configuration, including header values.</summary>
+    public const string ConfigurePermission = "attendance.bulk_import";
+
+    public static AttendanceDeviceDto Project(AttendanceDevice d, bool revealHeaderValues) => new(
         d.Id, d.TenantId, d.DeviceName, d.DeviceType, d.Vendor, d.SerialNumber,
         d.BranchId, d.LocationName, d.IpAddress, d.EndpointUrl, d.Port, d.ApiKeyReference,
-        d.SyncMethod, d.SyncFrequency, d.AuthType, d.CustomHeadersJson, d.DeviceParametersJson,
+        d.SyncMethod, d.SyncFrequency, d.AuthType,
+        revealHeaderValues ? d.CustomHeadersJson : MaskHeaderValues(d.CustomHeadersJson), d.DeviceParametersJson,
         d.FieldMappingsJson, d.Notes, d.LastSyncStatus, d.LastSyncAtUtc, d.ErrorLog, d.IsActive,
         d.CreatedAtUtc, d.CreatedBy, d.UpdatedAtUtc, d.UpdatedBy, d.IsDeleted, d.DeletedAtUtc, d.DeletedBy,
         HasCredentials: !string.IsNullOrWhiteSpace(d.AuthCredentialsJson) && d.AuthCredentialsJson != "{}");
+
+    /// <summary>Header names kept, every value replaced. Anything that is not a JSON object reveals nothing.</summary>
+    public static string MaskHeaderValues(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return "{}";
+        try
+        {
+            var headers = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json);
+            return headers is null ? "{}" : JsonSerializer.Serialize(headers.Keys.ToDictionary(k => k, _ => MaskedHeaderValue));
+        }
+        catch (JsonException) { return "{}"; }
+    }
+
+    /// <summary>
+    /// The custom headers to store on an update: an incoming value equal to <see cref="MaskedHeaderValue"/>
+    /// keeps the stored value for that header (or drops the header if nothing is stored), so a masked read
+    /// sent back on save never replaces a real credential with the mask.
+    /// </summary>
+    public static string MergeMaskedHeaderValues(string? stored, string incoming)
+    {
+        // Parsed, not string-searched: the mask may arrive JSON-escaped ("\u2022").
+        Dictionary<string, JsonElement>? next;
+        try { next = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(incoming); }
+        catch (JsonException) { return incoming; }
+        if (next is null || !next.Values.Any(IsMask)) return incoming;
+
+        Dictionary<string, JsonElement> current;
+        try { current = string.IsNullOrWhiteSpace(stored) ? new() : JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(stored) ?? new(); }
+        catch (JsonException) { current = new(); }
+
+        var merged = new Dictionary<string, JsonElement>();
+        foreach (var (name, value) in next)
+        {
+            if (IsMask(value))
+            {
+                if (current.TryGetValue(name, out var kept)) merged[name] = kept;
+                continue;
+            }
+            merged[name] = value;
+        }
+        return JsonSerializer.Serialize(merged);
+    }
+
+    private static bool IsMask(JsonElement value) =>
+        value.ValueKind == JsonValueKind.String && value.GetString() == MaskedHeaderValue;
 }
 
 public record AttendanceDeviceRequest(

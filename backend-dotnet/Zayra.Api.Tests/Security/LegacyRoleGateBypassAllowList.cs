@@ -26,7 +26,7 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         SameAudienceAsSiblings,
         HrOfficerHrOperations,
         OpenUnscopedNames,
-        OpenDeviceConfigRead,
+        DeviceReadMasked,
     }
 
     internal static readonly IReadOnlyDictionary<Reason, string> Reasons = new Dictionary<Reason, string>
@@ -45,7 +45,7 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         [SameAudienceAsSiblings] = "Payroll Manager is already named on Create/Update of the same tax policies, and Update can already archive one.",
         [HrOfficerHrOperations] = "HR Officer is HR staff holding this module's write key and the UI exposes these HR screens to it. P2: narrowing tenant HR configuration to the HR-manager tier is a product decision.",
         [OpenUnscopedNames] = "OPEN P2: per-employee names with document-expiry or missed-punch data, not data-scoped. No money, salary or bank data. Follow-up: apply DataScope.",
-        [OpenDeviceConfigRead] = "OPEN P1: device DTO returns CustomHeadersJson, which can carry device credentials, to any attendance.read holder. Follow-up: mask secrets in AttendanceDeviceDto.",
+        [DeviceReadMasked] = "Device configuration read only: auth credentials are never serialised and custom header values are masked for callers without attendance.bulk_import.",
     };
 
     internal static readonly (string Endpoint, string Roles, Reason Why)[] AllowList =
@@ -98,9 +98,9 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         ("POST Attendance.CreateDevice", "HR Director", SeniorHr),
         ("GET Attendance.Dashboard", "Payroll Manager,Payroll Officer,HR Assistant", ScopedRead),
         ("DELETE Attendance.DeleteDevice", "HR Director", SeniorHr),
-        ("GET Attendance.Device", "Payroll Manager,Payroll Officer,Manager,Supervisor,HR Assistant", OpenDeviceConfigRead),
+        ("GET Attendance.Device", "Payroll Manager,Payroll Officer,Manager,Supervisor,HR Assistant", DeviceReadMasked),
         ("GET Attendance.Device", "HR Director", SeniorHr),
-        ("GET Attendance.Devices", "Payroll Manager,Payroll Officer,Manager,Supervisor,HR Assistant", OpenDeviceConfigRead),
+        ("GET Attendance.Devices", "Payroll Manager,Payroll Officer,Manager,Supervisor,HR Assistant", DeviceReadMasked),
         ("GET Attendance.Devices", "HR Director", SeniorHr),
         ("POST Attendance.GenerateDeviceKey", "HR Director", SeniorHr),
         ("POST Attendance.Import", "HR Director", SeniorHr),

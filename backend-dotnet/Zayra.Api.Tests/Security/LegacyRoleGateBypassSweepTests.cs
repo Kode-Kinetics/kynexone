@@ -151,7 +151,7 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         // A plain employee, kiosk operator or line supervisor bypassing a role gate is only ever acceptable for
         // aggregate or data-scoped reads, scoped attendance processing, or an action whose body refuses them anyway.
         var frontLine = new[] { "Employee", "Kiosk Operator", "Supervisor", "Manager" };
-        var acceptable = new[] { ScopedRead, AggregateOnly, AttendanceProcessScoped, OpenUnscopedNames, OpenDeviceConfigRead, WorkflowStepAuthority, BodyRechecksRole };
+        var acceptable = new[] { ScopedRead, AggregateOnly, AttendanceProcessScoped, OpenUnscopedNames, DeviceReadMasked, WorkflowStepAuthority, BodyRechecksRole };
         var offending = AllowList
             .Where(e => e.Roles.Split(',', StringSplitOptions.TrimEntries).Intersect(frontLine).Any() && !acceptable.Contains(e.Why))
             .Select(e => $"{e.Endpoint} [{e.Roles}] {e.Why}")
