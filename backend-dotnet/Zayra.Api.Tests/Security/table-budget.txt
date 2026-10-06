@@ -82,6 +82,7 @@ ComplianceReminders
 ComplianceRenewals
 ComplianceRequirements
 ContinuousFeedback
+ContractRenewalCases
 ContractTemplates
 CostCenters
 CountryPayrollRules
@@ -106,6 +107,7 @@ EmployeeDocumentRequests
 EmployeeDocumentVersions
 EmployeeDocuments
 EmployeeDrafts
+EmployeeEntitlements
 EmployeeEosbOpeningBalances
 EmployeeFinalSettlements
 EmployeeGoals

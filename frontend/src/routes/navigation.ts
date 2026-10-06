@@ -45,6 +45,9 @@ export const navigationGroups: NavGroup[] = [
       { label: 'My Overtime', icon: TimerReset, path: '/ess/overtime', requiredPermissions: ['ess.read'], requiredFeatureKey: 'overtime' },
       { label: 'My HR Requests', icon: Headphones, path: '/ess/requests', requiredPermissions: ['ess.read'] },
       { label: 'My Benefits', icon: HeartPulse, path: '/ess/benefits', requiredPermissions: ['ess.read'] },
+      // Release A (release_a opt-in flag): the employee's own package and deductions.
+      { label: 'My package', icon: WalletCards, path: '/ess/package', requiredPermissions: ['ess.read'], requiredFeatureKey: 'release_a' },
+      { label: 'My deductions', icon: FileText, path: '/ess/deductions', requiredPermissions: ['ess.read'], requiredFeatureKey: 'release_a' },
     ],
   },
   {
@@ -68,6 +71,9 @@ export const navigationGroups: NavGroup[] = [
       { label: 'Payslip Templates', icon: FileText, path: '/payroll/templates', requiredPermissions: ['payroll.read'], requiredFeatureKey: 'payslip_template_designer' },
       { label: 'Loans & Advances', icon: Landmark, path: '/loans', requiredPermissions: ['loans.self', 'loans.read', 'loans.write'] },
       { label: 'Benefits', icon: HeartPulse, path: '/benefits', requiredPermissions: ['employees.write'] },
+      // Release A (release_a opt-in flag): benefits by grade and contract renewals.
+      { label: 'Benefits by grade', icon: Layers3, path: '/benefits/by-grade', requiredPermissions: ['entitlements.read'], requiredFeatureKey: 'release_a' },
+      { label: 'Contract renewals', icon: FileSignature, path: '/contract-renewals', requiredPermissions: ['contracts.renewal.read'], requiredFeatureKey: 'release_a' },
       { label: 'Recruitment', icon: BriefcaseBusiness, path: '/recruitment', requiredPermissions: ['recruitment.read', 'recruitment.write'], requiredFeatureKey: 'recruitment' },
       { label: 'Offboarding', icon: UserMinus, path: '/offboarding', requiredPermissions: ['employees.write', 'payroll.approve'] },
       // Any performance key opens it; the page then shows each audience its own tabs (lib/performanceAccess).
@@ -134,6 +140,10 @@ export const navigationHints: Record<string, string> = {
   '/payroll/templates': 'Design the layout of the payslips employees receive.',
   '/loans': 'Salary advances and loans, with their repayment schedules.',
   '/benefits': 'Benefit plans offered to employees, and who is enrolled.',
+  '/benefits/by-grade': 'What each grade is entitled to — housing, transport, tickets, medical, education, per diem — per company.',
+  '/contract-renewals': 'Contracts ending soon: what is due next, the legal deadline, and each renewal’s progress.',
+  '/ess/package': 'Your pay and the benefits fixed for your contract year.',
+  '/ess/deductions': 'What is deducted from your pay, why, and what is left to repay.',
   '/recruitment': 'Open positions, candidates and the hiring pipeline.',
   '/offboarding': 'Resignations and exits: clearance, final settlement and end of service.',
   '/performance': 'Goals, review cycles and ratings.',

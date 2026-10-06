@@ -164,6 +164,9 @@ public static class ModuleCatalog
                 "/api/grades", "/api/cost-centers", "/api/locations", "/api/positions",
                 "/api/companies", "/api/organization", "/api/reference", "/api/establishment",
                 "/api/jobs", "/api/planning",
+                // Release A: the grade entitlement matrix and the employee package are employment terms, not an
+                // optional module. The release_a opt-in flag (OptInFeatures) gates them on top of this.
+                "/api/entitlements",
             ],
             NavPaths = ["/people", "/org-chart", "/companies"],
         },
@@ -358,7 +361,9 @@ public static class ModuleCatalog
             Lock = ModuleLock.Statutory,
             LockReason = StatutoryComplianceReason,
             StatutoryCountries = ["SA", "AE", "KW", "QA", "BH", "OM"],
-            RoutePrefixes = ["/api/compliance"],
+            // /api/contracts: Release A contract renewals (the chain, the renewal case). The existing contract
+            // register stays under /api/compliance/contracts; the release_a opt-in flag gates the new prefix too.
+            RoutePrefixes = ["/api/compliance", "/api/contracts"],
             NavPaths = ["/compliance"],
         },
 
@@ -503,6 +508,10 @@ public static class ModuleCatalog
                 "Hijri dates are configured on the localisation settings "
                 + "(PUT /api/tenant-admin/localization, hijriDatesEnabled), which is the setting the "
                 + "runtime actually reads. This duplicate key reads nothing.",
+            [FeatureKeys.ReleaseA] =
+                "Release A (benefits by grade, contract renewals, the deductions statement) is an opt-in "
+                + "feature switched on per tenant by the platform team while it is being rolled out. It is off "
+                + "unless enabled, and Tenant Admin cannot switch it. See OptInFeatures.",
             ["demo_seed_version"] =
                 "Not a feature. The demo seeder stamps its version into this row; it is not a module.",
         };

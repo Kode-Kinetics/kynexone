@@ -13,6 +13,9 @@ import { ImportExportToolbar, downloadCsv } from '../components/ImportExportTool
 import { ReadinessBadge, hasExpiringId } from '../components/ReadinessBadge';
 import { ReadinessChecklist, type ReadinessFixMode } from '../components/ReadinessChecklist';
 import { GosiCohortPanel } from '../components/GosiCohortPanel';
+import { EmployeePackagePanel } from '../components/entitlements/EmployeePackagePanel';
+import { EmployeeDeductionsPanel } from '../components/deductions/EmployeeDeductionsPanel';
+import { useReleaseA } from '../lib/releaseA';
 import client from '../api/client';
 import { createLatestRequestGate, runLatest } from '../lib/latestRequest';
 import { createUrlSeed } from '../lib/urlSeed';
@@ -67,7 +70,7 @@ import {
 import type { EmployeeEditField, ResolvedFieldCatalog } from '../api/employeeFieldCatalog';
 
 type StatusFilter = '' | 'Draft' | 'Pre-boarding' | 'Active' | 'Probation' | 'Confirmed' | 'On leave' | 'Suspended' | 'Resigned' | 'Notice period' | 'Terminated' | 'Retired' | 'Absconded' | 'Inactive' | 'Blacklisted';
-type DetailTab = 'personal' | 'employment' | 'payroll' | 'compliance' | 'documents' | 'history' | 'transfers';
+type DetailTab = 'personal' | 'employment' | 'payroll' | 'package' | 'deductions' | 'compliance' | 'documents' | 'history' | 'transfers';
 type EditField = EmployeeEditField;
 
 const statusOptions: StatusFilter[] = ['', 'Draft', 'Pre-boarding', 'Active', 'Probation', 'Confirmed', 'On leave', 'Suspended', 'Resigned', 'Notice period', 'Terminated', 'Retired', 'Absconded', 'Inactive', 'Blacklisted'];
@@ -106,10 +109,13 @@ const BULK_REASON_LABELS: Record<string, string> = {
 };
 const bulkReasonLabel = (reason?: string | null) => (reason ? BULK_REASON_LABELS[reason] ?? reason : 'Skipped');
 
-const tabs: { id: DetailTab; label: string }[] = [
+// releaseA: shown only when the tenant has the release_a flag on (Release A slices R2 and R3 own the panels).
+const tabs: { id: DetailTab; label: string; releaseA?: boolean }[] = [
   { id: 'personal', label: 'Personal Information' },
   { id: 'employment', label: 'Employment Information' },
   { id: 'payroll', label: 'Payroll Profile' },
+  { id: 'package', label: 'Package', releaseA: true },
+  { id: 'deductions', label: 'Deductions', releaseA: true },
   { id: 'compliance', label: 'Compliance' },
   { id: 'documents', label: 'Documents' },
   { id: 'history', label: 'History' },
@@ -290,6 +296,8 @@ export function EmployeesPage() {
   const [readiness, setReadiness] = useState<EmployeeReadiness | null>(null);
   const [blockedPanel, setBlockedPanel] = useState<EmployeeNotActivatable | null>(null);
   const [activeTab, setActiveTab] = useState<DetailTab>('personal');
+  const releaseA = useReleaseA();
+  const visibleTabs = useMemo(() => tabs.filter((tab) => !tab.releaseA || releaseA), [releaseA]);
   const [statusReason, setStatusReason] = useState('');
   const [newStatus, setNewStatus] = useState<StatusFilter>('Active');
   const [transferReason, setTransferReason] = useState('');
@@ -1573,7 +1581,7 @@ export function EmployeesPage() {
                   </button>
                 </div>
                 <div className="mt-4 flex gap-1 overflow-x-auto">
-                  {tabs.map((tab) => (
+                  {visibleTabs.map((tab) => (
                     <button key={tab.id} type="button" onClick={() => setActiveTab(tab.id)} className={`whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-semibold ${activeTab === tab.id ? 'bg-sapphire text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.07]'}`}>
                       {tab.label}
                     </button>
@@ -1737,6 +1745,8 @@ export function EmployeesPage() {
                     <GosiCohortPanel key={detail!.id} employee={detail!} />
                   </>
                 )}
+                {releaseA && activeTab === 'package' && <EmployeePackagePanel key={detail!.id} employee={detail!} />}
+                {releaseA && activeTab === 'deductions' && <EmployeeDeductionsPanel key={detail!.id} employee={detail!} />}
                 {activeTab === 'compliance' && (
                   <div className="space-y-2">
                     {detail!.complianceRecords.length === 0 && <SmallEmpty label="No compliance records saved" />}

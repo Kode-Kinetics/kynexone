@@ -48,6 +48,28 @@ public class FeatureFlagGuardFilter : IAsyncActionFilter
     {
         var path = context.HttpContext.Request.Path.Value ?? string.Empty;
 
+        // Opt-in features (default OFF) are checked first and independently of the owning module: a Core route
+        // such as /api/entitlements is never switched off as a module, but stays closed until release_a is on.
+        var optIn = OptInFeatures.ResolveApiPath(path);
+        if (optIn is not null && Guid.TryParse(context.HttpContext.User.FindFirstValue("tenant_id"), out var optInTenant))
+        {
+            var optInState = await _modules.GetStateAsync(optInTenant, context.HttpContext.RequestAborted);
+            if (!optInState.IsEnabled(optIn))
+            {
+                _log.LogWarning(
+                    "FeatureFlagGuard blocked an opt-in feature. Tenant={TenantId} Feature={FeatureKey} Path={Path}",
+                    optInTenant, optIn, path);
+                context.Result = new ObjectResult(new
+                {
+                    error = "feature_not_enabled",
+                    feature = optIn,
+                    message = "This feature is not enabled for your account yet.",
+                })
+                { StatusCode = StatusCodes.Status403Forbidden };
+                return;
+            }
+        }
+
         var module = ModuleCatalog.ResolveApiPath(path);
         if (module is null)
         {

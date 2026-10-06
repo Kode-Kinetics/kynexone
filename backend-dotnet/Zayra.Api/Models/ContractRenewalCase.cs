@@ -1,0 +1,210 @@
+using Zayra.Api.Domain.Entities;
+
+namespace Zayra.Api.Models;
+
+/// <summary>
+/// The review of one expiring contract term: renew as is, renew with changes, convert to indefinite, or not
+/// renew — through approval, the employee's acceptance, the Qiwa step and Apply.
+///
+/// <para><b>Capability.</b> Release A requirement 2 (rev 8.3 §2.3). One row per expiring term
+/// (UNIQUE (tenant_id, expiring_contract_id)); the precedent is <c>final_settlements</c>, the separation case.
+/// The state machine and its transition table are <c>Application/Contracts/RenewalStateMachine</c>; the
+/// database refuses illegal transitions into Accepted, Applied and NonRenewed (the money and legal path).</para>
+///
+/// <para><b>Frozen at open.</b> <see cref="AllowedActions"/>, the four deadlines, <see cref="QiwaRequired"/>
+/// and <see cref="WorkerNationalityClass"/> are computed once from <c>statutory_rules</c> when the case opens
+/// and only re-baselined (audited) when the contract end date changes.</para>
+///
+/// <para><see cref="EmployeeId"/> is the employee's <b>PublicId</b>, matching <see cref="EmployeeContract.EmployeeId"/>.</para>
+/// </summary>
+public class ContractRenewalCase : ITenantOwned, ICompanyScopedOperational
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+
+    /// <summary>Employer of record. NOT NULL in the database.</summary>
+    public Guid? CompanyId { get; set; }
+
+    /// <summary>The employee's PublicId.</summary>
+    public Guid EmployeeId { get; set; }
+
+    public Guid ExpiringContractId { get; set; }
+
+    /// <summary>The expiring term's end date, frozen at open (re-baselined with an audit row if the contract changes).</summary>
+    public DateOnly ExpiringEndDate { get; set; }
+
+    /// <summary>Saudi or NonSaudi, frozen at open. Art. 37 / Art. 55 turn on it.</summary>
+    public string WorkerNationalityClass { get; set; } = WorkerNationalityClasses.NonSaudi;
+
+    /// <summary>The contract actions the law allows for this term, derived at open. See <see cref="ContractActions"/>.</summary>
+    public string[] AllowedActions { get; set; } = [];
+
+    /// <summary>See <see cref="RenewalStates"/>.</summary>
+    public string State { get; set; } = RenewalStates.Open;
+
+    public string? RecommendedAction { get; set; }
+    public Guid? RecommendedByUserId { get; set; }
+    public DateOnly? ManagerDueOn { get; set; }
+
+    /// <summary>The action the offer proposes. Must be one of <see cref="AllowedActions"/> (CHECK).</summary>
+    public string? ContractAction { get; set; }
+    public short? TermMonths { get; set; }
+    public string? FallbackIfRejected { get; set; }
+    public string? ReasonCode { get; set; }
+
+    public string? EmployeeResponse { get; set; }
+    public DateTime? EmployeeRespondedAt { get; set; }
+    /// <summary>ESS: the employee's own user. PaperUpload: the HR user who recorded the signed paper response.</summary>
+    public Guid? EmployeeRespondedByUserId { get; set; }
+    public string? ResponseChannel { get; set; }
+
+    /// <summary>PaperUpload only: the signed response document (restricted type). Required for a paper acceptance.</summary>
+    public Guid? EmployeeResponseDocumentId { get; set; }
+
+    /// <summary>PaperUpload only: the second user who confirmed the paper response. Never the one who recorded it (CHECK).</summary>
+    public Guid? EmployeeResponseConfirmedBy { get; set; }
+
+    /// <summary>
+    /// Frozen when the offer is submitted (T6) from the tenant toggle <c>contracts.as_is_requires_employee_acceptance</c>
+    /// (default true). True ⇒ Apply needs <c>employee_response = 'Accepted'</c>; false only for a waived fast-lane RenewAsIs.
+    /// </summary>
+    public bool EmployeeAcceptanceRequired { get; set; } = true;
+
+    public string? HoldReason { get; set; }
+
+    /// <summary>The state the case was in when put OnHold (T19); release (T20) returns it exactly there. Set iff OnHold.</summary>
+    public string? HeldFromState { get; set; }
+
+    /// <summary>The batch approval request this case was submitted in (fast lane).</summary>
+    public Guid? RenewalBatchId { get; set; }
+    public Guid? CurrentApprovalRequestId { get; set; }
+
+    public short OfferVersion { get; set; }
+    public string? OfferSha256 { get; set; }
+    public decimal? OfferCostDeltaMonthly { get; set; }
+
+    public DateOnly? NoticeDueOn { get; set; }
+    public DateOnly? OfferDueOn { get; set; }
+    public DateOnly? QiwaSubmitDueOn { get; set; }
+    public DateOnly? QiwaGateDueOn { get; set; }
+
+    public bool QiwaRequired { get; set; } = true;
+    public string? QiwaRequestNo { get; set; }
+    public DateOnly? QiwaSentOn { get; set; }
+    public short QiwaAttempts { get; set; }
+    public DateOnly? QiwaRespondByOn { get; set; }
+    /// <summary>The statutory rule row the respond-by date was computed from (frozen with it).</summary>
+    public Guid? QiwaRuleId { get; set; }
+
+    public Guid? QiwaEvidenceDocumentId { get; set; }
+    public string? QiwaEvidenceOutcome { get; set; }
+    public Guid? QiwaEvidenceRecordedBy { get; set; }
+    /// <summary>Must differ from <see cref="QiwaEvidenceRecordedBy"/> (CHECK).</summary>
+    public Guid? QiwaEvidenceVerifiedBy { get; set; }
+
+    public DateOnly? NonRenewalNoticeServedOn { get; set; }
+    public string? NonRenewalNoticeChannel { get; set; }
+    public string? NonRenewalNoticeBy { get; set; }
+    public Guid? NonRenewalNoticeDocumentId { get; set; }
+
+    public Guid? ResultingContractId { get; set; }
+    public Guid? AppliedBy { get; set; }
+    public DateTime? AppliedAt { get; set; }
+    public string? ApplyIdempotencyKey { get; set; }
+
+    /// <summary>Generated by the database from the state and the frozen dates; NULL once the case is closed.</summary>
+    public DateOnly? NextHardDeadline { get; private set; }
+
+    public DateTime OpenedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? ClosedAt { get; set; }
+
+    /// <summary>PostgreSQL xmin: optimistic concurrency for every state change.</summary>
+    public uint Version { get; set; }
+}
+
+/// <summary>Value set of <c>contract_renewal_cases.state</c>. Transitions: <c>RenewalStateMachine</c>.</summary>
+public static class RenewalStates
+{
+    public const string NeedsConfirmation = "NeedsConfirmation";
+    public const string Open = "Open";
+    public const string AwaitingManager = "AwaitingManager";
+    public const string OfferInPreparation = "OfferInPreparation";
+    public const string InApproval = "InApproval";
+    public const string OfferSent = "OfferSent";
+    public const string Accepted = "Accepted";
+    public const string QiwaPending = "QiwaPending";
+    public const string ReadyToApply = "ReadyToApply";
+    public const string Applied = "Applied";
+    public const string NonRenewed = "NonRenewed";
+    public const string Cancelled = "Cancelled";
+    public const string OnHold = "OnHold";
+
+    public static readonly string[] All =
+    [
+        NeedsConfirmation, Open, AwaitingManager, OfferInPreparation, InApproval, OfferSent, Accepted,
+        QiwaPending, ReadyToApply, Applied, NonRenewed, Cancelled, OnHold,
+    ];
+
+    public static readonly string[] Terminal = [Applied, NonRenewed, Cancelled];
+
+    public static bool IsTerminal(string? state) => state is Applied or NonRenewed or Cancelled;
+}
+
+/// <summary>Value set of the contract action on a renewal case.</summary>
+public static class ContractActions
+{
+    public const string RenewAsIs = "RenewAsIs";
+    public const string RenewWithChanges = "RenewWithChanges";
+    public const string ConvertIndefinite = "ConvertIndefinite";
+    public const string NonRenew = "NonRenew";
+    public static readonly string[] All = [RenewAsIs, RenewWithChanges, ConvertIndefinite, NonRenew];
+}
+
+/// <summary>Value set of <c>worker_nationality_class</c> on contracts and renewal cases.</summary>
+public static class WorkerNationalityClasses
+{
+    public const string Saudi = "Saudi";
+    public const string NonSaudi = "NonSaudi";
+    public static readonly string[] All = [Saudi, NonSaudi];
+}
+
+/// <summary>Value set of <c>contract_renewal_cases.hold_reason</c>.</summary>
+public static class RenewalHoldReasons
+{
+    public const string Resignation = "Resignation";
+    public const string UnpaidLeave = "UnpaidLeave";
+    public const string Abroad = "Abroad";
+    public const string Transfer = "Transfer";
+    public const string LabourDispute = "LabourDispute";
+    public static readonly string[] All = [Resignation, UnpaidLeave, Abroad, Transfer, LabourDispute];
+}
+
+/// <summary>Value sets of the employee-response, Qiwa-evidence and notice columns.</summary>
+public static class RenewalValueSets
+{
+    public static readonly string[] FallbackIfRejected = [ContractActions.RenewAsIs, ContractActions.NonRenew];
+    public static readonly string[] EmployeeResponses = ["Accepted", "Declined", "NoResponse"];
+    public static readonly string[] ResponseChannels = ["ESS", "PaperUpload"];
+    public static readonly string[] QiwaEvidenceOutcomes = ["Approved", "Rejected", "ChangesRequested", "NoResponse"];
+    public static readonly string[] NoticeChannels = ["Qiwa", "Written"];
+    public static readonly string[] NoticeBy = ["Employer", "Employee"];
+}
+
+/// <summary>Value set of <c>employee_contracts.provisional_basis</c>: why a provisional successor term exists.</summary>
+public static class ProvisionalBases
+{
+    /// <summary>Continued work after expiry renews the contract for a similar term (Art. 37; a Saudi renewal clause, Art. 55(2)).</summary>
+    public const string DeemedRenewal = "DeemedRenewal";
+    /// <summary>A Saudi fixed-term contract that became indefinite by law (Art. 55).</summary>
+    public const string Art55Indefinite = "Art55Indefinite";
+    public static readonly string[] All = [DeemedRenewal, Art55Indefinite];
+}
+
+/// <summary>Value set of the salary row's housing/transport basis (Art. 61: cash or in kind, never neither).</summary>
+public static class AllowanceBases
+{
+    public const string Amount = "Amount";
+    public const string PercentOfBasic = "PercentOfBasic";
+    public const string InKind = "InKind";
+    public static readonly string[] All = [Amount, PercentOfBasic, InKind];
+}

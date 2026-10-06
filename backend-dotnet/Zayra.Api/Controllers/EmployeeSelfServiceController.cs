@@ -101,7 +101,8 @@ public class EmployeeSelfServiceController : ControllerBase
         var pendingRequests = await _db.HRRequests.CountAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Status != "Closed", cancellationToken);
         var pendingLeave = await _db.LeaveRequests.CountAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Status.Contains("Pending"), cancellationToken);
         var documentAlerts = await _db.EmployeeDocuments.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && !x.IsDeleted && x.ExpiryDate != null && x.ExpiryDate <= today.AddDays(60))
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && !x.IsDeleted && x.ExpiryDate != null && x.ExpiryDate <= today.AddDays(60)
+                        && !RestrictedEmployeeDocumentTypes.Lowered.Contains(x.DocumentType.Trim().ToLower()))
             .OrderBy(x => x.ExpiryDate)
             .Take(5)
             .Select(x => new ESSDocumentDto(x.Id, x.DocumentType, x.FileName, x.ExpiryDate, x.ApprovalStatus))
@@ -677,8 +678,10 @@ public class EmployeeSelfServiceController : ControllerBase
     {
         var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
         if (!essOk) return BadRequest(new { message = ctxError });
+        // Release A: HR evidence types (Qiwa evidence, loan-deduction consent, non-renewal notice) are never self-service documents.
         var documents = await _db.EmployeeDocuments.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && !x.IsDeleted)
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && !x.IsDeleted
+                        && !RestrictedEmployeeDocumentTypes.Lowered.Contains(x.DocumentType.Trim().ToLower()))
             .OrderBy(x => x.DocumentType)
             .Select(x => new ESSDocumentDto(x.Id, x.DocumentType, x.FileName, x.ExpiryDate, x.ApprovalStatus))
             .ToListAsync(cancellationToken);
@@ -691,6 +694,8 @@ public class EmployeeSelfServiceController : ControllerBase
     {
         var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken, requireWrite: true);
         if (!essOk) return BadRequest(new { message = ctxError });
+        if (RestrictedEmployeeDocumentTypes.IsRestricted(request.DocumentType))
+            return BadRequest(new { message = RestrictedEmployeeDocumentTypes.SelfServiceRefusal });
         var normalizedStorage = request.StorageUrl.Replace('\\', '/');
         var localPrefix = $"storage/documents/{tenantId:N}/";
         var objectPrefix = $"{tenantId:N}/documents/";
@@ -736,6 +741,8 @@ public class EmployeeSelfServiceController : ControllerBase
         var documentType = form.DocumentType?.Trim() ?? string.Empty;
         if (documentType.Length == 0) return BadRequest(new { message = "documentType is required." });
         if (documentType.Length > 100 || documentType.Any(char.IsControl)) return BadRequest(new { message = "documentType must be at most 100 characters." });
+        if (RestrictedEmployeeDocumentTypes.IsRestricted(documentType))
+            return BadRequest(new { message = RestrictedEmployeeDocumentTypes.SelfServiceRefusal });
         var documentNumber = form.DocumentNumber?.Trim();
         if (documentNumber is { Length: > 64 }) return BadRequest(new { message = "documentNumber must be at most 64 characters." });
         if (form.ExpiryDate is { } expiry && expiry < DateOnly.FromDateTime(DateTime.UtcNow))
@@ -784,7 +791,8 @@ public class EmployeeSelfServiceController : ControllerBase
     {
         var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
         if (!essOk) return BadRequest(new { message = ctxError });
-        var document = await _db.EmployeeDocuments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Id == id && !x.IsDeleted, cancellationToken);
+        var document = await _db.EmployeeDocuments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Id == id && !x.IsDeleted
+            && !RestrictedEmployeeDocumentTypes.Lowered.Contains(x.DocumentType.Trim().ToLower()), cancellationToken);
         if (document is null) return NotFound();
         byte[] bytes;
         try { bytes = await Storage.GetBytesAsync(tenantId, document.StorageUrl, cancellationToken); }
@@ -1239,7 +1247,8 @@ public class EmployeeSelfServiceController : ControllerBase
         // W2-D (S1): an attachment is a reference to an EmployeeDocument the CALLER owns (uploaded via
         // POST /api/ess/documents) — never bytes, never a storage key, never a colleague's document.
         if (request.AttachmentDocumentId is { } attachmentId
-            && !await _db.EmployeeDocuments.AsNoTracking().AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Id == attachmentId && !x.IsDeleted, cancellationToken))
+            && !await _db.EmployeeDocuments.AsNoTracking().AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Id == attachmentId && !x.IsDeleted
+                && !RestrictedEmployeeDocumentTypes.Lowered.Contains(x.DocumentType.Trim().ToLower()), cancellationToken))
             return BadRequest(new { message = "The attachment was not found among your documents." });
         var slaHours = category?.DefaultSlaHours ?? 48;
         var hrRequest = new HRRequest
@@ -1369,7 +1378,8 @@ public class EmployeeSelfServiceController : ControllerBase
         var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
         if (!essOk) return BadRequest(new { message = ctxError });
         return Ok(await _db.EmployeeDocuments.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && (x.EmployeeId == employeeId || x.DocumentType.Contains("Policy")) && !x.IsDeleted)
+            .Where(x => x.TenantId == tenantId && (x.EmployeeId == employeeId || x.DocumentType.Contains("Policy")) && !x.IsDeleted
+                        && !RestrictedEmployeeDocumentTypes.Lowered.Contains(x.DocumentType.Trim().ToLower()))
             .Select(x => new ESSDocumentDto(x.Id, x.DocumentType, x.FileName, x.ExpiryDate, x.ApprovalStatus))
             .ToListAsync(cancellationToken));
     }
@@ -1403,7 +1413,8 @@ public class EmployeeSelfServiceController : ControllerBase
         // employee a different balance from the one their own leave screen showed.
         var leaveAvailable = await _db.EmployeeLeaveBalances.Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Year == DateTime.UtcNow.Year).SumAsync(x => Math.Max(x.Entitled, x.Accrued) + x.CarriedForward + x.ManualAdjustment - x.Used - x.Pending - x.Encashed - x.Expired, cancellationToken);
         var openTickets = await _db.HRRequests.CountAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Status != "Closed", cancellationToken);
-        var expiringDocs = await _db.EmployeeDocuments.CountAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && !x.IsDeleted && x.ExpiryDate != null && x.ExpiryDate <= DateOnly.FromDateTime(DateTime.UtcNow.AddDays(60)), cancellationToken);
+        var expiringDocs = await _db.EmployeeDocuments.CountAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && !x.IsDeleted && x.ExpiryDate != null && x.ExpiryDate <= DateOnly.FromDateTime(DateTime.UtcNow.AddDays(60))
+            && !RestrictedEmployeeDocumentTypes.Lowered.Contains(x.DocumentType.Trim().ToLower()), cancellationToken);
         var answer = $"I can only use your own KynexOne employee data. Current snapshot: leave available {leaveAvailable:0.##} days, open HR requests {openTickets}, documents expiring in 60 days {expiringDocs}. I cannot approve, reject, or expose another employee's data.";
         _db.EmployeeAIQueryLogs.Add(new EmployeeAIQueryLog { TenantId = tenantId, EmployeeId = employeeId, Question = request.Question, Answer = answer, UserId = GetUserId() });
         await _db.SaveChangesAsync(cancellationToken);

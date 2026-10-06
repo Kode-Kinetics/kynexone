@@ -525,6 +525,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
                 JawazatApprovalSync.IsJawazat(approval) ? await ResolveJawazatScopeAsync(tenantId, context, cancellationToken) : null);
             await TimesheetApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
             await Zayra.Api.Infrastructure.Recruitment.RequisitionApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
+            // Release A: a rejected renewal offer returns the case to OfferInPreparation (T7). No-op for anything else.
+            await Zayra.Api.Infrastructure.Contracts.ContractRenewalApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
         }
         else if (step.IsFinalStep)
         {
@@ -540,6 +542,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             // Requisitions: the shared row and the requisition's own status are now one write. Before
             // this the module stamped its status and left this row Pending for ever.
             await Zayra.Api.Infrastructure.Recruitment.RequisitionApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
+            // Release A: the final approval moves the renewal case on (T8 / T9; a batch enqueues per-case moves).
+            await Zayra.Api.Infrastructure.Contracts.ContractRenewalApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
         }
         else
         {

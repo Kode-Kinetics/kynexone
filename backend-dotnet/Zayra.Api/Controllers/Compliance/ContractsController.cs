@@ -30,7 +30,16 @@ public class ContractsController : ControllerBase
         };
 
     private readonly ZayraDbContext _db;
-    public ContractsController(ZayraDbContext db) => _db = db;
+    private readonly Zayra.Api.Infrastructure.Contracts.IContractTermLifecycleDispatcher? _termLifecycle;
+
+    /// <param name="termLifecycle">Release A term-activation hooks (chain stamp, package freeze). Optional so direct
+    /// constructions keep compiling; the dispatcher itself is a no-op unless the tenant has release_a on.</param>
+    public ContractsController(ZayraDbContext db,
+        Zayra.Api.Infrastructure.Contracts.IContractTermLifecycleDispatcher? termLifecycle = null)
+    {
+        _db = db;
+        _termLifecycle = termLifecycle;
+    }
 
     private Guid GetTenantId() =>
         Guid.TryParse(User.FindFirst("tenant_id")?.Value, out var id) ? id : Guid.Empty;
@@ -280,6 +289,17 @@ public class ContractsController : ControllerBase
         {
             contract.SignedByHrName = req.SignedByHrName!.Trim();
             contract.SignedByHrAtUtc = DateTime.UtcNow;
+            // Release A: stamp the chain and freeze the contract-year package in this same SaveChanges.
+            if (_termLifecycle is not null) await _termLifecycle.OnActivatedAsync(contract, ct);
+        }
+        else if (old == "Active" && (requested is "Expired" or "Terminated") && _termLifecycle is not null)
+        {
+            // Release A, in this SaveChanges. Terminated cancels an open renewal case (T21) and closes the package;
+            // Expired is RECORD-ONLY — the employee working on renews the contract by law (Art. 74(2)), so the case
+            // stays open for the holdover (T22, R6). See IContractTermLifecycle.OnEndedAsync.
+            await _termLifecycle.OnEndedAsync(contract, requested == "Expired"
+                ? Zayra.Api.Application.Entitlements.ContractEndReasons.Expired
+                : Zayra.Api.Application.Entitlements.ContractEndReasons.Terminated, ct);
         }
 
         _db.ComplianceAuditLogs.Add(new ComplianceAuditLog
@@ -315,9 +335,19 @@ public class ContractsController : ControllerBase
             return BadRequest(new { error = "invalid_contract_dates", message = "The replacement contract must start on or after the prior start date and end on or after its start date." });
         if (req.BasicSalary < 0m)
             return BadRequest(new { error = "invalid_basic_salary", message = "Basic salary cannot be negative." });
+        // Release A: a term under renewal review is replaced only by the renewal itself (Apply), never beside it —
+        // otherwise the case would decide a term that no longer exists. Finish or cancel the case first.
+        if (await _db.ContractRenewalCases.AnyAsync(c => c.TenantId == tid && c.ExpiringContractId == id && c.ClosedAt == null, ct))
+            return Conflict(new
+            {
+                error = "renewal_case_open",
+                message = "This contract has an open renewal review. Finish or cancel the renewal before replacing the contract.",
+            });
 
         old.Status = "Superseded";
         old.UpdatedAtUtc = DateTime.UtcNow;
+        if (_termLifecycle is not null)
+            await _termLifecycle.OnEndedAsync(old, Zayra.Api.Application.Entitlements.ContractEndReasons.Superseded, ct);
 
         var count = await _db.EmployeeContracts.CountAsync(x => x.TenantId == tid, ct);
         var contractNumber = $"CON-{DateTime.UtcNow.Year}-{(count + 1):D4}";

@@ -1,5 +1,6 @@
 import { formatMessage, type MessageParams } from './message';
 import { numberLocale } from '../lib/format';
+import { releaseA } from './releaseA';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
 export type { MessageParams };
@@ -1229,6 +1230,9 @@ const en: Dict = {
   "Offered to this company's employees": "Offered to this company's employees",
   'Name (Arabic, optional)': 'Name (Arabic, optional)',
   'Details are visible to HR and to the employee who raised this request.': 'Details are visible to HR and to the employee who raised this request.',
+
+  // Release A — one file per slice in ./releaseA (R0 spreads them once; slices edit only their own file).
+  ...releaseA.en,
 };
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
@@ -2447,6 +2451,9 @@ const ar: Dict = {
   "Offered to this company's employees": 'متاح لموظفي هذه الشركة',
   'Name (Arabic, optional)': 'الاسم (بالعربية، اختياري)',
   'Details are visible to HR and to the employee who raised this request.': 'التفاصيل مرئية لفريق الموارد البشرية وللموظف الذي قدّم هذا الطلب.',
+
+  // Release A — see ./releaseA.
+  ...releaseA.ar,
 };
 
 // ── French ────────────────────────────────────────────────────────────────────
