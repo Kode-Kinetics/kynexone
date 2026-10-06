@@ -38,8 +38,9 @@ ORDER BY r.tenant_id, r.entity_name, r.created_at_utc;
 
 -- 2. Workflow configuration that produces "Any": active workflows with a Role step (a blank type is a Role
 --    step) whose role is blank or "Any".
---    Act: edit each workflow in Setup > Approval workflows and name the role that should decide the step
---    (for example HR Manager). Saving it unchanged is now refused with a message saying so.
+--    Act: there is no workflow editor screen. An approvals.manage holder updates the workflow through
+--    PUT /api/approval-workflows/{id}, naming the role that should decide each listed step (for example
+--    HR Manager). Re-saving it unchanged is now refused with a message naming the step.
 SELECT
     w.tenant_id,
     w.id                    AS workflow_id,
