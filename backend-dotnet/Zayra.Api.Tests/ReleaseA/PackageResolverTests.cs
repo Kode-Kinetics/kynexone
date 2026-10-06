@@ -302,7 +302,8 @@ public sealed class PackageResolverTests
             reason.Should().NotBeNull(code);
             new[] { reason!.TitleEn, reason.TitleAr, reason.WhyEn, reason.WhyAr, reason.FixEn, reason.FixAr }.Should().OnlyContain(t => t.Length > 3, code);
         }
-        PackageReasons.Pending.Keys.Should().NotIntersectWith(ReleaseABlockReasons.All.Keys, "a code R0 adds must be deleted from Pending");
+        PackageReasons.Pending.Should().BeEmpty("R0 #189 added all twelve R2 codes to the catalogue");
+        PackageReasons.All.Should().OnlyContain(code => ReleaseABlockReasons.All.ContainsKey(code), "every R2 code resolves from the R0 catalogue");
     }
 
     [Theory]

@@ -49,6 +49,9 @@ public static class RenewalStateMachine
             new("T14", RenewalStates.QiwaPending, RenewalStates.QiwaPending, "Resend after a lapse or no response"),
             new("T15", RenewalStates.QiwaPending, RenewalStates.OfferInPreparation, "Evidence shows the employee rejected or asked for changes in Qiwa"),
             new("T16", RenewalStates.QiwaPending, RenewalStates.ReadyToApply, "Evidence recorded by one user, verified by another"),
+            // Same pair as T16, its own row so the reason is on record: a fast-lane RenewAsIs approved straight to
+            // QiwaPending (T9) when both counsel toggles waive the Qiwa step has no evidence to wait for.
+            new("T16b", RenewalStates.QiwaPending, RenewalStates.ReadyToApply, "No Qiwa step required (qiwa_required = false)"),
             new("T17", RenewalStates.ReadyToApply, RenewalStates.Applied, "Apply (Idempotency-Key)"),
             new("T18", RenewalStates.ReadyToApply, RenewalStates.NonRenewed, "Apply non-renewal; notice served on time"),
         };

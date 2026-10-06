@@ -24,8 +24,9 @@ import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { useAssistantProvider, useWorkforceFindings } from '../hooks/useWorkforceFindings';
 import { useMediaQuery } from '../hooks/useMediaQuery';
 import { useT } from '../hooks/useT';
-import { dedupeInsights, insightRoute, timeAgo } from '../components/dashboard/dashboardModel';
+import { dedupeInsights, insightRoute } from '../components/dashboard/dashboardModel';
 
+import { useFormat } from '../hooks/useFormat';
 interface Turn {
   role: 'user' | 'assistant';
   text: string;
@@ -53,6 +54,7 @@ function intentRoute(intent: string | undefined, question: string): string | und
 
 export function AssistantDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
   const t = useT();
+  const fmt = useFormat();
   const titleId = useId();
   const phone = useMediaQuery('(max-width: 639.98px)');
   const reduceMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
@@ -276,7 +278,7 @@ export function AssistantDrawer({ open, onClose }: { open: boolean; onClose: () 
                         </p>
                         <p className="mt-1 text-xs leading-relaxed text-slate-700 dark:text-slate-300">{f.summary}</p>
                         <div className="mt-2 flex items-center justify-between">
-                          <span className="text-[11px] text-slate-600 dark:text-slate-300">{f.module} · {timeAgo(f.createdAtUtc)}</span>
+                          <span className="text-[11px] text-slate-600 dark:text-slate-300">{t(f.module)} · {fmt.relative(f.createdAtUtc)}</span>
                           <Link href={insightRoute(f.insightType)} onClick={onClose} className="inline-flex items-center gap-1 text-xs font-semibold text-sapphire hover:underline dark:text-blue-300">
                             {t('See records')} <ArrowRight className="h-3 w-3" aria-hidden />
                           </Link>

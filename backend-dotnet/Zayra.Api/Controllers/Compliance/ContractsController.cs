@@ -294,7 +294,9 @@ public class ContractsController : ControllerBase
         }
         else if (old == "Active" && (requested is "Expired" or "Terminated") && _termLifecycle is not null)
         {
-            // Release A: close the package and cancel any open renewal case for the term (T21), in this SaveChanges.
+            // Release A, in this SaveChanges. Terminated cancels an open renewal case (T21) and closes the package;
+            // Expired is RECORD-ONLY — the employee working on renews the contract by law (Art. 74(2)), so the case
+            // stays open for the holdover (T22, R6). See IContractTermLifecycle.OnEndedAsync.
             await _termLifecycle.OnEndedAsync(contract, requested == "Expired"
                 ? Zayra.Api.Application.Entitlements.ContractEndReasons.Expired
                 : Zayra.Api.Application.Entitlements.ContractEndReasons.Terminated, ct);

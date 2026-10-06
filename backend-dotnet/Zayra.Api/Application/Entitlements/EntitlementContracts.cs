@@ -220,17 +220,35 @@ public interface IContractTermLifecycle
     /// <summary>The term became Active (UpdateStatus → Active, or imported as / changed to Active).</summary>
     Task OnActivatedAsync(EmployeeContract contract, CancellationToken ct);
 
-    /// <summary>An Active term ended: <paramref name="reason"/> is a <see cref="ContractEndReasons"/> value.</summary>
+    /// <summary>
+    /// An Active term ended: <paramref name="reason"/> is a <see cref="ContractEndReasons"/> value. What a hook may do
+    /// depends on the reason (CTO decision):
+    /// <list type="bullet">
+    /// <item><b>Terminated, Separated, Superseded</b> — the employment or the term really ended: an open renewal case for
+    /// it is cancelled (T21) and the package rows are closed.</item>
+    /// <item><b>Expired</b> — NEVER cancels an open case and never closes the package. An expired fixed-term contract
+    /// with the employee still working renews by operation of law (Art. 74(2); Art. 37/55); the holdover (T22, R6)
+    /// writes the provisional successor term. A hook may only record the event (e.g. flag "expired with no outcome").</item>
+    /// </list>
+    /// </summary>
     Task OnEndedAsync(EmployeeContract contract, string reason, CancellationToken ct);
 }
 
-/// <summary>Why an Active term stopped being in force.</summary>
+/// <summary>Why an Active term stopped being in force. See <see cref="IContractTermLifecycle.OnEndedAsync"/>.</summary>
 public static class ContractEndReasons
 {
+    /// <summary>ContractsController.UpdateStatus → Terminated. Cancels an open case (T21).</summary>
     public const string Terminated = "Terminated";
+    /// <summary>ContractsController.UpdateStatus → Expired (and the import). Record only: NEVER cancels a case (Art. 74(2)).</summary>
     public const string Expired = "Expired";
+    /// <summary>ContractsController.Supersede (and the import). Cancels an open case (T21).</summary>
     public const string Superseded = "Superseded";
+    /// <summary>OffboardingController completion (the separation is final: settlement paid, employee archived), for
+    /// every Active term of the employee. Cancels an open case (T21).</summary>
     public const string Separated = "Separated";
+
+    /// <summary>The reasons that cancel an open renewal case (T21). Expired is deliberately absent.</summary>
+    public static readonly string[] CancelOpenCase = [Terminated, Separated, Superseded];
     public static readonly string[] All = [Terminated, Expired, Superseded, Separated];
 }
 
