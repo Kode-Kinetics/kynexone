@@ -130,11 +130,14 @@ public record AttendanceDeviceDto(
     /// The auth credentials to store on an update. The API never returns stored credentials (only
     /// <see cref="HasCredentials"/>), so an edit form saves them blank; storing that would wipe the device's
     /// login on every edit. A blank or masked value keeps the stored value for that field, and an empty object
-    /// keeps the stored credentials whole. Only switching the auth type to "None" clears them.
+    /// keeps the stored credentials whole. Switching the auth type (to "None" or another scheme) drops them.
     /// </summary>
-    public static string MergeBlankCredentials(string? stored, string incoming, string authType)
+    public static string MergeBlankCredentials(string? stored, string incoming, string authType, string? previousAuthType = null)
     {
         if (string.Equals(authType, "None", StringComparison.OrdinalIgnoreCase)) return "{}";
+        // A different auth scheme: the stored credentials belong to the old one and are dropped.
+        if (previousAuthType is not null && !string.Equals(previousAuthType, authType, StringComparison.OrdinalIgnoreCase))
+            return incoming;
         Dictionary<string, JsonElement> current;
         try { current = string.IsNullOrWhiteSpace(stored) ? new() : JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(stored) ?? new(); }
         catch (JsonException) { return incoming; }
@@ -189,7 +192,7 @@ public record AttendanceDeviceDto(
             .Replace(MaskedHeaderValue, string.Empty, StringComparison.Ordinal);
     }
 
-    private static string RedactQuotedUrl(string? text, string? url)
+    internal static string RedactQuotedUrl(string? text, string? url)
     {
         if (string.IsNullOrEmpty(text) || string.IsNullOrWhiteSpace(url)) return text ?? string.Empty;
         var redacted = RedactEndpointUrl(url);

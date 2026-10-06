@@ -114,7 +114,7 @@ public class AttendanceController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: DeviceId, SyncMethod, Status, StartedAtUtc, CompletedAtUtc, RawEventsReceived, RawEventsProcessed, ErrorMessage. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public Task<IReadOnlyCollection<AttendanceDeviceSyncLog>> SyncLogs(Guid id, CancellationToken ct) =>
-        _attendance.GetSyncLogsAsync(RequireTenant(), id, ct);
+        _attendance.GetSyncLogsAsync(RequireTenant(), id, ct, CanConfigureDevices);
 
     /// <summary>Generate (or rotate) a device API key. Plaintext is returned ONCE; only its hash is stored.</summary>
     [HttpPost("devices/{id:guid}/generate-key")]
@@ -252,9 +252,14 @@ public class AttendanceController : ControllerBase
             RequestedByUserId: GetUserId(),
             IpAddress: HttpContext.Connection.RemoteIpAddress?.ToString(),
             UserAgent: Request.Headers.UserAgent.ToString());
-        var key = string.IsNullOrWhiteSpace(idempotencyKey)
-            ? Infrastructure.Attendance.AttendanceProcessingJobHandler.DefaultIdempotencyKey(payload)
-            : "client:" + idempotencyKey.Trim();
+        // A caller with a restricted data scope (a Mobile-mode employee, a Supervisor) gets ONE active job per
+        // employee: a fresh Idempotency-Key or date range per request would otherwise let them queue jobs
+        // without limit. A later request returns the queued/running job until it finishes.
+        var key = !scope.IsUnrestricted
+            ? $"scoped:{request.EmployeeId}:{GetUserId()}"
+            : string.IsNullOrWhiteSpace(idempotencyKey)
+                ? Infrastructure.Attendance.AttendanceProcessingJobHandler.DefaultIdempotencyKey(payload)
+                : "client:" + idempotencyKey.Trim();
 
         var result = await jobs.EnqueueAsync(tenantId, Infrastructure.Attendance.AttendanceProcessingJobHandler.JobType,
             key, payload, GetUserId(), ct);
@@ -442,7 +447,7 @@ public class AttendanceController : ControllerBase
     [HttpGet("reports/device-sync")]
     [Authorize(Roles = "Admin,HR Director,HR Manager,HR Officer,Auditor")]
     public Task<IReadOnlyCollection<AttendanceDeviceSyncDto>> ReportDeviceSync(CancellationToken ct) =>
-        _attendance.DeviceSyncReportAsync(RequireTenant(), ct);
+        _attendance.DeviceSyncReportAsync(RequireTenant(), ct, CanConfigureDevices);
 
     [HttpGet("ai/insights")]
     [Authorize(Roles = "Admin,HR Director,HR Manager")]

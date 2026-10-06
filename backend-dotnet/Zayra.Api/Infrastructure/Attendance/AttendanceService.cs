@@ -365,8 +365,15 @@ public class AttendanceService : IAttendanceService
         return log;
     }
 
-    public async Task<IReadOnlyCollection<AttendanceDeviceSyncLog>> GetSyncLogsAsync(Guid tenantId, Guid deviceId, CancellationToken ct) =>
-        await _db.AttendanceDeviceSyncLogs.Where(x => x.TenantId == tenantId && x.DeviceId == deviceId).OrderByDescending(x => x.StartedAtUtc).Take(100).ToListAsync(ct);
+    public async Task<IReadOnlyCollection<AttendanceDeviceSyncLog>> GetSyncLogsAsync(Guid tenantId, Guid deviceId, CancellationToken ct, bool revealSecrets = true)
+    {
+        var logs = await _db.AttendanceDeviceSyncLogs.AsNoTracking().Where(x => x.TenantId == tenantId && x.DeviceId == deviceId).OrderByDescending(x => x.StartedAtUtc).Take(100).ToListAsync(ct);
+        if (revealSecrets || logs.Count == 0) return logs;
+        // Error text quotes the endpoint URL, which can carry credentials in its userinfo or query string.
+        var url = await _db.AttendanceDevices.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == deviceId).Select(x => x.EndpointUrl).FirstOrDefaultAsync(ct);
+        foreach (var log in logs) log.ErrorMessage = AttendanceDeviceDto.RedactQuotedUrl(log.ErrorMessage, url);
+        return logs;
+    }
 
     public async Task<AttendanceRawEvent> PushEventAsync(Guid tenantId, AttendanceRawEventRequest request, RequestContext context, CancellationToken ct)
     {
@@ -908,8 +915,13 @@ public class AttendanceService : IAttendanceService
             .OrderBy(x => x.EmployeeName).ToList();
     }
 
-    public async Task<IReadOnlyCollection<AttendanceDeviceSyncDto>> DeviceSyncReportAsync(Guid tenantId, CancellationToken ct) =>
-        await _db.AttendanceDevices.Where(x => x.TenantId == tenantId && !x.IsDeleted).Select(x => new AttendanceDeviceSyncDto(x.Id, x.DeviceName, x.Vendor, x.LastSyncStatus, x.LastSyncAtUtc, x.ErrorLog)).ToListAsync(ct);
+    public async Task<IReadOnlyCollection<AttendanceDeviceSyncDto>> DeviceSyncReportAsync(Guid tenantId, CancellationToken ct, bool revealSecrets = true)
+    {
+        var rows = await _db.AttendanceDevices.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted)
+            .Select(x => new { x.Id, x.DeviceName, x.Vendor, x.LastSyncStatus, x.LastSyncAtUtc, x.ErrorLog, x.EndpointUrl }).ToListAsync(ct);
+        return rows.Select(x => new AttendanceDeviceSyncDto(x.Id, x.DeviceName, x.Vendor, x.LastSyncStatus, x.LastSyncAtUtc,
+            revealSecrets ? x.ErrorLog : AttendanceDeviceDto.RedactQuotedUrl(x.ErrorLog, x.EndpointUrl))).ToList();
+    }
 
     public async Task<IReadOnlyCollection<AttendanceAIInsight>> GenerateInsightsAsync(Guid tenantId, CancellationToken ct)
     {
@@ -1265,8 +1277,9 @@ public class AttendanceService : IAttendanceService
         device.ApiKeyReference = Clean(request.ApiKeyReference);
         device.SyncMethod = Clean(request.SyncMethod, "Manual upload");
         device.SyncFrequency = Clean(request.SyncFrequency, "Manual");
+        var previousAuthType = device.AuthType;
         device.AuthType = Clean(request.AuthType, "None");
-        device.AuthCredentialsJson = AttendanceDeviceDto.MergeBlankCredentials(device.AuthCredentialsJson, CleanJson(request.AuthCredentialsJson), device.AuthType);
+        device.AuthCredentialsJson = AttendanceDeviceDto.MergeBlankCredentials(device.AuthCredentialsJson, CleanJson(request.AuthCredentialsJson), device.AuthType, previousAuthType);
         device.CustomHeadersJson = AttendanceDeviceDto.MergeMaskedJsonValues(device.CustomHeadersJson, CleanJson(request.CustomHeadersJson));
         device.DeviceParametersJson = AttendanceDeviceDto.MergeMaskedJsonValues(device.DeviceParametersJson, CleanJson(request.DeviceParametersJson));
         device.FieldMappingsJson = CleanJson(request.FieldMappingsJson) ?? "{}";

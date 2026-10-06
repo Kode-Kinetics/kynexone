@@ -2082,7 +2082,7 @@ const TABS: { id: Tab; label: string; icon: React.ComponentType<{ className?: st
 ];
 
 export function LeavePage() {
-  const { user } = useAuth();
+  const { user, hasPermission } = useAuth();
   const { t } = useLocale();
   const [tab, setTab] = useState<Tab>('dashboard');
   const [companies, setCompanies] = useState<CompanyDto[]>([]);
@@ -2124,7 +2124,8 @@ export function LeavePage() {
       if (['types', 'policies', 'holidays', 'reports', 'ai-insights'].includes(t.id)) return isAdmin;
       if (t.id === 'approvals') return isAdmin || isManager;
       if (t.id === 'absences') return isAdmin || isManager;
-      if (t.id === 'encashment') return isAdmin || isManager || isPayroll;
+      // Plus anyone who can take an encashment decision (HR Director, Finance Approver hold these keys).
+      if (t.id === 'encashment') return isAdmin || isManager || isPayroll || hasPermission('employees.approve') || hasPermission('payroll.approve');
       if (t.id === 'compoff') return isAdmin || isManager;
       return true;
     });

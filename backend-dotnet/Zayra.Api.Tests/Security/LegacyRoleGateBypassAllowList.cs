@@ -28,6 +28,8 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         HrOfficerHrOperations,
         OpenUnscopedNames,
         DeviceReadMasked,
+        DeviceOpsRead,
+        TenantDirectoryRead,
     }
 
     internal static readonly IReadOnlyDictionary<Reason, string> Reasons = new Dictionary<Reason, string>
@@ -48,6 +50,8 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         [HrOfficerHrOperations] = "HR Officer is HR staff holding this module's write key and the UI exposes these HR screens to it. P2: narrowing tenant HR configuration to the HR-manager tier is a product decision.",
         [OpenUnscopedNames] = "OPEN P2: per-employee names with document-expiry or missed-punch data, not data-scoped. No money, salary or bank data. Follow-up: apply DataScope.",
         [DeviceReadMasked] = "Device configuration read only: auth credentials are never serialised and custom header values, secret-looking device parameters and endpoint URL credentials/query are masked for callers without attendance.bulk_import.",
+        [DeviceOpsRead] = "NOT data-scoped: every device's sync status and logs in the tenant (device name, vendor, timestamps, event counts, error text). No employee pay, contact or identity data; the endpoint URL's credentials and query are redacted for callers without attendance.bulk_import.",
+        [TenantDirectoryRead] = "NOT data-scoped: the whole org chart within the caller's company scope (employee code, name, designation, reporting line). No pay, contact or identity data. A Supervisor sees the tenant's structure, not just their team.",
     };
 
     internal static readonly (string Endpoint, string Roles, Reason Why)[] AllowList =
@@ -114,11 +118,11 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         ("POST Attendance.Process", "Supervisor,Employee+Mobile", AttendanceProcessScoped),
         ("POST Attendance.ProcessInBackground", "Supervisor,Employee+Mobile", AttendanceProcessScoped),
         ("GET Attendance.ReportDeviceSync", "Payroll Manager,Payroll Officer,HR Assistant", OrgReadByDesign),
-        ("GET Attendance.ReportDeviceSync", "Manager,Supervisor", TeamScopedRead),
+        ("GET Attendance.ReportDeviceSync", "Manager,Supervisor", DeviceOpsRead),
         ("POST Attendance.Reprocess", "Supervisor,Employee+Mobile", AttendanceProcessScoped),
         ("POST Attendance.Sync", "HR Director", SeniorHr),
         ("GET Attendance.SyncLogs", "Payroll Manager,Payroll Officer,HR Assistant", OrgReadByDesign),
-        ("GET Attendance.SyncLogs", "Manager,Supervisor", TeamScopedRead),
+        ("GET Attendance.SyncLogs", "Manager,Supervisor", DeviceOpsRead),
         ("GET Attendance.SyncLogs", "HR Director", SeniorHr),
         ("POST Attendance.TestConnection", "HR Director", SeniorHr),
         ("GET Attendance.Today", "Payroll Manager,Payroll Officer,HR Assistant", OrgReadByDesign),
@@ -310,7 +314,7 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         ("GET Employees.MissingDocuments", "Payroll Manager,Finance,Finance Approver,Compliance Officer,Manager,Supervisor,Recruiter,HR Assistant", OpenUnscopedNames),
         ("GET Employees.MissingDocuments", "HR Director", SeniorHr),
         ("GET Employees.OrgChart", "Payroll Manager,Payroll Officer,Finance,Finance Approver,Compliance Officer,Recruiter,HR Assistant", OrgReadByDesign),
-        ("GET Employees.OrgChart", "Supervisor", TeamScopedRead),
+        ("GET Employees.OrgChart", "Supervisor", TenantDirectoryRead),
         ("GET Employees.OrgChart", "HR Director", SeniorHr),
         ("GET Employees.Readiness", "Payroll Manager,Finance,Finance Approver,Compliance Officer,Recruiter,HR Assistant", OrgReadByDesign),
         ("GET Employees.Readiness", "Supervisor", TeamScopedRead),

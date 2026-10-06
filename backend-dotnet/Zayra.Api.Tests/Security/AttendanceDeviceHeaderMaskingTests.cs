@@ -69,6 +69,29 @@ public sealed class AttendanceDeviceHeaderMaskingTests
     }
 
     [Theory]
+    [InlineData("Manager", false)]
+    [InlineData("Supervisor", false)]
+    [InlineData("Payroll Officer", false)]
+    [InlineData("HR Manager", true)]
+    public async Task SyncLogsAndTheSyncReport_RedactTheEndpointUrlForNonConfigurers(string role, bool reveals)
+    {
+        var (db, tenantId) = await NewTenantAsync("device-logs");
+        var device = await SeedDeviceAsync(db, tenantId);
+        db.AttendanceDeviceSyncLogs.Add(new AttendanceDeviceSyncLog
+        {
+            TenantId = tenantId, DeviceId = device.Id, Status = "Failed", StartedAtUtc = DateTime.UtcNow,
+            ErrorMessage = $"Connection timed out after 10 seconds. Check device IP/endpoint: {StoredUrl}",
+        });
+        await db.SaveChangesAsync();
+        var controller = Controller(db, await CallerAsync(db, tenantId, role));
+
+        var text = JsonSerializer.Serialize(await controller.SyncLogs(device.Id, Ct)) + JsonSerializer.Serialize(await controller.ReportDeviceSync(Ct));
+
+        if (reveals) text.Should().Contain(UrlPassword);
+        else text.Should().NotContain(UrlPassword).And.NotContain(QueryKey).And.Contain("device.example.com");
+    }
+
+    [Theory]
     [InlineData("HR Manager")]
     [InlineData("Admin")]
     public async Task ADeviceConfigurer_StillSeesHeaderValues_SoTheEditFormWorks(string role)
@@ -185,6 +208,18 @@ public sealed class AttendanceDeviceHeaderMaskingTests
         await controller.UpdateDevice(device.Id, Request(device.CustomHeadersJson, device.DeviceParametersJson, StoredUrl, "None", "{}"), Ct);
 
         StoredCredentials(db, device.Id).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task SwitchingToAnotherAuthScheme_DropsTheOldSchemesCredentials()
+    {
+        var (db, tenantId) = await NewTenantAsync("device-creds-switch");
+        var device = await SeedDeviceAsync(db, tenantId, "BasicAuth", "{\"username\":\"ops\",\"password\":\"s3cret\"}");
+        var controller = Controller(db, await CallerAsync(db, tenantId, "HR Manager"));
+
+        await controller.UpdateDevice(device.Id, Request(device.CustomHeadersJson, device.DeviceParametersJson, StoredUrl, "Bearer", "{\"token\":\"\"}"), Ct);
+
+        StoredCredentials(db, device.Id).Should().NotContainKey("password").And.NotContainKey("username");
     }
 
     private static Dictionary<string, string> StoredCredentials(ZayraDbContext db, Guid id) =>

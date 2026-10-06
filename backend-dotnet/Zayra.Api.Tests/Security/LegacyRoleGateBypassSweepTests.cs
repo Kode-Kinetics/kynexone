@@ -47,7 +47,8 @@ public sealed partial class LegacyRoleGateBypassSweepTests
     {
         ("Employee+Mobile", "Employee", AccessModes.Mobile),
         ("Employee+ManagerPortal", "Employee", AccessModes.ManagerPortal),
-        ("KioskOnly", "Kiosk Operator", AccessModes.KioskOnly),
+        ("Employee+KioskOnly", "Employee", AccessModes.KioskOnly),
+        ("Payroll Officer+ManagerPortal", "Payroll Officer", AccessModes.ManagerPortal),
     };
 
     /// <summary>Every caller shape the sweep checks: label, the role name it carries, and its effective permissions.</summary>
@@ -220,7 +221,7 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         // aggregate or data-scoped reads, scoped attendance processing, or an action whose body refuses them anyway.
         var frontLine = new[] { "Employee", "Kiosk Operator", "Supervisor", "Manager" }
             .Concat(AccessModeBundles.Select(b => b.Label)).ToArray();
-        var acceptable = new[] { TeamScopedRead, AggregateOnly, AttendanceProcessScoped, OpenUnscopedNames, DeviceReadMasked, WorkflowStepAuthority, BodyRechecksRole };
+        var acceptable = new[] { TeamScopedRead, AggregateOnly, AttendanceProcessScoped, OpenUnscopedNames, DeviceReadMasked, DeviceOpsRead, TenantDirectoryRead, WorkflowStepAuthority, BodyRechecksRole };
         var offending = AllowList
             .Where(e => e.Roles.Split(',', StringSplitOptions.TrimEntries).Intersect(frontLine).Any() && !acceptable.Contains(e.Why))
             .Select(e => $"{e.Endpoint} [{e.Roles}] {e.Why}")
