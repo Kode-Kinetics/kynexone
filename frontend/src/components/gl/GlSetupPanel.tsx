@@ -31,7 +31,8 @@ export function GlSetupPanel({ companies, costCenters }: Props) {
   const ratesManage = hasPermission('payroll.rates.manage');
   const statutoryOverride = hasPermission('payroll.rates.statutory_override');
   const statutoryRead = ratesRead || statutoryOverride;
-  const canApprove = hasPermission('approvals.decide');
+  // Activating a statutory override needs the same key as raising one (the API enforces it; approvals.decide is not enough).
+  const canApprove = statutoryOverride;
 
   // ── Scope selector: group default (group-scoped callers only) or a company ──
   const [scope, setScope] = useState<string | null>(isGroupScope ? null : companies[0]?.id ?? null);
