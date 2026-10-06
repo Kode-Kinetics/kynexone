@@ -45,7 +45,9 @@ public sealed record EmployeePackage(
 /// <param name="Source">A <see cref="PackageLineSources"/> value: where the figure was read from.</param>
 /// <param name="Offered">False when the employee's company skips this component.</param>
 /// <param name="MonthlyCash">Cash per month this line pays (QiwaWage lines only); NULL for non-cash lines.</param>
+/// <param name="Quantity">A count (tickets per period). Never the education child cap.</param>
 /// <param name="DependantScope">A <see cref="DependantScopes"/> value.</param>
+/// <param name="MaxDependants">The most dependants covered. Education: the child cap is here (scope Children), not in Quantity.</param>
 /// <param name="DependantsCovered">How many of the employee's recorded dependants this line covers today.</param>
 /// <param name="GradeStandardDiffers">The grade's standard now differs from the frozen value — "reviewed at renewal".</param>
 /// <param name="ReasonCode">Why the line is not eligible or not offered, as a block code; NULL when it is.</param>
@@ -54,6 +56,8 @@ public sealed record EmployeePackage(
 /// 25% of basic = SAR 2,000). NULL when the line is not a sum of money.</param>
 /// <param name="EligibleFrom">When an ineligible line becomes eligible by a criterion (service months, end of probation);
 /// NULL when eligible now or never by date.</param>
+/// <param name="StandardValue">The grade's standard for this component today (the company cell where one exists), so the
+/// offer editor and the "Why?" popover can show it beside the frozen value; NULL when the grade has no cell.</param>
 public sealed record PackageLine(
     string ComponentCode,
     string Class,
@@ -78,7 +82,8 @@ public sealed record PackageLine(
     string? ReasonCode,
     decimal? MaxOutstandingAmount,
     decimal? ResolvedAmount,
-    DateOnly? EligibleFrom);
+    DateOnly? EligibleFrom,
+    GradeStandardLine? StandardValue);
 
 /// <summary>
 /// The one rule for comparing rates (plan §1.2, round 2). Grade cells and frozen rows store <c>rate</c> as numeric(9,4);
@@ -110,7 +115,8 @@ public static class PackageLineSources
     public static readonly string[] All = [Salary, ContractFrozen, GradeStandard, Facility];
 }
 
-/// <summary>One grade cell in force for a company (the company override where one exists).</summary>
+/// <summary>One grade cell in force for a company (the company override where one exists). Quantity is a count (tickets);
+/// the education child cap is <c>MaxDependants</c> with scope Children.</summary>
 public sealed record GradeStandardLine(
     string ComponentCode,
     string Class,

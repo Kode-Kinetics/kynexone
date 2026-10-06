@@ -25,8 +25,8 @@ internal static class ReleaseAModelConfiguration
 
     /// <summary>The value-shape rule shared by grade cells and employee rows: the primary value column for each
     /// type is present, and the columns that belong to another type are absent. coverage_tier and quantity are
-    /// also allowed as qualifiers (a Quantity ticket carries its class; an Amount education allowance its
-    /// child count).</summary>
+    /// also allowed as qualifiers (a Quantity ticket carries its class). The education child cap is not a quantity:
+    /// it is max_dependants with dependant_scope Children.</summary>
     internal const string ValueShapeSql =
         "(value_type = 'Amount' AND amount IS NOT NULL AND amount >= 0 AND rate IS NULL)"
         + " OR (value_type = 'PercentOfBasic' AND rate IS NOT NULL AND rate > 0 AND rate <= 1 AND amount IS NULL)"
