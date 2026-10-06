@@ -13,7 +13,7 @@ public interface IAttendanceService
     Task<bool> DeleteDeviceAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken ct);
     Task<AttendanceDeviceSyncLog?> TestConnectionAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken ct);
     Task<AttendanceDeviceSyncLog?> SyncDeviceAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken ct);
-    Task<IReadOnlyCollection<AttendanceDeviceSyncLog>> GetSyncLogsAsync(Guid tenantId, Guid deviceId, CancellationToken ct);
+    Task<IReadOnlyCollection<AttendanceDeviceSyncLog>> GetSyncLogsAsync(Guid tenantId, Guid deviceId, CancellationToken ct, bool revealSecrets = true);
     Task<DeviceKeyResult?> GenerateDeviceKeyAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken ct);
     Task<DeviceIngestResult?> IngestByDeviceKeyAsync(string deviceKey, DeviceIngestRequest request, string? ip, CancellationToken ct);
 
@@ -51,6 +51,6 @@ public interface IAttendanceService
     Task<IReadOnlyCollection<AttendanceDailyDto>> ReportByStatusAsync(Guid tenantId, DateOnly from, DateOnly to, string status, CancellationToken ct);
     Task<IReadOnlyCollection<AttendanceDailyDto>> ReportMissingPunchAsync(Guid tenantId, DateOnly from, DateOnly to, CancellationToken ct);
     Task<IReadOnlyCollection<AttendancePayrollSummaryDto>> PayrollSummaryAsync(Guid tenantId, DateOnly from, DateOnly to, CancellationToken ct);
-    Task<IReadOnlyCollection<AttendanceDeviceSyncDto>> DeviceSyncReportAsync(Guid tenantId, CancellationToken ct);
+    Task<IReadOnlyCollection<AttendanceDeviceSyncDto>> DeviceSyncReportAsync(Guid tenantId, CancellationToken ct, bool revealSecrets = true);
     Task<IReadOnlyCollection<AttendanceAIInsight>> GenerateInsightsAsync(Guid tenantId, CancellationToken ct);
 }

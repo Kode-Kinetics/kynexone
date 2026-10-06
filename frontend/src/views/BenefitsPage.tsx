@@ -63,11 +63,12 @@ function FormError({ message }: { message: string | null }) {
 type Tab = 'plans' | 'enrollments';
 
 export function BenefitsPage() {
-  const { hasRole } = useAuth();
+  const { hasRole, hasPermission } = useAuth();
   const { companies, companyVersion } = useCompany();
   const canManagePlans = hasRole('Admin') || hasRole('HR Manager');
   const canEnroll = canManagePlans || hasRole('HR Officer');
-  const canRecordMoney = canManagePlans || hasRole('Finance');
+  // Contributions and payroll-deduction links need employees.approve (BenefitsController).
+  const canRecordMoney = hasPermission('employees.approve');
 
   const [tab, setTab] = useState<Tab>('plans');
   const [plans, setPlans] = useState<BenefitPlan[]>([]);

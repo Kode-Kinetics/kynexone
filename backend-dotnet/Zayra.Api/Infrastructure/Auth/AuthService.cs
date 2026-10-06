@@ -1753,7 +1753,7 @@ public class AuthService : IAuthService
     private static bool IsNoLogin(User user) => PrimaryAccess(user)?.AccessMode == AccessModes.NoLogin;
     private static bool RequiresPasswordSetup(User user) => PrimaryAccess(user)?.RequiresPasswordSetup == true;
 
-    private static IReadOnlyCollection<string> AccessModePermissions(string? accessMode) => accessMode switch
+    internal static IReadOnlyCollection<string> AccessModePermissions(string? accessMode) => accessMode switch
     {
         AccessModes.EssOnly => new[] { "ess.read", "ess.write", "profile.read" },
         AccessModes.ManagerPortal => new[] { "ess.read", "ess.write", "manager.read", "approvals.read", "approvals.decide", "profile.read" },

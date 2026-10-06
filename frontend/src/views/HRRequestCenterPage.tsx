@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { notifyApiError } from '../api/client';
+import { useAuth } from '../contexts/AuthContext';
 import {
   hrRequestApi,
   type HRRequest,
@@ -25,7 +26,10 @@ const PRIORITY_COLORS: Record<string, string> = {
 };
 
 export default function HRRequestCenterPage() {
-  const [tab, setTab] = useState<Tab>('dashboard');
+  // The dashboard is the HR desk's queue: the API requires employees.write.
+  const { hasPermission } = useAuth();
+  const isHrDesk = hasPermission('employees.write');
+  const [tab, setTab] = useState<Tab>(isHrDesk ? 'dashboard' : 'requests');
   const [requests, setRequests] = useState<HRRequest[]>([]);
   const [categories, setCategories] = useState<HRRequestCategory[]>([]);
   const [dashboard, setDashboard] = useState<{ open: number; inProgress: number; resolved: number; overdue: number; recentRequests: HRRequest[] } | null>(null);
@@ -42,7 +46,7 @@ export default function HRRequestCenterPage() {
   }, []);
 
   useEffect(() => {
-    if (tab === 'dashboard') loadDashboard();
+    if (tab === 'dashboard' && isHrDesk) loadDashboard();
     if (tab === 'requests') loadRequests();
   }, [tab, statusFilter]);
 
@@ -115,8 +119,8 @@ export default function HRRequestCenterPage() {
   }
 
   const tabs: { id: Tab; label: string }[] = [
-    { id: 'dashboard', label: 'Dashboard' },
-    { id: 'requests', label: 'All Requests' },
+    ...(isHrDesk ? [{ id: 'dashboard' as Tab, label: 'Dashboard' }] : []),
+    { id: 'requests', label: isHrDesk ? 'All Requests' : 'Requests' },
     { id: 'create', label: '+ New Request' },
   ];
 
@@ -245,7 +249,9 @@ export default function HRRequestCenterPage() {
                       </span>
                     </div>
                   </div>
-                  <p className="text-sm text-gray-700 mt-3">{requestDetail.request.description}</p>
+                  {requestDetail.request.detailsRedacted
+                    ? <p className="text-sm italic text-gray-500 mt-3">Details are visible to HR and to the employee who raised this request.</p>
+                    : <p className="text-sm text-gray-700 mt-3">{requestDetail.request.description}</p>}
                   <div className="flex gap-2 mt-3">
                     {['Open', 'InProgress', 'Resolved'].map(s => s !== requestDetail.request.status && (
                       <button

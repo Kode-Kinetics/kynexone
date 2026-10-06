@@ -126,6 +126,40 @@ public record AttendanceDeviceDto(
         return JsonSerializer.Serialize(merged);
     }
 
+    /// <summary>
+    /// The auth credentials to store on an update. The API never returns stored credentials (only
+    /// <see cref="HasCredentials"/>), so an edit form saves them blank; storing that would wipe the device's
+    /// login on every edit. A blank or masked value keeps the stored value for that field, and an empty object
+    /// keeps the stored credentials whole. Switching the auth type (to "None" or another scheme) drops them.
+    /// </summary>
+    public static string MergeBlankCredentials(string? stored, string incoming, string authType, string? previousAuthType = null)
+    {
+        if (string.Equals(authType, "None", StringComparison.OrdinalIgnoreCase)) return "{}";
+        // A different auth scheme: the stored credentials belong to the old one and are dropped.
+        if (previousAuthType is not null && !string.Equals(previousAuthType, authType, StringComparison.OrdinalIgnoreCase))
+            return incoming;
+        Dictionary<string, JsonElement> current;
+        try { current = string.IsNullOrWhiteSpace(stored) ? new() : JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(stored) ?? new(); }
+        catch (JsonException) { return incoming; }
+        if (current.Count == 0) return incoming;
+
+        Dictionary<string, JsonElement>? next;
+        try { next = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(incoming); }
+        catch (JsonException) { return incoming; }
+        if (next is null || next.Count == 0) return stored!;
+
+        var merged = new Dictionary<string, JsonElement>(next);
+        foreach (var (name, value) in next)
+        {
+            var blank = value.ValueKind is JsonValueKind.Null
+                || (value.ValueKind == JsonValueKind.String && (string.IsNullOrEmpty(value.GetString()) || value.GetString() == MaskedHeaderValue));
+            if (!blank) continue;
+            if (current.TryGetValue(name, out var kept)) merged[name] = kept;
+            else merged.Remove(name);
+        }
+        return JsonSerializer.Serialize(merged);
+    }
+
     /// <summary>The URL without its userinfo (user:password@) or query string (?api_key=...), each replaced by
     /// the mask. A value that is not an absolute URL but carries '@' or '?' is masked whole.</summary>
     public static string RedactEndpointUrl(string? url)
@@ -158,7 +192,7 @@ public record AttendanceDeviceDto(
             .Replace(MaskedHeaderValue, string.Empty, StringComparison.Ordinal);
     }
 
-    private static string RedactQuotedUrl(string? text, string? url)
+    internal static string RedactQuotedUrl(string? text, string? url)
     {
         if (string.IsNullOrEmpty(text) || string.IsNullOrWhiteSpace(url)) return text ?? string.Empty;
         var redacted = RedactEndpointUrl(url);

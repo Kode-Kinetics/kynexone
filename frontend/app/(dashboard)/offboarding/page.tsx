@@ -3,7 +3,7 @@ import { OffboardingPage } from '@/src/views/OffboardingPage';
 
 export default function Page() {
   return (
-    <PermissionGate permissions={['employees.read', 'employees.write']}>
+    <PermissionGate permissions={['employees.write', 'payroll.approve']}>
       <OffboardingPage />
     </PermissionGate>
   );

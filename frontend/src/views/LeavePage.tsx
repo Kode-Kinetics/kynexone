@@ -24,7 +24,7 @@ import type {
 } from '../api/leave';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { InfoTip } from '../components/InfoTip';
-import client from '../api/client';
+import client, { notifyApiError } from '../api/client';
 import { companiesApi, branchesApi } from '../api/organization';
 import type { CompanyDto, BranchDto } from '../api/organization';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
@@ -1632,7 +1632,7 @@ function HolidayCalendarTab() {
 // ── Encashment Tab ────────────────────────────────────────────────────────────
 
 function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
-  const { user } = useAuth();
+  const { hasPermission } = useAuth();
   const [payrollRuns, setPayrollRuns] = useState<PayrollRun[]>([]);
   const [selectedRun, setSelectedRun] = useState<Record<string, string>>({});
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([]);
@@ -1641,9 +1641,11 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
   const [form, setForm] = useState({ employeeId: '', employeeName: '', leaveTypeId: '', year: new Date().getFullYear(), daysToEncash: '', reason: '' });
   const [saving, setSaving] = useState(false);
   const { currencyCode } = useTenantSettings();
-  const canHrApprove = user?.roles.some(r => ['Admin', 'HR Manager'].includes(r)) ?? false;
-  const canPayrollApprove = user?.roles.some(r => ['Admin', 'Payroll Officer', 'Payroll Manager'].includes(r)) ?? false;
-  const canVoid = user?.roles.some(r => ['Admin', 'Payroll Manager'].includes(r)) ?? false;
+  // The same keys the API requires (EncashmentController): HR decision and reject need employees.approve,
+  // payroll approval and void need payroll.approve.
+  const canHrApprove = hasPermission('employees.approve');
+  const canPayrollApprove = hasPermission('payroll.approve');
+  const canVoid = hasPermission('payroll.approve');
   const set = (k: keyof typeof form, v: string | number) => setForm(f => ({ ...f, [k]: v }));
 
   useEffect(() => {
@@ -1669,24 +1671,24 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
     try {
       await encashmentApi.create({ employeeId: Number(form.employeeId), leaveTypeId: form.leaveTypeId, year: Number(form.year), daysToEncash: Number(form.daysToEncash), reason: form.reason });
       setShowCreate(false); load();
-    } catch { alert('Failed.'); }
+    } catch (e) { notifyApiError(e, 'Could not create the encashment request.'); }
     setSaving(false);
   };
 
-  const hrApprove = async (id: string) => { try { await encashmentApi.hrApprove(id); load(); } catch { alert('Failed.'); } };
+  const hrApprove = async (id: string) => { try { await encashmentApi.hrApprove(id); load(); } catch (e) { notifyApiError(e, 'HR approval failed.'); } };
   const payrollApprove = async (id: string) => {
     const payrollRunId = selectedRun[id];
     if (!payrollRunId) return;
     try { await encashmentApi.payrollApprove(id, payrollRunId); load(); }
-    catch { alert('Payroll approval failed. Verify the run is open and matches the employee legal entity.'); }
+    catch (e) { notifyApiError(e, 'Payroll approval failed. Verify the run is open and matches the employee legal entity.'); }
   };
   const voidEncashment = async (id: string) => {
     const reason = prompt('Void reason (required):')?.trim() ?? '';
     if (reason.length < 5) return;
     try { await encashmentApi.void(id, reason); load(); }
-    catch { alert('Void failed. If payroll was processed, void or reopen the payroll run first.'); }
+    catch (e) { notifyApiError(e, 'Void failed. If payroll was processed, void or reopen the payroll run first.'); }
   };
-  const reject = async (id: string) => { const n = prompt('Rejection notes:') ?? ''; try { await encashmentApi.reject(id, n); load(); } catch { alert('Failed.'); } };
+  const reject = async (id: string) => { const n = prompt('Rejection notes:') ?? ''; try { await encashmentApi.reject(id, n); load(); } catch (e) { notifyApiError(e, 'Rejection failed.'); } };
 
   return (
     <div className="space-y-4">
@@ -2080,7 +2082,7 @@ const TABS: { id: Tab; label: string; icon: React.ComponentType<{ className?: st
 ];
 
 export function LeavePage() {
-  const { user } = useAuth();
+  const { user, hasPermission } = useAuth();
   const { t } = useLocale();
   const [tab, setTab] = useState<Tab>('dashboard');
   const [companies, setCompanies] = useState<CompanyDto[]>([]);
@@ -2122,7 +2124,8 @@ export function LeavePage() {
       if (['types', 'policies', 'holidays', 'reports', 'ai-insights'].includes(t.id)) return isAdmin;
       if (t.id === 'approvals') return isAdmin || isManager;
       if (t.id === 'absences') return isAdmin || isManager;
-      if (t.id === 'encashment') return isAdmin || isManager || isPayroll;
+      // Plus anyone who can take an encashment decision (HR Director, Finance Approver hold these keys).
+      if (t.id === 'encashment') return isAdmin || isManager || isPayroll || hasPermission('employees.approve') || hasPermission('payroll.approve');
       if (t.id === 'compoff') return isAdmin || isManager;
       return true;
     });

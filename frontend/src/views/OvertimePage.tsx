@@ -135,6 +135,7 @@ const TABS: { key: Tab; label: string; icon: React.ComponentType<{ className?: s
 // ── Dashboard Tab ───────────────────────────────────────────────────────────────
 
 function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
+  const { hasPermission } = useAuth();
   const [summary, setSummary] = useState<OvertimeSummary | null>(null);
   const [recent, setRecent] = useState<OvertimeRequest[]>([]);
   const { currencyCode } = useTenantSettings();
@@ -184,7 +185,9 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
               ['OT Policies', 'policies', Settings],
               ['Calculation Preview', 'calc-preview', Calculator],
               ['Payroll Review', 'payroll-review', WalletCards],
-            ] as [string, Tab, React.ComponentType<{ className?: string }>][]).map(([label, t, Icon]) => (
+            ] as [string, Tab, React.ComponentType<{ className?: string }>][])
+              .filter(([, t]) => t !== 'payroll-review' || hasPermission('payroll.read'))
+              .map(([label, t, Icon]) => (
               <button key={t} type="button" onClick={() => onNavigate(t)}
                 className="flex w-full items-center gap-3 rounded-lg p-2.5 text-start hover:bg-slate-50 dark:hover:bg-white/5">
                 <Icon className="h-4 w-4 shrink-0 text-sapphire dark:text-cyanAccent" />
@@ -1014,7 +1017,7 @@ function ReportsTab() {
 // ── Main Page ───────────────────────────────────────────────────────────────────
 
 export function OvertimePage() {
-  const { user } = useAuth();
+  const { user, hasPermission } = useAuth();
   const { currencyCode } = useTenantSettings();
   const isAdmin    = user?.roles.some(r => r === 'Admin') ?? false;
   const isHRManager = user?.roles.some(r => r === 'HR Manager') ?? false;
@@ -1025,6 +1028,8 @@ export function OvertimePage() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
 
   const visibleTabs = TABS.filter(t => {
+    // Per-employee overtime pay: the API requires payroll.read.
+    if (t.key === 'payroll-review' && !hasPermission('payroll.read')) return false;
     if (isEmployee) return ['dashboard', 'submit', 'my-ot'].includes(t.key);
     if (isManager)  return ['dashboard', 'submit', 'my-ot', 'team-ot', 'approvals'].includes(t.key);
     return true; // HR Manager & Admin see all tabs

@@ -17,8 +17,11 @@ public partial class LoansController
     private Task<IActionResult> SerializeLifecycleAsync(Guid id, Func<Task<IActionResult>> action, CancellationToken ct) =>
         FinanceDecisionSerializer.SerializeAsync(_db, FinanceDecisionSerializer.ScopeLoan, GetTenantId(), id, action, ct);
 
+    // "...Lifecycle" resolved to loans.policy_manage (the name contains "cycle"), which HR Director, Finance and
+    // Finance Approver do not hold, so the roles named here were refused. The body still decides who may act.
     [HttpPost("{id:guid}/lifecycle/refresh")]
     [Authorize(Roles = "Admin,HR Manager,HR Director,Finance,Finance Approver")]
+    [HasPermission("loans.write", "loans.approve", "employees.approve")]
     public Task<IActionResult> RefreshLoanLifecycle(Guid id, CancellationToken ct) => SerializeLifecycleAsync(id, async () =>
     {
         if (!IsLoanChangeRequester() && !User.IsInRole("Finance Approver")) return Forbid();
@@ -32,6 +35,7 @@ public partial class LoansController
 
     [HttpPatch("{id:guid}/lifecycle/review")]
     [Authorize(Roles = "Admin,HR Manager,HR Director")]
+    [HasPermission("loans.policy_manage", "employees.approve")]
     public Task<IActionResult> ReviewLoanLifecycle(Guid id, [FromBody] LoanLifecycleReviewRequest req, CancellationToken ct) => SerializeLifecycleAsync(id, async () =>
     {
         if (!IsLoanHrReviewer()) return Forbid();

@@ -6,7 +6,6 @@ public interface IRecruitmentService
 {
     Task<string> GenerateRequisitionNumberAsync(Guid tenantId, CancellationToken ct = default);
     Task<string> GenerateJobCodeAsync(Guid tenantId, CancellationToken ct = default);
-    Task<Guid?> CreateApprovalRequestAsync(Guid tenantId, string entityName, Guid entityId, string title, Guid? requestedByUserId, CancellationToken ct = default);
     string GenerateOfferLetterHtml(OfferLetterTemplateData data);
     Task<OfferAcceptanceResult> AcceptOfferAsync(
         Guid tenantId,

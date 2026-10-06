@@ -118,7 +118,9 @@ function deviceToForm(d: AttendanceDevice): DeviceFormState {
     authUsername: creds.username || '', authPassword: creds.password || '',
     authToken: creds.token || '',
     authHeaderName: creds.headerName || '', authHeaderValue: creds.headerValue || '',
-    authParamName: creds.paramName || 'api_key', authParamValue: creds.paramValue || '',
+    // Stored credentials are never returned, so an edit form starts blank; defaulting the name to 'api_key'
+    // would overwrite a stored parameter name on save. New devices still default it (emptyDeviceForm).
+    authParamName: creds.paramName || '', authParamValue: creds.paramValue || '',
     customHeaders: jsonToKv(d.customHeadersJson),
     deviceParams: jsonToKv(d.deviceParametersJson),
     fieldMappings: jsonToKv(d.fieldMappingsJson),
