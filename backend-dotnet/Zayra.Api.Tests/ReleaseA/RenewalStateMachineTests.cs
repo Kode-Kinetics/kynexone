@@ -75,6 +75,15 @@ public class RenewalStateMachineTests
     }
 
     [Fact]
+    public void TheTableHas48Rows_AndAWaivedQiwaStepCanReachReadyToApply()
+    {
+        // 2 × T1, T2–T18 (17), T16b, 9 × T19, 9 × T20, 10 × T21. Pairs: 45 (T16b shares T16's pair).
+        RenewalStateMachine.Transitions.Should().HaveCount(48);
+        RenewalStateMachine.Transitions.Where(t => t.From == QP && t.To == RTA).Select(t => t.Id).Should().Equal("T16", "T16b");
+        RenewalStateMachine.EnsureCanTransition(QP, RTA).Id.Should().Be("T16");
+    }
+
+    [Fact]
     public void AHold_IsReleasedExactlyWhereItCameFrom()
     {
         RenewalStateMachine.ReleaseTarget(Hold, NC).Should().Be(NC, "an unconfirmed case never skips T2 by being held");

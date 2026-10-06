@@ -99,6 +99,9 @@ public class ReleaseAContractTests
         Signature(typeof(IContractTermLifecycle), nameof(IContractTermLifecycle.OnEndedAsync))
             .Should().Be("Task OnEndedAsync(EmployeeContract, String, CancellationToken)");
         ContractEndReasons.All.Should().Equal("Terminated", "Expired", "Superseded", "Separated");
+        // CTO decision: an expired term worked on renews by law (Art. 74(2)) — Expired never cancels a case.
+        ContractEndReasons.CancelOpenCase.Should().BeEquivalentTo("Terminated", "Separated", "Superseded");
+        ContractEndReasons.CancelOpenCase.Should().NotContain(ContractEndReasons.Expired);
         Signature(typeof(IRenewalDeadlineCalculator), nameof(IRenewalDeadlineCalculator.ComputeAsync))
             .Should().Be("Task`1[RenewalDeadlines] ComputeAsync(Guid, EmployeeContract, CancellationToken)");
         Signature(typeof(IDeductionStatementService), nameof(IDeductionStatementService.ForSlipAsync))
