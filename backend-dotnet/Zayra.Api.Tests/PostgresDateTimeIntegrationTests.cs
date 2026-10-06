@@ -66,6 +66,18 @@ public sealed class PostgresFixture : IAsyncLifetime
         await db.Database.ExecuteSqlRawAsync(GradeEntitlementSql.AddExclusion);
         // AddGradeNameArAndLoanOffering: employer loans are principal only (qard). Same DDL as the migration.
         await db.Database.ExecuteSqlRawAsync(LoanTypeSql.AddInterestFreeCheck);
+        // Release A (ReleaseAEntitlementsAndRenewals): the EXCLUDE, the PublicId FKs and the four triggers EF cannot
+        // model — the migration's own frozen constants, so the fixture runs against exactly what production gets.
+        // Through a plain command, not ExecuteSqlRaw: the DDL holds regex quantifiers ({64}) that ExecuteSqlRaw would
+        // read as format placeholders. migrationBuilder.Sql does no formatting, so this is the text production runs.
+        var connection = db.Database.GetDbConnection();
+        await connection.OpenAsync();
+        foreach (var ddl in Zayra.Api.Migrations.ReleaseAEntitlementsAndRenewals.PostgresOnlyDdl)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = ddl;
+            await command.ExecuteNonQueryAsync();
+        }
     }
 
     /// <summary>
