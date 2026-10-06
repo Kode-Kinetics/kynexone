@@ -12,6 +12,7 @@ import { authApi } from '../api/auth';
 import { Logo } from '../components/Logo';
 import { Brief, VendorFooter } from '../components/LoginMarketing';
 import { normalizeWorkspace, resolveWorkspaceAlias, safeLocalReturnPath } from '../lib/publicAuth';
+import { waitPhrase } from '../lib/retryAfter';
 
 /**
  * The aurora is CODE-SPLIT and never server-rendered.
@@ -110,9 +111,10 @@ export function LoginPage() {
       else if (status === 429) {
         // Distinct codes from the API (LoginAbuseGuard): only the account limit is "too many attempts".
         const code = err?.response?.data?.error;
-        if (code === 'account_rate_limited') setError('Too many attempts for this account. Please wait a few minutes and try again.');
-        else if (code === 'ip_failure_budget') setError('Too many failed sign-ins from your network. Please wait a few minutes and try again.');
-        else setError('The sign-in service is busy — try again in a few seconds.');
+        const when = waitPhrase(err?.response?.headers?.['retry-after']);
+        if (code === 'account_rate_limited') setError(`Too many attempts for this account. Please try again ${when}.`);
+        else if (code === 'ip_failure_budget') setError(`Too many failed sign-ins from your network. Please try again ${when}.`);
+        else setError(`The sign-in service is busy — try again ${when}.`);
       }
       else if (!err?.response) setError('Cannot reach the server. Check your connection and try again.');
       else {

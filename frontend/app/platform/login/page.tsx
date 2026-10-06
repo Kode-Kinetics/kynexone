@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { AlertCircle, Eye, EyeOff, Lock, ShieldCheck, Activity, Users } from 'lucide-react';
 import { platformApi, PLATFORM_PENDING_ENROLLMENT_KEY } from '@/src/api/platform';
 import { Logo } from '@/src/components/Logo';
+import { waitPhrase } from '@/src/lib/retryAfter';
 
 type ErrorKind = 'invalid_credentials' | 'not_configured' | 'network' | 'busy' | 'rate_limited' | 'invalid_code' | 'enrollment_expired' | null;
 
@@ -12,13 +13,13 @@ type ErrorKind = 'invalid_credentials' | 'not_configured' | 'network' | 'busy' |
  *  or from the console's "set up now" prompt via sessionStorage. */
 type Step = 'credentials' | 'mfa' | 'enroll' | 'codes';
 
-function errorMessage(kind: ErrorKind): string {
+function errorMessage(kind: ErrorKind, when = 'in a few seconds'): string {
   switch (kind) {
     case 'invalid_credentials': return 'Invalid platform admin credentials. Please check your email and password.';
     case 'not_configured': return 'Platform admin access is not configured on this server. Set PLATFORM_ADMIN_EMAIL and PLATFORM_ADMIN_PASSWORD environment variables.';
     case 'network': return 'Cannot reach the server. Check that the backend is running and reachable.';
-    case 'busy': return 'The sign-in service is busy — try again in a few seconds.';
-    case 'rate_limited': return 'Too many sign-in attempts. Please wait a few minutes and try again.';
+    case 'busy': return `The sign-in service is busy — try again ${when}.`;
+    case 'rate_limited': return `Too many sign-in attempts. Please try again ${when}.`;
     case 'invalid_code': return 'That code was not accepted. Check your authenticator app and try again.';
     case 'enrollment_expired': return 'This setup session has expired. Sign in again to restart setup.';
     default: return '';
@@ -47,6 +48,7 @@ export default function PlatformLoginPage() {
   const [enrollmentUri, setEnrollmentUri] = useState('');
   const [totpCode, setTotpCode] = useState('');
   const [info, setInfo] = useState('');
+  const [retryWhen, setRetryWhen] = useState('in a few seconds');
   const [useRecoveryCode, setUseRecoveryCode] = useState(false);
   const [recoveryCode, setRecoveryCode] = useState('');
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
@@ -146,8 +148,9 @@ export default function PlatformLoginPage() {
       if (status === 401) setErrorKind('invalid_credentials');
       else if (status === 503) setErrorKind('not_configured');
       else if (status === 429) {
-        const code = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
-        setErrorKind(code === 'account_rate_limited' || code === 'ip_failure_budget' ? 'rate_limited' : 'busy');
+        const res = (err as { response?: { data?: { error?: string }; headers?: Record<string, unknown> } })?.response;
+        setRetryWhen(waitPhrase(res?.headers?.['retry-after']));
+        setErrorKind(res?.data?.error === 'account_rate_limited' || res?.data?.error === 'ip_failure_budget' ? 'rate_limited' : 'busy');
       }
       else if (!(err as { response?: unknown })?.response) setErrorKind('network');
       else setErrorKind('invalid_credentials');
@@ -276,7 +279,7 @@ export default function PlatformLoginPage() {
                     <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">Enter the 6-digit code from your authenticator app.</p>
                   </div>
                 )}
-                {errorKind && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{errorMessage(errorKind)}</p>}
+                {errorKind && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{errorMessage(errorKind, retryWhen)}</p>}
                 <button type="submit"
                   disabled={loading || (useRecoveryCode ? recoveryCode.replace(/[^A-Za-z0-9]/g, '').length !== 20 : totpCode.length !== 6)}
                   className="pa-btn disabled:cursor-not-allowed disabled:opacity-60">
@@ -314,7 +317,7 @@ export default function PlatformLoginPage() {
                     value={totpCode} onChange={e => setTotpCode(e.target.value.replace(/\D/g, ''))}
                     autoComplete="one-time-code" required placeholder="000000" className="pa-input" />
                 </div>
-                {errorKind && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{errorMessage(errorKind)}</p>}
+                {errorKind && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{errorMessage(errorKind, retryWhen)}</p>}
                 <button type="submit" disabled={loading || totpCode.length !== 6 || !enrollmentSecret} className="pa-btn disabled:cursor-not-allowed disabled:opacity-60">
                   {loading ? 'Enabling…' : 'Turn on two-step sign-in'}
                 </button>
@@ -399,7 +402,7 @@ export default function PlatformLoginPage() {
               {errorKind && (
                 <div className="flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 dark:border-red-500/20 dark:bg-red-500/[0.08]">
                   <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
-                  <p className="text-sm leading-relaxed text-red-700 dark:text-red-400">{errorMessage(errorKind)}</p>
+                  <p className="text-sm leading-relaxed text-red-700 dark:text-red-400">{errorMessage(errorKind, retryWhen)}</p>
                 </div>
               )}
 
