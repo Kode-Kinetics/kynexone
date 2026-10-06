@@ -31,14 +31,26 @@
         "new fragment key: \"your grade's per-loan maximum\"",
         "new fragment key: \"your grade's total outstanding maximum\""
       ]
+    },
+    {
+      "pinnedAt": "2026-10-06",
+      "reason": "Main gained PR #182 (privileged MFA, sign-in hardening: platform login, team page, MFA enrolment prompt) and PR #177 (Saudi bank file: payroll page WPS evidence, outside payments). Their new strings are English-only; accepted so the Arabic foundation can merge, and translated in Arabic Wave 1, which repins these counts back down.",
+      "increases": [
+        "app/platform/login/page.tsx  hardcoded: 21 → 34",
+        "app/platform/team/page.tsx  hardcoded: 18 → 20",
+        "src/components/MfaEnrollmentPrompt.tsx  hardcoded: 0 → 4",
+        "src/components/MfaEnrollmentPrompt.tsx  locale: 0 → 1",
+        "src/views/PayrollPage.tsx  hardcoded: 368 → 387",
+        "src/views/PayrollPage.tsx  locale: 30 → 32"
+      ]
     }
   ],
   "totals": {
-    "hardcoded": 5758,
+    "hardcoded": 5791,
     "rawStatus": 61,
-    "locale": 226,
+    "locale": 229,
     "icons": 0,
-    "files": 126
+    "files": 127
   },
   "fragmentKeys": [
     "These companies have no loan policy for this loan type. Once it is limited by grade, their employees can no longer apply for it:",
@@ -120,7 +132,7 @@
       "locale": 1
     },
     "app/platform/login/page.tsx": {
-      "hardcoded": 21
+      "hardcoded": 34
     },
     "app/platform/marketing/page.tsx": {
       "hardcoded": 28,
@@ -164,7 +176,7 @@
       "locale": 5
     },
     "app/platform/team/page.tsx": {
-      "hardcoded": 18,
+      "hardcoded": 20,
       "locale": 1
     },
     "app/platform/tenants/[id]/GovernanceTab.tsx": {
@@ -256,6 +268,10 @@
     },
     "src/components/Logo.tsx": {
       "hardcoded": 5
+    },
+    "src/components/MfaEnrollmentPrompt.tsx": {
+      "hardcoded": 4,
+      "locale": 1
     },
     "src/components/Modal.tsx": {
       "hardcoded": 1
@@ -481,9 +497,9 @@
       "locale": 2
     },
     "src/views/PayrollPage.tsx": {
-      "hardcoded": 368,
+      "hardcoded": 387,
       "rawStatus": 10,
-      "locale": 30
+      "locale": 32
     },
     "src/views/PayslipTemplatesPage.tsx": {
       "hardcoded": 44,
@@ -507,7 +523,7 @@
       "locale": 6
     },
     "src/views/SaudiComplianceConfig.tsx": {
-      "hardcoded": 144,
+      "hardcoded": 139,
       "locale": 3
     },
     "src/views/SaudiComplianceDashboard.tsx": {
