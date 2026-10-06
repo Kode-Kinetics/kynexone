@@ -95,10 +95,12 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
     () => commandItems.filter((item) => {
       if (item.path === '/ai-assistant') return mayUseAssistant;
       const navMatch = navigationItems.find((nav) => nav.path === item.path);
+      // A feature-flagged screen (e.g. Release A, off unless enabled) is offered only when its flag is on.
+      if (navMatch?.requiredFeatureKey && !isFeatureEnabled(navMatch.requiredFeatureKey)) return false;
       if (!navMatch?.requiredPermissions?.length) return true;
       return navMatch.requiredPermissions.every((permission) => hasPermission(permission));
     }),
-    [commandItems, hasPermission, mayUseAssistant],
+    [commandItems, hasPermission, mayUseAssistant, isFeatureEnabled],
   );
 
   const filteredCommands = useMemo(() => {

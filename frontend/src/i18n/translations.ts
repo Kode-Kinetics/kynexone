@@ -1,3 +1,5 @@
+import { releaseA } from './releaseA';
+
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
 
 type Dict = Record<string, string>;
@@ -687,6 +689,9 @@ const en: Dict = {
   'Date of the event (death, birth or marriage)': 'Date of the event (death, birth or marriage)',
   'Separate event? Say why (for example, a second bereavement)': 'Separate event? Say why (for example, a second bereavement)',
   'Only if this is a different event from your earlier leave of this kind. The event date is required too.': 'Only if this is a different event from your earlier leave of this kind. The event date is required too.',
+
+  // Release A — one file per slice in ./releaseA (R0 spreads them once; slices edit only their own file).
+  ...releaseA.en,
 };
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
@@ -1374,6 +1379,9 @@ const ar: Dict = {
   'Date of the event (death, birth or marriage)': 'تاريخ الواقعة (الوفاة أو الولادة أو الزواج)',
   'Separate event? Say why (for example, a second bereavement)': 'واقعة منفصلة؟ اذكر السبب (مثلاً: وفاة ثانية)',
   'Only if this is a different event from your earlier leave of this kind. The event date is required too.': 'فقط إذا كانت واقعة مختلفة عن إجازتك السابقة من هذا النوع. ويلزم أيضاً ذكر تاريخ الواقعة.',
+
+  // Release A — see ./releaseA.
+  ...releaseA.ar,
 };
 
 // ── French ────────────────────────────────────────────────────────────────────
