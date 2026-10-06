@@ -46,95 +46,26 @@ public static class PackageReasons
     public const string ProposalClosed = "ENTITLEMENT_PROPOSAL_CLOSED";
 
     // ── Pending: requested from R0 in review round 2 (PR #192 body lists them with EN/AR) ───────
-    public const string RowNeverTookEffect = "ENTITLEMENT_ROW_NEVER_TOOK_EFFECT";
-    public const string TermRunningNeedsProposal = "ENTITLEMENT_TERM_RUNNING_NEEDS_PROPOSAL";
-    public const string ProposalOpen = "ENTITLEMENT_PROPOSAL_OPEN";
-    public const string ProposalRequesterUnknown = "ENTITLEMENT_PROPOSAL_REQUESTER_UNKNOWN";
-    public const string PredecessorUnconfirmed = "ENTITLEMENT_PREDECESSOR_UNCONFIRMED";
-    public const string EarlierServiceUnconfirmed = "ENTITLEMENT_EARLIER_SERVICE_UNCONFIRMED";
-    public const string JoiningDateChanged = "ENTITLEMENT_JOINING_DATE_CHANGED";
-    public const string TermHasPackage = "ENTITLEMENT_TERM_HAS_PACKAGE";
+    public const string RowNeverTookEffect = ReleaseABlockReasons.EntitlementRowNeverTookEffect;
+    public const string TermRunningNeedsProposal = ReleaseABlockReasons.EntitlementTermRunningNeedsProposal;
+    public const string ProposalOpen = ReleaseABlockReasons.EntitlementProposalOpen;
+    public const string ProposalRequesterUnknown = ReleaseABlockReasons.EntitlementProposalRequesterUnknown;
+    public const string PredecessorUnconfirmed = ReleaseABlockReasons.EntitlementPredecessorUnconfirmed;
+    public const string EarlierServiceUnconfirmed = ReleaseABlockReasons.EntitlementEarlierServiceUnconfirmed;
+    public const string JoiningDateChanged = ReleaseABlockReasons.EntitlementJoiningDateChanged;
+    public const string TermHasPackage = ReleaseABlockReasons.EntitlementTermHasPackage;
     // The stable message prefixes R0's triggers raise (SQLSTATE 23514), each mapped to its own code by FromDatabase.
-    public const string OutsideTerm = "ENTITLEMENT_OUTSIDE_TERM";
-    public const string CompanyMismatch = "ENTITLEMENT_COMPANY_MISMATCH";
-    public const string BasisNotOwnSalary = "ENTITLEMENT_BASIS_NOT_OWN_SALARY";
-    public const string CarriedDiffers = "ENTITLEMENT_CARRIED_DIFFERS";
-    public const string CarriedOverlaps = "ENTITLEMENT_CARRIED_OVERLAPS";
-    public const string CloseOnly = "ENTITLEMENT_CLOSE_ONLY";
+    public const string OutsideTerm = ReleaseABlockReasons.EntitlementOutsideTerm;
+    public const string CompanyMismatch = ReleaseABlockReasons.EntitlementCompanyMismatch;
+    public const string BasisNotOwnSalary = ReleaseABlockReasons.EntitlementBasisNotOwnSalary;
+    public const string CarriedDiffers = ReleaseABlockReasons.EntitlementCarriedDiffers;
+    public const string CarriedOverlaps = ReleaseABlockReasons.EntitlementCarriedOverlaps;
+    public const string CloseOnly = ReleaseABlockReasons.EntitlementCloseOnly;
 
     /// <summary>Codes R2 uses that the R0 catalogue does not have yet. Empty: R0 (#189, 349a56e1) added all twelve.</summary>
-    public static readonly IReadOnlyDictionary<string, BlockReason> Pending = new[]
-    {
-        new BlockReason(RowNeverTookEffect,
-            "A fixed benefit has not started yet", "توجد ميزة مثبتة لم تبدأ بعد",
-            "This contract has a fixed benefit that starts on or after the day of this change, so it has not taken effect. Fixed benefits are never removed, so the contract stays as it is for now.",
-            "لهذا العقد ميزة مثبتة تبدأ في يوم هذا التغيير أو بعده، فلم تُطبَّق بعد. والمزايا المثبتة لا تُحذف، لذلك يبقى العقد كما هو حالياً.",
-            "Make the change on or after the date shown. Until then the contract and its benefits stay exactly as they are.",
-            "أجرِ التغيير في التاريخ الظاهر أو بعده، وحتى ذلك الحين يبقى العقد ومزاياه كما هي تماماً.", HrManager),
-        new BlockReason(PredecessorUnconfirmed,
-            "Needs a second person's check", "يحتاج إلى تحقق شخص آخر",
-            "The employee's previous contract has no confirmed benefits, so this contract's benefits are taken from the grade table only as a proposal that another HR user checks against the signed contract.",
-            "لا توجد مزايا مؤكدة للعقد السابق للموظف، لذلك تؤخذ مزايا هذا العقد من جدول الدرجات كمقترح فقط يراجعه مستخدم آخر في الموارد البشرية مقابل العقد الموقّع.",
-            "Propose the benefits, then ask another HR user to confirm them.", "اقترح المزايا ثم اطلب من مستخدم آخر في الموارد البشرية تأكيدها.", HrManager),
-        new BlockReason(EarlierServiceUnconfirmed,
-            "Needs a second person's check", "يحتاج إلى تحقق شخص آخر",
-            "The employee joined before this contract and no confirmed benefits from an earlier contract are on file, so this contract's benefits are taken from the grade table only as a proposal that another HR user checks against the signed contract.",
-            "التحق الموظف قبل هذا العقد ولا توجد مزايا مؤكدة من عقد سابق، لذلك تؤخذ مزايا هذا العقد من جدول الدرجات كمقترح فقط يراجعه مستخدم آخر في الموارد البشرية مقابل العقد الموقّع.",
-            "Propose the benefits, then ask another HR user to confirm them.", "اقترح المزايا ثم اطلب من مستخدم آخر في الموارد البشرية تأكيدها.", HrManager),
-        new BlockReason(JoiningDateChanged,
-            "Joining date changed after the benefits were fixed", "تغيّر تاريخ الالتحاق بعد تثبيت المزايا",
-            "These benefits were fixed from the grade table as a new hire's, but the employee's joining date now says they joined earlier. Nothing was changed automatically.",
-            "ثُبّتت هذه المزايا من جدول الدرجات على أنها لموظف جديد، لكن تاريخ الالتحاق يشير الآن إلى التحاق أبكر، ولم يُغيَّر شيء تلقائياً.",
-            "Check the joining date in the employee's history and the signed contract; correct whichever is wrong.",
-            "راجع تاريخ الالتحاق في سجل الموظف والعقد الموقّع، وصحّح الخطأ منهما.", HrDirector),
-        new BlockReason(TermHasPackage,
-            "Change it through the contract screen", "عدّله من شاشة العقود",
-            "This contract already has fixed or proposed benefits, so the import cannot change its start date or status.",
-            "لهذا العقد مزايا مثبتة أو مقترحة، لذلك لا يمكن للاستيراد تغيير تاريخ بدايته أو حالته.",
-            "Use Supersede (or Terminate) on the contract screen.", "استخدم الاستبدال (أو الإنهاء) من شاشة العقود.", HrManager),
-        new BlockReason(TermRunningNeedsProposal,
-            "Needs a second person's check", "يحتاج إلى تحقق شخص آخر",
-            "This contract term has already started, so its benefits are taken from the grade table only as a proposal that another HR user checks against the signed contract.",
-            "بدأ هذا العقد بالفعل، لذلك تؤخذ مزاياه من جدول الدرجات كمقترح فقط يراجعه مستخدم آخر في الموارد البشرية مقابل العقد الموقّع.",
-            "Propose the package, then ask another HR user to confirm it.", "اقترح الباقة ثم اطلب من مستخدم آخر في الموارد البشرية تأكيدها.", HrManager),
-        new BlockReason(ProposalOpen,
-            "A proposal is waiting", "يوجد مقترح بانتظار القرار",
-            "A proposed package for this term is waiting for a second HR user, so it cannot also be fixed directly.",
-            "توجد باقة مقترحة لهذا العقد بانتظار مستخدم آخر في الموارد البشرية، فلا يمكن تثبيتها مباشرة أيضاً.",
-            "Confirm or reject the proposal first.", "أكّد المقترح أو ارفضه أولاً.", HrManager),
-        new BlockReason(ProposalRequesterUnknown,
-            "Who asked for it is unknown", "مقدّم الطلب غير معروف",
-            "This proposal does not record who asked for it, so nobody can be shown to be a different person.",
-            "لا يسجّل هذا المقترح من طلبه، لذلك لا يمكن التحقق من أن المؤكِّد شخص مختلف.",
-            "Reject it and propose the package again.", "ارفضه واقترح الباقة مجدداً.", HrDirector),
-        new BlockReason(OutsideTerm,
-            "Outside the contract term", "خارج مدة العقد",
-            "A benefit's dates would fall outside its contract term.", "ستقع تواريخ الميزة خارج مدة العقد.",
-            "Check the contract's start and end dates.", "راجع تاريخي بداية العقد ونهايته.", HrManager),
-        new BlockReason(CompanyMismatch,
-            "Different company", "منشأة مختلفة",
-            "The benefit is not for the company named on its contract.", "الميزة ليست للمنشأة المذكورة في عقدها.",
-            "Check the employing company on the contract.", "راجع المنشأة صاحبة العمل في العقد.", HrManager),
-        new BlockReason(BasisNotOwnSalary,
-            "Salary record of someone else", "سجل راتب لموظف آخر",
-            "A percentage benefit cites a salary record that is not this employee's.", "ميزة بنسبة مئوية تستند إلى سجل راتب ليس لهذا الموظف.",
-            "Fix the employee's salary record.", "صحّح سجل راتب الموظف.", HrManager),
-        new BlockReason(CarriedDiffers,
-            "Carried benefit differs", "الميزة المنقولة مختلفة",
-            "A benefit carried into a new term must equal the one it carries, and it does not.", "يجب أن تساوي الميزة المنقولة إلى عقد جديد الميزة الأصلية، وهي لا تساويها.",
-            "Fix the package for the new term again.", "ثبّت باقة العقد الجديد مجدداً.", HrManager),
-        new BlockReason(CarriedOverlaps,
-            "Carried benefit overlaps", "الميزة المنقولة متداخلة",
-            "A carried benefit must start after the one it carries ends.", "يجب أن تبدأ الميزة المنقولة بعد انتهاء الميزة الأصلية.",
-            "Check the start date of the new term.", "راجع تاريخ بداية العقد الجديد.", HrManager),
-        new BlockReason(CloseOnly,
-            "Fixed benefits are never changed", "المزايا المثبتة لا تُعدَّل",
-            "A fixed benefit can only be ended earlier, never changed, extended or removed.", "يمكن إنهاء الميزة المثبتة مبكراً فقط، ولا يجوز تعديلها أو تمديدها أو حذفها.",
-            "End it and fix a new value from the next day.", "أنهِها وثبّت قيمة جديدة من اليوم التالي.", HrManager),
-    }.ToDictionary(r => r.Code);
+    /// <summary>Codes R2 uses that the R0 catalogue does not have yet. Empty: every R2 code is in ReleaseABlockReasons (on main).</summary>
+    public static readonly IReadOnlyDictionary<string, BlockReason> Pending = new Dictionary<string, BlockReason>();
 
-    private const string HrManager = "HR Manager";
-    private const string HrDirector = "HR Director";
 
     /// <summary>
     /// The reason code for a database refusal: SQLSTATE 23P01 (the no-overlap EXCLUDE) is a term overlap; 23514 carries the

@@ -59,6 +59,21 @@ public static class ReleaseABlockReasons
     public const string EntitlementProposalSameUser = "ENTITLEMENT_PROPOSAL_SAME_USER";
     public const string EntitlementProposalDocumentRequired = "ENTITLEMENT_PROPOSAL_DOCUMENT_REQUIRED";
     public const string EntitlementProposalClosed = "ENTITLEMENT_PROPOSAL_CLOSED";
+    // R2 review rounds 2–4 (added by R2 after #189 merged, per the integration owner):
+    public const string EntitlementRowNeverTookEffect = "ENTITLEMENT_ROW_NEVER_TOOK_EFFECT";
+    public const string EntitlementPredecessorUnconfirmed = "ENTITLEMENT_PREDECESSOR_UNCONFIRMED";
+    public const string EntitlementEarlierServiceUnconfirmed = "ENTITLEMENT_EARLIER_SERVICE_UNCONFIRMED";
+    public const string EntitlementJoiningDateChanged = "ENTITLEMENT_JOINING_DATE_CHANGED";
+    public const string EntitlementTermHasPackage = "ENTITLEMENT_TERM_HAS_PACKAGE";
+    public const string EntitlementTermRunningNeedsProposal = "ENTITLEMENT_TERM_RUNNING_NEEDS_PROPOSAL";
+    public const string EntitlementProposalOpen = "ENTITLEMENT_PROPOSAL_OPEN";
+    public const string EntitlementProposalRequesterUnknown = "ENTITLEMENT_PROPOSAL_REQUESTER_UNKNOWN";
+    public const string EntitlementOutsideTerm = "ENTITLEMENT_OUTSIDE_TERM";
+    public const string EntitlementCompanyMismatch = "ENTITLEMENT_COMPANY_MISMATCH";
+    public const string EntitlementBasisNotOwnSalary = "ENTITLEMENT_BASIS_NOT_OWN_SALARY";
+    public const string EntitlementCarriedDiffers = "ENTITLEMENT_CARRIED_DIFFERS";
+    public const string EntitlementCarriedOverlaps = "ENTITLEMENT_CARRIED_OVERLAPS";
+    public const string EntitlementCloseOnly = "ENTITLEMENT_CLOSE_ONLY";
 
     private const string HrManager = "HR Manager";
     private const string HrDirector = "HR Director";
@@ -325,6 +340,72 @@ public static class ReleaseABlockReasons
             "No action needed.",
             "لا يلزم أي إجراء.",
             HrManager),
+        new BlockReason(EntitlementRowNeverTookEffect,
+            "A fixed benefit has not started yet", "توجد ميزة مثبتة لم تبدأ بعد",
+            "This contract has a fixed benefit that starts on or after the day of this change, so it has not taken effect. Fixed benefits are never removed, so the contract stays as it is for now.",
+            "لهذا العقد ميزة مثبتة تبدأ في يوم هذا التغيير أو بعده، فلم تُطبَّق بعد. والمزايا المثبتة لا تُحذف، لذلك يبقى العقد كما هو حالياً.",
+            "Make the change on or after the date shown. Until then the contract and its benefits stay exactly as they are.",
+            "أجرِ التغيير في التاريخ الظاهر أو بعده، وحتى ذلك الحين يبقى العقد ومزاياه كما هي تماماً.", HrManager),
+        new BlockReason(EntitlementPredecessorUnconfirmed,
+            "Needs a second person's check", "يحتاج إلى تحقق شخص آخر",
+            "The employee's previous contract has no confirmed benefits, so this contract's benefits are taken from the grade table only as a proposal that another HR user checks against the signed contract.",
+            "لا توجد مزايا مؤكدة للعقد السابق للموظف، لذلك تؤخذ مزايا هذا العقد من جدول الدرجات كمقترح فقط يراجعه مستخدم آخر في الموارد البشرية مقابل العقد الموقّع.",
+            "Propose the benefits, then ask another HR user to confirm them.", "اقترح المزايا ثم اطلب من مستخدم آخر في الموارد البشرية تأكيدها.", HrManager),
+        new BlockReason(EntitlementEarlierServiceUnconfirmed,
+            "Needs a second person's check", "يحتاج إلى تحقق شخص آخر",
+            "The employee joined before this contract and no confirmed benefits from an earlier contract are on file, so this contract's benefits are taken from the grade table only as a proposal that another HR user checks against the signed contract.",
+            "التحق الموظف قبل هذا العقد ولا توجد مزايا مؤكدة من عقد سابق، لذلك تؤخذ مزايا هذا العقد من جدول الدرجات كمقترح فقط يراجعه مستخدم آخر في الموارد البشرية مقابل العقد الموقّع.",
+            "Propose the benefits, then ask another HR user to confirm them.", "اقترح المزايا ثم اطلب من مستخدم آخر في الموارد البشرية تأكيدها.", HrManager),
+        new BlockReason(EntitlementJoiningDateChanged,
+            "Joining date changed after the benefits were fixed", "تغيّر تاريخ الالتحاق بعد تثبيت المزايا",
+            "These benefits were fixed from the grade table as a new hire's, but the employee's joining date now says they joined earlier. Nothing was changed automatically.",
+            "ثُبّتت هذه المزايا من جدول الدرجات على أنها لموظف جديد، لكن تاريخ الالتحاق يشير الآن إلى التحاق أبكر، ولم يُغيَّر شيء تلقائياً.",
+            "Check the joining date in the employee's history and the signed contract; correct whichever is wrong.",
+            "راجع تاريخ الالتحاق في سجل الموظف والعقد الموقّع، وصحّح الخطأ منهما.", HrDirector),
+        new BlockReason(EntitlementTermHasPackage,
+            "Change it through the contract screen", "عدّله من شاشة العقود",
+            "This contract already has fixed or proposed benefits, so the import cannot change its start date or status.",
+            "لهذا العقد مزايا مثبتة أو مقترحة، لذلك لا يمكن للاستيراد تغيير تاريخ بدايته أو حالته.",
+            "Use Supersede (or Terminate) on the contract screen.", "استخدم الاستبدال (أو الإنهاء) من شاشة العقود.", HrManager),
+        new BlockReason(EntitlementTermRunningNeedsProposal,
+            "Needs a second person's check", "يحتاج إلى تحقق شخص آخر",
+            "This contract term has already started, so its benefits are taken from the grade table only as a proposal that another HR user checks against the signed contract.",
+            "بدأ هذا العقد بالفعل، لذلك تؤخذ مزاياه من جدول الدرجات كمقترح فقط يراجعه مستخدم آخر في الموارد البشرية مقابل العقد الموقّع.",
+            "Propose the package, then ask another HR user to confirm it.", "اقترح الباقة ثم اطلب من مستخدم آخر في الموارد البشرية تأكيدها.", HrManager),
+        new BlockReason(EntitlementProposalOpen,
+            "A proposal is waiting", "يوجد مقترح بانتظار القرار",
+            "A proposed package for this term is waiting for a second HR user, so it cannot also be fixed directly.",
+            "توجد باقة مقترحة لهذا العقد بانتظار مستخدم آخر في الموارد البشرية، فلا يمكن تثبيتها مباشرة أيضاً.",
+            "Confirm or reject the proposal first.", "أكّد المقترح أو ارفضه أولاً.", HrManager),
+        new BlockReason(EntitlementProposalRequesterUnknown,
+            "Who asked for it is unknown", "مقدّم الطلب غير معروف",
+            "This proposal does not record who asked for it, so nobody can be shown to be a different person.",
+            "لا يسجّل هذا المقترح من طلبه، لذلك لا يمكن التحقق من أن المؤكِّد شخص مختلف.",
+            "Reject it and propose the package again.", "ارفضه واقترح الباقة مجدداً.", HrDirector),
+        new BlockReason(EntitlementOutsideTerm,
+            "Outside the contract term", "خارج مدة العقد",
+            "A benefit's dates would fall outside its contract term.", "ستقع تواريخ الميزة خارج مدة العقد.",
+            "Check the contract's start and end dates.", "راجع تاريخي بداية العقد ونهايته.", HrManager),
+        new BlockReason(EntitlementCompanyMismatch,
+            "Different company", "منشأة مختلفة",
+            "The benefit is not for the company named on its contract.", "الميزة ليست للمنشأة المذكورة في عقدها.",
+            "Check the employing company on the contract.", "راجع المنشأة صاحبة العمل في العقد.", HrManager),
+        new BlockReason(EntitlementBasisNotOwnSalary,
+            "Salary record of someone else", "سجل راتب لموظف آخر",
+            "A percentage benefit cites a salary record that is not this employee's.", "ميزة بنسبة مئوية تستند إلى سجل راتب ليس لهذا الموظف.",
+            "Fix the employee's salary record.", "صحّح سجل راتب الموظف.", HrManager),
+        new BlockReason(EntitlementCarriedDiffers,
+            "Carried benefit differs", "الميزة المنقولة مختلفة",
+            "A benefit carried into a new term must equal the one it carries, and it does not.", "يجب أن تساوي الميزة المنقولة إلى عقد جديد الميزة الأصلية، وهي لا تساويها.",
+            "Fix the package for the new term again.", "ثبّت باقة العقد الجديد مجدداً.", HrManager),
+        new BlockReason(EntitlementCarriedOverlaps,
+            "Carried benefit overlaps", "الميزة المنقولة متداخلة",
+            "A carried benefit must start after the one it carries ends.", "يجب أن تبدأ الميزة المنقولة بعد انتهاء الميزة الأصلية.",
+            "Check the start date of the new term.", "راجع تاريخ بداية العقد الجديد.", HrManager),
+        new BlockReason(EntitlementCloseOnly,
+            "Fixed benefits are never changed", "المزايا المثبتة لا تُعدَّل",
+            "A fixed benefit can only be ended earlier, never changed, extended or removed.", "يمكن إنهاء الميزة المثبتة مبكراً فقط، ولا يجوز تعديلها أو تمديدها أو حذفها.",
+            "End it and fix a new value from the next day.", "أنهِها وثبّت قيمة جديدة من اليوم التالي.", HrManager),
     }.ToDictionary(r => r.Code, StringComparer.Ordinal);
 
     /// <summary>The catalogue entry for a code. Throws for an unknown code: an unexplained refusal is a defect.</summary>

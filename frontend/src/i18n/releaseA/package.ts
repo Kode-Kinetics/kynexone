@@ -142,6 +142,7 @@ const pairs: Array<[string, string]> = [
   // Review round 2
   ['A fixed benefit has not started yet. The contract stays as it is until the date shown.', 'توجد ميزة مثبتة لم تبدأ بعد، ويبقى العقد كما هو حتى التاريخ الظاهر.'],
   ['The previous contract’s benefits were never confirmed: propose these, and another HR user confirms them.', 'لم تُؤكَّد مزايا العقد السابق: اقترح هذه المزايا ويؤكدها مستخدم آخر في الموارد البشرية.'],
+  ['The employee joined before this contract and no confirmed benefits are on file: propose these, and another HR user confirms them.', 'التحق الموظف قبل هذا العقد ولا توجد مزايا مؤكدة: اقترح هذه المزايا ويؤكدها مستخدم آخر في الموارد البشرية.'],
   ['The term has started: propose the package, and another HR user confirms it.', 'بدأ العقد: اقترح الباقة ويؤكدها مستخدم آخر في الموارد البشرية.'],
   ['Proposed — waiting for another HR user to confirm it.', 'مقترحة — بانتظار تأكيد مستخدم آخر في الموارد البشرية.'],
   ['Already decided.', 'تم البت فيها.'],

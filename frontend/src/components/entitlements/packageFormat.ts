@@ -164,6 +164,7 @@ export function reasonText(code: string | null | undefined, t: Translate, criter
     ENTITLEMENT_ROW_IN_THE_WAY: 'The earlier term has this benefit fixed from a later date.',
     ENTITLEMENT_ROW_NEVER_TOOK_EFFECT: 'A fixed benefit has not started yet. The contract stays as it is until the date shown.',
     ENTITLEMENT_PREDECESSOR_UNCONFIRMED: 'The previous contract’s benefits were never confirmed: propose these, and another HR user confirms them.',
+    ENTITLEMENT_EARLIER_SERVICE_UNCONFIRMED: 'The employee joined before this contract and no confirmed benefits are on file: propose these, and another HR user confirms them.',
     ENTITLEMENT_TERM_RUNNING_NEEDS_PROPOSAL: 'The term has started: propose the package, and another HR user confirms it.',
     ENTITLEMENT_PROPOSAL_OPEN: 'Proposed — waiting for another HR user to confirm it.',
     ENTITLEMENT_PROPOSAL_CLOSED: 'Already decided.',
