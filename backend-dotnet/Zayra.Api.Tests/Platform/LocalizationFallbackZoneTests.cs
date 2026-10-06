@@ -34,28 +34,24 @@ public class LocalizationFallbackZoneTests
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options);
 
-    private static TenantAdminController Ctrl(ZayraDbContext db, Guid? tenantId)
+    private static TenantAdminController Ctrl(ZayraDbContext db, Guid? tenantId, string? authorization = null)
     {
         var claims = tenantId is { } id
             ? new[] { new Claim("tenant_id", id.ToString()), new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()) }
             : Array.Empty<Claim>();
-        return new TenantAdminController(db)
+        var http = new DefaultHttpContext
         {
-            ControllerContext = new ControllerContext
-            {
-                HttpContext = new DefaultHttpContext
-                {
-                    User = new ClaimsPrincipal(new ClaimsIdentity(claims, tenantId is null ? null : "test")),
-                },
-            },
+            User = new ClaimsPrincipal(new ClaimsIdentity(claims, tenantId is null ? null : "test")),
         };
+        if (authorization is not null) http.Request.Headers.Authorization = authorization;
+        return new TenantAdminController(db) { ControllerContext = new ControllerContext { HttpContext = http } };
     }
 
-    private static async Task<TenantLocalizationSetting> Get(ZayraDbContext db, Guid? tenantId, string? slug = null)
+    private static async Task<LocalizationResponse> Get(ZayraDbContext db, Guid? tenantId, string? slug = null)
     {
         var result = await Ctrl(db, tenantId).GetLocalization(slug, CancellationToken.None);
         return result.Should().BeOfType<OkObjectResult>().Subject.Value
-            .Should().BeOfType<TenantLocalizationSetting>().Subject;
+            .Should().BeOfType<LocalizationResponse>().Subject;
     }
 
     private static Guid SeedTenant(ZayraDbContext db, string? companyCountry)
@@ -143,5 +139,76 @@ public class LocalizationFallbackZoneTests
         await Get(db, tid);
 
         db.TenantLocalizationSettings.IgnoreQueryFilters().Should().BeEmpty();
+    }
+
+    // ── stated: whether the answer is a real tenant's ───────────────────────────────────────────
+
+    /// <summary>
+    /// The web client applies tenant values (the default language) only when <c>stated</c> is true.
+    /// The anonymous placeholder must say it is one, or "no tenant" reads as "a tenant that speaks
+    /// English" and overrides an Arabic tenant's cached language.
+    /// </summary>
+    [Fact]
+    public async Task WithNoTenantResolved_TheAnswerIsNotStated()
+    {
+        using var db = CreateDb();
+
+        (await Get(db, tenantId: null)).Stated.Should().BeFalse();
+        (await Get(db, tenantId: null, slug: "no-such-tenant")).Stated.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ForTheCallersTenant_TheAnswerIsStated_WithOrWithoutALocalizationRow()
+    {
+        using var db = CreateDb();
+        var bare = SeedTenant(db, "SA");
+        var withRow = SeedTenant(db, "SA");
+        db.TenantLocalizationSettings.Add(new TenantLocalizationSetting { TenantId = withRow, DefaultLanguage = "ar" });
+        db.SaveChanges();
+
+        (await Get(db, bare)).Stated.Should().BeTrue("the tenant was resolved; its zone and currency come from its own companies");
+        var loc = await Get(db, withRow);
+        loc.Stated.Should().BeTrue();
+        loc.DefaultLanguage.Should().Be("ar");
+    }
+
+    [Fact]
+    public async Task ForATenantResolvedBySlug_TheAnswerIsStated()
+    {
+        using var db = CreateDb();
+        var tid = SeedTenant(db, "SA");
+        var slug = db.Tenants.Single(t => t.Id == tid).Slug;
+
+        (await Get(db, tenantId: null, slug: slug)).Stated.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// An expired or forged bearer token must not be answered with the anonymous placeholder (nor
+    /// fall through to a slug): that would silently blank a signed-in user's settings. 401 lets the
+    /// client refresh the token and retry.
+    /// </summary>
+    [Fact]
+    public async Task WithAnInvalidBearerToken_ItAnswers401_NotTheAnonymousDefault()
+    {
+        using var db = CreateDb();
+        var tid = SeedTenant(db, "SA");
+        var slug = db.Tenants.Single(t => t.Id == tid).Slug;
+
+        var result = await Ctrl(db, tenantId: null, authorization: "Bearer expired.or.forged")
+            .GetLocalization(slug, CancellationToken.None);
+
+        result.Should().BeOfType<UnauthorizedObjectResult>();
+    }
+
+    /// <summary>No token at all is the pre-sign-in load: still answered, as not stated.</summary>
+    [Fact]
+    public async Task WithNoToken_ThePlaceholderIsStillServed()
+    {
+        using var db = CreateDb();
+
+        var result = await Ctrl(db, tenantId: null).GetLocalization(null, CancellationToken.None);
+
+        result.Should().BeOfType<OkObjectResult>().Subject.Value
+            .Should().BeOfType<LocalizationResponse>().Subject.Stated.Should().BeFalse();
     }
 }
