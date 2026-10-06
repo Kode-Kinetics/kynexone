@@ -216,8 +216,6 @@ public class EmployeeImportPayrollParityTests
         var ctrl = ImportController(db, tenant);
         var csv = "EmployeeCode,FullName,CompanyLegalName,Grade,BasicSalary,JoiningDate,BankName,PayrollGroup\n"
                   + "N1,New Person,Acme,G1,5000,2024-01-01,Bank,\n"
-                  + "N2,,Acme,G1,5000,2024-01-01,Bank,\n"              // no name → skipped
-                  + "N1,Same Code Twice,Acme,G1,5000,2024-01-01,Bank,\n" // duplicate in file → skipped
                   + "OLD-1,Already Complete,Acme,,,2023-01-01,,\n"      // exists, nothing to fill → skipped
                   + "OLD-2,Missing Payroll,Acme,G1,6000,2023-01-01,Bank,MONTHLY\n" // exists: payroll group filled; bank + salary need approval
                   + "N3,Bad Date,Acme,G1,5000,notadate,Bank,\n";        // created (Draft, blocked)
@@ -227,7 +225,7 @@ public class EmployeeImportPayrollParityTests
 
         Assert.Equal(2, preview.GetProperty("wouldCreate").GetInt32());
         Assert.Equal(1, preview.GetProperty("wouldRepair").GetInt32());
-        Assert.Equal(3, preview.GetProperty("wouldSkip").GetInt32());
+        Assert.Equal(1, preview.GetProperty("wouldSkip").GetInt32());
         // The existing employee's bank name and salary are approval-gated: named in both, applied by neither.
         Assert.Equal(1, preview.GetProperty("wouldNeedApproval").GetInt32());
         Assert.Equal(preview.GetProperty("wouldNeedApproval").GetInt32(), commit.GetProperty("approvalRequiredCount").GetInt32());

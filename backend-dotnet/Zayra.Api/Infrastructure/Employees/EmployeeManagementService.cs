@@ -1571,27 +1571,28 @@ public class EmployeeManagementService : IEmployeeManagementService
             var position = await _db.Positions.AsNoTracking()
                 .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == employee.PositionId && !x.IsDeleted, cancellationToken);
             if (position is null) throw new InvalidOperationException("Selected position was not found.");
-            if (position.Status is PositionStatuses.Frozen or PositionStatuses.Closed)
-                throw new InvalidOperationException($"Position '{position.Code}' is {position.Status.ToLowerInvariant()} and cannot receive an employee.");
-            if (position.EffectiveFrom > DateOnly.FromDateTime(employee.JoiningDate))
-                throw new InvalidOperationException($"Position '{position.Code}' is not effective on the employee joining date.");
-            if (position.EffectiveTo is not null && position.EffectiveTo < DateOnly.FromDateTime(employee.JoiningDate))
-                throw new InvalidOperationException($"Position '{position.Code}' expired before the employee joining date.");
-            if (position.IncumbentEmployeeId is not null && position.IncumbentEmployeeId != employee.Id)
-                throw new InvalidOperationException($"Position '{position.Code}' is already occupied by another employee.");
-
-            void RequireMatch(Guid? expected, Guid? actual, string label)
+            // The SAME decision the CSV import makes (EmployeeAssignmentRules); only the answer differs — the
+            // form refuses the save, the import leaves the position unassigned with a review gap.
+            var refusal = EmployeeAssignmentRules.CheckPosition(position, employee.Id == 0 ? null : employee.Id,
+                DateOnly.FromDateTime(employee.JoiningDate), employee.CompanyId, employee.BranchId, employee.DepartmentId,
+                employee.CostCenterId, employee.DesignationId, employee.GradeId);
+            string Requires(Guid? expected, string label) => $"Position '{position.Code}' requires {label} '{expected}'.";
+            var message = refusal switch
             {
-                if (expected is not null && actual != expected)
-                    throw new InvalidOperationException($"Position '{position.Code}' requires {label} '{expected}'.");
-            }
-
-            RequireMatch(position.CompanyId, employee.CompanyId, "its configured legal entity");
-            RequireMatch(position.BranchId, employee.BranchId, "its configured branch");
-            RequireMatch(position.DepartmentId, employee.DepartmentId, "its configured department");
-            RequireMatch(position.CostCenterId, employee.CostCenterId, "its configured cost center");
-            RequireMatch(position.DesignationId, employee.DesignationId, "its configured designation");
-            RequireMatch(position.GradeId, employee.GradeId, "its configured grade");
+                PositionRefusal.None => null,
+                PositionRefusal.FrozenOrClosed => $"Position '{position.Code}' is {position.Status.ToLowerInvariant()} and cannot receive an employee.",
+                PositionRefusal.NotYetEffective or PositionRefusal.JoiningDateUnknown => $"Position '{position.Code}' is not effective on the employee joining date.",
+                PositionRefusal.Expired => $"Position '{position.Code}' expired before the employee joining date.",
+                PositionRefusal.Occupied => $"Position '{position.Code}' is already occupied by another employee.",
+                PositionRefusal.CompanyMismatch => Requires(position.CompanyId, "its configured legal entity"),
+                PositionRefusal.BranchMismatch => Requires(position.BranchId, "its configured branch"),
+                PositionRefusal.DepartmentMismatch => Requires(position.DepartmentId, "its configured department"),
+                PositionRefusal.CostCenterMismatch => Requires(position.CostCenterId, "its configured cost center"),
+                PositionRefusal.DesignationMismatch => Requires(position.DesignationId, "its configured designation"),
+                PositionRefusal.GradeMismatch => Requires(position.GradeId, "its configured grade"),
+                _ => $"Position '{position.Code}' cannot receive this employee.",
+            };
+            if (message is not null) throw new InvalidOperationException(message);
         }
 
         if (employee.DesignationId is not null)
@@ -1850,7 +1851,8 @@ public class EmployeeManagementService : IEmployeeManagementService
             .Select(c => (Guid?)c.Id)
             .Take(2)
             .ToListAsync(cancellationToken);
-        return ids.Count == 1 ? ids[0] : null;
+        // The same rule the CSV import uses: the only active company, never the oldest of several.
+        return EmployeeAssignmentRules.DefaultCompany(ids);
     }
 
     private void TrackChange(Employee employee, string field, string oldValue, string newValue, DateTime? effectiveDate, string reason, RequestContext context)

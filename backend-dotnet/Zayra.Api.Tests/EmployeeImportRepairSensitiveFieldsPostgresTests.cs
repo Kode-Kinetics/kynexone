@@ -208,10 +208,23 @@ public sealed class EmployeeImportRepairSensitiveFieldsPostgresTests(PostgresFix
                       + $"SCP-A,In Company A,Scope A Co,{FileIban},File Bank,MONTHLY,2024-01-01\n"
                       + $"SCP-B,In Company B,Scope B Co,{FileIban},File Bank,MONTHLY,2024-01-01\n"
                       + $"SCP-NEW,New In A,Scope A Co,{FileIban},File Bank,MONTHLY,2024-01-01\n";
+            // Another company's code is taken and invisible to this importer: the WHOLE file is refused, naming the
+            // row, rather than landing the other two while silently skipping it (all-or-nothing import).
+            var refused = await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), default);
+            refused.Should().BeOfType<UnprocessableEntityObjectResult>();
+            var refusal = JsonSerializer.SerializeToElement(((ObjectResult)refused).Value);
+            refusal.GetProperty("error").GetString().Should().Be("import_rows_invalid");
+            refusal.GetProperty("failedRows")[0].GetProperty("row").GetInt32().Should().Be(3);
+            refusal.GetProperty("message").GetString().Should().NotContain("In Company B", "no detail of another company's employee");
+            scoped.ChangeTracker.Clear();
+            (await scoped.Employees.IgnoreQueryFilters().AnyAsync(e => e.TenantId == tenant && e.EmployeeCode == "SCP-NEW"))
+                .Should().BeFalse("a refused file writes nothing");
+
+            csv = string.Join("\n", csv.Split('\n').Where(line => !line.StartsWith("SCP-B,")));
             var json = Json(await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), default));
             json.GetProperty("created").GetInt32().Should().Be(1);
             json.GetProperty("repaired").GetInt32().Should().Be(1, "only the employee the importer can see");
-            json.GetProperty("skipped").GetInt32().Should().Be(1, "another company's code is taken, never repaired");
+            json.GetProperty("skipped").GetInt32().Should().Be(0);
             json.GetProperty("approvalRequired").EnumerateArray().Select(x => x.GetProperty("employeeCode").GetString())
                 .Should().Equal(new[] { "SCP-A" }, "a scoped importer is told nothing about another company's employee");
         }

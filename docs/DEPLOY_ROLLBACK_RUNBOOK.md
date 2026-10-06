@@ -228,6 +228,62 @@ GROUP BY tenant_id;
 The second branch catches previously recognised spellings stored with surrounding spaces (the old
 comparison did not trim). Zero rows means no past payslip was affected.
 
+## Identity-document dates — expiry stored as issue date (read-only detection)
+
+Until c9d43a34 the employee edit form's offline field catalogue bound the **work-permit** expiry input (all six
+GCC profiles) and the **residency** expiry input (KW/OM) to the *issue-date* column, and until 6b0c26ab that
+offline catalogue was what every user got. A permit expiring 2027-03-01 was saved as *issued* 2027-03-01: the
+expiry stayed empty and no renewal alert could fire. Neither `employees.work_permit_issue_date` nor
+`employees.residency_issue_date` has an expiry column beside it, so the tell-tale is an issue date in the
+future, or one equal to the employee's own residence-card expiry. Passport, visa and the compliance mirror do
+have both columns, so for them the check is expiry on or before issue.
+
+**This is detection only. Do not write a data fix from it.** Hand the list to the tenant's HR to confirm each
+document against the physical card; a wrong date corrected by a guess is worse than a flagged one. Run on the
+target database (SELECT only):
+
+```sql
+-- 1. Issue dates that look like expiries (no expiry column exists for these two documents).
+SELECT tenant_id, company_id, id AS employee_id, employee_code, 'work_permit' AS document,
+       work_permit_issue_date AS issue_date, NULL::date AS expiry_date,
+       CASE WHEN work_permit_issue_date > current_date THEN 'issue date in the future'
+            ELSE 'issue date equals iqama/residence expiry' END AS reason
+FROM employees
+WHERE NOT is_deleted AND work_permit_issue_date IS NOT NULL
+  AND (work_permit_issue_date > current_date
+       OR work_permit_issue_date IN (iqama_expiry_date, emirates_id_expiry_date, qid_expiry_date, civil_id_expiry_date))
+UNION ALL
+SELECT tenant_id, company_id, id, employee_code, 'residency',
+       residency_issue_date, NULL::date,
+       CASE WHEN residency_issue_date > current_date THEN 'issue date in the future'
+            ELSE 'issue date equals iqama/residence expiry' END
+FROM employees
+WHERE NOT is_deleted AND residency_issue_date IS NOT NULL
+  AND (residency_issue_date > current_date
+       OR residency_issue_date IN (iqama_expiry_date, emirates_id_expiry_date, qid_expiry_date, civil_id_expiry_date))
+-- 2. Documents that have both columns: expiry equal to, or before, issue.
+UNION ALL
+SELECT tenant_id, company_id, id, employee_code, 'passport', passport_issue_date, passport_expiry_date,
+       CASE WHEN passport_expiry_date = passport_issue_date THEN 'expiry equals issue' ELSE 'expiry before issue' END
+FROM employees
+WHERE NOT is_deleted AND passport_expiry_date <= passport_issue_date
+UNION ALL
+SELECT tenant_id, company_id, id, employee_code, 'visa', visa_issue_date, visa_expiry_date,
+       CASE WHEN visa_expiry_date = visa_issue_date THEN 'expiry equals issue' ELSE 'expiry before issue' END
+FROM employees
+WHERE NOT is_deleted AND visa_expiry_date <= visa_issue_date
+UNION ALL
+SELECT r.tenant_id, e.company_id, r.employee_id, e.employee_code, r.field_key, r.issue_date, r.expiry_date,
+       CASE WHEN r.expiry_date = r.issue_date THEN 'expiry equals issue' ELSE 'expiry before issue' END
+FROM employee_compliance_records r
+JOIN employees e ON e.id = r.employee_id AND e.tenant_id = r.tenant_id
+WHERE NOT r.is_deleted AND NOT e.is_deleted AND r.expiry_date <= r.issue_date
+ORDER BY 1, 2, 4, 5;
+```
+
+Zero rows means nothing to review. Rows from part 1 with reason "issue date in the future" are almost certainly
+expiries; the others need the card in hand.
+
 ## Invariants
 - **Schema leads code.** Migrations apply in `migrate-backend` before the deploy hook fires.
 - **Single trigger.** `autoDeploy: false`; the CI hook is the only deploy path.

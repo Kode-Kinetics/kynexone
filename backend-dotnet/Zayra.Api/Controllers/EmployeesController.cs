@@ -596,13 +596,25 @@ public class EmployeesController : ControllerBase
 
     [HttpPost("import")]
     [HasPermission("employees.bulk_import")]
-    public async Task<IActionResult> Import([FromBody] ImportEmployeesRequest req, CancellationToken ct)
+    public Task<IActionResult> Import([FromBody] ImportEmployeesRequest req, CancellationToken ct) =>
+        RunEmployeeImportAsync(req, dryRun: false, ct);
+
+    /// <summary>
+    /// THE employee import — the commit, and the dry run the preview reports from. <paramref name="dryRun"/> runs
+    /// every step of the commit (resolution, row gate, storage guard, every save, the audit rows) inside the same
+    /// single transaction and then ROLLS IT BACK, so "what the preview says" is literally what the commit would
+    /// do with this file against this database, not a second validator's opinion of it. A dry run ignores the
+    /// import key (it neither replays nor records a batch) and is only possible on a relational provider.
+    /// </summary>
+    private async Task<IActionResult> RunEmployeeImportAsync(ImportEmployeesRequest req, bool dryRun, CancellationToken ct)
     {
         var tenantId = RequireTenant();
         // HEADERS FIRST — before a single row is read, let alone written. An unrecognised column used to
         // import "cleanly" and lose its data (see EmployeeCsvHeaderValidator).
         if (HeaderRejection(req.CsvContent) is IActionResult headerRejection) return headerRejection;
-        var rows = Csv.Parse(req.CsvContent ?? string.Empty);
+        // Then the SHAPE of every row: a row with more or fewer cells than the header (an unquoted "8,000") would
+        // shift every later value into the wrong column. Every such row is named; nothing is read from the file.
+        if (ParseImportRows(req.CsvContent, out var rows) is IActionResult shapeRejection) return shapeRejection;
 
         // ── ONE TRANSACTION FOR THE WHOLE FILE, AND A COMMIT THAT IS SAFE TO RETRY ─────────────────────
         // The import writes at several persistence boundaries (employees, position assignments, payroll
@@ -625,11 +637,13 @@ public class EmployeesController : ControllerBase
         // HTTP requests: a repeated key replays the recorded summary (200, replayed: true) and imports nothing;
         // the same key with a DIFFERENT file is refused (409). Omitting the key keeps the old behaviour.
         var contentSha256 = ImportContentSha256(req.CsvContent);
-        var clientKey = req.ImportKey is { } suppliedKey && suppliedKey != Guid.Empty ? suppliedKey : (Guid?)null;
+        var clientKey = !dryRun && req.ImportKey is { } suppliedKey && suppliedKey != Guid.Empty ? suppliedKey : (Guid?)null;
         var importBatchId = clientKey ?? Guid.NewGuid();
 
         if (!_db.Database.IsRelational())
         {
+            // A dry run needs a transaction to roll back; the in-memory test double has none.
+            if (dryRun) throw new InvalidOperationException("An import dry run needs a relational database.");
             // Non-relational providers (the in-memory test double) have no transactions: run the body directly.
             if (clientKey is not null && await FindCommittedImportAsync(tenantId, importBatchId, ct) is { } landedInMemory)
                 return ImportReplay(landedInMemory, contentSha256, importBatchId);
@@ -670,7 +684,7 @@ public class EmployeesController : ControllerBase
                     _db.ChangeTracker.Clear();
                     throw;
                 }
-                if (outcome is OkObjectResult)
+                if (outcome is OkObjectResult && !dryRun)
                 {
                     attempt.Outcome = outcome;
                     attempt.CommitInFlight = true;
@@ -729,8 +743,9 @@ public class EmployeesController : ControllerBase
             var establishmentBlockedRows = new List<(int RowNum, Guid DeptId, Guid LevelId, int Budgeted, int Current)>();
 
             int created = 0, skipped = 0;
-            // THE LAW: a row is dropped ONLY for (a) no name or (b) a duplicate EmployeeCode. Split the two
-            // lawful reasons so the summary can prove no other drop happened (accept-never-block assertion).
+            // THE LAW (pilot-readiness revision): a row the import cannot take refuses the WHOLE file (the ROW GATE
+            // below). What is still "skipped" is never a person lost: an all-blank row (skippedNoName) or a row
+            // matching an existing employee with nothing to fill / a separated one (skippedDupCode).
             int skippedNoName = 0, skippedDupCode = 0;
             var errors = new List<string>();
             // Non-fatal notices: the row IS imported, but an optional reference could not be resolved.
@@ -789,6 +804,16 @@ public class EmployeesController : ControllerBase
                     .NullableTenantWide(_db.Employees, tenantId, TakenCodesBypassJustification)
                     .Select(e => e.EmployeeCode).ToListAsync(ct),
                 StringComparer.OrdinalIgnoreCase);
+
+            // ── ROW GATE: ALL OR NOTHING ───────────────────────────────────────────────────────────────────
+            // A row the import cannot take without guessing — no name, a code repeated in this file, a code that
+            // belongs to someone the importer cannot see — refuses the WHOLE file, with every such row named. Those
+            // rows used to be skipped while the rest of the file landed: a real-data load that "succeeded" with
+            // people missing, discovered at payroll. Rows matching a visible existing employee are a re-import
+            // (repaired or skipped below) and are not errors. The preview applies this same function.
+            var rowRefusals = ImportRowRefusals(rows, existingEmployeesByCode, takenCodes);
+            if (rowRefusals.Count > 0) return ImportRowsRefused(rowRefusals, rows.Count, importBatchId);
+
             var repairLookups = await ImportRepairLookups.LoadAsync(_db, tenantId, track: true, ct);
             // Rows matched to an existing employee, and the subset where something was actually filled in.
             var repairExistingCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -926,14 +951,18 @@ public class EmployeesController : ControllerBase
             {
                 rowNum++;
                 var name = row.GetValueOrDefault("FullName", string.Empty).Trim();
-                if (string.IsNullOrWhiteSpace(name)) { skipped++; skippedNoName++; errors.Add($"Row {rowNum}: missing FullName; row skipped."); continue; }
+                // Only a row with EVERY cell blank gets here (the ROW GATE refused any other nameless row): it is
+                // not a person, so it is counted as skipped and noted, never reported as a rejected row.
+                if (string.IsNullOrWhiteSpace(name)) { skipped++; skippedNoName++; warnings.Add($"Row {rowNum}: empty row ignored."); continue; }
                 var code = row.GetValueOrDefault("EmployeeCode", string.Empty).Trim();
                 if (!string.IsNullOrWhiteSpace(code))
                 {
                     // A second row in this same file with an already-added code would both pass the
                     // DB check and violate the unique (TenantId, EmployeeCode) index at SaveChanges.
+                    // Unreachable after the ROW GATE (a repeated code refuses the file); kept as the last line of
+                    // defence against the unique (TenantId, EmployeeCode) index.
                     if (batchCodes.ContainsKey(code))
-                    { skipped++; skippedDupCode++; errors.Add($"Row {rowNum}: EmployeeCode '{code}' is duplicated within the import file; row skipped."); continue; }
+                        return ImportRowsRefused(new[] { new ImportRowRefusal(rowNum, code, $"EmployeeCode '{code}' is used by more than one row") }, rows.Count, importBatchId);
                     if (existingEmployeesByCode.TryGetValue(code, out var existingEmployee))
                     {
                         // A separated employee is never changed by an import (see EmployeeImportRepairPlan.IsSeparated).
@@ -975,8 +1004,9 @@ public class EmployeesController : ControllerBase
                         }
                         continue;
                     }
+                    // Unreachable after the ROW GATE (an invisible taken code refuses the file); same last-line defence.
                     if (takenCodes.Contains(code))
-                    { skipped++; skippedDupCode++; errors.Add($"Row {rowNum}: EmployeeCode '{code}' already exists."); continue; }
+                        return ImportRowsRefused(new[] { new ImportRowRefusal(rowNum, code, $"EmployeeCode '{code}' already belongs to another record") }, rows.Count, importBatchId);
                 }
 
                 // ── A JOINING DATE THAT CANNOT BE READ IS NEVER GUESSED ─────────────────────────────────
@@ -996,7 +1026,7 @@ public class EmployeesController : ControllerBase
                 // unknown company → default (or null); unknown grade → null; ineligible designation → dropped
                 // designation link; bad/occupied/ineligible position → null; salary w/o grade → HELD; salary
                 // out of band → REVIEW. Each failure is a typed gap + a warning; the person still imports.
-                var resolved = EmployeeImportRowResolver.ResolveRow(row, lookups, claimedPositionCodes);
+                var resolved = EmployeeImportRowResolver.ResolveRow(row, lookups, claimedPositionCodes, ImportJoiningDateOnly(jd));
                 var resolvedDeptId = resolved.DepartmentId;
                 var resolvedDesigId = resolved.DesignationId;
                 AddUnparsedJoiningDateGap(resolved, joining);
@@ -1818,6 +1848,101 @@ public class EmployeesController : ControllerBase
         resolved.Warnings.Add($"JoiningDate '{joining.Raw}' is not a valid date — imported as Draft without a joining date; set it before activating.");
     }
 
+    /// <summary>The readable joining date as a date, or null when it is unknown (an unparseable cell).</summary>
+    private static DateOnly? ImportJoiningDateOnly(DateTime joiningDate) =>
+        joiningDate == default ? null : DateOnly.FromDateTime(joiningDate);
+
+    /// <summary>A row that refuses the whole import (see the ROW GATE in <see cref="RunEmployeeImportAsync"/>).</summary>
+    internal sealed record ImportRowRefusal(int Row, string EmployeeCode, string Problem);
+
+    /// <summary>
+    /// The rows that make the import refuse the WHOLE file — ONE function for the commit and the preview.
+    /// Row numbers count the header as row 1, as everywhere else in the import. A row whose every cell is blank
+    /// (a spreadsheet's trailing ",,,,") is not a person and is ignored rather than refused.
+    /// </summary>
+    internal static List<ImportRowRefusal> ImportRowRefusals(
+        IReadOnlyList<Dictionary<string, string>> rows,
+        IReadOnlyDictionary<string, Employee> visibleExistingByCode,
+        IReadOnlySet<string> takenCodes)
+    {
+        var refusals = new List<ImportRowRefusal>();
+        var firstRowOfCode = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var rowNum = 1;
+        foreach (var row in rows)
+        {
+            rowNum++;
+            if (row.Values.All(string.IsNullOrWhiteSpace)) continue;
+            var code = row.GetValueOrDefault("EmployeeCode", string.Empty).Trim();
+            var name = row.GetValueOrDefault("FullName", string.Empty).Trim();
+            if (name.Length == 0)
+            {
+                refusals.Add(new ImportRowRefusal(rowNum, code, "FullName is empty — every row must name the person"));
+                continue;
+            }
+            if (code.Length == 0) continue;
+            if (firstRowOfCode.TryGetValue(code, out var firstRow))
+            {
+                refusals.Add(new ImportRowRefusal(rowNum, code,
+                    $"EmployeeCode '{code}' is also used by row {firstRow} — each person needs their own code"));
+                continue;
+            }
+            firstRowOfCode[code] = rowNum;
+            if (!visibleExistingByCode.ContainsKey(code) && takenCodes.Contains(code))
+                refusals.Add(new ImportRowRefusal(rowNum, code,
+                    $"EmployeeCode '{code}' already belongs to an employee outside your access or a deleted record — use another code, or leave it blank to generate one"));
+        }
+        return refusals;
+    }
+
+    /// <summary>The 422 for <see cref="ImportRowRefusals"/>: every bad row named, nothing written.</summary>
+    private UnprocessableEntityObjectResult ImportRowsRefused(IReadOnlyList<ImportRowRefusal> refusals, int received, Guid importBatchId)
+    {
+        var first = refusals[0];
+        var where = string.IsNullOrEmpty(first.EmployeeCode) ? $"Row {first.Row}" : $"Row {first.Row} (EmployeeCode '{first.EmployeeCode}')";
+        return UnprocessableEntity(new
+        {
+            error = "import_rows_invalid",
+            message = $"{where}: {first.Problem}."
+                      + (refusals.Count > 1 ? $" {refusals.Count - 1} more row(s) need fixing too." : string.Empty)
+                      + " Nothing from this file was imported — correct it and import it again.",
+            stage = "rows",
+            failedRows = refusals.Take(100).Select(r => new { row = r.Row, employeeCode = r.EmployeeCode, problem = r.Problem }).ToList(),
+            received, created = 0, repaired = 0, skipped = 0, failed = received,
+            importBatchId,
+        });
+    }
+
+    /// <summary>
+    /// Parse the employee file, refusing it (422, every bad row named with its cell count and the header's) when
+    /// any row's width differs from the header's. Shared by the commit and the preview.
+    /// </summary>
+    private IActionResult? ParseImportRows(string? csvContent, out List<Dictionary<string, string>> rows)
+    {
+        try
+        {
+            rows = Csv.Parse(csvContent ?? string.Empty);
+            return null;
+        }
+        catch (CsvShapeException ex)
+        {
+            rows = new List<Dictionary<string, string>>();
+            return UnprocessableEntity(new
+            {
+                error = "csv_row_shape",
+                message = ex.Message,
+                expectedCells = ex.HeaderCount,
+                failedRows = ex.Mismatches.Take(100).Select(m => new
+                {
+                    row = m.RowNumber,
+                    cells = m.CellCount,
+                    expected = ex.HeaderCount,
+                    problem = $"has {m.CellCount} cells but the header has {ex.HeaderCount} — usually an unquoted thousands separator (8,000) or a comma inside an unquoted name",
+                }).ToList(),
+                created = 0,
+            });
+        }
+    }
+
     /// <summary>The status a row lands in (shared by preview and commit): blank ⇒ Draft; Active with an activation
     /// blocker ⇒ Draft; an unknown joining date ⇒ Draft whatever was asked; any other status as given.</summary>
     private static string ImportLandingStatus(string csvStatus, EmployeeReadiness readiness, DateTime joiningDate)
@@ -2135,7 +2260,7 @@ public class EmployeesController : ControllerBase
         // The preview is the safety mechanism for a bulk write, so it must fail on exactly what the commit
         // fails on — a dry run that accepts a file the commit rejects is worse than no dry run.
         if (HeaderRejection(req.CsvContent) is IActionResult headerRejection) return headerRejection;
-        var rows = Csv.Parse(req.CsvContent ?? string.Empty);
+        if (ParseImportRows(req.CsvContent, out var rows) is IActionResult shapeRejection) return shapeRejection;
 
         var sub = await _db.TenantSubscriptions.AsNoTracking()
             .FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
@@ -2166,6 +2291,8 @@ public class EmployeesController : ControllerBase
             StringComparer.OrdinalIgnoreCase);
         var repairLookups = await ImportRepairLookups.LoadAsync(_db, tenantId, track: false, ct);
         var existingCodes = new HashSet<string>(existingEmployeesByCode.Keys.Select(c => c.ToUpperInvariant()));
+        // The commit's ROW GATE, the same function: any of these rows refuses the whole file.
+        var refusalByRow = ImportRowRefusals(rows, existingEmployeesByCode, takenCodes).ToDictionary(r => r.Row);
         // Duplicate-person detection PREVIEW parity (§4d): the SAME preloaded matcher commit uses, so the
         // dry-run flags the identical rows. Persists nothing — feeds the "most common gaps" strip + per-row
         // warnings only. Register non-error rows in file order so intra-file matches surface as in commit.
@@ -2261,13 +2388,26 @@ public class EmployeesController : ControllerBase
             var joining = ParseImportJoiningDate(row);
             var salary = ParseImportSalary(row);
 
+            if (refusalByRow.TryGetValue(rowNum, out var refusal))
+            {
+                wouldFail++;
+                previewRows.Add(new
+                {
+                    row = rowNum, employeeCode = code, fullName = name, status = "WillFail", projectedStatus = string.Empty,
+                    blocking = new List<string>(), recommended = new List<string>(),
+                    errors = new List<string> { $"{refusal.Problem} — the import will be refused until this is corrected." },
+                    warnings = new List<string>(),
+                });
+                continue;
+            }
+
             // The two lawful drops are the only preview ERRORS (⇒ wouldSkip), so dry-run skips == commit
             // skips: (a) missing FullName, (b) duplicate EmployeeCode. Self/circular manager are WARNINGS —
             // commit does NOT drop those rows (Pass 1 created the person; Pass 2 only skips the link). A code
             // that already exists is a REPAIR, not a skip, when the row can fill something the employee is
             // missing (EmployeeImportRepairPlan — the same decision the commit makes).
             if (string.IsNullOrWhiteSpace(name))
-            { rowErrors.Add("Missing FullName"); }
+            { rowErrors.Add("Empty row — ignored"); }
             else if (!string.IsNullOrEmpty(code))
             {
                 if (seen.Contains(code.ToUpperInvariant()))
@@ -2300,7 +2440,7 @@ public class EmployeesController : ControllerBase
             }
 
             // ── SHARED accept-never-block resolution (IDENTICAL to commit) → org/grade/position/salary gaps.
-            var resolved = EmployeeImportRowResolver.ResolveRow(row, lookups, claimedPositionCodes);
+            var resolved = EmployeeImportRowResolver.ResolveRow(row, lookups, claimedPositionCodes, ImportJoiningDateOnly(joining.Value));
             if (repairTarget is null) AddUnparsedJoiningDateGap(resolved, joining);
             rowWarnings.AddRange(resolved.Warnings);
 
@@ -2552,9 +2692,22 @@ public class EmployeesController : ControllerBase
             .ThenBy(g => g.label)
             .ToList();
 
+        // ── THE COMMIT, DRY-RUN ─────────────────────────────────────────────────────────────────────────
+        // The per-row projection above explains each row; this is the verdict: the real import of this file,
+        // run to the end in a transaction that is then rolled back. If the two ever disagree, the commit's
+        // answer is the one the screen must act on (the Import button follows it, not the row counts).
+        object? commitCheck = null;
+        if (_db.Database.IsRelational())
+        {
+            var dry = await RunEmployeeImportAsync(req with { ImportKey = null }, dryRun: true, ct);
+            _db.ChangeTracker.Clear();
+            commitCheck = DescribeImportDryRun(dry);
+        }
+
         return Ok(new
         {
             received = rows.Count,
+            commitCheck,
             wouldCreate,
             wouldRepair,
             wouldSkip,
@@ -2566,6 +2719,28 @@ public class EmployeesController : ControllerBase
             fieldGaps,
             rows = previewRows
         });
+    }
+
+    /// <summary>The preview's summary of a dry-run commit: would it import (and how many), or why it would not.</summary>
+    private static object DescribeImportDryRun(IActionResult outcome)
+    {
+        var objectResult = outcome as ObjectResult;
+        var body = objectResult?.Value is { } value ? JsonSerializer.SerializeToElement(value) : default;
+        int? Count(string name) => body.ValueKind == JsonValueKind.Object && body.TryGetProperty(name, out var p)
+            && p.ValueKind == JsonValueKind.Number ? p.GetInt32() : null;
+        string? Text(string name) => body.ValueKind == JsonValueKind.Object && body.TryGetProperty(name, out var p)
+            && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
+        if (outcome is OkObjectResult)
+            return new { outcome = "would_import", created = Count("created") ?? 0, repaired = Count("repaired") ?? 0, skipped = Count("skipped") ?? 0 };
+        return new
+        {
+            outcome = "would_refuse",
+            status = objectResult?.StatusCode ?? 500,
+            error = Text("error"),
+            message = Text("message") ?? "The import would be refused.",
+            failedRows = body.ValueKind == JsonValueKind.Object && body.TryGetProperty("failedRows", out var rowsElement)
+                ? (object)rowsElement : Array.Empty<object>(),
+        };
     }
 
     // ── Org chart ─────────────────────────────────────────────────────────────
