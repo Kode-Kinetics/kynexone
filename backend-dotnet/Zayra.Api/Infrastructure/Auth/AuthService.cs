@@ -60,7 +60,7 @@ public class AuthService : IAuthService
         if (failReason is not null)
         {
             // No email in logs (personal data): the user id when the account exists, otherwise nothing.
-            _log.LogWarning("Login failed for user {UserId} / tenant={Slug}: {Reason}", user?.Id, request.TenantSlug, failReason);
+            _log.LogWarning("Login failed for user {UserId} / tenant={Slug}: {Reason}", user?.Id, LogSafe.Text(request.TenantSlug), failReason);
             _db.LoginActivities.Add(new LoginActivity
             {
                 TenantId      = user?.TenantId,
