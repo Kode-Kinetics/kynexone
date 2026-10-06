@@ -17,7 +17,7 @@ import {
   entityGrantsApi,
 } from '../api/identity';
 import { companiesApi } from '../api/organization';
-import client from '../api/client';
+import client, { notifyApiError } from '../api/client';
 import type {
   UserListItem, RoleItem, PermissionItem, ApprovalDelegation,
   ApprovalAuthority, SecuritySetting, AuditLogItem, PermissionGrantorRecord,
@@ -1578,7 +1578,7 @@ function PermissionGrantorsTab() {
 
   const revoke = async (id: string) => {
     try { await grantorsApi.revoke(id); load(); }
-    catch { alert('Failed to revoke grantor authority.'); }
+    catch (e) { notifyApiError(e, 'Failed to revoke grantor authority.'); }
   };
 
   const selectedPreset = SCOPE_PRESETS.find(p => p.value === form.permissionScope);
@@ -1726,7 +1726,7 @@ function DelegationsTab() {
   };
 
   const cancel = async (id: string) => {
-    try { await delegationsApi.cancel(id); load(); } catch { alert('Failed to cancel delegation.'); }
+    try { await delegationsApi.cancel(id); load(); } catch (e) { notifyApiError(e, 'Failed to cancel delegation.'); }
   };
 
   return (
