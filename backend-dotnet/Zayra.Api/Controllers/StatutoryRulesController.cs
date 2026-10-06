@@ -147,7 +147,7 @@ public class StatutoryRulesController : ControllerBase
         // See Infrastructure/Payroll/StatutoryValueUnits.cs.
         var value = req.RuleValue.Trim();
         if (StatutoryValueUnits.Validate(key, req.DataType, value) is { } unitError)
-            return BadRequest(unitError);
+            return BadRequest(StatutoryValueUnits.Refusal(unitError));
         // Release A: a renewal lead time or toggle is validated here, on save, so the daily renewal job never meets it.
         if (Zayra.Api.Application.Contracts.RenewalRuleKeys.ValidateOverride(key, value) is { } renewalError)
             return BadRequest(renewalError);
@@ -203,7 +203,7 @@ public class StatutoryRulesController : ControllerBase
         // path an operator actually uses to change a rate.
         var nextValue = (req.RuleValue ?? string.Empty).Trim();
         if (StatutoryValueUnits.Validate(prior.RuleKey, prior.DataType, nextValue) is { } unitError)
-            return BadRequest(unitError);
+            return BadRequest(StatutoryValueUnits.Refusal(unitError));
         // Release A: a renewal lead time or toggle is validated here, on save, so the daily renewal job never meets it.
         if (Zayra.Api.Application.Contracts.RenewalRuleKeys.ValidateOverride(prior.RuleKey, nextValue) is { } renewalError)
             return BadRequest(renewalError);

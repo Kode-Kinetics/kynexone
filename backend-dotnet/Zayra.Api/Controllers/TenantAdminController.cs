@@ -343,7 +343,7 @@ public class TenantAdminController : ControllerBase
         // table up. Same registry, same refusal as every other statutory write path.
         // See Infrastructure/Payroll/StatutoryValueUnits.cs.
         if (StatutoryValueUnits.Validate(req.RuleKey, req.DataType, req.RuleValue) is { } unitError)
-            return BadRequest(new { message = unitError });
+            return BadRequest(StatutoryValueUnits.Refusal(unitError));
 
         var rule = new CountryPayrollRule
         {

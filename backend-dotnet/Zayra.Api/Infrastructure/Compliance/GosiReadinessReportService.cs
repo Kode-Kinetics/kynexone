@@ -121,12 +121,14 @@ public sealed class GosiReadinessReportService
                 var contributoryWage = bounds.Clamp(uncapped);
                 if (contributoryWage < uncapped) ceilingBoundCount++;
 
-                // The bounds are handed to the calculator as well: GosiCalculationService is the
-                // ONE place the clamp is applied to a contribution line, and it no longer reads
-                // GosiContributionRule.Min/MaxContributoryWage at all. Clamping here first is
-                // idempotent and is what lets the report say WHICH employees the ceiling bound.
-                var calc = GosiCalculationService.Calculate(
-                    emp.Nationality, contributoryWage, rules, periodDate, tenantId, bounds);
+                // ONE ENGINE, ONE STORE. The amounts come from the payslip's own calculator reading the
+                // payslip's own effective-dated statutory rules — not from gosi_contribution_rules,
+                // which a tenant override could move without moving the payslip. The engine applies
+                // the same ceiling itself; `contributoryWage` above only lets the report say WHICH
+                // employees the ceiling bound.
+                var calc = await GosiCalculationService.CalculateAsync(
+                    _rules, emp.Nationality, salary.BasicSalary, salary.HousingAllowance,
+                    periodDate, emp.GosiFirstRegisteredOn, ct);
 
                 employeeTotal = calc.EmployeeTotal;
                 employerTotal = calc.EmployerTotal;

@@ -235,7 +235,7 @@ public class RatesController : ControllerBase
         // refused with the expected form named rather than interpreted.
         // See Infrastructure/Payroll/StatutoryValueUnits.cs.
         if (StatutoryValueUnits.Validate(req.RuleKey, req.DataType, req.OverrideValue) is { } unitError)
-            return BadRequest(new { message = unitError });
+            return BadRequest(StatutoryValueUnits.Refusal(unitError));
 
         var cc = req.CountryCode.ToUpperInvariant();
         var jur = req.Jurisdiction ?? "";

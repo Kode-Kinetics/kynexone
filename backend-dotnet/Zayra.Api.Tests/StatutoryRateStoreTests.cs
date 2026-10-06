@@ -121,6 +121,10 @@ public class StatutoryRateStoreTests
                      ("Controllers/GosiController.cs", new[]
                      {
                          "salary.BasicSalary + salary.HousingAllowance",
+                         // GosiCalculationService.CalculateAsync takes basic AND housing as separate
+                         // required arguments and builds the covered wage with SalaryBreakdown — the
+                         // payslip's own definition — so basic alone cannot be passed at all.
+                         "salary.BasicSalary, salary.HousingAllowance",
                      }),
                  })
         {

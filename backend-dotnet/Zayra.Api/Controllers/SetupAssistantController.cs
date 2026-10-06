@@ -562,7 +562,7 @@ public class SetupAssistantController : ControllerBase
                 // rule as the admin surfaces: a rate is a decimal FRACTION (0.09 = 9%).
                 // See Infrastructure/Payroll/StatutoryValueUnits.cs.
                 if (StatutoryValueUnits.Validate(r.RuleKey, r.DataType, r.RuleValue) is { } unitError)
-                    return BadRequest(new { message = unitError });
+                    return BadRequest(StatutoryValueUnits.Refusal(unitError));
                 _db.StatutoryRules.Add(new StatutoryRule
                 {
                     TenantId = tenantId, CountryCode = country, Jurisdiction = $"{country}-default",

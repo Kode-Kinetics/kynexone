@@ -7,6 +7,7 @@ using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Payroll;
+using Zayra.Api.Infrastructure.Seed;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -70,55 +71,37 @@ public class GosiController : ControllerBase
     }
 
     /// <summary>
-    /// Creates a tenant-specific GOSI contribution rule override.
-    /// Requires payroll.rates.statutory_override.
+    /// Formerly created a tenant-specific GOSI contribution rule override. Now refuses with
+    /// <see cref="GosiRateStoreRetiredCode"/>: this store is no longer a rate source for anything.
+    /// Still requires payroll.rates.statutory_override, so the refusal does not disclose more than before.
     /// </summary>
     [HttpPost("contribution-rules")]
-    public async Task<IActionResult> CreateContributionRule(
+    public Task<IActionResult> CreateContributionRule(
         [FromBody] CreateGosiRuleRequest req,
         CancellationToken ct)
     {
-        // HARDENED (compliance boundary): GOSI contribution rates are the flagship statutory rate and
-        // the actual computation source (GosiCalculationService), so overriding one is a bounded
-        // statutory action — it requires the higher-trust payroll.rates.statutory_override permission
-        // (not ordinary payroll.manage) and a non-empty reason. Every write is audited below.
-        if (!HasPermission("payroll.rates.statutory_override")) return Forbid();
-        if (string.IsNullOrWhiteSpace(req.SourceReference) && string.IsNullOrWhiteSpace(req.Notes))
-            return BadRequest(new { error = "A reason (SourceReference or Notes) is required to override a GOSI contribution rate." });
+        // The permission gate is kept ahead of the refusal so an unprivileged caller learns nothing new.
+        if (!HasPermission("payroll.rates.statutory_override")) return Task.FromResult<IActionResult>(Forbid());
 
-        // UNIT GATE. Rate is a decimal FRACTION of the contributory wage (0.09 = 9%) — the same
-        // unit StatutoryRule.RuleValue holds for gosi.saudi_employee_rate, which is what the
-        // payslip and the GOSI filing read. An operator who types "9" here means 9% and would
-        // otherwise have nine times the wage deducted, so the write is refused with the form
-        // named rather than interpreted. See Infrastructure/Payroll/StatutoryValueUnits.cs.
-        if (StatutoryValueUnits.ValidateGosiBranchRate(req.Rate, req.Branch, req.Payer) is { } rateError)
-            return BadRequest(new { error = rateError });
-
-        var tenantId = GetTenantId();
-        var rule = new GosiContributionRule
+        // RETIRED AS A RATE SOURCE. No surface computes GOSI from gosi_contribution_rules any more:
+        // the payslip, the GOSI filing, the per-employee preview and the readiness report all read
+        // the effective-dated statutory_rules through KsaDeductionCalculator. A row written here would
+        // be accepted, audited and then ignored by every number the customer sees, which is worse than
+        // a refusal. The refusal names the statutory key that holds the same fact.
+        GosiRuleSeeder.StatutoryRuleKeyFor.TryGetValue((req.Branch, req.Payer), out var statutoryKey);
+        return Task.FromResult<IActionResult>(StatusCode(StatusCodes.Status410Gone, new
         {
-            TenantId           = tenantId,
-            CountryCode        = req.CountryCode ?? "SA",
-            Classification     = req.Classification,
-            Branch             = req.Branch,
-            Payer              = req.Payer,
-            Rate               = req.Rate,
-            MinContributoryWage = req.MinContributoryWage,
-            MaxContributoryWage = req.MaxContributoryWage,
-            EffectiveFrom      = req.EffectiveFrom,
-            EffectiveTo        = req.EffectiveTo,
-            SourceReference    = req.SourceReference,
-            Notes              = req.Notes,
-            CreatedBy          = GetUserId(),
-        };
-
-        _db.GosiContributionRules.Add(rule);
-        await GosiAudit("gosi.rule.created", rule.Id.ToString(),
-            new { rule.Classification, rule.Branch, rule.Payer, rule.Rate, rule.EffectiveFrom }, ct);
-        await _db.SaveChangesAsync(ct);
-
-        return CreatedAtAction(nameof(GetContributionRules), new { }, rule);
+            code  = GosiRateStoreRetiredCode,
+            error = "GOSI contribution rates are no longer edited here. Every GOSI figure — payslip, filing, "
+                  + "preview and readiness report — is computed from the effective-dated statutory rules, so a "
+                  + "rate saved in this list would change nothing. Nothing has been saved."
+                  + (statutoryKey is null ? string.Empty : $" The statutory rule that holds this rate is '{statutoryKey}'."),
+            statutoryRuleKey = statutoryKey,
+        }));
     }
+
+    /// <summary>Coded reason returned when a caller tries to write to the retired GOSI rate store.</summary>
+    public const string GosiRateStoreRetiredCode = "GOSI_RATE_STORE_RETIRED";
 
     /// <summary>
     /// Deactivates a tenant-specific GOSI contribution rule.
@@ -239,9 +222,12 @@ public class GosiController : ControllerBase
             // The MONTHLY ceiling comes from the same statutory rule the pack reads, so this preview
             // and the payslip cannot disagree. Previously unbounded here: SAR 5,850 previewed against
             // SAR 4,387.50 deducted on a SAR 60,000 covered wage.
-            var bounds = await KsaGosiWageBounds.ResolveAsync(_rules, periodDate, null, ct);
-            preview = GosiCalculationService.Calculate(
-                employee.Nationality, salary.BasicSalary + salary.HousingAllowance, rules, periodDate, tenantId, bounds);
+            //
+            // ONE ENGINE, ONE STORE: the preview is computed by the payslip's own calculator on the
+            // payslip's own statutory rules, cohort included, so it cannot drift from the run.
+            preview = await GosiCalculationService.CalculateAsync(
+                _rules, employee.Nationality, salary.BasicSalary, salary.HousingAllowance,
+                periodDate, employee.GosiFirstRegisteredOn, ct);
         }
 
         return Ok(new

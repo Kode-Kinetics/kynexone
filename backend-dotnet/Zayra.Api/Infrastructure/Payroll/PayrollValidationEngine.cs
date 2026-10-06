@@ -67,6 +67,9 @@ public static class PayrollValidationEngine
                 Severity = "Warning", Code = code, Message = message, CreatedAtUtc = now,
             });
 
+        string CodeFor(int empId) =>
+            ctx.Slips.FirstOrDefault(s => s.EmployeeId == empId)?.EmployeeCode ?? empId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
         // ── Run-level company/pack guards (must precede per-slip rules) ───────────
         // These mirror the fail-loud abort in Process(); a second pass here catches
         // edge cases where the run was created before the guard was added.
@@ -618,6 +621,26 @@ public static class PayrollValidationEngine
                 "in this legal entity. Per-run statutory reports cover THIS run only — use the period-level " +
                 "GOSI rollup (GET /api/gosi/periods/{year}/{month}/contribution-summary) for filing.");
 
+        // ── Rule 14b (mid-year cutover): one pay period, one YTD source ────────────────────────────
+        // ERROR when carried opening balances AND this product's own locked payslips both feed the
+        // year-to-date and no cutover says where the carried figures end — the overlap cannot be resolved
+        // without guessing. WARNING when a cutover resolved it, so the preparer sees which payslips the
+        // opening balance stands in for. Populated identically by Process and /validate (PayrollYtdBasis).
+        foreach (var empId in ctx.YtdUnresolvedOverlapEmployeeIds)
+            Err(PayrollYtdBasis.UnresolvedOverlapCode,
+                $"Employee {CodeFor(empId)} has carried year-to-date opening balances for {ctx.Run.Year} AND payslips " +
+                $"locked in this product earlier in {ctx.Run.Year}, but no Active cutover date is declared for this legal " +
+                "entity, so nothing says which months the carried figures already include. Summing both may count the " +
+                "same months twice on the payslip's year-to-date. Declare the cutover (migration import, companyCutover " +
+                "section) and re-process.",
+                empId);
+        foreach (var empId in ctx.YtdPreCutoverExcludedEmployeeIds)
+            Warn(PayrollYtdBasis.PreCutoverExcludedCode,
+                $"Employee {CodeFor(empId)}: payslips this product locked before the cutover month were left out of the " +
+                "year-to-date, because the carried opening balance is stated as at the day before cutover and already " +
+                "contains those months.",
+                empId);
+
         // ── Rule 15 (KSA): Labour Law Art. 92/93 — DEBT-type deductions ≤ half the wage due ──────
         // Checked BEFORE Lock so it surfaces here, not on export day. Only debt-type lines count (loan and
         // advance instalments, penalties/fines, damages — WageDeductionClassification); statutory GOSI,
@@ -739,6 +762,16 @@ public sealed record PayrollValidationContext(
     /// </summary>
     public IReadOnlyDictionary<int, decimal> PriorPeriodGosiEeByEmployee { get; init; } =
         new Dictionary<int, decimal>();
+
+    /// <summary>
+    /// Mid-year cutover — employees whose YTD would sum carried opening balances AND this product's locked
+    /// payslips for the same year with no cutover to separate them. Rule 14b raises an Error per employee.
+    /// MUST be populated identically by Process and /validate (both use <see cref="PayrollYtdBasis.LoadAsync"/>).
+    /// </summary>
+    public IReadOnlySet<int> YtdUnresolvedOverlapEmployeeIds { get; init; } = new HashSet<int>();
+
+    /// <summary>Mid-year cutover — employees whose pre-cutover locked payslips were left out of YTD (Rule 14b warning).</summary>
+    public IReadOnlySet<int> YtdPreCutoverExcludedEmployeeIds { get; init; } = new HashSet<int>();
 
     /// <summary>
     /// POD-B2 (M8) — true when this run's statutory amounts were computed INCREMENTALLY against the

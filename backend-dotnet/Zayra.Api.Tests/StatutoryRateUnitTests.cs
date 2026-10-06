@@ -54,7 +54,9 @@ public class StatutoryRateUnitTests
             CancellationToken.None);
 
         var bad = Assert.IsType<BadRequestObjectResult>(result.Result);
-        var message = Assert.IsType<string>(bad.Value);
+        // A stable code a client can branch on, beside the message a person reads.
+        Assert.Equal(StatutoryValueUnits.UnitRefusalCode, Field(bad.Value!, "code"));
+        var message = Field(bad.Value!, "message");
 
         // The refusal has to name the FORM, not merely say "invalid".
         Assert.Contains("FRACTION", message, StringComparison.Ordinal);
@@ -78,7 +80,8 @@ public class StatutoryRateUnitTests
             "9.75", "2026 circular", new DateTime(2026, 7, 1), null), CancellationToken.None);
 
         var bad = Assert.IsType<BadRequestObjectResult>(result.Result);
-        Assert.Contains("0.0975", Assert.IsType<string>(bad.Value), StringComparison.Ordinal);
+        Assert.Equal(StatutoryValueUnits.UnitRefusalCode, Field(bad.Value!, "code"));
+        Assert.Contains("0.0975", Field(bad.Value!, "message"), StringComparison.Ordinal);
 
         // The prior row must be untouched — a refused supersede closes nothing.
         Assert.Null((await db.StatutoryRules.FindAsync(prior.Id))!.EffectiveTo);
@@ -156,40 +159,35 @@ public class StatutoryRateUnitTests
             "StatutoryValueUnits refuses values StatutoryRuleSeeder writes: " + string.Join(" | ", refused));
     }
 
-    [Fact]
-    public async Task GosiContributionRuleApi_RefusesARateTypedAsAPercentage()
-    {
-        using var db = MakeDb();
-        var ctrl = GosiControllerFor(db);
-
-        var result = await ctrl.CreateContributionRule(new CreateGosiRuleRequest(
-            Classification: GosiClassifications.Saudi,
-            Branch: GosiBranches.Annuities,
-            Payer: GosiPayers.Employee,
-            Rate: 9m,
-            EffectiveFrom: new DateOnly(2026, 1, 1),
-            SourceReference: "2026 GOSI circular"), CancellationToken.None);
-
-        var bad = Assert.IsType<BadRequestObjectResult>(result);
-        var message = bad.Value!.GetType().GetProperty("error")!.GetValue(bad.Value) as string;
-        Assert.NotNull(message);
-        Assert.Contains("FRACTION", message, StringComparison.Ordinal);
-        Assert.Contains("0.09", message, StringComparison.Ordinal);
-        Assert.Empty(await db.GosiContributionRules.IgnoreQueryFilters().ToListAsync());
-    }
-
-    [Fact]
-    public async Task GosiContributionRuleApi_AcceptsTheFraction()
+    /// <summary>
+    /// The second GOSI rate store is retired as a rate source: nothing computes from it, so a rate
+    /// written there would be accepted and then ignored by every figure the customer sees. Both the
+    /// mistyped percentage AND a correct fraction are refused, with a code and the statutory key that
+    /// holds the fact.
+    /// </summary>
+    [Theory]
+    [InlineData(9)]
+    [InlineData(0.0975)]
+    public async Task GosiContributionRuleApi_IsRetired_AndRefusesEveryRateWithACode(double rate)
     {
         using var db = MakeDb();
         var result = await GosiControllerFor(db).CreateContributionRule(new CreateGosiRuleRequest(
-            GosiClassifications.Saudi, GosiBranches.Annuities, GosiPayers.Employee,
-            0.0975m, new DateOnly(2026, 1, 1), SourceReference: "2026 GOSI circular"),
-            CancellationToken.None);
+            Classification: GosiClassifications.Saudi,
+            Branch: GosiBranches.Annuities,
+            Payer: GosiPayers.Employee,
+            Rate: (decimal)rate,
+            EffectiveFrom: new DateOnly(2026, 1, 1),
+            SourceReference: "2026 GOSI circular"), CancellationToken.None);
 
-        Assert.IsType<CreatedAtActionResult>(result);
-        Assert.Equal(0.0975m, (await db.GosiContributionRules.IgnoreQueryFilters().SingleAsync()).Rate);
+        var gone = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(410, gone.StatusCode);
+        Assert.Equal(GosiController.GosiRateStoreRetiredCode, Field(gone.Value!, "code"));
+        Assert.Equal(RuleKeys.GosiSaudiEmployeeRate, Field(gone.Value!, "statutoryRuleKey"));
+        Assert.Empty(await db.GosiContributionRules.IgnoreQueryFilters().ToListAsync());
     }
+
+    private static string Field(object value, string name) =>
+        (string)value.GetType().GetProperty(name)!.GetValue(value)!;
 
     [Fact]
     public void GosiBranchRateGuard_RefusesTheOldPercentSpellingOfSaned()
