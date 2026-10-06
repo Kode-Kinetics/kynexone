@@ -8,6 +8,7 @@ import {
   Star, Target, Calendar, BadgeCheck, User, X, Download, FileSignature,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
+import { ESS_PAYSLIPS_PATH } from '../lib/essPayslip';
 import { essApi, type EssDashboard, type EssHrRequest, type EssHrRequestDetail, type EssRosterEntry } from '../api/ess';
 import { essDocumentsApi, type EssDocumentRequest, type EssLetterType } from '../api/hrLetters';
 import { useAuth } from '../contexts/AuthContext';
@@ -640,7 +641,7 @@ export function EmployeeSelfServicePage() {
               </button>
               <button
                 type="button"
-                onClick={() => router.push('/payroll')}
+                onClick={() => router.push(ESS_PAYSLIPS_PATH)}
                 className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition dark:border-white/[0.12] dark:bg-white/[0.04] dark:text-slate-200 dark:hover:bg-white/[0.08]"
               >
                 <FileText className="h-4 w-4" /> View Payslip
@@ -705,7 +706,7 @@ export function EmployeeSelfServicePage() {
           value={ps ? formatCurrency(ps.netSalary, ps.currency) : '—'}
           sub={ps?.period ?? undefined}
           sub2={ps?.nextPayrollDate ? `Next payroll: ${formatDate(ps.nextPayrollDate)}` : undefined}
-          onClick={() => router.push('/payroll')}
+          onClick={() => router.push(ESS_PAYSLIPS_PATH)}
           emptyText={!ps ? 'No finalised payslips yet' : undefined}
         />
 
@@ -1040,7 +1041,7 @@ export function EmployeeSelfServicePage() {
           <div className="grid grid-cols-2 gap-2">
             {[
               { icon: CalendarOff, label: 'Request Leave', path: '/leave', bg: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400', border: 'border-emerald-100 dark:border-emerald-500/20' },
-              { icon: FileText, label: 'My Payslips', path: '/payroll', bg: 'bg-violet-500/10 text-violet-700 dark:text-violet-400', border: 'border-violet-100 dark:border-violet-500/20' },
+              { icon: FileText, label: 'My Payslips', path: ESS_PAYSLIPS_PATH, bg: 'bg-violet-500/10 text-violet-700 dark:text-violet-400', border: 'border-violet-100 dark:border-violet-500/20' },
               { icon: FileText, label: 'Jawazat Requests', path: '/ess/jawazat', bg: 'bg-sapphire/10 text-sapphire dark:text-cyanAccent', border: 'border-blue-100 dark:border-blue-500/20' },
             ].map(({ icon: Icon, label, path, bg, border }) => (
               <button
