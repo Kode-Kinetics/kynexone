@@ -180,6 +180,28 @@ Code: no longer mentions `name_en` — and has not, **in a release that is alrea
 stopped using the column. Never in the same one. If the release that stops using it has to be
 rolled back, the column must still be there.
 
+### The CI gate: a destructive migration must say it is the contract phase
+
+`Security/DestructiveMigrationGuardTests` (runs in the backend test job) scans the whole migration
+file except the body of `Down` — so SQL held in a class-level `const`, or a helper placed after
+`Down`, is scanned too — and fails it if it contains `DropColumn`, `DropTable`, `RenameColumn`,
+`RenameTable`; an `AlterColumn` from nullable to `nullable: false` (a default does not make it safe:
+old code can still write an explicit NULL), one that shrinks `maxLength`, or one that changes the
+store or CLR type (widening a varchar is the only exemption); the raw-SQL forms `DROP COLUMN`,
+`DROP TABLE`, `RENAME [COLUMN] x TO`, `RENAME TO`, `ALTER COLUMN x [SET DATA] TYPE`, `SET NOT NULL`; or
+a `migrationBuilder.Sql(...)` argument that names a constant declared outside the file (it cannot be
+read). If the change really is the contract phase, mark the migration class and name the release
+that stopped using the old shape:
+
+```csharp
+[ContractPhase("Release 2026.10.2 stopped reading employees.name_en")]
+public partial class DropEmployeeNameEn : Migration { ... }
+```
+
+The destructive migrations that predate the gate (three, plus five found when it was tightened on
+2026-10-05) are grandfathered by id, each with its reason, in the test's baseline. That list only
+shrinks — never add to it.
+
 ---
 
 ## 2. Recipes
