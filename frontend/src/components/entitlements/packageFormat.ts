@@ -2,6 +2,8 @@
 // pinned by unit/releaseA.package.spec.ts. Every sentence is an i18n key in src/i18n/releaseA/package.ts; values are
 // filled into {placeholders} after translation, so Arabic word order is the translator's, not the code's.
 
+import { createFormatter } from '../../lib/format';
+
 export type Translate = (key: string) => string;
 
 /** The fields both the HR line and the employee line carry. */
@@ -26,32 +28,35 @@ export interface FormatContext {
   currency: string;
 }
 
-const CURRENCY_AR: Record<string, string> = { SAR: 'ر.س', AED: 'د.إ', KWD: 'د.ك', BHD: 'د.ب', OMR: 'ر.ع', QAR: 'ر.ق' };
-
 export function fill(template: string, values: Record<string, string | number>): string {
-  return Object.entries(values).reduce((s, [k, v]) => s.split(`{${k}}`).join(String(v)), template);
+  return Object.entries(values).reduce((acc, [k, v]) => acc.split(`{${k}}`).join(String(v)), template);
 }
 
-/** "SAR 2,000" / "2,000 ر.س". Western digits in both (as Saudi payslips print them); cents only when present. */
+// The app's own formatter (lib/format, what useFormat() wraps): numbers, money and dates follow the viewer's language the
+// same way every other screen does. Calendar dates are rendered as dates (UTC), never shifted by a zone.
+const formatters = new Map<string, ReturnType<typeof createFormatter>>();
+function formatter(locale: string) {
+  let f = formatters.get(locale);
+  if (!f) formatters.set(locale, f = createFormatter({ locale, timeZone: 'UTC', calendarSystem: 'Gregorian', currency: null }));
+  return f;
+}
+
+/** "SAR 2,000" / "2,000 ر.س."; cents only when present. */
 export function money(amount: number, ctx: Pick<FormatContext, 'locale' | 'currency'>): string {
-  const digits = Number.isInteger(amount) ? 0 : 2;
-  const n = amount.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: 2 });
-  return ctx.locale === 'ar' ? `${n} ${CURRENCY_AR[ctx.currency] ?? ctx.currency}` : `${ctx.currency} ${n}`;
+  return formatter(ctx.locale).money(amount, ctx.currency, { decimals: Number.isInteger(amount) ? 0 : 2 });
 }
 
-/** 1 Feb 2026 / ١ فبراير ٢٠٢٦ is avoided: Gregorian, Arabic month names, Western digits. */
+/** A calendar date: "31 Jan 2027" / "31 يناير 2027" (Gregorian). */
 export function date(iso: string | null | undefined, locale: string): string {
-  if (!iso) return '';
-  const d = new Date(`${iso}T00:00:00Z`);
-  return d.toLocaleDateString(locale === 'ar' ? 'ar-SA-u-ca-gregory-nu-latn' : 'en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+  return iso ? formatter(locale).date(iso, 'medium') : '';
 }
 
-function percent(rate: number): string {
-  return (Math.round(rate * 10000) / 100).toLocaleString('en-US', { maximumFractionDigits: 2 });
+function percent(rate: number, locale: string): string {
+  return formatter(locale).number(Math.round(rate * 10000) / 100);
 }
 
-function multiple(rate: number): string {
-  return rate.toLocaleString('en-US', { maximumFractionDigits: 4 });
+function multiple(rate: number, locale: string): string {
+  return formatter(locale).number(rate, { maximumFractionDigits: 4 });
 }
 
 /** Coverage tier in words: "Class B", "CCHI basic class", "Economy". */
@@ -89,21 +94,27 @@ export function valueText(line: ValueLine, ctx: FormatContext): string {
       return t('Provided in kind');
     case 'PercentOfBasic':
       return line.monthlyCash != null
-        ? fill(t('{rate}% of basic = {amount} a month'), { rate: percent(line.rate ?? 0), amount: m(line.monthlyCash) })
-        : fill(t('{rate}% of basic salary'), { rate: percent(line.rate ?? 0) });
+        ? fill(t('{rate}% of basic = {amount} a month'), { rate: percent(line.rate ?? 0, ctx.locale), amount: m(line.monthlyCash) })
+        : fill(t('{rate}% of basic salary'), { rate: percent(line.rate ?? 0, ctx.locale) });
     case 'CoverageTier':
       return tierText(line.coverageTier, t);
-    case 'Quantity': {
-      const per = line.limitPeriod === 'PerTerm' ? t('per contract year') : t('a year');
-      return fill(t('{n} × {class} ticket {per}'), { n: line.quantity ?? 1, class: tierText(line.coverageTier, t), per });
+    case 'Quantity':
+    {
+      const values = { n: line.quantity ?? 1, class: tierText(line.coverageTier, t) };
+      return line.limitPeriod === 'PerTerm' ? fill(t('{n} × {class} ticket per contract year'), values) : fill(t('{n} × {class} ticket a year'), values);
     }
     case 'MultipleOfBasic':
     case 'MultipleOfGross':
     case 'MultipleOfHousing': {
-      const basis = line.valueType === 'MultipleOfHousing' ? t('housing allowance') : line.valueType === 'MultipleOfBasic' ? t('basic salary') : t('gross salary');
-      const formula = `${multiple(line.rate ?? 0)} × ${basis}`;
+      const rate = multiple(line.rate ?? 0, ctx.locale);
       const figure = line.resolvedAmount ?? line.amount;
-      return figure != null ? fill(t('Up to {amount} ({formula})'), { amount: m(figure), formula }) : formula;
+      // Whole sentences per basis, so Arabic orders its own words (no glued fragments).
+      const keys = {
+        MultipleOfHousing: ['Up to {amount} ({rate} × housing allowance)', '{rate} × housing allowance'],
+        MultipleOfBasic: ['Up to {amount} ({rate} × basic salary)', '{rate} × basic salary'],
+        MultipleOfGross: ['Up to {amount} ({rate} × gross salary)', '{rate} × gross salary'],
+      }[line.valueType];
+      return figure != null ? fill(t(keys[0]), { amount: m(figure), rate }) : fill(t(keys[1]), { rate });
     }
     case 'EligibilityOnly':
       return t('Included');
@@ -113,10 +124,10 @@ export function valueText(line: ValueLine, ctx: FormatContext): string {
       if (line.amount == null) return isLoan && line.resolvedAmount != null ? fill(t('Up to {amount}'), { amount: m(line.resolvedAmount) }) : '';
       if (isLoan) return fill(t('Up to {amount}'), { amount: m(line.resolvedAmount ?? line.amount) });
       if (line.limitPeriod === 'PerDay') return fill(t('{amount} a day'), { amount: m(line.amount) });
-      if (line.dependantScope === 'Children') {
-        const base = fill(t('{amount} a child a year'), { amount: m(line.amount) });
-        return line.maxDependants != null ? `${base} · ${fill(t('up to {n} children'), { n: line.maxDependants })}` : base;
-      }
+      if (line.dependantScope === 'Children')
+        return line.maxDependants != null
+          ? fill(t('{amount} a child a year, for up to {n} children'), { amount: m(line.amount), n: line.maxDependants })
+          : fill(t('{amount} a child a year'), { amount: m(line.amount) });
       if (line.limitPeriod === 'Annual') return fill(t('{amount} a year'), { amount: m(line.amount) });
       return m(line.amount);
     }
@@ -151,6 +162,10 @@ export function reasonText(code: string | null | undefined, t: Translate, criter
     ENTITLEMENT_FLOOR_TRANSPORT: 'The salary gives neither a transport allowance nor transport in kind (Article 61).',
     ENTITLEMENT_TERM_OVERLAP: 'Already fixed under another contract term that overlaps this one.',
     ENTITLEMENT_ROW_IN_THE_WAY: 'The earlier term has this benefit fixed from a later date.',
+    ENTITLEMENT_ROW_NEVER_TOOK_EFFECT: 'A fixed benefit has not started yet, and fixed benefits are never removed.',
+    ENTITLEMENT_TERM_RUNNING_NEEDS_PROPOSAL: 'The term has started: propose the package, and another HR user confirms it.',
+    ENTITLEMENT_PROPOSAL_OPEN: 'Proposed — waiting for another HR user to confirm it.',
+    ENTITLEMENT_PROPOSAL_CLOSED: 'Already decided.',
   };
   return t(known[code] ?? 'This item is not available right now.');
 }
@@ -176,8 +191,9 @@ export function essWhy(why: EssWhy, ctx: FormatContext): string[] {
       out.push(fill(t('Paid with your salary from {date}, as in your Qiwa contract.'), { date: date(why.since, locale) }));
       break;
     case 'contract':
-      out.push(fill(t('Fixed in your contract from {from} to {to}. Changes to the grade table do not alter it.'),
-        { from: date(why.since, locale), to: why.until ? date(why.until, locale) : t('the end of the contract') }));
+      out.push(why.until
+        ? fill(t('Fixed in your contract from {from} to {to}. Changes to the grade table do not alter it.'), { from: date(why.since, locale), to: date(why.until, locale) })
+        : fill(t('Fixed in your contract from {from}, with no end date. Changes to the grade table do not alter it.'), { from: date(why.since, locale) }));
       break;
     case 'grade':
       out.push(fill(t('The standard for your grade ({grade}), in force since {date}. Not yet fixed in your contract.'),
@@ -215,10 +231,11 @@ export function hrWhy(input: HrWhyInput, ctx: FormatContext): string[] {
       break;
     case 'ContractFrozen':
       if (input.frozen)
-        out.push(fill(t('Fixed for contract {number} from {from} to {to}.'), {
-          number: input.frozen.contractNumber, from: date(input.frozen.effectiveFrom, locale),
-          to: input.frozen.effectiveTo ? date(input.frozen.effectiveTo, locale) : t('the end of the contract'),
-        }));
+        out.push(input.frozen.effectiveTo
+          ? fill(t('Fixed for contract {number} from {from} to {to}.'), {
+            number: input.frozen.contractNumber, from: date(input.frozen.effectiveFrom, locale), to: date(input.frozen.effectiveTo, locale) })
+          : fill(t('Fixed for contract {number} from {from}, with no end date.'), {
+            number: input.frozen.contractNumber, from: date(input.frozen.effectiveFrom, locale) }));
       if (input.cell) out.push(fill(t('Copied from the grade cell for {grade}, in force since {date}.'), { grade: input.gradeName, date: cellSince }));
       if (input.frozen?.verificationState === 'Unverified') out.push(t('Loaded from the grade table and not yet confirmed against the signed contract.'));
       break;
@@ -234,9 +251,17 @@ export function hrWhy(input: HrWhyInput, ctx: FormatContext): string[] {
   if (input.cell?.minServiceMonths) out.push(fill(t('Applies after {n} months of service.'), { n: input.cell.minServiceMonths }));
   if (input.cell?.afterProbation) out.push(t('Applies once probation ends.'));
   if (input.cell && input.cell.nationalityScope !== 'Any')
-    out.push(fill(input.cell.nationalityScope === 'Saudi'
-      ? t('Limited to Saudi employees. Legal basis: {basis}')
-      : t('Limited to non-Saudi employees. Legal basis: {basis}'), { basis: input.cell.nationalityBasis ?? '' }));
+    out.push(input.cell.nationalityScope === 'Saudi'
+      ? fill(t('Limited to Saudi employees. Legal basis: {basis}'), { basis: input.cell.nationalityBasis ?? '' })
+      : fill(t('Limited to non-Saudi employees. Legal basis: {basis}'), { basis: input.cell.nationalityBasis ?? '' }));
   if (input.gradeStandardDiffers) out.push(t('The grade standard is different now. This is reviewed at renewal; nothing changes mid-year.'));
   return out;
+}
+
+/** The documents that count as the signed contract (mirrors the server's SignedContractDocuments). */
+const CONTRACT_TYPES = new Set(['contract', 'employment contract', 'signed contract', 'signed employment contract', 'labour contract',
+  'labor contract', 'qiwa contract', 'عقد', 'عقد العمل', 'عقد عمل']);
+export function isContractDocument(doc: { documentType: string; storageUrl?: string | null }, contractFileUrl?: string | null): boolean {
+  if (contractFileUrl && doc.storageUrl === contractFileUrl) return true;
+  return CONTRACT_TYPES.has(doc.documentType.trim().replace(/\s+/g, ' ').toLowerCase());
 }

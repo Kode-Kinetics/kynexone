@@ -14,6 +14,7 @@ import { GosiCohortPanel } from '../components/GosiCohortPanel';
 import { EmployeePackagePanel } from '../components/entitlements/EmployeePackagePanel';
 import { EmployeeDeductionsPanel } from '../components/deductions/EmployeeDeductionsPanel';
 import { useReleaseA } from '../lib/releaseA';
+import { useLocale } from '../contexts/LocaleContext';
 import client from '../api/client';
 import { createLatestRequestGate, runLatest } from '../lib/latestRequest';
 import { createUrlSeed } from '../lib/urlSeed';
@@ -244,6 +245,7 @@ export function EmployeesPage() {
   const searchParams = useSearchParams();
   const { currencyCode } = useTenantSettings();
   const { hasPermission } = useAuth();
+  const { t: translateLabel } = useLocale();
   const { companies: accessibleCompanies, selectedCompanyId } = useCompany();
   const [employees, setEmployees] = useState<EmployeeListItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -1551,7 +1553,7 @@ export function EmployeesPage() {
                 <div className="mt-4 flex gap-1 overflow-x-auto">
                   {visibleTabs.map((tab) => (
                     <button key={tab.id} type="button" onClick={() => setActiveTab(tab.id)} className={`whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-semibold ${activeTab === tab.id ? 'bg-sapphire text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.07]'}`}>
-                      {tab.label}
+                      {translateLabel(tab.label)}
                     </button>
                   ))}
                 </div>

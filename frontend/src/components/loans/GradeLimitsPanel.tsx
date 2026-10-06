@@ -233,7 +233,7 @@ export function GradeLimitsPanel({ loanTypes, companies, initialLoanTypeId, onGr
                   <input type="number" min="0" step={d.basis === 'Amount' ? '0.01' : '0.25'} inputMode="decimal" className="input w-32" disabled={figuresDisabled}
                     aria-label={fillTemplate(t('Per-loan maximum — {grade}'), { grade: gradeLabel(d) })}
                     placeholder={figuresDisabled ? '—' : t('No limit')} value={d.perLoan} onChange={e => update(d.gradeId, { perLoan: e.target.value })} />
-                  {!figuresDisabled && <span className="block text-xs text-slate-500">{d.basis === 'Amount' ? currencyCode : t(d.basis === 'MultipleOfBasic' ? 'months of basic salary' : d.basis === 'MultipleOfHousing' ? 'months of housing allowance' : 'months of gross salary')}</span>}
+                  {!figuresDisabled && <span className="block text-xs text-slate-500">{d.basis === 'Amount' ? currencyCode : t(d.basis === 'MultipleOfBasic' ? 'months of basic salary' : d.basis === 'MultipleOfHousing' ? 'Months of housing allowance' : 'months of gross salary')}</span>}
                 </td>
                 <td className="p-2">
                   <input type="number" min="0" step="0.01" inputMode="decimal" className="input w-32" disabled={figuresDisabled}

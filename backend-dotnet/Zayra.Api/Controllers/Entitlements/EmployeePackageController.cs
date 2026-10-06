@@ -374,8 +374,12 @@ public sealed record EmployeePackageView(
     {
         var package = resolved.Package;
         // "N of M benefits fixed": M = the contract benefits this employee is given (eligible and offered), N = those frozen.
+        // Counted: given now, waiting on a date (service months, probation), or waiting for the term's nationality class.
+        // Not counted: not in the grade, not offered, or excluded by nationality.
         var contractLines = package.Lines.Where(l => l.Class == PayEntitlementClasses.Contractual && l.Offered
-            && (l.Eligible || l.ReasonCode == PackageReasons.NotEligibleCriteria)).ToList();
+            && (l.Eligible || l.ReasonCode == PackageReasons.NationalityUnconfirmed
+                || (l.ReasonCode == PackageReasons.NotEligibleCriteria
+                    && resolved.Reasons.GetValueOrDefault(l.ComponentCode)?.Criterion != PackageCriteria.Nationality))).ToList();
         var frozen = contractLines.Where(l => l.Source == PackageLineSources.ContractFrozen).Select(l => l.ComponentCode).ToHashSet();
         var skips = preview?.Skips.ToDictionary(x => x.ComponentCode, x => x.Code) ?? [];
         var notFixed = contractLines.Where(l => !frozen.Contains(l.ComponentCode))

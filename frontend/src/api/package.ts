@@ -104,7 +104,11 @@ export interface EmployeePackageView {
   reasons: Record<string, BlockReason>;
   /** Component code → the criterion a "not eligible yet" line is waiting for. */
   criteria: Record<string, string>;
+  /** A direct "Fix" can succeed now (term not started, nothing blocking, no open proposal). */
   canFreeze: boolean;
+  /** The term is running: its package is proposed, and another HR user confirms it. */
+  canPropose: boolean;
+  freezeStatus: FreezeStatus;
   dependantsOnFile: number;
   proposal: PackageProposal | null;
   labels: Record<string, ComponentLabel>;
@@ -113,7 +117,16 @@ export interface EmployeePackageView {
 export interface ProposedRow {
   componentCode: string; valueType: string; amount: number | null; rate: number | null; maxOutstandingAmount: number | null;
   coverageTier: string | null; quantity: number | null; dependantScope: string; maxDependants: number | null; limitPeriod: string | null;
-  resolvedAmount: number | null; carriedFromId: string | null;
+  resolvedAmount: number | null; carriedFromId: string | null; verificationState: string;
+}
+
+/** "N of M benefits fixed", and why each of the rest is not (reasonCode null = it can be fixed now). */
+export interface FreezeStatus {
+  fixed: number;
+  total: number;
+  notFixed: Array<{ componentCode: string; reasonCode: string | null }>;
+  blockedCode: string | null;
+  possibleFrom: string | null;
 }
 
 export interface FreezeSkip { componentCode: string; code: string }
@@ -185,6 +198,8 @@ export const packageApi = {
     client.post<FreezeOutcome>(
       `/api/entitlements/employees/${employeeId}/package/freeze`, { contractId },
       { headers: { 'Idempotency-Key': `package-freeze:${contractId}` } }).then((r) => r.data),
+  propose: (employeeId: number, contractId: string) =>
+    client.post<{ jobId: string }>(`/api/entitlements/employees/${employeeId}/package/propose`, { contractId }).then((r) => r.data),
   confirmProposal: (batchId: string, contractId: string, documentId: string) =>
     client.post<{ confirmed: number }>(`/api/entitlements/package/proposals/${batchId}/confirm`, { contractId, documentId }).then((r) => r.data),
   rejectProposal: (batchId: string, contractId: string, reason: string) =>

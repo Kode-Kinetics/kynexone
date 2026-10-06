@@ -52,11 +52,26 @@ export function EmployeePackagePanel({ employee }: { employee: EmployeeDetail })
       const base = r.alreadyFrozen ? t('This contract year was already fixed.') : r.frozen ? t('The package is fixed for this contract year.') : t('Nothing to fix: the grade has no contract benefits yet.');
       const skipped = r.skipped.filter((x) => x.code !== 'ENTITLEMENT_NOT_IN_GRADE')
         .map((x) => `${view.labels[x.componentCode]?.[locale === 'ar' ? 'ar' : 'en'] ?? x.componentCode}: ${reasonText(x.code, t)}`);
-      setNotice(skipped.length ? `${base} ${t('Not fixed:')} ${skipped.join(' · ')}` : base);
+      setNotice(skipped.length ? `${base} ${fill(t('These were not fixed: {list}'), { list: skipped.join(' · ') })}` : base);
       await load();
     } catch (e) {
       const data = (e as { response?: { data?: { message?: string } } })?.response?.data;
       setNotice(data?.message ?? t('The package could not be changed.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const propose = async () => {
+    if (!view?.contract) return;
+    setBusy(true);
+    setNotice(null);
+    try {
+      await packageApi.propose(employee.id, view.contract.id);
+      setNotice(t('The package is being proposed. Another HR user confirms it here when it is ready.'));
+      await load();
+    } catch (e) {
+      setNotice((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? t('The package could not be changed.'));
     } finally {
       setBusy(false);
     }
@@ -80,14 +95,17 @@ export function EmployeePackagePanel({ employee }: { employee: EmployeeDetail })
   const label = (code: string) => (locale === 'ar' ? view.labels[code]?.ar : view.labels[code]?.en) ?? code;
   const gradeName = view.grade ? `${view.grade.code} ${locale === 'ar' && view.grade.nameAr ? view.grade.nameAr : view.grade.name}` : '';
   const companyName = view.company ? (locale === 'ar' ? view.company.nameAr || view.company.nameEn : view.company.nameEn) : '';
-  const anyFrozen = pkg.lines.some((l) => l.source === 'ContractFrozen');
+  const status = view.freezeStatus;
+  // "Fixed until …" only when every contract benefit is fixed; otherwise say how many, and list the rest with reasons.
+  const allFixed = status.total > 0 && status.fixed === status.total;
   const groups: Group[] = [
     { key: 'pay', title: t('Pay (in the Qiwa contract)'), lines: pkg.lines.filter((l) => l.class === 'QiwaWage') },
     {
       key: 'contract',
-      title: anyFrozen && pkg.termEndsOn
-        ? fill(t('Contract benefits — fixed until {date}'), { date: date(pkg.termEndsOn, locale) })
-        : anyFrozen ? t('Contract benefits — fixed for this contract') : t('Contract benefits — not yet fixed for this contract year'),
+      title: allFixed
+        ? (pkg.termEndsOn ? fill(t('Contract benefits — fixed until {date}'), { date: date(pkg.termEndsOn, locale) }) : t('Contract benefits — fixed for this contract'))
+        : status.fixed > 0 ? fill(t('Contract benefits — {n} of {m} fixed for this contract year'), { n: status.fixed, m: status.total })
+        : t('Contract benefits — not yet fixed for this contract year'),
       lines: pkg.lines.filter((l) => l.class !== 'QiwaWage' && l.class !== 'Facility'),
     },
     { key: 'facility', title: t('Facilities — current policy'), lines: pkg.lines.filter((l) => l.class === 'Facility') },
@@ -111,10 +129,9 @@ export function EmployeePackagePanel({ employee }: { employee: EmployeeDetail })
           <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">{t('Package for this contract year')}</h3>
           <p className="text-xs text-slate-500 dark:text-slate-400">
             {[gradeName && fill(t('Grade {grade}'), { grade: gradeName }), companyName,
-              view.contract && fill(t('Contract {number}: {from} to {to}'), {
-                number: view.contract.number, from: date(view.contract.startDate, locale),
-                to: view.contract.endDate ? date(view.contract.endDate, locale) : t('no end date'),
-              }),
+              view.contract && (view.contract.endDate
+                ? fill(t('Contract {number}: {from} to {to}'), { number: view.contract.number, from: date(view.contract.startDate, locale), to: date(view.contract.endDate, locale) })
+                : fill(t('Contract {number}: from {from}, with no end date'), { number: view.contract.number, from: date(view.contract.startDate, locale) })),
               fill(t('As of {date}'), { date: date(pkg.asOf, locale) })].filter(Boolean).join(' · ')}
           </p>
         </div>
@@ -127,7 +144,30 @@ export function EmployeePackagePanel({ employee }: { employee: EmployeeDetail })
             <span className="max-w-xs text-end text-[11px] text-slate-500 dark:text-slate-400">{t('Later changes to the grade table will not alter this year’s benefits.')}</span>
           </div>
         )}
+        {canManage && view.canPropose && view.contract && (
+          <div className="flex flex-col items-end gap-1">
+            <button type="button" disabled={busy} onClick={() => void propose()}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-xs font-semibold text-white hover:bg-sapphire/90 disabled:opacity-60">
+              <Lock className="h-3.5 w-3.5" aria-hidden="true" />{t('Propose the package for a second check')}
+            </button>
+            <span className="max-w-xs text-end text-[11px] text-slate-500 dark:text-slate-400">{t('This term has already started, so another HR user confirms its package against the signed contract.')}</span>
+          </div>
+        )}
       </header>
+
+      {status.total > 0 && !allFixed && status.notFixed.length > 0 && (
+        <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-200">
+          <p className="font-semibold">{fill(t('{n} of {m} contract benefits are fixed. The rest are listed below with the reason.'), { n: status.fixed, m: status.total })}</p>
+          <ul className="mt-1 list-disc space-y-0.5 ps-4">
+            {status.notFixed.map((n) => (
+              <li key={n.componentCode}>
+                {fill(t('{benefit} — {reason}'), { benefit: label(n.componentCode), reason: n.reasonCode ? reasonText(n.reasonCode, t) : t('Can be fixed now.') })}
+                {n.reasonCode === 'ENTITLEMENT_ROW_NEVER_TOOK_EFFECT' && status.possibleFrom && ` ${fill(t('Possible from {date}.'), { date: date(status.possibleFrom, locale) })}`}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {notice && <p role="status" className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-700 dark:bg-white/[0.04] dark:text-slate-200">{notice}</p>}
       {!view.contract && <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600 dark:bg-white/[0.04] dark:text-slate-300">{t('No active contract term, so nothing is fixed yet. The grade standard is shown.')}</p>}
