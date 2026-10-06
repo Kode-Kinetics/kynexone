@@ -218,11 +218,11 @@ public sealed class ReleaseAMigrationPostgresTests
         // ── contract_renewal_cases ──────────────────────────────────────────────────────────────
         string Case(Guid contract, string state = "'Open'", string nationality = "'NonSaudi'",
             string allowed = "ARRAY['RenewAsIs','RenewWithChanges','NonRenew']", string? action = null, string? hold = null,
-            Guid? companyId = null, Guid? employee = null) => $"""
+            Guid? companyId = null, Guid? employee = null, bool qiwaRequired = true) => $"""
             INSERT INTO contract_renewal_cases (id,tenant_id,company_id,employee_id,expiring_contract_id,expiring_end_date,worker_nationality_class,allowed_actions,
                 state,contract_action,hold_reason,offer_version,notice_due_on,offer_due_on,qiwa_submit_due_on,qiwa_gate_due_on,qiwa_required,qiwa_attempts,opened_at)
             VALUES (gen_random_uuid(),'{t}','{companyId ?? company.Id}','{employee ?? mohammed.PublicId}','{contract}','2027-01-31',{nationality},{allowed},{state},
-                {action ?? "NULL"},{hold ?? "NULL"},0,'2026-12-02','2026-11-18','2027-01-01','2027-01-24',true,0,CURRENT_TIMESTAMP)
+                {action ?? "NULL"},{hold ?? "NULL"},0,'2026-12-02','2026-11-18','2027-01-01','2027-01-24',{(qiwaRequired ? "true" : "false")},0,CURRENT_TIMESTAMP)
             """;
         string Approval(Guid id, string status, string sha) => $"""
             INSERT INTO approval_requests (id,tenant_id,workflow_id,entity_name,entity_id,title,status,current_step_order,decision_version,
@@ -246,6 +246,8 @@ public sealed class ReleaseAMigrationPostgresTests
         await Rejected(db, $"UPDATE contract_renewal_cases SET state = 'OnHold', hold_reason = 'Abroad' WHERE id = '{caseId}'", "23514");
         await Rejected(db, $"UPDATE contract_renewal_cases SET state = 'OnHold', hold_reason = 'Abroad', held_from_state = 'OfferSent' WHERE id = '{caseId}'", "23514");
         await Sql(db, $"UPDATE contract_renewal_cases SET state = 'OnHold', hold_reason = 'Abroad', held_from_state = 'Open' WHERE id = '{caseId}'");
+        await Rejected(db, $"UPDATE contract_renewal_cases SET held_from_state = 'OfferSent' WHERE id = '{caseId}'", "23514");                  // frozen while held
+        await Sql(db, $"UPDATE contract_renewal_cases SET hold_reason = 'UnpaidLeave' WHERE id = '{caseId}'");                                  // the reason may be corrected
         await Rejected(db, $"UPDATE contract_renewal_cases SET state = 'OfferInPreparation', hold_reason = NULL, held_from_state = NULL WHERE id = '{caseId}'", "23514");
         await Sql(db, $"UPDATE contract_renewal_cases SET state = 'Open', hold_reason = NULL, held_from_state = NULL WHERE id = '{caseId}'");
 
@@ -282,6 +284,8 @@ public sealed class ReleaseAMigrationPostgresTests
         await Sql(db, $"UPDATE contract_renewal_cases SET {string.Format(apply, next.Id)} WHERE id = '{caseId}'");
         Assert.True(await Scalar<bool>(db, $"SELECT next_hard_deadline IS NULL FROM contract_renewal_cases WHERE id = '{caseId}'"));
         await Rejected(db, $"UPDATE contract_renewal_cases SET state = 'Open', closed_at = NULL WHERE id = '{caseId}'", "23514");                // closed is closed
+        await Rejected(db, $"UPDATE contract_renewal_cases SET reason_code = 'LATE_EDIT' WHERE id = '{caseId}'", "23514");                     // and immutable
+        await Rejected(db, $"UPDATE contract_renewal_cases SET applied_at = now() WHERE id = '{caseId}'", "23514");
 
         // EF reads the case: text[] round-trips and the xmin row version is populated.
         db.ChangeTracker.Clear();
@@ -290,6 +294,18 @@ public sealed class ReleaseAMigrationPostgresTests
         Assert.NotEqual(0u, loaded.Version);
         Assert.Null(loaded.NextHardDeadline);
         Assert.True(loaded.EmployeeAcceptanceRequired);
+
+        // Fast lane with both counsel toggles off: no Qiwa step, no in-app acceptance — QiwaPending → ReadyToApply (T16b).
+        await Sql(db, Case(next.Id, qiwaRequired: false));
+        var fast = await Scalar<Guid>(db, $"SELECT id FROM contract_renewal_cases WHERE expiring_contract_id = '{next.Id}'");
+        var fastSha = new string('e', 64);
+        var fastApproval = Guid.NewGuid();
+        await Sql(db, Approval(fastApproval, "'Approved'", fastSha));
+        await Sql(db, $"UPDATE contract_renewal_cases SET state = 'OfferInPreparation' WHERE id = '{fast}'");
+        await Sql(db, $"UPDATE contract_renewal_cases SET state = 'InApproval', contract_action = 'RenewAsIs', offer_sha256 = '{fastSha}', current_approval_request_id = '{fastApproval}', employee_acceptance_required = false WHERE id = '{fast}'");
+        await Sql(db, $"UPDATE contract_renewal_cases SET state = 'QiwaPending' WHERE id = '{fast}'");
+        await Sql(db, $"UPDATE contract_renewal_cases SET state = 'ReadyToApply' WHERE id = '{fast}'");
+        await Sql(db, $"UPDATE contract_renewal_cases SET state = 'Applied', resulting_contract_id = '{draft.Id}', applied_by = gen_random_uuid(), applied_at = now(), apply_idempotency_key = 'k-fast', closed_at = now() WHERE id = '{fast}'");
 
         // NonRenewed needs an approval and notice served by the notice date — already to become ReadyToApply.
         await Sql(db, Case(colleagueTerm.Id, employee: colleague.PublicId));

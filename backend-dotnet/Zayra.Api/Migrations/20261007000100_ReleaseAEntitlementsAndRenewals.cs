@@ -1350,11 +1350,13 @@ namespace Zayra.Api.Migrations
         /// <list type="bullet">
         /// <item>a case is created Open or NeedsConfirmation, for the company and tenant of its expiring contract, and
         /// its identity (tenant, company, employee, expiring contract) never changes;</item>
-        /// <item>a closed case never moves; a hold records where it came from and is released back there (or cancelled);</item>
+        /// <item>a closed case never changes at all; a hold records where it came from, keeps that while held, and is
+        /// released back there (or cancelled);</item>
         /// <item>Accepted only from OfferSent, by a response to the offer version that was sent — in the app by the
         /// employee, or on paper with the signed document confirmed by a second user;</item>
         /// <item>ReadyToApply only from Accepted when no Qiwa step is required, or from QiwaPending with verified approving
-        /// evidence (renewal) or a notice served by the notice date (non-renewal);</item>
+        /// evidence when a Qiwa step is required (renewal; T16) — or with none when it is not (fast-lane RenewAsIs with
+        /// both counsel toggles off; T16b) — or a notice served by the notice date (non-renewal);</item>
         /// <item>Applied only from ReadyToApply, with its result and idempotency key, an Approved approval whose payload
         /// hash is the offer's (or an Approved batch), the employee's acceptance unless it was waived, and verified Qiwa
         /// evidence when required; NonRenewed only from ReadyToApply, approved, with the notice served on time.</item>
@@ -1391,12 +1393,28 @@ namespace Zayra.Api.Migrations
                     RAISE EXCEPTION 'RENEWAL_TRANSITION: the tenant, company, employee and expiring contract of case % are fixed', OLD.id
                         USING ERRCODE = '23514';
                 END IF;
-                IF NEW.state IS NOT DISTINCT FROM OLD.state THEN
+                -- A closed case is history: nothing on it changes (there are no audit-only columns on this table; the
+                -- audit trail lives in audit_logs). next_hard_deadline is generated, so it is left out of the comparison.
+                IF OLD.state IN ('Applied', 'NonRenewed', 'Cancelled') THEN
+                    IF (to_jsonb(NEW) - 'next_hard_deadline') IS DISTINCT FROM (to_jsonb(OLD) - 'next_hard_deadline') THEN
+                        RAISE EXCEPTION 'RENEWAL_TRANSITION: case % is closed (%) and cannot change', OLD.id, OLD.state
+                            USING ERRCODE = '23514';
+                    END IF;
                     RETURN NEW;
                 END IF;
-                IF OLD.state IN ('Applied', 'NonRenewed', 'Cancelled') THEN
-                    RAISE EXCEPTION 'RENEWAL_TRANSITION: case % is closed (%) and cannot move to %', OLD.id, OLD.state, NEW.state
-                        USING ERRCODE = '23514';
+                IF OLD.state = 'OnHold' THEN
+                    IF NEW.state = 'OnHold' THEN
+                        IF NEW.held_from_state IS DISTINCT FROM OLD.held_from_state THEN
+                            RAISE EXCEPTION 'RENEWAL_TRANSITION: case % stays held from % until it is released', OLD.id, OLD.held_from_state
+                                USING ERRCODE = '23514';
+                        END IF;
+                        RETURN NEW;
+                    END IF;
+                    IF NEW.state <> 'Cancelled' AND NEW.state IS DISTINCT FROM OLD.held_from_state THEN
+                        RAISE EXCEPTION 'RENEWAL_TRANSITION: case % was held from % and is released back there, not to %', OLD.id, OLD.held_from_state, NEW.state
+                            USING ERRCODE = '23514';
+                    END IF;
+                    RETURN NEW;
                 END IF;
                 IF NEW.state = 'OnHold' THEN
                     IF NEW.held_from_state IS DISTINCT FROM OLD.state THEN
@@ -1405,11 +1423,7 @@ namespace Zayra.Api.Migrations
                     END IF;
                     RETURN NEW;
                 END IF;
-                IF OLD.state = 'OnHold' THEN
-                    IF NEW.state <> 'Cancelled' AND NEW.state IS DISTINCT FROM OLD.held_from_state THEN
-                        RAISE EXCEPTION 'RENEWAL_TRANSITION: case % was held from % and is released back there, not to %', OLD.id, OLD.held_from_state, NEW.state
-                            USING ERRCODE = '23514';
-                    END IF;
+                IF NEW.state IS NOT DISTINCT FROM OLD.state THEN
                     RETURN NEW;
                 END IF;
 
@@ -1442,8 +1456,8 @@ namespace Zayra.Api.Migrations
                                 RAISE EXCEPTION 'RENEWAL_NOTICE_SERVED_LATE: case % has no non-renewal notice served by the notice date', OLD.id
                                     USING ERRCODE = '23514';
                             END IF;
-                        ELSIF NEW.qiwa_evidence_document_id IS NULL OR NEW.qiwa_evidence_verified_by IS NULL
-                              OR NEW.qiwa_evidence_outcome IS DISTINCT FROM 'Approved' THEN
+                        ELSIF NEW.qiwa_required AND (NEW.qiwa_evidence_document_id IS NULL OR NEW.qiwa_evidence_verified_by IS NULL
+                              OR NEW.qiwa_evidence_outcome IS DISTINCT FROM 'Approved') THEN
                             RAISE EXCEPTION 'APPLY_QIWA_EVIDENCE_MISSING: case % needs verified Qiwa evidence of approval', OLD.id
                                 USING ERRCODE = '23514';
                         END IF;
