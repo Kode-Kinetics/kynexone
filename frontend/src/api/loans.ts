@@ -268,7 +268,7 @@ export const loansApi = {
   get: (id: string) =>
     client.get<LoanDetail>(`/api/finance/loans/${id}`).then(r => r.data),
 
-  create: (body: { employeeId?: string; employeeName: string; loanTypeId: string; requestedAmount: number; requestedInstallments: number; repaymentMethod: LoanRepaymentMethod; requestPolicyException?: boolean; notes?: string; employeeIntId?: number }) =>
+  create: (body: { employeeId?: string; employeeName: string; loanTypeId: string; requestedAmount: number; requestedInstallments: number; repaymentMethod: LoanRepaymentMethod; requestPolicyException?: boolean; notes?: string; employeeIntId?: number; consentDocumentId?: string }) =>
     client.post<EmployeeLoan>('/api/finance/loans', body).then(r => r.data),
 
   settle: (id: string, body: { settlementType: string; settlementAmount: number; settlementDate: string; notes?: string }) =>

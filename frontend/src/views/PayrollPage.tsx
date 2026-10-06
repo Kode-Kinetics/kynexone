@@ -38,6 +38,7 @@ import { SaudiBankExportGate } from '../components/payroll/SaudiBankExportGate';
 import { payrollInsightEmptyCopy, payrollInsightState, payrollPeriodState } from '../lib/payrollInsightState';
 
 import { EnumLabel, type EnumName } from '../components/EnumLabel';
+import { RunDeductionsReview } from '../components/deductions/RunDeductionsReview';
 // ── Payroll import/export helpers ───────────────────────────────────────────────
 
 const salaryStructuresImportExport = {
@@ -1444,6 +1445,7 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
                   </table>
                 </div>
               )}
+              <RunDeductionsReview runId={selectedRun.id} />
             </>
           )}
         </div>

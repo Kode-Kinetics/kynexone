@@ -59,6 +59,9 @@ public static class ReleaseABlockReasons
     public const string EntitlementProposalSameUser = "ENTITLEMENT_PROPOSAL_SAME_USER";
     public const string EntitlementProposalDocumentRequired = "ENTITLEMENT_PROPOSAL_DOCUMENT_REQUIRED";
     public const string EntitlementProposalClosed = "ENTITLEMENT_PROPOSAL_CLOSED";
+    // R3 deductions statement (PR for slice R3): flags a statement raises instead of guessing.
+    public const string DeductionUnclassifiedCounted = "DEDUCTION_UNCLASSIFIED_COUNTED";
+    public const string DeductionSplitUnreconciled = "DEDUCTION_SPLIT_UNRECONCILED";
 
     private const string HrManager = "HR Manager";
     private const string HrDirector = "HR Director";
@@ -318,6 +321,20 @@ public static class ReleaseABlockReasons
             "Upload the signed contract to the employee's documents, then choose it.",
             "ارفع العقد الموقّع إلى مستندات الموظف ثم اختره.",
             HrManager),
+        new BlockReason(DeductionUnclassifiedCounted,
+            "A deduction of an unrecognised type", "استقطاع من نوع غير معروف",
+            "A payroll adjustment was deducted under a type the system does not recognise. It is counted toward the 50% limit until payroll says what it is, so the limit is never understated.",
+            "تم خصم تسوية رواتب بنوع لا يعرفه النظام، لذلك تُحتسب ضمن حد الـ 50% إلى أن يحدد قسم الرواتب نوعها، حتى لا يُقلَّل الحد.",
+            "Record the adjustment under a known type (for example a penalty, damages, a court order or a pay correction) and re-process the run.",
+            "سجّل التسوية بنوع معروف (مثل جزاء أو تعويض أضرار أو حكم قضائي أو تصحيح راتب) ثم أعد معالجة المسير.",
+            PayrollManager),
+        new BlockReason(DeductionSplitUnreconciled,
+            "Loan instalments could not be matched", "تعذّرت مطابقة أقساط القروض",
+            "The loan or advance amount on this payslip does not match the instalments recorded against each loan for this payroll run, so it is shown as one total and no balance is assumed.",
+            "مبلغ القرض أو السلفة في هذا المسير لا يطابق الأقساط المسجّلة على كل قرض في هذا التشغيل، لذلك يُعرض كمبلغ واحد دون افتراض أي رصيد.",
+            "Check the loan schedules for this month against the payroll run, and correct the schedule or re-process the run.",
+            "راجع جداول أقساط القروض لهذا الشهر مقابل مسير الرواتب، ثم صحّح الجدول أو أعد معالجة المسير.",
+            PayrollManager),
         new BlockReason(EntitlementProposalClosed,
             "Already decided", "تم البت فيها",
             "This proposed package was already confirmed or rejected, or the term already has its package.",

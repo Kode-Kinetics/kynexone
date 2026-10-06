@@ -25,6 +25,21 @@ export interface LoanEligibility {
   /** Strictest of every evaluated limit, as principal. 0 when nothing can be borrowed; null when nothing caps the amount. */
   available?: number | null;
   gradeLimit?: LoanGradeLimitCheck | null; bindingLimit?: LoanBindingLimit | null; limitBreakdowns?: LoanLimitBreakdown[] | null;
+  /** Release A (Art. 92): the instalment as a share of the wage. Absent in a preview and for tenants without Release A. */
+  art92?: LoanArt92Check | null;
+}
+
+/** Saudi Labour Law Art. 92: an employer-loan instalment deducted from pay above 10% of the wage needs written consent. */
+export interface LoanArt92Check {
+  instalment: number;
+  /** Null when the wage is unknown, or hidden from this caller. */
+  wageDue: number | null;
+  /** Instalment ÷ wage, 0–100. Null when the wage is unknown. */
+  pct: number | null;
+  /** True when deducted from pay and above 10% (or the wage is unknown): a signed LoanDeductionConsent is required. */
+  requiresConsent: boolean;
+  deductedFromPay: boolean;
+  thresholdPercent: number;
 }
 
 /** Which of the effective limits is the one that actually caps this request (strictest wins). */

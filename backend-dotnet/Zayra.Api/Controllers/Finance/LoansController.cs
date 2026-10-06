@@ -265,6 +265,11 @@ public partial class LoansController : ControllerBase
                 currency = await GlAccountResolver.ResolveCurrencyAsync(_db, tid, employee.CompanyId, ct) });
         }
 
+        // Art. 92 (Release A only): an instalment above 10% of the wage needs the employee's signed consent on file.
+        var releaseA = await ReleaseAEnabledAsync(tid, ct);
+        if (releaseA && await Art92RefusalAsync(tid, employee.Id, assessment.Art92, req.ConsentDocumentId, ct) is { } art92Refusal)
+            return art92Refusal;
+
         var loanNumber = $"LN-{DateTime.UtcNow.Year}-{Guid.NewGuid().ToString("N")[..10].ToUpperInvariant()}";
 
         var loan = new EmployeeLoan
@@ -280,6 +285,9 @@ public partial class LoansController : ControllerBase
             Currency = await GlAccountResolver.ResolveCurrencyAsync(_db, tid, employee.CompanyId, ct),
             CreatedBy = uid, PolicyId = assessment.PolicyId, PolicyVersion = assessment.PolicyVersion,
             PolicySnapshotJson = assessment.PolicySnapshotJson, EligibilitySnapshotJson = JsonSerializer.Serialize(assessment),
+            // Art. 92 witnesses: the consent on file and the wage the 10% test was computed against.
+            ConsentDocumentId = releaseA ? req.ConsentDocumentId : null,
+            CapBaseWage = releaseA ? assessment.Art92?.WageDue : null,
         };
         LoanEligibilityService.StampGradeWitness(loan, assessment);
         _db.EmployeeLoans.Add(loan);
@@ -289,7 +297,8 @@ public partial class LoansController : ControllerBase
             _db.LoanApprovals.Add(new LoanApproval { TenantId = tid, LoanId = loan.Id, StepOrder = 2, ApproverRole = "HR Director" });
         await new LoanLifecycleService(_db).RefreshAsync(tid, loan, ct);
 
-        AddLoanAudit(loan.Id, "LoanRequested", new { loan.LoanNumber, loan.RequestedAmount, loan.Status, loan.RepaymentMethod });
+        AddLoanAudit(loan.Id, "LoanRequested", new { loan.LoanNumber, loan.RequestedAmount, loan.Status, loan.RepaymentMethod,
+            loan.ConsentDocumentId, loan.CapBaseWage });
         await _db.SaveChangesAsync(ct);
         return Ok(EmployeeLoanDto.Project(loan));
     }
@@ -456,6 +465,13 @@ public partial class LoansController : ControllerBase
                 loan.RepaymentMethod, loan.Id, loan.PolicySnapshotJson, ct);
             if (!assessment.Eligible) return BadRequest(new { error = "loan_ineligible", assessment.Reasons, assessment.Codes,
                 gradeLimit = GradeLimitDto(assessment.GradeLimit), assessment.Available, assessment.BindingLimit, limitBreakdowns = assessment.Limits });
+            // Art. 92 again at approval: the approved terms (fewer instalments = a larger one) are what will be deducted.
+            if (await ReleaseAEnabledAsync(tid, ct))
+            {
+                if (await Art92RefusalAsync(tid, employee.Id, assessment.Art92, loan.ConsentDocumentId, ct) is { } art92Refusal)
+                    return art92Refusal;
+                loan.CapBaseWage = assessment.Art92?.WageDue;
+            }
             loan.EligibilitySnapshotJson = JsonSerializer.Serialize(assessment);
             // The approver's re-check is the decision of record: refresh the grade witnesses to what it saw.
             LoanEligibilityService.StampGradeWitness(loan, assessment);
@@ -713,7 +729,9 @@ public partial class LoansController : ControllerBase
 }
 
 public record LoanTypeRequest(string Code, string NameEn, string? NameAr, decimal MaxAmount, int MaxInstallments, string RepaymentFrequency, bool IsInterestFree, decimal InterestRate, int MinServiceMonths, bool RequiresApproval);
-public record CreateLoanRequest(Guid EmployeeId, string EmployeeName, Guid LoanTypeId, decimal RequestedAmount, int RequestedInstallments, string? Notes, int? EmployeeIntId = null, string RepaymentMethod = "BankTransfer", bool RequestPolicyException = false);
+/// <param name="ConsentDocumentId">Release A, Art. 92: the employee's signed LoanDeductionConsent document (uploaded to their file by
+/// HR), required when the instalment deducted from pay is above 10% of the wage.</param>
+public record CreateLoanRequest(Guid EmployeeId, string EmployeeName, Guid LoanTypeId, decimal RequestedAmount, int RequestedInstallments, string? Notes, int? EmployeeIntId = null, string RepaymentMethod = "BankTransfer", bool RequestPolicyException = false, Guid? ConsentDocumentId = null);
 public record LoanApprovalRequest(int StepOrder, string ApproverRole);
 public record ApprovalDecisionRequest(string Decision, string? Comments, decimal? ApprovedAmount, int? ApprovedInstallments, DateOnly? RepaymentStartDate);
 public record LoanSettlementRequest(string SettlementType, decimal SettlementAmount, DateOnly SettlementDate, string? Notes);
