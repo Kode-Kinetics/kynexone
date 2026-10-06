@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "next lint",
     "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test --ui"
+    "test:e2e:ui": "playwright test --ui",
+    "seed:demo-masar": "playwright test -c e2e/release-a/playwright.demo-seed.config.ts"
   },
   "dependencies": {
     "@opentelemetry/api": "1.9.1",

@@ -529,6 +529,10 @@ public sealed partial class MigrationImportController
         loan.RequestedInstallments = plan.TotalInstallments;
         loan.ApprovedInstallments = plan.TotalInstallments;
         loan.InstallmentAmount = plan.InstallmentAmount;
+        // The resolved currency was stamped on the origin row but never on the loan itself, so every
+        // carried-in loan had Currency = null — and the Loans page formats each row with it, so ONE
+        // imported loan took the whole page down ("Invalid currency code : null").
+        loan.Currency = plan.Currency;
         loan.RepaymentFrequency = "Monthly";
         loan.DisbursementDate = plan.DisbursementDate;
         loan.RepaymentStartDate = plan.FirstUnpaidDueDate;

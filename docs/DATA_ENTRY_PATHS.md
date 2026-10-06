@@ -62,6 +62,21 @@ cd frontend && npx playwright test -c e2e/bootstrap/playwright.bootstrap.config.
 - Passwords come from the environment. CI generates them per run; outside CI a documented local
   default is used. Nothing here is a production credential.
 
+### The Release A demo company (Masar Holding)
+`frontend/e2e/release-a/demo-seed.ts` builds the client-demo tenant the same way (public API only,
+idempotent): two companies, G1–G5, 50 employees with contract chains, loan grade limits, a
+go-live opening-balance import, and two locked payroll months.
+
+```bash
+cd frontend && DEMO_API_BASE_URL=http://localhost:5117 PLATFORM_ADMIN_EMAIL=… PLATFORM_ADMIN_PASSWORD=… \
+  npm run seed:demo-masar
+```
+
+Persona passwords are generated on first run into the git-ignored
+`frontend/e2e/.auth/demo-masar.credentials.json` (or all set from `DEMO_MASAR_PASSWORD`). Any host
+that is not loopback or private needs `DEMO_SEED_CONFIRM_HOST=<host>`; the live pilot hosts are
+always refused.
+
 ## Repair passes (create nothing)
 `Infrastructure/Boot/CompanyScopeBackfill.cs` runs at boot and only assigns rows with a null
 `CompanyId` to the tenant's existing company. A tenant with no active company is logged and
