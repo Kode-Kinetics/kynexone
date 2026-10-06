@@ -113,7 +113,9 @@ the same way.
     attacker on an unknown device stays locked out until it expires. Audited as
     `auth.lockout_bypassed_known_device` (platform: `platform.auth.…`) and the owner is emailed once
     per lockout (tenant: through the notification outbox; platform: through an in-process notice
-    queue — sign-in never waits on SMTP). The bypass session keeps working during the lockout
+    queue — sign-in never waits on SMTP; a notice dropped on a full queue is logged by id and
+    queued again on the next bypass). Security notices (`security.*`) are emailed even when the
+    employee turned email off. The bypass session keeps working during the lockout
     (tenant: its security stamp postdates the lockout; platform: it carries `kx_lockout_bypass`
     bound to the bypassed lockout's end, so a new, longer lockout is not covered); sessions issued
     before the lockout still end;
