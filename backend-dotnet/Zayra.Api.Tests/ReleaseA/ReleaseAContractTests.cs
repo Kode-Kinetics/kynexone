@@ -145,7 +145,10 @@ public class ReleaseAContractTests
         await new EntitlementWriter().Invoking(w => w.FreezeTermAsync(Guid.NewGuid(), Guid.NewGuid(), default))
             .Should().ThrowAsync<NotImplementedException>();
         var contract = new EmployeeContract { TenantId = Guid.NewGuid() };
-        await new ContractChainStamper().Invoking(h => h.OnActivatedAsync(contract, default)).Should().NotThrowAsync();
+        // R4 replaced the stamper stub; it still never throws, even with no employee row behind the contract.
+        await using var stamperDb = InMemory();
+        await new ContractChainStamper(stamperDb, NullLogger<ContractChainStamper>.Instance)
+            .Invoking(h => h.OnActivatedAsync(contract, default)).Should().NotThrowAsync();
         await new PackageFreezeOnActivation().Invoking(h => h.OnActivatedAsync(contract, default)).Should().NotThrowAsync();
     }
 
@@ -185,7 +188,7 @@ public class ReleaseAContractTests
     {
         var codes = typeof(ReleaseABlockReasons).GetFields(BindingFlags.Public | BindingFlags.Static)
             .Where(f => f.IsLiteral && f.FieldType == typeof(string)).Select(f => (string)f.GetRawConstantValue()!).ToList();
-        codes.Should().HaveCount(37);
+        codes.Should().HaveCount(43); // 37 (R0 + R2) + 6 (R4: contract still active, case changed, case in progress, nationality unconfirmed, holdover pending, outcome reset)
         ReleaseABlockReasons.All.Keys.Should().BeEquivalentTo(codes);
         var arabic = new Regex(@"\p{IsArabic}");
         foreach (var reason in ReleaseABlockReasons.All.Values)
