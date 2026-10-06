@@ -132,6 +132,158 @@ public sealed partial class PersonalDataLoggingRatchetTests
         Offences("""var x = Math.Log(phoneCount);""").Should().BeEmpty("Math.Log is not a logger");
     }
 
+    // ── Send paths: the exception itself is personal data ───────────────────────
+
+    /// <summary>
+    /// A catch around an email or notification send must not log the exception object or its message. SMTP
+    /// and SMS providers put the recipient in the message ("550 5.1.1 &lt;x@y&gt;: mailbox unavailable"), and a
+    /// structured logger serialises the whole exception, message included, so <c>LogWarning(ex, …)</c> is an
+    /// email address in the log even when no argument names one. Log the record id and
+    /// <c>ex.GetType().Name</c> instead.
+    /// </summary>
+    [Fact]
+    public void NoSendPathCatchLogsTheExceptionOrItsMessage()
+    {
+        var offenders = new List<string>();
+        var sendPathCatches = 0;
+        foreach (var (relative, code) in SourceScan.Files(SourceScan.ResolveApiRoot(), "*.cs"))
+        {
+            if (relative.StartsWith("Migrations/", StringComparison.Ordinal)) continue;
+            var (catches, offences) = SendPathCatchOffences(code);
+            sendPathCatches += catches;
+            offenders.AddRange(offences.Select(o => $"{relative}:{o.Line}: {o.Offence}"));
+        }
+
+        offenders.Should().BeEmpty(
+            "a send-path exception message carries the recipient; log the id and ex.GetType().Name, never the exception.\n  "
+            + string.Join("\n  ", offenders));
+        sendPathCatches.Should().BeGreaterThan(5, "the scan must be reaching the real email and notification send paths");
+    }
+
+    [Fact]
+    public void SendPathScannerCatchesTheExceptionAndItsMessage_AndAllowsTheTypeName()
+    {
+        SendPathCatchOffences("""
+            try { await _emailService.SendAsync(t, user.Email, n, s, h); }
+            catch (Exception ex) { _log.LogWarning(ex, "Reset email failed for {UserId}", user.Id); }
+            """).Offences.Should().ContainSingle();
+        SendPathCatchOffences("""
+            try { var d = await email.DeliverAsync(t, to, n, s, h, null, ct); }
+            catch (SmtpCommandException e) when (e.StatusCode > 0)
+            {
+                _log.LogError("SMTP test failed: {Error}", e.Message);
+            }
+            """).Offences.Should().ContainSingle("the message is the part that names the recipient");
+        SendPathCatchOffences("""
+            try { await Provider.SendAsync(message, ct); }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { _log.LogWarning("send threw {Detail}", $"{ex}"); }
+            """).Offences.Should().ContainSingle("a second catch clause is scanned too, and an interpolated hole still logs it");
+
+        // Every send shape the review named is recognised as a send path.
+        foreach (var send in new[]
+                 {
+                     "await _notifications.SendEmailAsync(t, code, to, name, vars, ct);",
+                     "await _emailSender.SendAsync(message, ct);",
+                     "await smtp.SendAsync(mime, ct);",
+                     "await _sms.SendAsync(phone, text, ct);",
+                     "await _mailer.SendMailAsync(mail);",
+                     "await SendWelcomeEmailAsync(user, ct);",
+                     "await _whatsApp.SendTemplateAsync(to, tpl, ct);",
+                     "await _SMTP.SendAsync(mime, ct);",
+                 })
+        {
+            var scanned = SendPathCatchOffences(
+                "try { " + send + " }\ncatch (Exception ex) { _log.LogWarning(ex, \"send failed for {Id}\", id); }");
+            scanned.Catches.Should().Be(1, $"'{send}' is a send");
+            scanned.Offences.Should().ContainSingle($"logging the exception around '{send}' leaks the recipient");
+        }
+
+        var typeOnly = SendPathCatchOffences("""
+            try { await _emailService.SendAsync(t, user.Email, n, s, h); }
+            catch (Exception ex) { _log.LogWarning("Reset email failed for {UserId} ({ErrorType})", user.Id, ex.GetType().Name); }
+            """);
+        typeOnly.Catches.Should().Be(1);
+        typeOnly.Offences.Should().BeEmpty("the exception's type name carries no recipient");
+
+        var notASend = SendPathCatchOffences("""
+            try { await _db.SaveChangesAsync(ct); }
+            catch (Exception ex) { _log.LogError(ex, "Save failed"); }
+            """);
+        notASend.Catches.Should().Be(0, "a catch around no send is out of this rule's scope");
+        notASend.Offences.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A call that sends, or probes, an email or notification channel: any async call on a receiver whose name
+    /// mentions email/mail/smtp/sms/whatsapp/notif (<c>_emailService.SendAsync</c>, <c>smtp.SendAsync</c>,
+    /// <c>_notifications.SendEmailAsync</c>, <c>_mailer.SendMailAsync</c>, <c>_sms.SendAsync</c>), any
+    /// <c>Send…Email/Mail/Sms…Async(</c> call, the delivery helpers by name, a provider call, and the
+    /// notification dispatcher loop. Case-insensitive.
+    /// </summary>
+    [GeneratedRegex(@"\b\w*(?:email|mail|smtp|sms|whatsapp|notif)\w*\s*\.\s*\w+Async\s*\(|\bSend\w*(?:Email|Mail|Sms)\w*Async\s*\(|\b(?:Deliver(?:Platform)?Async|SendPlatformAsync|SendCoreAsync|DeliverToRecipientsAsync)\s*\(|\bProvider\s*\.\s*\w+Async\s*\(|\bdispatchers\b", RegexOptions.IgnoreCase)]
+    private static partial Regex SendCall();
+
+    [GeneratedRegex(@"\btry\s*\{")]
+    private static partial Regex TryBlock();
+
+    [GeneratedRegex(@"\G\s*catch\b\s*")]
+    private static partial Regex CatchKeyword();
+
+    [GeneratedRegex(@"\G\s*when\s*\(")]
+    private static partial Regex WhenFilter();
+
+    private static (int Catches, List<(int Line, string Offence)> Offences) SendPathCatchOffences(string code)
+    {
+        var offences = new List<(int, string)>();
+        var catches = 0;
+        foreach (Match t in TryBlock().Matches(code))
+        {
+            var open = t.Index + t.Length - 1;
+            var close = SourceScan.MatchingClose(code, open, '{', '}');
+            var sends = SendCall().IsMatch(SourceScan.BlankLiterals(code[(open + 1)..close]));
+
+            var i = close + 1;
+            for (var clause = CatchKeyword().Match(code, i); clause.Success; clause = CatchKeyword().Match(code, i))
+            {
+                var j = clause.Index + clause.Length;
+                string? variable = null;
+                if (j < code.Length && code[j] == '(')
+                {
+                    var declClose = SourceScan.MatchingClose(code, j, '(', ')');
+                    var decl = code[(j + 1)..declClose].Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+                    if (decl.Length >= 2) variable = decl[^1];
+                    j = declClose + 1;
+                }
+                var when = WhenFilter().Match(code, j);
+                if (when.Success) j = SourceScan.MatchingClose(code, when.Index + when.Length - 1, '(', ')') + 1;
+                while (j < code.Length && char.IsWhiteSpace(code[j])) j++;
+                if (j >= code.Length || code[j] != '{') break;
+                var bodyClose = SourceScan.MatchingClose(code, j, '{', '}');
+
+                if (sends)
+                {
+                    catches++;
+                    if (variable is not null)
+                    {
+                        var body = code[j..(bodyClose + 1)];
+                        // Any use of the caught exception except its type name.
+                        var leak = new Regex($@"(?<![\w.]){Regex.Escape(variable)}\b(?!\s*\.\s*GetType\s*\(\s*\)\s*\.\s*(?:Name|FullName)\b)");
+                        foreach (Match m in LogCall().Matches(body))
+                        {
+                            var argsOpen = m.Index + m.Length - 1;
+                            var args = body[(argsOpen + 1)..SourceScan.MatchingClose(body, argsOpen, '(', ')')];
+                            if (leak.IsMatch(SourceScan.BlankLiteralsKeepHoles(args)))
+                                offences.Add((SourceScan.LineOf(code, j + m.Index), $"{m.Groups["kind"].Value}: logs '{variable}' in a send-path catch"));
+                        }
+                    }
+                }
+                i = bodyClose + 1;
+            }
+        }
+        return (catches, offences);
+    }
+
     // ── Scanner ───────────────────────────────────────────────────────────────
 
     private static List<(int Line, string Offence)> Offences(string code)

@@ -656,12 +656,11 @@ async function activateEmployees(adminToken: string, slug: string, floor: number
 /**
  * Turn the declared employee accounts into REAL employee logins, linked to a person.
  *
- * Two different links exist in this product and only one of them is an email match:
- *   • `DataScopeService` falls back to matching the token's email against the employee's work or
- *     personal email — that is what makes ESS document requests work.
- *   • `EssTimesheetsController` (and My Benefits) require `Employee.UserAccountId == userId`, a hard
- *     foreign key that ONLY the invitation flow writes. An email match is not enough for them, and
- *     the failure is a polite 409 "ask HR to link it" that reads like a product bug.
+ * The ONLY link between a login and a person is the one the invitation flow writes (EmployeeUserAccounts
+ * and `Employee.UserAccountId`). The token's employee_id claim comes from it, and the data scope,
+ * self-service, timesheets and My Benefits all read it (`CallerEmployeeResolver`). There is no email
+ * fallback: matching a login's email to an employee's work or personal email used to stand in for the
+ * link, and a personal email can be changed through an approved self-service request.
  *
  * So these accounts are not created by `POST /api/platform/tenants/{id}/users` at all. They are
  * created the way a real employee login is created: HR invites the employee, and the employee

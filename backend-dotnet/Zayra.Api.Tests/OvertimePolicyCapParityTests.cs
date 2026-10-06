@@ -340,6 +340,8 @@ public class OvertimePolicyCapParityTests
         new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
         new Claim(ClaimTypes.Name, "OT Caps Tester"),
         new Claim(ClaimTypes.Role, "Admin"),
+        // An Admin holds overtime.write; filing for someone else needs it (OvertimeController.CreateRequest).
+        new Claim("permission", "overtime.write"),
     }, "Test"));
 
     private sealed class OrganizationScopeService : IDataScopeService

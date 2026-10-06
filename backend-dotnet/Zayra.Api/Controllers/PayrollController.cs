@@ -3118,6 +3118,8 @@ public class PayrollController : ControllerBase
         var validationCtx = new PayrollValidationContext(
             run, slips, employees, salaryAssignments, valProfiles, valDeductions, valEarnings, company)
         {
+            UnverifiedImportedBankDetails  = await UnverifiedImportedBankDetailsAsync(
+                tenantId, slips.Select(s => s.EmployeeId).ToList(), cancellationToken),
             OvertimeHoursByEmployee        = otHoursByEmpForValidation,
             AttendanceProcessedEmployeeIds = attendanceProcessedEmpIds,
             GosiRatesEffectiveFrom         = gosiRatesEffectiveFrom,
@@ -3871,13 +3873,13 @@ public class PayrollController : ControllerBase
         // Load deduction lines for this page of slips to build the breakdown.
         var deductionsByEmployee = await _db.PayrollDeductions.AsNoTracking()
             .Where(d => d.TenantId == tenantId && d.PayrollRunId == id && employeeIds.Contains(d.EmployeeId))
-            .Select(d => new { d.EmployeeId, d.ComponentCode, d.ComponentName, d.Amount, d.Source })
+            .Select(d => new { d.EmployeeId, d.ComponentCode, d.ComponentName, d.Amount, d.Source, d.IsEmployerContribution })
             .ToListAsync(cancellationToken);
         var linesByEmployee = deductionsByEmployee
             .GroupBy(d => d.EmployeeId)
             .ToDictionary(
                 g => g.Key,
-                g => (IReadOnlyList<PayrollDeductionLineDto>)g.Select(d => new PayrollDeductionLineDto(d.ComponentCode, d.ComponentName, d.Amount, d.Source)).ToList());
+                g => (IReadOnlyList<PayrollDeductionLineDto>)g.Select(d => new PayrollDeductionLineDto(d.ComponentCode, d.ComponentName, d.Amount, d.Source, d.IsEmployerContribution)).ToList());
         return Ok(new PagedResult<PayrollSlipDto>(
             items.Select(s => PayrollSlipDto.Project(s, true, linesByEmployee.TryGetValue(s.EmployeeId, out var dl) ? dl : null)).ToList(),
             total, page, pageSize));
@@ -4005,6 +4007,8 @@ public class PayrollController : ControllerBase
 
         var ctx     = new PayrollValidationContext(run, slips, employees, salaries, profiles, deductions, earnings, company)
         {
+            UnverifiedImportedBankDetails  = await UnverifiedImportedBankDetailsAsync(
+                tenantId, slips.Select(s => s.EmployeeId).ToList(), cancellationToken),
             OvertimeHoursByEmployee        = valOtHoursByEmp,
             AttendanceProcessedEmployeeIds = valAttendanceEmpIds,
             EmployeesAlreadyPaidRecurringThisPeriod = valAlreadyPaidEmpIds,
@@ -5121,8 +5125,15 @@ public class PayrollController : ControllerBase
             }
             foreach (var e in earnings.Where(x => x.EmployeeId == slip.EmployeeId))
                 _db.PayslipComponents.Add(new PayslipComponent { TenantId = tenantId, PayslipId = payslip.Id, ComponentType = "Earning", ComponentName = e.ComponentName, Amount = e.Amount });
+            // An employer contribution (e.g. GOSI-OH-ER) is an employer cost, not money taken from the
+            // employee: it is stored under its own type so no payslip ever counts it as a deduction.
             foreach (var d in deductions.Where(x => x.EmployeeId == slip.EmployeeId))
-                _db.PayslipComponents.Add(new PayslipComponent { TenantId = tenantId, PayslipId = payslip.Id, ComponentType = "Deduction", ComponentName = d.ComponentName, Amount = d.Amount });
+                _db.PayslipComponents.Add(new PayslipComponent
+                {
+                    TenantId = tenantId, PayslipId = payslip.Id,
+                    ComponentType = d.IsEmployerContribution ? PayslipLineTypes.EmployerContribution : PayslipLineTypes.Deduction,
+                    ComponentName = d.ComponentName, Amount = d.Amount,
+                });
             _db.PayslipComponents.Add(new PayslipComponent { TenantId = tenantId, PayslipId = payslip.Id, ComponentType = "Net", ComponentName = "Net pay", Amount = slip.NetSalary });
 
             // Both branches are tracked entities (existingPayslips is loaded WITHOUT AsNoTracking, new rows
@@ -6382,8 +6393,9 @@ public class PayrollController : ControllerBase
     /// <summary>
     /// Reverses a payment recorded outside the bank file (e.g. a cheque that bounced or was cancelled), the
     /// same way a bank settlement is reversed: contra lines dated to the original period, refused if that
-    /// period is closed, the originals flagged reversed. 2100 re-opens for the employee, and the payment can
-    /// then be recorded again. Requires payroll.export and a reason; refused once the batch is Reconciled,
+    /// period is closed, the originals flagged reversed. 2100 re-opens for the employee, a final settlement the
+    /// payment marked Paid goes back to Disbursing, and the payment can then be recorded again. Requires
+    /// payroll.export and a reason; refused once the batch is Reconciled,
     /// and never by the employee who was paid. Audited.
     /// </summary>
     [HttpPost("payment-batches/{batchId:guid}/outside-payments/{employeeId:int}/reverse")]
@@ -6426,12 +6438,84 @@ public class PayrollController : ControllerBase
             foreach (var o in originals) o.IsReversed = true;
             _db.FinanceGlEntries.AddRange(contras);
             var amount = originals.Where(o => !string.IsNullOrEmpty(o.DebitAccount)).Sum(o => o.Amount);
+            var settlementsReopened = await ReopenSettlementsPaidOutsideBankFileAsync(
+                tenantId, batch, employeeId, req.Reason!.Trim(), cancellationToken);
             await PayrollAudit("payroll.outside_payment.reversed", "PayrollPaymentBatch", batch.Id.ToString(),
-                new { runId = batch.PayrollRunId, employeeId, amount, reason = req.Reason!.Trim(), reversedEntries = contras.Count }, cancellationToken);
+                new { runId = batch.PayrollRunId, employeeId, amount, reason = req.Reason!.Trim(), reversedEntries = contras.Count, settlementsReopened }, cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
-            return Ok(new { batchId = batch.Id, employeeId, reversed = amount, reversedEntries = contras.Count });
+            return Ok(new { batchId = batch.Id, employeeId, reversed = amount, reversedEntries = contras.Count, settlementsReopened });
         }, cancellationToken);
     }
+
+    /// <summary>
+    /// A bounced or cancelled cheque (or a cash payment recorded in error) means the leaver was NOT paid, so a
+    /// final settlement this payment moved to Paid goes back to Disbursing, the state
+    /// <see cref="FinalizePaidSettlementsAsync"/> took it from; recording the payment again marks it Paid again.
+    /// What the payment did is undone where it describes the payment, and kept where it describes the debt:
+    /// <list type="bullet">
+    /// <item>PaymentBatchId and PaidAtUtc are cleared.</item>
+    /// <item>The offboarding's FinalSettlementDone tick, which the payment set, is cleared while the offboarding
+    ///   is still in progress. A Completed offboarding is left as it is and the audit row says so.</item>
+    /// <item>A residual loan or advance already reclassified to 1420 stays there: that journal and its
+    ///   sub-ledger row describe a debt that still exists whether or not the cheque cleared, and the loan no
+    ///   longer carries it, so re-recording cannot reclassify it twice.</item>
+    /// <item>ResidualDebtUnbooked is reset. It is a report of what stayed on the loan uncovered, and the next
+    ///   payment recomputes it from the loan; keeping it would count it twice.</item>
+    /// </list>
+    /// Runs inside the caller's serialized unit and is saved by its SaveChanges. Each settlement is audited.
+    /// </summary>
+    private async Task<List<Guid>> ReopenSettlementsPaidOutsideBankFileAsync(
+        Guid tenantId, PayrollPaymentBatch batch, int employeeId, string reason, CancellationToken ct)
+    {
+        var settlements = await _db.EmployeeFinalSettlements
+            .Where(s => s.TenantId == tenantId && s.PayrollRunId == batch.PayrollRunId && s.EmployeeId == employeeId
+                     && s.PaymentBatchId == batch.Id && s.Status == FinalSettlementStatuses.Paid)
+            .ToListAsync(ct);
+        if (settlements.Count == 0) return new List<Guid>();
+
+        var offboardingIds = settlements.Select(s => s.OffboardingId).Distinct().ToList();
+        var offboardings = await _db.EmployeeOffboardings
+            .Where(o => o.TenantId == tenantId && offboardingIds.Contains(o.Id))
+            .ToListAsync(ct);
+        var now = DateTime.UtcNow;
+        foreach (var s in settlements)
+        {
+            var previouslyPaidAtUtc = s.PaidAtUtc;
+            var unbookedCleared = s.ResidualDebtUnbooked;
+            s.Status = FinalSettlementStatuses.Disbursing;
+            s.PaymentBatchId = null;
+            s.PaidAtUtc = null;
+            s.ResidualDebtUnbooked = 0m;
+            s.UpdatedAtUtc = now;
+
+            var off = offboardings.FirstOrDefault(o => o.Id == s.OffboardingId);
+            var offboardingCompleted = off?.Status == "Completed";
+            var checklistReopened = false;
+            if (off is not null && off.FinalSettlementDone && !offboardingCompleted)
+            {
+                off.FinalSettlementDone = false;
+                off.UpdatedAtUtc = now;
+                checklistReopened = true;
+            }
+
+            await PayrollAudit("payroll.final_settlement.payment_reversed", "EmployeeFinalSettlement", s.Id.ToString(), new
+            {
+                s.EmployeeId, s.EmployeeCode, from = FinalSettlementStatuses.Paid, to = FinalSettlementStatuses.Disbursing,
+                runId = batch.PayrollRunId, batchId = batch.Id, previouslyPaidAtUtc, reason,
+                residualReclassedKept = s.ResidualDebtReclassed, residualUnbookedCleared = unbookedCleared,
+                offboardingChecklistReopened = checklistReopened, offboardingCompleted,
+            }, ct);
+        }
+        return settlements.Select(s => s.Id).ToList();
+    }
+
+    /// <summary>Rule 5c input: the employees whose imported bank details are still waiting for a second person.</summary>
+    private async Task<IReadOnlySet<int>> UnverifiedImportedBankDetailsAsync(Guid tenantId, List<int> employeeIds, CancellationToken ct) =>
+        (await _db.EmployeeImportGaps.AsNoTracking()
+            .Where(g => g.TenantId == tenantId && g.ResolvedAtUtc == null
+                     && g.GapType == EmployeeImportGap.BankDetailsUnverified && employeeIds.Contains(g.EmployeeId))
+            .Select(g => g.EmployeeId)
+            .ToListAsync(ct)).ToHashSet();
 
     /// <summary>The outside-the-bank-file payments recorded (live, unreversed) for a run, by GL reference.</summary>
     private async Task<HashSet<string>> OutsidePaymentRefsAsync(Guid tenantId, IReadOnlyCollection<Guid> runIds, CancellationToken ct) =>

@@ -40,6 +40,10 @@ export const navigationGroups: NavGroup[] = [
       { label: 'Dashboard', icon: Gauge, path: '/dashboard', requiredPermissions: ['dashboard.read'] },
       { label: 'Group Overview', icon: Building2, path: '/group', requiredPermissions: ['dashboard.read'], groupAccountOnly: true },
       { label: 'Self-Service', icon: UserCircle2, path: '/ess', requiredPermissions: ['ess.read'] },
+      { label: 'My Payslips', icon: FileText, path: '/ess/payslips', requiredPermissions: ['ess.read'] },
+      { label: 'My Leave', icon: ClipboardList, path: '/ess/leave', requiredPermissions: ['ess.read'] },
+      { label: 'My Overtime', icon: TimerReset, path: '/ess/overtime', requiredPermissions: ['ess.read'], requiredFeatureKey: 'overtime' },
+      { label: 'My HR Requests', icon: Headphones, path: '/ess/requests', requiredPermissions: ['ess.read'] },
       { label: 'My Benefits', icon: HeartPulse, path: '/ess/benefits', requiredPermissions: ['ess.read'] },
       // Release A (release_a opt-in flag): the employee's own package and deductions.
       { label: 'My package', icon: WalletCards, path: '/ess/package', requiredPermissions: ['ess.read'], requiredFeatureKey: 'release_a' },
@@ -89,7 +93,9 @@ export const navigationGroups: NavGroup[] = [
     items: [
       { label: 'Compliance Profiles', icon: ShieldCheck, path: '/compliance-profiles', requiredPermissions: ['compliance.read'] },
       { label: 'Tax Policies', icon: Landmark, path: '/tax-policies', requiredPermissions: ['payroll.read'] },
-      { label: 'Request Center', icon: Headphones, path: '/hr-requests', requiredPermissions: ['approvals.read', 'approvals.write', 'approvals.decide', 'ess.read'] },
+      // HR's queue. Employees raise and follow their own requests at /ess/requests (My HR Requests);
+      // ess.read used to show this link too, and the page's gate sent them to "Access Denied".
+      { label: 'Request Center', icon: Headphones, path: '/hr-requests', requiredPermissions: ['approvals.read', 'approvals.write', 'approvals.decide'] },
       { label: 'Approvals', icon: CheckSquare2, path: '/approvals', requiredPermissions: ['approvals.read', 'approvals.decide'] },
       { label: 'User Management', icon: KeyRound, path: '/user-management', requiredPermissions: ['users.manage', 'roles.manage', 'security.manage'] },
       { label: 'Saudi Compliance', icon: ShieldCheck, path: '/saudi-compliance', requiredPermissions: ['compliance.read', 'qiwa.read'] },
@@ -116,6 +122,10 @@ export const navigationHints: Record<string, string> = {
   '/dashboard': 'Today at a glance: payroll, attendance, approvals and document expiries.',
   '/group': 'Headcount, payroll and compliance across every company in the group.',
   '/ess': 'Your own payslips, leave balance, requests and documents.',
+  '/ess/payslips': 'Your payslips by month, with every line and a PDF to download.',
+  '/ess/leave': 'Your leave balances and requests. Apply for leave and cancel a request still waiting for approval.',
+  '/ess/overtime': 'Request overtime you have worked and follow it through approval.',
+  '/ess/requests': 'Ask HR for something, follow your requests, and reply to HR on each one.',
   '/ess/benefits': 'The benefits you are enrolled in and what they cover.',
   '/people': 'Employee records: profiles, contracts, documents and job history.',
   '/people/new-hires': 'Accepted offers and prepared hires waiting to be approved and activated as employees.',

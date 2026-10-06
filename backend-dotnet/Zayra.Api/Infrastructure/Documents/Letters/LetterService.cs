@@ -20,11 +20,15 @@ public class LetterService : ILetterService
         var ar = b.Locale is "ar" or "bilingual";
 
         var monthName = new DateTime(data.PayYear, data.PayMonth, 1).ToString("MMMM yyyy");
-        var earnings   = data.Items.Where(i => i.Type == "Earning").ToList();
-        var deductions = data.Items.Where(i => i.Type == "Deduction").ToList();
-        var netItem    = data.Items.FirstOrDefault(i => i.Type == "Net");
+        var earnings   = data.Items.Where(i => i.Type == PayslipLineTypes.Earning).ToList();
+        // Employee deductions only. Employer contributions are an employer cost: they get their own
+        // section below and are never part of the deductions total, so gross − deductions = net pay.
+        var deductions = data.Items.Where(i => i.Type == PayslipLineTypes.Deduction).ToList();
+        var employerContributions = data.Items.Where(i => i.Type == PayslipLineTypes.EmployerContribution).ToList();
+        var netItem    = data.Items.FirstOrDefault(i => i.Type == PayslipLineTypes.Net);
         var grossTotal     = earnings.Sum(e => e.Amount);
         var deductionTotal = deductions.Sum(d => d.Amount);
+        var employerTotal  = employerContributions.Sum(c => c.Amount);
         var netPay = netItem?.Amount ?? grossTotal - deductionTotal;
 
         // Parse branding colors to QuestPDF color strings (fallback to defaults on invalid hex)
@@ -44,6 +48,8 @@ public class LetterService : ILetterService
         var deductTotalLbl  = ar ? "إجمالي الاستقطاعات" : "Total Deductions";
         var netLabel        = ar ? "صافي الراتب"  : "NET PAY";
         var noDeductLbl     = ar ? "لا توجد استقطاعات" : "No deductions";
+        var employerLabel   = ar ? "مساهمات صاحب العمل (لا تُخصم من راتبك)" : "EMPLOYER CONTRIBUTIONS (NOT DEDUCTED FROM YOUR PAY)";
+        var employerTotLbl  = ar ? "إجمالي مساهمات صاحب العمل" : "Total employer contributions";
         var empLabel        = ar ? "الموظف"       : "Employee";
         var codeLabel       = ar ? "الكود"        : "Code";
         var deptLabel       = ar ? "القسم"        : "Department";
@@ -163,6 +169,27 @@ public class LetterService : ILetterService
                         row.RelativeItem().Text(netLabel).FontSize(12).Bold().FontColor(Colors.White);
                         row.ConstantItem(120).AlignRight().Text($"{data.Currency} {netPay:N2}").FontSize(13).Bold().FontColor(Colors.White);
                     });
+
+                    // Employer contributions — what the employer pays ON TOP of this salary (e.g. GOSI
+                    // occupational hazard). Shown after net pay so it can never be read as a deduction.
+                    if (employerContributions.Count > 0)
+                    {
+                        col.Item().PaddingTop(12).Column(c =>
+                        {
+                            c.Item().Background(Colors.Grey.Lighten3).Padding(6).Text(employerLabel).Bold().FontSize(8);
+                            foreach (var ec in employerContributions)
+                                c.Item().BorderBottom(0.5f).BorderColor(Colors.Grey.Lighten2).Padding(4).Row(r =>
+                                {
+                                    r.RelativeItem().Text(ec.Name);
+                                    r.ConstantItem(70).AlignRight().Text($"{ec.Amount:N2}");
+                                });
+                            c.Item().Background(Colors.Grey.Lighten2).Padding(5).Row(r =>
+                            {
+                                r.RelativeItem().Text(employerTotLbl).SemiBold();
+                                r.ConstantItem(70).AlignRight().Text($"{employerTotal:N2}").SemiBold();
+                            });
+                        });
+                    }
 
                     col.Item().PaddingTop(20).Text("This is a system-generated payslip and is valid without a signature.").FontSize(7).FontColor(Colors.Grey.Medium).Italic();
                 });

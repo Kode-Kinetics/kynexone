@@ -354,7 +354,7 @@ public class PayslipTemplatesController : ControllerBase
         catch { return new(); }
     }
 
-    private static IReadOnlyList<PayslipLineItem> BuildSampleItems(PayslipLayoutConfig layout, string locale)
+    internal static IReadOnlyList<PayslipLineItem> BuildSampleItems(PayslipLayoutConfig layout, string locale)
     {
         var ar = locale is "ar" or "bilingual";
         var items = new List<PayslipLineItem>();
@@ -367,9 +367,12 @@ public class PayslipTemplatesController : ControllerBase
                 if (fd is null) continue;
                 var label = ar ? fd.LabelAr : fd.LabelEn;
                 var sampleAmount = SampleAmounts.GetValueOrDefault(fieldKey, 500m);
-                var type = sec.Key is "deductions" or "employer_contributions" ? "Deduction"
+                // Employer contributions are an employer cost, never part of the employee's deductions:
+                // the preview must type them the way real payslips do, or it shows them inside Total Deductions.
+                var type = sec.Key is "deductions" ? PayslipLineTypes.Deduction
+                           : sec.Key is "employer_contributions" ? PayslipLineTypes.EmployerContribution
                            : sec.Key is "ytd" or "leave_balance" or "loan_balance" or "bank_wps" or "signatory" ? "Info"
-                           : "Earning";
+                           : PayslipLineTypes.Earning;
                 items.Add(new(label, sampleAmount, type));
             }
         }

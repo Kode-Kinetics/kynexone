@@ -22,6 +22,14 @@ public class EmployeeImportGap : ITenantOwned, ICompanyScopedOperational
     public int EmployeeId { get; set; }
     public int RowNumber { get; set; }
 
+    /// <summary>
+    /// A NEW employee's bank details (IBAN / account / routing code) came from an import, so no second person
+    /// has seen them. Never self-heals: it stays open until an HR user other than the importer confirms the
+    /// details with the employee (POST /api/employees/{id}/bank-details/confirm, audited), and until then the
+    /// pre-lock payroll validation carries it as a Warning on every run that pays them by bank.
+    /// </summary>
+    public const string BankDetailsUnverified = "pay:bankUnverified";
+
     /// <summary>Typed gap key, e.g. "org:department", "org:grade", "link:manager", "pay:salaryHeld".</summary>
     public string GapType { get; set; } = string.Empty;
 
