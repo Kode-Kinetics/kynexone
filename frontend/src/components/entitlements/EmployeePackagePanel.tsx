@@ -1,12 +1,14 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, CheckCircle2, Lock, RefreshCw } from 'lucide-react';
+import { AlertTriangle, Lock, RefreshCw } from 'lucide-react';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useAuth } from '../../contexts/AuthContext';
 import type { EmployeeDetail } from '../../api/employees';
 import { packageApi, type EmployeePackageView, type PackageLine } from '../../api/package';
 import { WhyPopover } from './WhyPopover';
+import { DependantsPanel } from './DependantsPanel';
+import { ProposalCard } from './ProposalCard';
 import { date, fill, hrWhy, reasonText, valueText, coverageText, type FormatContext } from './packageFormat';
 
 type Group = { key: string; title: string; lines: PackageLine[] };
@@ -41,18 +43,16 @@ export function EmployeePackagePanel({ employee }: { employee: EmployeeDetail })
 
   useEffect(() => { void load(); }, [load]);
 
-  const act = async (kind: 'freeze' | 'confirm') => {
+  const freeze = async () => {
     if (!view?.contract) return;
     setBusy(true);
     setNotice(null);
     try {
-      if (kind === 'freeze') {
-        const r = await packageApi.freeze(employee.id, view.contract.id);
-        setNotice(r.alreadyFrozen ? t('This contract year was already fixed.') : r.frozen ? t('The package is fixed for this contract year.') : t('Nothing to fix: the grade has no contract benefits yet.'));
-      } else {
-        await packageApi.confirm(employee.id, view.contract.id);
-        setNotice(t('The package is confirmed against the signed contract.'));
-      }
+      const r = await packageApi.freeze(employee.id, view.contract.id);
+      const base = r.alreadyFrozen ? t('This contract year was already fixed.') : r.frozen ? t('The package is fixed for this contract year.') : t('Nothing to fix: the grade has no contract benefits yet.');
+      const skipped = r.skipped.filter((x) => x.code !== 'ENTITLEMENT_NOT_IN_GRADE')
+        .map((x) => `${view.labels[x.componentCode]?.[locale === 'ar' ? 'ar' : 'en'] ?? x.componentCode}: ${reasonText(x.code, t)}`);
+      setNotice(skipped.length ? `${base} ${t('Not fixed:')} ${skipped.join(' · ')}` : base);
       await load();
     } catch (e) {
       const data = (e as { response?: { data?: { message?: string } } })?.response?.data;
@@ -120,24 +120,21 @@ export function EmployeePackagePanel({ employee }: { employee: EmployeeDetail })
         </div>
         {canManage && view.canFreeze && (
           <div className="flex flex-col items-end gap-1">
-            <button type="button" disabled={busy} onClick={() => void act('freeze')}
+            <button type="button" disabled={busy} onClick={() => void freeze()}
               className="inline-flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-xs font-semibold text-white hover:bg-sapphire/90 disabled:opacity-60">
               <Lock className="h-3.5 w-3.5" aria-hidden="true" />{busy ? t('Fixing…') : t('Fix the package for this contract year')}
             </button>
             <span className="max-w-xs text-end text-[11px] text-slate-500 dark:text-slate-400">{t('Later changes to the grade table will not alter this year’s benefits.')}</span>
           </div>
         )}
-        {canManage && view.unverifiedRows > 0 && (
-          <button type="button" disabled={busy} onClick={() => void act('confirm')}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-60">
-            <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />{t('Confirm it matches the signed contract')}
-          </button>
-        )}
       </header>
 
       {notice && <p role="status" className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-700 dark:bg-white/[0.04] dark:text-slate-200">{notice}</p>}
       {!view.contract && <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600 dark:bg-white/[0.04] dark:text-slate-300">{t('No active contract term, so nothing is fixed yet. The grade standard is shown.')}</p>}
-      {view.unverifiedRows > 0 && <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-500/[0.06] dark:text-amber-300">{t('These benefits were loaded from the grade table. Check them against the signed contract, then confirm.')}</p>}
+      {view.proposal && view.contract && canManage && (
+        <ProposalCard employeeId={employee.id} contractId={view.contract.id} proposal={view.proposal} labels={label} ctx={ctx}
+          onDecided={(message) => { setNotice(message); void load(); }} />
+      )}
       {view.blockReasons.map((r) => (
         <div key={r.code} role="alert" className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/20 dark:bg-amber-500/[0.06] dark:text-amber-200">
           <p className="font-semibold">{locale === 'ar' ? r.titleAr : r.titleEn}</p>
@@ -153,8 +150,8 @@ export function EmployeePackagePanel({ employee }: { employee: EmployeeDetail })
               <li key={line.componentCode} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-4 py-2.5">
                 <div className="min-w-0">
                   <p className="text-sm font-medium text-slate-800 dark:text-slate-100">{label(line.componentCode)}</p>
-                  {line.dependantScope !== 'None' && line.eligible && <p className="text-xs text-slate-500 dark:text-slate-400">{coverageText(line, t)}</p>}
-                  {line.reasonCode && <p className="text-xs text-amber-700 dark:text-amber-300">{reasonText(line.reasonCode, t)}</p>}
+                  {line.dependantScope !== 'None' && line.eligible && <p className="text-xs text-slate-500 dark:text-slate-400">{coverageText(line, t, view.dependantsOnFile)}</p>}
+                  {line.reasonCode && <p className="text-xs text-amber-700 dark:text-amber-300">{reasonText(line.reasonCode, t, view.criteria[line.componentCode], line.eligibleFrom, locale)}</p>}
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   {line.gradeStandardDiffers && <span className="rounded-full bg-sky-50 px-2 py-0.5 text-[11px] font-medium text-sky-700 dark:bg-sky-500/10 dark:text-sky-300">{t('Reviewed at renewal')}</span>}
@@ -168,6 +165,8 @@ export function EmployeePackagePanel({ employee }: { employee: EmployeeDetail })
           </ul>
         </div>
       ))}
+
+      <DependantsPanel employeeId={employee.id} onChanged={() => void load()} />
     </section>
   );
 }

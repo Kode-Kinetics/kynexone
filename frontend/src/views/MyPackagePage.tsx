@@ -120,8 +120,8 @@ function MyPackage() {
                   {shown
                     ? <p className="break-words text-sm tabular-nums text-slate-900 dark:text-slate-50">{valueText(line, ctx)}</p>
                     : !line.reasonCode && <p className="text-sm text-slate-400 dark:text-slate-500">{t('Not included')}</p>}
-                  {shown && line.dependantScope !== 'None' && <p className="text-xs text-slate-500 dark:text-slate-400">{coverageText(line, t)}</p>}
-                  {line.reasonCode && <p className={`text-xs ${shown ? 'text-amber-700 dark:text-amber-300' : 'text-slate-500 dark:text-slate-400'}`}>{reasonText(line.reasonCode, t)}</p>}
+                  {shown && line.dependantScope !== 'None' && <p className="text-xs text-slate-500 dark:text-slate-400">{coverageText(line, t, data.dependantsOnFile)}</p>}
+                  {line.reasonCode && <p className={`text-xs ${shown ? 'text-amber-700 dark:text-amber-300' : 'text-slate-500 dark:text-slate-400'}`}>{reasonText(line.reasonCode, t, line.reasonCriterion, line.eligibleFrom, locale)}</p>}
                 </li>
               );
             })}

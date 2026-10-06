@@ -28,6 +28,13 @@ export interface PackageLine {
   isCompanyOverride: boolean;
   gradeStandardDiffers: boolean;
   reasonCode: string | null;
+  maxOutstandingAmount: number | null;
+  /** The cash figure the line comes to today (e.g. 3 × housing = 6,000; 25% of basic = 2,000). */
+  resolvedAmount: number | null;
+  /** When a line waiting on a criterion becomes eligible. */
+  eligibleFrom: string | null;
+  /** The grade's standard today (company cell where one exists); null when the grade has no cell. */
+  standardValue: Record<string, unknown> | null;
 }
 
 export interface EmployeePackage {
@@ -88,15 +95,47 @@ export interface EmployeePackageView {
   currency: string;
   grade: { id: string; code: string; name: string; nameAr: string | null; level: number } | null;
   company: { id: string; nameEn: string; nameAr: string } | null;
-  contract: { id: string; number: string; status: string; startDate: string; endDate: string | null } | null;
+  contract: { id: string; number: string; status: string; startDate: string; endDate: string | null; workerNationalityClass: string | null } | null;
   salary: { effectiveDate: string; basicSalary: number; currency: string } | null;
   cells: PackageCell[];
   frozenRows: PackageFrozenRow[];
   blockReasons: BlockReason[];
+  /** Every reason code on the screen, described (EN/AR title, why, fix). */
+  reasons: Record<string, BlockReason>;
+  /** Component code → the criterion a "not eligible yet" line is waiting for. */
+  criteria: Record<string, string>;
   canFreeze: boolean;
-  unverifiedRows: number;
+  dependantsOnFile: number;
+  proposal: PackageProposal | null;
   labels: Record<string, ComponentLabel>;
 }
+
+export interface ProposedRow {
+  componentCode: string; valueType: string; amount: number | null; rate: number | null; maxOutstandingAmount: number | null;
+  coverageTier: string | null; quantity: number | null; dependantScope: string; maxDependants: number | null; limitPeriod: string | null;
+  resolvedAmount: number | null; carriedFromId: string | null;
+}
+
+export interface FreezeSkip { componentCode: string; code: string }
+
+export interface PackageProposal {
+  batchId: string;
+  /** The viewer asked for the run, so another HR user must decide it. */
+  requestedByYou: boolean;
+  from: string;
+  to: string | null;
+  rows: ProposedRow[];
+  skips: FreezeSkip[];
+}
+
+export interface FreezeOutcome {
+  frozen: boolean; alreadyFrozen: boolean; rowsWritten: number;
+  skipped: Array<{ componentCode: string; code: string; reason: BlockReason | null }>;
+}
+
+export type DependantRelationship = 'Spouse' | 'Child' | 'Parent' | 'Other';
+export interface Dependant { id: string; fullName: string; relationship: DependantRelationship; dateOfBirth: string | null; nationalId: string }
+export interface DependantInput { fullName: string; relationship: DependantRelationship; dateOfBirth: string | null; nationalId: string | null }
 
 export type EssGroup = 'pay' | 'contract' | 'facility';
 
@@ -119,6 +158,9 @@ export interface EssPackageLine {
   dependantsCovered: number;
   limitPeriod: string | null;
   reasonCode: string | null;
+  reasonCriterion: string | null;
+  eligibleFrom: string | null;
+  resolvedAmount: number | null;
   why: { basis: 'salary' | 'contract' | 'grade' | 'policy'; gradeName: string | null; gradeNameAr: string | null; companyRule: boolean; since: string | null; until: string | null };
 }
 
@@ -140,10 +182,18 @@ export const packageApi = {
   forEmployee: (employeeId: number, asOf?: string) =>
     client.get<EmployeePackageView>(`/api/entitlements/employees/${employeeId}/package`, { params: asOf ? { asOf } : undefined }).then((r) => r.data),
   freeze: (employeeId: number, contractId: string) =>
-    client.post<{ frozen: boolean; alreadyFrozen: boolean; rowsWritten: number }>(
+    client.post<FreezeOutcome>(
       `/api/entitlements/employees/${employeeId}/package/freeze`, { contractId },
       { headers: { 'Idempotency-Key': `package-freeze:${contractId}` } }).then((r) => r.data),
-  confirm: (employeeId: number, contractId: string) =>
-    client.post<{ confirmed: number }>(`/api/entitlements/employees/${employeeId}/package/confirm`, { contractId }).then((r) => r.data),
+  confirmProposal: (batchId: string, contractId: string, documentId: string) =>
+    client.post<{ confirmed: number }>(`/api/entitlements/package/proposals/${batchId}/confirm`, { contractId, documentId }).then((r) => r.data),
+  rejectProposal: (batchId: string, contractId: string, reason: string) =>
+    client.post<{ rejected: boolean }>(`/api/entitlements/package/proposals/${batchId}/reject`, { contractId, reason }).then((r) => r.data),
+  dependants: (employeeId: number) => client.get<Dependant[]>(`/api/entitlements/employees/${employeeId}/dependants`).then((r) => r.data),
+  addDependant: (employeeId: number, input: DependantInput) =>
+    client.post<Dependant>(`/api/entitlements/employees/${employeeId}/dependants`, input).then((r) => r.data),
+  updateDependant: (employeeId: number, id: string, input: DependantInput) =>
+    client.put<Dependant>(`/api/entitlements/employees/${employeeId}/dependants/${id}`, input).then((r) => r.data),
+  removeDependant: (employeeId: number, id: string) => client.delete(`/api/entitlements/employees/${employeeId}/dependants/${id}`),
   mine: () => client.get<EssPackage>('/api/ess/package').then((r) => r.data),
 };

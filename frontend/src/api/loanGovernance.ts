@@ -57,7 +57,7 @@ export interface LoanLimitBreakdown {
 export type GradeLimitValueType = 'Amount' | 'MultipleOfBasic' | 'MultipleOfGross' | 'MultipleOfHousing' | 'EligibilityOnly';
 
 /** Grade-limit reason codes the eligibility service can return. Never exceptionable. */
-export type GradeLimitReasonCode = 'GradeNotEligible' | 'GradeLimitPerLoan' | 'GradeLimitOutstanding' | 'GradeMissing' | 'GradeLimitNotConfigured' | 'GradeSalaryMissing' | 'GradeLimitCurrencyAmbiguous';
+export type GradeLimitReasonCode = 'GradeNotEligible' | 'GradeLimitPerLoan' | 'GradeLimitOutstanding' | 'GradeMissing' | 'GradeLimitNotConfigured' | 'GradeSalaryMissing' | 'GradeLimitCurrencyAmbiguous' | 'GradeHousingInKind';
 
 /** One row of GET /api/finance/loans/grade-limits — one per active grade, ordered by level. */
 export interface GradeLoanLimitRow {

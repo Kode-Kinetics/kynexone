@@ -68,7 +68,8 @@ test('"Why this value?" names the grade cell for HR and the contract year for th
 });
 
 test('a reason is always a sentence, never a raw code', () => {
-  for (const code of ['PACKAGE_NOT_OFFERED_BY_COMPANY', 'PACKAGE_HOUSING_IN_KIND', 'ENTITLEMENT_CELL_MISSING', 'SOMETHING_NEW']) {
+  for (const code of ['ENTITLEMENT_NOT_OFFERED_BY_COMPANY', 'ENTITLEMENT_NOT_IN_GRADE', 'ENTITLEMENT_HOUSING_IN_KIND', 'ENTITLEMENT_SALARY_MISSING',
+    'ENTITLEMENT_NATIONALITY_UNCONFIRMED', 'ENTITLEMENT_LOAN_POLICY_BLOCKS', 'ENTITLEMENT_TERM_OVERLAP', 'ENTITLEMENT_CELL_MISSING', 'SOMETHING_NEW']) {
     for (const locale of ['en', 'ar'] as const) {
       const text = reasonText(code, ctx(locale).t);
       expect(text.length, code).toBeGreaterThan(10);
@@ -79,6 +80,7 @@ test('a reason is always a sentence, never a raw code', () => {
 
 test('every string the package screens translate has an Arabic entry', () => {
   const files = ['src/components/entitlements/packageFormat.ts', 'src/components/entitlements/EmployeePackagePanel.tsx',
+    'src/components/entitlements/DependantsPanel.tsx', 'src/components/entitlements/ProposalCard.tsx',
     'src/components/entitlements/WhyPopover.tsx', 'src/views/MyPackagePage.tsx'];
   for (const file of files) {
     const source = readFileSync(file, 'utf8');
@@ -90,11 +92,30 @@ test('every string the package screens translate has an Arabic entry', () => {
 });
 
 test('the loan form explains the housing advance as a multiple of the housing allowance, and the grid offers it only there', async () => {
-  const { breakdownExplanation, fillTemplate, isHousingAdvance } = await import('../src/lib/gradeLoanLimits');
+  const { breakdownExplanation, fillTemplate, allowsHousingMultiple, gradeReasonKeyFor } = await import('../src/lib/gradeLoanLimits');
   const sentence = breakdownExplanation({ limit: 'GradePerLoan', basis: 'MultipleOfHousing', multiple: 3, salaryBasisAmount: 2000, cap: 6000,
     outstandingNow: null, available: 6000, unit: 'Principal' }, (n) => `SAR ${n.toLocaleString('en-US')}`)!;
   expect(fillTemplate(translate('en', sentence.key), sentence.values)).toBe('Eligible up to SAR 6,000 = 3 × housing allowance SAR 2,000');
   expect(translate('ar', sentence.key)).toContain('بدل السكن');
-  expect([isHousingAdvance('HOUSING_ADVANCE'), isHousingAdvance('housing-advance'), isHousingAdvance('Housing'), isHousingAdvance('PERSONAL')])
-    .toEqual([true, true, false, false]);
+  // Keyed on the entitlement component code, as the server is: the display code alone never decides.
+  expect([
+    allowsHousingMultiple({ code: 'HOUSING_ADVANCE' }),
+    allowsHousingMultiple({ code: 'Housing', entitlementComponentCode: 'LOAN_HOUSING_ADVANCE' }),
+    allowsHousingMultiple({ code: 'HOUSING_ADVANCE', entitlementComponentCode: 'LOAN_HOUSING' }),
+    allowsHousingMultiple({ code: 'PERSONAL' }),
+  ]).toEqual([true, true, false, false]);
+  for (const self of [true, false]) {
+    const key = gradeReasonKeyFor('GradeHousingInKind', self);
+    expect(key).toContain('in kind');
+    expect(translate('ar', key)).toContain('عيناً');
+  }
+});
+
+test('"not eligible yet" says which criterion and from when; no dependants on file is said, not counted as 0', () => {
+  const en = ctx('en');
+  expect(reasonText('ENTITLEMENT_NOT_ELIGIBLE_CRITERIA', en.t, 'ServiceMonths', '2027-02-01', 'en'))
+    .toBe('Applies from 1 Feb 2027, once the required months of service are completed.');
+  expect(reasonText('ENTITLEMENT_NOT_ELIGIBLE_CRITERIA', ctx('ar').t, 'AfterProbation', '2026-05-02', 'ar')).toContain('فترة التجربة');
+  expect(coverageText(medical, en.t, 0)).toBe('Employee — no dependants on file');
+  expect(valueText({ ...advance, amount: null, resolvedAmount: 6000 }, en)).toBe('Up to SAR 6,000 (3 × housing allowance)');
 });

@@ -7,6 +7,7 @@ export type Translate = (key: string) => string;
 /** The fields both the HR line and the employee line carry. */
 export interface ValueLine {
   componentCode: string;
+  resolvedAmount?: number | null;
   valueType: string | null;
   amount: number | null;
   rate: number | null;
@@ -66,8 +67,9 @@ export function tierText(tier: string | null, t: Translate): string {
 }
 
 /** Who besides the employee a line covers: "Employee only", "Employee + 3 dependants". */
-export function coverageText(line: ValueLine, t: Translate): string {
+export function coverageText(line: ValueLine, t: Translate, dependantsOnFile?: number): string {
   if (line.dependantScope === 'None') return t('Employee only');
+  if (dependantsOnFile === 0) return t('Employee — no dependants on file');
   if (line.dependantsCovered === 0) return t('Employee (no dependants on file in scope)');
   return line.dependantsCovered === 1
     ? t('Employee + 1 dependant')
@@ -100,15 +102,16 @@ export function valueText(line: ValueLine, ctx: FormatContext): string {
     case 'MultipleOfHousing': {
       const basis = line.valueType === 'MultipleOfHousing' ? t('housing allowance') : line.valueType === 'MultipleOfBasic' ? t('basic salary') : t('gross salary');
       const formula = `${multiple(line.rate ?? 0)} × ${basis}`;
-      return line.amount != null ? fill(t('Up to {amount} ({formula})'), { amount: m(line.amount), formula }) : formula;
+      const figure = line.resolvedAmount ?? line.amount;
+      return figure != null ? fill(t('Up to {amount} ({formula})'), { amount: m(figure), formula }) : formula;
     }
     case 'EligibilityOnly':
       return t('Included');
     case 'Amount':
     default: {
       if (line.monthlyCash != null && line.limitPeriod === 'Monthly') return fill(t('{amount} a month'), { amount: m(line.monthlyCash) });
-      if (line.amount == null) return '';
-      if (isLoan) return fill(t('Up to {amount}'), { amount: m(line.amount) });
+      if (line.amount == null) return isLoan && line.resolvedAmount != null ? fill(t('Up to {amount}'), { amount: m(line.resolvedAmount) }) : '';
+      if (isLoan) return fill(t('Up to {amount}'), { amount: m(line.resolvedAmount ?? line.amount) });
       if (line.limitPeriod === 'PerDay') return fill(t('{amount} a day'), { amount: m(line.amount) });
       if (line.dependantScope === 'Children') {
         const base = fill(t('{amount} a child a year'), { amount: m(line.amount) });
@@ -120,21 +123,34 @@ export function valueText(line: ValueLine, ctx: FormatContext): string {
   }
 }
 
-/** Every reason a line is not (yet) given, in a sentence. Unknown codes fall back to a neutral sentence, never the code. */
-export function reasonText(code: string | null | undefined, t: Translate): string {
+/**
+ * Every reason a line is not (yet) given, in a sentence. One mapping for every code the server returns (PackageReasons);
+ * "not eligible yet" is worded by its criterion and says from when. Unknown codes fall back to a neutral sentence.
+ */
+export function reasonText(code: string | null | undefined, t: Translate, criterion?: string | null, eligibleFrom?: string | null, locale = 'en'): string {
   if (!code) return '';
+  if (code === 'ENTITLEMENT_NOT_ELIGIBLE_CRITERIA') {
+    const when = eligibleFrom ? date(eligibleFrom, locale) : null;
+    switch (criterion) {
+      case 'ServiceMonths': return when ? fill(t('Applies from {date}, once the required months of service are completed.'), { date: when }) : t('Applies once the required months of service are completed.');
+      case 'AfterProbation': return when ? fill(t('Applies from {date}, once probation ends.'), { date: when }) : t('Applies once probation ends.');
+      case 'Nationality': return t('Limited to another nationality group, under a recorded legal basis.');
+      default: return t('Not eligible yet.');
+    }
+  }
   const known: Record<string, string> = {
-    PACKAGE_NOT_OFFERED_BY_COMPANY: 'Your company does not offer this benefit.',
-    PACKAGE_NOT_IN_GRADE: 'Not included for this grade.',
-    PACKAGE_SERVICE_MONTHS: 'Applies once the required months of service are completed.',
-    PACKAGE_AFTER_PROBATION: 'Applies once probation ends.',
-    PACKAGE_NATIONALITY: 'Limited to another nationality group, under a recorded legal basis.',
-    PACKAGE_HOUSING_IN_KIND: 'Housing is provided in kind, so there is no housing allowance to advance against.',
-    PACKAGE_SALARY_MISSING: 'No salary is on file yet.',
+    ENTITLEMENT_NOT_OFFERED_BY_COMPANY: 'Your company does not offer this benefit.',
+    ENTITLEMENT_NOT_IN_GRADE: 'Not included for this grade.',
+    ENTITLEMENT_HOUSING_IN_KIND: 'Housing is provided in kind, so there is no housing allowance to advance against.',
+    ENTITLEMENT_SALARY_MISSING: 'No salary is on file yet.',
+    ENTITLEMENT_NATIONALITY_UNCONFIRMED: 'Needs confirmation: the contract does not record the nationality class yet.',
+    ENTITLEMENT_LOAN_POLICY_BLOCKS: 'The loan policy does not allow it right now. The loan form gives the exact reason.',
     ENTITLEMENT_CELL_MISSING: 'Not set for this grade yet. HR has a gap to fill in the grade table.',
     GRADE_MISSING: 'No grade is recorded, so the grade standard cannot be shown.',
     ENTITLEMENT_FLOOR_HOUSING: 'The salary gives neither a housing allowance nor housing in kind (Article 61).',
     ENTITLEMENT_FLOOR_TRANSPORT: 'The salary gives neither a transport allowance nor transport in kind (Article 61).',
+    ENTITLEMENT_TERM_OVERLAP: 'Already fixed under another contract term that overlaps this one.',
+    ENTITLEMENT_ROW_IN_THE_WAY: 'The earlier term has this benefit fixed from a later date.',
   };
   return t(known[code] ?? 'This item is not available right now.');
 }

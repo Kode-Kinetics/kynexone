@@ -8,7 +8,7 @@ import { useLocale } from '../../contexts/LocaleContext';
 import { useTenantSettings } from '../../contexts/TenantSettingsContext';
 import { loanErrorMessage, localDateToday } from '../../lib/loanWorkflow';
 import {
-  applyFromGradeUpward, applySameForAll, companiesWithoutPolicyFromError, draftFromRow, draftProblem, fillTemplate, inputFromDraft, isHousingAdvance, localName,
+  applyFromGradeUpward, applySameForAll, companiesWithoutPolicyFromError, draftFromRow, draftProblem, fillTemplate, inputFromDraft, allowsHousingMultiple, localName,
   missingGradesFromError, unsetGradeNames, type GradeEligibilityChoice, type GradeLimitBasis, type GradeLimitDraft,
 } from '../../lib/gradeLoanLimits';
 
@@ -223,7 +223,7 @@ export function GradeLimitsPanel({ loanTypes, companies, initialLoanTypeId, onGr
                 </td>
                 <td className="p-2">
                   <select className="select" aria-label={fillTemplate(t('Limit basis — {grade}'), { grade: gradeLabel(d) })} disabled={figuresDisabled} value={d.basis} onChange={e => update(d.gradeId, { basis: e.target.value as GradeLimitBasis })}>
-                    {(Object.keys(basisKeys) as GradeLimitBasis[]).filter(basis => basis !== 'MultipleOfHousing' || isHousingAdvance(loanType?.code) || d.basis === basis)
+                    {(Object.keys(basisKeys) as GradeLimitBasis[]).filter(basis => basis !== 'MultipleOfHousing' || allowsHousingMultiple(loanType) || d.basis === basis)
                       .map(basis => <option key={basis} value={basis}>{t(basisKeys[basis])}</option>)}
                   </select>
                 </td>

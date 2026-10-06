@@ -6,9 +6,16 @@ import type {
 /** Limit basis the admin picks per grade. "No per-loan cap" is an empty per-loan figure, not a basis. */
 export type GradeLimitBasis = 'Amount' | 'MultipleOfBasic' | 'MultipleOfGross' | 'MultipleOfHousing';
 
-/** Release A (R2): × housing allowance is offered only for the housing advance (EntitlementComponentRules). */
-export const isHousingAdvance = (loanTypeCode: string | null | undefined) =>
-  (loanTypeCode ?? '').toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '') === 'HOUSING_ADVANCE';
+/** The Facility code a loan type's grade limits are keyed by — the server's GradeLoanLimitResolver.FacilityCodeFor. */
+export const facilityCodeFor = (loanTypeCode: string | null | undefined) => {
+  const cleaned = (loanTypeCode ?? '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '_').replace(/^_+|_+$/g, '');
+  return ('LOAN_' + (cleaned || 'TYPE')).slice(0, 64);
+};
+
+/** Release A (R2): × housing allowance is allowed only for the housing-advance facility (EntitlementComponentRules), keyed on
+ * the loan type's entitlement component code like the server, never on its display code. */
+export const allowsHousingMultiple = (loanType: { code?: string | null; entitlementComponentCode?: string | null } | null | undefined) =>
+  !!loanType && (loanType.entitlementComponentCode || facilityCodeFor(loanType.code)).toUpperCase() === 'LOAN_HOUSING_ADVANCE';
 
 /** Eligibility as edited: 'unset' only exists for a grade with no limit in force yet. */
 export type GradeEligibilityChoice = 'unset' | 'yes' | 'no';
@@ -43,6 +50,7 @@ export const gradeReasonKeys: Record<GradeLimitReasonCode, string> = {
   GradeLimitNotConfigured: "Your loan limit hasn't been set up yet — HR has been notified.",
   GradeSalaryMissing: "Your limit is a multiple of your salary, and no current salary is on file. HR needs to complete it before you can apply.",
   GradeLimitCurrencyAmbiguous: "Your grade's loan limit is a fixed amount set for all companies, but the companies pay in different currencies. HR needs to set your company's own limit before you can apply.",
+  GradeHousingInKind: "Your housing is provided in kind (accommodation), so there is no housing allowance to advance against.",
 };
 
 /** The same refusals, worded for HR applying on an employee's behalf. */
@@ -54,6 +62,7 @@ export const gradeReasonKeysForEmployee: Record<GradeLimitReasonCode, string> = 
   GradeLimitNotConfigured: "No loan limit is set for this employee's grade yet. Set it in Loan Policies → Limits by grade.",
   GradeSalaryMissing: "This employee's limit is a multiple of salary, and no current salary is on file. Complete it before applying.",
   GradeLimitCurrencyAmbiguous: "This grade's loan limit is a fixed amount set for all companies, but the companies pay in different currencies. Set this employee's company's own limit in Loan Policies \u2192 Limits by grade.",
+  GradeHousingInKind: "This employee's housing is provided in kind, so there is no housing allowance to advance against.",
 };
 export const gradeReasonFallbackKey = "This request is outside the loan limit for your grade.";
 export const gradeReasonFallbackKeyForEmployee = "This request is outside the loan limit for this employee's grade.";
