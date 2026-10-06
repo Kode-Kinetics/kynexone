@@ -143,7 +143,10 @@ public class ReleaseAContractTests
         // R2 landed: the resolver and writer are real (Release A R2 tests). Its activation hook must still never block
         // activation, even when the writer fails.
         var contract = new EmployeeContract { TenantId = Guid.NewGuid() };
-        await new ContractChainStamper().Invoking(h => h.OnActivatedAsync(contract, default)).Should().NotThrowAsync();
+        // R4 replaced the stamper stub; it still never throws, even with no employee row behind the contract.
+        await using var stamperDb = InMemory();
+        await new ContractChainStamper(stamperDb, NullLogger<ContractChainStamper>.Instance)
+            .Invoking(h => h.OnActivatedAsync(contract, default)).Should().NotThrowAsync();
         await new PackageFreezeOnActivation(new ThrowingWriter()).Invoking(h => h.OnActivatedAsync(contract, default)).Should().NotThrowAsync();
     }
 
@@ -183,7 +186,7 @@ public class ReleaseAContractTests
     {
         var codes = typeof(ReleaseABlockReasons).GetFields(BindingFlags.Public | BindingFlags.Static)
             .Where(f => f.IsLiteral && f.FieldType == typeof(string)).Select(f => (string)f.GetRawConstantValue()!).ToList();
-        codes.Should().HaveCount(51); // 37 from R0 + 14 from R2 (review rounds 2–4)
+        codes.Should().HaveCount(57); // 37 from R0 + 14 from R2 (review rounds 2–4) + 6 from R4
         ReleaseABlockReasons.All.Keys.Should().BeEquivalentTo(codes);
         var arabic = new Regex(@"\p{IsArabic}");
         foreach (var reason in ReleaseABlockReasons.All.Values)

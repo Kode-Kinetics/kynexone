@@ -310,7 +310,8 @@ public class ContractsController : ControllerBase
             });
         if (requested == "Active" && string.IsNullOrWhiteSpace(req.SignedByHrName))
             return BadRequest(new { error = "hr_signature_required", message = "HR signatory name is required to activate a contract." });
-        if (requested == "Expired" && (!contract.EndDate.HasValue || contract.EndDate.Value > DateOnly.FromDateTime(DateTime.UtcNow)))
+        var today = _clock is not null ? await _clock.TodayAsync(tid, ct) : DateOnly.FromDateTime(DateTime.UtcNow);
+        if (requested == "Expired" && (!contract.EndDate.HasValue || contract.EndDate.Value > today))
             return BadRequest(new { error = "contract_not_expired", message = "A contract can only be marked Expired on or after its recorded end date." });
 
         contract.Status = requested;
@@ -389,14 +390,17 @@ public class ContractsController : ControllerBase
             return BadRequest(new { error = "invalid_contract_dates", message = "The replacement contract must start on or after the prior start date and end on or after its start date." });
         if (req.BasicSalary < 0m)
             return BadRequest(new { error = "invalid_basic_salary", message = "Basic salary cannot be negative." });
-        // Release A: a term under renewal review is replaced only by the renewal itself (Apply), never beside it —
-        // otherwise the case would decide a term that no longer exists. Finish or cancel the case first.
-        if (await _db.ContractRenewalCases.AnyAsync(c => c.TenantId == tid && c.ExpiringContractId == id && c.ClosedAt == null, ct))
-            return Conflict(new
-            {
-                error = "renewal_case_open",
-                message = "This contract has an open renewal review. Finish or cancel the renewal before replacing the contract.",
-            });
+        // Release A: an open renewal review follows its term (RenewalCaseCarry). An amendment within the term is allowed and
+        // the review moves onto the new version when that version is activated; a new term after the end is the renewal's
+        // own decision, and a changed end date once an action is chosen is refused.
+        var carry = await Zayra.Api.Infrastructure.Contracts.RenewalCaseCarry.DecideAsync(_db, tid, old, req.StartDate, req.EndDate, ct);
+        if (carry.RefusalCode == Zayra.Api.Application.Contracts.ReleaseABlockReasons.RenewalCaseInProgress)
+        {
+            var reason = Zayra.Api.Application.Contracts.ReleaseABlockReasons.All[carry.RefusalCode];
+            return Conflict(new { error = carry.RefusalCode, reason, message = reason.WhyEn, messageAr = reason.WhyAr });
+        }
+        if (carry.RefusalCode is not null)
+            return Conflict(new { error = carry.RefusalCode, message = carry.RefusalEn, messageAr = carry.RefusalAr });
 
         // Release A: refuse BEFORE anything changes when the replacement would need a fixed benefit that has not started
         // removed (the database never removes one) — the current version then simply stays in force.
@@ -428,6 +432,9 @@ public class ContractsController : ControllerBase
             CreatedByUserId = GetUserId(),
             // Release A: an amendment is the same worker under the same chain — keep the stamped nationality class, so
             // nationality-scoped benefits are not "needs confirmation" on every new version.
+            // The same term's renewal terms carry over to the new version (Release A).
+            AutoRenew = old.AutoRenew,
+            NonRenewalNoticeDays = old.NonRenewalNoticeDays,
             WorkerNationalityClass = old.WorkerNationalityClass,
         };
 

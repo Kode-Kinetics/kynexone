@@ -25,7 +25,9 @@ import { requestFailureReason } from '../lib/requestFailure';
 import { JawazatPanel } from '../components/compliance/JawazatPanel';
 import { BenefitsAwaitingNotice } from '../components/entitlements/BenefitsAwaitingNotice';
 import { packageApi, type ContractPackageStatus } from '../api/package';
+import { useLocale } from '../contexts/LocaleContext';
 import { useReleaseA } from '../lib/releaseA';
+import { fill } from '../lib/renewalRadar';
 import { useAuth } from '../contexts/AuthContext';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -145,6 +147,9 @@ function ContractsTab() {
   const { hasPermission } = useAuth();
   const canCreate = hasPermission('compliance.write');
   const [statusFilter, setStatusFilter] = useState('');
+  // Release A (R4): the renewal number and a link to the contract's history, for release_a tenants only.
+  const releaseA = useReleaseA();
+  const { t: tr } = useLocale();
   // Every contract, not the server's first 20: an active contract past its end date is acted on
   // from this register ("Mark expired"), so one on a later page would silently never be.
   const list = useFullList<EmployeeContract>(() => complianceContractsApi.listAll({ status: statusFilter || undefined }));
@@ -161,7 +166,6 @@ function ContractsTab() {
   useEffect(() => { void list.reload(); }, [statusFilter, list.reload]);
 
   // Release A: an active contract whose benefits wait for a second person gets one next action on its row.
-  const releaseA = useReleaseA();
   const [packageStatus, setPackageStatus] = useState<Record<string, ContractPackageStatus>>({});
   const [proposing, setProposing] = useState<string | null>(null);
   const activeIds = contracts.filter((c) => c.status === 'Active').map((c) => c.id).join(',');
@@ -280,7 +284,7 @@ function ContractsTab() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-200 dark:border-white/10">
-                {['Contract #', 'Employee', 'Type', 'Start', 'End', 'Salary', 'Version', 'Status', 'Actions'].map(h => (
+                {['Contract #', 'Employee', 'Type', 'Start', 'End', 'Salary', 'Version', ...(releaseA ? [tr('Renewal')] : []), 'Status', 'Actions'].map(h => (
                   <th key={h} className="p-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{h}</th>
                 ))}
               </tr>
@@ -296,6 +300,13 @@ function ContractsTab() {
                   <td className="p-3 text-xs text-slate-500 dark:text-slate-400">{c.endDate ?? 'Indefinite'}</td>
                   <td className="p-3 font-semibold text-slate-900 dark:text-white">{c.currencyCode} {c.basicSalary.toLocaleString()}</td>
                   <td className="p-3 text-slate-500 dark:text-slate-400">v{c.version}</td>
+                  {releaseA && (
+                    <td className="p-3 text-xs text-slate-500 dark:text-slate-400">
+                      {c.status === 'Draft' || c.status === 'PendingApproval' ? '—'
+                        : c.renewalNumber != null ? fill(tr('Renewal #{n}'), { n: c.renewalNumber }) : tr('History not confirmed')}
+                      <a href={`/contract-renewals?contract=${c.id}`} className="block font-medium text-sapphire underline dark:text-cyanAccent">{tr('Contract history')}</a>
+                    </td>
+                  )}
                   <td className="p-3"><span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[c.status] ?? ''}`}>{c.status}</span></td>
                   <td className="p-3">
                     <div className="flex min-w-[230px] flex-wrap items-center gap-2">

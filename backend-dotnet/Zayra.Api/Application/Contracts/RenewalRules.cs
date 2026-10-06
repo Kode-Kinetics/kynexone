@@ -21,6 +21,12 @@ public static class RenewalRuleKeys
     /// <summary>Days of preparation the case needs before its offer is due; the case opens no later than
     /// end − (notice + offer lead + this margin), even when the renewal lead is shorter.</summary>
     public const string OpenMarginDays = "contracts.open_margin_days";
+    /// <summary>Days a first term may start after the employee's joining date and still be the original contract
+    /// (0-31, default 0). Read by the R4 chain linker.</summary>
+    public const string OriginalTermJoiningToleranceDays = "contracts.original_term_joining_tolerance_days";
+    /// <summary>Days of gap between two terms of one employer still read as one continuous chain (0-31, default 0:
+    /// only a term starting the day after the previous one ended continues it). [COUNSEL] Read by the R4 chain linker.</summary>
+    public const string ChainGapToleranceDays = "contracts.chain_gap_tolerance_days";
     /// <summary>Tenant toggle, default true (owner decision): the employee accepts every renewal in the app.</summary>
     public const string AsIsRequiresEmployeeAcceptance = "contracts.as_is_requires_employee_acceptance";
     /// <summary>Tenant toggle, default true, [COUNSEL]: an unchanged renewal still goes through Qiwa.</summary>
@@ -30,7 +36,7 @@ public static class RenewalRuleKeys
     [
         Art55MaxConsecutiveRenewals, Art55MaxTotalYears, Art55Reading, QiwaContractResponseDays, UnifiedContractFrom,
         RenewalLeadDays, OfferLeadDays, QiwaSubmitLeadDays, QiwaGateLeadDays, DefaultNonRenewalNoticeDays, OpenMarginDays,
-        AsIsRequiresEmployeeAcceptance, AsIsRequiresQiwaStep,
+        OriginalTermJoiningToleranceDays, ChainGapToleranceDays, AsIsRequiresEmployeeAcceptance, AsIsRequiresQiwaStep,
     ];
 
     private static readonly string[] PositiveWholeDays =
@@ -54,6 +60,10 @@ public static class RenewalRuleKeys
             return int.TryParse(v, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var n) && n >= 1 && n <= 3650
                 ? null
                 : $"'{k}' must be a whole number from 1 to 3650. Received '{v}'.";
+        if (k is OriginalTermJoiningToleranceDays or ChainGapToleranceDays)
+            return int.TryParse(v, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var d) && d >= 0 && d <= 31
+                ? null
+                : $"'{k}' must be a whole number from 0 to 31. Received '{v}'.";
         if (k == Art55Reading)
             return v is "conservative" or "lenient" ? null : $"'{k}' must be 'conservative' or 'lenient'. Received '{v}'.";
         if (k is AsIsRequiresEmployeeAcceptance or AsIsRequiresQiwaStep)

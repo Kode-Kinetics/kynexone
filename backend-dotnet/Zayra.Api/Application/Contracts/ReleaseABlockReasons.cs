@@ -75,6 +75,13 @@ public static class ReleaseABlockReasons
     public const string EntitlementCarriedOverlaps = "ENTITLEMENT_CARRIED_OVERLAPS";
     public const string EntitlementCloseOnly = "ENTITLEMENT_CLOSE_ONLY";
 
+    // R4 review (PR #191)
+    public const string RenewalContractStillActive = "RENEWAL_CONTRACT_STILL_ACTIVE";
+    public const string RenewalCaseChanged = "RENEWAL_CASE_CHANGED";
+    public const string RenewalCaseInProgress = "RENEWAL_CASE_IN_PROGRESS";
+    public const string RenewalNationalityUnconfirmed = "RENEWAL_NATIONALITY_UNCONFIRMED";
+    public const string RenewalHoldoverPending = "RENEWAL_HOLDOVER_PENDING";
+    public const string RenewalOutcomeReset = "RENEWAL_OUTCOME_RESET";
     private const string HrManager = "HR Manager";
     private const string HrDirector = "HR Director";
     private const string PayrollManager = "Payroll Manager";
@@ -406,6 +413,48 @@ public static class ReleaseABlockReasons
             "Fixed benefits are never changed", "المزايا المثبتة لا تُعدَّل",
             "A fixed benefit can only be ended earlier, never changed, extended or removed.", "يمكن إنهاء الميزة المثبتة مبكراً فقط، ولا يجوز تعديلها أو تمديدها أو حذفها.",
             "End it and fix a new value from the next day.", "أنهِها وثبّت قيمة جديدة من اليوم التالي.", HrManager),
+        new BlockReason(RenewalContractStillActive,
+            "The contract is still in force", "العقد ما زال سارياً",
+            "A renewal review can be cancelled only once its contract has ended. While the contract is in force its review must stay visible, because the renewal deadlines keep running.",
+            "لا تُلغى مراجعة التجديد إلا بعد انتهاء عقدها. وما دام العقد سارياً يجب أن تبقى المراجعة ظاهرة لأن مواعيد التجديد مستمرة.",
+            "Put the review on hold instead, or end the contract first.",
+            "علّق المراجعة بدلاً من ذلك، أو أنهِ العقد أولاً.",
+            HrManager),
+        new BlockReason(RenewalCaseChanged,
+            "The review changed meanwhile", "تغيّرت المراجعة في الأثناء",
+            "Someone else changed this renewal review, or its contract, at the same time, so this change was not saved.",
+            "قام شخص آخر بتعديل مراجعة التجديد أو عقدها في الوقت نفسه، لذلك لم يُحفظ هذا التعديل.",
+            "Reload the review and try again.",
+            "أعد تحميل المراجعة وحاول مرة أخرى.",
+            HrManager),
+        new BlockReason(RenewalCaseInProgress,
+            "The renewal review has started", "بدأت مراجعة التجديد",
+            "A renewal decision is already being prepared from this contract history, so the history cannot be changed underneath it.",
+            "يجري إعداد قرار التجديد بناءً على سجل العقود هذا، لذلك لا يمكن تعديل السجل أثناء ذلك.",
+            "Cancel or finish the review, then correct the history.",
+            "ألغِ المراجعة أو أكملها، ثم صحّح السجل.",
+            HrManager),
+        new BlockReason(RenewalNationalityUnconfirmed,
+            "Saudi or non-Saudi not confirmed", "لم يتم تأكيد سعودي أو غير سعودي",
+            "Article 37 and Article 55 apply differently to Saudi and non-Saudi workers, and this employee's recorded nationality is missing, not recognised, a GCC nationality or contradicts the declared class. Nothing is assumed.",
+            "تختلف أحكام المادتين 37 و55 بين العامل السعودي وغير السعودي، وجنسية هذا الموظف غير مسجلة أو غير معروفة أو خليجية أو تخالف الفئة المصرّح بها، ولا يُفترض أي شيء.",
+            "Record the employee's nationality, or confirm Saudi or non-Saudi in the contract history.",
+            "سجّل جنسية الموظف، أو أكّد سعودي أو غير سعودي في سجل العقود.",
+            HrManager),
+        new BlockReason(RenewalHoldoverPending,
+            "Contract expired: continuing by law", "انتهى العقد: مستمر بحكم النظام",
+            "The contract reached its end date while its renewal review was open. Under Article 74(2) it continues on its current terms, so the review stays open until the continuation is recorded.",
+            "بلغ العقد تاريخ انتهائه ومراجعة تجديده مفتوحة. ووفق المادة 74 فقرة 2 يستمر بشروطه الحالية، لذلك تبقى المراجعة مفتوحة حتى يُسجَّل استمراره.",
+            "Record the continuation (holdover) or apply the renewal; do not cancel the review.",
+            "سجّل استمرار العقد أو طبّق التجديد، ولا تُلغِ المراجعة.",
+            HrManager),
+        new BlockReason(RenewalOutcomeReset,
+            "The end date changed after an outcome was chosen — choose again", "تغيّر تاريخ الانتهاء بعد اختيار النتيجة — اختر مجدداً",
+            "An amendment that changes the contract's end date was signed after the renewal outcome had been chosen. The outcome was chosen for the old end date, so it was cleared and the options and deadlines were worked out again for the new one.",
+            "تم توقيع تعديل يغيّر تاريخ انتهاء العقد بعد اختيار نتيجة التجديد. وقد اختيرت النتيجة لتاريخ الانتهاء السابق، لذلك أُلغيت وأُعيد احتساب الخيارات والمواعيد للتاريخ الجديد.",
+            "Review the new deadlines and choose the renewal outcome again.",
+            "راجع المواعيد الجديدة واختر نتيجة التجديد مرة أخرى.",
+            HrManager),
     }.ToDictionary(r => r.Code, StringComparer.Ordinal);
 
     /// <summary>The catalogue entry for a code. Throws for an unknown code: an unexplained refusal is a defect.</summary>
