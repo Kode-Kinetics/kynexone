@@ -45,7 +45,7 @@ public class AttendanceController : ControllerBase
         return Ok(new { date = summary.Date, totalActive = summary.ActiveEmployees, present = summary.Present, absent = summary.Absent, onLeave = 0, late = summary.Late });
     }
 
-    /// <summary>Header values on a device are credentials; only a caller who may configure devices sees them.</summary>
+    /// <summary>Device secrets (header values, secret parameters, URL credentials) are shown only to a caller who may configure devices.</summary>
     private bool CanConfigureDevices => User.HasPermission(AttendanceDeviceDto.ConfigurePermission);
 
     [HttpGet("devices")]

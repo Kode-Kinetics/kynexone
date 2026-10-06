@@ -145,6 +145,26 @@ public sealed class RoleGateBypassHotfixTests
         (await db.PayrollAdjustments.CountAsync()).Should().Be(0);
     }
 
+    [Theory]
+    [InlineData(nameof(EncashmentController.HRApprove))]
+    [InlineData(nameof(EncashmentController.PayrollApprove))]
+    public async Task EncashmentDecision_WithoutAnAttributableUser_IsRefused(string action)
+    {
+        var (db, tenantId) = await NewTenantAsync("enc-anon");
+        var (encashment, _) = await SeedEncashmentAsync(db, tenantId, subjectUserAccountId: null);
+        var anonymous = new ClaimsPrincipal(new ClaimsIdentity(new[] { new Claim("tenant_id", tenantId.ToString()) }, "Test"));
+        var controller = Bind(new EncashmentController(db, new FixedScope(null), new NoRules()), anonymous);
+        var request = new EncashmentDecisionRequest("ok", Guid.NewGuid());
+
+        var result = action == nameof(EncashmentController.HRApprove)
+            ? await controller.HRApprove(encashment.Id, request, Ct)
+            : await controller.PayrollApprove(encashment.Id, request, Ct);
+
+        StatusOf(result).Should().Be(StatusCodes.Status403Forbidden, "separation of duties cannot be checked for nobody");
+        (await db.LeaveEncashmentRequests.SingleAsync()).Status.Should().Be(LeaveEncashmentStatuses.Pending);
+        (await db.AuditLogs.CountAsync()).Should().Be(0);
+    }
+
     // ── 3. Statutory override activation: approvals.decide was enough ─────────────────────────────
 
     [Theory]

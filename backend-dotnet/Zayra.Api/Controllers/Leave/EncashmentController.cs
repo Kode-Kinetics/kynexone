@@ -160,6 +160,7 @@ public class EncashmentController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        if (this.GetUserId() is null) return UnattributedDecision();
 
         var encashment = await _db.LeaveEncashmentRequests
             .FirstOrDefaultAsync(e => e.Id == id && e.TenantId == tenantId, ct);
@@ -195,6 +196,7 @@ public class EncashmentController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        if (this.GetUserId() is null) return UnattributedDecision();
 
         var encashment = await _db.LeaveEncashmentRequests
             .FirstOrDefaultAsync(e => e.Id == id && e.TenantId == tenantId, ct);
@@ -394,6 +396,12 @@ public class EncashmentController : ControllerBase
         }
         return Ok(encashment);
     }
+
+    /// <summary>A decision nobody can be held to: it could not be separated from the subject or the other step.</summary>
+    private ObjectResult UnattributedDecision() => StatusCode(StatusCodes.Status403Forbidden, new
+    {
+        message = "This decision cannot be attributed to a user, so separation of duties cannot be checked. Sign in again and retry.",
+    });
 
     internal const string HrApprovedAuditAction = "leave.encashment.hr_approved";
     internal const string PayrollApprovedAuditAction = "leave.encashment.payroll_approved";

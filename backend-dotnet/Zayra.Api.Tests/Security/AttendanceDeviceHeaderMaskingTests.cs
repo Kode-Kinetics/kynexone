@@ -25,6 +25,10 @@ namespace Zayra.Api.Tests.Security;
 public sealed class AttendanceDeviceHeaderMaskingTests
 {
     private const string Secret = "live-device-secret-123";
+    private const string ParamSecret = "param-token-456";
+    private const string UrlPassword = "url-pass-789";
+    private const string QueryKey = "query-key-012";
+    private static readonly string StoredUrl = $"https://ops:{UrlPassword}@device.example.com:8443/api/att/logs?api_key={QueryKey}";
     private static readonly CancellationToken Ct = CancellationToken.None;
 
     [Theory]
@@ -46,7 +50,16 @@ public sealed class AttendanceDeviceHeaderMaskingTests
 
         foreach (var dto in new[] { one, list.Items.Single() })
         {
-            JsonSerializer.Serialize(dto).Should().NotContain(Secret);
+            var serialized = JsonSerializer.Serialize(dto);
+            foreach (var secret in new[] { Secret, ParamSecret, UrlPassword, QueryKey, "ops:" })
+                serialized.Should().NotContain(secret);
+            dto.EndpointUrl.Should().Be($"https://{AttendanceDeviceDto.MaskedHeaderValue}@device.example.com:8443/api/att/logs?{AttendanceDeviceDto.MaskedHeaderValue}");
+            JsonSerializer.Deserialize<Dictionary<string, string>>(dto.DeviceParametersJson).Should().Equal(new Dictionary<string, string>
+            {
+                ["poll_path"] = "/iclock/cdata",                          // operational, still readable
+                ["auth_token"] = AttendanceDeviceDto.MaskedHeaderValue,
+                ["comm_key"] = AttendanceDeviceDto.MaskedHeaderValue,
+            });
             JsonSerializer.Deserialize<Dictionary<string, string>>(dto.CustomHeadersJson).Should().Equal(new Dictionary<string, string>
             {
                 ["X-Api-Key"] = AttendanceDeviceDto.MaskedHeaderValue,
@@ -67,7 +80,49 @@ public sealed class AttendanceDeviceHeaderMaskingTests
         var one = (AttendanceDeviceDto)((OkObjectResult)(await controller.Device(device.Id, Ct)).Result!).Value!;
 
         one.CustomHeadersJson.Should().Contain(Secret);
+        one.DeviceParametersJson.Should().Contain(ParamSecret);
+        one.EndpointUrl.Should().Be(StoredUrl);
+        one.ErrorLog.Should().Contain(UrlPassword);
     }
+
+    [Fact]
+    public async Task SavingMaskedParametersAndUrl_KeepsTheStoredValues()
+    {
+        var (db, tenantId) = await NewTenantAsync("device-merge-params");
+        var device = await SeedDeviceAsync(db, tenantId);
+        var controller = Controller(db, await CallerAsync(db, tenantId, "HR Manager"));
+        var maskedParams = JsonSerializer.Serialize(new Dictionary<string, string>
+        {
+            ["poll_path"] = "/iclock/v2",                             // a real edit
+            ["auth_token"] = AttendanceDeviceDto.MaskedHeaderValue,   // round-tripped mask
+            ["comm_key"] = AttendanceDeviceDto.MaskedHeaderValue,
+        });
+        var maskedUrl = AttendanceDeviceDto.RedactEndpointUrl(StoredUrl);
+
+        var result = await controller.UpdateDevice(device.Id, Request(device.CustomHeadersJson, maskedParams, maskedUrl), Ct);
+
+        result.Result.Should().BeOfType<OkObjectResult>();
+        var stored = await db.AttendanceDevices.AsNoTracking().SingleAsync(d => d.Id == device.Id);
+        stored.EndpointUrl.Should().Be(StoredUrl);
+        JsonSerializer.Deserialize<Dictionary<string, string>>(stored.DeviceParametersJson).Should().Equal(new Dictionary<string, string>
+        {
+            ["poll_path"] = "/iclock/v2", ["auth_token"] = ParamSecret, ["comm_key"] = "4242",
+        });
+    }
+
+    [Fact]
+    public void AMaskedUrlWithANewHost_KeepsTheStoredCredentialsAndQuery() =>
+        AttendanceDeviceDto.MergeMaskedEndpointUrl(StoredUrl,
+                $"https://{AttendanceDeviceDto.MaskedHeaderValue}@device2.example.com/api?{AttendanceDeviceDto.MaskedHeaderValue}")
+            .Should().Be($"https://ops:{UrlPassword}@device2.example.com/api?api_key={QueryKey}");
+
+    [Theory]
+    [InlineData("https://device.example.com/api", "https://device.example.com/api")]
+    [InlineData("http://10.0.0.5:8080/logs", "http://10.0.0.5:8080/logs")]
+    [InlineData("user:pw@10.0.0.5/logs", "••••")]
+    [InlineData("", "")]
+    public void UrlsWithoutSecretsAreUntouched_AndUnparseableOnesWithSecretsAreMaskedWhole(string url, string expected) =>
+        AttendanceDeviceDto.RedactEndpointUrl(url).Should().Be(expected);
 
     [Fact]
     public async Task SavingAMaskedHeaderValue_KeepsTheStoredCredential()
@@ -100,9 +155,9 @@ public sealed class AttendanceDeviceHeaderMaskingTests
 
     // ── helpers ────────────────────────────────────────────────────────────────────────────────────
 
-    private static AttendanceDeviceRequest Request(string customHeadersJson) => new(
-        "Gate 1", "Biometric", "ZK", "SN-1", null, "Riyadh", "10.0.0.1", "https://device.example.com", 443,
-        null, "Pull API", "Hourly", "None", null, customHeadersJson, null, null, null);
+    private static AttendanceDeviceRequest Request(string customHeadersJson, string? parametersJson = null, string? endpointUrl = null) => new(
+        "Gate 1", "Biometric", "ZK", "SN-1", null, "Riyadh", "10.0.0.1", endpointUrl ?? "https://device.example.com", 443,
+        null, "Pull API", "Hourly", "None", null, customHeadersJson, parametersJson, null, null);
 
     private static async Task<AttendanceDevice> SeedDeviceAsync(ZayraDbContext db, Guid tenantId)
     {
@@ -110,6 +165,10 @@ public sealed class AttendanceDeviceHeaderMaskingTests
         {
             TenantId = tenantId, DeviceName = "Gate 1", DeviceType = "Biometric", Vendor = "ZK", SerialNumber = "SN-1",
             CustomHeadersJson = JsonSerializer.Serialize(new Dictionary<string, string> { ["X-Api-Key"] = Secret, ["X-Site"] = "riyadh-1" }),
+            DeviceParametersJson = JsonSerializer.Serialize(new Dictionary<string, string>
+                { ["poll_path"] = "/iclock/cdata", ["auth_token"] = ParamSecret, ["comm_key"] = "4242" }),
+            EndpointUrl = StoredUrl,
+            ErrorLog = $"Sync timed out. Check endpoint: {StoredUrl}",
         };
         db.AttendanceDevices.Add(device);
         await db.SaveChangesAsync();

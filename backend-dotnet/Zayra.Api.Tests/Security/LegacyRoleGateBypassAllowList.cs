@@ -45,7 +45,7 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         [SameAudienceAsSiblings] = "Payroll Manager is already named on Create/Update of the same tax policies, and Update can already archive one.",
         [HrOfficerHrOperations] = "HR Officer is HR staff holding this module's write key and the UI exposes these HR screens to it. P2: narrowing tenant HR configuration to the HR-manager tier is a product decision.",
         [OpenUnscopedNames] = "OPEN P2: per-employee names with document-expiry or missed-punch data, not data-scoped. No money, salary or bank data. Follow-up: apply DataScope.",
-        [DeviceReadMasked] = "Device configuration read only: auth credentials are never serialised and custom header values are masked for callers without attendance.bulk_import.",
+        [DeviceReadMasked] = "Device configuration read only: auth credentials are never serialised and custom header values, secret-looking device parameters and endpoint URL credentials/query are masked for callers without attendance.bulk_import.",
     };
 
     internal static readonly (string Endpoint, string Roles, Reason Why)[] AllowList =
