@@ -1029,6 +1029,7 @@ const en: Dict = {
   'Only if this is a different event from your earlier leave of this kind. The event date is required too.': 'Only if this is a different event from your earlier leave of this kind. The event date is required too.',
   "Offered to this company's employees": "Offered to this company's employees",
   'Name (Arabic, optional)': 'Name (Arabic, optional)',
+  'Details are visible to HR and to the employee who raised this request.': 'Details are visible to HR and to the employee who raised this request.',
 };
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
@@ -2047,6 +2048,7 @@ const ar: Dict = {
   'Only if this is a different event from your earlier leave of this kind. The event date is required too.': 'فقط إذا كانت واقعة مختلفة عن إجازتك السابقة من هذا النوع. ويلزم أيضاً ذكر تاريخ الواقعة.',
   "Offered to this company's employees": 'متاح لموظفي هذه الشركة',
   'Name (Arabic, optional)': 'الاسم (بالعربية، اختياري)',
+  'Details are visible to HR and to the employee who raised this request.': 'التفاصيل مرئية لفريق الموارد البشرية وللموظف الذي قدّم هذا الطلب.',
 };
 
 // ── French ────────────────────────────────────────────────────────────────────
