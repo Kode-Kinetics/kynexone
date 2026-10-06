@@ -57,6 +57,7 @@ export interface RenewalCaseItem {
   employee: RenewalEmployee;
   companyId: string;
   companyName: string;
+  companyNameAr: string | null;
   nationalityClass: NationalityClass;
   expiringEndDate: string;
   daysLeft: number;
@@ -109,6 +110,8 @@ export interface RenewalReconciliation {
   withoutReview: number;
   withClosedReviewOnly: number;
   notYetDue: number;
+  openReviewCaseIds: string[];
+  notYetDueContracts: RenewalUnopened[];
 }
 
 export interface RenewalExceptionTile {

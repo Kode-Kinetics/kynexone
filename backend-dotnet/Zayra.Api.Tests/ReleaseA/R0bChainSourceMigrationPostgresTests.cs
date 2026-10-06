@@ -75,10 +75,14 @@ public sealed class R0bChainSourceMigrationPostgresTests
         Assert.Equal(1L, await Scalar<long>(db, $"SELECT count(*) FROM \"__EFMigrationsHistory\" WHERE \"MigrationId\" = '{ThisMigration}'"));
         await Sql(db, "UPDATE employee_contracts SET chain_source = 'Derived' WHERE chain_source = 'Recorded'");
         await migrator.MigrateAsync(before);
+        // A stamped chain survives the Down without its source (the column is gone) ...
         Assert.Equal(0L, await Scalar<long>(db, "SELECT count(*) FROM information_schema.columns WHERE table_name = 'employee_contracts' AND column_name = 'chain_source'"));
         Assert.Equal(0L, await Scalar<long>(db, $"SELECT count(*) FROM pg_constraint WHERE conname IN ('{string.Join("','", Checks)}')"));
         await migrator.MigrateAsync();
         Assert.Empty(await db.Database.GetPendingMigrationsAsync());
+        // ... and the re-Up marks it Derived again (runbook); the unstamped rows stay NULL.
+        Assert.Equal("Derived", await Scalar<string>(db, $"SELECT chain_source FROM employee_contracts WHERE id = '{recorded}'"));
+        Assert.Equal(0L, await Scalar<long>(db, "SELECT count(*) FROM employee_contracts WHERE chain_source IS NULL AND renewal_number IS NOT NULL AND chain_started_on IS NOT NULL"));
         Assert.Equal(4L, await Scalar<long>(db, $"SELECT count(*) FROM pg_constraint WHERE conname IN ('{string.Join("','", Checks)}')"));
     }
 

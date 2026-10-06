@@ -32,9 +32,19 @@ namespace Zayra.Api.Migrations
                 maxLength: 10,
                 nullable: true);
 
+            // A re-Up after a Down finds stamped chains whose source was dropped with the column: they were derived by the
+            // census (HR-recorded history blocks the Down), so they are marked Derived again. A first Up finds none.
+            migrationBuilder.Sql(BackfillDerivedSql);
+
             // The model declares the same four CHECKs (ReleaseAModelConfiguration); here they go in NOT VALID.
             migrationBuilder.Sql(AddChecksNotValidSql);
         }
+
+        /// <summary>FROZEN once shipped. Marks stamped-but-unsourced chains Derived (only possible after a Down → Up).</summary>
+        internal const string BackfillDerivedSql = """
+            UPDATE employee_contracts SET chain_source = 'Derived'
+            WHERE chain_source IS NULL AND renewal_number IS NOT NULL AND chain_started_on IS NOT NULL;
+            """;
 
         /// <summary>FROZEN: never edit — VALIDATE and any change are a new migration.</summary>
         internal const string AddChecksNotValidSql = """

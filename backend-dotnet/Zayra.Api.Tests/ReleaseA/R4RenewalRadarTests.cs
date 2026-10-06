@@ -192,7 +192,7 @@ public class R4RenewalRadarTests
         var stamps = ContractChainLinker.Link(
         [
             Facts(a, "Expired", "2025-03-31", "2026-03-30"),
-            Facts(b, "Superseded", "2026-03-31", "2027-03-30", previous: a),
+            Facts(b, "Expired", "2026-03-31", "2027-03-30"),
             Facts(c, "Active", "2027-03-31", "2028-03-30"),
         ], joiningDate: new DateOnly(2025, 3, 31), WorkerNationalityClasses.NonSaudi);
 
@@ -239,7 +239,9 @@ public class R4RenewalRadarTests
     [InlineData("", "PH", "NonSaudi")]
     [InlineData("", "Pakistan", "NonSaudi")]
     [InlineData("", "مصري", "NonSaudi")]
-    [InlineData("NonSaudi", "", "NonSaudi")]  // a declared class stands alone
+    [InlineData("NonSaudi", "", null)]        // a declared class never stands alone: a nationality must be on record
+    [InlineData("Saudi", "", null)]
+    [InlineData("Non Saudi", "Indian", "NonSaudi")]
     [InlineData("Saudi", "Egyptian", null)]   // contradiction → confirm
     [InlineData("", "Bahraini", null)]        // GCC national → confirm
     [InlineData("", "", null)]                // nothing on file → confirm
@@ -353,7 +355,7 @@ public class R4RenewalRadarTests
         await db.SaveChangesAsync();
         var controller = Bind(new ContractRenewalsController(db, new FixedClock(DemoToday)), tenantId);
 
-        (await controller.Hold(c.Id, new RenewalHoldRequest("Holiday", null), default)).Should().BeOfType<BadRequestObjectResult>();
+        (await controller.Hold(c.Id, new RenewalHoldRequest("Holiday", null), default)).Should().BeAssignableTo<ObjectResult>().Which.StatusCode.Should().Be(400);
         (await controller.Hold(c.Id, new RenewalHoldRequest(RenewalHoldReasons.LabourDispute, "Case 12"), default)).Should().BeOfType<OkObjectResult>()
             .Which.Value.Should().BeOfType<RenewalCaseDto>().Which.Summary.BlockReasons
             .Should().Contain(r => r.Code == ReleaseABlockReasons.RenewalDisputeHold);
@@ -365,7 +367,7 @@ public class R4RenewalRadarTests
         var released = await db.ContractRenewalCases.SingleAsync();
         (released.State, released.HoldReason).Should().Be((RenewalStates.Open, (string?)null));
 
-        (await controller.Cancel(c.Id, new RenewalCancelRequest(" "), default)).Should().BeOfType<BadRequestObjectResult>();
+        (await controller.Cancel(c.Id, new RenewalCancelRequest(" "), default)).Should().BeAssignableTo<ObjectResult>().Which.StatusCode.Should().Be(400);
         (await controller.Cancel(c.Id, new RenewalCancelRequest("Employee transferred to the sister company"), default))
             .Should().BeAssignableTo<ObjectResult>().Which.StatusCode.Should().Be(409, "the contract is still in force: hold, do not cancel");
         term.Status = "Terminated";

@@ -163,6 +163,9 @@ harmful.
   ```
   Rollback: `Down()` refuses while any term carries HR-recorded history (`chain_source = 'Recorded'`); otherwise it drops
   the four CHECKs and the column. Order: image → schema `Down` (R0b before R0).
+  Re-applying R0b after a Down marks every term that still carries a stamped chain (`renewal_number` and
+  `chain_started_on` set, `chain_source` dropped with the column) as `Derived` again — they can only have come from
+  the census, because recorded history blocks the Down.
 
 ### 3. Re-verify before restoring traffic
 - `/health/ready` must read `ready` with `pendingMigrations: 0`.

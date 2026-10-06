@@ -69,7 +69,7 @@ public class R4ReviewFixTests
         var stamps = ContractChainLinker.Link([replaced, extended, imported], DateOnly.Parse("2023-01-01"), WorkerNationalityClasses.Saudi);
 
         Of(stamps, replaced).LinkKind.Should().Be(ChainLinkKinds.Original);
-        Of(stamps, extended).GapReason.Should().Be(ChainGapReasons.ExtendsTerm);
+        Of(stamps, extended).GapReason.Should().Be(ChainGapReasons.Overlap, "it overlaps the imported term — both are flagged");
         Of(stamps, imported).Should().Match<ChainStamp>(s => !s.IsConfirmed && s.GapReason == ChainGapReasons.Overlap);
     }
 
@@ -80,7 +80,7 @@ public class R4ReviewFixTests
         var stray = T("Expired", "2023-06-01", "2024-06-30");   // no version link
         var current = T("Active", "2024-01-01", "2024-12-31");
         var stamps = ContractChainLinker.Link([first, stray, current], DateOnly.Parse("2023-01-01"), WorkerNationalityClasses.Saudi);
-        Of(stamps, first).LinkKind.Should().Be(ChainLinkKinds.Original);
+        Of(stamps, first).GapReason.Should().Be(ChainGapReasons.Overlap, "both sides of an overlap are flagged");
         Of(stamps, stray).GapReason.Should().Be(ChainGapReasons.Overlap);
         Of(stamps, current).GapReason.Should().Be(ChainGapReasons.Overlap);
     }
@@ -349,8 +349,11 @@ public class R4ReviewFixTests
         var radar = await RenewalCaseReadModel.RadarAsync(db, opener, tenantId, null, 180, Today, default);
 
         radar.OpenLeadDays.Should().Be(120);
-        radar.Reconciliation.Should().Be(new RenewalReconciliationDto(DueActiveContracts: 5, WithOpenReview: 1, WithoutReview: 3,
-            WithClosedReviewOnly: 1, NotYetDue: 1));
+        (radar.Reconciliation.DueActiveContracts, radar.Reconciliation.WithOpenReview, radar.Reconciliation.WithoutReview,
+            radar.Reconciliation.WithClosedReviewOnly, radar.Reconciliation.NotYetDue).Should().Be((5, 1, 3, 1, 1));
+        // Every number drills down to exactly the records it counts.
+        radar.Reconciliation.OpenReviewCaseIds.Should().HaveCount(radar.Reconciliation.WithOpenReview);
+        radar.Reconciliation.NotYetDueContracts.Select(n => n.ContractId).Should().Equal(cLater.Id);
         (radar.Reconciliation.WithOpenReview + radar.Reconciliation.WithoutReview + radar.Reconciliation.WithClosedReviewOnly)
             .Should().Be(radar.Reconciliation.DueActiveContracts);
         radar.Exceptions.ActiveWithoutOpenReview.Single().ContractId.Should().Be(cClosed.Id);

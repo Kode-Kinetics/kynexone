@@ -114,6 +114,8 @@ export const gapReasonKeys: Record<string, string> = {
   CompanyChanged: 'The earlier contract was with another company',
   StartsBeforeJoining: 'Starts before the employee’s joining date',
   JoiningDateUnknown: 'The employee’s joining date is not recorded',
+  VersionNotRenewal: 'A new version starting after the earlier one ended is not counted as a renewal',
+  PredecessorTerminated: 'The earlier contract was terminated',
 };
 
 /** Replaces `{name}` placeholders. Unknown placeholders stay visible rather than vanishing silently. */
@@ -131,6 +133,28 @@ export function formatDay(iso: string | null | undefined, f: DayFormatter, today
   if (!iso) return '—';
   const sameYear = today ? today.slice(0, 4) === iso.slice(0, 4) : true;
   return f.date(iso, sameYear ? 'dayMonth' : 'medium');
+}
+
+/** The employee's name in the viewer's language (the Arabic name when one is on file). */
+export function personName(e: { name: string; nameAr: string | null }, locale: string): string {
+  return locale === 'ar' && e.nameAr ? e.nameAr : e.name;
+}
+
+/** The company's legal name in the viewer's language. */
+export function companyName(item: { companyName: string; companyNameAr: string | null }, locale: string): string {
+  return locale === 'ar' && item.companyNameAr ? item.companyNameAr : item.companyName;
+}
+
+/**
+ * A failed renewal request in the viewer's language: the catalogue reason (EN/AR) when the server refused with a code,
+ * else the server's EN/AR message, else the fallback. Never an English-only sentence for an Arabic reader.
+ */
+export function renewalErrorText(err: unknown, locale: string, fallback: string): string {
+  const data = (err as { response?: { data?: { message?: string; messageAr?: string; reason?: { titleAr: string; whyAr: string; titleEn: string; whyEn: string } } } })
+    ?.response?.data;
+  if (!data) return fallback;
+  if (data.reason) return locale === 'ar' ? `${data.reason.titleAr}: ${data.reason.whyAr}` : `${data.reason.titleEn}: ${data.reason.whyEn}`;
+  return (locale === 'ar' ? data.messageAr : data.message) ?? fallback;
 }
 
 /** The translated badge sentence. */

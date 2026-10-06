@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { notifyApiError } from '../../api/client';
+import { notifyRenewalError } from './notify';
 import { renewalsApi, type ContractChain, type NationalityClass } from '../../api/renewals';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useFormat } from '../../hooks/useFormat';
@@ -83,7 +83,7 @@ export function ChainDrawer({ contractId, canManage, onClose, onChanged }: {
       setChain(updated);
       onChanged();
     } catch (err) {
-      notifyApiError(err, t('The contract history could not be saved.'));
+      notifyRenewalError(err, locale, t('The contract history could not be saved.'));
     } finally {
       setSaving(false);
     }

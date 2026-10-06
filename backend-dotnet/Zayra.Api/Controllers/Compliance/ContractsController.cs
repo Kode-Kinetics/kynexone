@@ -335,14 +335,16 @@ public class ContractsController : ControllerBase
             return BadRequest(new { error = "invalid_contract_dates", message = "The replacement contract must start on or after the prior start date and end on or after its start date." });
         if (req.BasicSalary < 0m)
             return BadRequest(new { error = "invalid_basic_salary", message = "Basic salary cannot be negative." });
-        // Release A: a term under renewal review is replaced only by the renewal itself (Apply), never beside it —
-        // otherwise the case would decide a term that no longer exists. Finish or cancel the case first.
-        if (await _db.ContractRenewalCases.AnyAsync(c => c.TenantId == tid && c.ExpiringContractId == id && c.ClosedAt == null, ct))
-            return Conflict(new
-            {
-                error = "renewal_case_open",
-                message = "This contract has an open renewal review. Finish or cancel the renewal before replacing the contract.",
-            });
+        // Release A: an open renewal review follows its term (RenewalCaseCarry). An amendment within the term carries the
+        // review onto the new version in this same SaveChanges; a new term after the end is the renewal's own decision.
+        var carry = await Zayra.Api.Infrastructure.Contracts.RenewalCaseCarry.DecideAsync(_db, tid, old, req.StartDate, req.EndDate, ct);
+        if (carry.RefusalCode == Zayra.Api.Application.Contracts.ReleaseABlockReasons.RenewalCaseInProgress)
+        {
+            var reason = Zayra.Api.Application.Contracts.ReleaseABlockReasons.All[carry.RefusalCode];
+            return Conflict(new { error = carry.RefusalCode, reason, message = reason.WhyEn, messageAr = reason.WhyAr });
+        }
+        if (carry.RefusalCode is not null)
+            return Conflict(new { error = carry.RefusalCode, message = carry.RefusalEn, messageAr = carry.RefusalAr });
 
         old.Status = "Superseded";
         old.UpdatedAtUtc = DateTime.UtcNow;
@@ -366,9 +368,19 @@ public class ContractsController : ControllerBase
             Version = old.Version + 1,
             PreviousVersionId = old.Id,
             CreatedByUserId = GetUserId(),
+            // The same term's renewal terms carry over to the new version (Release A).
+            AutoRenew = old.AutoRenew,
+            NonRenewalNoticeDays = old.NonRenewalNoticeDays,
+            WorkerNationalityClass = old.WorkerNationalityClass,
         };
 
         _db.EmployeeContracts.Add(newContract);
+        if (carry.Case is not null)
+        {
+            var today = DateOnly.FromDateTime(DateTime.UtcNow);
+            var rules = await Zayra.Api.Infrastructure.Contracts.RenewalRuleSet.LoadAsync(_db, tid, today, ct);
+            Zayra.Api.Infrastructure.Contracts.RenewalCaseCarry.Carry(_db, carry, newContract, rules, today, GetUserId(), GetUserName());
+        }
 
         _db.ComplianceAuditLogs.Add(new ComplianceAuditLog
         {
@@ -378,7 +390,15 @@ public class ContractsController : ControllerBase
             MetadataJson = System.Text.Json.JsonSerializer.Serialize(new { previousId = id, newVersion = newContract.Version }),
         });
 
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException) when (carry.Case is not null)
+        {
+            var reason = Zayra.Api.Application.Contracts.ReleaseABlockReasons.All[Zayra.Api.Application.Contracts.ReleaseABlockReasons.RenewalCaseChanged];
+            return Conflict(new { error = reason.Code, reason, message = reason.WhyEn, messageAr = reason.WhyAr });
+        }
         return Ok(newContract);
     }
 }

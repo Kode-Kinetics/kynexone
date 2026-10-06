@@ -223,6 +223,76 @@ public sealed class R4RenewalPostgresTests(PostgresFixture fx)
             (await db.ContractRenewalCases.IgnoreQueryFilters().SingleAsync(x => x.Id == caseId)).State.Should().Be(RenewalStates.Open);
     }
 
+    [Fact]
+    public async Task SupersedeCarriesTheReview_UnderTheRealTransitionGuard_AndTheJobFollowsTheTerm()
+    {
+        var t = await SeedTenantAsync();
+        await using var sp = BuildProvider();
+        await RunJobAsync(sp, t.Tenant, "carry-day-1");
+        Guid employee;
+        await using (var db = fx.CreateDb())
+            employee = (await db.EmployeeContracts.IgnoreQueryFilters().SingleAsync(c => c.Id == t.Contract)).EmployeeId;
+
+        EmployeeContract newVersion;
+        await using (var db = fx.CreateDb())
+        {
+            var contracts = new Controllers.Compliance.ContractsController(db) { ControllerContext = ControllerCtx(t.Tenant) };
+            var result = await contracts.Supersede(t.Contract, new Controllers.Compliance.CreateContractRequest(employee, null, null, null,
+                new DateOnly(2026, 7, 1), new DateOnly(2026, 12, 31), 4500m, null, null, null, null), default);
+            newVersion = (EmployeeContract)result.Should().BeOfType<Microsoft.AspNetCore.Mvc.OkObjectResult>().Subject.Value!;
+        }
+        await using (var db = fx.CreateDb())
+        {
+            var review = await db.ContractRenewalCases.IgnoreQueryFilters().SingleAsync(c => c.TenantId == t.Tenant);
+            (review.State, review.ClosedAt, review.ExpiringContractId).Should().Be((RenewalStates.Open, (DateTime?)null, t.Contract));
+        }
+        // The next daily run neither cancels the review (its first version is Superseded) nor opens a second one.
+        await using (var db = fx.CreateDb())
+            await db.Database.ExecuteSqlRawAsync("UPDATE employee_contracts SET status = 'Active' WHERE id = {0}", newVersion.Id);
+        await RunJobAsync(sp, t.Tenant, "carry-day-2");
+        await using (var db = fx.CreateDb())
+        {
+            var reviews = await db.ContractRenewalCases.IgnoreQueryFilters().Where(c => c.TenantId == t.Tenant).ToListAsync();
+            reviews.Should().ContainSingle().Which.State.Should().Be(RenewalStates.Open);
+        }
+    }
+
+    [Fact]
+    public async Task TheDailyJob_OpensAWaitingReview_OnceTheCensusConfirmsItsHistory()
+    {
+        // Joined 2019 on file, contract 2026: unconfirmed, the review waits in NeedsConfirmation.
+        var t = await SeedTenantAsync(new DateTime(2019, 5, 1, 0, 0, 0, DateTimeKind.Utc));
+        await using var sp = BuildProvider();
+        await RunJobAsync(sp, t.Tenant, "wait-1");
+        await using (var db = fx.CreateDb())
+            (await db.ContractRenewalCases.IgnoreQueryFilters().SingleAsync(c => c.TenantId == t.Tenant)).State.Should().Be(RenewalStates.NeedsConfirmation);
+
+        // The joining date is corrected to the contract start: the next census links the original term, the job takes T2.
+        await using (var db = fx.CreateDb())
+            await db.Database.ExecuteSqlRawAsync("UPDATE employees SET joining_date = '2026-01-01' WHERE tenant_id = {0}", t.Tenant);
+        await RunJobAsync(sp, t.Tenant, "wait-2");
+        await using (var db = fx.CreateDb())
+        {
+            var review = await db.ContractRenewalCases.IgnoreQueryFilters().SingleAsync(c => c.TenantId == t.Tenant);
+            review.State.Should().Be(RenewalStates.Open);
+            review.AllowedActions.Should().Contain(ContractActions.RenewAsIs);
+            (await AuditAsync(db, t.Tenant, "Rebaselined")).Should().Be(1);
+        }
+    }
+
+    private static Microsoft.AspNetCore.Mvc.ControllerContext ControllerCtx(Guid tenantId) => new()
+    {
+        HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext
+        {
+            User = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(
+            [
+                new System.Security.Claims.Claim("tenant_id", tenantId.ToString()),
+                new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+                new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Role, "HR Manager"),
+            ], "Test")),
+        },
+    };
+
     private static Controllers.Contracts.ContractRenewalsController Controller(ZayraDbContext db, Guid tenantId) => new(db, new FixedClock(Today))
     {
         ControllerContext = new Microsoft.AspNetCore.Mvc.ControllerContext
@@ -322,7 +392,10 @@ public sealed class R4RenewalPostgresTests(PostgresFixture fx)
             if (!await runner.RunNextAsync("r4-test", default, default, [RenewalCaseJobHandler.JobType]))
                 await Task.Delay(50);
         }
-        throw new TimeoutException($"Renewal job for tenant {tenant} did not finish.");
+        await using var last = fx.CreateDb();
+        var errors = await last.BackgroundJobs.IgnoreQueryFilters()
+            .Where(j => j.TenantId == tenant && j.JobType == RenewalCaseJobHandler.JobType).Select(j => j.Status + ": " + j.LastError).ToListAsync();
+        throw new TimeoutException($"Renewal job for tenant {tenant} did not finish: {string.Join(" | ", errors)}");
     }
 
     private async Task<int> JobCountAsync(Guid tenant)

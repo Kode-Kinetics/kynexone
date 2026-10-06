@@ -17,6 +17,7 @@ namespace Zayra.Api.Infrastructure.Contracts;
 public sealed record RenewalRuleSet(
     RenewalDeadlineRules Deadlines,
     int OriginalTermJoiningToleranceDays,
+    int ChainGapToleranceDays,
     Art55Reading Art55Reading,
     int Art55MaxConsecutiveRenewals,
     int Art55MaxTotalYears,
@@ -34,7 +35,7 @@ public sealed record RenewalRuleSet(
 
     /// <summary>The seeded platform values, used when nothing is on file.</summary>
     public static RenewalRuleSet Defaults { get; } = new(
-        new RenewalDeadlineRules(), 0, Art55Reading.Conservative, 3, 4, new DateOnly(2025, 10, 6), true, null, []);
+        new RenewalDeadlineRules(), 0, 0, Art55Reading.Conservative, 3, 4, new DateOnly(2025, 10, 6), true, null, []);
 
     /// <summary>Loads the set in force on <paramref name="asOf"/> for <paramref name="tenantId"/>.</summary>
     public static async Task<RenewalRuleSet> LoadAsync(ZayraDbContext db, Guid tenantId, DateOnly asOf, CancellationToken ct)
@@ -104,14 +105,16 @@ public sealed record RenewalRuleSet(
             unified = d.UnifiedContractFrom;
         }
 
-        // Absent row = 0 days (the seeded default); it is not a "fall back" worth reporting.
-        var tolerance = winner.TryGetValue(OriginalTermJoiningToleranceKey, out var tolRow)
-                        && int.TryParse(tolRow.RuleValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var tol) && tol is >= 0 and <= 31
-            ? tol
-            : 0;
+        // The two chain tolerances: 0-31 days, seeded 0; an absent or invalid row reads as 0 (the conservative value).
+        int Tolerance(string key) =>
+            winner.TryGetValue(key, out var row)
+            && int.TryParse(row.RuleValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var days) && days is >= 0 and <= 31
+                ? days
+                : 0;
         return new RenewalRuleSet(
             deadlines,
-            tolerance,
+            Tolerance(OriginalTermJoiningToleranceKey),
+            Tolerance(RenewalRuleKeys.ChainGapToleranceDays),
             reading,
             Int(RenewalRuleKeys.Art55MaxConsecutiveRenewals, d.Art55MaxConsecutiveRenewals, 1),
             Int(RenewalRuleKeys.Art55MaxTotalYears, d.Art55MaxTotalYears, 1),

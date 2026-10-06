@@ -84,19 +84,14 @@ public sealed class RenewalCaseJobHandler : IBackgroundJobHandler
         // ── Reconcile open cases with their contract ─────────────────────────────────────────────
         var open = await db.ContractRenewalCases.AsNoTracking()
             .Where(c => c.TenantId == tenantId && c.ClosedAt == null)
-            .Select(c => new { c.Id, c.EmployeeId, c.ExpiringContractId, c.ExpiringEndDate })
+            .Select(c => new { c.Id, c.EmployeeId, c.ExpiringContractId, c.ExpiringEndDate, c.State, c.AllowedActions, c.ContractAction })
             .ToListAsync(ct);
-        var openContractIds = open.Select(c => c.ExpiringContractId).ToList();
-        var contracts = await ScopedBypass.TenantWide(db.EmployeeContracts, tenantId,
-                "Renewal job reconciles open cases with their contract, deleted rows included; tenant from the job.")
-            .AsNoTracking()
-            .Where(c => openContractIds.Contains(c.Id))
-            .Select(c => new { c.Id, c.Status, c.EndDate, c.IsDeleted })
-            .ToDictionaryAsync(c => c.Id, ct);
-        int cancelled = 0, rebaselined = 0;
+        // A case follows its TERM: the version it was opened on may have been amended since (Supersede carries the case).
+        var versions = await RenewalTermVersions.LoadAsync(db, tenantId, null, ct);
+        int cancelled = 0, rebaselined = 0, confirmed = 0;
         foreach (var c in open)
         {
-            if (!contracts.TryGetValue(c.ExpiringContractId, out var contract)) continue;
+            if (versions.Current(c.ExpiringContractId) is not { } contract) continue;
             if (contract.IsDeleted || EndedStatuses.Contains(contract.Status))
             {
                 if (await context.RunItemAsync($"reconcile:{c.Id:N}:ended",
@@ -106,8 +101,17 @@ public sealed class RenewalCaseJobHandler : IBackgroundJobHandler
             else if (contract.EndDate is { } end && end != c.ExpiringEndDate)
             {
                 if (await context.RunItemAsync($"reconcile:{c.Id:N}:end:{end:yyyyMMdd}",
-                        itemCt => RebaselineAsync(context, c.Id, c.EmployeeId, today, itemCt)))
+                        itemCt => RebaselineAsync(context, c.Id, c.EmployeeId, contract.Id, today, "ContractEndDateChanged", itemCt)))
                     rebaselined++;
+            }
+            // The census (or HR on an earlier term) has now confirmed the history of a case still waiting for it: T2.
+            else if ((c.State == RenewalStates.NeedsConfirmation || (c.AllowedActions.Length == 0 && c.ContractAction is null
+                         && c.State is RenewalStates.Open or RenewalStates.AwaitingManager or RenewalStates.OfferInPreparation))
+                     && contract.RenewalNumber is not null && contract.ChainStartedOn is not null && contract.WorkerNationalityClass is not null)
+            {
+                if (await context.RunItemAsync($"reconcile:{c.Id:N}:confirmed:{today:yyyyMMdd}",
+                        itemCt => RebaselineAsync(context, c.Id, c.EmployeeId, contract.Id, today, "HistoryConfirmed", itemCt)))
+                    confirmed++;
             }
         }
 
@@ -115,9 +119,10 @@ public sealed class RenewalCaseJobHandler : IBackgroundJobHandler
         var rules = await RenewalRuleSet.LoadAsync(db, tenantId, today, ct);
         var candidates = await _opener.CandidatesAsync(tenantId, null, today.AddDays(rules.Deadlines.RenewalLeadDays + 366), tracked: false, ct);
         var withCase = (await db.ContractRenewalCases.AsNoTracking()
-                .Where(c => c.TenantId == tenantId).Select(c => c.ExpiringContractId).ToListAsync(ct)).ToHashSet();
+                .Where(c => c.TenantId == tenantId).Select(c => c.ExpiringContractId).ToListAsync(ct))
+            .Select(versions.Root).ToHashSet();
         int opened = 0, skipped = 0;
-        foreach (var candidate in candidates.Where(c => !withCase.Contains(c.Contract.Id)))
+        foreach (var candidate in candidates.Where(c => !withCase.Contains(versions.Root(c.Contract.Id))))
         {
             var plan = RenewalCaseOpener.Plan(candidate, rules, today);
             if (plan.SkipReason == RenewalOpenSkipReasons.NotDue) continue;
@@ -155,6 +160,7 @@ public sealed class RenewalCaseJobHandler : IBackgroundJobHandler
             census,
             cancelled,
             rebaselined,
+            confirmedAfterCensus = confirmed,
             opened,
             notOpenedNeedsData = skipped,
             remindersEnqueued,
@@ -177,16 +183,17 @@ public sealed class RenewalCaseJobHandler : IBackgroundJobHandler
             new { transition = transition.Id, from, reason = "ContractEnded" }));
     }
 
-    private static async Task RebaselineAsync(JobExecutionContext context, Guid caseId, Guid employeeId, DateOnly today, CancellationToken ct)
+    private static async Task RebaselineAsync(JobExecutionContext context, Guid caseId, Guid employeeId, Guid currentVersionId, DateOnly today,
+        string why, CancellationToken ct)
     {
         var db = context.Db;
         await FinanceDecisionSerializer.AcquireAsync(db, FinanceDecisionSerializer.ScopeEmployeePackage, context.TenantId, employeeId, ct);
         var c = await db.ContractRenewalCases.FirstOrDefaultAsync(x => x.TenantId == context.TenantId && x.Id == caseId, ct);
-        if (c is null) return;
+        if (c is null || RenewalStates.IsTerminal(c.State)) return;
         var contract = await db.EmployeeContracts.AsNoTracking()
-            .FirstOrDefaultAsync(x => x.TenantId == context.TenantId && x.Id == c.ExpiringContractId, ct);
-        if (contract?.EndDate is null || contract.EndDate == c.ExpiringEndDate) return;
+            .FirstOrDefaultAsync(x => x.TenantId == context.TenantId && x.Id == currentVersionId, ct);
+        if (contract?.EndDate is null) return;
         var rules = await RenewalRuleSet.LoadAsync(db, context.TenantId, today, ct);
-        RenewalCaseOpener.Rebaseline(db, c, contract, rules, today, "ContractEndDateChanged", null, SystemActor);
+        RenewalCaseOpener.Rebaseline(db, c, contract, rules, today, why, null, SystemActor);
     }
 }

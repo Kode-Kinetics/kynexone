@@ -64,6 +64,8 @@ public static class ReleaseABlockReasons
     public const string RenewalContractStillActive = "RENEWAL_CONTRACT_STILL_ACTIVE";
     public const string RenewalCaseChanged = "RENEWAL_CASE_CHANGED";
     public const string RenewalCaseInProgress = "RENEWAL_CASE_IN_PROGRESS";
+    public const string RenewalNationalityUnconfirmed = "RENEWAL_NATIONALITY_UNCONFIRMED";
+    public const string RenewalHoldoverPending = "RENEWAL_HOLDOVER_PENDING";
     private const string HrManager = "HR Manager";
     private const string HrDirector = "HR Director";
     private const string PayrollManager = "Payroll Manager";
@@ -349,6 +351,20 @@ public static class ReleaseABlockReasons
             "يجري إعداد قرار التجديد بناءً على سجل العقود هذا، لذلك لا يمكن تعديل السجل أثناء ذلك.",
             "Cancel or finish the review, then correct the history.",
             "ألغِ المراجعة أو أكملها، ثم صحّح السجل.",
+            HrManager),
+        new BlockReason(RenewalNationalityUnconfirmed,
+            "Saudi or non-Saudi not confirmed", "لم يتم تأكيد سعودي أو غير سعودي",
+            "Article 37 and Article 55 apply differently to Saudi and non-Saudi workers, and this employee's recorded nationality is missing, not recognised, a GCC nationality or contradicts the declared class. Nothing is assumed.",
+            "تختلف أحكام المادتين 37 و55 بين العامل السعودي وغير السعودي، وجنسية هذا الموظف غير مسجلة أو غير معروفة أو خليجية أو تخالف الفئة المصرّح بها، ولا يُفترض أي شيء.",
+            "Record the employee's nationality, or confirm Saudi or non-Saudi in the contract history.",
+            "سجّل جنسية الموظف، أو أكّد سعودي أو غير سعودي في سجل العقود.",
+            HrManager),
+        new BlockReason(RenewalHoldoverPending,
+            "Contract expired: continuing by law", "انتهى العقد: مستمر بحكم النظام",
+            "The contract reached its end date while its renewal review was open. Under Article 74(2) it continues on its current terms, so the review stays open until the continuation is recorded.",
+            "بلغ العقد تاريخ انتهائه ومراجعة تجديده مفتوحة. ووفق المادة 74 فقرة 2 يستمر بشروطه الحالية، لذلك تبقى المراجعة مفتوحة حتى يُسجَّل استمراره.",
+            "Record the continuation (holdover) or apply the renewal; do not cancel the review.",
+            "سجّل استمرار العقد أو طبّق التجديد، ولا تُلغِ المراجعة.",
             HrManager),
     }.ToDictionary(r => r.Code, StringComparer.Ordinal);
 

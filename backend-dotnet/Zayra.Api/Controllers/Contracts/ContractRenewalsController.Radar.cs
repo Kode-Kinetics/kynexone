@@ -70,7 +70,7 @@ public sealed partial class ContractRenewalsController
         [FromQuery] int? days = null, CancellationToken ct = default)
     {
         if (days is < 1 or > MaxRadarDays)
-            return BadRequest(new { error = "invalid_days", message = $"Days must be between 1 and {MaxRadarDays}." });
+            return Invalid("invalid_days", $"Days must be between 1 and {MaxRadarDays}.", $"يجب أن يكون عدد الأيام بين 1 و{MaxRadarDays}.");
         var tenantId = RequireTenant();
         return Ok(await RenewalCaseReadModel.RadarAsync(_db, opener, tenantId, companyId, days, await TodayAsync(ct), ct));
     }
@@ -105,11 +105,13 @@ public sealed partial class ContractRenewalsController
         var tenantId = RequireTenant();
         var today = await TodayAsync(ct);
         if (!WorkerNationalityClasses.All.Contains(req.WorkerNationalityClass))
-            return BadRequest(new { error = "invalid_nationality_class", message = "Choose Saudi or Non-Saudi." });
+            return Invalid("invalid_nationality_class", "Choose Saudi or Non-Saudi.", "اختر سعودي أو غير سعودي.");
         if (req.RenewalNumber < 0 || (req.RenewedFromContractId is not null && req.RenewalNumber < 1))
-            return BadRequest(new { error = "invalid_renewal_number", message = "A term that renews an earlier one is renewal 1 or later; the first term is 0." });
+            return Invalid("invalid_renewal_number", "A term that renews an earlier one is renewal 1 or later; the first term is 0.",
+                "العقد الذي يجدد عقداً سابقاً هو التجديد رقم 1 أو أكثر، وأول عقد رقمه 0.");
         if (req.NonRenewalNoticeDays is < 1 or > 365)
-            return BadRequest(new { error = "invalid_notice_days", message = "Notice must be between 1 and 365 days, or left empty for the statutory default." });
+            return Invalid("invalid_notice_days", "Notice must be between 1 and 365 days, or left empty for the statutory default.",
+                "يجب أن تكون مدة الإشعار بين 1 و365 يوماً، أو اتركها فارغة لتطبيق المدة النظامية.");
 
         var target = await _db.EmployeeContracts.AsNoTracking()
             .Where(c => c.TenantId == tenantId && c.Id == contractId && !c.IsDeleted)
@@ -131,26 +133,34 @@ public sealed partial class ContractRenewalsController
                         .ToListAsync(ct);
                     var contract = terms.Single(c => c.Id == contractId);
                     if (contract.ProvisionalBasis is not null)
-                        return Conflict(new { error = "provisional_term", message = "This term continues by law and is confirmed when its renewal is applied." });
+                        return Invalid("provisional_term", "This term continues by law and is confirmed when its renewal is applied.",
+                            "هذا العقد مستمر بحكم النظام ويُؤكَّد عند تطبيق تجديده.", StatusCodes.Status409Conflict);
                     if (req.ChainStartedOn > contract.StartDate)
-                        return BadRequest(new { error = "invalid_chain_start", message = "The chain cannot start after this term starts." });
+                        return Invalid("invalid_chain_start", "The first contract cannot start after this one starts.",
+                            "لا يمكن أن يبدأ أول عقد بعد بداية هذا العقد.");
 
-                    // The term itself and every later Derived term will be re-derived: none may have a review past preparation.
+                    // The term itself and every LATER term not recorded by HR (Derived, or never stamped) is re-derived from
+                    // the history HR records now: none of their reviews may be past preparation.
+                    var versions = await RenewalTermVersions.LoadAsync(_db, tenantId, target.EmployeeId, ct);
                     var descendants = terms.Where(t => t.Id != contract.Id && t.StartDate > contract.StartDate
-                                                       && t.ChainSource == ChainSources.Derived).ToList();
-                    var affected = descendants.Select(d => d.Id).Append(contract.Id).ToHashSet();
-                    if (cases.Any(c => affected.Contains(c.ExpiringContractId) && !IsRederivable(c)))
+                                                       && t.ChainSource != ChainSources.Recorded).ToList();
+                    var affectedTerms = descendants.Select(d => versions.Root(d.Id)).Append(versions.Root(contract.Id)).ToHashSet();
+                    var affectedCases = cases.Where(c => affectedTerms.Contains(versions.Root(c.ExpiringContractId))).ToList();
+                    if (affectedCases.Any(c => !IsRederivable(c)))
                         return Refuse(StatusCodes.Status409Conflict, ReleaseABlockReasons.RenewalCaseInProgress);
 
                     if (req.RenewedFromContractId is { } previousId)
                     {
                         var previous = terms.FirstOrDefault(c => c.Id == previousId);
                         if (previous is null || previous.Id == contract.Id || previous.StartDate >= contract.StartDate)
-                            return BadRequest(new { error = "invalid_previous_term", message = "The earlier term must be another, earlier contract of the same employee." });
+                            return Invalid("invalid_previous_term", "The earlier contract must be another, earlier contract of the same employee.",
+                                "يجب أن يكون العقد السابق عقداً آخر أقدم للموظف نفسه.");
                         if (previous.CompanyId != contract.CompanyId)
-                            return BadRequest(new { error = "previous_term_other_employer", message = "The earlier term was with another company. Article 55 counts renewals with the same employer only." });
+                            return Invalid("previous_term_other_employer", "The earlier contract was with another company. Article 55 counts renewals with the same employer only.",
+                                "كان العقد السابق مع منشأة أخرى، والمادة 55 لا تحتسب إلا التجديدات لدى صاحب العمل نفسه.");
                         if (terms.Any(c => c.RenewedFromContractId == previousId && c.Id != contractId && c.ChainSource != ChainSources.Derived))
-                            return Conflict(new { error = "previous_term_already_renewed", message = "Another term is already recorded as the renewal of that contract." });
+                            return Invalid("previous_term_already_renewed", "Another contract is already recorded as the renewal of that contract.",
+                                "يوجد عقد آخر مسجل بالفعل على أنه تجديد لذلك العقد.", StatusCodes.Status409Conflict);
                     }
 
                     var before = new { contract.RenewedFromContractId, contract.RenewalNumber, contract.ChainStartedOn, contract.WorkerNationalityClass,
@@ -170,16 +180,12 @@ public sealed partial class ContractRenewalsController
                     contract.UpdatedAtUtc = DateTime.UtcNow;
 
                     var rules = await RenewalRuleSet.LoadAsync(_db, tenantId, today, ct);
-                    var employee = await _db.Employees.AsNoTracking()
-                        .Where(e => e.TenantId == tenantId && e.PublicId == contract.EmployeeId)
-                        .Select(e => new { e.JoiningDate, e.SaudiOrNonSaudi, e.Nationality }).FirstOrDefaultAsync(ct);
-                    var stamps = ContractChainLinker.Link(terms.Select(ContractChainFacts.Of).ToList(),
-                        ContractChainCensus.JoiningDateOf(employee?.JoiningDate), WorkerNationality.ClassOf(employee?.SaudiOrNonSaudi, employee?.Nationality),
-                        rules.OriginalTermJoiningToleranceDays);
+                    var stamps = await ContractChainCensus.LinkEmployeeAsync(_db, tenantId, target.EmployeeId, terms, rules, ct);
                     var rederived = new List<object>();
                     foreach (var d in descendants)
                     {
                         if (stamps.TryGetValue(d.Id, out var stamp)) ContractChainLinker.Apply(d, stamp);
+                        if (d.WorkerNationalityClass is null) d.WorkerNationalityClass = contract.WorkerNationalityClass;
                         d.UpdatedAtUtc = DateTime.UtcNow;
                         rederived.Add(new { d.Id, d.ContractNumber, d.RenewalNumber, d.ChainStartedOn });
                     }
@@ -189,9 +195,15 @@ public sealed partial class ContractRenewalsController
                         Action = "ChainConfirmed", PerformedByUserId = CurrentUserId(), PerformedByName = ActorName(),
                         MetadataJson = JsonSerializer.Serialize(new { before, after = req, rederived }),
                     });
-                    foreach (var c in cases.Where(c => affected.Contains(c.ExpiringContractId)))
-                        RenewalCaseOpener.Rebaseline(_db, c, terms.Single(t => t.Id == c.ExpiringContractId), rules, today,
-                            c.ExpiringContractId == contract.Id ? "ChainConfirmed" : "EarlierTermConfirmed", CurrentUserId(), ActorName());
+                    // Every open review of an affected term — including one still waiting in NeedsConfirmation — is
+                    // re-baselined on its term's CURRENT version (T2 when its history is now confirmed).
+                    foreach (var c in affectedCases)
+                    {
+                        var currentId = versions.Current(c.ExpiringContractId)?.Id ?? c.ExpiringContractId;
+                        if (terms.FirstOrDefault(t => t.Id == currentId) is not { } current) continue;
+                        RenewalCaseOpener.Rebaseline(_db, c, current, rules, today,
+                            versions.SameTerm(c.ExpiringContractId, contract.Id) ? "ChainConfirmed" : "EarlierTermConfirmed", CurrentUserId(), ActorName());
+                    }
                     await _db.SaveChangesAsync(ct);
                     return null;
                 }, ct);
@@ -228,7 +240,7 @@ public sealed partial class ContractRenewalsController
     public Task<IActionResult> Hold(Guid caseId, [FromBody] RenewalHoldRequest req, CancellationToken ct)
     {
         if (!RenewalHoldReasons.All.Contains(req.Reason))
-            return Task.FromResult<IActionResult>(BadRequest(new { error = "invalid_hold_reason", message = "Choose why the renewal is on hold." }));
+            return Task.FromResult<IActionResult>(Invalid("invalid_hold_reason", "Choose why the renewal is on hold.", "اختر سبب تعليق التجديد."));
         return MoveAsync(caseId, "Held", ct, (c, _) => Task.FromResult<IActionResult?>(null),
             c => RenewalCaseTransitions.Hold(c, req.Reason), new { reason = req.Reason, note = req.Note });
     }
@@ -255,21 +267,25 @@ public sealed partial class ContractRenewalsController
     /// <summary>
     /// POST /api/contracts/renewals/{caseId}/cancel {reason} — T21, only once the contract is no longer in force. While it
     /// is Active the review must stay visible (its deadlines keep running): refused with RENEWAL_CONTRACT_STILL_ACTIVE —
-    /// put it on hold instead. Ending the contract cancels its review automatically (OnEndedAsync).
+    /// put it on hold instead. An Expired contract continues by law (Art. 74(2)): refused with RENEWAL_HOLDOVER_PENDING —
+    /// the holdover is R6's. Terminating the contract cancels its review automatically (OnEndedAsync).
     /// </summary>
     [HttpPost("{caseId:guid}/cancel")]
     [HasPermission("contracts.renewal.manage")]
     public Task<IActionResult> Cancel(Guid caseId, [FromBody] RenewalCancelRequest req, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(req.Reason) || req.Reason.Length > 500)
-            return Task.FromResult<IActionResult>(BadRequest(new { error = "cancel_reason_required", message = "Say why the renewal review is cancelled." }));
+            return Task.FromResult<IActionResult>(Invalid("cancel_reason_required", "Say why the renewal review is cancelled.", "اذكر سبب إلغاء مراجعة التجديد."));
         return MoveAsync(caseId, "Cancelled", ct,
             async (c, token) =>
             {
-                var status = await _db.EmployeeContracts.AsNoTracking()
-                    .Where(x => x.TenantId == c.TenantId && x.Id == c.ExpiringContractId && !x.IsDeleted)
-                    .Select(x => x.Status).FirstOrDefaultAsync(token);
-                return status == "Active" ? Refuse(StatusCodes.Status409Conflict, ReleaseABlockReasons.RenewalContractStillActive) : null;
+                // The term's CURRENT version decides (an amendment carries the review).
+                var current = (await RenewalTermVersions.LoadAsync(_db, c.TenantId, c.EmployeeId, token)).Current(c.ExpiringContractId);
+                return current?.IsDeleted == false && current.Status == "Active"
+                    ? Refuse(StatusCodes.Status409Conflict, ReleaseABlockReasons.RenewalContractStillActive)
+                    : current?.IsDeleted == false && current.Status == "Expired"
+                        ? Refuse(StatusCodes.Status409Conflict, ReleaseABlockReasons.RenewalHoldoverPending)
+                        : null;
             },
             c => RenewalCaseTransitions.Cancel(c, DateTime.UtcNow), new { reason = req.Reason.Trim() });
     }
@@ -320,9 +336,17 @@ public sealed partial class ContractRenewalsController
         return Ok(await RenewalCaseReadModel.CaseAsync(_db, tenantId, caseId, await TodayAsync(ct), ct));
     }
 
+    /// <summary>A validation error as a code with its English and Arabic sentence (no English-only text reaches an Arabic user).</summary>
+    private ObjectResult Invalid(string code, string en, string ar, int status = StatusCodes.Status400BadRequest) =>
+        StatusCode(status, new { error = code, message = en, messageAr = ar });
+
     /// <summary>A refusal the UI renders as plain sentences: the catalogue code and its EN/AR title, why and fix.</summary>
     private ObjectResult Refuse(int status, string code, object? detail = null) =>
-        StatusCode(status, new { error = code, reason = ReleaseABlockReasons.All[code], message = ReleaseABlockReasons.All[code].WhyEn, detail });
+        StatusCode(status, new
+        {
+            error = code, reason = ReleaseABlockReasons.All[code], message = ReleaseABlockReasons.All[code].WhyEn,
+            messageAr = ReleaseABlockReasons.All[code].WhyAr, detail,
+        });
 
     /// <summary>A review whose frozen actions may still be re-derived: nothing chosen yet, still being prepared.</summary>
     private static bool IsRederivable(ContractRenewalCase c) =>
@@ -339,14 +363,9 @@ public sealed partial class ContractRenewalsController
         var siblings = await _db.EmployeeContracts.AsNoTracking()
             .Where(c => c.TenantId == tenantId && c.EmployeeId == contract.EmployeeId && !c.IsDeleted)
             .ToListAsync(ct);
-        var employee = await _db.Employees.AsNoTracking()
-            .Where(e => e.TenantId == tenantId && e.PublicId == contract.EmployeeId)
-            .Select(e => new { e.JoiningDate, e.SaudiOrNonSaudi, e.Nationality })
-            .FirstOrDefaultAsync(ct);
-        var employeeClass = WorkerNationality.ClassOf(employee?.SaudiOrNonSaudi, employee?.Nationality);
+        var employeeClass = await ContractChainCensus.EmployeeClassAsync(_db, tenantId, contract.EmployeeId, ct);
         var rules = await RenewalRuleSet.LoadAsync(_db, tenantId, today, ct);
-        var stamps = ContractChainLinker.Link(siblings.Select(ContractChainFacts.Of).ToList(),
-            ContractChainCensus.JoiningDateOf(employee?.JoiningDate), employeeClass, rules.OriginalTermJoiningToleranceDays);
+        var stamps = await ContractChainCensus.LinkEmployeeAsync(_db, tenantId, contract.EmployeeId, siblings, rules, ct);
 
         var terms = siblings.Where(c => ContractChainLinker.IsTerm(c.Status) || c.Id == contractId)
             .OrderBy(c => c.StartDate).ThenBy(c => c.Version)
@@ -359,9 +378,12 @@ public sealed partial class ContractRenewalsController
             })
             .ToList();
 
-        var renewal = await _db.ContractRenewalCases.AsNoTracking()
-            .Where(c => c.TenantId == tenantId && c.ExpiringContractId == contractId)
-            .OrderBy(c => c.ClosedAt != null).FirstOrDefaultAsync(ct);
+        // The review of this TERM, whichever version it was opened on (Supersede carries it).
+        var versions = await RenewalTermVersions.LoadAsync(_db, tenantId, contract.EmployeeId, ct);
+        var renewal = (await _db.ContractRenewalCases.AsNoTracking()
+                .Where(c => c.TenantId == tenantId && c.EmployeeId == contract.EmployeeId).ToListAsync(ct))
+            .Where(c => versions.SameTerm(c.ExpiringContractId, contractId))
+            .OrderBy(c => c.ClosedAt != null).ThenByDescending(c => c.OpenedAt).FirstOrDefault();
         var view = RenewalCaseReadModel.Clone(contract, renewal?.WorkerNationalityClass ?? contract.WorkerNationalityClass ?? employeeClass);
 
         IReadOnlyList<string> actions = [];
@@ -373,7 +395,7 @@ public sealed partial class ContractRenewalsController
             var deadlines = RenewalDeadlineCalculator.Compute(view, rules);
             opensOn = deadlines.OpensOn;
             derived = view.WorkerNationalityClass is null
-                ? new AllowedActionsResult([], false, [ReleaseABlockReasons.RenewalChainUnconfirmed], view.RenewalNumber, null)
+                ? new AllowedActionsResult([], false, [ReleaseABlockReasons.RenewalNationalityUnconfirmed], view.RenewalNumber, null)
                 : AllowedActionsDeriver.Derive(view, renewal?.NoticeDueOn ?? deadlines.NoticeDueOn, today, rules);
             actions = renewal is not null && !RenewalStates.IsTerminal(renewal.State) ? renewal.AllowedActions : derived.Actions;
             blocks = derived.BlockCodes;

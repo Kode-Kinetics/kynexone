@@ -124,25 +124,29 @@ public static class RenewalNextStep
     }
 
     /// <summary>
-    /// The deadlines still ahead of the case's progress — what the reminder job reminds about. Nothing for a closed
-    /// or held case (a hold is a decision to wait; the dashboard still shows it).
+    /// The deadlines still ahead of the case's progress — what the reminder job reminds about. Nothing for a closed case.
+    /// A case ON HOLD keeps the two deadlines the law runs regardless of the hold — the non-renewal notice date and the
+    /// Qiwa gate — read from the state it was held from (the hold dialog says deadlines keep running); the offer and
+    /// Qiwa-submission reminders pause, because those steps wait for the hold to end.
     /// </summary>
     public static IReadOnlyList<PendingDeadline> Pending(ContractRenewalCase c)
     {
         var list = new List<PendingDeadline>();
-        if (RenewalStates.IsTerminal(c.State) || c.State == RenewalStates.OnHold) return list;
-        var beforeOfferOrApproving = BeforeOffer.Contains(c.State) || c.State == RenewalStates.InApproval;
+        if (RenewalStates.IsTerminal(c.State)) return list;
+        var held = c.State == RenewalStates.OnHold;
+        var state = held ? c.HeldFromState ?? RenewalStates.Open : c.State;
+        var beforeOfferOrApproving = BeforeOffer.Contains(state) || state == RenewalStates.InApproval;
 
-        if (beforeOfferOrApproving && c.OfferDueOn is { } offer)
+        if (!held && beforeOfferOrApproving && c.OfferDueOn is { } offer)
             list.Add(new(RenewalDeadlineKinds.Offer, offer));
         if (c.NonRenewalNoticeServedOn is null && c.NoticeDueOn is { } notice
             && c.AllowedActions.Contains(ContractActions.NonRenew)
             && (beforeOfferOrApproving || c.ContractAction == ContractActions.NonRenew))
             list.Add(new(RenewalDeadlineKinds.Notice, notice));
-        if (c.QiwaRequired && c.QiwaSentOn is null && c.QiwaSubmitDueOn is { } submit
-            && (beforeOfferOrApproving || c.State is RenewalStates.OfferSent or RenewalStates.Accepted))
+        if (!held && c.QiwaRequired && c.QiwaSentOn is null && c.QiwaSubmitDueOn is { } submit
+            && (beforeOfferOrApproving || state is RenewalStates.OfferSent or RenewalStates.Accepted))
             list.Add(new(RenewalDeadlineKinds.QiwaSubmit, submit));
-        if (c.QiwaRequired && c.State != RenewalStates.ReadyToApply && c.QiwaGateDueOn is { } gate)
+        if (c.QiwaRequired && state != RenewalStates.ReadyToApply && c.QiwaGateDueOn is { } gate)
             list.Add(new(RenewalDeadlineKinds.QiwaGate, gate));
         return list;
     }

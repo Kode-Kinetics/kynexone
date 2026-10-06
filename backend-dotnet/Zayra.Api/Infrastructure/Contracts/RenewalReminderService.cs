@@ -20,6 +20,7 @@ public sealed record RenewalReminderResult(int Enqueued, int AlreadySent, bool N
 /// Renewal deadline reminders through the notification outbox (<see cref="INotificationService.EnqueueAsync"/>; the
 /// delivery worker owns provider I/O). On a deadline's day HR Managers with access to the case's company are told;
 /// if it is still pending the next day, it escalates to the HR Director (Admin when the tenant has no HR Director).
+/// A held case keeps its notice and Qiwa-gate reminders (<see cref="RenewalNextStep.Pending"/>).
 /// Deadlines more than <see cref="StaleAfterDays"/> old are not re-announced — the dashboard shows them as overdue.
 ///
 /// <para><b>Never twice.</b> A reminder is identified by (case, deadline kind, due date, level) — <see cref="RenewalReminder.Key"/>
@@ -65,7 +66,7 @@ public sealed class RenewalReminderService
     public async Task<IReadOnlyList<RenewalReminder>> PlanAsync(Guid tenantId, DateOnly today, CancellationToken ct)
     {
         var open = await _db.ContractRenewalCases.AsNoTracking()
-            .Where(c => c.TenantId == tenantId && c.ClosedAt == null && c.State != RenewalStates.OnHold)
+            .Where(c => c.TenantId == tenantId && c.ClosedAt == null)
             .ToListAsync(ct);
         return open.SelectMany(c => Due(c, today)).ToList();
     }
@@ -81,10 +82,11 @@ public sealed class RenewalReminderService
 
         var employee = await _db.Employees.AsNoTracking()
             .Where(e => e.TenantId == tenantId && e.PublicId == reminder.EmployeePublicId)
-            .Select(e => new { e.FullName, e.EmployeeCode })
+            .Select(e => new { e.FullName, e.ArabicName, e.EmployeeCode })
             .FirstOrDefaultAsync(ct);
         var who = employee is null ? "an employee" : $"{employee.FullName} ({employee.EmployeeCode})";
-        var (title, message) = Text(reminder, who);
+        var whoAr = employee is null ? "موظف" : $"{(string.IsNullOrWhiteSpace(employee.ArabicName) ? employee.FullName : employee.ArabicName)} ({employee.EmployeeCode})";
+        var (title, message) = Text(reminder, who, whoAr);
 
         int enqueued = 0, already = 0;
         foreach (var userId in recipients)
@@ -109,21 +111,45 @@ public sealed class RenewalReminderService
         return new RenewalReminderResult(enqueued, already, false);
     }
 
-    /// <summary>Plain-language title and body. Deterministic for a given reminder, so the outbox dedupe key is stable.</summary>
-    public static (string Title, string Message) Text(RenewalReminder r, string who)
+    /// <summary>
+    /// Plain-language title and body in English AND Arabic (one notification row serves both readers), whole sentences
+    /// per deadline and level. Deterministic for a given reminder, so the outbox dedupe key is stable.
+    /// </summary>
+    public static (string Title, string Message) Text(RenewalReminder r, string who, string whoAr)
     {
         var due = r.DueOn.ToString("d MMM yyyy", CultureInfo.InvariantCulture);
-        var (what, ifMissed) = r.Kind switch
+        var dueAr = r.DueOn.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var (en, ar) = (r.Kind, r.Level) switch
         {
-            RenewalDeadlineKinds.Offer => ("the renewal offer is due", "without a decision the contract renews on its current terms"),
-            RenewalDeadlineKinds.Notice => ("the last day to serve a non-renewal notice", "after it the contract renews on its current terms (Article 74(2))"),
-            RenewalDeadlineKinds.QiwaSubmit => ("the renewal should be sent to Qiwa", "Qiwa may not confirm it before the contract ends"),
-            RenewalDeadlineKinds.QiwaGate => ("the Qiwa outcome must be on file", "the new term cannot be applied before the contract ends"),
-            _ => ("a renewal deadline", "the renewal may not complete on time"),
+            (RenewalDeadlineKinds.Offer, 1) => (
+                $"{due} is the day the renewal offer is due for {who}. If missed, the contract renews on its current terms.",
+                $"تاريخ {dueAr} هو موعد عرض التجديد للموظف {whoAr}. إن فات الموعد يتجدد العقد بشروطه الحالية."),
+            (RenewalDeadlineKinds.Offer, _) => (
+                $"{due} was the day the renewal offer was due for {who}, and it is still open. If nothing is done, the contract renews on its current terms.",
+                $"كان {dueAr} موعد عرض التجديد للموظف {whoAr} وما زال مفتوحاً. إن لم يُتخذ إجراء يتجدد العقد بشروطه الحالية."),
+            (RenewalDeadlineKinds.Notice, 1) => (
+                $"{due} is the last day to serve a non-renewal notice for {who}. After it the contract renews on its current terms (Article 74(2)).",
+                $"تاريخ {dueAr} هو آخر يوم لإرسال إشعار عدم التجديد للموظف {whoAr}. وبعده يتجدد العقد بشروطه الحالية (المادة 74 فقرة 2)."),
+            (RenewalDeadlineKinds.Notice, _) => (
+                $"{due} was the last day to serve a non-renewal notice for {who}, and none is recorded. The contract now renews on its current terms (Article 74(2)).",
+                $"كان {dueAr} آخر يوم لإرسال إشعار عدم التجديد للموظف {whoAr} ولم يُسجَّل إشعار. يتجدد العقد الآن بشروطه الحالية (المادة 74 فقرة 2)."),
+            (RenewalDeadlineKinds.QiwaSubmit, 1) => (
+                $"{due} is the day the renewal for {who} should be sent to Qiwa. If missed, Qiwa may not confirm it before the contract ends.",
+                $"تاريخ {dueAr} هو موعد إرسال تجديد الموظف {whoAr} إلى قوى. إن فات الموعد قد لا تؤكده قوى قبل انتهاء العقد."),
+            (RenewalDeadlineKinds.QiwaSubmit, _) => (
+                $"{due} was the day the renewal for {who} should have been sent to Qiwa, and it is still open. Qiwa may not confirm it before the contract ends.",
+                $"كان {dueAr} موعد إرسال تجديد الموظف {whoAr} إلى قوى وما زال مفتوحاً. قد لا تؤكده قوى قبل انتهاء العقد."),
+            (RenewalDeadlineKinds.QiwaGate, 1) => (
+                $"{due} is the day the Qiwa outcome for {who} must be on file. If missed, the new term cannot be applied before the contract ends.",
+                $"تاريخ {dueAr} هو موعد تسجيل نتيجة قوى للموظف {whoAr}. إن فات الموعد لا يمكن تطبيق العقد الجديد قبل انتهاء العقد الحالي."),
+            _ => (
+                $"{due} was the day the Qiwa outcome for {who} had to be on file, and it is still missing. The new term cannot be applied before the contract ends.",
+                $"كان {dueAr} موعد تسجيل نتيجة قوى للموظف {whoAr} وما زالت غير مسجلة. لا يمكن تطبيق العقد الجديد قبل انتهاء العقد الحالي."),
         };
-        var title = r.Level == 1 ? $"Contract renewal due {due}" : $"Overdue contract renewal: {due}";
-        var lead = r.Level == 1 ? $"{due} is the day {what} for {who}." : $"{due} was the day {what} for {who}, and it is still open.";
-        return (title, $"{lead} If missed, {ifMissed}. Open Contract renewals to act on it.");
+        var title = r.Level == 1
+            ? $"Contract renewal due {due} / موعد تجديد عقد {dueAr}"
+            : $"Overdue contract renewal: {due} / تجديد عقد متأخر: {dueAr}";
+        return (title, $"{en} Open Contract renewals to act on it.\n\n{ar} افتح تجديد العقود لاتخاذ الإجراء.");
     }
 
     /// <summary>Active users holding one of <paramref name="roles"/> who can see <paramref name="companyId"/>.</summary>

@@ -20,7 +20,7 @@ const ar = (key: string) => translate('ar', key);
 const item = (over: Partial<RenewalCaseItem> = {}): RenewalCaseItem => ({
   caseId: 'c1', contractId: 'k1', contractNumber: 'CON-1',
   employee: { id: 1, publicId: 'p1', name: 'Faisal Al-Qahtani', nameAr: 'فيصل القحطاني', code: 'E-1' },
-  companyId: 'co', companyName: 'Masar Facility Services', nationalityClass: 'Saudi', expiringEndDate: '2026-12-31', daysLeft: 86,
+  companyId: 'co', companyName: 'Masar Facility Services', companyNameAr: 'مسار للخدمات', nationalityClass: 'Saudi', expiringEndDate: '2026-12-31', daysLeft: 86,
   stage: 'Preparing', state: 'Open', holdReason: null, allowedActions: ['ConvertIndefinite', 'NonRenew'], contractAction: null,
   renewalNumber: 2, chainStartedOn: '2023-02-01',
   next: { step: 'PrepareOffer', dueOn: '2026-10-16', consequence: 'RenewsOnCurrentTerms', overdue: false, daysLeft: 10 },

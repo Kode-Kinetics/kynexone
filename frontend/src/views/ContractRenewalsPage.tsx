@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { notifyApiError } from '../api/client';
+import { notifyRenewalError } from '../components/renewals/notify';
 import { renewalsApi, type HoldReason, type RenewalCaseItem, type RenewalRadar } from '../api/renewals';
 import { Modal } from '../components/Modal';
 import { ReleaseAGate } from '../components/releaseA/ReleaseAGate';
@@ -21,7 +21,7 @@ const HOLD_REASONS: HoldReason[] = ['Resignation', 'UnpaidLeave', 'Abroad', 'Tra
  * opens that contract's history (the Compliance contracts register links here).
  */
 export function ContractRenewalsPage({ batchActions }: { batchActions?: (caseIds: string[], done: () => void) => React.ReactNode } = {}) {
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   const { hasPermission } = useAuth();
   const canManage = hasPermission('contracts.renewal.manage');
   // NULL = the lead a review opens at under the tenant's rules (the server's default window).
@@ -65,7 +65,7 @@ export function ContractRenewalsPage({ batchActions }: { batchActions?: (caseIds
       await run();
       await load();
     } catch (err) {
-      notifyApiError(err, t(failure));
+      notifyRenewalError(err, locale, t(failure));
     } finally {
       setBusyCaseId(null);
     }
@@ -77,7 +77,7 @@ export function ContractRenewalsPage({ batchActions }: { batchActions?: (caseIds
       await renewalsApi.openNow();
       await load();
     } catch (err) {
-      notifyApiError(err, t('Reviews could not be opened. Please try again.'));
+      notifyRenewalError(err, locale, t('Reviews could not be opened. Please try again.'));
     } finally {
       setOpening(false);
     }

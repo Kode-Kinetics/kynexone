@@ -36,15 +36,9 @@ public sealed class ContractChainStamper : IContractTermLifecycle
             var siblings = await _db.EmployeeContracts.AsNoTracking()
                 .Where(c => c.TenantId == contract.TenantId && c.EmployeeId == contract.EmployeeId && !c.IsDeleted && c.Id != contract.Id)
                 .ToListAsync(ct);
-            var employee = await _db.Employees.AsNoTracking()
-                .Where(e => e.TenantId == contract.TenantId && e.PublicId == contract.EmployeeId)
-                .Select(e => new { e.JoiningDate, e.SaudiOrNonSaudi, e.Nationality })
-                .FirstOrDefaultAsync(ct);
-
-            var facts = siblings.Select(ContractChainFacts.Of).Append(ContractChainFacts.Of(contract)).ToList();
             var rules = await RenewalRuleSet.LoadAsync(_db, contract.TenantId, DateOnly.FromDateTime(DateTime.UtcNow), ct);
-            var stamps = ContractChainLinker.Link(facts, ContractChainCensus.JoiningDateOf(employee?.JoiningDate),
-                WorkerNationality.ClassOf(employee?.SaudiOrNonSaudi, employee?.Nationality), rules.OriginalTermJoiningToleranceDays);
+            var stamps = await ContractChainCensus.LinkEmployeeAsync(_db, contract.TenantId, contract.EmployeeId,
+                siblings.Append(contract).ToList(), rules, ct);
             if (stamps.TryGetValue(contract.Id, out var stamp))
                 ContractChainLinker.Apply(contract, stamp);
         }
@@ -60,26 +54,31 @@ public sealed class ContractChainStamper : IContractTermLifecycle
     }
 
     /// <summary>
-    /// The term stopped being in force by termination, separation or supersede: its open renewal review has nothing left
-    /// to decide, so it is cancelled (T21) with an audit row naming why, in the caller's unit of work. <b>Expiry never
+    /// The term stopped being in force by termination or separation: its open renewal review has nothing left to decide,
+    /// so it is cancelled (T21) with an audit row naming why, in the caller's unit of work. <b>Expiry never
     /// cancels</b>: a term that reaches its end date with the review still open continues by law (Art. 74(2)) — that is
-    /// R6's holdover (T22), and the dashboard shows it as "Expired — holdover pending". Never throws: should it fail,
+    /// R6's holdover (T22), and the dashboard shows it as "Expired — holdover pending". <b>Supersede never cancels</b>
+    /// either: an amendment carries the review onto the new version (ContractsController.Supersede). Never throws: should it fail,
     /// the daily job's reconcile step cancels the case on its next run.
     /// </summary>
     public async Task OnEndedAsync(EmployeeContract contract, string reason, CancellationToken ct)
     {
-        if (reason == ContractEndReasons.Expired) return;
+        // Expiry: the holdover (R6). Supersede: the Supersede endpoint carries the case onto the new version itself.
+        if (reason is ContractEndReasons.Expired or ContractEndReasons.Superseded) return;
         try
         {
-            var open = await _db.ContractRenewalCases
-                .Where(c => c.TenantId == contract.TenantId && c.ExpiringContractId == contract.Id && c.ClosedAt == null)
-                .ToListAsync(ct);
+            var versions = await RenewalTermVersions.LoadAsync(_db, contract.TenantId, contract.EmployeeId, ct);
+            var open = (await _db.ContractRenewalCases
+                    .Where(c => c.TenantId == contract.TenantId && c.EmployeeId == contract.EmployeeId && c.ClosedAt == null)
+                    .ToListAsync(ct))
+                .Where(c => c.ExpiringContractId == contract.Id || versions.SameTerm(c.ExpiringContractId, contract.Id))
+                .ToList();
             foreach (var c in open)
             {
                 var from = c.State;
                 var transition = RenewalCaseTransitions.Cancel(c, DateTime.UtcNow);
                 _db.ComplianceAuditLogs.Add(RenewalCaseOpener.Audit(contract.TenantId, c, "Cancelled", null, "kynexone:contract-ended",
-                    new { transition = transition.Id, from, reason = "ContractEnded", contractEnd = reason }));
+                    new { transition = transition.Id, from, reason = "ContractEnded", contractEnd = reason, versionContractId = contract.Id }));
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)

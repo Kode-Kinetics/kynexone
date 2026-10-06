@@ -1,11 +1,12 @@
 'use client';
 
-import type { ReactNode } from 'react';
-import type { RenewalCaseItem, RenewalRadar } from '../../api/renewals';
+import { Fragment, type ReactNode } from 'react';
+import type { RenewalCaseItem, RenewalRadar, RenewalUnopened } from '../../api/renewals';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useFormat } from '../../hooks/useFormat';
 import {
-  actionKeys, badgeText, blockText, closedStateKeys, fill, formatDay, nextLine, stageKeys, toggleAll, toggleSelection, unopenedReasonKeys,
+  actionKeys, badgeText, blockText, closedStateKeys, companyName, fill, formatDay, nextLine, personName, stageKeys, toggleAll, toggleSelection,
+  unopenedReasonKeys,
   type RadarFilter,
 } from '../../lib/renewalRadar';
 import { StatusChip } from '../StatusChip';
@@ -78,6 +79,7 @@ export function Radar(props: RadarProps) {
   const rec = radar.reconciliation;
   const showUnopened = isActive('exception', 'expiringWithoutCase');
   const showClosedOnly = isActive('exception', 'activeWithoutOpenReview');
+  const showNotYet = isActive('exception', 'notYetDue');
   const eligibleInView = rows.filter((r) => r.fastLaneEligible);
   const allEligibleSelected = eligibleInView.length > 0 && eligibleInView.every((r) => selected.has(r.caseId));
 
@@ -85,10 +87,12 @@ export function Radar(props: RadarProps) {
     <div className="space-y-5">
       <section aria-labelledby="renewal-buckets">
         <h2 id="renewal-buckets" className="mb-2 text-sm font-semibold text-slate-700 dark:text-slate-200">{t('Contracts ending')}</h2>
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
           {radar.buckets.map((b) => (
-            <Tile key={b.key} label={fill(t('In {from}–{to} days'), { from: b.fromDays, to: b.toDays })}
-              definition={t('Open reviews whose contract ends in this window.')} count={b.count} tone="neutral"
+            <Tile key={b.key}
+              label={b.key === 'overdue' ? t('Overdue: contract already ended') : fill(t('In {from}–{to} days'), { from: b.fromDays, to: b.toDays })}
+              definition={b.key === 'overdue' ? t('Open reviews whose contract end date has passed.') : t('Open reviews whose contract ends in this window.')}
+              count={b.count} tone={b.key === 'overdue' ? 'warn' : 'neutral'}
               active={isActive('bucket', b.key)} onClick={() => pick('bucket', b.key, b.caseIds)} />
           ))}
         </div>
@@ -105,12 +109,33 @@ export function Radar(props: RadarProps) {
       </section>
 
       <p className="text-xs text-slate-600 dark:text-slate-300" aria-label={t('How the contracts add up')}>
-        {fill(t('{due} fixed-term contracts in force are due: {open} with an open review, {none} without one, {closed} with only a closed review.'),
-          { due: rec.dueActiveContracts, open: rec.withOpenReview, none: rec.withoutReview, closed: rec.withClosedReviewOnly })}
-        {rec.notYetDue > 0 && <> {fill(t('{n} more open later.'), { n: rec.notYetDue })}</>}
+        {fillTemplate(t('{due} fixed-term contracts in force are due: {open} with an open review, {none} without one, {closed} with only a closed review.'), {
+          due: rec.dueActiveContracts,
+          open: <DrillLink count={rec.withOpenReview} label={t('Show the contracts with an open review')} active={isActive('exception', 'reconOpen')}
+            onClick={() => pick('exception', 'reconOpen', rec.openReviewCaseIds)} />,
+          none: <DrillLink count={rec.withoutReview} label={t('Show the contracts without a review')} active={showUnopened}
+            onClick={() => pick('exception', 'expiringWithoutCase', [])} />,
+          closed: <DrillLink count={rec.withClosedReviewOnly} label={t('Show the contracts with only a closed review')} active={showClosedOnly}
+            onClick={() => pick('exception', 'activeWithoutOpenReview', [])} />,
+        })}
+        {rec.notYetDue > 0 && (
+          <>
+            {' '}
+            {fillTemplate(t('{n} more open later.'), {
+              n: <DrillLink count={rec.notYetDue} label={t('Show the contracts whose review opens later')} active={showNotYet}
+                onClick={() => pick('exception', 'notYetDue', [])} />,
+            })}
+          </>
+        )}
       </p>
 
-      {showClosedOnly ? (
+      {showNotYet ? (
+        <ContractList rows={rec.notYetDueContracts} label={t('Reviews that open later')} empty={t('Nothing in this view.')}
+          reason={(u) => fill(t('The renewal review opens on {date}.'), { date: formatDay(u.opensOn, f, radar.today) })}
+          onOpenChain={props.onOpenChain} today={radar.today} />
+      ) : null}
+
+      {showNotYet ? null : showClosedOnly ? (
         <section aria-label={t('Active contract with no open review')} className="surface overflow-x-auto rounded-xl">
           {ex.activeWithoutOpenReview.length === 0 ? (
             <p className="p-6 text-center text-sm text-slate-500 dark:text-slate-400">{t('Every contract in force has an open review.')}</p>
@@ -128,7 +153,7 @@ export function Radar(props: RadarProps) {
                 {ex.activeWithoutOpenReview.map((u) => (
                   <tr key={u.contractId}>
                     <td className="p-3">
-                      <span className="font-medium text-slate-800 dark:text-slate-100">{u.employee?.name ?? u.contractNumber}</span>
+                      <span className="font-medium text-slate-800 dark:text-slate-100">{u.employee ? personName(u.employee, locale) : u.contractNumber}</span>
                       <span className="block text-xs text-slate-500">{u.employee?.code} · {u.contractNumber}</span>
                     </td>
                     <td className="p-3 text-slate-600 dark:text-slate-300">{formatDay(u.endDate, f, radar.today)}</td>
@@ -146,43 +171,10 @@ export function Radar(props: RadarProps) {
           )}
         </section>
       ) : showUnopened ? (
-        <section aria-label={t('Due without a review')} className="surface overflow-x-auto rounded-xl">
-          {ex.expiringWithoutCase.length === 0 ? (
-            <p className="p-6 text-center text-sm text-slate-500 dark:text-slate-400">{t('Every due contract has its review open.')}</p>
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-slate-200 text-start text-xs text-slate-500 dark:border-white/10 dark:text-slate-400">
-                  <th className="p-3 text-start">{t('Employee')}</th>
-                  <th className="p-3 text-start">{t('Contract ends')}</th>
-                  <th className="p-3 text-start">{t('Why there is no review')}</th>
-                  <th className="p-3 text-start"><span className="sr-only">{t('Actions')}</span></th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-white/5">
-                {ex.expiringWithoutCase.map((u) => (
-                  <tr key={u.contractId}>
-                    <td className="p-3">
-                      <span className="font-medium text-slate-800 dark:text-slate-100">{u.employee?.name ?? u.contractNumber}</span>
-                      <span className="block text-xs text-slate-500">{u.employee?.code} · {u.contractNumber}</span>
-                    </td>
-                    <td className="p-3 text-slate-600 dark:text-slate-300">{formatDay(u.endDate, f, radar.today)}</td>
-                    <td className="p-3 text-slate-600 dark:text-slate-300">
-                      {u.blockReason ? blockText(u.blockReason, locale).title : t(unopenedReasonKeys[u.reason] ?? u.reason)}
-                      {u.blockReason && <span className="block text-xs text-slate-500">{blockText(u.blockReason, locale).fix}</span>}
-                    </td>
-                    <td className="p-3 text-end">
-                      <button type="button" onClick={() => props.onOpenChain(u.contractId)}
-                        className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/5">
-                        {t('Contract history')}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </section>
+        <ContractList rows={ex.expiringWithoutCase} label={t('Due without a review')} empty={t('Every due contract has its review open.')}
+          reason={(u) => (u.blockReason ? blockText(u.blockReason, locale).title : t(unopenedReasonKeys[u.reason] ?? u.reason))}
+          detail={(u) => (u.blockReason ? blockText(u.blockReason, locale).fix : null)}
+          onOpenChain={props.onOpenChain} today={radar.today} />
       ) : (
         <section aria-label={t('Renewal reviews')} className="surface overflow-x-auto rounded-xl">
           {rows.length === 0 ? (
@@ -223,10 +215,10 @@ export function Radar(props: RadarProps) {
                       </td>
                       <td className="p-3">
                         <span className="font-medium text-slate-800 dark:text-slate-100">
-                          {locale === 'ar' && item.employee.nameAr ? item.employee.nameAr : item.employee.name}
+                          {personName(item.employee, locale)}
                         </span>
                         <span className="block text-xs text-slate-500 dark:text-slate-400">
-                          {item.employee.code} · {item.companyName}
+                          {item.employee.code} · {companyName(item, locale)}
                         </span>
                         <div className="mt-1.5 flex flex-wrap gap-1">
                           {item.badges.map((b) => <StatusChip key={b.code} label={badgeText(b, t)} tone={badgeTone(b.code)} />)}
@@ -283,6 +275,72 @@ export function Radar(props: RadarProps) {
         </section>
       )}
     </div>
+  );
+}
+
+/** A count inside a sentence that lists exactly the records it counts (AGENTS.md: every number drills down). */
+function DrillLink({ count, label, active, onClick }: { count: number; label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} aria-pressed={active} aria-label={`${label} (${count})`}
+      className={`font-semibold underline decoration-dotted underline-offset-2 ${active ? 'text-sapphire' : 'text-slate-800 dark:text-slate-100'}`}>
+      {count}
+    </button>
+  );
+}
+
+/** Fills {placeholders} of a translated whole sentence with nodes, so a link can sit inside it in either language. */
+function fillTemplate(template: string, parts: Record<string, ReactNode>): ReactNode[] {
+  return template.split(/(\{\w+\})/).map((piece, i) => {
+    const m = /^\{(\w+)\}$/.exec(piece);
+    return <Fragment key={i}>{m && m[1] in parts ? parts[m[1]] : piece}</Fragment>;
+  });
+}
+
+/** Contracts without an open review (due, or opening later): who, when it ends, and why. */
+function ContractList({ rows, label, empty, reason, detail, onOpenChain, today }: {
+  rows: RenewalUnopened[]; label: string; empty: string; reason: (u: RenewalUnopened) => string;
+  detail?: (u: RenewalUnopened) => string | null; onOpenChain: (contractId: string) => void; today: string;
+}) {
+  const { t, locale } = useLocale();
+  const f = useFormat();
+  return (
+    <section aria-label={label} className="surface overflow-x-auto rounded-xl">
+      {rows.length === 0 ? (
+        <p className="p-6 text-center text-sm text-slate-500 dark:text-slate-400">{empty}</p>
+      ) : (
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-slate-200 text-start text-xs text-slate-500 dark:border-white/10 dark:text-slate-400">
+              <th className="p-3 text-start">{t('Employee')}</th>
+              <th className="p-3 text-start">{t('Contract ends')}</th>
+              <th className="p-3 text-start">{t('Why there is no review')}</th>
+              <th className="p-3 text-start"><span className="sr-only">{t('Actions')}</span></th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 dark:divide-white/5">
+            {rows.map((u) => (
+              <tr key={u.contractId}>
+                <td className="p-3">
+                  <span className="font-medium text-slate-800 dark:text-slate-100">{u.employee ? personName(u.employee, locale) : u.contractNumber}</span>
+                  <span className="block text-xs text-slate-500">{u.employee?.code} · {u.contractNumber}</span>
+                </td>
+                <td className="p-3 text-slate-600 dark:text-slate-300">{formatDay(u.endDate, f, today)}</td>
+                <td className="p-3 text-slate-600 dark:text-slate-300">
+                  {reason(u)}
+                  {detail?.(u) && <span className="block text-xs text-slate-500">{detail(u)}</span>}
+                </td>
+                <td className="p-3 text-end">
+                  <button type="button" onClick={() => onOpenChain(u.contractId)}
+                    className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/5">
+                    {t('Contract history')}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
   );
 }
 

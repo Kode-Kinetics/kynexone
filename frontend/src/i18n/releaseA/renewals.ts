@@ -178,6 +178,16 @@ const en = [
   'The contract ended on {date} with no outcome — it continues by law',
   '{used} of {max} renewals',
   '{used} of {max} years',
+  // R4 re-review
+  'A new version starting after the earlier one ended is not counted as a renewal',
+  'The earlier contract was terminated',
+  'Open reviews whose contract end date has passed.',
+  'Overdue: contract already ended',
+  'Reviews that open later',
+  'Show the contracts whose review opens later',
+  'Show the contracts with an open review',
+  'Show the contracts with only a closed review',
+  'Show the contracts without a review',
 ] as const;
 
 const ar: Record<(typeof en)[number], string> = {
@@ -341,6 +351,15 @@ const ar: Record<(typeof en)[number], string> = {
   'The contract ended on {date} with no outcome — it continues by law': 'انتهى العقد في {date} دون نتيجة — ويستمر بحكم النظام',
   '{used} of {max} renewals': '{used} من {max} تجديدات',
   '{used} of {max} years': '{used} من {max} سنوات',
+  'A new version starting after the earlier one ended is not counted as a renewal': 'النسخة الجديدة التي تبدأ بعد انتهاء النسخة السابقة لا تُحتسب تجديداً',
+  'The earlier contract was terminated': 'تم إنهاء العقد السابق',
+  'Open reviews whose contract end date has passed.': 'مراجعات مفتوحة مضى تاريخ انتهاء عقدها.',
+  'Overdue: contract already ended': 'متأخرة: انتهى العقد',
+  'Reviews that open later': 'مراجعات تُفتح لاحقاً',
+  'Show the contracts whose review opens later': 'عرض العقود التي تُفتح مراجعتها لاحقاً',
+  'Show the contracts with an open review': 'عرض العقود التي لها مراجعة مفتوحة',
+  'Show the contracts with only a closed review': 'عرض العقود التي لها مراجعة مغلقة فقط',
+  'Show the contracts without a review': 'عرض العقود التي ليس لها مراجعة',
 };
 
 export const renewals: ReleaseADict = {
