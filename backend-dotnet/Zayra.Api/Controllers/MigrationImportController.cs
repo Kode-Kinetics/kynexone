@@ -552,12 +552,23 @@ public sealed partial class MigrationImportController : ControllerBase
         return created ? "created" : "updated";
     }
 
+    /// <summary>
+    /// One unusable placeholder credential per import request, not one per row. Imported users must
+    /// set a password before signing in (MustChangePassword, unconfirmed email) and the random
+    /// plaintext is discarded, so sharing its hash across the batch grants nothing — while hashing
+    /// per row at 600k PBKDF2 iterations cost ~0.5 CPU-second per user and stalled large imports.
+    /// </summary>
+    private string? _importPlaceholderHash;
+    private string ImportPlaceholderHash()
+        => _importPlaceholderHash ??= _passwordHasher.Hash(
+            Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)) + "!Aa1");
+
     private async Task<string> UpsertUserAsync(Dictionary<string, string> row, Guid tenantId, CancellationToken ct)
     {
         var email = Require(row, "Email").Trim(); var normalized = email.ToUpperInvariant();
         var user = await _db.Users.Include(x => x.UserRoles).FirstOrDefaultAsync(x => x.TenantId == tenantId && x.NormalizedEmail == normalized && !x.IsDeleted, ct);
         var created = user is null;
-        user ??= new User { TenantId = tenantId, Email = email, NormalizedEmail = normalized, PasswordHash = _passwordHasher.Hash(Guid.NewGuid().ToString("N") + "!Aa1"), MustChangePassword = true, IsEmailConfirmed = false };
+        user ??= new User { TenantId = tenantId, Email = email, NormalizedEmail = normalized, PasswordHash = ImportPlaceholderHash(), MustChangePassword = true, IsEmailConfirmed = false };
         user.Email = email; user.NormalizedEmail = normalized; user.FullName = Require(row, "FullName"); user.PhoneNumber = Val(row, "PhoneNumber"); user.PreferredLanguage = Val(row, "PreferredLanguage", "en"); user.Timezone = Val(row, "Timezone", "UTC"); user.Status = Val(row, "Status", "Invited"); user.IsActive = user.Status == "Active"; user.IsGroupScope = Bool(row, "IsGroupScope", false);
         var names = Val(row, "RoleNames").Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (names.Length > 0)

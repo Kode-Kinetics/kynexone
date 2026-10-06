@@ -37,6 +37,8 @@ public class User : ITenantOwned
     public string? MfaSecretEncrypted { get; set; }
     public DateTime? MfaConfiguredAtUtc { get; set; }
     public DateTime? MfaLastVerifiedAtUtc { get; set; }
+    /// <summary>Last accepted TOTP time-step; any code at or below it is refused (replay protection).</summary>
+    public long? MfaLastTotpStep { get; set; }
     public int MfaFailedCount { get; set; }
     public bool IsDeleted { get; set; }
     public DateTime? DeletedAtUtc { get; set; }

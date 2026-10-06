@@ -5,6 +5,11 @@ internal static class AuthChallengeTokenCodec
     public const string TenantLoginPurpose = "tm1";
     public const string TenantEnrollmentPurpose = "te1";
     public const string PlatformLoginPurpose = "pm1";
+    /// <summary>Setup-only token for a platform operator who must enrol MFA before any session.</summary>
+    public const string PlatformEnrollmentPurpose = "pe1";
+
+    private static bool IsPlatformPurpose(string purpose)
+        => purpose is PlatformLoginPurpose or PlatformEnrollmentPurpose;
 
     public static string CreateTenant(
         string purpose,
@@ -25,8 +30,20 @@ internal static class AuthChallengeTokenCodec
         Guid platformUserId,
         string sessionStamp,
         string nonce) =>
-        string.Join('.', PlatformLoginPurpose, challengeId.ToString("N"),
+        CreatePlatform(PlatformLoginPurpose, challengeId, platformUserId, sessionStamp, nonce);
+
+    public static string CreatePlatform(
+        string purpose,
+        Guid challengeId,
+        Guid platformUserId,
+        string sessionStamp,
+        string nonce)
+    {
+        if (!IsPlatformPurpose(purpose))
+            throw new ArgumentOutOfRangeException(nameof(purpose));
+        return string.Join('.', purpose, challengeId.ToString("N"),
             platformUserId.ToString("N"), "platform", sessionStamp, nonce);
+    }
 
     public static bool TryParse(string rawToken, string expectedPurpose, out AuthChallengeEnvelope envelope)
     {
@@ -42,7 +59,7 @@ internal static class AuthChallengeTokenCodec
             return false;
 
         Guid? tenantId = null;
-        if (expectedPurpose == PlatformLoginPurpose)
+        if (IsPlatformPurpose(expectedPurpose))
         {
             if (!string.Equals(parts[3], "platform", StringComparison.Ordinal)) return false;
         }

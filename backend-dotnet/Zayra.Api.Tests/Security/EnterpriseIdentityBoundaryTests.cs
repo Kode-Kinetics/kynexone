@@ -232,7 +232,7 @@ public class EnterpriseIdentityBoundaryTests
         public Task<bool> DisableAsync(Guid userId, Guid tenantId, string totpCode, CancellationToken cancellationToken) => throw new NotImplementedException();
         public Task<bool> AdminDisableAsync(Guid userId, Guid tenantId, RequestContext context, CancellationToken cancellationToken) => throw new NotImplementedException();
         public Task<MfaSetupInitDto> InitiatePlatformSetupAsync(Guid platformUserId, CancellationToken cancellationToken) => throw new NotImplementedException();
-        public Task<bool> VerifyPlatformSetupAsync(Guid platformUserId, MfaVerifySetupRequest request, CancellationToken cancellationToken) => throw new NotImplementedException();
+        public Task<IReadOnlyList<string>?> VerifyPlatformSetupAsync(Guid platformUserId, MfaVerifySetupRequest request, CancellationToken cancellationToken) => throw new NotImplementedException();
         public Task<string> CreatePlatformChallengeAsync(Guid platformUserId, string ip, CancellationToken cancellationToken) => throw new NotImplementedException();
         public Task<PlatformUser?> VerifyPlatformChallengeAsync(string challengeToken, string totpCode, CancellationToken cancellationToken) => throw new NotImplementedException();
         public Task<PlatformUser?> CompletePlatformChallengeAsync(string challengeToken, string totpCode, RequestContext context, CancellationToken cancellationToken) => throw new NotImplementedException();

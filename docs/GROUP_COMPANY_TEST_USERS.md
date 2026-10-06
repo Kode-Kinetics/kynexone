@@ -1,17 +1,22 @@
 # Group → Company Enterprise Test Data Reference
 
-**Summary.** The enterprise test seeder provisions three realistic Group tenants (Almarai-, Tata-, and Emaar-styled), each with five companies across multiple jurisdictions, a full persona ladder of users (group-scope and company-scoped), and operational data (employees, branches, departments, attendance, leave, one approved payroll run, compliance profiles with deliberate gaps). It is gated behind the `SEED_ENTERPRISE_TEST_DATA=true` environment variable, is idempotent, and is **TEST DATA ONLY** — no real PII; sensitive fields are left empty or synthetic.
+> **Status (2026-10): the seeder this page describes no longer exists.** `SEED_ENTERPRISE_TEST_DATA`
+> switches on nothing — the enterprise seeder was deleted (docs/DATA_ENTRY_PATHS.md) and
+> `Zayra.Api.Tests/Security/NoSideDoorDataTests.cs` fails the build if any demo/fixture seeder, or
+> that flag, returns to `Zayra.Api`. The API therefore cannot create these accounts in ANY
+> environment. The same fixture world is now provisioned through the platform-admin API by
+> `frontend/e2e/bootstrap`, only against disposable hosts (`disposable-host.guard.ts`), with
+> passwords taken from `E2E_GROUP_PASSWORD` (generated per run in CI). The current reference is
+> `frontend/e2e/group-company/README.md`; the persona tables below are kept for orientation.
 
-> **NEVER enable `SEED_ENTERPRISE_TEST_DATA` in production.** See `docs/GROUP_COMPANY_STRICTMODE_CUTOVER.md` §production env checklist.
+**Summary.** Three realistic Group test tenants (Almarai-, Tata-, and Emaar-styled), each with five companies across multiple jurisdictions, a full persona ladder of users (group-scope and company-scoped), and operational data. **TEST DATA ONLY** — no real PII; sensitive fields are left empty or synthetic.
 
----
+## 1. Guarantees
 
-## 1. Seeder gate and guarantees
-
-- **Gate:** the seeder runs only when the environment variable `SEED_ENTERPRISE_TEST_DATA=true` is set. Absent/false → no-op.
-- **Idempotent:** safe to run on every boot; existing tenants/companies/users are matched by slug/code/email and not duplicated.
-- **No real PII:** names are fictional, national-id / IBAN / passport style fields are left empty or filled with clearly synthetic values. The seeded data must never be mistaken for (or mixed with) customer data.
-- **Universal password:** every seeded user authenticates with `GroupDemo123!x`.
+- **Never in production:** no code path in the API creates these tenants or users; only the e2e bootstrap does, and it refuses non-disposable hosts.
+- **Idempotent:** re-running the bootstrap matches tenants/companies/users by slug/code/email and does not duplicate them.
+- **No real PII:** names are fictional, national-id / IBAN / passport style fields are left empty or filled with clearly synthetic values.
+- **Password:** every user authenticates with the value of `E2E_GROUP_PASSWORD`. No password is published in this document.
 
 ## 2. Tenants and companies
 
@@ -46,7 +51,7 @@ Three Group tenants (`AccountType = Group`):
 
 ## 3. Users per tenant
 
-Password for **all** users: `GroupDemo123!x`. `{slug}` is the tenant slug (`almarai-test`, `tata-test`, `emaar-test`); `{code}` is the company code lower-cased (e.g. `alm-dairy-ksa`).
+Password for **all** users: the value of `E2E_GROUP_PASSWORD`. `{slug}` is the tenant slug (`almarai-test`, `tata-test`, `emaar-test`); `{code}` is the company code lower-cased (e.g. `alm-dairy-ksa`).
 
 ### Group-scope users (see every company; "All Companies" switcher available)
 | Email | Persona |
