@@ -133,6 +133,15 @@ export default function PlatformTeamPage() {
           <p className="text-xs text-slate-500 mt-0.5">
             {members.length} member{members.length !== 1 ? 's' : ''} · Platform users are separate from all tenant company users
           </p>
+          {(() => {
+            const notEnrolled = members.filter(m => m.isActive && m.mfaEnabled === false).length;
+            return notEnrolled > 0 ? (
+              <p className="mt-1 text-xs font-medium text-amber-300">
+                {notEnrolled} active operator{notEnrolled !== 1 ? 's have' : ' has'} not yet set up two-step sign-in.
+                It becomes mandatory on the enforcement date.
+              </p>
+            ) : null;
+          })()}
         </div>
         <div className="flex items-center gap-2">
           <button type="button" onClick={load} disabled={loading} aria-label="Refresh"

@@ -74,5 +74,17 @@ ENV DOTNET_GCConserveMemory=9
 ENV DOTNET_EnableDiagnostics=0
 ENV DOTNET_GCHeapHardLimit=0x14000000
 
+# ── RUN AS A NON-ROOT USER ──
+# The aspnet:8.0 base ships an unprivileged `app` user and exports its uid as APP_UID (1654).
+# The published app stays root-owned and is therefore read-only to the process: a compromised
+# request handler cannot rewrite the binaries it runs from. The only directory the process needs
+# to write under /app is storage/ (LocalDocumentStorage, Development/compose only — production
+# documents go to S3); it is created here and handed to `app`, so a fresh named volume mounted on
+# it inherits that ownership. The DataProtection key ring lives in PostgreSQL
+# (PersistKeysToDbContext), and captured mail goes to /tmp, so nothing else needs write access.
+# Port 8080 is above 1024, so binding it needs no capability.
+RUN mkdir -p /app/storage && chown "$APP_UID" /app/storage
+USER $APP_UID
+
 EXPOSE 8080
 ENTRYPOINT ["dotnet", "Zayra.Api.dll"]

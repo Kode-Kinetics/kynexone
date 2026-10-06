@@ -112,11 +112,17 @@ public static class TenantSessionSecurity
             .FirstOrDefaultAsync(x => x.TenantId == tenantId, ct);
         var identity = await db.TenantIdentityProviderSettings.AsNoTracking()
             .FirstOrDefaultAsync(x => x.TenantId == tenantId, ct);
+        // ignoreFailureLockout: the stamp check above already did that job. Locking an account
+        // after repeated failed passwords rotates User.UpdatedAtUtc (IsLocked/LockoutEnd are not
+        // login telemetry in ZayraDbContext), so every session issued BEFORE the lockout fails the
+        // stamp comparison. A session whose stamp is current during a lockout was issued after it
+        // began — which only the owner's known-device bypass can do — and must keep working.
         var eligibility = AuthCurrentEligibility.ForSession(
             user,
             AuthCurrentEligibility.IsSsoOnly(user!, identity),
             policy,
-            validationTimeUtc);
+            validationTimeUtc,
+            ignoreFailureLockout: true);
         if (!eligibility.Allowed) return false;
 
         var currentRoles = user!.UserRoles
