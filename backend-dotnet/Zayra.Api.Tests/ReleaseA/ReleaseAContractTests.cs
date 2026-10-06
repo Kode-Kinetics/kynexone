@@ -133,7 +133,10 @@ public class ReleaseAContractTests
         await new EntitlementWriter().Invoking(w => w.FreezeTermAsync(Guid.NewGuid(), Guid.NewGuid(), default))
             .Should().ThrowAsync<NotImplementedException>();
         var contract = new EmployeeContract { TenantId = Guid.NewGuid() };
-        await new ContractChainStamper().Invoking(h => h.OnActivatedAsync(contract, default)).Should().NotThrowAsync();
+        // R4 replaced the stamper stub; it still never throws, even with no employee row behind the contract.
+        await using var stamperDb = InMemory();
+        await new ContractChainStamper(stamperDb, NullLogger<ContractChainStamper>.Instance)
+            .Invoking(h => h.OnActivatedAsync(contract, default)).Should().NotThrowAsync();
         await new PackageFreezeOnActivation().Invoking(h => h.OnActivatedAsync(contract, default)).Should().NotThrowAsync();
     }
 

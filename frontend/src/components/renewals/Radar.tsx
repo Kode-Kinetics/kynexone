@@ -1,0 +1,259 @@
+'use client';
+
+import type { ReactNode } from 'react';
+import type { RenewalCaseItem, RenewalRadar } from '../../api/renewals';
+import { useLocale } from '../../contexts/LocaleContext';
+import {
+  actionKeys, badgeText, blockText, fill, formatDay, nextLine, stageKeys, toggleAll, toggleSelection, unopenedReasonKeys,
+  type RadarFilter,
+} from '../../lib/renewalRadar';
+import { StatusChip } from '../StatusChip';
+
+/** One tile: a count, what it counts (always visible), and a click that lists exactly those records. */
+function Tile({ label, definition, count, active, tone, onClick }: {
+  label: string; definition: string; count: number; active: boolean; tone: 'neutral' | 'warn'; onClick: () => void;
+}) {
+  const ring = active ? 'ring-2 ring-sapphire' : 'ring-1 ring-slate-200 dark:ring-white/10';
+  const number = tone === 'warn' && count > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-900 dark:text-white';
+  return (
+    <button type="button" onClick={onClick} aria-pressed={active}
+      className={`surface rounded-xl p-3 text-start transition-shadow hover:shadow-soft ${ring}`}>
+      <span className="block text-xs font-semibold text-slate-600 dark:text-slate-300">{label}</span>
+      <span className={`mt-1 block text-2xl font-bold tracking-tight ${number}`}>{count}</span>
+      <span className="mt-1 block text-[11px] leading-snug text-slate-500 dark:text-slate-400">{definition}</span>
+    </button>
+  );
+}
+
+const badgeTone = (code: string): 'rose' | 'amber' | 'blue' | 'slate' =>
+  code === 'Art55Threshold' || code === 'NoticeDatePassed' || code === 'QiwaOverdue' || code === 'ExpiredNoOutcome' ? 'rose'
+    : code === 'ChainUnconfirmed' || code === 'OnHold' || code === 'OffboardingOpen' ? 'amber'
+      : code === 'Art55Meter' ? 'blue' : 'slate';
+
+export interface RadarProps {
+  radar: RenewalRadar;
+  filter: RadarFilter;
+  onFilter: (filter: RadarFilter) => void;
+  rows: RenewalCaseItem[];
+  selected: ReadonlySet<string>;
+  onSelected: (next: Set<string>) => void;
+  canManage: boolean;
+  onOpenChain: (contractId: string) => void;
+  onHold: (item: RenewalCaseItem) => void;
+  onRelease: (item: RenewalCaseItem) => void;
+  onCancel: (item: RenewalCaseItem) => void;
+  busyCaseId: string | null;
+}
+
+/** The renewal dashboard body: bucket tiles, exception tiles, the due-without-a-review list and the case list. */
+export function Radar(props: RadarProps) {
+  const { radar, filter, onFilter, rows, selected, onSelected, canManage } = props;
+  const { t, locale } = useLocale();
+  const isActive = (kind: string, key: string) => filter.kind === kind && 'key' in filter && filter.key === key;
+  const pick = (kind: 'bucket' | 'exception', key: string, caseIds: string[]) =>
+    onFilter(isActive(kind, key) ? { kind: 'all' } : { kind, key, caseIds });
+
+  const ex = radar.exceptions;
+  const exceptionTiles: { key: string; label: string; definition: string; ids: string[]; count: number }[] = [
+    { key: 'expiringWithoutCase', label: t('Due without a review'), definition: t('Fixed-term contracts whose review should be open but is not.'),
+      ids: [], count: ex.expiringWithoutCase.length },
+    { key: 'needsConfirmation', label: t('History to confirm'), definition: t('Reviews waiting for HR to confirm earlier contracts and nationality.'),
+      ids: ex.needsConfirmation.caseIds, count: ex.needsConfirmation.count },
+    { key: 'noticeDatePassed', label: t('Notice date passed'), definition: t('No decision by the notice date: the contract renews on its current terms.'),
+      ids: ex.noticeDatePassed.caseIds, count: ex.noticeDatePassed.count },
+    { key: 'qiwaOverdue', label: t('Qiwa overdue'), definition: t('The Qiwa reply window or the Qiwa deadline has passed.'),
+      ids: ex.qiwaOverdue.caseIds, count: ex.qiwaOverdue.count },
+    { key: 'art55Threshold', label: t('At the Art. 55 limit'), definition: t('Saudi contracts that can only become indefinite or not be renewed.'),
+      ids: ex.art55Threshold.caseIds, count: ex.art55Threshold.count },
+    { key: 'expiredNoOutcome', label: t('Ended with no outcome'), definition: t('The contract end date passed and the review is still open.'),
+      ids: ex.expiredNoOutcome.caseIds, count: ex.expiredNoOutcome.count },
+  ];
+  const showUnopened = isActive('exception', 'expiringWithoutCase');
+  const eligibleInView = rows.filter((r) => r.fastLaneEligible);
+  const allEligibleSelected = eligibleInView.length > 0 && eligibleInView.every((r) => selected.has(r.caseId));
+
+  return (
+    <div className="space-y-5">
+      <section aria-labelledby="renewal-buckets">
+        <h2 id="renewal-buckets" className="mb-2 text-sm font-semibold text-slate-700 dark:text-slate-200">{t('Contracts ending')}</h2>
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          {radar.buckets.map((b) => (
+            <Tile key={b.key} label={fill(t('In {from}–{to} days'), { from: b.fromDays, to: b.toDays })}
+              definition={t('Open reviews whose contract ends in this window.')} count={b.count} tone="neutral"
+              active={isActive('bucket', b.key)} onClick={() => pick('bucket', b.key, b.caseIds)} />
+          ))}
+        </div>
+      </section>
+
+      <section aria-labelledby="renewal-exceptions">
+        <h2 id="renewal-exceptions" className="mb-2 text-sm font-semibold text-slate-700 dark:text-slate-200">{t('Needs attention')}</h2>
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+          {exceptionTiles.map((x) => (
+            <Tile key={x.key} label={x.label} definition={x.definition} count={x.count} tone="warn"
+              active={isActive('exception', x.key)} onClick={() => pick('exception', x.key, x.ids)} />
+          ))}
+        </div>
+      </section>
+
+      {showUnopened ? (
+        <section aria-label={t('Due without a review')} className="surface overflow-x-auto rounded-xl">
+          {ex.expiringWithoutCase.length === 0 ? (
+            <p className="p-6 text-center text-sm text-slate-500 dark:text-slate-400">{t('Every due contract has its review open.')}</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 text-start text-xs text-slate-500 dark:border-white/10 dark:text-slate-400">
+                  <th className="p-3 text-start">{t('Employee')}</th>
+                  <th className="p-3 text-start">{t('Contract ends')}</th>
+                  <th className="p-3 text-start">{t('Why there is no review')}</th>
+                  <th className="p-3 text-start"><span className="sr-only">{t('Actions')}</span></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-white/5">
+                {ex.expiringWithoutCase.map((u) => (
+                  <tr key={u.contractId}>
+                    <td className="p-3">
+                      <span className="font-medium text-slate-800 dark:text-slate-100">{u.employee?.name ?? u.contractNumber}</span>
+                      <span className="block text-xs text-slate-500">{u.employee?.code} · {u.contractNumber}</span>
+                    </td>
+                    <td className="p-3 text-slate-600 dark:text-slate-300">{formatDay(u.endDate, locale, radar.today)}</td>
+                    <td className="p-3 text-slate-600 dark:text-slate-300">
+                      {u.blockReason ? blockText(u.blockReason, locale).title : t(unopenedReasonKeys[u.reason] ?? u.reason)}
+                      {u.blockReason && <span className="block text-xs text-slate-500">{blockText(u.blockReason, locale).fix}</span>}
+                    </td>
+                    <td className="p-3 text-end">
+                      <button type="button" onClick={() => props.onOpenChain(u.contractId)}
+                        className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/5">
+                        {t('Contract history')}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      ) : (
+        <section aria-label={t('Renewal reviews')} className="surface overflow-x-auto rounded-xl">
+          {rows.length === 0 ? (
+            <p className="p-6 text-center text-sm text-slate-500 dark:text-slate-400">
+              {filter.kind === 'all' ? fill(t('No contract ends in the next {days} days.'), { days: radar.days }) : t('Nothing in this view.')}
+            </p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 text-xs text-slate-500 dark:border-white/10 dark:text-slate-400">
+                  <th className="w-10 p-3 text-start">
+                    {canManage && (
+                      <input type="checkbox" aria-label={t('Select every review that can renew on current terms')}
+                        checked={allEligibleSelected} disabled={eligibleInView.length === 0}
+                        onChange={() => onSelected(toggleAll(selected, rows))} />
+                    )}
+                  </th>
+                  <th className="p-3 text-start">{t('Employee')}</th>
+                  <th className="p-3 text-start">{t('Contract ends')}</th>
+                  <th className="p-3 text-start">{t('Stage')}</th>
+                  <th className="p-3 text-start">{t('What is due')}</th>
+                  <th className="p-3 text-start"><span className="sr-only">{t('Actions')}</span></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-white/5">
+                {rows.map((item) => {
+                  const line = nextLine(item, t, locale, radar.today);
+                  const busy = props.busyCaseId === item.caseId;
+                  return (
+                    <tr key={item.caseId} className="align-top hover:bg-slate-50 dark:hover:bg-white/[0.02]">
+                      <td className="p-3">
+                        {canManage && (
+                          <input type="checkbox" checked={selected.has(item.caseId)} disabled={!item.fastLaneEligible}
+                            aria-label={fill(t('Select {name} for renewal on current terms'), { name: item.employee.name })}
+                            title={item.fastLaneEligible ? undefined : t('Only reviews that can renew on current terms, with nothing blocking them, can be selected.')}
+                            onChange={() => onSelected(toggleSelection(selected, item))} />
+                        )}
+                      </td>
+                      <td className="p-3">
+                        <span className="font-medium text-slate-800 dark:text-slate-100">
+                          {locale === 'ar' && item.employee.nameAr ? item.employee.nameAr : item.employee.name}
+                        </span>
+                        <span className="block text-xs text-slate-500 dark:text-slate-400">
+                          {item.employee.code} · {item.companyName}
+                        </span>
+                        <div className="mt-1.5 flex flex-wrap gap-1">
+                          {item.badges.map((b) => <StatusChip key={b.code} label={badgeText(b, t)} tone={badgeTone(b.code)} />)}
+                        </div>
+                      </td>
+                      <td className="p-3 whitespace-nowrap text-slate-700 dark:text-slate-200">
+                        {formatDay(item.expiringEndDate, locale, radar.today)}
+                        <span className="block text-xs text-slate-500 dark:text-slate-400">
+                          {item.daysLeft >= 0 ? fill(t('{n} days left'), { n: item.daysLeft }) : fill(t('{n} days ago'), { n: -item.daysLeft })}
+                        </span>
+                      </td>
+                      <td className="p-3">
+                        <StatusChip label={t(stageKeys[item.stage] ?? item.stage)} tone={item.state === 'OnHold' ? 'amber' : 'slate'} />
+                        {item.allowedActions.length > 0 && (
+                          <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">
+                            {item.allowedActions.map((a) => t(actionKeys[a] ?? a)).join(' · ')}
+                          </span>
+                        )}
+                      </td>
+                      <td className={`p-3 text-sm ${item.next?.overdue ? 'font-medium text-rose-700 dark:text-rose-300' : 'text-slate-700 dark:text-slate-200'}`}>
+                        {line}
+                        {item.blockReasons.map((r) => (
+                          <span key={r.code} className="mt-1 block text-xs text-slate-500 dark:text-slate-400">
+                            {blockText(r, locale).why}
+                          </span>
+                        ))}
+                      </td>
+                      <td className="p-3">
+                        <div className="flex flex-wrap justify-end gap-1.5">
+                          <button type="button" onClick={() => props.onOpenChain(item.contractId)}
+                            className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/5">
+                            {t('Contract history')}
+                          </button>
+                          {canManage && item.state === 'OnHold' && (
+                            <button type="button" disabled={busy} onClick={() => props.onRelease(item)}
+                              className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 disabled:opacity-50 dark:border-white/10 dark:text-slate-200">
+                              {t('Release hold')}
+                            </button>
+                          )}
+                          {canManage && item.state !== 'OnHold' && item.stage !== 'Done' && (
+                            <button type="button" disabled={busy} onClick={() => props.onHold(item)}
+                              className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 disabled:opacity-50 dark:border-white/10 dark:text-slate-200">
+                              {t('Put on hold')}
+                            </button>
+                          )}
+                          {canManage && item.stage !== 'Done' && (
+                            <button type="button" disabled={busy} onClick={() => props.onCancel(item)}
+                              className="rounded-lg px-2.5 py-1 text-xs font-medium text-rose-700 hover:bg-rose-50 disabled:opacity-50 dark:text-rose-300 dark:hover:bg-rose-500/10">
+                              {t('Cancel review')}
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </section>
+      )}
+    </div>
+  );
+}
+
+/** The bar shown while rows are selected. R5 passes its batch action in `children` (fast lane). */
+export function SelectionBar({ count, onClear, children }: { count: number; onClear: () => void; children?: ReactNode }) {
+  const { t } = useLocale();
+  if (count === 0) return null;
+  return (
+    <div role="region" aria-label={t('Selected reviews')}
+      className="sticky bottom-3 z-10 flex flex-wrap items-center gap-3 rounded-xl bg-slate-900 px-4 py-2.5 text-sm text-white shadow-lg dark:bg-slate-800">
+      <span className="font-medium">{fill(t('{n} selected to renew on current terms'), { n: count })}</span>
+      {children}
+      <button type="button" onClick={onClear} className="ms-auto rounded-lg px-2.5 py-1 text-xs font-medium text-slate-200 hover:bg-white/10">
+        {t('Clear selection')}
+      </button>
+    </div>
+  );
+}
