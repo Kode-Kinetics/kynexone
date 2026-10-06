@@ -1,0 +1,8 @@
+{
+  "expectedCode": "file_reference_reused",
+  "patch": {
+    "header": {
+      "fileReference": "2026090101"
+    }
+  }
+}

@@ -10,7 +10,8 @@ import {
   MonitorPlay, Menu, X, CheckCircle, AlertTriangle, Circle,
 } from 'lucide-react';
 import { Logo } from '@/src/components/Logo';
-import { platformApi } from '@/src/api/platform';
+import { platformApi, PLATFORM_PENDING_ENROLLMENT_KEY } from '@/src/api/platform';
+import { MfaEnrollmentPrompt } from '@/src/components/MfaEnrollmentPrompt';
 import { PlatformToastProvider } from '@/src/components/platform/PlatformToast';
 import { PlatformErrorBoundary } from '@/src/components/platform/PlatformErrorBoundary';
 
@@ -323,6 +324,15 @@ function PlatformShell({ children }: { children: React.ReactNode }) {
 
   const isLoginPage = pathname === '/platform/login';
 
+  // Grace-period hand-off to the sign-in page's enrolment step. No logout call: it rotates the
+  // operator's session stamp, which would invalidate the enrolment token just issued.
+  const startMfaEnrollment = useCallback(async () => {
+    const { enrollmentToken } = await platformApi.mfaEnrollmentStart();
+    try { sessionStorage.setItem(PLATFORM_PENDING_ENROLLMENT_KEY, enrollmentToken); } catch { /* storage unavailable */ }
+    localStorage.removeItem('platform_access_token');
+    router.replace('/platform/login');
+  }, [router]);
+
   useEffect(() => {
     if (isLoginPage) { setChecked(true); return; }
     const token = typeof window !== 'undefined' ? localStorage.getItem('platform_access_token') : null;
@@ -347,6 +357,13 @@ function PlatformShell({ children }: { children: React.ReactNode }) {
         <CommandBar onMenuOpen={() => setSidebarOpen(true)} />
         <main className="lg:ps-60 pt-[52px] min-h-screen">
           <div className="max-w-[1440px] mx-auto px-5 py-6 animate-fade-in">
+            <MfaEnrollmentPrompt
+              loadStatus={platformApi.mfaStatus}
+              onStart={startMfaEnrollment}
+              dismissKey="platform-mfa-prompt-later"
+              tone="dark"
+              className="mb-5"
+            />
             <PlatformErrorBoundary fallbackRoute="/platform/dashboard">
               {children}
             </PlatformErrorBoundary>

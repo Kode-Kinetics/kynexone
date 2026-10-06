@@ -47,7 +47,7 @@ public class PlatformIntegrationHealthTests : PlatformTestBase
         components.GetProperty("email").GetProperty("status").GetString().Should().Be("capture");
         components.GetProperty("email").GetProperty("simulated").GetBoolean().Should().BeTrue();
         components.GetProperty("qiwa").GetProperty("simulated").GetBoolean().Should().BeTrue();
-        components.GetProperty("qiwa").GetProperty("detail").GetString().Should().Contain("Simulated (sandbox)");
+        components.GetProperty("qiwa").GetProperty("detail").GetString().Should().Contain("Qiwa data check only (nothing sent to Qiwa)");
         var deliveries = components.GetProperty("deliveries");
         deliveries.GetProperty("status").GetString().Should().Be("attention");
         deliveries.GetProperty("deadLetter").GetInt32().Should().Be(1);

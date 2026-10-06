@@ -205,12 +205,12 @@ async function checkTarget(env: Env): Promise<TargetContext> {
       `GET ${apiBaseUrl}/health/live → ${describe(live)}. Expected 200 with service "zayra-api".`));
     return ctx;
   }
+  // The anonymous probe answers status + pendingMigrations only. The tenant count is operator
+  // detail and is read from /health/ready/details once the platform owner has signed in (step 6).
   const ready = await http('GET', `${apiBaseUrl}/health/ready`);
   const health = ready.json ?? {};
-  if (ready.status === 200 && health.status === 'ready' && health.dependencies?.database?.healthy === true
-      && (health.pendingMigrations ?? 0) === 0) {
-    f.push(pass('API is ready with its schema applied', `pendingMigrations=0, activeTenants=${health.activeTenants ?? '?'}`));
-    ctx.activeTenants = typeof health.activeTenants === 'number' ? health.activeTenants : null;
+  if (ready.status === 200 && health.status === 'ready' && health.pendingMigrations === 0) {
+    f.push(pass('API is ready with its schema applied', 'pendingMigrations=0'));
   } else {
     f.push(fail('API is ready with its schema applied',
       `GET ${apiBaseUrl}/health/ready → ${describe(ready)}. Pending migrations produce blank modules, not errors.`));
@@ -260,6 +260,11 @@ async function checkTarget(env: Env): Promise<TargetContext> {
           + '      the API process and to this one — in CI they are generated once and written to GITHUB_ENV.')));
     return ctx;
   }
+
+  // 5b. Readiness detail (tenant count) — platform operators only since it stopped being public.
+  const details = await http('GET', `${apiBaseUrl}/health/ready/details`, { token: ctx.platformToken });
+  ctx.activeTenants = details.status === 200 && typeof details.json?.activeTenants === 'number'
+    ? details.json.activeTenants : null;
 
   // 6. The database the API is connected to — only a platform operator may see its name and host.
   const platformHealth = await http('GET', `${apiBaseUrl}/api/platform/health`, { token: ctx.platformToken });
@@ -449,7 +454,7 @@ async function checkLane(ctx: TargetContext, env: Env): Promise<void> {
   const f = ctx.findings;
   f.push((ctx.activeTenants ?? 0) >= 1
     ? pass('the database is provisioned', `${ctx.activeTenants} active tenant(s)`)
-    : fail('the database is provisioned', `/health/ready reports ${ctx.activeTenants ?? 'no'} active tenants. Run the bootstrap.`));
+    : fail('the database is provisioned', `/health/ready/details reports ${ctx.activeTenants ?? 'no'} active tenants. Run the bootstrap.`));
 
   let record: PreflightRecord | null = null;
   try { record = JSON.parse(await readFile(PREFLIGHT_RECORD, 'utf8')) as PreflightRecord; } catch { /* missing */ }

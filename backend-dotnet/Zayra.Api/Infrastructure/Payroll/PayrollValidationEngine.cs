@@ -408,9 +408,34 @@ public static class PayrollValidationEngine
                 }
             }
 
-            // Rule 5a: IBAN present + valid Saudi format
+            // Rule 5a: IBAN present + valid Saudi format. Not asked of an employee paid by cash or cheque
+            // (they are left out of the bank batch, by name, instead), nor of an ANB-to-ANB credit to a
+            // 16-digit ANB account number (the bank export's own account rules check that).
             var iban = profile?.Iban ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(iban))
+            var paidOutsideBankFile = PaymentBatchExclusions.IsPaidOutsideBankFile(profile?.PaymentMethod);
+            var anbInternalAccount = SaudiBankExports.SaudiBeneficiaryBic.IsAnbInternalCredit(emp, profile);
+            // Cash / cheque pay is surfaced, never silent: it leaves the bank/WPS file, and the approver must
+            // acknowledge the count at Approve. Stronger when a valid IBAN is on file — paying that person
+            // in cash is then a choice, not a necessity.
+            if (paidOutsideBankFile && slip.NetSalary > 0m)
+            {
+                var hasIban = !string.IsNullOrWhiteSpace(iban) && IbanValidator.IsValid(iban);
+                var method = profile!.PaymentMethod.Trim().ToLowerInvariant();
+                var mudad = isKsa ? " " + PaymentBatchExclusions.MudadNote : string.Empty;
+                if (hasIban)
+                    Warn(PaymentBatchExclusions.PaidOutsideWithIbanWarning,
+                        $"Employee {slip.EmployeeCode} is set to be paid by {method}, although a valid IBAN is on file. " +
+                        $"They will be left out of the bank/WPS file and their wage must be paid and recorded separately.{mudad} " +
+                        "If this is not intended, change the payment method to bank transfer before locking.",
+                        slip.EmployeeId);
+                else
+                    Warn(PaymentBatchExclusions.PaidOutsideWarning,
+                        $"Employee {slip.EmployeeCode} is paid by {method}: they will be left out of the bank/WPS file and " +
+                        $"their wage must be paid and recorded separately.{mudad}",
+                        slip.EmployeeId);
+            }
+            if (paidOutsideBankFile || anbInternalAccount || slip.NetSalary <= 0m) { }
+            else if (string.IsNullOrWhiteSpace(iban))
                 Err("MISSING_IBAN",
                     $"Employee {slip.EmployeeCode} has no IBAN on their payroll profile. " +
                     "Bank details are required for WPS payment disbursement.",
@@ -579,6 +604,29 @@ public static class PayrollValidationEngine
                 $"{ctx.SiblingRunCount} other non-voided payroll run(s) exist for {ctx.Run.Year}-{ctx.Run.Month:D2} " +
                 "in this legal entity. Per-run statutory reports cover THIS run only — use the period-level " +
                 "GOSI rollup (GET /api/gosi/periods/{year}/{month}/contribution-summary) for filing.");
+
+        // ── Rule 15 (KSA): Labour Law Art. 92/93 — DEBT-type deductions ≤ half the wage due ──────
+        // Checked BEFORE Lock so it surfaces here, not on export day. Only debt-type lines count (loan and
+        // advance instalments, penalties/fines, damages — WageDeductionClassification); statutory GOSI,
+        // absence/loss-of-pay and unpaid leave do not, so a five-paid-day joiner whose GOSI is on the
+        // full-month base, or a long unpaid absence, passes. Overridable with a recorded reason and the
+        // reference of its written basis; the bank export honours that override.
+        if (isKsa)
+        {
+            var debtByEmp = WageDeductionClassification.DebtTotalsByEmployee(ctx.Deductions);
+            foreach (var slip in ctx.Slips.GroupBy(s => s.EmployeeId).Select(g => g.First()))
+            {
+                var debt = debtByEmp.GetValueOrDefault(slip.EmployeeId);
+                if (!WageDeductionClassification.ExceedsHalfWage(debt, slip.GrossSalary)) continue;
+                Err(WageDeductionClassification.DeductionsExceedHalfWageCode,
+                    $"Employee {slip.EmployeeCode}: loan, advance, penalty and damages deductions ({debt:N2}) are more " +
+                    $"than half of the wage due ({slip.GrossSalary:N2}). Saudi Labour Law Art. 92/93 caps them at 50% " +
+                    "(statutory GOSI, absence and unpaid leave are not counted). Reschedule the instalment or reduce the " +
+                    "deduction and re-process, or override it citing " + WageDeductionClassification.CapOverrideGrounds +
+                    " and its reference.",
+                    slip.EmployeeId);
+            }
+        }
 
         if (ctx.StatutoryComputedIncrementally)
             Warn("SUPPLEMENTAL_STATUTORY_BASE",

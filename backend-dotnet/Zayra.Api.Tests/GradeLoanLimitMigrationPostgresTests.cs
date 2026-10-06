@@ -109,8 +109,11 @@ public sealed class GradeLoanLimitMigrationPostgresTests
         Assert.Equal("20261005204934_AddKsaStatutoryLeaveFields", await ScalarAsync<string>(db,
             "SELECT \"MigrationId\" FROM \"__EFMigrationsHistory\" ORDER BY \"MigrationId\" DESC LIMIT 1"));
         await migrator.MigrateAsync();
-        Assert.Equal("20261006000200_AddGradeNameArAndLoanOffering", await ScalarAsync<string>(db,
-            "SELECT \"MigrationId\" FROM \"__EFMigrationsHistory\" ORDER BY \"MigrationId\" DESC LIMIT 1"));
+        // The slice is back in the history. Not "is the newest": later migrations (e.g. the MFA ones,
+        // 20261006000300/0400) legitimately follow it, and MigrateAsync() reapplies those too.
+        Assert.Equal(1L, await ScalarAsync<long>(db,
+            "SELECT count(*) FROM \"__EFMigrationsHistory\" WHERE \"MigrationId\" = '20261006000200_AddGradeNameArAndLoanOffering'"));
+        Assert.Empty(await db.Database.GetPendingMigrationsAsync());
         Assert.Equal(1L, await ScalarAsync<long>(db, "SELECT count(*) FROM pg_constraint WHERE conname = 'ex_grade_entitlements__no_overlap'"));
     }
 

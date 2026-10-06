@@ -1,0 +1,10 @@
+{
+  "expectedCode": "deductions_unreconciled",
+  "patch": {
+    "rows": {
+      "0": {
+        "slipDeductions": 400.0
+      }
+    }
+  }
+}

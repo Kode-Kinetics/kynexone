@@ -343,6 +343,10 @@ jobs:
           # The gate's OWN logins are still paced under the production limit by the setup project —
           # the brute-force control itself is never relaxed for the suite under test.
           RateLimit__LoginPermitLimit: '200'
+          Auth__LoginThrottle__AccountIpAttempts: '1000'
+          Auth__LoginThrottle__AccountAttempts: '1000'
+          Auth__LoginThrottle__IpFailures: '1000'
+          Auth__PasswordVerification__MaxConcurrency: '4'
           RateLimit__PlatformLoginPermitLimit: '50'
           ASPNETCORE_ENVIRONMENT: 'Development'
           ASPNETCORE_URLS: 'http://localhost:5117'
@@ -864,6 +868,10 @@ jobs:
           # to the disposable CI stack; docker-compose and deployed environments retain the default.
           LOGIN_PERMIT_LIMIT: '200'
           PLATFORM_LOGIN_PERMIT_LIMIT: '50'
+          LOGIN_ACCOUNT_IP_ATTEMPT_LIMIT: '1000'
+          LOGIN_ACCOUNT_ATTEMPT_LIMIT: '1000'
+          LOGIN_IP_FAILURE_LIMIT: '1000'
+          PASSWORD_HASH_CONCURRENCY: '4'
           JWT_SIGNING_KEY: 'CI_ONLY_BROWSER_PILOT_SIGNING_KEY_64_CHARS_MINIMUM_12345678901234567890'
         run: docker compose -p zayra-browser-ci up -d --build
 

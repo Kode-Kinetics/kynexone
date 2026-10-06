@@ -157,7 +157,9 @@ public static class WpsSifValidator
             var profile = profiles.FirstOrDefault(p => p.EmployeeId == empId);
             var iban    = profile?.Iban;
 
-            if (string.IsNullOrWhiteSpace(iban))
+            // An ANB-to-ANB credit to a 16-digit ANB account (BIC from the one shared resolver) has no IBAN.
+            if (SaudiBankExports.SaudiBeneficiaryBic.IsAnbInternalCredit(employees.FirstOrDefault(e => e.Id == empId), profile)) { }
+            else if (string.IsNullOrWhiteSpace(iban))
                 errors.Add(EmpError("MISSING_IBAN", empId, empCode,
                     $"Employee {empCode} has no IBAN on their payroll profile. Add bank details before exporting."));
             else if (!IbanValidator.IsValid(iban))
