@@ -4371,7 +4371,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         TimesheetModelConfiguration.Configure(modelBuilder);
 
         // Release A (entitlements, contract-year package, renewal case) — same append-only convention.
-        ReleaseAModelConfiguration.Configure(modelBuilder);
+        ReleaseAModelConfiguration.Configure(modelBuilder, Database.IsNpgsql());
 
         ApplyTenantQueryFilters(modelBuilder);
         ApplyCompanyScopeIndexes(modelBuilder);

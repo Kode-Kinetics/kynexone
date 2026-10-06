@@ -63,11 +63,17 @@ public sealed partial class MigrationImportController : ControllerBase
     private readonly IPasswordHasher _passwordHasher;
     private readonly IAuditService _audit;
 
-    public MigrationImportController(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService audit)
+    private readonly Zayra.Api.Infrastructure.Contracts.IContractTermLifecycleDispatcher? _termLifecycle;
+
+    /// <param name="termLifecycle">Release A term hooks: an imported contract that becomes, or stops being, Active goes
+    /// through the same hooks as one changed on the contract screen. Optional so direct constructions keep compiling.</param>
+    public MigrationImportController(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService audit,
+        Zayra.Api.Infrastructure.Contracts.IContractTermLifecycleDispatcher? termLifecycle = null)
     {
         _db = db;
         _passwordHasher = passwordHasher;
         _audit = audit;
+        _termLifecycle = termLifecycle;
     }
 
     [HttpGet("template")]
@@ -855,6 +861,11 @@ public sealed partial class MigrationImportController : ControllerBase
         var contractNumber = Require(row, "ContractNumber").Trim();
         var item = await _db.EmployeeContracts.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.ContractNumber == contractNumber && !x.IsDeleted, ct);
         var created = item is null;
+        // Release A: a term under renewal review is changed only by the renewal itself, never by a re-import.
+        if (!created && await _db.ContractRenewalCases.AnyAsync(c => c.TenantId == tenantId && c.ExpiringContractId == item!.Id && c.ClosedAt == null, ct))
+            throw new InvalidOperationException(
+                $"Contract '{contractNumber}' has an open renewal review. Finish or cancel the renewal before re-importing it.");
+        var previousStatus = item?.Status;
         item ??= new EmployeeContract { TenantId = tenantId, ContractNumber = contractNumber, CompanyId = employee.CompanyId };
         item.EmployeeId = employee.PublicId;
         item.EmployeeName = employee.FullName;
@@ -869,6 +880,13 @@ public sealed partial class MigrationImportController : ControllerBase
         item.CreatedByUserId = UserId();
         item.UpdatedAtUtc = DateTime.UtcNow;
         if (created) _db.EmployeeContracts.Add(item);
+        if (_termLifecycle is not null)
+        {
+            if (item.Status == "Active" && previousStatus != "Active")
+                await _termLifecycle.OnActivatedAsync(item, ct);
+            else if (previousStatus == "Active" && (item.Status is "Expired" or "Terminated" or "Superseded"))
+                await _termLifecycle.OnEndedAsync(item, item.Status, ct);
+        }
         return created ? "created" : "updated";
     }
 

@@ -770,6 +770,11 @@ public class PlatformController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
         FeatureFlagGuardFilter.InvalidateCache(_cache, tenantId, featureKey);
+        // Release A: switching release_a on installs the renewal approval chains at once (insert-if-absent), rather
+        // than waiting for the next boot's backfill. A no-op until R5 registers the renewal producers.
+        if (req.IsEnabled && featureKey == FeatureKeys.ReleaseA
+            && await Zayra.Api.Infrastructure.Seed.TenantProvisioningBundle.InstallDefaultApprovalWorkflowsAsync(_db, tenantId, ct) > 0)
+            await _db.SaveChangesAsync(ct);
         return Ok(flag);
     }
 

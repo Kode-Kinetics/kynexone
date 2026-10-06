@@ -148,6 +148,9 @@ public class StatutoryRulesController : ControllerBase
         var value = req.RuleValue.Trim();
         if (StatutoryValueUnits.Validate(key, req.DataType, value) is { } unitError)
             return BadRequest(unitError);
+        // Release A: a renewal lead time or toggle is validated here, on save, so the daily renewal job never meets it.
+        if (Zayra.Api.Application.Contracts.RenewalRuleKeys.ValidateOverride(key, value) is { } renewalError)
+            return BadRequest(renewalError);
 
         var rule = new StatutoryRule
         {
@@ -201,6 +204,9 @@ public class StatutoryRulesController : ControllerBase
         var nextValue = (req.RuleValue ?? string.Empty).Trim();
         if (StatutoryValueUnits.Validate(prior.RuleKey, prior.DataType, nextValue) is { } unitError)
             return BadRequest(unitError);
+        // Release A: a renewal lead time or toggle is validated here, on save, so the daily renewal job never meets it.
+        if (Zayra.Api.Application.Contracts.RenewalRuleKeys.ValidateOverride(prior.RuleKey, nextValue) is { } renewalError)
+            return BadRequest(renewalError);
 
         // Supersede (append-only): close the prior row, insert the new effective-dated value.
         var before = prior.RuleValue;

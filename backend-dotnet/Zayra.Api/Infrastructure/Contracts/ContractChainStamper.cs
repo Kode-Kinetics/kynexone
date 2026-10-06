@@ -14,4 +14,6 @@ namespace Zayra.Api.Infrastructure.Contracts;
 public sealed class ContractChainStamper : IContractTermLifecycle
 {
     public Task OnActivatedAsync(EmployeeContract contract, CancellationToken ct) => Task.CompletedTask;
+
+    public Task OnEndedAsync(EmployeeContract contract, string reason, CancellationToken ct) => Task.CompletedTask;
 }

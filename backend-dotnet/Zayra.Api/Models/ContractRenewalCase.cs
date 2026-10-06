@@ -54,10 +54,26 @@ public class ContractRenewalCase : ITenantOwned, ICompanyScopedOperational
 
     public string? EmployeeResponse { get; set; }
     public DateTime? EmployeeRespondedAt { get; set; }
+    /// <summary>ESS: the employee's own user. PaperUpload: the HR user who recorded the signed paper response.</summary>
     public Guid? EmployeeRespondedByUserId { get; set; }
     public string? ResponseChannel { get; set; }
 
+    /// <summary>PaperUpload only: the signed response document (restricted type). Required for a paper acceptance.</summary>
+    public Guid? EmployeeResponseDocumentId { get; set; }
+
+    /// <summary>PaperUpload only: the second user who confirmed the paper response. Never the one who recorded it (CHECK).</summary>
+    public Guid? EmployeeResponseConfirmedBy { get; set; }
+
+    /// <summary>
+    /// Frozen when the offer is submitted (T6) from the tenant toggle <c>contracts.as_is_requires_employee_acceptance</c>
+    /// (default true). True ⇒ Apply needs <c>employee_response = 'Accepted'</c>; false only for a waived fast-lane RenewAsIs.
+    /// </summary>
+    public bool EmployeeAcceptanceRequired { get; set; } = true;
+
     public string? HoldReason { get; set; }
+
+    /// <summary>The state the case was in when put OnHold (T19); release (T20) returns it exactly there. Set iff OnHold.</summary>
+    public string? HeldFromState { get; set; }
 
     /// <summary>The batch approval request this case was submitted in (fast lane).</summary>
     public Guid? RenewalBatchId { get; set; }
