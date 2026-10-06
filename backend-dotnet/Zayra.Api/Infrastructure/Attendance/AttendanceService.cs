@@ -923,7 +923,7 @@ public class AttendanceService : IAttendanceService
             revealSecrets ? x.ErrorLog : AttendanceDeviceDto.RedactQuotedUrl(x.ErrorLog, x.EndpointUrl))).ToList();
     }
 
-    public async Task<IReadOnlyCollection<AttendanceAIInsight>> GenerateInsightsAsync(Guid tenantId, CancellationToken ct)
+    public async Task<IReadOnlyCollection<AttendanceAIInsight>> GenerateInsightsAsync(Guid tenantId, CancellationToken ct, IReadOnlyCollection<int>? visibleEmployeeIds = null)
     {
         var since = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(-30));
         // Materialise first — EF Core cannot translate GroupBy with element access into SQL
@@ -953,7 +953,12 @@ public class AttendanceService : IAttendanceService
             }
         }
         await _db.SaveChangesAsync(ct);
-        return await _db.AttendanceAIInsights.Where(x => x.TenantId == tenantId && !x.IsAcknowledged).OrderByDescending(x => x.CreatedAtUtc).Take(25).ToListAsync(ct);
+        var insights = _db.AttendanceAIInsights.Where(x => x.TenantId == tenantId && !x.IsAcknowledged);
+        // A scoped caller sees insights about employees in scope only; an insight about no one in
+        // particular is not theirs to see either (fail closed).
+        if (visibleEmployeeIds is not null)
+            insights = insights.Where(x => x.EmployeeId != null && visibleEmployeeIds.Contains(x.EmployeeId.Value));
+        return await insights.OrderByDescending(x => x.CreatedAtUtc).Take(25).ToListAsync(ct);
     }
 
     private async Task ProcessEmployeeDay(Guid tenantId, Employee employee, DateOnly date, AttendancePolicy policy, RequestContext context, CancellationToken ct)

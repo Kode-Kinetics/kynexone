@@ -211,7 +211,9 @@ public sealed class ReportScheduleWorker : BackgroundService
                 execution.Status = ReportSchedulePolicy.StatusFailed;
                 var reason = Truncate(ex.Message);
                 execution.ErrorMessage = reason;
-                _log.LogError(ex, "Scheduled report {ScheduleId} failed for tenant {TenantId}.", schedule.Id, schedule.TenantId);
+                // Type only: the message can name recipients (refusals, relay rejections). It is kept on the
+                // execution row above, inside the tenant's own access controls.
+                _log.LogError("Scheduled report {ScheduleId} failed for tenant {TenantId} ({ErrorType}).", schedule.Id, schedule.TenantId, ex.GetType().Name);
                 // Only a relay failure is retried. Reaching here from the delivery step means nothing
                 // went out for this run (see DeliverToRecipientsAsync), so a retry cannot duplicate.
                 // Refusals before delivery — an owner who lost access, a retired report key, nobody

@@ -341,6 +341,29 @@ public class RequisitionApprovalConvergenceTests
             .Decisions.Should().HaveCount(1);
     }
 
+    // ── A broken workflow is a 422, not a 500 ───────────────────────────────────────────────
+
+    [Fact]
+    public async Task SubmittingIntoAWorkflowWithNoFinalStep_Returns422_AndLeavesTheDraftUntouched()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var wf = AddRequisitionWorkflow(db, tenantId);
+        wf.Steps.Single().IsFinalStep = false;   // the router refuses a route that can never complete
+        var req = AddRequisition(db, tenantId, Guid.NewGuid());
+        db.ManpowerRequisitions.Add(req);
+        await db.SaveChangesAsync();
+
+        // ApprovalRouter.TryResolveAsync throws ApprovalRouteInvalidException for this route. It used to be
+        // called outside Submit's try/catch, so the configuration error escaped as an unhandled 500.
+        var result = await Controller(db, tenantId, Guid.NewGuid(), "Manager").Submit(req.Id, CancellationToken.None);
+
+        var refusal = result.Should().BeOfType<UnprocessableEntityObjectResult>().Subject;
+        refusal.Value!.ToString().Should().Contain(ApprovalRouteInvalidException.ErrorCode);
+        (await db.ManpowerRequisitions.SingleAsync(x => x.Id == req.Id)).Status.Should().Be("Draft");
+        (await db.ApprovalRequests.CountAsync()).Should().Be(0);
+    }
+
     // ── The unlinked legacy path still works ─────────────────────────────────────────────────
 
     [Fact]
