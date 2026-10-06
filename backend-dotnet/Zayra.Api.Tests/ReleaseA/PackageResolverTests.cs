@@ -381,6 +381,9 @@ public sealed class PackageResolverTests
         result.Lines.Single(l => l.ComponentCode == "HOUSING").MonthlyCash.Should().Be(2000m, "Mohammed's, not the colleague's 1,500");
         (result.FixedUntil, result.DependantsOnFile, result.GradeNameAr).Should().Be((PackageSeed.TermEnd, 3, "مشرف"));
         result.Lines.Single(l => l.ComponentCode == "MEDICAL").DependantsCovered.Should().Be(3);
+        result.Lines.Single(l => l.ComponentCode == "MEDICAL").LabelAr.Should().Be("التأمين الطبي", "names come from the catalogue, never a raw code");
+        result.Lines.Single(l => l.ComponentCode == "LOAN_HOUSING_ADVANCE").Should().BeEquivalentTo(
+            new { LabelAr = "سلفة السكن", Group = "facility", Amount = 6000m }, o => o.ExcludingMissingMembers());
 
         // The colleague's login sees the colleague's package; nothing in the route can point elsewhere.
         var other = Bind(new EssPackageController(db, new EntitlementResolver(db), new FixedTenantClock(Today), new NoDeadlines()),

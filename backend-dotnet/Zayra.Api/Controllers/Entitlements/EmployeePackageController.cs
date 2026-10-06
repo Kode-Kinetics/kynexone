@@ -160,7 +160,8 @@ public sealed record EmployeePackageView(
     IReadOnlyList<PackageFrozenRowDto> FrozenRows,
     IReadOnlyList<BlockReason> BlockReasons,
     bool CanFreeze,
-    int UnverifiedRows)
+    int UnverifiedRows,
+    IReadOnlyDictionary<string, ComponentLabel> Labels)
 {
     public static EmployeePackageView From(EmployeePackage package, PackageViewContext c)
     {
@@ -178,7 +179,8 @@ public sealed record EmployeePackageView(
                 x.ResolvedAmount, x.EffectiveFrom, x.EffectiveTo)).ToList(),
             package.BlockCodes.Where(ReleaseABlockReasons.All.ContainsKey).Select(code => ReleaseABlockReasons.All[code]).ToList(),
             c.Contract is { Status: "Active" } && frozenCount == 0 && package.GradeId is not null,
-            c.FrozenRows.Values.Count(x => x.VerificationState == EntitlementVerificationStates.Unverified));
+            c.FrozenRows.Values.Count(x => x.VerificationState == EntitlementVerificationStates.Unverified),
+            c.Labels);
     }
 }
 

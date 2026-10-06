@@ -98,6 +98,8 @@ public sealed record EssPackageDto(
 /// <param name="Why">What the value is based on, in words the employee can check — never an id.</param>
 public sealed record EssPackageLineDto(
     string ComponentCode,
+    string LabelEn,
+    string LabelAr,
     string Group,
     bool Eligible,
     bool Offered,
@@ -134,7 +136,8 @@ public sealed record EssPackageLineDto(
             _ => new EssPackageWhyDto(line.Source == PackageLineSources.Facility ? "policy" : "grade", c.Grade?.Name, c.Grade?.NameAr,
                 line.IsCompanyOverride, cell?.EffectiveFrom, null),
         };
-        return new EssPackageLineDto(line.ComponentCode, group, line.Eligible, line.Offered, line.Source == PackageLineSources.ContractFrozen,
+        var label = c.Labels.TryGetValue(line.ComponentCode, out var l) ? l : new ComponentLabel(line.ComponentCode, line.ComponentCode);
+        return new EssPackageLineDto(line.ComponentCode, label.En, label.Ar, group, line.Eligible, line.Offered, line.Source == PackageLineSources.ContractFrozen,
             line.ValueType, line.Amount, line.Rate, line.MonthlyCash, line.CoverageTier, line.Quantity, line.DependantScope, line.MaxDependants,
             line.DependantsCovered, line.LimitPeriod, line.ReasonCode, why);
     }

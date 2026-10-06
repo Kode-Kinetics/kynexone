@@ -22,7 +22,8 @@ public sealed record PackageViewContext(
     string Currency,
     IReadOnlyDictionary<Guid, GradeEntitlement> Cells,
     IReadOnlyDictionary<Guid, EmployeeEntitlement> FrozenRows,
-    IReadOnlyList<EmployeeDependent> Dependants)
+    IReadOnlyList<EmployeeDependent> Dependants,
+    IReadOnlyDictionary<string, ComponentLabel> Labels)
 {
     public static async Task<PackageViewContext> LoadAsync(ZayraDbContext db, Guid tenantId, EmployeePackage package, CancellationToken ct)
     {
@@ -48,6 +49,37 @@ public sealed record PackageViewContext(
         var dependants = await db.EmployeeDependents.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.EmployeeId == employee.Id).ToListAsync(ct);
         var currency = company?.DefaultCurrency ?? salary?.Currency ?? "SAR";
-        return new PackageViewContext(employee, grade, company, contract, salary, currency, cells, rows, dependants);
+        return new PackageViewContext(employee, grade, company, contract, salary, currency, cells, rows, dependants,
+            await LabelsAsync(db, tenantId, package.Lines.Select(l => l.ComponentCode).Distinct().ToList(), ct));
+    }
+
+    /// <summary>
+    /// The EN/AR name of each component: the catalogue's own name, else the loan type a LOAN_* code belongs to, else the
+    /// tenant's pay component — so a screen never shows a raw code.
+    /// </summary>
+    private static async Task<IReadOnlyDictionary<string, ComponentLabel>> LabelsAsync(ZayraDbContext db, Guid tenantId, List<string> codes, CancellationToken ct)
+    {
+        var labels = new Dictionary<string, ComponentLabel>(StringComparer.OrdinalIgnoreCase);
+        var loanTypes = await db.LoanTypes.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && !x.IsDeleted && x.EntitlementComponentCode != null && codes.Contains(x.EntitlementComponentCode))
+            .Select(x => new { Code = x.EntitlementComponentCode!, x.NameEn, x.NameAr }).ToListAsync(ct);
+        var components = await ScopedBypass.TenantWide(db.PayComponents, tenantId, "Component names are one identity across the tenant.")
+            .AsNoTracking().Where(x => codes.Contains(x.Code) && !x.IsDeleted && x.CompanyId == null)
+            .Select(x => new { x.Code, x.NameEn, x.NameAr }).ToListAsync(ct);
+        foreach (var code in codes)
+        {
+            var rule = EntitlementComponentRules.For(code);
+            var loan = loanTypes.FirstOrDefault(x => string.Equals(x.Code, code, StringComparison.OrdinalIgnoreCase));
+            var component = components.FirstOrDefault(x => string.Equals(x.Code, code, StringComparison.OrdinalIgnoreCase));
+            labels[code] = rule is not null && !string.Equals(rule.NameEn, code, StringComparison.OrdinalIgnoreCase)
+                ? new ComponentLabel(rule.NameEn, rule.NameAr)
+                : loan is not null ? new ComponentLabel(loan.NameEn, string.IsNullOrWhiteSpace(loan.NameAr) ? loan.NameEn : loan.NameAr)
+                : component is not null ? new ComponentLabel(component.NameEn, string.IsNullOrWhiteSpace(component.NameAr) ? component.NameEn : component.NameAr)
+                : new ComponentLabel(code, code);
+        }
+        return labels;
     }
 }
+
+/// <summary>A component's display name in English and Arabic.</summary>
+public sealed record ComponentLabel(string En, string Ar);
