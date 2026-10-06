@@ -121,12 +121,16 @@ function isTranslatorCall(n: ts.Node): n is ts.CallExpression {
   return ts.isCallExpression(n) && ts.isIdentifier(n.expression) && (n.expression.text === 't' || n.expression.text === 'msg');
 }
 
+/** Local helpers that fill a t() template with their second argument. */
+const FILL_HELPERS = new Set(['fmt', 'fill']);
+
 function paramsOf(call: ts.CallExpression): TCall['params'] {
   let arg = call.arguments[1];
-  // `fmt(t('… {n} …'), { n })`: the template is filled by a local helper (EstablishmentPanel and
-  // friends). Its second argument is the params.
+  // `fmt(t('… {n} …'), { n })` / `fill(t('… {date} …'), { date: <bdi>…</bdi> })`: the template is
+  // filled by a named local helper (EstablishmentPanel's fmt for strings, StatutoryLeaveHistory's
+  // fill for React nodes, which t() cannot take). Only these names count; any other wrapper does not.
   const outer = call.parent;
-  if (!arg && outer && ts.isCallExpression(outer) && ts.isIdentifier(outer.expression) && outer.expression.text === 'fmt'
+  if (!arg && outer && ts.isCallExpression(outer) && ts.isIdentifier(outer.expression) && FILL_HELPERS.has(outer.expression.text)
     && outer.arguments[0] === call && outer.arguments[1]) arg = outer.arguments[1];
   if (!arg) return 'none';
   const obj = ts.isParenthesizedExpression(arg) ? arg.expression : arg;

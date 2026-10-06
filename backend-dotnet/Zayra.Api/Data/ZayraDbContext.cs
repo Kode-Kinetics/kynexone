@@ -2064,6 +2064,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasKey(x => x.Id);
             entity.Property(x => x.TotalDays).HasPrecision(6,2);
             entity.Property(x => x.HoursRequested).HasPrecision(5,2);
+            entity.Property(x => x.StatutoryLeaveKind).HasMaxLength(40);
             entity.HasIndex(x => new { x.TenantId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.StartDate });
         });
