@@ -40,6 +40,7 @@ export const navigationGroups: NavGroup[] = [
       { label: 'Dashboard', icon: Gauge, path: '/dashboard', requiredPermissions: ['dashboard.read'] },
       { label: 'Group Overview', icon: Building2, path: '/group', requiredPermissions: ['dashboard.read'], groupAccountOnly: true },
       { label: 'Self-Service', icon: UserCircle2, path: '/ess', requiredPermissions: ['ess.read'] },
+      { label: 'My Payslips', icon: FileText, path: '/ess/payslips', requiredPermissions: ['ess.read'] },
       { label: 'My Benefits', icon: HeartPulse, path: '/ess/benefits', requiredPermissions: ['ess.read'] },
       // Release A (release_a opt-in flag): the employee's own package and deductions.
       { label: 'My package', icon: WalletCards, path: '/ess/package', requiredPermissions: ['ess.read'], requiredFeatureKey: 'release_a' },
@@ -116,6 +117,7 @@ export const navigationHints: Record<string, string> = {
   '/dashboard': 'Today at a glance: payroll, attendance, approvals and document expiries.',
   '/group': 'Headcount, payroll and compliance across every company in the group.',
   '/ess': 'Your own payslips, leave balance, requests and documents.',
+  '/ess/payslips': 'Your payslips by month, with every line and a PDF to download.',
   '/ess/benefits': 'The benefits you are enrolled in and what they cover.',
   '/people': 'Employee records: profiles, contracts, documents and job history.',
   '/people/new-hires': 'Accepted offers and prepared hires waiting to be approved and activated as employees.',
