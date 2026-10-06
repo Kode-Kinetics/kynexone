@@ -55,6 +55,7 @@ export const badgeKeys: Record<string, string> = {
   ExpiredNoOutcome: 'Ended with no outcome',
   OffboardingOpen: 'Leaving the company',
   ExpiredHoldoverPending: 'Expired — holdover pending',
+  OutcomeReset: 'End date changed: choose the outcome again',
 };
 
 export const holdReasonKeys: Record<string, string> = {

@@ -66,6 +66,7 @@ public static class ReleaseABlockReasons
     public const string RenewalCaseInProgress = "RENEWAL_CASE_IN_PROGRESS";
     public const string RenewalNationalityUnconfirmed = "RENEWAL_NATIONALITY_UNCONFIRMED";
     public const string RenewalHoldoverPending = "RENEWAL_HOLDOVER_PENDING";
+    public const string RenewalOutcomeReset = "RENEWAL_OUTCOME_RESET";
     private const string HrManager = "HR Manager";
     private const string HrDirector = "HR Director";
     private const string PayrollManager = "Payroll Manager";
@@ -365,6 +366,13 @@ public static class ReleaseABlockReasons
             "بلغ العقد تاريخ انتهائه ومراجعة تجديده مفتوحة. ووفق المادة 74 فقرة 2 يستمر بشروطه الحالية، لذلك تبقى المراجعة مفتوحة حتى يُسجَّل استمراره.",
             "Record the continuation (holdover) or apply the renewal; do not cancel the review.",
             "سجّل استمرار العقد أو طبّق التجديد، ولا تُلغِ المراجعة.",
+            HrManager),
+        new BlockReason(RenewalOutcomeReset,
+            "The end date changed after an outcome was chosen — choose again", "تغيّر تاريخ الانتهاء بعد اختيار النتيجة — اختر مجدداً",
+            "An amendment that changes the contract's end date was signed after the renewal outcome had been chosen. The outcome was chosen for the old end date, so it was cleared and the options and deadlines were worked out again for the new one.",
+            "تم توقيع تعديل يغيّر تاريخ انتهاء العقد بعد اختيار نتيجة التجديد. وقد اختيرت النتيجة لتاريخ الانتهاء السابق، لذلك أُلغيت وأُعيد احتساب الخيارات والمواعيد للتاريخ الجديد.",
+            "Review the new deadlines and choose the renewal outcome again.",
+            "راجع المواعيد الجديدة واختر نتيجة التجديد مرة أخرى.",
             HrManager),
     }.ToDictionary(r => r.Code, StringComparer.Ordinal);
 

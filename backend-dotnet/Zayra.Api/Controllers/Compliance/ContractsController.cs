@@ -34,11 +34,16 @@ public class ContractsController : ControllerBase
 
     /// <param name="termLifecycle">Release A term-activation hooks (chain stamp, package freeze). Optional so direct
     /// constructions keep compiling; the dispatcher itself is a no-op unless the tenant has release_a on.</param>
+    private readonly ITenantClock? _clock;
+
+    /// <param name="clock">Tenant-local today (Riyadh for Saudi tenants). Injected by DI; optional only so direct
+    /// constructions keep compiling — they fall back to the UTC date.</param>
     public ContractsController(ZayraDbContext db,
-        Zayra.Api.Infrastructure.Contracts.IContractTermLifecycleDispatcher? termLifecycle = null)
+        Zayra.Api.Infrastructure.Contracts.IContractTermLifecycleDispatcher? termLifecycle = null, ITenantClock? clock = null)
     {
         _db = db;
         _termLifecycle = termLifecycle;
+        _clock = clock;
     }
 
     private Guid GetTenantId() =>
@@ -279,7 +284,8 @@ public class ContractsController : ControllerBase
             });
         if (requested == "Active" && string.IsNullOrWhiteSpace(req.SignedByHrName))
             return BadRequest(new { error = "hr_signature_required", message = "HR signatory name is required to activate a contract." });
-        if (requested == "Expired" && (!contract.EndDate.HasValue || contract.EndDate.Value > DateOnly.FromDateTime(DateTime.UtcNow)))
+        var today = _clock is not null ? await _clock.TodayAsync(tid, ct) : DateOnly.FromDateTime(DateTime.UtcNow);
+        if (requested == "Expired" && (!contract.EndDate.HasValue || contract.EndDate.Value > today))
             return BadRequest(new { error = "contract_not_expired", message = "A contract can only be marked Expired on or after its recorded end date." });
 
         contract.Status = requested;

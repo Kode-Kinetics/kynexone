@@ -47,7 +47,7 @@ test('every code the dashboard can receive has an English and an Arabic sentence
     expect(consequenceCodes as readonly string[], pair).toContain(consequence);
   }
   expect(Object.keys(badgeKeys).sort()).toEqual(['Art55Meter', 'Art55Threshold', 'ChainUnconfirmed', 'ExpiredHoldoverPending', 'ExpiredNoOutcome',
-    'NonSaudiFixedTerm', 'NoticeDatePassed', 'OffboardingOpen', 'OnHold', 'QiwaOverdue'].sort());
+    'NonSaudiFixedTerm', 'NoticeDatePassed', 'OffboardingOpen', 'OnHold', 'OutcomeReset', 'QiwaOverdue'].sort());
 });
 
 test("Faisal's badge and Next line read as the storyline says, in English and Arabic", () => {

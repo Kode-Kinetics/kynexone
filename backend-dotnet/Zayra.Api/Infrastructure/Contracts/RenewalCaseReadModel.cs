@@ -258,14 +258,22 @@ public static class RenewalCaseReadModel
             .Where(o => o.TenantId == tenantId && employeeIntIds.Contains(o.EmployeeId) && o.Status == "InProgress")
             .Select(o => o.EmployeeId).ToListAsync(ct)).ToHashSet();
 
+        // Cases whose chosen outcome an activated amendment reset (RENEWAL_OUTCOME_RESET, shown until HR chooses again).
+        var caseIdStrings = cases.Select(c => c.Id.ToString()).ToList();
+        var outcomeReset = (await db.ComplianceAuditLogs.AsNoTracking()
+                .Where(l => l.TenantId == tenantId && l.EntityType == RenewalCaseOpener.AuditEntity && l.Action == RenewalCaseCarry.OutcomeResetAction
+                            && caseIdStrings.Contains(l.EntityId))
+                .Select(l => l.EntityId).ToListAsync(ct))
+            .ToHashSet();
         var list = new List<RenewalCaseItemDto>();
         foreach (var c in cases)
         {
             var contract = ContractOf(c);
             var employee = employees.GetValueOrDefault(c.EmployeeId) ?? new RenewalEmployeeDto(0, c.EmployeeId, "", null, "");
             var leaving = offboarding.Contains(employee.Id);
+            var reset = outcomeReset.Contains(c.Id.ToString()) && c.ContractAction is null;
             var badges = RenewalNextStep.Badges(c, today, contract?.RenewalNumber, contract?.ChainStartedOn, rules, leaving,
-                contractExpired: contract?.Status == "Expired");
+                contractExpired: contract?.Status == "Expired", outcomeReset: reset);
             var blockReasons = badges.Select(b => b.BlockCode).OfType<string>().Distinct()
                 .Select(code => ReleaseABlockReasons.All[code]).ToList();
             list.Add(new RenewalCaseItemDto(
@@ -277,7 +285,7 @@ public static class RenewalCaseReadModel
                 c.AllowedActions, c.ContractAction, contract?.RenewalNumber, contract?.ChainStartedOn,
                 RenewalNextStep.Next(c, today), badges, blockReasons,
                 new RenewalDeadlinesDto(c.OfferDueOn, c.NoticeDueOn, c.QiwaSubmitDueOn, c.QiwaGateDueOn, c.QiwaRespondByOn, c.NextHardDeadline),
-                RenewalNextStep.FastLaneEligible(c, today, leaving), versions.HasPendingAmendment(c.ExpiringContractId)));
+                RenewalNextStep.FastLaneEligible(c, today, leaving) && !reset, versions.HasPendingAmendment(c.ExpiringContractId)));
         }
         return list;
     }

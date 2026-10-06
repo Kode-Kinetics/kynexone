@@ -35,6 +35,8 @@ public sealed record RenewalCarryDecision(ContractRenewalCase? Case, string? Ref
 public static class RenewalCaseCarry
 {
     public const string RenewalCaseOpenCode = "renewal_case_open";
+    /// <summary>Audit action of a chosen outcome reset by an activated amendment (drives the RENEWAL_OUTCOME_RESET exception).</summary>
+    public const string OutcomeResetAction = "OutcomeReset";
 
     public static async Task<RenewalCarryDecision> DecideAsync(ZayraDbContext db, Guid tenantId, EmployeeContract old, DateOnly newStart,
         DateOnly? newEnd, CancellationToken ct)
@@ -67,19 +69,28 @@ public static class RenewalCaseCarry
         var mode = end == review.ExpiringEndDate ? RebaselineActions.Keep
             : end > review.ExpiringEndDate ? RebaselineActions.Clear
             : RebaselineActions.Derive;
-        // Supersede refuses a change of end date once an action is chosen; one chosen while the amendment waited for
-        // activation keeps its options (only the dates move) and is flagged for HR in the audit row.
-        var decided = !IsUndecided(review);
+        // Supersede refuses a change of end date once an action is chosen. An action chosen while the amendment waited
+        // for activation is reset: the signed amendment is legally real, so the outcome chosen for the old end date no
+        // longer stands. The action goes back to "needs a decision", the options and deadlines are re-derived from the new
+        // term, and a blocking RENEWAL_OUTCOME_RESET exception shows on the case and its radar row until HR chooses again.
+        var reset = mode != RebaselineActions.Keep && review.ContractAction is not null;
         // The move itself is always on record; the re-baseline adds its own row when it changed anything.
         db.ComplianceAuditLogs.Add(RenewalCaseOpener.Audit(activated.TenantId, review, "CarriedToVersion", null, "kynexone:amendment-activated",
             new { fromVersion = versions.Current(review.ExpiringContractId)?.Id ?? review.ExpiringContractId, toVersion = activated.Id,
-                activated.ContractNumber, mode = mode.ToString(), needsReview = decided && mode != RebaselineActions.Keep }));
+                activated.ContractNumber, mode = mode.ToString(), outcomeReset = reset }));
+        if (reset)
+        {
+            db.ComplianceAuditLogs.Add(RenewalCaseOpener.Audit(activated.TenantId, review, OutcomeResetAction, null, "kynexone:amendment-activated",
+                new { previousAction = review.ContractAction, review.State, oldEnd = review.ExpiringEndDate, newEnd = end,
+                    blockCode = ReleaseABlockReasons.RenewalOutcomeReset, toVersion = activated.Id }));
+            review.ContractAction = null;
+        }
         RenewalCaseOpener.Rebaseline(db, review, activated, rules, today,
             mode switch { RebaselineActions.Keep => "AmendedVersion", RebaselineActions.Clear => "AmendmentExtendsTerm", _ => "AmendmentShortensTerm" },
-            null, "kynexone:amendment-activated", decided ? RebaselineActions.Keep : mode,
+            null, "kynexone:amendment-activated", mode,
             new { carriedToVersion = activated.Id, activated.ContractNumber, reason = mode == RebaselineActions.Clear ? ChainGapReasons.ExtendsTerm : null,
-                needsReview = decided && mode != RebaselineActions.Keep },
-            versions.TermStartedOn(activated.Id));
+                outcomeReset = reset },
+            versions.TermStartedOn(activated.Id), anyState: reset);
         return true;
     }
 

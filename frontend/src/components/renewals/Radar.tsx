@@ -28,7 +28,7 @@ function Tile({ label, definition, count, active, tone, onClick }: {
 }
 
 const badgeTone = (code: string): 'rose' | 'amber' | 'blue' | 'slate' =>
-  code === 'Art55Threshold' || code === 'NoticeDatePassed' || code === 'QiwaOverdue' || code === 'ExpiredNoOutcome' || code === 'ExpiredHoldoverPending' ? 'rose'
+  code === 'Art55Threshold' || code === 'NoticeDatePassed' || code === 'QiwaOverdue' || code === 'ExpiredNoOutcome' || code === 'ExpiredHoldoverPending' || code === 'OutcomeReset' ? 'rose'
     : code === 'ChainUnconfirmed' || code === 'OnHold' || code === 'OffboardingOpen' ? 'amber'
       : code === 'Art55Meter' ? 'blue' : 'slate';
 

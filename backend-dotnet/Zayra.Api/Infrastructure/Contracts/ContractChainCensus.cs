@@ -363,14 +363,21 @@ public sealed record ChainCensusResult(int Terms, int Stamped, int Confirmed, in
 public sealed class ContractChainCensus
 {
     private readonly ZayraDbContext _db;
+    private readonly ITenantClock? _clock;
 
-    public ContractChainCensus(ZayraDbContext db) => _db = db;
+    /// <param name="clock">Tenant-local today for the rules in force; injected by DI (optional for direct constructions).</param>
+    public ContractChainCensus(ZayraDbContext db, ITenantClock? clock = null)
+    {
+        _db = db;
+        _clock = clock;
+    }
 
     /// <summary>Runs the census over every employee of <paramref name="tenantId"/> (or one employee).</summary>
     /// <param name="toleranceDays">The original-term joining tolerance; NULL reads it from the tenant's rules.</param>
     public async Task<ChainCensusResult> RunAsync(Guid tenantId, Guid? employeePublicId, CancellationToken ct, int? toleranceDays = null)
     {
-        var rules = await RenewalRuleSet.LoadAsync(_db, tenantId, DateOnly.FromDateTime(DateTime.UtcNow), ct);
+        var today = _clock is not null ? await _clock.TodayAsync(tenantId, ct) : DateOnly.FromDateTime(DateTime.UtcNow);
+        var rules = await RenewalRuleSet.LoadAsync(_db, tenantId, today, ct);
         if (toleranceDays is { } overrideTolerance) rules = rules with { OriginalTermJoiningToleranceDays = overrideTolerance };
         var contracts = await _db.EmployeeContracts
             .Where(c => c.TenantId == tenantId && !c.IsDeleted && (employeePublicId == null || c.EmployeeId == employeePublicId))

@@ -60,6 +60,8 @@ public static class RenewalBadgeCodes
     public const string OffboardingOpen = "OffboardingOpen";
     /// <summary>The contract was marked Expired while its review is still open: it continues by law until R6's holdover (T22).</summary>
     public const string ExpiredHoldoverPending = "ExpiredHoldoverPending";
+    /// <summary>An activated amendment changed the end date after an outcome was chosen: the outcome was reset (blocking).</summary>
+    public const string OutcomeReset = "OutcomeReset";
 }
 
 /// <param name="Step">A <see cref="RenewalStepCodes"/> value.</param>
@@ -171,7 +173,7 @@ public static class RenewalNextStep
     /// contract; <paramref name="rules"/> gives the Art. 55 limits the meter is read against.
     /// </summary>
     public static IReadOnlyList<RenewalBadge> Badges(ContractRenewalCase c, DateOnly today, short? renewalNumber, DateOnly? chainStartedOn,
-        RenewalRuleSet rules, bool offboardingOpen, bool contractExpired = false)
+        RenewalRuleSet rules, bool offboardingOpen, bool contractExpired = false, bool outcomeReset = false)
     {
         var badges = new List<RenewalBadge>();
         if (c.WorkerNationalityClass == WorkerNationalityClasses.Saudi && renewalNumber is { } renewals && chainStartedOn is { } chainStart)
@@ -203,6 +205,8 @@ public static class RenewalNextStep
             badges.Add(new RenewalBadge(RenewalBadgeCodes.ExpiredNoOutcome, Empty));
         if (offboardingOpen)
             badges.Add(new RenewalBadge(RenewalBadgeCodes.OffboardingOpen, Empty));
+        if (outcomeReset && c.ContractAction is null && !RenewalStates.IsTerminal(c.State))
+            badges.Add(new RenewalBadge(RenewalBadgeCodes.OutcomeReset, Empty, ReleaseABlockReasons.RenewalOutcomeReset));
         if (contractExpired && !RenewalStates.IsTerminal(c.State))
             badges.Add(new RenewalBadge(RenewalBadgeCodes.ExpiredHoldoverPending, Empty));
         return badges;

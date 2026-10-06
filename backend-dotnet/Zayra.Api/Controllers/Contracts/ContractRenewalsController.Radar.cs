@@ -165,15 +165,33 @@ public sealed partial class ContractRenewalsController
                                 "يوجد عقد آخر مسجل بالفعل على أنه تجديد لذلك العقد.", StatusCodes.Status409Conflict);
                     }
 
-                    // The nearest earlier history HR already recorded must agree with this one (same chain start, a higher
-                    // renewal number for a later term) — or HR says explicitly that it has checked the contradiction.
-                    var recorded = terms.Where(t => t.Id != contract.Id && t.ChainSource == ChainSources.Recorded && t.StartDate < contract.StartDate
-                                                    && t.RenewalNumber is not null && t.ChainStartedOn is not null)
-                        .OrderByDescending(t => t.StartDate).FirstOrDefault();
-                    if (recorded is not null && !req.AcknowledgeContradiction)
+                    // The nearest history HR already recorded, BEFORE and AFTER this term, must agree with this one exactly:
+                    // the same chain start, and renewal numbers that step by one per term in between (amendments are the
+                    // same term). Any jump needs HR's explicit "I've checked".
+                    if (!req.AcknowledgeContradiction)
                     {
-                        var minimum = recorded.RenewalNumber!.Value + (versions.SameTerm(recorded.Id, contract.Id) ? 0 : 1);
-                        if (req.ChainStartedOn != recorded.ChainStartedOn || req.RenewalNumber < minimum)
+                        var thisTerm = versions.Root(contract.Id);
+                        var termStarts = terms.Where(t => ContractChainLinker.IsTerm(t.Status) || t.Id == contract.Id)
+                            .GroupBy(t => versions.Root(t.Id)).Select(g => (Root: g.Key, Start: g.Min(t => t.StartDate))).ToList();
+                        int TermsBetween(DateOnly from, DateOnly to) => termStarts.Count(x => x.Start > from && x.Start < to);
+                        // Terms are compared by their FIRST version's start (an amendment is the same term).
+                        DateOnly StartOf(EmployeeContract t) => termStarts.FirstOrDefault(x => x.Root == versions.Root(t.Id)).Start is var d && d != default ? d : t.StartDate;
+                        var thisStart = StartOf(contract);
+                        var recordedTerms = terms.Where(t => t.Id != contract.Id && t.ChainSource == ChainSources.Recorded
+                                                             && t.RenewalNumber is not null && t.ChainStartedOn is not null
+                                                             && versions.Root(t.Id) != thisTerm).ToList();
+                        var recordedBefore = recordedTerms.Where(t => StartOf(t) < thisStart).MaxBy(StartOf);
+                        var recordedAfter = recordedTerms.Where(t => StartOf(t) > thisStart).MinBy(StartOf);
+                        EmployeeContract? contradicted = null;
+                        if (recordedBefore is not null
+                            && (req.ChainStartedOn != recordedBefore.ChainStartedOn
+                                || req.RenewalNumber != recordedBefore.RenewalNumber!.Value + TermsBetween(StartOf(recordedBefore), thisStart) + 1))
+                            contradicted = recordedBefore;
+                        else if (recordedAfter is not null
+                                 && (req.ChainStartedOn != recordedAfter.ChainStartedOn
+                                     || recordedAfter.RenewalNumber!.Value != req.RenewalNumber + TermsBetween(thisStart, StartOf(recordedAfter)) + 1))
+                            contradicted = recordedAfter;
+                        if (contradicted is { } recorded)
                             return StatusCode(StatusCodes.Status409Conflict, new
                             {
                                 error = "chain_contradicts_recorded_history",

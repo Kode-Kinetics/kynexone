@@ -60,7 +60,8 @@ public sealed class ContractChainStamper : IContractTermLifecycle
             var siblings = await _db.EmployeeContracts.AsNoTracking()
                 .Where(c => c.TenantId == contract.TenantId && c.EmployeeId == contract.EmployeeId && !c.IsDeleted && c.Id != contract.Id)
                 .ToListAsync(ct);
-            var rules = await RenewalRuleSet.LoadAsync(_db, contract.TenantId, DateOnly.FromDateTime(DateTime.UtcNow), ct);
+            var today = _clock is not null ? await _clock.TodayAsync(contract.TenantId, ct) : DateOnly.FromDateTime(DateTime.UtcNow);
+            var rules = await RenewalRuleSet.LoadAsync(_db, contract.TenantId, today, ct);
             var stamps = await ContractChainCensus.LinkEmployeeAsync(_db, contract.TenantId, contract.EmployeeId,
                 siblings.Append(contract).ToList(), rules, ct);
             if (stamps.TryGetValue(contract.Id, out var stamp))

@@ -291,7 +291,7 @@ public sealed class RenewalCaseOpener
     /// </summary>
     public static bool Rebaseline(ZayraDbContext db, ContractRenewalCase c, EmployeeContract contract, RenewalRuleSet rules, DateOnly today,
         string why, Guid? actorUserId, string actorName, RebaselineActions actions = RebaselineActions.Derive, object? detail = null,
-        DateOnly? termStartedOn = null)
+        DateOnly? termStartedOn = null, bool anyState = false)
     {
         if (RenewalStates.IsTerminal(c.State) || contract.EndDate is null) return false;
         var term = Anchored(contract, termStartedOn);
@@ -308,9 +308,10 @@ public sealed class RenewalCaseOpener
         c.QiwaRuleId = deadlines.QiwaRuleId;
 
         string? transition = null;
+        // anyState: an outcome was just reset (RenewalCaseCarry) — the options are re-derived whatever stage the case is in.
         var undecided = c.ContractAction is null
-                        && c.State is RenewalStates.NeedsConfirmation or RenewalStates.Open or RenewalStates.OnHold or RenewalStates.AwaitingManager
-                            or RenewalStates.OfferInPreparation;
+                        && (anyState || c.State is RenewalStates.NeedsConfirmation or RenewalStates.Open or RenewalStates.OnHold
+                            or RenewalStates.AwaitingManager or RenewalStates.OfferInPreparation);
         if (actions == RebaselineActions.Clear && undecided)
         {
             // The term was extended by an amendment: an extension is a renewal decision, so nothing is offered until HR

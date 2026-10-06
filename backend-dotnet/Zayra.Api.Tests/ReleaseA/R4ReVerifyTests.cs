@@ -111,6 +111,40 @@ public class R4ReVerifyTests
         (await db.EmployeeContracts.SingleAsync(c => c.Id == s.Term.Id)).Status.Should().Be("Active", "nothing was superseded");
     }
 
+    [Fact]
+    public async Task AnOutcomeChosenWhileTheAmendmentWaited_IsResetOnActivation_WithABlockingException()
+    {
+        await using var db = InMemory();
+        var s = await SeedAsync(db, "Filipino", WorkerNationalityClasses.NonSaudi, RenewalStates.Open);
+        // Amendment drafted with no outcome chosen (Supersede allows it) ...
+        var draft = await AmendAsync(db, s, new DateOnly(2026, 9, 1), new DateOnly(2026, 11, 30));
+        // ... then HR chooses Non-renew while the draft waits for signature.
+        var review = await db.ContractRenewalCases.SingleAsync();
+        review.State = RenewalStates.OfferInPreparation;
+        review.ContractAction = ContractActions.NonRenew;
+        await db.SaveChangesAsync();
+
+        await ActivateAsync(db, s.Tenant, draft.Id);
+
+        review = await db.ContractRenewalCases.SingleAsync();
+        review.ContractAction.Should().BeNull("the outcome was chosen for the old end date: it needs a decision again");
+        review.State.Should().Be(RenewalStates.OfferInPreparation);
+        review.AllowedActions.Should().NotContain(ContractActions.NonRenew, "the new notice date (1 Oct) has passed");
+        (await db.ComplianceAuditLogs.SingleAsync(l => l.Action == RenewalCaseCarry.OutcomeResetAction)).MetadataJson
+            .Should().Contain("\"previousAction\":\"NonRenew\"");
+        var row = (await Radar(db, s.Tenant)).Items.Single();
+        row.BlockReasons.Select(b => b.Code).Should().Contain(ReleaseABlockReasons.RenewalOutcomeReset);
+        row.BlockReasons.Single(b => b.Code == ReleaseABlockReasons.RenewalOutcomeReset).TitleAr.Should().MatchRegex(@"\p{IsArabic}");
+        row.FastLaneEligible.Should().BeFalse();
+        var dto = (RenewalCaseDto)((OkObjectResult)(await Renewals(db, s.Tenant).GetCase(review.Id, default)).Result!).Value!;
+        dto.Summary.Badges.Select(b => b.Code).Should().Contain(RenewalBadgeCodes.OutcomeReset);
+
+        // Once HR chooses again the exception clears.
+        review.ContractAction = ContractActions.RenewAsIs;
+        await db.SaveChangesAsync();
+        (await Radar(db, s.Tenant)).Items.Single().BlockReasons.Select(b => b.Code).Should().NotContain(ReleaseABlockReasons.RenewalOutcomeReset);
+    }
+
     // ── P1-1: Art. 55 keeps the term's first-version anchor across an amendment ───────────────────
 
     [Fact]
@@ -176,6 +210,48 @@ public class R4ReVerifyTests
         (await controller.ConfirmChain(s.Term.Id, contradicting with { AcknowledgeContradiction = true }, Opener(db), default)).Result
             .Should().BeOfType<OkObjectResult>();
         (await db.ComplianceAuditLogs.CountAsync()).Should().Be(audits, "re-confirming identical history changes nothing and records nothing");
+    }
+
+    [Fact]
+    public async Task ContradictionsAreCheckedAgainstRecordedHistory_InBothDirections()
+    {
+        await using var db = InMemory();
+        var s = await SeedAsync(db, "Saudi", WorkerNationalityClasses.Saudi, RenewalStates.Open, chainStart: new DateOnly(2019, 1, 1), renewal: 4,
+            allowed: [ContractActions.ConvertIndefinite, ContractActions.NonRenew]);
+        // An EARLIER term, recorded by HR as renewal #2 of a chain from 2019 — this 2026 term is the next one after 2025.
+        db.EmployeeContracts.Add(new EmployeeContract
+        {
+            TenantId = s.Tenant, CompanyId = Masar, EmployeeId = s.Employee.PublicId, ContractNumber = "CON-2025", Status = "Expired",
+            StartDate = new DateOnly(2025, 1, 1), EndDate = new DateOnly(2025, 12, 31), WorkerNationalityClass = WorkerNationalityClasses.Saudi,
+            RenewalNumber = 3, ChainStartedOn = new DateOnly(2019, 1, 1), ChainSource = ChainSources.Derived,
+        });
+        var earlier = new EmployeeContract
+        {
+            TenantId = s.Tenant, CompanyId = Masar, EmployeeId = s.Employee.PublicId, ContractNumber = "CON-2024", Status = "Expired",
+            StartDate = new DateOnly(2024, 1, 1), EndDate = new DateOnly(2024, 12, 31), WorkerNationalityClass = WorkerNationalityClasses.Saudi,
+            RenewalNumber = 2, ChainStartedOn = new DateOnly(2019, 1, 1), ChainSource = ChainSources.Recorded,
+        };
+        db.EmployeeContracts.Add(earlier);
+        await db.SaveChangesAsync();
+        var controller = Renewals(db, s.Tenant);
+
+        // Forward: one term (2025) lies between, so this term must be #4 — #5 is a jump.
+        var jump = await controller.ConfirmChain(s.Term.Id,
+            new ChainConfirmRequest(null, new DateOnly(2019, 1, 1), WorkerNationalityClasses.Saudi, true, null, 5), Opener(db), default);
+        Prop(((ObjectResult)jump.Result!).Value!, "error").Should().Be("chain_contradicts_recorded_history");
+        (await controller.ConfirmChain(s.Term.Id,
+            new ChainConfirmRequest(null, new DateOnly(2019, 1, 1), WorkerNationalityClasses.Saudi, true, null, 4), Opener(db), default))
+            .Result.Should().BeOfType<OkObjectResult>("#4 steps by one per term from the recorded #2");
+
+        // Backward: the 2026 term is now recorded #4; restating 2024 as #1 contradicts it (2025 lies between: 2024 must be #2).
+        earlier.ChainSource = ChainSources.Derived;
+        await db.SaveChangesAsync();
+        var backward = await controller.ConfirmChain(earlier.Id,
+            new ChainConfirmRequest(null, new DateOnly(2019, 1, 1), WorkerNationalityClasses.Saudi, true, null, 1), Opener(db), default);
+        Prop(((ObjectResult)backward.Result!).Value!, "error").Should().Be("chain_contradicts_recorded_history");
+        (await controller.ConfirmChain(earlier.Id,
+            new ChainConfirmRequest(null, new DateOnly(2019, 1, 1), WorkerNationalityClasses.Saudi, true, null, 1, AcknowledgeContradiction: true),
+            Opener(db), default)).Result.Should().BeOfType<OkObjectResult>("HR checked and says so explicitly");
     }
 
     // ── P2-4: the import guard follows the term ──────────────────────────────────────────────────

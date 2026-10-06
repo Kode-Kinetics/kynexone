@@ -188,7 +188,7 @@ public class ReleaseAContractTests
     {
         var codes = typeof(ReleaseABlockReasons).GetFields(BindingFlags.Public | BindingFlags.Static)
             .Where(f => f.IsLiteral && f.FieldType == typeof(string)).Select(f => (string)f.GetRawConstantValue()!).ToList();
-        codes.Should().HaveCount(42); // 37 (R0 + R2) + 5 (R4: contract still active, case changed, case in progress, nationality unconfirmed, holdover pending)
+        codes.Should().HaveCount(43); // 37 (R0 + R2) + 6 (R4: contract still active, case changed, case in progress, nationality unconfirmed, holdover pending, outcome reset)
         ReleaseABlockReasons.All.Keys.Should().BeEquivalentTo(codes);
         var arabic = new Regex(@"\p{IsArabic}");
         foreach (var reason in ReleaseABlockReasons.All.Values)
