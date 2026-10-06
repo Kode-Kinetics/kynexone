@@ -50,8 +50,9 @@ public sealed record MatrixCellDto(
 /// <param name="ChangesOn">A scheduled skip or re-offer, if one is already published for a later month.</param>
 public sealed record MatrixOfferingDto(string ComponentCode, string Mode, bool Offered, DateOnly? SkippedFrom, DateOnly? ChangesOn, bool CanBeSkipped);
 
-/// <summary>A grade with no value — not even "Not offered" — for a component that applies to it.</summary>
-public sealed record MatrixGapDto(Guid GradeId, string ComponentCode);
+/// <summary>A grade with no value in force — not even "Not offered" — for a component that applies to it.</summary>
+/// <param name="ScheduledFrom">A value is already published and starts on this date; until then the grade has none.</param>
+public sealed record MatrixGapDto(Guid GradeId, string ComponentCode, DateOnly? ScheduledFrom = null);
 
 public sealed record EntitlementMatrixDto(
     DateOnly AsOf, DateOnly Today, Guid? CompanyId, string? Currency,

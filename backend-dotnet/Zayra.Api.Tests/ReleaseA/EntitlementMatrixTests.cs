@@ -45,8 +45,8 @@ public class EntitlementMatrixTests
         (await h.Db.GradeEntitlements.AllAsync(c => c.CompanyId == null && c.EffectiveFrom == Nov1 && c.SourceRule == EntitlementMatrixService.SourceRuleMatrix))
             .Should().BeTrue();
 
-        // Before 1 Nov nothing is in force yet; from 1 Nov every grade has every benefit.
-        (await h.Read(null, Today)).Gaps.Should().HaveCount(35);
+        // Before 1 Nov nothing is in force yet, and every gap says when its published value starts; from 1 Nov none remain.
+        (await h.Read(null, Today)).Gaps.Should().HaveCount(35).And.OnlyContain(g => g.ScheduledFrom == Nov1);
         var matrix = await h.Read(null, Nov1);
         matrix.Gaps.Should().BeEmpty();
         matrix.Grades.Select(g => g.Code).Should().Equal("G1", "G2", "G3", "G4", "G5");
@@ -55,7 +55,13 @@ public class EntitlementMatrixTests
         matrix.Components.Single(c => c.Code == "HOUSING").FloorReason!.Code.Should().Be(ReleaseABlockReasons.EntitlementFloorHousing);
         matrix.Components.Single(c => c.Code == "MEDICAL").Should().Match<MatrixComponentDto>(c => c.IsFloor && !c.CanBeSkipped && c.Group == "Contract");
         matrix.Components.Single(c => c.Code == "EDUCATION").CanBeSkipped.Should().BeTrue();
-        matrix.Components.Single(c => c.Code == "LOAN_HOUSING_ADVANCE").Should().Match<MatrixComponentDto>(c => c.IsLoanFacility && !c.CanBeSkipped);
+        // A loan facility is listed (read-only) only once a loan type uses it, under the loan type's own name.
+        matrix.Components.Should().NotContain(c => c.IsLoanFacility);
+        h.Db.LoanTypes.Add(new LoanType { TenantId = h.Tid, Code = "HOUSING_ADVANCE", NameEn = "Housing advance", NameAr = "سلفة السكن",
+            MaxInstallments = 12, GradeLimited = true, EntitlementComponentCode = "LOAN_HOUSING_ADVANCE" });
+        await h.Db.SaveChangesAsync();
+        (await h.Read(null, Nov1)).Components.Single(c => c.IsLoanFacility)
+            .Should().Match<MatrixComponentDto>(c => c.Code == "LOAN_HOUSING_ADVANCE" && !c.CanBeSkipped && c.Group == "Facility");
     }
 
     [Fact]

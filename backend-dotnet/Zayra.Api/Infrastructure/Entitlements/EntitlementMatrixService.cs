@@ -147,7 +147,11 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
                     ? cell == null
                     : group == null && (companyIds.Count == 0
                         || companyIds.Any(co => !companyCellsInForce.Contains((grade.Id, rule.Code, co))));
-                if (missing) gaps.Add(new MatrixGapDto(grade.Id, rule.Code));
+                if (!missing) continue;
+                // A published value that has not started yet is not a forgotten one: say when it starts.
+                var scheduled = versions.Where(c => c.EffectiveFrom > asOf && (companyId is not null || c.CompanyId == null))
+                    .Select(c => (DateOnly?)c.EffectiveFrom).Min();
+                gaps.Add(new MatrixGapDto(grade.Id, rule.Code, scheduled));
             }
         }
 
@@ -722,10 +726,11 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
         await ScopedBypass.TenantWide(db.Companies, tid, "Group completeness is checked against every active company.")
             .Where(x => !x.IsDeleted && x.IsActive).Select(x => x.Id).ToListAsync(ct);
 
-    /// <summary>The catalogue, plus the loan facilities of grade-limited loan types (shown read-only).</summary>
+    /// <summary>The catalogue's benefits, plus the loan facilities of grade-limited loan types (shown read-only, named as
+    /// the loan type is). A catalogue loan facility no loan type uses yet is left out: it has nowhere to be set.</summary>
     private async Task<List<EntitlementComponentRule>> ComponentRulesAsync(Guid tid, CancellationToken ct)
     {
-        var rules = EntitlementComponentRules.Catalogue.ToList();
+        var rules = EntitlementComponentRules.Catalogue.Where(r => !r.IsLoanFacility).ToList();
         var loans = await db.LoanTypes.AsNoTracking()
             .Where(x => x.TenantId == tid && !x.IsDeleted && x.EntitlementComponentCode != null)
             .Select(x => new { Code = x.EntitlementComponentCode!, x.NameEn, x.NameAr }).ToListAsync(ct);
