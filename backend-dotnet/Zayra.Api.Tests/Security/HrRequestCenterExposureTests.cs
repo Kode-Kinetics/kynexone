@@ -75,6 +75,32 @@ public sealed class HrRequestCenterExposureTests
         (await Controller(db, caller, Org()).Get(requesterTicket.Id, Ct)).Should().BeOfType<ForbidResult>();
     }
 
+    [Theory]
+    [InlineData("Recruiter")]
+    [InlineData("Finance")]
+    [InlineData("Auditor")]
+    public async Task CompanyScopedOrgReaders_StillListOnlyTheirOwnRequests(string role)
+    {
+        // DataScopeService.ApplyCompanyBoundaryAsync materialises a company-scoped reader's Organization scope into
+        // an id list: restricted, but not a reporting line. It must not be treated as a manager's team.
+        var (db, tenantId, requesterId, callerEmployeeId) = await SeedAsync();
+        var caller = WithEmployee(await CallerAsync(db, tenantId, role), callerEmployeeId);
+        var companyOrg = new MaterialisedOrgScope(new[] { requesterId, callerEmployeeId });
+
+        var page = Page(await Controller(db, caller, companyOrg).List(null, null, null, ct: Ct));
+
+        page.Items.Should().ContainSingle().Which.EmployeeId.Should().Be(callerEmployeeId);
+        Json(page).Should().NotContain("Leave question");
+        var ticket = db.HRRequests.Single(r => r.EmployeeId == requesterId);
+        (await Controller(db, caller, companyOrg).Get(ticket.Id, Ct)).Should().BeOfType<ForbidResult>();
+    }
+
+    private sealed class MaterialisedOrgScope(int[] ids) : IDataScopeService
+    {
+        public Task<DataScope> ResolveAsync(ClaimsPrincipal caller, Guid tenantId, CancellationToken ct) =>
+            Task.FromResult(new DataScope { Level = DataScopeLevel.Organization, AllowedEmployeeIds = ids });
+    }
+
     [Fact]
     public async Task ALineManager_SeesTheTeamQueue_ButNotTheFreeTextOrTravelData()
     {

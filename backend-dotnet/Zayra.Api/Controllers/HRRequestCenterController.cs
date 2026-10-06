@@ -309,20 +309,25 @@ public class HRRequestCenterController : ControllerBase
     /// Who is reading the request queue, and how much of it they may see.
     /// <list type="bullet">
     /// <item>HR (employees.write): the existing data and company scope, with every field.</item>
-    /// <item>A line manager (a restricted, team data scope): their team's requests by the same data-scope
-    /// rules, but the free text and Jawazat data only on their own requests.</item>
-    /// <item>Anyone else, including roles whose data scope is org-wide only because they read employee
-    /// records (Recruiter, Finance, Payroll, Compliance, Auditor...): their own requests only.</item>
+    /// <item>A line manager (a Team, DirectReports or Department data scope): their reporting line's requests,
+    /// but the free text and Jawazat data only on their own requests.</item>
+    /// <item>Anyone else, including roles whose data scope is Organization only because they read employee
+    /// records (Recruiter, Finance, Payroll, Compliance, Auditor...): their own requests only. This is decided on
+    /// the scope's LEVEL, not on whether it is unrestricted: a company-scoped org reader's Organization scope is
+    /// materialised into an id list (DataScopeService.ApplyCompanyBoundaryAsync) and is not a reporting line.</item>
     /// </list>
     /// </summary>
     private sealed record RequestReader(bool IsHr, DataScope Scope, int? OwnEmployeeId)
     {
-        public bool MaySeeDetails(HRRequest r) => IsHr || (OwnEmployeeId.HasValue && r.EmployeeId == OwnEmployeeId.Value);
+        public bool IsLineManager => Scope.Level is DataScopeLevel.Team or DataScopeLevel.DirectReports or DataScopeLevel.Department;
+
+        public bool IsOwn(HRRequest r) => OwnEmployeeId.HasValue && r.EmployeeId == OwnEmployeeId.Value;
+
+        public bool MaySeeDetails(HRRequest r) => IsHr || IsOwn(r);
 
         public bool MayList(HRRequest r) => IsHr
             ? Scope.CanAccessEmployee(r.EmployeeId)
-            : (OwnEmployeeId.HasValue && r.EmployeeId == OwnEmployeeId.Value)
-              || (!Scope.IsUnrestricted && Scope.CanAccessEmployee(r.EmployeeId));
+            : IsOwn(r) || (IsLineManager && Scope.CanAccessEmployee(r.EmployeeId));
     }
 
     private async Task<RequestReader> ReaderAsync(Guid tenantId, CancellationToken ct)
@@ -344,9 +349,10 @@ public class HRRequestCenterController : ControllerBase
         var own = reader.OwnEmployeeId ?? int.MinValue;
         if (reader.IsHr)
             return reader.Scope.IsUnrestricted ? query : query.Where(r => reader.Scope.AllowedEmployeeIds!.Contains(r.EmployeeId));
-        if (reader.Scope.IsUnrestricted)
+        if (!reader.IsLineManager || reader.Scope.IsUnrestricted)
             return query.Where(r => r.EmployeeId == own);
-        return query.Where(r => r.EmployeeId == own || reader.Scope.AllowedEmployeeIds!.Contains(r.EmployeeId));
+        var team = reader.Scope.AllowedEmployeeIds!;
+        return query.Where(r => r.EmployeeId == own || team.Contains(r.EmployeeId));
     }
 
     private IQueryable<HRRequest> ScopeGovernedRequests(IQueryable<HRRequest> query)
