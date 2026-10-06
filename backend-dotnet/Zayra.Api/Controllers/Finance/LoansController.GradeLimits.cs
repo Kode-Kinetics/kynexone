@@ -21,8 +21,9 @@ public partial class LoansController
     private const string GradeLimitLockScope = "finance.grade-limits";
     /// <summary>Per-company policy lock, shared with CreateLoanPolicy and the offering switch.</summary>
     internal const string LoanPolicyLockScope = "finance.loan-policies";
-    /// <summary>The permission that owns loan policy configuration (seeded to Admin and HR Manager; Finance never).</summary>
-    internal const string LoanPolicyManagePermission = "loans.policy_manage";
+    // The loan-policy gates (CreateLoanPolicy, PublishGradeLimits, SetLoanTypeGradeLimited, SetLoanTypeOffering) take
+    // loans.policy_manage (Admin, HR Manager) OR employees.approve (Admin, HR Manager, HR Director): owner decision that
+    // HR Director manages loan policies. Finance and Finance Approver hold neither key.
 
     /// <summary>The grid for one loan type: one row per active grade, by level. With <c>companyId</c>, each row
     /// is the cell in force for that company — its own override, else the tenant-wide cell
@@ -46,9 +47,9 @@ public partial class LoansController
     /// </summary>
     [HttpPut("grade-limits")]
     [Authorize(Roles = "Admin,HR Manager,HR Director")]
-    // Explicit gate: the policy-owner permission (not loans.write, which Finance holds). The body re-checks the
-    // role as defence in depth (403 hr_policy_owner_required).
-    [HasPermission(LoanPolicyManagePermission)]
+    // Explicit gate: the policy owners' keys (not loans.write, which Finance holds). employees.approve admits HR
+    // Director. The body re-checks the role as defence in depth (403 hr_policy_owner_required).
+    [HasPermission("loans.policy_manage", "employees.approve")]
     public Task<IActionResult> PublishGradeLimits([FromBody] PublishGradeLimitsRequest req, CancellationToken ct) =>
         FinanceDecisionSerializer.SerializeAsync<IActionResult>(_db, GradeLimitLockScope, GetTenantId(), req.LoanTypeId, async () =>
         {
@@ -163,9 +164,9 @@ public partial class LoansController
     /// limit in force for some company — those employees could not apply at all.</summary>
     [HttpPatch("types/{id:guid}/grade-limited")]
     [Authorize(Roles = "Admin,HR Manager,HR Director")]
-    // Explicit gate: the policy-owner permission (not loans.write, which Finance holds). The body re-checks the
-    // role as defence in depth (403 hr_policy_owner_required).
-    [HasPermission(LoanPolicyManagePermission)]
+    // Explicit gate: the policy owners' keys (not loans.write, which Finance holds). employees.approve admits HR
+    // Director. The body re-checks the role as defence in depth (403 hr_policy_owner_required).
+    [HasPermission("loans.policy_manage", "employees.approve")]
     public Task<IActionResult> SetLoanTypeGradeLimited(Guid id, [FromBody] SetGradeLimitedRequest req, CancellationToken ct) =>
         FinanceDecisionSerializer.SerializeAsync<IActionResult>(_db, GradeLimitLockScope, GetTenantId(), id, async () =>
         {
@@ -269,9 +270,9 @@ public partial class LoansController
     /// </summary>
     [HttpPut("offerings")]
     [Authorize(Roles = "Admin,HR Manager,HR Director")]
-    // Explicit gate: the policy-owner permission (not loans.write, which Finance holds). The body re-checks the
-    // role as defence in depth (403 hr_policy_owner_required).
-    [HasPermission(LoanPolicyManagePermission)]
+    // Explicit gate: the policy owners' keys (not loans.write, which Finance holds). employees.approve admits HR
+    // Director. The body re-checks the role as defence in depth (403 hr_policy_owner_required).
+    [HasPermission("loans.policy_manage", "employees.approve")]
     public Task<IActionResult> SetLoanTypeOffering([FromBody] SetLoanOfferingRequest req, CancellationToken ct) =>
         FinanceDecisionSerializer.SerializeAsync<IActionResult>(_db, LoanPolicyLockScope, GetTenantId(), req.CompanyId, async () =>
         {
