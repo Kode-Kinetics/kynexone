@@ -7,6 +7,14 @@ public interface IPasswordHasher
 {
     string Hash(string password);
     bool Verify(string password, string passwordHash);
+
+    /// <summary>
+    /// True when <paramref name="passwordHash"/> verifies under an older work factor than
+    /// <see cref="Hash"/> would produce today. Callers that have JUST verified the plaintext
+    /// re-hash it and store the result (rehash-on-login), so old hashes upgrade transparently
+    /// without ever being invalidated. Default false keeps simple test doubles valid.
+    /// </summary>
+    bool NeedsRehash(string passwordHash) => false;
 }
 
 public interface ITokenService
@@ -43,11 +51,36 @@ public interface IMfaService
 
     // ── Platform user MFA ─────────────────────────────────────────────────────
     Task<MfaSetupInitDto> InitiatePlatformSetupAsync(Guid platformUserId, CancellationToken cancellationToken);
-    Task<bool> VerifyPlatformSetupAsync(Guid platformUserId, Zayra.Api.Application.Auth.MfaVerifySetupRequest request, CancellationToken cancellationToken);
+    /// <summary>Enables the factor; returns the one-time recovery codes (shown once), or null on failure.</summary>
+    Task<IReadOnlyList<string>?> VerifyPlatformSetupAsync(Guid platformUserId, Zayra.Api.Application.Auth.MfaVerifySetupRequest request, CancellationToken cancellationToken);
     Task<string> CreatePlatformChallengeAsync(Guid platformUserId, string ip, CancellationToken cancellationToken);
     Task<Zayra.Api.Models.PlatformUser?> VerifyPlatformChallengeAsync(string challengeToken, string totpCode, CancellationToken cancellationToken);
     Task<Zayra.Api.Models.PlatformUser?> CompletePlatformChallengeAsync(string challengeToken, string totpCode, RequestContext context, CancellationToken cancellationToken);
     Task<bool> DisablePlatformAsync(Guid platformUserId, string totpCode, CancellationToken cancellationToken);
+
+    // ── Platform mandatory-MFA enrolment (PrivilegedMfaPolicy) ───────────────
+    // Default bodies keep the test doubles that predate mandatory MFA compiling; MfaService
+    // implements all three. A double reaching one of them means a test hit the enforcement path
+    // without a real MFA service, which should fail loudly.
+    /// <summary>Setup-only token for a platform operator who must enrol before any session.</summary>
+    Task<string> CreatePlatformEnrollmentChallengeAsync(Guid platformUserId, string ip, CancellationToken cancellationToken)
+        => throw new NotSupportedException("This IMfaService does not support platform MFA enrolment.");
+    Task<MfaSetupInitDto?> InitiatePlatformEnrollmentSetupAsync(string enrollmentToken, CancellationToken cancellationToken)
+        => throw new NotSupportedException("This IMfaService does not support platform MFA enrolment.");
+    /// <summary>Enables the factor with a setup-only token; returns the one-time recovery codes, or null.</summary>
+    Task<IReadOnlyList<string>?> VerifyPlatformEnrollmentSetupAsync(string enrollmentToken, Zayra.Api.Application.Auth.MfaVerifySetupRequest request, CancellationToken cancellationToken)
+        => throw new NotSupportedException("This IMfaService does not support platform MFA enrolment.");
+    /// <summary>Completes a platform sign-in challenge with a one-time recovery code instead of TOTP.
+    /// The code is consumed; the use is audited.</summary>
+    Task<Zayra.Api.Models.PlatformUser?> CompletePlatformChallengeWithRecoveryCodeAsync(string challengeToken, string recoveryCode, RequestContext context, CancellationToken cancellationToken)
+        => throw new NotSupportedException("This IMfaService does not support recovery codes.");
+    /// <summary>Replaces all recovery codes; requires a current TOTP code. Returns the new codes, or null.</summary>
+    Task<IReadOnlyList<string>?> RegeneratePlatformRecoveryCodesAsync(Guid platformUserId, string totpCode, CancellationToken cancellationToken)
+        => throw new NotSupportedException("This IMfaService does not support recovery codes.");
+    /// <summary>Break-glass: an Owner clears ANOTHER operator's factor (lost device). The operator
+    /// re-enrols at next sign-in; all their sessions and pending challenges end.</summary>
+    Task<bool> AdminResetPlatformFactorAsync(Guid platformUserId, Guid actingPlatformUserId, RequestContext context, CancellationToken cancellationToken)
+        => throw new NotSupportedException("This IMfaService does not support platform factor reset.");
 }
 
 public record MfaSetupInitDto(string ProvisioningUri, string TempSecret);

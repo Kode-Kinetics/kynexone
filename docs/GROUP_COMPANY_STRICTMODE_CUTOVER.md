@@ -33,7 +33,7 @@ After cutover there is **no fail-open path**: v2 tokens carry explicit scope; cl
 | `EntityScope__StrictMode` | `true` — after the §2 procedure | Removes the claim-absence fail-open. |
 | `ZAYRA_COMPANY_SCOPE_ASSERT` | `strict` — after one clean deploy cycle | `CompanyScopeBootAssertion` (`Infrastructure/Boot/CompanyScopeBootAssertion.cs`) is strict (throw ⇒ failed boot) everywhere **except** Production, where it logs errors only until this var opts in. Once a deploy cycle has proven clean, flip it so a mis-declared `CompanyId` entity can never silently ship unfiltered. CI/tests are always strict. |
 | `CompanyScope__Backfill` | Leave at default (enabled) | Idempotent default-company backfill on boot (`Infrastructure/Boot/CompanyScopeBackfill.cs`); no-ops once data is clean and self-heals stragglers. Set `false` only as a deliberate backfill-rollback step. |
-| `SEED_ENTERPRISE_TEST_DATA` | **NEVER set in production** | Gates the enterprise test-data seeder (three demo Group tenants with the universal password `GroupDemo123!x`). Test/staging only. |
+| `SEED_ENTERPRISE_TEST_DATA` | Obsolete — switches on nothing | The enterprise test-data seeder was deleted; `NoSideDoorDataTests` fails the build if it or this flag returns. Group test tenants are provisioned only by `frontend/e2e/bootstrap` against disposable hosts. |
 
 ## 4. Observability — log strings to watch
 

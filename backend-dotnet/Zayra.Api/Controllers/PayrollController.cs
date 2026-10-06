@@ -6387,7 +6387,8 @@ public class PayrollController : ControllerBase
     /// Reverses a payment recorded outside the bank file (e.g. a cheque that bounced or was cancelled), the
     /// same way a bank settlement is reversed: contra lines dated to the original period, refused if that
     /// period is closed, the originals flagged reversed. 2100 re-opens for the employee, a final settlement the
-    /// payment marked Paid goes back to Disbursing, and the payment can then be recorded again. Requires payroll.export and a reason; refused once the batch is Reconciled,
+    /// payment marked Paid goes back to Disbursing, and the payment can then be recorded again. Requires
+    /// payroll.export and a reason; refused once the batch is Reconciled,
     /// and never by the employee who was paid. Audited.
     /// </summary>
     [HttpPost("payment-batches/{batchId:guid}/outside-payments/{employeeId:int}/reverse")]
