@@ -14,10 +14,15 @@ public static class ProductionReadinessEvidence
 {
     private static readonly string[] OpenRequisitionStatuses = ["Draft", "Submitted", "PendingApproval", "Approved"];
 
-    public static async Task<ReadinessEvidence> BuildReadinessAsync(ZayraDbContext db, IConfiguration config, CancellationToken ct)
+    /// <param name="includeDetail">
+    /// False for the anonymous <c>/health/ready</c> probe: the status rule needs only the database,
+    /// migration parity and the worker fleet, so the tenant counts, queue counters and SMTP mode are
+    /// not computed at all (they are not returned either — see <see cref="PublicReadiness"/>).
+    /// </param>
+    public static async Task<ReadinessEvidence> BuildReadinessAsync(ZayraDbContext db, IConfiguration config, CancellationToken ct, bool includeDetail = true)
     {
         var dbProbe = await ProbeDatabaseAsync(db, ct);
-        var tenantCounts = dbProbe.Healthy
+        var tenantCounts = dbProbe.Healthy && includeDetail
             ? await db.Tenants.AsNoTracking()
                 .GroupBy(_ => 1)
                 .Select(g => new { Total = g.Count(), Active = g.Count(x => x.IsActive) })
@@ -32,7 +37,7 @@ public static class ProductionReadinessEvidence
         var workers = dbProbe.Healthy && pendingMigrations == 0
             ? EvaluateWorkers(await db.WorkerHeartbeats.AsNoTracking().ToListAsync(ct), DateTime.UtcNow)
             : WorkerFleetReadiness.Unavailable;
-        var queues = dbProbe.Healthy && pendingMigrations == 0
+        var queues = dbProbe.Healthy && pendingMigrations == 0 && includeDetail
             ? await BuildQueueHealthAsync(db, ct)
             : QueueHealthEvidence.Unavailable;
 
@@ -43,7 +48,7 @@ public static class ProductionReadinessEvidence
                 dbProbe,
                 RedisDependency(config),
                 QiwaDependency(config),
-                dbProbe.Healthy ? await SmtpDependencyAsync(db, config, ct) : SmtpNotEvaluated(config),
+                dbProbe.Healthy && includeDetail ? await SmtpDependencyAsync(db, config, ct) : SmtpNotEvaluated(config),
                 workers),
             tenantCounts?.Total ?? 0,
             tenantCounts?.Active ?? 0,
@@ -399,6 +404,19 @@ public sealed record ReadinessEvidence(
     int ActiveTenants,
     int PendingMigrations,
     QueueHealthEvidence Queues);
+
+/// <summary>
+/// The ONLY body the anonymous <c>/health/ready</c> returns. Render's health check reads the status
+/// code; CI and the e2e preflight read <c>status</c> and <c>pendingMigrations</c>. Everything else in
+/// <see cref="ReadinessEvidence"/> — tenant counts, worker names, SMTP and Qiwa modes, queue depths —
+/// told an anonymous caller how many customers we have and how outbound mail is wired, so it moved
+/// behind the PlatformAdmin policy at <c>/health/ready/details</c>.
+/// </summary>
+public sealed record PublicReadiness(string Status, DateTime Utc, int PendingMigrations)
+{
+    public static PublicReadiness From(ReadinessEvidence evidence)
+        => new(evidence.Status, evidence.Utc, evidence.PendingMigrations);
+}
 
 public sealed record ReadinessDependencies(
     DependencyProbe Database,

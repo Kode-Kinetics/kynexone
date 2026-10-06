@@ -42,4 +42,6 @@ public sealed class PackageFreezeOnActivation : IContractTermLifecycle
             _log.LogWarning(ex, "Package not frozen on activation of contract {ContractId}; activation continues", contract.Id);
         }
     }
+
+    public Task OnEndedAsync(EmployeeContract contract, string reason, CancellationToken ct) => Task.CompletedTask;
 }

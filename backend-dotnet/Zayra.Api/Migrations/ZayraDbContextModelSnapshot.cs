@@ -699,6 +699,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("mfa_failed_count");
 
+                    b.Property<long?>("MfaLastTotpStep")
+                        .HasColumnType("bigint")
+                        .HasColumnName("mfa_last_totp_step");
+
                     b.Property<DateTime?>("MfaLastVerifiedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("mfa_last_verified_at_utc");
@@ -6939,6 +6943,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("current_approval_request_id");
 
+                    b.Property<bool>("EmployeeAcceptanceRequired")
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("employee_acceptance_required");
+
                     b.Property<Guid>("EmployeeId")
                         .HasColumnType("uuid")
                         .HasColumnName("employee_id");
@@ -6956,6 +6965,14 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("character varying(12)")
                         .HasColumnName("employee_response");
 
+                    b.Property<Guid?>("EmployeeResponseConfirmedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("employee_response_confirmed_by");
+
+                    b.Property<Guid?>("EmployeeResponseDocumentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("employee_response_document_id");
+
                     b.Property<Guid>("ExpiringContractId")
                         .HasColumnType("uuid")
                         .HasColumnName("expiring_contract_id");
@@ -6968,6 +6985,11 @@ namespace Zayra.Api.Migrations
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)")
                         .HasColumnName("fallback_if_rejected");
+
+                    b.Property<string>("HeldFromState")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("held_from_state");
 
                     b.Property<string>("HoldReason")
                         .HasMaxLength(20)
@@ -7141,6 +7163,8 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "CurrentApprovalRequestId");
 
+                    b.HasIndex("TenantId", "EmployeeResponseDocumentId");
+
                     b.HasIndex("TenantId", "ExpiringContractId")
                         .IsUnique()
                         .HasDatabaseName("ux_contract_renewal_cases__expiring_contract");
@@ -7170,6 +7194,10 @@ namespace Zayra.Api.Migrations
 
                             t.HasCheckConstraint("ck_contract_renewal_cases__fallback_if_rejected", "fallback_if_rejected IS NULL OR fallback_if_rejected IN ('RenewAsIs','NonRenew')");
 
+                            t.HasCheckConstraint("ck_contract_renewal_cases__held_from_state", "held_from_state IS NULL OR held_from_state IN ('NeedsConfirmation','Open','AwaitingManager','OfferInPreparation','InApproval','OfferSent','Accepted','QiwaPending','ReadyToApply')");
+
+                            t.HasCheckConstraint("ck_contract_renewal_cases__hold_iff_held_from", "(state = 'OnHold') = (held_from_state IS NOT NULL)");
+
                             t.HasCheckConstraint("ck_contract_renewal_cases__hold_iff_reason", "(state = 'OnHold') = (hold_reason IS NOT NULL)");
 
                             t.HasCheckConstraint("ck_contract_renewal_cases__hold_reason", "hold_reason IS NULL OR hold_reason IN ('Resignation','UnpaidLeave','Abroad','Transfer','LabourDispute')");
@@ -7184,6 +7212,8 @@ namespace Zayra.Api.Migrations
 
                             t.HasCheckConstraint("ck_contract_renewal_cases__offer_version", "offer_version >= 0");
 
+                            t.HasCheckConstraint("ck_contract_renewal_cases__paper_response_two_people", "response_channel IS NULL OR response_channel <> 'PaperUpload' OR employee_response_confirmed_by IS NULL OR (employee_responded_by_user_id IS NOT NULL AND employee_response_confirmed_by <> employee_responded_by_user_id)");
+
                             t.HasCheckConstraint("ck_contract_renewal_cases__qiwa_attempts", "qiwa_attempts >= 0");
 
                             t.HasCheckConstraint("ck_contract_renewal_cases__qiwa_evidence_outcome", "qiwa_evidence_outcome IS NULL OR qiwa_evidence_outcome IN ('Approved','Rejected','ChangesRequested','NoResponse')");
@@ -7193,6 +7223,8 @@ namespace Zayra.Api.Migrations
                             t.HasCheckConstraint("ck_contract_renewal_cases__recommended_action", "recommended_action IS NULL OR recommended_action IN ('RenewAsIs','RenewWithChanges','ConvertIndefinite','NonRenew')");
 
                             t.HasCheckConstraint("ck_contract_renewal_cases__response_channel", "response_channel IS NULL OR response_channel IN ('ESS','PaperUpload')");
+
+                            t.HasCheckConstraint("ck_contract_renewal_cases__response_document_is_paper", "employee_response_document_id IS NULL OR (response_channel IS NOT NULL AND response_channel = 'PaperUpload')");
 
                             t.HasCheckConstraint("ck_contract_renewal_cases__state", "state IN ('NeedsConfirmation','Open','AwaitingManager','OfferInPreparation','InApproval','OfferSent','Accepted','QiwaPending','ReadyToApply','Applied','NonRenewed','Cancelled','OnHold')");
 
@@ -22703,6 +22735,15 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("mfa_enabled");
 
+                    b.Property<long?>("MfaLastTotpStep")
+                        .HasColumnType("bigint")
+                        .HasColumnName("mfa_last_totp_step");
+
+                    b.Property<string>("MfaRecoveryCodeHashes")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("mfa_recovery_code_hashes");
+
                     b.Property<string>("MfaSecretEncrypted")
                         .HasMaxLength(1024)
                         .HasColumnType("character varying(1024)")
@@ -24508,6 +24549,10 @@ namespace Zayra.Api.Migrations
                     b.Property<bool>("PasswordRequireUppercase")
                         .HasColumnType("boolean")
                         .HasColumnName("password_require_uppercase");
+
+                    b.Property<DateTime?>("PrivilegedMfaEnforceFromUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("privileged_mfa_enforce_from_utc");
 
                     b.Property<int>("RefreshTokenExpiryDays")
                         .HasColumnType("integer")
@@ -26546,6 +26591,12 @@ namespace Zayra.Api.Migrations
                     b.HasOne("Zayra.Api.Models.ApprovalRequest", null)
                         .WithMany()
                         .HasForeignKey("TenantId", "CurrentApprovalRequestId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.EmployeeDocument", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "EmployeeResponseDocumentId")
                         .HasPrincipalKey("TenantId", "Id")
                         .OnDelete(DeleteBehavior.Restrict);
 

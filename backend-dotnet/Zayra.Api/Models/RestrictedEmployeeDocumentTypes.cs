@@ -20,6 +20,15 @@ public static class RestrictedEmployeeDocumentTypes
 
     public static readonly string[] All = [QiwaEvidence, LoanDeductionConsent, NonRenewalNotice];
 
+    /// <summary>Lower-case spellings, for query filters: compare <c>x.DocumentType.Trim().ToLower()</c> against these, so a
+    /// row stored as "qiwaevidence" or " QiwaEvidence " is hidden too (PostgreSQL string equality is case-sensitive).</summary>
+    public static readonly string[] Lowered = All.Select(t => t.ToLowerInvariant()).ToArray();
+
+    /// <summary>Case- and whitespace-insensitive: "qiwaevidence" and " QiwaEvidence " are restricted.</summary>
     public static bool IsRestricted(string? documentType) =>
-        documentType is not null && All.Contains(documentType, StringComparer.OrdinalIgnoreCase);
+        documentType is not null && All.Contains(documentType.Trim(), StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Why an employee cannot upload one of these types themselves.</summary>
+    public const string SelfServiceRefusal =
+        "This document type is recorded by HR as evidence and cannot be uploaded from self-service.";
 }

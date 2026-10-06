@@ -359,6 +359,23 @@ public class EssSelfServiceW2DTests
             .Should().BeOfType<OkObjectResult>().Subject.Value.Should().BeAssignableTo<IEnumerable<ESSDocumentDto>>().Subject;
         listed.Select(d => d.DocumentType).Should().Equal("Contract");
 
+        // Not by upload either, in any spelling: an employee cannot plant HR evidence in their own file.
+        foreach (var spelling in new[] { "QiwaEvidence", "qiwaevidence", " NonRenewalNotice ", "LOANDEDUCTIONCONSENT" })
+        {
+            var refused = await Ess(db, storage, tenantId, me.Id).UploadDocumentFile(new EssDocumentUploadForm
+            { File = FormFile(PdfBytes, "x.pdf", "application/pdf"), DocumentType = spelling }, CancellationToken.None);
+            refused.Result.Should().BeOfType<BadRequestObjectResult>(spelling);
+        }
+        // A row stored in another spelling (an import, a legacy writer) is still hidden.
+        db.EmployeeDocuments.Add(new EmployeeDocument
+        {
+            TenantId = tenantId, EmployeeId = me.Id, DocumentType = "qiwaevidence", FileName = "lower.pdf",
+            StorageUrl = $"{tenantId:N}/documents/own.pdf", ContentType = "application/pdf",
+        });
+        await db.SaveChangesAsync();
+        ((await Ess(db, storage, tenantId, me.Id).Documents(CancellationToken.None)).Result as OkObjectResult)!.Value
+            .As<IEnumerable<ESSDocumentDto>>().Select(d => d.DocumentType).Should().Equal("Contract");
+
         foreach (var doc in await db.EmployeeDocuments.ToListAsync())
         {
             var result = await Ess(db, storage, tenantId, me.Id).DownloadDocument(doc.Id, CancellationToken.None);

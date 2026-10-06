@@ -32,6 +32,13 @@ public class PlatformUser
     // Encrypted via IDataProtector — never returned in responses.
     public string? MfaSecretEncrypted { get; set; }
     public DateTime? MfaConfiguredAtUtc { get; set; }
+    /// <summary>
+    /// SHA-256 hashes (hex, newline-separated) of the operator's UNUSED one-time recovery codes.
+    /// Plaintext codes are shown once, at enrolment or regeneration, and never stored.
+    /// </summary>
+    public string? MfaRecoveryCodeHashes { get; set; }
+    /// <summary>Last accepted TOTP time-step; any code at or below it is refused (replay protection).</summary>
+    public long? MfaLastTotpStep { get; set; }
     public DateTime? LastLoginAtUtc { get; set; }
     public string? LastLoginIp { get; set; }
     // Brute-force lockout for platform-admin accounts (highest-privilege in the system). Mirrors the
