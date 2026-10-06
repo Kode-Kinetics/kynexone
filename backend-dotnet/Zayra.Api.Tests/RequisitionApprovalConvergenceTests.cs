@@ -84,6 +84,9 @@ public class RequisitionApprovalConvergenceTests
             new(ClaimTypes.NameIdentifier, userId.ToString()),
             new(ClaimTypes.Role, role),
             new("permission", "approvals.decide"),
+            // The seeded HR Manager bundle holds manager.approve; an unassigned ("Any") step needs it besides
+            // approvals.decide (ApprovalWorkflowService.CanDecideRequestAsync).
+            new("permission", "manager.approve"),
             new("is_group_scope", "true"),
         };
         controller.ControllerContext = new ControllerContext
@@ -206,7 +209,7 @@ public class RequisitionApprovalConvergenceTests
         var decided = await centre.DecideAsync(
             tenantId, approvalRequestId,
             new ApprovalDecisionRequest("Approve", "Approved in the global queue"),
-            new RequestContext("127.0.0.1", "tests", approverId, tenantId, ["HR Manager"], ["approvals.decide"]),
+            new RequestContext("127.0.0.1", "tests", approverId, tenantId, ["HR Manager"], ["approvals.decide", "manager.approve"]),
             CancellationToken.None);
 
         decided!.Status.Should().Be("Approved");

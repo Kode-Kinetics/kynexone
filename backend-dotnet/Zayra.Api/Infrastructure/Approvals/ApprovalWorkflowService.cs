@@ -342,11 +342,12 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         var key = $"{role}|{string.Join(",", excludedIds)}";
         if (cache.TryGetValue(key, out var known)) return known;
 
-        // An empty or "Any" role is open to anyone CanDecideRequestAsync admits, but deciding also needs the
-        // approvals.decide permission, so only holders of it count as someone who could unblock the request.
+        // An empty or "Any" role is open to approvals.decide holders who also hold manager.approve or
+        // approvals.override (CanDecideRequestAsync), so only they count as someone who could unblock it.
         var anyRole = role.Length == 0 || role.Equals("Any", StringComparison.OrdinalIgnoreCase);
         var exists = anyRole
-            ? await ApprovalUnblock.AnyOtherUserWithPermissionAsync(_db, approval.TenantId, "approvals.decide", excludedIds, cancellationToken)
+            ? await ApprovalUnblock.AnyOtherUserWithPermissionAndAnyOfAsync(_db, approval.TenantId, "approvals.decide",
+                new[] { AnyStepApproverPermission, "approvals.override" }, excludedIds, cancellationToken)
             : await ApprovalUnblock.AnyOtherUserInRolesAsync(_db, approval.TenantId, new[] { role }, orOverride: true, excludedIds, cancellationToken);
         cache[key] = exists;
         return exists;
@@ -788,6 +789,9 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
 
     /// <param name="separationOfDuties">False only for visibility: a subject or earlier-step decider
     /// who is routed this step may still SEE it (and be told why they cannot decide it).</param>
+    /// <summary>The key an "Any" (unassigned) approval step requires besides approvals.decide.</summary>
+    internal const string AnyStepApproverPermission = "manager.approve";
+
     private async Task<bool> CanDecideRequestAsync(ApprovalRequest approval, RequestContext? context, CancellationToken cancellationToken,
         bool separationOfDuties = true)
     {
@@ -816,7 +820,11 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
 
         var requiredRole = Clean(approval.CurrentApproverRole);
         if (string.IsNullOrWhiteSpace(requiredRole) || requiredRole.Equals("Any", StringComparison.OrdinalIgnoreCase))
-            return true;
+            // An unassigned ("Any") step was open to every approvals.decide holder in the tenant: Payroll Manager,
+            // Finance, Finance Approver and ManagerPortal employees could approve an employee's IBAN or salary
+            // change. It now needs an approver's key on top of approvals.decide and the bars above.
+            // (approvals.override already returned true above.)
+            return permissions.Any(x => x.Equals(AnyStepApproverPermission, StringComparison.OrdinalIgnoreCase));
         var roles = context.Roles ?? Array.Empty<string>();
         return roles.Any(x => x.Equals(requiredRole, StringComparison.OrdinalIgnoreCase));
     }

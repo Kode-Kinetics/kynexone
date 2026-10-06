@@ -429,6 +429,14 @@ public class ApprovalSeparationOfDutiesGapTests
         db.Permissions.Add(decide);
         db.RolePermissions.Add(new RolePermission { RoleId = clerkRole.Id, PermissionId = decide.Id });
         await db.SaveChangesAsync();
+        // approvals.decide alone no longer decides an "Any" step: it also needs manager.approve (or override).
+        var decideOnly = await Service(db).GetRequestAsync(tenantId, request.Id, AdminContext(tenantId, soleAdmin), CancellationToken.None);
+        decideOnly!.DecisionBlockedReason.Should().Contain("No other active user can decide it yet");
+
+        var approve = new Permission { Key = "manager.approve", Module = "Manager", Description = "Approve" };
+        db.Permissions.Add(approve);
+        db.RolePermissions.Add(new RolePermission { RoleId = clerkRole.Id, PermissionId = approve.Id });
+        await db.SaveChangesAsync();
         var clerkMayDecide = await Service(db).GetRequestAsync(tenantId, request.Id, AdminContext(tenantId, soleAdmin), CancellationToken.None);
         clerkMayDecide!.DecisionBlockedReason.Should().Contain("It is waiting for").And.NotContain("No other active user");
     }
