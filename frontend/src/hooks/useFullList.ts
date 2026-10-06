@@ -13,6 +13,7 @@
 
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { createLatestRequestGate, runLatest } from '../lib/latestRequest';
+import { requireList } from '../lib/listResponse';
 
 export interface FullList<T> {
   items: T[];
@@ -32,7 +33,7 @@ export function useFullList<T>(fetchAll: () => Promise<T[]>): FullList<T> {
   const reload = useCallback(() => {
     setLoading(true);
     setError(null);
-    return runLatest(gate, () => fetchRef.current(), {
+    return runLatest(gate, async () => requireList<T>(await fetchRef.current()), {
       onResult: (rows) => setItems(rows),
       onError: (err) => { setItems([]); setError(err); },
       onSettled: () => setLoading(false),

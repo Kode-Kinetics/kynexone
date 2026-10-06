@@ -1,4 +1,5 @@
 import client from './client';
+import { requireList, requirePage } from '../lib/listResponse';
 
 // ── Loan Types ────────────────────────────────────────────────────────────────
 
@@ -256,14 +257,14 @@ export interface AuditLogEntry {
 
 export const loanTypesApi = {
   list: () =>
-    client.get<LoanType[]>('/api/finance/loans/types').then(r => r.data),
+    client.get<LoanType[]>('/api/finance/loans/types').then(r => requireList<LoanType>(r.data, 'loan types')),
   create: (body: { code: string; nameEn: string; nameAr?: string; maxAmount: number; maxInstallments: number; repaymentFrequency: string; isInterestFree: boolean; interestRate: number; minServiceMonths: number; requiresApproval: boolean }) =>
     client.post<LoanType>('/api/finance/loans/types', body).then(r => r.data),
 };
 
 export const loansApi = {
   list: (params: { employeeId?: string; mine?: boolean; status?: string; page?: number; pageSize?: number } = {}) =>
-    client.get<{ total: number; items: EmployeeLoan[] }>('/api/finance/loans', { params }).then(r => r.data),
+    client.get<{ total: number; items: EmployeeLoan[] }>('/api/finance/loans', { params }).then(r => requirePage<{ total: number; items: EmployeeLoan[] }>(r.data, 'loans')),
 
   get: (id: string) =>
     client.get<LoanDetail>(`/api/finance/loans/${id}`).then(r => r.data),
