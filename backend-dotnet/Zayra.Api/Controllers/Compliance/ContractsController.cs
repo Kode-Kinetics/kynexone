@@ -292,6 +292,13 @@ public class ContractsController : ControllerBase
             // Release A: stamp the chain and freeze the contract-year package in this same SaveChanges.
             if (_termLifecycle is not null) await _termLifecycle.OnActivatedAsync(contract, ct);
         }
+        else if (old == "Active" && (requested is "Expired" or "Terminated") && _termLifecycle is not null)
+        {
+            // Release A: close the package and cancel any open renewal case for the term (T21), in this SaveChanges.
+            await _termLifecycle.OnEndedAsync(contract, requested == "Expired"
+                ? Zayra.Api.Application.Entitlements.ContractEndReasons.Expired
+                : Zayra.Api.Application.Entitlements.ContractEndReasons.Terminated, ct);
+        }
 
         _db.ComplianceAuditLogs.Add(new ComplianceAuditLog
         {
@@ -337,6 +344,8 @@ public class ContractsController : ControllerBase
 
         old.Status = "Superseded";
         old.UpdatedAtUtc = DateTime.UtcNow;
+        if (_termLifecycle is not null)
+            await _termLifecycle.OnEndedAsync(old, Zayra.Api.Application.Entitlements.ContractEndReasons.Superseded, ct);
 
         var count = await _db.EmployeeContracts.CountAsync(x => x.TenantId == tid, ct);
         var contractNumber = $"CON-{DateTime.UtcNow.Year}-{(count + 1):D4}";

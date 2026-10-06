@@ -42,8 +42,9 @@ public sealed class ContractChainStamper : IContractTermLifecycle
                 .FirstOrDefaultAsync(ct);
 
             var facts = siblings.Select(ContractChainFacts.Of).Append(ContractChainFacts.Of(contract)).ToList();
+            var rules = await RenewalRuleSet.LoadAsync(_db, contract.TenantId, DateOnly.FromDateTime(DateTime.UtcNow), ct);
             var stamps = ContractChainLinker.Link(facts, ContractChainCensus.JoiningDateOf(employee?.JoiningDate),
-                WorkerNationality.ClassOf(employee?.SaudiOrNonSaudi, employee?.Nationality));
+                WorkerNationality.ClassOf(employee?.SaudiOrNonSaudi, employee?.Nationality), rules.OriginalTermJoiningToleranceDays);
             if (stamps.TryGetValue(contract.Id, out var stamp))
                 ContractChainLinker.Apply(contract, stamp);
         }
@@ -55,6 +56,39 @@ public sealed class ContractChainStamper : IContractTermLifecycle
         {
             _log.LogWarning(ex, "Contract chain stamp skipped for contract {ContractId}; its renewal case will ask HR to confirm the history.",
                 contract.Id);
+        }
+    }
+
+    /// <summary>
+    /// The term stopped being in force by termination, separation or supersede: its open renewal review has nothing left
+    /// to decide, so it is cancelled (T21) with an audit row naming why, in the caller's unit of work. <b>Expiry never
+    /// cancels</b>: a term that reaches its end date with the review still open continues by law (Art. 74(2)) — that is
+    /// R6's holdover (T22), and the dashboard shows it as "Expired — holdover pending". Never throws: should it fail,
+    /// the daily job's reconcile step cancels the case on its next run.
+    /// </summary>
+    public async Task OnEndedAsync(EmployeeContract contract, string reason, CancellationToken ct)
+    {
+        if (reason == ContractEndReasons.Expired) return;
+        try
+        {
+            var open = await _db.ContractRenewalCases
+                .Where(c => c.TenantId == contract.TenantId && c.ExpiringContractId == contract.Id && c.ClosedAt == null)
+                .ToListAsync(ct);
+            foreach (var c in open)
+            {
+                var from = c.State;
+                var transition = RenewalCaseTransitions.Cancel(c, DateTime.UtcNow);
+                _db.ComplianceAuditLogs.Add(RenewalCaseOpener.Audit(contract.TenantId, c, "Cancelled", null, "kynexone:contract-ended",
+                    new { transition = transition.Id, from, reason = "ContractEnded", contractEnd = reason }));
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Renewal case for ended contract {ContractId} was not cancelled; the daily job will reconcile it.", contract.Id);
         }
     }
 }

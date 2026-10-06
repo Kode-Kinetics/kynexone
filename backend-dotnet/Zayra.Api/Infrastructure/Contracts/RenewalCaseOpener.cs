@@ -19,6 +19,8 @@ public static class RenewalOpenSkipReasons
     public const string NationalityUnknown = "NationalityUnknown";
     /// <summary>A following term is already on file (renewed outside the case).</summary>
     public const string SuccessorOnFile = "SuccessorOnFile";
+    /// <summary>Another Active term of the same employee also covers this end date: two current terms, fix the records first.</summary>
+    public const string DuplicateTerm = "DuplicateTerm";
 }
 
 /// <summary>What the opener would do with one contract today (pure; the dashboard reads it without writing).</summary>
@@ -43,7 +45,8 @@ public sealed record RenewalOpenOutcome(Guid ContractId, string Result, Guid? Ca
 }
 
 /// <summary>A due contract the opener considers, with the employee facts it reads.</summary>
-public sealed record RenewalCandidate(EmployeeContract Contract, Guid? EmployeeCompanyId, string? EmployeeNationalityClass, bool SuccessorOnFile);
+public sealed record RenewalCandidate(EmployeeContract Contract, Guid? EmployeeCompanyId, string? EmployeeNationalityClass, bool SuccessorOnFile,
+    bool DuplicateTerm = false);
 
 /// <summary>
 /// T1 — opens one <c>contract_renewal_cases</c> row per expiring fixed-term term on its open date
@@ -82,6 +85,7 @@ public sealed class RenewalCaseOpener
 
         if (today < deadlines.OpensOn) return Skip(RenewalOpenSkipReasons.NotDue, null);
         if (candidate.SuccessorOnFile) return Skip(RenewalOpenSkipReasons.SuccessorOnFile, null);
+        if (candidate.DuplicateTerm) return Skip(RenewalOpenSkipReasons.DuplicateTerm, null);
         // The case's company is the expiring term's company, never inferred from the employee (integrity rule: a
         // case and its contract name the same employer). A term without one is surfaced, not opened.
         var companyId = contract.CompanyId;
@@ -99,11 +103,17 @@ public sealed class RenewalCaseOpener
     }
 
     /// <summary>The fixed-term Active terms of a tenant ending on or before <paramref name="horizon"/>, with the employee facts.</summary>
-    public async Task<IReadOnlyList<RenewalCandidate>> CandidatesAsync(Guid tenantId, Guid? companyId, DateOnly horizon, bool tracked,
-        CancellationToken ct)
+    public Task<IReadOnlyList<RenewalCandidate>> CandidatesAsync(Guid tenantId, Guid? companyId, DateOnly horizon, bool tracked,
+        CancellationToken ct) => CandidatesAsync(tenantId, companyId, horizon, tracked, contractId: null, ct);
+
+    private async Task<IReadOnlyList<RenewalCandidate>> CandidatesAsync(Guid tenantId, Guid? companyId, DateOnly? horizon, bool tracked,
+        Guid? contractId, CancellationToken ct)
     {
         var query = _db.EmployeeContracts.Where(c => c.TenantId == tenantId && !c.IsDeleted && c.Status == "Active"
-                                                     && c.EndDate != null && c.EndDate <= horizon && c.ProvisionalBasis == null);
+                                                     && c.EndDate != null && c.ProvisionalBasis == null
+                                                     && (horizon == null || c.EndDate <= horizon)
+                                                     && (contractId == null || c.Id == contractId)
+                                                     && (companyId == null || c.CompanyId == companyId));
         if (!tracked) query = query.AsNoTracking();
         var contracts = await query.ToListAsync(ct);
         if (contracts.Count == 0) return [];
@@ -113,21 +123,24 @@ public sealed class RenewalCaseOpener
             .Where(e => e.TenantId == tenantId && employeeIds.Contains(e.PublicId))
             .Select(e => new { e.PublicId, e.CompanyId, e.SaudiOrNonSaudi, e.Nationality })
             .ToDictionaryAsync(e => e.PublicId, ct);
-        var contractIds = contracts.Select(c => c.Id).ToList();
-        var successors = await _db.EmployeeContracts.AsNoTracking()
-            .Where(c => c.TenantId == tenantId && !c.IsDeleted && employeeIds.Contains(c.EmployeeId)
-                        && (c.Status == "Active" || c.Status == "PendingApproval" || c.Status == "Expired" || c.Status == "Terminated"))
-            .Select(c => new { c.Id, c.EmployeeId, c.StartDate, c.RenewedFromContractId })
-            .ToListAsync(ct);
+        // One read of every other term of the same employees, grouped once: no per-contract query.
+        var others = (await _db.EmployeeContracts.AsNoTracking()
+                .Where(c => c.TenantId == tenantId && !c.IsDeleted && employeeIds.Contains(c.EmployeeId)
+                            && (c.Status == "Active" || c.Status == "PendingApproval" || c.Status == "Expired" || c.Status == "Terminated"))
+                .Select(c => new { c.Id, c.EmployeeId, c.Status, c.StartDate, c.EndDate, c.RenewedFromContractId, c.ProvisionalBasis })
+                .ToListAsync(ct))
+            .ToLookup(c => c.EmployeeId);
 
-        var list = new List<RenewalCandidate>();
+        var list = new List<RenewalCandidate>(contracts.Count);
         foreach (var c in contracts)
         {
             employees.TryGetValue(c.EmployeeId, out var e);
-            if (companyId is not null && c.CompanyId != companyId) continue;
-            var successor = successors.Any(s => s.Id != c.Id && s.EmployeeId == c.EmployeeId
-                                                && (s.RenewedFromContractId == c.Id || s.StartDate == c.EndDate!.Value.AddDays(1)));
-            list.Add(new RenewalCandidate(c, e?.CompanyId, WorkerNationality.ClassOf(e?.SaudiOrNonSaudi, e?.Nationality), successor));
+            var end = c.EndDate!.Value;
+            var mine = others[c.EmployeeId].Where(s => s.Id != c.Id).ToList();
+            var successor = mine.Any(s => s.RenewedFromContractId == c.Id || s.StartDate == end.AddDays(1));
+            var duplicate = mine.Any(s => s.Status == "Active" && s.ProvisionalBasis == null
+                                          && s.StartDate <= end && (s.EndDate == null || s.EndDate >= end));
+            list.Add(new RenewalCandidate(c, e?.CompanyId, WorkerNationality.ClassOf(e?.SaudiOrNonSaudi, e?.Nationality), successor, duplicate));
         }
         return list;
     }
@@ -198,8 +211,7 @@ public sealed class RenewalCaseOpener
             return new RenewalOpenOutcome(contractId, RenewalOpenOutcome.Skipped, null, "NotAFixedTermActiveContract");
 
         var rules = await RenewalRuleSet.LoadAsync(_db, tenantId, today, ct);
-        var candidate = (await CandidatesAsync(tenantId, null, contract.EndDate.Value, tracked: false, ct))
-            .FirstOrDefault(c => c.Contract.Id == contractId);
+        var candidate = (await CandidatesAsync(tenantId, null, null, tracked: false, contractId, ct)).FirstOrDefault();
         if (candidate is null) return new RenewalOpenOutcome(contractId, RenewalOpenOutcome.Skipped, null, "NotAFixedTermActiveContract");
         var plan = Plan(candidate with { Contract = contract }, rules, today);
         if (!plan.CanOpen) return new RenewalOpenOutcome(contractId, RenewalOpenOutcome.Skipped, null, plan.SkipReason);
@@ -250,7 +262,7 @@ public sealed class RenewalCaseOpener
         string why, Guid? actorUserId, string actorName)
     {
         if (RenewalStates.IsTerminal(c.State) || contract.EndDate is null) return;
-        var before = new { c.State, c.ExpiringEndDate, c.OfferDueOn, c.NoticeDueOn, c.QiwaSubmitDueOn, c.QiwaGateDueOn, c.AllowedActions, c.WorkerNationalityClass };
+        var before = new { c.State, c.HeldFromState, c.ExpiringEndDate, c.OfferDueOn, c.NoticeDueOn, c.QiwaSubmitDueOn, c.QiwaGateDueOn, c.AllowedActions, c.WorkerNationalityClass };
         var deadlines = RenewalDeadlineCalculator.Compute(contract, rules);
         c.ExpiringEndDate = contract.EndDate.Value;
         c.NoticeDueOn = deadlines.NoticeDueOn;
@@ -267,18 +279,15 @@ public sealed class RenewalCaseOpener
             c.WorkerNationalityClass = nationality;
             var derived = AllowedActionsDeriver.Derive(contract, deadlines.NoticeDueOn, today, rules);
             c.AllowedActions = derived.Actions.ToArray();
-            if (c.State == RenewalStates.NeedsConfirmation && AllowedActionsDeriver.IsChainConfirmed(contract))
-            {
-                transition = RenewalStateMachine.EnsureCanTransition(c.State, RenewalStates.Open).Id;
-                c.State = RenewalStates.Open;
-            }
+            if (AllowedActionsDeriver.IsChainConfirmed(contract))
+                transition = RenewalCaseTransitions.ChainConfirmed(c);
         }
         db.ComplianceAuditLogs.Add(Audit(contract.TenantId, c, "Rebaselined", actorUserId, actorName, new
         {
             why,
             transition,
             before,
-            after = new { c.State, c.ExpiringEndDate, c.OfferDueOn, c.NoticeDueOn, c.QiwaSubmitDueOn, c.QiwaGateDueOn, c.AllowedActions, c.WorkerNationalityClass },
+            after = new { c.State, c.HeldFromState, c.ExpiringEndDate, c.OfferDueOn, c.NoticeDueOn, c.QiwaSubmitDueOn, c.QiwaGateDueOn, c.AllowedActions, c.WorkerNationalityClass },
         }));
     }
 

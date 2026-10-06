@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 import type { RenewalCaseItem, RenewalRadar } from '../../api/renewals';
 import { useLocale } from '../../contexts/LocaleContext';
 import {
-  actionKeys, badgeText, blockText, fill, formatDay, nextLine, stageKeys, toggleAll, toggleSelection, unopenedReasonKeys,
+  actionKeys, badgeText, blockText, closedStateKeys, fill, formatDay, nextLine, stageKeys, toggleAll, toggleSelection, unopenedReasonKeys,
   type RadarFilter,
 } from '../../lib/renewalRadar';
 import { StatusChip } from '../StatusChip';
@@ -26,7 +26,7 @@ function Tile({ label, definition, count, active, tone, onClick }: {
 }
 
 const badgeTone = (code: string): 'rose' | 'amber' | 'blue' | 'slate' =>
-  code === 'Art55Threshold' || code === 'NoticeDatePassed' || code === 'QiwaOverdue' || code === 'ExpiredNoOutcome' ? 'rose'
+  code === 'Art55Threshold' || code === 'NoticeDatePassed' || code === 'QiwaOverdue' || code === 'ExpiredNoOutcome' || code === 'ExpiredHoldoverPending' ? 'rose'
     : code === 'ChainUnconfirmed' || code === 'OnHold' || code === 'OffboardingOpen' ? 'amber'
       : code === 'Art55Meter' ? 'blue' : 'slate';
 
@@ -41,7 +41,6 @@ export interface RadarProps {
   onOpenChain: (contractId: string) => void;
   onHold: (item: RenewalCaseItem) => void;
   onRelease: (item: RenewalCaseItem) => void;
-  onCancel: (item: RenewalCaseItem) => void;
   busyCaseId: string | null;
 }
 
@@ -57,6 +56,9 @@ export function Radar(props: RadarProps) {
   const exceptionTiles: { key: string; label: string; definition: string; ids: string[]; count: number }[] = [
     { key: 'expiringWithoutCase', label: t('Due without a review'), definition: t('Fixed-term contracts whose review should be open but is not.'),
       ids: [], count: ex.expiringWithoutCase.length },
+    { key: 'activeWithoutOpenReview', label: t('Active contract with no open review'),
+      definition: t('Contracts still in force whose only review is closed. Their deadlines still run.'),
+      ids: [], count: ex.activeWithoutOpenReview.length },
     { key: 'needsConfirmation', label: t('History to confirm'), definition: t('Reviews waiting for HR to confirm earlier contracts and nationality.'),
       ids: ex.needsConfirmation.caseIds, count: ex.needsConfirmation.count },
     { key: 'noticeDatePassed', label: t('Notice date passed'), definition: t('No decision by the notice date: the contract renews on its current terms.'),
@@ -67,8 +69,13 @@ export function Radar(props: RadarProps) {
       ids: ex.art55Threshold.caseIds, count: ex.art55Threshold.count },
     { key: 'expiredNoOutcome', label: t('Ended with no outcome'), definition: t('The contract end date passed and the review is still open.'),
       ids: ex.expiredNoOutcome.caseIds, count: ex.expiredNoOutcome.count },
+    { key: 'expiredHoldoverPending', label: t('Expired — holdover pending'),
+      definition: t('Marked expired with the review still open: the contract continues by law until the holdover is recorded.'),
+      ids: ex.expiredHoldoverPending.caseIds, count: ex.expiredHoldoverPending.count },
   ];
+  const rec = radar.reconciliation;
   const showUnopened = isActive('exception', 'expiringWithoutCase');
+  const showClosedOnly = isActive('exception', 'activeWithoutOpenReview');
   const eligibleInView = rows.filter((r) => r.fastLaneEligible);
   const allEligibleSelected = eligibleInView.length > 0 && eligibleInView.every((r) => selected.has(r.caseId));
 
@@ -87,7 +94,7 @@ export function Radar(props: RadarProps) {
 
       <section aria-labelledby="renewal-exceptions">
         <h2 id="renewal-exceptions" className="mb-2 text-sm font-semibold text-slate-700 dark:text-slate-200">{t('Needs attention')}</h2>
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-4">
           {exceptionTiles.map((x) => (
             <Tile key={x.key} label={x.label} definition={x.definition} count={x.count} tone="warn"
               active={isActive('exception', x.key)} onClick={() => pick('exception', x.key, x.ids)} />
@@ -95,7 +102,48 @@ export function Radar(props: RadarProps) {
         </div>
       </section>
 
-      {showUnopened ? (
+      <p className="text-xs text-slate-600 dark:text-slate-300" aria-label={t('How the contracts add up')}>
+        {fill(t('{due} fixed-term contracts in force are due: {open} with an open review, {none} without one, {closed} with only a closed review.'),
+          { due: rec.dueActiveContracts, open: rec.withOpenReview, none: rec.withoutReview, closed: rec.withClosedReviewOnly })}
+        {rec.notYetDue > 0 && <> {fill(t('{n} more open later.'), { n: rec.notYetDue })}</>}
+      </p>
+
+      {showClosedOnly ? (
+        <section aria-label={t('Active contract with no open review')} className="surface overflow-x-auto rounded-xl">
+          {ex.activeWithoutOpenReview.length === 0 ? (
+            <p className="p-6 text-center text-sm text-slate-500 dark:text-slate-400">{t('Every contract in force has an open review.')}</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 text-xs text-slate-500 dark:border-white/10 dark:text-slate-400">
+                  <th className="p-3 text-start">{t('Employee')}</th>
+                  <th className="p-3 text-start">{t('Contract ends')}</th>
+                  <th className="p-3 text-start">{t('Last review')}</th>
+                  <th className="p-3 text-start"><span className="sr-only">{t('Actions')}</span></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-white/5">
+                {ex.activeWithoutOpenReview.map((u) => (
+                  <tr key={u.contractId}>
+                    <td className="p-3">
+                      <span className="font-medium text-slate-800 dark:text-slate-100">{u.employee?.name ?? u.contractNumber}</span>
+                      <span className="block text-xs text-slate-500">{u.employee?.code} · {u.contractNumber}</span>
+                    </td>
+                    <td className="p-3 text-slate-600 dark:text-slate-300">{formatDay(u.endDate, locale, radar.today)}</td>
+                    <td className="p-3 text-slate-600 dark:text-slate-300">{t(closedStateKeys[u.caseState] ?? u.caseState)}</td>
+                    <td className="p-3 text-end">
+                      <button type="button" onClick={() => props.onOpenChain(u.contractId)}
+                        className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/5">
+                        {t('Contract history')}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      ) : showUnopened ? (
         <section aria-label={t('Due without a review')} className="surface overflow-x-auto rounded-xl">
           {ex.expiringWithoutCase.length === 0 ? (
             <p className="p-6 text-center text-sm text-slate-500 dark:text-slate-400">{t('Every due contract has its review open.')}</p>
@@ -220,12 +268,6 @@ export function Radar(props: RadarProps) {
                             <button type="button" disabled={busy} onClick={() => props.onHold(item)}
                               className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 disabled:opacity-50 dark:border-white/10 dark:text-slate-200">
                               {t('Put on hold')}
-                            </button>
-                          )}
-                          {canManage && item.stage !== 'Done' && (
-                            <button type="button" disabled={busy} onClick={() => props.onCancel(item)}
-                              className="rounded-lg px-2.5 py-1 text-xs font-medium text-rose-700 hover:bg-rose-50 disabled:opacity-50 dark:text-rose-300 dark:hover:bg-rose-500/10">
-                              {t('Cancel review')}
                             </button>
                           )}
                         </div>

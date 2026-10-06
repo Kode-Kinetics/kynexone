@@ -3,7 +3,7 @@ import type { RenewalCaseItem, RenewalRadar } from '../src/api/renewals';
 import { renewals } from '../src/i18n/releaseA/renewals';
 import { translate } from '../src/i18n/translations';
 import {
-  actionKeys, badgeKeys, badgeText, consequenceKeys, fill, filterItems, formatDay, gapReasonKeys, holdReasonKeys, linkKindKeys,
+  actionKeys, badgeKeys, badgeText, closedStateKeys, consequenceKeys, fill, filterItems, formatDay, gapReasonKeys, holdReasonKeys, linkKindKeys,
   nextLine, stageKeys, stepKeys, toggleAll, toggleSelection, unopenedReasonKeys,
 } from '../src/lib/renewalRadar';
 
@@ -27,7 +27,7 @@ const item = (over: Partial<RenewalCaseItem> = {}): RenewalCaseItem => ({
 });
 
 test('every code the dashboard can receive has an English and an Arabic sentence', () => {
-  const maps = [stepKeys, consequenceKeys, badgeKeys, holdReasonKeys, actionKeys, stageKeys, unopenedReasonKeys, linkKindKeys, gapReasonKeys];
+  const maps = [stepKeys, consequenceKeys, badgeKeys, holdReasonKeys, actionKeys, stageKeys, unopenedReasonKeys, linkKindKeys, gapReasonKeys, closedStateKeys];
   for (const map of maps) {
     for (const key of Object.values(map)) {
       expect(renewals.en[key], key).toBe(key);
@@ -38,8 +38,8 @@ test('every code the dashboard can receive has an English and an Arabic sentence
   expect(Object.keys(stepKeys).sort()).toEqual(['Apply', 'ApproveOffer', 'AwaitEmployee', 'ConfirmHistory', 'ExpiredNoOutcome',
     'PrepareOffer', 'RecordQiwaOutcome', 'ResolveHold', 'SendToQiwa', 'ServeNotice']);
   expect(Object.keys(consequenceKeys).sort()).toEqual(['BecomesIndefinite', 'ContinuesByLaw', 'NoOptionsUntilConfirmed', 'QiwaLate', 'RenewsOnCurrentTerms']);
-  expect(Object.keys(badgeKeys).sort()).toEqual(['Art55Meter', 'Art55Threshold', 'ChainUnconfirmed', 'ExpiredNoOutcome', 'NonSaudiFixedTerm',
-    'NoticeDatePassed', 'OffboardingOpen', 'OnHold', 'QiwaOverdue']);
+  expect(Object.keys(badgeKeys).sort()).toEqual(['Art55Meter', 'Art55Threshold', 'ChainUnconfirmed', 'ExpiredHoldoverPending', 'ExpiredNoOutcome',
+    'NonSaudiFixedTerm', 'NoticeDatePassed', 'OffboardingOpen', 'OnHold', 'QiwaOverdue'].sort());
 });
 
 test("Faisal's badge and Next line read as the storyline says, in English and Arabic", () => {
@@ -66,8 +66,8 @@ test('dates are Gregorian and add the year only when it differs', () => {
 
 test('a tile drill-down lists exactly the rows the tile counted', () => {
   const radar = {
-    today: '2026-10-06', days: 120, buckets: [], items: [item({ caseId: 'a' }), item({ caseId: 'b' }), item({ caseId: 'c' })],
-    exceptions: {} as RenewalRadar['exceptions'],
+    today: '2026-10-06', days: 120, openLeadDays: 120, buckets: [], items: [item({ caseId: 'a' }), item({ caseId: 'b' }), item({ caseId: 'c' })],
+    exceptions: {} as RenewalRadar['exceptions'], reconciliation: {} as RenewalRadar['reconciliation'],
   } as RenewalRadar;
   expect(filterItems(radar, { kind: 'all' }).map((i) => i.caseId)).toEqual(['a', 'b', 'c']);
   expect(filterItems(radar, { kind: 'bucket', key: '0-30', caseIds: ['c', 'a'] }).map((i) => i.caseId)).toEqual(['a', 'c']);

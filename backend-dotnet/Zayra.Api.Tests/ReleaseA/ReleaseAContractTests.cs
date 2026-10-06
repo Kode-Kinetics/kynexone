@@ -73,7 +73,13 @@ public class ReleaseAContractTests
             "ValueType:String", "Amount:Nullable`1", "Rate:Nullable`1", "MonthlyCash:Nullable`1", "CoverageTier:String",
             "Quantity:Nullable`1", "DependantScope:String", "MaxDependants:Nullable`1", "DependantsCovered:Int32",
             "LimitPeriod:String", "GradeEntitlementId:Nullable`1", "EmployeeEntitlementId:Nullable`1", "IsCompanyOverride:Boolean",
-            "GradeStandardDiffers:Boolean", "ReasonCode:String");
+            "GradeStandardDiffers:Boolean", "ReasonCode:String", "MaxOutstandingAmount:Nullable`1", "ResolvedAmount:Nullable`1",
+            "EligibleFrom:Nullable`1");
+        // Rates are compared at the grade cell's 4 dp, so salary-row precision never reads as a difference.
+        EntitlementRates.Same(0.250000m, 0.2500m).Should().BeTrue();
+        EntitlementRates.Same(0.25004m, 0.2500m).Should().BeTrue();
+        EntitlementRates.Same(0.2501m, 0.2500m).Should().BeFalse();
+        EntitlementRates.Same(null, null).Should().BeTrue();
         PackageLineSources.All.Should().Equal("Salary", "ContractFrozen", "GradeStandard", "Facility");
     }
 
@@ -90,6 +96,9 @@ public class ReleaseAContractTests
             .Should().Be("Task CarryToProvisionalAsync(Guid, Guid, Guid, CancellationToken)");
         Signature(typeof(IContractTermLifecycle), nameof(IContractTermLifecycle.OnActivatedAsync))
             .Should().Be("Task OnActivatedAsync(EmployeeContract, CancellationToken)");
+        Signature(typeof(IContractTermLifecycle), nameof(IContractTermLifecycle.OnEndedAsync))
+            .Should().Be("Task OnEndedAsync(EmployeeContract, String, CancellationToken)");
+        ContractEndReasons.All.Should().Equal("Terminated", "Expired", "Superseded", "Separated");
         Signature(typeof(IRenewalDeadlineCalculator), nameof(IRenewalDeadlineCalculator.ComputeAsync))
             .Should().Be("Task`1[RenewalDeadlines] ComputeAsync(Guid, EmployeeContract, CancellationToken)");
         Signature(typeof(IDeductionStatementService), nameof(IDeductionStatementService.ForSlipAsync))
@@ -176,7 +185,7 @@ public class ReleaseAContractTests
     {
         var codes = typeof(ReleaseABlockReasons).GetFields(BindingFlags.Public | BindingFlags.Static)
             .Where(f => f.IsLiteral && f.FieldType == typeof(string)).Select(f => (string)f.GetRawConstantValue()!).ToList();
-        codes.Should().HaveCount(19);
+        codes.Should().HaveCount(28); // 25 (R0) + 3 (R4 review: contract still active, case changed, case in progress)
         ReleaseABlockReasons.All.Keys.Should().BeEquivalentTo(codes);
         var arabic = new Regex(@"\p{IsArabic}");
         foreach (var reason in ReleaseABlockReasons.All.Values)
@@ -439,10 +448,89 @@ public class ReleaseAContractTests
         (await controller.Supersede(contract.Id, replacement, default)).Should().NotBeOfType<ConflictObjectResult>();
     }
 
+    /// <summary>
+    /// The migration import is the other writer of Active contracts: it must not re-import a term under renewal review,
+    /// and a contract it creates as Active goes through the same activation hooks as the contract screen.
+    /// </summary>
+    [Fact]
+    public async Task ContractImport_RefusesATermUnderReview_AndRunsTheActivationHooks()
+    {
+        await using var connection = new Microsoft.Data.Sqlite.SqliteConnection("DataSource=:memory:");
+        await connection.OpenAsync();
+        await using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>().UseSqlite(connection).Options);
+        await db.Database.EnsureCreatedAsync();
+        var tenantId = Guid.NewGuid();
+        var company = new Company { TenantId = tenantId, LegalNameEn = "Masar", RegistrationNumber = "CR-1", IsActive = true };
+        var employee = new Employee { TenantId = tenantId, CompanyId = company.Id, EmployeeCode = "E-1", FullName = "Mohammed", Status = "Active" };
+        db.TenantFeatureFlags.Add(new TenantFeatureFlag { TenantId = tenantId, FeatureKey = FeatureKeys.ReleaseA, IsEnabled = true });
+        db.AddRange(company, employee);
+        var underReview = new EmployeeContract
+        {
+            TenantId = tenantId, CompanyId = company.Id, EmployeeId = employee.PublicId, ContractNumber = "CON-REVIEW", Status = "Active",
+            StartDate = new DateOnly(2026, 1, 1), EndDate = new DateOnly(2026, 12, 31),
+        };
+        db.EmployeeContracts.Add(underReview);
+        db.ContractRenewalCases.Add(new ContractRenewalCase
+        {
+            TenantId = tenantId, CompanyId = company.Id, EmployeeId = employee.PublicId, ExpiringContractId = underReview.Id,
+            ExpiringEndDate = new DateOnly(2026, 12, 31), AllowedActions = [ContractActions.RenewAsIs], NoticeDueOn = new DateOnly(2026, 11, 1),
+        });
+        await db.SaveChangesAsync();
+        var hook = new RecordingHook();
+        var controller = new MigrationImportController(db, new Zayra.Api.Infrastructure.Auth.Pbkdf2PasswordHasher(),
+            new Zayra.Api.Infrastructure.Audit.AuditService(db),
+            new ContractTermLifecycleDispatcher([hook], new TenantModuleService(db, new MemoryCache(new MemoryCacheOptions()))));
+        Bind(controller, tenantId);
+        const string header = "EmployeeCode,ContractNumber,ContractType,Status,StartDate,EndDate,BasicSalary,CurrencyCode\n";
+
+        var result = await controller.Commit(new MigrationPackageRequest("ra-import", new Dictionary<string, string>
+        {
+            ["contracts"] = header + "E-1,CON-REVIEW,Employment,Active,2026-01-01,2027-06-30,9000,SAR\n"
+                                   + "E-1,CON-NEW,Employment,Active,2027-01-01,2027-12-31,9000,SAR\n",
+        }), default);
+
+        var dto = (MigrationReconciliationDto)result.Result.Should().BeOfType<OkObjectResult>().Subject.Value!;
+        dto.Errors.Should().ContainSingle(e => e.Contains("open renewal review"));
+        hook.Calls.Should().Be(1, "only the newly imported Active contract is activated");
+        (await db.EmployeeContracts.AsNoTracking().SingleAsync(c => c.Id == underReview.Id)).EndDate.Should().Be(new DateOnly(2026, 12, 31));
+    }
+
     private sealed class RecordingHook : IContractTermLifecycle
     {
         public int Calls { get; private set; }
+        public List<string> Ended { get; } = [];
         public Task OnActivatedAsync(EmployeeContract contract, CancellationToken ct) { Calls++; return Task.CompletedTask; }
+        public Task OnEndedAsync(EmployeeContract contract, string reason, CancellationToken ct) { Ended.Add(reason); return Task.CompletedTask; }
+    }
+
+    [Fact]
+    public async Task EndingATerm_RunsTheEndHook_ForExpiryTerminationAndSupersede()
+    {
+        await using var db = InMemory();
+        var tenantId = Guid.NewGuid();
+        db.TenantFeatureFlags.Add(new TenantFeatureFlag { TenantId = tenantId, FeatureKey = FeatureKeys.ReleaseA, IsEnabled = true });
+        EmployeeContract Active(string number) => new()
+        {
+            TenantId = tenantId, CompanyId = Guid.NewGuid(), EmployeeId = Guid.NewGuid(), ContractNumber = number, Status = "Active",
+            StartDate = new DateOnly(2025, 1, 1), EndDate = new DateOnly(2025, 12, 31),
+        };
+        var expiring = Active("CON-E");
+        var terminating = Active("CON-T");
+        var superseded = Active("CON-S");
+        db.EmployeeContracts.AddRange(expiring, terminating, superseded);
+        await db.SaveChangesAsync();
+        var hook = new RecordingHook();
+        var controller = Bind(new ContractsController(db,
+            new ContractTermLifecycleDispatcher([hook], new TenantModuleService(db, new MemoryCache(new MemoryCacheOptions())))), tenantId);
+
+        (await controller.UpdateStatus(expiring.Id, new UpdateContractStatusRequest("Expired", null), default)).Should().BeOfType<OkObjectResult>();
+        (await controller.UpdateStatus(terminating.Id, new UpdateContractStatusRequest("Terminated", null), default)).Should().BeOfType<OkObjectResult>();
+        await controller.Supersede(superseded.Id, new CreateContractRequest(superseded.EmployeeId, null, null, null, new DateOnly(2025, 6, 1),
+            null, 9000m, null, null, null, null), default);
+
+        hook.Ended.Should().Equal(ContractEndReasons.Expired, ContractEndReasons.Terminated, ContractEndReasons.Superseded);
+        var dispatcher = new ContractTermLifecycleDispatcher([hook], new TenantModuleService(db, new MemoryCache(new MemoryCacheOptions())));
+        await dispatcher.Invoking(d => d.OnEndedAsync(expiring, "Retired", default)).Should().ThrowAsync<ArgumentOutOfRangeException>();
     }
 
     private static T Bind<T>(T controller, Guid tenantId) where T : ControllerBase

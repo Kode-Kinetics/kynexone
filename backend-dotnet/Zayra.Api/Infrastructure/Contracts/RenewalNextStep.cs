@@ -58,6 +58,8 @@ public static class RenewalBadgeCodes
     public const string QiwaOverdue = "QiwaOverdue";
     public const string ExpiredNoOutcome = "ExpiredNoOutcome";
     public const string OffboardingOpen = "OffboardingOpen";
+    /// <summary>The contract was marked Expired while its review is still open: it continues by law until R6's holdover (T22).</summary>
+    public const string ExpiredHoldoverPending = "ExpiredHoldoverPending";
 }
 
 /// <param name="Step">A <see cref="RenewalStepCodes"/> value.</param>
@@ -165,7 +167,7 @@ public static class RenewalNextStep
     /// contract; <paramref name="rules"/> gives the Art. 55 limits the meter is read against.
     /// </summary>
     public static IReadOnlyList<RenewalBadge> Badges(ContractRenewalCase c, DateOnly today, short? renewalNumber, DateOnly? chainStartedOn,
-        RenewalRuleSet rules, bool offboardingOpen)
+        RenewalRuleSet rules, bool offboardingOpen, bool contractExpired = false)
     {
         var badges = new List<RenewalBadge>();
         if (c.WorkerNationalityClass == WorkerNationalityClasses.Saudi && renewalNumber is { } renewals && chainStartedOn is { } chainStart)
@@ -197,6 +199,8 @@ public static class RenewalNextStep
             badges.Add(new RenewalBadge(RenewalBadgeCodes.ExpiredNoOutcome, Empty));
         if (offboardingOpen)
             badges.Add(new RenewalBadge(RenewalBadgeCodes.OffboardingOpen, Empty));
+        if (contractExpired && !RenewalStates.IsTerminal(c.State))
+            badges.Add(new RenewalBadge(RenewalBadgeCodes.ExpiredHoldoverPending, Empty));
         return badges;
     }
 

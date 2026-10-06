@@ -100,6 +100,21 @@ public class EmployeeContract : ITenantOwned, ICompanyScopedOperational
 
     /// <summary>Set on a provisional successor term written by the holdover job. See <see cref="ProvisionalBases"/>.</summary>
     public string? ProvisionalBasis { get; set; }
+
+    /// <summary>
+    /// Where <see cref="RenewalNumber"/> / <see cref="ChainStartedOn"/> came from (R0b): <c>Derived</c> by the chain census or
+    /// the activation stamp from the contract rows, or <c>Recorded</c> by HR (chain confirm). NULL while unstamped. A
+    /// Derived term is re-derived when HR corrects an earlier term; a Recorded one is never overwritten. See <see cref="ChainSources"/>.
+    /// </summary>
+    public string? ChainSource { get; set; }
+}
+
+/// <summary>Value set of <c>employee_contracts.chain_source</c> (Release A R0b).</summary>
+public static class ChainSources
+{
+    public const string Derived = "Derived";
+    public const string Recorded = "Recorded";
+    public static readonly string[] All = [Derived, Recorded];
 }
 
 // ── Compliance Requirement ─────────────────────────────────────────────────────

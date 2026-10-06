@@ -177,10 +177,13 @@ public class R4RenewalRadarTests
 
     // ── Chain linker and stamper ───────────────────────────────────────────────────────────────
 
+    private static readonly Guid Masar = Guid.Parse("c0000000-0000-0000-0000-000000000001");
+    private static readonly Guid MasarLogistics = Guid.Parse("c0000000-0000-0000-0000-000000000002");
+
     private static ContractChainFacts Facts(Guid id, string status, string start, string? end, Guid? previous = null, int version = 1,
-        short? renewals = null, string? chainStart = null) =>
+        short? renewals = null, string? chainStart = null, Guid? company = null) =>
         new(id, status, DateOnly.Parse(start), end is null ? null : DateOnly.Parse(end), version, previous, null, renewals,
-            chainStart is null ? null : DateOnly.Parse(chainStart), null, DateTime.UtcNow);
+            chainStart is null ? null : DateOnly.Parse(chainStart), null, DateTime.UtcNow, company ?? Masar);
 
     [Fact]
     public void Linker_ChainsContiguousTerms_IncludingATermEndingOnThe30thAndTheNextStartingOnThe31st()
@@ -231,9 +234,20 @@ public class R4RenewalRadarTests
     [InlineData("", "Saudi", "Saudi")]
     [InlineData("NonSaudi", "Egyptian", "NonSaudi")]
     [InlineData("", "سعودي", "Saudi")]
+    [InlineData("", "KSA", "Saudi")]
+    [InlineData("", "Egyptian", "NonSaudi")]
+    [InlineData("", "PH", "NonSaudi")]
+    [InlineData("", "Pakistan", "NonSaudi")]
+    [InlineData("", "مصري", "NonSaudi")]
+    [InlineData("NonSaudi", "", "NonSaudi")]  // a declared class stands alone
     [InlineData("Saudi", "Egyptian", null)]   // contradiction → confirm
     [InlineData("", "Bahraini", null)]        // GCC national → confirm
     [InlineData("", "", null)]                // nothing on file → confirm
+    [InlineData("", "Saudi national", null)]  // not a recognised spelling → confirm, never guessed
+    [InlineData("", "Unknown", null)]
+    [InlineData("", "-", null)]
+    [InlineData("", "Suadi", null)]           // a typo is not Saudi and not "non-Saudi" either
+    [InlineData("NonSaudi", "Unknown", null)] // an unrecognised nationality beside a declaration is still a question
     public void NationalityClass_IsDerivedOnlyWhenTheRecordIsClear(string declared, string nationality, string? expected) =>
         WorkerNationality.ClassOf(declared, nationality).Should().Be(expected);
 
@@ -245,9 +259,9 @@ public class R4RenewalRadarTests
         var employee = new Employee { TenantId = tenantId, EmployeeCode = "E-1", FullName = "Ramon Dela Cruz", Nationality = "Filipino",
             JoiningDate = new DateTime(2025, 12, 1, 0, 0, 0, DateTimeKind.Utc), Status = "Active" };
         db.Employees.Add(employee);
-        var first = new EmployeeContract { TenantId = tenantId, EmployeeId = employee.PublicId, ContractNumber = "C-1", Status = "Expired",
+        var first = new EmployeeContract { TenantId = tenantId, CompanyId = Masar, EmployeeId = employee.PublicId, ContractNumber = "C-1", Status = "Expired",
             StartDate = new DateOnly(2025, 12, 1), EndDate = new DateOnly(2026, 11, 30) };
-        var second = new EmployeeContract { TenantId = tenantId, EmployeeId = employee.PublicId, ContractNumber = "C-2", Status = "Active",
+        var second = new EmployeeContract { TenantId = tenantId, CompanyId = Masar, EmployeeId = employee.PublicId, ContractNumber = "C-2", Status = "Active",
             StartDate = new DateOnly(2026, 12, 1), EndDate = new DateOnly(2027, 11, 30) };
         db.EmployeeContracts.AddRange(first, second);
         await db.SaveChangesAsync();
@@ -278,9 +292,9 @@ public class R4RenewalRadarTests
             JoiningDate = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc), Status = "Active" };
         db.Employees.Add(employee);
         db.EmployeeContracts.AddRange(
-            new EmployeeContract { TenantId = tenantId, EmployeeId = employee.PublicId, ContractNumber = "A", Status = "Expired",
+            new EmployeeContract { TenantId = tenantId, CompanyId = Masar, EmployeeId = employee.PublicId, ContractNumber = "A", Status = "Expired",
                 StartDate = new DateOnly(2024, 1, 1), EndDate = new DateOnly(2024, 12, 31) },
-            new EmployeeContract { TenantId = tenantId, EmployeeId = employee.PublicId, ContractNumber = "B", Status = "Active",
+            new EmployeeContract { TenantId = tenantId, CompanyId = Masar, EmployeeId = employee.PublicId, ContractNumber = "B", Status = "Active",
                 StartDate = new DateOnly(2025, 1, 1), EndDate = new DateOnly(2025, 12, 31) });
         await db.SaveChangesAsync();
 
@@ -346,17 +360,21 @@ public class R4RenewalRadarTests
         (await db.ContractRenewalCases.SingleAsync()).State.Should().Be(RenewalStates.OnHold);
 
         (await controller.Hold(c.Id, new RenewalHoldRequest(RenewalHoldReasons.Abroad, null), default))
-            .Should().BeOfType<ConflictObjectResult>("OnHold → OnHold is not a transition");
+            .Should().BeAssignableTo<ObjectResult>().Which.StatusCode.Should().Be(409, "OnHold → OnHold is not a transition");
         (await controller.Release(c.Id, default)).Should().BeOfType<OkObjectResult>();
         var released = await db.ContractRenewalCases.SingleAsync();
         (released.State, released.HoldReason).Should().Be((RenewalStates.Open, (string?)null));
 
         (await controller.Cancel(c.Id, new RenewalCancelRequest(" "), default)).Should().BeOfType<BadRequestObjectResult>();
+        (await controller.Cancel(c.Id, new RenewalCancelRequest("Employee transferred to the sister company"), default))
+            .Should().BeAssignableTo<ObjectResult>().Which.StatusCode.Should().Be(409, "the contract is still in force: hold, do not cancel");
+        term.Status = "Terminated";
+        await db.SaveChangesAsync();
         (await controller.Cancel(c.Id, new RenewalCancelRequest("Employee transferred to the sister company"), default)).Should().BeOfType<OkObjectResult>();
         var cancelled = await db.ContractRenewalCases.SingleAsync();
         cancelled.State.Should().Be(RenewalStates.Cancelled);
         cancelled.ClosedAt.Should().NotBeNull();
-        (await controller.Release(c.Id, default)).Should().BeOfType<ConflictObjectResult>("a closed case never moves again");
+        (await controller.Release(c.Id, default)).Should().BeAssignableTo<ObjectResult>().Which.StatusCode.Should().Be(409, "a closed case never moves again");
 
         (await db.ComplianceAuditLogs.Where(a => a.EntityId == c.Id.ToString()).Select(a => a.Action).ToListAsync())
             .Should().Equal("Held", "Released", "Cancelled");
@@ -398,7 +416,7 @@ public class R4RenewalRadarTests
         opened.State = RenewalStates.OfferInPreparation;
         await db.SaveChangesAsync();
         (await controller.ConfirmChain(term.Id, new ChainConfirmRequest(null, new DateOnly(2023, 2, 1), WorkerNationalityClasses.Saudi, true, null, 1),
-            opener, default)).Result.Should().BeOfType<ConflictObjectResult>();
+            opener, default)).Result.Should().BeAssignableTo<ObjectResult>().Which.StatusCode.Should().Be(409);
     }
 
     // ── Permissions ────────────────────────────────────────────────────────────────────────────

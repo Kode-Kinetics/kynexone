@@ -92,6 +92,25 @@ export interface RenewalUnopened {
   blockReason: BlockReason | null;
 }
 
+export interface RenewalClosedReview {
+  contractId: string;
+  contractNumber: string;
+  employee: RenewalEmployee | null;
+  endDate: string;
+  caseId: string;
+  caseState: string;
+  closedAt: string | null;
+}
+
+/** Every due Active fixed-term contract counted once: withOpenReview + withoutReview + withClosedReviewOnly = dueActiveContracts. */
+export interface RenewalReconciliation {
+  dueActiveContracts: number;
+  withOpenReview: number;
+  withoutReview: number;
+  withClosedReviewOnly: number;
+  notYetDue: number;
+}
+
 export interface RenewalExceptionTile {
   count: number;
   caseIds: string[];
@@ -100,14 +119,18 @@ export interface RenewalExceptionTile {
 export interface RenewalRadar {
   today: string;
   days: number;
+  openLeadDays: number;
   buckets: RenewalBucket[];
+  reconciliation: RenewalReconciliation;
   exceptions: {
     expiringWithoutCase: RenewalUnopened[];
+    activeWithoutOpenReview: RenewalClosedReview[];
     needsConfirmation: RenewalExceptionTile;
     noticeDatePassed: RenewalExceptionTile;
     qiwaOverdue: RenewalExceptionTile;
     art55Threshold: RenewalExceptionTile;
     expiredNoOutcome: RenewalExceptionTile;
+    expiredHoldoverPending: RenewalExceptionTile;
   };
   items: RenewalCaseItem[];
 }

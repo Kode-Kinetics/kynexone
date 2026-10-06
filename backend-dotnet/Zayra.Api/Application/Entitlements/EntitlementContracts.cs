@@ -49,6 +49,11 @@ public sealed record EmployeePackage(
 /// <param name="DependantsCovered">How many of the employee's recorded dependants this line covers today.</param>
 /// <param name="GradeStandardDiffers">The grade's standard now differs from the frozen value — "reviewed at renewal".</param>
 /// <param name="ReasonCode">Why the line is not eligible or not offered, as a block code; NULL when it is.</param>
+/// <param name="MaxOutstandingAmount">Facility only: the most that may be owed at once (e.g. one housing advance).</param>
+/// <param name="ResolvedAmount">The cash figure the line comes to today, for a Facility or a rate (e.g. 3 × housing = SAR 6,000;
+/// 25% of basic = SAR 2,000). NULL when the line is not a sum of money.</param>
+/// <param name="EligibleFrom">When an ineligible line becomes eligible by a criterion (service months, end of probation);
+/// NULL when eligible now or never by date.</param>
 public sealed record PackageLine(
     string ComponentCode,
     string Class,
@@ -70,7 +75,26 @@ public sealed record PackageLine(
     Guid? EmployeeEntitlementId,
     bool IsCompanyOverride,
     bool GradeStandardDiffers,
-    string? ReasonCode);
+    string? ReasonCode,
+    decimal? MaxOutstandingAmount,
+    decimal? ResolvedAmount,
+    DateOnly? EligibleFrom);
+
+/// <summary>
+/// The one rule for comparing rates (plan §1.2, round 2). Grade cells and frozen rows store <c>rate</c> as numeric(9,4);
+/// the salary row stores housing/transport rates as numeric(9,6). Every comparison across them — notably
+/// <see cref="PackageLine.GradeStandardDiffers"/> — rounds both sides to 4 decimal places first, so 0.250000 and 0.2500
+/// are the same rate and storage precision never reads as a difference.
+/// </summary>
+public static class EntitlementRates
+{
+    public const int ComparisonScale = 4;
+
+    public static decimal? Normalise(decimal? rate) =>
+        rate is { } r ? Math.Round(r, ComparisonScale, MidpointRounding.AwayFromZero) : null;
+
+    public static bool Same(decimal? a, decimal? b) => Normalise(a) == Normalise(b);
+}
 
 /// <summary>Value set of <see cref="PackageLine.Source"/>.</summary>
 public static class PackageLineSources
@@ -180,13 +204,28 @@ public static class RenewalLineActions
 }
 
 /// <summary>
-/// Called when a contract term becomes Active (ContractsController.UpdateStatus → Active), inside the same unit
-/// of work, only for tenants with the <c>release_a</c> flag on. Registered as <c>IEnumerable</c>: R2 freezes
-/// the package, R4 stamps the chain. Implementations add entities to the context; they never SaveChanges.
+/// Called when a contract term starts or stops being the term in force, inside the same unit of work, only for
+/// tenants with the <c>release_a</c> flag on. Registered as <c>IEnumerable</c>: R2 freezes / closes the package, R4
+/// stamps the chain and cancels an open case (T21). Implementations add or change entities; they never SaveChanges.
+/// Callers: ContractsController (UpdateStatus, Supersede) and the migration import of contracts.
 /// </summary>
 public interface IContractTermLifecycle
 {
+    /// <summary>The term became Active (UpdateStatus → Active, or imported as / changed to Active).</summary>
     Task OnActivatedAsync(EmployeeContract contract, CancellationToken ct);
+
+    /// <summary>An Active term ended: <paramref name="reason"/> is a <see cref="ContractEndReasons"/> value.</summary>
+    Task OnEndedAsync(EmployeeContract contract, string reason, CancellationToken ct);
+}
+
+/// <summary>Why an Active term stopped being in force.</summary>
+public static class ContractEndReasons
+{
+    public const string Terminated = "Terminated";
+    public const string Expired = "Expired";
+    public const string Superseded = "Superseded";
+    public const string Separated = "Separated";
+    public static readonly string[] All = [Terminated, Expired, Superseded, Separated];
 }
 
 /// <summary>The four renewal deadlines of an expiring term, from statutory_rules (tenant row overrides platform). Slice R4.</summary>

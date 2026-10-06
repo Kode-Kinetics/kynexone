@@ -324,8 +324,10 @@ public class NotificationService : INotificationService
         if (channel == NotificationChannels.Email)
         {
             // Email is ON by default — that is exactly what the code did before this pod, and
-            // turning it off silently would be a regression. An employee can opt out.
-            if (recipient.EmployeeId.HasValue && preference is { EmailEnabled: false }) return null;
+            // turning it off silently would be a regression. An employee can opt out — except of an
+            // account-security notice ("security.*" codes only), which must reach the account owner.
+            if (recipient.EmployeeId.HasValue && preference is { EmailEnabled: false }
+                && !NotificationCategories.IsSecurityEvent(request.EventCode)) return null;
 
             var destination = recipient.Email;
             var (subject, body, unresolved) = RenderForChannel(channel, request, template, templates);

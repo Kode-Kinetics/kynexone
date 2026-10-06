@@ -77,16 +77,32 @@ public sealed record RenewalUnopenedDto(Guid ContractId, string ContractNumber, 
 /// <summary>An exception tile: how many, and exactly which records (drill-down).</summary>
 public sealed record RenewalExceptionDto(int Count, IReadOnlyList<Guid> CaseIds);
 
+/// <summary>A due Active fixed-term contract whose review is CLOSED while the contract is still in force.</summary>
+public sealed record RenewalClosedReviewDto(Guid ContractId, string ContractNumber, RenewalEmployeeDto? Employee, DateOnly EndDate, Guid CaseId,
+    string CaseState, DateTime? ClosedAt);
+
+/// <summary>
+/// Every due Active fixed-term contract ending in the window, counted once: with an open review (buckets), without any
+/// review (<c>expiringWithoutCase</c>), or with only a closed one (<c>activeWithoutOpenReview</c>). The three always add
+/// up to <see cref="DueActiveContracts"/>; contracts whose review opens later are counted apart.
+/// </summary>
+public sealed record RenewalReconciliationDto(int DueActiveContracts, int WithOpenReview, int WithoutReview, int WithClosedReviewOnly,
+    int NotYetDue);
+
 public sealed record RenewalExceptionsDto(
     IReadOnlyList<RenewalUnopenedDto> ExpiringWithoutCase,
+    IReadOnlyList<RenewalClosedReviewDto> ActiveWithoutOpenReview,
     RenewalExceptionDto NeedsConfirmation,
     RenewalExceptionDto NoticeDatePassed,
     RenewalExceptionDto QiwaOverdue,
     RenewalExceptionDto Art55Threshold,
-    RenewalExceptionDto ExpiredNoOutcome);
+    RenewalExceptionDto ExpiredNoOutcome,
+    RenewalExceptionDto ExpiredHoldoverPending);
 
-public sealed record RenewalRadarDto(DateOnly Today, int Days, IReadOnlyList<RenewalBucketDto> Buckets, RenewalExceptionsDto Exceptions,
-    IReadOnlyList<RenewalCaseItemDto> Items);
+/// <param name="OpenLeadDays">How many days before its end a contract with the default notice gets its review (the
+/// tenant's rules): the dashboard's default window and the number its subtitle states.</param>
+public sealed record RenewalRadarDto(DateOnly Today, int Days, int OpenLeadDays, IReadOnlyList<RenewalBucketDto> Buckets, RenewalExceptionsDto Exceptions,
+    IReadOnlyList<RenewalCaseItemDto> Items, RenewalReconciliationDto Reconciliation);
 
 /// <summary>
 /// The renewal read side. Runs on the request's context, so the tenant and company-scope filters apply on top of the
@@ -100,11 +116,14 @@ public static class RenewalCaseReadModel
     public static readonly int[] BucketEdges = [30, 60, 90, 120];
 
     /// <summary>The dashboard: open cases ending within <paramref name="days"/> (and every overdue one), buckets, exceptions.</summary>
-    public static async Task<RenewalRadarDto> RadarAsync(ZayraDbContext db, RenewalCaseOpener opener, Guid tenantId, Guid? companyId, int days,
+    /// <param name="days">The window; NULL = the tenant's open lead.</param>
+    public static async Task<RenewalRadarDto> RadarAsync(ZayraDbContext db, RenewalCaseOpener opener, Guid tenantId, Guid? companyId, int? days,
         DateOnly today, CancellationToken ct)
     {
         var rules = await RenewalRuleSet.LoadAsync(db, tenantId, today, ct);
-        var horizon = today.AddDays(days);
+        var openLead = RenewalDeadlineCalculator.DefaultOpenLeadDays(rules);
+        var window = days ?? openLead;
+        var horizon = today.AddDays(window);
         var cases = await db.ContractRenewalCases.AsNoTracking()
             .Where(c => c.TenantId == tenantId && c.ClosedAt == null && c.ExpiringEndDate <= horizon
                         && (companyId == null || c.CompanyId == companyId))
@@ -114,9 +133,9 @@ public static class RenewalCaseReadModel
 
         var buckets = new List<RenewalBucketDto>();
         var from = 0;
-        foreach (var edge in BucketEdges.Where(e => e - 30 < days))
+        foreach (var edge in BucketEdges.Where(e => e - 30 < window))
         {
-            var to = Math.Min(edge, days);
+            var to = Math.Min(edge, window);
             var ids = items.Where(i => i.DaysLeft >= from && i.DaysLeft <= to).Select(i => i.CaseId).ToList();
             buckets.Add(new RenewalBucketDto($"{from}-{to}", from, to, ids.Count, ids));
             from = edge + 1;
@@ -129,30 +148,49 @@ public static class RenewalCaseReadModel
         }
         bool Has(RenewalCaseItemDto i, string badge) => i.Badges.Any(b => b.Code == badge);
 
-        var withCase = (await db.ContractRenewalCases.AsNoTracking()
-            .Where(c => c.TenantId == tenantId).Select(c => c.ExpiringContractId).ToListAsync(ct)).ToHashSet();
-        var unopened = new List<RenewalUnopenedDto>();
-        var candidates = (await opener.CandidatesAsync(tenantId, companyId, horizon, tracked: false, ct))
-            .Where(c => !withCase.Contains(c.Contract.Id)).ToList();
+        // Every Active fixed-term contract in the window, with ALL its cases (open or closed), so each lands somewhere.
+        var caseRows = await db.ContractRenewalCases.AsNoTracking()
+            .Where(c => c.TenantId == tenantId)
+            .Select(c => new { c.Id, c.ExpiringContractId, c.State, c.ClosedAt })
+            .ToListAsync(ct);
+        var casesByContract = caseRows.ToLookup(c => c.ExpiringContractId);
+        var candidates = await opener.CandidatesAsync(tenantId, companyId, horizon, tracked: false, ct);
         var employees = await EmployeesAsync(db, tenantId, candidates.Select(c => c.Contract.EmployeeId), ct);
+        var unopened = new List<RenewalUnopenedDto>();
+        var closedOnly = new List<RenewalClosedReviewDto>();
+        int due = 0, withOpen = 0, notYetDue = 0;
         foreach (var candidate in candidates)
         {
+            var contract = candidate.Contract;
             var plan = RenewalCaseOpener.Plan(candidate, rules, today);
-            if (plan.SkipReason is RenewalOpenSkipReasons.NotDue or RenewalOpenSkipReasons.SuccessorOnFile) continue;
+            var all = casesByContract[contract.Id].ToList();
+            if (all.Any(c => c.ClosedAt == null)) { due++; withOpen++; continue; }
+            if (plan.SkipReason == RenewalOpenSkipReasons.NotDue) { notYetDue++; continue; }
+            due++;
+            var employee = employees.GetValueOrDefault(contract.EmployeeId);
+            if (all.Count > 0)
+            {
+                var last = all.OrderByDescending(c => c.ClosedAt).First();
+                closedOnly.Add(new RenewalClosedReviewDto(contract.Id, contract.ContractNumber, employee, contract.EndDate!.Value, last.Id, last.State,
+                    last.ClosedAt));
+                continue;
+            }
             var block = plan.BlockCode is { } code && ReleaseABlockReasons.All.TryGetValue(code, out var reason) ? reason : null;
-            unopened.Add(new RenewalUnopenedDto(candidate.Contract.Id, candidate.Contract.ContractNumber,
-                employees.GetValueOrDefault(candidate.Contract.EmployeeId), candidate.Contract.EndDate!.Value, plan.Deadlines!.OpensOn,
+            unopened.Add(new RenewalUnopenedDto(contract.Id, contract.ContractNumber, employee, contract.EndDate!.Value, plan.Deadlines!.OpensOn,
                 plan.SkipReason ?? AwaitingDailyRun, block));
         }
 
         var exceptions = new RenewalExceptionsDto(
             unopened.OrderBy(u => u.EndDate).ToList(),
+            closedOnly.OrderBy(u => u.EndDate).ToList(),
             Tile(i => i.State == RenewalStates.NeedsConfirmation || Has(i, RenewalBadgeCodes.ChainUnconfirmed)),
             Tile(i => Has(i, RenewalBadgeCodes.NoticeDatePassed)),
             Tile(i => Has(i, RenewalBadgeCodes.QiwaOverdue)),
             Tile(i => Has(i, RenewalBadgeCodes.Art55Threshold)),
-            Tile(i => Has(i, RenewalBadgeCodes.ExpiredNoOutcome)));
-        return new RenewalRadarDto(today, days, buckets, exceptions, items);
+            Tile(i => Has(i, RenewalBadgeCodes.ExpiredNoOutcome)),
+            Tile(i => Has(i, RenewalBadgeCodes.ExpiredHoldoverPending)));
+        return new RenewalRadarDto(today, window, openLead, buckets, exceptions, items,
+            new RenewalReconciliationDto(due, withOpen, unopened.Count, closedOnly.Count, notYetDue));
     }
 
     /// <summary>The full DTO of one case, or NULL when it is not visible to the caller.</summary>
@@ -183,7 +221,7 @@ public static class RenewalCaseReadModel
         var contractIds = cases.Select(c => c.ExpiringContractId).ToList();
         var contracts = await db.EmployeeContracts.AsNoTracking()
             .Where(c => c.TenantId == tenantId && contractIds.Contains(c.Id))
-            .Select(c => new { c.Id, c.ContractNumber, c.RenewalNumber, c.ChainStartedOn })
+            .Select(c => new { c.Id, c.ContractNumber, c.RenewalNumber, c.ChainStartedOn, c.Status })
             .ToDictionaryAsync(c => c.Id, ct);
         var employees = await EmployeesAsync(db, tenantId, cases.Select(c => c.EmployeeId), ct);
         var companyIds = cases.Select(c => c.CompanyId!.Value).Distinct().ToList();
@@ -202,7 +240,8 @@ public static class RenewalCaseReadModel
             contracts.TryGetValue(c.ExpiringContractId, out var contract);
             var employee = employees.GetValueOrDefault(c.EmployeeId) ?? new RenewalEmployeeDto(0, c.EmployeeId, "", null, "");
             var leaving = offboarding.Contains(employee.Id);
-            var badges = RenewalNextStep.Badges(c, today, contract?.RenewalNumber, contract?.ChainStartedOn, rules, leaving);
+            var badges = RenewalNextStep.Badges(c, today, contract?.RenewalNumber, contract?.ChainStartedOn, rules, leaving,
+                contractExpired: contract?.Status == "Expired");
             var blockReasons = badges.Select(b => b.BlockCode).OfType<string>().Distinct()
                 .Select(code => ReleaseABlockReasons.All[code]).ToList();
             list.Add(new RenewalCaseItemDto(

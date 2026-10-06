@@ -987,7 +987,7 @@ file sealed class NullLeaverMfaService : Zayra.Api.Application.Auth.IMfaService
     public Task<bool> DisableAsync(Guid userId, Guid tenantId, string code, CancellationToken ct) => throw new NotImplementedException();
     public Task<bool> AdminDisableAsync(Guid userId, Guid tenantId, Zayra.Api.Application.Auth.RequestContext context, CancellationToken ct) => throw new NotImplementedException();
     public Task<Zayra.Api.Application.Auth.MfaSetupInitDto> InitiatePlatformSetupAsync(Guid id, CancellationToken ct) => throw new NotImplementedException();
-    public Task<bool> VerifyPlatformSetupAsync(Guid id, Zayra.Api.Application.Auth.MfaVerifySetupRequest req, CancellationToken ct) => throw new NotImplementedException();
+    public Task<IReadOnlyList<string>?> VerifyPlatformSetupAsync(Guid id, Zayra.Api.Application.Auth.MfaVerifySetupRequest req, CancellationToken ct) => throw new NotImplementedException();
     public Task<string> CreatePlatformChallengeAsync(Guid id, string ip, CancellationToken ct) => throw new NotImplementedException();
     public Task<Zayra.Api.Models.PlatformUser?> VerifyPlatformChallengeAsync(string token, string code, CancellationToken ct) => throw new NotImplementedException();
     public Task<Zayra.Api.Models.PlatformUser?> CompletePlatformChallengeAsync(string token, string code, Zayra.Api.Application.Auth.RequestContext context, CancellationToken ct) => throw new NotImplementedException();

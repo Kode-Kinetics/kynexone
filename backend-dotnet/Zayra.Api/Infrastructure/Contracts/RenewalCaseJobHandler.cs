@@ -18,7 +18,7 @@ public sealed record RenewalCasePayload(DateOnly Today);
 /// with the checkpoint), so a crash or retry resumes without repeating finished work:
 /// <list type="number">
 /// <item><c>census</c> — the chain census (<see cref="ContractChainCensus"/>).</item>
-/// <item><c>reconcile:{case}</c> — a case whose expiring contract was terminated, superseded or deleted is cancelled
+/// <item><c>reconcile:{case}</c> — a case whose expiring contract was terminated, superseded or deleted is cancelled (an EXPIRED one is left for R6's holdover)
 ///   (T21) with an audit row; one whose end date changed is re-baselined with an audit row.</item>
 /// <item><c>open:{contract}</c> — T1 for every fixed-term term whose open date has arrived (UNIQUE makes it
 ///   exactly once; <see cref="RenewalCaseOpener"/>).</item>
@@ -172,10 +172,7 @@ public sealed class RenewalCaseJobHandler : IBackgroundJobHandler
         var c = await db.ContractRenewalCases.FirstOrDefaultAsync(x => x.TenantId == context.TenantId && x.Id == caseId, ct);
         if (c is null || RenewalStates.IsTerminal(c.State)) return;
         var from = c.State;
-        var transition = RenewalStateMachine.EnsureCanTransition(from, RenewalStates.Cancelled);
-        c.State = RenewalStates.Cancelled;
-        c.HoldReason = null;
-        c.ClosedAt = DateTime.UtcNow;
+        var transition = RenewalCaseTransitions.Cancel(c, DateTime.UtcNow);
         db.ComplianceAuditLogs.Add(RenewalCaseOpener.Audit(context.TenantId, c, "Cancelled", null, SystemActor,
             new { transition = transition.Id, from, reason = "ContractEnded" }));
     }

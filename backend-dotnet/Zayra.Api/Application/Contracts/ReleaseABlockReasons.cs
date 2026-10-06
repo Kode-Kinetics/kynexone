@@ -39,6 +39,17 @@ public static class ReleaseABlockReasons
     public const string ApplyPayrollPeriodProcessed = "APPLY_PAYROLL_PERIOD_PROCESSED";
     public const string LoanInstalmentOver10PctNoConsent = "LOAN_INSTALMENT_OVER_10PCT_NO_CONSENT";
     public const string DeductionsOverHalfWage = "DEDUCTIONS_OVER_HALF_WAGE";
+    // Round 2 (review of PR #189)
+    public const string EntitlementNotEligibleCriteria = "ENTITLEMENT_NOT_ELIGIBLE_CRITERIA";
+    public const string EntitlementNotOfferedByCompany = "ENTITLEMENT_NOT_OFFERED_BY_COMPANY";
+    public const string RenewalOfferStale = "RENEWAL_OFFER_STALE";
+    public const string ApplyQiwaEvidenceMissing = "APPLY_QIWA_EVIDENCE_MISSING";
+    public const string RenewalNoticeServedLate = "RENEWAL_NOTICE_SERVED_LATE";
+    public const string RenewalBatchNotFastLane = "RENEWAL_BATCH_NOT_FAST_LANE";
+    // R4 review (PR #191)
+    public const string RenewalContractStillActive = "RENEWAL_CONTRACT_STILL_ACTIVE";
+    public const string RenewalCaseChanged = "RENEWAL_CASE_CHANGED";
+    public const string RenewalCaseInProgress = "RENEWAL_CASE_IN_PROGRESS";
 
     private const string HrManager = "HR Manager";
     private const string HrDirector = "HR Director";
@@ -179,6 +190,69 @@ public static class ReleaseABlockReasons
             "Defer or reduce a deduction so the total stays within the limit.",
             "أجّل استقطاعاً أو خفّضه ليبقى المجموع ضمن الحد.",
             PayrollManager),
+        new BlockReason(EntitlementNotEligibleCriteria,
+            "Not eligible yet", "غير مؤهل بعد",
+            "This benefit applies only after a set number of months of service, after probation, or to a nationality group with a recorded legal basis, and the employee does not meet that condition yet.",
+            "تُستحق هذه الميزة بعد عدد محدد من أشهر الخدمة أو بعد انتهاء فترة التجربة أو لفئة جنسية لها سند نظامي مسجّل، والموظف لا يستوفي الشرط بعد.",
+            "No action needed — the date it starts is shown. Change the condition in Benefits by grade if it is wrong.",
+            "لا يلزم أي إجراء، ويظهر تاريخ بدء الاستحقاق. عدّل الشرط في المزايا حسب الدرجة إذا كان غير صحيح.",
+            HrDirector),
+        new BlockReason(EntitlementNotOfferedByCompany,
+            "Not offered by this company", "غير مقدَّمة في هذه المنشأة",
+            "The employee's company has chosen not to offer this benefit, so it is not part of their package.",
+            "اختارت منشأة الموظف عدم تقديم هذه الميزة، لذلك ليست ضمن باقته.",
+            "If the company should offer it, switch it on for the company in Benefits by grade.",
+            "إذا كان يجب تقديمها، فعّلها للمنشأة في المزايا حسب الدرجة.",
+            HrDirector),
+        new BlockReason(RenewalOfferStale,
+            "The offer has changed", "تغيّر العرض",
+            "The renewal offer was changed after this version was sent or approved, so a response or approval of the earlier version no longer counts.",
+            "تم تعديل عرض التجديد بعد إرسال هذه النسخة أو اعتمادها، لذلك لم يعد الرد أو الاعتماد على النسخة السابقة معتبراً.",
+            "Review the current offer and respond to, or approve, that version.",
+            "راجع العرض الحالي ثم رُدّ عليه أو اعتمده.",
+            HrManager),
+        new BlockReason(ApplyQiwaEvidenceMissing,
+            "Qiwa approval not evidenced", "لم يُثبت اعتماد قوى",
+            "The new contract terms can be applied only after the Qiwa approval has been recorded with evidence and checked by a second person.",
+            "لا تُطبَّق شروط العقد الجديدة إلا بعد تسجيل اعتماد قوى بمستند وتحقق شخص آخر منه.",
+            "Upload the Qiwa approval evidence and ask another HR user to verify it.",
+            "ارفع مستند اعتماد قوى واطلب من مستخدم آخر في الموارد البشرية التحقق منه.",
+            HrManager),
+        new BlockReason(RenewalNoticeServedLate,
+            "Notice served too late", "تم الإشعار بعد الموعد",
+            "A non-renewal notice served after the notice date does not prevent the contract renewing on its current terms (Article 74(2)).",
+            "إشعار عدم التجديد بعد موعد الإشعار لا يمنع تجدد العقد بشروطه الحالية (المادة 74 فقرة 2).",
+            "Renew the contract, or take legal advice before ending it early (Article 77).",
+            "جدّد العقد، أو استشر الشؤون القانونية قبل إنهائه مبكراً (المادة 77).",
+            HrManager),
+        new BlockReason(RenewalBatchNotFastLane,
+            "Not eligible for the quick renewal", "غير مؤهل للتجديد السريع",
+            "Only an unchanged renewal with no hold, no dispute, no open issue and no exit in progress can be renewed in a batch.",
+            "لا يُجدَّد ضمن مجموعة إلا العقد الذي يُجدَّد دون تغيير ودون تعليق أو نزاع أو ملاحظة مفتوحة أو إنهاء خدمة جارٍ.",
+            "Review this contract on its own renewal page.",
+            "راجع هذا العقد في صفحة التجديد الخاصة به.",
+            HrManager),
+        new BlockReason(RenewalContractStillActive,
+            "The contract is still in force", "العقد ما زال سارياً",
+            "A renewal review can be cancelled only once its contract has ended. While the contract is in force its review must stay visible, because the renewal deadlines keep running.",
+            "لا تُلغى مراجعة التجديد إلا بعد انتهاء عقدها. وما دام العقد سارياً يجب أن تبقى المراجعة ظاهرة لأن مواعيد التجديد مستمرة.",
+            "Put the review on hold instead, or end the contract first.",
+            "علّق المراجعة بدلاً من ذلك، أو أنهِ العقد أولاً.",
+            HrManager),
+        new BlockReason(RenewalCaseChanged,
+            "The review changed meanwhile", "تغيّرت المراجعة في الأثناء",
+            "Someone else changed this renewal review, or its contract, at the same time, so this change was not saved.",
+            "قام شخص آخر بتعديل مراجعة التجديد أو عقدها في الوقت نفسه، لذلك لم يُحفظ هذا التعديل.",
+            "Reload the review and try again.",
+            "أعد تحميل المراجعة وحاول مرة أخرى.",
+            HrManager),
+        new BlockReason(RenewalCaseInProgress,
+            "The renewal review has started", "بدأت مراجعة التجديد",
+            "A renewal decision is already being prepared from this contract history, so the history cannot be changed underneath it.",
+            "يجري إعداد قرار التجديد بناءً على سجل العقود هذا، لذلك لا يمكن تعديل السجل أثناء ذلك.",
+            "Cancel or finish the review, then correct the history.",
+            "ألغِ المراجعة أو أكملها، ثم صحّح السجل.",
+            HrManager),
     }.ToDictionary(r => r.Code, StringComparer.Ordinal);
 
     /// <summary>The catalogue entry for a code. Throws for an unknown code: an unexplained refusal is a defect.</summary>

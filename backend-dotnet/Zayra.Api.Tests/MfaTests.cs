@@ -100,7 +100,7 @@ public class MfaTests
     {
         var (_, totp, _) = MakeServices();
         var secret = totp.GenerateBase32Secret();
-        var uri = totp.GenerateProvisioningUri("user@test.com", "Zayra HRM", secret);
+        var uri = totp.GenerateProvisioningUri("user@test.com", "KynexOne", secret);
         Assert.StartsWith("otpauth://totp/", uri);
         Assert.Contains("secret=", uri);
         Assert.Contains("issuer=", uri);

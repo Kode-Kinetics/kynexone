@@ -1,5 +1,7 @@
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Compliance;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
@@ -10,11 +12,11 @@ public static class ChainLinkKinds
 {
     /// <summary>The first term of the chain: renewal_number 0, the chain starts on its start date.</summary>
     public const string Original = "Original";
-    /// <summary>Starts the day after an earlier term ended: renewal_number + 1, same chain start (Art. 56).</summary>
+    /// <summary>Starts the day after an earlier term of the same employer ended: renewal_number + 1, same chain start (Art. 56).</summary>
     public const string Renewal = "Renewal";
-    /// <summary>A new version of the same term (supersede inside the term): same renewal number and chain start.</summary>
+    /// <summary>A new version of the same term (supersede inside the term, ending no later): same renewal number and chain start.</summary>
     public const string Amendment = "Amendment";
-    /// <summary>HR stated the history (chain/confirm); kept as recorded.</summary>
+    /// <summary>HR stated the history (chain/confirm), or a value already on the row; kept as recorded.</summary>
     public const string Recorded = "Recorded";
     /// <summary>Could not be linked; nothing is assumed (case opens NeedsConfirmation).</summary>
     public const string Unconfirmed = "Unconfirmed";
@@ -25,10 +27,20 @@ public static class ChainGapReasons
 {
     /// <summary>An earlier term exists but this one does not start the day after it ended.</summary>
     public const string GapOrOverlap = "GapOrOverlap";
+    /// <summary>Another term in force covers this term's start date (a stray or duplicate row).</summary>
+    public const string Overlap = "Overlap";
+    /// <summary>A "new version" that ends later than the term it replaces: an extension is a renewal decision, not an amendment.</summary>
+    public const string ExtendsTerm = "ExtendsTerm";
+    /// <summary>The earlier term was with another employer (or names none): the chain is per employer (group transfer).</summary>
+    public const string CompanyChanged = "CompanyChanged";
     /// <summary>The earlier term itself is unconfirmed, so this one cannot be counted.</summary>
     public const string PredecessorUnconfirmed = "PredecessorUnconfirmed";
     /// <summary>The first term on file starts after the employee joined: earlier terms are not on file.</summary>
     public const string EarlierTermsNotOnFile = "EarlierTermsNotOnFile";
+    /// <summary>The first term on file starts before the employee's joining date: one of the two dates is wrong.</summary>
+    public const string StartsBeforeJoining = "StartsBeforeJoining";
+    /// <summary>The employee's joining date is not recorded, so the first term cannot be shown to be the original.</summary>
+    public const string JoiningDateUnknown = "JoiningDateUnknown";
     /// <summary>Two later terms both claim the same earlier term.</summary>
     public const string AmbiguousSuccessor = "AmbiguousSuccessor";
 }
@@ -45,10 +57,11 @@ public sealed record ContractChainFacts(
     short? RenewalNumber,
     DateOnly? ChainStartedOn,
     string? WorkerNationalityClass,
-    DateTime CreatedAtUtc)
+    DateTime CreatedAtUtc,
+    Guid? CompanyId = null)
 {
     public static ContractChainFacts Of(EmployeeContract c) => new(c.Id, c.Status, c.StartDate, c.EndDate, c.Version,
-        c.PreviousVersionId, c.RenewedFromContractId, c.RenewalNumber, c.ChainStartedOn, c.WorkerNationalityClass, c.CreatedAtUtc);
+        c.PreviousVersionId, c.RenewedFromContractId, c.RenewalNumber, c.ChainStartedOn, c.WorkerNationalityClass, c.CreatedAtUtc, c.CompanyId);
 }
 
 /// <summary>What the linker concludes for one term. NULL fields stay NULL on the row: nothing is assumed.</summary>
@@ -68,14 +81,36 @@ public sealed record ChainStamp(
 /// <summary>The worker's nationality class from the employee record, or NULL when it cannot be stated safely.</summary>
 public static class WorkerNationality
 {
+    // Demonyms for the countries of IsoReference (the reference list the product supports). Saudi and GCC are not here:
+    // Saudi goes through SaudiNationality, GCC is never classified automatically.
+    private static readonly Dictionary<string, string> Demonyms = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Egyptian"] = "EG", ["Jordanian"] = "JO", ["Lebanese"] = "LB", ["Iraqi"] = "IQ", ["Yemeni"] = "YE", ["Yemenite"] = "YE",
+        ["Syrian"] = "SY", ["Palestinian"] = "PS", ["Moroccan"] = "MA", ["Algerian"] = "DZ", ["Tunisian"] = "TN", ["Libyan"] = "LY",
+        ["Sudanese"] = "SD", ["Turkish"] = "TR", ["Indian"] = "IN", ["Pakistani"] = "PK", ["Bangladeshi"] = "BD", ["Sri Lankan"] = "LK",
+        ["Nepali"] = "NP", ["Nepalese"] = "NP", ["Filipino"] = "PH", ["Filipina"] = "PH", ["Philippine"] = "PH", ["Indonesian"] = "ID",
+        ["American"] = "US", ["British"] = "GB", ["Canadian"] = "CA", ["Australian"] = "AU", ["German"] = "DE", ["French"] = "FR",
+        ["Italian"] = "IT", ["Spanish"] = "ES", ["Dutch"] = "NL", ["Swiss"] = "CH", ["Chinese"] = "CN", ["Japanese"] = "JP",
+        ["Singaporean"] = "SG", ["Malaysian"] = "MY", ["South African"] = "ZA", ["Nigerian"] = "NG", ["Kenyan"] = "KE",
+        ["Ethiopian"] = "ET",
+        // Arabic demonyms of the largest expatriate groups in the Kingdom.
+        ["مصري"] = "EG", ["أردني"] = "JO", ["سوداني"] = "SD", ["يمني"] = "YE", ["سوري"] = "SY", ["هندي"] = "IN", ["باكستاني"] = "PK",
+        ["بنغلاديشي"] = "BD", ["فلبيني"] = "PH", ["إندونيسي"] = "ID", ["نيبالي"] = "NP", ["سريلانكي"] = "LK",
+    };
+
+    private static readonly HashSet<string> GccIso2 = new(StringComparer.OrdinalIgnoreCase) { "AE", "KW", "QA", "BH", "OM" };
+
     /// <summary>
-    /// Saudi / NonSaudi from the employee's declared Qiwa class and recorded nationality. NULL — "confirm it" — when
-    /// neither is recorded, when they disagree, or when the worker is a GCC national: GCC nationals have their own
-    /// treatment in several Saudi rules, so the class that Article 37 / 55 turns on is confirmed by HR, not guessed.
+    /// Saudi / NonSaudi from the employee's declared Qiwa class and recorded nationality. Saudi only through the shared
+    /// <see cref="SaudiNationality"/> normaliser; NonSaudi only for a RECOGNISED non-Saudi country (ISO code, the
+    /// reference country name or its demonym) or an explicit NonSaudi declaration. NULL — "HR confirms" — for anything
+    /// else: nothing recorded, an unrecognised value ("Unknown", "-", a typo), a contradiction between the two fields, or
+    /// a GCC national (GCC nationals have their own treatment in several Saudi rules). This stamp
+    /// (<c>worker_nationality_class</c>) is the single source Release A reads, so it is never guessed.
     /// </summary>
     public static string? ClassOf(string? declared, string? nationality)
     {
-        var fromDeclared = declared?.Trim().Replace("-", "").Replace(" ", "").ToUpperInvariant() switch
+        var fromDeclared = declared?.Trim().Replace("-", "").Replace(" ", "").Replace("_", "").ToUpperInvariant() switch
         {
             "SAUDI" => WorkerNationalityClasses.Saudi,
             "NONSAUDI" => WorkerNationalityClasses.NonSaudi,
@@ -84,27 +119,44 @@ public static class WorkerNationality
         string? fromNationality = null;
         if (!string.IsNullOrWhiteSpace(nationality))
         {
-            var gosi = GosiCalculationService.DeriveClassification(nationality);
-            if (gosi == GosiClassifications.GCC) return null;
-            fromNationality = gosi == GosiClassifications.Saudi ? WorkerNationalityClasses.Saudi : WorkerNationalityClasses.NonSaudi;
+            var iso = IsoOf(nationality);
+            if (SaudiNationality.IsSaudi(nationality)) fromNationality = WorkerNationalityClasses.Saudi;
+            else if (GosiCalculationService.DeriveClassification(nationality) == GosiClassifications.GCC || (iso is not null && GccIso2.Contains(iso)))
+                return null;
+            else if (iso is not null) fromNationality = WorkerNationalityClasses.NonSaudi;
+            else return null; // an unrecognised value ("Unknown", "-", a typo) is never read as either class
         }
         if (fromDeclared is not null && fromNationality is not null && fromDeclared != fromNationality) return null;
         return fromDeclared ?? fromNationality;
     }
+
+    /// <summary>The ISO-2 code of a recognised non-Saudi nationality (code, reference country name or demonym), else NULL.</summary>
+    public static string? IsoOf(string nationality)
+    {
+        var v = nationality.Trim();
+        if (CountryCodeStandard.NormalizeToIso2(v) is { } code) return code == "SA" ? null : code;
+        var byName = IsoReference.Countries.FirstOrDefault(c => string.Equals(c.Name, v, StringComparison.OrdinalIgnoreCase));
+        if (byName is not null) return byName.Code == "SA" ? null : byName.Code;
+        return Demonyms.TryGetValue(v, out var iso) ? iso : null;
+    }
 }
 
 /// <summary>
-/// The pure chain rule (plan §2 R4, rev 8.3.2 §6). Given every row of one employee's contracts it derives, for each
-/// TERM (a contract that was ever in force: Active, Expired, Terminated or Superseded), its place in the chain:
+/// The pure chain rule (plan §2 R4, rev 8.3.2 §6; corrected in the R4 review). Given every row of one employee's
+/// contracts it derives, for each TERM (a contract that was ever in force: Active, Expired, Terminated or Superseded),
+/// its place in the Article 55 chain. The chain is per EMPLOYER: every link requires the same company on both terms.
 /// <list type="bullet">
 /// <item>Values already on the row (stamped earlier or recorded by HR) are kept exactly as they are.</item>
-/// <item>A supersede version that starts inside its predecessor is an <see cref="ChainLinkKinds.Amendment"/>: same
-///   renewal number, same chain start, no renewed_from (a term is renewed at most once — UNIQUE).</item>
-/// <item>A term that starts the day after an earlier term ended (by supersede link or by dates) is a
-///   <see cref="ChainLinkKinds.Renewal"/> of it: renewal number + 1, same chain start.</item>
-/// <item>The first term on file is the <see cref="ChainLinkKinds.Original"/> only when it starts on or before the
-///   employee's joining date — otherwise earlier terms may exist off-system and it stays unconfirmed.</item>
-/// <item>Anything else (a gap, an overlap, an unconfirmed predecessor, two successors) stays unconfirmed.</item>
+/// <item>A term whose start date is covered by another term in force (not its own version family, not a version that
+///   was itself replaced) is unconfirmed — a stray or duplicate row makes any count unsafe.</item>
+/// <item>A supersede version that starts inside its predecessor AND ends no later is an
+///   <see cref="ChainLinkKinds.Amendment"/>: same renewal number and chain start, no renewed_from. One that ends later is
+///   an extension — a renewal decision — and stays unconfirmed.</item>
+/// <item>A term that starts the day after an earlier term of the same employer ended (by supersede link or by dates;
+///   a version that was replaced by a newer version is never a candidate) is a <see cref="ChainLinkKinds.Renewal"/>.</item>
+/// <item>The first term on file is the <see cref="ChainLinkKinds.Original"/> only when it starts ON the joining date
+///   (or up to <c>toleranceDays</c> after it). Starting before the joining date is bad data; after it, earlier terms
+///   may exist off-system. Both stay unconfirmed.</item>
 /// </list>
 /// Deterministic and idempotent: the same rows always give the same stamps.
 /// </summary>
@@ -115,14 +167,16 @@ public static class ContractChainLinker
     public static bool IsTerm(string status) => TermStatuses.Contains(status);
 
     public static IReadOnlyDictionary<Guid, ChainStamp> Link(
-        IReadOnlyCollection<ContractChainFacts> contracts, DateOnly? joiningDate, string? employeeNationalityClass)
+        IReadOnlyCollection<ContractChainFacts> contracts, DateOnly? joiningDate, string? employeeNationalityClass, int toleranceDays = 0)
     {
         var terms = contracts.Where(c => IsTerm(c.Status))
             .OrderBy(c => c.StartDate).ThenBy(c => c.Version).ThenBy(c => c.CreatedAtUtc).ThenBy(c => c.Id)
             .ToList();
         var byId = terms.ToDictionary(t => t.Id);
+        // A term another term names as its previous version has been replaced: never a renewal predecessor, never an overlap.
+        var replaced = terms.Where(t => t.PreviousVersionId is { } p && byId.ContainsKey(p)).Select(t => t.PreviousVersionId!.Value).ToHashSet();
+        var family = terms.ToDictionary(t => t.Id, t => FamilyRoot(t, byId));
         var result = new Dictionary<Guid, ChainStamp>();
-        // Who already renews whom (rows on file), so a derived link never collides with the UNIQUE.
         var claimed = terms.Where(t => t.RenewedFromContractId is not null)
             .GroupBy(t => t.RenewedFromContractId!.Value).ToDictionary(g => g.Key, g => g.First().Id);
 
@@ -140,16 +194,29 @@ public static class ContractChainLinker
             ChainStamp Unconfirmed(string reason, Guid? linkedTo = null) =>
                 new(term.Id, ChainLinkKinds.Unconfirmed, linkedTo, term.RenewedFromContractId, null, null, nationality, reason);
 
-            ChainStamp? FromPredecessor(ContractChainFacts predecessor, bool viaVersionLink)
+            var overlapping = terms.FirstOrDefault(t => t.Id != term.Id && family[t.Id] != family[term.Id] && !replaced.Contains(t.Id)
+                                                        && t.StartDate <= term.StartDate && (t.EndDate is null || t.EndDate >= term.StartDate));
+            if (overlapping is not null)
             {
-                if (!result.TryGetValue(predecessor.Id, out var p)) return null;
-                var amendment = viaVersionLink
-                    && term.StartDate >= predecessor.StartDate
-                    && (predecessor.EndDate is null || term.StartDate <= predecessor.EndDate.Value);
-                if (amendment)
+                result[term.Id] = Unconfirmed(ChainGapReasons.Overlap, overlapping.Id);
+                continue;
+            }
+
+            ChainStamp FromPredecessor(ContractChainFacts predecessor, bool viaVersionLink)
+            {
+                if (term.CompanyId is null || predecessor.CompanyId != term.CompanyId)
+                    return Unconfirmed(ChainGapReasons.CompanyChanged, predecessor.Id);
+                if (!result.TryGetValue(predecessor.Id, out var p)) return Unconfirmed(ChainGapReasons.PredecessorUnconfirmed, predecessor.Id);
+                var startsInside = term.StartDate >= predecessor.StartDate
+                                   && (predecessor.EndDate is null || term.StartDate <= predecessor.EndDate.Value);
+                if (viaVersionLink && startsInside)
+                {
+                    var endsNoLater = predecessor.EndDate is null || (term.EndDate is { } e && e <= predecessor.EndDate.Value);
+                    if (!endsNoLater) return Unconfirmed(ChainGapReasons.ExtendsTerm, predecessor.Id);
                     return p.IsConfirmed
                         ? new ChainStamp(term.Id, ChainLinkKinds.Amendment, predecessor.Id, null, p.RenewalNumber, p.ChainStartedOn, nationality, null)
                         : Unconfirmed(ChainGapReasons.PredecessorUnconfirmed, predecessor.Id);
+                }
                 if (predecessor.EndDate is not { } predecessorEnd || term.StartDate != predecessorEnd.AddDays(1))
                     return Unconfirmed(ChainGapReasons.GapOrOverlap, predecessor.Id);
                 if (claimed.TryGetValue(predecessor.Id, out var other) && other != term.Id)
@@ -163,21 +230,25 @@ public static class ContractChainLinker
             ChainStamp stamp;
             if (term.PreviousVersionId is { } previousId && byId.TryGetValue(previousId, out var previous))
             {
-                stamp = FromPredecessor(previous, viaVersionLink: true) ?? Unconfirmed(ChainGapReasons.PredecessorUnconfirmed, previousId);
+                stamp = FromPredecessor(previous, viaVersionLink: true);
             }
             else
             {
                 var earlier = terms.Where(t => t.Id != term.Id && t.StartDate < term.StartDate).ToList();
-                // Of several versions of the term that ended the day before, the in-force one is the predecessor.
                 var contiguous = earlier
-                    .Where(t => t.EndDate is { } e && e.AddDays(1) == term.StartDate)
-                    .OrderBy(t => t.Status == "Superseded" ? 1 : 0).ThenByDescending(t => t.Version).ThenByDescending(t => t.CreatedAtUtc)
-                    .FirstOrDefault();
-                if (contiguous is not null)
-                    stamp = FromPredecessor(contiguous, viaVersionLink: false)!;
+                    .Where(t => !replaced.Contains(t.Id) && t.EndDate is { } e && e.AddDays(1) == term.StartDate)
+                    .ToList();
+                if (contiguous.Count > 1)
+                    stamp = Unconfirmed(ChainGapReasons.Overlap, contiguous[1].Id);
+                else if (contiguous.Count == 1)
+                    stamp = FromPredecessor(contiguous[0], viaVersionLink: false);
                 else if (earlier.Count > 0)
                     stamp = Unconfirmed(ChainGapReasons.GapOrOverlap, earlier[^1].Id);
-                else if (joiningDate is { } joined && term.StartDate <= joined)
+                else if (joiningDate is not { } joined)
+                    stamp = Unconfirmed(ChainGapReasons.JoiningDateUnknown);
+                else if (term.StartDate < joined)
+                    stamp = Unconfirmed(ChainGapReasons.StartsBeforeJoining);
+                else if (term.StartDate.DayNumber - joined.DayNumber <= Math.Max(0, toleranceDays))
                     stamp = new ChainStamp(term.Id, ChainLinkKinds.Original, null, null, 0, term.StartDate, nationality, null);
                 else
                     stamp = Unconfirmed(ChainGapReasons.EarlierTermsNotOnFile);
@@ -187,9 +258,18 @@ public static class ContractChainLinker
         return result;
     }
 
+    private static Guid FamilyRoot(ContractChainFacts t, IReadOnlyDictionary<Guid, ContractChainFacts> byId)
+    {
+        var current = t;
+        var seen = new HashSet<Guid> { t.Id };
+        while (current.PreviousVersionId is { } p && byId.TryGetValue(p, out var prev) && seen.Add(prev.Id))
+            current = prev;
+        return current.Id;
+    }
+
     /// <summary>
     /// Writes a stamp onto its row, filling only fields that are NULL — never overwriting what was stamped or
-    /// recorded before. Returns true when anything changed.
+    /// recorded before — and marks the fields <see cref="ChainSources.Derived"/>. Returns true when anything changed.
     /// </summary>
     public static bool Apply(EmployeeContract row, ChainStamp stamp)
     {
@@ -198,6 +278,7 @@ public static class ContractChainLinker
         {
             row.RenewalNumber = stamp.RenewalNumber;
             row.ChainStartedOn = stamp.ChainStartedOn;
+            row.ChainSource = ChainSources.Derived;
             if (row.RenewedFromContractId is null && stamp.RenewedFromContractId is not null)
                 row.RenewedFromContractId = stamp.RenewedFromContractId;
             changed = true;
@@ -209,6 +290,20 @@ public static class ContractChainLinker
         }
         return changed;
     }
+
+    /// <summary>
+    /// Clears a DERIVED stamp so it can be re-derived (HR corrected an earlier term). A Recorded stamp is never cleared.
+    /// Returns true when the row was cleared.
+    /// </summary>
+    public static bool ClearDerived(EmployeeContract row)
+    {
+        if (row.ChainSource != ChainSources.Derived) return false;
+        row.RenewalNumber = null;
+        row.ChainStartedOn = null;
+        row.RenewedFromContractId = null;
+        row.ChainSource = null;
+        return true;
+    }
 }
 
 /// <summary>What one census run did.</summary>
@@ -216,10 +311,9 @@ public sealed record ChainCensusResult(int Terms, int Stamped, int Confirmed, in
 
 /// <summary>
 /// The chain census: links the existing Superseded/Version rows of one tenant into chains and stamps
-/// renewal_number, chain_started_on, renewed_from and the worker's nationality class where they are NULL
-/// (<see cref="ContractChainLinker"/>). Never overwrites a value already on a row; unlinkable chains stay NULL and
-/// their cases open NeedsConfirmation. It changes no schema: the full provisional/renewal_number pairing CHECK is
-/// left for the R0b migration (see the R4 PR). Idempotent — a second run stamps nothing. Stages changes on the
+/// renewal_number, chain_started_on, renewed_from, chain_source = Derived and the worker's nationality class where
+/// they are NULL (<see cref="ContractChainLinker"/>). Never overwrites a value already on a row; unlinkable chains stay
+/// NULL and their cases open NeedsConfirmation. Idempotent — a second run stamps nothing. Stages changes on the
 /// context; the caller saves. Slice R4.
 /// </summary>
 public sealed class ContractChainCensus
@@ -229,8 +323,11 @@ public sealed class ContractChainCensus
     public ContractChainCensus(ZayraDbContext db) => _db = db;
 
     /// <summary>Runs the census over every employee of <paramref name="tenantId"/> (or one employee).</summary>
-    public async Task<ChainCensusResult> RunAsync(Guid tenantId, Guid? employeePublicId, CancellationToken ct)
+    /// <param name="toleranceDays">The original-term joining tolerance; NULL reads it from the tenant's rules.</param>
+    public async Task<ChainCensusResult> RunAsync(Guid tenantId, Guid? employeePublicId, CancellationToken ct, int? toleranceDays = null)
     {
+        var tolerance = toleranceDays ?? (await RenewalRuleSet.LoadAsync(_db, tenantId, DateOnly.FromDateTime(DateTime.UtcNow), ct))
+            .OriginalTermJoiningToleranceDays;
         var contracts = await _db.EmployeeContracts
             .Where(c => c.TenantId == tenantId && !c.IsDeleted && (employeePublicId == null || c.EmployeeId == employeePublicId))
             .ToListAsync(ct);
@@ -245,7 +342,7 @@ public sealed class ContractChainCensus
         {
             employees.TryGetValue(group.Key, out var employee);
             var stamps = ContractChainLinker.Link(group.Select(ContractChainFacts.Of).ToList(),
-                JoiningDateOf(employee?.JoiningDate), WorkerNationality.ClassOf(employee?.SaudiOrNonSaudi, employee?.Nationality));
+                JoiningDateOf(employee?.JoiningDate), WorkerNationality.ClassOf(employee?.SaudiOrNonSaudi, employee?.Nationality), tolerance);
             foreach (var row in group)
             {
                 if (!stamps.TryGetValue(row.Id, out var stamp)) continue;

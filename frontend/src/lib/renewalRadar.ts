@@ -38,6 +38,7 @@ export const badgeKeys: Record<string, string> = {
   QiwaOverdue: 'Qiwa overdue',
   ExpiredNoOutcome: 'Ended with no outcome',
   OffboardingOpen: 'Leaving the company',
+  ExpiredHoldoverPending: 'Expired — holdover pending',
 };
 
 export const holdReasonKeys: Record<string, string> = {
@@ -68,6 +69,15 @@ export const unopenedReasonKeys: Record<string, string> = {
   RENEWAL_NO_COMPANY: 'The contract does not name its employing company',
   NationalityUnknown: 'Saudi or non-Saudi is not confirmed',
   AwaitingDailyRun: 'Opens with the next daily run',
+  SuccessorOnFile: 'A following contract is already on file',
+  DuplicateTerm: 'Two current contracts cover the same end date',
+};
+
+/** Closed review states, for the "Active contract with no open review" list. */
+export const closedStateKeys: Record<string, string> = {
+  Applied: 'Renewal applied',
+  NonRenewed: 'Not renewed',
+  Cancelled: 'Review cancelled',
 };
 
 export const linkKindKeys: Record<string, string> = {
@@ -83,6 +93,11 @@ export const gapReasonKeys: Record<string, string> = {
   PredecessorUnconfirmed: 'The earlier contract is not confirmed',
   EarlierTermsNotOnFile: 'Starts after the employee joined: earlier contracts are not on file',
   AmbiguousSuccessor: 'Two contracts claim the same earlier contract',
+  Overlap: 'Another contract in force covers its start date',
+  ExtendsTerm: 'A new version that extends the contract is a renewal, not an amendment',
+  CompanyChanged: 'The earlier contract was with another company',
+  StartsBeforeJoining: 'Starts before the employee’s joining date',
+  JoiningDateUnknown: 'The employee’s joining date is not recorded',
 };
 
 /** Replaces `{name}` placeholders. Unknown placeholders stay visible rather than vanishing silently. */

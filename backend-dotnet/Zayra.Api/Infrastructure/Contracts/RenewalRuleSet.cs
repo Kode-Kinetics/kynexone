@@ -16,6 +16,7 @@ namespace Zayra.Api.Infrastructure.Contracts;
 /// </summary>
 public sealed record RenewalRuleSet(
     RenewalDeadlineRules Deadlines,
+    int OriginalTermJoiningToleranceDays,
     Art55Reading Art55Reading,
     int Art55MaxConsecutiveRenewals,
     int Art55MaxTotalYears,
@@ -24,15 +25,23 @@ public sealed record RenewalRuleSet(
     Guid? QiwaRuleId,
     IReadOnlyList<string> FellBack)
 {
+    /// <summary>
+    /// Days a term may start AFTER the employee's joining date and still count as the original contract (R4 review P1-2).
+    /// Default 0: the first term is the original only when it starts on the joining date. Effective-dated like every rule;
+    /// a tenant row may widen it (0–31). Seeding the platform row belongs to <c>StatutoryRuleSeeder</c> (R0); an absent
+    /// row reads as 0.
+    /// </summary>
+    public const string OriginalTermJoiningToleranceKey = "contracts.original_term_joining_tolerance_days";
+
     /// <summary>The seeded platform values, used when nothing is on file.</summary>
     public static RenewalRuleSet Defaults { get; } = new(
-        new RenewalDeadlineRules(), Art55Reading.Conservative, 3, 4, new DateOnly(2025, 10, 6), true, null, []);
+        new RenewalDeadlineRules(), 0, Art55Reading.Conservative, 3, 4, new DateOnly(2025, 10, 6), true, null, []);
 
     /// <summary>Loads the set in force on <paramref name="asOf"/> for <paramref name="tenantId"/>.</summary>
     public static async Task<RenewalRuleSet> LoadAsync(ZayraDbContext db, Guid tenantId, DateOnly asOf, CancellationToken ct)
     {
         var cutoff = asOf.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
-        var keys = RenewalRuleKeys.All;
+        var keys = RenewalRuleKeys.All.Append(OriginalTermJoiningToleranceKey).ToArray();
         // Platform defaults have TenantId NULL, which the tenant filter hides: read this tenant's overrides and the
         // platform rows through the sanctioned bypass, each pinned to exactly one owner — never another tenant's rows.
         var rows = new List<RuleRow>();
@@ -73,7 +82,8 @@ public sealed record RenewalRuleSet(
             QiwaSubmitLeadDays: Int(RenewalRuleKeys.QiwaSubmitLeadDays, d.Deadlines.QiwaSubmitLeadDays, 1),
             QiwaGateLeadDays: Int(RenewalRuleKeys.QiwaGateLeadDays, d.Deadlines.QiwaGateLeadDays, 1),
             DefaultNonRenewalNoticeDays: Int(RenewalRuleKeys.DefaultNonRenewalNoticeDays, d.Deadlines.DefaultNonRenewalNoticeDays, 1),
-            QiwaResponseDays: Int(RenewalRuleKeys.QiwaContractResponseDays, d.Deadlines.QiwaResponseDays, 1));
+            QiwaResponseDays: Int(RenewalRuleKeys.QiwaContractResponseDays, d.Deadlines.QiwaResponseDays, 1),
+            OpenMarginDays: Int(RenewalRuleKeys.OpenMarginDays, d.Deadlines.OpenMarginDays, 1));
 
         Art55Reading reading;
         if (winner.TryGetValue(RenewalRuleKeys.Art55Reading, out var readingRow)
@@ -95,8 +105,14 @@ public sealed record RenewalRuleSet(
             unified = d.UnifiedContractFrom;
         }
 
+        // Absent row = 0 days (the seeded default); it is not a "fall back" worth reporting.
+        var tolerance = winner.TryGetValue(OriginalTermJoiningToleranceKey, out var tolRow)
+                        && int.TryParse(tolRow.RuleValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var tol) && tol is >= 0 and <= 31
+            ? tol
+            : 0;
         return new RenewalRuleSet(
             deadlines,
+            tolerance,
             reading,
             Int(RenewalRuleKeys.Art55MaxConsecutiveRenewals, d.Art55MaxConsecutiveRenewals, 1),
             Int(RenewalRuleKeys.Art55MaxTotalYears, d.Art55MaxTotalYears, 1),

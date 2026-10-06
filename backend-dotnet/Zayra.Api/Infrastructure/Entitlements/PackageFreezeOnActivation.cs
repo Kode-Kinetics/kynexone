@@ -15,4 +15,6 @@ namespace Zayra.Api.Infrastructure.Entitlements;
 public sealed class PackageFreezeOnActivation : IContractTermLifecycle
 {
     public Task OnActivatedAsync(EmployeeContract contract, CancellationToken ct) => Task.CompletedTask;
+
+    public Task OnEndedAsync(EmployeeContract contract, string reason, CancellationToken ct) => Task.CompletedTask;
 }
