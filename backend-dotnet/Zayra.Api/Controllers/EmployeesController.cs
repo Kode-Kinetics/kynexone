@@ -1305,9 +1305,15 @@ public class EmployeesController : ControllerBase
                     payrollArtifactsChanged = true;
                     // A NEW employee's bank details are initial data entry, but no second person has seen them:
                     // say so, so they are confirmed with the employee before the first salary is sent.
+                    // Persisted as a typed gap too (not only this response), so HR can find it on the employee's
+                    // readiness checklist, payroll validation can warn on it, and confirming it is audited.
                     if (!string.IsNullOrEmpty(ibanRaw) || !string.IsNullOrEmpty(accountRaw) || !string.IsNullOrEmpty(routingRaw))
-                        warnings.Add($"Employee {emp.EmployeeCode}: bank details (IBAN/account/routing code) were set by this import " +
-                                     "without a second review. Verify them with the employee before their first payroll.");
+                    {
+                        const string bankDetail = "Bank details (IBAN/account/routing code) were set by an import without a second " +
+                                                  "review. Verify them with the employee before their first payroll.";
+                        warnings.Add($"Employee {emp.EmployeeCode}: {bankDetail}");
+                        gapsByCode[payrollCode].Add(new ImportGap(EmployeeImportGap.BankDetailsUnverified, "pay", bankDetail, null));
+                    }
                 }
                 // ── ONE SET OF BANK DETAILS, IN BOTH HOMES ──────────────────────────────────────────────
                 // The WPS/SIF export pays from the payroll profile; the employee record, its readiness snapshot
@@ -4428,6 +4434,50 @@ public class EmployeesController : ControllerBase
 
     /// <summary>Refresh one employee's denormalized readiness badge after a dup-flag change (fold via the
     /// service's snapshot path). Best-effort — display only; the activation gate always recomputes live.</summary>
+    /// <summary>
+    /// Clears the "imported bank details not yet verified" flag (<see cref="EmployeeImportGap.BankDetailsUnverified"/>)
+    /// once HR has confirmed the IBAN/account with the employee. A second-person check, so it is refused to the
+    /// user who created the imported payroll profile and to the employee themselves, and to a caller who cannot
+    /// see the bank details being confirmed. Audited with the caller's note.
+    /// </summary>
+    [HttpPost("{id:int}/bank-details/confirm")]
+    [HasPermission("employees.write")]
+    public async Task<IActionResult> ConfirmImportedBankDetails(int id, [FromBody] ConfirmBankDetailsRequest req, CancellationToken ct)
+    {
+        var tenantId = RequireTenant();
+        if (!await CanAccessEmployeeAsync(id, ct)) return Forbid();
+        if (!CanViewSensitive())
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = "bank_details_not_visible",
+                message = "Confirming bank details needs a role that can see them (employees.sensitive)." });
+        if (string.IsNullOrWhiteSpace(req.Note))
+            return BadRequest(new { error = "note_required", message = "Say how the bank details were confirmed (for example, with the employee's bank letter)." });
+
+        var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, ct);
+        if (employee is null) return NotFound();
+        var open = await _db.EmployeeImportGaps
+            .Where(g => g.TenantId == tenantId && g.EmployeeId == id && g.ResolvedAtUtc == null
+                        && g.GapType == EmployeeImportGap.BankDetailsUnverified)
+            .ToListAsync(ct);
+        if (open.Count == 0)
+            return Conflict(new { error = "nothing_to_confirm", message = "This employee has no imported bank details waiting to be confirmed." });
+
+        var callerId = GetUserId();
+        var importedBy = await _db.EmployeePayrollProfiles.AsNoTracking()
+            .Where(p => p.TenantId == tenantId && p.EmployeeId == id && !p.IsDeleted)
+            .Select(p => p.CreatedBy).FirstOrDefaultAsync(ct);
+        if (callerId is null || callerId == importedBy || callerId == employee.UserAccountId)
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = "second_person_required",
+                message = "Imported bank details must be confirmed by someone other than the person who imported them or the employee." });
+
+        var now = DateTime.UtcNow;
+        foreach (var g in open) g.ResolvedAtUtc = now;
+        await _db.SaveChangesAsync(ct);
+        await RefreshReadinessByIdAsync(tenantId, id, ct);
+        await _audit.WriteAsync("employee.imported_bank_details_confirmed", "Employee", id.ToString(), Context(),
+            JsonSerializer.Serialize(new { note = req.Note.Trim(), clearedGaps = open.Count, importBatchIds = open.Select(g => g.ImportBatchId).Distinct() }), ct);
+        return Ok(new { confirmed = true, clearedGaps = open.Count });
+    }
+
     private async Task RefreshReadinessByIdAsync(Guid tenantId, int id, CancellationToken ct)
     {
         try
@@ -5891,6 +5941,7 @@ public record DeriveWorkEmailResponse(
     string Domain, string Pattern, string LocalPart, string WorkEmail, bool Unique, string? Suggestion, string Status);
 
 public record ResolveDuplicateRequest(string Resolution, int? IntoEmployeeId, string? Reason);
+public record ConfirmBankDetailsRequest(string? Note);
 
 /// <summary>Read-only Ex-Employees archive row. Directory + lifecycle metadata only — no salary,
 /// bank, or statutory-identity fields (parity with the People list's non-sensitive projection).</summary>

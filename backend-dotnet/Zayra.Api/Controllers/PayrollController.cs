@@ -3118,6 +3118,8 @@ public class PayrollController : ControllerBase
         var validationCtx = new PayrollValidationContext(
             run, slips, employees, salaryAssignments, valProfiles, valDeductions, valEarnings, company)
         {
+            UnverifiedImportedBankDetails  = await UnverifiedImportedBankDetailsAsync(
+                tenantId, slips.Select(s => s.EmployeeId).ToList(), cancellationToken),
             OvertimeHoursByEmployee        = otHoursByEmpForValidation,
             AttendanceProcessedEmployeeIds = attendanceProcessedEmpIds,
             GosiRatesEffectiveFrom         = gosiRatesEffectiveFrom,
@@ -4005,6 +4007,8 @@ public class PayrollController : ControllerBase
 
         var ctx     = new PayrollValidationContext(run, slips, employees, salaries, profiles, deductions, earnings, company)
         {
+            UnverifiedImportedBankDetails  = await UnverifiedImportedBankDetailsAsync(
+                tenantId, slips.Select(s => s.EmployeeId).ToList(), cancellationToken),
             OvertimeHoursByEmployee        = valOtHoursByEmp,
             AttendanceProcessedEmployeeIds = valAttendanceEmpIds,
             EmployeesAlreadyPaidRecurringThisPeriod = valAlreadyPaidEmpIds,
@@ -6496,6 +6500,14 @@ public class PayrollController : ControllerBase
         }
         return settlements.Select(s => s.Id).ToList();
     }
+
+    /// <summary>Rule 5c input: the employees whose imported bank details are still waiting for a second person.</summary>
+    private async Task<IReadOnlySet<int>> UnverifiedImportedBankDetailsAsync(Guid tenantId, List<int> employeeIds, CancellationToken ct) =>
+        (await _db.EmployeeImportGaps.AsNoTracking()
+            .Where(g => g.TenantId == tenantId && g.ResolvedAtUtc == null
+                     && g.GapType == EmployeeImportGap.BankDetailsUnverified && employeeIds.Contains(g.EmployeeId))
+            .Select(g => g.EmployeeId)
+            .ToListAsync(ct)).ToHashSet();
 
     /// <summary>The outside-the-bank-file payments recorded (live, unreversed) for a run, by GL reference.</summary>
     private async Task<HashSet<string>> OutsidePaymentRefsAsync(Guid tenantId, IReadOnlyCollection<Guid> runIds, CancellationToken ct) =>
