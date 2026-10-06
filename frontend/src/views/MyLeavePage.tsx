@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { essActionsApi, type EssBalance } from '@/src/api/ess';
 import type { LeaveRequest, LeaveType } from '@/src/api/leave';
 import { StatusChip } from '@/src/components/StatusChip';
-import { EssCard, EssEmpty, EssField, EssLoadError, EssNotice, EssPageHeader, essInput, essPrimaryButton, useOwnEmployeeId, useEssDate } from '@/src/components/ess/EssParts';
+import { EssCard, EssEmpty, EssField, EssLoadError, EssNotice, EssPageHeader, essInput, essPrimaryButton, useOwnEmployeeId, useEssDate, useCanWriteEss, EssReadOnly } from '@/src/components/ess/EssParts';
 import { useLocale } from '@/src/contexts/LocaleContext';
 import { canCancelLeave, leaveStatus } from '@/src/lib/essSelfService';
 import { isDeclarableLeave, isSaudiStatutoryLeave } from '@/src/lib/ksaStatutoryLeave';
@@ -20,6 +20,7 @@ const blankForm = { leaveTypeId: '', startDate: '', endDate: '', halfDay: false,
 export function MyLeavePage() {
   const { t, locale } = useLocale();
   const fmtDate = useEssDate();
+  const canWrite = useCanWriteEss();
   const ownEmployeeId = useOwnEmployeeId();
   const [balances, setBalances] = useState<EssBalance[]>([]);
   const [types, setTypes] = useState<LeaveType[]>([]);
@@ -53,6 +54,11 @@ export function MyLeavePage() {
   const statutoryKind = selectedType ? isSaudiStatutoryLeave(selectedType.code, selectedType.nameEn, selectedType.category) : null;
   const declarable = isDeclarableLeave(statutoryKind);
   const typeName = (ty: LeaveType) => (locale === 'ar' && ty.nameAr ? ty.nameAr : ty.nameEn);
+  /** A balance or request names its type in English; show the type's Arabic name when it has one. */
+  const typeNameById = (id: string, stored: string) => {
+    const ty = types.find((x) => x.id === id);
+    return ty ? typeName(ty) : stored;
+  };
   const sorted = useMemo(() => [...requests].sort((a, b) => b.startDate.localeCompare(a.startDate)), [requests]);
   const set = <K extends keyof typeof blankForm>(k: K, v: (typeof blankForm)[K]) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -124,7 +130,7 @@ export function MyLeavePage() {
               <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                 {balances.map((b) => (
                   <li key={b.leaveTypeId} className="rounded-xl bg-slate-50 p-3 dark:bg-white/[0.03]">
-                    <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">{b.leaveTypeName}</p>
+                    <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">{typeNameById(b.leaveTypeId, b.leaveTypeName)}</p>
                     {b.statutoryEntitlementDays != null ? (
                       <>
                         <p className="mt-1 text-sm font-bold text-emerald-700 dark:text-emerald-300">{t('Statutory entitlement')}</p>
@@ -150,7 +156,9 @@ export function MyLeavePage() {
 
           <div className="grid gap-4 lg:grid-cols-[22rem_1fr]">
             <EssCard title={t('Apply for leave')} testId="my-leave-apply">
-              {types.length === 0 ? (
+              {!canWrite ? (
+                <EssReadOnly />
+              ) : types.length === 0 ? (
                 <EssEmpty text={t('No leave types are available yet. Ask HR to set them up.')} />
               ) : (
                 <form className="space-y-3" onSubmit={(e) => void submit(e)}>
@@ -208,7 +216,7 @@ export function MyLeavePage() {
                     return (
                       <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 py-2.5">
                         <div className="min-w-0">
-                          <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">{r.leaveTypeName}</p>
+                          <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">{typeNameById(r.leaveTypeId, r.leaveTypeName)}</p>
                           <p className="text-xs text-slate-500 dark:text-slate-400">
                             {fillTemplate(t('{start} to {end} ({days} days)'), { start: fmtDate(r.startDate), end: fmtDate(r.endDate), days: r.totalDays })}
                           </p>
@@ -218,7 +226,7 @@ export function MyLeavePage() {
                         </div>
                         <div className="flex items-center gap-2">
                           <StatusChip label={t(s.label)} tone={s.tone} dot />
-                          {canCancelLeave(r.status) && (
+                          {canWrite && canCancelLeave(r.status) && (
                             <button type="button" disabled={cancellingId === r.id} onClick={() => void cancel(r)}
                               className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60 dark:border-white/[0.12] dark:text-slate-200 dark:hover:bg-white/[0.06]">
                               {cancellingId === r.id ? t('Cancelling…') : t('Cancel request')}

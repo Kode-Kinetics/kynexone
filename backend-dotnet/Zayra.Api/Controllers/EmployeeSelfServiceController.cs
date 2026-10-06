@@ -22,6 +22,8 @@ using Zayra.Api.Models;
 using DocumentRequest = Zayra.Api.Models.EmployeeDocumentRequest;
 
 
+using Zayra.Api.Infrastructure.Common;
+
 namespace Zayra.Api.Controllers;
 
 [ApiController]
@@ -112,14 +114,30 @@ public class EmployeeSelfServiceController : ControllerBase
         ESSPayrollSnapshotDto? payrollSnapshot = null;
         try
         {
-            var lastSlip = await _db.PayrollSlips.AsNoTracking()
-                .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Status == "Final")
-                .OrderByDescending(x => x.RunId)
+            // The latest slip by PERIOD, chosen the way GET /api/ess/payslips orders them (year, month, then
+            // the run's creation time; a voided run's slip is skipped). It used to be ordered by RunId, a
+            // GUID, so the "Last payslip" card showed an arbitrary month.
+            var latest = await (
+                    from slip in _db.PayrollSlips.AsNoTracking()
+                        .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Status == "Final")
+                    join r in _db.PayrollRuns.AsNoTracking().Where(r => r.TenantId == tenantId)
+                        on slip.RunId equals r.Id into runs
+                    from r in runs.DefaultIfEmpty()
+                    where r == null || r.Status != "Voided"
+                    select new
+                    {
+                        Slip = slip,
+                        Run = r,
+                        Year = r == null ? 0 : r.Year,
+                        Month = r == null ? 0 : r.Month,
+                        RunCreatedAtUtc = r == null ? DateTime.MinValue : r.CreatedAtUtc,
+                    })
+                .OrderByDescending(x => x.Year).ThenByDescending(x => x.Month).ThenByDescending(x => x.RunCreatedAtUtc)
                 .FirstOrDefaultAsync(cancellationToken);
+            var lastSlip = latest?.Slip;
             if (lastSlip is not null)
             {
-                var run = await _db.PayrollRuns.AsNoTracking()
-                    .FirstOrDefaultAsync(x => x.Id == lastSlip.RunId, cancellationToken);
+                var run = latest!.Run;
                 var salaryAsOf = run is null
                     ? DateOnly.FromDateTime(DateTime.UtcNow)
                     : new DateOnly(run.Year, run.Month, DateTime.DaysInMonth(run.Year, run.Month));
@@ -1426,25 +1444,13 @@ public class EmployeeSelfServiceController : ControllerBase
         if (!Guid.TryParse(tenantClaim, out var tenantId))
             return (false, default, default, "Tenant claim is missing. Please log in again.");
 
-        // Fast path: JWT already has the employee_id claim (user was invited via employee invite flow)
-        if (int.TryParse(User.FindFirstValue("employee_id"), out var empId))
-            return (true, tenantId, empId, null);
-
-        // Fallback: match by email — handles users created via "Create User" whose email
-        // matches an employee record in the same tenant (WorkEmail or PersonalEmail)
-        var email = User.FindFirstValue("email") ?? User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
-        if (!string.IsNullOrWhiteSpace(email))
-        {
-            var normalizedEmail = email.Trim().ToUpperInvariant();
-            var matches = await _db.Employees.AsNoTracking()
-                .Where(x => x.TenantId == tenantId && !x.IsDeleted &&
-                    (x.WorkEmail.ToUpper() == normalizedEmail || x.PersonalEmail.ToUpper() == normalizedEmail))
-                .Select(x => x.Id).Take(2).ToListAsync(cancellationToken);
-            if (matches.Count == 1)
-                return (true, tenantId, matches[0], null);
-            if (matches.Count > 1)
-                return (false, default, default, "Multiple employee records match this email. Ask HR to link your account explicitly.");
-        }
+        // The same lookup the data scope uses (CallerEmployeeResolver): the employee_id claim, else the one
+        // employee whose work or personal email matches the login's, case-insensitively.
+        var (empId, match) = await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId, cancellationToken);
+        if (empId is int linked)
+            return (true, tenantId, linked, null);
+        if (match == CallerEmployeeMatch.Ambiguous)
+            return (false, default, default, "Multiple employee records match this email. Ask HR to link your account explicitly.");
 
         return (false, default, default,
             "No employee record found for your account. Ensure an employee profile exists in the People module with the same email address as your login, or ask HR to link your account via User Management → Invite Employee.");

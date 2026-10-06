@@ -56,10 +56,13 @@ export function overtimeWindow(date: string, start: string, end: string): { star
   return { startTimeUtc: s.toISOString(), endTimeUtc: e.toISOString() };
 }
 
-/** "2h 30m" from minutes. */
-export function hoursAndMinutes(minutes: number): string {
+/**
+ * Whole hours and the remaining minutes, to fill a translated duration such as
+ * t('{hours} h {minutes} min'). The words around the numbers belong to the translation, not here.
+ */
+export function splitMinutes(minutes: number): { hours: number; minutes: number } {
   const m = Math.max(0, Math.round(minutes));
-  return `${Math.floor(m / 60)}h ${m % 60}m`;
+  return { hours: Math.floor(m / 60), minutes: m % 60 };
 }
 
 /** "14:05" in the viewer's own clock, from a UTC instant. Digits only, so it reads the same in Arabic. */

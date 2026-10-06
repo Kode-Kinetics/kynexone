@@ -46,3 +46,14 @@ export function payslipSections(lines: EssPayslipLine[]): PayslipSections {
     reconciles: cents(gross) - cents(totalDeductions) === cents(net),
   };
 }
+
+/**
+ * The payslip's month in the viewer's language ("September 2026", "سبتمبر 2026"), formatted from its year
+ * and month rather than the server's English period label. Gregorian months with Western digits in Arabic,
+ * as the rest of the app. A slip whose run is missing (year 0) keeps the server's label, or a dash.
+ */
+export function payslipMonthLabel(year: number, month: number, locale: string, fallback = ''): string {
+  if (!year || !month || month < 1 || month > 12) return fallback || '—';
+  const tag = locale === 'ar' ? 'ar-u-nu-latn' : locale;
+  return new Intl.DateTimeFormat(tag, { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(Date.UTC(year, month - 1, 1)));
+}

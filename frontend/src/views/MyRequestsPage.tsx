@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { essActionsApi, essApi, type EssHrRequest, type EssHrRequestCategory, type EssHrRequestDetail } from '@/src/api/ess';
 import { StatusChip } from '@/src/components/StatusChip';
-import { EssCard, EssEmpty, EssField, EssLoadError, EssNotice, EssPageHeader, essInput, essPrimaryButton, useEssDate } from '@/src/components/ess/EssParts';
+import { EssCard, EssEmpty, EssField, EssLoadError, EssNotice, EssPageHeader, essInput, essPrimaryButton, useEssDate, useCanWriteEss, EssReadOnly } from '@/src/components/ess/EssParts';
 import { useLocale } from '@/src/contexts/LocaleContext';
 import { hrRequestStatus } from '@/src/lib/essSelfService';
 import { fillTemplate } from '@/src/lib/gradeLoanLimits';
@@ -19,6 +19,7 @@ const blankForm = { categoryId: '', subject: '', description: '' };
 export function MyRequestsPage() {
   const { t } = useLocale();
   const fmtDate = useEssDate();
+  const canWrite = useCanWriteEss();
   const [categories, setCategories] = useState<EssHrRequestCategory[]>([]);
   const [requests, setRequests] = useState<EssHrRequest[]>([]);
   const [loading, setLoading] = useState(true);
@@ -116,6 +117,7 @@ export function MyRequestsPage() {
           {notice && <EssNotice tone={notice.tone}>{notice.text}</EssNotice>}
           <div className="grid gap-4 lg:grid-cols-[22rem_1fr]">
             <EssCard title={t('Raise a request')} testId="my-requests-new">
+              {!canWrite ? <EssReadOnly /> : (
               <form className="space-y-3" onSubmit={(e) => void submit(e)}>
                 <EssField label={t('What is it about?')}>
                   <select className={essInput} value={form.categoryId} onChange={(e) => set('categoryId', e.target.value)}>
@@ -133,6 +135,7 @@ export function MyRequestsPage() {
                   {submitting ? t('Sending…') : t('Send to HR')}
                 </button>
               </form>
+              )}
             </EssCard>
 
             <div className="space-y-4">
@@ -186,6 +189,7 @@ export function MyRequestsPage() {
                       ))}
                     </ul>
                   )}
+                  {canWrite && (
                   <div className="mt-3 space-y-2">
                     <EssField label={t('Add a comment')}>
                       <textarea className={essInput} rows={2} value={reply} onChange={(e) => setReply(e.target.value)} />
@@ -194,6 +198,7 @@ export function MyRequestsPage() {
                       {replying ? t('Sending…') : t('Send comment')}
                     </button>
                   </div>
+                  )}
                 </EssCard>
               )}
             </div>

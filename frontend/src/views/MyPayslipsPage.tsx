@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, Download, FileText, RefreshCw } from 'lucide-react';
 import { essApi, type EssPayslipDetail, type EssPayslipLine, type EssPayslipSummary } from '@/src/api/ess';
 import { useLocale } from '@/src/contexts/LocaleContext';
-import { payslipSections } from '@/src/lib/essPayslip';
+import { payslipMonthLabel, payslipSections } from '@/src/lib/essPayslip';
 
 const money = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -20,7 +20,7 @@ function errorMessage(e: unknown, t: (k: string) => string, fallback: string) {
  * are never part of the deductions total.
  */
 export function MyPayslipsPage() {
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   const [slips, setSlips] = useState<EssPayslipSummary[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -115,7 +115,7 @@ export function MyPayslipsPage() {
                         ? 'bg-sapphire/10 font-semibold text-sapphire dark:bg-cyanAccent/10 dark:text-cyanAccent'
                         : 'text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-white/[0.04]'}`}
                     >
-                      <span>{s.periodLabel || '—'}</span>
+                      <span>{payslipMonthLabel(s.year, s.month, locale, s.periodLabel)}</span>
                       <span className="font-mono text-xs tabular-nums">{s.currency} {money(s.netSalary)}</span>
                     </button>
                   </li>
@@ -145,14 +145,14 @@ function PayslipDetailView({ detail, downloading, downloadError, onDownload }: {
   downloadError: string | null;
   onDownload: () => void;
 }) {
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   const s = payslipSections(detail.lines);
   const cur = detail.currency;
 
   return (
     <div className="space-y-4" data-testid="my-payslip-detail">
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <h2 className="text-base font-bold text-slate-800 dark:text-slate-100">{detail.periodLabel}</h2>
+        <h2 className="text-base font-bold text-slate-800 dark:text-slate-100">{payslipMonthLabel(detail.year, detail.month, locale, detail.periodLabel)}</h2>
         <button
           type="button"
           onClick={onDownload}

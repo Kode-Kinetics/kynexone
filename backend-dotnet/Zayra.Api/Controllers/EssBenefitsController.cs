@@ -4,6 +4,8 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
 
+using Zayra.Api.Infrastructure.Common;
+
 namespace Zayra.Api.Controllers;
 
 /// <summary>
@@ -79,21 +81,12 @@ public class EssBenefitsController : ControllerBase
 
     private async Task<(int? EmployeeId, string Error)> ResolveCallerEmployeeIdAsync(Guid tenantId, CancellationToken ct)
     {
-        if (int.TryParse(User.FindFirstValue("employee_id"), out var empId))
-            return (empId, string.Empty);
-
-        var email = User.FindFirstValue("email") ?? User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
-        if (!string.IsNullOrWhiteSpace(email))
-        {
-            var normalizedEmail = email.Trim().ToUpperInvariant();
-            var matches = await _db.Employees.AsNoTracking()
-                .Where(x => x.TenantId == tenantId && !x.IsDeleted &&
-                    (x.WorkEmail.ToUpper() == normalizedEmail || x.PersonalEmail.ToUpper() == normalizedEmail))
-                .Select(x => x.Id).Take(2).ToListAsync(ct);
-            if (matches.Count == 1) return (matches[0], string.Empty);
-            if (matches.Count > 1) return (null, "Multiple employee records match this email. Ask HR to link your account explicitly.");
-        }
-        return (null, "Your user account is not linked to an employee record. Ask HR to link your account via User Management → Invite Employee.");
+        // The same lookup as the data scope and the rest of self-service (CallerEmployeeResolver).
+        var (employeeId, match) = await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId, ct);
+        if (employeeId is int linked) return (linked, string.Empty);
+        return match == CallerEmployeeMatch.Ambiguous
+            ? (null, "Multiple employee records match this email. Ask HR to link your account explicitly.")
+            : (null, "Your user account is not linked to an employee record. Ask HR to link your account via User Management → Invite Employee.");
     }
 
     private bool HasPermission(string permission) =>

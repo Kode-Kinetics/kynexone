@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Employees;
 using Zayra.Api.Controllers;
 using Zayra.Api.Controllers.Leave;
 using Zayra.Api.Data;
@@ -50,6 +51,7 @@ public class EssEmployeeActionsTests
             JoiningDate = DateTime.UtcNow.Date.AddYears(-3), UserAccountId = Guid.NewGuid(),
         };
         var me = NewEmployee("E-ME");
+        me.WorkEmail = "Asif.Khan@Masar.SA"; // capitals on purpose: the login email is lower-case
         var colleague = NewEmployee("E-COLLEAGUE");
         db.Employees.AddRange(me, colleague);
         var annual = new LeaveType { TenantId = tenantId, Code = "ANNUAL", NameEn = "Annual Leave", Category = "Annual", IsPaid = true, IsActive = true };
@@ -66,6 +68,22 @@ public class EssEmployeeActionsTests
                 TenantId = tenantId, EmployeeId = me.Id, EmployeeName = me.FullName, LeaveTypeId = annual.Id, LeaveTypeName = annual.NameEn,
                 Year = year, Entitled = 21m,
             });
+        // Two of every request kind, one each, so an unfiltered list is visibly "the whole tenant".
+        var someday = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(60);
+        foreach (var e in new[] { me, colleague })
+        {
+            db.LeaveRequests.Add(new LeaveRequest
+            {
+                TenantId = tenantId, EmployeeId = e.Id, EmployeeName = e.FullName, LeaveTypeId = annual.Id, LeaveTypeName = annual.NameEn,
+                StartDate = someday, EndDate = someday, DayType = "Full", Reason = "Seed", Status = "Submitted",
+            });
+            db.OvertimeRequests.Add(new OvertimeRequest
+            {
+                TenantId = tenantId, EmployeeId = e.Id, EmployeeName = e.FullName, WorkDate = someday.AddDays(-90),
+                StartTimeUtc = DateTime.UtcNow.AddDays(-30), EndTimeUtc = DateTime.UtcNow.AddDays(-30).AddHours(1),
+                RequestedMinutes = 60, Reason = "Seed", Status = "PendingManager",
+            });
+        }
         await db.SaveChangesAsync();
         await TestApprovalConfig.EnsureDefaultLeaveWorkflowAsync(db, tenantId);
 
@@ -199,6 +217,7 @@ public class EssEmployeeActionsTests
         });
         await w.Db.SaveChangesAsync();
 
+        var colleagueBefore = await w.Db.OvertimeRequests.CountAsync(x => x.EmployeeId == w.Colleague.Id);
         var created = await Overtime(w).CreateRequest(
             new OvertimeRequestCreate(w.Me.Id, null, null, day, start, start.AddHours(2), "SelfService", "Month-end close"), CancellationToken.None);
         var mine = created.Result.Should().BeOfType<CreatedResult>().Subject.Value.Should().BeOfType<OvertimeRequest>().Subject;
@@ -207,7 +226,7 @@ public class EssEmployeeActionsTests
         var forColleague = await Overtime(w).CreateRequest(
             new OvertimeRequestCreate(w.Colleague.Id, null, null, day, start.AddHours(3), start.AddHours(5), "SelfService", "Filed for someone else"), CancellationToken.None);
         forColleague.Result.Should().BeOfType<ForbidResult>();
-        (await w.Db.OvertimeRequests.CountAsync(x => x.EmployeeId == w.Colleague.Id)).Should().Be(1, "nothing was filed in the colleague's name");
+        (await w.Db.OvertimeRequests.CountAsync(x => x.EmployeeId == w.Colleague.Id)).Should().Be(colleagueBefore, "nothing was filed in the colleague's name");
 
         foreach (var asked in new int?[] { w.Me.Id, w.Colleague.Id, null })
         {
@@ -297,6 +316,146 @@ public class EssEmployeeActionsTests
             gates.Should().NotBeEmpty($"{controller.Name}.{actionName} must require authentication");
         }
         problems.Should().BeEmpty();
+    }
+
+    // ── The data scope fails closed, and agrees with self-service on who the caller is ──
+
+    /// <summary>A caller holding the Employee role's permissions but NO employee_id claim.</summary>
+    private static ClaimsPrincipal UnclaimedCaller(World w, string? email, bool groupScope = false, params string[] extraPermissions)
+    {
+        var claims = new List<Claim>
+        {
+            new("tenant_id", w.TenantId.ToString()),
+            new(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+            new(ClaimTypes.Role, "Employee"),
+        };
+        if (email is not null) claims.Add(new Claim("email", email));
+        if (groupScope) claims.Add(new Claim("is_group_scope", "true"));
+        claims.AddRange(w.EmployeePermissions.Concat(extraPermissions).Select(p => new Claim("permission", p)));
+        return new ClaimsPrincipal(new ClaimsIdentity(claims, "Test"));
+    }
+
+    /// <summary>
+    /// An Employee login linked to no employee record has no records of its own. Asking for any employee id
+    /// used to fall back to "(no caller id, no set)", which every list reads as "no restriction": proven live,
+    /// such a login listed every leave request in the tenant.
+    /// </summary>
+    [Fact]
+    public async Task AnUnlinkedEmployeeLogin_WithGroupScope_ListsNothing_OnLeaveOrOvertime()
+    {
+        var w = await SeedAsync();
+        var unlinked = UnclaimedCaller(w, "nobody@masar.sa", groupScope: true);
+        (await w.Db.LeaveRequests.CountAsync()).Should().BeGreaterThan(1);
+        (await w.Db.OvertimeRequests.CountAsync()).Should().BeGreaterThan(1);
+
+        foreach (var asked in new int?[] { w.Me.Id, w.Colleague.Id, 999_999, null })
+        {
+            var leave = (await As(new LeaveRequestsController(w.Db, Leave(w.Db), new DataScopeService(w.Db), new NullNotifications()), unlinked)
+                .List(null, asked, null, null, null, null, null, null, 1, 100, CancellationToken.None)).Should().BeOfType<OkObjectResult>().Subject;
+            ((PagedResult<LeaveRequest>)leave.Value!).Items.Should().BeEmpty($"asking for {asked?.ToString() ?? "(none)"}");
+
+            var overtime = (await As(new OvertimeController(w.Db, new DataScopeService(w.Db), new HrmHierarchyService(w.Db, new AuditService(w.Db))), unlinked)
+                .Requests(null, asked, 1, 100, CancellationToken.None)).Result.Should().BeOfType<OkObjectResult>().Subject;
+            ((PagedResult<OvertimeRequest>)overtime.Value!).Items.Should().BeEmpty($"asking for {asked?.ToString() ?? "(none)"}");
+        }
+    }
+
+    [Fact]
+    public void Constrain_WithNoCallerRecord_IsAnEmptySet_NeverUnrestricted()
+    {
+        var unlinked = new DataScope { Level = DataScopeLevel.Own, CallerEmployeeId = null, AllowedEmployeeIds = Array.Empty<int>() };
+        unlinked.Constrain(42).Should().Be(((int?)null, (IReadOnlyCollection<int>?)Array.Empty<int>()));
+        unlinked.Constrain(null).SetFilter.Should().BeEmpty();
+
+        var own = new DataScope { Level = DataScopeLevel.Own, CallerEmployeeId = 7, AllowedEmployeeIds = new[] { 7 } };
+        own.Constrain(42).Should().Be(((int?)7, (IReadOnlyCollection<int>?)null), "out of scope falls back to the caller's own record");
+        own.Constrain(7).SingleId.Should().Be(7);
+
+        var team = new DataScope { Level = DataScopeLevel.Team, CallerEmployeeId = 7, AllowedEmployeeIds = new[] { 7, 8 } };
+        team.Constrain(8).SingleId.Should().Be(8);
+        team.Constrain(null).SetFilter.Should().BeEquivalentTo(new[] { 7, 8 });
+    }
+
+    [Fact]
+    public async Task HrAndAdminScope_IsUnchanged_TheWholeOrganisation()
+    {
+        var w = await SeedAsync();
+        var hr = UnclaimedCaller(w, null, groupScope: true, "employees.read", "employees.write");
+        var scope = await new DataScopeService(w.Db).ResolveAsync(hr, w.TenantId, CancellationToken.None);
+        scope.Level.Should().Be(DataScopeLevel.Organization);
+        scope.Constrain(null).Should().Be(((int?)null, (IReadOnlyCollection<int>?)null));
+        scope.Constrain(w.Colleague.Id).SingleId.Should().Be(w.Colleague.Id);
+
+        var all = (await As(new LeaveRequestsController(w.Db, Leave(w.Db), new DataScopeService(w.Db), new NullNotifications()), hr)
+            .List(null, null, null, null, null, null, null, null, 1, 100, CancellationToken.None)).Should().BeOfType<OkObjectResult>().Subject;
+        ((PagedResult<LeaveRequest>)all.Value!).Items.Select(r => r.EmployeeId).Should().Contain(new[] { w.Me.Id, w.Colleague.Id });
+    }
+
+    /// <summary>
+    /// The data scope compared the lower-cased login email with the stored email as written; self-service
+    /// compared both upper-cased. A WorkEmail with capitals resolved in self-service and not in the data scope.
+    /// Both now use CallerEmployeeResolver.
+    /// </summary>
+    [Fact]
+    public async Task ALoginEmail_ResolvesToTheSameEmployee_InTheDataScopeAndInSelfService_WhateverItsCase()
+    {
+        var w = await SeedAsync();
+        foreach (var login in new[] { "asif.khan@masar.sa", "ASIF.KHAN@MASAR.SA", " Asif.Khan@Masar.SA " })
+        {
+            var caller = UnclaimedCaller(w, login);
+            var scope = await new DataScopeService(w.Db).ResolveAsync(caller, w.TenantId, CancellationToken.None);
+            scope.CallerEmployeeId.Should().Be(w.Me.Id, $"the data scope must find {login}");
+
+            var ess = Ess(w);
+            ess.ControllerContext.HttpContext.User = caller;
+            var profile = (await ess.Profile(CancellationToken.None)).Result.Should().BeOfType<OkObjectResult>().Subject;
+            ((EssEmployeeProfileDto)profile.Value!).Id.Should().Be(w.Me.Id, $"self-service must find {login}");
+        }
+    }
+
+    [Fact]
+    public async Task AnEmailMatchingTwoEmployees_ResolvesToNoOne_InBoth()
+    {
+        var w = await SeedAsync();
+        w.Colleague.PersonalEmail = "asif.khan@masar.sa";
+        w.Db.Employees.Update(w.Colleague);
+        await w.Db.SaveChangesAsync();
+        var caller = UnclaimedCaller(w, "asif.khan@masar.sa");
+
+        (await new DataScopeService(w.Db).ResolveAsync(caller, w.TenantId, CancellationToken.None)).CallerEmployeeId.Should().BeNull();
+        var ess = Ess(w);
+        ess.ControllerContext.HttpContext.User = caller;
+        (await ess.Profile(CancellationToken.None)).Result.Should().BeOfType<BadRequestObjectResult>();
+    }
+
+    /// <summary>
+    /// The "Last payslip" card took the slip with the greatest RunId, a GUID, so it showed an arbitrary
+    /// month. It must be the latest PERIOD, the same slip GET /api/ess/payslips lists first.
+    /// </summary>
+    [Fact]
+    public async Task TheLastPayslipCard_IsTheLatestMonth_NotTheGreatestRunGuid()
+    {
+        var w = await SeedAsync();
+        var august = new PayrollRun { Id = Guid.Parse("ffffffff-ffff-ffff-ffff-ffffffffffff"), TenantId = w.TenantId, Year = 2026, Month = 8, Status = "Locked", RunType = "Regular" };
+        var september = new PayrollRun { Id = Guid.Parse("00000000-0000-0000-0000-000000000001"), TenantId = w.TenantId, Year = 2026, Month = 9, Status = "Locked", RunType = "Regular" };
+        w.Db.PayrollRuns.AddRange(august, september);
+        PayrollSlip Slip(PayrollRun run, decimal net) => new()
+        {
+            TenantId = w.TenantId, RunId = run.Id, EmployeeId = w.Me.Id, EmployeeCode = w.Me.EmployeeCode, EmployeeName = w.Me.FullName,
+            BasicSalary = net, GrossSalary = net, NetSalary = net, Status = "Final",
+        };
+        w.Db.PayrollSlips.AddRange(Slip(august, 4100m), Slip(september, 4400m));
+        await w.Db.SaveChangesAsync();
+
+        var dashboard = (await Ess(w).Dashboard(CancellationToken.None)).Result.Should().BeOfType<OkObjectResult>().Subject.Value
+            .Should().BeOfType<ESSDashboardDto>().Subject;
+        dashboard.PayrollSnapshot.Should().NotBeNull();
+        dashboard.PayrollSnapshot!.NetSalary.Should().Be(4400m, "September is the latest month");
+        dashboard.PayrollSnapshot.Period.Should().Be("Sep 2026");
+
+        var list = (await Ess(w).Payslips(CancellationToken.None)).Result.Should().BeOfType<OkObjectResult>().Subject.Value
+            .Should().BeAssignableTo<IReadOnlyCollection<EssPayslipSummaryDto>>().Subject;
+        list.First().NetSalary.Should().Be(dashboard.PayrollSnapshot.NetSalary, "the card and the payslip list agree on the latest slip");
     }
 
     // ── Stubs ────────────────────────────────────────────────────────────────

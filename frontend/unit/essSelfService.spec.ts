@@ -2,9 +2,10 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test, expect } from '@playwright/test';
 import { LOCALE_DICTS } from '../src/i18n/translations';
+import { payslipMonthLabel } from '../src/lib/essPayslip';
 import {
   ESS_LEAVE_PATH, ESS_OVERTIME_PATH, ESS_REQUESTS_PATH,
-  canCancelLeave, hrRequestStatus, leaveStatus, overtimeStatus, overtimeWindow,
+  canCancelLeave, hrRequestStatus, leaveStatus, overtimeStatus, overtimeWindow, splitMinutes,
 } from '../src/lib/essSelfService';
 
 const root = join(__dirname, '..');
@@ -65,9 +66,49 @@ test('every string on the employee pages has English and Arabic, with the same p
   for (const f of files) for (const m of read(f).matchAll(/\bt\('((?:[^'\\]|\\.)*)'\)/g)) keys.add(m[1].replace(/\\'/g, "'"));
   for (const m of read('src/lib/essSelfService.ts').matchAll(/label: '([^']+)'/g)) keys.add(m[1]);
   for (const k of ['My Leave', 'My Overtime', 'My HR Requests']) keys.add(k);
+  // The self-service home page's buttons and quick links.
+  const home = read('src/views/EmployeeSelfServicePage.tsx');
+  for (const k of ['Apply Leave', 'View Payslip', 'OT Request', 'My Requests', 'Request leave']) {
+    expect(home, k).toContain(`{t('${k}')}`);
+    keys.add(k);
+  }
+  for (const m of home.matchAll(/label: '([^']+)', path: /g)) keys.add(m[1]);
+  expect(home).toMatch(/\{t\(label\)\}/);
+  for (const k of ['Request Leave', 'My Payslips', 'Jawazat Requests']) expect(keys.has(k), k).toBe(true);
   expect(keys.size).toBeGreaterThan(50);
   const { en, ar } = LOCALE_DICTS;
   const args = (s: string) => [...s.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(',');
   const missing = [...keys].filter((k) => !(k in en) || !(k in ar) || ar[k] === k || args(ar[k]) !== args(k));
   expect(missing).toEqual([]);
+});
+
+test('OT Request on the self-service page follows the Overtime module switch', () => {
+  expect(read('src/views/EmployeeSelfServicePage.tsx')).toMatch(/\{isFeatureEnabled\('overtime'\) && \(\s*<button\s+type="button"\s+onClick=\{\(\) => router\.push\(ESS_OVERTIME_PATH\)\}/);
+});
+
+test('the submit forms are offered only with ess.write', () => {
+  for (const f of ['src/views/MyLeavePage.tsx', 'src/views/MyOvertimePage.tsx', 'src/views/MyRequestsPage.tsx']) {
+    const src = read(f);
+    expect(src, f).toMatch(/const canWrite = useCanWriteEss\(\);/);
+    expect(src, f).toMatch(/!canWrite \? \(?\s*<EssReadOnly \/>/);
+  }
+  expect(read('src/components/ess/EssParts.tsx')).toMatch(/hasPermission\('ess\.write'\)/);
+});
+
+test('durations and payslip months are built for the translation, not in English', () => {
+  expect(splitMinutes(150)).toEqual({ hours: 2, minutes: 30 });
+  expect(splitMinutes(-5)).toEqual({ hours: 0, minutes: 0 });
+  expect(payslipMonthLabel(2026, 9, 'en')).toBe('September 2026');
+  const ar = payslipMonthLabel(2026, 9, 'ar');
+  expect(ar).toContain('2026');
+  expect(ar).not.toMatch(/[A-Za-z]/);
+  expect(payslipMonthLabel(0, 0, 'ar', 'Sep 2026')).toBe('Sep 2026');
+  expect(read('src/views/MyPayslipsPage.tsx')).not.toMatch(/\{(s|detail)\.periodLabel/);
+});
+
+test('leave type names use the Arabic name from the leave types', () => {
+  const src = read('src/views/MyLeavePage.tsx');
+  expect(src).not.toMatch(/\{[br]\.leaveTypeName\}/);
+  expect(src).toMatch(/typeNameById\(b\.leaveTypeId, b\.leaveTypeName\)/);
+  expect(src).toMatch(/typeNameById\(r\.leaveTypeId, r\.leaveTypeName\)/);
 });

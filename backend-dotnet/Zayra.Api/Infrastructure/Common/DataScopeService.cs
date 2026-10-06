@@ -158,24 +158,7 @@ public class DataScopeService : IDataScopeService
     }
 
     private async Task<int?> ResolveCallerEmployeeIdAsync(ClaimsPrincipal caller, Guid tenantId, CancellationToken ct)
-    {
-        // Fast path: employee_id JWT claim
-        var claim = caller.FindFirstValue("employee_id");
-        if (int.TryParse(claim, out var empId)) return empId;
-
-        // Email fallback (for users created without invite flow)
-        var email = caller.FindFirstValue(JwtRegisteredClaimNames.Email)
-                 ?? caller.FindFirstValue(ClaimTypes.Email);
-        if (string.IsNullOrWhiteSpace(email)) return null;
-
-        var normalised = email.Trim().ToLowerInvariant();
-        var emp = await _db.Employees.AsNoTracking()
-            .Where(e => e.TenantId == tenantId && !e.IsDeleted &&
-                (e.WorkEmail == normalised || e.PersonalEmail == normalised))
-            .Select(e => (int?)e.Id)
-            .FirstOrDefaultAsync(ct);
-        return emp;
-    }
+        => (await CallerEmployeeResolver.ResolveAsync(_db, caller, tenantId, ct)).EmployeeId;
 
     private async Task AddReportingTreeAsync(Guid tenantId, int managerId, HashSet<int> result, CancellationToken ct)
     {

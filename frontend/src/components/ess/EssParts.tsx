@@ -22,6 +22,18 @@ export function useEssDate(): (value: string | null | undefined) => string {
   return useCallback((value) => (locale === 'ar' ? formatCalendarDate(value, 'ar-u-nu-latn') : formatCalendarDate(value)), [locale]);
 }
 
+/** Submitting needs ess.write; ess.read alone (an HR Assistant, for one) can look but not submit. */
+export function useCanWriteEss(): boolean {
+  const { hasPermission } = useAuth();
+  return hasPermission('ess.write');
+}
+
+/** Shown in place of a form when the caller can view self-service but not submit. */
+export function EssReadOnly() {
+  const { t } = useLocale();
+  return <EssEmpty text={t('Your account can view self-service but cannot send requests. Ask HR if you need to.')} />;
+}
+
 export function useOwnEmployeeId(): () => Promise<number> {
   const { user } = useAuth();
   const fromLogin = user?.employeeId;

@@ -4,9 +4,9 @@ import { useCallback, useEffect, useState } from 'react';
 import { essActionsApi } from '@/src/api/ess';
 import type { OvertimeRequest, OvertimeType } from '@/src/api/overtime';
 import { StatusChip } from '@/src/components/StatusChip';
-import { EssCard, EssEmpty, EssField, EssLoadError, EssNotice, EssPageHeader, essInput, essPrimaryButton, useOwnEmployeeId, useEssDate } from '@/src/components/ess/EssParts';
+import { EssCard, EssEmpty, EssField, EssLoadError, EssNotice, EssPageHeader, essInput, essPrimaryButton, useOwnEmployeeId, useEssDate, useCanWriteEss, EssReadOnly } from '@/src/components/ess/EssParts';
 import { useLocale } from '@/src/contexts/LocaleContext';
-import { hoursAndMinutes, localClock, overtimeStatus, overtimeWindow } from '@/src/lib/essSelfService';
+import { localClock, overtimeStatus, overtimeWindow, splitMinutes } from '@/src/lib/essSelfService';
 import { fillTemplate } from '@/src/lib/gradeLoanLimits';
 import { requestFailureReason } from '@/src/lib/requestFailure';
 
@@ -19,6 +19,7 @@ const blankForm = { workDate: '', start: '', end: '', overtimeTypeId: '', reason
 export function MyOvertimePage() {
   const { t } = useLocale();
   const fmtDate = useEssDate();
+  const canWrite = useCanWriteEss();
   const ownEmployeeId = useOwnEmployeeId();
   const [employeeId, setEmployeeId] = useState<number | null>(null);
   const [types, setTypes] = useState<OvertimeType[]>([]);
@@ -47,6 +48,7 @@ export function MyOvertimePage() {
 
   useEffect(() => { void load(); }, [load]);
 
+  const duration = (minutes: number) => fillTemplate(t('{hours} h {minutes} min'), splitMinutes(minutes));
   const set = <K extends keyof typeof blankForm>(k: K, v: (typeof blankForm)[K]) => setForm((f) => ({ ...f, [k]: v }));
 
   const submit = async (e: React.FormEvent) => {
@@ -96,6 +98,7 @@ export function MyOvertimePage() {
           {notice && <EssNotice tone={notice.tone}>{notice.text}</EssNotice>}
           <div className="grid gap-4 lg:grid-cols-[22rem_1fr]">
             <EssCard title={t('Request overtime')} testId="my-overtime-apply">
+              {!canWrite ? <EssReadOnly /> : (
               <form className="space-y-3" onSubmit={(e) => void submit(e)}>
                 <EssField label={t('Date worked')}>
                   <input type="date" className={essInput} value={form.workDate} onChange={(e) => set('workDate', e.target.value)} />
@@ -124,6 +127,7 @@ export function MyOvertimePage() {
                   {submitting ? t('Sending…') : t('Send for approval')}
                 </button>
               </form>
+              )}
             </EssCard>
 
             <EssCard title={t('My overtime requests')} testId="my-overtime-requests">
@@ -142,8 +146,8 @@ export function MyOvertimePage() {
                           </p>
                           <p className="text-xs text-slate-500 dark:text-slate-400">
                             {approved && r.approvedMinutes > 0
-                              ? fillTemplate(t('{requested} requested, {approved} approved'), { requested: hoursAndMinutes(r.requestedMinutes), approved: hoursAndMinutes(r.approvedMinutes) })
-                              : fillTemplate(t('{requested} requested'), { requested: hoursAndMinutes(r.requestedMinutes) })}
+                              ? fillTemplate(t('{requested} requested, {approved} approved'), { requested: duration(r.requestedMinutes), approved: duration(r.approvedMinutes) })
+                              : fillTemplate(t('{requested} requested'), { requested: duration(r.requestedMinutes) })}
                           </p>
                           {r.reason && <p className="truncate text-xs text-slate-500 dark:text-slate-400">{r.reason}</p>}
                         </div>

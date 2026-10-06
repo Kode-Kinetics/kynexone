@@ -13,6 +13,8 @@ import { ESS_LEAVE_PATH, ESS_OVERTIME_PATH, ESS_REQUESTS_PATH } from '../lib/ess
 import { essApi, type EssDashboard, type EssHrRequest, type EssHrRequestDetail, type EssRosterEntry } from '../api/ess';
 import { essDocumentsApi, type EssDocumentRequest, type EssLetterType } from '../api/hrLetters';
 import { useAuth } from '../contexts/AuthContext';
+import { useFeatureFlags } from '../contexts/FeatureFlagContext';
+import { useLocale } from '../contexts/LocaleContext';
 import { StatusChip } from '../components/StatusChip';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -475,6 +477,8 @@ function DashboardSkeleton() {
 
 export function EmployeeSelfServicePage() {
   const { user } = useAuth();
+  const { t } = useLocale();
+  const { isFeatureEnabled } = useFeatureFlags();
   const router = useRouter();
   const [dashboard, setDashboard] = useState<EssDashboard | null>(null);
   const [error, setError] = useState('');
@@ -638,28 +642,30 @@ export function EmployeeSelfServicePage() {
                 onClick={() => router.push(ESS_LEAVE_PATH)}
                 className="inline-flex items-center gap-1.5 rounded-xl bg-sapphire px-4 py-2 text-sm font-semibold text-white hover:bg-sapphire/90 transition dark:bg-cyanAccent dark:text-slate-900"
               >
-                <CalendarOff className="h-4 w-4" /> Apply Leave
+                <CalendarOff className="h-4 w-4" /> {t('Apply Leave')}
               </button>
               <button
                 type="button"
                 onClick={() => router.push(ESS_PAYSLIPS_PATH)}
                 className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition dark:border-white/[0.12] dark:bg-white/[0.04] dark:text-slate-200 dark:hover:bg-white/[0.08]"
               >
-                <FileText className="h-4 w-4" /> View Payslip
+                <FileText className="h-4 w-4" /> {t('View Payslip')}
               </button>
-              <button
-                type="button"
-                onClick={() => router.push(ESS_OVERTIME_PATH)}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition dark:border-white/[0.12] dark:bg-white/[0.04] dark:text-slate-200 dark:hover:bg-white/[0.08]"
-              >
-                <Zap className="h-4 w-4" /> OT Request
-              </button>
+              {isFeatureEnabled('overtime') && (
+                <button
+                  type="button"
+                  onClick={() => router.push(ESS_OVERTIME_PATH)}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition dark:border-white/[0.12] dark:bg-white/[0.04] dark:text-slate-200 dark:hover:bg-white/[0.08]"
+                >
+                  <Zap className="h-4 w-4" /> {t('OT Request')}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => router.push(ESS_REQUESTS_PATH)}
                 className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition dark:border-white/[0.12] dark:bg-white/[0.04] dark:text-slate-200 dark:hover:bg-white/[0.08]"
               >
-                <ClipboardList className="h-4 w-4" /> My Requests
+                <ClipboardList className="h-4 w-4" /> {t('My Requests')}
               </button>
             </div>
 
@@ -847,7 +853,7 @@ export function EmployeeSelfServicePage() {
         <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5 dark:border-white/[0.07]">
           <p className="text-sm font-semibold text-slate-900 dark:text-white">Leave Balances</p>
           <button type="button" onClick={() => router.push(ESS_LEAVE_PATH)} className="text-[11px] font-medium text-sapphire hover:underline dark:text-cyanAccent">
-            Request leave
+            {t('Request leave')}
           </button>
         </div>
         <div className="p-5">
@@ -1054,7 +1060,7 @@ export function EmployeeSelfServicePage() {
                 <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${bg}`}>
                   <Icon className="h-3.5 w-3.5" />
                 </div>
-                <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">{label}</span>
+                <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">{t(label)}</span>
                 <ChevronRight className="ms-auto h-3.5 w-3.5 text-slate-300 dark:text-slate-600" />
               </button>
             ))}

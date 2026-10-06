@@ -179,6 +179,9 @@ public class AttendanceController : ControllerBase
         // who requested no specific employee, Constrain yields a set — fail closed to the
         // caller's own record rather than leaking the whole team.
         var scopedEmployeeId = setFilter is not null ? scope.CallerEmployeeId : singleId;
+        // A scoped caller with no employee record of their own sees nothing: null here means "everyone".
+        if (setFilter is not null && scopedEmployeeId is null)
+            return new PagedResult<AttendanceRawEvent>(Array.Empty<AttendanceRawEvent>(), 0, page, pageSize);
         return await _attendance.GetRawEventsAsync(RequireTenant(), from, to, scopedEmployeeId, processed, page, pageSize, ct);
     }
 
