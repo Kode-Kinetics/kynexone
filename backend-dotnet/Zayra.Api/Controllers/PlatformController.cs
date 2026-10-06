@@ -170,7 +170,15 @@ public class PlatformController : ControllerBase
     /// never waits on SMTP, and a notice with a dedupe key goes out at most once.
     /// </summary>
     private void NotifyOperator(PlatformUser user, string subject, string text, string kind, string? dedupeKey = null)
-        => _securityNotices?.TryEnqueue(new PlatformSecurityNotice(user.Id, user.Email, user.FullName, subject, text, kind), dedupeKey);
+    {
+        if (_securityNotices is null) return;
+        var outcome = _securityNotices.TryEnqueue(
+            new PlatformSecurityNotice(user.Id, user.Email, user.FullName, subject, text, kind), dedupeKey);
+        // A dropped notice is not remembered, so the next sign-in for the same event queues it again.
+        if (outcome == PlatformSecurityNoticeOutcome.Dropped)
+            _log.LogWarning("Security notice {Kind} for platform user {PlatformUserId} was dropped: the notice queue is full.",
+                kind, user.Id);
+    }
 
     private IActionResult PlatformRefused(string error, string message, int? retryAfterSeconds = null)
     {

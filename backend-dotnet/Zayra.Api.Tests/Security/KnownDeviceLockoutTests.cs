@@ -268,6 +268,42 @@ public sealed class KnownDeviceLockoutTests
             && a.Metadata!.Contains("password_mismatch_known_device"))).Should().Be(5, "the same audit row as the tenant path");
     }
 
+    [Fact]
+    public void NoticeQueue_RemembersADedupeKeyOnlyOnceTheNoticeIsQueued()
+    {
+        using var queue = new PlatformSecurityNoticeQueue(capacity: 1);
+        static PlatformSecurityNotice N(string kind) => new(Guid.NewGuid(), "o@platform.test", "O", "s", "t", kind);
+
+        queue.TryEnqueue(N("filler"), "k-filler").Should().Be(PlatformSecurityNoticeOutcome.Queued);
+        queue.TryEnqueue(N("lockout"), "k-lockout").Should().Be(PlatformSecurityNoticeOutcome.Dropped);
+        Drain(queue).Should().ContainSingle(n => n.Kind == "filler");
+
+        queue.TryEnqueue(N("lockout"), "k-lockout").Should().Be(PlatformSecurityNoticeOutcome.Queued,
+            "a dropped notice must not burn its dedupe key, or that lockout's email never goes out");
+        queue.TryEnqueue(N("lockout"), "k-lockout").Should().Be(PlatformSecurityNoticeOutcome.Duplicate);
+        Drain(queue).Should().ContainSingle(n => n.Kind == "lockout");
+    }
+
+    [Fact]
+    public async Task Platform_ABypassNoticeDroppedOnAFullQueue_IsQueuedOnTheNextBypass()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        await SeedOwnerAsync(kit);
+        using var guard = Guard();
+        using var notices = new PlatformSecurityNoticeQueue(capacity: 1);
+        var cookie = CookieValue((await Platform(kit, guard, Password, "198.51.100.10")).Response, LoginAbuseGuard.PlatformKnownDeviceCookie);
+        for (var i = 0; i < PlatformUser.MaxFailedLogins; i++) await Platform(kit, guard, "attacker-guess", "203.0.113.66");
+
+        notices.TryEnqueue(new PlatformSecurityNotice(Guid.NewGuid(), "x@platform.test", "X", "s", "t", "filler"))
+            .Should().Be(PlatformSecurityNoticeOutcome.Queued);
+        (await Platform(kit, guard, Password, "198.51.100.10", cookie, notices)).Result.Should().BeOfType<OkObjectResult>(
+            "a full notice queue never blocks the owner's sign-in");
+        Drain(notices).Should().OnlyContain(n => n.Kind == "filler", "the bypass notice was dropped");
+
+        (await Platform(kit, guard, Password, "198.51.100.10", cookie, notices)).Result.Should().BeOfType<OkObjectResult>();
+        Drain(notices).Should().ContainSingle(n => n.Kind == "lockout-bypassed");
+    }
+
     private static List<PlatformSecurityNotice> Drain(PlatformSecurityNoticeQueue queue)
     {
         var items = new List<PlatformSecurityNotice>();
