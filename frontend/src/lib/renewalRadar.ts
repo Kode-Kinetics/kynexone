@@ -18,13 +18,29 @@ export const stepKeys: Record<string, string> = {
   ExpiredNoOutcome: 'The contract ended on {date} with no outcome',
 };
 
-/** Consequence code → sentence. */
-export const consequenceKeys: Record<string, string> = {
-  NoOptionsUntilConfirmed: 'if missed: no renewal option can be offered',
-  RenewsOnCurrentTerms: 'if missed: renews on current terms (Art. 74(2))',
-  BecomesIndefinite: 'if missed: becomes an indefinite contract (Art. 55)',
-  QiwaLate: 'if missed: Qiwa may not confirm before the contract ends',
-  ContinuesByLaw: 'if missed: the contract continues by law',
+/** The consequence codes the server sends (RenewalConsequenceCodes). */
+export const consequenceCodes = ['NoOptionsUntilConfirmed', 'RenewsOnCurrentTerms', 'BecomesIndefinite', 'QiwaLate', 'ContinuesByLaw'] as const;
+
+/**
+ * "{step}.{consequence}" → ONE whole sentence (Arabic cannot reorder a sentence glued from fragments). These are the
+ * pairs the server produces (RenewalNextStep.Next); an unexpected pair falls back to the step sentence alone.
+ */
+export const nextLineKeys: Record<string, string> = {
+  'ConfirmHistory.NoOptionsUntilConfirmed': 'Next: confirm the contract history by {date} — if missed: no renewal option can be offered',
+  'ResolveHold.RenewsOnCurrentTerms': 'Next: resolve the hold by {date} — if missed: renews on current terms (Art. 74(2))',
+  'ResolveHold.BecomesIndefinite': 'Next: resolve the hold by {date} — if missed: becomes an indefinite contract (Art. 55)',
+  'PrepareOffer.RenewsOnCurrentTerms': 'Next: send offer by {date} — if missed: renews on current terms (Art. 74(2))',
+  'PrepareOffer.BecomesIndefinite': 'Next: send offer by {date} — if missed: becomes an indefinite contract (Art. 55)',
+  'ApproveOffer.RenewsOnCurrentTerms': 'Next: get the offer approved by {date} — if missed: renews on current terms (Art. 74(2))',
+  'ApproveOffer.BecomesIndefinite': 'Next: get the offer approved by {date} — if missed: becomes an indefinite contract (Art. 55)',
+  'ServeNotice.RenewsOnCurrentTerms': 'Next: serve the non-renewal notice by {date} — if missed: renews on current terms (Art. 74(2))',
+  'ServeNotice.BecomesIndefinite': 'Next: serve the non-renewal notice by {date} — if missed: becomes an indefinite contract (Art. 55)',
+  'AwaitEmployee.QiwaLate': 'Next: the employee answers the offer by {date} — if missed: Qiwa may not confirm before the contract ends',
+  'AwaitEmployee.ContinuesByLaw': 'Next: the employee answers the offer by {date} — if missed: the contract continues by law',
+  'SendToQiwa.QiwaLate': 'Next: send the renewal to Qiwa by {date} — if missed: Qiwa may not confirm before the contract ends',
+  'RecordQiwaOutcome.ContinuesByLaw': 'Next: record the Qiwa outcome by {date} — if missed: the contract continues by law',
+  'Apply.ContinuesByLaw': 'Next: apply the new term by {date} — if missed: the contract continues by law',
+  'ExpiredNoOutcome.ContinuesByLaw': 'The contract ended on {date} with no outcome — it continues by law',
 };
 
 /** Badge code → sentence. Placeholders are the badge's params. */
@@ -105,14 +121,16 @@ export function fill(template: string, params: Record<string, string | number>):
   return template.replace(/\{(\w+)\}/g, (whole, name: string) => (name in params ? String(params[name]) : whole));
 }
 
-/** "16 Oct" (or "16 Oct 2027" when not this year), Gregorian in both languages. */
-export function formatDay(iso: string | null | undefined, locale: 'en' | 'ar' | string, today?: string): string {
+/** The slice of the shared formatter (useFormat / createFormatter) the dashboard needs. */
+export interface DayFormatter {
+  date: (d: string, style?: 'dayMonth' | 'medium') => string;
+}
+
+/** "16 Oct" (or "16 Oct 2027" when not this year) through the shared formatter: the tenant's calendar, Latin digits. */
+export function formatDay(iso: string | null | undefined, f: DayFormatter, today?: string): string {
   if (!iso) return '—';
-  const [y, m, d] = iso.split('-').map(Number);
-  const date = new Date(Date.UTC(y, m - 1, d));
   const sameYear = today ? today.slice(0, 4) === iso.slice(0, 4) : true;
-  const tag = locale === 'ar' ? 'ar-SA-u-ca-gregory-nu-latn' : 'en-GB';
-  return new Intl.DateTimeFormat(tag, { day: 'numeric', month: 'short', ...(sameYear ? {} : { year: 'numeric' }), timeZone: 'UTC' }).format(date);
+  return f.date(iso, sameYear ? 'dayMonth' : 'medium');
 }
 
 /** The translated badge sentence. */
@@ -124,13 +142,12 @@ export function badgeText(badge: RenewalBadge, t: (key: string) => string): stri
   return fill(t(key), params);
 }
 
-/** The "Next: … — if missed: …" line, or null for a closed case. */
-export function nextLine(item: Pick<RenewalCaseItem, 'next'>, t: (key: string) => string, locale: string, today?: string): string | null {
+/** The "Next: … — if missed: …" line as one translated sentence, or null for a closed case. */
+export function nextLine(item: Pick<RenewalCaseItem, 'next'>, t: (key: string) => string, f: DayFormatter, today?: string): string | null {
   const next = item.next;
   if (!next) return null;
-  const step = fill(t(stepKeys[next.step] ?? next.step), { date: formatDay(next.dueOn, locale, today) });
-  const consequence = consequenceKeys[next.consequence] ? t(consequenceKeys[next.consequence]) : '';
-  return consequence ? `${step} — ${consequence}` : step;
+  const key = nextLineKeys[`${next.step}.${next.consequence}`] ?? stepKeys[next.step];
+  return key ? fill(t(key), { date: formatDay(next.dueOn, f, today) }) : next.step;
 }
 
 /** A dashboard filter: a bucket or an exception tile, each naming exactly the case ids it counts. */

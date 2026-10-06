@@ -4,18 +4,20 @@ import { useCallback, useEffect, useState } from 'react';
 import { notifyApiError } from '../../api/client';
 import { renewalsApi, type ContractChain, type NationalityClass } from '../../api/renewals';
 import { useLocale } from '../../contexts/LocaleContext';
+import { useFormat } from '../../hooks/useFormat';
+import { EnumLabel } from '../EnumLabel';
 import { actionKeys, blockText, fill, formatDay, gapReasonKeys, linkKindKeys } from '../../lib/renewalRadar';
 import { Modal } from '../Modal';
 
 /** One meter row: used of max, filled in proportion, red once the limit is reached. */
-function Meter({ label, used, max, unit }: { label: string; used: number | null; max: number; unit: string }) {
+function Meter({ label, used, max, text }: { label: string; used: number | null; max: number; text: string }) {
   const pct = used == null ? 0 : Math.min(100, Math.round((used / max) * 100));
   const reached = used != null && used >= max;
   return (
     <div>
       <div className="flex justify-between text-xs text-slate-600 dark:text-slate-300">
         <span>{label}</span>
-        <span className="font-semibold">{used == null ? '—' : `${used} / ${max} ${unit}`}</span>
+        <span className="font-semibold">{used == null ? '—' : text}</span>
       </div>
       <div className="mt-1 h-2 rounded-full bg-slate-100 dark:bg-white/10" role="meter" aria-label={label}
         aria-valuemin={0} aria-valuemax={max} aria-valuenow={used ?? 0}>
@@ -34,6 +36,7 @@ export function ChainDrawer({ contractId, canManage, onClose, onChanged }: {
   contractId: string | null; canManage: boolean; onClose: () => void; onChanged: () => void;
 }) {
   const { t, locale } = useLocale();
+  const f = useFormat();
   const [chain, setChain] = useState<ContractChain | null>(null);
   const [failed, setFailed] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -101,8 +104,10 @@ export function ChainDrawer({ contractId, canManage, onClose, onChanged }: {
           <section className="grid gap-3 rounded-xl bg-slate-50 p-3 dark:bg-white/[0.03] md:grid-cols-2">
             {chain.nationalityClass === 'Saudi' ? (
               <>
-                <Meter label={t('Renewals used (Art. 55)')} used={chain.art55.renewalsUsed} max={chain.art55.maxRenewals} unit={t('renewals')} />
-                <Meter label={t('Years in the chain (Art. 55)')} used={chain.art55.yearsServed} max={chain.art55.maxYears} unit={t('years')} />
+                <Meter label={t('Renewals used (Art. 55)')} used={chain.art55.renewalsUsed} max={chain.art55.maxRenewals}
+                  text={fill(t('{used} of {max} renewals'), { used: chain.art55.renewalsUsed ?? 0, max: chain.art55.maxRenewals })} />
+                <Meter label={t('Years in the chain (Art. 55)')} used={chain.art55.yearsServed} max={chain.art55.maxYears}
+                  text={fill(t('{used} of {max} years'), { used: chain.art55.yearsServed ?? 0, max: chain.art55.maxYears })} />
                 {chain.art55.thresholdReached && (
                   <p className="md:col-span-2 text-xs font-medium text-rose-700 dark:text-rose-300">
                     {t('At the limit: at renewal this contract can only become indefinite or not be renewed.')}
@@ -120,7 +125,7 @@ export function ChainDrawer({ contractId, canManage, onClose, onChanged }: {
                 ? chain.nextAllowedActions.map((a) => t(actionKeys[a] ?? a)).join(' · ')
                 : t('No option until the history is confirmed')}
               {chain.opensOn && (
-                <span className="block text-slate-500">{fill(t('The renewal review opens on {date}.'), { date: formatDay(chain.opensOn, locale) })}</span>
+                <span className="block text-slate-500">{fill(t('The renewal review opens on {date}.'), { date: formatDay(chain.opensOn, f) })}</span>
               )}
             </div>
             {chain.blockReasons.map((r) => {
@@ -149,10 +154,10 @@ export function ChainDrawer({ contractId, canManage, onClose, onChanged }: {
               <tbody className="divide-y divide-slate-100 dark:divide-white/5">
                 {chain.terms.map((term) => (
                   <tr key={term.contractId} className={term.isCurrent ? 'bg-sapphire/5' : ''}>
-                    <td className="p-2 font-mono">{term.contractNumber}<span className="block font-sans text-slate-500">{term.status}</span></td>
-                    <td className="p-2">{formatDay(term.startDate, locale, '0000')}</td>
-                    <td className="p-2">{term.endDate ? formatDay(term.endDate, locale, '0000') : t('Indefinite')}</td>
-                    <td className="p-2">{formatDay(term.signedOn, locale, '0000')}</td>
+                    <td className="p-2 font-mono">{term.contractNumber}<span className="block font-sans text-slate-500"><EnumLabel enum="Status" value={term.status} /></span></td>
+                    <td className="p-2">{formatDay(term.startDate, f, '0000')}</td>
+                    <td className="p-2">{term.endDate ? formatDay(term.endDate, f, '0000') : t('Indefinite')}</td>
+                    <td className="p-2">{formatDay(term.signedOn, f, '0000')}</td>
                     <td className="p-2">
                       {t(linkKindKeys[term.linkKind] ?? term.linkKind)}
                       {term.renewalNumber != null && term.linkKind !== 'Unconfirmed' && <span className="text-slate-500"> · #{term.renewalNumber}</span>}

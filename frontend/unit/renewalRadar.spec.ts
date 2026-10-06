@@ -2,8 +2,9 @@ import { test, expect } from '@playwright/test';
 import type { RenewalCaseItem, RenewalRadar } from '../src/api/renewals';
 import { renewals } from '../src/i18n/releaseA/renewals';
 import { translate } from '../src/i18n/translations';
+import { createFormatter } from '../src/lib/format';
 import {
-  actionKeys, badgeKeys, badgeText, closedStateKeys, consequenceKeys, fill, filterItems, formatDay, gapReasonKeys, holdReasonKeys, linkKindKeys,
+  actionKeys, badgeKeys, badgeText, closedStateKeys, consequenceCodes, nextLineKeys, fill, filterItems, formatDay, gapReasonKeys, holdReasonKeys, linkKindKeys,
   nextLine, stageKeys, stepKeys, toggleAll, toggleSelection, unopenedReasonKeys,
 } from '../src/lib/renewalRadar';
 
@@ -12,6 +13,8 @@ import {
 // exactly the rows the tile counted.
 
 const en = (key: string) => translate('en', key);
+const fEn = createFormatter({ locale: 'en', timeZone: 'Asia/Riyadh' });
+const fAr = createFormatter({ locale: 'ar', timeZone: 'Asia/Riyadh' });
 const ar = (key: string) => translate('ar', key);
 
 const item = (over: Partial<RenewalCaseItem> = {}): RenewalCaseItem => ({
@@ -27,7 +30,7 @@ const item = (over: Partial<RenewalCaseItem> = {}): RenewalCaseItem => ({
 });
 
 test('every code the dashboard can receive has an English and an Arabic sentence', () => {
-  const maps = [stepKeys, consequenceKeys, badgeKeys, holdReasonKeys, actionKeys, stageKeys, unopenedReasonKeys, linkKindKeys, gapReasonKeys, closedStateKeys];
+  const maps = [stepKeys, nextLineKeys, badgeKeys, holdReasonKeys, actionKeys, stageKeys, unopenedReasonKeys, linkKindKeys, gapReasonKeys, closedStateKeys];
   for (const map of maps) {
     for (const key of Object.values(map)) {
       expect(renewals.en[key], key).toBe(key);
@@ -37,7 +40,12 @@ test('every code the dashboard can receive has an English and an Arabic sentence
   // The server's step, consequence and badge codes (RenewalStepCodes, RenewalConsequenceCodes, RenewalBadgeCodes).
   expect(Object.keys(stepKeys).sort()).toEqual(['Apply', 'ApproveOffer', 'AwaitEmployee', 'ConfirmHistory', 'ExpiredNoOutcome',
     'PrepareOffer', 'RecordQiwaOutcome', 'ResolveHold', 'SendToQiwa', 'ServeNotice']);
-  expect(Object.keys(consequenceKeys).sort()).toEqual(['BecomesIndefinite', 'ContinuesByLaw', 'NoOptionsUntilConfirmed', 'QiwaLate', 'RenewsOnCurrentTerms']);
+  // Every Next-line pair names a known step and consequence.
+  for (const pair of Object.keys(nextLineKeys)) {
+    const [step, consequence] = pair.split('.');
+    expect(stepKeys[step], pair).toBeTruthy();
+    expect(consequenceCodes as readonly string[], pair).toContain(consequence);
+  }
   expect(Object.keys(badgeKeys).sort()).toEqual(['Art55Meter', 'Art55Threshold', 'ChainUnconfirmed', 'ExpiredHoldoverPending', 'ExpiredNoOutcome',
     'NonSaudiFixedTerm', 'NoticeDatePassed', 'OffboardingOpen', 'OnHold', 'QiwaOverdue'].sort());
 });
@@ -46,9 +54,12 @@ test("Faisal's badge and Next line read as the storyline says, in English and Ar
   const faisal = item();
   expect(badgeText(faisal.badges[0], en)).toBe('Art 55: 2 of 3 renewals, 3.9 of 4 years — only convert to indefinite or non-renew');
   expect(badgeText(faisal.badges[0], ar)).toContain('المادة 55: 2 من 3 تجديدات، 3.9 من 4 سنوات');
-  expect(nextLine(faisal, en, 'en', '2026-10-06')).toBe('Next: send offer by 16 Oct — if missed: renews on current terms (Art. 74(2))');
-  expect(nextLine(faisal, ar, 'ar', '2026-10-06')).toContain('التالي: إرسال العرض قبل');
-  expect(nextLine(item({ next: null }), en, 'en')).toBeNull();
+  expect(nextLine(faisal, en, fEn, '2026-10-06')).toBe('Next: send offer by 16 Oct — if missed: renews on current terms (Art. 74(2))');
+  expect(nextLine(faisal, ar, fAr, '2026-10-06')).toContain('التالي: إرسال العرض قبل');
+  expect(nextLine(item({ next: null }), en, fEn)).toBeNull();
+  // An unexpected pair still reads as a whole sentence: the step alone.
+  expect(nextLine(item({ next: { step: 'Apply', dueOn: '2026-12-31', consequence: 'QiwaLate', overdue: false, daysLeft: 1 } }), en, fEn, '2026-10-06'))
+    .toBe('Next: apply the new term by 31 Dec');
 });
 
 test('placeholders are filled, and an unknown one stays visible instead of vanishing', () => {
@@ -58,10 +69,10 @@ test('placeholders are filled, and an unknown one stays visible instead of vanis
 });
 
 test('dates are Gregorian and add the year only when it differs', () => {
-  expect(formatDay('2026-10-16', 'en', '2026-10-06')).toBe('16 Oct');
-  expect(formatDay('2027-01-31', 'en', '2026-10-06')).toBe('31 Jan 2027');
-  expect(formatDay(null, 'en')).toBe('—');
-  expect(formatDay('2026-10-16', 'ar', '2026-10-06')).toMatch(/16/);
+  expect(formatDay('2026-10-16', fEn, '2026-10-06')).toBe('16 Oct');
+  expect(formatDay('2027-01-31', fEn, '2026-10-06')).toBe('31 Jan 2027');
+  expect(formatDay(null, fEn)).toBe('—');
+  expect(formatDay('2026-10-16', fAr, '2026-10-06')).toMatch(/16/);
 });
 
 test('a tile drill-down lists exactly the rows the tile counted', () => {

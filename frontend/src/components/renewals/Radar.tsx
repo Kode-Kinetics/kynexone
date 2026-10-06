@@ -3,6 +3,7 @@
 import type { ReactNode } from 'react';
 import type { RenewalCaseItem, RenewalRadar } from '../../api/renewals';
 import { useLocale } from '../../contexts/LocaleContext';
+import { useFormat } from '../../hooks/useFormat';
 import {
   actionKeys, badgeText, blockText, closedStateKeys, fill, formatDay, nextLine, stageKeys, toggleAll, toggleSelection, unopenedReasonKeys,
   type RadarFilter,
@@ -48,6 +49,7 @@ export interface RadarProps {
 export function Radar(props: RadarProps) {
   const { radar, filter, onFilter, rows, selected, onSelected, canManage } = props;
   const { t, locale } = useLocale();
+  const f = useFormat();
   const isActive = (kind: string, key: string) => filter.kind === kind && 'key' in filter && filter.key === key;
   const pick = (kind: 'bucket' | 'exception', key: string, caseIds: string[]) =>
     onFilter(isActive(kind, key) ? { kind: 'all' } : { kind, key, caseIds });
@@ -129,7 +131,7 @@ export function Radar(props: RadarProps) {
                       <span className="font-medium text-slate-800 dark:text-slate-100">{u.employee?.name ?? u.contractNumber}</span>
                       <span className="block text-xs text-slate-500">{u.employee?.code} · {u.contractNumber}</span>
                     </td>
-                    <td className="p-3 text-slate-600 dark:text-slate-300">{formatDay(u.endDate, locale, radar.today)}</td>
+                    <td className="p-3 text-slate-600 dark:text-slate-300">{formatDay(u.endDate, f, radar.today)}</td>
                     <td className="p-3 text-slate-600 dark:text-slate-300">{t(closedStateKeys[u.caseState] ?? u.caseState)}</td>
                     <td className="p-3 text-end">
                       <button type="button" onClick={() => props.onOpenChain(u.contractId)}
@@ -164,7 +166,7 @@ export function Radar(props: RadarProps) {
                       <span className="font-medium text-slate-800 dark:text-slate-100">{u.employee?.name ?? u.contractNumber}</span>
                       <span className="block text-xs text-slate-500">{u.employee?.code} · {u.contractNumber}</span>
                     </td>
-                    <td className="p-3 text-slate-600 dark:text-slate-300">{formatDay(u.endDate, locale, radar.today)}</td>
+                    <td className="p-3 text-slate-600 dark:text-slate-300">{formatDay(u.endDate, f, radar.today)}</td>
                     <td className="p-3 text-slate-600 dark:text-slate-300">
                       {u.blockReason ? blockText(u.blockReason, locale).title : t(unopenedReasonKeys[u.reason] ?? u.reason)}
                       {u.blockReason && <span className="block text-xs text-slate-500">{blockText(u.blockReason, locale).fix}</span>}
@@ -207,7 +209,7 @@ export function Radar(props: RadarProps) {
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-white/5">
                 {rows.map((item) => {
-                  const line = nextLine(item, t, locale, radar.today);
+                  const line = nextLine(item, t, f, radar.today);
                   const busy = props.busyCaseId === item.caseId;
                   return (
                     <tr key={item.caseId} className="align-top hover:bg-slate-50 dark:hover:bg-white/[0.02]">
@@ -231,7 +233,7 @@ export function Radar(props: RadarProps) {
                         </div>
                       </td>
                       <td className="p-3 whitespace-nowrap text-slate-700 dark:text-slate-200">
-                        {formatDay(item.expiringEndDate, locale, radar.today)}
+                        {formatDay(item.expiringEndDate, f, radar.today)}
                         <span className="block text-xs text-slate-500 dark:text-slate-400">
                           {item.daysLeft >= 0 ? fill(t('{n} days left'), { n: item.daysLeft }) : fill(t('{n} days ago'), { n: -item.daysLeft })}
                         </span>
