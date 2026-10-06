@@ -1,19 +1,17 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useAppToast } from '@/src/components/ui/AppToast';
+import { useT } from './useT';
+import { describeApiError } from '../lib/apiError';
+import type { MessageParams } from '../i18n/translations';
 
-export function parseApiError(err: unknown): string {
-  const ax = err as { response?: { status?: number; data?: unknown } };
-  if (ax?.response?.data) {
-    const d = ax.response.data as Record<string, unknown>;
-    if (typeof d === 'string') return d;
-    if (d.message) return String(d.message);
-    if (d.title) return String(d.title);
-    return `${ax.response.status}: ${JSON.stringify(d)}`;
-  }
-  if (err instanceof Error) return err.message;
-  return String(err);
+/**
+ * One translated sentence for a failed call — never the raw response body.
+ * See lib/apiError.ts for the resolution order (error code → server message → HTTP status).
+ */
+export function parseApiError(err: unknown, t?: (key: string, params?: MessageParams) => string): string {
+  return describeApiError(err, t);
 }
 
 /**
@@ -24,13 +22,19 @@ export function parseApiError(err: unknown): string {
 export function useApiCall() {
   const [error, setError] = useState<string | null>(null);
   const toast = useAppToast();
+  // `t` is read through a ref so `call` keeps depending on `toast` alone: callers put `call` in
+  // effect deps, and a new `call` per language switch would refetch every screen
+  // (e2e/toast-context-stability.spec.ts). The ref always holds the current language's `t`.
+  const t = useT();
+  const tRef = useRef(t);
+  useEffect(() => { tRef.current = t; }, [t]);
 
   const call = useCallback(
     async <T>(fn: () => Promise<T>, opts?: { banner?: boolean }): Promise<T | undefined> => {
       try {
         return await fn();
       } catch (e) {
-        const msg = parseApiError(e);
+        const msg = describeApiError(e, tRef.current);
         if (opts?.banner) {
           setError(msg);
         } else {

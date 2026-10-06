@@ -4,9 +4,14 @@ import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, Download, FileText, RefreshCw } from 'lucide-react';
 import { essApi, type EssPayslipDetail, type EssPayslipLine, type EssPayslipSummary } from '@/src/api/ess';
 import { useLocale } from '@/src/contexts/LocaleContext';
+import { useFormat } from '@/src/hooks/useFormat';
 import { payslipLineName, payslipMonthLabel, payslipSections } from '@/src/lib/essPayslip';
 
-const money = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+/** Two-decimal amounts in the viewer's number format; the currency code is printed beside it. */
+function useMoney() {
+  const fx = useFormat();
+  return (n: number) => fx.number(n, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
 
 function errorMessage(e: unknown, t: (k: string) => string, fallback: string) {
   const res = (e as { response?: { status?: number; data?: { message?: string } } })?.response;
@@ -21,6 +26,7 @@ function errorMessage(e: unknown, t: (k: string) => string, fallback: string) {
  */
 export function MyPayslipsPage() {
   const { t, locale } = useLocale();
+  const money = useMoney();
   const [slips, setSlips] = useState<EssPayslipSummary[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -146,6 +152,7 @@ function PayslipDetailView({ detail, downloading, downloadError, onDownload }: {
   onDownload: () => void;
 }) {
   const { t, locale } = useLocale();
+  const money = useMoney();
   const s = payslipSections(detail.lines);
   const cur = detail.currency;
 
@@ -204,6 +211,7 @@ function LineBlock({ title, lines, totalLabel, total, currency, empty, muted }: 
   muted?: boolean;
 }) {
   const { t, locale } = useLocale();
+  const money = useMoney();
   return (
     <div className={`rounded-xl border p-3 ${muted ? 'border-dashed border-slate-300 dark:border-white/[0.12]' : 'border-slate-200 dark:border-white/[0.06]'}`}>
       <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">{title}</h3>

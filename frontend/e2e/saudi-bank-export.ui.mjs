@@ -21,7 +21,7 @@ try {
   const context=await browser.newContext({viewport:{width,height},acceptDownloads:true});
   const page=await context.newPage();page.setDefaultTimeout(10000);const errors=[],writes=[],unexpected=[],bankRequests=[];let artifact=null;
   page.on('pageerror',e=>{errors.push(String(e));console.log('PAGE_ERROR',String(e));});page.on('console',m=>{if(m.type()==='error')console.log('CONSOLE',m.text());});
-  await page.addInitScript(()=>{localStorage.setItem('zayra_access_token','fixture-token');localStorage.setItem('zayra_refresh_token','fixture-refresh');localStorage.setItem('kynexone.theme','light');localStorage.setItem('kynexone-locale','en');});
+  await page.addInitScript(()=>{localStorage.setItem('zayra_access_token','fixture-token');localStorage.setItem('zayra_refresh_token','fixture-refresh');localStorage.setItem('kynexone.theme','light');localStorage.setItem('kynexone-locale-choice-v2','en');});
   await page.route('**/api/**',async route=>{
    const req=route.request(),p=new URL(req.url()).pathname,m=req.method();
    const json=(body,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(body)});
