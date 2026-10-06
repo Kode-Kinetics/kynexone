@@ -30,6 +30,7 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         DeviceReadMasked,
         DeviceOpsRead,
         TenantDirectoryRead,
+        HrOfficerFilesOnBehalf,
     }
 
     internal static readonly IReadOnlyDictionary<Reason, string> Reasons = new Dictionary<Reason, string>
@@ -52,6 +53,7 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         [DeviceReadMasked] = "Device configuration read only: auth credentials are never serialised and custom header values, secret-looking device parameters and endpoint URL credentials/query are masked for callers without attendance.bulk_import.",
         [DeviceOpsRead] = "NOT data-scoped: every device's sync status and logs in the tenant (device name, vendor, timestamps, event counts, error text). No employee pay, contact or identity data; the endpoint URL's credentials and query are redacted for callers without attendance.bulk_import.",
         [TenantDirectoryRead] = "NOT data-scoped: the whole org chart within the caller's company scope (employee code, name, designation, reporting line). No pay, contact or identity data. A Supervisor sees the tenant's structure, not just their team.",
+        [HrOfficerFilesOnBehalf] = "HR Officer files leave and overtime on employees' behalf (leave.write, overtime.write, an owner decision). Raising overtime requests from processed attendance is the same filing, limited by DataScope to the employees the officer can reach, and capped by the overtime policy.",
     };
 
     internal static readonly (string Endpoint, string Roles, Reason Why)[] AllowList =
@@ -577,6 +579,7 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         ("POST Overtime.CreatePolicy", "HR Director", SeniorHr),
         ("POST Overtime.CreateType", "HR Director", SeniorHr),
         ("POST Overtime.DetectFromAttendance", "HR Director", SeniorHr),
+        ("POST Overtime.DetectFromAttendance", "HR Officer", HrOfficerFilesOnBehalf),
         ("GET Overtime.PayrollReview", "Finance Approver", PayrollFinanceTier),
         ("GET Overtime.PayrollReview", "HR Director", SeniorHr),
         ("POST Overtime.Reject", "HR Director", SeniorHr),

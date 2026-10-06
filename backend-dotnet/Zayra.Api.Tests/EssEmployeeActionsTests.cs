@@ -596,6 +596,61 @@ public class EssEmployeeActionsTests
             .Which.Message.Should().Be(Zayra.Api.Infrastructure.Approvals.ApprovalWorkflowService.SubjectBarMessage);
     }
 
+    /// <summary>
+    /// HR Officer files overtime on an employee's behalf, as it files leave: the seeded role holds overtime.write
+    /// beside leave.write. Filing for someone else needs that key, not merely data scope; and data scope still
+    /// bounds it, so an employee outside the officer's company is refused.
+    /// </summary>
+    [Fact]
+    public async Task HrOfficer_FilesOvertimeForAnEmployeeInScope_AndIsRefusedOutsideIt()
+    {
+        var w = await SeedAsync();
+        var permissions = await SeededRoleBundles.PermissionsOfAsync(w.Db, w.TenantId, "HR Officer");
+        permissions.Should().Contain(new[] { "overtime.write", "leave.write" });
+        var mine = new Company { TenantId = w.TenantId, LegalNameEn = "Masar Logistics" };
+        var other = new Company { TenantId = w.TenantId, LegalNameEn = "Masar Facilities" };
+        w.Db.Companies.AddRange(mine, other);
+        w.Me.CompanyId = mine.Id;
+        w.Colleague.CompanyId = other.Id;
+        w.Db.Employees.UpdateRange(w.Me, w.Colleague);
+        w.Db.OvertimePolicies.Add(new OvertimePolicy { TenantId = w.TenantId, Name = "Standard", IsActive = true, RoundingRule = "None" });
+        await w.Db.SaveChangesAsync();
+
+        var officer = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim("tenant_id", w.TenantId.ToString()), new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+            new Claim(ClaimTypes.Role, "HR Officer"),
+            new Claim("entity_scope", System.Text.Json.JsonSerializer.Serialize(new { v = 2, m = "companies", c = new[] { mine.Id } })),
+        }.Concat(permissions.Select(p => new Claim("permission", p))), "Test"));
+        var controller = As(new OvertimeController(w.Db, new DataScopeService(w.Db), new HrmHierarchyService(w.Db, new AuditService(w.Db))), officer);
+        var day = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-4);
+        var at = day.ToDateTime(new TimeOnly(17, 0), DateTimeKind.Utc);
+
+        var filed = (await controller.CreateRequest(new OvertimeRequestCreate(w.Me.Id, null, null, day, at, at.AddHours(2), "Manual", "Stock count"), CancellationToken.None)).Result;
+        filed.Should().BeOfType<CreatedResult>().Which.Value.Should().BeOfType<OvertimeRequest>().Which.EmployeeId.Should().Be(w.Me.Id);
+
+        var before = await w.Db.OvertimeRequests.CountAsync(x => x.EmployeeId == w.Colleague.Id);
+        (await controller.CreateRequest(new OvertimeRequestCreate(w.Colleague.Id, null, null, day, at, at.AddHours(2), "Manual", "Outside my company"), CancellationToken.None))
+            .Result.Should().BeOfType<ForbidResult>();
+        (await w.Db.OvertimeRequests.CountAsync(x => x.EmployeeId == w.Colleague.Id)).Should().Be(before);
+    }
+
+    /// <summary>An existing tenant's HR Officer role gains overtime.write when the seeder runs on restart.</summary>
+    [Fact]
+    public async Task AnExistingTenantsHrOfficer_GainsOvertimeWrite_WhenTheSeederRunsAgain()
+    {
+        var (db, tenantId) = await SeededRoleBundles.NewTenantAsync("hr-officer-restart");
+        var role = await db.Roles.Include(r => r.RolePermissions).ThenInclude(rp => rp.Permission)
+            .SingleAsync(r => r.TenantId == tenantId && r.Name == "HR Officer");
+        db.RolePermissions.RemoveRange(role.RolePermissions.Where(rp => rp.Permission!.Key == "overtime.write"));
+        await db.SaveChangesAsync();
+        (await SeededRoleBundles.PermissionsOfAsync(db, tenantId, "HR Officer")).Should().NotContain("overtime.write", "the tenant predates the grant");
+
+        await new Zayra.Api.Infrastructure.Seed.AuthSeeder(db).EnsureTenantRolesAsync(tenantId, CancellationToken.None);
+
+        (await SeededRoleBundles.PermissionsOfAsync(db, tenantId, "HR Officer")).Should().Contain(new[] { "overtime.write", "leave.write" });
+    }
+
     // ── Stubs ────────────────────────────────────────────────────────────────
 
     private sealed class NoStorage : IDocumentStorage

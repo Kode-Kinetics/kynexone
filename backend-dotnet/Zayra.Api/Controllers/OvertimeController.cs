@@ -468,6 +468,10 @@ public class OvertimeController : ControllerBase
 
     [HttpPost("comp-off-conversions")]
     [Authorize(Roles = "Admin,HR Manager")]
+    // Converting approved overtime into time off is overtime administration for the HR-manager tier, not
+    // filing. Without an explicit key the gate resolved to overtime.write, which HR Officer now holds to file
+    // overtime on an employee's behalf.
+    [HasPermission("overtime.policy_manage")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: OvertimeRequestId, EmployeeId, OvertimeHours, CompOffDays, Status, CreatedAtUtc. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public async Task<ActionResult<OvertimeCompOffConversion>> CreateCompOffConversion(CompOffConversionRequest req, CancellationToken ct)
     {
