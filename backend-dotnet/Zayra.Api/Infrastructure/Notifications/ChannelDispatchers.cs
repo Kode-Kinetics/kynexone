@@ -28,7 +28,7 @@ public abstract class ProviderBackedDispatcher : INotificationChannelDispatcher
         try { return await Provider.IsConfiguredAsync(tenantId, ct); }
         catch (Exception ex)
         {
-            _log.LogWarning(ex, "{Channel}: provider configuration probe failed for tenant {TenantId}.", Channel, tenantId);
+            _log.LogWarning("{Channel}: provider configuration probe failed for tenant {TenantId} ({ErrorType}).", Channel, tenantId, ex.GetType().Name);
             return false;
         }
     }
@@ -55,7 +55,8 @@ public abstract class ProviderBackedDispatcher : INotificationChannelDispatcher
         }
         catch (Exception ex)
         {
-            _log.LogWarning(ex, "{Channel}: provider send threw for tenant {TenantId}.", Channel, request.TenantId);
+            // Type only: a provider's exception message can echo the destination (a phone number or address).
+            _log.LogWarning("{Channel}: provider send threw for tenant {TenantId} ({ErrorType}).", Channel, request.TenantId, ex.GetType().Name);
             return ChannelDispatchResult.Transient(Provider.Name, "provider_exception",
                 NotificationBodyPolicy.ScrubProviderError(ex.Message));
         }
@@ -114,7 +115,7 @@ public sealed class EmailChannelDispatcher : INotificationChannelDispatcher
         try { return await _email.IsConfiguredAsync(tenantId, ct); }
         catch (Exception ex)
         {
-            _log.LogWarning(ex, "Email: SMTP configuration probe failed for tenant {TenantId}.", tenantId);
+            _log.LogWarning("Email: SMTP configuration probe failed for tenant {TenantId} ({ErrorType}).", tenantId, ex.GetType().Name);
             return false;
         }
     }
