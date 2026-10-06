@@ -11,6 +11,7 @@ internal interface IS3Primitives
 {
     Task PutAsync(string bucket, string key, Stream content, string contentType, CancellationToken ct);
     Task<byte[]> GetBytesAsync(string bucket, string key, CancellationToken ct);
+    Task DeleteAsync(string bucket, string key, CancellationToken ct) => Task.CompletedTask;
 }
 
 internal sealed class AwsS3Primitives(IAmazonS3 s3) : IS3Primitives
@@ -25,6 +26,9 @@ internal sealed class AwsS3Primitives(IAmazonS3 s3) : IS3Primitives
             ContentType = contentType,
         }, ct);
     }
+
+    public Task DeleteAsync(string bucket, string key, CancellationToken ct) =>
+        s3.DeleteObjectAsync(new DeleteObjectRequest { BucketName = bucket, Key = key }, ct);
 
     public async Task<byte[]> GetBytesAsync(string bucket, string key, CancellationToken ct)
     {
@@ -80,6 +84,23 @@ public sealed class S3DocumentStorage : IDocumentStorage
             string.Equals(ex.ErrorCode, "NoSuchKey", StringComparison.OrdinalIgnoreCase))
         {
             throw new FileNotFoundException($"Stored document not found: {storageUrl}", ex);
+        }
+    }
+
+    public async Task<bool> TryDeleteAsync(Guid tenantId, string storageUrl, CancellationToken ct = default)
+    {
+        AssertTenantOwnership(tenantId, storageUrl);
+        try
+        {
+            await _s3.DeleteAsync(_opts.Bucket, storageUrl, ct);
+            _logger.LogInformation("S3: removed uncommitted {Key}", storageUrl);
+            return true;
+        }
+        catch (AmazonS3Exception ex)
+        {
+            // Best effort: the caller is already handling a failed write and must surface THAT error.
+            _logger.LogWarning(ex, "S3: could not remove uncommitted {Key}", storageUrl);
+            return false;
         }
     }
 

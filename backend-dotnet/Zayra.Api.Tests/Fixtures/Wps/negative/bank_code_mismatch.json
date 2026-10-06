@@ -1,0 +1,10 @@
+{
+  "expectedCode": "bank_code_mismatch",
+  "patch": {
+    "rows": {
+      "0": {
+        "bankBic": "RIBLSARI"
+      }
+    }
+  }
+}
