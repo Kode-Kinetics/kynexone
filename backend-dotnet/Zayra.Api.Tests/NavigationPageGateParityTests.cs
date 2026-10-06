@@ -87,6 +87,38 @@ public class NavigationPageGateParityTests
         traps.Should().BeEmpty("a sidebar link must open for everyone it is shown to");
     }
 
+    /// <summary>
+    /// The self-service "View Payslip", "Last Payslip" and "My Payslips" links went to <c>/payroll</c>, the
+    /// payroll team's screen, gated on payroll.read — which the Employee role does not hold, so every
+    /// employee who clicked was sent to "Access Denied". Each payslip link must open a page whose gate
+    /// admits a permission the seeded Employee role actually has.
+    /// </summary>
+    [Fact]
+    public void SelfServicePayslipLinks_OpenAPageTheEmployeeRoleCanAccess()
+    {
+        var seeder = File.ReadAllText(Locate("backend-dotnet/Zayra.Api/Infrastructure/Seed/AuthSeeder.cs"));
+        var employeeRole = Regex.Match(seeder, @"EnsureRole\(tenantId,\s*""Employee"",\s*""[^""]*"",\s*Ps\(new\[\]\s*\{(?<perms>[^}]*)\}");
+        employeeRole.Success.Should().BeTrue("the Employee role's permission list must still be parseable from AuthSeeder");
+        var employeePerms = Parse(employeeRole.Groups["perms"].Value);
+        employeePerms.Should().Contain("ess.read").And.NotContain("payroll.read");
+
+        var lib = File.ReadAllText(Locate("frontend/src/lib/essPayslip.ts"));
+        var target = Regex.Match(lib, @"ESS_PAYSLIPS_PATH\s*=\s*'(?<path>/[^']+)'").Groups["path"].Value;
+        target.Should().NotBeNullOrEmpty();
+
+        var ess = File.ReadAllText(Locate("frontend/src/views/EmployeeSelfServicePage.tsx"));
+        Regex.Matches(ess, @"router\.push\(ESS_PAYSLIPS_PATH\)").Count.Should().Be(2, "the View Payslip button and the Last Payslip card");
+        ess.Should().Contain("label: 'My Payslips', path: ESS_PAYSLIPS_PATH");
+        Regex.IsMatch(ess, @"['""]/payroll['""]").Should().BeFalse("self-service must never link to the payroll team's screen");
+
+        var page = Path.Combine(Locate("frontend/app"), "(dashboard)", target.TrimStart('/').Replace('/', Path.DirectorySeparatorChar), "page.tsx");
+        File.Exists(page).Should().BeTrue($"{target} must be a real route");
+        var gate = Gate.Match(File.ReadAllText(page));
+        gate.Success.Should().BeTrue($"{target} must declare its PermissionGate");
+        Parse(gate.Groups["perms"].Value).Overlaps(employeePerms).Should().BeTrue(
+            $"{target} must open for the Employee role ({string.Join(", ", employeePerms)})");
+    }
+
     private static HashSet<string> Parse(string list) =>
         list.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(p => p.Trim('\'', '"', ' '))
