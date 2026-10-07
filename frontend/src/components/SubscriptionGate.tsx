@@ -38,7 +38,7 @@ export function SubscriptionGate({ featureName, requiredPlan, reason, children, 
             </p>
           )}
           <a
-            href="mailto:sales@kynexone.com?subject=Upgrade Inquiry"
+            href="mailto:info@kodekinetics.com?subject=Upgrade Inquiry"
             className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-sapphire hover:bg-sapphire/90 text-white text-sm font-medium transition-colors"
           >
             Contact Sales to Upgrade
@@ -65,7 +65,7 @@ export function UpgradePrompt({ featureName, requiredPlan, compact = false }: {
       <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-sapphire/5 border border-sapphire/20 text-xs text-sapphire">
         <Lock className="h-3.5 w-3.5 shrink-0" />
         <span>{featureName} requires an upgraded plan.{requiredPlan ? ` (${requiredPlan}+)` : ''}</span>
-        <a href="mailto:sales@kynexone.com?subject=Upgrade Inquiry" className="ms-auto underline hover:no-underline whitespace-nowrap">
+        <a href="mailto:info@kodekinetics.com?subject=Upgrade Inquiry" className="ms-auto underline hover:no-underline whitespace-nowrap">
           Upgrade →
         </a>
       </div>
@@ -82,7 +82,7 @@ export function UpgradePrompt({ featureName, requiredPlan, compact = false }: {
         <p className="text-sm text-slate-400">Upgrade to {requiredPlan} to access this feature.</p>
       )}
       <a
-        href="mailto:sales@kynexone.com?subject=Upgrade Inquiry"
+        href="mailto:info@kodekinetics.com?subject=Upgrade Inquiry"
         className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-sapphire hover:bg-sapphire/90 text-white text-sm font-medium transition-colors"
       >
         Contact Sales <ArrowUpRight className="h-3.5 w-3.5" />
