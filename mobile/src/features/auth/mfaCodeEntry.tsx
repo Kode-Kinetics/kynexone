@@ -66,19 +66,25 @@ export function MfaCodeInput({
   editable,
   autoFocus,
   onSubmit,
+  tone,
 }: {
   value: string;
   onChange: (code: string) => void;
   editable: boolean;
   autoFocus?: boolean;
   onSubmit?: () => void;
+  /** Colours for a themed (light or dark) surface; the default suits the dark sign-in sheets. */
+  tone?: { text: string; placeholder: string; background: string; border: string };
 }) {
   const { t } = useTranslation();
   return (
     <TextInput
       value={value}
       onChangeText={(text) => onChange(normalizeCode(text))}
-      style={styles.codeInput}
+      style={[
+        styles.codeInput,
+        tone && { color: tone.text, backgroundColor: tone.background, borderColor: tone.border },
+      ]}
       keyboardType="number-pad"
       inputMode="numeric"
       textContentType="oneTimeCode"
@@ -93,17 +99,17 @@ export function MfaCodeInput({
       secureTextEntry={false}
       accessibilityLabel={t('mfa.codeLabel')}
       placeholder="••••••"
-      placeholderTextColor="rgba(255,255,255,0.25)"
+      placeholderTextColor={tone?.placeholder ?? 'rgba(255,255,255,0.25)'}
     />
   );
 }
 
 /** Plain-language error for the current state, with attempts left after a wrong code. */
-export function MfaCodeError({ state }: { state: CodeEntryState }) {
+export function MfaCodeError({ state, color }: { state: CodeEntryState; color?: string }) {
   const { t } = useTranslation();
   if (!state.error) return null;
   return (
-    <Text style={styles.error} accessibilityLiveRegion="polite" accessibilityRole="alert">
+    <Text style={[styles.error, color ? { color } : null]} accessibilityLiveRegion="polite" accessibilityRole="alert">
       {t(`mfa.errors.${state.error}`)}
       {state.error === 'wrongCode' || state.error === 'notAccepted' || state.error === 'waitForNextCode' ? `\n${t('mfa.attemptsLeft', { count: attemptsLeft(state) })}` : ''}
     </Text>

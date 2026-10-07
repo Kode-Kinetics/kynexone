@@ -1,20 +1,24 @@
 import React, { useState } from 'react';
 import {
-  ActivityIndicator,
-  I18nManager,
   KeyboardAvoidingView,
   Platform,
+  ScrollView,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/auth/authStore';
 import { formatCountdown, MFA_CODE_LENGTH, secondsLeft } from '@/auth/mfaFlow';
-import { COLORS } from '@/config';
+import {
+  GlassSurface,
+  LiquidBackdrop,
+  LiquidButton,
+  MotionPressable,
+  ScreenHero,
+} from '@/components/ui';
+import { useTheme } from '@/theme/ThemeProvider';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { AuthStackParamList } from '@/navigation/authTypes';
 import { MfaCodeError, MfaCodeInput, useCodeEntry } from './mfaCodeEntry';
@@ -24,6 +28,7 @@ type Props = NativeStackScreenProps<AuthStackParamList, 'MfaChallenge'>;
 /** Step 2 of sign-in for an enrolled user: the 6-digit code from the authenticator app. */
 export default function MfaChallengeScreen({ navigation, route }: Props) {
   const { t } = useTranslation();
+  const { theme } = useTheme();
   const { challengeToken, tenantId, email, expiresInSeconds, justEnrolled } = route.params;
   const completeMfa = useAuthStore((s) => s.completeMfa);
   const [code, setCode] = useState('');
@@ -42,95 +47,116 @@ export default function MfaChallengeScreen({ navigation, route }: Props) {
   };
 
   return (
-    <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-      <LinearGradient colors={['#0B1020', '#0F1830', '#0B1020']} style={StyleSheet.absoluteFill} />
-      <TouchableOpacity
-        style={styles.back}
-        onPress={() => navigation.goBack()}
-        accessibilityRole="button"
-        accessibilityLabel={t('mfa.backToSignIn')}
+    <KeyboardAvoidingView
+      style={[styles.root, { backgroundColor: theme.colors.canvas }]}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
+      <LiquidBackdrop />
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+        automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+        showsVerticalScrollIndicator={false}
       >
-        <Ionicons name={I18nManager.isRTL ? 'arrow-forward' : 'arrow-back'} size={22} color="#fff" />
-      </TouchableOpacity>
-
-      <View style={styles.card}>
-        <View style={styles.iconCircle}>
-          <Ionicons name="shield-checkmark-outline" size={34} color={COLORS.cyan} />
-        </View>
-        <Text style={styles.title}>{t('mfa.challengeTitle')}</Text>
-        <Text style={styles.subtitle}>{t('mfa.challengeBody', { email })}</Text>
-
-        <View style={styles.inputGap} />
-        <MfaCodeInput
-          value={code}
-          onChange={(value) => {
-            edited();
-            setCode(value);
-          }}
-          editable={!finished && !submitting}
-          autoFocus
-          onSubmit={submit}
+        <ScreenHero
+          title={t('mfa.challengeTitle')}
+          subtitle={t('mfa.challengeBody', { email })}
+          onBack={() => navigation.goBack()}
+          backLabel={t('mfa.backToSignIn')}
         />
 
-        <MfaCodeError state={state} />
-        {!finished ? (
-          <Text style={styles.timer}>
-            {t('mfa.expiresIn', { time: formatCountdown(secondsLeft(state, nowMs)) })}
-          </Text>
-        ) : null}
+        <View style={styles.content}>
+          <GlassSurface radius={theme.radius.xl} contentStyle={styles.card}>
+            <View style={[styles.identityIcon, { backgroundColor: theme.colors.cyan + '18' }]}>
+              <Ionicons name="shield-checkmark-outline" size={30} color={theme.colors.cyan} />
+            </View>
 
-        {finished ? (
-          <TouchableOpacity style={styles.button} onPress={() => navigation.goBack()} accessibilityRole="button">
-            <Text style={styles.buttonText}>{t('mfa.backToSignIn')}</Text>
-          </TouchableOpacity>
-        ) : (
-          <>
-            <TouchableOpacity
-              style={[styles.button, !canSubmit && styles.buttonDisabled]}
-              onPress={submit}
-              disabled={!canSubmit}
-              accessibilityRole="button"
-              accessibilityState={{ disabled: !canSubmit, busy: submitting }}
-            >
-              {submitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>{t('mfa.verify')}</Text>}
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => navigation.goBack()} style={styles.secondary} accessibilityRole="button">
-              <Text style={styles.secondaryText}>{t('mfa.backToSignIn')}</Text>
-            </TouchableOpacity>
-          </>
-        )}
-      </View>
+            <View style={styles.inputGap} />
+            <MfaCodeInput
+              value={code}
+              onChange={(value) => {
+                edited();
+                setCode(value);
+              }}
+              editable={!finished && !submitting}
+              autoFocus
+              onSubmit={submit}
+              tone={{
+                text: theme.colors.text,
+                placeholder: theme.colors.textMuted,
+                background: theme.colors.surfaceSoft,
+                border: state.error ? theme.colors.danger : theme.colors.glassBorder,
+              }}
+            />
+
+            <MfaCodeError state={state} color={theme.colors.danger} />
+            {!finished ? (
+              <Text style={[theme.typography.caption, styles.timer, { color: theme.colors.textMuted }]}>
+                {t('mfa.expiresIn', { time: formatCountdown(secondsLeft(state, nowMs)) })}
+              </Text>
+            ) : null}
+
+            {finished ? (
+              <LiquidButton
+                label={t('mfa.backToSignIn')}
+                icon="arrow-back-outline"
+                onPress={() => navigation.goBack()}
+                style={styles.button}
+              />
+            ) : (
+              <>
+                <LiquidButton
+                  label={t('mfa.verify')}
+                  icon="log-in-outline"
+                  onPress={submit}
+                  loading={submitting}
+                  disabled={!canSubmit}
+                  style={styles.button}
+                />
+                <MotionPressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t('mfa.backToSignIn')}
+                  onPress={() => navigation.goBack()}
+                  haptic="selection"
+                  contentStyle={styles.secondary}
+                >
+                  <Text style={[theme.typography.caption, styles.secondaryText, { color: theme.colors.primary }]}>
+                    {t('mfa.backToSignIn')}
+                  </Text>
+                </MotionPressable>
+              </>
+            )}
+          </GlassSurface>
+        </View>
+      </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: 'center', padding: 24, backgroundColor: COLORS.navy },
-  back: { position: 'absolute', top: 58, start: 22, zIndex: 1, padding: 8 },
-  card: {
-    borderRadius: 22,
-    padding: 24,
-    backgroundColor: 'rgba(255,255,255,0.055)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-  },
-  iconCircle: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
+  root: { flex: 1 },
+  scroll: { flexGrow: 1, paddingBottom: 34 },
+  content: { paddingHorizontal: 16, paddingTop: 12 },
+  card: { padding: 20 },
+  identityIcon: {
+    width: 58,
+    height: 58,
+    borderRadius: 21,
     alignSelf: 'center',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(94,235,255,0.1)',
-    marginBottom: 18,
   },
-  title: { color: '#fff', fontSize: 24, fontWeight: '800', textAlign: 'center' },
-  subtitle: { color: 'rgba(255,255,255,0.62)', fontSize: 14, lineHeight: 21, textAlign: 'center', marginTop: 9 },
-  inputGap: { height: 26 },
-  timer: { color: 'rgba(255,255,255,0.45)', textAlign: 'center', marginTop: 14, fontSize: 12 },
-  button: { backgroundColor: COLORS.blue, borderRadius: 14, alignItems: 'center', paddingVertical: 15, marginTop: 22 },
-  buttonDisabled: { opacity: 0.45 },
-  buttonText: { color: '#fff', fontSize: 15, fontWeight: '800' },
-  secondary: { alignItems: 'center', marginTop: 18, paddingVertical: 6 },
-  secondaryText: { color: COLORS.cyan, fontSize: 13, fontWeight: '600' },
+  inputGap: { height: 22 },
+  timer: { textAlign: 'center', marginTop: 14 },
+  button: { marginTop: 18 },
+  secondary: {
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 10,
+  },
+  secondaryText: { fontWeight: '700' },
 });

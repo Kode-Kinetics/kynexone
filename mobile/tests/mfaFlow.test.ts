@@ -289,6 +289,8 @@ const BASELINE_DEPENDENCIES = [
   'expo-system-ui', 'i18next', 'react', 'react-hook-form', 'react-i18next', 'react-native',
   'react-native-reanimated', 'react-native-safe-area-context', 'react-native-screens', 'react-native-svg',
   'react-native-worklets', 'zod', 'zustand',
+  // Build 6 (#58): config plugin for iOS scene support (app.json plugins), not part of MFA.
+  'expo-build-properties',
 ];
 // Both must ship in the FIRST store binary: the OTA channel, and screen-capture
 // protection for the setup key.

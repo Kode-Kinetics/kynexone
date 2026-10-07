@@ -1,40 +1,72 @@
-import React, { useEffect } from 'react';
-import { View, ActivityIndicator } from 'react-native';
+import React, { useEffect, useMemo } from 'react';
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { useAuthStore } from '@/auth/authStore';
 import { AuthStack } from './AuthStack';
 import { MainTabs } from './MainTabs';
-import { COLORS } from '@/config';
 import { navigationRef } from './routes';
+import { GlassSurface, LiquidBackdrop } from '@/components/ui';
+import { useTheme } from '@/theme/ThemeProvider';
 import { MfaSetupBanner } from '@/features/auth/MfaSetupBanner';
 
 export function RootNavigator() {
   const { isAuthenticated, isInitialized, initialize } = useAuthStore();
+  const { theme } = useTheme();
 
   useEffect(() => {
     void initialize();
   }, [initialize]);
+
+  const navigationTheme = useMemo(() => ({
+    dark: theme.isDark,
+    colors: {
+      primary: theme.colors.primary,
+      background: theme.colors.canvas,
+      card: theme.colors.surfaceStrong,
+      text: theme.colors.text,
+      border: theme.colors.border,
+      notification: theme.colors.danger,
+    },
+  }), [theme]);
 
   // Only the cold-start session restore may replace the navigator. Sign-in,
   // MFA and sign-out also toggle isLoading; unmounting the tree for those
   // threw away the screen that was about to navigate to the MFA step.
   if (!isInitialized) {
     return (
-      <View style={{ flex: 1, backgroundColor: COLORS.navy, alignItems: 'center', justifyContent: 'center' }}>
-        <View style={{
-          width: 64, height: 64, borderRadius: 16, backgroundColor: COLORS.blue,
-          alignItems: 'center', justifyContent: 'center', marginBottom: 20,
-        }}>
-          <ActivityIndicator color="#fff" size="large" />
-        </View>
+      <View style={[styles.loading, { backgroundColor: theme.colors.canvas }]}>
+        <LiquidBackdrop />
+        <GlassSurface style={styles.loadingCard} contentStyle={styles.loadingContent} radius={28}>
+          <View style={[styles.mark, { backgroundColor: theme.colors.primary }]}>
+            <Text style={styles.markText}>K</Text>
+          </View>
+          <ActivityIndicator color={theme.colors.cyan} size="small" />
+          <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>
+            Preparing your secure workspace…
+          </Text>
+        </GlassSurface>
       </View>
     );
   }
 
   return (
-    <NavigationContainer ref={navigationRef}>
+    <NavigationContainer ref={navigationRef} theme={navigationTheme}>
       {isAuthenticated ? <MainTabs /> : <AuthStack />}
       {isAuthenticated ? <MfaSetupBanner /> : null}
     </NavigationContainer>
   );
 }
+
+const styles = StyleSheet.create({
+  loading: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
+  loadingCard: { width: '100%', maxWidth: 310, minHeight: 210 },
+  loadingContent: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16, padding: 24 },
+  mark: {
+    width: 68,
+    height: 68,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  markText: { color: '#FFFFFF', fontSize: 34, fontWeight: '800', letterSpacing: -1 },
+});

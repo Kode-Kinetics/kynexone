@@ -459,6 +459,13 @@ export interface TeamMember {
 // ---- Dashboard ----
 
 export interface EmployeeDashboard {
+  profile?: {
+    employeeId: string;
+    fullName: string;
+    jobTitle?: string;
+    department?: string;
+    profilePhotoUrl?: string;
+  };
   todayAttendance: TodayAttendance;
   leaveBalances: LeaveBalance[];
   pendingRequestsCount: number;
