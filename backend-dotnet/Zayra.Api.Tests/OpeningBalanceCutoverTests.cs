@@ -575,15 +575,12 @@ public class OpeningBalanceCutoverTests
         using var doc = JsonDocument.Parse(json);
         doc.RootElement.GetProperty("code").GetString().Should().Be("cutover_period_locked");
 
-        // Two independent reasons, each coded: the package DECLARES a cutover whose boundary a locked run
-        // already sits on, and it carries balances INTO that locked period. The balance refusal is the
-        // one this test pins; the cutover-change refusal is pinned in PilotPayrollCorrectnessPostgresTests.
+        // The FIRST declaration of 2026-09-01 is not itself refused (it is on the earliest locked month);
+        // carrying balances INTO the locked period is.
         var refusals = doc.RootElement.GetProperty("refusals").EnumerateArray().ToList();
-        refusals.Select(r => r.GetProperty("code").GetString()).Should().BeEquivalentTo(new[]
-        {
-            CutoverStatuses.BalanceIntoLockedPeriodCode, CutoverStatuses.ChangeAfterLockedRunCode,
-        });
-        var refusal = refusals.Single(r => r.GetProperty("code").GetString() == CutoverStatuses.BalanceIntoLockedPeriodCode);
+        refusals.Should().ContainSingle();
+        var refusal = refusals[0];
+        refusal.GetProperty("code").GetString().Should().Be(CutoverStatuses.BalanceIntoLockedPeriodCode);
         refusal.GetProperty("period").GetString().Should().Be("2026-09");
         refusal.GetProperty("payrollRunId").GetGuid().Should().Be(september.Id);
         refusal.GetProperty("companyName").GetString().Should().Be("Cutover KSA Co");
@@ -607,11 +604,37 @@ public class OpeningBalanceCutoverTests
         var co = await SeedCompany(db, tid);
         await SeedEmployee(db, tid, co.Id, "EMP-001");
 
+        // The wave's cutover is declared first, then July — a month this product owns — is locked.
+        await Commit(db, tid, Package("cutover-declared", ("companyCutover", CutoverCsv)));
         var july = await CreateRun(db, tid, 2026, 7, co.Id);
         await ProcessApproveLock(db, tid, july.Id);
 
+        // A re-migration of the same wave (same cutover, balances) is not a change and is accepted.
         await Commit(db, tid, FullCutoverPackage("cutover-prior-lock"));
         (await db.EmployeeLoans.CountAsync(l => l.TenantId == tid)).Should().Be(1);
+    }
+
+    /// <summary>
+    /// A FIRST cutover may not be declared for a month later than a run this product already locked:
+    /// the locked July would land on the carried side of a September boundary. The refusal names the
+    /// latest month that can be declared.
+    /// </summary>
+    [Fact]
+    public async Task FirstCutover_LaterThanALockedRun_IsRefusedNamingTheLatestAllowedMonth()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var tid = Guid.NewGuid();
+        var co = await SeedCompany(db, tid);
+        await SeedEmployee(db, tid, co.Id, "EMP-001");
+        var july = await CreateRun(db, tid, 2026, 7, co.Id);
+        await ProcessApproveLock(db, tid, july.Id);
+
+        var res = await Migration(db, tid).Commit(FullCutoverPackage("first-after-lock"), CancellationToken.None);
+
+        var json = JsonSerializer.Serialize(res.Result.Should().BeOfType<ConflictObjectResult>().Subject.Value);
+        json.Should().Contain(CutoverStatuses.FirstDeclarationTooLateCode).And.Contain("2026-07-01");
+        (await db.EmployeeLoans.CountAsync(l => l.TenantId == tid)).Should().Be(0);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

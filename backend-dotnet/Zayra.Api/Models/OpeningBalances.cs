@@ -70,6 +70,12 @@ public static class CutoverStatuses
     /// <summary>Coded reason: an opening-balance import into a period with a locked payroll run.</summary>
     public const string BalanceIntoLockedPeriodCode = "OPENING_BALANCE_INTO_LOCKED_PERIOD";
 
+    /// <summary>Coded reason: payslip YTD opening balances with no cutover in force or declared alongside them.</summary>
+    public const string BalanceNeedsCutoverCode = "OPENING_BALANCE_NEEDS_CUTOVER";
+
+    /// <summary>Coded reason: a FIRST cutover declared for a month later than a run this product already locked.</summary>
+    public const string FirstDeclarationTooLateCode = "CUTOVER_FIRST_DECLARATION_AFTER_LOCKED_RUN";
+
     /// <summary>Coded reason: a cutover date that is not the first day of a month.</summary>
     public const string NotFirstOfMonthCode = "CUTOVER_NOT_FIRST_OF_MONTH";
 

@@ -3105,6 +3105,7 @@ public class PayrollController : ControllerBase
             // Mid-year cutover — the same partition decision the YTD figures above were computed from.
             YtdUnresolvedOverlapEmployeeIds         = ytdSources.UnresolvedOverlapEmployeeIds,
             YtdPreCutoverExcludedEmployeeIds        = ytdSources.PreCutoverSlipsExcludedEmployeeIds,
+            YtdSuggestedCutover                     = ytdSources.SuggestedCutover,
             Exclusions                              = runPopulation.Exclusions,
             NotEligibleSelections                   = runPopulation.NotEligible,
             SiblingRunCount                         = siblingRuns.Count,
@@ -3999,6 +4000,7 @@ public class PayrollController : ControllerBase
             // stored results wholesale, so omitting it would silently drop Rule 14b.
             YtdUnresolvedOverlapEmployeeIds         = valYtdSources.UnresolvedOverlapEmployeeIds,
             YtdPreCutoverExcludedEmployeeIds        = valYtdSources.PreCutoverSlipsExcludedEmployeeIds,
+            YtdSuggestedCutover                     = valYtdSources.SuggestedCutover,
             Exclusions                              = validationPopulation.Exclusions,
             NotEligibleSelections                   = validationPopulation.NotEligible,
             SiblingRunCount                         = valSiblingRuns.Count,

@@ -475,7 +475,9 @@ public class PilotPayrollCorrectnessPostgresTests
         (await Payroll(db, tenantId, rules).Process(september.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
 
         (await Findings(db, september.Id)).Should().Contain(f =>
-            f.Code == PayrollYtdBasis.UnresolvedOverlapCode && f.Severity == "Error" && f.EmployeeId == employee.Id);
+            f.Code == PayrollYtdBasis.UnresolvedOverlapCode && f.Severity == "Error" && f.EmployeeId == employee.Id
+            && f.Message.Contains("Declare a cutover of 2026-08-01"),
+            "the block names the month to declare: the first month this product locked this year");
 
         (await Payroll(db, tenantId, rules).Validate(september.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
         (await Findings(db, september.Id)).Should().Contain(f =>
@@ -552,6 +554,83 @@ public class PilotPayrollCorrectnessPostgresTests
         var stored = await db.CompanyCutovers.AsNoTracking().SingleAsync(c => c.CompanyId == company.Id);
         stored.CutoverDate.Should().Be(new DateOnly(2026, 9, 1));
         stored.Status.Should().Be(CutoverStatuses.Active);
+    }
+
+    /// <summary>
+    /// Payslip YTD opening balances are refused unless a cutover is in force or declared in the same
+    /// package — the import that used to create the month-two deadlock. Detail buckets stay optional.
+    /// </summary>
+    [Fact]
+    public async Task Import_PayslipYtdBalancesWithNoCutover_AreRefused()
+    {
+        await using var db = _fx.CreateDb();
+        var (tenantId, company) = await SeedTenantAndCompany(db);
+        var employee = await SeedEmployee(db, tenantId, company, "Saudi", 10_000m, 2_500m,
+            joining: new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+
+        var dto = Ok(await Migration(db, tenantId).Commit(new MigrationPackageRequest($"ytd-{Guid.NewGuid():N}", new Dictionary<string, string>
+        {
+            ["payrollOpeningBalances"] = "EmployeeCode,Year,BalanceType,ComponentCode,Amount,Currency,SourceSystem,SourceRecordId\n"
+                + $"{employee.EmployeeCode},2026,YTD_GROSS,TOTAL,100000,SAR,SAP,Y1\n"
+                + $"{employee.EmployeeCode},2026,YTD_STATUTORY_EE,GOSI,9750,SAR,SAP,Y2\n",
+        }, false), CancellationToken.None));
+
+        dto.Errors.Should().ContainSingle(e => e.Contains(CutoverStatuses.BalanceNeedsCutoverCode) && e.Contains("YTD_GROSS"));
+        (await db.PayrollOpeningBalances.Where(b => b.EmployeeId == employee.Id).Select(b => b.BalanceType).ToListAsync())
+            .Should().BeEquivalentTo(new[] { OpeningBalanceTypes.YtdStatutoryEmployee },
+                "the payslip aggregate is refused; a detail bucket is never summed into a payslip and stays allowed");
+    }
+
+    /// <summary>
+    /// THE DEADLOCK, RESOLVED. Legacy carried balances with no cutover; September run and locked here;
+    /// October blocked by 14b, which names 2026-09-01. A FIRST declaration of that month is not a change
+    /// and is accepted; October then counts every month once.
+    /// </summary>
+    [Fact]
+    public async Task Cutover_FirstDeclarationOfTheNamedMonth_ResolvesTheMonthTwoDeadlock()
+    {
+        await using var db = _fx.CreateDb();
+        var (tenantId, company) = await SeedTenantAndCompany(db);
+        var employee = await SeedEmployee(db, tenantId, company, "Saudi", 10_000m, 2_500m,
+            joining: new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        var rules = KsaRules();
+        AddOpeningYtd(db, tenantId, company, employee, gross: 100_000m, deductions: 9_750m, net: 90_250m);
+        await db.SaveChangesAsync();
+
+        var sep = await ProcessAndLock(db, tenantId, company, rules, 2026, 9);
+        var oct = await NewRun(db, tenantId, company, 2026, 10);
+        (await Payroll(db, tenantId, rules).Process(oct.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        (await Findings(db, oct.Id)).Should().Contain(f => f.Code == PayrollYtdBasis.UnresolvedOverlapCode
+            && f.Message.Contains("Declare a cutover of 2026-09-01"));
+
+        Ok(await Migration(db, tenantId).Commit(CutoverPackage(company, "2026-09-01", "Active", "first"), CancellationToken.None))
+            .Errors.Should().BeEmpty("a first declaration on the earliest locked month is not a change");
+
+        // Validating the run again (what the 14b message asks for) re-derives the YTD basis with the cutover.
+        (await Payroll(db, tenantId, rules).Validate(oct.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        var octSlip = await Slip(db, oct.Id, employee.Id);
+        octSlip.YtdGross.Should().Be(100_000m + (await Slip(db, sep.Id, employee.Id)).GrossSalary + octSlip.GrossSalary,
+            "the carried figure ends at August; September and October are counted once each");
+        var basis = await PayrollYtdBasis.LoadAsync(db, tenantId, company.Id, oct, new[] { employee.Id }, CancellationToken.None);
+        basis.PriorSlips.Should().ContainSingle(p => p.RunId == sep.Id, "September is on the earned-here side of a 2026-09-01 cutover");
+        basis.OpeningBalancesByEmployee.Should().ContainKey(employee.Id);
+        (await Findings(db, oct.Id)).Should().NotContain(f => f.Code == PayrollYtdBasis.UnresolvedOverlapCode);
+    }
+
+    /// <summary>A first declaration LATER than a locked run is refused, naming the latest month allowed.</summary>
+    [Fact]
+    public async Task Cutover_FirstDeclarationAfterALockedRun_IsRefusedNamingTheMonth()
+    {
+        await using var db = _fx.CreateDb();
+        var (tenantId, company) = await SeedTenantAndCompany(db);
+        await SeedEmployee(db, tenantId, company, "Saudi", 10_000m, 2_500m, joining: new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        await ProcessAndLock(db, tenantId, company, KsaRules(), 2026, 9);
+
+        var result = await Migration(db, tenantId).Commit(CutoverPackage(company, "2026-10-01", "Active", "late"), CancellationToken.None);
+
+        var json = System.Text.Json.JsonSerializer.Serialize(result.Result.Should().BeOfType<ConflictObjectResult>().Subject.Value);
+        json.Should().Contain(CutoverStatuses.FirstDeclarationTooLateCode).And.Contain("2026-09-01").And.Contain("ReasonAr");
+        (await db.CompanyCutovers.AnyAsync(c => c.CompanyId == company.Id)).Should().BeFalse();
     }
 
     /// <summary>A cutover must be the 1st of a month; the refusal is coded and names the month.</summary>

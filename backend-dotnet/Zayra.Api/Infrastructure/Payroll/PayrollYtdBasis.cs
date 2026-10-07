@@ -128,6 +128,11 @@ public static class PayrollYtdBasis
                 .Select(c => c.Slip.EmployeeId).ToHashSet()
             : new HashSet<int>();
 
+        // The month to declare when the overlap is unresolved: the first month this product locked for the
+        // entity this year — the latest first cutover the importer accepts (CUTOVER_FIRST_DECLARATION_AFTER_LOCKED_RUN).
+        DateOnly? suggestedCutover = candidates.Count == 0 ? null
+            : candidates.Select(c => new DateOnly(c.Year, c.Month, 1)).Min();
+
         return new YtdSources(
             cutover,
             priorSlips,
@@ -135,7 +140,10 @@ public static class PayrollYtdBasis
                 ? balances.GroupBy(b => b.EmployeeId).ToDictionary(g => g.Key, g => g.ToList())
                 : new Dictionary<int, List<PayrollOpeningBalance>>(),
             unresolved,
-            preCutoverExcluded);
+            preCutoverExcluded)
+        {
+            SuggestedCutover = suggestedCutover,
+        };
     }
 }
 
@@ -145,4 +153,8 @@ public sealed record YtdSources(
     IReadOnlyList<PayrollSlip> PriorSlips,
     IReadOnlyDictionary<int, List<PayrollOpeningBalance>> OpeningBalancesByEmployee,
     IReadOnlySet<int> UnresolvedOverlapEmployeeIds,
-    IReadOnlySet<int> PreCutoverSlipsExcludedEmployeeIds);
+    IReadOnlySet<int> PreCutoverSlipsExcludedEmployeeIds)
+{
+    /// <summary>The cutover month to declare when the overlap is unresolved (see <see cref="PayrollYtdBasis.LoadAsync"/>).</summary>
+    public DateOnly? SuggestedCutover { get; init; }
+}

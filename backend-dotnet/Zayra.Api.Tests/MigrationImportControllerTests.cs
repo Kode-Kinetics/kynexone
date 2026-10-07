@@ -145,9 +145,18 @@ public sealed class MigrationImportControllerTests
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
+        // Payslip YTD opening balances need a cutover for the employee's legal entity
+        // (OPENING_BALANCE_NEEDS_CUTOVER), so the employee has one and the package declares it.
+        var company = new Company
+        {
+            TenantId = tenantId, LegalNameEn = "Enterprise Co", RegistrationNumber = "ENT-0001",
+            CountryCode = "SAU", Jurisdiction = "KSA-mainland", DefaultCurrency = "SAR", IsActive = true,
+        };
+        db.Companies.Add(company);
         db.Employees.Add(new Employee
         {
             TenantId = tenantId,
+            CompanyId = company.Id,
             EmployeeCode = "EMP-001",
             FullName = "Enterprise Employee",
             Status = EmployeeStatuses.Active
@@ -196,6 +205,7 @@ public sealed class MigrationImportControllerTests
         new Dictionary<string, string>
         {
             ["employeeHistory"] = "EmployeeCode,EventType,FieldName,OldValue,NewValue,EffectiveDate,Reason,SourceSystem,SourceRecordId\nEMP-001,JobChange,Designation,Associate,Manager,2026-01-01,Legacy migration,Workday,HIST-001\n",
+            ["companyCutover"] = "CompanyRegistrationNumber,CompanyLegalName,CutoverDate,SourceSystem,Status,Notes\nENT-0001,,2026-09-01,SAP,Active,Enterprise wave\n",
             ["payrollOpeningBalances"] = "EmployeeCode,Year,BalanceType,ComponentCode,Amount,Currency,SourceSystem,SourceRecordId\nEMP-001,2026,YTD_GROSS,BASIC,120000,SAR,SAP,PAY-OB-001\n",
             ["benefitsEnrollments"] = "EmployeeCode,PlanCode,PlanName,CoverageTier,EffectiveDate,EndDate,EmployeeContribution,EmployerContribution,Currency,Status,SourceSystem,SourceRecordId\nEMP-001,MED-GOLD,Medical Gold,Family,2026-01-01,,500,1500,SAR,Active,Oracle,BEN-001\n",
             ["documentManifests"] = "EmployeeCode,DocumentType,DocumentCategory,FileName,ContentType,StorageUrl,Checksum,VersionNumber,IssueDate,ExpiryDate,ApprovalStatus,RetentionClass,SourceSystem,SourceDocumentId\nEMP-001,Passport,Identity,passport.pdf,application/pdf,s3://legacy/passport.pdf,sha256:abc,1,2024-01-01,2034-01-01,Verified,EmployeeRecord,Workday,DOC-001\n",

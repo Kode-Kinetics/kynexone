@@ -96,6 +96,28 @@ public sealed partial class MigrationImportController
         return date;
     }
 
+    /// <summary>
+    /// The cutover for a payroll opening-balance row. MANDATORY for the buckets the payslip's year-to-date
+    /// sums (YTD_GROSS / YTD_DEDUCTIONS / YTD_NET), whatever the tenant's other cutovers: without one,
+    /// nothing says which months the carried figures already contain, the second month's run is blocked
+    /// (YTD_OPENING_BALANCE_OVERLAP_UNRESOLVED), and the import that caused it had been accepted. Refused
+    /// up front instead, with OPENING_BALANCE_NEEDS_CUTOVER. Detail buckets (statutory, tax, covered wage)
+    /// are never summed into a payslip and stay optional, as before.
+    /// </summary>
+    private static DateOnly? ResolveCutoverForPayrollBalance(Employee employee, CutoverContext cutover, string balanceType)
+    {
+        if (!OpeningBalanceTypes.PayslipAggregates.Contains(balanceType, StringComparer.OrdinalIgnoreCase))
+            return ResolveCutoverFor(employee, cutover, mandatory: false);
+        if (employee.CompanyId is { } companyId && cutover.CutoverByCompany.TryGetValue(companyId, out var date))
+            return date;
+        throw new InvalidOperationException(
+            $"[{CutoverStatuses.BalanceNeedsCutoverCode}] {balanceType} for '{employee.EmployeeCode}' needs a cutover for the "
+          + "employee's legal entity — Active or Closed, or declared in this same package (companyCutover section). The "
+          + "payslip's year-to-date adds this figure to the payslips this product locks, and only the cutover says which "
+          + "months the carried figure already contains. Nothing has been saved for this row. "
+          + "/ تتطلب أرصدة السنة حتى تاريخه تاريخ انتقال للكيان القانوني للموظف، ساري المفعول أو مُعلَن في الحزمة نفسها. لم يتم حفظ هذا السطر.");
+    }
+
     /// <summary>The mandatory form, for the sections where a cutover is not optional.</summary>
     private static DateOnly RequireCutoverFor(Employee employee, CutoverContext cutover)
         => ResolveCutoverFor(employee, cutover, mandatory: true)!.Value;
@@ -307,6 +329,7 @@ public sealed partial class MigrationImportController
 
         // ── 1. Cutover changes — whatever else the package carries ─────────────────────────────────
         var changes = new List<(Guid CompanyId, DateOnly Boundary, string What)>();
+        var firstDeclarationRefusals = new List<LockedPeriodRefusal>();
         if (request.Sections.TryGetValue("companyCutover", out var cutoverCsv)
             && TryParseSection("companyCutover", cutoverCsv, out var cutoverRows, out _))
         {
@@ -324,6 +347,43 @@ public sealed partial class MigrationImportController
                 var existing = await _db.CompanyCutovers.AsNoTracking()
                     .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.CompanyId == company.Id, ct);
                 var oldGoverns = existing is not null && CutoverStatuses.Governs(existing.Status);
+
+                // ── A FIRST declaration is not a change ───────────────────────────────────────────────
+                // No cutover has governed this entity, so no locked run was partitioned by one — there is
+                // no boundary to move. It is allowed on or before the month of the EARLIEST run this product
+                // locked in that year (or later years): those payslips are then on the earned-here side, and
+                // are left out of YTD only for employees whose carried balance stands in for them. A later
+                // month would put locked product months on the carried side for everyone, so it is refused
+                // naming the latest month that can be declared.
+                if (!oldGoverns && newGoverns)
+                {
+                    var declaredMonth = new DateOnly(newDate.Year, newDate.Month, 1);
+                    var earliest = await _db.PayrollRuns.AsNoTracking()
+                        .Where(r => r.TenantId == tenantId && r.CompanyId == company.Id && r.Status == "Locked"
+                                 && r.Year >= newDate.Year)
+                        .OrderBy(r => r.Year).ThenBy(r => r.Month)
+                        .Select(r => new { r.Id, r.Year, r.Month, r.RunType })
+                        .FirstOrDefaultAsync(ct);
+                    if (earliest is not null && declaredMonth > new DateOnly(earliest.Year, earliest.Month, 1))
+                    {
+                        var latestAllowed = new DateOnly(earliest.Year, earliest.Month, 1);
+                        firstDeclarationRefusals.Add(new LockedPeriodRefusal(
+                            Code: CutoverStatuses.FirstDeclarationTooLateCode,
+                            CompanyId: company.Id,
+                            CompanyName: company.LegalNameEn,
+                            PayrollRunId: earliest.Id,
+                            Period: $"{earliest.Year}-{earliest.Month:D2}",
+                            RunType: earliest.RunType,
+                            CutoverDate: newDate,
+                            Reason: $"A first cutover of {newDate:yyyy-MM-dd} is later than payroll run {earliest.Id} for "
+                                  + $"{earliest.Year}-{earliest.Month:D2}, which this product has already locked. The latest cutover "
+                                  + $"that can be declared is {latestAllowed:yyyy-MM-dd}: declare that date (or an earlier 1st) and state "
+                                  + $"the carried opening balances as at {latestAllowed.AddDays(-1):yyyy-MM-dd}.",
+                            ReasonAr: $"لا يمكن أن يكون أول تاريخ انتقال لاحقاً لمسير رواتب مقفل. آخر تاريخ يمكن إعلانه هو "
+                                    + $"{latestAllowed:yyyy-MM-dd}، مع بيان الأرصدة الافتتاحية كما في {latestAllowed.AddDays(-1):yyyy-MM-dd}."));
+                    }
+                    continue;
+                }
 
                 var boundaryChanges = oldGoverns != newGoverns
                     || (oldGoverns && newGoverns && existing!.CutoverDate != newDate);
@@ -345,6 +405,7 @@ public sealed partial class MigrationImportController
             ? await LoadCutoverContextAsync(tenantId, request, Guid.Empty, ct)
             : new CutoverContext(tenantId, Guid.Empty, new Dictionary<Guid, DateOnly>());
 
+        refusals.AddRange(firstDeclarationRefusals);
         var companyIds = changes.Select(c => c.CompanyId).Concat(cutover.CutoverByCompany.Keys).Distinct().ToList();
         if (companyIds.Count == 0) return refusals;
 

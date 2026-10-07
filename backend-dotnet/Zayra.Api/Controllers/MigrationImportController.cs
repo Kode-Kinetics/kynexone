@@ -485,9 +485,9 @@ public sealed partial class MigrationImportController : ControllerBase
                     ? "updated" : "created";
             case "payrollOpeningBalances":
                 var payrollEmployee = await Employee(row, tenantId, ct);
-                ResolveCutoverFor(payrollEmployee, cutover, mandatory: false);
                 var payrollYear = IntRequired(row, "Year");
                 var balanceType = RequireBalanceType(row);
+                ResolveCutoverForPayrollBalance(payrollEmployee, cutover, balanceType);
                 var componentCode = Require(row, "ComponentCode").Trim();
                 _ = DecRequired(row, "Amount");
                 await GuardPayslipAggregateAgainstStoredAsync(tenantId, payrollEmployee, payrollYear, balanceType, componentCode, ct);
@@ -701,9 +701,9 @@ public sealed partial class MigrationImportController : ControllerBase
     private async Task<string> UpsertPayrollOpeningBalanceAsync(Dictionary<string, string> row, Guid tenantId, CutoverContext cutover, SectionResult result, CancellationToken ct)
     {
         var employee = await Employee(row, tenantId, ct);
-        var cutoverDate = ResolveCutoverFor(employee, cutover, mandatory: false);
         var year = IntRequired(row, "Year");
         var balanceType = RequireBalanceType(row);
+        var cutoverDate = ResolveCutoverForPayrollBalance(employee, cutover, balanceType);
         var componentCode = Require(row, "ComponentCode").Trim();
         var amount = DecRequired(row, "Amount");
         // MI1 — refuse a payslip-aggregate bucket that is already stored under a DIFFERENT component

@@ -629,13 +629,20 @@ public static class PayrollValidationEngine
         // year-to-date and no cutover says where the carried figures end — the overlap cannot be resolved
         // without guessing. WARNING when a cutover resolved it, so the preparer sees which payslips the
         // opening balance stands in for. Populated identically by Process and /validate (PayrollYtdBasis).
+        var declare = ctx.YtdSuggestedCutover is DateOnly sc
+            ? sc.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)
+            : null;
         foreach (var empId in ctx.YtdUnresolvedOverlapEmployeeIds)
             Err(PayrollYtdBasis.UnresolvedOverlapCode,
                 $"Employee {CodeFor(empId)} has carried year-to-date opening balances for {ctx.Run.Year} AND payslips " +
-                $"locked in this product earlier in {ctx.Run.Year}, but no cutover date (Active or Closed) is declared for this legal " +
-                "entity, so nothing says which months the carried figures already include. Summing both may count the " +
-                "same months twice on the payslip's year-to-date. Declare the cutover (migration import, companyCutover " +
-                "section) and re-process.",
+                $"locked in this product earlier in {ctx.Run.Year}, but no cutover date (Active or Closed) is declared for this " +
+                "legal entity, so nothing says which months the carried figures already include. Summing both may count the " +
+                "same months twice on the payslip's year-to-date. " +
+                (declare is null
+                    ? "Declare the cutover (migration import, companyCutover section), then validate this run again."
+                    : $"Declare a cutover of {declare} — the first month this product locked for this legal entity in " +
+                      $"{ctx.Run.Year}, and the latest first cutover the import accepts — in a migration-import companyCutover " +
+                      "row, check the carried balances are stated as at the day before it, then validate this run again."),
                 empId);
         foreach (var empId in ctx.YtdPreCutoverExcludedEmployeeIds)
             Warn(PayrollYtdBasis.PreCutoverExcludedCode,
@@ -775,6 +782,9 @@ public sealed record PayrollValidationContext(
 
     /// <summary>Mid-year cutover — employees whose pre-cutover locked payslips were left out of YTD (Rule 14b warning).</summary>
     public IReadOnlySet<int> YtdPreCutoverExcludedEmployeeIds { get; init; } = new HashSet<int>();
+
+    /// <summary>Mid-year cutover — the month Rule 14b tells the preparer to declare (first locked month this year).</summary>
+    public DateOnly? YtdSuggestedCutover { get; init; }
 
     /// <summary>
     /// POD-B2 (M8) — true when this run's statutory amounts were computed INCREMENTALLY against the
