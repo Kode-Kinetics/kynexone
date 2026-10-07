@@ -367,6 +367,70 @@ public sealed class EmployeeAccessTests
     }
 
     [Fact]
+    public async Task TheWorkEmailSetter_GetsAPrintableCode_NeverAnEmail_AndBecomesItsHandler()
+    {
+        var w = await SeedAsync();
+        // A single HR officer creates the employee with the work email, then gives access, in a tenant WITH email.
+        Guid userId;
+        int id;
+        await using (var db = _fx.CreateDb())
+            id = (await Employees(db).CreateAsync(w.TenantId, Hire("Solo Hire", $"solo.hire@{w.Domain}", w.CompanyId), Ctx(w.HrOfficerId, w.TenantId), default)).Id;
+        await UpdateEmployeeAsync(id, e => e.Status = EmployeeStatuses.Active);
+        var email = new RecordingEmail(configured: true);
+
+        var response = await IssueAsync(w, w.HrOfficerId, [id], email: email);
+
+        var item = response.Issued.Should().ContainSingle().Subject;
+        item.Delivery.Should().Be(IssuedCodeDto.PrintDelivery);
+        item.Code.Should().MatchRegex("^[0-9]{8}$");
+        response.Emailed.Should().BeFalse();
+        response.DeliveryMessage.Should().Be("You entered these work emails, so print the slips and hand them over in person.");
+        email.Sent.Should().BeEmpty("never emailed to an address the issuer chose");
+        await using (var db = _fx.CreateDb())
+        {
+            userId = (await db.EmployeeUserAccounts.IgnoreQueryFilters().SingleAsync(x => x.EmployeeId == id)).UserId!.Value;
+            (await db.AuditLogs.IgnoreQueryFilters().SingleAsync(a => a.Action == EmployeeAccessService.DisclosedAction && a.EntityId == userId.ToString()))
+                .UserId.Should().Be(w.HrOfficerId);
+        }
+        await RedeemAsync(w, $"solo.hire@{w.Domain}", item.Code!);
+        await using (var db = _fx.CreateDb())
+            (await CredentialHandlerBar.IsBarredAsync(db, w.TenantId, id, w.HrOfficerId, DateTime.UtcNow, default)).Should().BeTrue("the 30-day decision bar applies");
+    }
+
+    [Fact]
+    public async Task AColleagueIssuing_Emails_AndAMixedBulkReportsDeliveryPerItem()
+    {
+        var w = await SeedAsync();
+        int mine, theirs;
+        await using (var db = _fx.CreateDb())
+        {
+            mine = (await Employees(db).CreateAsync(w.TenantId, Hire("Mine Hire", $"mine.hire@{w.Domain}", w.CompanyId), Ctx(w.HrOfficerId, w.TenantId), default)).Id;
+            theirs = (await Employees(db).CreateAsync(w.TenantId, Hire("Their Hire", $"their.hire@{w.Domain}", w.CompanyId), Ctx(w.HrOfficer2Id, w.TenantId), default)).Id;
+        }
+        await UpdateEmployeeAsync(mine, e => e.Status = EmployeeStatuses.Active);
+        await UpdateEmployeeAsync(theirs, e => e.Status = EmployeeStatuses.Active);
+
+        // A different HR colleague: emailed.
+        var colleagueMail = new RecordingEmail(configured: true);
+        var byColleague = await IssueAsync(w, w.HrOfficer2Id, [mine], email: colleagueMail);
+        byColleague.Emailed.Should().BeTrue();
+        byColleague.Issued.Single().Delivery.Should().Be(IssuedCodeDto.EmailDelivery);
+        byColleague.Issued.Single().Code.Should().BeNull();
+        colleagueMail.Sent.Should().ContainSingle(m => m.To == $"mine.hire@{w.Domain}");
+
+        // Mixed bulk by HR officer one: their own hire is printed, the colleague's hire is emailed.
+        var mail = new RecordingEmail(configured: true);
+        var bulk = await IssueAsync(w, w.HrOfficerId, [mine, theirs], email: mail);
+        bulk.Issued.Single(i => i.EmployeeId == mine).Delivery.Should().Be(IssuedCodeDto.PrintDelivery);
+        bulk.Issued.Single(i => i.EmployeeId == mine).Code.Should().NotBeNull();
+        bulk.Issued.Single(i => i.EmployeeId == theirs).Delivery.Should().Be(IssuedCodeDto.EmailDelivery);
+        bulk.Issued.Single(i => i.EmployeeId == theirs).Code.Should().BeNull();
+        bulk.Emailed.Should().BeFalse("not ALL were emailed");
+        bulk.DeliveryMessage.Should().Be(EmployeeAccessService.SetterPrintMessage);
+        mail.Sent.Select(m => m.To).Should().BeEquivalentTo([$"their.hire@{w.Domain}"]);
+    }
+
+    [Fact]
     public async Task Reissue_SupersedesTheOldCode()
     {
         var w = await SeedAsync();
@@ -400,12 +464,12 @@ public sealed class EmployeeAccessTests
         await RedeemAsync(w, $"already@{w.Domain}", (await IssueAsync(w, w.HrOfficer2Id, [active])).Issued.Single().Code!);
 
         var bulk = await IssueAsync(w, w.HrOfficerId, [above, manager, report, setBySelf]);
-        bulk.Issued.Select(i => i.EmployeeId).Should().BeEquivalentTo([report]);
+        bulk.Issued.Select(i => i.EmployeeId).Should().BeEquivalentTo([report, setBySelf], "the setter rule forces print, it does not skip");
+        bulk.Issued.Single(i => i.EmployeeId == setBySelf).Delivery.Should().Be(IssuedCodeDto.PrintDelivery);
         Reason(await IssueAsync(w, w.HrOfficerId, [self], canReset: true), self).Should().Be(EmployeeAccessService.Skip.SelfIssue);
         Reason(bulk, above).Should().Be(EmployeeAccessService.Skip.AboveCeiling);
         Reason(bulk, manager).Should().Be(EmployeeAccessService.Skip.Privileged);
-        Reason(bulk, setBySelf).Should().Be(WorkEmailSetterRule.SetByCallerCode);
-        bulk.Skipped.Single(s => s.EmployeeId == setBySelf).Reason.Should().Be("You set this person's work email, so another HR colleague must give access.");
+        bulk.Skipped.Should().NotContain(x => x.ReasonCode == WorkEmailSetterRule.SetByCallerCode);
 
         // An active login: never in bulk, and never without employees.access.reset.
         var refused = await Assert.ThrowsAsync<EmployeeAccessRequestException>(() => IssueAsync(w, w.HrManagerId, [active, report], canReset: true));
