@@ -385,9 +385,9 @@ public sealed class EmployeeLoginLinkTests
                 .Result.Should().BeOfType<NotFoundObjectResult>();
         await AssertNotLinkedAsync(user, employeeId);
 
-        // A company-B-scoped administrator can link the same unscoped login.
+        // A group-level administrator can link the same login (it has no company access yet).
         await using (var db = _fixture.CreateRetryingDb())
-            (await Controller(db, w, w.AdminId, scopedTo: w.CompanyB).LinkExistingLogin(new LinkExistingLoginRequest(employeeId, user, "link"), default))
+            (await Controller(db, w, w.AdminId).LinkExistingLogin(new LinkExistingLoginRequest(employeeId, user, "link"), default))
                 .Result.Should().BeOfType<OkObjectResult>();
     }
 
@@ -442,8 +442,8 @@ public sealed class EmployeeLoginLinkTests
         {
             var status = Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId).EmployeeLoginStatus(employeeId, default)).Result);
             status.NextAction.Should().Be(EmployeeLoginNextActions.Blocked);
-            status.ReasonCode.Should().Be(LoginInOtherCompanyException.Code);
-            status.ReasonCompany.Should().Be("B");
+            status.ReasonCode.Should().Be(EmployeeLinkRefusals.LoginOtherCompany);
+            status.ReasonSubject.Should().Be("B");
             status.Reason.Should().Be("This login works in a different company. Give it access to B first, or link it from that company.");
         }
         await using (var db = _fixture.CreateRetryingDb())
@@ -452,8 +452,8 @@ public sealed class EmployeeLoginLinkTests
                 new LinkExistingLoginRequest(employeeId, user, "link"), default)).Result);
             var body = JsonSerializer.SerializeToElement(bad.Value);
             body.GetProperty("message").GetString().Should().Be("This login works in a different company. Give it access to B first, or link it from that company.");
-            body.GetProperty("code").GetString().Should().Be(LoginInOtherCompanyException.Code);
-            body.GetProperty("company").GetString().Should().Be("B");
+            body.GetProperty("code").GetString().Should().Be(EmployeeLinkRefusals.LoginOtherCompany);
+            body.GetProperty("subject").GetString().Should().Be("B");
         }
 
         await AssertNotLinkedAsync(user, employeeId);
@@ -462,8 +462,8 @@ public sealed class EmployeeLoginLinkTests
         grants.Should().ContainSingle().Which.CompanyId.Should().Be(w.CompanyA, "the login's scope is never widened");
         (await RoleNamesAsync(user)).Should().Equal("Employee");
         (await StampAsync(user)).Should().Be(stampBefore, "nothing about the login changed");
-        (await verify.AuditLogs.IgnoreQueryFilters().AnyAsync(x => x.TenantId == w.TenantId && x.Action != "access.change_refused"))
-            .Should().BeFalse("a refused link writes no audit row but a refusal");
+        (await verify.AuditLogs.IgnoreQueryFilters().Where(x => x.TenantId == w.TenantId).Select(x => x.Action).ToListAsync())
+            .Should().Equal(["access.employee_login_link_refused"], "a refused link writes nothing but its refusal");
     }
 
     [Fact]
@@ -517,6 +517,217 @@ public sealed class EmployeeLoginLinkTests
         await using var verify = _fixture.CreateRetryingDb();
         (await verify.UserEntityAccesses.IgnoreQueryFilters().Where(x => x.UserId == user).ToListAsync())
             .Should().ContainSingle().Which.Role.Should().Be("HR", "the existing grant is the only one");
+    }
+
+    // ── Stranded and dormant links, legacy pointers ─────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("deleted")]
+    [InlineData("merged")]
+    public async Task ALiveLinkStrandedOnADeadEmployee_IsReused_AndTheDeadPointerCleared(string fate)
+    {
+        var w = await SeedAsync();
+        var email = Email($"stranded-{fate}");
+        var user = await AddUserAsync(w, email, ["Employee"], groupScope: false, grantCompany: w.CompanyA);
+        var dead = await AddEmployeeAsync(w, w.CompanyA, Email("old-record"));
+        var oldLinkId = await AddLinkAsync(w, dead, user);
+        var survivor = await AddEmployeeAsync(w, w.CompanyA, email);
+        await UpdateEmployeeAsync(dead, e =>
+        {
+            if (fate == "deleted") { e.IsDeleted = true; e.DeletedAtUtc = DateTime.UtcNow; }
+            else e.DuplicateOfEmployeeId = survivor; // merged into the survivor, not (yet) soft-removed
+        });
+
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var status = Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId).EmployeeLoginStatus(survivor, default)).Result);
+            status.NextAction.Should().Be(EmployeeLoginNextActions.LinkExisting, "a link stranded on a {0} employee is dormant", fate);
+            status.MatchingLogin!.UserId.Should().Be(user);
+        }
+        await using (var db = _fixture.CreateRetryingDb())
+            (await Controller(db, w, w.AdminId).LinkExistingLogin(new LinkExistingLoginRequest(survivor, user, "re-home"), default))
+                .Result.Should().BeOfType<OkObjectResult>();
+
+        await using var verify = _fixture.CreateRetryingDb();
+        var rows = await verify.EmployeeUserAccounts.IgnoreQueryFilters().Where(x => x.UserId == user).ToListAsync();
+        var row = rows.Should().ContainSingle().Subject;
+        row.Id.Should().Be(oldLinkId, "the login's one row is reused");
+        row.EmployeeId.Should().Be(survivor);
+        row.IsDeleted.Should().BeFalse();
+        (await verify.Employees.IgnoreQueryFilters().SingleAsync(x => x.Id == dead)).UserAccountId.Should().BeNull();
+        (await verify.Employees.IgnoreQueryFilters().SingleAsync(x => x.Id == survivor)).UserAccountId.Should().Be(user);
+        var audit = await verify.AuditLogs.IgnoreQueryFilters().SingleAsync(x => x.TenantId == w.TenantId && x.Action == "access.employee_login_linked");
+        using var meta = JsonDocument.Parse(audit.Metadata!);
+        meta.RootElement.GetProperty("previousEmployeeId").GetInt32().Should().Be(dead);
+        meta.RootElement.GetProperty("previousPointerCleared").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ASoftDeletedLinkRow_IsReused_AndALivingPreviousEmployeeIsNotTouched()
+    {
+        var w = await SeedAsync();
+        var email = Email("dormant");
+        var user = await AddUserAsync(w, email, ["Employee"], groupScope: false, grantCompany: w.CompanyA);
+        var previous = await AddEmployeeAsync(w, w.CompanyA, Email("previous"));
+        var oldLinkId = await AddLinkAsync(w, previous, user, deleted: true); // unlinked earlier; previous no longer names the login
+        var employeeId = await AddEmployeeAsync(w, w.CompanyA, email);
+
+        await using (var db = _fixture.CreateRetryingDb())
+            (await Controller(db, w, w.AdminId).LinkExistingLogin(new LinkExistingLoginRequest(employeeId, user, "link"), default))
+                .Result.Should().BeOfType<OkObjectResult>();
+
+        await using var verify = _fixture.CreateRetryingDb();
+        var row = (await verify.EmployeeUserAccounts.IgnoreQueryFilters().Where(x => x.UserId == user).ToListAsync()).Should().ContainSingle().Subject;
+        row.Id.Should().Be(oldLinkId);
+        row.EmployeeId.Should().Be(employeeId);
+        row.IsDeleted.Should().BeFalse();
+        var prev = await verify.Employees.IgnoreQueryFilters().SingleAsync(x => x.Id == previous);
+        prev.IsDeleted.Should().BeFalse();
+        prev.UserAccountId.Should().BeNull();
+        var audit = await verify.AuditLogs.IgnoreQueryFilters().SingleAsync(x => x.TenantId == w.TenantId && x.Action == "access.employee_login_linked");
+        using var meta = JsonDocument.Parse(audit.Metadata!);
+        meta.RootElement.GetProperty("previousEmployeeId").GetInt32().Should().Be(previous);
+        meta.RootElement.GetProperty("previousPointerCleared").GetBoolean().Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ALivingEmployeeStillNamingTheLogin_IsNeverClearedSilently()
+    {
+        var w = await SeedAsync();
+        var email = Email("legacy-pointer");
+        var user = await AddUserAsync(w, email, ["Employee"], groupScope: false, grantCompany: w.CompanyA);
+        // A legacy pointer with no link row (and a soft-deleted link row to it, the shape the old flows left).
+        var holder = await AddEmployeeAsync(w, w.CompanyA, Email("holder"), fullName: "Sara Holder", code: "EMP-HOLD");
+        await AddLinkAsync(w, holder, user, deleted: true, keepPointer: true);
+        var employeeId = await AddEmployeeAsync(w, w.CompanyA, email);
+
+        const string expected = "This login is still recorded on Sara Holder (EMP-HOLD)'s employee record. Unlink it there first.";
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var status = Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId).EmployeeLoginStatus(employeeId, default)).Result);
+            status.NextAction.Should().Be(EmployeeLoginNextActions.Blocked);
+            status.ReasonCode.Should().Be(EmployeeLinkRefusals.Pointer);
+            status.ReasonSubject.Should().Be("Sara Holder (EMP-HOLD)");
+            status.Reason.Should().Be(expected);
+        }
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var bad = Assert.IsType<BadRequestObjectResult>((await Controller(db, w, w.AdminId).LinkExistingLogin(
+                new LinkExistingLoginRequest(employeeId, user, "link"), default)).Result);
+            Message(bad).Should().Be(expected);
+        }
+        await AssertNotLinkedAsync(user, employeeId);
+        await using var verify = _fixture.CreateRetryingDb();
+        (await verify.Employees.IgnoreQueryFilters().SingleAsync(x => x.Id == holder)).UserAccountId.Should().Be(user, "a living record's pointer is never cleared silently");
+        (await verify.EmployeeUserAccounts.IgnoreQueryFilters().SingleAsync(x => x.UserId == user)).IsDeleted.Should().BeTrue();
+    }
+
+    // ── Group-level decisions, and what a scoped administrator may see ──────────────────────────────
+
+    [Fact]
+    public async Task ACompanyScopedAdmin_CannotTakeALoginWithNoCompanyAccessIntoTheirCompany()
+    {
+        var w = await SeedAsync();
+        var email = Email("zero-grant");
+        var user = await AddUserAsync(w, email, ["Employee"], groupScope: false);
+        var employeeId = await AddEmployeeAsync(w, w.CompanyB, email);
+
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var status = Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId, scopedTo: w.CompanyB).EmployeeLoginStatus(employeeId, default)).Result);
+            status.NextAction.Should().Be(EmployeeLoginNextActions.Blocked);
+            status.ReasonCode.Should().Be(EmployeeLinkRefusals.NeedsGroupAdmin);
+            status.MatchingLogin.Should().BeNull();
+        }
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var refused = Assert.IsType<ObjectResult>((await Controller(db, w, w.AdminId, scopedTo: w.CompanyB).LinkExistingLogin(
+                new LinkExistingLoginRequest(employeeId, user, "link"), default)).Result);
+            refused.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
+            Message(refused).Should().Be("Only a group-level administrator can link a login that has no company access yet.");
+        }
+        await AssertNotLinkedAsync(user, employeeId);
+        await using var verify = _fixture.CreateRetryingDb();
+        (await verify.UserEntityAccesses.IgnoreQueryFilters().AnyAsync(x => x.UserId == user)).Should().BeFalse();
+        (await RoleNamesAsync(user)).Should().Equal("Employee");
+    }
+
+    [Fact]
+    public async Task TheStatus_DescribesNothingAboutALoginOutsideTheCallersAccess()
+    {
+        var w = await SeedAsync();
+        var email = Email("outside");
+        var user = await AddUserAsync(w, email, ["Employee"], groupScope: false, grantCompany: w.CompanyB);
+        var other = await AddEmployeeAsync(w, w.CompanyB, Email("its-record"));
+        await AddLinkAsync(w, other, user);
+        var employeeId = await AddEmployeeAsync(w, w.CompanyA, email);
+
+        await using var db = _fixture.CreateRetryingDb();
+        var status = Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId, scopedTo: w.CompanyA).EmployeeLoginStatus(employeeId, default)).Result);
+        status.NextAction.Should().Be(EmployeeLoginNextActions.Blocked);
+        status.MatchingLogin.Should().BeNull();
+        status.ReasonCode.Should().Be(EmployeeLinkRefusals.NotManageableCode);
+        status.Reason.Should().NotContain("another employee").And.NotContain(user.ToString());
+        JsonSerializer.Serialize(status).Should().NotContain(user.ToString());
+    }
+
+    // ── Every refusal is audited, with ids only ─────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task RefusedLinks_AreAudited_WithTheirCode()
+    {
+        var w = await SeedAsync();
+        var email = Email("audited");
+        var user = await AddUserAsync(w, email, ["Employee"], groupScope: false);
+        var mismatched = await AddEmployeeAsync(w, w.CompanyA, Email("not-the-login"));
+
+        await using (var db = _fixture.CreateRetryingDb())
+            Assert.IsType<BadRequestObjectResult>((await Controller(db, w, w.AdminId).LinkExistingLogin(
+                new LinkExistingLoginRequest(mismatched, user, "link"), default)).Result);
+        await using (var db = _fixture.CreateRetryingDb())
+            Assert.IsType<NotFoundObjectResult>((await Controller(db, w, w.AdminId).LinkExistingLogin(
+                new LinkExistingLoginRequest(int.MaxValue, user, "link"), default)).Result);
+
+        await using var verify = _fixture.CreateRetryingDb();
+        var rows = await verify.AuditLogs.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.TenantId == w.TenantId && x.Action == "access.employee_login_link_refused")
+            .OrderBy(x => x.CreatedAtUtc).ToListAsync();
+        rows.Should().HaveCount(2);
+        rows.Select(x => x.UserId).Should().AllBeEquivalentTo(w.AdminId);
+        var codes = rows.Select(x => JsonDocument.Parse(x.Metadata!).RootElement.GetProperty("code").GetString()).ToList();
+        codes.Should().BeEquivalentTo([EmployeeLinkRefusals.Email, AccessTargetNotFoundException.EmployeeNotFound]);
+        rows.Should().OnlyContain(x => !x.Metadata!.Contains(email), "ids and the code only");
+        (await verify.EmployeeUserAccounts.IgnoreQueryFilters().AnyAsync(x => x.UserId == user)).Should().BeFalse();
+    }
+
+    // ── One login racing two employees ──────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task OneLoginRacingTwoEmployees_ExactlyOneLinkSurvives()
+    {
+        var w = await SeedAsync();
+        var email = Email("two-records");
+        var user = await AddUserAsync(w, email, ["Employee"], groupScope: false, grantCompany: w.CompanyA);
+        var first = await AddEmployeeAsync(w, w.CompanyA, email);
+        var second = await AddEmployeeAsync(w, w.CompanyA, email); // work email is free text and may repeat
+
+        async Task<IActionResult?> LinkAsync(int employeeId)
+        {
+            await using var db = _fixture.CreateRetryingDb();
+            return (await Controller(db, w, w.AdminId).LinkExistingLogin(new LinkExistingLoginRequest(employeeId, user, "race"), default)).Result;
+        }
+
+        var results = await Task.WhenAll(new[] { first, second, first, second }.Select(id => Task.Run(() => LinkAsync(id))));
+        results.Should().Contain(r => r is OkObjectResult);
+        results.Should().OnlyContain(r => r is OkObjectResult || r is BadRequestObjectResult);
+
+        await using var verify = _fixture.CreateRetryingDb();
+        var live = await verify.EmployeeUserAccounts.IgnoreQueryFilters().Where(x => x.UserId == user && !x.IsDeleted).ToListAsync();
+        var winner = live.Should().ContainSingle().Subject.EmployeeId;
+        winner.Should().BeOneOf(first, second);
+        var pointers = await verify.Employees.IgnoreQueryFilters().Where(x => x.UserAccountId == user).Select(x => x.Id).ToListAsync();
+        pointers.Should().Equal(winner);
+        (await verify.AuditLogs.IgnoreQueryFilters().CountAsync(x => x.TenantId == w.TenantId && x.Action == "access.employee_login_linked")).Should().Be(1);
     }
 
     [Fact]
@@ -696,15 +907,16 @@ public sealed class EmployeeLoginLinkTests
         return id;
     }
 
-    private async Task<int> AddEmployeeAsync(World w, Guid companyId, string workEmail, string? personalEmail = null)
+    private async Task<int> AddEmployeeAsync(World w, Guid companyId, string workEmail, string? personalEmail = null,
+        string fullName = "Noah Williams", string? code = null)
     {
         await using var db = _fixture.CreateRetryingDb();
         var employee = new Employee
         {
             TenantId = w.TenantId,
             CompanyId = companyId,
-            EmployeeCode = $"EMP-{Guid.NewGuid():N}"[..20],
-            FullName = "Noah Williams",
+            EmployeeCode = code ?? $"EMP-{Guid.NewGuid():N}"[..20],
+            FullName = fullName,
             WorkEmail = workEmail,
             PersonalEmail = personalEmail ?? string.Empty,
             Status = EmployeeStatuses.Active,
@@ -715,16 +927,29 @@ public sealed class EmployeeLoginLinkTests
         return employee.Id;
     }
 
-    private async Task AddLinkAsync(World w, int employeeId, Guid userId)
+    private async Task<Guid> AddLinkAsync(World w, int employeeId, Guid userId, bool deleted = false, bool keepPointer = false)
     {
         await using var db = _fixture.CreateRetryingDb();
-        db.EmployeeUserAccounts.Add(new EmployeeUserAccount
+        var link = new EmployeeUserAccount
         {
             TenantId = w.TenantId, EmployeeId = employeeId, UserId = userId, AccessMode = AccessModes.EssOnly,
             Status = "Active", RequiresPasswordSetup = false, IsPrimary = true,
-        });
-        var employee = await db.Employees.IgnoreQueryFilters().SingleAsync(x => x.Id == employeeId);
-        employee.UserAccountId = userId;
+            IsDeleted = deleted, DeletedAtUtc = deleted ? DateTime.UtcNow : null,
+        };
+        db.EmployeeUserAccounts.Add(link);
+        if (!deleted || keepPointer)
+        {
+            var employee = await db.Employees.IgnoreQueryFilters().SingleAsync(x => x.Id == employeeId);
+            employee.UserAccountId = userId;
+        }
+        await db.SaveChangesAsync();
+        return link.Id;
+    }
+
+    private async Task UpdateEmployeeAsync(int employeeId, Action<Employee> change)
+    {
+        await using var db = _fixture.CreateRetryingDb();
+        change(await db.Employees.IgnoreQueryFilters().SingleAsync(x => x.Id == employeeId));
         await db.SaveChangesAsync();
     }
 

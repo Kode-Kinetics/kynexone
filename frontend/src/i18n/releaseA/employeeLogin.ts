@@ -42,6 +42,14 @@ export const employeeLogin: ReleaseADict = {
     'Invitation link': 'Invitation link',
     'Copy link': 'Copy link',
     'Link copied': 'Link copied',
+    "Employee: {name}":
+      "Employee: {name}",
+    "This login is still recorded on {employee}'s employee record. Unlink it there first.":
+      "This login is still recorded on {employee}'s employee record. Unlink it there first.",
+    "Only a group-level administrator can link a login that has no company access yet.":
+      "Only a group-level administrator can link a login that has no company access yet.",
+    "A login already uses this work email, but it is outside your access. An administrator who manages it must link it.":
+      "A login already uses this work email, but it is outside your access. An administrator who manages it must link it.",
     'This login works in a different company. Give it access to {company} first, or link it from that company.':
       'This login works in a different company. Give it access to {company} first, or link it from that company.',
   },
@@ -82,6 +90,14 @@ export const employeeLogin: ReleaseADict = {
     'Invitation link': 'رابط الدعوة',
     'Copy link': 'نسخ الرابط',
     'Link copied': 'تم نسخ الرابط',
+    "Employee: {name}":
+      "الموظف: {name}",
+    "This login is still recorded on {employee}'s employee record. Unlink it there first.":
+      "حساب الدخول هذا لا يزال مسجلاً في سجل الموظف {employee}. ألغِ الربط هناك أولاً.",
+    "Only a group-level administrator can link a login that has no company access yet.":
+      "لا يمكن ربط حساب دخول ليس لديه صلاحية وصول إلى أي شركة بعد إلا من قِبل مسؤول على مستوى المجموعة.",
+    "A login already uses this work email, but it is outside your access. An administrator who manages it must link it.":
+      "يستخدم حساب دخول هذا البريد الإلكتروني للعمل بالفعل، لكنه خارج نطاق صلاحياتك. يجب أن يربطه مسؤول يدير ذلك الحساب.",
     'This login works in a different company. Give it access to {company} first, or link it from that company.':
       'يعمل حساب الدخول هذا في شركة أخرى. امنحه صلاحية الوصول إلى {company} أولاً، أو اربطه من تلك الشركة.',
   },

@@ -14,7 +14,7 @@ namespace Zayra.Api.Infrastructure.Common;
 /// <para>There is deliberately NO email fallback. Matching the login's email against an employee's work or
 /// personal email let an email binding stand in for the link, and an employee's personal email can be
 /// changed through an approved self-service profile request, so it could bind a different login to that
-/// record. A login without the link is linked by HR (User Management → the user → Link to employee record, or an invitation), not guessed.</para>
+/// record. A login without the link is linked by HR (User Management → Invite employee, or the user's Link to employee record — EssLinkGuidance), not guessed.</para>
 /// </summary>
 public static class CallerEmployeeResolver
 {
@@ -30,4 +30,20 @@ public static class CallerEmployeeResolver
             && (!requireActive || e.Status == EmployeeStatuses.Active), ct);
         return exists ? claimed : null;
     }
+}
+
+/// <summary>
+/// What Self-Service tells a login that has no employee link: where HR fixes it. "Invite employee" is on the
+/// User Management toolbar for every administrator; a login's own "Link to employee record" is on its row.
+/// </summary>
+public static class EssLinkGuidance
+{
+    public const string En =
+        "Your login is not linked to an employee record. Ask HR to link it in User Management → Invite employee (or the user's Link to employee record).";
+
+    public const string Ar =
+        "حسابك غير مرتبط بسجل موظف. اطلب من الموارد البشرية ربطه من إدارة المستخدمين ← دعوة موظف (أو «ربط بسجل موظف» من صف المستخدم).";
+
+    /// <summary>The Arabic for <paramref name="message"/> when it is this guidance; null for any other message.</summary>
+    public static string? ArabicFor(string? message) => string.Equals(message, En, StringComparison.Ordinal) ? Ar : null;
 }

@@ -554,7 +554,11 @@ public class AccessController : ControllerBase
         }
         catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.employee_login_linked", "User", request.UserId.ToString()); }
         catch (AccessTargetNotFoundException ex) { return NotFound(new { message = ex.Message }); }
-        catch (LoginInOtherCompanyException ex) { return BadRequest(new { message = ex.Message, code = LoginInOtherCompanyException.Code, company = ex.CompanyName }); }
+        catch (EmployeeLinkRefusedException ex)
+        {
+            var body = new { message = ex.Refusal.Message, code = ex.Refusal.Code, subject = ex.Refusal.Subject };
+            return ex.Refusal.StatusCode == StatusCodes.Status400BadRequest ? BadRequest(body) : StatusCode(ex.Refusal.StatusCode, body);
+        }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 

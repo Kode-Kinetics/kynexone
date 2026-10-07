@@ -48,8 +48,8 @@ export interface EmployeeLoginStatus {
   reason: string | null;
   /** Stable code for a refusal the screen words itself, e.g. 'login_other_company'. */
   reasonCode?: string | null;
-  /** The company a 'login_other_company' refusal names. */
-  reasonCompany?: string | null;
+  /** The name a coded refusal cites: a company (login_other_company) or an employee (login_pointer_conflict). */
+  reasonSubject?: string | null;
 }
 
 export interface EmployeeLoginLinkResult {

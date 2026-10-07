@@ -84,8 +84,8 @@ public record EmployeeLoginStatusDto(
 {
     /// <summary>Stable code for a refusal the screen words itself (e.g. <c>login_other_company</c>).</summary>
     public string? ReasonCode { get; init; }
-    /// <summary>The company a <c>login_other_company</c> refusal names.</summary>
-    public string? ReasonCompany { get; init; }
+    /// <summary>The name a coded refusal cites: the company (<c>login_other_company</c>) or employee (<c>login_pointer_conflict</c>).</summary>
+    public string? ReasonSubject { get; init; }
 }
 
 public static class EmployeeLoginNextActions

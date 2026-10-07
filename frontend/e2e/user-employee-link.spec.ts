@@ -89,7 +89,7 @@ async function openUserManagement(page: Page) {
     if (pathname === '/api/access/employee-logins/44') return json({
       employeeId: 44, employeeName: 'Omar Saleh', workEmail: 'omar.saleh@kkdemo.com', linkedLogin: null,
       matchingLogin: { userId: '33333333-3333-3333-3333-333333333333', email: 'omar.saleh@kkdemo.com', status: 'Active', accessMode: 'HRPortal', isActive: true },
-      nextAction: 'blocked', reason: 'English server text', reasonCode: 'login_other_company', reasonCompany: 'Riyadh Branch',
+      nextAction: 'blocked', reason: 'English server text', reasonCode: 'login_other_company', reasonSubject: 'Riyadh Branch',
     });
     if (pathname === '/api/access/roles') return json(['Admin', 'HR Manager', 'Employee'].map((name, index) => ({ id: String(index), name, permissions: [] })));
     if (pathname === '/api/access/ceiling') return json({ userId: 'admin-1', isAdmin: true, heldPermissions: ['users.manage', 'roles.manage', 'security.manage'], roles: [] });

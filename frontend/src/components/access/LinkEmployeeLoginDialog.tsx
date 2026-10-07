@@ -29,6 +29,9 @@ type Outcome =
 
 /** The server's refusal codes this dialog words itself, so the reader gets their own language. */
 const LOGIN_OTHER_COMPANY = 'login_other_company';
+const LOGIN_POINTER_CONFLICT = 'login_pointer_conflict';
+const LOGIN_NEEDS_GROUP_ADMIN = 'login_needs_group_admin';
+const LOGIN_NOT_MANAGEABLE = 'login_not_manageable';
 
 const btnPrimary = 'rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-60';
 const btnSecondary = 'rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-700';
@@ -61,14 +64,22 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
 
   const name = status?.employeeName ?? employee?.fullName ?? '';
 
-  const otherCompany = (company: string) =>
-    t('This login works in a different company. Give it access to {company} first, or link it from that company.', { company });
+  /** A coded refusal in the reader's language, or null for a code this dialog does not word itself. */
+  const codedRefusal = (code: unknown, subject: unknown): string | null => {
+    const named = typeof subject === 'string' && subject ? subject : null;
+    if (code === LOGIN_OTHER_COMPANY && named)
+      return t('This login works in a different company. Give it access to {company} first, or link it from that company.', { company: named });
+    if (code === LOGIN_POINTER_CONFLICT && named)
+      return t("This login is still recorded on {employee}'s employee record. Unlink it there first.", { employee: named });
+    if (code === LOGIN_NEEDS_GROUP_ADMIN) return t('Only a group-level administrator can link a login that has no company access yet.');
+    if (code === LOGIN_NOT_MANAGEABLE) return t('A login already uses this work email, but it is outside your access. An administrator who manages it must link it.');
+    return null;
+  };
 
   /** A refusal from a write: the coded ones in the reader's language, the rest as the server said them. */
   const writeError = (e: unknown, fallback: string) => {
-    const data = (e as { response?: { data?: { code?: unknown; company?: unknown } } } | null)?.response?.data;
-    if (data?.code === LOGIN_OTHER_COMPANY && typeof data.company === 'string') return otherCompany(data.company);
-    return localizedRefusal(e, locale) ?? fallback;
+    const data = (e as { response?: { data?: { code?: unknown; subject?: unknown } } } | null)?.response?.data;
+    return codedRefusal(data?.code, data?.subject) ?? localizedRefusal(e, locale) ?? fallback;
   };
 
   const link = async (userId: string) => {
@@ -136,9 +147,8 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
         break;
       case 'needs_work_email':
       case 'blocked':
-        explanation = status.reasonCode === LOGIN_OTHER_COMPANY && status.reasonCompany
-          ? otherCompany(status.reasonCompany)
-          : status.reason ?? t('This employee cannot be linked right now.');
+        explanation = codedRefusal(status.reasonCode, status.reasonSubject)
+          ?? status.reason ?? t('This employee cannot be linked right now.');
         break;
     }
   }

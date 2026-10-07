@@ -306,7 +306,11 @@ function UsersTab() {
                   <p className="text-xs text-slate-500">{u.email}</p>
                   {u.employeeId && (
                     <p className="text-xs text-violet-500">
-                      {u.employeeName ? t('Employee: {name} ({code})', { name: u.employeeName, code: u.employeeCode ?? '' }) : `Emp #${u.employeeId}`}
+                      {!u.employeeName
+                        ? `Emp #${u.employeeId}`
+                        : u.employeeCode
+                          ? t('Employee: {name} ({code})', { name: u.employeeName, code: u.employeeCode })
+                          : t('Employee: {name}', { name: u.employeeName })}
                     </p>
                   )}
                 </td>
