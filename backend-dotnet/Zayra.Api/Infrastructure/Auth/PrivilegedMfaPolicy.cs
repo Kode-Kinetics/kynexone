@@ -102,7 +102,7 @@ public static class PrivilegedMfaPolicy
         "finance.gl.manage", "finance.gl.drivers.manage", "finance.gl.drivers.author_predicates", "finance.erp.confirm",
         // Employee records and bulk changes.
         "employees.write", "employees.delete", "employees.approve", "employees.documents", "employees.templates",
-        "employees.bulk_import", "dashboard.export", "reports.export", "reports.schedule", "audit.export",
+        "employees.bulk_import", "employees.access.issue", "employees.access.reset", "dashboard.export", "reports.export", "reports.schedule", "audit.export",
         // Organisation, policy and configuration.
         "organization.write", "organization.delete", "organization.establishment.write", "organization.setup.apply",
         "leave.policy_manage", "leave.cancel", "overtime.policy_manage", "notifications.manage", "localization.manage",

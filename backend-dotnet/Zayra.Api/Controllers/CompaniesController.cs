@@ -8,6 +8,8 @@ using Zayra.Api.Application.Common.Import;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
+using Zayra.Api.Infrastructure.Organization;
+using Zayra.Api.Infrastructure.Authorization;
 
 namespace Zayra.Api.Controllers;
 
@@ -93,10 +95,12 @@ public class CompaniesController : ControllerBase
             // that the CSV importer further down passes exactly the same four checks this form does.
             var gate = await CompanyCreationGate.EvaluateAsync(_db, tenantId.Value, cancellationToken);
             if (!gate.Allowed) return GateRefusal(gate);
+            if (EmailDomainNeedsSecurityAdmin(null, request.EmailDomain)) return EmailDomainForbidden();
 
             var company = await _organization.CreateCompanyAsync(tenantId.Value, request, Context(), cancellationToken, gate.AsDraft);
             return CreatedAtAction(nameof(Get), new { id = company.Id }, company);
         }
+        catch (EmailDomainRefusedException ex) { return StatusCode(ex.Status, new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -127,11 +131,29 @@ public class CompaniesController : ControllerBase
         {
             var tenantId = this.GetTenantId();
             if (tenantId is null) return Unauthorized();
+            var current = await _db.Companies.AsNoTracking().Where(c => c.TenantId == tenantId && c.Id == id && !c.IsDeleted)
+                .Select(c => c.EmailDomain).FirstOrDefaultAsync(cancellationToken);
+            if (current is not null && EmailDomainNeedsSecurityAdmin(current, request.EmailDomain)) return EmailDomainForbidden();
             var company = await _organization.UpdateCompanyAsync(tenantId.Value, id, request, Context(), cancellationToken);
             return company is null ? NotFound() : Ok(company);
         }
+        catch (EmailDomainRefusedException ex) { return StatusCode(ex.Status, new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
+
+    private const string EmailDomainSecurityMessage =
+        "Only a security administrator can set or change a company's email domain, because it decides who can sign in.";
+
+    /// <summary>F5: setting or changing EmailDomain needs security.manage. <paramref name="current"/> null = a new company.</summary>
+    private bool EmailDomainNeedsSecurityAdmin(string? current, string? requested)
+    {
+        var next = CompanyEmailDomainRules.Normalize(requested);
+        var changes = current is null ? next.Length > 0 : !string.Equals(CompanyEmailDomainRules.Normalize(current), next, StringComparison.Ordinal);
+        return changes && !User.HasPermission(CompanyEmailDomainRules.SecurityPermission);
+    }
+
+    private ObjectResult EmailDomainForbidden() =>
+        StatusCode(StatusCodes.Status403Forbidden, new { code = "email_domain_needs_security_admin", message = EmailDomainSecurityMessage });
 
     [HttpDelete("{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager")]
@@ -335,7 +357,11 @@ public class CompaniesController : ControllerBase
             {
                 try
                 {
-                    if (existingByName.TryGetValue(OrgCodes.Normalize(row.Name), out var existing))
+                    if (EmailDomainNeedsSecurityAdmin(
+                            existingByName.TryGetValue(OrgCodes.Normalize(row.Name), out var prior) ? prior.EmailDomain ?? string.Empty : null,
+                            row.Request!.EmailDomain))
+                        errors.Add(EmailDomainSecurityMessage);
+                    else if (existingByName.TryGetValue(OrgCodes.Normalize(row.Name), out var existing))
                     {
                         await _organization.UpdateCompanyAsync(tenantId, existing.Id, row.Request!, context, ct);
                         updated++;

@@ -62,6 +62,15 @@ public class EmployeeUserAccount : ITenantOwned
     public DateTime? InvitedAtUtc { get; set; }
     public DateTime? InvitationAcceptedAtUtc { get; set; }
     public string LoginDisabledReason { get; set; } = string.Empty;
+    // ── Welcome code (EmployeeAccess). HR hands the employee an 8-digit code; the employee sets their own password.
+    // Stored only as HMAC-SHA256(server key, linkId:code) — never the code. Single use, burnt after 5 misses.
+    public string? WelcomeCodeHash { get; set; }
+    public DateTime? WelcomeCodeIssuedAtUtc { get; set; }
+    public DateTime? WelcomeCodeExpiresAtUtc { get; set; }
+    public Guid? WelcomeCodeIssuedBy { get; set; }
+    public int WelcomeCodeFailedAttempts { get; set; }
+    /// <summary>Set when the code was used. The hash is kept so a replay answers "used" only to someone holding the code.</summary>
+    public DateTime? WelcomeCodeRedeemedAtUtc { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? CreatedBy { get; set; }
     public DateTime? UpdatedAtUtc { get; set; }
@@ -69,6 +78,19 @@ public class EmployeeUserAccount : ITenantOwned
     public bool IsDeleted { get; set; }
     public DateTime? DeletedAtUtc { get; set; }
     public Guid? DeletedBy { get; set; }
+
+    /// <summary>Forgets any welcome code: access stopped, the username changed, or the code was used.
+    /// The issue/expiry timestamps are kept only while the hash is (state "not started — last code expired" reads them).</summary>
+    public void ClearWelcomeCode(bool keepExpiry = false)
+    {
+        WelcomeCodeHash = null;
+        WelcomeCodeFailedAttempts = 0;
+        WelcomeCodeRedeemedAtUtc = null;
+        if (keepExpiry) return;
+        WelcomeCodeIssuedAtUtc = null;
+        WelcomeCodeExpiresAtUtc = null;
+        WelcomeCodeIssuedBy = null;
+    }
 }
 
 public class UserPermissionOverride : ITenantOwned

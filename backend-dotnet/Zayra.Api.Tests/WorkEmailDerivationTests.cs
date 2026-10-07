@@ -116,16 +116,17 @@ public class WorkEmailDerivationTests
     }
 
     [Fact]
-    public void Resolve_CoercesForeignDomain_AndThrowsOnUserSuppliedCollision()
+    public void Resolve_RefusesForeignDomain_AndThrowsOnUserSuppliedCollision()
     {
         var taken = new HashSet<string> { "taken@acme.sa" };
         bool IsTaken(string a) => taken.Contains(a);
 
-        // Foreign domain coerced onto the company domain.
-        var coerced = WorkEmailDeriver.Resolve("john@evil.com", "John Smith", null, "acme.sa", WorkEmailPatterns.FirstLast, IsTaken, out var outcome, out var from);
-        coerced.Should().Be("john@acme.sa");
-        outcome.Should().Be("coerced");
-        from.Should().Be("john@evil.com");
+        // UPDATED (employee-access contract §3): a foreign domain is REFUSED (422 work_email_wrong_domain), never
+        // silently coerced — the work email is the login's username and must be the person's real address.
+        var refused = Assert.Throws<WorkEmailRejectedException>(() =>
+            WorkEmailDeriver.Resolve("john@evil.com", "John Smith", null, "acme.sa", WorkEmailPatterns.FirstLast, IsTaken, out _, out _));
+        refused.Code.Should().Be(WorkEmailRejectedException.WrongDomainCode);
+        refused.SuggestedWorkEmail.Should().Be("john@acme.sa");
 
         // User-supplied collision → deliberate stop.
         var act = () => WorkEmailDeriver.Resolve("taken@acme.sa", "X", null, "acme.sa", WorkEmailPatterns.FirstLast, IsTaken, out _, out _);
@@ -173,14 +174,16 @@ public class WorkEmailDerivationTests
 
     // ── Single create: derive, suffix, edge-7, conflict, coercion, case-insensitive ─────────────
     [Fact]
-    public async Task Create_DerivesWorkEmail_FromNameAndCompanyDomain()
+    public async Task Create_LeavesABlankWorkEmailBlank_AndSuggestsTheDerivedAddress()
     {
+        // UPDATED (employee-access contract §3): the derived address is a SUGGESTION, never saved.
         await using var db = CreateDb();
         var tenantId = await SeedTenant(db);
         var acme = await SeedCompany(db, tenantId, "Acme", "acme.sa");
 
         var created = await Svc(db).CreateAsync(tenantId, Req("John Smith", null, acme.Id), Ctx(tenantId), CancellationToken.None);
-        created.WorkEmail.Should().Be("john.smith@acme.sa");
+        created.WorkEmail.Should().BeEmpty();
+        created.SuggestedWorkEmail.Should().Be("john.smith@acme.sa");
     }
 
     [Fact]
@@ -191,10 +194,11 @@ public class WorkEmailDerivationTests
         var acme = await SeedCompany(db, tenantId, "Acme", "acme.sa");
         var svc = Svc(db);
 
-        (await svc.CreateAsync(tenantId, Req("John Smith", null, acme.Id), Ctx(tenantId), CancellationToken.None))
+        // UPDATED: the first John Smith's address is typed; the second one's SUGGESTION skips past it.
+        (await svc.CreateAsync(tenantId, Req("John Smith", "john.smith", acme.Id), Ctx(tenantId), CancellationToken.None))
             .WorkEmail.Should().Be("john.smith@acme.sa");
         (await svc.CreateAsync(tenantId, Req("John Smith", null, acme.Id), Ctx(tenantId), CancellationToken.None))
-            .WorkEmail.Should().Be("john.smith2@acme.sa");
+            .SuggestedWorkEmail.Should().Be("john.smith2@acme.sa");
     }
 
     [Fact]
@@ -204,7 +208,7 @@ public class WorkEmailDerivationTests
         var tenantId = await SeedTenant(db);
         var acme = await SeedCompany(db, tenantId, "Acme", "acme.sa");
         var svc = Svc(db);
-        await svc.CreateAsync(tenantId, Req("John Smith", null, acme.Id), Ctx(tenantId), CancellationToken.None);
+        await svc.CreateAsync(tenantId, Req("John Smith", "john.smith", acme.Id), Ctx(tenantId), CancellationToken.None);
 
         // A DIFFERENT person who supplies the SAME local part must not silently duplicate the login identity.
         var act = () => svc.CreateAsync(tenantId, Req("Jane Doe", "john.smith", acme.Id), Ctx(tenantId), CancellationToken.None);
@@ -218,7 +222,7 @@ public class WorkEmailDerivationTests
         var tenantId = await SeedTenant(db);
         var acme = await SeedCompany(db, tenantId, "Acme", "acme.sa");
         var svc = Svc(db);
-        await svc.CreateAsync(tenantId, Req("John Smith", null, acme.Id), Ctx(tenantId), CancellationToken.None); // john.smith@acme.sa
+        await svc.CreateAsync(tenantId, Req("John Smith", "john.smith", acme.Id), Ctx(tenantId), CancellationToken.None); // john.smith@acme.sa
 
         // "John.Smith" differs only by case; normalized it is the SAME login → must conflict, not create a twin.
         var act = () => svc.CreateAsync(tenantId, Req("Jane Doe", "John.Smith", acme.Id), Ctx(tenantId), CancellationToken.None);
@@ -226,14 +230,15 @@ public class WorkEmailDerivationTests
     }
 
     [Fact]
-    public async Task Create_ForeignDomain_IsCoercedToCompanyDomain()
+    public async Task Create_ForeignDomain_IsRefused()
     {
+        // UPDATED (employee-access contract §3): 422 work_email_wrong_domain instead of silent coercion.
         await using var db = CreateDb();
         var tenantId = await SeedTenant(db);
         var acme = await SeedCompany(db, tenantId, "Acme", "acme.sa");
 
-        var created = await Svc(db).CreateAsync(tenantId, Req("John Smith", "john.smith@evil.com", acme.Id), Ctx(tenantId), CancellationToken.None);
-        created.WorkEmail.Should().Be("john.smith@acme.sa");
+        var act = () => Svc(db).CreateAsync(tenantId, Req("John Smith", "john.smith@evil.com", acme.Id), Ctx(tenantId), CancellationToken.None);
+        (await act.Should().ThrowAsync<WorkEmailRejectedException>()).Which.Message.Should().Be("Work email must end in @acme.sa.");
     }
 
     [Fact]
@@ -400,7 +405,7 @@ public class WorkEmailDerivationTests
     }
 
     [Fact]
-    public async Task Import_DerivesWorkEmail_WhenBlank_AndSuffixesCollisions()
+    public async Task Import_LeavesBlankWorkEmailsBlank_NeverDerives()
     {
         await using var db = CreateDb();
         var tenantId = await SeedTenant(db);
@@ -413,8 +418,9 @@ public class WorkEmailDerivationTests
             "E2,John Smith,Acme,2024-01-01\n";
         await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
 
-        (await db.Employees.SingleAsync(e => e.EmployeeCode == "E1")).WorkEmail.Should().Be("john.smith@acme.sa");
-        (await db.Employees.SingleAsync(e => e.EmployeeCode == "E2")).WorkEmail.Should().Be("john.smith2@acme.sa");
+        // UPDATED (employee-access contract §3): no derived address is saved; they wait for their real work email.
+        (await db.Employees.SingleAsync(e => e.EmployeeCode == "E1")).WorkEmail.Should().BeEmpty();
+        (await db.Employees.SingleAsync(e => e.EmployeeCode == "E2")).WorkEmail.Should().BeEmpty();
     }
 
     [Fact]
@@ -458,9 +464,10 @@ public class WorkEmailDerivationTests
     }
 
     [Fact]
-    public async Task Import_DomainPresentButArabicOnlyName_FlagsNeedsInfo()
+    public async Task Import_DomainPresentButArabicOnlyName_StaysBlank_WithoutAnEmailGap()
     {
-        // Derivation was expected (company has a domain) but the name has no romanizable form → email:needs-info.
+        // UPDATED (employee-access contract §3): nothing is derived any more, so an Arabic-only name is no different
+        // from any blank work email: it stays blank, no per-row gap (the access state says "Waiting for work email").
         await using var db = CreateDb();
         var tenantId = await SeedTenant(db);
         await SeedCompany(db, tenantId, "Acme", "acme.sa");
@@ -474,11 +481,11 @@ public class WorkEmailDerivationTests
         var e1 = await db.Employees.SingleAsync(e => e.EmployeeCode == "E1");
         e1.WorkEmail.Should().BeEmpty();
         (await db.EmployeeImportGaps.Where(g => g.EmployeeId == e1.Id).Select(g => g.GapType).ToListAsync())
-            .Should().Contain("email:needs-info");
+            .Should().NotContain(t => t.StartsWith("email:"));
     }
 
     [Fact]
-    public async Task Import_DerivedEmail_IsUniqueAgainstExistingDbRow()
+    public async Task Import_BlankEmail_IsNeverDerived_EvenWhenTheBaseAddressIsTaken()
     {
         await using var db = CreateDb();
         var tenantId = await SeedTenant(db);
@@ -497,7 +504,8 @@ public class WorkEmailDerivationTests
             "E1,John Smith,Acme,2024-01-01\n";
         await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
 
-        (await db.Employees.SingleAsync(e => e.EmployeeCode == "E1")).WorkEmail.Should().Be("john.smith2@acme.sa");
+        // UPDATED (employee-access contract §3): blank stays blank.
+        (await db.Employees.SingleAsync(e => e.EmployeeCode == "E1")).WorkEmail.Should().BeEmpty();
     }
 }
 

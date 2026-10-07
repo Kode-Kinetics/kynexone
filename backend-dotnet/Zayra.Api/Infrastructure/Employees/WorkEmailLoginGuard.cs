@@ -45,7 +45,7 @@ public static class WorkEmailLoginGuard
     /// what was an active login (it awaits a password again, but it is a person's login, never a staged one).</summary>
     private static readonly string[] ActivationEvidence =
         ["auth.invitation_accepted", "auth.password_reset", "auth.password_changed", "auth.login", "access.user_created",
-         AccessManagementService.LinkCredentialResetAction];
+         AccessManagementService.LinkCredentialResetAction, WelcomeCodeRedeemer.RedeemedAction];
 
     /// <summary>
     /// STAGED = never activated. Every one of: a live link to this employee still awaiting its first password
@@ -114,6 +114,12 @@ public static class WorkEmailLoginGuard
         var links = await ScopedBypass.TenantWide(db.EmployeeUserAccounts, tenantId, Why)
             .Where(x => x.EmployeeId == employee.Id && !x.IsDeleted)
             .ToListAsync(ct);
+        // A welcome code was handed out for the old address: it dies with it (Amendment 2). HR issues a new one.
+        foreach (var row in links.Where(x => x.WelcomeCodeHash != null))
+        {
+            row.ClearWelcomeCode();
+            row.UpdatedAtUtc = nowUtc;
+        }
         var userIds = links.Where(x => x.UserId.HasValue).Select(x => x.UserId!.Value)
             .Concat(employee.UserAccountId is Guid pointer ? new[] { pointer } : Array.Empty<Guid>())
             .Distinct()

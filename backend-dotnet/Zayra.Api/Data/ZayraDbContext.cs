@@ -161,6 +161,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     {
         var now = DateTime.UtcNow;
         EnforceAuditLogAppendOnly();
+        await ClearWelcomeCodesOnAccessChangeAsync(cancellationToken);
         foreach (var entry in ChangeTracker.Entries())
         {
             if (entry.State == EntityState.Added)
@@ -225,6 +226,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         EnforceAuditLogAppendOnly();
+        ClearWelcomeCodesOnAccessChangeAsync(CancellationToken.None, synchronous: true).GetAwaiter().GetResult();
         // The tenant write guard is pure ChangeTracker inspection (no DB I/O), so it runs on the
         // synchronous path too — closing the gap where SaveChanges() enforced no scope at all.
         // (Audit/actor + company stamping remain async-only, a pre-existing divergence.)
@@ -720,6 +722,58 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     /// would leave tokens minted under the old state valid. The written stamp is therefore never
     /// lower than a caller's RotateStamp value and always strictly after the stored one.
     /// </summary>
+    /// <summary>
+    /// ONE LIVE CREDENTIAL AT A TIME (employee access, Amendment 3 F3). A welcome code was issued for a login as it
+    /// stood; when that login's roles, permission overrides, company grants, access mode or username change, the code
+    /// no longer describes what it would unlock, so it is forgotten and HR issues a new one. Done here, in the save,
+    /// so no access-changing path can forget it. The redeem itself (which switches the login on) is exempt: it marks
+    /// the code used in the same save.
+    /// </summary>
+    private async Task ClearWelcomeCodesOnAccessChangeAsync(CancellationToken ct, bool synchronous = false)
+    {
+        var redeeming = ChangeTracker.Entries<EmployeeUserAccount>()
+            .Where(e => e.State == EntityState.Modified && e.Property(x => x.WelcomeCodeRedeemedAtUtc).IsModified
+                        && e.Entity.WelcomeCodeRedeemedAtUtc != null)
+            .Select(e => e.Entity.UserId)
+            .Where(id => id.HasValue).Select(id => id!.Value)
+            .ToHashSet();
+        var affected = new Dictionary<Guid, Guid>(); // userId -> tenantId
+        void Add(Guid userId, Guid tenantId) { if (!redeeming.Contains(userId)) affected[userId] = tenantId; }
+        foreach (var e in ChangeTracker.Entries<UserRole>())
+            if (e.State is EntityState.Added or EntityState.Deleted && e.Entity.User is { } u1) Add(u1.Id, u1.TenantId);
+            else if (e.State is EntityState.Added or EntityState.Deleted && Users.Local.FirstOrDefault(x => x.Id == e.Entity.UserId) is { } u2) Add(u2.Id, u2.TenantId);
+        foreach (var e in ChangeTracker.Entries<UserPermissionOverride>())
+            if (e.State is EntityState.Added or EntityState.Deleted or EntityState.Modified) Add(e.Entity.UserId, e.Entity.TenantId);
+        foreach (var e in ChangeTracker.Entries<UserEntityAccess>())
+            if (e.State is EntityState.Added or EntityState.Deleted or EntityState.Modified) Add(e.Entity.UserId, e.Entity.TenantId);
+        foreach (var e in ChangeTracker.Entries<User>())
+            if (e.State == EntityState.Modified
+                && (e.Property(x => x.AccessMode).IsModified || e.Property(x => x.NormalizedEmail).IsModified
+                    || e.Property(x => x.IsGroupScope).IsModified))
+                Add(e.Entity.Id, e.Entity.TenantId);
+        foreach (var e in ChangeTracker.Entries<EmployeeUserAccount>())
+            if (e.State == EntityState.Modified && e.Entity.UserId is Guid lu
+                && (e.Property(x => x.AccessMode).IsModified || e.Property(x => x.LoginDisabledReason).IsModified
+                    || e.Property(x => x.Status).IsModified))
+                Add(lu, e.Entity.TenantId);
+        // A brand-new login (staging) has no code to clear.
+        foreach (var added in ChangeTracker.Entries<User>().Where(e => e.State == EntityState.Added)) affected.Remove(added.Entity.Id);
+        if (affected.Count == 0) return;
+
+        foreach (var link in ChangeTracker.Entries<EmployeeUserAccount>().Select(e => e.Entity)
+                     .Where(l => l.UserId is Guid id && affected.ContainsKey(id) && l.WelcomeCodeHash != null && l.WelcomeCodeRedeemedAtUtc == null))
+            link.ClearWelcomeCode();
+        foreach (var group in affected.GroupBy(kv => kv.Value))
+        {
+            var ids = group.Select(kv => kv.Key).ToList();
+            var query = Infrastructure.Data.ScopedBypass.TenantWide(EmployeeUserAccounts, group.Key,
+                    "Welcome-code invalidation on an access change: the changed logins' own employee links are read across legal entities; the tenant of the changed rows is re-applied.")
+                .Where(x => x.UserId != null && ids.Contains(x.UserId.Value) && x.WelcomeCodeHash != null && x.WelcomeCodeRedeemedAtUtc == null);
+            var links = synchronous ? query.ToList() : await query.ToListAsync(ct);
+            foreach (var link in links) link.ClearWelcomeCode();
+        }
+    }
+
     private static void StampUserSecurityStampMonotonically(
         Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry entry, DateTime now)
     {
@@ -1340,6 +1394,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.AccessMode).HasMaxLength(40).IsRequired();
             entity.Property(x => x.Status).HasMaxLength(40).IsRequired();
             entity.Property(x => x.InvitationTokenHash).HasMaxLength(128);
+            entity.Property(x => x.WelcomeCodeHash).HasMaxLength(128);
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.IsPrimary });
             entity.HasIndex(x => new { x.TenantId, x.UserId }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.InvitationTokenHash });

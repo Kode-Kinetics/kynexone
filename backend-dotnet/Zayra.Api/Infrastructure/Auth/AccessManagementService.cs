@@ -1199,7 +1199,7 @@ public class AccessManagementService : IAccessManagementService
 
     /// <summary>Audit actions (central audit, entity User) whose ACTOR has held a credential for that login.</summary>
     internal static readonly string[] CredentialHandlerActions =
-        ["access.user_created", "access.admin_password_reset", InvitationLinkDisclosedAction];
+        ["access.user_created", "access.admin_password_reset", InvitationLinkDisclosedAction, EmployeeAccessService.DisclosedAction];
 
     /// <summary>Admin-audit actions (entity User) whose PerformedBy was shown a live credential link for that login.</summary>
     internal static readonly string[] CredentialDisclosureAdminActions =

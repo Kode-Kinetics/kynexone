@@ -57,7 +57,10 @@ public class EmployeeManagementService : IEmployeeManagementService
     public Task<PagedResult<EmployeeListItemDto>> SearchAsync(Guid tenantId, string? search, string? status, string? department, int page, int pageSize, CancellationToken cancellationToken)
         => SearchAsync(tenantId, search, status, department, null, null, null, page, pageSize, cancellationToken);
 
-    public async Task<PagedResult<EmployeeListItemDto>> SearchAsync(Guid tenantId, string? search, string? status, string? department, string? readiness, Guid? importBatchId, string? gapType, int page, int pageSize, CancellationToken cancellationToken)
+    public Task<PagedResult<EmployeeListItemDto>> SearchAsync(Guid tenantId, string? search, string? status, string? department, string? readiness, Guid? importBatchId, string? gapType, int page, int pageSize, CancellationToken cancellationToken)
+        => SearchAsync(tenantId, search, status, department, readiness, importBatchId, gapType, null, page, pageSize, cancellationToken);
+
+    public async Task<PagedResult<EmployeeListItemDto>> SearchAsync(Guid tenantId, string? search, string? status, string? department, string? readiness, Guid? importBatchId, string? gapType, string? access, int page, int pageSize, CancellationToken cancellationToken)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
@@ -73,11 +76,14 @@ public class EmployeeManagementService : IEmployeeManagementService
         if (!string.IsNullOrWhiteSpace(department)) query = query.Where(x => x.Department == department);
         // SERVER-SIDE readiness / import-gap filter — the whole dataset, so the deep-link works past page 1.
         query = EmployeeReadinessQuery.ApplyReadinessFilter(query, _db, tenantId, readiness, importBatchId, gapType);
+        query = await Zayra.Api.Infrastructure.Auth.EmployeeAccessStates.ApplyFilterAsync(query, _db, tenantId,
+            Zayra.Api.Infrastructure.Auth.EmployeeAccessStates.ParseFilter(access), cancellationToken);
 
         var total = await query.CountAsync(cancellationToken);
         var items = await query.OrderBy(x => x.EmployeeCode).Skip((page - 1) * pageSize).Take(pageSize)
             .Select(x => new EmployeeListItemDto(x.Id, x.EmployeeCode, x.FullName, x.ArabicName, x.Department, x.Designation, string.IsNullOrEmpty(x.Branch) ? (_db.Branches.Where(b => b.Id == x.BranchId).Select(b => b.NameEn).FirstOrDefault() ?? string.Empty) : x.Branch, x.ManagerEmployeeId, x.Status, x.ProfileCompletenessScore, x.VisaExpiryDate, x.PassportExpiryDate, x.ReadinessState, x.ActivationBlockersCount, x.PublicId))
             .ToListAsync(cancellationToken);
+        items = await Zayra.Api.Infrastructure.Auth.EmployeeAccessStates.DecorateAsync(_db, tenantId, items, cancellationToken);
         return new PagedResult<EmployeeListItemDto>(items, total, page, pageSize);
     }
 
@@ -177,6 +183,8 @@ public class EmployeeManagementService : IEmployeeManagementService
                 await UpsertPayrollProfile(employee, request.PayrollProfile, context, cancellationToken);
                 await UpsertEmployeeSalaryStructure(employee, salaryBreakdown, context, cancellationToken);
                 await UpsertComplianceRecords(employee, request.ComplianceRecords ?? [], context, cancellationToken);
+                // The login belongs to the profile from creation onwards (contract §3): staged now, in this transaction.
+                await new Zayra.Api.Infrastructure.Auth.EmployeeLoginProvisioner(_db).EnsureStagedLoginAsync(tenantId, employee, context, cancellationToken);
                 await AddHistory(employee, "Created", "Employee", string.Empty, employee.EmployeeCode, DateOnly.FromDateTime(DateTime.UtcNow), "Employee created", context, cancellationToken);
                 await _db.SaveChangesAsync(cancellationToken);
                 return true;
@@ -228,7 +236,8 @@ public class EmployeeManagementService : IEmployeeManagementService
         // any caller holding employees.write, and (via GetAsync) falsely stamped employee.sensitive_viewed.
         return (await GetAsync(tenantId, employee.Id, includeSensitive, context, cancellationToken))! with
         {
-            WorkEmailHasExistingLogin = workEmailHasExistingLogin
+            WorkEmailHasExistingLogin = workEmailHasExistingLogin,
+            SuggestedWorkEmail = workEmailAudit.SuggestedWorkEmail,
         };
     }
 
@@ -865,6 +874,7 @@ public class EmployeeManagementService : IEmployeeManagementService
             link.InvitationTokenHash = string.Empty;
             link.InvitationExpiresAtUtc = null;
             link.LoginDisabledReason = loginDisabledReason;
+            link.ClearWelcomeCode(); // access stopped: any live welcome code dies with it
             link.UpdatedAtUtc = effectiveAtUtc;
             link.UpdatedBy = actorUserId;
             invalidatedLinks++;
@@ -1481,6 +1491,8 @@ public class EmployeeManagementService : IEmployeeManagementService
         public string? RenamedJson;   // → employee.work_email_renamed (STAGED login's username kept in sync)
         public string? LoginHeldJson; // → employee.work_email_login_held (ACTIVATED login left untouched)
         public bool LoginUsernameDiffers;
+        /// <summary>A blank work email's name-derived suggestion. Returned to the client, never saved.</summary>
+        public string? SuggestedWorkEmail;
     }
 
     /// <summary>
@@ -1513,21 +1525,22 @@ public class EmployeeManagementService : IEmployeeManagementService
                 .FirstOrDefaultAsync(ct)
             : null;
         var domain = (company?.EmailDomain ?? string.Empty).Trim().ToLowerInvariant();
+        // '+' is refused everywhere, whatever the company domain (contract Amendment 1).
+        WorkEmailDeriver.RejectPlusAddress(Clean(request.WorkEmail));
 
         if (!string.IsNullOrWhiteSpace(domain))
         {
             var pattern = WorkEmailPatterns.Normalize(company!.WorkEmailPattern);
             var taken = await LoadTenantWorkEmailSetAsync(tenantId, isUpdate ? employee.Id : (int?)null, ct);
             bool IsTaken(string addr) => taken.Contains(Zayra.Api.Infrastructure.Auth.AuthService.Normalize(addr));
-            // Shared authoritative resolution (same code the PATCH edit + preview endpoint use).
+            // Shared authoritative resolution (same code the PATCH edit + preview endpoint use). A wrong domain or a
+            // '+' throws WorkEmailRejectedException (422); a blank stays blank — the derived address is a suggestion.
             var resolvedEmail = WorkEmailDeriver.Resolve(
                 Clean(request.WorkEmail), employee.EnglishName, employee.ArabicName, domain, pattern, IsTaken,
-                out var outcome, out var coercedFrom);
-            if (outcome != "manual") employee.WorkEmail = resolvedEmail; // "manual" → leave blank for manual entry
-            if (outcome == "derived")
-                audit.DerivedJson = JsonSerializer.Serialize(new { pattern, domain, workEmail = resolvedEmail, source = "name" });
-            if (coercedFrom is not null)
-                audit.CoercedJson = JsonSerializer.Serialize(new { provided = coercedFrom, coercedTo = resolvedEmail });
+                out var outcome, out _);
+            employee.WorkEmail = resolvedEmail;
+            if (outcome == "blank")
+                audit.SuggestedWorkEmail = WorkEmailDeriver.Suggest(employee.EnglishName, employee.ArabicName, domain, pattern, IsTaken);
         }
         // edge-7 (no domain): employee.WorkEmail keeps the request value (Clean'd in ApplyEmployee); never block.
 
@@ -1540,6 +1553,8 @@ public class EmployeeManagementService : IEmployeeManagementService
             audit.RenamedJson = login.RenamedJson;
             audit.LoginHeldJson = login.HeldJson;
             audit.LoginUsernameDiffers = login.LoginUsernameDiffers;
+            // A work email set or changed on an employee with no login stages one (idempotent; saved with the edit).
+            await new Zayra.Api.Infrastructure.Auth.EmployeeLoginProvisioner(_db).EnsureStagedLoginAsync(tenantId, employee, context, ct);
         }
         return audit;
     }

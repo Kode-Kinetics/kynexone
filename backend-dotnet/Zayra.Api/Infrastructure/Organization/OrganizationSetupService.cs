@@ -44,6 +44,7 @@ public class OrganizationSetupService : IOrganizationSetupService
     {
         ValidateCountryCode(request.CountryCode);
         ValidateEmailDomain(request.EmailDomain);
+        await CompanyEmailDomainRules.EnsureClaimableAsync(_db, tenantId, request.EmailDomain, cancellationToken);
         await EnsureCompanyUnique(tenantId, request.RegistrationNumber, null, cancellationToken);
         var company = new Company { TenantId = tenantId, CreatedBy = context.UserId };
         Apply(company, request);
@@ -56,6 +57,9 @@ public class OrganizationSetupService : IOrganizationSetupService
         _db.Companies.Add(company);
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("organization.company_created", nameof(Company), company.Id.ToString(), context, null, cancellationToken);
+        if (company.EmailDomain.Length > 0)
+            await _audit.WriteAsync(CompanyEmailDomainRules.ChangedAction, nameof(Company), company.Id.ToString(), context,
+                System.Text.Json.JsonSerializer.Serialize(new { oldEmailDomain = (string?)null, newEmailDomain = company.EmailDomain }), cancellationToken);
         return company.ToDto();
     }
 
@@ -63,6 +67,7 @@ public class OrganizationSetupService : IOrganizationSetupService
     {
         ValidateCountryCode(request.CountryCode);
         ValidateEmailDomain(request.EmailDomain);
+        await CompanyEmailDomainRules.EnsureClaimableAsync(_db, tenantId, request.EmailDomain, cancellationToken);
         var changedAtUtc = DateTime.UtcNow;
         var auditId = Guid.NewGuid();
         CompanyDto? result = null;
@@ -85,7 +90,16 @@ public class OrganizationSetupService : IOrganizationSetupService
                     "Company activation cannot be changed through the general editor. Use the controlled company-status workflow.");
 
             await EnsureCompanyUnique(tenantId, request.RegistrationNumber, id, ct);
+            var priorEmailDomain = company.EmailDomain ?? string.Empty;
             Apply(company, request, applyLifecycle: false);
+            if (!string.Equals(priorEmailDomain, company.EmailDomain, StringComparison.Ordinal))
+                _db.AuditLogs.Add(new Zayra.Api.Domain.Entities.AuditLog
+                {
+                    Id = Guid.NewGuid(), TenantId = tenantId, UserId = context.UserId, Action = CompanyEmailDomainRules.ChangedAction,
+                    EntityName = nameof(Company), EntityId = company.Id.ToString(), IpAddress = context.IpAddress, UserAgent = context.UserAgent,
+                    Metadata = System.Text.Json.JsonSerializer.Serialize(new { oldEmailDomain = priorEmailDomain, newEmailDomain = company.EmailDomain }),
+                    CreatedAtUtc = changedAtUtc,
+                });
             company.UpdatedAtUtc = changedAtUtc;
             company.UpdatedBy = context.UserId;
             result = company.ToDto();

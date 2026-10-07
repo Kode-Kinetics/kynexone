@@ -58,15 +58,17 @@ public static class WorkEmailDeriver
     }
 
     /// <summary>
-    /// The single server-authoritative resolution shared by create, update, the PATCH edit, and the preview
-    /// endpoint so they can NEVER diverge. Given a company <paramref name="domain"/> (already known non-empty),
-    /// the provided value (blank / local part / full address), the name (for derive-when-blank), and the
-    /// caller's normalized collision predicate:
-    ///  - blank + a romanizable name → DERIVE and auto-suffix on collision (never throws);
-    ///  - blank + no romanizable name (e.g. Arabic-only) → outcome "manual", returns "" (leave for manual);
-    ///  - a provided value → the domain is authoritative: extract the local part and RE-ASSEMBLE on the
-    ///    company domain (a foreign/stale domain is coerced, surfaced via <paramref name="coercedFrom"/>),
-    ///    then a collision throws <see cref="WorkEmailConflictException"/> (the one deliberate stop).
+    /// The single server-authoritative resolution shared by create, update, the PATCH edit, and the preview endpoint
+    /// so they can NEVER diverge. Given a company <paramref name="domain"/> (already known non-empty) and the provided
+    /// value (blank / local part / full address):
+    ///  - blank → outcome "blank", returns "": a derived address is a SUGGESTION only (<see cref="Suggest"/>), never
+    ///    saved — the login's username must be the employee's real work email (employee-access contract §3);
+    ///  - a '+' in the local part → <see cref="WorkEmailRejectedException"/> <c>work_email_plus_address</c>;
+    ///  - a full address on ANOTHER domain → <see cref="WorkEmailRejectedException"/> <c>work_email_wrong_domain</c>
+    ///    ("Work email must end in @{domain}."); it is refused, never silently re-assembled onto the company domain;
+    ///  - a local part, or an address on the domain → assembled on the domain; a collision throws
+    ///    <see cref="WorkEmailConflictException"/> (the deliberate stop — never silently duplicate).
+    /// <paramref name="coercedFrom"/> is always null now (kept for call-site compatibility).
     /// </summary>
     public static string Resolve(
         string? providedWorkEmail, string? englishName, string? arabicName,
@@ -75,21 +77,32 @@ public static class WorkEmailDeriver
     {
         coercedFrom = null;
         var provided = (providedWorkEmail ?? string.Empty).Trim();
-        if (provided.Length == 0)
-        {
-            var local = BuildLocalPart(englishName, arabicName, pattern);
-            if (local.Length == 0) { outcome = "manual"; return string.Empty; }
-            outcome = "derived";
-            return Uniqueify(local, domain, isTaken);
-        }
+        if (provided.Length == 0) { outcome = "blank"; return string.Empty; }
+        RejectPlusAddress(provided);
         var localPart = ExtractLocalPart(provided);
         var (matches, providedDomain) = ValidateAgainstDomain(provided, domain);
+        if (!matches && !string.IsNullOrEmpty(providedDomain))
+            throw WorkEmailRejectedException.WrongDomain(domain, localPart.Length > 0 && !isTaken(Assemble(localPart, domain)) ? Assemble(localPart, domain) : null);
         var assembled = Assemble(localPart, domain);
-        if (!matches && !string.IsNullOrEmpty(providedDomain)) coercedFrom = provided;
         if (isTaken(assembled))
             throw new WorkEmailConflictException(assembled, Uniqueify(localPart, domain, isTaken));
-        outcome = coercedFrom is null ? "assembled" : "coerced";
+        outcome = "assembled";
         return assembled;
+    }
+
+    /// <summary>The address HR may accept for a blank work email: derived from the name per the pattern, made unique.
+    /// Null when the name has no romanizable form. Returned to the client only — never saved by the server.</summary>
+    public static string? Suggest(string? englishName, string? arabicName, string domain, string pattern, Func<string, bool> isTaken)
+    {
+        if (string.IsNullOrWhiteSpace(domain)) return null;
+        var local = BuildLocalPart(englishName, arabicName, pattern);
+        return local.Length == 0 ? null : Uniqueify(local, domain, isTaken);
+    }
+
+    /// <summary>Refuses a '+' in the local part (contract Amendment 1), whatever the company domain.</summary>
+    public static void RejectPlusAddress(string? workEmail)
+    {
+        if (Zayra.Api.Infrastructure.Auth.WorkEmailSetterRule.IsPlusAddressed(workEmail)) throw WorkEmailRejectedException.PlusAddress();
     }
 
     /// <summary>Assemble a full address from a local part and a domain (domain lowercased/trimmed).</summary>
@@ -183,4 +196,29 @@ public sealed class WorkEmailConflictException : Exception
         Attempted = attempted;
         Suggestion = suggestion;
     }
+}
+
+/// <summary>
+/// A work email the server refuses outright (HTTP 422 with <c>code</c>): on the wrong domain, or plus-addressed.
+/// <see cref="SuggestedWorkEmail"/> is the address on the company domain the client may offer instead.
+/// </summary>
+public sealed class WorkEmailRejectedException : Exception
+{
+    public const string WrongDomainCode = "work_email_wrong_domain";
+    public const string PlusAddressCode = "work_email_plus_address";
+
+    public string Code { get; }
+    public string? SuggestedWorkEmail { get; }
+
+    private WorkEmailRejectedException(string code, string message, string? suggestion) : base(message)
+    {
+        Code = code;
+        SuggestedWorkEmail = suggestion;
+    }
+
+    public static WorkEmailRejectedException WrongDomain(string domain, string? suggestion) =>
+        new(WrongDomainCode, $"Work email must end in @{domain.Trim().ToLowerInvariant()}.", suggestion);
+
+    public static WorkEmailRejectedException PlusAddress() =>
+        new(PlusAddressCode, Zayra.Api.Infrastructure.Auth.WorkEmailSetterRule.PlusAddressMessage, null);
 }

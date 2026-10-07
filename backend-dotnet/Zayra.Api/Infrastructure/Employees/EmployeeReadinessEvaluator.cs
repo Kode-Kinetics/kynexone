@@ -295,6 +295,7 @@ public sealed class EmployeeReadinessEvaluator : IEmployeeReadinessEvaluator
             // Work-email auto-derivation gaps (advisory, fail-open — never block activation).
             ["email:needs-info"] = "Work email needs manual entry",
             ["email:domain-mismatch"] = "Work email domain mismatch",
+            ["email:plus-address"] = "Work email can't contain '+'",
             ["email:duplicate"] = "Work email already in use",
             // Duplicate-person flags (advisory, human-resolved — never auto-heal). Category "dup".
             ["dup:strong"] = "Possible duplicate (ID match)",

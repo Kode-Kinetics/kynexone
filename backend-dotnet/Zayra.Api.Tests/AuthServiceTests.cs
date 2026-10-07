@@ -111,11 +111,13 @@ public class AuthServiceTests
     [InlineData("   ")]
     public void RequiredWorkspace_RejectsMissingOrBlankValues(string? workspace)
     {
-        var tenantSlug = typeof(ForgotPasswordRequest)
+        // UPDATED (employee-access contract §4): login and forgot-password route by domain, so the attribute now
+        // guards the token endpoints (reset-password, accept-invitation) only.
+        var tenantSlug = typeof(ResetPasswordRequest)
             .GetConstructors()
             .Single()
             .GetParameters()
-            .Single(parameter => parameter.Name == nameof(ForgotPasswordRequest.TenantSlug));
+            .Single(parameter => parameter.Name == nameof(ResetPasswordRequest.TenantSlug));
         var validator = Assert.Single(
             tenantSlug.GetCustomAttributes(typeof(RequiredWorkspaceAttribute), inherit: false)
                 .Cast<RequiredWorkspaceAttribute>());
@@ -123,7 +125,7 @@ public class AuthServiceTests
         Assert.False(validator.IsValid(workspace));
         Assert.Equal(
             "Workspace is required.",
-            validator.FormatErrorMessage(nameof(ForgotPasswordRequest.TenantSlug)));
+            validator.FormatErrorMessage(nameof(ResetPasswordRequest.TenantSlug)));
         Assert.Throws<InvalidOperationException>(() => AuthService.RequireWorkspace(workspace));
     }
 

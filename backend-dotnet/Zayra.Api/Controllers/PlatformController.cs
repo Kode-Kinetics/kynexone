@@ -1449,6 +1449,8 @@ public class PlatformController : ControllerBase
         // Same domain rule as the tenant setup path (shared validator, not a divergent copy).
         if (!Zayra.Api.Infrastructure.Organization.OrganizationSetupService.IsValidEmailDomainOrEmpty(req.EmailDomain))
             return BadRequest(new { message = $"Invalid email domain '{req.EmailDomain}'. Use a domain like 'acme.sa'." });
+        try { await Zayra.Api.Infrastructure.Organization.CompanyEmailDomainRules.EnsureClaimableAsync(_db, tenantId, req.EmailDomain, ct); }
+        catch (Zayra.Api.Infrastructure.Organization.EmailDomainRefusedException ex) { return StatusCode(ex.Status, new { code = ex.Code, message = ex.Message }); }
 
         var sub = await _db.TenantSubscriptions.AsNoTracking().FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
         // SYSTEM CONTEXT: tenant scope intentionally bypassed; explicit TenantId predicate.

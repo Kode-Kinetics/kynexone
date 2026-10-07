@@ -133,8 +133,10 @@ public class AuthSeeder : IAuthSeeder
 
         // Level 2 — HR Director: full HR + payroll visibility + reports + compliance.
         // Release A: entitlements.* (benefits by grade) and contracts.renewal.* (decides renewals).
+        // employees.access.* (welcome codes) is deliberately NOT HR Director's: issue = Admin, HR Manager, HR Officer;
+        // reset = Admin, HR Manager (employee-access contract, Amendment 3 F1).
         await EnsureRole(tenantId, "HR Director", "Senior HR leader with strategic visibility", permissions.Where(x =>
-            x.Key.StartsWith("employees.") || x.Key.StartsWith("attendance.") || x.Key.StartsWith("leave.") ||
+            (x.Key.StartsWith("employees.") && !x.Key.StartsWith("employees.access.")) || x.Key.StartsWith("attendance.") || x.Key.StartsWith("leave.") ||
             x.Key.StartsWith("overtime.") || x.Key.StartsWith("dashboard.") || x.Key.StartsWith("organization.") ||
             x.Key.StartsWith("approvals.") || x.Key.StartsWith("notifications.") || x.Key.StartsWith("localization.") ||
             x.Key.StartsWith("performance.") || x.Key.StartsWith("compliance.") || x.Key.StartsWith("reports.") ||
@@ -183,6 +185,8 @@ public class AuthSeeder : IAuthSeeder
             "dashboard.read", "employees.read", "employees.write", "employees.documents", "employees.templates",
             // employees.bulk_import reconciles HR Officer's existing role-name reach to POST /employees/import(-preview).
             "employees.bulk_import",
+            // Gives employees their welcome code. NOT employees.access.reset: resetting an active login is HR Manager/Admin.
+            "employees.access.issue",
             "organization.read", "approvals.read", "approvals.write", "notifications.read", "localization.read",
             // overtime.write beside leave.write: HR Officer files both on an employee's behalf. Filing overtime
             // for someone else is gated on overtime.write (OvertimeController.CreateRequest), not on data scope.
@@ -309,6 +313,8 @@ public class AuthSeeder : IAuthSeeder
             ("employees.documents", "Employees", "Upload and download employee documents"),
             ("employees.templates", "Employees", "Generate localized employee document templates"),
             ("employees.bulk_import", "Employees", "Bulk import employee records"),
+            ("employees.access.issue", "Employees", "Give employees their KynexOne welcome code (sign-in slips)"),
+            ("employees.access.reset", "Employees", "Reset the sign-in of an employee who already uses KynexOne"),
             // Profile
             ("profile.read", "Profile", "Read own profile"),
             ("profile.write", "Profile", "Update own profile"),
