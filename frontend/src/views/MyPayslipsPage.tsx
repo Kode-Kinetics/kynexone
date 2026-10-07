@@ -6,6 +6,7 @@ import { essApi, type EssPayslipDetail, type EssPayslipLine, type EssPayslipSumm
 import { useLocale } from '@/src/contexts/LocaleContext';
 import { useFormat } from '@/src/hooks/useFormat';
 import { payslipLineName, payslipMonthLabel, payslipSections } from '@/src/lib/essPayslip';
+import { PayslipDeductionsBreakdown } from '@/src/components/deductions/PayslipDeductionsBreakdown';
 
 /** Two-decimal amounts in the viewer's number format; the currency code is printed beside it. */
 function useMoney() {
@@ -187,6 +188,7 @@ function PayslipDetailView({ detail, downloading, downloadError, onDownload }: {
         <span className="font-mono text-lg font-bold tabular-nums" data-testid="my-payslip-net">{cur} {money(s.net)}</span>
       </div>
       <p className="text-[11px] text-slate-500 dark:text-slate-400">{t('Gross pay minus total deductions equals net pay.')}</p>
+      <PayslipDeductionsBreakdown payslipId={detail.id} />
 
       {s.employerContributions.length > 0 && (
         <div data-testid="my-payslip-employer">

@@ -42,7 +42,8 @@ public record EmployeeLoanDto(
     int? PolicyVersion,
     bool ReviewRequired,
     string ReviewReason,
-    string CollectionStatus)
+    string CollectionStatus,
+    bool ConsentOnFile = false)
 {
     public static EmployeeLoanDto Project(EmployeeLoan e) => new(
         e.Id, e.EmployeeId, e.EmployeeName,
@@ -55,7 +56,9 @@ public record EmployeeLoanDto(
         e.Status, e.RejectionReason, e.Notes,
         e.IsLockedByPayroll,
         e.CreatedAtUtc, e.UpdatedAtUtc, e.RepaymentMethod, e.Currency,
-        e.CompanyId, e.CreatedBy, e.PolicyId, e.PolicyVersion, e.ReviewRequired, e.ReviewReason, e.CollectionStatus);
+        e.CompanyId, e.CreatedBy, e.PolicyId, e.PolicyVersion, e.ReviewRequired, e.ReviewReason, e.CollectionStatus,
+        // Release A (Art. 92): the employee's signed consent to an instalment above 10% of the wage is on the loan.
+        e.ConsentDocumentId.HasValue);
 }
 
 // ── Advances ──────────────────────────────────────────────────────────────────
