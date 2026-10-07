@@ -24,7 +24,13 @@ public sealed record EmployeeAccessDto(
     /// <summary>The workspace has a working email transport (codes are emailed instead of printed).</summary>
     bool EmailDelivery);
 
-public sealed record IssueCodesRequest(IReadOnlyList<int>? EmployeeIds);
+/// <summary><c>Delivery</c>: "print" never emails — the codes come back (and are recorded as disclosed) even when the
+/// workspace can send email. Absent: emailed when a relay exists, otherwise returned.</summary>
+public sealed record IssueCodesRequest(IReadOnlyList<int>? EmployeeIds, string? Delivery = null)
+{
+    public const string Print = "print";
+    public bool PrintOnly => string.Equals(Delivery?.Trim(), Print, StringComparison.OrdinalIgnoreCase);
+}
 
 public sealed record IssuedCodeDto(
     int EmployeeId, string EmployeeName, string ArabicName, string EmployeeCode,
@@ -140,7 +146,7 @@ public sealed class EmployeeAccessService
         };
         if (allowed && (!AuthCurrentEligibility.IsEmployeeLifecycleEligible(facts.Status)
                         || (caller.UserId is Guid me && (facts.Login?.UserId == me
-                            || await WorkEmailSetterRule.IsSetterAsync(_db, tenantId, employeeId, me, ct)))))
+                            || await WorkEmailSetterRule.IsCallerSetterAsync(_db, tenantId, employeeId, me, ct)))))
             allowed = false;
 
         return new EmployeeAccessDto(facts.EmployeeId, facts.EmployeeName, facts.EmployeeCode, facts.WorkEmail, state.State,
@@ -187,7 +193,7 @@ public sealed class EmployeeAccessService
 
         // Delivery: by email to the login's username when a relay exists; otherwise the code comes back to the issuer,
         // and that disclosure makes them a credential handler for the two-person rule.
-        var configured = issued.Count > 0 && await _email.IsConfiguredAsync(tenantId, ct);
+        var configured = issued.Count > 0 && !request.PrintOnly && await _email.IsConfiguredAsync(tenantId, ct);
         var items = new List<IssuedCodeDto>();
         var anyEmailed = false;
         var allEmailed = issued.Count > 0;
@@ -210,6 +216,8 @@ public sealed class EmployeeAccessService
                 ? "Each employee was emailed their sign-in code at their work email."
                 : anyEmailed
                     ? "Some codes could not be emailed. Print the sign-in slips for those employees."
+                    : request.PrintOnly
+                        ? "Print the sign-in slips."
                     : configured
                         ? "The codes could not be emailed, so print the sign-in slips."
                         : "No email delivery is configured, so print the sign-in slips.";
@@ -248,7 +256,7 @@ public sealed class EmployeeAccessService
             // A login already in use (active, or active with a live reset code) is a RESET (F1), whatever the state shows.
             var resetOfActive = facts.Login is { IsActive: true };
             if (resetOfActive ? !canReset : !canIssue) { result = new(Skip.ResetNeedsPermission, null); return; }
-            if (await WorkEmailSetterRule.IsSetterAsync(_db, tenantId, employeeId, callerId, token))
+            if (await WorkEmailSetterRule.IsCallerSetterAsync(_db, tenantId, employeeId, callerId, token))
             { result = new(WorkEmailSetterRule.SetByCallerCode, null); return; }
 
             // A pre-existing employee with no login yet: stage it now (the provisioner is idempotent).
@@ -439,7 +447,7 @@ public sealed class EmployeeAccessService
             if (email.Length == 0) { conflicts.Add(new(code, email, "work_email_missing")); continue; }
             var norm = AuthService.Normalize(email);
             if (dupEmails.Contains(norm)) { conflicts.Add(new(code, email, "duplicate_in_file")); continue; }
-            if (WorkEmailSetterRule.IsPlusAddressed(email)) { conflicts.Add(new(code, email, WorkEmailSetterRule.PlusAddressCode)); continue; }
+            if (WorkEmailPlusAddressException.IsPlusAddressed(email)) { conflicts.Add(new(code, email, WorkEmailPlusAddressException.Code)); continue; }
             var domain = e.CompanyId is Guid cid && domains.TryGetValue(cid, out var d) ? d : string.Empty;
             if (domain.Length == 0) { conflicts.Add(new(code, email, EmployeeLoginProvisioner.BlockedCodes.CompanyEmailDomainMissing)); continue; }
             if (!EmployeeLoginProvisioner.IsOnDomain(email, domain)) { wrongDomain.Add(new(code, email, domain)); continue; }

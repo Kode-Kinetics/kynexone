@@ -89,6 +89,12 @@ public record EmployeeLoginStatusDto(
     public string? ReasonCode { get; init; }
     /// <summary>The name a coded refusal cites: the company (<c>login_other_company</c>) or employee (<c>login_pointer_conflict</c>).</summary>
     public string? ReasonSubject { get; init; }
+    /// <summary>For <c>link_existing</c>: someone other than the person has held a credential for this login, so the
+    /// link will make its password unusable and invite the person to set their own.</summary>
+    public bool WillResetCredential { get; init; }
+    /// <summary>Who last set the employee's work email — the address every credential is sent to — and when. Null when not recorded.</summary>
+    public string? WorkEmailSetBy { get; init; }
+    public DateTime? WorkEmailSetAtUtc { get; init; }
 }
 
 public static class EmployeeLoginNextActions
@@ -223,7 +229,13 @@ public record PendingResetNoticeDto(DateTime Date);
 /// <summary>GET api/auth/password-policy — what the welcome screen's live ticks check.</summary>
 public record PasswordPolicyDto(int MinLength);
 
-public record ForgotPasswordResponse(string Message, string? ResetToken, DateTime? ResetTokenExpiresAtUtc);
+public record ForgotPasswordResponse(string Message, string? ResetToken, DateTime? ResetTokenExpiresAtUtc)
+{
+    /// <summary>Whether the RESOLVED workspace can send email at all (never whether the address exists). Lets the
+    /// employee screens say "Ask HR for a new welcome code" when nothing can be mailed. Null when no workspace resolved.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public bool? EmailDeliveryConfigured { get; init; }
+}
 
 public record RoleDto(
     Guid Id,

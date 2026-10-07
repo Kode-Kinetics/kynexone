@@ -1525,8 +1525,6 @@ public class EmployeeManagementService : IEmployeeManagementService
                 .FirstOrDefaultAsync(ct)
             : null;
         var domain = (company?.EmailDomain ?? string.Empty).Trim().ToLowerInvariant();
-        // '+' is refused everywhere, whatever the company domain (contract Amendment 1).
-        WorkEmailDeriver.RejectPlusAddress(Clean(request.WorkEmail));
 
         if (!string.IsNullOrWhiteSpace(domain))
         {
@@ -1543,6 +1541,11 @@ public class EmployeeManagementService : IEmployeeManagementService
                 audit.SuggestedWorkEmail = WorkEmailDeriver.Suggest(employee.EnglishName, employee.ArabicName, domain, pattern, IsTaken);
         }
         // edge-7 (no domain): employee.WorkEmail keeps the request value (Clean'd in ApplyEmployee); never block.
+
+        // A NEW plus-addressed work email is refused; an existing one is left alone until it is changed.
+        if (!isUpdate || !string.Equals(Zayra.Api.Infrastructure.Auth.AuthService.Normalize(employee.WorkEmail ?? string.Empty),
+                Zayra.Api.Infrastructure.Auth.AuthService.Normalize(priorWorkEmail ?? string.Empty), StringComparison.Ordinal))
+            WorkEmailPlusAddressException.ThrowIfPlusAddressed(employee.WorkEmail);
 
         // ── Login-identity guard (req 8 / R1, P0 login takeover) ──────────────────────────────────
         // A STAGED login's username follows the work email (and its invitation is cancelled); an ACTIVATED

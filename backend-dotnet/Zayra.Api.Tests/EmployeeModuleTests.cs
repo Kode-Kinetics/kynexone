@@ -67,6 +67,27 @@ public class EmployeeModuleTests
     }
 
     [Fact]
+    public async Task ApproveDraft_RefusesAPlusAddressedWorkEmail()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAndEmployeeRole(db);
+        db.Departments.Add(new Department { TenantId = tenantId, Code = "PPL", NameEn = "People", IsActive = true });
+        db.Designations.Add(new Designation { TenantId = tenantId, Code = "HRO", TitleEn = "HR Officer", IsActive = true });
+        db.Branches.Add(new Branch { TenantId = tenantId, Code = "DXB", NameEn = "Dubai", IsActive = true });
+        await db.SaveChangesAsync();
+        var controller = CreateController(db, tenantId);
+        var draftResult = await controller.CreateDraft(new EmployeeDraftRequest("Review", "Sara Ahmed", "سارة أحمد", "sara.personal@example.com", "sara+hr@zayra.local", "+9715000000", "Female", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(-30)), "Married", "Ali Ahmed", "+9715111111", "Emirati", "AE", "People", "HR Officer", "Dubai", "Dubai HQ", null, DateTime.UtcNow.Date, "Unlimited", "G5", "HR-001", DateOnly.FromDateTime(DateTime.UtcNow.Date), DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(2)), DateOnly.FromDateTime(DateTime.UtcNow.Date.AddMonths(6)), "MONTHLY", 12000m, "Emirates NBD", "AE000000", "WPS-1", "DAY", "UAE-ANNUAL", "Zayra", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(-1)), "P123", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(5)), DateOnly.FromDateTime(DateTime.UtcNow.Date), "V123", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(2)), null, null, null, null, "784-0000", "LC-1", "VF-1", null, null, null, null, null, null), CancellationToken.None);
+        var draft = Assert.IsType<EmployeeDraftDto>(Assert.IsType<CreatedResult>(draftResult.Result).Value);
+        await controller.SubmitDraft(draft.Id, CancellationToken.None);
+
+        var approval = await CreateController(db, tenantId).ApproveDraft(draft.Id, CancellationToken.None);
+
+        var refused = Assert.IsType<UnprocessableEntityObjectResult>(approval.Result);
+        Assert.Contains(Zayra.Api.Infrastructure.Auth.WorkEmailPlusAddressException.Code, System.Text.Json.JsonSerializer.Serialize(refused.Value));
+        Assert.False(await db.Employees.AnyAsync(x => x.TenantId == tenantId && x.WorkEmail == "sara+hr@zayra.local"));
+    }
+
+    [Fact]
     public async Task SensitiveUpdate_CreatesApprovalRequestWithoutChangingEmployee()
     {
         await using var db = CreateDb();

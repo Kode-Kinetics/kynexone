@@ -53,7 +53,7 @@ public sealed class EmployeeAccessController : ControllerBase
             var ids = request.EmployeeIds ?? Array.Empty<int>();
             var scope = await _dataScope.ResolveAsync(User, tenantId, ct);
             var allowed = scope.IsUnrestricted ? ids : ids.Where(id => scope.AllowedEmployeeIds!.Contains(id)).ToList();
-            var response = await _access.IssueCodesAsync(tenantId, new IssueCodesRequest(allowed), this.GetEntityScope(), Context(tenantId),
+            var response = await _access.IssueCodesAsync(tenantId, new IssueCodesRequest(allowed, request.Delivery), this.GetEntityScope(), Context(tenantId),
                 canIssue: true, canReset: User.HasPermission(ResetPermission), ct);
             var outOfScope = ids.Except(allowed).Select(id => new SkippedCodeDto(id, EmployeeAccessService.Skip.NotFound,
                 EmployeeAccessService.SkipReason(EmployeeAccessService.Skip.NotFound)));

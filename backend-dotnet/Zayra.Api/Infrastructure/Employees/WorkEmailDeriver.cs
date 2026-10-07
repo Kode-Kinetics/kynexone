@@ -63,7 +63,6 @@ public static class WorkEmailDeriver
     /// value (blank / local part / full address):
     ///  - blank → outcome "blank", returns "": a derived address is a SUGGESTION only (<see cref="Suggest"/>), never
     ///    saved — the login's username must be the employee's real work email (employee-access contract §3);
-    ///  - a '+' in the local part → <see cref="WorkEmailRejectedException"/> <c>work_email_plus_address</c>;
     ///  - a full address on ANOTHER domain → <see cref="WorkEmailRejectedException"/> <c>work_email_wrong_domain</c>
     ///    ("Work email must end in @{domain}."); it is refused, never silently re-assembled onto the company domain;
     ///  - a local part, or an address on the domain → assembled on the domain; a collision throws
@@ -78,7 +77,6 @@ public static class WorkEmailDeriver
         coercedFrom = null;
         var provided = (providedWorkEmail ?? string.Empty).Trim();
         if (provided.Length == 0) { outcome = "blank"; return string.Empty; }
-        RejectPlusAddress(provided);
         var localPart = ExtractLocalPart(provided);
         var (matches, providedDomain) = ValidateAgainstDomain(provided, domain);
         if (!matches && !string.IsNullOrEmpty(providedDomain))
@@ -97,12 +95,6 @@ public static class WorkEmailDeriver
         if (string.IsNullOrWhiteSpace(domain)) return null;
         var local = BuildLocalPart(englishName, arabicName, pattern);
         return local.Length == 0 ? null : Uniqueify(local, domain, isTaken);
-    }
-
-    /// <summary>Refuses a '+' in the local part (contract Amendment 1), whatever the company domain.</summary>
-    public static void RejectPlusAddress(string? workEmail)
-    {
-        if (Zayra.Api.Infrastructure.Auth.WorkEmailSetterRule.IsPlusAddressed(workEmail)) throw WorkEmailRejectedException.PlusAddress();
     }
 
     /// <summary>Assemble a full address from a local part and a domain (domain lowercased/trimmed).</summary>
@@ -199,13 +191,12 @@ public sealed class WorkEmailConflictException : Exception
 }
 
 /// <summary>
-/// A work email the server refuses outright (HTTP 422 with <c>code</c>): on the wrong domain, or plus-addressed.
+/// A work email the server refuses outright (HTTP 422 with <c>code</c>): on the wrong domain. ('+' is WorkEmailPlusAddressException.)
 /// <see cref="SuggestedWorkEmail"/> is the address on the company domain the client may offer instead.
 /// </summary>
 public sealed class WorkEmailRejectedException : Exception
 {
     public const string WrongDomainCode = "work_email_wrong_domain";
-    public const string PlusAddressCode = "work_email_plus_address";
 
     public string Code { get; }
     public string? SuggestedWorkEmail { get; }
@@ -218,7 +209,4 @@ public sealed class WorkEmailRejectedException : Exception
 
     public static WorkEmailRejectedException WrongDomain(string domain, string? suggestion) =>
         new(WrongDomainCode, $"Work email must end in @{domain.Trim().ToLowerInvariant()}.", suggestion);
-
-    public static WorkEmailRejectedException PlusAddress() =>
-        new(PlusAddressCode, Zayra.Api.Infrastructure.Auth.WorkEmailSetterRule.PlusAddressMessage, null);
 }

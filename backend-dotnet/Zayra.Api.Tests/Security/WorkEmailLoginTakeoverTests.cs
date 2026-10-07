@@ -208,6 +208,44 @@ public sealed class WorkEmailLoginTakeoverTests
         WorkEmailLoginGuard.IsStaged(new User { Status = "Suspended", IsActive = false, IsEmailConfirmed = false }, Awaiting(), false).Should().BeFalse("suspended");
     }
 
+    // ── Plus-addressing: refused when a work email is SET; an existing one is left alone ──────────────────
+
+    [Fact]
+    public async Task APlusAddressedWorkEmail_IsRefused_AndNothingChanges()
+    {
+        await using var db = CreateDb();
+        var world = await SeedAsync(db, staged: false, legacyPointer: true);
+
+        var result = await Controller(db, world.TenantId, "HR Officer").UpdateEmployee(world.EmployeeId, WorkEmailEdit("victim+inbox@acme.test"), default);
+
+        var refused = Assert.IsType<UnprocessableEntityObjectResult>(result);
+        var body = JsonSerializer.SerializeToElement(refused.Value);
+        body.GetProperty("code").GetString().Should().Be(WorkEmailPlusAddressException.Code);
+        body.GetProperty("message").GetString().Should().Be("Work email can't contain '+'.");
+        db.ChangeTracker.Clear();
+        (await db.Employees.IgnoreQueryFilters().SingleAsync(x => x.Id == world.EmployeeId)).WorkEmail.Should().Be(OldEmail);
+    }
+
+    [Fact]
+    public async Task AnExistingPlusAddressedWorkEmail_IsLeftAlone_WhenSomethingElseIsEdited()
+    {
+        await using var db = CreateDb();
+        var world = await SeedAsync(db, staged: false, legacyPointer: true);
+        var employee = await db.Employees.IgnoreQueryFilters().SingleAsync(x => x.Id == world.EmployeeId);
+        employee.WorkEmail = "legacy+tag@acme.test";
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        var result = await Controller(db, world.TenantId, "HR Officer").UpdateEmployee(world.EmployeeId,
+            new EmployeeUpdateRequest(DateOnly.FromDateTime(DateTime.UtcNow.Date), new()
+            {
+                ["phone"] = JsonSerializer.SerializeToElement("+966500000000"),
+                ["workEmail"] = JsonSerializer.SerializeToElement("legacy+tag@acme.test"),
+            }), default);
+
+        Assert.IsType<OkObjectResult>(result);
+    }
+
     // ── Harness ─────────────────────────────────────────────────────────────────────────────────
 
     private sealed record World(Guid TenantId, string Slug, int EmployeeId, Guid UserId);

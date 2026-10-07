@@ -90,17 +90,17 @@ public sealed class EmployeeAccessTests
         (await StateAsync(w, created.Id)).Should().Be(EmployeeAccessStates.WaitingForWorkEmail);
     }
 
-    [Theory]
-    [InlineData("noah@gmail.com", WorkEmailRejectedException.WrongDomainCode)]
-    [InlineData("noah+hr@{domain}", WorkEmailRejectedException.PlusAddressCode)]
-    public async Task Create_RefusesAWrongDomain_AndAPlusAddress(string email, string code)
+    [Fact]
+    public async Task Create_RefusesAWrongDomain_AndAPlusAddress()
     {
         var w = await SeedAsync();
         await using var db = _fx.CreateDb();
         var refused = await Assert.ThrowsAsync<WorkEmailRejectedException>(() => Employees(db).CreateAsync(
-            w.TenantId, Hire("Noah Hr", email.Replace("{domain}", w.Domain), w.CompanyId), Ctx(w.HrOfficerId, w.TenantId), default));
-        refused.Code.Should().Be(code);
-        if (code == WorkEmailRejectedException.WrongDomainCode) refused.Message.Should().Be($"Work email must end in @{w.Domain}.");
+            w.TenantId, Hire("Noah Hr", "noah@gmail.com", w.CompanyId), Ctx(w.HrOfficerId, w.TenantId), default));
+        refused.Code.Should().Be(WorkEmailRejectedException.WrongDomainCode);
+        refused.Message.Should().Be($"Work email must end in @{w.Domain}.");
+        await Assert.ThrowsAsync<WorkEmailPlusAddressException>(() => Employees(db).CreateAsync(
+            w.TenantId, Hire("Noah Hr", $"noah+hr@{w.Domain}", w.CompanyId), Ctx(w.HrOfficerId, w.TenantId), default));
         await using var verify = _fx.CreateDb();
         (await verify.Employees.IgnoreQueryFilters().AnyAsync(e => e.TenantId == w.TenantId && e.FullName == "Noah Hr")).Should().BeFalse();
     }
@@ -175,8 +175,7 @@ public sealed class EmployeeAccessTests
         var companyName = await db.Companies.IgnoreQueryFilters().Where(c => c.Id == w.CompanyId).Select(c => c.LegalNameEn).SingleAsync();
         var csv = "EmployeeCode,FullName,JoiningDate,CompanyLegalName,WorkEmail\n" +
                   $"IMP-A,Imported Alpha,2024-01-15,{companyName},alpha@{w.Domain}\n" +
-                  $"IMP-B,Imported Beta,2024-01-15,{companyName},\n" +
-                  $"IMP-C,Imported Gamma,2024-01-15,{companyName},gamma+x@{w.Domain}\n";
+                  $"IMP-B,Imported Beta,2024-01-15,{companyName},\n";
         var result = await EmployeesCtl(db, w, w.AdminId).Import(new EmployeesController.ImportEmployeesRequest(csv), default);
         Assert.IsType<OkObjectResult>(result);
 
@@ -185,7 +184,6 @@ public sealed class EmployeeAccessTests
             .ToDictionaryAsync(e => e.EmployeeCode, e => e);
         (await verify.EmployeeUserAccounts.IgnoreQueryFilters().AnyAsync(x => x.EmployeeId == ids["IMP-A"].Id)).Should().BeTrue();
         ids["IMP-B"].WorkEmail.Should().BeEmpty("import no longer derives an address");
-        ids["IMP-C"].WorkEmail.Should().BeEmpty("a '+' address is refused");
         (await StateAsync(w, ids["IMP-A"].Id)).Should().Be(EmployeeAccessStates.NotStarted);
         (await StateAsync(w, ids["IMP-B"].Id)).Should().Be(EmployeeAccessStates.WaitingForWorkEmail);
     }
@@ -329,6 +327,39 @@ public sealed class EmployeeAccessTests
         await using var db = _fx.CreateDb();
         (await db.AuditLogs.IgnoreQueryFilters().AnyAsync(a => a.TenantId == w.TenantId && a.Action == EmployeeAccessService.DisclosedAction))
             .Should().BeFalse("nobody saw the code");
+    }
+
+    [Fact]
+    public async Task Issue_WithDeliveryPrint_NeverEmails_EvenWhenEmailIsConfigured()
+    {
+        var w = await SeedAsync();
+        var id = await AddStagedAsync(w, $"printed@{w.Domain}");
+        var email = new RecordingEmail(configured: true);
+        var response = await IssueAsync(w, w.HrOfficerId, [id], email: email, delivery: "print");
+        response.Emailed.Should().BeFalse();
+        response.Issued.Single().Code.Should().MatchRegex("^[0-9]{8}$");
+        email.Sent.Should().BeEmpty();
+        await using var db = _fx.CreateDb();
+        (await db.AuditLogs.IgnoreQueryFilters().SingleAsync(a => a.TenantId == w.TenantId && a.Action == EmployeeAccessService.DisclosedAction))
+            .UserId.Should().Be(w.HrOfficerId, "printing makes the issuer a credential handler");
+    }
+
+    [Fact]
+    public async Task ForgotPassword_SaysWhetherTheWorkspaceCanEmail_TheSameForAnyAddress()
+    {
+        var w = await SeedAsync();
+        var staff = await EmailOfAsync(w.HrOfficerId);
+        await using var db = _fx.CreateDb();
+        var known = await Auth(db).ForgotPasswordAsync(new ForgotPasswordRequest(staff, w.Slug), new RequestContext("1.1.1.1", "x"), default);
+        var unknown = await Auth(db).ForgotPasswordAsync(new ForgotPasswordRequest($"ghost@{w.Domain}", w.Slug), new RequestContext("1.1.1.1", "x"), default);
+        known.EmailDeliveryConfigured.Should().BeFalse();
+        unknown.Should().BeEquivalentTo(known with { }, "never reveal whether the address exists");
+        var withMail = new AuthService(db, new Pbkdf2PasswordHasher(), new JwtTokenService(Jwt), new AuditService(db), new RecordingEmail(configured: true), Jwt,
+            new NullMfaService(), new TotpService(DataProtectionProvider.Create("ZayraTests")), NullLogger<AuthService>.Instance);
+        (await withMail.ForgotPasswordAsync(new ForgotPasswordRequest($"ghost@{w.Domain}", w.Slug), new RequestContext("1.1.1.1", "x"), default))
+            .EmailDeliveryConfigured.Should().BeTrue();
+        (await withMail.ForgotPasswordAsync(new ForgotPasswordRequest(staff, "no-such-workspace"), new RequestContext("1.1.1.1", "x"), default))
+            .EmailDeliveryConfigured.Should().BeNull();
     }
 
     [Fact]
@@ -705,7 +736,7 @@ public sealed class EmployeeAccessTests
         await AddEmployeeAsync(w, $"holder@{w.Domain}", code: "PL-C");
         var result = await BackfillAsync(w, [new("PL-A", $"a+b@{w.Domain}"), new("PL-B", $"holder@{w.Domain}")], dryRun: false);
         result.Saved.Should().Be(0);
-        result.Conflicts.Select(c => c.Reason).Should().BeEquivalentTo([WorkEmailSetterRule.PlusAddressCode, "email_used_by_another_employee"]);
+        result.Conflicts.Select(c => c.Reason).Should().BeEquivalentTo([WorkEmailPlusAddressException.Code, "email_used_by_another_employee"]);
     }
 
     // ── Isolation ──────────────────────────────────────────────────────────────────────────────────────
@@ -773,10 +804,10 @@ public sealed class EmployeeAccessTests
 
     private static string ToArabicIndic(string digits) => new(digits.Select(c => c is >= '0' and <= '9' ? (char)('٠' + (c - '0')) : c).ToArray());
 
-    private async Task<IssueCodesResponse> IssueAsync(World w, Guid caller, int[] ids, bool canReset = false, IEmailService? email = null)
+    private async Task<IssueCodesResponse> IssueAsync(World w, Guid caller, int[] ids, bool canReset = false, IEmailService? email = null, string? delivery = null)
     {
         await using var db = _fx.CreateDb();
-        return await Service(db, email).IssueCodesAsync(w.TenantId, new IssueCodesRequest(ids), EntityScopeContext.GroupLevel, Ctx(caller, w.TenantId), true, canReset, default);
+        return await Service(db, email).IssueCodesAsync(w.TenantId, new IssueCodesRequest(ids, delivery), EntityScopeContext.GroupLevel, Ctx(caller, w.TenantId), true, canReset, default);
     }
 
     private async Task<WorkEmailBackfillResponse> BackfillAsync(World w, IReadOnlyList<WorkEmailBackfillRow> rows, bool dryRun)

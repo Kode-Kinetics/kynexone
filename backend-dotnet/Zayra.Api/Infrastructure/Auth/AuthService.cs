@@ -636,9 +636,14 @@ public class AuthService : IAuthService
         // Always respond with the same message to prevent user enumeration
         const string safeMessage = "If an account with that email exists, a password reset link has been sent.";
 
+        // Workspace-level only (the same for every address in it), so it reveals nothing about the email.
+        var resolvedTenantId = await _db.Tenants.AsNoTracking().Where(t => t.Slug == tenantSlug && t.IsActive)
+            .Select(t => (Guid?)t.Id).FirstOrDefaultAsync(cancellationToken);
+        bool? deliveryConfigured = resolvedTenantId is Guid rt ? await _emailService.IsConfiguredAsync(rt, cancellationToken) : null;
+
         var user = await LoadUserGraph(request.Email, tenantSlug, cancellationToken);
         if (user?.Tenant is null || !user.IsActive || !user.Tenant.IsActive)
-            return new ForgotPasswordResponse(safeMessage, null, null);
+            return new ForgotPasswordResponse(safeMessage, null, null) { EmailDeliveryConfigured = deliveryConfigured };
 
         var resetToken = _tokenService.CreateSecureToken();
         var expiresAt = DateTime.UtcNow.AddHours(1);
@@ -690,7 +695,7 @@ public class AuthService : IAuthService
             _log.LogInformation("SMTP not configured — reset token saved for user {UserId}, no email sent.", user.Id);
         }
 
-        return new ForgotPasswordResponse(safeMessage, null, null);
+        return new ForgotPasswordResponse(safeMessage, null, null) { EmailDeliveryConfigured = deliveryConfigured };
     }
 
     public async Task ResetPasswordAsync(ResetPasswordRequest request, RequestContext context, CancellationToken cancellationToken)

@@ -63,7 +63,7 @@ public sealed class EmployeeAccessUnitTests
     [InlineData("no+ah", true)]
     [InlineData("noah@ac+me.sa", false)]
     public void PlusAddressing_IsDetectedInTheLocalPartOnly(string email, bool plus) =>
-        WorkEmailSetterRule.IsPlusAddressed(email).Should().Be(plus);
+        WorkEmailPlusAddressException.IsPlusAddressed(email).Should().Be(plus);
 
     [Fact]
     public void Resolve_NeverSavesADerivedAddress_AndRefusesAWrongDomain()
@@ -78,9 +78,6 @@ public sealed class EmployeeAccessUnitTests
             WorkEmailDeriver.Resolve("noah@gmail.com", null, null, "acme.sa", WorkEmailPatterns.FirstLast, NotTaken, out _, out _));
         wrong.Code.Should().Be("work_email_wrong_domain");
         wrong.Message.Should().Be("Work email must end in @acme.sa.");
-        Assert.Throws<WorkEmailRejectedException>(() =>
-            WorkEmailDeriver.Resolve("noah+1@acme.sa", null, null, "acme.sa", WorkEmailPatterns.FirstLast, NotTaken, out _, out _))
-            .Code.Should().Be("work_email_plus_address");
     }
 
     [Fact]

@@ -437,6 +437,7 @@ public class AccessController : ControllerBase
             });
         }
         catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.password_reset_link_issued", "User", userId.ToString()); }
+        catch (WorkEmailSetterRefusedException ex) { return SetterRefused(ex); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -530,6 +531,7 @@ public class AccessController : ControllerBase
             return Created($"/api/access/users/{invite.UserId}", invite);
         }
         catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.employee_invited", "Employee", request.EmployeeId.ToString(System.Globalization.CultureInfo.InvariantCulture)); }
+        catch (WorkEmailSetterRefusedException ex) { return SetterRefused(ex); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -589,6 +591,10 @@ public class AccessController : ControllerBase
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
+
+    /// <summary>A credential refused by the work-email setter rule: 403 with its code, in both languages.</summary>
+    private ObjectResult SetterRefused(WorkEmailSetterRefusedException ex) =>
+        StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Code, code = ex.Code, message = ex.Message, messageAr = ex.MessageAr });
 
     /// <summary>
     /// An invitation link was handed back to the caller instead of reaching the invitee: the caller has held a

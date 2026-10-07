@@ -98,7 +98,8 @@ async function openUserManagement(page: Page, opts: { slowLookupFor?: string; cr
     if (pathname === '/api/access/employee-logins/42') return json({
       employeeId: 42, employeeName: 'Noah Williams', workEmail: 'noah.williams@kkdemo.com', linkedLogin: null,
       matchingLogin: { userId: noah.id, email: noah.email, status: 'Active', accessMode: 'FullPortal', isActive: true },
-      nextAction: 'link_existing', reason: null,
+      nextAction: 'link_existing', reason: null, willResetCredential: !!opts.credentialReset,
+      workEmailSetBy: 'Hana Haddad', workEmailSetAtUtc: '2026-10-01T09:00:00Z',
     });
     if (pathname === '/api/access/employee-logins/43') return json({
       employeeId: 43, employeeName: 'Layla Haddad', workEmail: 'layla.haddad@kkdemo.com', linkedLogin: null,
@@ -148,6 +149,9 @@ test('an existing login is linked to its employee record from the user row', asy
 
   const status = dialog.getByTestId('employee-login-status');
   await expect(status.getByText(`The login ${noah.email} uses Noah Williams's work email.`, { exact: false })).toBeVisible();
+  await expect(dialog.getByTestId('link-will-reset-credential')).toHaveCount(0);
+  // Who set the address every credential goes to, said above the action.
+  await expect(dialog.getByTestId('work-email-set-by')).toHaveText('Work email set by Hana Haddad on 2026-10-01.');
   const linkButton = dialog.getByRole('button', { name: 'Link this login', exact: true });
   await expect(linkButton).toBeDisabled(); // A reason is required before anything is sent.
   expect(writes).toEqual([]);
@@ -179,6 +183,10 @@ test('a login an administrator had handled is linked with a fresh password invit
 
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByTestId('employee-login-status')).toBeVisible();
+  // Said BEFORE anything is sent.
+  await expect(dialog.getByTestId('link-will-reset-credential')).toHaveText(
+    "Linking will reset this login's password. Noah Williams will set a new one from an invitation.");
+  expect(writes).toEqual([]);
   await dialog.getByLabel('Reason (kept in the audit trail)').fill('Created in User Management');
   await dialog.getByRole('button', { name: 'Link this login', exact: true }).click();
 

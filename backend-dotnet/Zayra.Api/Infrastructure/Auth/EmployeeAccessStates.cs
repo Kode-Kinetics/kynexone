@@ -36,7 +36,7 @@ public static class EmployeeAccessStates
             "The company has no official email domain yet. An administrator adds it in company settings.",
         EmployeeLoginProvisioner.BlockedCodes.WrongDomain =>
             string.IsNullOrEmpty(domain) ? "The work email isn't on the company's email domain." : $"Work email must end in @{domain}.",
-        EmployeeLoginProvisioner.BlockedCodes.PlusAddress => WorkEmailSetterRule.PlusAddressMessage,
+        EmployeeLoginProvisioner.BlockedCodes.PlusAddress => WorkEmailPlusAddressException.Text,
         EmployeeLoginProvisioner.BlockedCodes.EmailBelongsToExistingLogin =>
             "This work email is already someone's sign-in. An administrator must check it is the same person and connect it.",
         EmployeeLoginProvisioner.BlockedCodes.EmailBelongsToFormerEmployee =>
@@ -103,7 +103,7 @@ public static class EmployeeAccessStates
             if (f.PointerUserId.HasValue) return Block(EmployeeLoginProvisioner.BlockedCodes.LegacyUnlinkedLogin, f.CompanyDomain);
             var email = f.WorkEmail.Trim();
             if (email.Length == 0) return new Evaluation(WaitingForWorkEmail);
-            if (WorkEmailSetterRule.IsPlusAddressed(email)) return Block(EmployeeLoginProvisioner.BlockedCodes.PlusAddress, f.CompanyDomain);
+            if (WorkEmailPlusAddressException.IsPlusAddressed(email)) return Block(EmployeeLoginProvisioner.BlockedCodes.PlusAddress, f.CompanyDomain);
             if (f.CompanyDomain.Length == 0) return Block(EmployeeLoginProvisioner.BlockedCodes.CompanyEmailDomainMissing, null);
             if (!EmployeeLoginProvisioner.IsOnDomain(email, f.CompanyDomain))
                 return Block(EmployeeLoginProvisioner.BlockedCodes.WrongDomain, f.CompanyDomain);

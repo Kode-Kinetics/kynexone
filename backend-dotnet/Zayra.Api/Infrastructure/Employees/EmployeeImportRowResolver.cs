@@ -302,13 +302,6 @@ public static class EmployeeImportRowResolver
 
         // ── Work email (validate against company domain; accept-never-block) ──
         var workEmailRaw = V("WorkEmail");
-        if (Zayra.Api.Infrastructure.Auth.WorkEmailSetterRule.IsPlusAddressed(workEmailRaw))
-        {
-            // '+' is refused everywhere (contract Amendment 1): the row imports WITHOUT it and is flagged.
-            r.Gaps.Add(new ImportGap("email:plus-address", "readiness", Zayra.Api.Infrastructure.Auth.WorkEmailSetterRule.PlusAddressMessage, workEmailRaw));
-            r.Warnings.Add($"Work email '{workEmailRaw}' contains '+', which isn't allowed — imported without a work email.");
-            workEmailRaw = string.Empty;
-        }
         var emailDomain = (company?.EmailDomain ?? string.Empty).Trim().ToLowerInvariant();
         var emailPattern = Models.WorkEmailPatterns.Normalize(company?.WorkEmailPattern);
         r.WorkEmailDomain = emailDomain;
