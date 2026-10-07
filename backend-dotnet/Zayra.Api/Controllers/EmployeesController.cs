@@ -1888,8 +1888,35 @@ public class EmployeesController : ControllerBase
         return false;
     }
 
-    private static string ImportContentSha256(string? csv) =>
-        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(csv ?? string.Empty))).ToLowerInvariant();
+    /// <summary>
+    /// The import's content fingerprint, taken over the PARSED rows, not the raw bytes: a spreadsheet re-save changes
+    /// line endings, adds a BOM or a trailing newline, and must still be recognised as the same file (otherwise every
+    /// code-less row is imported again). Headers are trimmed and lower-cased, cells trimmed, blank rows ignored. A file
+    /// that does not parse falls back to the same normalisation on the text, so it still gets a stable fingerprint.
+    /// </summary>
+    internal static string ImportContentSha256(string? csv)
+    {
+        var text = (csv ?? string.Empty).TrimStart('\uFEFF').Replace("\r\n", "\n").Replace('\r', '\n');
+        string canonical;
+        try
+        {
+            var rows = Csv.Parse(text);
+            var headers = Csv.SplitRow(text.Split('\n', 2)[0]).Select(h => h.Trim().ToLowerInvariant()).ToList();
+            var sb = new StringBuilder(string.Join('\u001F', headers));
+            foreach (var row in rows)
+            {
+                var cells = headers.Select(h => row.TryGetValue(h, out var v) ? v.Trim() : string.Empty).ToList();
+                if (cells.All(string.IsNullOrEmpty)) continue;
+                sb.Append('\u001E').Append(string.Join('\u001F', cells));
+            }
+            canonical = sb.ToString();
+        }
+        catch (CsvShapeException)
+        {
+            canonical = string.Join('\n', text.Split('\n').Select(l => l.TrimEnd()).Where(l => l.Length > 0));
+        }
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
+    }
 
     /// <summary>Transaction-scoped advisory-lock key for one (tenant, import key), namespaced so it never collides
     /// with the other advisory-lock users (establishment cells, audit chains).</summary>
