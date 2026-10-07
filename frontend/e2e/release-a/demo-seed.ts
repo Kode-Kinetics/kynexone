@@ -6,8 +6,9 @@
  * tenant, its companies and its users, then as the tenant's own personas for everything else. No SQL.
  * Every row passes the product's real validation, approval and maker-checker rules.
  *
- * Phase 1 seeds only what exists on main. The Release A parts (entitlement matrix, packages,
- * renewal cases, deductions statement) are TODO hooks at the bottom, marked TODO(R1)…TODO(R6).
+ * Phase 1 seeds the HR, payroll, loan, leave, overtime and attendance base. The Release A parts
+ * (entitlement matrix, packages, renewal cases) are TODO hooks at the bottom, marked TODO(R1)…TODO(R6):
+ * their APIs are on main behind the release_a flag, which phase 1 leaves off (see the hooks for why).
  *
  * ── Properties ────────────────────────────────────────────────────────────────────────────────
  * IDEMPOTENT  every step reads before it writes; a second run changes nothing and says so.
@@ -31,8 +32,8 @@ import { collectAllPages, pageItems, pageTotal } from '../paging';
 import { isPrivateHost } from '../preflight/rules';
 import {
   ASIF_ABSENCE_DATE, ASIF_LOAN, ASIF_TRAFFIC_FINE, COMPANIES, EMPLOYEES, ENTITLEMENT_MATRIX, GO_LIVE_CUTOVER,
-  GRADES, GRADE_LOAN_LIMITS, LOAN_TYPES, MOHAMMED_DEPENDANTS, PAYROLL_MONTHS, PERSONAS, TENANT,
-  allowancesFor, type CompanyKey, type DemoEmployee, type DemoPersona, type GradeCode,
+  GRADES, GRADE_LOAN_LIMITS, LOAN_TYPES, MOHAMMED_DEPENDANTS, OVERTIME_POLICY, PAYROLL_MONTHS, PERSONAS, TENANT,
+  allowancesFor, loanCatalogueProblems, type CompanyKey, type DemoEmployee, type DemoPersona, type GradeCode,
 } from './demo-seed.data';
 
 const API_BASE = (process.env.DEMO_API_BASE_URL ?? process.env.E2E_API_BASE_URL ?? 'http://localhost:5117')
@@ -130,6 +131,15 @@ async function loadCredentials(): Promise<Credentials> {
 
 // ── Authentication ────────────────────────────────────────────────────────────────────────────
 
+/**
+ * A 200 with no token is a second-factor or set-up challenge, not a session. Privileged MFA (#182) is enforced
+ * from a date (platform-wide: migration time + 14 days); from then on the platform owner and the privileged
+ * personas must sign in with TOTP, which this seed does not do. It says so instead of guessing.
+ */
+const MFA_HINT = 'The response is a second-factor challenge, not a session: privileged MFA is enforced on this '
+  + 'environment (docs/MFA_ENFORCEMENT.md). This seed signs in with a password only; seed a stack whose '
+  + 'enforcement date has not passed.';
+
 async function platformLogin(): Promise<string> {
   const email = process.env.PLATFORM_ADMIN_EMAIL;
   const password = process.env.PLATFORM_ADMIN_PASSWORD;
@@ -137,25 +147,30 @@ async function platformLogin(): Promise<string> {
     throw new Error('[demo-masar] PLATFORM_ADMIN_EMAIL and PLATFORM_ADMIN_PASSWORD must be set (the platform owner of the target).');
   }
   const res = ok(await call('POST', '/api/platform/auth/login', { body: { email, password } }), 'platform-owner login');
-  return res.body?.token ?? res.body?.accessToken;
+  const token = res.body?.token ?? res.body?.accessToken;
+  if (!token) throw new Error(`[demo-masar] platform-owner login returned no token. ${MFA_HINT}`);
+  return token;
+}
+
+async function tenantLoginRes(email: string, password: string): Promise<Res> {
+  return call('POST', '/api/auth/login', { body: { email, password, tenantSlug: TENANT.slug } });
 }
 
 async function tenantLogin(email: string, password: string): Promise<string | null> {
-  const res = await call('POST', '/api/auth/login', { body: { email, password, tenantSlug: TENANT.slug } });
-  return res.status === 200 ? (res.body?.accessToken ?? res.body?.token) : null;
+  const res = await tenantLoginRes(email, password);
+  return res.status === 200 ? (res.body?.accessToken ?? res.body?.token ?? null) : null;
 }
 
 async function requireLogin(persona: DemoPersona, creds: Credentials): Promise<string> {
-  const token = await tenantLogin(persona.email, creds[persona.email]);
+  const res = await tenantLoginRes(persona.email, creds[persona.email]);
+  const token = res.status === 200 ? (res.body?.accessToken ?? res.body?.token) : null;
   if (token) return token;
-  const probe = await call('POST', '/api/auth/login', {
-    body: { email: persona.email, password: creds[persona.email], tenantSlug: TENANT.slug },
-  });
   throw new Error(
-    `[demo-masar] ${persona.email} cannot log in (HTTP ${probe.status}). `
-    + (probe.status === 429 ? 'That is the login rate limiter.'
-      : `The account exists with a different password than ${CREDENTIALS_FILE} holds. Restore that file `
-        + 'from the machine that first seeded this environment, or set DEMO_MASAR_PASSWORD to the password used then.'),
+    `[demo-masar] ${persona.email} cannot log in (HTTP ${res.status}). `
+    + (res.status === 200 ? MFA_HINT
+      : res.status === 429 ? 'That is the login rate limiter.'
+        : `The account exists with a different password than ${CREDENTIALS_FILE} holds. Restore that file `
+          + 'from the machine that first seeded this environment, or set DEMO_MASAR_PASSWORD to the password used then.'),
   );
 }
 
@@ -669,6 +684,13 @@ async function ensureLoans(
   adminToken: string, companyIds: Record<CompanyKey, string>, gradeIds: Record<GradeCode, string>,
 ): Promise<Record<string, string>> {
   const types = items(ok(await call('GET', '/api/finance/loans/types', { token: adminToken }), 'list loan types').body);
+  // An earlier draft of this seed created the housing advance as code HOUSING (facility LOAN_HOUSING, a generic
+  // loan). Nothing here removes it; say so, because it is a second "Housing Advance" on that stack.
+  const legacy = types.find((x: any) => (x.code ?? x.Code) === 'HOUSING' && /housing advance/i.test(String(x.nameEn ?? x.NameEn ?? '')));
+  if (legacy) {
+    log('WARNING: loan type HOUSING ("Housing Advance") from an earlier seed draft exists; it is a generic loan '
+      + '(LOAN_HOUSING), not the housing advance. Re-seed a fresh stack, or retire it in Loans.');
+  }
   const typeIds: Record<string, string> = {};
   for (const t of LOAN_TYPES) {
     let id = idOf(types.find((x: any) => (x.code ?? x.Code) === t.code));
@@ -725,7 +747,61 @@ async function ensureLoans(
       token: adminToken, body: { gradeLimited: true },
     }), `grade-limit loan type ${t.code}`);
   }
+  await assertServerLoanFacilities(adminToken);
   return typeIds;
+}
+
+/**
+ * Seed-time check that the API agreed: every grade-limited loan type carries the facility code the data declares
+ * (the API stamps it on the first grade-limit publish), and every catalogued facility is in the live entitlement
+ * catalogue. The catalogue endpoint is part of Release A, so it is read only when the tenant has release_a on;
+ * otherwise the pre-flight check against the pinned catalogue (loanCatalogueProblems) is what holds.
+ */
+async function assertServerLoanFacilities(adminToken: string): Promise<void> {
+  const live = items(ok(await call('GET', '/api/finance/loans/types', { token: adminToken }), 'list loan types').body);
+  const problems: string[] = [];
+  for (const t of LOAN_TYPES.filter((x) => GRADE_LOAN_LIMITS[x.code])) {
+    const row = live.find((x: any) => (x.code ?? x.Code) === t.code);
+    const code = row?.entitlementComponentCode ?? row?.EntitlementComponentCode;
+    if (!row) problems.push(`loan type ${t.code} is missing`);
+    else if (code !== t.facility) problems.push(`loan type ${t.code} has facility ${code ?? 'none'}, expected ${t.facility}`);
+    else if (!(row.gradeLimited ?? row.GradeLimited)) problems.push(`loan type ${t.code} is not grade-limited`);
+  }
+  const catalogue = await call('GET', '/api/entitlements/components', { token: adminToken });
+  if (catalogue.status === 200) {
+    const codes = new Set(items(catalogue.body).map((c: any) => String(c.code ?? c.Code)));
+    for (const t of LOAN_TYPES.filter((x) => x.catalogued && !codes.has(x.facility))) {
+      problems.push(`loan type ${t.code}: ${t.facility} is not in the live entitlement catalogue`);
+    }
+  }
+  if (problems.length) throw new Error(`[demo-masar] loan facilities do not match the catalogue:\n  ${problems.join('\n  ')}`);
+}
+
+// ── Overtime policy ──────────────────────────────────────────────────────────────────────────
+
+/** One active tenant overtime policy, so /ess/overtime (POST /api/overtime/requests) can be used at all. */
+async function ensureOvertimePolicy(adminToken: string): Promise<void> {
+  const policies = items(ok(await call('GET', '/api/overtime/policies', { token: adminToken }), 'list overtime policies').body);
+  const mine = policies.find((p: any) => (p.code ?? p.Code) === OVERTIME_POLICY.code);
+  if (mine) {
+    if (!(mine.isActive ?? mine.IsActive)) {
+      throw new Error(`[demo-masar] overtime policy ${OVERTIME_POLICY.code} exists but is inactive; reactivate it in Overtime.`);
+    }
+    return;
+  }
+  ok(await call('POST', '/api/overtime/policies', {
+    token: adminToken,
+    body: {
+      code: OVERTIME_POLICY.code, name: OVERTIME_POLICY.name, hourlyRateBasis: OVERTIME_POLICY.hourlyRateBasis,
+      fixedHourlyRate: 0, standardMonthlyHours: OVERTIME_POLICY.standardMonthlyHours,
+      minimumMinutes: OVERTIME_POLICY.minimumMinutes, maximumMinutesPerDay: OVERTIME_POLICY.maximumMinutesPerDay,
+      monthlyCapMinutes: OVERTIME_POLICY.monthlyCapMinutes, roundingRule: OVERTIME_POLICY.roundingRule,
+      requiresApproval: OVERTIME_POLICY.requiresApproval, allowCompOffConversion: OVERTIME_POLICY.allowCompOffConversion,
+      regularDayMultiplier: OVERTIME_POLICY.regularDayMultiplier, weekendMultiplier: OVERTIME_POLICY.weekendMultiplier,
+      holidayMultiplier: OVERTIME_POLICY.holidayMultiplier,
+    },
+  }), `create overtime policy ${OVERTIME_POLICY.code}`, [200, 201]);
+  log(`created overtime policy ${OVERTIME_POLICY.code}`);
 }
 
 // ── Go-live cutover and Asif's carried-in loan ────────────────────────────────────────────────
@@ -924,38 +1000,51 @@ async function ensureTenantDefaults(adminToken: string, platformToken: string, t
   }
 }
 
-// ── Release A TODO hooks (R1–R6 add these; phase 1 leaves them as markers) ───────────────────
+// ── Release A TODO hooks (phase 2) ───────────────────────────────────────────────────────────
+//
+// R0–R4 are on main now, every surface behind the per-tenant release_a flag
+// (PUT /api/platform/tenants/{id}/features/release_a). Phase 1 deliberately leaves the flag OFF: with it on,
+// activating a contract term freezes that term's package (PackageFreezeOnActivation), so switching it on before
+// the matrix is published would freeze packages with nothing in them. Phase 2 does, in order: flag on → matrix →
+// dependants → package freeze → open-now.
 
-/** TODO(R1): publish ENTITLEMENT_MATRIX group-wide from 1 Nov 2026, then the MLG overrides
- *  (Education → Skip, per diem G1 → SAR 200 Tailored), through the R1 benefits-by-grade API. */
+/** TODO(R1): publish ENTITLEMENT_MATRIX group-wide from 1 Nov 2026 (PUT /api/entitlements/matrix), then the MLG
+ *  overrides (Education → Skip, per diem G1 → SAR 200 Tailored) via PUT /api/entitlements/offerings and the matrix. */
 function todoR1EntitlementMatrix(): string {
-  return `TODO(R1) entitlement matrix: ${Object.keys(ENTITLEMENT_MATRIX).length - 2} benefit rows waiting for the R1 API`;
+  return `TODO(R1) entitlement matrix: ${Object.keys(ENTITLEMENT_MATRIX).length - 2} benefit rows (PUT /api/entitlements/matrix, needs release_a)`;
 }
 
-/** TODO(R2): Mohammed's dependants (wife + 2 children) — employee_dependents has NO API on main —
- *  then freeze each employee's contract-year package (employee_entitlements) via the R2 writer. */
+/** TODO(R2): Mohammed's dependants (wife + 2 children) through POST /api/entitlements/employees/{id}/dependants,
+ *  then each employee's contract-year package (POST /api/entitlements/package/freeze-bulk). */
 function todoR2DependantsAndPackages(): string {
-  return `TODO(R2) ${MOHAMMED_DEPENDANTS.length} dependants for MFS-0003 + contract-year packages (no dependants API yet)`;
+  return `TODO(R2) ${MOHAMMED_DEPENDANTS.length} dependants for MFS-0003 + contract-year packages (needs release_a)`;
 }
 
-/** TODO(R3): Asif's SAR 150 traffic fine for Oct 2026. There is no public API that creates a
- *  PayrollAdjustment (only leave encashment writes one), so it waits for R3's deductions slice. */
+/** TODO(R3): Asif's SAR 150 traffic fine for Oct 2026. R3 shipped the deductions STATEMENT; there is still no
+ *  public API that creates a PayrollAdjustment for a fine (only leave encashment writes one). */
 function todoR3TrafficFine(): string {
   return `TODO(R3) traffic fine SAR ${ASIF_TRAFFIC_FINE.amount} for ${ASIF_TRAFFIC_FINE.employeeCode} (${ASIF_TRAFFIC_FINE.period}): no adjustment API`;
 }
 
-/** TODO(R4–R6): term-chain columns (renewed_from, renewal_number, chain_started_on) on the contracts
- *  seeded above, then `open-now` to create the renewal cases (Faisal Art 55, Mohammed, the 12-person
- *  Ramon batch). TODO(R7 phase 2): process the October run once the fine exists. */
+/** TODO(R4–R6): R4's chain stamper sets renewed_from / renewal_number / chain_started_on when a term is activated
+ *  on a release_a tenant; then POST /api/contracts/renewals/open-now creates the renewal cases (Faisal Art 55,
+ *  Mohammed, the 12-person Ramon batch). TODO(R7 phase 2): process the October run once the fine exists. */
 function todoR4toR6RenewalCases(): string {
   const ramon = EMPLOYEES.filter((e) => e.cast === 'ramon-group').length;
-  return `TODO(R4-R6) renewal cases: Faisal (Art 55), Mohammed, Ramon group of ${ramon}`;
+  return `TODO(R4-R6) renewal cases: Faisal (Art 55), Mohammed, Ramon group of ${ramon} (open-now, needs release_a)`;
 }
 
 // ── Orchestration ─────────────────────────────────────────────────────────────────────────────
 
+/** Refuses to start when a grade-limited loan type would not land on its catalogue facility (no writes yet). */
+export function assertLoanCatalogue(): void {
+  const problems = loanCatalogueProblems();
+  if (problems.length) throw new Error(`[demo-masar] loan types disagree with the entitlement catalogue:\n  ${problems.join('\n  ')}`);
+}
+
 export async function seedMasarDemo(): Promise<void> {
   assertSeedableHost();
+  assertLoanCatalogue();
   const started = Date.now();
   const creds = await loadCredentials();
   const platformToken = await platformLogin();
@@ -974,6 +1063,7 @@ export async function seedMasarDemo(): Promise<void> {
   await ensureEmployeeLogins(adminToken, companyIds, byCode, creds);
   await ensureLeave(adminToken);
   await ensureLoans(adminToken, companyIds, gradeIds);
+  await ensureOvertimePolicy(adminToken);
   await ensureCutoverAndAsifLoan(adminToken, byCode);
   await ensureLeaveOpeningBalances(adminToken, byCode);
   const payroll = await ensurePayroll(companyIds, creds);

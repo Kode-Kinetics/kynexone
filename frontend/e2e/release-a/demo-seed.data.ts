@@ -246,17 +246,76 @@ export const PERSONAS: DemoPersona[] = [
 
 // ── Loans (live feature: loan types, policies, grade loan limits) ───────────────────────────────
 
+/**
+ * `facility` is the grade-limit code the API derives from `code` (GradeLoanLimitResolver.FacilityCodeFor:
+ * 'LOAN_' + the code upper-cased, anything not A–Z/0–9 turned into '_'). `catalogued` says the facility must be
+ * one of the Release A catalogue's own components (EntitlementComponentRules.Catalogue), not the generic
+ * LOAN_<type> fallback every other loan type gets.
+ *
+ * The housing advance MUST be code HOUSING_ADVANCE: code HOUSING would give LOAN_HOUSING, a generic loan with no
+ * × housing option, and the matrix, package and renewal screens would never recognise it as the housing advance.
+ * FacilityCodeFor deliberately does not alias HOUSING, because live tenants already hold LOAN_HOUSING grids.
+ */
 export const LOAN_TYPES = [
-  { code: 'PERSONAL', nameEn: 'Personal Loan', nameAr: 'قرض شخصي', maxAmount: 100000, maxInstallments: 24 },
+  { code: 'PERSONAL', nameEn: 'Personal Loan', nameAr: 'قرض شخصي', maxAmount: 100000, maxInstallments: 24, facility: 'LOAN_PERSONAL', catalogued: false },
   // The storyline's "housing advance": G2+ up to 3x monthly housing, one outstanding at a time.
-  { code: 'HOUSING', nameEn: 'Housing Advance', nameAr: 'سلفة سكن', maxAmount: 30000, maxInstallments: 12 },
+  { code: 'HOUSING_ADVANCE', nameEn: 'Housing Advance', nameAr: 'سلفة سكن', maxAmount: 30000, maxInstallments: 12, facility: 'LOAN_HOUSING_ADVANCE', catalogued: true },
 ] as const;
 
 /**
- * Grade loan limits. The housing advance is "3x monthly housing"; the live grid has no
- * multiple-of-housing value type yet (plan §0, "Missing"), so it is stated as the equivalent multiple
- * of BASIC: 3 x 25% = 0.75x basic for G2–G4 and 3 x 30% = 0.9x for G5. That gives Mohammed
- * (basic 8,000) exactly the storyline's SAR 6,000. G1 is in-kind housing, so not eligible.
+ * The loan facilities the Release A catalogue declares itself (EntitlementComponentRules.Catalogue, the rules
+ * with IsLoanFacility), with the value types each allows. unit/demoSeedLoanCatalogue.spec.ts pins this list to
+ * the C# source, so the two cannot drift. Any other LOAN_* code is the generic fallback (For()), which allows
+ * GENERIC_LOAN_VALUE_TYPES.
+ */
+export const CATALOGUE_LOAN_FACILITIES: Record<string, readonly string[]> = {
+  LOAN_HOUSING_ADVANCE: ['Amount', 'MultipleOfBasic', 'MultipleOfGross', 'MultipleOfHousing', 'EligibilityOnly'],
+};
+export const GENERIC_LOAN_VALUE_TYPES: readonly string[] = ['Amount', 'MultipleOfBasic', 'MultipleOfGross', 'EligibilityOnly'];
+
+/** Port of GradeLoanLimitResolver.FacilityCodeFor (C#). Kept byte-for-byte equivalent; see the unit spec. */
+export function facilityCodeFor(loanTypeCode: string): string {
+  const cleaned = (loanTypeCode ?? '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '_').replace(/^_+|_+$/g, '');
+  const code = `LOAN_${cleaned.length === 0 ? 'TYPE' : cleaned}`;
+  return code.length > 64 ? code.slice(0, 64) : code;
+}
+
+/**
+ * Every problem with the declared grade-limited loan types, before the seed writes anything. Empty = fine.
+ * Each grade-limited type must: exist in LOAN_TYPES; derive the facility it declares; when catalogued, be in the
+ * catalogue; and use only value types its facility allows.
+ */
+export function loanCatalogueProblems(
+  types: ReadonlyArray<{ code: string; facility: string; catalogued: boolean }> = LOAN_TYPES,
+  limits: Record<string, Record<string, { valueType: string }>> = GRADE_LOAN_LIMITS,
+  catalogue: Record<string, readonly string[]> = CATALOGUE_LOAN_FACILITIES,
+): string[] {
+  const problems: string[] = [];
+  for (const [code, grid] of Object.entries(limits)) {
+    const type = types.find((t) => t.code === code);
+    if (!type) { problems.push(`grade limits are declared for loan type ${code}, which LOAN_TYPES does not create`); continue; }
+    const derived = facilityCodeFor(type.code);
+    if (derived !== type.facility) {
+      problems.push(`loan type ${code} derives facility ${derived}, not the declared ${type.facility}`);
+      continue;
+    }
+    const allowed = type.catalogued ? catalogue[type.facility] : GENERIC_LOAN_VALUE_TYPES;
+    if (!allowed) { problems.push(`loan type ${code}: ${type.facility} is not in the entitlement catalogue`); continue; }
+    if (!type.catalogued && catalogue[type.facility]) {
+      problems.push(`loan type ${code}: ${type.facility} is a catalogue component; mark it catalogued`);
+    }
+    for (const [grade, cell] of Object.entries(grid)) {
+      if (!allowed.includes(cell.valueType)) problems.push(`loan type ${code} ${grade}: ${cell.valueType} is not allowed for ${type.facility}`);
+    }
+  }
+  return problems;
+}
+
+/**
+ * Grade loan limits. The housing advance is "3x monthly housing", stated as the equivalent multiple of
+ * BASIC: 3 x 25% = 0.75x basic for G2–G4 and 3 x 30% = 0.9x for G5. That gives Mohammed (basic 8,000)
+ * exactly the storyline's SAR 6,000. G1 is in-kind housing, so not eligible. (R2 added MultipleOfHousing
+ * for LOAN_HOUSING_ADVANCE; the seed keeps the basic multiple so the figures do not depend on it.)
  */
 export const GRADE_LOAN_LIMITS: Record<string, Record<GradeCode,
   { eligible: boolean; valueType: 'MultipleOfBasic' | 'EligibilityOnly'; rate?: number; note: string }>> = {
@@ -267,7 +326,7 @@ export const GRADE_LOAN_LIMITS: Record<string, Record<GradeCode,
     G4: { eligible: true, valueType: 'MultipleOfBasic', rate: 3, note: 'Up to 3x basic' },
     G5: { eligible: true, valueType: 'MultipleOfBasic', rate: 4, note: 'Up to 4x basic' },
   },
-  HOUSING: {
+  HOUSING_ADVANCE: {
     G1: { eligible: false, valueType: 'EligibilityOnly', note: 'Housing provided in kind' },
     G2: { eligible: true, valueType: 'MultipleOfBasic', rate: 0.75, note: '3x monthly housing (25% of basic)' },
     G3: { eligible: true, valueType: 'MultipleOfBasic', rate: 0.75, note: '3x monthly housing (25% of basic)' },
@@ -287,6 +346,20 @@ export const ASIF_LOAN = {
   employeeCode: 'MLG-0003', loanNumber: 'MASAR-LN-2026-0417', loanTypeCode: 'PERSONAL',
   original: 4800, instalment: 400, total: 12, paidBeforeCutover: 3, outstandingAtCutover: 3600,
   firstUnpaidDue: '2026-08-25', disbursed: '2026-04-20', sourceSystem: 'Previous HR system', sourceRecordId: 'LN-0417',
+} as const;
+
+/**
+ * The tenant's overtime policy. Without an ACTIVE one, POST /api/overtime/requests refuses every request
+ * ("An active overtime policy is required"), so /ess/overtime cannot be demonstrated. KSA Art 107: the hourly
+ * wage is basic / 240 (30 days x 8 hours) and an overtime hour adds 50% of it, including on rest days and
+ * public holidays, so every day category is 1.5x. The payroll run floors these at the statutory rate anyway.
+ * Caps are the product defaults: 4 h a day, 60 h a month (720 h a year), rounded to the nearest 15 minutes.
+ */
+export const OVERTIME_POLICY = {
+  code: 'MASAR-OT-KSA', name: 'Masar Holding overtime (KSA Art 107)', hourlyRateBasis: 'BasicSalary',
+  standardMonthlyHours: 240, minimumMinutes: 30, maximumMinutesPerDay: 240, monthlyCapMinutes: 3600,
+  roundingRule: 'Nearest15', requiresApproval: true, allowCompOffConversion: false,
+  regularDayMultiplier: 1.5, weekendMultiplier: 1.5, holidayMultiplier: 1.5,
 } as const;
 
 /** Asif's one absence day: Sunday 4 Oct 2026, a KSA working day, so it lands on the October payslip. */
