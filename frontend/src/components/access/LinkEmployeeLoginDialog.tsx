@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { Modal } from '../Modal';
 import { EmployeeSearchSelect, type EmployeeSelection } from '../EmployeeSearchSelect';
 import { usersApi } from '../../api/identity';
+import { employeesApi, type EmployeeListItem } from '../../api/employees';
 import type { EmployeeLoginInvitation, EmployeeLoginStatus, UserListItem } from '../../api/identity';
 import { localizedRefusal } from '../../lib/accessCeiling';
 import { useLocale } from '../../contexts/LocaleContext';
@@ -32,6 +33,8 @@ const LOGIN_OTHER_COMPANY = 'login_other_company';
 const LOGIN_POINTER_CONFLICT = 'login_pointer_conflict';
 const LOGIN_NEEDS_GROUP_ADMIN = 'login_needs_group_admin';
 const LOGIN_NOT_MANAGEABLE = 'login_not_manageable';
+/** The lifecycle states that can hold a login (AuthCurrentEligibility). */
+const LINKABLE_STATUSES = ['Active', 'Invited'] as const;
 
 const btnPrimary = 'rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-60';
 const btnSecondary = 'rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-700';
@@ -48,6 +51,64 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
   const [error, setError] = useState('');
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [copied, setCopied] = useState(false);
+
+  // Opened from a login: look for its employee record so the admin does not have to. The employee search matches
+  // work email as a SUBSTRING (ann@ also finds joann@) and does not return the email, so a hit is only a candidate:
+  // the status endpoint gives each candidate's work email, and only an exact match (case-insensitive) is picked
+  // automatically. Other candidates are offered to choose from. No candidate by email → offer employees named like
+  // the login, since the usual cause is a work email that was never filled in.
+  const [suggestions, setSuggestions] = useState<{ by: 'email' | 'name'; items: EmployeeListItem[] } | null>(null);
+  const [lookingUp, setLookingUp] = useState(Boolean(user));
+  const [autoPicked, setAutoPicked] = useState(false);
+  // Set by any choice the admin makes; a lookup still in flight must never overwrite it.
+  const choseByHand = useRef(false);
+  const userEmail = user?.email ?? '';
+  const userName = user?.fullName ?? '';
+  useEffect(() => {
+    if (!userEmail) return;
+    let current = true;
+    const live = () => current && !choseByHand.current;
+    const wanted = userEmail.trim().toLowerCase();
+    (async () => {
+      try {
+        const byEmail = await employeesApi.list({ search: userEmail, pageSize: 5, status: LINKABLE_STATUSES });
+        if (!live()) return;
+        if (byEmail.items.length > 0) {
+          const checked = await Promise.all(byEmail.items.map((e) =>
+            usersApi.employeeLoginStatus(e.id).then((st) => ({ e, exact: st.workEmail.trim().toLowerCase() === wanted }), () => ({ e, exact: false }))));
+          if (!live()) return;
+          const exact = checked.filter((c) => c.exact);
+          if (exact.length === 1) {
+            const e = exact[0].e;
+            setEmployee({ intId: e.id, publicId: e.publicId, fullName: e.fullName, employeeCode: e.employeeCode, department: e.department ?? '' });
+            setAutoPicked(true);
+            return;
+          }
+          setSuggestions({ by: 'email', items: byEmail.items });
+          return;
+        }
+        const nameTerm = userName.trim();
+        if (!nameTerm) return;
+        const byName = await employeesApi.list({ search: nameTerm, pageSize: 5, status: LINKABLE_STATUSES });
+        if (live() && byName.items.length > 0) setSuggestions({ by: 'name', items: byName.items });
+      } catch {
+        // A failed lookup only means no suggestion; the search box still works.
+      } finally {
+        if (current) setLookingUp(false);
+      }
+    })();
+    return () => { current = false; };
+    // Keyed on the login's email and name, not the object: a parent re-render must not redo the lookup.
+  }, [userEmail, userName]);
+
+  const choose = (selection: EmployeeSelection | null) => {
+    choseByHand.current = true;
+    setLookingUp(false);
+    setEmployee(selection);
+    setAutoPicked(false);
+  };
+  const pick = (e: EmployeeListItem) =>
+    choose({ intId: e.id, publicId: e.publicId, fullName: e.fullName, employeeCode: e.employeeCode, department: e.department ?? '' });
 
   // A new employee starts a new question: forget the previous answer, error and outcome.
   useEffect(() => {
@@ -167,7 +228,7 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
   );
 
   return (
-    <Modal isOpen title={user ? t('Link to employee record') : t('Invite employee')} onClose={onClose} footer={footer}>
+    <Modal isOpen size="lg" title={user ? t('Link to employee record') : t('Invite employee')} onClose={onClose} footer={footer}>
       <div className="space-y-4">
         {user && (
           <p className="text-sm text-slate-600 dark:text-slate-400">
@@ -176,7 +237,49 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
         )}
         <div>
           <p className="mb-1 text-xs font-medium text-slate-600 dark:text-slate-400">{t('Employee')}</p>
-          <EmployeeSearchSelect value={employee} onChange={setEmployee} placeholder={t('Search employees by name or code')} statuses={['Active', 'Invited']} />
+          <EmployeeSearchSelect
+            value={employee}
+            onChange={choose}
+            placeholder={t('Search employees by name, code or work email')}
+            statuses={LINKABLE_STATUSES}
+            inlineResults
+            autoFocus={!user}
+          />
+          {user && lookingUp && !employee && (
+            <p className="mt-2 text-sm text-slate-500">{t('Looking for the employee record that uses {email}…', { email: user.email })}</p>
+          )}
+          {autoPicked && employee && (
+            <p className="mt-2 text-sm text-emerald-700 dark:text-emerald-400" data-testid="employee-auto-picked">
+              {t('Found automatically: {name} has the work email {email}.', { name: employee.fullName, email: user?.email ?? '' })}
+            </p>
+          )}
+          {user && !employee && !lookingUp && (
+            <div className="mt-3 space-y-2" data-testid="employee-suggestions">
+              <p className="text-sm text-slate-600 dark:text-slate-400">
+                {suggestions?.by === 'email'
+                  ? t('No employee record has exactly the work email {email}, but these records mention it. Choose the right one below.', { email: user.email })
+                  : suggestions?.by === 'name'
+                    ? t('No employee record has the work email {email}. The employees below have a similar name. Choose one, then check its work email.', { email: user.email })
+                    : t('No employee record has the work email {email}. Search by name above, then set that work email on the record.', { email: user.email })}
+              </p>
+              {suggestions && (
+                <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200 dark:divide-white/[0.06] dark:border-white/[0.1]">
+                  {suggestions.items.map((e) => (
+                    <li key={e.id}>
+                      <button type="button" onClick={() => pick(e)}
+                        className="flex w-full items-center justify-between gap-3 px-3 py-2 text-start hover:bg-slate-50 dark:hover:bg-white/[0.05]">
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-medium text-slate-900 dark:text-white">{e.fullName}</span>
+                          <span className="block text-xs text-slate-500">{e.employeeCode}{e.department ? ` · ${e.department}` : ''}{e.status !== 'Active' ? ` · ${t(e.status)}` : ''}</span>
+                        </span>
+                        <span className="shrink-0 text-xs font-medium text-violet-700 dark:text-violet-300">{t('Choose this employee')}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
         </div>
 
         {loadingStatus && <p className="text-sm text-slate-500">{t('Checking the employee record…')}</p>}
@@ -199,6 +302,7 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
                   required
                   value={reason}
                   onChange={(e) => setReason(e.target.value)}
+                  placeholder={t('For example: the login was created before the employee record')}
                   maxLength={500}
                   className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-violet-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
                 />
