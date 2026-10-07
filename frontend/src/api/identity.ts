@@ -18,8 +18,58 @@ export interface UserListItem {
   roles: string[];
   accessMode: string;
   employeeId?: number;
+  /** The employee record this login is linked to (name and code), when it is linked. */
+  employeeName?: string | null;
+  employeeCode?: string | null;
   lastLoginAtUtc?: string;
   createdAtUtc: string;
+}
+
+/** A login as the employee-link dialog shows it. */
+export interface LinkedLogin {
+  userId: string;
+  email: string;
+  status: string;
+  accessMode: string;
+  isActive: boolean;
+}
+
+export type EmployeeLoginNextAction = 'linked' | 'link_existing' | 'invite' | 'needs_work_email' | 'blocked';
+
+/** GET /api/access/employee-logins/{employeeId}: where an employee stands on the way to Self-Service. */
+export interface EmployeeLoginStatus {
+  employeeId: number;
+  employeeName: string;
+  workEmail: string;
+  linkedLogin: LinkedLogin | null;
+  matchingLogin: LinkedLogin | null;
+  nextAction: EmployeeLoginNextAction;
+  /** Plain-language reason, for blocked / needs_work_email. */
+  reason: string | null;
+}
+
+export interface EmployeeLoginLinkResult {
+  employeeId: number;
+  userId: string;
+  email: string;
+  status: string;
+  accessMode: string;
+  isActive: boolean;
+  alreadyLinked: boolean;
+}
+
+/** POST /api/access/employee-logins/invite. `invitationUrl` must be shared by hand when `emailSent` is false. */
+export interface EmployeeLoginInvitation {
+  userId: string;
+  employeeId: number;
+  email: string;
+  accessMode: string;
+  status: string;
+  invitationExpiresAtUtc?: string | null;
+  invitationUrl: string;
+  emailDeliveryConfigured: boolean;
+  emailSent: boolean;
+  deliveryMessage: string;
 }
 
 export interface UserAccess {
@@ -259,7 +309,15 @@ export const usersApi = {
     client.delete(`/api/access/users/${userId}`),
 
   inviteEmployee: (body: { employeeId: number; email?: string; accessMode: string; roles?: string[]; invitationHours?: number }) =>
-    client.post('/api/access/employee-logins/invite', body).then(r => r.data),
+    client.post<EmployeeLoginInvitation>('/api/access/employee-logins/invite', body).then(r => r.data),
+
+  /** Where one employee record stands on the way to Self-Service, and the one next step. */
+  employeeLoginStatus: (employeeId: number) =>
+    client.get<EmployeeLoginStatus>(`/api/access/employee-logins/${employeeId}`).then(r => r.data),
+
+  /** Links an existing, active login to the employee record whose work email it carries. */
+  linkExistingLogin: (body: { employeeId: number; userId: string; reason: string }) =>
+    client.post<EmployeeLoginLinkResult>('/api/access/employee-logins/link-existing', body).then(r => r.data),
 };
 
 export const rolesApi = {

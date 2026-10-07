@@ -84,7 +84,7 @@ public class EssBenefitsController : ControllerBase
         // The same lookup as the data scope and the rest of self-service (CallerEmployeeResolver).
         return await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId, ct) is int linked
             ? (linked, string.Empty)
-            : (null, "Your user account is not linked to an employee record. Ask HR to link your account via User Management → Invite Employee.");
+            : (null, "Your login is not linked to an employee record. Ask HR to link it in User Management → the user → Link to employee record.");
     }
 
     private bool HasPermission(string permission) =>

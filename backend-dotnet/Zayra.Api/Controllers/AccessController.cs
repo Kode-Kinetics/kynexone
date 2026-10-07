@@ -520,6 +520,43 @@ public class AccessController : ControllerBase
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
+    /// <summary>
+    /// Where one employee record stands on the way to Self-Service: the login linked to it, an unlinked login
+    /// carrying its work email, and the one next step (linked | link_existing | invite | needs_work_email | blocked).
+    /// </summary>
+    [HttpGet("employee-logins/{employeeId:int}")]
+    public async Task<ActionResult<EmployeeLoginStatusDto>> EmployeeLoginStatus(int employeeId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var tenantId = GetTenantId();
+            if (tenantId is null || GetUserId() is null) return Unauthorized();
+            var status = await _accessManagement.GetEmployeeLoginStatusAsync(
+                tenantId.Value, employeeId, this.GetEntityScope(), GetContext(), cancellationToken);
+            return status is null ? NotFound(new { message = "Employee not found." }) : Ok(status);
+        }
+        catch (PrivilegeCeilingException ex) { return Refused(ex); }
+    }
+
+    /// <summary>
+    /// Links an existing, active login to an employee record whose work email it carries, so the next sign-in
+    /// carries employee_id and Self-Service works. Does not use a seat: the login is already one.
+    /// </summary>
+    [HttpPost("employee-logins/link-existing")]
+    public async Task<ActionResult<EmployeeLoginLinkResultDto>> LinkExistingLogin(LinkExistingLoginRequest request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var tenantId = GetTenantId();
+            if (tenantId is null || GetUserId() is null) return Unauthorized();
+            return Ok(await _accessManagement.LinkExistingLoginAsync(
+                tenantId.Value, request, this.GetEntityScope(), GetContext(), cancellationToken));
+        }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.employee_login_linked", "User", request.UserId.ToString()); }
+        catch (AccessTargetNotFoundException ex) { return NotFound(new { message = ex.Message }); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
     private async Task<EmployeeLoginInvitationDto> AttachInvitationDeliveryAsync(
         Guid tenantId, EmployeeLoginInvitationDto invite, CancellationToken cancellationToken)
     {

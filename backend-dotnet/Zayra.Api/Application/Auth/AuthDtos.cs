@@ -65,6 +65,46 @@ public record EmployeeLoginInvitationDto(
     bool EmailSent = false,
     string DeliveryMessage = "");
 
+/// <summary>A login as the employee-link screen shows it: who, what state, what access mode.</summary>
+public record LinkedLoginDto(Guid UserId, string Email, string Status, string AccessMode, bool IsActive);
+
+/// <summary>
+/// Where one employee record stands on the way to Self-Service. <see cref="NextAction"/> is one of
+/// <see cref="EmployeeLoginNextActions"/>; <see cref="Reason"/> says why in plain language when it is
+/// <c>blocked</c> or <c>needs_work_email</c>.
+/// </summary>
+public record EmployeeLoginStatusDto(
+    int EmployeeId,
+    string EmployeeName,
+    string WorkEmail,
+    LinkedLoginDto? LinkedLogin,
+    LinkedLoginDto? MatchingLogin,
+    string NextAction,
+    string? Reason);
+
+public static class EmployeeLoginNextActions
+{
+    public const string Linked = "linked";
+    public const string LinkExisting = "link_existing";
+    public const string Invite = "invite";
+    public const string NeedsWorkEmail = "needs_work_email";
+    public const string Blocked = "blocked";
+}
+
+public record LinkExistingLoginRequest(
+    [Required] int EmployeeId,
+    [Required] Guid UserId,
+    [Required, MaxLength(500)] string Reason);
+
+public record EmployeeLoginLinkResultDto(
+    int EmployeeId,
+    Guid UserId,
+    string Email,
+    string Status,
+    string AccessMode,
+    bool IsActive,
+    bool AlreadyLinked);
+
 public record AccessModeRequest([Required] string AccessMode, string? Reason);
 
 public record PermissionOverrideRequest([Required] string PermissionKey, [Required] string Effect, string? Reason, DateTime? ExpiresAtUtc);
@@ -228,7 +268,10 @@ public record UserListDto(
     string AccessMode,
     int? EmployeeId,
     DateTime? LastLoginAtUtc,
-    DateTime CreatedAtUtc);
+    DateTime CreatedAtUtc,
+    // The employee record this login is linked to, for the User Management row. Null when unlinked.
+    string? EmployeeName = null,
+    string? EmployeeCode = null);
 
 public record UpdateUserRequest(
     string? FullName,

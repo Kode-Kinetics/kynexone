@@ -14,7 +14,7 @@ namespace Zayra.Api.Infrastructure.Common;
 /// <para>There is deliberately NO email fallback. Matching the login's email against an employee's work or
 /// personal email let an email binding stand in for the link, and an employee's personal email can be
 /// changed through an approved self-service profile request, so it could bind a different login to that
-/// record. A login without the link is linked by HR (User Management → Invite Employee), not guessed.</para>
+/// record. A login without the link is linked by HR (User Management → the user → Link to employee record, or an invitation), not guessed.</para>
 /// </summary>
 public static class CallerEmployeeResolver
 {

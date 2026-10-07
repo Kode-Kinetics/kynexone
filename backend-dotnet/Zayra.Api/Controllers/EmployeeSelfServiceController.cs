@@ -73,7 +73,7 @@ public class EmployeeSelfServiceController : ControllerBase
         var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
         if (!essOk) return BadRequest(new { message = ctxError });
         var employee = await OwnEmployee(tenantId, employeeId, cancellationToken);
-        if (employee is null) return NotFound(new { message = "Your user account is not linked to an employee record. Ask HR to invite you using the Invite Employee flow in User Management." });
+        if (employee is null) return NotFound(new { message = "Your login is not linked to an employee record. Ask HR to link it in User Management → the user → Link to employee record." });
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var now = DateTime.UtcNow;
         var attendance = await _db.AttendanceDailyRecords.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.WorkDate == today && !x.IsDeleted, cancellationToken);
@@ -1471,7 +1471,7 @@ public class EmployeeSelfServiceController : ControllerBase
             return (true, tenantId, linked, null);
 
         return (false, default, default,
-            "Your login is not linked to an employee record. Ask HR to link your account via User Management → Invite Employee.");
+            "Your login is not linked to an employee record. Ask HR to link it in User Management → the user → Link to employee record.");
     }
 
     private bool HasPermission(string permission) => User.Claims.Any(x => x.Type == "permission" && x.Value == permission);

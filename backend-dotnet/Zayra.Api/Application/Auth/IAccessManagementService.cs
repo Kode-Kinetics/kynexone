@@ -12,6 +12,10 @@ public interface IAccessManagementService
     Task<UserListDto?> UpdateUserAsync(Guid tenantId, Guid userId, UpdateUserRequest request, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken);
     Task<AuthUserDto> AssignRolesAsync(Guid tenantId, Guid userId, AssignRolesRequest request, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken);
     Task<EmployeeLoginInvitationDto> InviteEmployeeLoginAsync(Guid tenantId, InviteEmployeeLoginRequest request, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken);
+    /// <summary>Where an employee record stands on the way to Self-Service, and the one next step. Null = not found or outside the caller's company scope.</summary>
+    Task<EmployeeLoginStatusDto?> GetEmployeeLoginStatusAsync(Guid tenantId, int employeeId, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken);
+    /// <summary>Links an existing, active login to an employee record whose work email it carries.</summary>
+    Task<EmployeeLoginLinkResultDto> LinkExistingLoginAsync(Guid tenantId, LinkExistingLoginRequest request, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken);
     Task<UserAccessDto?> GetUserAccessAsync(Guid tenantId, Guid userId, EntityScopeContext entityScope, CancellationToken cancellationToken);
     Task<UserAccessDto?> SetAccessModeAsync(Guid tenantId, Guid userId, AccessModeRequest request, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken);
     Task<UserAccessDto?> SetPermissionOverrideAsync(Guid tenantId, Guid userId, PermissionOverrideRequest request, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken);

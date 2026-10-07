@@ -9,6 +9,7 @@ using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Models;
 
@@ -643,6 +644,379 @@ public class AccessManagementService : IAccessManagementService
                 "The invitation commit could not be reconciled; the invitation token was not disclosed.");
     }
 
+    // ── Linking an existing login to an employee record ───────────────────────
+    //
+    // Self-Service resolves the caller ONLY from the employee_id claim, which the token service mints only
+    // from a live EmployeeUserAccounts row (CallerEmployeeResolver; there is deliberately no email fallback).
+    // Before this, the only ways to create that row were the invitation (which refuses an email that already
+    // belongs to an active login) and new-hire approval. A login made in User Management → Create User
+    // therefore had no path to its employee record at all. This is that path, with the identity evidence the
+    // resolver refused to guess: the login's email must BE the employee's work email (never the personal
+    // email, which the employee can change through self-service).
+
+    private const string EmployeeRoleNormalizedName = "EMPLOYEE";
+
+    private const string LinkBypassWhy =
+        "Login-to-employee link: the auth graph of one tenant's login and employee is read and locked across legal entities; the tenant is re-applied, and the caller's company scope is checked explicitly on both the employee and the login.";
+
+    /// <inheritdoc />
+    public async Task<EmployeeLoginStatusDto?> GetEmployeeLoginStatusAsync(
+        Guid tenantId,
+        int employeeId,
+        EntityScopeContext entityScope,
+        RequestContext context,
+        CancellationToken cancellationToken)
+    {
+        var employee = await _db.Employees.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.Id == employeeId && !x.IsDeleted)
+            .Select(x => new { x.Id, x.FullName, x.WorkEmail, x.Status, x.CompanyId, x.UserAccountId })
+            .SingleOrDefaultAsync(cancellationToken);
+        if (employee is null || !EmployeeWithinScope(entityScope, employee.CompanyId)) return null;
+
+        var workEmail = (employee.WorkEmail ?? string.Empty).Trim();
+        EmployeeLoginStatusDto Status(LinkedLoginDto? linked, LinkedLoginDto? matching, string nextAction, string? reason) =>
+            new(employee.Id, employee.FullName, workEmail, linked, matching, nextAction, reason);
+
+        var links = await ScopedBypass.TenantWide(_db.EmployeeUserAccounts, tenantId, LinkBypassWhy).AsNoTracking()
+            .Include(x => x.User)
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && !x.IsDeleted)
+            .OrderByDescending(x => x.IsPrimary).ThenByDescending(x => x.CreatedAtUtc)
+            .ToListAsync(cancellationToken);
+        if (links.Count > 0)
+        {
+            var link = links[0];
+            if (link.User is null || link.User.TenantId != tenantId)
+                return Status(null, null, EmployeeLoginNextActions.Blocked,
+                    "This employee record has a login mapping with no login behind it. Contact support to resolve it before linking.");
+            return Status(ToLinkedLogin(link.User, link), null, EmployeeLoginNextActions.Linked, null);
+        }
+
+        if (!AuthCurrentEligibility.IsEmployeeLifecycleEligible(employee.Status))
+            return Status(null, null, EmployeeLoginNextActions.Blocked,
+                $"Only active or invited employees can have a login. This employee's status is {employee.Status}.");
+        if (string.IsNullOrWhiteSpace(workEmail))
+            return Status(null, null, EmployeeLoginNextActions.NeedsWorkEmail,
+                "Add a work email to the employee record first. A login is matched to an employee by work email.");
+
+        var normalizedWorkEmail = AuthService.Normalize(workEmail);
+        var matches = await ScopedBypass.TenantWide(_db.Users, tenantId, LinkBypassWhy).AsNoTracking().AsSplitQuery()
+            .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
+            .Include(x => x.EmployeeUserAccounts)
+            .Include(x => x.EntityAccesses)
+            .Include(x => x.PermissionOverrides)
+            .Where(x => x.TenantId == tenantId && x.NormalizedEmail == normalizedWorkEmail)
+            .OrderBy(x => x.Id)
+            .Take(2)
+            .ToListAsync(cancellationToken);
+        if (matches.Count > 1)
+            return Status(null, null, EmployeeLoginNextActions.Blocked,
+                "More than one login uses this work email. Contact support to resolve it before linking.");
+        if (matches.Count == 0)
+        {
+            return employee.UserAccountId.HasValue
+                ? Status(null, null, EmployeeLoginNextActions.Blocked,
+                    "This employee record points to a login that does not use its work email. Contact support to resolve it before inviting.")
+                : Status(null, null, EmployeeLoginNextActions.Invite, null);
+        }
+
+        var user = matches[0];
+        var matching = ToLinkedLogin(user, null);
+        var userRefusal = LinkUserRefusal(user, employee.Id, employee.UserAccountId, DateTime.UtcNow);
+        if (userRefusal is not null)
+            return Status(null, matching, EmployeeLoginNextActions.Blocked, userRefusal);
+        if (!await UserWithinLinkScopeAsync(tenantId, user, entityScope, cancellationToken))
+            return Status(null, matching, EmployeeLoginNextActions.Blocked, LoginOutsideScopeMessage);
+
+        var caller = await LoadCallerCeilingAsync(tenantId, context, cancellationToken);
+        if (user.Id == caller.UserId)
+            return Status(null, matching, EmployeeLoginNextActions.Blocked, SelfLinkRefusal().MessageEn);
+        var above = PrivilegeCeiling.TargetRefusal(caller, user.Id, HoldsAdmin(user), AuthService.GetPermissions(user));
+        if (above is not null)
+            return Status(null, matching, EmployeeLoginNextActions.Blocked, above.MessageEn);
+        return Status(null, matching, EmployeeLoginNextActions.LinkExisting, null);
+    }
+
+    /// <inheritdoc />
+    public async Task<EmployeeLoginLinkResultDto> LinkExistingLoginAsync(
+        Guid tenantId,
+        LinkExistingLoginRequest request,
+        EntityScopeContext entityScope,
+        RequestContext context,
+        CancellationToken cancellationToken)
+    {
+        var reason = (request.Reason ?? string.Empty).Trim();
+        if (reason.Length == 0)
+            throw new InvalidOperationException("Give a reason for linking this login. It is kept in the audit trail.");
+        if (reason.Length > 500) reason = reason[..500];
+
+        var linkedAtUtc = ToDatabasePrecisionUtc(DateTime.UtcNow);
+        var auditId = Guid.NewGuid();
+        var newLinkId = Guid.NewGuid();
+        var newGrantId = Guid.NewGuid();
+        EmployeeLoginLinkResultDto? result = null;
+
+        async Task<bool> LinkOnceAsync(CancellationToken ct)
+        {
+            _db.ChangeTracker.Clear();
+            result = null;
+
+            // Lock order matches InviteEmployeeLoginAsync: tenant → employee → employee links → user graph.
+            _ = await _db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == tenantId && x.IsActive, ct)
+                ?? throw new AccessTargetNotFoundException("Workspace not found.");
+            var employee = await _db.Employees.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == request.EmployeeId && !x.IsDeleted, ct);
+            if (employee is null || !EmployeeWithinScope(entityScope, employee.CompanyId))
+                throw new AccessTargetNotFoundException("Employee not found.");
+            var employeeLinks = await ScopedBypass.TenantWide(_db.EmployeeUserAccounts, tenantId, LinkBypassWhy)
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && !x.IsDeleted)
+                .OrderBy(x => x.Id)
+                .ToListAsync(ct);
+
+            var anchored = await ScopedBypass.TenantWide(_db.Users, tenantId, LinkBypassWhy).TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.Id == request.UserId && x.TenantId == tenantId)
+                .Select(x => x.Id)
+                .ToListAsync(ct);
+            if (anchored.Count == 0) throw new AccessTargetNotFoundException("Login not found.");
+            await ScopedBypass.TenantWide(_db.EmployeeUserAccounts, tenantId, LinkBypassWhy).TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.TenantId == tenantId && x.UserId == request.UserId)
+                .OrderBy(x => x.Id).Select(x => x.Id).ToListAsync(ct);
+            await _db.UserRoles.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.UserId == request.UserId)
+                .OrderBy(x => x.RoleId).Select(x => x.RoleId).ToListAsync(ct);
+            await ScopedBypass.TenantWide(_db.UserEntityAccesses, tenantId, LinkBypassWhy).TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.TenantId == tenantId && x.UserId == request.UserId)
+                .OrderBy(x => x.Id).Select(x => x.Id).ToListAsync(ct);
+            await ScopedBypass.TenantWide(_db.UserPermissionOverrides, tenantId, LinkBypassWhy).TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.TenantId == tenantId && x.UserId == request.UserId)
+                .OrderBy(x => x.Id).Select(x => x.Id).ToListAsync(ct);
+
+            // Split: primary-key filter inside this anchored transaction (AuthGraphSnapshot).
+            var user = await ScopedBypass.TenantWide(_db.Users, tenantId, LinkBypassWhy).AsSplitQuery()
+                .Include(x => x.Tenant)
+                .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
+                .Include(x => x.EmployeeUserAccounts)
+                .Include(x => x.EntityAccesses)
+                .Include(x => x.PermissionOverrides)
+                .SingleAsync(x => x.Id == request.UserId && x.TenantId == tenantId, ct);
+
+            // The subject never decides (strict separation of duties), nobody acts outside their company
+            // scope, and nobody reaches up to a login holding more than they do.
+            var caller = await LoadCallerCeilingAsync(tenantId, context, ct);
+            if (user.Id == caller.UserId) throw new PrivilegeCeilingException(SelfLinkRefusal());
+            if (!await UserWithinLinkScopeAsync(tenantId, user, entityScope, ct))
+                throw new AccessTargetNotFoundException("Login not found.");
+            ThrowIfRefused(PrivilegeCeiling.TargetRefusal(caller, user.Id, HoldsAdmin(user), AuthService.GetPermissions(user)));
+
+            // Idempotent: this exact link already live → answer it and write nothing.
+            var sameLink = employeeLinks.FirstOrDefault(x => x.UserId == user.Id);
+            if (sameLink is not null && employeeLinks.Count == 1 && employee.UserAccountId == user.Id)
+            {
+                result = ToLinkResult(employee.Id, user, sameLink, alreadyLinked: true);
+                return true;
+            }
+
+            if (!AuthCurrentEligibility.IsEmployeeLifecycleEligible(employee.Status))
+                throw new InvalidOperationException(
+                    $"Only active or invited employees can be linked to a login. This employee's status is {employee.Status}.");
+            if (employeeLinks.Count != 0)
+                throw new InvalidOperationException(
+                    "This employee record is already linked to a login. A record can have only one login.");
+            if (employee.UserAccountId.HasValue && employee.UserAccountId != user.Id)
+                throw new InvalidOperationException(
+                    "This employee record points to a different login. Contact support to resolve it before linking.");
+            if (LinkUserRefusal(user, employee.Id, employee.UserAccountId, linkedAtUtc) is { } refusal)
+                throw new InvalidOperationException(refusal);
+
+            // Identity evidence: the login's email IS the employee's work email. Never the personal email.
+            var workEmail = (employee.WorkEmail ?? string.Empty).Trim();
+            if (string.IsNullOrEmpty(workEmail)
+                || !string.Equals(user.NormalizedEmail, AuthService.Normalize(workEmail), StringComparison.Ordinal))
+                throw new InvalidOperationException(
+                    "This login's email does not match the employee's work email. Correct the work email on the employee record so they match, or send the employee a self-service invitation instead.");
+            if (!await AuthTenantGraphIntegrity.IsValidAsync(user, _db, ct))
+                throw new InvalidOperationException(
+                    "This login's access records are inconsistent. Contact support to resolve it before linking.");
+
+            // The Employee role: what Self-Service needs. Every other role the login holds is kept as it is.
+            var rolesAdded = new List<string>();
+            if (!user.UserRoles.Any(x => x.Role is { NormalizedName: EmployeeRoleNormalizedName, IsActive: true, IsDeleted: false }))
+            {
+                    var employeeRole = await _db.Roles
+                    .Include(x => x.RolePermissions).ThenInclude(x => x.Permission)
+                    .Where(x => (x.TenantId == tenantId || x.TenantId == null)
+                        && x.NormalizedName == EmployeeRoleNormalizedName
+                        && x.IsActive
+                        && !x.IsDeleted)
+                    .OrderByDescending(x => x.TenantId == tenantId)
+                    .FirstOrDefaultAsync(ct)
+                    ?? throw new InvalidOperationException(
+                        "The Employee role is not available in this workspace. Restore it before linking a login.");
+                ThrowIfRefused(PrivilegeCeiling.AssignRefusal(caller, Facts(employeeRole)));
+                _db.UserRoles.Add(new UserRole { UserId = user.Id, RoleId = employeeRole.Id, User = user, Role = employeeRole });
+                rolesAdded.Add(employeeRole.Name);
+            }
+
+            // Company access for the employee's own company, so Self-Service can read the record. Group-scope
+            // logins, and logins that already reach the company, are left alone.
+            var companyGrantAdded = false;
+            if (employee.CompanyId is Guid companyId
+                && !user.IsGroupScope
+                && !user.EntityAccesses.Any(x => x.TenantId == tenantId && x.IsActive
+                    && (x.GrantMode == EntityGrantModes.AllCurrentAndFutureCompanies
+                        || x.GrantMode == EntityGrantModes.AllCurrentCompanies
+                        || (x.GrantMode == EntityGrantModes.SelectedCompanies && x.CompanyId == companyId))))
+            {
+                var dormantGrant = user.EntityAccesses.FirstOrDefault(x => x.TenantId == tenantId && !x.IsActive
+                    && x.GrantMode == EntityGrantModes.SelectedCompanies && x.CompanyId == companyId && x.Role == "Employee");
+                if (dormantGrant is not null)
+                {
+                    dormantGrant.IsActive = true;
+                    dormantGrant.UpdatedAtUtc = linkedAtUtc;
+                    dormantGrant.UpdatedBy = context.UserId;
+                    dormantGrant.GrantedBy = context.UserId;
+                    dormantGrant.GrantedAt = linkedAtUtc;
+                }
+                else
+                {
+                    _db.UserEntityAccesses.Add(new UserEntityAccess
+                    {
+                        Id = newGrantId,
+                        TenantId = tenantId,
+                        User = user,
+                        UserId = user.Id,
+                        CompanyId = companyId,
+                        GrantMode = EntityGrantModes.SelectedCompanies,
+                        Role = "Employee",
+                        IsActive = true,
+                        CreatedAtUtc = linkedAtUtc,
+                        CreatedBy = context.UserId,
+                        GrantedBy = context.UserId,
+                        GrantedAt = linkedAtUtc
+                    });
+                }
+                companyGrantAdded = true;
+            }
+
+            // (tenant_id, user_id) is unique across soft-deleted rows too, so a login whose earlier link was
+            // removed reuses that row; the audit row below records the employee it used to point at.
+            var dormantLink = user.EmployeeUserAccounts.FirstOrDefault(x => x.TenantId == tenantId && x.IsDeleted);
+            int? previousEmployeeId = dormantLink?.EmployeeId;
+            var link = dormantLink ?? new EmployeeUserAccount { Id = newLinkId, TenantId = tenantId, User = user, UserId = user.Id };
+            link.EmployeeId = employee.Id;
+            link.IsPrimary = true;
+            link.AccessMode = user.AccessMode;
+            link.Status = "Active";
+            link.RequiresPasswordSetup = false;
+            link.InvitationTokenHash = string.Empty;
+            link.InvitationExpiresAtUtc = null;
+            link.InvitedAtUtc = null;
+            link.InvitationAcceptedAtUtc = null;
+            link.LoginDisabledReason = string.Empty;
+            link.IsDeleted = false;
+            link.DeletedAtUtc = null;
+            link.DeletedBy = null;
+            if (dormantLink is null)
+            {
+                link.CreatedAtUtc = linkedAtUtc;
+                link.CreatedBy = context.UserId;
+                _db.EmployeeUserAccounts.Add(link);
+            }
+            else
+            {
+                link.UpdatedAtUtc = linkedAtUtc;
+                link.UpdatedBy = context.UserId;
+            }
+            employee.UserAccountId = user.Id;
+
+            // The next sign-in must carry employee_id: retire every session minted without it.
+            await InvalidateAuthorizationSessionsAsync(new[] { user }, linkedAtUtc, context, ct);
+
+            _db.AuditLogs.Add(AuthAuditEntry.Create(
+                auditId,
+                linkedAtUtc,
+                "access.employee_login_linked",
+                "EmployeeUserAccount",
+                link.Id.ToString(),
+                context with { TenantId = tenantId },
+                System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    employeeId = employee.Id,
+                    userId = user.Id,
+                    reason,
+                    rolesAdded,
+                    companyGrantAdded,
+                    accessMode = link.AccessMode,
+                    previousEmployeeId
+                })));
+            await _db.SaveChangesAsync(ct);
+            result = ToLinkResult(employee.Id, user, link, alreadyLinked: false);
+            return true;
+        }
+
+        await ExecuteAuthorizationTransactionAsync(auditId, "access.employee_login_linked", LinkOnceAsync, cancellationToken);
+        return result ?? throw new InvalidOperationException("The link could not be confirmed. Refresh and check the employee record.");
+    }
+
+    private const string LoginOutsideScopeMessage =
+        "This login belongs to a company outside your access. An administrator who manages that company must link it.";
+
+    private static PrivilegeCeiling.Refusal SelfLinkRefusal() => new(
+        PrivilegeCeiling.Codes.SelfChange,
+        "You cannot link your own login to an employee record. Another administrator must link your login.",
+        "لا يمكنك ربط حسابك بسجل موظف بنفسك. يجب أن يربط حسابك مسؤول آخر.",
+        null,
+        Array.Empty<string>());
+
+    private static bool EmployeeWithinScope(EntityScopeContext scope, Guid? companyId) =>
+        scope.IsGroupLevel || (companyId.HasValue && scope.CanAccessCompany(companyId.Value));
+
+    /// <summary>
+    /// A company-scoped administrator may link a login they can already see (it reaches one of their companies),
+    /// or a login with no company access at all — a fresh Create User login has none, and is invisible to every
+    /// company-scoped list until it is linked. A login scoped elsewhere, or group-wide, is not theirs to link.
+    /// </summary>
+    private async Task<bool> UserWithinLinkScopeAsync(Guid tenantId, User user, EntityScopeContext scope, CancellationToken ct)
+    {
+        if (scope.IsGroupLevel) return true;
+        if (user.IsGroupScope) return false;
+        if (!user.EntityAccesses.Any(x => x.IsActive) && !user.EmployeeUserAccounts.Any(x => !x.IsDeleted)) return true;
+        return await _db.Users.AsNoTracking().ApplyEntityScope(_db, tenantId, scope).AnyAsync(x => x.Id == user.Id, ct);
+    }
+
+    /// <summary>Why <paramref name="user"/> cannot be linked to <paramref name="employeeId"/>, in plain language. Null = it can.</summary>
+    private static string? LinkUserRefusal(User user, int employeeId, Guid? employeeUserAccountId, DateTime nowUtc)
+    {
+        if (user.IsDeleted)
+            return "The login that used this work email was deleted, so it cannot be linked, and the email is still reserved. Contact support to release it, or give the employee a different work email.";
+        if (user.EmployeeUserAccounts.Any(x => !x.IsDeleted && x.EmployeeId != employeeId))
+            return "This login is already linked to another employee record. A login can belong to only one employee.";
+        if (!string.Equals(user.IdentityProvider, "Local", StringComparison.OrdinalIgnoreCase))
+            return "This login signs in through single sign-on, so it cannot be linked here.";
+        if (user.IsLocked
+            || AuthCurrentEligibility.IsFailureLockoutActive(user, nowUtc)
+            || string.Equals(user.Status, "Locked", StringComparison.Ordinal))
+            return "This login is locked. Unlock it first, then link it.";
+        if (string.Equals(user.AccessMode, AccessModes.NoLogin, StringComparison.Ordinal))
+            return "This login cannot sign in (its access mode is No login, or it is still waiting for an invitation to be accepted). It can be linked once it is active.";
+        if (!user.IsActive || !string.Equals(user.Status, "Active", StringComparison.Ordinal))
+            return $"This login is not active (status: {user.Status}). Activate it first, then link it.";
+        if (employeeUserAccountId.HasValue && employeeUserAccountId != user.Id)
+            return "This employee record points to a different login. Contact support to resolve it before linking.";
+        return null;
+    }
+
+    private static LinkedLoginDto ToLinkedLogin(User user, EmployeeUserAccount? link) => new(
+        user.Id,
+        user.Email,
+        user.IsDeleted ? "Deleted" : link?.Status ?? user.Status,
+        link?.AccessMode ?? user.AccessMode,
+        user.IsActive && !user.IsDeleted);
+
+    private static EmployeeLoginLinkResultDto ToLinkResult(int employeeId, User user, EmployeeUserAccount link, bool alreadyLinked) =>
+        new(employeeId, user.Id, user.Email, link.Status, link.AccessMode, user.IsActive, alreadyLinked);
+
     public async Task<AuthUserDto> AssignRolesAsync(Guid tenantId, Guid userId, AssignRolesRequest request, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken)
     {
         var changedAtUtc = DateTime.UtcNow;
@@ -1070,7 +1444,24 @@ public class AccessManagementService : IAccessManagementService
             .Take(query.PageSize)
             .ToListAsync(cancellationToken);
 
-        return new PagedResult<UserListDto>(items.Select(ToUserListDto).ToList(), total, query.Page, query.PageSize);
+        var employeeNames = await LinkedEmployeeNamesAsync(tenantId, items, cancellationToken);
+        return new PagedResult<UserListDto>(items.Select(x => ToUserListDto(x, employeeNames)).ToList(), total, query.Page, query.PageSize);
+    }
+
+    /// <summary>One query for the whole page: the employee each listed login is linked to (name and code).</summary>
+    private async Task<IReadOnlyDictionary<int, (string Name, string Code)>> LinkedEmployeeNamesAsync(
+        Guid tenantId, IEnumerable<User> users, CancellationToken cancellationToken)
+    {
+        var ids = users
+            .SelectMany(u => u.EmployeeUserAccounts.Where(x => !x.IsDeleted).Select(x => x.EmployeeId))
+            .Distinct()
+            .ToList();
+        if (ids.Count == 0) return new Dictionary<int, (string, string)>();
+        var rows = await _db.Employees.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && ids.Contains(x.Id) && !x.IsDeleted)
+            .Select(x => new { x.Id, x.FullName, x.EmployeeCode })
+            .ToListAsync(cancellationToken);
+        return rows.ToDictionary(x => x.Id, x => (x.FullName, x.EmployeeCode));
     }
 
     public async Task<UserListDto?> GetUserAsync(Guid tenantId, Guid userId, EntityScopeContext entityScope, CancellationToken cancellationToken)
@@ -1081,7 +1472,7 @@ public class AccessManagementService : IAccessManagementService
             .ApplyEntityScope(_db, tenantId, entityScope)
             .AsNoTracking()
             .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, cancellationToken);
-        return user is null ? null : ToUserListDto(user);
+        return user is null ? null : ToUserListDto(user, await LinkedEmployeeNamesAsync(tenantId, new[] { user }, cancellationToken));
     }
 
     public async Task<UserListDto?> UpdateUserAsync(Guid tenantId, Guid userId, UpdateUserRequest request, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken)
@@ -2352,11 +2743,17 @@ public class AccessManagementService : IAccessManagementService
     private static ApprovalAuthorityDto ToAuthorityDto(ApprovalAuthority authority) =>
         new(authority.Id, authority.EmployeeId, authority.UserId, authority.AuthorityScope, authority.ApproverRole, authority.AmountLimit, authority.Currency, authority.CanFinalApprove, authority.IsActive);
 
-    private static UserListDto ToUserListDto(User user)
+    private static UserListDto ToUserListDto(User user) => ToUserListDto(user, null);
+
+    private static UserListDto ToUserListDto(User user, IReadOnlyDictionary<int, (string Name, string Code)>? employeeNames)
     {
         var roles = user.UserRoles.Select(x => x.Role?.Name).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x!).Distinct().OrderBy(x => x).ToList();
         var link = user.EmployeeUserAccounts.Where(x => !x.IsDeleted).OrderByDescending(x => x.IsPrimary).FirstOrDefault();
-        return new UserListDto(user.Id, user.Email, user.FullName, user.PhoneNumber, user.Status, user.IsActive, user.IsLocked, user.MustChangePassword, roles, link?.AccessMode ?? user.AccessMode, link?.EmployeeId, user.LastLoginAtUtc, user.CreatedAtUtc);
+        (string Name, string Code)? employee = link is not null && employeeNames is not null && employeeNames.TryGetValue(link.EmployeeId, out var found)
+            ? found
+            : null;
+        return new UserListDto(user.Id, user.Email, user.FullName, user.PhoneNumber, user.Status, user.IsActive, user.IsLocked, user.MustChangePassword, roles, link?.AccessMode ?? user.AccessMode, link?.EmployeeId, user.LastLoginAtUtc, user.CreatedAtUtc,
+            employee?.Name, employee?.Code);
     }
 
     private static SecuritySettingDto ToSecuritySettingDto(Models.SecuritySetting s) =>
@@ -3194,4 +3591,13 @@ internal static class AccessManagementScopeExtensions
                 && grant.CompanyId.HasValue
                 && companyIds.Contains(grant.CompanyId.Value)));
     }
+}
+
+/// <summary>
+/// The target of an access change does not exist in this workspace, or sits outside the caller's company scope.
+/// The Access API answers it with 404, so a scoped administrator learns nothing about records they cannot see.
+/// </summary>
+public sealed class AccessTargetNotFoundException : Exception
+{
+    public AccessTargetNotFoundException(string message) : base(message) { }
 }
