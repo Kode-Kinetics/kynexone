@@ -1,3 +1,5 @@
+using Zayra.Api.Infrastructure.CountryPack;
+using Zayra.Api.Application.CountryPack;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Payroll;
@@ -23,12 +25,17 @@ public sealed class SaudiComplianceDashboardService
     /// "not known to be live", which is reported as a simulation — the safe reading (F09).
     /// </param>
     public SaudiComplianceDashboardService(ZayraDbContext db, GosiReconciliationService reconciliation,
-        IQiwaApiAdapter? qiwaAdapter = null)
+        IQiwaApiAdapter? qiwaAdapter = null, IStatutoryRuleReader? rules = null)
     {
         _db = db;
         _reconciliation = reconciliation;
         _qiwaAdapter = qiwaAdapter;
+        // The payslip's own rule reader, so GOSI readiness here is the run's verdict. Defaults to the
+        // database-backed reader for callers that construct the service directly.
+        _rules = rules ?? new StatutoryRuleReader(db);
     }
+
+    private readonly IStatutoryRuleReader _rules;
 
     public async Task<SaudiComplianceDashboard> BuildAsync(Guid tenantId, CancellationToken ct)
     {
@@ -165,15 +172,6 @@ public sealed class SaudiComplianceDashboardService
             .Where(s => s.TenantId == tenantId && s.IsActive)
             .ToListAsync(ct);
 
-        // IgnoreQueryFilters is intentional: same as GosiReadinessReportService — Guid.Empty
-        // platform defaults are invisible through the global tenant filter. Scope is re-applied
-        // explicitly: own-tenant overrides + Guid.Empty defaults only.
-        var rules = await _db.GosiContributionRules
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(r => (r.TenantId == Guid.Empty || r.TenantId == tenantId) && r.IsActive)
-            .ToListAsync(ct);
-
         var periodDate   = DateOnly.FromDateTime(DateTime.UtcNow);
         var missingRef   = employees.Count(e => string.IsNullOrWhiteSpace(e.GosiReference));
         // EmployeesMissingGosiEmployerId counts AFFECTED EMPLOYEES, so it is 0 for a tenant with no
@@ -183,20 +181,12 @@ public sealed class SaudiComplianceDashboardService
         var missingEmpId = string.IsNullOrWhiteSpace(company?.GosiEmployerId) ? employees.Count : 0;
         var employerIdConfigured = !string.IsNullOrWhiteSpace(company?.GosiEmployerId);
 
-        // Run readiness validator for every active employee.
-        var reports = employees.Select(e =>
-        {
-            var salary = salaries
-                .Where(s => s.EmployeeId == e.Id && s.EffectiveDate <= periodDate)
-                .OrderByDescending(s => s.EffectiveDate)
-                .FirstOrDefault();
-
-            var applicable = GosiCalculationService.SelectActiveRules(
-                GosiCalculationService.DeriveClassification(e.Nationality),
-                rules, periodDate, tenantId);
-
-            return GosiReadinessValidator.Validate(e, salary?.BasicSalary, applicable);
-        }).ToList();
+        // GOSI readiness is the payroll run's own verdict: the payslip engine's result for the salary the
+        // run would use, judged with the run's codes (GosiReadinessValidator.AssessAsync).
+        var reports = new List<Zayra.Api.Infrastructure.Payroll.GosiReadinessReport>(employees.Count);
+        foreach (var e in employees)
+            reports.Add((await GosiReadinessValidator.AssessAsync(
+                _rules, e, GosiReadinessValidator.SalaryForPeriod(salaries, e.Id, periodDate), periodDate, ct)).Readiness);
 
         var readyCount      = reports.Count(r => r.IsReady);
         var blockedCount    = reports.Count(r => !r.IsReady);
@@ -241,6 +231,10 @@ public sealed class SaudiComplianceDashboardService
             warnings.Add("Company GOSI employer ID is not set.");
         if (gccCount > 0)
             warnings.Add($"{Plural(gccCount, "GCC employee", "GCC employees")} — contribution rates pending legal confirmation.");
+        // GOSI rate/ceiling values saved at tenant level are never applied by payroll (GosiStatutoryValues).
+        var ignoredGosiOverrides = await GosiStatutoryValues.FindIgnoredTenantOverridesAsync(_db, tenantId, ct);
+        if (ignoredGosiOverrides.Count > 0)
+            warnings.Add(GosiStatutoryValues.IgnoredOverrideWarning(ignoredGosiOverrides));
 
         return new GosiDashboardSection(
             missingRef, missingEmpId, employerIdConfigured,

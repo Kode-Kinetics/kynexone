@@ -824,6 +824,72 @@ public sealed class EmployeeDraftLifecyclePostgresTests
         }
     }
 
+    /// <summary>
+    /// Draft approval and the CSV import dispense codes from the same ID rule. Approval used to read the rule with a
+    /// plain SELECT while an import held it FOR UPDATE, so an approval during an import reused a code the import had
+    /// dispensed (refused at the unique index) and wrote the sequence back over the import's. Both now take the
+    /// same lock (EmployeeIdRuleLock): every code is distinct and the sequence advances once per person, no gaps.
+    /// </summary>
+    [Fact]
+    public async Task ADraftApprovedDuringAnImport_NeverDuplicatesACode_OrLosesASequenceNumber()
+    {
+        const int importRows = 40, drafts = 4;
+        var tenantId = Guid.NewGuid();
+        var checker = Guid.NewGuid();
+        var draftIds = new List<Guid>();
+        await using (var db = _fixture.CreateDb())
+        {
+            var company = new Company { TenantId = tenantId, LegalNameEn = "Race Co", RegistrationNumber = $"RC-{Guid.NewGuid():N}", CountryCode = "AE", Jurisdiction = "AE", DefaultCurrency = "AED" };
+            var branch = new Branch { TenantId = tenantId, CompanyId = company.Id, Code = "DXB", NameEn = "Dubai", CountryCode = "AE", IsActive = true };
+            db.AddRange(
+                new Tenant { Id = tenantId, Name = "Race Tenant", Slug = $"race-{tenantId:N}" },
+                company, branch,
+                new Role { TenantId = tenantId, Name = "Employee", NormalizedName = "EMPLOYEE", IsActive = true },
+                new TenantSubscription { TenantId = tenantId, Plan = "Enterprise", Status = "Active", MaxEmployees = 1000 },
+                new EmployeeIdRule { TenantId = tenantId, CompanyPrefix = "RACE", UseYear = false, PaddingLength = 4, NextSequence = 1, IsActive = true });
+            for (var i = 0; i < drafts; i++)
+            {
+                var draft = new EmployeeDraft
+                {
+                    TenantId = tenantId, CreatedByUserId = Guid.NewGuid(), Status = "PendingHrApproval", CurrentStep = "HrApproval",
+                    EnglishName = $"Race Hire {i}", PersonalEmail = $"race-{Guid.NewGuid():N}@example.test", Branch = branch.NameEn,
+                    JoiningDate = DateTime.UtcNow.Date, SubmittedAtUtc = DateTime.UtcNow.AddHours(-1),
+                    Nationality = "Emirati", EmiratesId = $"784-1990-765432{i}-2",
+                };
+                db.Add(draft);
+                draftIds.Add(draft.Id);
+            }
+            await db.SaveChangesAsync();
+        }
+
+        var csv = "FullName,CompanyLegalName,JoiningDate\n"
+                  + string.Join("\n", Enumerable.Range(1, importRows).Select(i => $"Imported Racer {i},Race Co,2024-01-01")) + "\n";
+        async Task<IActionResult> RunImport()
+        {
+            await using var db = _fixture.CreateDb();
+            return await HrmHierarchyTests.BuildImportControllerInternal(db, tenantId)
+                .Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
+        }
+        async Task<object?> Approve(Guid draftId)
+        {
+            await Task.Delay(Random.Shared.Next(0, 40));
+            await using var db = _fixture.CreateDb();
+            return (await Employees(db, tenantId, checker).ApproveDraft(draftId, CancellationToken.None)).Result;
+        }
+
+        var import = RunImport();
+        var approvals = draftIds.Select(Approve).ToList();
+        Assert.IsType<OkObjectResult>(await import);
+        foreach (var approval in approvals) Assert.IsType<OkObjectResult>(await approval);
+
+        await using var verify = _fixture.CreateDb();
+        var codes = await verify.Employees.IgnoreQueryFilters().Where(e => e.TenantId == tenantId).Select(e => e.EmployeeCode).ToListAsync();
+        codes.Should().HaveCount(importRows + drafts).And.OnlyHaveUniqueItems();
+        codes.Should().BeEquivalentTo(Enumerable.Range(1, importRows + drafts).Select(n => $"RACE-{n:D4}"), "no sequence number is lost or reused");
+        (await verify.EmployeeIdRules.IgnoreQueryFilters().SingleAsync(r => r.TenantId == tenantId)).NextSequence
+            .Should().Be(importRows + drafts + 1);
+    }
+
     private async Task<Seeded> SeedAsync(string status)
     {
         await using var db = _fixture.CreateDb();
@@ -893,6 +959,8 @@ public sealed class EmployeeDraftLifecyclePostgresTests
                 : JsonSerializer.Serialize(new { v = 2, m = "companies", c = companies })),
         };
         if (canApprove) claims.Add(new Claim("permission", "employees.approve"));
+        // As AuthSeeder grants it (HR Manager holds employees.*): sensitive visibility is the permission, never the role name.
+        if (role is "HR Manager" or "Admin") claims.Add(new Claim("permission", "employees.sensitive"));
         var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test"));
         controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = principal } };
         return controller;

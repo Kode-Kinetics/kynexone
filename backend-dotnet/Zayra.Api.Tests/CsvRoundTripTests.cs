@@ -179,4 +179,42 @@ public class CsvRoundTripTests
 
         Assert.Throws<CsvShapeException>(() => Csv.Parse(csv));
     }
+
+    /// <summary>
+    /// Every mis-shaped row is named in ONE refusal (row number, its cell count, the header's), so a real file
+    /// with the same unquoted "8,000" on many salary cells is fixed in one pass — and no row of it is returned.
+    /// </summary>
+    [Fact]
+    public void Every_row_with_the_wrong_cell_count_is_named_with_both_counts_and_nothing_is_returned()
+    {
+        var csv = "EmployeeCode,FullName,BasicSalary\n"
+                  + "E1,Fine,5000\n"
+                  + "E2,Shifted,8,000\n"
+                  + "E3,Fine,\"25,000\"\n"
+                  + "E4,Short\n"
+                  + "E5,Shifted,1,500\n";
+
+        var ex = Assert.Throws<CsvShapeException>(() => Csv.Parse(csv));
+
+        ex.RowNumber.Should().Be(3);
+        ex.CellCount.Should().Be(4);
+        ex.HeaderCount.Should().Be(3);
+        ex.Mismatches.Should().Equal(new CsvShapeMismatch(3, 4), new CsvShapeMismatch(5, 2), new CsvShapeMismatch(6, 4));
+        ex.Message.Should().Contain("CSV row 3 has 4 cell(s) but the header declares 3 column(s)")
+            .And.Contain("Also wrong: row 5 (2), row 6 (4)");
+    }
+
+    /// <summary>A quoted cell holding a line break (a multi-line address) is named as exactly that, not as a
+    /// "thousands separator" cell-count problem, and its continuation line is not reported as a second bad row.</summary>
+    [Fact]
+    public void A_multi_line_quoted_cell_gets_a_message_that_says_so()
+    {
+        var csv = "EmployeeCode,FullName,Address\nE1,Fine,Riyadh\nE2,Split,\"King Fahd Road\nRiyadh\"\nE3,Fine,Jeddah\n";
+
+        var ex = Assert.Throws<CsvShapeException>(() => Csv.Parse(csv));
+
+        ex.RowNumber.Should().Be(3);
+        ex.Mismatches.Should().ContainSingle().Which.UnterminatedQuote.Should().BeTrue();
+        ex.Message.Should().Contain("CSV row 3 has a line break inside a quoted cell").And.NotContain("thousands separator");
+    }
 }

@@ -81,7 +81,12 @@ export const offboardingApi = {
     client.patch<Offboarding>(`/api/offboarding/${id}/checklist`, body).then(r => r.data),
   /** S2-B2 — revokes the leaver's login for real, on their last working day, without waiting for the settlement. */
   revokeAccess: (id: string) =>
-    client.post<{ id: string; accessRevoked: boolean; accessRevokedAtUtc: string | null; alreadyRevoked: boolean }>(
+    client.post<{
+      id: string; accessRevoked: boolean; accessRevokedAtUtc: string | null; alreadyRevoked: boolean;
+      /** Linked logins this user may not switch off (an Admin's, the last Admin's, or one above them). They stay
+       *  active; the tenant's Admins were notified. Coded, with the reason in English and Arabic. */
+      linkedLoginHeld?: { userId: string; email: string; code: string; message: string; messageAr: string }[];
+    }>(
       `/api/offboarding/${id}/revoke-access`).then(r => r.data),
   /** S2-B2 — a settlement paid by bank transfer / cheque / cash. Posts the discharge journal. */
   recordExternalSettlementPayment: (id: string, body: { method: string; reference: string; amount: number; paidOn?: string }) =>

@@ -45,6 +45,30 @@ export interface RoleItem {
   permissions: string[];
 }
 
+/**
+ * The caller's privilege ceiling (GET /api/access/ceiling): what the server will let THIS caller assign or edit.
+ * The reasons are the server's own sentences (EN and AR), so the screen and the 403 always say the same thing.
+ */
+export interface RoleCeiling {
+  roleId: string;
+  name: string;
+  canAssign: boolean;
+  assignRefusalCode?: string | null;
+  assignRefusalEn?: string | null;
+  assignRefusalAr?: string | null;
+  canEdit: boolean;
+  editRefusalCode?: string | null;
+  editRefusalEn?: string | null;
+  editRefusalAr?: string | null;
+}
+
+export interface AccessCeiling {
+  userId: string;
+  isAdmin: boolean;
+  heldPermissions: string[];
+  roles: RoleCeiling[];
+}
+
 export interface PermissionMatrixRow {
   permissionKey: string;
   module: string;
@@ -241,6 +265,15 @@ export const usersApi = {
 export const rolesApi = {
   list: () =>
     client.get<RoleItem[]>('/api/access/roles').then(r => r.data),
+
+  // A reply that is not a ceiling (an older server, a proxy page, a test double) is treated as "unavailable",
+  // exactly like a failed request — the screen then falls back to the server's own 403s, never crashes.
+  ceiling: () =>
+    client.get<AccessCeiling>('/api/access/ceiling').then(r => {
+      const d = r.data as Partial<AccessCeiling> | null | undefined;
+      if (!d || !Array.isArray(d.roles) || !Array.isArray(d.heldPermissions)) throw new Error('access ceiling unavailable');
+      return d as AccessCeiling;
+    }),
 
   permissions: () =>
     client.get<PermissionItem[]>('/api/access/permissions').then(r => r.data),

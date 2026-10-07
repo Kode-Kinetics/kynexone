@@ -26,7 +26,9 @@ public sealed class AdminCohortInvariantSecurityTests
     public async Task BlockingWriter_CannotRemoveOrBlockLastOperationalAdmin(string writer)
     {
         var seed = await SeedAdminsAsync(1);
-        var callerId = Guid.NewGuid();
+        // Every writer resolves its caller (PrivilegeCeiling: only an Admin acts on an Admin), so the writers act as
+        // a second Admin who cannot sign in yet — the target stays the last OPERATIONAL one.
+        var callerId = await AddDormantAdminAsync(seed.TenantId);
         await using var db = _fixture.CreateRetryingDb();
         var service = CreateService(db);
 
@@ -128,6 +130,7 @@ public sealed class AdminCohortInvariantSecurityTests
         for (var cycle = 0; cycle < RaceCycles; cycle++)
         {
             var seed = await SeedAdminsAsync(2);
+            var actingAdmin = await AddDormantAdminAsync(seed.TenantId);
             var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
             async Task<bool> SuspendAsync(Guid userId)
@@ -142,7 +145,7 @@ public sealed class AdminCohortInvariantSecurityTests
                         userId,
                         "race-test",
                         EntityScopeContext.GroupLevel,
-                        Context(seed.TenantId, Guid.NewGuid()),
+                        Context(seed.TenantId, actingAdmin),
                         CancellationToken.None);
                     return true;
                 }
@@ -214,6 +217,33 @@ public sealed class AdminCohortInvariantSecurityTests
         }
         await db.SaveChangesAsync();
         return new Seed(tenantId, userIds);
+    }
+
+    private async Task<Guid> AddDormantAdminAsync(Guid tenantId)
+    {
+        await using var db = _fixture.CreateRetryingDb();
+        var adminRole = await db.Roles.IgnoreQueryFilters().SingleAsync(x => x.TenantId == tenantId && x.NormalizedName == "ADMIN");
+        var id = Guid.NewGuid();
+        var email = $"dormant-admin-{id:N}@example.test";
+        db.Users.Add(new User
+        {
+            Id = id,
+            TenantId = tenantId,
+            Email = email,
+            NormalizedEmail = AuthService.Normalize(email),
+            FullName = "Dormant Admin",
+            PasswordHash = "test-only-hash",
+            // Signed in but not operational (a forced password reset is pending), so the cohort's operational
+            // count is untouched.
+            Status = "PasswordResetRequired",
+            AccessMode = AccessModes.FullPortal,
+            IsActive = true,
+            IsEmailConfirmed = true,
+            MustChangePassword = true
+        });
+        db.UserRoles.Add(new UserRole { UserId = id, RoleId = adminRole.Id });
+        await db.SaveChangesAsync();
+        return id;
     }
 
     private static RequestContext Context(Guid tenantId, Guid callerId) =>

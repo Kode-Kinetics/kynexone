@@ -28,6 +28,16 @@ namespace Zayra.Api.Infrastructure.Payroll;
 /// </summary>
 public static class StatutoryValueUnits
 {
+    /// <summary>
+    /// The stable, machine-readable reason every write path returns when it refuses a statutory value
+    /// for its unit or range (a rate typed as a percentage, a value outside its band, an untyped value).
+    /// The message beside it is for people; this code is what a client or a test branches on.
+    /// </summary>
+    public const string UnitRefusalCode = "STATUTORY_VALUE_UNIT";
+
+    /// <summary>The response body for a unit refusal: <c>{ code, message }</c>.</summary>
+    public static object Refusal(string message) => new { code = UnitRefusalCode, message };
+
     /// <summary>The unit a statutory value is expressed in. This is the whole vocabulary.</summary>
     public enum Unit
     {
