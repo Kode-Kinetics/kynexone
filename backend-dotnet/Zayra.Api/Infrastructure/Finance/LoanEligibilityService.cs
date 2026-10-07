@@ -33,8 +33,11 @@ public sealed class LoanEligibilityService(ZayraDbContext db)
 {
     public async Task<LoanEligibilityAssessment> EvaluateAsync(Guid tid, Employee employee, LoanType loanType,
         decimal amount, int installments, string repaymentMethod, Guid? excludeLoanId = null,
-        string? policySnapshotJson = null, CancellationToken ct = default, bool preview = false)
+        string? policySnapshotJson = null, CancellationToken ct = default, bool preview = false, DateOnly? asOf = null)
     {
+        // asOf: the date a preview is read for (the package screen's date). Every date rule below uses it; default today.
+        var asOfDate = asOf ?? DateOnly.FromDateTime(DateTime.UtcNow);
+        var asOfUtc = asOfDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
         // Preview: no amount chosen yet. Report the limits for this type without the rules that judge an
         // amount (or an instalment count the employee has not picked). Never used to create or approve.
         var reasons = new List<string>();
@@ -92,7 +95,7 @@ public sealed class LoanEligibilityService(ZayraDbContext db)
             else Refuse("PolicyInvalid", "The loan type must have a valid installment limit.");
             policy.MinServiceMonths = Math.Max(policy.MinServiceMonths, loanType.MinServiceMonths);
         }
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var today = asOfDate;
         var currency = await GlAccountResolver.ResolveCurrencyAsync(db, tid, employee.CompanyId, ct);
         var salary = await db.Set<EmployeeSalaryStructure>().AsNoTracking()
             .Where(x => x.TenantId == tid && x.EmployeeId == employee.Id && x.IsActive && x.EffectiveDate <= today)
@@ -107,11 +110,11 @@ public sealed class LoanEligibilityService(ZayraDbContext db)
         if (employee.IsDeleted || !statuses.Contains(employee.Status, StringComparer.OrdinalIgnoreCase))
             Refuse("EmploymentStatus", $"Employment status '{employee.Status}' is not eligible under this policy.");
         if (policy.BlockDuringNotice && (notice || employee.Status == EmployeeStatuses.Offboarded)) Refuse("Notice", "Employees serving notice cannot receive a new loan.");
-        if (employee.JoiningDate == default || employee.JoiningDate.Date > DateTime.UtcNow.Date)
+        if (employee.JoiningDate == default || employee.JoiningDate.Date > asOfUtc.Date)
             Refuse("EmploymentDate", "A valid joining date is required before a loan can be assessed.");
         else if (policy.MinServiceMonths is < 0 or > 600)
             Refuse("PolicyInvalid", "The policy service requirement is invalid.");
-        else if (employee.JoiningDate.Date > DateTime.UtcNow.Date.AddMonths(-policy.MinServiceMonths))
+        else if (employee.JoiningDate.Date > asOfUtc.Date.AddMonths(-policy.MinServiceMonths))
             Refuse("MinService", $"At least {policy.MinServiceMonths} completed service month(s) are required.");
         if (policy.RequireProbationCompleted && !(employee.ConfirmationDate <= today
             || (employee.ProbationEndDate.HasValue && employee.ProbationEndDate.Value < today)))
@@ -151,7 +154,7 @@ public sealed class LoanEligibilityService(ZayraDbContext db)
             || await db.LoanInstallments.AnyAsync(x => x.TenantId == tid && liveIds.Contains(x.LoanId) && x.DueDate < today && x.AmountPaid < x.AmountDue && x.Status != "Waived", ct)))
             Refuse("Overdue", "An overdue loan must be resolved before another loan is granted.");
         if (policy.CooldownMonthsAfterRepayment > 0 && loans.Any(x => x.Status is "Settled" or "Closed"
-            && x.UpdatedAtUtc > DateTime.UtcNow.AddMonths(-policy.CooldownMonthsAfterRepayment)))
+            && x.UpdatedAtUtc > asOfUtc.AddMonths(-policy.CooldownMonthsAfterRepayment)))
             Refuse("Cooldown", $"Wait {policy.CooldownMonthsAfterRepayment} month(s) after the previous loan was settled.");
         decimal? maximum = policy.MaxAmount > 0 ? policy.MaxAmount : null;
         if (policy.MaxTotalOutstanding > 0) maximum = Min(maximum, Math.Max(0, policy.MaxTotalOutstanding - committedAmount));

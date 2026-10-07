@@ -785,7 +785,7 @@ schema names a column but not its type, the type is inferred from `CONVENTIONS.m
 
 Not part of the 76: `TARGET_SCHEMA.md` revision 8.3.2 takes the target to 80 and these are three of the four
 (the fourth, `employee_salary_components`, is deferred to Release B). They ship on the **live** EF schema first
-(migrations `20261006000100_AddGradeLoanLimits` and `20261007000100_ReleaseAEntitlementsAndRenewals`); the
+(migrations `20261006000100_AddGradeLoanLimits`, `20261007000100_ReleaseAEntitlementsAndRenewals` and the R0b `20261007000200_ReleaseAContractChainSource`); the
 baseline SQL, V2 model and parity test follow in the programme's step A. Live column names; RLS is a target rule —
 the live bridge uses the `ITenantOwned` / `ICompanyScoped` query filters.
 
@@ -806,6 +806,13 @@ the live bridge uses the `ITenantOwned` / `ICompanyScoped` query filters.
 - **Constraint** — gist no-overlap per (tenant, employee, component); provenance CHECKs (approval ⇔ Exception/Correction, origin ⇔ Carried, document ⇔ Correction, witness ⇔ PercentOfBasic); close-only trigger (values frozen, `effective_to` shortens only, confirm once, never deleted); deferred two-sided containment trigger (inside the term, contract not Draft/Superseded, same company; a Carried row equals its origin).
 - **Lifecycle** — written only by `IEntitlementWriter` (freeze at activation, renewal Apply, holdover carry); closed at the term's end.
 - **Retention** `S` — labour-law evidence of what was agreed for each term.
+
+### `employee_contracts` — the Release A renewal chain (live bridge columns)
+- **Purpose** — each term's place in the Article 55 chain, per employer: `renewed_from_contract_id` (UNIQUE per tenant), `renewal_number` (renewals before this term; 0 = the original), `chain_started_on`, `worker_nationality_class` (the single source Release A reads for Saudi / NonSaudi), `auto_renew`, `non_renewal_notice_days`, `provisional_basis` (holdover), and `chain_source` (R0b, `20261007000200_ReleaseAContractChainSource`).
+- **`chain_source`** — NULL while unstamped; `Derived` when the chain census or the activation stamp derived the number from the contract rows; `Recorded` when HR confirmed it (`POST ~/api/contracts/{id}/chain/confirm`). Correcting an earlier term re-derives the later `Derived` terms; a `Recorded` term is never overwritten.
+- **Constraint** — `ck__chain_source` (value set), `ck__chain_pair` (`renewal_number` and `chain_started_on` are set together), `ck__renewed_from_counts` (a renewal is renewal 1 or later, unless it is a provisional holdover term), `ck__chain_starts_by_term_start` — all four added **NOT VALID** by R0b and validated by a later migration after the runbook pre-check reads zero; `ck__provisional_has_no_renewal_number` (R0).
+- **Lifecycle** — stamped by the daily census (fills NULLs only), at activation (`ContractChainStamper`), by HR confirmation, and by renewal Apply (R6).
+- **Retention** `S` — the basis of an Article 55 decision.
 
 ### `contract_renewal_cases`
 - **Purpose** — the review of one expiring contract term: allowed actions (Arts. 37/55), deadlines, offer and approvals, the employee's acceptance, the Qiwa evidence check and Apply (precedent: `final_settlements`).

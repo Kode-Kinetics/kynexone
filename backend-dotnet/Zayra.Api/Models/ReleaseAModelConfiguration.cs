@@ -52,6 +52,15 @@ internal static class ReleaseAModelConfiguration
 
     /// <param name="isNpgsql">PostgreSQL (production, migrations) maps the case's row version onto the xmin system
     /// column. SQLite and InMemory — used only by the unit suite — have no xmin, so the token is not mapped there.</param>
+    // R0b chain CHECKs (owner: R4). The migration adds exactly these texts NOT VALID.
+    internal const string R0bChainPairCheck = "ck_employee_contracts__chain_pair";
+    internal const string R0bChainPairSql = "(renewal_number IS NULL) = (chain_started_on IS NULL)";
+    internal const string R0bRenewedFromCountsCheck = "ck_employee_contracts__renewed_from_counts";
+    // A provisional (holdover, R6) successor carries renewed_from but no renewal number until Apply confirms it.
+    internal const string R0bRenewedFromCountsSql = "renewed_from_contract_id IS NULL OR renewal_number >= 1 OR provisional_basis IS NOT NULL";
+    internal const string R0bChainStartsByTermStartCheck = "ck_employee_contracts__chain_starts_by_term_start";
+    internal const string R0bChainStartsByTermStartSql = "chain_started_on IS NULL OR chain_started_on <= start_date";
+
     internal static void Configure(ModelBuilder modelBuilder, bool isNpgsql = true)
     {
         // ── FK targets on existing tables (each named by the FK that needs it) ──────────────────────
@@ -111,7 +120,17 @@ internal static class ReleaseAModelConfiguration
                     "provisional_basis IS NULL OR renewal_number IS NULL");
                 t.HasCheckConstraint("ck_employee_contracts__not_renewed_from_itself",
                     "renewed_from_contract_id IS NULL OR renewed_from_contract_id <> id");
+                // ── R0b (20261007000200_ReleaseAContractChainSource; owner: R4) ───────────────────────────
+                t.HasCheckConstraint("ck_employee_contracts__chain_source",
+                    "chain_source IS NULL OR chain_source IN " + In(ChainSources.All));
+                // The three chain CHECKs are added NOT VALID by the migration (VALIDATE is a later migration, after the
+                // runbook pre-check reads zero on each environment). Declared here so the model, the snapshot and the
+                // EnsureCreated schemas carry them too.
+                t.HasCheckConstraint(R0bChainPairCheck, R0bChainPairSql);
+                t.HasCheckConstraint(R0bRenewedFromCountsCheck, R0bRenewedFromCountsSql);
+                t.HasCheckConstraint(R0bChainStartsByTermStartCheck, R0bChainStartsByTermStartSql);
             });
+            entity.Property(x => x.ChainSource).HasMaxLength(10);
             // FK target for every per-employee child: (tenant, employee, contract) proves the child is this employee's term.
             entity.HasAlternateKey(x => new { x.TenantId, x.EmployeeId, x.Id });
             entity.Property(x => x.WorkerNationalityClass).HasMaxLength(10);
