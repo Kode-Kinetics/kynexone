@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { notifyApiError } from '../api/client';
+import { apiErrorReason, notifyApiError } from '../api/client';
 import { TransliterateButton } from '../components/TransliterateButton';
 import {
   CreditCard, DollarSign, Gift, Plus, CheckCircle, XCircle,
@@ -12,20 +12,38 @@ import {
   bonusTypesApi, bonusBatchesApi,
 } from '../api/loans';
 import type {
-  LoanType, EmployeeLoan, LoanApproval, LoanInstallment,
+  LoanType, EmployeeLoan, LoanApproval, LoanDetail, LoanRepaymentMethod,
   AdvancePolicy, SalaryAdvance, BonusType, BonusBatch, EmployeeBonus,
   FinanceGlEntry, AuditLogEntry,
 } from '../api/loans';
 import { Modal } from '../components/Modal';
-import { useTenantSettings } from '../contexts/TenantSettingsContext';
+import { useTenantSettings, useTenantSettingsContext } from '../contexts/TenantSettingsContext';
 import { EmployeeSearchSelect } from '../components/EmployeeSearchSelect';
 import type { EmployeeSelection } from '../components/EmployeeSearchSelect';
 import { employeesApi } from '../api/employees';
+import { useAuth } from '../contexts/AuthContext';
+import { canDecideLoan, loanApprovalRole, loanErrorMessage, localDateToday, repaymentMethodLabels } from '../lib/loanWorkflow';
+import { LoanPaymentsTab } from '../components/loans/LoanPaymentsTab';
+import { LoanPoliciesTab } from '../components/loans/LoanPoliciesTab';
+import { LoanLifecyclePanel } from '../components/loans/LoanLifecyclePanel';
+import { LoanAccountSummary, LoanStatement } from '../components/loans/LoanStatement';
+import { loanGovernanceApi, loanOfferingsApi, type LoanEligibility, type OfferedLoanType } from '../api/loanGovernance';
+import { useCompany } from '../contexts/CompanyContext';
+import { useLocale } from '../contexts/LocaleContext';
+import { LoanLimitCard } from '../components/loans/LoanLimitCard';
+import { LoanConsentStep } from '../components/deductions/LoanConsentStep';
+import { LoanConsentAttach } from '../components/deductions/LoanConsentAttach';
+import { LoadFailedRow } from '../components/ui/LoadFailedRow';
+import { isGradeBlocked, isLoanTypeNotOffered, localName, reasonKeyFor } from '../lib/gradeLoanLimits';
 
-type Tab = 'loans' | 'loanTypes' | 'advances' | 'advancePolicy' | 'bonusTypes' | 'bonusBatches' | 'auditReport';
+import { EnumLabel, type EnumName } from '../components/EnumLabel';
+import { useFormat } from '../hooks/useFormat';
+type Tab = 'loans' | 'loanPayments' | 'loanPolicies' | 'loanTypes' | 'advances' | 'advancePolicy' | 'bonusTypes' | 'bonusBatches' | 'auditReport';
 
 const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: 'loans', label: 'Loans', icon: CreditCard },
+  { id: 'loanPayments', label: 'Loan Payments', icon: DollarSign },
+  { id: 'loanPolicies', label: 'Loan Policies', icon: ShieldCheck },
   { id: 'loanTypes', label: 'Loan Types', icon: DollarSign },
   { id: 'advances', label: 'Salary Advances', icon: DollarSign },
   { id: 'advancePolicy', label: 'Advance Policy', icon: DollarSign },
@@ -36,7 +54,7 @@ const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({ status, enumName = 'LoanStatus' }: { status: string; enumName?: EnumName }) {
   const colors: Record<string, string> = {
     Active: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
     Approved: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
@@ -53,7 +71,7 @@ function StatusBadge({ status }: { status: string }) {
   };
   return (
     <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${colors[status] ?? 'bg-slate-100 text-slate-500'}`}>
-      {status}
+      <EnumLabel enum={enumName} value={status} />
     </span>
   );
 }
@@ -158,11 +176,13 @@ function LoanTypesTab() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  const fmt = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: currencyCode, minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  const fx = useFormat();
+  const fmt = (n: number) => fx.plain.money(n, currencyCode, { decimals: 0 });
 
+  const [loadError, setLoadError] = useState<unknown>(null);
   const load = useCallback(async () => {
     setLoading(true);
-    try { setItems(await loanTypesApi.list()); } catch { /**/ }
+    try { setItems(await loanTypesApi.list()); setLoadError(null); } catch (e) { setItems([]); setLoadError(e); }
     finally { setLoading(false); }
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -171,7 +191,7 @@ function LoanTypesTab() {
     if (!form.code.trim() || !form.nameEn.trim()) { setError('Code and name are required'); return; }
     setSaving(true); setError('');
     try { await loanTypesApi.create(form); setModalOpen(false); load(); }
-    catch { setError('Failed to save.'); }
+    catch (e) { setError(apiErrorReason(e, 'Failed to save.')); }
     finally { setSaving(false); }
   };
   const f = (key: string, v: string | boolean | number) => setForm(x => ({ ...x, [key]: v }));
@@ -196,6 +216,8 @@ function LoanTypesTab() {
             <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
               {loading ? (
                 <tr><td colSpan={9} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
+              ) : loadError != null ? (
+                <LoadFailedRow colSpan={9} error={loadError} onRetry={() => { void load(); }} />
               ) : items.length === 0 ? (
                 <tr><td colSpan={9} className="py-12 text-center text-slate-400">No loan types yet</td></tr>
               ) : items.map((t) => (
@@ -227,7 +249,7 @@ function LoanTypesTab() {
           <FormField label="Max Installments"><input type="number" value={form.maxInstallments} onChange={(e) => f('maxInstallments', Number(e.target.value))} className="input w-full" title="Max Installments" /></FormField>
           <FormField label="Repayment Frequency">
             <select value={form.repaymentFrequency} onChange={(e) => f('repaymentFrequency', e.target.value)} className="select w-full" title="Repayment Frequency">
-              {['Monthly', 'BiMonthly', 'Weekly'].map((v) => <option key={v}>{v}</option>)}
+              {['Monthly', 'Weekly', 'BiWeekly', 'Quarterly'].map((v) => <option key={v}>{v}</option>)}
             </select>
           </FormField>
           <FormField label="Min Service (months)"><input type="number" value={form.minServiceMonths} onChange={(e) => f('minServiceMonths', Number(e.target.value))} className="input w-full" title="Min Service (months)" /></FormField>
@@ -246,11 +268,16 @@ function LoanTypesTab() {
 
 // ── Loans ─────────────────────────────────────────────────────────────────────
 
-function LoansTab({ loanTypes }: { loanTypes: LoanType[] }) {
+function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanType[]; onPayments: () => void; onChanged: () => void; mine: boolean }) {
+  const { user } = useAuth();
+  const staff = user?.roles.some(role => ['Admin', 'Finance', 'Finance Approver', 'HR Manager', 'HR Director', 'Manager'].includes(role)) ?? false;
+  const canManagePayments = user?.roles.some(role => ['Admin', 'Finance'].includes(role)) ?? false;
   const { currencyCode } = useTenantSettings();
-  const fmt = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: currencyCode });
+  const fx = useFormat();
+  const fmt = (n: number, currency: string) => fx.plain.money(n, currency);
   const [items, setItems] = useState<EmployeeLoan[]>([]);
   const [total, setTotal] = useState(0);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [loading, setLoading] = useState(true);
   const [filterStatus, setFilterStatus] = useState('');
   const [page, setPage] = useState(1);
@@ -258,42 +285,128 @@ function LoansTab({ loanTypes }: { loanTypes: LoanType[] }) {
 
   const [createModal, setCreateModal] = useState(false);
   const [detailModal, setDetailModal] = useState(false);
-  const [settleModal, setSettleModal] = useState(false);
-  const [selected, setSelected] = useState<{ loan: EmployeeLoan; installments: LoanInstallment[]; approvals: LoanApproval[]; auditLogs: AuditLogEntry[]; glEntries: FinanceGlEntry[] } | null>(null);
+  const [receiptModal, setReceiptModal] = useState(false);
+  const [selected, setSelected] = useState<LoanDetail | null>(null);
   const [decideModal, setDecideModal] = useState(false);
   const [decidingApproval, setDecidingApproval] = useState<LoanApproval | null>(null);
-  const [createForm, setCreateForm] = useState({ loanTypeId: '', requestedAmount: 0, requestedInstallments: 12, notes: '' });
+  const [createForm, setCreateForm] = useState({ loanTypeId: '', requestedAmount: 0, requestedInstallments: 12, repaymentMethod: 'BankTransfer' as LoanRepaymentMethod, notes: '' });
   const [selectedEmployee, setSelectedEmployee] = useState<EmployeeSelection | null>(null);
   const [decideForm, setDecideForm] = useState({ decision: 'Approved', comments: '', approvedAmount: 0, approvedInstallments: 0, repaymentStartDate: '' });
-  const [settleForm, setSettleForm] = useState({ settlementType: 'Early', settlementAmount: 0, settlementDate: '', notes: '' });
+  const [receiptForm, setReceiptForm] = useState({ amount: 0, paidDate: '', reference: '', paymentMethod: 'BankTransfer' });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const [detailTab, setDetailTab] = useState<'schedule' | 'gl' | 'audit'>('schedule');
+  const [detailTab, setDetailTab] = useState<'schedule' | 'receipts' | 'gl' | 'audit' | 'review'>('schedule');
+  const [eligibility, setEligibility] = useState<LoanEligibility | null>(null);
+  const [checkingEligibility, setCheckingEligibility] = useState(false);
+  const [requestException, setRequestException] = useState(false);
+  // Release A (Art. 92): the employee's signed consent, uploaded to their file, when the instalment is above 10% of the wage.
+  const [consentDocumentId, setConsentDocumentId] = useState<string | null>(null);
+  const applicantId = selectedEmployee?.intId ?? (mine || !staff ? user?.employeeId : undefined);
+  const eligibilityKey = JSON.stringify([applicantId, createForm.loanTypeId, createForm.requestedAmount, createForm.requestedInstallments, createForm.repaymentMethod]);
+  // A consent belongs to one employee: choosing another applicant drops it.
+  useEffect(() => { setConsentDocumentId(null); }, [applicantId]);
+  const [checkedKey, setCheckedKey] = useState('');
+  const { t, locale } = useLocale();
+  const self = mine || !staff;
+  const checkedEligibility = eligibility && checkedKey === eligibilityKey ? eligibility : null;
+  // The loan types this applicant is OFFERED (server-decided per company: explicit switch, policy, interest).
+  // Null while unknown (HR has not picked the employee yet, or the list failed) — then every type is listed
+  // and the server's "not offered" code still blocks the request.
+  const [offeredTypesSettled, setOfferedTypesSettled] = useState(false);
+  const [offeredTypes, setOfferedTypes] = useState<{ applicant: number | undefined; list: OfferedLoanType[] } | null>(null);
+  useEffect(() => {
+    if (!createModal || (!applicantId && staff && !mine)) return;
+    let cancelled = false;
+    loanOfferingsApi.offeredTypes(applicantId)
+      // Anything but a list (an older API without this endpoint, a proxy error page) means "unknown": list every
+      // type and let the server's own "not offered" refusal decide, rather than hiding all types or crashing.
+      .then(list => { if (!cancelled) setOfferedTypes(Array.isArray(list) ? { applicant: applicantId, list } : null); })
+      .catch(() => { if (!cancelled) setOfferedTypes(null); })
+      .finally(() => { if (!cancelled) setOfferedTypesSettled(true); });
+    return () => { cancelled = true; };
+  }, [createModal, applicantId, staff, mine]);
+  const currentOffered = offeredTypes && offeredTypes.applicant === applicantId ? offeredTypes.list : null;
+  // Unknown offerings (the list failed or came back malformed): list the interest-free types and say the server
+  // will confirm on selection — its "not offered" refusal still applies. Interest-bearing types are never offered.
+  const offeringsUnknown = createModal && offeredTypes === null && !(!applicantId && staff && !mine) && offeredTypesSettled;
+  const selectableTypes = currentOffered
+    ? loanTypes.filter(type => currentOffered.some(o => o.loanTypeId === type.id && o.offered))
+    : loanTypes.filter(type => type.isInterestFree && !type.interestRate);
+  const noTypesOffered = !!currentOffered && selectableTypes.length === 0;
+  useEffect(() => {
+    // A type the applicant is not offered can never stay selected.
+    if (currentOffered && createForm.loanTypeId && !selectableTypes.some(type => type.id === createForm.loanTypeId))
+      setCreateForm(x => ({ ...x, loanTypeId: selectableTypes[0]?.id ?? '' }));
+  }, [currentOffered, selectableTypes, createForm.loanTypeId]);
+  const typeName = (type: LoanType) => localName(locale, type.nameEn, type.nameAr);
+  // Limits preview: fetched as soon as a loan type (and, for HR on behalf, an employee) is chosen,
+  // so the applicant sees their limit before typing an amount. The full check still needs the amount.
+  const [preview, setPreview] = useState<{ key: string; result: LoanEligibility } | null>(null);
+  const previewKey = JSON.stringify([applicantId, createForm.loanTypeId]);
+  useEffect(() => {
+    if (!createModal || !createForm.loanTypeId || (!applicantId && staff && !mine)) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      loanGovernanceApi.preview({ employeeIntId: applicantId, loanTypeId: createForm.loanTypeId })
+        .then(result => { if (!cancelled) setPreview({ key: previewKey, result }); })
+        .catch(() => { if (!cancelled) setPreview(null); }); // A preview is a convenience; Check Eligibility reports errors.
+    }, 350);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [createModal, createForm.loanTypeId, applicantId, staff, mine, previewKey]);
+  const currentPreview = preview?.key === previewKey ? preview.result : null;
+  const notOffered = isLoanTypeNotOffered(checkedEligibility) || isLoanTypeNotOffered(currentPreview);
+  // Grade limits are hard: no policy exception can lift them.
+  const gradeBlocked = isGradeBlocked(checkedEligibility);
+  const consentMissing = !!checkedEligibility?.art92?.requiresConsent && !consentDocumentId;
+  const canSubmit = !!checkedEligibility && !notOffered && !gradeBlocked && !consentMissing
+    && (checkedEligibility.eligible || (requestException && !!checkedEligibility.canRequestException));
+  // Reasons the limit card already explains in plain words (grade refusals, "not offered") are not repeated.
+  // Reasons the limit card already explains (grade refusals) and "not offered" are not repeated. Every other
+  // reason is shown from its CODE, in the UI language — never the server's English sentence or the raw code.
+  const otherReasons = checkedEligibility
+    ? Array.from(new Set((checkedEligibility.codes ?? []).filter(code => !code.startsWith('Grade') && code !== 'LoanTypeNotOffered')
+      .map(code => t(reasonKeyFor(code, self)))))
+    : [];
+  const notOfferedText = t(self ? "Loans of this type aren't offered by your company." : "Loans of this type aren't offered by this employee's company.");
+  const checkEligibility = async () => {
+    if ((!applicantId && staff && !mine) || !createForm.loanTypeId || createForm.requestedAmount <= 0) { setError(t('Select the employee, loan type and requested amount first.')); return; }
+    setCheckingEligibility(true); setError('');
+    try { setEligibility(await loanGovernanceApi.eligibility({ employeeIntId: applicantId, loanTypeId: createForm.loanTypeId, amount: createForm.requestedAmount, installments: createForm.requestedInstallments, repaymentMethod: createForm.repaymentMethod })); setCheckedKey(eligibilityKey); }
+    catch (e) { setError(loanErrorMessage(e, t('Unable to check eligibility.'))); }
+    finally { setCheckingEligibility(false); }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
-    try { const r = await loansApi.list({ status: filterStatus || undefined, page, pageSize }); setItems(r.items); setTotal(r.total); } catch { /**/ }
+    try { const r = await loansApi.list({ mine, status: filterStatus || undefined, page, pageSize }); setItems(r.items); setTotal(r.total); setLoadError(null); }
+    catch (e) { setItems([]); setTotal(0); setLoadError(e); } // the table's failed-load row says why and offers Retry
     finally { setLoading(false); }
-  }, [filterStatus, page]);
+  }, [filterStatus, page, mine]);
   useEffect(() => { load(); }, [load]);
 
   const openDetail = async (loan: EmployeeLoan) => {
-    try { const d = await loansApi.get(loan.id); setSelected(d); setDetailTab('schedule'); setDetailModal(true); } catch { /**/ }
+    setError('');
+    try { const d = await loansApi.get(loan.id); setSelected(d); setDetailTab('schedule'); setDetailModal(true); } catch (e) { setError(loanErrorMessage(e, 'Unable to open loan.')); }
   };
 
   const createLoan = async () => {
-    if (!selectedEmployee || !createForm.loanTypeId) { setError('Select an employee and loan type'); return; }
+    if ((!applicantId && staff && !mine) || !createForm.loanTypeId) { setError(t('Select an employee and loan type')); return; }
+    if (!canSubmit || !eligibility) { setError(notOffered || gradeBlocked ? t('This request cannot be submitted. The reason is shown under Check Eligibility.') : t('Check eligibility for the current request before submitting.')); return; }
+    if (createForm.requestedAmount <= 0 || !Number.isInteger(createForm.requestedInstallments) || createForm.requestedInstallments < 1) { setError(t('Enter a positive amount and a whole number of installments.')); return; }
     setSaving(true); setError('');
     try {
       await loansApi.create({
         ...createForm,
         employeeId: '00000000-0000-0000-0000-000000000000', // server auto-generates
-        employeeName: selectedEmployee.fullName,
-        employeeIntId: selectedEmployee.intId,
+        employeeName: selectedEmployee?.fullName ?? user?.fullName ?? '',
+        employeeIntId: applicantId,
+        requestPolicyException: requestException && !eligibility.eligible,
+        consentDocumentId: consentDocumentId ?? undefined,
       });
       setCreateModal(false); setSelectedEmployee(null); load();
+      onChanged();
     }
-    catch (e: any) { setError(e?.response?.data || 'Failed to create loan.'); }
+    catch (e) { setError(loanErrorMessage(e, 'Failed to create loan.')); }
     finally { setSaving(false); }
   };
 
@@ -307,45 +420,48 @@ function LoansTab({ loanTypes }: { loanTypes: LoanType[] }) {
     if (!selected || !decidingApproval) return;
     setSaving(true); setError('');
     try {
-      await loansApi.decide(selected.loan.id, decidingApproval.id, decideForm);
+      await loansApi.decide(selected.loan.id, decidingApproval.id, { ...decideForm, repaymentStartDate: decideForm.repaymentStartDate || undefined });
       setDecideModal(false);
+      onChanged();
       const d = await loansApi.get(selected.loan.id); setSelected(d);
       load();
-    } catch (e: any) { setError(e?.response?.data || 'Failed to submit decision.'); }
+    } catch (e) { setError(loanErrorMessage(e, 'Failed to submit decision.')); }
     finally { setSaving(false); }
   };
 
-  const settle = async () => {
+  const recordReceipt = async () => {
     if (!selected) return;
+    if (receiptForm.amount <= 0 || receiptForm.amount > selected.loan.outstandingBalance || !receiptForm.paidDate || !receiptForm.reference.trim()) { setError('Enter an amount within the outstanding balance, payment date and receipt reference.'); return; }
     setSaving(true); setError('');
     try {
-      await loansApi.settle(selected.loan.id, settleForm);
-      setSettleModal(false);
+      await loansApi.recordRepayment(selected.loan.id, receiptForm);
+      setReceiptModal(false); setDetailTab('receipts');
+      onChanged();
       const d = await loansApi.get(selected.loan.id); setSelected(d);
       load();
-    } catch (e: any) { setError(e?.response?.data || 'Failed to settle loan.'); }
+    } catch (e) { setError(loanErrorMessage(e, 'Failed to record repayment.')); }
     finally { setSaving(false); }
   };
-
-  const pendingApprovals = selected?.approvals.filter((a) => a.status === 'Pending') ?? [];
 
   return (
     <>
       <div className="space-y-4">
+        {!createModal && !decideModal && !receiptModal && <FormError error={error} />}
+        <p className="rounded-lg bg-blue-50 p-3 text-sm text-blue-800 dark:bg-blue-900/20 dark:text-blue-200">Request → Approval → Loan Payments → Payment confirmation → Repayment receipts. New loans use separate bank repayments by default.</p>
         <div className="flex items-center justify-between">
           <select value={filterStatus} onChange={(e) => { setFilterStatus(e.target.value); setPage(1); }} className="select" title="Filter by status">
             <option value="">All Statuses</option>
-            {['PendingApproval', 'Approved', 'Active', 'Settled', 'Rejected', 'Closed'].map((s) => <option key={s}>{s}</option>)}
+            {['Pending', 'Approved', 'Active', 'Overdue', 'Settled', 'Rejected', 'Closed'].map((s) => <option key={s} value={s}>{s === 'Approved' ? 'Approved — awaiting payment' : s}</option>)}
           </select>
-          <button type="button" onClick={() => { setCreateForm({ loanTypeId: loanTypes[0]?.id ?? '', requestedAmount: 0, requestedInstallments: 12, notes: '' }); setSelectedEmployee(null); setError(''); setCreateModal(true); }} className="btn-primary">
-            <Plus className="h-4 w-4" /> New Loan Request
+          <button type="button" onClick={() => { setCreateForm({ loanTypeId: loanTypes[0]?.id ?? '', requestedAmount: 0, requestedInstallments: 12, repaymentMethod: 'BankTransfer', notes: '' }); setSelectedEmployee(null); setEligibility(null); setPreview(null); setOfferedTypes(null); setOfferedTypesSettled(false); setRequestException(false); setConsentDocumentId(null); setCheckedKey(''); setError(''); setCreateModal(true); }} className="btn-primary">
+            <Plus className="h-4 w-4" /> {t('New Loan Request')}
           </button>
         </div>
-        <div className="surface overflow-hidden">
+        <div className="surface overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                {['Loan #', 'Employee', 'Type', 'Requested', 'Approved', 'Outstanding', 'Installment', 'Status', ''].map((h) => (
+                {['Loan #', 'Employee', 'Type / Repayment', 'Requested', 'Approved', 'Outstanding', 'Installment', 'Status', ''].map((h) => (
                   <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
                 ))}
               </tr>
@@ -353,19 +469,21 @@ function LoansTab({ loanTypes }: { loanTypes: LoanType[] }) {
             <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
               {loading ? (
                 <tr><td colSpan={9} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
+              ) : loadError != null ? (
+                <LoadFailedRow colSpan={9} error={loadError} onRetry={() => { void load(); }} />
               ) : items.length === 0 ? (
                 <tr><td colSpan={9} className="py-12 text-center text-slate-400">No loans found</td></tr>
               ) : items.map((l) => (
                 <tr key={l.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03] cursor-pointer" onClick={() => openDetail(l)}>
                   <td className="px-4 py-3 font-mono text-xs text-slate-500">{l.loanNumber}</td>
                   <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{l.employeeName}</td>
-                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{l.loanTypeName}</td>
-                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{fmt(l.requestedAmount)}</td>
-                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{l.approvedAmount > 0 ? fmt(l.approvedAmount) : '—'}</td>
-                  <td className="px-4 py-3 font-semibold text-slate-900 dark:text-white">{fmt(l.outstandingBalance)}</td>
-                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{l.installmentAmount > 0 ? fmt(l.installmentAmount) : '—'}</td>
-                  <td className="px-4 py-3"><StatusBadge status={l.status} /></td>
-                  <td className="px-4 py-3 text-sapphire text-xs">View →</td>
+                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{l.loanTypeName}<span className="block text-xs text-slate-500">{repaymentMethodLabels[l.repaymentMethod]}</span></td>
+                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{fmt(l.requestedAmount, l.currency)}</td>
+                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{l.approvedAmount > 0 ? fmt(l.approvedAmount, l.currency) : '—'}</td>
+                  <td className="px-4 py-3 font-semibold text-slate-900 dark:text-white">{fmt(l.outstandingBalance, l.currency)}</td>
+                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{l.installmentAmount > 0 ? fmt(l.installmentAmount, l.currency) : '—'}</td>
+                  <td className="px-4 py-3"><StatusBadge status={l.status} />{l.reviewRequired && <span className="mt-1 block text-xs text-amber-700 dark:text-amber-300">HR review required</span>}</td>
+                  <td className="px-4 py-3 text-sapphire text-xs"><button type="button" onClick={e => { e.stopPropagation(); openDetail(l); }} aria-label={`View loan ${l.loanNumber}`}>View →</button></td>
                 </tr>
               ))}
             </tbody>
@@ -384,30 +502,58 @@ function LoansTab({ loanTypes }: { loanTypes: LoanType[] }) {
       </div>
 
       {/* Create Loan Modal */}
-      <Modal isOpen={createModal} title="New Loan Request" onClose={() => setCreateModal(false)} size="lg"
-        footer={<><button type="button" onClick={() => setCreateModal(false)} className="btn-secondary">Cancel</button><button type="button" onClick={createLoan} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Submitting…' : 'Submit Request'}</button></>}>
+      <Modal isOpen={createModal} title={t('New Loan Request')} onClose={() => setCreateModal(false)} size="lg"
+        footer={<><button type="button" onClick={() => setCreateModal(false)} className="btn-secondary">{t('Cancel')}</button>{!notOffered && !noTypesOffered && <button type="button" onClick={createLoan} disabled={saving || checkingEligibility || !canSubmit} className="btn-primary disabled:opacity-60">{saving ? t('Submitting…') : t('Submit Request')}</button>}</>}>
         <FormError error={error} />
         <div className="space-y-3">
-          <FormField label="Employee" required>
-            <EmployeeSearchSelect value={selectedEmployee} onChange={setSelectedEmployee} required />
+          <FormField label={t('Employee')} required>
+            {self ? <p className="text-sm font-semibold">{user?.fullName}</p> : <EmployeeSearchSelect value={selectedEmployee} onChange={setSelectedEmployee} required />}
           </FormField>
-          <div className="grid grid-cols-2 gap-3">
-            <FormField label="Loan Type" required>
-              <select value={createForm.loanTypeId} onChange={(e) => setCreateForm(x => ({ ...x, loanTypeId: e.target.value }))} className="select w-full" title="Loan Type">
-                <option value="">Select type</option>
-                {loanTypes.map((t) => <option key={t.id} value={t.id}>{t.nameEn} {t.isInterestFree ? '(Interest-Free)' : `(${t.interestRate}%)`}</option>)}
+          {noTypesOffered && <p role="status" className="rounded-md border border-amber-300 bg-amber-50 p-2 text-sm font-semibold text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
+            {t(self ? 'No loan types are offered by your company right now.' : "No loan types are offered by this employee's company right now.")}
+          </p>}
+          {offeringsUnknown && <p role="status" className="text-xs text-slate-500">{t("We couldn't confirm which loan types your company offers; we'll check when you choose one.")}</p>}
+          {!noTypesOffered && <div className="grid grid-cols-2 gap-3">
+            <FormField label={t('Loan Type')} required>
+              <select value={createForm.loanTypeId} onChange={(e) => setCreateForm(x => ({ ...x, loanTypeId: e.target.value }))} className="select w-full" title={t('Loan Type')}>
+                <option value="">{t('Select type')}</option>
+                {selectableTypes.map((type) => <option key={type.id} value={type.id}>{typeName(type)} {type.isInterestFree ? `(${t('Interest-free')})` : `(${type.interestRate}%)`}</option>)}
               </select>
             </FormField>
-            <FormField label={`Amount (${currencyCode})`} required>
-              <input type="number" value={createForm.requestedAmount} onChange={(e) => setCreateForm(x => ({ ...x, requestedAmount: Number(e.target.value) }))} className="input w-full" title="Requested Amount" min="1" />
+            <FormField label={t('Amount (employee company currency)')} required>
+              <input type="number" value={createForm.requestedAmount} onChange={(e) => setCreateForm(x => ({ ...x, requestedAmount: Number(e.target.value) }))} className="input w-full" title={t('Requested amount')} min="1" />
             </FormField>
-            <FormField label="Installments">
-              <input type="number" value={createForm.requestedInstallments} onChange={(e) => setCreateForm(x => ({ ...x, requestedInstallments: Number(e.target.value) }))} className="input w-full" title="Requested Installments" min="1" />
+            <FormField label={t('Installments')}>
+              <input type="number" value={createForm.requestedInstallments} onChange={(e) => setCreateForm(x => ({ ...x, requestedInstallments: Number(e.target.value) }))} className="input w-full" title={t('Requested installments')} min="1" />
             </FormField>
-            <FormField label="Notes">
-              <textarea value={createForm.notes} onChange={(e) => setCreateForm(x => ({ ...x, notes: e.target.value }))} className="input w-full" rows={2} title="Notes" />
+            <FormField label={t('Repayment method')} required>
+              <select title={t('Repayment method')} className="select w-full" value={createForm.repaymentMethod} onChange={e => setCreateForm(x => ({ ...x, repaymentMethod: e.target.value as LoanRepaymentMethod }))}>
+                {Object.entries(repaymentMethodLabels).map(([value, label]) => <option key={value} value={value}>{t(label)}</option>)}
+              </select>
+              <p className="mt-1 text-xs text-slate-500">{t(createForm.repaymentMethod === 'PayrollDeduction' ? 'Installments will be deducted from salary after disbursement.' : 'Finance records each repayment separately from payroll.')}</p>
             </FormField>
-          </div>
+            <FormField label={t('Notes')}>
+              <textarea value={createForm.notes} onChange={(e) => setCreateForm(x => ({ ...x, notes: e.target.value }))} className="input w-full" rows={2} title={t('Notes')} />
+            </FormField>
+          </div>}
+          {!noTypesOffered && <div className="space-y-2 rounded-lg border border-slate-200 p-3 dark:border-white/10">
+            <button className="btn-secondary" disabled={checkingEligibility || saving} onClick={checkEligibility}>{checkingEligibility ? t('Checking…') : t('Check Eligibility')}</button>
+            {!checkedEligibility && currentPreview && (notOffered
+              ? <p role="status" className="text-sm font-semibold text-amber-700 dark:text-amber-300">{notOfferedText}</p>
+              : <LoanLimitCard eligibility={currentPreview} self={self} />)}
+            {checkedEligibility && (notOffered
+              ? <p role="status" className="text-sm font-semibold text-amber-700 dark:text-amber-300">{notOfferedText}</p>
+              : <div role="status" className="space-y-1 text-sm">
+                <p className={checkedEligibility.eligible ? 'text-emerald-700' : 'text-amber-700'}>{t(checkedEligibility.eligible ? 'Eligible to apply' : 'Not eligible for this request')}</p>
+                <LoanLimitCard eligibility={checkedEligibility} self={self} />
+                {checkedEligibility.art92 && <LoanConsentStep art92={checkedEligibility.art92} self={self} employeeId={applicantId} consentDocumentId={consentDocumentId} onConsent={setConsentDocumentId} />}
+                <p>{checkedEligibility.maxAvailableAmount == null ? t('No fixed amount limit') : t('Maximum available: {amount}', { amount: fx.money(checkedEligibility.maxAvailableAmount, checkedEligibility.currency ?? null) })} · {t('Policy version {version}', { version: checkedEligibility.policyVersion ?? '—' })}</p>
+                {otherReasons.map(reason => <p key={reason}>{reason}</p>)}
+                {!checkedEligibility.eligible && checkedEligibility.canRequestException && !gradeBlocked && <label className="flex items-center gap-2"><input type="checkbox" checked={requestException} onChange={e => setRequestException(e.target.checked)} />{t('Request an HR Director policy exception')}</label>}
+                {gradeBlocked && <p className="text-xs text-slate-500">{t('Grade limits cannot be overridden by a policy exception.')}</p>}
+                <p className="text-xs text-slate-500">{t('Approval starts with HR Manager. Policy exceptions need a separate independent approval before the loan can proceed.')}</p>
+              </div>)}
+          </div>}
         </div>
       </Modal>
 
@@ -415,38 +561,45 @@ function LoansTab({ loanTypes }: { loanTypes: LoanType[] }) {
       <Modal isOpen={detailModal && !!selected} title={`Loan — ${selected?.loan.loanNumber}`} onClose={() => setDetailModal(false)} size="lg"
         footer={
           <div className="flex items-center gap-2">
-            {selected?.loan.status === 'Active' && (
-              <button type="button" onClick={() => { setSettleForm({ settlementType: 'Early', settlementAmount: selected.loan.outstandingBalance, settlementDate: new Date().toISOString().split('T')[0], notes: '' }); setError(''); setSettleModal(true); }} className="btn-primary h-8 px-3 text-sm">Settle Loan</button>
+            {selected && ['Active', 'Overdue'].includes(selected.loan.status) && selected.loan.repaymentMethod !== 'PayrollDeduction' && canManagePayments && (
+              <button type="button" onClick={() => { setReceiptForm({ amount: Math.min(selected.loan.installmentAmount, selected.loan.outstandingBalance), paidDate: localDateToday(), reference: '', paymentMethod: selected.loan.repaymentMethod }); setError(''); setReceiptModal(true); }} className="btn-primary h-8 px-3 text-sm">Record Repayment</button>
             )}
+            {selected?.loan.status === 'Approved' && (canManagePayments || user?.roles.includes('Finance Approver')) && <button type="button" onClick={onPayments} className="btn-primary">Open Loan Payments</button>}
             <button type="button" onClick={() => setDetailModal(false)} className="btn-secondary ms-auto">Close</button>
           </div>
         }>
         {selected && (
           <div className="space-y-4">
+            <LoanStatement detail={selected} />
+            <LoanConsentAttach loan={selected.loan} self={self} onAttached={() => { void loansApi.get(selected.loan.id).then(setSelected); load(); }} />
+            {selected.loan.reviewRequired && <p role="status" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-200">HR review required: {selected.loan.reviewReason || 'Employment details have changed.'} Open Reviews &amp; Changes for the review history and next action.</p>}
+            <p className="rounded-lg bg-blue-50 p-3 text-sm text-blue-800 dark:bg-blue-900/20 dark:text-blue-200">
+              {selected.loan.status === 'Approved' ? 'Approved and awaiting disbursement. Finance must process this loan in Loan Payments and confirm the completed payment.' : selected.loan.status === 'Pending' ? 'Awaiting the next approval decision. Approval does not send funds.' : selected.loan.status === 'Active' ? `Repayment method: ${repaymentMethodLabels[selected.loan.repaymentMethod]}. ${selected.loan.repaymentMethod === 'PayrollDeduction' ? 'Scheduled installments are collected through payroll.' : 'Finance records receipts after payments are received.'}` : `Repayment method: ${repaymentMethodLabels[selected.loan.repaymentMethod]}.`}
+            </p>
             <div className="grid grid-cols-3 gap-3 text-sm">
               <div className="surface p-3 rounded-lg"><p className="text-xs text-slate-400 mb-1">Employee</p><p className="font-semibold text-slate-900 dark:text-white">{selected.loan.employeeName}</p></div>
-              <div className="surface p-3 rounded-lg"><p className="text-xs text-slate-400 mb-1">Outstanding</p><p className="font-semibold text-slate-900 dark:text-white">{fmt(selected.loan.outstandingBalance)}</p></div>
+              <div className="surface p-3 rounded-lg"><p className="text-xs text-slate-400 mb-1">Outstanding</p><p className="font-semibold text-slate-900 dark:text-white">{fmt(selected.loan.outstandingBalance, selected.loan.currency)}</p></div>
               <div className="surface p-3 rounded-lg"><p className="text-xs text-slate-400 mb-1">Status</p><StatusBadge status={selected.loan.status} /></div>
             </div>
 
-            {pendingApprovals.length > 0 && (
+            {selected.approvals.length > 0 && (
               <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-900/20">
-                <p className="mb-2 text-sm font-semibold text-amber-700 dark:text-amber-400">Pending Approval</p>
-                {pendingApprovals.map((a) => (
+                <p className="mb-2 text-sm font-semibold text-amber-700 dark:text-amber-400">Approval Route</p>
+                {selected.approvals.map((a) => (
                   <div key={a.id} className="flex items-center justify-between">
-                    <span className="text-sm text-amber-700 dark:text-amber-300">Step {a.stepOrder} — {a.approverRole}</span>
-                    <button type="button" onClick={() => openDecide(a, selected.loan)} className="btn-primary h-7 px-2 text-xs">Decide</button>
+                    <span className="text-sm text-amber-700 dark:text-amber-300">Step {a.stepOrder} — {a.status === 'Pending' ? loanApprovalRole(a.approverRole) : a.approverRole} · {a.status}{a.approvedByName ? ` · ${a.approvedByName}` : ''}</span>
+                    {selected.loan.status === 'Pending' && canDecideLoan(a, selected.approvals, user) && <button type="button" onClick={() => openDecide(a, selected.loan)} className="btn-primary h-7 px-2 text-xs">Decide</button>}
                   </div>
                 ))}
               </div>
             )}
 
             {/* Sub-tabs */}
-            <div className="flex gap-3 border-b border-slate-100 dark:border-white/[0.07]">
-              {(['schedule', 'gl', 'audit'] as const).map((t) => (
+            <div className="flex gap-3 overflow-x-auto border-b border-slate-100 dark:border-white/[0.07]">
+              {(['schedule', 'receipts', 'gl', 'audit', 'review'] as const).filter(t => t !== 'gl' || canManagePayments).map((t) => (
                 <button key={t} type="button" onClick={() => setDetailTab(t)}
                   className={`pb-2 text-xs font-semibold uppercase tracking-wide transition border-b-2 ${detailTab === t ? 'border-sapphire text-sapphire' : 'border-transparent text-slate-400 hover:text-slate-600'}`}>
-                  {t === 'schedule' ? 'Installments' : t === 'gl' ? 'GL Entries' : 'Audit Trail'}
+                  {t === 'schedule' ? 'Installments' : t === 'receipts' ? 'Repayment Receipts' : t === 'gl' ? 'GL Entries' : t === 'review' ? 'Reviews & Changes' : 'Audit Trail'}
                 </button>
               ))}
             </div>
@@ -460,8 +613,8 @@ function LoansTab({ loanTypes }: { loanTypes: LoanType[] }) {
                       <tr key={ins.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                         <td className="px-3 py-2 text-slate-500">{ins.installmentNumber}</td>
                         <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{ins.dueDate}</td>
-                        <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{fmt(ins.amountDue)}</td>
-                        <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{fmt(ins.amountPaid)}</td>
+                        <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{fmt(ins.amountDue, selected.loan.currency)}</td>
+                        <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{fmt(ins.amountPaid, selected.loan.currency)}</td>
                         <td className="px-3 py-2"><StatusBadge status={ins.status} /></td>
                       </tr>
                     ))}
@@ -472,29 +625,31 @@ function LoansTab({ loanTypes }: { loanTypes: LoanType[] }) {
             {detailTab === 'schedule' && selected.installments.length === 0 && (
               <p className="text-center text-sm text-slate-400 py-4">No installments scheduled yet</p>
             )}
-            {detailTab === 'gl' && <GlEntriesTable entries={selected.glEntries ?? []} fmt={fmt} />}
+            {detailTab === 'gl' && <GlEntriesTable entries={selected.glEntries ?? []} fmt={n => fmt(n, selected.loan.currency)} />}
+            {detailTab === 'receipts' && <div className="space-y-2">{(selected.repayments ?? []).length === 0 ? <p className="py-4 text-sm text-slate-500">No separate repayment receipts recorded.</p> : selected.repayments.map(receipt => <div key={receipt.id} className="surface flex flex-wrap justify-between gap-2 p-3 text-sm"><span>{receipt.paidDate} · {receipt.reference}<span className="block text-xs text-slate-500">{repaymentMethodLabels[receipt.paymentMethod as LoanRepaymentMethod] ?? receipt.paymentMethod}{receipt.isReversed ? ' · Reversed — excluded from repayments' : ''}</span></span><strong className={receipt.isReversed ? 'text-slate-500 line-through' : ''}>{fmt(receipt.amount, selected.loan.currency)}</strong></div>)}</div>}
             {detailTab === 'audit' && <AuditTrailTable logs={selected.auditLogs ?? []} />}
+            {detailTab === 'review' && <LoanLifecyclePanel detail={selected} onChanged={async () => { setSelected(await loansApi.get(selected.loan.id)); await load(); onChanged(); }} />}
           </div>
         )}
       </Modal>
 
-      {/* Settle Modal */}
-      <Modal isOpen={settleModal} title={`Settle Loan — ${selected?.loan.loanNumber}`} onClose={() => setSettleModal(false)}
-        footer={<><button type="button" onClick={() => setSettleModal(false)} className="btn-secondary">Cancel</button><button type="button" onClick={settle} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Processing…' : 'Confirm Settlement'}</button></>}>
+      <Modal isOpen={receiptModal} title={`Record Repayment — ${selected?.loan.loanNumber}`} onClose={() => !saving && setReceiptModal(false)}
+        footer={<><button type="button" onClick={() => setReceiptModal(false)} disabled={saving} className="btn-secondary">Cancel</button><button type="button" onClick={recordReceipt} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Recording…' : 'Record Received Payment'}</button></>}>
         <FormError error={error} />
         <div className="space-y-3">
-          <FormField label="Settlement Type">
-            <select value={settleForm.settlementType} onChange={(e) => setSettleForm(x => ({ ...x, settlementType: e.target.value }))} className="select w-full" title="Settlement Type">
-              {['Early', 'Normal', 'Waiver'].map((v) => <option key={v}>{v}</option>)}
+          <p className="text-sm text-slate-500">Record funds already received. The payment is allocated to the oldest unpaid installments. Paying the full outstanding balance settles the loan.</p>
+          <FormField label="Payment method">
+            <select value={receiptForm.paymentMethod} onChange={(e) => setReceiptForm(x => ({ ...x, paymentMethod: e.target.value }))} className="select w-full" title="Payment method">
+              {Object.entries(repaymentMethodLabels).filter(([value]) => value !== 'PayrollDeduction').map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select>
           </FormField>
-          <FormField label={`Settlement Amount (${currencyCode})`} required>
-            <input type="number" value={settleForm.settlementAmount} onChange={(e) => setSettleForm(x => ({ ...x, settlementAmount: Number(e.target.value) }))} className="input w-full" title="Settlement Amount" />
+          <FormField label={`Received amount (${selected?.loan.currency ?? currencyCode})`} required>
+            <input type="number" min="0.01" step="0.01" max={selected?.loan.outstandingBalance} value={receiptForm.amount} onChange={(e) => setReceiptForm(x => ({ ...x, amount: Number(e.target.value) }))} className="input w-full" title="Received amount" />
           </FormField>
-          <FormField label="Settlement Date" required>
-            <input type="date" value={settleForm.settlementDate} onChange={(e) => setSettleForm(x => ({ ...x, settlementDate: e.target.value }))} className="input w-full" title="Settlement Date" />
+          <FormField label="Payment date" required>
+            <input type="date" max={localDateToday()} value={receiptForm.paidDate} onChange={(e) => setReceiptForm(x => ({ ...x, paidDate: e.target.value }))} className="input w-full" title="Payment date" />
           </FormField>
-          <FormField label="Notes"><textarea value={settleForm.notes} onChange={(e) => setSettleForm(x => ({ ...x, notes: e.target.value }))} className="input w-full" rows={2} title="Notes" /></FormField>
+          <FormField label="Receipt / bank reference" required><input value={receiptForm.reference} onChange={(e) => setReceiptForm(x => ({ ...x, reference: e.target.value }))} className="input w-full" title="Receipt / bank reference" maxLength={160} /></FormField>
         </div>
       </Modal>
 
@@ -515,7 +670,7 @@ function LoansTab({ loanTypes }: { loanTypes: LoanType[] }) {
           </FormField>
           {decideForm.decision === 'Approved' && (
             <>
-              <FormField label={`Approved Amount (${currencyCode})`}><input type="number" value={decideForm.approvedAmount} onChange={(e) => setDecideForm(x => ({ ...x, approvedAmount: Number(e.target.value) }))} className="input w-full" title="Approved Amount" /></FormField>
+              <FormField label={`Approved Amount (${selected?.loan.currency ?? currencyCode})`}><input type="number" value={decideForm.approvedAmount} onChange={(e) => setDecideForm(x => ({ ...x, approvedAmount: Number(e.target.value) }))} className="input w-full" title="Approved Amount" /></FormField>
               <FormField label="Approved Installments"><input type="number" value={decideForm.approvedInstallments} onChange={(e) => setDecideForm(x => ({ ...x, approvedInstallments: Number(e.target.value) }))} className="input w-full" title="Approved Installments" /></FormField>
               <FormField label="Repayment Start Date"><input type="date" value={decideForm.repaymentStartDate} onChange={(e) => setDecideForm(x => ({ ...x, repaymentStartDate: e.target.value }))} className="input w-full" title="Repayment Start Date" /></FormField>
             </>
@@ -553,7 +708,7 @@ function AdvancePolicyTab() {
   const save = async () => {
     setSaving(true); setError(''); setSuccess(false);
     try { const p = await advancePolicyApi.upsert(form); setPolicy(p); setForm({ ...p }); setSuccess(true); }
-    catch { setError('Failed to save policy.'); }
+    catch (e) { setError(apiErrorReason(e, 'Failed to save policy.')); }
     finally { setSaving(false); }
   };
   const f = (key: string, v: string | boolean | number) => setForm(x => ({ ...x, [key]: v }));
@@ -592,7 +747,8 @@ function AdvancePolicyTab() {
 
 function AdvancesTab() {
   const { currencyCode } = useTenantSettings();
-  const fmt = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: currencyCode });
+  const fx = useFormat();
+  const fmt = (n: number) => fx.plain.money(n, currencyCode);
   const [items, setItems] = useState<SalaryAdvance[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -638,7 +794,7 @@ function AdvancesTab() {
     if (!selected) return;
     setSaving(true); setError('');
     try { await advancesApi.approve(selected.id, approveForm); setApproveModal(false); load(); }
-    catch { setError('Failed to approve.'); }
+    catch (e) { setError(apiErrorReason(e, 'Failed to approve.')); }
     finally { setSaving(false); }
   };
 
@@ -646,7 +802,7 @@ function AdvancesTab() {
     if (!selected) return;
     setSaving(true); setError('');
     try { await advancesApi.reject(selected.id, rejectReason); setRejectModal(false); load(); }
-    catch { setError('Failed to reject.'); }
+    catch (e) { setError(apiErrorReason(e, 'Failed to reject.')); }
     finally { setSaving(false); }
   };
 
@@ -1051,8 +1207,13 @@ function BonusTypesTab() {
 // ── Bonus Batches ─────────────────────────────────────────────────────────────
 
 function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
-  const { currencyCode } = useTenantSettings();
-  const fmt = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: currencyCode });
+  // A bonus batch has no currency of its own; it is paid in the tenant's. Until the tenant's
+  // settings load, that currency is unknown (the context's 'USD' is a placeholder), so amounts
+  // are shown bare rather than labelled with a guess.
+  const { settings: { currencyCode }, loaded: settingsLoaded } = useTenantSettingsContext();
+  const batchCurrency = settingsLoaded ? currencyCode : null;
+  const fx = useFormat();
+  const fmt = (n: number) => fx.plain.money(n, batchCurrency);
   const [items, setItems] = useState<BonusBatch[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -1096,7 +1257,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
     if (!createForm.bonusTypeId || !createForm.batchName.trim() || !createForm.paymentPeriod.trim() || !createForm.paymentDate) { setError('All fields are required'); return; }
     setSaving(true); setError('');
     try { await bonusBatchesApi.create(createForm); setCreateModal(false); load(); }
-    catch { setError('Failed to create batch.'); }
+    catch (e) { setError(apiErrorReason(e, 'Failed to create batch.')); }
     finally { setSaving(false); }
   };
 
@@ -1112,7 +1273,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
       });
       setAddResult({ grossBonusAmount: r.grossBonusAmount, taxWithheld: r.taxWithheld, netBonusAmount: r.netBonusAmount });
       const d = await bonusBatchesApi.get(selected.batch.id); setSelected(d);
-    } catch { setError('Failed to add employee.'); }
+    } catch (e) { setError(apiErrorReason(e, 'Failed to add employee.')); }
     finally { setSaving(false); }
   };
 
@@ -1142,7 +1303,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
     if (!editBatchId) return;
     setSaving(true); setError('');
     try { await bonusBatchesApi.update(editBatchId, editBatchForm); setEditBatchModal(false); load(); }
-    catch { setError('Failed to update batch.'); }
+    catch (e) { setError(apiErrorReason(e, 'Failed to update batch.')); }
     finally { setSaving(false); }
   };
 
@@ -1170,7 +1331,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
       setBulkResult(r);
       const d = await bonusBatchesApi.get(selected.batch.id); setSelected(d);
       load();
-    } catch { setError('Bulk add failed.'); }
+    } catch (e) { setError(apiErrorReason(e, 'Bulk add failed.')); }
     finally { setSaving(false); }
   };
 
@@ -1357,7 +1518,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
           <div className="space-y-3">
             <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-800 dark:bg-emerald-900/20">
               <p className="font-semibold text-emerald-700 dark:text-emerald-300">{bulkResult.added} employees added</p>
-              <p className="text-sm text-emerald-600 dark:text-emerald-400 mt-1">Total bonus: {bulkResult.totalNetAdded.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+              <p className="text-sm text-emerald-600 dark:text-emerald-400 mt-1">Total bonus: {fx.plain.money(bulkResult.totalNetAdded, batchCurrency)}</p>
             </div>
             {(bulkResult.skippedDuplicate + bulkResult.skippedMinService + bulkResult.skippedNoSalary) > 0 && (
               <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-900/20 text-sm space-y-1">
@@ -1432,7 +1593,8 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
 
 function AuditReportTab() {
   const { currencyCode } = useTenantSettings();
-  const fmt = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: currencyCode });
+  const fx = useFormat();
+  const fmt = (n: number) => fx.plain.money(n, currencyCode);
   const [loanAudit, setLoanAudit] = useState<any>(null);
   const [advanceAudit, setAdvanceAudit] = useState<any>(null);
   const [bonusAudit, setBonusAudit] = useState<any>(null);
@@ -1462,7 +1624,9 @@ function AuditReportTab() {
             <p className="font-semibold text-emerald-700 dark:text-emerald-400">Finance Module — Audit Ready</p>
             <p className="text-xs text-emerald-600 dark:text-emerald-300 mt-0.5">
               All financial transactions are recorded with double-entry GL journal entries, immutable audit trails, and reconciliation checks.
-              Report generated: {new Date().toLocaleString('en-US', { timeZone: 'America/New_York', dateStyle: 'medium', timeStyle: 'short' })} EST
+              {/* Was hard-coded to America/New_York and labelled EST for every tenant; now the tenant's
+                  zone, named, so a reader in another zone knows which clock the time is on. */}
+              Report generated: {fx.dateTime(new Date())} ({fx.zone()})
             </p>
           </div>
         </div>
@@ -1502,7 +1666,7 @@ function AuditReportTab() {
                     <td className="px-4 py-3 font-mono text-xs text-slate-500">{r.loanNumber}</td>
                     <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{r.employeeName}</td>
                     <td className="px-4 py-3 text-slate-500">{r.loanTypeName}</td>
-                    <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{fmt(r.approvedAmount)}</td>
+                    <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{fmt(r.actualDisbursedAmount)}</td>
                     <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{fmt(r.totalRepaid)}</td>
                     <td className="px-4 py-3 font-semibold text-slate-900 dark:text-white">{fmt(r.outstandingBalance)}</td>
                     <td className="px-4 py-3"><StatusBadge status={r.status} /></td>
@@ -1591,16 +1755,31 @@ function AuditReportTab() {
 // ── LoansPage ─────────────────────────────────────────────────────────────────
 
 export function LoansPage() {
+  const { user } = useAuth();
+  const { companyVersion } = useCompany();
+  const canConfigurePolicies = user?.roles.some(role => ['Admin', 'HR Manager', 'HR Director'].includes(role)) ?? false;
+  const canViewFinanceModules = user?.roles.some(role => ['Admin', 'Finance', 'Finance Approver', 'HR Manager', 'HR Director'].includes(role)) ?? false;
+  const canViewTeam = canViewFinanceModules || !!user?.roles.includes('Manager');
+  const [mine, setMine] = useState(false);
+  useEffect(() => { setMine(new URLSearchParams(window.location.search).get('mine') === 'true'); }, []);
+  const ownAccounts = mine || !canViewTeam;
+  const canManagePayments = user?.roles.some(role => ['Admin', 'Finance', 'Finance Approver'].includes(role)) ?? false;
   const { currencyCode } = useTenantSettings();
-  const fmt = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: currencyCode });
+  const fx = useFormat();
+  const fmt = (n: number) => fx.plain.money(n, currencyCode);
   const [activeTab, setActiveTab] = useState<Tab>('loans');
   const [loanTypes, setLoanTypes] = useState<LoanType[]>([]);
   const [bonusTypes, setBonusTypes] = useState<BonusType[]>([]);
   const [summary, setSummary] = useState<{ activeLoans: number; totalOutstanding: number; pendingLoans: number; pendingBonuses: number } | null>(null);
+  const [summaryVersion, setSummaryVersion] = useState(0);
+  const refreshSummary = useCallback(() => setSummaryVersion(version => version + 1), []);
 
   useEffect(() => {
     loanTypesApi.list().then(setLoanTypes).catch(() => {});
-    bonusTypesApi.list(true).then(setBonusTypes).catch(() => {});
+    if (canViewFinanceModules) bonusTypesApi.list(true).then(setBonusTypes).catch(() => {});
+  }, [canViewFinanceModules, companyVersion]);
+  useEffect(() => {
+    if (!canViewFinanceModules) return;
     Promise.all([loansApi.audit(), advancesApi.audit()]).then(([la, aa]) => {
       setSummary({
         activeLoans: (la.activeLoans ?? 0) + (aa.activeAdvances ?? 0),
@@ -1609,18 +1788,18 @@ export function LoansPage() {
         pendingBonuses: 0,
       });
     }).catch(() => {});
-  }, []);
+  }, [summaryVersion, activeTab, canViewFinanceModules, companyVersion]);
 
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">Loans, Advances & Bonuses</h1>
+        <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">{ownAccounts ? 'My Loans' : canViewFinanceModules ? 'Loans, Advances & Bonuses' : 'Team Loans'}</h1>
         <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
-          Finance module — audit-ready with GL journal entries, reconciliation reports, and compliance trails
+          {ownAccounts ? 'Apply for a loan, follow approvals and view your repayment statement.' : 'Review scoped employee loans, approval routes and repayment history.'}
         </p>
       </div>
 
-      {summary && (
+      {summary && canViewFinanceModules && !ownAccounts && !['loans', 'loanPayments', 'loanPolicies'].includes(activeTab) && (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <SummaryCard label="Active Obligations" value={summary.activeLoans} icon={CreditCard} color="text-blue-600 dark:text-blue-400" sub="loans + advances" />
           <SummaryCard label="Total Outstanding" value={fmt(summary.totalOutstanding)} icon={DollarSign} color="text-amber-600 dark:text-amber-400" sub="loans + advances" />
@@ -1628,9 +1807,11 @@ export function LoansPage() {
           <SummaryCard label="Audit Status" value="Ready" icon={ShieldCheck} color="text-emerald-600 dark:text-emerald-400" sub="GL entries current" />
         </div>
       )}
+      {user?.employeeId && canViewTeam && <div className="flex gap-2"><button className={ownAccounts ? 'btn-primary' : 'btn-secondary'} onClick={() => { setMine(true); setActiveTab('loans'); }}>My Loans</button><button className={!ownAccounts ? 'btn-primary' : 'btn-secondary'} onClick={() => { setMine(false); setActiveTab('loans'); }}>{canViewFinanceModules ? 'Scoped Employee Loans' : 'Team Loans'}</button></div>}
+      {activeTab === 'loans' && <LoanAccountSummary key={companyVersion} mine={ownAccounts} version={summaryVersion} />}
 
-      <div className="flex items-center gap-1 border-b border-slate-200 dark:border-white/[0.08]">
-        {tabs.map(({ id, label, icon: Icon }) => (
+      <div className="flex items-center gap-1 overflow-x-auto border-b border-slate-200 dark:border-white/[0.08]">
+        {tabs.filter(tab => tab.id === 'loans' || (!ownAccounts && (tab.id === 'loanPolicies' ? canConfigurePolicies : tab.id === 'loanPayments' ? canManagePayments : canViewFinanceModules))).map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             type="button"
@@ -1648,7 +1829,9 @@ export function LoansPage() {
       </div>
 
       <div>
-        {activeTab === 'loans' && <LoansTab loanTypes={loanTypes} />}
+        {activeTab === 'loans' && <LoansTab key={`${companyVersion}-${ownAccounts}`} mine={ownAccounts} loanTypes={loanTypes} onPayments={() => setActiveTab('loanPayments')} onChanged={refreshSummary} />}
+        {activeTab === 'loanPayments' && canManagePayments && <LoanPaymentsTab key={companyVersion} onChanged={refreshSummary} />}
+        {activeTab === 'loanPolicies' && canConfigurePolicies && <LoanPoliciesTab key={companyVersion} loanTypes={loanTypes} onGradeLimitedChanged={(id, gradeLimited) => setLoanTypes(list => list.map(type => (type.id === id ? { ...type, gradeLimited } : type)))} />}
         {activeTab === 'loanTypes' && <LoanTypesTab />}
         {activeTab === 'advances' && <AdvancesTab />}
         {activeTab === 'advancePolicy' && <AdvancePolicyTab />}

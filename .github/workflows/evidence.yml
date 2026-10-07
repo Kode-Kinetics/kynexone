@@ -92,6 +92,10 @@ jobs:
         env:
           LOGIN_PERMIT_LIMIT: '200'
           PLATFORM_LOGIN_PERMIT_LIMIT: '50'
+          LOGIN_ACCOUNT_IP_ATTEMPT_LIMIT: '1000'
+          LOGIN_ACCOUNT_ATTEMPT_LIMIT: '1000'
+          LOGIN_IP_FAILURE_LIMIT: '1000'
+          PASSWORD_HASH_CONCURRENCY: '4'
           JWT_SIGNING_KEY: 'CI_ONLY_EVIDENCE_LANE_SIGNING_KEY_64_CHARS_MINIMUM_12345678901234567890'
         run: docker compose -p kynexone-evidence-ci up -d --build
 

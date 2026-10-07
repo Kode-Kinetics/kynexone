@@ -165,7 +165,7 @@ public class EmployeeFieldWiringTests
     }
 
     /// <summary>`qiwaContractNumber` is a SensitiveField, so it routes to the Approval Center and is applied
-    /// by ApproveChange. It was dropped there — AFTER a human approved it, which is the worst version of the
+    /// by the Approval Center. It was dropped there — AFTER a human approved it, which is the worst version of the
     /// defect: an audited approval that changed nothing.</summary>
     [Fact]
     public async Task QiwaContractNumber_SurvivesTheApprovalRoundTrip()
@@ -179,8 +179,8 @@ public class EmployeeFieldWiringTests
         accepted.Should().BeOfType<AcceptedResult>();
 
         var change = await db.EmployeeChangeRequests.AsNoTracking().SingleAsync(c => c.TenantId == tenantId);
-        // A different user approves — maker-checker.
-        await Controller(db, tenantId, Guid.NewGuid()).ApproveChange(change.Id, CancellationToken.None);
+        // Different users approve each step — maker-checker and separation of duties.
+        await ApprovalCenterDriver.ApproveChangeAsync(db, tenantId, change.Id);
 
         db.ChangeTracker.Clear();
         (await db.Employees.AsNoTracking().SingleAsync(e => e.Id == employee.Id))

@@ -66,8 +66,6 @@ public class AccessManagementService : IAccessManagementService
         var passwordHash = _passwordHasher.Hash(request.Password);
         var auditMetadata = System.Text.Json.JsonSerializer.Serialize(new { email = canonicalEmail });
         var isAdminUser = normalizedRoleNames.Contains("ADMIN", StringComparer.Ordinal);
-        await using var adminSeatLease = await AcquireAdminSeatLeaseAsync(
-            tenantId, isAdminUser, cancellationToken);
 
         Guid[]? expectedRoleIds = null;
 
@@ -123,6 +121,7 @@ public class AccessManagementService : IAccessManagementService
         async Task<bool> CreateOnceAsync(CancellationToken ct)
         {
             _db.ChangeTracker.Clear();
+            await AcquireAdminSeatLockAsync(tenantId, isAdminUser, ct);
             var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.Id == tenantId && x.IsActive, ct)
                 ?? throw new InvalidOperationException("Tenant not found.");
@@ -624,11 +623,11 @@ public class AccessManagementService : IAccessManagementService
         var changedAtUtc = DateTime.UtcNow;
         var auditId = Guid.NewGuid();
         var requestedAdmin = request.Roles.Any(x => AuthService.Normalize(x) == "ADMIN");
-        await using var adminSeatLease = await AcquireAdminSeatLeaseAsync(tenantId, requestedAdmin, cancellationToken);
 
         async Task<bool> AssignOnceAsync(CancellationToken ct)
         {
             _db.ChangeTracker.Clear();
+            await AcquireAdminSeatLockAsync(tenantId, requestedAdmin, ct);
             var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.Id == tenantId, ct)
                 ?? throw new InvalidOperationException("Tenant not found.");
@@ -1995,38 +1994,34 @@ public class AccessManagementService : IAccessManagementService
             throw new InvalidOperationException($"The tenant subscription allows at most {limit} active administrator user(s).");
     }
 
-    private async Task<IAsyncDisposable> AcquireAdminSeatLeaseAsync(
-        Guid tenantId, bool required, CancellationToken cancellationToken)
+    /// <summary>
+    /// Serialises admin-seat consumption for one tenant. Transaction-scoped on purpose: it must be
+    /// called inside the execution-strategy transaction, and Postgres releases it at commit or
+    /// rollback (including each retry's rollback), so there is no unlock to forget.
+    ///
+    /// <para>It used to be a SESSION lock (<c>pg_advisory_lock</c> ... <c>pg_advisory_unlock</c>)
+    /// taken outside the transaction. Production reaches Neon through its PgBouncer pooler in
+    /// transaction mode, which hands each autocommit statement and each transaction to whichever
+    /// server connection is free. The lock, the work and the unlock could therefore land on three
+    /// different server sessions: the unlock became a no-op, the lock stayed held on a pooled
+    /// session, a later request that drew that session re-acquired it re-entrantly (no exclusion),
+    /// and one that drew another session blocked until the command timeout. Inside a transaction
+    /// PgBouncer pins one server session from BEGIN to COMMIT, so an xact lock is exact.</para>
+    /// </summary>
+    private async Task AcquireAdminSeatLockAsync(Guid tenantId, bool required, CancellationToken cancellationToken)
     {
-        if (!required || !_db.Database.IsNpgsql()) return NoopAsyncDisposable.Instance;
+        if (!required || !_db.Database.IsNpgsql()) return;
+        if (_db.Database.CurrentTransaction is null)
+            throw new InvalidOperationException(
+                "The admin-seat lock is transaction-scoped and must be taken inside the operation's transaction.");
+        var key = AdminSeatLockKey(tenantId);
+        await _db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({key})", cancellationToken);
+    }
+
+    internal static long AdminSeatLockKey(Guid tenantId)
+    {
         var digest = SHA256.HashData(Encoding.UTF8.GetBytes($"admin-seat:{tenantId:D}"));
-        var key = System.Buffers.Binary.BinaryPrimitives.ReadInt64BigEndian(digest.AsSpan(0, 8));
-        await _db.Database.OpenConnectionAsync(cancellationToken);
-        try
-        {
-            await _db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_lock({key})", cancellationToken);
-            return new AdvisoryLockLease(_db, key);
-        }
-        catch
-        {
-            await _db.Database.CloseConnectionAsync();
-            throw;
-        }
-    }
-
-    private sealed class AdvisoryLockLease(ZayraDbContext db, long key) : IAsyncDisposable
-    {
-        public async ValueTask DisposeAsync()
-        {
-            try { await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_unlock({key})"); }
-            finally { await db.Database.CloseConnectionAsync(); }
-        }
-    }
-
-    private sealed class NoopAsyncDisposable : IAsyncDisposable
-    {
-        public static readonly NoopAsyncDisposable Instance = new();
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        return System.Buffers.Binary.BinaryPrimitives.ReadInt64BigEndian(digest.AsSpan(0, 8));
     }
 
     // Split on (tenant, primary key), inside the caller's anchored transaction when there is one,

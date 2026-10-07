@@ -1,5 +1,10 @@
-import '@/config/i18n';
+// ============================================================
+// KynexOne Mobile — App root
+// ============================================================
+
+import { promptRestartIfNeeded } from '@/config/i18n'; // Initialize i18n before anything renders
 import React, { useEffect } from 'react';
+import { InteractionManager } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { RootNavigator } from '@/navigation/RootNavigator';
@@ -28,6 +33,15 @@ function openFromNotification(data: Record<string, unknown> | undefined) {
 
 function AppContent() {
   const { theme } = useTheme();
+
+  // After the first screen is up: offer the restart if the saved language and the layout direction
+  // disagree. Raised any earlier, Android can drop the alert (config/i18n.ts).
+  useEffect(() => {
+    const task = InteractionManager.runAfterInteractions(() => {
+      promptRestartIfNeeded().catch((error) => console.warn('[i18n] Restart prompt failed:', error));
+    });
+    return () => task.cancel();
+  }, []);
 
   useEffect(() => {
     let active = true;

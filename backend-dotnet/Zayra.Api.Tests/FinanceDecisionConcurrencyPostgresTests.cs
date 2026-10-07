@@ -54,7 +54,7 @@ public class FinanceDecisionConcurrencyPostgresTests
     // ══════════════════════ Loans ══════════════════════
 
     [Fact]
-    public async Task TwoSimultaneousLoanApprovals_ExactlyOneWins_TheLoserGets409_AndTheLoanDisbursesOnce()
+    public async Task TwoSimultaneousLoanApprovals_ExactlyOneWins_TheLoserGets409_AndCashWaitsForDisbursement()
     {
         var tenantId = await SeedTenantAsync();
 
@@ -71,22 +71,19 @@ public class FinanceDecisionConcurrencyPostgresTests
 
             await using var db = _fx.CreateDb();
             var loan = await db.EmployeeLoans.AsNoTracking().SingleAsync(x => x.Id == loanId);
-            loan.Status.Should().Be("Active", $"round {round}: the winner disbursed");
+            loan.Status.Should().Be("Approved", $"round {round}: the winner approved, awaiting separate disbursement");
             loan.ApprovedAmount.Should().Be(6_000m, $"round {round}: the loser must not rewrite the approved amount");
-            loan.OutstandingBalance.Should().Be(6_000m);
+            loan.OutstandingBalance.Should().Be(0m);
             loan.TotalRepaid.Should().Be(0m);
-            (loan.ApprovedAmount - loan.TotalRepaid - loan.OutstandingBalance).Should().Be(0m,
-                $"round {round}: the audit reconciliation invariant");
+            loan.DisbursementDate.Should().BeNull($"round {round}: approval is not bank evidence");
 
             var installments = await db.LoanInstallments.AsNoTracking()
                 .Where(x => x.LoanId == loanId).ToListAsync();
-            installments.Should().HaveCount(3,
-                $"round {round}: GenerateInstallments must run once, not twice into the unique index");
+            installments.Should().BeEmpty($"round {round}: installment schedule starts only after payout");
 
             var disbursements = await db.FinanceGlEntries.AsNoTracking()
                 .Where(x => x.SourceEntityId == loanId && x.EventType == "Disbursement").ToListAsync();
-            disbursements.Should().HaveCount(1, $"round {round}: cash leaves once");
-            disbursements[0].Amount.Should().Be(6_000m);
+            disbursements.Should().BeEmpty($"round {round}: approval cannot move cash");
 
             var decidedSteps = await db.LoanApprovals.AsNoTracking()
                 .Where(x => x.LoanId == loanId && x.Status != "Pending").ToListAsync();
@@ -118,10 +115,10 @@ public class FinanceDecisionConcurrencyPostgresTests
             // Whichever decision won, the loan's shape must be internally consistent: an Active loan
             // has a schedule and a journal, a Rejected loan has neither. The un-guarded code could
             // produce a Rejected header sitting over a live disbursement.
-            if (loan.Status == "Active")
+            if (loan.Status == "Approved")
             {
-                disbursements.Should().Be(1, $"round {round}: an approved loan disburses exactly once");
-                installments.Should().Be(3, $"round {round}");
+                disbursements.Should().Be(0, $"round {round}: an approved loan awaits bank confirmation");
+                installments.Should().Be(0, $"round {round}");
             }
             else
             {
@@ -154,7 +151,7 @@ public class FinanceDecisionConcurrencyPostgresTests
             var steps = await db.LoanApprovals.AsNoTracking().Where(x => x.LoanId == loanId).ToListAsync();
             steps.Should().NotBeEmpty($"round {round}: the seeded step must still be there");
 
-            if (loan.Status == "Active")
+            if (loan.Status == "Approved")
             {
                 steps.Should().OnlyContain(s => s.Status == "Approved",
                     $"round {round}: a disbursed loan cannot carry a Pending approval step");
@@ -250,6 +247,79 @@ public class FinanceDecisionConcurrencyPostgresTests
 
     // ══════════════════════ Racing harness ══════════════════════
 
+    [Fact]
+    public async Task StandaloneLoan_ConcurrentReservationsPayoutsAndReceipts_DoNotDuplicateMoney()
+    {
+        var tid = await SeedTenantAsync();
+        Guid loanId;
+        await using (var seed = _fx.CreateDb())
+        {
+            var company = new Company { TenantId = tid, LegalNameEn = "Loan Race Co", CountryCode = "SAU", DefaultCurrency = "SAR", IsActive = true };
+            var employee = new Employee { TenantId = tid, CompanyId = company.Id, EmployeeCode = "RACER", FullName = "Loan Racer", Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-2) };
+            var type = new LoanType { TenantId = tid, Code = "RACE", NameEn = "Race", MaxAmount = 10000, MaxInstallments = 12 };
+            seed.AddRange(company, employee, type);
+            await seed.SaveChangesAsync();
+            seed.EmployeePayrollProfiles.Add(new EmployeePayrollProfile { TenantId = tid, EmployeeId = employee.Id, Iban = "SA4420000001234567891234", BankName = "Race Bank", SalaryCurrency = "SAR" });
+            var loan = new EmployeeLoan
+            {
+                TenantId = tid, CompanyId = company.Id, EmployeeIntId = employee.Id, EmployeeId = employee.PublicId,
+                EmployeeName = employee.FullName, LoanNumber = $"RACE-{Guid.NewGuid():N}", Status = "Approved", LoanTypeId = type.Id,
+                RepaymentMethod = "BankTransfer", Currency = "SAR", RequestedAmount = 100m, ApprovedAmount = 100m,
+                RequestedInstallments = 3, ApprovedInstallments = 3, InstallmentAmount = 33.33m
+            };
+            seed.EmployeeLoans.Add(loan);
+            await seed.SaveChangesAsync();
+            loanId = loan.Id;
+        }
+
+        async Task<IActionResult> Reserve()
+        {
+            await using var db = _fx.CreateDb();
+            return await Loans(db, tid).CreatePaymentBatch(new CreateLoanPaymentBatchRequest(new[] { loanId }), CancellationToken.None);
+        }
+        var reservations = await RaceAsync(Reserve, Reserve);
+        reservations.Should().NotContainNulls();
+        reservations.Count(x => x is OkObjectResult or CreatedResult).Should().Be(1);
+        reservations.OfType<ConflictObjectResult>().Should().ContainSingle();
+        Guid batchId;
+        await using (var approve = _fx.CreateDb())
+        {
+            batchId = (await approve.Set<LoanDisbursementBatch>().SingleAsync(x => x.TenantId == tid)).Id;
+            (await Loans(approve, tid).ApprovePaymentBatch(batchId, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        }
+
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        async Task<IActionResult> Pay()
+        {
+            await using var db = _fx.CreateDb();
+            return await Loans(db, tid).ConfirmPaymentBatchPaid(batchId, new ConfirmLoanPaymentRequest("RACE-BANK", today), CancellationToken.None);
+        }
+        var payouts = await RaceAsync(Pay, Pay);
+        payouts.Should().NotContainNulls();
+        payouts.Should().Contain(x => x is OkObjectResult);
+
+        async Task<IActionResult> Receive()
+        {
+            await using var db = _fx.CreateDb();
+            return await Loans(db, tid).RecordRepayment(loanId, new RecordLoanRepaymentRequest(10m, today, "RACE-RECEIPT"), CancellationToken.None);
+        }
+        var receipts = await RaceAsync(Receive, Receive);
+        receipts.Should().NotContainNulls();
+        receipts.Should().Contain(x => x is OkObjectResult);
+        await using var verify = _fx.CreateDb();
+        var after = await verify.EmployeeLoans.SingleAsync(x => x.Id == loanId);
+        after.OutstandingBalance.Should().Be(90m);
+        after.TotalRepaid.Should().Be(10m);
+        (await verify.Set<LoanRepayment>().CountAsync(x => x.LoanId == loanId)).Should().Be(1);
+        (await verify.LoanInstallments.Where(x => x.LoanId == loanId).SumAsync(x => x.AmountDue)).Should().Be(100m);
+        (await verify.LoanInstallments.Where(x => x.LoanId == loanId).SumAsync(x => x.AmountPaid)).Should().Be(10m);
+        (await verify.FinanceGlEntries.CountAsync(x => x.SourceEntityId == loanId && x.EventType == "Disbursement")).Should().Be(1);
+        var receiptEvidence = await verify.LoanRepayments.SingleAsync(x => x.LoanId == loanId);
+        receiptEvidence.GlEntryId.Should().NotBeNull();
+        (await verify.FinanceGlEntries.CountAsync(x => x.Id == receiptEvidence.GlEntryId
+            && x.SourceEntityId == receiptEvidence.Id && x.EventType == "Repayment")).Should().Be(1);
+    }
+
     /// <summary>
     /// Runs two contenders as genuinely as a test can: each on its own DbContext and connection,
     /// started on the thread pool, and both blocked on one barrier that is released only after both
@@ -300,12 +370,15 @@ public class FinanceDecisionConcurrencyPostgresTests
     private async Task<(Guid LoanId, Guid ApprovalId)> SeedPendingLoanAsync(Guid tenantId)
     {
         await using var db = _fx.CreateDb();
+        var employee = new Employee { TenantId = tenantId, EmployeeCode = $"R-{Guid.NewGuid():N}"[..16], FullName = "Racer", Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-2) };
+        var type = new LoanType { TenantId = tenantId, Code = $"T-{Guid.NewGuid():N}"[..16], NameEn = "Race", MaxAmount = 10000, MaxInstallments = 12 };
+        db.AddRange(employee, type); await db.SaveChangesAsync();
         var loan = new EmployeeLoan
         {
             TenantId = tenantId,
-            EmployeeId = Guid.NewGuid(),
+            EmployeeId = employee.PublicId, EmployeeIntId = employee.Id, RepaymentMethod = "BankTransfer",
             EmployeeName = "Racer",
-            LoanTypeId = Guid.NewGuid(),
+            LoanTypeId = type.Id,
             LoanTypeName = "Emergency Loan",
             LoanNumber = $"LN-{Guid.NewGuid():N}"[..16],
             RequestedAmount = 6_000m,
@@ -404,6 +477,7 @@ public class FinanceDecisionConcurrencyPostgresTests
         new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
         new Claim(ClaimTypes.Name, "Finance Racer"),
         new Claim(ClaimTypes.Role, "Finance"),
+        new Claim(ClaimTypes.Role, "HR Manager"),
     }, "Test"));
 
     private sealed class UnrestrictedScopeService : IDataScopeService

@@ -14,6 +14,7 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { createLatestRequestGate, runLatest } from '../lib/latestRequest';
 import { API_MAX_PAGE_SIZE } from '../lib/paging';
+import { requirePage } from '../lib/listResponse';
 
 export interface PagedListPage<T> {
   items: T[];
@@ -49,7 +50,7 @@ export function usePagedList<T>(
     setLoading(true);
     setLoadingMore(false);
     setError(null);
-    return runLatest(gate, () => fetchRef.current(1, pageSize), {
+    return runLatest(gate, async () => requirePage<PagedListPage<T>>(await fetchRef.current(1, pageSize)), {
       onResult: (page) => { pageRef.current = 1; setItems(page.items); setTotal(page.total); },
       onError: (err) => { setItems([]); setTotal(null); setError(err); },
       onSettled: () => setLoading(false),
@@ -60,7 +61,7 @@ export function usePagedList<T>(
     const next = pageRef.current + 1;
     setLoadingMore(true);
     setError(null);
-    return runLatest(gate, () => fetchRef.current(next, pageSize), {
+    return runLatest(gate, async () => requirePage<PagedListPage<T>>(await fetchRef.current(next, pageSize)), {
       onResult: (page) => { pageRef.current = next; setItems((prev) => [...prev, ...page.items]); setTotal(page.total); },
       onError: (err) => setError(err),
       onSettled: () => setLoadingMore(false),

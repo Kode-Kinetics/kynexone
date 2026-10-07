@@ -119,7 +119,7 @@ public record DesignationRequest(
 public record GradeDto(
     Guid Id, string Code, string Name, string Band, int Level,
     decimal MinSalary, decimal MidSalary, decimal MaxSalary, string Currency,
-    bool IsActive);
+    bool IsActive, string? NameAr = null);
 
 public record GradeRequest(
     [Required, MaxLength(40)] string Code,
@@ -130,7 +130,8 @@ public record GradeRequest(
     [Range(0, 100_000_000)] decimal MidSalary = 0,
     [Range(0, 100_000_000)] decimal MaxSalary = 0,
     [MaxLength(8)] string? Currency = "SAR",
-    bool IsActive = true);
+    bool IsActive = true,
+    [MaxLength(120)] string? NameAr = null);
 
 public record GradePayScaleComponentDto(
     Guid Id, string ComponentCode, string ComponentName, string ComponentType,
@@ -219,7 +220,7 @@ public static class OrganizationMappings
     public static GradeDto ToDto(this Grade grade) => new(
         grade.Id, grade.Code, grade.Name, grade.Band, grade.Level,
         grade.MinSalary, grade.MidSalary, grade.MaxSalary, grade.Currency,
-        grade.IsActive);
+        grade.IsActive, grade.NameAr);
 
     public static GradePayScaleComponentDto ToDto(this GradePayScaleComponent c) => new(
         c.Id, c.ComponentCode, c.ComponentName, c.ComponentType, c.CalculationType,

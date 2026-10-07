@@ -20,6 +20,7 @@ public sealed class AiInsightEngine : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<AiInsightEngine> _log;
     private readonly WorkerHeartbeatReporter? _heartbeat;
+    private readonly SweepOutcomeReporter _outcomes;
 
     public AiInsightEngine(IServiceScopeFactory scopeFactory, ILogger<AiInsightEngine> log,
         WorkerHeartbeatReporter? heartbeat = null)
@@ -27,10 +28,11 @@ public sealed class AiInsightEngine : BackgroundService
         _scopeFactory = scopeFactory;
         _log = log;
         _heartbeat = heartbeat;
+        _outcomes = new SweepOutcomeReporter(ProductionWorkerNames.AiInsights, log, heartbeat);
     }
 
     /// <summary>Exposed for integration tests — runs one analysis cycle synchronously.</summary>
-    public Task AnalyzeOnceAsync(CancellationToken ct) => RunAnalysisForAllTenantsAsync(ct);
+    public Task<SweepOutcome> AnalyzeOnceAsync(CancellationToken ct) => RunAnalysisForAllTenantsAsync(ct);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -42,8 +44,10 @@ public sealed class AiInsightEngine : BackgroundService
         {
             try
             {
-                await RunAnalysisForAllTenantsAsync(stoppingToken);
-                if (_heartbeat is not null) await _heartbeat.SucceededAsync(ProductionWorkerNames.AiInsights, stoppingToken);
+                // Only a cycle that held its lease to the end is a success; a skipped or interrupted
+                // one is reported as such, never as Healthy.
+                var outcome = await RunAnalysisForAllTenantsAsync(stoppingToken);
+                await _outcomes.ReportAsync(outcome, stoppingToken);
             }
             catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
             {
@@ -57,11 +61,17 @@ public sealed class AiInsightEngine : BackgroundService
         }
     }
 
-    private async Task RunAnalysisForAllTenantsAsync(CancellationToken ct)
+    private async Task<SweepOutcome> RunAnalysisForAllTenantsAsync(CancellationToken ct)
     {
         await using var scope = _scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
-        var llm = scope.ServiceProvider.GetService<ILlmClient>();
+
+        // One instance per cycle across the cluster. The 24h InsightType dedupe below is a read-then-
+        // insert with no unique index, so two concurrent cycles (two instances, or old and new during a
+        // deploy) would each see "no insight yet" and both insert it. Sequential cycles are safe: the
+        // second one sees the first one's rows.
+        await using var lease = await SingletonWorkerLease.TryAcquireAsync(db, ProductionWorkerNames.AiInsights, ct);
+        if (lease is null) return SweepOutcome.Skipped;
 
         var tenantIds = await db.Tenants
             .AsNoTracking()
@@ -73,7 +83,7 @@ public sealed class AiInsightEngine : BackgroundService
 
         foreach (var tenantId in tenantIds)
         {
-            if (ct.IsCancellationRequested) break;
+            if (ct.IsCancellationRequested || lease.IsLost) break;
             try
             {
                 await using var tenantScope = _scopeFactory.CreateAsyncScope();
@@ -83,6 +93,8 @@ public sealed class AiInsightEngine : BackgroundService
             }
             catch (Exception ex) { _log.LogWarning(ex, "AiInsightEngine: error for tenant {TenantId}", tenantId); }
         }
+        // The keepalive notices a dead lease only every 30s, so check once more before calling it clean.
+        return lease.IsLost || !await lease.IsStillHeldAsync(ct) ? SweepOutcome.LeaseLost : SweepOutcome.Completed;
     }
 
     internal async Task AnalyzeTenantAsync(ZayraDbContext db, ILlmClient? llm, Guid tenantId, CancellationToken ct)

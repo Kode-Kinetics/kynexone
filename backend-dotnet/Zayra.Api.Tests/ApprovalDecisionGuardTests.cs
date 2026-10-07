@@ -171,6 +171,80 @@ public class ApprovalDecisionGuardTests
     }
 
     [Fact]
+    public void TheSubjectDecidingARecordAboutThemIsRefused()
+    {
+        // HR raised it, so maker-checker passes; the borrower holds the approver role.
+        var verdict = ApprovalDecisionGuard.Evaluate(Build(spec => spec.SubjectIsDecider = true));
+
+        Assert.Equal(ApprovalGuardOutcome.SubjectIsDecider, verdict.Outcome);
+        Assert.Equal("you cannot decide a request about you", verdict.Message);
+    }
+
+    [Fact]
+    public void MakerCheckerStillOutranksTheSubjectBar()
+    {
+        // Self-service: requester and subject are the same person. The refusal they always got stays.
+        var verdict = ApprovalDecisionGuard.Evaluate(Build(spec =>
+        {
+            spec.RequesterIsDecider = true;
+            spec.SubjectIsDecider = true;
+        }));
+
+        Assert.Equal(ApprovalGuardOutcome.MakerIsChecker, verdict.Outcome);
+    }
+
+    [Fact]
+    public void ASubjectBarScopedToApprovalStillLetsTheSubjectWithdraw()
+    {
+        var approving = ApprovalDecisionGuard.Evaluate(Build(spec =>
+        {
+            spec.Decision = "Approved";
+            spec.SubjectIsDecider = true;
+            spec.SubjectScope = new[] { "Approved" };
+        }));
+        var rejecting = ApprovalDecisionGuard.Evaluate(Build(spec =>
+        {
+            spec.Decision = "Rejected";
+            spec.SubjectIsDecider = true;
+            spec.SubjectScope = new[] { "Approved" };
+        }));
+
+        Assert.Equal(ApprovalGuardOutcome.SubjectIsDecider, approving.Outcome);
+        Assert.True(rejecting.Passed);
+        Assert.False(SubjectSeparationRule.None.IsViolated("Approved"));
+    }
+
+    [Fact]
+    public void WhoeverApprovedAnEarlierStepCannotDecideALaterOne_ForEitherDecision()
+    {
+        foreach (var decision in new[] { "Approved", "Rejected" })
+        {
+            var verdict = ApprovalDecisionGuard.Evaluate(Build(spec =>
+            {
+                spec.Decision = decision;
+                spec.ApprovedEarlierStep = true;
+            }));
+
+            Assert.Equal(ApprovalGuardOutcome.DeciderApprovedEarlierStep, verdict.Outcome);
+            Assert.Equal("you approved an earlier step", verdict.Message);
+        }
+        Assert.False(EarlierStepRule.None.DeciderApprovedEarlierStep);
+    }
+
+    [Fact]
+    public void TheEarlierStepBarIsCheckedAfterEveryExistingRefusal()
+    {
+        var verdict = ApprovalDecisionGuard.Evaluate(Build(spec =>
+        {
+            spec.RequesterIsDecider = true;
+            spec.SubjectIsDecider = true;
+            spec.ApprovedEarlierStep = true;
+        }));
+
+        Assert.Equal(ApprovalGuardOutcome.MakerIsChecker, verdict.Outcome);
+    }
+
+    [Fact]
     public void AMultiStatusVocabularyIsRenderedReadablyInTheRefusal()
     {
         var verdict = ApprovalDecisionGuard.Evaluate(Build(spec =>
@@ -201,6 +275,9 @@ public class ApprovalDecisionGuardTests
         public bool Locked;
         public bool RequesterIsDecider;
         public IReadOnlyCollection<string>? MakerCheckerScope;
+        public bool SubjectIsDecider;
+        public IReadOnlyCollection<string>? SubjectScope;
+        public bool ApprovedEarlierStep;
     }
 
     private static ApprovalDecisionSpec Spec() => Build(_ => { });
@@ -221,6 +298,9 @@ public class ApprovalDecisionGuardTests
             Lock = new ApprovalLock(k.Locked, "locked for payroll"),
             MakerChecker = new MakerCheckerRule(
                 k.RequesterIsDecider, k.MakerCheckerScope, "you cannot decide your own"),
+            SubjectSeparation = new SubjectSeparationRule(
+                k.SubjectIsDecider, k.SubjectScope, "you cannot decide a request about you"),
+            EarlierStepSeparation = new EarlierStepRule(k.ApprovedEarlierStep, "you approved an earlier step"),
         };
     }
 }

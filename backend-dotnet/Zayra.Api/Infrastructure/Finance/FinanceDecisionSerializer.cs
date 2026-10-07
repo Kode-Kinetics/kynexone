@@ -55,6 +55,10 @@ public static class FinanceDecisionSerializer
 {
     public const string ScopeLoan = "finance.loan";
     public const string ScopeAdvance = "finance.advance";
+    /// <summary>Release A per-employee lock: every writer of an employee's package, salary, contract term or renewal
+    /// case (loan request, Apply, Correction, freeze) serialises on (tenant, employee PublicId). Fixed order inside
+    /// it: case row → contract → salary → entitlement rows.</summary>
+    public const string ScopeEmployeePackage = "employee.package";
 
     /// <summary>
     /// Runs <paramref name="body"/> as the sole writer of (<paramref name="scope"/>,
@@ -101,7 +105,9 @@ public static class FinanceDecisionSerializer
     public static Task AcquireAsync(
         ZayraDbContext db, string scope, Guid tenantId, Guid aggregateId, CancellationToken ct = default)
     {
-        if (!db.Database.IsRelational()) return Task.CompletedTask;
+        // SQLite is used by the financial integration fixtures. Its transaction already
+        // serializes writers; PostgreSQL additionally needs the aggregate advisory lock.
+        if (!db.Database.IsNpgsql()) return Task.CompletedTask;
         var key = ComputeLockKey(scope, tenantId, aggregateId);
         // Interpolated value binds as a parameter, not as text.
         return db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({key})", ct);

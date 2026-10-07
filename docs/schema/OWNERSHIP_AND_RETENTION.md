@@ -350,6 +350,19 @@ not a judgement call. A `DELETE` here is an incident.
 | `background_jobs` | T, or E when referenced by `retention_purge_audits` | The TTL job must check the reference before deleting. |
 | `background_job_items` | T | May hold row-level personal data from a failed import — TTL aggressively. |
 
+### S. Grade entitlements and contract renewal (rev 8.3.2 — Release A)
+
+**Owner:** HR Core Engineering · **Approved by:** HR Core lead + **Payroll Engineering** (`grade_entitlements` drives loan
+limits and the salary basis) + **Compliance (KSA)** for the statutory floors and the Art. 37/55 rules they encode.
+RLS: shape (a) for all three, plus the company-scope predicate for the two tier-C tables (live bridge: the
+`ICompanyScoped` query filter).
+
+| Table | Class | Note |
+|---|---|---|
+| `grade_entitlements` | S | Close-only. Loans and frozen packages keep a witness id into it, so a cell is never deleted. |
+| `employee_entitlements` | S | Labour-law evidence of the package agreed for each term. Anonymise with the employee only after the S minimum. |
+| `contract_renewal_cases` | S | Evidence of a renewal decision, its notice and its Qiwa outcome. The referenced Qiwa evidence and notice documents must be retained at least as long. |
+
 ---
 
 ## 4. What the DPO must still decide

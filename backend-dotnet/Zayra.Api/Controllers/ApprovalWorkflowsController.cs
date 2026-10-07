@@ -53,10 +53,34 @@ public class ApprovalWorkflowsController : ControllerBase
                 validEntities = ApprovalEntities.Producers.OrderBy(x => x, StringComparer.Ordinal).ToArray(),
             });
 
+    // Release A: a contract renewal changes contract terms and pay, so every step of its chain must name the
+    // role that decides it — whatever the step type. A blank or "Any" role would let any approver in the company
+    // decide someone's renewal; the general Role-step rule (EnsureRoleStepsNameARole) does not cover other types.
+    private ActionResult? RefuseOpenRenewalSteps(ApprovalWorkflowRequest request)
+    {
+        var entity = (request.EntityName ?? string.Empty).Trim();
+        if (!Zayra.Api.Infrastructure.Contracts.ContractRenewalApprovalSync.EntityNames.Contains(entity, StringComparer.OrdinalIgnoreCase))
+            return null;
+        var open = (request.Steps ?? Array.Empty<ApprovalWorkflowStepRequest>())
+            .Where(s => string.IsNullOrWhiteSpace(s.ApproverRole) || s.ApproverRole.Trim().Equals("Any", StringComparison.OrdinalIgnoreCase))
+            .Select(s => s.StepOrder)
+            .ToArray();
+        return open.Length == 0
+            ? null
+            : BadRequest(new
+            {
+                code = "approval_renewal_step_needs_role",
+                message = "Every step of a contract renewal approval must name the role that decides it, for example HR Manager "
+                          + "then HR Director. A blank or \"Any\" role would let any approver in the company decide it.",
+                steps = open,
+            });
+    }
+
     [HttpPost]
     [HasPermission("approvals.manage")]
     public async Task<ActionResult<ApprovalWorkflowDto>> Create(ApprovalWorkflowRequest request, CancellationToken cancellationToken)
     {
+        if (RefuseOpenRenewalSteps(request) is { } renewalRefusal) return renewalRefusal;
         if (RefuseUnroutableEntity(request) is { } refusal) return refusal;
         try
         {
@@ -73,6 +97,7 @@ public class ApprovalWorkflowsController : ControllerBase
     {
         // Update is guarded too: without it a tenant could create a valid workflow and then rename
         // its entity to a dead one — the same silent misconfiguration by a second route.
+        if (RefuseOpenRenewalSteps(request) is { } renewalRefusal) return renewalRefusal;
         if (RefuseUnroutableEntity(request) is { } refusal) return refusal;
         try
         {

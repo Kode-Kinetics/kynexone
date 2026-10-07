@@ -1,4 +1,5 @@
 import client from './client';
+import { requireList } from '../lib/listResponse';
 import { fetchAllPages } from '../lib/paging';
 import type { PagedResult } from './organization';
 
@@ -48,6 +49,8 @@ export interface LeavePolicy {
   publicHolidaysIncluded: boolean;
   payrollImpact: string;
   approvalWorkflowId: string | null;
+  /** Company choice to grant Hajj leave beyond Saudi Labour Law Art. 114 eligibility. */
+  allowsHajjBeyondStatutoryEligibility?: boolean;
   status: string;
   createdAtUtc: string;
   updatedAtUtc: string | null;
@@ -78,6 +81,12 @@ export interface EmployeeLeaveBalance {
   granted?: number;
   /** THE balance. Always read this rather than recomputing it from the components. */
   available: number;
+  /**
+   * Set for Saudi statutory event leave (maternity, Hajj, marriage…): the statutory days per event.
+   * Such leave is granted by law per event, not drawn from this balance, so show this figure as
+   * "Statutory entitlement" — `available` can read negative while a request is pending.
+   */
+  statutoryEntitlementDays?: number | null;
   createdAtUtc: string;
   updatedAtUtc: string | null;
 }
@@ -128,6 +137,12 @@ export interface LeaveRequest {
   decidedAtUtc: string | null;
   cancelledAtUtc: string | null;
   approvals?: LeaveApproval[];
+  /** Saudi statutory leave: the kind stamped at submission (Maternity, Hajj, Bereavement…). */
+  statutoryLeaveKind?: string | null;
+  /** Saudi statutory leave: the date of the event (death, birth, marriage), when given. */
+  statutoryEventDate?: string | null;
+  /** Set when the requester declared this a separate event from earlier leave of the same kind. */
+  separateEventReason?: string | null;
 }
 
 export interface LeaveApproval {
@@ -302,7 +317,7 @@ export interface LeaveDashboard {
 
 export const leaveTypesApi = {
   list: () =>
-    client.get<LeaveType[]>('/api/leave/types').then(r => r.data),
+    client.get<LeaveType[]>('/api/leave/types').then(r => requireList<LeaveType>(r.data, 'leave types')),
   create: (body: { code: string; nameEn: string; nameAr?: string; category: string; isPaid: boolean; isHalfDayAllowed: boolean; isHourlyAllowed: boolean; requiresAttachment: boolean; requiresReason: boolean; maxConsecutiveDays: number; colorCode?: string; sortOrder?: number }) =>
     client.post<LeaveType>('/api/leave/types', body).then(r => r.data),
   update: (id: string, body: object) =>
@@ -343,7 +358,38 @@ export const leaveBalancesApi = {
     client.post('/api/leave/balances/accrue').then(r => r.data),
 };
 
+/** The server's KsaStatutoryLeaveKind names. */
+export type StatutoryLeaveKindName =
+  | 'Maternity' | 'Paternity' | 'Marriage' | 'Bereavement' | 'BereavementSibling' | 'Hajj' | 'IddahMuslim' | 'IddahNonMuslim';
+
+/** One earlier leave of the same Saudi statutory kind, shown to the approver beside a request. */
+export interface StatutoryLeaveHistoryItem {
+  requestId: string;
+  statutoryKind: StatutoryLeaveKindName;
+  leaveTypeName: string;
+  startDate: string;
+  endDate: string;
+  totalDays: number;
+  status: string;
+  /** True when it falls in the same statutory event as the request being decided. */
+  sameEvent: boolean;
+  eventDate: string | null;
+}
+
+/** What the approver sees beside a Saudi statutory leave request. */
+export interface StatutoryLeaveContext {
+  statutoryKind: StatutoryLeaveKindName;
+  history: StatutoryLeaveHistoryItem[];
+  eventDate: string | null;
+  /** Set when the requester declared this request a separate event. */
+  separateEventReason: string | null;
+}
+
 export const leaveRequestsApi = {
+  /** For each Saudi statutory leave request among `ids`: the employee's other leave of that kind. */
+  statutoryHistory: (ids: string[]) =>
+    client.get<Record<string, StatutoryLeaveContext>>('/api/leave/requests/statutory-history', { params: { ids: ids.join(',') } })
+      .then(r => r.data),
   list: (params: { status?: string; employeeId?: number; leaveTypeId?: string; fromDate?: string; toDate?: string; departmentName?: string; companyId?: string; branchId?: string; page?: number; pageSize?: number } = {}) =>
     client.get<{ items: LeaveRequest[]; total: number }>('/api/leave/requests', { params }).then(r => r.data),
   /** Every matching request, page by page: an approval queue must show all of its work. */
@@ -357,6 +403,7 @@ export const leaveRequestsApi = {
     leaveTypeId: string; policyId?: string; startDate: string; endDate: string;
     dayType?: string; hoursRequested?: number; reason: string; isEmergency?: boolean;
     attachmentPath?: string; delegateEmployeeId?: number; delegateEmployeeName?: string;
+    statutoryEventDate?: string; separateEventReason?: string;
   }) => client.post<LeaveRequest>('/api/leave/requests', body).then(r => r.data),
   approve: (id: string, notes?: string) =>
     client.post<LeaveRequest>(`/api/leave/requests/${id}/approve`, { notes }).then(r => r.data),

@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Entitlements;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -30,8 +32,11 @@ public class BenefitsController : ControllerBase
         return Ok(await q.OrderBy(x => x.Code).Select(x => BenefitPlanDto.From(x)).ToListAsync(ct));
     }
 
+    // Role-gate bypass sweep (LegacyRoleGateBypassSweepTests): these resolved to employees.write, which HR Officer holds; the gate names Admin and HR Manager.
+    // Tenant-wide plan configuration and contribution/deduction money: the HR-manager approval tier.
     [HttpPost("plans")]
     [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("employees.approve")]
     public async Task<IActionResult> CreatePlan([FromBody] BenefitPlanRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -62,6 +67,7 @@ public class BenefitsController : ControllerBase
 
     [HttpPost("plans/{planId:guid}/eligibility")]
     [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("employees.approve")]
     public async Task<IActionResult> AddEligibility(Guid planId, [FromBody] BenefitEligibilityRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -70,6 +76,11 @@ public class BenefitsController : ControllerBase
         if (plan is null) return NotFound("Benefit plan not found.");
         if (req.EffectiveTo.HasValue && req.EffectiveTo < req.EffectiveFrom)
             return BadRequest("EffectiveTo cannot be before EffectiveFrom.");
+
+        // Release A (R1): which grade gets which benefit is set in Benefits by grade. For a tenant with release_a on, the
+        // grade eligibility rules are frozen (kept, readable and listed by the matrix import); tenants without the flag
+        // are unchanged.
+        if (await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId.Value, ct)) return MovedToBenefitsByGrade();
 
         var rule = new BenefitEligibilityRule
         {
@@ -86,6 +97,12 @@ public class BenefitsController : ControllerBase
         await _db.SaveChangesAsync(ct);
         return Ok(BenefitEligibilityDto.From(rule));
     }
+
+    private ConflictObjectResult MovedToBenefitsByGrade() => Conflict(new
+    {
+        error = "moved_to_benefits_by_grade",
+        message = "Which grades get a benefit is now set in Benefits → Benefits by grade. Existing eligibility rules are kept and listed there.",
+    });
 
     [HttpGet("plans/{planId:guid}/eligibility")]
     public async Task<IActionResult> ListEligibility(Guid planId, CancellationToken ct)
@@ -105,6 +122,7 @@ public class BenefitsController : ControllerBase
     /// </summary>
     [HttpPut("plans/{planId:guid}")]
     [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("employees.approve")]
     public async Task<IActionResult> UpdatePlan(Guid planId, [FromBody] BenefitPlanUpdateRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -129,12 +147,17 @@ public class BenefitsController : ControllerBase
     /// <summary>Deactivates (never deletes) an eligibility rule so historic enrolment decisions stay explainable.</summary>
     [HttpDelete("plans/{planId:guid}/eligibility/{ruleId:guid}")]
     [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("employees.approve")]
     public async Task<IActionResult> DeactivateEligibility(Guid planId, Guid ruleId, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         var rule = await _db.BenefitEligibilityRules.FirstOrDefaultAsync(x => x.Id == ruleId && x.BenefitPlanId == planId && x.TenantId == tenantId, ct);
         if (rule is null) return NotFound("Eligibility rule not found.");
+        // Release A (R1): which grade gets which benefit is set in Benefits by grade. For a tenant with release_a on, the
+        // grade eligibility rules are frozen (kept, readable and listed by the matrix import); tenants without the flag
+        // are unchanged.
+        if (await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId.Value, ct)) return MovedToBenefitsByGrade();
         rule.IsActive = false;
         await _db.SaveChangesAsync(ct);
         return Ok(BenefitEligibilityDto.From(rule));
@@ -146,6 +169,7 @@ public class BenefitsController : ControllerBase
     /// instead of surfacing the rule as a 400 after the fact. Read-only; writes nothing.
     /// </summary>
     [HttpGet("eligibility-check")]
+    [HasPermission("employees.write", "payroll.read", "finance.gl.read")]
     public async Task<IActionResult> CheckEligibility([FromQuery] Guid planId, [FromQuery] int employeeId, [FromQuery] DateOnly? effectiveFrom, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -215,7 +239,10 @@ public class BenefitsController : ControllerBase
         return Ok(BenefitEnrollmentDto.From(enrollment));
     }
 
+    // Role-gate bypass sweep (LegacyRoleGateBypassSweepTests): the controller role list resolved to employees.read, so a line Manager, Recruiter or HR Assistant
+    // listed every enrolment and read contribution and payroll-deduction amounts. HR, finance and payroll readers only.
     [HttpGet("enrollments")]
+    [HasPermission("employees.write", "payroll.read", "finance.gl.read")]
     public async Task<IActionResult> ListEnrollments([FromQuery] int? employeeId, [FromQuery] Guid? planId, CancellationToken ct, [FromQuery] string? status = null, [FromQuery] Guid? companyId = null)
     {
         var tenantId = this.GetTenantId();
@@ -230,6 +257,7 @@ public class BenefitsController : ControllerBase
 
     /// <summary>One enrolment with its contributions and payroll-deduction links.</summary>
     [HttpGet("enrollments/{enrollmentId:guid}")]
+    [HasPermission("employees.write", "payroll.read", "finance.gl.read")]
     public async Task<IActionResult> GetEnrollment(Guid enrollmentId, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -255,6 +283,7 @@ public class BenefitsController : ControllerBase
     /// Statutory lines (GOSI etc.) are excluded: they are never a benefit premium.
     /// </summary>
     [HttpGet("enrollments/{enrollmentId:guid}/deduction-candidates")]
+    [HasPermission("employees.write", "payroll.read", "finance.gl.read")]
     public async Task<IActionResult> ListDeductionCandidates(Guid enrollmentId, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -275,6 +304,7 @@ public class BenefitsController : ControllerBase
 
     [HttpPost("enrollments/{enrollmentId:guid}/contributions")]
     [Authorize(Roles = "Admin,HR Manager,Finance")]
+    [HasPermission("employees.approve")]
     public async Task<IActionResult> AddContribution(Guid enrollmentId, [FromBody] BenefitContributionRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -307,6 +337,7 @@ public class BenefitsController : ControllerBase
 
     [HttpPost("enrollments/{enrollmentId:guid}/payroll-deduction-links")]
     [Authorize(Roles = "Admin,HR Manager,Finance")]
+    [HasPermission("employees.approve")]
     public async Task<IActionResult> LinkPayrollDeduction(Guid enrollmentId, [FromBody] BenefitPayrollDeductionLinkRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();

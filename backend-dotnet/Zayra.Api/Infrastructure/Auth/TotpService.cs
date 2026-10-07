@@ -48,18 +48,30 @@ public class TotpService
     /// <summary>Verifies a 6-digit TOTP code using the plaintext base32 secret.
     /// Accepts one step before or after current step to accommodate clock skew.</summary>
     public bool Verify(string base32Secret, string userCode, int windowSteps = 1)
+        => MatchStep(base32Secret, userCode, windowSteps) is not null;
+
+    /// <summary>
+    /// The RFC 6238 time-step the code matched (within ±<paramref name="windowSteps"/>), or null.
+    /// Callers that hold a stored factor persist it and refuse any later code at or below it, so a
+    /// code observed once (shoulder-surfed, phished, logged) cannot be replayed inside its window.
+    /// </summary>
+    public long? MatchStep(string base32Secret, string userCode, int windowSteps = 1)
     {
         if (string.IsNullOrWhiteSpace(base32Secret) || string.IsNullOrWhiteSpace(userCode))
-            return false;
-        if (!int.TryParse(userCode.Trim(), out var inputCode)) return false;
+            return null;
+        if (!int.TryParse(userCode.Trim(), out var inputCode)) return null;
         byte[] keyBytes;
         try { keyBytes = FromBase32(base32Secret); }
-        catch { return false; }
+        catch { return null; }
         var currentStep = DateTimeOffset.UtcNow.ToUnixTimeSeconds() / StepSeconds;
         for (var step = currentStep - windowSteps; step <= currentStep + windowSteps; step++)
-            if (Compute(keyBytes, step) == inputCode) return true;
-        return false;
+            if (Compute(keyBytes, step) == inputCode) return step;
+        return null;
     }
+
+    /// <summary>A matched step is usable only if it is strictly after the last one accepted.</summary>
+    public static bool IsFreshStep(long? matched, long? lastAccepted)
+        => matched is { } step && (lastAccepted is null || step > lastAccepted.Value);
 
     // ── Internal RFC 6238 / RFC 4226 ─────────────────────────────────────────
 

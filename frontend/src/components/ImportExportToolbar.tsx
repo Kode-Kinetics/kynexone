@@ -217,13 +217,19 @@ function deriveFieldGaps(preview: ImportPreview): ImportFieldGap[] {
 
 export interface ImportExportToolbarProps {
   entityName: string;
-  onExport: () => Promise<void>;
+  /** Omit to hide the Export button (the caller may not export this entity). */
+  onExport?: () => Promise<void>;
   onDownloadTemplate: () => Promise<void>;
   /**
    * `importKey` identifies one selected file. An importer that forwards it lets the server replay a
    * re-sent submission (a retry after a timeout) instead of importing the same file twice.
    */
   onImport: (csvContent: string, importKey?: string) => Promise<ImportResult>;
+  /**
+   * False hides Template and Import CSV, for a user the API would refuse (the import endpoint's
+   * permission key, e.g. `employees.bulk_import`). Defaults to true.
+   */
+  canImport?: boolean;
   /**
    * Opt-in: when provided, importing runs a pre-commit dry-run and a persistent results view
    * instead of the 5-second toast. Importers that omit this keep the original toast flow.
@@ -328,6 +334,7 @@ export function ImportExportToolbar({
   onExport,
   onDownloadTemplate,
   onImport,
+  canImport = true,
   onPreview,
   onViewIncomplete,
 }: ImportExportToolbarProps) {
@@ -349,6 +356,7 @@ export function ImportExportToolbar({
   };
 
   const handleExport = async () => {
+    if (!onExport) return;
     setExporting(true);
     try {
       await onExport();
@@ -511,17 +519,20 @@ export function ImportExportToolbar({
         onChange={handleFileChange}
       />
 
-      <button
-        type="button"
-        className={btnOutline}
-        disabled={exporting}
-        onClick={handleExport}
-        title={`Export ${entityName} as CSV`}
-      >
-        <Download className="h-3.5 w-3.5" />
-        {exporting ? 'Exporting…' : 'Export'}
-      </button>
+      {onExport && (
+        <button
+          type="button"
+          className={btnOutline}
+          disabled={exporting}
+          onClick={handleExport}
+          title={`Export ${entityName} as CSV`}
+        >
+          <Download className="h-3.5 w-3.5" />
+          {exporting ? 'Exporting…' : 'Export'}
+        </button>
+      )}
 
+      {canImport && <>
       <button
         type="button"
         className={btnOutline}
@@ -543,6 +554,7 @@ export function ImportExportToolbar({
         <Upload className="h-3.5 w-3.5" />
         {importing ? 'Importing…' : previewing ? 'Checking…' : 'Import CSV'}
       </button>
+      </>}
 
       {/* Toast (kept for the toast-flow importers and for import errors) */}
       {toast && (

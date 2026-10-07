@@ -2,3 +2,11 @@ node_modules/
 dist/
 .next/
 *.tsbuildinfo
+# Never bake local secrets or session material into an image layer.
+.env*
+!.env.example
+.vercel/
+e2e/.auth/
+test-results/
+playwright-report/
+blob-report/

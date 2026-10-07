@@ -1058,9 +1058,12 @@ own `Claimed` rows** rather than claiming afresh. The run's exit condition is
 `slips + explicitly excluded = selected_employee_count` — which is why `payroll_runs` carries both
 counts as columns.
 
-**Session-scoped advisory locks are banned.** `AccessManagementService.cs:1917` uses
-`pg_advisory_lock` on a pooled connection, so a fault before unlock **leaks the lock into the next
-request's connection**. Always `pg_advisory_xact_lock`, matching the other three call sites.
+**Session-scoped advisory locks are banned.** Production reaches Neon through PgBouncer in
+transaction mode, so a `pg_advisory_lock` stays on whichever pooled server session ran it, the
+`pg_advisory_unlock` usually lands elsewhere, and the lock **leaks into other requests**. Take
+`pg_advisory_xact_lock` inside the operation's transaction; a lock that must span many transactions
+uses `TransactionHeldAdvisoryLease`. `SessionAdvisoryLockRatchetTests` bans the session functions in
+C# and SQL, and `AdvisoryXactLockGuardInterceptor` throws if an xact lock runs outside a transaction.
 
 ---
 

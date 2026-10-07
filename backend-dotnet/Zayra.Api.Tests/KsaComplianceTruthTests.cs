@@ -951,9 +951,10 @@ public class KsaComplianceTruthTests
             .Select(t => t.Name)
             .ToList();
 
-        types.Should().Contain("LiveQiwaApiAdapter").And.Contain("SandboxQiwaApiAdapter");
-        // Non-vacuous: the production assembly ships exactly these two.
-        types.Should().HaveCount(2);
+        types.Should().Contain("LiveQiwaApiAdapter").And.Contain("SandboxQiwaApiAdapter").And.Contain("RefusedLiveQiwaApiAdapter");
+        // Non-vacuous: the production assembly ships exactly these three, and only one claims to file.
+        types.Should().HaveCount(3);
+        new RefusedLiveQiwaApiAdapter().IsLiveIntegration.Should().BeFalse("the refusing adapter never claims to file");
     }
 
     // ═════════════════════════════════════════════════════════════════════════

@@ -17,6 +17,7 @@ using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Entitlements;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Data;
@@ -28,6 +29,8 @@ using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Models;
+
+using Zayra.Api.Infrastructure.Common;
 
 namespace Zayra.Api.Controllers;
 
@@ -264,8 +267,13 @@ public class EmployeesController : ControllerBase
         "ResidencyIssueDate", "IdNumber", "SponsorName", "ContractReference", "WorkPermitReference", "QiwaEmployeeReference"
     };
 
+    // Whole-tenant people export (PII, plus payroll and bank columns with employees.sensitive). Owner decision: only
+    // the HR roles that maintain the records (employees.write: Admin, HR Director, HR Manager, HR Officer). The
+    // resolver inferred employees.documents, which also let Compliance Officer export the whole tenant; Payroll
+    // Officer and Auditor were named but never held that key. Compliance keeps People Search.
     [HttpGet("export")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer,Auditor")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.write")]
     public async Task<IActionResult> Export(CancellationToken ct)
     {
         var tenantId = RequireTenant();
@@ -1298,6 +1306,17 @@ public class EmployeesController : ControllerBase
                     stagedPayrollEntities.Add(payrollProfile);
                     payrollProfilesCreated++;
                     payrollArtifactsChanged = true;
+                    // A NEW employee's bank details are initial data entry, but no second person has seen them:
+                    // say so, so they are confirmed with the employee before the first salary is sent.
+                    // Persisted as a typed gap too (not only this response), so HR can find it on the employee's
+                    // readiness checklist, payroll validation can warn on it, and confirming it is audited.
+                    if (!string.IsNullOrEmpty(ibanRaw) || !string.IsNullOrEmpty(accountRaw) || !string.IsNullOrEmpty(routingRaw))
+                    {
+                        const string bankDetail = "Bank details (IBAN/account/routing code) were set by an import without a second " +
+                                                  "review. Verify them with the employee before their first payroll.";
+                        warnings.Add($"Employee {emp.EmployeeCode}: {bankDetail}");
+                        gapsByCode[payrollCode].Add(new ImportGap(EmployeeImportGap.BankDetailsUnverified, "pay", bankDetail, null));
+                    }
                 }
                 // ── ONE SET OF BANK DETAILS, IN BOTH HOMES ──────────────────────────────────────────────
                 // The WPS/SIF export pays from the payroll profile; the employee record, its readiness snapshot
@@ -1325,7 +1344,8 @@ public class EmployeesController : ControllerBase
                 if (heldSalaryCodes.Contains(payrollCode)) continue;
 
                 var grade = emp.GradeId is not null ? lookups.GradeById.GetValueOrDefault(emp.GradeId.Value) : null;
-                var structure = await ResolveImportSalaryStructureAsync(tenantId, emp.CompanyId, grade, structureCodeRaw, currency, importStructures, ct);
+                var structure = await ResolveImportSalaryStructureAsync(tenantId, emp.CompanyId, grade, structureCodeRaw, currency, importStructures, ct,
+                    DateOnly.FromDateTime(emp.JoiningDate), warnings);
                 var assignment = new EmployeeSalaryStructure
                 {
                     TenantId = tenantId, EmployeeId = emp.Id, SalaryStructureId = structure.Id,
@@ -1994,9 +2014,12 @@ public class EmployeesController : ControllerBase
     /// <param name="importStructures">Structures already resolved or staged by THIS import. A query cannot see an
     /// Added-but-unsaved row, so without it every row of a grade staged its own copy of the same (company, code)
     /// structure — 250 duplicates in a 250-row file, all saved in one transaction.</param>
+    /// <param name="asOf">The date the grade standard is read on (Release A: the matrix in force then).</param>
+    /// <param name="warnings">Release A: where an allowance the grade has no matrix value for is reported.</param>
     private async Task<SalaryStructure> ResolveImportSalaryStructureAsync(Guid tenantId, Guid? companyId, Grade? grade,
         string requestedCode, string currency,
-        IDictionary<(Guid TenantId, Guid? CompanyId, string Code), SalaryStructure> importStructures, CancellationToken ct)
+        IDictionary<(Guid TenantId, Guid? CompanyId, string Code), SalaryStructure> importStructures, CancellationToken ct,
+        DateOnly? asOf = null, ICollection<string>? warnings = null)
     {
         var code = string.IsNullOrWhiteSpace(requestedCode)
             ? grade is not null ? $"GRADE-{grade.Code}" : "EMPLOYEE-IMPORT"
@@ -2027,7 +2050,19 @@ public class EmployeesController : ControllerBase
         _db.SalaryStructures.Add(structure);
         importStructures[key] = structure;
 
-        if (grade is not null)
+        // Release A: one fact in one place. A release_a tenant's grade standard is the matrix (Benefits by grade), never the
+        // frozen legacy pay scale. An allowance the grade has no value for gets no line — it is reported, not guessed.
+        if (grade is not null && await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId, ct))
+        {
+            var on = asOf ?? DateOnly.FromDateTime(DateTime.UtcNow);
+            var allowances = await EntitlementMatrixService.CashAllowancesAsync(_db, tenantId, grade.Id, companyId, on, ct);
+            _db.SalaryComponents.AddRange(EntitlementMatrixService.SalaryComponentsFor(allowances, tenantId, structure.Id));
+            foreach (var missing in allowances.Where(a => a.Missing))
+                warnings?.Add($"Salary structure {code}: grade {grade.Code} has no {EntitlementComponentRules.For(missing.ComponentCode)?.NameEn.ToLowerInvariant() ?? missing.ComponentCode} "
+                    + $"in Benefits by grade on {on:yyyy-MM-dd}, so the structure has no line for it. Each employee's own figure from the file is kept; "
+                    + "set the grade's value in Benefits by grade.");
+        }
+        else if (grade is not null)
         {
             var components = await _db.GradePayScaleComponents
                 .AsNoTracking()
@@ -3535,6 +3570,24 @@ public class EmployeesController : ControllerBase
                     .Where(x => !SensitiveFields.Contains(x.Key))
                     .ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
 
+                // A sensitive value does not change until it is approved, so the form (and the readiness
+                // fast-fix) keeps offering it, and every save used to raise ANOTHER identical approval —
+                // thirteen of them for one admin's own record in production. Resubmitting exactly what is
+                // already waiting now returns the waiting request instead of queueing a copy.
+                if (immediateChanges.Count == 0
+                    && await FindIdenticalPendingChangeAsync(tenantId, employee.Id, sensitiveChanges, cancellationToken) is { } waiting)
+                {
+                    return Accepted(new
+                    {
+                        changeRequestId = waiting.Id,
+                        approvalRequestId = waiting.ApprovalRequestId,
+                        requiresApproval = true,
+                        alreadyPending = true,
+                        sensitiveFields = sensitive,
+                        appliedFields = new List<string>()
+                    });
+                }
+
                 if (immediateChanges.Count > 0)
                 {
                     ApplyChanges(employee, immediateChanges);
@@ -3858,7 +3911,6 @@ public class EmployeesController : ControllerBase
     // independently (no outer transaction) so one failure never rolls back the others, and every row
     // resets the change-tracker so a guard-rejected mutation can never be flushed by a later row.
     private const int BulkActionMaxIds = 5000;
-    private static readonly string[] BulkExportRoles = { "Admin", "HR Manager", "HR Officer", "Payroll Officer", "Auditor" };
     private static readonly HashSet<string> BulkDeactivateTargets = new(StringComparer.OrdinalIgnoreCase) { "Suspended", "Inactive" };
 
     public sealed record BulkSelectAllFilter(string? Search, string? Status, string? Readiness, Guid? ImportBatchId, string? GapType);
@@ -3893,7 +3945,8 @@ public class EmployeesController : ControllerBase
             "activate" => User.HasPermission("employees.approve"),
             "deactivate" => User.HasPermission("employees.write"),
             "delete" => User.HasPermission("employees.delete"),
-            "export" => BulkExportRoles.Any(r => User.IsInRole(r)),
+            // The same audience as the full people export (GET export): employees.write.
+            "export" => User.HasPermission("employees.write"),
             _ => false,
         };
         if (!permitted) return Forbid();
@@ -4398,6 +4451,67 @@ public class EmployeesController : ControllerBase
         return BadRequest(new { message = "resolution must be 'distinct', 'merge', or 'unmerge'." });
     }
 
+    /// <summary>
+    /// Clears the "imported bank details not yet verified" flag (<see cref="EmployeeImportGap.BankDetailsUnverified"/>)
+    /// once HR has confirmed the IBAN/account with the employee. A second-person check, so it is refused to the
+    /// user who created the imported payroll profile and to the employee themselves, and to a caller who cannot
+    /// see the bank details being confirmed. Audited with the caller's note.
+    /// </summary>
+    [HttpPost("{id:int}/bank-details/confirm")]
+    [HasPermission("employees.write")]
+    public async Task<IActionResult> ConfirmImportedBankDetails(int id, [FromBody] ConfirmBankDetailsRequest req, CancellationToken ct)
+    {
+        var tenantId = RequireTenant();
+        if (!await CanAccessEmployeeAsync(id, ct)) return Forbid();
+        if (!CanViewSensitive())
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = "bank_details_not_visible",
+                message = "Confirming bank details needs a role that can see them (employees.sensitive)." });
+        if (string.IsNullOrWhiteSpace(req.Note))
+            return BadRequest(new { error = "note_required", message = "Say how the bank details were confirmed (for example, with the employee's bank letter)." });
+
+        var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, ct);
+        if (employee is null) return NotFound();
+        var open = await _db.EmployeeImportGaps
+            .Where(g => g.TenantId == tenantId && g.EmployeeId == id && g.ResolvedAtUtc == null
+                        && g.GapType == EmployeeImportGap.BankDetailsUnverified)
+            .ToListAsync(ct);
+        if (open.Count == 0)
+            return Conflict(new { error = "nothing_to_confirm", message = "This employee has no imported bank details waiting to be confirmed." });
+
+        // Who imported them: the imported payroll profile's CreatedBy, AND the actor on each import's commit
+        // marker (employee.import_committed, EntityId = the batch id), which is written in the import's own
+        // transaction. If neither names anyone, the second-person check cannot be made, so it is refused
+        // (fail closed) rather than letting an unknown importer confirm their own data.
+        var callerId = GetUserId();
+        var importers = new HashSet<Guid>();
+        var profileCreatedBy = await _db.EmployeePayrollProfiles.AsNoTracking()
+            .Where(p => p.TenantId == tenantId && p.EmployeeId == id && !p.IsDeleted && p.CreatedBy != null)
+            .Select(p => p.CreatedBy!.Value).ToListAsync(ct);
+        importers.UnionWith(profileCreatedBy);
+        var batchIds = open.Select(g => g.ImportBatchId.ToString()).Distinct().ToList();
+        var markerActors = await _db.AuditLogs.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.Action == ImportCommittedAction && a.EntityName == ImportBatchEntityName
+                        && a.EntityId != null && batchIds.Contains(a.EntityId) && a.UserId != null)
+            .Select(a => a.UserId!.Value).ToListAsync(ct);
+        importers.UnionWith(markerActors);
+        if (importers.Count == 0)
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = "importer_unknown",
+                message = "The import that set these bank details does not record who ran it, so a second-person check is not possible. "
+                        + "Re-enter the bank details through the normal change approval instead." });
+        if (callerId is null || importers.Contains(callerId.Value) || callerId == employee.UserAccountId)
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = "second_person_required",
+                message = "Imported bank details must be confirmed by someone other than the person who imported them or the employee." });
+
+        // ONE SaveChanges: AuditService adds its row to this same request-scoped context and saves, so the gap
+        // resolution and the audit row commit together or not at all.
+        var now = DateTime.UtcNow;
+        foreach (var g in open) g.ResolvedAtUtc = now;
+        await _audit.WriteAsync("employee.imported_bank_details_confirmed", "Employee", id.ToString(), Context(),
+            JsonSerializer.Serialize(new { note = req.Note.Trim(), clearedGaps = open.Count, importBatchIds = open.Select(g => g.ImportBatchId).Distinct() }), ct);
+        await RefreshReadinessByIdAsync(tenantId, id, ct);   // display badge only, best-effort
+        return Ok(new { confirmed = true, clearedGaps = open.Count });
+    }
+
     /// <summary>Refresh one employee's denormalized readiness badge after a dup-flag change (fold via the
     /// service's snapshot path). Best-effort — display only; the activation gate always recomputes live.</summary>
     private async Task RefreshReadinessByIdAsync(Guid tenantId, int id, CancellationToken ct)
@@ -4419,89 +4533,24 @@ public class EmployeesController : ControllerBase
         catch { /* best-effort badge refresh */ }
     }
 
+    // RETIRED. This applied a sensitive change in one click: it skipped the EMPLOYEE-CHANGE workflow's
+    // two steps (manager, then HR), the separation-of-duties bars (the employee the change is about
+    // could approve their own salary or IBAN), and it left the change's ApprovalRequest open in the
+    // Approval Center. No client calls it. Changes are decided only through ApprovalWorkflowService,
+    // which is the one place those rules live. The permission stays declared so the catalog still
+    // names the action that once used it.
     [HttpPost("changes/{changeId:guid}/approve")]
     [HasPermission("employees.approve")]
     public async Task<IActionResult> ApproveChange(Guid changeId, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
-        var change = await _db.EmployeeChangeRequests.FirstOrDefaultAsync(x => x.Id == changeId && x.TenantId == tenantId, cancellationToken);
-        if (change is null) return NotFound();
-        if (!string.Equals(change.Status, "PendingApproval", StringComparison.OrdinalIgnoreCase))
-            return BadRequest(new { message = "Change request has already been decided." });
-        var approverId = GetUserId();
-        if (approverId is not null && change.RequestedByUserId == approverId)
-            return BadRequest(new { message = "Maker-checker violation: requester cannot approve their own sensitive change." });
-        var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
-        if (change.EffectiveDate > today)
-            return BadRequest(new { message = "Future-dated sensitive changes cannot be applied before their effective date." });
-        var employee = await _db.Employees.FirstOrDefaultAsync(x => x.Id == change.EmployeeId && x.TenantId == tenantId, cancellationToken);
-        if (employee is null) return NotFound();
-        var changes = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.ProposedChangesJson) ?? new();
-        var priorDeptId = employee.DepartmentId;
-        var priorDesigId = employee.DesignationId;
-        // Same re-check as the Approval Center: a change the effective-date job returned for review is refused
-        // if a value moved after the re-review was raised. A change never returned for review passes through.
-        var baselineKeys = HttpContext?.RequestServices?.GetService(typeof(IDataProtectionProvider)) as IDataProtectionProvider;
-        var review = await EmployeeChangeBaseline.CheckUnchangedSinceReviewAsync(_db,
-            baselineKeys is null ? null : EmployeeChangeBaseline.CreateProtector(baselineKeys), tenantId, change.Id, employee,
-            changes.Keys, cancellationToken);
-        if (!review.Unchanged)
-            return UnprocessableEntity(new { error = "changed_since_review", message = review.Refusal(DashboardController.FormatChangedFields) });
-        // managerEmployeeId is not a sensitive key, so a change request only carries one if it was stored by an
-        // older build; it is still checked here, because every apply path goes through the same rules.
-        if (await EmployeeChangeApplier.ValidateManagerChangeAsync(_db, employee, changes, null, cancellationToken) is { } managerRejection)
-            return UnprocessableEntity(new { error = "invalid_manager", message = managerRejection.Message + " The change remains pending." });
-        try
+        if (!await _db.EmployeeChangeRequests.AnyAsync(x => x.Id == changeId && x.TenantId == tenantId, cancellationToken))
+            return NotFound();
+        return StatusCode(StatusCodes.Status410Gone, new
         {
-            // The payload was validated against EditableEmployeeFields when the change was REQUESTED, so an
-            // unknown key here is a stored patch from an older build. Refusing would strand an approved
-            // change with no operator remedy, so it is logged loudly instead of dropped in silence.
-            // ONE apply sequence for every approval path (EmployeeChangeApplier.ApplyApprovedChangeAsync):
-            // employee columns, payroll-profile keys, org ids, and the approved bank field(s) mirrored onto
-            // the payroll profile so an IBAN fixed via the checklist actually reaches the WPS run (Δ13 / P1-1).
-            var unknownApproved = await EmployeeChangeApplier.ApplyApprovedChangeAsync(
-                _db, tenantId, employee, changes, approverId, cancellationToken);
-            if (unknownApproved.Count > 0)
-                _logger?.LogWarning(
-                    "Approved employee change {ChangeId} for employee {EmployeeId} carried unrecognised field(s) {UnknownFields}; those values were NOT applied.",
-                    change.Id, employee.Id, string.Join(", ", unknownApproved));
-            employee.UpdatedAtUtc = DateTime.UtcNow;
-            change.Status = "ApprovedApplied";
-            change.ApprovedByUserId = approverId;
-            change.ApprovedAtUtc = DateTime.UtcNow;
-            change.AppliedAtUtc = DateTime.UtcNow;
-            await AddHistory(employee, "SensitiveChangeApproved", change.EffectiveDate, cancellationToken);
-            // ESTABLISHMENT GUARD (path "approval"): authoritative re-check AT APPLY — the slot may
-            // have been consumed since submission. On a block nothing is persisted (throws before
-            // save / transaction rolls back), so the change request stays PendingApproval and can
-            // be re-approved after a budget raise.
-            if (employee.DepartmentId != priorDeptId || employee.DesignationId != priorDesigId)
-            {
-                await _establishmentGuard.EnforceAndExecuteAsync(tenantId, employee.DepartmentId, employee.DesignationId,
-                    excludeEmployeeId: employee.Id, path: "approval", Context(), async () =>
-                    {
-                        await _db.SaveChangesAsync(cancellationToken);
-                        return true;
-                    }, cancellationToken);
-            }
-            else
-            {
-                await _db.SaveChangesAsync(cancellationToken);
-            }
-            await Audit("employee.change_approved", "EmployeeChangeRequest", change.Id.ToString(), cancellationToken);
-            return Ok(EmployeeDetailDto.Project(employee, CanViewSensitive()));
-        }
-        catch (EstablishmentBudgetExceededException ex)
-        {
-            // Discard the half-applied tracked mutations BEFORE any further write on this context
-            // (Notify saves): the change request must remain PendingApproval untouched.
-            _db.ChangeTracker.Clear();
-            await Notify("Employee change blocked by staffing budget",
-                $"The approved change for {employee.EmployeeCode} could not be applied: {ex.Block.DepartmentName} already has {ex.Block.Current} of {ex.Block.Budgeted} budgeted {ex.Block.LevelNameEn}(s). Raise the budget or amend the change; the request remains pending.",
-                "EmployeeChangeRequest", change.Id.ToString(), cancellationToken);
-            return this.EstablishmentConflict(ex);
-        }
-        catch (InvalidOperationException ex) { return UnprocessableEntity(new { message = ex.Message }); }
+            message = "Approving an employee change here is disabled. Decide it in the Approval Center "
+                      + "(POST /api/approval-requests/{id}/decisions) so every approval step and separation-of-duties rule is enforced."
+        });
     }
 
     private async Task<ApprovalWorkflow> EnsureEmployeeChangeWorkflowAsync(Guid tenantId, CancellationToken cancellationToken)
@@ -4686,14 +4735,21 @@ public class EmployeesController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer,Auditor")]
     public async Task<ActionResult<IReadOnlyCollection<EmployeeExpiringDocumentDto>>> ExpiringDocuments([FromServices] IEmployeeManagementService employeeManagement, [FromQuery] int days = 60, CancellationToken cancellationToken = default)
     {
-        return Ok(await employeeManagement.ExpiringDocumentsAsync(RequireTenant(), days, cancellationToken));
+        // DATA SCOPE: names with document expiry, so a team-scoped caller (a Manager or Supervisor reaching
+        // this through employees.read) sees their reporting line, and a company-scoped caller their companies.
+        var tenantId = RequireTenant();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
+        return Ok(await employeeManagement.ExpiringDocumentsAsync(tenantId, days, cancellationToken, scope.AllowedEmployeeIds));
     }
 
     [HttpGet("reports/missing-documents")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer,Auditor")]
     public async Task<ActionResult<IReadOnlyCollection<EmployeeMissingDocumentsReportDto>>> MissingDocuments([FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
-        return Ok(await employeeManagement.MissingDocumentsAsync(RequireTenant(), cancellationToken));
+        // DATA SCOPE: same rule as expiring-documents above.
+        var tenantId = RequireTenant();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
+        return Ok(await employeeManagement.MissingDocumentsAsync(tenantId, cancellationToken, scope.AllowedEmployeeIds));
     }
 
     [HttpGet("reports/status-summary")]
@@ -4779,13 +4835,16 @@ public class EmployeesController : ControllerBase
     /// template, bilingual, stored unique reference, register row. The routes and the response
     /// shape are unchanged, so nothing calling them has to move.</para>
     /// </summary>
+    // Role-gate bypass sweep (LegacyRoleGateBypassSweepTests): issuing a registered letter (appointment letter states salary) resolved to employees.read; HR roles hold employees.write.
     [HttpGet("{id:int}/letters/appointment")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.write")]
     public Task<IActionResult> AppointmentLetter(int id, [FromQuery] string language = HrLetterLanguages.Bilingual, CancellationToken cancellationToken = default)
         => IssueRegisteredLetterAsync(id, HrLetterTypes.AppointmentLetter, language, cancellationToken);
 
     [HttpGet("{id:int}/letters/experience")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.write")]
     public Task<IActionResult> ExperienceLetter(int id, [FromQuery] string language = HrLetterLanguages.Bilingual, CancellationToken cancellationToken = default)
         => IssueRegisteredLetterAsync(id, HrLetterTypes.ExperienceCertificate, language, cancellationToken);
 
@@ -4895,15 +4954,8 @@ public class EmployeesController : ControllerBase
         return Ok(transfer);
     }
 
-    private async Task<int?> GetCallerEmployeeId(CancellationToken cancellationToken)
-    {
-        var userId = GetUserId();
-        if (userId is null) return null;
-        return await _db.Employees.AsNoTracking()
-            .Where(e => e.TenantId == RequireTenant() && !e.IsDeleted && e.UserAccountId == userId)
-            .Select(e => (int?)e.Id)
-            .FirstOrDefaultAsync(cancellationToken);
-    }
+    private Task<int?> GetCallerEmployeeId(CancellationToken cancellationToken) =>
+        CallerEmployeeResolver.ResolveAsync(_db, User, RequireTenant(), cancellationToken);
 
     // ── Employee draft lifecycle helpers ─────────────────────────────────────────────────────────
 
@@ -5837,6 +5889,38 @@ public class EmployeesController : ControllerBase
             && char.IsDigit(s[2]) && char.IsDigit(s[3]);
     }
 
+    /// <summary>
+    /// The employee's pending change whose proposed values are exactly <paramref name="proposed"/> (same
+    /// keys, same values), with its approval still pending. Null when nothing identical is waiting.
+    /// </summary>
+    private async Task<EmployeeChangeRequest?> FindIdenticalPendingChangeAsync(
+        Guid tenantId, int employeeId, IReadOnlyDictionary<string, JsonElement> proposed, CancellationToken cancellationToken)
+    {
+        var pending = await _db.EmployeeChangeRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId
+                && x.Status == EmployeeChangeStatuses.PendingApproval && x.ApprovalRequestId != null)
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .ToListAsync(cancellationToken);
+        foreach (var change in pending)
+        {
+            Dictionary<string, JsonElement>? stored;
+            try { stored = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.ProposedChangesJson); }
+            catch (JsonException) { continue; }
+            if (stored is null || stored.Count != proposed.Count) continue;
+            var storedByKey = new Dictionary<string, JsonElement>(stored, StringComparer.OrdinalIgnoreCase);
+            if (!proposed.All(p => storedByKey.TryGetValue(p.Key, out var v) && SameJsonValue(v, p.Value))) continue;
+            var approvalPending = await _db.ApprovalRequests.AsNoTracking()
+                .AnyAsync(a => a.TenantId == tenantId && a.Id == change.ApprovalRequestId && a.Status == "Pending", cancellationToken);
+            if (approvalPending) return change;
+        }
+        return null;
+    }
+
+    private static bool SameJsonValue(JsonElement a, JsonElement b) =>
+        a.ValueKind == b.ValueKind && (a.ValueKind == JsonValueKind.String
+            ? string.Equals(a.GetString()?.Trim(), b.GetString()?.Trim(), StringComparison.Ordinal)
+            : a.GetRawText() == b.GetRawText());
+
     private bool CanEditSensitive() => User.IsInRole("Admin") || User.IsInRole("HR Manager") || User.HasClaim("permission", "employees.sensitive");
     private bool CanViewSensitive() => CanEditSensitive() || User.IsInRole("Payroll Officer") || User.HasClaim("permission", "employees.sensitive");
     private Task Notify(string title, string message, string entity, string? entityId, CancellationToken cancellationToken) => _notifications.NotifyAsync(RequireTenant(), null, title, message, entity, entityId, cancellationToken);
@@ -5886,6 +5970,7 @@ public record DeriveWorkEmailResponse(
     string Domain, string Pattern, string LocalPart, string WorkEmail, bool Unique, string? Suggestion, string Status);
 
 public record ResolveDuplicateRequest(string Resolution, int? IntoEmployeeId, string? Reason);
+public record ConfirmBankDetailsRequest(string? Note);
 
 /// <summary>Read-only Ex-Employees archive row. Directory + lifecycle metadata only — no salary,
 /// bank, or statutory-identity fields (parity with the People list's non-sensitive projection).</summary>

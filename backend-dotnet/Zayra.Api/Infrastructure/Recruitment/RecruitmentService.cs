@@ -52,36 +52,6 @@ public class RecruitmentService : IRecruitmentService
         return $"{prefix}{seq:D4}";
     }
 
-    // ── Approval integration ───────────────────────────────────────────────────
-
-    public async Task<Guid?> CreateApprovalRequestAsync(
-        Guid tenantId, string entityName, Guid entityId, string title,
-        Guid? requestedByUserId, CancellationToken ct = default)
-    {
-        // F1 — the ONE approval router chooses the workflow (deterministically; this used to be an
-        // unordered FirstOrDefault over every active workflow for the entity). A requisition has no
-        // employee subject, so only tenant-wide workflows apply. No workflow keeps the existing
-        // product rule for requisitions: they are submitted without an approval step.
-        var route = await new Zayra.Api.Infrastructure.Approvals.ApprovalRouter(_db)
-            .TryResolveAsync(tenantId, null, entityName, ct);
-        if (route is null) return null;
-
-        var req = new ApprovalRequest
-        {
-            TenantId = tenantId,
-            WorkflowId = route.WorkflowId,
-            EntityName = entityName,
-            EntityId = entityId.ToString(),
-            Title = title,
-            Status = "Pending",
-            CurrentStepOrder = 1,
-            RequestedByUserId = requestedByUserId,
-        };
-        _db.ApprovalRequests.Add(req);
-        await _db.SaveChangesAsync(ct);
-        return req.Id;
-    }
-
     // ── Offer letter HTML ──────────────────────────────────────────────────────
 
     public string GenerateOfferLetterHtml(OfferLetterTemplateData d)

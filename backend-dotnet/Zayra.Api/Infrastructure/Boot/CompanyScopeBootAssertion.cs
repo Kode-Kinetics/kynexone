@@ -30,6 +30,13 @@ public static class CompanyScopeBootAssertion
     /// </summary>
     private static readonly Dictionary<string, string> AllowList = new()
     {
+        ["HRRequest"] = "Shared legacy HR ticket: CompanyId is populated only for governed Jawazat requests. " +
+                        "Applying an operational filter would hide every ordinary pre-existing null-company ticket " +
+                        "and the requesting employee's own history after transfer. JawazatWorkflowService and " +
+                        "HRRequestCenterController enforce frozen-company AND employee scope for HR reads/writes; " +
+                        "employee self-service is restricted to its canonical account-linked owner. Generic status " +
+                        "and HR-letter mutations reject Jawazat tickets. JawazatWorkflowTests cover these boundaries; " +
+                        "ITenantOwned still applies to every ticket.",
         ["Branch"] = "Org-structure child: non-nullable Guid CompanyId (a branch cannot exist " +
                      "outside a company); visibility follows its parent Company, and the " +
                      "nullable-CompanyId interface contract cannot apply.",

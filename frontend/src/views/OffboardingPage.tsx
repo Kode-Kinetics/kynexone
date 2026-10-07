@@ -9,6 +9,7 @@ import {
   type Offboarding, type OffboardingSummary, type SeparationTypeInfo,
 } from '../api/offboarding';
 import { employeesApi } from '../api/employees';
+import { useAuth } from '../contexts/AuthContext';
 import { requestFailureReason } from '../lib/requestFailure';
 
 const EXIT_REASONS = ['Compensation', 'Career Growth', 'Management', 'Work-Life Balance', 'Relocation', 'Job Content', 'Company Culture', 'Better Offer', 'Personal', 'Other'];
@@ -38,6 +39,10 @@ function apiMessage(e: unknown, fallback: string) {
 }
 
 export function OffboardingPage() {
+  // Initiating a separation is `employees.approve` on the API (OffboardingController.Initiate). The
+  // page is open to employees.write and payroll.approve holders, who were offered the button and got a 403.
+  const { hasPermission } = useAuth();
+  const canInitiate = hasPermission('employees.approve');
   const [items, setItems] = useState<Offboarding[]>([]);
   const [summary, setSummary] = useState<OffboardingSummary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -81,9 +86,9 @@ export function OffboardingPage() {
           <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">Offboarding</h1>
           <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">Manage separations end-to-end — notice period, exit interview, clearance checklist and final archive.</p>
         </div>
-        <button type="button" className="btn-primary flex items-center gap-1.5 text-sm" onClick={() => setShowInitiate(true)}>
+        {canInitiate && <button type="button" className="btn-primary flex items-center gap-1.5 text-sm" onClick={() => setShowInitiate(true)}>
           <UserMinus className="h-3.5 w-3.5" /> Initiate Offboarding
-        </button>
+        </button>}
       </div>
 
       {!loading && !listUnavailable && staleNotices.length > 0 && (

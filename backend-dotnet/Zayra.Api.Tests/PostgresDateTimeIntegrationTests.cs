@@ -60,6 +60,24 @@ public sealed class PostgresFixture : IAsyncLifetime
               ON payroll_runs (tenant_id, year, month)
               WHERE ""company_id"" IS NULL AND ""status"" != 'Voided' AND ""run_type"" = 'Regular';
         ");
+        // Slice L1 — EnsureCreated cannot emit EXCLUDE. Apply the same DDL the AddGradeLoanLimits migration
+        // does, so every integration test runs against production's no-overlap guarantee on grade_entitlements.
+        await db.Database.ExecuteSqlRawAsync(GradeEntitlementSql.CreateExtension);
+        await db.Database.ExecuteSqlRawAsync(GradeEntitlementSql.AddExclusion);
+        // AddGradeNameArAndLoanOffering: employer loans are principal only (qard). Same DDL as the migration.
+        await db.Database.ExecuteSqlRawAsync(LoanTypeSql.AddInterestFreeCheck);
+        // Release A (ReleaseAEntitlementsAndRenewals): the EXCLUDE, the PublicId FKs and the four triggers EF cannot
+        // model — the migration's own frozen constants, so the fixture runs against exactly what production gets.
+        // Through a plain command, not ExecuteSqlRaw: the DDL holds regex quantifiers ({64}) that ExecuteSqlRaw would
+        // read as format placeholders. migrationBuilder.Sql does no formatting, so this is the text production runs.
+        var connection = db.Database.GetDbConnection();
+        await connection.OpenAsync();
+        foreach (var ddl in Zayra.Api.Migrations.ReleaseAEntitlementsAndRenewals.PostgresOnlyDdl)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = ddl;
+            await command.ExecuteNonQueryAsync();
+        }
     }
 
     /// <summary>
@@ -108,6 +126,7 @@ public sealed class PostgresFixture : IAsyncLifetime
             .UseNpgsql(ConnectionString, ProductionProviderOptions)
             // Same as Program.cs: F3 job claiming relies on it for FOR UPDATE SKIP LOCKED.
             .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance)
+            .AddInterceptors(Zayra.Api.Infrastructure.Data.AdvisoryXactLockGuardInterceptor.Instance)
             .Options);
 
     /// <summary>
@@ -122,6 +141,7 @@ public sealed class PostgresFixture : IAsyncLifetime
             .UseNpgsql(ConnectionString, ProductionProviderOptions)
             // Same as Program.cs: F3 job claiming relies on it for FOR UPDATE SKIP LOCKED.
             .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance)
+            .AddInterceptors(Zayra.Api.Infrastructure.Data.AdvisoryXactLockGuardInterceptor.Instance)
             .Options,
         accessor);
 
@@ -135,6 +155,7 @@ public sealed class PostgresFixture : IAsyncLifetime
             .UseNpgsql(ConnectionString, ProductionProviderOptions)
             // Same as Program.cs: F3 job claiming relies on it for FOR UPDATE SKIP LOCKED.
             .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance)
+            .AddInterceptors(Zayra.Api.Infrastructure.Data.AdvisoryXactLockGuardInterceptor.Instance)
             .Options,
         accessor,
         logger: null,
@@ -143,7 +164,7 @@ public sealed class PostgresFixture : IAsyncLifetime
 
     /// <summary>One definition of "production's provider configuration", so the fixture's factories
     /// cannot drift apart from each other or from Program.cs.</summary>
-    private static void ProductionProviderOptions(NpgsqlDbContextOptionsBuilder options) =>
+    internal static void ProductionProviderOptions(NpgsqlDbContextOptionsBuilder options) =>
         options.EnableRetryOnFailure(
             maxRetryCount: 5, maxRetryDelay: TimeSpan.FromSeconds(5), errorCodesToAdd: null);
 

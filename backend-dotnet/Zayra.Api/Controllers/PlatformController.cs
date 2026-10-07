@@ -47,6 +47,9 @@ public class PlatformController : ControllerBase
     private readonly ILogger<PlatformController> _log;
     private readonly IMemoryCache _cache;
     private readonly string _appUrl;
+    private readonly PasswordVerificationGate? _passwordGate;
+    private readonly LoginAbuseGuard? _loginAbuse;
+    private readonly PlatformSecurityNoticeQueue? _securityNotices;
 
     /// <summary>
     /// Key read (never written) by the <c>/platform/health</c> distributed-cache probe. Carries the
@@ -66,8 +69,14 @@ public class PlatformController : ControllerBase
         IMfaService mfa,
         IAccessManagementService accessManagement,
         ILogger<PlatformController> log,
-        IMemoryCache cache)
+        IMemoryCache cache,
+        PasswordVerificationGate? passwordGate = null,
+        LoginAbuseGuard? loginAbuse = null,
+        PlatformSecurityNoticeQueue? securityNotices = null)
     {
+        _securityNotices = securityNotices;
+        _passwordGate = passwordGate;
+        _loginAbuse = loginAbuse;
         _db = db;
         _jwt = jwt.Value;
         _passwordHasher = passwordHasher;
@@ -91,12 +100,115 @@ public class PlatformController : ControllerBase
     [HttpPost("auth/login")]
     [AllowAnonymous]
     [EnableRateLimiting("platform_login")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<IActionResult> Login([FromBody] PlatformLoginRequest req, CancellationToken ct)
+    {
+        // Cheap refusals before any hashing (LoginAbuseGuard): this account from this address, this
+        // account overall (unless a known device), and the address's unknown-account failure budget.
+        var client = _loginAbuse?.Client(HttpContext);
+        var email = req.Email ?? string.Empty;
+        if (_loginAbuse is not null && client is { } address
+            && _loginAbuse.TryBeginFromAddress("platform", "platform", email, address, DateTime.UtcNow) is { } refusal)
+            return PlatformRefusal(refusal, email, address);
+        try
+        {
+            var result = await LoginCoreAsync(req, ct);
+            if (client is { } address2 && HttpContext.Items.ContainsKey(UnknownPlatformAccountItem))
+                _loginAbuse?.RecordUnknownAccountFailure(address2, DateTime.UtcNow);
+            return result;
+        }
+        catch (PasswordVerificationBusyException ex)
+        {
+            return PlatformRefused(LoginAbuseGuard.BusyError, ex.Message);
+        }
+    }
+
+    private const string UnknownPlatformAccountItem = "kx.platform.unknown_account";
+
+    /// <summary>Sets the known-device cookie for <paramref name="user"/>'s current credentials.</summary>
+    private void RememberPlatformDevice(PlatformUser user, Guid? existingDevice)
+        => LoginAbuseGuard.AppendKnownDeviceCookie(Response, "platform", _loginAbuse?.IssueKnownDeviceToken(
+            "platform", "platform", user.Email, user.Id,
+            LoginAbuseGuard.CredentialVersion(user.PasswordHash, user.MfaEnabled, user.MfaConfiguredAtUtc),
+            existingDevice ?? Guid.NewGuid(), DateTime.UtcNow));
+
+    /// <summary>The device id of this request's known-device cookie if it is valid for <paramref name="user"/>.</summary>
+    private Guid? ReadPlatformKnownDevice(PlatformUser user, string email)
+        => _loginAbuse is not null
+           && _loginAbuse.TryReadKnownDevice(LoginAbuseGuard.KnownDeviceCookie(Request, "platform"), "platform", "platform",
+               email, user.Id, LoginAbuseGuard.CredentialVersion(user.PasswordHash, user.MfaEnabled, user.MfaConfiguredAtUtc), out var device)
+            ? device
+            : null;
+
+    /// <summary>
+    /// Context for the second-factor step of a platform sign-in: resolves the operator the challenge
+    /// names and validates this browser's known-device cookie for them, so a known device that got
+    /// through an active lockout at the password step gets through it here too (without clearing it).
+    /// </summary>
+    private async Task<(RequestContext Context, Guid? Device, DateTime? LockoutBypass)> PlatformSecondFactorContextAsync(
+        string challengeToken, CancellationToken ct)
+    {
+        var context = new RequestContext(
+            _loginAbuse?.Client(HttpContext).Ip ?? HttpContext.Connection.RemoteIpAddress?.ToString(),
+            HttpContext.Request.Headers.UserAgent.ToString(), null, null);
+        if (_loginAbuse is null
+            || !AuthChallengeTokenCodec.TryParse(challengeToken, AuthChallengeTokenCodec.PlatformLoginPurpose, out var envelope))
+            return (context, null, null);
+        var pu = await _db.PlatformUsers.AsNoTracking().FirstOrDefaultAsync(x => x.Id == envelope.PrincipalId, ct);
+        if (pu is null) return (context, null, null);
+        var device = ReadPlatformKnownDevice(pu, pu.Email);
+        var trusted = PlatformDeviceTrusted(device, pu.Email);
+        DateTime? bypassed = trusted && pu.LockoutEndUtc > DateTime.UtcNow ? pu.LockoutEndUtc : null;
+        return (context with { KnownDeviceVerified = trusted }, device, bypassed);
+    }
+
+    private bool PlatformDeviceTrusted(Guid? device, string email)
+        => device is { } d && _loginAbuse!.KnownDeviceStillTrusted("platform", "platform", email, d, DateTime.UtcNow);
+
+    /// <summary>
+    /// Queues a security notice for an operator (<see cref="PlatformSecurityNoticeQueue"/>): sign-in
+    /// never waits on SMTP, and a notice with a dedupe key goes out at most once.
+    /// </summary>
+    private void NotifyOperator(PlatformUser user, string subject, string text, string kind, string? dedupeKey = null)
+    {
+        if (_securityNotices is null) return;
+        var outcome = _securityNotices.TryEnqueue(
+            new PlatformSecurityNotice(user.Id, user.Email, user.FullName, subject, text, kind), dedupeKey);
+        // A dropped notice is not remembered, so the next sign-in for the same event queues it again.
+        if (outcome == PlatformSecurityNoticeOutcome.Dropped)
+            _log.LogWarning("Security notice {Kind} for platform user {PlatformUserId} was dropped: the notice queue is full.",
+                kind, user.Id);
+    }
+
+    private IActionResult PlatformRefused(string error, string message, int? retryAfterSeconds = null)
+    {
+        Response.Headers.RetryAfter = retryAfterSeconds is { } seconds
+            ? seconds.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : LoginAbuseGuard.JitteredRetryAfterSeconds();
+        return StatusCode(StatusCodes.Status429TooManyRequests, new { error, message });
+    }
+
+    private IActionResult PlatformRefusal(LoginRefusal refusal, string email, Zayra.Api.Infrastructure.Http.ClientAddress? client)
+    {
+        var retry = _loginAbuse!.RetryAfterSeconds(refusal, "platform", "platform", email, client, DateTime.UtcNow);
+        var (error, message) = LoginAbuseGuard.Describe(refusal, retry);
+        return PlatformRefused(error, message, retry);
+    }
+
+    /// <summary>Same PBKDF2 work as a real check, so a miss is not distinguishable by timing.</summary>
+    private Task<bool> VerifyDummyPasswordAsync(string password, CancellationToken ct)
+        => PasswordVerificationGate.RunAsync(_passwordGate,
+            () => _passwordHasher.Verify(password, Pbkdf2PasswordHasher.DummyHash), ct);
+
+    private async Task<IActionResult> LoginCoreAsync(PlatformLoginRequest req, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(req.Email) || string.IsNullOrWhiteSpace(req.Password))
             return BadRequest(new { message = "Email and password are required." });
 
         PlatformUser authenticatedUser;
+        DateTime? sessionExpiry = null;
+        var bypassingLockout = false;
+        Guid? signInDevice = null;
 
         // 1. Try DB-based platform user lookup first. Include inactive rows so the bootstrap
         // environment credential can never resurrect a deliberately deactivated owner.
@@ -105,12 +217,30 @@ public class PlatformController : ControllerBase
 
         if (dbUser is not null)
         {
-            if (!dbUser.IsActive || !PlatformRoles.All.Contains(dbUser.Role))
-                return Unauthorized(new { message = "Invalid platform admin credentials." });
+            // Known device (LoginAbuseGuard): a cookie issued to THIS operator for their current
+            // credentials, from a browser that has not been guessing. It lifts the account-wide cap
+            // and lets the owner through the lockout below, never the per-address limit.
+            var attemptAtUtc = DateTime.UtcNow;
+            var activeAccount = dbUser.IsActive && PlatformRoles.All.Contains(dbUser.Role);
+            var platformDevice = activeAccount ? ReadPlatformKnownDevice(dbUser, req.Email) : null;
+            var knownDevice = PlatformDeviceTrusted(platformDevice, req.Email);
+            // The account-wide cap applies to inactive accounts too: they are guessable all the same.
+            if (_loginAbuse?.TryBeginAccountWide("platform", "platform", req.Email, knownDevice, attemptAtUtc) is { } accountRefusal)
+                return PlatformRefusal(accountRefusal, req.Email, null);
 
-            // Brute-force lockout (see PlatformUser.FailedLoginCount): reject while a lockout is active.
-            if (dbUser.LockoutEndUtc.HasValue && dbUser.LockoutEndUtc > DateTime.UtcNow)
+            if (!activeAccount)
             {
+                await VerifyDummyPasswordAsync(req.Password, ct);
+                return Unauthorized(new { message = "Invalid platform admin credentials." });
+            }
+
+            // Brute-force lockout (see PlatformUser.FailedLoginCount): reject while a lockout is active —
+            // except for a trusted known device, which gets through WITHOUT clearing it, so an attacker
+            // on an unknown device stays locked out until it expires.
+            var lockoutActive = dbUser.LockoutEndUtc.HasValue && dbUser.LockoutEndUtc > DateTime.UtcNow;
+            if (lockoutActive && !knownDevice)
+            {
+                await VerifyDummyPasswordAsync(req.Password, ct);
                 _db.LoginActivities.Add(new LoginActivity
                 {
                     UserId = dbUser.Id, EmailAttempted = dbUser.Email,
@@ -122,8 +252,39 @@ public class PlatformController : ControllerBase
                 return Unauthorized(new { message = "Invalid platform admin credentials." });
             }
 
-            if (!_passwordHasher.Verify(req.Password, dbUser.PasswordHash))
+            var storedHash = dbUser.PasswordHash;
+            if (!await PasswordVerificationGate.RunAsync(_passwordGate,
+                    () => _passwordHasher.Verify(req.Password, storedHash), ct))
             {
+                if (knownDevice)
+                {
+                    // Counted against THIS device (it stops being trusted at the limit), never toward
+                    // the unknown-device lockout. Same activity and audit row as the tenant path.
+                    var now = DateTime.UtcNow;
+                    var distrusted = _loginAbuse!.RecordKnownDeviceFailure("platform", "platform", req.Email, platformDevice!.Value, now);
+                    var clientIp = _loginAbuse.Client(HttpContext).Ip;
+                    var audit = new RequestContext(clientIp, HttpContext.Request.Headers.UserAgent.ToString(), null, null);
+                    _db.LoginActivities.Add(new LoginActivity
+                    {
+                        UserId = dbUser.Id, EmailAttempted = dbUser.Email,
+                        EventType = LoginEventTypes.PlatformLoginFailed, FailureReason = "password_mismatch_known_device",
+                        IpAddress = clientIp,
+                        UserAgent = HttpContext.Request.Headers.UserAgent.ToString(),
+                    });
+                    _db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), now, "platform.auth.login_failed", "PlatformUser",
+                        dbUser.Id.ToString(), audit,
+                        System.Text.Json.JsonSerializer.Serialize(new { email = req.Email, reason = "password_mismatch_known_device" })));
+                    if (distrusted)
+                        _db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), now, "platform.auth.known_device_distrusted", "PlatformUser",
+                            dbUser.Id.ToString(), audit, $"{{\"failures\":{LoginAbuseGuard.KnownDeviceFailureLimit}}}"));
+                    await _db.SaveChangesAsync(ct);
+                    if (distrusted)
+                        NotifyOperator(dbUser, "Repeated wrong passwords on your KynexOne platform account",
+                            $"{LoginAbuseGuard.KnownDeviceFailureLimit} wrong passwords were entered for your account from a browser "
+                            + "you had signed in with before. That browser is no longer trusted to get past a lockout.",
+                            "known-device-distrusted", $"distrusted|{dbUser.Id:N}|{platformDevice!.Value:N}|{now:yyyyMMddHH}");
+                    return Unauthorized(new { message = "Invalid platform admin credentials." });
+                }
                 dbUser.FailedLoginCount++;
                 if (dbUser.FailedLoginCount >= PlatformUser.MaxFailedLogins)
                     dbUser.LockoutEndUtc = DateTime.UtcNow.AddMinutes(PlatformUser.LockoutMinutes);
@@ -140,9 +301,33 @@ public class PlatformController : ControllerBase
                 return Unauthorized(new { message = "Invalid platform admin credentials." });
             }
 
-            // Successful password: clear any lockout state.
-            dbUser.FailedLoginCount = 0;
-            dbUser.LockoutEndUtc = null;
+            // Successful password: a normal success clears the counter and any lockout. A known-device
+            // bypass of an ACTIVE lockout leaves both alone and is audited, and the owner is told.
+            bypassingLockout = knownDevice && lockoutActive;
+            signInDevice = platformDevice;
+            if (bypassingLockout)
+            {
+                _db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), DateTime.UtcNow, "platform.auth.lockout_bypassed_known_device",
+                    "PlatformUser", dbUser.Id.ToString(),
+                    new RequestContext(_loginAbuse!.Client(HttpContext).Ip, HttpContext.Request.Headers.UserAgent.ToString(), null, null),
+                    $"{{\"lockoutEnd\":\"{dbUser.LockoutEndUtc:O}\"}}"));
+                NotifyOperator(dbUser, "Your KynexOne platform account is locked by failed sign-ins",
+                    "Your account was locked after repeated wrong passwords from a device you have not used before. You signed "
+                    + "in from a browser you had used before, so you were let through; the lock stays in place for everyone "
+                    + "else until it expires. If the failed attempts were not you, change your password.",
+                    "lockout-bypassed", $"bypass|{dbUser.Id:N}|{dbUser.LockoutEndUtc?.Ticks ?? 0}"); // one per lockout
+            }
+            else
+            {
+                dbUser.FailedLoginCount = 0;
+                dbUser.LockoutEndUtc = null;
+            }
+
+            // Transparent rehash at today's work factor (see Pbkdf2PasswordHasher). A guarded
+            // UPDATE rather than a tracked change: PlatformUser.UpdatedAtUtc is the operator's
+            // session stamp, and re-encoding the SAME password must not sign out other sessions.
+            if (_passwordHasher.NeedsRehash(dbUser.PasswordHash))
+                await UpgradePlatformPasswordHashAsync(dbUser, req.Password, ct);
 
             // MFA challenge: if the DB platform user has TOTP configured, issue a challenge
             // token instead of the full JWT. The client must complete /api/platform/auth/mfa/challenge/verify.
@@ -152,6 +337,31 @@ public class PlatformController : ControllerBase
                     dbUser.Id, HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty, ct);
                 return Ok(new { mfaRequired = true, challengeToken, expiresInSeconds = 300 });
             }
+
+            // Mandatory MFA for every platform operator (PrivilegedMfaPolicy). From the enforcement
+            // date an un-enrolled operator gets a setup-only enrolment token instead of a session;
+            // before it, sign-in proceeds and the console prompts (GET auth/mfa/status).
+            var mfaState = await PrivilegedMfaPolicy.ForPlatformUserAsync(_db, _config, dbUser, DateTime.UtcNow, ct);
+            if (mfaState.BlocksSession)
+            {
+                await _db.SaveChangesAsync(ct); // persist the cleared lockout counters
+                var enrollmentToken = await _mfa.CreatePlatformEnrollmentChallengeAsync(
+                    dbUser.Id, HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty, ct);
+                _log.LogInformation("Platform user {PlatformUserId} must enrol MFA before signing in.", dbUser.Id);
+                return Ok(new
+                {
+                    mfaEnrollmentRequired = true,
+                    enrollmentToken,
+                    expiresInSeconds = 300,
+                    message = "Two-step sign-in is required for platform operators. Set it up to continue.",
+                });
+            }
+            if (mfaState.BreakGlassActive)
+                _log.LogWarning(
+                    "[MFA-BREAK-GLASS] Platform user {PlatformUserId} signed in without MFA because {Key} is suspending enforcement.",
+                    dbUser.Id, PrivilegedMfaPolicy.BreakGlassConfigKey);
+            // A grace-period session never outlives the grace period (min of 8 h and the date).
+            sessionExpiry = PrivilegedMfaPolicy.SessionExpiry(mfaState, _config, DateTime.UtcNow, PlatformSessionLifetime);
 
             // Update last login audit fields
             dbUser.LastLoginAtUtc = DateTime.UtcNow;
@@ -168,6 +378,10 @@ public class PlatformController : ControllerBase
             // request must never materialize a privileged principal or mint its first session.
             // Once any platform principal exists, an unknown email is indistinguishable from a
             // wrong password (401), so this endpoint is not an account-enumeration oracle.
+            if (_loginAbuse?.TryBeginAccountWide("platform", "platform", req.Email, false, DateTime.UtcNow) is { } unknownRefusal)
+                return PlatformRefusal(unknownRefusal, req.Email, null);
+            await VerifyDummyPasswordAsync(req.Password, ct);
+            HttpContext.Items[UnknownPlatformAccountItem] = true;
             if (await _db.PlatformUsers.AnyAsync(ct))
                 return Unauthorized(new { message = "Invalid platform admin credentials." });
 
@@ -189,13 +403,48 @@ public class PlatformController : ControllerBase
         });
         await _db.SaveChangesAsync(ct);
 
-        return Ok(CreatePlatformToken(authenticatedUser));
+        RememberPlatformDevice(authenticatedUser, signInDevice);
+        return Ok(CreatePlatformToken(authenticatedUser, sessionExpiry,
+            lockoutBypassedUntil: bypassingLockout ? authenticatedUser.LockoutEndUtc : null));
+    }
+
+    private async Task UpgradePlatformPasswordHashAsync(PlatformUser user, string password, CancellationToken ct)
+    {
+        var verified = user.PasswordHash;
+        try
+        {
+            var upgraded = await PasswordVerificationGate.RunAsync(_passwordGate, () => _passwordHasher.Hash(password), ct);
+            if (_db.Database.IsRelational())
+            {
+                var rows = await _db.PlatformUsers
+                    .Where(x => x.Id == user.Id && x.PasswordHash == verified)
+                    .ExecuteUpdateAsync(set => set.SetProperty(x => x.PasswordHash, upgraded), ct);
+                // Lost the compare-and-set (e.g. a simultaneous first login already upgraded it).
+                // Nothing to do: this login was already verified, and the platform path has no
+                // locked re-check that compares hashes.
+                if (rows != 1) return;
+                var property = _db.Entry(user).Property(x => x.PasswordHash);
+                property.CurrentValue = upgraded;
+                property.OriginalValue = upgraded;
+                property.IsModified = false;
+            }
+            else
+            {
+                user.PasswordHash = upgraded;
+            }
+            _log.LogInformation("Platform user {PlatformUserId} password re-hashed at the current work factor.", user.Id);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "Platform password rehash for {PlatformUserId} failed; the existing hash stays valid.", user.Id);
+        }
     }
 
     // ── Platform MFA ─────────────────────────────────────────────────────────
 
+    // Every platform role must enrol (PrivilegedMfaPolicy), so every role may set up its OWN factor.
     [HttpPost("auth/mfa/setup")]
-    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<IActionResult> PlatformMfaSetup(CancellationToken ct)
     {
         var platformUserId = GetPlatformUserId();
@@ -212,31 +461,126 @@ public class PlatformController : ControllerBase
     }
 
     [HttpPost("auth/mfa/verify-setup")]
-    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<IActionResult> PlatformMfaVerifySetup([FromBody] MfaVerifySetupRequest request, CancellationToken ct)
     {
         var platformUserId = GetPlatformUserId();
         if (platformUserId is null) return Unauthorized();
-        var ok = await _mfa.VerifyPlatformSetupAsync(platformUserId.Value, request, ct);
-        return ok ? NoContent() : BadRequest(new { message = "Invalid TOTP code." });
+        var codes = await _mfa.VerifyPlatformSetupAsync(platformUserId.Value, request, ct);
+        return codes is not null
+            ? Ok(new { recoveryCodes = codes })
+            : BadRequest(new { message = "Invalid TOTP code." });
+    }
+
+    /// <summary>The signed-in operator's mandatory-MFA standing; drives the console's enrolment prompt.</summary>
+    [HttpGet("auth/mfa/status")]
+    public async Task<IActionResult> PlatformMfaStatus(CancellationToken ct)
+    {
+        var platformUserId = GetPlatformUserId();
+        if (platformUserId is null) return Unauthorized();
+        var pu = await _db.PlatformUsers.AsNoTracking().FirstOrDefaultAsync(x => x.Id == platformUserId && x.IsActive, ct);
+        if (pu is null) return Unauthorized();
+        var state = await PrivilegedMfaPolicy.ForPlatformUserAsync(_db, _config, pu, DateTime.UtcNow, ct);
+        return Ok(new MfaStatusDto(
+            Enabled: PrivilegedMfaPolicy.IsPlatformUserEnrolled(pu),
+            Required: true,
+            RequiredBecause: "platform_operator",
+            EnforceFromUtc: state.EnforceFromUtc,
+            Enforced: state.Status == PrivilegedMfaStatus.Enforced,
+            PromptToEnroll: state.ShouldPrompt,
+            RecoveryCodesRemaining: MfaService.RecoveryCodesRemaining(pu)));
+    }
+
+    /// <summary>
+    /// Starts enrolment from a signed-in console session by issuing the same setup-only token the
+    /// sign-in flow uses, so the sign-in page's enrolment step is reused. Completing it rotates the
+    /// operator's session stamp; they sign in again with their code.
+    /// </summary>
+    [HttpPost("auth/mfa/enrollment/start")]
+    [EnableRateLimiting("platform_mfa_verify")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
+    public async Task<IActionResult> PlatformMfaEnrollmentStart(CancellationToken ct)
+    {
+        var platformUserId = GetPlatformUserId();
+        if (platformUserId is null) return Unauthorized();
+        var pu = await _db.PlatformUsers.AsNoTracking().FirstOrDefaultAsync(x => x.Id == platformUserId && x.IsActive, ct);
+        if (pu is null) return Unauthorized();
+        if (pu.MfaEnabled || !string.IsNullOrWhiteSpace(pu.MfaSecretEncrypted))
+            return Conflict(new { message = "MFA is already configured. Use the approved recovery flow to replace a factor." });
+        var token = await _mfa.CreatePlatformEnrollmentChallengeAsync(
+            pu.Id, HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty, ct);
+        return Ok(new { enrollmentToken = token, expiresInSeconds = 300 });
+    }
+
+    [HttpPost("auth/mfa/enrollment/setup")]
+    [AllowAnonymous]
+    [EnableRateLimiting("platform_mfa_verify")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
+    public async Task<IActionResult> PlatformMfaEnrollmentSetup([FromBody] MfaEnrollmentSetupRequest request, CancellationToken ct)
+    {
+        var dto = await _mfa.InitiatePlatformEnrollmentSetupAsync(request.EnrollmentToken, ct);
+        return dto is null
+            ? Unauthorized(new { message = "Invalid or expired MFA enrollment challenge." })
+            : Ok(new MfaSetupInitResponse(dto.ProvisioningUri));
+    }
+
+    /// <summary>Confirms first-time setup with the setup-only token. Issues no session.</summary>
+    [HttpPost("auth/mfa/enrollment/verify-setup")]
+    [AllowAnonymous]
+    [EnableRateLimiting("platform_mfa_verify")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
+    public async Task<IActionResult> PlatformMfaEnrollmentVerifySetup([FromBody] MfaEnrollmentVerifySetupRequest request, CancellationToken ct)
+    {
+        var codes = await _mfa.VerifyPlatformEnrollmentSetupAsync(
+            request.EnrollmentToken, new MfaVerifySetupRequest(request.TempSecret, request.TotpCode), ct);
+        // The recovery codes are returned exactly once, here. Only their hashes are stored.
+        return codes is not null
+            ? Ok(new { recoveryCodes = codes })
+            : Unauthorized(new { message = "Invalid or expired MFA enrollment challenge." });
+    }
+
+    /// <summary>
+    /// Completes the sign-in TOTP challenge with a one-time recovery code (lost authenticator).
+    /// The code is consumed and the use audited; it counts against the challenge's attempt cap.
+    /// </summary>
+    [HttpPost("auth/mfa/recovery/verify")]
+    [AllowAnonymous]
+    [EnableRateLimiting("platform_mfa_verify")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
+    public async Task<IActionResult> PlatformMfaRecoveryVerify([FromBody] PlatformRecoveryCodeRequest request, CancellationToken ct)
+    {
+        var (context, device, bypass) = await PlatformSecondFactorContextAsync(request.ChallengeToken, ct);
+        var pu = await _mfa.CompletePlatformChallengeWithRecoveryCodeAsync(request.ChallengeToken, request.RecoveryCode, context, ct);
+        if (pu is null) return Unauthorized(new { message = "Invalid or expired recovery code." });
+        RememberPlatformDevice(pu, device);
+        return Ok(CreatePlatformToken(pu, lockoutBypassedUntil: bypass));
+    }
+
+    /// <summary>Replaces every recovery code (old ones stop working). Requires a current TOTP code.</summary>
+    [HttpPost("auth/mfa/recovery-codes/regenerate")]
+    [EnableRateLimiting("platform_mfa_verify")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
+    public async Task<IActionResult> PlatformMfaRegenerateRecoveryCodes([FromBody] MfaDisableRequest request, CancellationToken ct)
+    {
+        var platformUserId = GetPlatformUserId();
+        if (platformUserId is null) return Unauthorized();
+        var codes = await _mfa.RegeneratePlatformRecoveryCodesAsync(platformUserId.Value, request.TotpCode, ct);
+        return codes is not null
+            ? Ok(new { recoveryCodes = codes })
+            : BadRequest(new { message = "Invalid TOTP code or MFA not enabled." });
     }
 
     [HttpPost("auth/mfa/challenge/verify")]
     [AllowAnonymous]
     [EnableRateLimiting("platform_mfa_verify")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<IActionResult> PlatformMfaChallengeVerify([FromBody] MfaChallengeVerifyRequest request, CancellationToken ct)
     {
-        var pu = await _mfa.CompletePlatformChallengeAsync(
-            request.ChallengeToken,
-            request.TotpCode,
-            new RequestContext(
-                HttpContext.Connection.RemoteIpAddress?.ToString(),
-                HttpContext.Request.Headers.UserAgent.ToString(),
-                null,
-                null),
-            ct);
+        var (context, device, bypass) = await PlatformSecondFactorContextAsync(request.ChallengeToken, ct);
+        var pu = await _mfa.CompletePlatformChallengeAsync(request.ChallengeToken, request.TotpCode, context, ct);
         if (pu is null) return Unauthorized(new { message = "Invalid or expired MFA challenge." });
-        return Ok(CreatePlatformToken(pu));
+        RememberPlatformDevice(pu, device);
+        return Ok(CreatePlatformToken(pu, lockoutBypassedUntil: bypass));
     }
 
     [HttpPost("auth/mfa/disable")]
@@ -273,12 +617,20 @@ public class PlatformController : ControllerBase
         return NoContent();
     }
 
-    private object CreatePlatformToken(PlatformUser user)
+    private static readonly TimeSpan PlatformSessionLifetime = TimeSpan.FromHours(8);
+
+    /// <summary>Claim on a platform session issued through a known-device lockout bypass: per-request
+    /// validation (PlatformSessionSecurity) then does not refuse it for the lockout it bypassed.</summary>
+    internal const string LockoutBypassClaim = "kx_lockout_bypass";
+
+    /// <param name="lockoutBypassedUntil">The LockoutEndUtc this session bypassed; recorded in the claim so
+    /// a later, longer lockout (new attacker failures) is NOT bypassed by the same token.</param>
+    private object CreatePlatformToken(PlatformUser user, DateTime? expiresAtUtc = null, DateTime? lockoutBypassedUntil = null)
     {
         if (!user.UpdatedAtUtc.HasValue)
             throw new InvalidOperationException("Platform user session stamp was not initialized.");
 
-        var expiresAt = DateTime.UtcNow.AddHours(8);
+        var expiresAt = expiresAtUtc ?? DateTime.UtcNow.Add(PlatformSessionLifetime);
         var claims = new List<Claim>
         {
             new(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
@@ -289,6 +641,8 @@ public class PlatformController : ControllerBase
             new(PlatformSessionSecurity.SessionStampClaim, PlatformSessionSecurity.StampValue(user.UpdatedAtUtc.Value)),
             new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
         };
+        if (lockoutBypassedUntil is { } bypassed)
+            claims.Add(new Claim(LockoutBypassClaim, PlatformSessionSecurity.LockoutClaimValue(bypassed)));
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwt.SigningKey));
         var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
         var token = new JwtSecurityToken(_jwt.Issuer, _jwt.PlatformAudience, claims, expires: expiresAt, signingCredentials: credentials);
@@ -446,11 +800,32 @@ public class PlatformController : ControllerBase
                 u.LastLoginAtUtc,
                 u.LastLoginIp,
                 u.CreatedAtUtc,
-                u.UpdatedAtUtc
+                u.UpdatedAtUtc,
+                u.MfaEnabled
             })
             .ToListAsync(ct);
 
         return Ok(users);
+    }
+
+    /// <summary>
+    /// Break-glass for a lost authenticator: an Owner clears ANOTHER operator's factor. That operator's
+    /// sessions end and they enrol a new factor at their next sign-in. Never self-service.
+    /// </summary>
+    [HttpPost("team/{id:guid}/reset-mfa")]
+    [RequirePlatformRole(PlatformRoles.Owner)]
+    public async Task<IActionResult> ResetTeamMemberMfa(Guid id, CancellationToken ct)
+    {
+        var actor = GetPlatformUserId();
+        if (actor is null) return Unauthorized();
+        if (actor.Value == id)
+            return BadRequest(new { message = "You cannot reset your own factor. Another Owner must do it." });
+        var reset = await _mfa.AdminResetPlatformFactorAsync(id, actor.Value,
+            new RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(), HttpContext.Request.Headers.UserAgent.ToString(), null, null),
+            ct);
+        return reset
+            ? Ok(new { id, mfaReset = true })
+            : NotFound(new { message = "No enrolled factor to reset for this platform user." });
     }
 
     [HttpPost("team")]
@@ -770,6 +1145,11 @@ public class PlatformController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
         FeatureFlagGuardFilter.InvalidateCache(_cache, tenantId, featureKey);
+        // Release A: switching release_a on installs the renewal approval chains at once (insert-if-absent), rather
+        // than waiting for the next boot's backfill. A no-op until R5 registers the renewal producers.
+        if (req.IsEnabled && featureKey == FeatureKeys.ReleaseA
+            && await Zayra.Api.Infrastructure.Seed.TenantProvisioningBundle.InstallDefaultApprovalWorkflowsAsync(_db, tenantId, ct) > 0)
+            await _db.SaveChangesAsync(ct);
         return Ok(flag);
     }
 
@@ -2229,12 +2609,12 @@ public class PlatformController : ControllerBase
             }
             catch (Exception ex)
             {
-                _log.LogWarning(ex, "Platform password reset email failed for {Email}. Token saved.", user.Email);
+                _log.LogWarning("Platform password reset email failed for user {UserId} ({ErrorType}). Token saved.", user.Id, ex.GetType().Name);
             }
         }
         else
         {
-            _log.LogInformation("SMTP not configured — reset token saved for {Email}, no email sent.", user.Email);
+            _log.LogInformation("SMTP not configured — reset token saved for user {UserId}, no email sent.", user.Id);
         }
 
         // The old message told the operator to "share the reset link directly" while showing no
@@ -4028,8 +4408,9 @@ public class PlatformController : ControllerBase
         {
             // The relay's own words are the single most useful thing here ("535 authentication
             // failed", "relay access denied"), so they are surfaced rather than swallowed.
-            // The exception carries the relay's own message; the host is not re-logged as text.
-            _log.LogWarning(ex, "Platform SMTP test failed on port {Port}.", smtp.Port);
+            // The operator sees the relay's message in the response; the log keeps the type only, because
+            // an SMTP exception message routinely names the recipient ("550 <x@y>: mailbox unavailable").
+            _log.LogWarning("Platform SMTP test failed on port {Port} ({ErrorType}).", smtp.Port, ex.GetType().Name);
             return Ok(new
             {
                 sent = false,
@@ -4251,9 +4632,111 @@ public class PlatformController : ControllerBase
             sessionTimeoutMinutes      = sec?.SessionTimeoutMinutes ?? 480,
             refreshTokenExpiryDays     = sec?.RefreshTokenExpiryDays ?? 30,
             allowMultipleSessions      = sec?.AllowMultipleSessions ?? true,
+            privilegedMfaEnforceFromUtc = sec?.PrivilegedMfaEnforceFromUtc,
+            platformPrivilegedMfaEnforceFromUtc = await PrivilegedMfaPolicy.LoadPlatformEnforceFromAsync(_db, ct),
             isCustomPolicy             = sec is not null,
             updatedAtUtc               = sec?.UpdatedAtUtc
         });
+    }
+
+    /// <summary>
+    /// Sets (or, with null, clears back to the platform date) WHEN mandatory MFA for this tenant's
+    /// privileged roles starts. Moving it later is the tenant-level break-glass for a customer that
+    /// cannot enrol in time; a reason is required and the change is audited.
+    /// </summary>
+    [HttpPut("tenants/{tenantId:guid}/privileged-mfa-enforcement")]
+    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    public async Task<IActionResult> SetTenantPrivilegedMfaEnforcement(
+        Guid tenantId, [FromBody] PrivilegedMfaEnforcementRequest body, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(body.Reason) || body.Reason.Trim().Length < 10)
+            return BadRequest(new { message = "Give a reason of at least 10 characters; it is recorded in the audit log." });
+        DateTime? enforceFrom = null;
+        if (body.EnforceFromUtc is not null)
+        {
+            enforceFrom = PrivilegedMfaPolicy.ParseExplicitUtc(body.EnforceFromUtc, out var dateError);
+            if (enforceFrom is null) return BadRequest(new { message = dateError });
+            if (enforceFrom.Value - DateTime.UtcNow > PrivilegedMfaPolicy.MaxEnforcementLead)
+                return BadRequest(new { message = "The enforcement date can be at most 90 days ahead." });
+        }
+        if (!await _db.Tenants.AsNoTracking().AnyAsync(t => t.Id == tenantId, ct)) return NotFound();
+
+        var platformDate = await PrivilegedMfaPolicy.LoadPlatformEnforceFromAsync(_db, ct);
+        var callerIsOwner = string.Equals(User.FindFirst("platform_role")?.Value, PlatformRoles.Owner, StringComparison.Ordinal);
+        if (PrivilegedMfaPolicy.CheckTenantDateChange(enforceFrom, platformDate, DateTime.UtcNow, callerIsOwner) is { } refusal)
+            return StatusCode(refusal.Status, new { message = refusal.Message });
+
+        var sec = await _db.SecuritySettings.FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
+        if (sec is null)
+        {
+            sec = new SecuritySetting { TenantId = tenantId };
+            _db.SecuritySettings.Add(sec);
+        }
+        var previous = sec.PrivilegedMfaEnforceFromUtc;
+        sec.PrivilegedMfaEnforceFromUtc = enforceFrom;
+        sec.UpdatedAtUtc = DateTime.UtcNow;
+        _db.AuditLogs.Add(new AuditLog
+        {
+            TenantId     = tenantId,
+            UserId       = Guid.Empty,
+            Action       = "platform.security_policy.privileged_mfa_enforcement_changed",
+            EntityName   = "SecuritySetting",
+            EntityId     = sec.Id.ToString(),
+            Metadata     = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                tenantId, previous, next = sec.PrivilegedMfaEnforceFromUtc, platformDate, reason = body.Reason.Trim(),
+                changedBy = GetPlatformUserId(), changedByRole = User.FindFirst("platform_role")?.Value,
+            }),
+            IpAddress    = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            CreatedAtUtc = DateTime.UtcNow
+        });
+        await _db.SaveChangesAsync(ct);
+        return Ok(new
+        {
+            tenantId,
+            privilegedMfaEnforceFromUtc = sec.PrivilegedMfaEnforceFromUtc,
+            platformPrivilegedMfaEnforceFromUtc = platformDate,
+        });
+    }
+
+    /// <summary>Moves the platform-wide enforcement date (operators, and every tenant without its own date).</summary>
+    [HttpPut("security/privileged-mfa-enforcement")]
+    [RequirePlatformRole(PlatformRoles.Owner)]
+    public async Task<IActionResult> SetPlatformPrivilegedMfaEnforcement(
+        [FromBody] PrivilegedMfaEnforcementRequest body, CancellationToken ct)
+    {
+        if (body.EnforceFromUtc is null)
+            return BadRequest(new { message = "A platform enforcement date is required; it cannot be removed." });
+        if (string.IsNullOrWhiteSpace(body.Reason) || body.Reason.Trim().Length < 10)
+            return BadRequest(new { message = "Give a reason of at least 10 characters; it is recorded in the audit log." });
+        var platformDate = PrivilegedMfaPolicy.ParseExplicitUtc(body.EnforceFromUtc, out var platformDateError);
+        if (platformDate is null) return BadRequest(new { message = platformDateError });
+        if (platformDate.Value - DateTime.UtcNow > PrivilegedMfaPolicy.MaxEnforcementLead)
+            return BadRequest(new { message = "The enforcement date can be at most 90 days ahead." });
+
+        var entry = await _db.PlatformConfigEntries.FirstOrDefaultAsync(e => e.Key == PrivilegedMfaPolicy.PlatformConfigKey, ct);
+        var previous = entry?.Value;
+        if (entry is null)
+        {
+            entry = new PlatformConfigEntry { Key = PrivilegedMfaPolicy.PlatformConfigKey };
+            _db.PlatformConfigEntries.Add(entry);
+        }
+        entry.Value = PrivilegedMfaPolicy.FormatDate(platformDate.Value);
+        entry.UpdatedAtUtc = DateTime.UtcNow;
+        entry.UpdatedByPlatformUserId = GetPlatformUserId();
+        _db.AdminAuditLogs.Add(new AdminAuditLog
+        {
+            TenantId        = Guid.Empty,
+            EntityType      = "PlatformConfigEntry",
+            EntityId        = PrivilegedMfaPolicy.PlatformConfigKey,
+            Action          = "PrivilegedMfaEnforcementChanged",
+            OldValuesJson   = System.Text.Json.JsonSerializer.Serialize(new { enforceFromUtc = previous }),
+            NewValuesJson   = System.Text.Json.JsonSerializer.Serialize(new { enforceFromUtc = entry.Value, reason = body.Reason.Trim() }),
+            PerformedByName = "platform_admin",
+            IpAddress       = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
+        });
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { platformPrivilegedMfaEnforceFromUtc = PrivilegedMfaPolicy.ParseDate(entry.Value) });
     }
 
     [HttpPut("tenants/{tenantId:guid}/security-policy")]
@@ -5101,6 +5584,13 @@ public record ConvertLeadRequest(
     // Required, same rule as CreateTenantRequest.HomeCountryCode. A lead records no jurisdiction, and
     // this path provisions statutory defaults exactly as CreateTenant does.
     string? HomeCountryCode = null);
+
+public record PlatformRecoveryCodeRequest(
+    [property: System.ComponentModel.DataAnnotations.Required] string ChallengeToken,
+    [property: System.ComponentModel.DataAnnotations.Required] string RecoveryCode);
+
+/// <param name="EnforceFromUtc">Explicit UTC instant ("…Z" or "…+00:00"); null clears a tenant's own date.</param>
+public record PrivilegedMfaEnforcementRequest(string? EnforceFromUtc, string Reason);
 
 public record UpdateSecurityPolicyRequest(
     int? PasswordMinLength,

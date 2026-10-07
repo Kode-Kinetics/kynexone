@@ -21,6 +21,8 @@ namespace Zayra.Api.Tests;
 internal static class SaudiBankExportTestData
 {
     public static readonly string IbanA = IbanValidator.WithValidCheckDigits("SA0080000000608010167519");
+    /// <summary>A 16-digit ANB internal account number. ANB Connect credits an ANB customer by it (with
+    /// ANB's BIC) instead of an IBAN; the KSA wage-file rules let it through to ANB's own account rules.</summary>
     public const string AnbInternal = "0108057386290038";
 
     public sealed class FakeAddresses : ISaudiBankEmployeeAddressSource
@@ -65,13 +67,13 @@ internal static class SaudiBankExportTestData
         {
             TenantId = tenantId, CompanyId = companyId, EmployeeCode = $"E1-{tag}", FullName = "Omar Test",
             EnglishName = "Omar Test", Status = "Active", ReadinessState = "Ready", JoiningDate = DateTime.UtcNow,
-            IdType = "NationalId", IdNumber = "1012345678",
+            IdType = "NationalId", IdNumber = "1012345678", Nationality = "Saudi",
         };
         var e2 = new Employee
         {
             TenantId = tenantId, CompanyId = companyId, EmployeeCode = $"E2-{tag}", FullName = "Sara Test",
             EnglishName = "Sara Test", Status = "Active", ReadinessState = "Ready", JoiningDate = DateTime.UtcNow,
-            IqamaNumber = "2012345678",
+            IqamaNumber = "2012345678", Nationality = "Egyptian",
         };
         // Explicit pre-approved BIC fixtures; addresses are intentionally absent until supplied.
         e1.WpsBankDetails = JsonSerializer.Serialize(new { schema = ApprovedSaudiBeneficiaryDetails.Schema, bicCode = "RJHISARI" });
@@ -339,7 +341,7 @@ public class SaudiBankExportTests
         var r = await svc.GenerateAsync(tenant, Guid.NewGuid(), batch, SaudiBankExportTestData.Request(), default);
 
         r.Outcome.Should().Be(SaudiBankExportOutcome.Invalid);
-        r.Validation!.Errors.Select(e => e.Code).Should().Contain(new[] { "run_not_locked", "payroll_errors_unresolved", "slip_net_unreconciled" });
+        r.Validation!.Errors.Select(e => e.Code).Should().Contain(new[] { "run_not_locked", "payroll_errors_unresolved", KsaWageFileRules.Codes.DeductionsUnreconciled });
         db.BankTransferFiles.Count().Should().Be(0);
     }
 

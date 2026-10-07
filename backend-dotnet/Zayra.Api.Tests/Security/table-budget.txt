@@ -82,6 +82,7 @@ ComplianceReminders
 ComplianceRenewals
 ComplianceRequirements
 ContinuousFeedback
+ContractRenewalCases
 ContractTemplates
 CostCenters
 CountryPayrollRules
@@ -106,6 +107,7 @@ EmployeeDocumentRequests
 EmployeeDocumentVersions
 EmployeeDocuments
 EmployeeDrafts
+EmployeeEntitlements
 EmployeeEosbOpeningBalances
 EmployeeFinalSettlements
 EmployeeGoals
@@ -145,6 +147,7 @@ GlJournalExports
 GlPeriodCloses
 GoalProgressUpdates
 GosiContributionRules
+GradeEntitlements
 GradePayScaleComponents
 Grades
 HRRequestAttachments
@@ -178,8 +181,12 @@ LeaveRequests
 LeaveTypes
 LoanApprovals
 LoanAuditLogs
+LoanDisbursementBatches
+LoanDisbursementLines
 LoanInstallments
 LoanPolicies
+LoanChangeRequests
+LoanRepayments
 LoanSettlements
 LoanTypes
 Locations

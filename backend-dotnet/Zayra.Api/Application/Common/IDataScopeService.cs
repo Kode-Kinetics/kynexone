@@ -25,7 +25,7 @@ public sealed class DataScope
     /// Returns (singleId, setFilter):
     ///   singleId non-null → filter by one employee
     ///   setFilter non-null → filter by set (use .Contains in query)
-    ///   both null → no restriction (org-wide)
+    ///   both null → no restriction (org-wide) — ONLY ever for an unrestricted scope
     public (int? SingleId, IReadOnlyCollection<int>? SetFilter) Constrain(int? requestedEmployeeId)
     {
         if (IsUnrestricted)
@@ -33,9 +33,12 @@ public sealed class DataScope
         if (requestedEmployeeId.HasValue)
         {
             // Requested a specific employee: allow only if in scope
-            return AllowedEmployeeIds!.Contains(requestedEmployeeId.Value)
-                ? (requestedEmployeeId, null)
-                : (CallerEmployeeId, null); // fall back to own record
+            if (AllowedEmployeeIds!.Contains(requestedEmployeeId.Value))
+                return (requestedEmployeeId, null);
+            // Out of scope: fall back to the caller's own record. A caller with NO employee record has
+            // none, so the answer is an empty set. (null, null) here meant "no restriction": an
+            // unlinked Employee who asked for any employee id was shown the whole tenant.
+            return CallerEmployeeId is int self ? (self, null) : (null, Array.Empty<int>());
         }
         // No specific employee requested: return the full allowed set
         return (null, AllowedEmployeeIds);

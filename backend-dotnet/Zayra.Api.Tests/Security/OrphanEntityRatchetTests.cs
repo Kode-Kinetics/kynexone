@@ -100,9 +100,8 @@ public class OrphanEntityRatchetTests
         "PerformanceRatingOption",
         "PerformanceRatingScale",
         "RoleCompetency",
-        // Dependants drive medical insurance and GOSI across the GCC. Its absence is a functional
-        // gap, not debt — get a product decision before removing it.
-        "EmployeeDependent",
+        // EmployeeDependent left this list in Release A R2: the package resolver counts the dependants
+        // a medical, ticket or education entitlement covers (PackageRules.DependantsCovered).
 
         // ── Retired by F1 ────────────────────────────────────────────────────────────────────
         // The frozen ApprovalPolicy model. The live approval path uses ApprovalWorkflowStep, a

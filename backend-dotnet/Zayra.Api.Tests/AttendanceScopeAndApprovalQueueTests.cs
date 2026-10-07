@@ -22,6 +22,58 @@ namespace Zayra.Api.Tests;
 
 public class AttendanceScopeAndApprovalQueueTests
 {
+    /// <summary>
+    /// GET attendance/ai/insights returns insights whose Summary names the employee. A Manager or Supervisor
+    /// reaches it through attendance.read, so it must be data-scoped like every other attendance list.
+    /// </summary>
+    [Fact]
+    public async Task AttendanceInsights_TeamScopedManager_SeesOnlyTheirTeam()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var manager = await AddEmployee(db, tenantId, "MGR-1");
+        var report = await AddEmployee(db, tenantId, "E-100", managerId: manager.Id);
+        var stranger = await AddEmployee(db, tenantId, "E-200");
+        db.AttendanceAIInsights.AddRange(
+            Insight(tenantId, report.Id, "E-100 has 3 missed punch days"),
+            Insight(tenantId, stranger.Id, "E-200 has 4 missed punch days"),
+            Insight(tenantId, null, "Tenant-wide note"));
+        await db.SaveChangesAsync();
+
+        // The real DataScopeService: employees.read + manager.read resolves to the caller's reporting tree.
+        var controller = CreateAttendanceController(db, tenantId, new Zayra.Api.Infrastructure.Common.DataScopeService(db));
+        controller.ControllerContext = CreateControllerContext(tenantId, Guid.NewGuid(), "Manager",
+            "employees.read", "manager.read", "attendance.read");
+        controller.User.AddIdentity(new ClaimsIdentity([new Claim("employee_id", manager.Id.ToString())]));
+
+        var seen = await controller.Insights(CancellationToken.None);
+
+        Assert.Equal([report.Id], seen.Select(i => i.EmployeeId!.Value).ToArray());
+    }
+
+    [Fact]
+    public async Task AttendanceInsights_OrgWideHr_StillSeesEveryInsight()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var a = await AddEmployee(db, tenantId, "E-100");
+        var b = await AddEmployee(db, tenantId, "E-200");
+        db.AttendanceAIInsights.AddRange(Insight(tenantId, a.Id, "a"), Insight(tenantId, b.Id, "b"), Insight(tenantId, null, "c"));
+        await db.SaveChangesAsync();
+
+        var controller = CreateAttendanceController(db, tenantId, new Zayra.Api.Infrastructure.Common.DataScopeService(db));
+        controller.ControllerContext = CreateControllerContext(tenantId, Guid.NewGuid(), "HR Manager",
+            "employees.read", "employees.write", "manager.read", "attendance.read");
+
+        Assert.Equal(3, (await controller.Insights(CancellationToken.None)).Count);
+    }
+
+    private static AttendanceAIInsight Insight(Guid tenantId, int? employeeId, string summary) => new()
+    {
+        TenantId = tenantId, EmployeeId = employeeId, InsightType = "RepeatedMissedPunch",
+        Severity = "Medium", Title = "Repeated missed punches", Summary = summary,
+    };
+
     [Fact]
     public async Task AttendanceRegularization_PermissionCannotEscapeEmployeeScope_NoMutation()
     {

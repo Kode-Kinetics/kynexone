@@ -1,0 +1,10 @@
+{
+  "expectedCode": "name_control_character",
+  "patch": {
+    "rows": {
+      "0": {
+        "name": "Omar\tTest"
+      }
+    }
+  }
+}

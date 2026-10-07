@@ -472,20 +472,36 @@ public class EstablishmentEnforcementPathTests
             })
         };
         db.EmployeeChangeRequests.Add(change);
+        // The Approval Center is the only path that applies a change (the direct ApproveChange is retired).
+        var workflow = new ApprovalWorkflow { TenantId = fx.TenantId, Code = "EMPLOYEE-CHANGE", Name = "Change", EntityName = nameof(EmployeeChangeRequest) };
+        workflow.Steps.Add(new ApprovalWorkflowStep { TenantId = fx.TenantId, StepOrder = 1, StepName = "HR", ApproverRole = "HR Manager", IsFinalStep = true });
+        var approval = new ApprovalRequest
+        {
+            TenantId = fx.TenantId, WorkflowId = workflow.Id, EntityName = nameof(EmployeeChangeRequest), EntityId = change.Id.ToString(),
+            Title = "Move to Operations", Status = "Pending", CurrentStepOrder = 1, RequestedByUserId = change.RequestedByUserId,
+            RequestedForEmployeeId = emp.Id, CurrentApproverRole = "HR Manager", CurrentApproverType = "Role",
+        };
+        change.ApprovalRequestId = approval.Id;
+        db.AddRange(workflow, approval);
         await db.SaveChangesAsync();
-        var controller = CreateController(db, fx.TenantId);
+        RequestContext Approver() => new("127.0.0.1", "xunit", Guid.NewGuid(), fx.TenantId, ["HR Manager"], ["approvals.decide"]);
 
-        var blocked = await controller.ApproveChange(change.Id, CancellationToken.None);
-        JsonSerializer.Serialize(((ConflictObjectResult)blocked).Value).Should().Contain("ESTABLISHMENT_BUDGET_EXCEEDED");
+        var blocked = () => new ApprovalWorkflowService(db, new AuditService(db)).DecideAsync(fx.TenantId, approval.Id,
+            new Zayra.Api.Application.Approvals.ApprovalDecisionRequest("Approve", "ok"), Approver(), CancellationToken.None);
+        await blocked.Should().ThrowAsync<EstablishmentBudgetExceededException>();
+        db.ChangeTracker.Clear();   // the request scope that failed ends; nothing it staged was saved
         (await db.EmployeeChangeRequests.AsNoTracking().SingleAsync(c => c.Id == change.Id)).Status
             .Should().Be("PendingApproval", "a stale approval fails gracefully and stays re-approvable");
+        (await db.ApprovalRequests.AsNoTracking().SingleAsync(a => a.Id == approval.Id)).Status.Should().Be("Pending");
         (await db.Employees.AsNoTracking().SingleAsync(e => e.Id == emp.Id)).DepartmentId.Should().Be(fx.Hr.Id);
 
         var budget = await db.DepartmentStaffingBudgets.SingleAsync(b => b.TenantId == fx.TenantId);
         budget.BudgetedHeadcount = 2;
         await db.SaveChangesAsync();
 
-        (await controller.ApproveChange(change.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        var decided = await new ApprovalWorkflowService(db, new AuditService(db)).DecideAsync(fx.TenantId, approval.Id,
+            new Zayra.Api.Application.Approvals.ApprovalDecisionRequest("Approve", "ok"), Approver(), CancellationToken.None);
+        decided!.Status.Should().Be("Approved");
         (await db.Employees.AsNoTracking().SingleAsync(e => e.Id == emp.Id)).DepartmentId.Should().Be(fx.Ops.Id);
         (await db.EmployeeChangeRequests.AsNoTracking().SingleAsync(c => c.Id == change.Id)).Status.Should().Be("ApprovedApplied");
     }

@@ -64,6 +64,9 @@ import { TransliterateButton } from '../components/TransliterateButton';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
+import { useT } from '../hooks/useT';
+import { useReleaseA } from '../lib/releaseA';
+import Link from 'next/link';
 
 type Tab = 'aiSetup' | 'establishment' | 'companies' | 'branches' | 'departments' | 'designations' | 'grades' | 'costCenters'
   | 'masterData' | 'numberingRules' | 'systemSettings' | 'gccSettings'
@@ -858,6 +861,10 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
 // ─── Grades ─────────────────────────────────────────────────────────────────
 
 function GradesTab() {
+  // Release A (R1): grade benefits live in Benefits by grade. For a release_a tenant the pay-scale lines are frozen:
+  // not shown for editing and never written (the API refuses them with 409); the rows are kept and importable there.
+  const benefitsByGrade = useReleaseA();
+  const t = useT();
   const [items, setItems] = useState<GradeDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -879,7 +886,7 @@ function GradesTab() {
   const openNew = () => { setEditing(null); setForm(emptyGrade()); setPayScale([]); setError(''); setModalOpen(true); };
   const openEdit = async (g: GradeDto) => {
     setEditing(g);
-    setForm({ code: g.code, name: g.name, band: g.band, level: g.level, minSalary: g.minSalary, midSalary: g.midSalary, maxSalary: g.maxSalary, currency: g.currency, isActive: g.isActive });
+    setForm({ code: g.code, name: g.name, nameAr: g.nameAr ?? '', band: g.band, level: g.level, minSalary: g.minSalary, midSalary: g.midSalary, maxSalary: g.maxSalary, currency: g.currency, isActive: g.isActive });
     setPayScale([]);
     setError('');
     setModalOpen(true);
@@ -894,7 +901,7 @@ function GradesTab() {
     setSaving(true); setError('');
     try {
       const saved = editing ? await gradesApi.update(editing.id, form) : await gradesApi.create(form);
-      await gradesApi.setPayScale(saved.id, payScale);
+      if (!benefitsByGrade) await gradesApi.setPayScale(saved.id, payScale);
       setModalOpen(false); load();
     } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? 'Failed to save. Please try again.'); }
     finally { setSaving(false); }
@@ -949,6 +956,7 @@ function GradesTab() {
             <FormField label="Level"><input type="number" value={form.level} onChange={(e) => f('level', Number(e.target.value))} className="input w-full" /></FormField>
           </div>
           <FormField label="Name" required><input value={form.name} onChange={(e) => f('name', e.target.value)} className="input w-full" placeholder="Professional Grade 5" /></FormField>
+          <FormField label={t('Name (Arabic, optional)')}><input dir="rtl" lang="ar" value={form.nameAr ?? ''} onChange={(e) => f('nameAr', e.target.value)} className="input w-full" placeholder="الدرجة المهنية 5" /></FormField>
           <FormField label="Band"><input value={form.band ?? ''} onChange={(e) => f('band', e.target.value)} className="input w-full" placeholder="Professional" /></FormField>
 
           {/* Pay scale band */}
@@ -960,7 +968,10 @@ function GradesTab() {
               <FormField label="Max"><input type="number" value={form.maxSalary ?? 0} onChange={(e) => f('maxSalary', Number(e.target.value))} className="input w-full" /></FormField>
               <FormField label="Currency"><input value={form.currency ?? 'SAR'} onChange={(e) => f('currency', e.target.value)} className="input w-full" placeholder="SAR" /></FormField>
             </div>
-            <PayScaleEditor components={payScale} onChange={setPayScale} />
+            {benefitsByGrade
+              ? <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">{t('Allowances and benefits for this grade are set in Benefits by grade.')}{' '}
+                <Link href="/benefits/by-grade" className="text-sapphire underline">{t('Open Benefits by grade')}</Link></p>
+              : <PayScaleEditor components={payScale} onChange={setPayScale} />}
           </div>
 
           <FormField label="Status"><select value={form.isActive ? 'true' : 'false'} onChange={(e) => f('isActive', e.target.value === 'true')} className="select w-full"><option value="true">Active</option><option value="false">Inactive</option></select></FormField>
@@ -2227,7 +2238,7 @@ const emptyDesig = (): DesignationRequest => ({
 });
 
 const emptyGrade = (): GradeRequest => ({
-  code: '', name: '', band: '', level: 0,
+  code: '', name: '', nameAr: '', band: '', level: 0,
   minSalary: 0, midSalary: 0, maxSalary: 0, currency: 'SAR', isActive: true,
 });
 

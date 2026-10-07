@@ -28,13 +28,13 @@ public class PostgresConnectionStringTests
     {
         // The real shape, including the channel_binding Neon appends and Npgsql has no keyword for.
         var normalised = PostgresConnectionString.Normalize(
-            "postgresql://neon_user:secret@ep-falling-frost-atnilrn7.c-9.us-east-1.aws.neon.tech/kynexone_clean"
+            "postgresql://neon_user:secret@ep-example-host-000000.c-0.region-1.aws.neon.tech/kynexone_clean"
             + "?sslmode=require&channel_binding=require");
 
         // The assertion that matters: Npgsql parses it. This is the exact call that threw
         // "Couldn't set <host>/<db>?sslmode" with an inner KeyNotFoundException.
         var builder = new NpgsqlConnectionStringBuilder(normalised);
-        builder.Host.Should().Be("ep-falling-frost-atnilrn7.c-9.us-east-1.aws.neon.tech");
+        builder.Host.Should().Be("ep-example-host-000000.c-0.region-1.aws.neon.tech");
         builder.Database.Should().Be("kynexone_clean");
         builder.Username.Should().Be("neon_user");
         builder.Password.Should().Be("secret");

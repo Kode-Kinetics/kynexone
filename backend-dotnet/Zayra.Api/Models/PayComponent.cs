@@ -126,6 +126,24 @@ public class PayComponent : ITenantOwned, ICompanyScoped
     public Guid? CreatedBy { get; set; }
     public DateTime? UpdatedAtUtc { get; set; }
     public Guid? UpdatedBy { get; set; }
+
+    /// <summary>What kind of entitlement this component represents. See <see cref="PayEntitlementClasses"/>.
+    /// <c>Facility</c> components (e.g. a grade loan limit) are NEVER paid: they carry no amount, use the
+    /// non-paying <see cref="PayComponentTypes.Facility"/> type, and <see cref="Infrastructure.Payroll.PayComponentEngine.ResolveInEffect"/>
+    /// drops them before a payroll run or the catalog can see them.</summary>
+    public string EntitlementClass { get; set; } = PayEntitlementClasses.None;
+
+    /// <summary>The statutory minimum this component helps satisfy. See <see cref="PayStatutoryFloors"/>.
+    /// Classification only in this release; no engine reads it yet.</summary>
+    public string StatutoryFloor { get; set; } = PayStatutoryFloors.None;
+
+    /// <summary>
+    /// Release A per-company skip: a company row with <c>false</c> means "this company does not offer this
+    /// benefit". Read only by the entitlement resolver; payroll ignores non-paying rows. A statutory-floor
+    /// component (Housing, Transport, Medical, Art40) can never be skipped
+    /// (CHECK ck_pay_components__floor_always_offered). Loans keep <c>loan_policies.is_offered</c>.
+    /// </summary>
+    public bool IsOffered { get; set; } = true;
 }
 
 public static class PayComponentTypes
@@ -133,6 +151,33 @@ public static class PayComponentTypes
     public const string Earning = "Earning";
     public const string Deduction = "Deduction";
     public const string EmployerContribution = "EmployerContribution";
+    /// <summary>A non-paying entitlement (a loan facility). Outside the payroll engine's vocabulary on
+    /// purpose: <c>PayComponentEngine.Compute</c> only emits Earning / Deduction / EmployerContribution.</summary>
+    public const string Facility = "Facility";
+    /// <summary>A non-paying contract benefit (air ticket, medical cover, education). Like Facility, it is outside
+    /// the payroll engine's vocabulary and is dropped by <c>PayComponentEngine.IsNonPaying</c>.</summary>
+    public const string Benefit = "Benefit";
+}
+
+/// <summary>Value set of <c>pay_components.entitlement_class</c> (CHECK ck_pay_components__entitlement_class).</summary>
+public static class PayEntitlementClasses
+{
+    public const string None = "None";
+    public const string QiwaWage = "QiwaWage";
+    public const string Contractual = "Contractual";
+    public const string Facility = "Facility";
+    public static readonly string[] All = [None, QiwaWage, Contractual, Facility];
+}
+
+/// <summary>Value set of <c>pay_components.statutory_floor</c> (CHECK ck_pay_components__statutory_floor).</summary>
+public static class PayStatutoryFloors
+{
+    public const string None = "None";
+    public const string Housing = "Housing";
+    public const string Transport = "Transport";
+    public const string Medical = "Medical";
+    public const string Art40 = "Art40";
+    public static readonly string[] All = [None, Housing, Transport, Medical, Art40];
 }
 
 public static class PayComponentCalcMethods
@@ -260,6 +305,47 @@ public static class PayComponentCatalog
         Comp(tenantId, "STATUTORY_ER", "Social insurance (Employer)", "التأمينات (صاحب العمل)", PayComponentTypes.EmployerContribution, PayComponentCalcMethods.Statutory,
             provider: PayComponentProviders.Statutory, glDriverKey: "DED:STATUTORY_ER", order: 100,
             isStatutory: true, isFamily: true, gosi: true),
+    };
+
+    /// <summary>
+    /// Release A classification of the existing wage components (plan §1.1): housing and transport are QiwaWage cash
+    /// carrying their Art. 61 floor; the composite other-allowances line is QiwaWage with no floor. Applied to a
+    /// tenant's stored rows by <c>PayComponentSeeder.EnsureEntitlementCatalogAsync</c> (release_a tenants only);
+    /// <see cref="SystemComponentSeeds"/> is deliberately unchanged, so no other tenant's catalog moves.
+    /// </summary>
+    public static readonly IReadOnlyDictionary<string, (string EntitlementClass, string StatutoryFloor)> EntitlementClassifications =
+        new Dictionary<string, (string, string)>(StringComparer.Ordinal)
+        {
+            ["HOUSING"] = (PayEntitlementClasses.QiwaWage, PayStatutoryFloors.Housing),
+            ["TRANSPORT"] = (PayEntitlementClasses.QiwaWage, PayStatutoryFloors.Transport),
+            ["OTHER_ALLOWANCES"] = (PayEntitlementClasses.QiwaWage, PayStatutoryFloors.None),
+        };
+
+    /// <summary>
+    /// Release A non-paying catalogue rows (plan §1.1): contract benefits (ComponentType Benefit, class Contractual)
+    /// and the per-diem facility. They carry no amount and are dropped by <c>PayComponentEngine.IsNonPaying</c>, so
+    /// a payroll run is byte-identical with or without them (proven by test). Values per grade live in
+    /// grade_entitlements; these rows are the catalogue identity and the per-company offered switch.
+    /// </summary>
+    public static IReadOnlyList<PayComponent> EntitlementComponentSeeds(Guid tenantId) => new[]
+    {
+        Entitlement(tenantId, "AIR_TICKET", "Annual air ticket", "تذكرة السفر السنوية", PayComponentTypes.Benefit,
+            PayEntitlementClasses.Contractual, PayStatutoryFloors.None, order: 200),
+        Entitlement(tenantId, "MEDICAL", "Medical insurance", "التأمين الطبي", PayComponentTypes.Benefit,
+            PayEntitlementClasses.Contractual, PayStatutoryFloors.Medical, order: 210),
+        Entitlement(tenantId, "EDUCATION", "Children's education allowance", "بدل تعليم الأبناء", PayComponentTypes.Benefit,
+            PayEntitlementClasses.Contractual, PayStatutoryFloors.None, order: 220),
+        Entitlement(tenantId, "PER_DIEM", "Per diem", "بدل انتداب", PayComponentTypes.Facility,
+            PayEntitlementClasses.Facility, PayStatutoryFloors.None, order: 230),
+    };
+
+    private static PayComponent Entitlement(
+        Guid tenantId, string code, string nameEn, string nameAr, string type, string entitlementClass, string floor, int order) => new()
+    {
+        TenantId = tenantId, CompanyId = null, Code = code, NameEn = nameEn, NameAr = nameAr,
+        ComponentType = type, CalcMethod = PayComponentCalcMethods.Fixed, Value = null, DisplayOrder = order,
+        EntitlementClass = entitlementClass, StatutoryFloor = floor, IsOffered = true,
+        WpsIncluded = false, IsSystem = true, IsActive = true,
     };
 
     private static PayComponent Comp(

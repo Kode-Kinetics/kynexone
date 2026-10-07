@@ -35,6 +35,9 @@ public static class PayrollValidationEngine
     /// </summary>
     private const decimal DefaultGosiCoveredWageCeiling = 45_000m;
 
+    /// <summary>Rule 5c — the employee is paid by bank with imported bank details nobody has confirmed (Warning).</summary>
+    public const string ImportedBankDetailsUnverified = "IMPORTED_BANK_DETAILS_UNVERIFIED";
+
     /// <summary>F02 — a Saudi national's slip was computed with no known GOSI cohort (Warning).</summary>
     public const string GosiCohortNotRecorded = "GOSI_COHORT_NOT_RECORDED";
 
@@ -408,9 +411,34 @@ public static class PayrollValidationEngine
                 }
             }
 
-            // Rule 5a: IBAN present + valid Saudi format
+            // Rule 5a: IBAN present + valid Saudi format. Not asked of an employee paid by cash or cheque
+            // (they are left out of the bank batch, by name, instead), nor of an ANB-to-ANB credit to a
+            // 16-digit ANB account number (the bank export's own account rules check that).
             var iban = profile?.Iban ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(iban))
+            var paidOutsideBankFile = PaymentBatchExclusions.IsPaidOutsideBankFile(profile?.PaymentMethod);
+            var anbInternalAccount = SaudiBankExports.SaudiBeneficiaryBic.IsAnbInternalCredit(emp, profile);
+            // Cash / cheque pay is surfaced, never silent: it leaves the bank/WPS file, and the approver must
+            // acknowledge the count at Approve. Stronger when a valid IBAN is on file — paying that person
+            // in cash is then a choice, not a necessity.
+            if (paidOutsideBankFile && slip.NetSalary > 0m)
+            {
+                var hasIban = !string.IsNullOrWhiteSpace(iban) && IbanValidator.IsValid(iban);
+                var method = profile!.PaymentMethod.Trim().ToLowerInvariant();
+                var mudad = isKsa ? " " + PaymentBatchExclusions.MudadNote : string.Empty;
+                if (hasIban)
+                    Warn(PaymentBatchExclusions.PaidOutsideWithIbanWarning,
+                        $"Employee {slip.EmployeeCode} is set to be paid by {method}, although a valid IBAN is on file. " +
+                        $"They will be left out of the bank/WPS file and their wage must be paid and recorded separately.{mudad} " +
+                        "If this is not intended, change the payment method to bank transfer before locking.",
+                        slip.EmployeeId);
+                else
+                    Warn(PaymentBatchExclusions.PaidOutsideWarning,
+                        $"Employee {slip.EmployeeCode} is paid by {method}: they will be left out of the bank/WPS file and " +
+                        $"their wage must be paid and recorded separately.{mudad}",
+                        slip.EmployeeId);
+            }
+            if (paidOutsideBankFile || anbInternalAccount || slip.NetSalary <= 0m) { }
+            else if (string.IsNullOrWhiteSpace(iban))
                 Err("MISSING_IBAN",
                     $"Employee {slip.EmployeeCode} has no IBAN on their payroll profile. " +
                     "Bank details are required for WPS payment disbursement.",
@@ -424,6 +452,16 @@ public static class PayrollValidationEngine
                 Warn("NON_SAUDI_IBAN",
                     $"Employee {slip.EmployeeCode} IBAN does not start with 'SA'. " +
                     "For a Saudi payroll run, confirm the bank account is held in Saudi Arabia.",
+                    slip.EmployeeId);
+
+            // Rule 5c: bank details a NEW employee was imported with, which no second person has confirmed yet
+            // (EmployeeImportGap.BankDetailsUnverified). A Warning: the details may well be right, but the run
+            // is about to send money to them, so HR confirms them (or corrects them) before Lock.
+            if (!paidOutsideBankFile && slip.NetSalary > 0m && ctx.UnverifiedImportedBankDetails.Contains(slip.EmployeeId))
+                Warn(ImportedBankDetailsUnverified,
+                    $"Employee {slip.EmployeeCode}'s bank details came from an employee import and have not been confirmed " +
+                    "by a second person. Verify them with the employee, then confirm them on the employee's record " +
+                    "(People → the employee → Confirm bank details) before this run is locked.",
                     slip.EmployeeId);
 
             // Rule 5b: MOL ID required for KSA regulatory reporting
@@ -580,6 +618,34 @@ public static class PayrollValidationEngine
                 "in this legal entity. Per-run statutory reports cover THIS run only — use the period-level " +
                 "GOSI rollup (GET /api/gosi/periods/{year}/{month}/contribution-summary) for filing.");
 
+        // ── Rule 15 (KSA): Labour Law Art. 92/93 — DEBT-type deductions ≤ half the wage due ──────
+        // Checked BEFORE Lock so it surfaces here, not on export day. Only debt-type lines count (loan and
+        // advance instalments, penalties/fines, damages — WageDeductionClassification); statutory GOSI,
+        // absence/loss-of-pay and unpaid leave do not, so a five-paid-day joiner whose GOSI is on the
+        // full-month base, or a long unpaid absence, passes. Overridable with a recorded reason and the
+        // reference of its written basis; the bank export honours that override.
+        if (isKsa)
+        {
+            // PER SLIP for now. The limit belongs to the pay period, so an off-cycle or supplementary run in the same
+            // month shares it; the deductions statement (DeductionStatementService) already sums the period's non-voided
+            // runs. Moving this rule to the period is queued as a separate engine change.
+            var debtByEmp = WageDeductionClassification.DebtTotalsByEmployee(ctx.Deductions);
+            foreach (var slip in ctx.Slips.GroupBy(s => s.EmployeeId).Select(g => g.First()))
+            {
+                var debt = debtByEmp.GetValueOrDefault(slip.EmployeeId);
+                // Wage due = gross minus absence/LOP and unpaid leave (one definition, WageDeductionClassification.WageDue).
+                var wageDue = WageDeductionClassification.WageDue(slip.GrossSalary, ctx.Deductions.Where(d => d.EmployeeId == slip.EmployeeId));
+                if (!WageDeductionClassification.ExceedsHalfWage(debt, wageDue)) continue;
+                Err(WageDeductionClassification.DeductionsExceedHalfWageCode,
+                    $"Employee {slip.EmployeeCode}: loan, advance, penalty and damages deductions ({debt:N2}) are more " +
+                    $"than half of the wage due after absence ({wageDue:N2}). Saudi Labour Law Art. 92/93 caps them at 50% " +
+                    "(statutory GOSI is not counted; absence and unpaid leave reduce the wage due). Reschedule the instalment or reduce the " +
+                    "deduction and re-process, or override it citing " + WageDeductionClassification.CapOverrideGrounds +
+                    " and its reference.",
+                    slip.EmployeeId);
+            }
+        }
+
         if (ctx.StatutoryComputedIncrementally)
             Warn("SUPPLEMENTAL_STATUTORY_BASE",
                 "Statutory contributions on this run were computed INCREMENTALLY: the covered wage already " +
@@ -621,6 +687,12 @@ public sealed record PayrollValidationContext(
 {
     // Set from Process/Validate to enable Rules 10+11.
     // Default to empty so existing callers that don't supply these are safe.
+
+    /// <summary>
+    /// Rule 5c — employees with an open <see cref="EmployeeImportGap.BankDetailsUnverified"/> gap. MUST be
+    /// populated identically by Process and by /validate (which replaces the stored results wholesale).
+    /// </summary>
+    public IReadOnlySet<int> UnverifiedImportedBankDetails { get; init; } = new HashSet<int>();
 
     /// <summary>Total approved OT hours per employee in this pay period.</summary>
     public IReadOnlyDictionary<int, decimal> OvertimeHoursByEmployee { get; init; } =

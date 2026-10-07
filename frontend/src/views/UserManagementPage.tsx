@@ -1,14 +1,15 @@
 'use client';
 
 import { InfoTip } from '../components/InfoTip';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useId } from 'react';
+import { createPortal } from 'react-dom';
 import { useSearchParams } from 'next/navigation';
 import {
   Shield, Users, Key, GitBranch, Award, Lock, CheckCircle, XCircle,
-  RefreshCw, Plus, Search, ChevronLeft, ChevronRight, Eye,
+  RefreshCw, Plus, Search, ChevronLeft, ChevronRight, Eye, EyeOff,
   UserCheck, UserX, Unlock, RotateCcw, ClipboardList, UserCog,
   CheckSquare, MinusSquare, Square, Edit2, Power, PowerOff, Table2, Trash2,
-  Building2,
+  Building2, Circle,
 } from 'lucide-react';
 import {
   usersApi, rolesApi, delegationsApi, authoritiesApi, securitySettingsApi,
@@ -16,13 +17,14 @@ import {
   entityGrantsApi,
 } from '../api/identity';
 import { companiesApi } from '../api/organization';
-import client from '../api/client';
+import client, { notifyApiError } from '../api/client';
 import type {
   UserListItem, RoleItem, PermissionItem, ApprovalDelegation,
   ApprovalAuthority, SecuritySetting, AuditLogItem, PermissionGrantorRecord,
   UserAccess, PermissionMatrix, EntityGrant, PasswordResetLinkResult,
 } from '../api/identity';
 import type { CompanyDto } from '../api/organization';
+import { evaluatePasswordRequirements, type PasswordPolicy } from '../lib/passwordRequirements';
 
 // ── Shared helpers ─────────────────────────────────────────────────────────────
 
@@ -65,10 +67,10 @@ function StatusBadge({ value }: { value: string }) {
   );
 }
 
-function FormField({ label, children }: { label: string; children: React.ReactNode }) {
+function FormField({ label, htmlFor, children }: { label: string; htmlFor?: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1">
-      <label className="text-xs font-medium text-slate-600 dark:text-slate-400">{label}</label>
+      <label htmlFor={htmlFor} className="text-xs font-medium text-slate-600 dark:text-slate-400">{label}</label>
       {children}
     </div>
   );
@@ -963,16 +965,37 @@ function UserAccessModal({ user, roles, allPermissions, onClose }: {
 }
 
 function CreateUserModal({ roles, onClose, onCreated }: { roles: RoleItem[]; onClose: () => void; onCreated: () => void }) {
+  const passwordId = useId();
+  const requirementsId = `${passwordId}-requirements`;
   const [email, setEmail] = useState('');
   const [fullName, setFullName] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
+  const [passwordPolicy, setPasswordPolicy] = useState<PasswordPolicy | null>(null);
+  const [policyLoading, setPolicyLoading] = useState(true);
+  const [policyAttempt, setPolicyAttempt] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    setPolicyLoading(true);
+    securitySettingsApi.get()
+      .then(policy => { if (active) setPasswordPolicy(policy); })
+      .catch(() => { if (active) setPasswordPolicy(null); })
+      .finally(() => { if (active) setPolicyLoading(false); });
+    return () => { active = false; };
+  }, [policyAttempt]);
+
+  const passwordCheck = passwordPolicy ? evaluatePasswordRequirements(password, passwordPolicy) : null;
+  const metCount = passwordCheck?.requirements.filter(requirement => requirement.met).length ?? 0;
 
   const submit = async () => {
     if (!email || !fullName || !password) { setErr('All fields are required.'); return; }
-    if (password.length < 10) { setErr('Password must be at least 10 characters.'); return; }
+    if (policyLoading) return;
+    if (passwordCheck && !passwordCheck.valid) { setErr('Please meet all password requirements below.'); return; }
+    if (Array.from(password).length < 10) { setErr('Password must be at least 10 characters.'); return; }
     setLoading(true); setErr('');
     try {
       await usersApi.create({ email, fullName, password, roles: selectedRoles });
@@ -991,13 +1014,63 @@ function CreateUserModal({ roles, onClose, onCreated }: { roles: RoleItem[]; onC
     setLoading(false);
   };
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl dark:bg-slate-900 space-y-4">
+      <div className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-2xl bg-white p-6 shadow-xl dark:bg-slate-900 space-y-4">
         <h3 className="text-base font-semibold text-slate-800 dark:text-slate-200">Create User</h3>
         <FormField label="Full Name"><input className={inp()} value={fullName} onChange={e => setFullName(e.target.value)} /></FormField>
         <FormField label="Email"><input type="email" className={inp()} value={email} onChange={e => setEmail(e.target.value)} /></FormField>
-        <FormField label="Password (min 10 chars)"><input type="password" className={inp()} value={password} onChange={e => setPassword(e.target.value)} /></FormField>
+        <FormField label="Password" htmlFor={passwordId}>
+          <div className="relative">
+            <input
+              id={passwordId}
+              type={showPassword ? 'text' : 'password'}
+              className={inp('h-11 pe-12')}
+              value={password}
+              onChange={e => { setPassword(e.target.value); setErr(''); }}
+              autoComplete="new-password"
+              spellCheck={false}
+              aria-describedby={requirementsId}
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword(visible => !visible)}
+              aria-label={showPassword ? 'Hide password' : 'Show password'}
+              aria-pressed={showPassword}
+              aria-controls={passwordId}
+              title={showPassword ? 'Hide password' : 'Show password'}
+              className="absolute end-0 top-0 grid h-11 w-11 place-items-center rounded-lg text-slate-500 hover:text-violet-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-500 dark:text-slate-400 dark:hover:text-violet-300"
+            >
+              {showPassword ? <EyeOff className="h-4 w-4" aria-hidden="true" /> : <Eye className="h-4 w-4" aria-hidden="true" />}
+            </button>
+          </div>
+          <div id={requirementsId} className="mt-1 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs dark:border-slate-700 dark:bg-slate-800">
+            <p className="font-medium text-slate-700 dark:text-slate-200">Password requirements</p>
+            {policyLoading ? (
+              <p className="mt-2 text-slate-500 dark:text-slate-400" role="status">Loading workspace rules…</p>
+            ) : passwordCheck ? (
+              <>
+                <ul className="mt-2 space-y-1.5">
+                  {passwordCheck.requirements.map(requirement => (
+                    <li key={requirement.id} className={`flex items-center gap-2 ${requirement.met ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-600 dark:text-slate-400'}`}>
+                      {requirement.met ? <CheckCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" /> : <Circle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
+                      <span><span className="sr-only">{requirement.met ? 'Met: ' : 'Not met: '}</span>{requirement.label}</span>
+                    </li>
+                  ))}
+                </ul>
+                {passwordCheck.hasInvalidCharacters && <p className="mt-2 text-red-700 dark:text-red-400">Remove hidden or unsupported characters.</p>}
+                <p role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+                  {passwordCheck.valid ? 'All password requirements met.' : `${metCount} of ${passwordCheck.requirements.length} password requirements met.${passwordCheck.hasInvalidCharacters ? ' Remove hidden or unsupported characters.' : ''}`}
+                </p>
+              </>
+            ) : (
+              <p className="mt-2 text-slate-600 dark:text-slate-400">
+                Workspace rules couldn’t be loaded. Your password will be checked when you create the user.{' '}
+                <button type="button" onClick={() => setPolicyAttempt(attempt => attempt + 1)} className="font-medium text-violet-700 underline underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-500 dark:text-violet-300">Retry</button>
+              </p>
+            )}
+          </div>
+        </FormField>
         <FormField label="Roles">
           <div className="grid grid-cols-2 gap-1.5 max-h-48 overflow-y-auto">
             {roles.map(r => (
@@ -1012,12 +1085,13 @@ function CreateUserModal({ roles, onClose, onCreated }: { roles: RoleItem[]; onC
         {err && <ErrMsg msg={err} />}
         <div className="flex justify-end gap-2 pt-2">
           <button onClick={onClose} className="rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-700">Cancel</button>
-          <button onClick={submit} disabled={loading} className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-60">
+          <button onClick={submit} disabled={loading || policyLoading} className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-60">
             {loading ? 'Creating…' : 'Create'}
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -1504,7 +1578,7 @@ function PermissionGrantorsTab() {
 
   const revoke = async (id: string) => {
     try { await grantorsApi.revoke(id); load(); }
-    catch { alert('Failed to revoke grantor authority.'); }
+    catch (e) { notifyApiError(e, 'Failed to revoke grantor authority.'); }
   };
 
   const selectedPreset = SCOPE_PRESETS.find(p => p.value === form.permissionScope);
@@ -1652,7 +1726,7 @@ function DelegationsTab() {
   };
 
   const cancel = async (id: string) => {
-    try { await delegationsApi.cancel(id); load(); } catch { alert('Failed to cancel delegation.'); }
+    try { await delegationsApi.cancel(id); load(); } catch (e) { notifyApiError(e, 'Failed to cancel delegation.'); }
   };
 
   return (

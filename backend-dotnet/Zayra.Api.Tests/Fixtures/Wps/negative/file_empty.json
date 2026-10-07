@@ -1,0 +1,6 @@
+{
+  "expectedCode": "file_empty",
+  "patch": {
+    "clearRows": true
+  }
+}

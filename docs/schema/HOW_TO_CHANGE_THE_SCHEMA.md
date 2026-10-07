@@ -53,7 +53,7 @@ the same time.
 | `070_seed_reference.sql` | `permissions`, `statutory_rules` + bands, `nitaqat_grid`, KSA `public_holidays`, `retention_policies` |
 | `tests/070_rls_proof.sql` | the RLS and partition proofs — fail-closed, cross-tenant read/update/delete, self-promotion, the credential surface, transitive `BYPASSRLS` reachability, forced RLS everywhere, ungranted partition children, `security_invoker` views **and the counter-proof that the flag is what holds the door**. **Written.** |
 | `tests/080_schema_ratchets.sql` | only what `070` does not already assert: declared policy **shape** vs live policy text, the manifest closing in both directions and arithmetically, table `COMMENT` + `@owner:` + retention declaration, index justification, and the heap check that closes the normaliser's blind spot. **Written.** |
-| `schema.sql` | the canonical `pg_dump --schema-only --no-owner` output, **normalised and committed** (16,922 lines). Generated on PostgreSQL 16; verified byte-identical from `pg_dump` 16.15 and 18.4, and from both `postgres:16` and `postgres:16-alpine`. Never hand-edited — regenerate it with `./scripts/schema-drift-gate.sh --write`. |
+| `schema.sql` | the canonical `pg_dump --schema-only --no-owner` output, **normalised and committed** (16,922 lines). Generated on PostgreSQL 16; verified byte-identical from `pg_dump` 16.15 and 18.4, and from both `postgres:16` and `postgres:16-alpine`. Never hand-edited — regenerate it with `./scripts/schema-drift-gate.sh --write`. Its monthly partition children are seeded around the fixed `SCHEMA_SNAPSHOT_SEED_MONTH` in `scripts/lib/schema-gate-common.sh`, not today's date, so the snapshot does not go stale when the month turns. |
 
 The gate scripts live in `scripts/`, not in the baseline directory, because they are tooling
 rather than schema and must not be swept into the apply set:
@@ -179,6 +179,28 @@ Code: no longer mentions `name_en` — and has not, **in a release that is alrea
 **The rule this example exists to teach:** the `DROP` ships in the release *after* the one that
 stopped using the column. Never in the same one. If the release that stops using it has to be
 rolled back, the column must still be there.
+
+### The CI gate: a destructive migration must say it is the contract phase
+
+`Security/DestructiveMigrationGuardTests` (runs in the backend test job) scans the whole migration
+file except the body of `Down` — so SQL held in a class-level `const`, or a helper placed after
+`Down`, is scanned too — and fails it if it contains `DropColumn`, `DropTable`, `RenameColumn`,
+`RenameTable`; an `AlterColumn` from nullable to `nullable: false` (a default does not make it safe:
+old code can still write an explicit NULL), one that shrinks `maxLength`, or one that changes the
+store or CLR type (widening a varchar is the only exemption); the raw-SQL forms `DROP COLUMN`,
+`DROP TABLE`, `RENAME [COLUMN] x TO`, `RENAME TO`, `ALTER COLUMN x [SET DATA] TYPE`, `SET NOT NULL`; or
+a `migrationBuilder.Sql(...)` argument that names a constant declared outside the file (it cannot be
+read). If the change really is the contract phase, mark the migration class and name the release
+that stopped using the old shape:
+
+```csharp
+[ContractPhase("Release 2026.10.2 stopped reading employees.name_en")]
+public partial class DropEmployeeNameEn : Migration { ... }
+```
+
+The destructive migrations that predate the gate (three, plus five found when it was tightened on
+2026-10-05) are grandfathered by id, each with its reason, in the test's baseline. That list only
+shrinks — never add to it.
 
 ---
 
@@ -471,10 +493,10 @@ base cannot be resolved, the gates run rather than being skipped.
 | **Connect the application as `neondb_owner`, or let any login role *reach* `BYPASSRLS`.** | `kynex_migrator` is the only exception. A direct `rolbypassrls` check is **not enough** — `GRANT kynex_owner TO kynex_app` defeats it while every row still reads false — so the test walks `pg_auth_members` **recursively** from every `rolcanlogin` role. See `ANTI_PATTERNS.md` §11. |
 | **Create a view without `security_invoker`.** | It reads as its owner, which holds `BYPASSRLS`. `ANTI_PATTERNS.md` §12. |
 | **`GRANT` anything on a partition child.** | Access is through the parent. A child with a grant and no policy is an unfiltered copy of millions of rows; the ratchet asserts zero direct grants on every child. |
-| **Use raw `NpgsqlConnection`, Dapper or `IDbConnection`.** | They bypass both the connection and command interceptors, so the tenant GUC is never set. A source-scanning test enforces it. |
+| **Use raw `NpgsqlConnection`, Dapper or `IDbConnection`.** | They bypass both the connection and command interceptors, so the tenant GUC is never set. `RawNpgsqlUsageRatchetTests` scans Zayra.Api for `NpgsqlConnection`/`NpgsqlCommand`/`NpgsqlDataSource`/`NpgsqlBatch` and allows them only in `TransactionHeldAdvisoryLease.cs`, which touches no table. It does not see Dapper, `IDbConnection` or commands built from `Database.GetDbConnection()` (the `/health` ping and the readiness probe use the last). |
 | **Rely on middleware alone to set the tenant GUC.** | EF opens and closes connections per operation and `DISCARD ALL` wipes the GUC, so it is gone by the second query. The guarantee is the `AsyncLocal` ambient plus the interceptor. |
 | **Use `REPEATABLE READ` for a read-compute-INSERT.** | It does not detect write skew. Leave debit, encashment and comp-off take `pg_advisory_xact_lock`. |
-| **Use session-scoped `pg_advisory_lock` on a pooled connection.** | A fault before unlock leaks the lock into the next request's connection (`AccessManagementService.cs:1917`). Always `pg_advisory_xact_lock`. |
+| **Use session-scoped `pg_advisory_lock` on a pooled connection.** | Under Neon's transaction-mode pooler the lock stays on a shared server session and the unlock runs elsewhere, so it leaks into other requests. Always `pg_advisory_xact_lock`; for a lock spanning many transactions use `TransactionHeldAdvisoryLease`. |
 | **Set `No Reset On Close`, or enable Npgsql multiplexing.** | Either one breaks the connection-scoped tenant GUC: the first lets it survive into another request, the second interleaves commands across connections. |
 | **Hold one transaction across a whole payroll run.** | Batches of 200, each its own transaction, `ON CONFLICT DO NOTHING`, resume from the first employee without a slip. The state machine is the unit of atomicity, not the transaction. |
 | **Change a `statutory_rules` row.** | A change is a **new effective-dated row**. Editing one silently rewrites what a past payslip was calculated from. |

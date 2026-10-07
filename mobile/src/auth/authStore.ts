@@ -239,6 +239,7 @@ function extractAuthError(error: unknown, fallback = 'Login failed. Please try a
     };
     const serverMessage = axiosError.response?.data?.message ?? axiosError.response?.data?.title;
     if (serverMessage) return serverMessage;
+    if (axiosError.response?.status === 429) return 'The sign-in service is busy — try again in a few seconds.';
     if (axiosError.response?.status === 401) return 'Invalid username, password, or authentication code.';
     if (axiosError.response?.status === 423) return 'Your account is locked. Contact HR.';
     if (axiosError.response?.status === 403) return 'Access denied. Check with your administrator.';
