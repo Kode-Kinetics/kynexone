@@ -185,13 +185,19 @@ public sealed class PasswordHashUpgradeTests
         // While this login's re-hash holds the only slot: the twin upgrades the row (so the
         // compare-and-set will miss) and a competing caller queues for the slot, so the re-check
         // that follows finds the gate busy.
+        //
+        // The competitor is queued by calling the gate DIRECTLY, not through Task.Run plus a short sleep:
+        // SemaphoreSlim registers an async waiter synchronously inside WaitAsync, so it is in the queue
+        // before the re-hash returns, and Release hands the slot straight to it. Task.Run left the
+        // ordering to the thread pool; under full-suite load the competitor was not yet queued when
+        // the re-hash released the slot, the re-check took it, and the login simply succeeded.
         var racing = new RacingHasher(async () =>
         {
             await using (var other = kit.NewDb())
                 await other.Users.Where(u => u.Id == userId)
                     .ExecuteUpdateAsync(s => s.SetProperty(u => u.PasswordHash, otherUpgrade));
-            holder = Task.Run(() => gate.RunAsync(() => { release.Wait(); return true; }, CancellationToken.None));
-            await Task.Delay(50);
+            holder = gate.RunAsync(() => { release.Wait(); return true; }, CancellationToken.None);
+            holder.IsCompleted.Should().BeFalse("the competitor must be waiting for the slot this re-hash holds");
         });
 
         await using var db = kit.NewDb();
