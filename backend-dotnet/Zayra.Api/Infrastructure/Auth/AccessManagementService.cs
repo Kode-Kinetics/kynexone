@@ -256,6 +256,7 @@ public class AccessManagementService : IAccessManagementService
         var auditMetadata = System.Text.Json.JsonSerializer.Serialize(new
         {
             employeeId = request.EmployeeId,
+            workEmailConfirmed = request.ConfirmedWorkEmail,
             accessMode,
             roles = (request.Roles is { Count: > 0 } ? request.Roles : DefaultRoles(accessMode))
                 .Select(x => x.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.Ordinal).ToList()
@@ -356,9 +357,6 @@ public class AccessManagementService : IAccessManagementService
                     : AuthLinkBuilder.AcceptInvitation(_appUrl, user.Tenant.Slug, invitationToken));
         }
 
-        // WorkEmailSetterRule: the invitation goes to the work email, so whoever set it never sends one.
-        await WorkEmailSetterRule.ThrowIfCallerIsSetterAsync(_db, tenantId, request.EmployeeId, context.UserId, cancellationToken);
-
         async Task<bool> IssueOnceAsync(CancellationToken ct)
         {
             _db.ChangeTracker.Clear();
@@ -371,6 +369,11 @@ public class AccessManagementService : IAccessManagementService
             if (!AuthCurrentEligibility.IsEmployeeLifecycleEligible(employee.Status))
                 throw new InvalidOperationException(
                     "Login invitations are available only for active or invited employees.");
+            // WorkEmailSetterRule, read UNDER the employee row lock that every work-email edit also takes: the
+            // invitation goes to the work email, so whoever set it never sends one, and a changed address with no
+            // activated login behind it needs the caller's confirmation.
+            await WorkEmailSetterRule.ThrowIfCallerIsSetterAsync(_db, tenantId, employee.Id, context.UserId, ct);
+            await WorkEmailSetterRule.ThrowIfConfirmationMissingAsync(_db, tenantId, employee.Id, request.ConfirmedWorkEmail, ct);
             // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var employeeLinks = await _db.EmployeeUserAccounts.IgnoreQueryFilters()
                 .TagWith(RowLockingInterceptor.ForUpdateTag)
@@ -690,6 +693,7 @@ public class AccessManagementService : IAccessManagementService
         var workEmail = (employee.WorkEmail ?? string.Empty).Trim();
         // Who set the work email every credential for this employee is sent to, and when (WorkEmailSetterRule).
         var setter = await WorkEmailSetterRule.GetAsync(_db, tenantId, employee.Id, cancellationToken);
+        var confirmationRequired = await WorkEmailSetterRule.RequiresConfirmationAsync(_db, tenantId, employee.Id, cancellationToken);
         string? setterName = null;
         if (setter?.ActorUserId is Guid setterId)
             setterName = await ScopedBypass.TenantWide(_db.Users, tenantId, LinkBypassWhy).AsNoTracking()
@@ -701,6 +705,7 @@ public class AccessManagementService : IAccessManagementService
             {
                 WorkEmailSetBy = setter is null ? null : setterName ?? "an administrator",
                 WorkEmailSetAtUtc = setter?.SetAtUtc,
+                WorkEmailChangedAfterCreation = confirmationRequired,
             };
         EmployeeLoginStatusDto Refused(LinkedLoginDto? matching, EmployeeLinkRefusal refusal) =>
             Status(null, matching, EmployeeLoginNextActions.Blocked, refusal.Message) with
@@ -933,6 +938,10 @@ public class AccessManagementService : IAccessManagementService
             var refusal = await EvaluateLinkAsync(tenantId, user, facts, employee.Id, employee.UserAccountId, employee.CompanyId,
                 employee.WorkEmail ?? string.Empty, entityScope, context.UserId, linkedAtUtc, ct);
             if (refusal is not null) throw new EmployeeLinkRefusedException(refusal);
+            // A work email changed after creation, with no activated login: the caller must have confirmed it.
+            var confirmationRequired = await WorkEmailSetterRule.RequiresConfirmationAsync(_db, tenantId, employee.Id, ct);
+            if (confirmationRequired && !request.ConfirmedWorkEmail)
+                throw new EmployeeLinkRefusedException(EmployeeLinkRefusals.ConfirmWorkEmail());
             // Someone other than the person has held a credential for this login: the link rotates it (below).
             var rotateCredential = await HasCredentialHandlersAsync(tenantId, user.Id, ct);
             var companyAccess = LinkCompanyAccess(user, tenantId, employee.CompanyId);
@@ -1098,7 +1107,9 @@ public class AccessManagementService : IAccessManagementService
                     accessMode = link.AccessMode,
                     previousEmployeeId,
                     previousPointerCleared,
-                    credentialReset = rotateCredential
+                    credentialReset = rotateCredential,
+                    workEmailConfirmationRequired = confirmationRequired,
+                    workEmailConfirmed = request.ConfirmedWorkEmail
                 })));
             await _db.SaveChangesAsync(ct);
             result = ToLinkResult(employee.Id, user, link, alreadyLinked: false);
@@ -3996,6 +4007,7 @@ public static class EmployeeLinkRefusals
     public static EmployeeLinkRefusal NotManageable() => new(NotManageableCode, "A login already uses this work email, but it is outside your access. An administrator who manages it must link it.");
     public static EmployeeLinkRefusal GraphInconsistent() => new(Graph, "This login's access records are inconsistent. Contact support to resolve it before linking.");
     public static EmployeeLinkRefusal CredentialHandledByCaller() => new(CredentialHandled, "You have handled this login's credentials (you created it, set its password, or were shown a reset or invitation link for it), so you cannot link it to an employee record. Another administrator must link it.", 403);
+    public static EmployeeLinkRefusal ConfirmWorkEmail() => new(WorkEmailSetterRule.ConfirmWorkEmailCode, WorkEmailSetterRule.ConfirmWorkEmailMessage);
     public static EmployeeLinkRefusal WorkEmailSetByCaller() => new(WorkEmailSetterRule.SetByCallerCode, WorkEmailSetterRule.SetByCallerMessage, 403);
     public static EmployeeLinkRefusal WorkEmailSetByHandler() => new(WorkEmailSetterRule.SetByHandlerCode, "The work email on this employee record was set by someone who has handled this login's credentials, so the login cannot be linked to it. Have a different administrator confirm and set the work email first.", 403);
     public static EmployeeLinkRefusal WorkEmailChangedByParty() => new(WorkEmailParty, "The work email on this employee record was set by this login itself, so it cannot be linked on it. Have an administrator confirm and set the work email first.", 403);

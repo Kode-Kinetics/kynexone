@@ -72,7 +72,7 @@ public static class WorkEmailLoginGuard
     /// rule for linking reads the last such row, so an initial value counts exactly like a later edit.
     /// </summary>
     public static AuditLog InitialWorkEmailAudit(Employee employee, Guid tenantId, RequestContext context, DateTime nowUtc,
-        string source, Guid? draftedBy = null) =>
+        string source, Guid? draftedBy = null, IReadOnlyCollection<Guid>? draftEmailSetters = null) =>
         AuthAuditEntry.Create(
             Guid.NewGuid(),
             nowUtc,
@@ -80,7 +80,14 @@ public static class WorkEmailLoginGuard
             "Employee",
             employee.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
             context with { TenantId = tenantId },
-            JsonSerializer.Serialize(new { oldWorkEmail = (string?)null, newWorkEmail = (employee.WorkEmail ?? string.Empty).Trim(), source, draftedBy }));
+            JsonSerializer.Serialize(new
+            {
+                oldWorkEmail = (string?)null,
+                newWorkEmail = (employee.WorkEmail ?? string.Empty).Trim(),
+                source,
+                draftedBy,
+                draftEmailSetters = draftEmailSetters ?? Array.Empty<Guid>(),
+            }));
 
     /// <summary>A warning, never a refusal: the work email set at creation is already some login's username.</summary>
     public static async Task<bool> BelongsToExistingLoginAsync(ZayraDbContext db, Guid tenantId, string? workEmail, CancellationToken ct)
@@ -101,6 +108,14 @@ public static class WorkEmailLoginGuard
         var newNorm = AuthService.Normalize(newWorkEmail);
         if (string.Equals(newNorm, AuthService.Normalize(priorWorkEmail ?? string.Empty), StringComparison.Ordinal))
             return Outcome.None;
+
+        // Serialise with every credential path (invite, link, reset link), which reads the work email and its setter
+        // under this same row lock. The employee UPDATE and this audit row commit in one SaveChanges.
+        await ScopedBypass.NullableTenantWide(db.Employees, tenantId, Why)
+            .TagWith(RowLockingInterceptor.ForUpdateTag)
+            .Where(x => x.Id == employee.Id)
+            .Select(x => x.Id)
+            .ToListAsync(ct);
 
         db.AuditLogs.Add(AuthAuditEntry.Create(
             Guid.NewGuid(),
