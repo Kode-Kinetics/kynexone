@@ -27,14 +27,48 @@ public sealed class MigrationImportExposureQueryTests
     private readonly PostgresFixture _fx;
     public MigrationImportExposureQueryTests(PostgresFixture fx) => _fx = fx;
 
-    [Fact]
-    public async Task TheRunbookExposureQueries_RunAndFindTheRolesAndAccountsAMigrationPackageWrote()
+    /// <summary>The users/roles CSV as a consultant actually sends it: Email or Name is not always the first
+    /// column, cells can be quoted or carry a leading space, and Excel writes CRLF. The query matched only an
+    /// email at the start of a line, so every one of these but the first was invisible to the owner's check.</summary>
+    public static TheoryData<string, string, string> Layouts => new()
+    {
+        { "email-first",
+          "Name,Description,AuthorityLevel,IsActive\nMigrated Clerks,From legacy,50,true\n",
+          "Email,FullName,PhoneNumber,PreferredLanguage,Timezone,Status,RoleNames,IsGroupScope\nclerk.one@example.com,Clerk One,,en,UTC,Invited,Migrated Clerks,false\n" },
+        { "email-later",
+          "Description,Name,AuthorityLevel,IsActive\nFrom legacy,Migrated Clerks,50,true\n",
+          "FullName,Email,PhoneNumber,PreferredLanguage,Timezone,Status,RoleNames,IsGroupScope\nClerk One,clerk.one@example.com,,en,UTC,Invited,Migrated Clerks,false\n" },
+        { "email-last",
+          "Description,AuthorityLevel,IsActive,Name\nFrom legacy,50,true,Migrated Clerks\n",
+          "FullName,PhoneNumber,PreferredLanguage,Timezone,Status,RoleNames,IsGroupScope,Email\nClerk One,,en,UTC,Invited,Migrated Clerks,false,clerk.one@example.com\n" },
+        { "leading-space",
+          "Name,Description,AuthorityLevel,IsActive\n Migrated Clerks,From legacy,50,true\n",
+          "FullName,Email,PhoneNumber,PreferredLanguage,Timezone,Status,RoleNames,IsGroupScope\nClerk One, clerk.one@example.com,,en,UTC,Invited,Migrated Clerks,false\n" },
+        { "crlf-quoted",
+          "Description,Name,AuthorityLevel,IsActive\r\n\"From legacy, migrated\",\"Migrated Clerks\",50,true\r\n",
+          "FullName,Email,PhoneNumber,PreferredLanguage,Timezone,Status,RoleNames,IsGroupScope\r\n\"One, Clerk\",\"clerk.one@example.com\",,en,UTC,Invited,\"Migrated Clerks\",false\r\n" },
+        { "nbsp-inside-quotes",
+          "Description,Name,AuthorityLevel,IsActive\nFrom legacy,\"\u00a0Migrated Clerks \",50,true\n",
+          "FullName,Email,PhoneNumber,PreferredLanguage,Timezone,Status,RoleNames,IsGroupScope\nClerk One,\" clerk.one@example.com\u00a0\",,en,UTC,Invited,Migrated Clerks,false\n" },
+        // #198 stores the package as MigrationPackageAuditCopy, whose key is lower-case "sections". Hand-written
+        // shape (the batch's payload is rewritten to it below) until #198's serializer is on main.
+        { "masked-lowercase-sections",
+          "Name,Description,AuthorityLevel,IsActive\nMigrated Clerks,From legacy,50,true\n",
+          "FullName,Email,PhoneNumber,PreferredLanguage,Timezone,Status,RoleNames,IsGroupScope\nClerk One,clerk.one@example.com,,en,UTC,Invited,Migrated Clerks,false\n" },
+    };
+
+    [Theory]
+    [MemberData(nameof(Layouts))]
+    public async Task TheRunbookExposureQueries_FindTheRolesAndAccountsAPackageWrote_WhateverItsColumnLayout(string layout, string rolesCsv, string usersCsv)
     {
         Guid tenant;
         await using (var seed = _fx.CreateDb())
         {
             tenant = await PostgresFixture.SeedMinimalTenant(seed);
             seed.Roles.Add(new Role { TenantId = tenant, Name = "Admin", NormalizedName = "ADMIN", IsSystem = true, IsEditable = false });
+            // A bystander whose address is a SUFFIX of the imported one: a match that is not anchored on a cell
+            // boundary would report them too.
+            seed.Users.Add(new User { TenantId = tenant, Email = "one@example.com", NormalizedEmail = "ONE@EXAMPLE.COM", FullName = "Bystander", PasswordHash = "x" });
             await seed.SaveChangesAsync();
         }
 
@@ -55,12 +89,8 @@ public sealed class MigrationImportExposureQueryTests
                     },
                 },
             };
-            var package = new MigrationPackageRequest($"exposure-{Guid.NewGuid():N}", new Dictionary<string, string>
-            {
-                ["roles"] = "Name,Description,AuthorityLevel,IsActive\nMigrated Clerks,From legacy,50,true\n",
-                ["users"] = "Email,FullName,PhoneNumber,PreferredLanguage,Timezone,Status,RoleNames,IsGroupScope\n"
-                    + "clerk.one@example.com,Clerk One,,en,UTC,Invited,Migrated Clerks,false\n",
-            });
+            var package = new MigrationPackageRequest($"exposure-{layout}-{Guid.NewGuid():N}",
+                new Dictionary<string, string> { ["roles"] = rolesCsv, ["users"] = usersCsv });
             var result = await controller.Commit(package, CancellationToken.None);
             Assert.IsType<OkObjectResult>(result.Result);
         }
@@ -70,6 +100,17 @@ public sealed class MigrationImportExposureQueryTests
         await using var verify = _fx.CreateDb();
         var conn = verify.Database.GetDbConnection();
         await conn.OpenAsync();
+        if (layout.StartsWith("masked", StringComparison.Ordinal))
+        {
+            await using var rewrite = conn.CreateCommand();
+            rewrite.CommandText = "UPDATE migration_import_batches SET payload_json = jsonb_build_object("
+                // Since #198 the import already stores the masked copy (lowercase 'sections'); read either shape so this
+                // case still exercises the lowercase form whatever the controller wrote.
+                + "'externalBatchId', coalesce(payload_json::jsonb ->> 'ExternalBatchId', payload_json::jsonb ->> 'externalBatchId'), 'dryRun', false, "
+                + "'sections', coalesce(payload_json::jsonb -> 'Sections', payload_json::jsonb -> 'sections'))::json WHERE tenant_id = @t";
+            var p = rewrite.CreateParameter(); p.ParameterName = "t"; p.Value = tenant; rewrite.Parameters.Add(p);
+            Assert.Equal(1, await rewrite.ExecuteNonQueryAsync());
+        }
         async Task<List<Dictionary<string, object?>>> Run(string sql)
         {
             await using var cmd = conn.CreateCommand();
@@ -81,10 +122,10 @@ public sealed class MigrationImportExposureQueryTests
             return rows;
         }
 
-        var batches = (await Run(queries[0])).Where(r => (Guid)r["tenant_id"]! == tenant).ToList();
-        var batch = Assert.Single(batches);
+        var batch = Assert.Single((await Run(queries[0])).Where(r => (Guid)r["tenant_id"]! == tenant));
         Assert.Equal(true, batch["had_roles"]);
         Assert.Equal(true, batch["had_users"]);
+        Assert.NotNull(batch["completed_audit_at"]);   // joined from audit_logs migration.import_completed
         var accounts = (await Run(queries[1])).Where(r => (Guid)r["tenant_id"]! == tenant).ToList();
         Assert.Equal("clerk.one@example.com", Assert.Single(accounts)["email"]);
         Assert.Equal("Migrated Clerks", accounts[0]["roles_now"]);

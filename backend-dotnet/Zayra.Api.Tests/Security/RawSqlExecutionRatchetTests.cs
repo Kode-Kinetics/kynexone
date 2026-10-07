@@ -65,6 +65,10 @@ public class RawSqlExecutionRatchetTests
         ["Data/ZayraDbContext.cs"] = 2,
         // Admin-seat pg_advisory_xact_lock (was a session lock + unlock pair, 2 -> 1).
         ["Infrastructure/Auth/AccessManagementService.cs"] = 1,
+        // The SAME admin-seat pg_advisory_xact_lock (AccessManagementService.AdminSeatLockKey(tenant)), taken by the
+        // migration import's users section so an import and the Access screen cannot both take the last seat.
+        // Writes no row. Exercised by MigrationImportSeatLockRaceTests.
+        ["Controllers/MigrationImportController.AccessGate.cs"] = 1,
         ["Infrastructure/Finance/FinanceDecisionSerializer.cs"] = 1,
         // Parameterized advisory lock only; key includes tenant + canonical employee. No row writes.
         // Jawazat creation idempotency and company-scope tests cover the governed ticket producer.

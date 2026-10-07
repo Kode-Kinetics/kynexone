@@ -8,7 +8,10 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Setup;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
+using Zayra.Api.Application.Organization;
+using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.CountryPack;
+using Zayra.Api.Infrastructure.Organization;
 using Zayra.Api.Infrastructure.Entitlements;
 using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Infrastructure.Leave;
@@ -52,21 +55,35 @@ public class SetupAssistantController : ControllerBase
     public async Task<IActionResult> Apply([FromBody] ApplySetupRequest req, CancellationToken ct)
     {
         if (!HasPermission("organization.setup.apply")) return Forbid();
+        // One spelling of the country everywhere it is written (company, branches, leave policies, calendars, rules):
+        // the forms store ISO codes upper-case, and "sa" would otherwise sit beside "SA".
+        req = req with { CountryCode = (req.CountryCode ?? string.Empty).Trim().ToUpperInvariant() };
         var tenantId = GetTenantId();
         var d = req.Draft;
         // Before anything is written: a reviewed draft can still have been edited below the Saudi
         // statutory floor, and applying half of it first would leave the tenant half-configured.
         if (await RefuseBelowStatutoryLeaveFloorAsync(tenantId, req, ct) is { } floorRefusal)
             return floorRefusal;
+        // The Setup forms' gates, before anything is written (P1, the same class as the org-structure import).
+        var gate = await EvaluateOrgGatesAsync(tenantId, req, ct);
+        if (gate.Problems.Count > 0)
+            return UnprocessableEntity(new
+            {
+                error = "setup_apply_refused",
+                message = "Nothing was applied. " + string.Join(" ", gate.Problems),
+                problems = gate.Problems,
+            });
         var counts = new Dictionary<string, int>();
         void Bump(string k, int n) => counts[k] = counts.GetValueOrDefault(k) + n;
+        // One audit row per organisation entity, with the Setup forms' action names, saved with the data.
+        var audited = new List<(string Action, string Entity, Guid Id, string Key)>();
+        void Audit(string action, string entity, Guid id, string key) => audited.Add((action, entity, id, key));
 
         // ── Entity context: company → branch. Config rows are explicitly wired
         // to this legal entity/branch when available, instead of floating tenant-wide.
-        Company? company = null;
+        Company? company = gate.Company;
         if (!string.IsNullOrWhiteSpace(req.LegalEntityName))
         {
-            company = await _db.Companies.FirstOrDefaultAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.LegalNameEn == req.LegalEntityName.Trim(), ct);
             if (company is null)
             {
                 company = new Company
@@ -79,11 +96,13 @@ public class SetupAssistantController : ControllerBase
                     // No "USD" fallback: an unstated currency is left for the tenant to state
                     // rather than silently booked as dollars on the legal entity.
                     DefaultCurrency = req.CurrencyCode?.Trim().ToUpperInvariant() ?? string.Empty,
-                    IsActive = true,
-                    ApprovalStatus = CompanyApprovalStatuses.Active,
+                    // Draft-approval tenants get an inactive Draft awaiting platform approval, exactly as the form does.
+                    IsActive = !gate.CreateAsDraft,
+                    ApprovalStatus = gate.CreateAsDraft ? CompanyApprovalStatuses.Draft : CompanyApprovalStatuses.Active,
                     CreatedBy = GetUserId()
                 };
                 _db.Companies.Add(company);
+                Audit("organization.company_created", nameof(Company), company.Id, company.LegalNameEn);
                 Bump("companies", 1);
             }
         }
@@ -102,6 +121,7 @@ public class SetupAssistantController : ControllerBase
                 existing.CompanyId = company.Id;
                 existing.IsHeadOffice = b.IsHeadOffice;
                 existing.UpdatedAtUtc = DateTime.UtcNow;
+                Audit("organization.branch_updated", nameof(Branch), existing.Id, b.Code);
             }
             else
             {
@@ -109,7 +129,7 @@ public class SetupAssistantController : ControllerBase
                 {
                     TenantId = tenantId,
                     CompanyId = company.Id,
-                    Code = b.Code,
+                    Code = OrgCodes.Normalize(b.Code),
                     NameEn = b.NameEn,
                     City = b.City,
                     CountryCode = req.CountryCode,
@@ -118,6 +138,7 @@ public class SetupAssistantController : ControllerBase
                     CreatedBy = GetUserId()
                 };
                 _db.Branches.Add(branch);
+                Audit("organization.branch_created", nameof(Branch), branch.Id, b.Code);
                 branchByCode[b.Code.ToUpperInvariant()] = branch;
                 Bump("branches", 1);
             }
@@ -132,8 +153,9 @@ public class SetupAssistantController : ControllerBase
         foreach (var dep in d.Departments)
         {
             if (existingDept.ContainsKey(dep.Code.ToUpper())) continue;
-            var entity = new Department { TenantId = tenantId, BranchId = defaultBranch?.Id, Code = dep.Code, NameEn = dep.NameEn, IsActive = true, CreatedBy = GetUserId() };
+            var entity = new Department { TenantId = tenantId, BranchId = defaultBranch?.Id, Code = OrgCodes.Normalize(dep.Code), NameEn = dep.NameEn, IsActive = true, CreatedBy = GetUserId() };
             _db.Departments.Add(entity);
+            Audit("organization.department_created", nameof(Department), entity.Id, dep.Code);
             existingDept[dep.Code.ToUpper()] = entity.Id;
             deptEntities[dep.Code.ToUpper()] = entity;
             Bump("departments", 1);
@@ -155,13 +177,14 @@ public class SetupAssistantController : ControllerBase
                 existing.Currency = string.IsNullOrWhiteSpace(req.CurrencyCode) ? g.Currency : req.CurrencyCode;
                 existing.IsActive = true;
                 existing.UpdatedAtUtc = DateTime.UtcNow;
+                Audit("organization.grade_updated", nameof(Grade), existing.Id, g.Code);
             }
             else
             {
                 var grade = new Grade
                 {
                     TenantId = tenantId,
-                    Code = g.Code,
+                    Code = OrgCodes.Normalize(g.Code),
                     Name = g.Name,
                     Band = g.Band,
                     Level = g.Level,
@@ -173,6 +196,7 @@ public class SetupAssistantController : ControllerBase
                     CreatedBy = GetUserId()
                 };
                 _db.Grades.Add(grade);
+                Audit("organization.grade_created", nameof(Grade), grade.Id, g.Code);
                 gradeByCode[g.Code.ToUpperInvariant()] = grade;
                 Bump("grades", 1);
             }
@@ -199,7 +223,7 @@ public class SetupAssistantController : ControllerBase
             var exists = await _db.GradePayScaleComponents.AnyAsync(x =>
                 x.TenantId == tenantId && x.GradeId == grade.Id && x.ComponentCode == component.ComponentCode, ct);
             if (exists) continue;
-            _db.GradePayScaleComponents.Add(new GradePayScaleComponent
+            var payComponent = new GradePayScaleComponent
             {
                 TenantId = tenantId,
                 GradeId = grade.Id,
@@ -213,7 +237,9 @@ public class SetupAssistantController : ControllerBase
                 Frequency = component.Frequency,
                 SortOrder = d.GradePayComponents.IndexOf(component) + 1,
                 IsActive = true
-            });
+            };
+            _db.GradePayScaleComponents.Add(payComponent);
+            Audit("organization.grade_pay_component_created", nameof(GradePayScaleComponent), payComponent.Id, $"{grade.Code}/{component.ComponentCode}");
             Bump("gradePayComponents", 1);
         }
 
@@ -222,8 +248,9 @@ public class SetupAssistantController : ControllerBase
         foreach (var cc in d.CostCenters)
         {
             if (costCenterByCode.ContainsKey(cc.Code.ToUpperInvariant())) continue;
-            var entity = new CostCenter { TenantId = tenantId, CompanyId = company?.Id, Code = cc.Code, Name = cc.Name, IsActive = true, CreatedBy = GetUserId() };
+            var entity = new CostCenter { TenantId = tenantId, CompanyId = company?.Id, Code = OrgCodes.Normalize(cc.Code), Name = cc.Name, IsActive = true, CreatedBy = GetUserId() };
             _db.CostCenters.Add(entity);
+            Audit("organization.cost_center_created", nameof(CostCenter), entity.Id, cc.Code);
             costCenterByCode[cc.Code.ToUpperInvariant()] = entity;
             if (!string.IsNullOrWhiteSpace(cc.DepartmentCode) && deptEntities.TryGetValue(cc.DepartmentCode.ToUpperInvariant(), out var dept))
                 dept.CostCenterId = entity.Id;
@@ -237,12 +264,14 @@ public class SetupAssistantController : ControllerBase
             if (!existingDesig.Add(ds.Code.ToUpper())) continue;
             Guid? deptId = !string.IsNullOrWhiteSpace(ds.DepartmentCode) && existingDept.TryGetValue(ds.DepartmentCode.ToUpper(), out var id) ? id : null;
             Guid? gradeId = !string.IsNullOrWhiteSpace(ds.GradeCode) && gradeByCode.TryGetValue(ds.GradeCode.ToUpperInvariant(), out var g) ? g.Id : null;
-            _db.Designations.Add(new Designation
+            var designation = new Designation
             {
-                TenantId = tenantId, Code = ds.Code, TitleEn = ds.TitleEn, DepartmentId = deptId,
+                TenantId = tenantId, Code = OrgCodes.Normalize(ds.Code), TitleEn = ds.TitleEn, DepartmentId = deptId,
                 GradeId = gradeId, JobGrade = ds.GradeCode, JobLevel = ds.JobLevel, IsManagerRole = ds.IsManagerRole, LevelRank = ds.LevelRank, IsActive = true,
                 CreatedBy = GetUserId(),
-            });
+            };
+            _db.Designations.Add(designation);
+            Audit("organization.designation_created", nameof(Designation), designation.Id, ds.Code);
             Bump("designations", 1);
         }
 
@@ -594,12 +623,14 @@ public class SetupAssistantController : ControllerBase
             }
         }
 
-        await _db.SaveChangesAsync(ct);
-        await _audit.WriteAsync(
-            "setup.assistant_applied",
-            "SetupDraft",
-            "bulk",
-            Context(tenantId),
+        // The per-entity audit rows and the bulk marker are saved WITH the data, in this one save: there is no
+        // applied draft without its trail (the marker used to be a second save after the first).
+        var context = Context(tenantId);
+        var at = DateTime.UtcNow;
+        foreach (var (action, entity, id, key) in audited.DistinctBy(a => (a.Action, a.Id)))
+            _db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), at, action, entity, id.ToString(), context,
+                JsonSerializer.Serialize(new { source = "setup_assistant", key })));
+        _db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), at, "setup.assistant_applied", "SetupDraft", "bulk", context,
             JsonSerializer.Serialize(new
             {
                 countryCode = req.CountryCode,
@@ -607,10 +638,122 @@ public class SetupAssistantController : ControllerBase
                 legalEntityName = req.LegalEntityName,
                 applied = counts,
                 total = counts.Values.Sum(),
+                entities = audited.Count,
                 skipped,
-            }),
-            ct);
+            })));
+        // The company gate is asked again INSIDE the save's transaction, as the org-structure import does: another
+        // legal entity created between the gate above and this save (a second apply, the form) could otherwise take
+        // the plan's last company or turn a single-company account into two.
+        var creatingCompany = company is not null && _db.Entry(company).State == EntityState.Added;
+        if (creatingCompany && _db.Database.IsRelational())
+        {
+            IActionResult? refusal = null;
+            var strategy = _db.Database.CreateExecutionStrategy();
+            await strategy.ExecuteAsync(async () =>
+            {
+                refusal = null;
+                await using var tx = await _db.Database.BeginTransactionAsync(ct);
+                var creation = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct);
+                if (!creation.Allowed)
+                {
+                    await tx.RollbackAsync(ct);
+                    refusal = UnprocessableEntity(new
+                    {
+                        error = "setup_apply_refused",
+                        message = "Nothing was applied. " + creation.Message,
+                        problems = new[] { creation.Message },
+                    });
+                    return;
+                }
+                await _db.SaveChangesAsync(ct);
+                await tx.CommitAsync(ct);
+            });
+            if (refusal is not null)
+            {
+                _db.ChangeTracker.Clear();
+                return refusal;
+            }
+        }
+        else
+        {
+            await _db.SaveChangesAsync(ct);
+        }
         return Ok(new { applied = counts, total = counts.Values.Sum(), skipped });
+    }
+
+    private sealed record OrgGateResult(List<string> Problems, Company? Company, bool CreateAsDraft);
+
+    /// <summary>
+    /// THE SETUP FORMS' GATES for the assistant's Apply (P1, the class #199 closed for the org-structure import).
+    /// Apply used to write its legal entity and branches straight to the database: a single-company account could add
+    /// a second legal entity, a platform-controlled tenant create one itself, the plan's company limit was never
+    /// counted, a draft-approval tenant got an ACTIVE company, "Saudi" was stored as a country code, a branch could be
+    /// moved to another company, and a company-scoped HR Manager could create a legal entity or write into a company
+    /// outside their scope. The rules are the forms' own: <see cref="CompanyCreationGate"/>,
+    /// <see cref="OrganizationSetupService.CountryCodeProblem"/>, the Branches importer's no-move rule, the entity scope
+    /// the org-structure import applies, and the grade form's band order. (The assistant never sets a company
+    /// registration number, so the form's registration-number uniqueness check has nothing to compare.)
+    /// </summary>
+    private async Task<OrgGateResult> EvaluateOrgGatesAsync(Guid tenantId, ApplySetupRequest req, CancellationToken ct)
+    {
+        var problems = new List<string>();
+        var scope = this.GetEntityScope();
+        var d = req.Draft;
+        if (OrganizationSetupService.CountryCodeProblem(req.CountryCode) is { } countryProblem) problems.Add(countryProblem);
+
+        Company? company = null;
+        var createAsDraft = false;
+        var legalName = (req.LegalEntityName ?? string.Empty).Trim();
+        if (legalName.Length > 0)
+        {
+            var upper = legalName.ToUpperInvariant();
+            var matches = await _db.Companies
+                .Where(x => x.TenantId == tenantId && !x.IsDeleted && x.LegalNameEn.ToUpper() == upper)
+                .ToListAsync(ct);
+            if (matches.Count > 1)
+                problems.Add($"'{legalName}' matches more than one company (their names differ only in letter case). Rename one in Setup first.");
+            company = matches.Count == 1 ? matches[0] : null;
+            if (company is not null && !scope.CanAccessCompany(company.Id))
+                problems.Add($"Company '{company.LegalNameEn}' is outside your company scope.");
+            if (company is null && matches.Count == 0)
+            {
+                if (!scope.IsGroupLevel)
+                    problems.Add("Only a group-scope administrator can create a legal entity.");
+                else
+                {
+                    var creation = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct);
+                    if (!creation.Allowed) problems.Add(creation.Message);
+                    createAsDraft = creation.AsDraft;
+                }
+            }
+        }
+        else
+        {
+            company = await _db.Companies.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted, ct);
+            if (company is not null && !scope.CanAccessCompany(company.Id))
+                problems.Add($"Company '{company.LegalNameEn}' is outside your company scope.");
+        }
+
+        if (d.Branches.Count > 0)
+        {
+            var codes = d.Branches.Where(b => !string.IsNullOrWhiteSpace(b.Code)).Select(b => b.Code.Trim().ToUpperInvariant()).ToList();
+            var saved = await _db.Branches.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && !x.IsDeleted && codes.Contains(x.Code.ToUpper()))
+                .Select(x => new { x.Code, x.CompanyId })
+                .ToListAsync(ct);
+            foreach (var branch in saved)
+                if (company is null || branch.CompanyId != company.Id)
+                    problems.Add($"Branch '{branch.Code}' belongs to another company and cannot be moved to another company by the setup assistant.");
+        }
+
+        foreach (var g in d.Grades)
+        {
+            if (g.MaxSalary > 0 && g.MinSalary > g.MaxSalary)
+                problems.Add($"Grade '{g.Code}': MinSalary cannot exceed MaxSalary.");
+            else if (g.MidSalary > 0 && (g.MidSalary < g.MinSalary || (g.MaxSalary > 0 && g.MidSalary > g.MaxSalary)))
+                problems.Add($"Grade '{g.Code}': MidSalary must fall between MinSalary and MaxSalary.");
+        }
+        return new OrgGateResult(problems.Distinct().ToList(), company, createAsDraft);
     }
 
     /// <summary>Only the two rules the overtime/attendance engines actually evaluate. Anything
