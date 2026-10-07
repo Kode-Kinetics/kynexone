@@ -631,6 +631,7 @@ public sealed partial class AdvisoryLockTransactionPoolingPostgresTests : IClass
                         new System.Security.Claims.Claim("tenant_id", tenantId.ToString()),
                         new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
                         new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Role, "Admin"),
+                        new System.Security.Claims.Claim("permission", "security.manage"),
                     }, "test"))
                 }
             }

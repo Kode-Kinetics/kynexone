@@ -256,6 +256,85 @@ GROUP BY tenant_id;
 The second branch catches previously recognised spellings stored with surrounding spaces (the old
 comparison did not trim). Zero rows means no past payslip was affected.
 
+## Migration import — who used it to create roles or grant access (read-only exposure check)
+
+Before this fix the migration import (`POST /api/migrations/preview|commit|{id}/resume`) accepted `roles` and
+`users` sections from any caller the controller admits — Admin, HR Manager, and through `employees.bulk_import`
+also HR Officer and HR Director — although the Access screen requires `security.manage`. An HR Manager could
+create roles and give any account, their own included, the Admin role. Those sections wrote **no per-entity
+audit row**; the evidence is the batch ledger (`migration_import_batches.payload_json` keeps the whole package and
+`created_by` the committer) and the `migration.import_completed` audit row.
+
+**Detection only — run it, read it, do not "fix" from it.** Review each hit with the tenant owner; removing a role or
+an account is a decision for the Access screen, with its own audit. Do **not** run it against production without
+the owner's say-so. SELECT only:
+
+```sql
+-- 1. Every committed (non-dry-run) migration package that carried a roles or users section, who committed it,
+--    and whether that person holds security.manage TODAY (the gate's requirement, which was not checked then).
+WITH access_batches AS (
+    SELECT b.tenant_id, b.id AS batch_id, b.external_batch_id, b.status, b.created_by,
+           b.created_at_utc, b.completed_at_utc,
+           (b.payload_json::jsonb -> 'Sections') ? 'roles' AS had_roles,
+           (b.payload_json::jsonb -> 'Sections') ? 'users' AS had_users,
+           lower(coalesce(b.payload_json::jsonb -> 'Sections' ->> 'roles', '')) AS roles_csv,
+           lower(coalesce(b.payload_json::jsonb -> 'Sections' ->> 'users', '')) AS users_csv
+    FROM migration_import_batches b
+    WHERE b.package_type = 'MigrationPackage' AND NOT b.dry_run AND b.status <> 'Previewed'
+      AND (b.payload_json::jsonb -> 'Sections') ?| array['roles', 'users'])
+SELECT ab.tenant_id, ab.batch_id, ab.external_batch_id, ab.status, ab.completed_at_utc,
+       ab.had_roles, ab.had_users, committer.email AS committed_by,
+       EXISTS (SELECT 1 FROM user_roles ur
+               JOIN role_permissions rp ON rp.role_id = ur.role_id
+               JOIN permissions p ON p.id = rp.permission_id
+               WHERE ur.user_id = ab.created_by AND p.permission_key = 'security.manage') AS committer_holds_security_manage_now
+FROM access_batches ab
+LEFT JOIN users committer ON committer.id = ab.created_by
+ORDER BY ab.completed_at_utc DESC NULLS FIRST;
+
+-- 2. The accounts those packages named (first CSV column = Email), with the roles they hold NOW.
+--    privileged = holds Admin or any role carrying security.manage.
+WITH access_batches AS (
+    SELECT b.tenant_id, b.id AS batch_id, b.created_by,
+           lower(coalesce(b.payload_json::jsonb -> 'Sections' ->> 'users', '')) AS users_csv
+    FROM migration_import_batches b
+    WHERE b.package_type = 'MigrationPackage' AND NOT b.dry_run AND b.status <> 'Previewed'
+      AND (b.payload_json::jsonb -> 'Sections') ? 'users')
+SELECT ab.tenant_id, ab.batch_id, u.id AS user_id, u.email, u.status, u.is_active, u.is_group_scope,
+       u.id = ab.created_by AS committer_changed_own_account,
+       string_agg(DISTINCT r.name, ', ') AS roles_now,
+       coalesce(bool_or(r.normalized_name = 'ADMIN' OR p.permission_key = 'security.manage'), false) AS privileged
+FROM access_batches ab
+JOIN users u ON u.tenant_id = ab.tenant_id AND NOT u.is_deleted
+ AND ab.users_csv ~ ('(^|\n)"?' || regexp_replace(lower(u.email), '([.+*?^$()\[\]{}|\\-])', '\\\1', 'g') || '"?,')
+LEFT JOIN user_roles ur ON ur.user_id = u.id
+LEFT JOIN roles r ON r.id = ur.role_id AND NOT r.is_deleted
+LEFT JOIN role_permissions rp ON rp.role_id = r.id
+LEFT JOIN permissions p ON p.id = rp.permission_id
+GROUP BY ab.tenant_id, ab.batch_id, ab.created_by, u.id, u.email, u.status, u.is_active, u.is_group_scope
+ORDER BY privileged DESC, ab.tenant_id, u.email;
+
+-- 3. The roles those packages named (first CSV column = Name), as they stand NOW.
+WITH access_batches AS (
+    SELECT b.tenant_id, b.id AS batch_id,
+           lower(coalesce(b.payload_json::jsonb -> 'Sections' ->> 'roles', '')) AS roles_csv
+    FROM migration_import_batches b
+    WHERE b.package_type = 'MigrationPackage' AND NOT b.dry_run AND b.status <> 'Previewed'
+      AND (b.payload_json::jsonb -> 'Sections') ? 'roles')
+SELECT ab.tenant_id, ab.batch_id, r.id AS role_id, r.name, r.is_system, r.is_active, r.created_at_utc,
+       (SELECT count(*) FROM user_roles ur WHERE ur.role_id = r.id) AS members_now,
+       (SELECT string_agg(p.permission_key, ', ' ORDER BY p.permission_key) FROM role_permissions rp
+          JOIN permissions p ON p.id = rp.permission_id WHERE rp.role_id = r.id) AS permissions_now
+FROM access_batches ab
+JOIN roles r ON (r.tenant_id = ab.tenant_id OR r.tenant_id IS NULL) AND NOT r.is_deleted
+ AND ab.roles_csv ~ ('(^|\n)"?' || regexp_replace(lower(r.name), '([.+*?^$()\[\]{}|\\-])', '\\\1', 'g') || '"?,')
+ORDER BY ab.tenant_id, r.name;
+```
+
+Zero rows from query 1 means the sections were never committed. From this release on, every role and user the
+import writes also gets its own `access.role_created|role_updated|user_created|user_updated|roles_assigned` audit
+row with `"source":"migration_import"` and the batch id in its metadata.
+
 ## Invariants
 - **Schema leads code.** Migrations apply in `migrate-backend` before the deploy hook fires.
 - **Single trigger.** `autoDeploy: false`; the CI hook is the only deploy path.
