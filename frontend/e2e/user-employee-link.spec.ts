@@ -25,16 +25,22 @@ const noah = {
   createdAtUtc: '2026-10-01T09:00:00Z',
 };
 
+// A login whose email is on no employee record (the work email was typed differently).
+const ann = { ...noah, id: '55555555-5555-5555-5555-555555555555', email: 'ann@kkdemo.com', fullName: 'Ann Lee' };
+const layla = { ...noah, id: '44444444-4444-4444-4444-444444444444', email: 'l.haddad@kkdemo.com', fullName: 'Layla Haddad' };
+
 const employees = [
-  { id: 42, publicId: 'p-42', employeeCode: 'EMP-0042', fullName: 'Noah Williams', department: 'Sales', status: 'Active' },
+  { id: 42, publicId: 'p-42', employeeCode: 'EMP-0042', fullName: 'Noah Williams', department: 'Sales', status: 'Active', workEmail: 'noah.williams@kkdemo.com' },
   // Invited, not Active: the picker must still find an employee who was invited but has no login yet.
-  { id: 43, publicId: 'p-43', employeeCode: 'EMP-0043', fullName: 'Layla Haddad', department: 'Finance', status: 'Invited' },
-  { id: 44, publicId: 'p-44', employeeCode: 'EMP-0044', fullName: 'Omar Saleh', department: 'Operations', status: 'Active' },
+  { id: 43, publicId: 'p-43', employeeCode: 'EMP-0043', fullName: 'Layla Haddad', department: 'Finance', status: 'Invited', workEmail: 'layla.haddad@kkdemo.com' },
+  { id: 44, publicId: 'p-44', employeeCode: 'EMP-0044', fullName: 'Omar Saleh', department: 'Operations', status: 'Active', workEmail: 'omar.saleh@kkdemo.com' },
+  // Her work email CONTAINS ann@kkdemo.com, which is not the same as having it.
+  { id: 45, publicId: 'p-45', employeeCode: 'EMP-0045', fullName: 'Joann Price', department: 'Legal', status: 'Active', workEmail: 'joann@kkdemo.com' },
 ];
 
 interface Captured { method: string; path: string; body: unknown }
 
-async function openUserManagement(page: Page) {
+async function openUserManagement(page: Page, opts: { slowLookupFor?: string } = {}) {
   const writes: Captured[] = [];
   const errors: string[] = [];
   let linked = false;
@@ -44,7 +50,7 @@ async function openUserManagement(page: Page) {
     localStorage.setItem('zayra_refresh_token', 'fixture-refresh');
     localStorage.setItem('kynexone.theme', 'light');
   });
-  await page.route('**/api/**', (route: Route) => {
+  await page.route('**/api/**', async (route: Route) => {
     const request = route.request();
     const url = new URL(request.url());
     const pathname = url.pathname;
@@ -71,13 +77,16 @@ async function openUserManagement(page: Page) {
     if (pathname === '/api/auth/me') return json({ id: 'admin-1', tenantId: 't1', email: 'admin@kkdemo.com', fullName: 'Tenant Admin', roles: ['Admin'], accountType: 'Group', isGroupScope: true, companies: [], permissions: ['users.manage', 'roles.manage', 'security.manage'] });
     if (pathname === '/api/access/users') {
       const row = linked ? { ...noah, employeeId: 42, employeeName: 'Noah Williams', employeeCode: 'EMP-0042' } : noah;
-      return json({ items: [row], total: 1, page: 1, pageSize: 20 });
+      return json({ items: [row, layla, ann], total: 3, page: 1, pageSize: 20 });
     }
     if (pathname === '/api/employees') {
       const search = (url.searchParams.get('search') ?? '').toLowerCase();
+      // The dialog's automatic lookup, answered late, after the admin has already chosen someone.
+      if (opts.slowLookupFor && search === opts.slowLookupFor) await new Promise((r) => setTimeout(r, 2500));
       const status = url.searchParams.get('status');
       const items = employees.filter((e) => (!status || e.status === status)
-        && (e.fullName.toLowerCase().includes(search) || e.employeeCode.toLowerCase().includes(search)));
+        // Like the server: name, code or work email.
+        && [e.fullName, e.employeeCode, e.workEmail].some((v) => v.toLowerCase().includes(search)));
       return json({ items, total: items.length, page: 1, pageSize: 8 });
     }
     if (pathname === '/api/access/employee-logins/42') return json({
@@ -87,6 +96,10 @@ async function openUserManagement(page: Page) {
     });
     if (pathname === '/api/access/employee-logins/43') return json({
       employeeId: 43, employeeName: 'Layla Haddad', workEmail: 'layla.haddad@kkdemo.com', linkedLogin: null,
+      matchingLogin: null, nextAction: 'invite', reason: null,
+    });
+    if (pathname === '/api/access/employee-logins/45') return json({
+      employeeId: 45, employeeName: 'Joann Price', workEmail: 'joann@kkdemo.com', linkedLogin: null,
       matchingLogin: null, nextAction: 'invite', reason: null,
     });
     if (pathname === '/api/access/employee-logins/44') return json({
@@ -110,7 +123,7 @@ async function openUserManagement(page: Page) {
 
 async function pickEmployee(page: Page, name: string) {
   const dialog = page.getByRole('dialog');
-  await dialog.getByPlaceholder('Search employees by name or code').fill(name.split(' ')[0]);
+  await dialog.getByPlaceholder('Search employees by name, code or work email').fill(name.split(' ')[0]);
   await dialog.getByRole('button', { name: new RegExp(name) }).click();
 }
 
@@ -122,7 +135,10 @@ test('an existing login is linked to its employee record from the user row', asy
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('heading', { name: 'Link to employee record' })).toBeVisible();
   await expect(dialog.getByText(`Login: ${noah.email}`)).toBeVisible();
-  await pickEmployee(page, 'Noah Williams');
+  // Nobody searches: the employee whose work email is the login's is found and chosen.
+  await expect(dialog.getByTestId('employee-auto-picked')).toHaveText(`Found automatically: Noah Williams has the work email ${noah.email}.`);
+  await expect(dialog.getByTestId('employee-login-status')).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('employee-auto-picked.png') });
 
   const status = dialog.getByTestId('employee-login-status');
   await expect(status.getByText(`The login ${noah.email} uses Noah Williams's work email.`, { exact: false })).toBeVisible();
@@ -180,5 +196,64 @@ test('a login that works in another company is explained, and nothing is offered
   await expect(dialog.getByRole('button', { name: 'Link this login' })).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: 'Send self-service invitation' })).toHaveCount(0);
   expect(writes).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test('a login whose email is on no employee record gets employees with a similar name to choose from', async ({ page }) => {
+  const { writes, errors } = await openUserManagement(page);
+  const row = page.getByRole('row').filter({ hasText: layla.email });
+  await row.getByRole('button', { name: 'Link to employee record', exact: true }).click();
+
+  const dialog = page.getByRole('dialog');
+  const suggestions = dialog.getByTestId('employee-suggestions');
+  await expect(suggestions).toContainText(`No employee record has the work email ${layla.email}. The employees below have a similar name`);
+  await suggestions.getByRole('button', { name: /Layla Haddad/ }).click();
+  // The server then says why this login cannot be linked to her as things stand, and what to do.
+  await expect(dialog.getByText(`This login's email (${layla.email}) does not match Layla Haddad's work email (layla.haddad@kkdemo.com).`, { exact: false })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Link this login' })).toHaveCount(0);
+  expect(writes).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test('search results stay inside the dialog, with room to read them', async ({ page }, testInfo) => {
+  await openUserManagement(page);
+  await page.getByRole('button', { name: 'Invite employee', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByPlaceholder('Search employees by name, code or work email').fill('kkdemo');
+  const result = dialog.getByRole('button', { name: /Omar Saleh/ });
+  await expect(result).toBeVisible();
+  // Every result is inside the dialog's box, not clipped by its scrolling body.
+  const box = (await dialog.boundingBox())!;
+  for (const name of ['Noah Williams', 'Layla Haddad', 'Omar Saleh']) {
+    const r = (await dialog.getByRole('button', { name: new RegExp(name) }).boundingBox())!;
+    expect(r.y).toBeGreaterThanOrEqual(box.y);
+    expect(r.y + r.height).toBeLessThanOrEqual(box.y + box.height);
+  }
+  await page.screenshot({ path: testInfo.outputPath('employee-search-results.png') });
+});
+
+test('an employee whose work email only contains the login email is offered, never picked automatically', async ({ page }) => {
+  const { writes, errors } = await openUserManagement(page);
+  await page.getByRole('row').filter({ hasText: ann.email }).getByRole('button', { name: 'Link to employee record', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  const suggestions = dialog.getByTestId('employee-suggestions');
+  await expect(suggestions).toContainText(`No employee record has exactly the work email ${ann.email}, but these records mention it.`);
+  await expect(suggestions.getByRole('button', { name: /Joann Price/ })).toBeVisible();
+  await expect(dialog.getByTestId('employee-auto-picked')).toHaveCount(0);
+  await expect(dialog.getByTestId('employee-login-status')).toHaveCount(0);
+  expect(writes).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test('an employee chosen by hand is never replaced by the automatic lookup answering late', async ({ page }) => {
+  const { errors } = await openUserManagement(page, { slowLookupFor: noah.email });
+  await page.getByRole('row').filter({ hasText: noah.email }).getByRole('button', { name: 'Link to employee record', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await pickEmployee(page, 'Omar Saleh');
+  await expect(dialog.getByText('This login works in a different company.', { exact: false })).toBeVisible();
+  await page.waitForTimeout(3500); // the lookup for Noah answers now
+  await expect(dialog.getByText('Omar Saleh', { exact: true })).toBeVisible();
+  await expect(dialog.getByTestId('employee-auto-picked')).toHaveCount(0);
+  await expect(dialog.getByText('Noah Williams')).toHaveCount(0);
   expect(errors).toEqual([]);
 });
