@@ -12,7 +12,6 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import { useAuthStore } from '@/auth/authStore';
 import { attendanceApi, dashboardApi } from '@/api/services';
-import { AttendanceSelfieModal } from '@/features/attendance/AttendanceSelfieModal';
 import { AttendanceCard } from '@/features/dashboard/EmployeeDashboard';
 import { getDeviceInfo } from '@/utils/device';
 import { formatRiyadhBusinessDate } from '@/utils/businessDate';
@@ -44,7 +43,6 @@ export default function ManagerDashboardScreen({ navigation }: Props) {
   const [attendance, setAttendance] = useState<TodayAttendance | undefined>();
   const [attendanceLoading, setAttendanceLoading] = useState(false);
   const [punchLoading, setPunchLoading] = useState(false);
-  const [pendingPunchType, setPendingPunchType] = useState<PunchType | null>(null);
   const [punchFeedback, setPunchFeedback] = useState<PunchType | null>(null);
   const employeeId = Number(user?.employeeId);
   const hasEmployeeProfile = Number.isFinite(employeeId) && employeeId > 0;
@@ -95,11 +93,7 @@ export default function ManagerDashboardScreen({ navigation }: Props) {
   const team = dashboard?.teamSummary;
   const pendingCount = dashboard?.pendingApprovalsCount ?? 0;
 
-  const submitPunch = useCallback(async (
-    punchType: PunchType,
-    selfiePhotoReference: string,
-    verification?: { deviceFaceVerified: boolean; faceCapabilityAvailable: boolean },
-  ) => {
+  const handlePunch = useCallback(async (punchType: PunchType) => {
     setPunchLoading(true);
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
@@ -113,16 +107,12 @@ export default function ManagerDashboardScreen({ navigation }: Props) {
         longitude: location.coords.longitude,
         accuracy: location.coords.accuracy ?? undefined,
         timestamp: location.timestamp,
-        mocked: (location as any).mocked ?? false,
       };
       await attendanceApi.punch({
         punchType,
         timestamp: new Date().toISOString(),
         location: geoLocation,
         deviceInfo: await getDeviceInfo(),
-        selfiePhotoReference,
-        deviceFaceVerified: verification?.deviceFaceVerified,
-        faceCapabilityAvailable: verification?.faceCapabilityAvailable,
       });
       await loadPersonalAttendance();
       setPunchFeedback(punchType);
@@ -131,25 +121,11 @@ export default function ManagerDashboardScreen({ navigation }: Props) {
         'Could not record attendance',
         error?.response?.data?.message ?? error?.message ?? 'Please check your connection and try again.',
       );
-      throw error;
     } finally {
       setPunchLoading(false);
     }
   }, [loadPersonalAttendance]);
 
-  const handleSelfieConfirm = useCallback(async (
-    uri: string,
-    verification: { deviceFaceVerified: boolean; faceCapabilityAvailable: boolean },
-  ) => {
-    if (!pendingPunchType) return;
-    try {
-      const evidence = await attendanceApi.uploadSelfie(uri);
-      await submitPunch(pendingPunchType, evidence.photoReference, verification);
-      setPendingPunchType(null);
-    } catch {
-      // The modal stays open so the user can retry without losing the captured image.
-    }
-  }, [pendingPunchType, submitPunch]);
 
   return (
     <View style={[styles.root, { backgroundColor: theme.colors.canvas }]}>
@@ -207,8 +183,8 @@ export default function ManagerDashboardScreen({ navigation }: Props) {
                 canClockIn={!attendance?.currentlyActive}
                 canClockOut={!!attendance?.currentlyActive}
                 punchLoading={punchLoading}
-                onClockIn={() => setPendingPunchType('CLOCK_IN')}
-                onClockOut={() => setPendingPunchType('CLOCK_OUT')}
+                onClockIn={() => void handlePunch('CLOCK_IN')}
+                onClockOut={() => void handlePunch('CLOCK_OUT')}
                 onViewHistory={() => go('AttendanceHistory')}
                 feedback={punchFeedback}
               />
@@ -221,7 +197,7 @@ export default function ManagerDashboardScreen({ navigation }: Props) {
               <View style={styles.employeeLinkCopy}>
                 <Text style={[theme.typography.h3, { color: theme.colors.text }]}>Personal attendance needs an employee profile</Text>
                 <Text style={[theme.typography.caption, { color: theme.colors.textSecondary, marginTop: 5 }]}>
-                  This administrator login is not linked to an employee record. Ask HR to link it before using selfie attendance.
+                  This administrator login is not linked to an employee record. Ask HR to link it before using personal attendance.
                 </Text>
               </View>
             </GlassSurface>
@@ -452,12 +428,6 @@ export default function ManagerDashboardScreen({ navigation }: Props) {
 
         <View style={styles.bottomSpacer} />
       </ScrollView>
-      <AttendanceSelfieModal
-        visible={pendingPunchType !== null}
-        punchType={pendingPunchType}
-        onCancel={() => setPendingPunchType(null)}
-        onConfirm={handleSelfieConfirm}
-      />
     </View>
   );
 }

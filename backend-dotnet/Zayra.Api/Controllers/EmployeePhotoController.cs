@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Documents;
 
 namespace Zayra.Api.Controllers;
@@ -14,6 +15,10 @@ namespace Zayra.Api.Controllers;
 /// <c>POST /api/ess/profile/photo</c>, which re-encodes to a ≤512px JPEG, strips EXIF, and keeps
 /// the storage key in <see cref="Models.Employee.ProfilePhotoStorageKey"/> — never in
 /// <c>ProfilePhotoUrl</c>, which is serialised to clients.
+///
+/// Two gates, both required: the caller must hold <c>employees.read</c> (the same permission the
+/// employee list carries), and the employee must be inside the caller's data scope. The lookup is
+/// also tenant-filtered, so another tenant's employee id answers 404 without touching storage.
 /// </summary>
 [ApiController]
 [Route("api/employees")]
@@ -34,7 +39,10 @@ public sealed class EmployeePhotoController : ControllerBase
         _scope = scope;
     }
 
+    public const string ReadPermission = "employees.read";
+
     [HttpGet("{employeeId:int}/photo")]
+    [HasPermission(ReadPermission)]
     [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
     public async Task<IActionResult> GetPhoto(int employeeId, CancellationToken ct)
     {

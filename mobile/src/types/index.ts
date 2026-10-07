@@ -78,7 +78,6 @@ export interface GeoLocation {
   longitude: number;
   accuracy?: number;
   timestamp: number;
-  mocked?: boolean;
 }
 
 export interface MobilePunchPayload {
@@ -87,9 +86,7 @@ export interface MobilePunchPayload {
   location?: GeoLocation;
   workLocationId?: string;
   deviceInfo: DeviceInfo;
-  selfiePhotoReference?: string; // opaque tenant-scoped storage reference returned by the API
-  deviceFaceVerified?: boolean;
-  faceCapabilityAvailable?: boolean;
+  selfieBase64?: string; // optional, if policy requires
   notes?: string;
 }
 

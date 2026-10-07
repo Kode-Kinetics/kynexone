@@ -69,9 +69,12 @@ public class OrphanEntityRatchetTests
 
         // ── Attendance: two of these are actively misleading ─────────────────────────────────
         "AttendanceDeviceConnector",
-        // AttendanceGeofence and AttendanceLocation were unpinned when the mobile punch path
-        // (AttendanceController.ValidateMobileGeoAsync) began reading them. Note that they still
-        // compete with Location.GeofenceRadiusMeters, which is the model the Setup screen writes.
+        // A second, richer model of a geofence (RadiusMeters, ClockInRequiredInside,
+        // SpoofingRiskCheckEnabled) competing with Location.GeofenceRadiusMeters, which IS the
+        // one written by the Setup screen. Keeping both guarantees the next engineer wires the
+        // wrong one.
+        "AttendanceGeofence",
+        "AttendanceLocation",
         // AttendanceRule/OvertimeRule are generic RuleValueJson rule engines. There is no rule
         // engine.
         "AttendanceRule",

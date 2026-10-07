@@ -16,7 +16,6 @@ import Animated, {
 } from 'react-native-reanimated';
 import * as Location from 'expo-location';
 import { useTranslation } from 'react-i18next';
-import { AttendanceSelfieModal } from '@/features/attendance/AttendanceSelfieModal';
 import { useAuthStore } from '@/auth/authStore';
 import { attendanceApi, dashboardApi } from '@/api/services';
 import { getDeviceInfo } from '@/utils/device';
@@ -56,7 +55,6 @@ export default function EmployeeDashboardScreen({ navigation }: Props) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [punchLoading, setPunchLoading] = useState(false);
-  const [pendingPunchType, setPendingPunchType] = useState<PunchType | null>(null);
   const [punchFeedback, setPunchFeedback] = useState<PunchType | null>(null);
   const loadDashboard = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -81,11 +79,7 @@ export default function EmployeeDashboardScreen({ navigation }: Props) {
     void loadDashboard(true);
   }, [loadDashboard]);
 
-  const submitPunch = useCallback(async (
-    punchType: PunchType,
-    selfiePhotoReference?: string,
-    verification?: { deviceFaceVerified: boolean; faceCapabilityAvailable: boolean },
-  ) => {
+  const handlePunch = useCallback(async (punchType: PunchType) => {
     setPunchLoading(true);
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
@@ -102,7 +96,6 @@ export default function EmployeeDashboardScreen({ navigation }: Props) {
         longitude: location.coords.longitude,
         accuracy: location.coords.accuracy ?? undefined,
         timestamp: location.timestamp,
-        mocked: (location as any).mocked ?? false,
       };
 
       await attendanceApi.punch({
@@ -110,9 +103,6 @@ export default function EmployeeDashboardScreen({ navigation }: Props) {
         timestamp: new Date().toISOString(),
         location: geoLocation,
         deviceInfo: await getDeviceInfo(),
-        selfiePhotoReference,
-        deviceFaceVerified: verification?.deviceFaceVerified,
-        faceCapabilityAvailable: verification?.faceCapabilityAvailable,
       });
       await loadDashboard(true);
       setPunchFeedback(punchType);
@@ -121,29 +111,11 @@ export default function EmployeeDashboardScreen({ navigation }: Props) {
         'Could not record attendance',
         error?.response?.data?.message ?? 'Please check your connection and try again.',
       );
-      throw error;
     } finally {
       setPunchLoading(false);
     }
   }, [loadDashboard, t]);
 
-  const handlePunch = useCallback((punchType: PunchType) => {
-    setPendingPunchType(punchType);
-  }, []);
-
-  const handleSelfieConfirm = useCallback(async (
-    uri: string,
-    verification: { deviceFaceVerified: boolean; faceCapabilityAvailable: boolean },
-  ) => {
-    if (!pendingPunchType) return;
-    try {
-      const evidence = await attendanceApi.uploadSelfie(uri);
-      await submitPunch(pendingPunchType, evidence.photoReference, verification);
-      setPendingPunchType(null);
-    } catch {
-      // submitPunch shows the user-facing error and the selfie modal remains open for retry.
-    }
-  }, [pendingPunchType, submitPunch]);
   const attendance = dashboard?.todayAttendance;
   const canClockIn = !attendance?.currentlyActive;
   const canClockOut = !!attendance?.currentlyActive;
@@ -421,13 +393,6 @@ export default function EmployeeDashboardScreen({ navigation }: Props) {
 
         <View style={styles.bottomSpacer} />
       </ScrollView>
-
-      <AttendanceSelfieModal
-        visible={pendingPunchType !== null}
-        punchType={pendingPunchType}
-        onCancel={() => setPendingPunchType(null)}
-        onConfirm={handleSelfieConfirm}
-      />
     </View>
   );
 }

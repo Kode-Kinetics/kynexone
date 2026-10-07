@@ -759,19 +759,6 @@ export const dashboardApi = {
 
 // ---- Attendance ----
 export const attendanceApi = {
-  async uploadSelfie(uri: string): Promise<{ photoReference: string }> {
-    const form = new FormData();
-    form.append(
-      'file',
-      filePart({
-        uri,
-        name: `attendance-selfie-${Date.now()}.jpg`,
-        mimeType: 'image/jpeg',
-      }),
-    );
-    return apiPost<{ photoReference: string }>('/attendance/evidence/selfie', form, MULTIPART);
-  },
-
   async punch(payload: MobilePunchPayload): Promise<{ recordId: string; message: string }> {
     const employeeId = await requireEmployeeId();
     const direction = payload.punchType === 'CLOCK_OUT' || payload.punchType === 'BREAK_OUT' ? 'Out' : 'In';
@@ -781,15 +768,6 @@ export const attendanceApi = {
       locationName: payload.location ? 'Mobile GPS' : 'Mobile',
       latitude: payload.location?.latitude,
       longitude: payload.location?.longitude,
-      accuracyMeters: payload.location?.accuracy,
-      locationMocked: payload.location?.mocked,
-      photoReference: payload.selfiePhotoReference,
-      clientBiometricVerified: payload.deviceFaceVerified,
-      verificationMethod: payload.selfiePhotoReference
-        ? payload.deviceFaceVerified
-          ? 'Mobile GPS + Selfie + Device Face'
-          : 'Mobile GPS + Selfie'
-        : 'Mobile GPS',
     });
     return { recordId: String(result.id ?? ''), message: `${direction} punch recorded` };
   },

@@ -713,25 +713,11 @@ public class AttendanceService : IAttendanceService
     public async Task<AttendanceRawEvent> PunchAsync(Guid tenantId, WebPunchRequest request, string source, RequestContext context, CancellationToken ct)
     {
         var punchedAtUtc = DateTime.UtcNow;
-        var isMobile = source.Contains("mobile", StringComparison.OrdinalIgnoreCase);
-        var verificationMethod = string.IsNullOrWhiteSpace(request.VerificationMethod)
-            ? (isMobile && !string.IsNullOrWhiteSpace(request.PhotoReference) ? "Mobile GPS + Selfie" : isMobile ? "Mobile GPS" : "Web")
-            : request.VerificationMethod;
-
-        var rawPayload = isMobile
-            ? JsonSerializer.Serialize(new
-            {
-                accuracyMeters = request.AccuracyMeters,
-                locationMocked = request.LocationMocked,
-                clientBiometricVerified = request.ClientBiometricVerified
-            })
-            : null;
-
         var raw = await PushEventAsync(tenantId,
             new AttendanceRawEventRequest(request.EmployeeId, null, null, source, punchedAtUtc,
                 request.PunchDirection, request.LocationName, request.Latitude, request.Longitude,
-                context.IpAddress, request.PhotoReference, rawPayload, "",
-                verificationMethod, request.ConfidenceScore),
+                context.IpAddress, null, null, "",
+                source.Contains("mobile", StringComparison.OrdinalIgnoreCase) ? "Mobile" : "Web", null),
             context, ct);
 
         var employee = await ResolveEmployee(tenantId, request.EmployeeId, null, ct)
