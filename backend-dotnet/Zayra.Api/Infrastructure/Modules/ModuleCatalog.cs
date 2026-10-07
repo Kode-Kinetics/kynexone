@@ -160,7 +160,7 @@ public static class ModuleCatalog
             LockReason = CoreHrReason,
             RoutePrefixes =
             [
-                "/api/employees", "/api/branches", "/api/departments", "/api/designations",
+                "/api/employees", "/api/employee-access", "/api/branches", "/api/departments", "/api/designations",
                 "/api/grades", "/api/cost-centers", "/api/locations", "/api/positions",
                 "/api/companies", "/api/organization", "/api/reference", "/api/establishment",
                 "/api/jobs", "/api/planning",

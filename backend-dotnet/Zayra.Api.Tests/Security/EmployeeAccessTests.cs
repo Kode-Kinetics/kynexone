@@ -175,7 +175,8 @@ public sealed class EmployeeAccessTests
         var companyName = await db.Companies.IgnoreQueryFilters().Where(c => c.Id == w.CompanyId).Select(c => c.LegalNameEn).SingleAsync();
         var csv = "EmployeeCode,FullName,JoiningDate,CompanyLegalName,WorkEmail\n" +
                   $"IMP-A,Imported Alpha,2024-01-15,{companyName},alpha@{w.Domain}\n" +
-                  $"IMP-B,Imported Beta,2024-01-15,{companyName},\n";
+                  $"IMP-B,Imported Beta,2024-01-15,{companyName},\n" +
+                  $"IMP-D,Imported Delta,2024-01-15,{companyName},delta@elsewhere.test\n";
         var result = await EmployeesCtl(db, w, w.AdminId).Import(new EmployeesController.ImportEmployeesRequest(csv), default);
         Assert.IsType<OkObjectResult>(result);
 
@@ -186,6 +187,9 @@ public sealed class EmployeeAccessTests
         ids["IMP-B"].WorkEmail.Should().BeEmpty("import no longer derives an address");
         (await StateAsync(w, ids["IMP-A"].Id)).Should().Be(EmployeeAccessStates.NotStarted);
         (await StateAsync(w, ids["IMP-B"].Id)).Should().Be(EmployeeAccessStates.WaitingForWorkEmail);
+        // Import keeps a wrong-domain address (flagged), but no login is ever staged on it.
+        (await verify.EmployeeUserAccounts.IgnoreQueryFilters().AnyAsync(x => x.EmployeeId == ids["IMP-D"].Id)).Should().BeFalse();
+        (await GetAsync(w, ids["IMP-D"].Id, w.HrOfficerId))!.BlockedCode.Should().Be(EmployeeLoginProvisioner.BlockedCodes.WrongDomain);
     }
 
     [Fact]
@@ -395,9 +399,9 @@ public sealed class EmployeeAccessTests
         var active = await AddStagedAsync(w, $"already@{w.Domain}");
         await RedeemAsync(w, $"already@{w.Domain}", (await IssueAsync(w, w.HrOfficer2Id, [active])).Issued.Single().Code!);
 
-        var bulk = await IssueAsync(w, w.HrOfficerId, [self, above, manager, report, setBySelf]);
+        var bulk = await IssueAsync(w, w.HrOfficerId, [above, manager, report, setBySelf]);
         bulk.Issued.Select(i => i.EmployeeId).Should().BeEquivalentTo([report]);
-        Reason(bulk, self).Should().Be(EmployeeAccessService.Skip.SelfIssue);
+        Reason(await IssueAsync(w, w.HrOfficerId, [self], canReset: true), self).Should().Be(EmployeeAccessService.Skip.SelfIssue);
         Reason(bulk, above).Should().Be(EmployeeAccessService.Skip.AboveCeiling);
         Reason(bulk, manager).Should().Be(EmployeeAccessService.Skip.Privileged);
         Reason(bulk, setBySelf).Should().Be(WorkEmailSetterRule.SetByCallerCode);
@@ -590,6 +594,43 @@ public sealed class EmployeeAccessTests
         (await CredentialHandlerBar.IsBarredAsync(verify, w.TenantId, id, w.HrOfficerId, DateTime.UtcNow, default)).Should().BeTrue();
         (await CredentialHandlerBar.IsBarredAsync(verify, w.TenantId, id, w.HrOfficer2Id, DateTime.UtcNow, default)).Should().BeFalse();
         (await CredentialHandlerBar.IsBarredAsync(verify, w.TenantId, id, w.HrOfficerId, DateTime.UtcNow.AddDays(31), default)).Should().BeFalse();
+
+        // The bar in use: the issuer may not approve that employee's self-service profile change; a colleague may.
+        var change = new EmployeeProfileChangeRequest { TenantId = w.TenantId, EmployeeId = id, RequestedChangesJson = "{\"phone\":\"+966500000000\"}" };
+        verify.EmployeeProfileChangeRequests.Add(change);
+        await verify.SaveChangesAsync();
+        var refused = await Ess(verify, w, w.HrOfficerId).ApproveProfileChange(change.Id, new ProfileChangeDecisionDto(null), default);
+        JsonSerializer.SerializeToElement(Assert.IsType<ConflictObjectResult>(refused).Value).GetProperty("code").GetString()
+            .Should().Be("credential_handler_cannot_decide");
+        Assert.IsType<OkObjectResult>(await Ess(verify, w, w.HrOfficer2Id).ApproveProfileChange(change.Id, new ProfileChangeDecisionDto(null), default));
+    }
+
+    private static EmployeeSelfServiceController Ess(ZayraDbContext db, World w, Guid caller)
+    {
+        var letters = new NoLetters();
+        var storage = new NoStorage();
+        return new EmployeeSelfServiceController(db, letters, new Zayra.Api.Infrastructure.Documents.PdfRenderGate(1),
+            new Zayra.Api.Infrastructure.Leave.LeaveService(db, new Zayra.Api.Infrastructure.Approvals.ApprovalRouter(db)),
+            new Zayra.Api.Infrastructure.Attendance.AttendanceService(db, TestNotifications.For(db), new NoHttp()),
+            new Zayra.Api.Infrastructure.Documents.Letters.HrLetterIssuer(db, letters, storage), storage)
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+                    {
+                        new Claim("tenant_id", w.TenantId.ToString()), new Claim(ClaimTypes.NameIdentifier, caller.ToString()),
+                        new Claim(ClaimTypes.Role, "HR Officer"), new Claim("permission", "employees.write"),
+                    }, "Test")),
+                },
+            },
+        };
+    }
+
+    private sealed class NoHttp : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => throw new NotSupportedException();
     }
 
     [Fact]
@@ -905,7 +946,7 @@ public sealed class EmployeeAccessTests
         {
             Id = id, TenantId = w.TenantId, Email = email.ToLowerInvariant(), NormalizedEmail = AuthService.Normalize(email), FullName = name,
             PasswordHash = new Pbkdf2PasswordHasher().Hash(StaffPassword),
-            Status = active ? "Active" : "Deactivated", AccessMode = staff ? AccessModes.FullPortal : AccessModes.EssOnly,
+            Status = active ? "Active" : "PendingPasswordSetup", AccessMode = staff ? AccessModes.FullPortal : AccessModes.EssOnly,
             IsActive = active, IsEmailConfirmed = active, IsGroupScope = staff, IdentityProvider = "Local", ProvisioningSource = "Local",
         });
         foreach (var roleName in roles)

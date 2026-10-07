@@ -253,6 +253,7 @@ public sealed class EmployeeAccessService
                 case EmployeeAccessStates.Blocked: result = new(Skip.Blocked, null, state.BlockedReason); return;
             }
             if (!AuthCurrentEligibility.IsEmployeeLifecycleEligible(employee.Status)) { result = new(Skip.Blocked, null, SkipReason(Skip.NotActive)); return; }
+            if (facts.Login?.UserId == callerId) { result = new(Skip.SelfIssue, null); return; }
             // A login already in use (active, or active with a live reset code) is a RESET (F1), whatever the state shows.
             var resetOfActive = facts.Login is { IsActive: true };
             if (resetOfActive ? !canReset : !canIssue) { result = new(Skip.ResetNeedsPermission, null); return; }
