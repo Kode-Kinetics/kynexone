@@ -453,6 +453,7 @@ public sealed class SaudiBankExportService
             .Where(d => d.TenantId == tenantId && d.PayrollRunId == run.Id && ids.Contains(d.EmployeeId))
             .ToListAsync(ct);
         var debtByEmployee = WageDeductionClassification.DebtTotalsByEmployee(deductionLines);
+        var wageDueByEmployee = WageDeductionClassification.WageDueByEmployee(slips, deductionLines);
         var debtCapOverridden = (await _db.PayrollValidationOverrides.AsNoTracking()
             .Where(o => o.TenantId == tenantId && o.PayrollRunId == run.Id
                         && o.Code == WageDeductionClassification.DeductionsExceedHalfWageCode && o.EmployeeId != null)
@@ -526,7 +527,8 @@ public sealed class SaudiBankExportService
                 SaudiBeneficiaryBic.Resolve(emp, profile),
                 NullIfEmpty(string.IsNullOrEmpty(emp.EnglishName) ? emp.FullName : emp.EnglishName),
                 slip.GrossSalary, slip.BasicSalary, slip.HousingAllowance, slip.NetSalary, slip.Deductions,
-                debtByEmployee.GetValueOrDefault(rec.EmployeeId), debtCapOverridden.Contains(rec.EmployeeId)));
+                debtByEmployee.GetValueOrDefault(rec.EmployeeId), debtCapOverridden.Contains(rec.EmployeeId),
+                wageDueByEmployee.TryGetValue(rec.EmployeeId, out var due) ? due : null));
 
             addresses.TryGetValue(rec.EmployeeId, out var addr);
             var hasAddr = addresses.ContainsKey(rec.EmployeeId);

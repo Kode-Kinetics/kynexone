@@ -67,7 +67,36 @@ public static class WageDeductionClassification
             .GroupBy(l => l.EmployeeId)
             .ToDictionary(g => g.Key, g => g.Sum(l => l.Amount));
 
-    /// <summary>True when debt-type deductions exceed half of the wage due (Art. 93).</summary>
-    public static bool ExceedsHalfWage(decimal debtDeductions, decimal grossWage) =>
-        grossWage > 0m && debtDeductions > grossWage / 2m;
+    /// <summary>Sources of lines that are pay NOT EARNED rather than a deduction from earned pay: absence and loss of pay
+    /// (<c>Attendance</c>) and unpaid leave (<c>Leave</c>).</summary>
+    public static readonly IReadOnlySet<string> WageReductionSources = new HashSet<string>(StringComparer.Ordinal) { "Attendance", "Leave" };
+
+    /// <summary>True for an employee-side line that reduces the wage due itself (absence, loss of pay, unpaid leave).</summary>
+    public static bool IsWageReduction(PayrollDeduction line) =>
+        !line.IsEmployerContribution && line.Source is not null && WageReductionSources.Contains(line.Source);
+
+    /// <summary>
+    /// The Art. 93 "wage due": gross pay minus the pay not earned (absence/LOP and unpaid-leave lines). Owner decision
+    /// (worker-protective reading, PENDING COUNSEL): half of what is actually payable, not half of the gross before
+    /// absence. The ONE definition — the validation engine, the bank export and the deductions statement all use it.
+    /// </summary>
+    public static decimal WageDue(decimal grossWage, IEnumerable<PayrollDeduction> employeeLines) =>
+        grossWage - employeeLines.Where(IsWageReduction).Sum(l => l.Amount);
+
+    /// <summary>Wage due per employee for a set of slips and their lines (see <see cref="WageDue"/>).</summary>
+    public static Dictionary<int, decimal> WageDueByEmployee(IEnumerable<PayrollSlip> slips, IEnumerable<PayrollDeduction> lines)
+    {
+        var reductions = lines.Where(IsWageReduction).GroupBy(l => l.EmployeeId).ToDictionary(g => g.Key, g => g.Sum(l => l.Amount));
+        return slips.GroupBy(s => s.EmployeeId)
+            .ToDictionary(g => g.Key, g => g.Sum(s => s.GrossSalary) - reductions.GetValueOrDefault(g.Key));
+    }
+
+    /// <summary>The Art. 93 limit: half the wage due, rounded DOWN to the cent so a fraction of a halala never widens it.</summary>
+    public static decimal HalfWageLimit(decimal wageDue) =>
+        wageDue <= 0m ? 0m : decimal.Floor(wageDue / 2m * 100m) / 100m;
+
+    /// <summary>True when debt-type deductions exceed half of the wage due (Art. 93). Fail-closed: any debt against a
+    /// zero (or negative) wage due is over the limit.</summary>
+    public static bool ExceedsHalfWage(decimal debtDeductions, decimal wageDue) =>
+        debtDeductions > 0m && (wageDue <= 0m || debtDeductions > HalfWageLimit(wageDue));
 }

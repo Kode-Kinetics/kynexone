@@ -74,6 +74,11 @@ public static class ReleaseABlockReasons
     public const string EntitlementCarriedDiffers = "ENTITLEMENT_CARRIED_DIFFERS";
     public const string EntitlementCarriedOverlaps = "ENTITLEMENT_CARRIED_OVERLAPS";
     public const string EntitlementCloseOnly = "ENTITLEMENT_CLOSE_ONLY";
+    // R3 deductions statement (PR for slice R3): flags a statement raises instead of guessing.
+    public const string DeductionUnclassifiedCounted = "DEDUCTION_UNCLASSIFIED_COUNTED";
+    public const string DeductionSplitUnreconciled = "DEDUCTION_SPLIT_UNRECONCILED";
+    public const string DeductionLinesMissing = "DEDUCTION_LINES_MISSING";
+    public const string LoanConsentAlreadyUsed = "LOAN_CONSENT_ALREADY_USED";
 
     // R4 review (PR #191)
     public const string RenewalContractStillActive = "RENEWAL_CONTRACT_STILL_ACTIVE";
@@ -340,6 +345,34 @@ public static class ReleaseABlockReasons
             "Upload the signed contract to the employee's documents, then choose it.",
             "ارفع العقد الموقّع إلى مستندات الموظف ثم اختره.",
             HrManager),
+        new BlockReason(DeductionUnclassifiedCounted,
+            "A deduction of an unrecognised type", "استقطاع من نوع غير معروف",
+            "A payroll adjustment was deducted under a type the system does not recognise. It is counted toward the 50% limit until payroll says what it is, so the limit is never understated.",
+            "تم خصم تسوية رواتب بنوع لا يعرفه النظام، لذلك تُحتسب ضمن حد الـ 50% إلى أن يحدد قسم الرواتب نوعها، حتى لا يُقلَّل الحد.",
+            "Record the adjustment under a known type (for example a penalty, damages, a court order or a pay correction) and re-process the run.",
+            "سجّل التسوية بنوع معروف (مثل جزاء أو تعويض أضرار أو حكم قضائي أو تصحيح راتب) ثم أعد معالجة المسير.",
+            PayrollManager),
+        new BlockReason(DeductionSplitUnreconciled,
+            "Loan instalments could not be matched", "تعذّرت مطابقة أقساط القروض",
+            "The loan or advance amount on this payslip does not match the instalments recorded against each loan for this payroll run, so it is shown as one total and no balance is assumed.",
+            "مبلغ القرض أو السلفة في هذا المسير لا يطابق الأقساط المسجّلة على كل قرض في هذا التشغيل، لذلك يُعرض كمبلغ واحد دون افتراض أي رصيد.",
+            "Check the loan schedules for this month against the payroll run, and correct the schedule or re-process the run.",
+            "راجع جداول أقساط القروض لهذا الشهر مقابل مسير الرواتب، ثم صحّح الجدول أو أعد معالجة المسير.",
+            PayrollManager),
+        new BlockReason(LoanConsentAlreadyUsed,
+            "Consent already used for another loan", "الموافقة مستخدمة لقرض آخر",
+            "A signed consent covers one loan. This document is already the consent on another loan, so it cannot also stand for this one.",
+            "الموافقة الموقّعة تخص قرضاً واحداً، وهذا المستند هو موافقة قرض آخر بالفعل، فلا يمكن أن يكون موافقة لهذا القرض أيضاً.",
+            "Ask the employee to sign a consent for this loan and upload it.",
+            "اطلب من الموظف توقيع موافقة لهذا القرض ثم ارفعها.",
+            HrManager),
+        new BlockReason(DeductionLinesMissing,
+            "This payslip can't be broken down yet", "لا يمكن تفصيل هذا المسير بعد",
+            "The payslip's deduction lines do not add up to its deductions total, so it cannot be shown which deductions count toward the 50% limit. Nothing is assumed to be within it.",
+            "بنود الاستقطاع في هذا المسير لا تطابق إجمالي استقطاعاته، لذلك لا يمكن بيان ما يُحتسب منها ضمن حد الـ 50%، ولا يُفترض أنه ضمن الحد.",
+            "Re-process the payroll run so every deduction is recorded as its own line, then check the limit again.",
+            "أعد معالجة مسير الرواتب ليُسجَّل كل استقطاع كبند مستقل، ثم تحقق من الحد مرة أخرى.",
+            PayrollManager),
         new BlockReason(EntitlementProposalClosed,
             "Already decided", "تم البت فيها",
             "This proposed package was already confirmed or rejected, or the term already has its package.",
