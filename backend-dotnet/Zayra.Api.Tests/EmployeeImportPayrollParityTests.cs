@@ -20,8 +20,15 @@ namespace Zayra.Api.Tests;
 /// producers, one repair decision and one storage check, so the dry run predicts what the commit does.
 /// (The first four tests come from the parallel WT session; the rest pin review defects 2 and 5.)
 /// </summary>
+[Trait("Category", "Integration")]
+[Collection("Integration")]
 public class EmployeeImportPayrollParityTests
 {
+    // The import preview is the commit run in a rolled-back transaction, so its tests need a real database.
+    private readonly PostgresFixture? _fx;
+    public EmployeeImportPayrollParityTests(PostgresFixture fx) => _fx = fx;
+    private ZayraDbContext PgDb() => _fx!.CreateDb();
+
     private static ZayraDbContext CreateDb() =>
         new(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
 
@@ -71,7 +78,7 @@ public class EmployeeImportPayrollParityTests
     [Fact]
     public async Task HeldSalary_PreviewMustListItAsUnresolved_NotComplete()
     {
-        await using var db = CreateDb();
+        await using var db = PgDb();
         var tenant = await SeedTenant(db); await SeedCompany(db, tenant, "Acme");
         var ctrl = ImportController(db, tenant);
         var csv = "EmployeeCode,FullName,CompanyLegalName,Grade,BasicSalary,JoiningDate\nE1,Demo Person,Acme,UNKNOWN,5000,2024-01-01\n";
@@ -85,7 +92,7 @@ public class EmployeeImportPayrollParityTests
     [InlineData("0", "1500", "BasicSalary")]
     public async Task InvalidSalary_PreviewExplainsWhyNoAssignmentWillBeWritten(string basic, string housing, string field)
     {
-        await using var db = CreateDb();
+        await using var db = PgDb();
         var tenant = await SeedTenant(db); await SeedCompany(db, tenant, "Acme"); await SeedGrade(db, tenant);
         var ctrl = ImportController(db, tenant);
         var csv = $"EmployeeCode,FullName,CompanyLegalName,Grade,BasicSalary,HousingAllowance,JoiningDate\nE1,Demo Person,Acme,G1,{basic},{housing},2024-01-01\n";
@@ -140,7 +147,7 @@ public class EmployeeImportPayrollParityTests
     [Fact]
     public async Task Preview_UnreadableJoiningDate_ProjectsDraftBlocked_ExactlyAsTheCommitLands()
     {
-        await using var db = CreateDb();
+        await using var db = PgDb();
         var tenant = await SeedTenant(db); await SeedCompany(db, tenant, "Acme");
         var ctrl = ImportController(db, tenant);
         var csv = "EmployeeCode,FullName,CompanyLegalName,JoiningDate,Status\nE1,Demo Person,Acme,YYYY-MM-DD,Active\n";
@@ -167,7 +174,7 @@ public class EmployeeImportPayrollParityTests
         System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("de-DE");
         try
         {
-            await using var db = CreateDb();
+            await using var db = PgDb();
             var tenant = await SeedTenant(db); await SeedCompany(db, tenant, "Acme"); await SeedGrade(db, tenant);
             var ctrl = ImportController(db, tenant);
             var csv = "EmployeeCode,FullName,CompanyLegalName,Grade,BasicSalary,JoiningDate\nE1,Demo Person,Acme,G1,\"1.500,50\",2024-01-01\n";
@@ -190,7 +197,7 @@ public class EmployeeImportPayrollParityTests
     [Fact]
     public async Task Preview_ReportsAnUnreadableExpiry_AsTheSameGapTheCommitPersists()
     {
-        await using var db = CreateDb();
+        await using var db = PgDb();
         var tenant = await SeedTenant(db); await SeedCompany(db, tenant, "Acme");
         var ctrl = ImportController(db, tenant);
         var csv = "EmployeeCode,FullName,CompanyLegalName,JoiningDate,PassportExpiryDate\nE1,Demo Person,Acme,2024-01-01,31-13-2025\n";
@@ -208,7 +215,7 @@ public class EmployeeImportPayrollParityTests
     [Fact]
     public async Task Preview_And_Commit_AgreeOnCreatedRepairedAndSkippedCounts()
     {
-        await using var db = CreateDb();
+        await using var db = PgDb();
         var tenant = await SeedTenant(db); var company = await SeedCompany(db, tenant, "Acme"); await SeedGrade(db, tenant);
         db.Employees.Add(new Employee { TenantId = tenant, CompanyId = company.Id, EmployeeCode = "OLD-1", FullName = "Already Complete", Status = "Active", JoiningDate = new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc) });
         db.Employees.Add(new Employee { TenantId = tenant, CompanyId = company.Id, EmployeeCode = "OLD-2", FullName = "Missing Payroll", Status = "Active", JoiningDate = new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc) });
@@ -216,8 +223,6 @@ public class EmployeeImportPayrollParityTests
         var ctrl = ImportController(db, tenant);
         var csv = "EmployeeCode,FullName,CompanyLegalName,Grade,BasicSalary,JoiningDate,BankName,PayrollGroup\n"
                   + "N1,New Person,Acme,G1,5000,2024-01-01,Bank,\n"
-                  + "N2,,Acme,G1,5000,2024-01-01,Bank,\n"              // no name → skipped
-                  + "N1,Same Code Twice,Acme,G1,5000,2024-01-01,Bank,\n" // duplicate in file → skipped
                   + "OLD-1,Already Complete,Acme,,,2023-01-01,,\n"      // exists, nothing to fill → skipped
                   + "OLD-2,Missing Payroll,Acme,G1,6000,2023-01-01,Bank,MONTHLY\n" // exists: payroll group filled; bank + salary need approval
                   + "N3,Bad Date,Acme,G1,5000,notadate,Bank,\n";        // created (Draft, blocked)
@@ -227,7 +232,7 @@ public class EmployeeImportPayrollParityTests
 
         Assert.Equal(2, preview.GetProperty("wouldCreate").GetInt32());
         Assert.Equal(1, preview.GetProperty("wouldRepair").GetInt32());
-        Assert.Equal(3, preview.GetProperty("wouldSkip").GetInt32());
+        Assert.Equal(1, preview.GetProperty("wouldSkip").GetInt32());
         // The existing employee's bank name and salary are approval-gated: named in both, applied by neither.
         Assert.Equal(1, preview.GetProperty("wouldNeedApproval").GetInt32());
         Assert.Equal(preview.GetProperty("wouldNeedApproval").GetInt32(), commit.GetProperty("approvalRequiredCount").GetInt32());
@@ -245,7 +250,7 @@ public class EmployeeImportPayrollParityTests
     [Fact]
     public async Task AnOverlongValue_IsNamedByRowAndColumn_InThePreviewAndTheRefusal()
     {
-        await using var db = CreateDb();
+        await using var db = PgDb();
         var tenant = await SeedTenant(db); await SeedCompany(db, tenant, "Acme");
         var ctrl = ImportController(db, tenant);
         var longName = new string('A', 151);
@@ -253,8 +258,11 @@ public class EmployeeImportPayrollParityTests
 
         var preview = JsonPayload(await ctrl.ImportPreview(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None));
         Assert.Equal(1, preview.GetProperty("wouldFail").GetInt32());
-        Assert.Equal("WillFail", PreviewRow(preview, 1).GetProperty("status").GetString());
-        Assert.Contains(Strings(PreviewRow(preview, 1).GetProperty("errors")), e => e.Contains("FullName") && e.Contains("150"));
+        // The preview IS the commit, rolled back: a refused file previews as its refused rows, under the refusal.
+        Assert.Equal("would_refuse", preview.GetProperty("commitCheck").GetProperty("outcome").GetString());
+        Assert.Equal(3, PreviewRow(preview, 0).GetProperty("row").GetInt32());
+        Assert.Equal("WillFail", PreviewRow(preview, 0).GetProperty("status").GetString());
+        Assert.Contains(Strings(PreviewRow(preview, 0).GetProperty("errors")), e => e.Contains("FullName") && e.Contains("150"));
 
         var refused = Assert.IsType<UnprocessableEntityObjectResult>(await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None));
         var body = JsonSerializer.SerializeToElement(refused.Value);

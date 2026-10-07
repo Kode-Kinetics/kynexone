@@ -343,7 +343,12 @@ public class TenantAdminController : ControllerBase
         // table up. Same registry, same refusal as every other statutory write path.
         // See Infrastructure/Payroll/StatutoryValueUnits.cs.
         if (StatutoryValueUnits.Validate(req.RuleKey, req.DataType, req.RuleValue) is { } unitError)
-            return BadRequest(new { message = unitError });
+            return BadRequest(StatutoryValueUnits.Refusal(unitError));
+        // GOSI rates and the contributory-wage ceiling are STATUTORY: payroll reads the platform row
+        // only, so a tenant value here would be saved and never applied. Refused with a code.
+        // See Infrastructure/Payroll/GosiStatutoryValues.cs.
+        if (GosiStatutoryValues.TenantWriteRefusal(req.RuleKey) is { } gosiRefusal)
+            return UnprocessableEntity(gosiRefusal);
 
         var rule = new CountryPayrollRule
         {

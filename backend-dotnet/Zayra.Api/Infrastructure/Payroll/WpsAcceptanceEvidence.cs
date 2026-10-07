@@ -215,6 +215,12 @@ public sealed class WpsAcceptanceEvidenceService
     }
 
     /// <summary>Evidence with this SHA-256 recorded against any batch of the same legal entity.</summary>
+    /// <remarks>
+    /// The SQL narrows on keys only (tenant, the entity's batches via the (tenant_id, payment_batch_id) index,
+    /// the evidence row-name prefix); the SHA is compared in memory on the parsed envelope. It must never be a
+    /// substring search over <c>file_content</c>: that column also holds generated bank/WPS files full of
+    /// IBANs, and a <c>strpos</c>/<c>LIKE</c> over it is an unindexed scan of payroll bank data.
+    /// </remarks>
     private async Task<WpsEvidenceEnvelope?> FindByHashInCompanyAsync(Guid tenantId, Guid? companyId, string sha, CancellationToken ct)
     {
         var companyRunIds = _db.PayrollRuns.AsNoTracking()
@@ -222,8 +228,9 @@ public sealed class WpsAcceptanceEvidenceService
         var companyBatchIds = _db.PayrollPaymentBatches.AsNoTracking()
             .Where(b => b.TenantId == tenantId && companyRunIds.Contains(b.PayrollRunId)).Select(b => b.Id);
         var rows = await _db.BankTransferFiles.AsNoTracking()
-            .Where(f => f.TenantId == tenantId && f.FileName.StartsWith(Prefix) && f.FileContent.Contains(sha)
+            .Where(f => f.TenantId == tenantId && f.FileName.StartsWith(Prefix)
                         && companyBatchIds.Contains(f.PaymentBatchId))
+            .OrderBy(f => f.CreatedAtUtc).ThenBy(f => f.Id)
             .Select(f => f.FileContent).ToListAsync(ct);
         return rows.Select(Parse).FirstOrDefault(e => e is not null && e.TenantId == tenantId && e.Sha256 == sha);
     }

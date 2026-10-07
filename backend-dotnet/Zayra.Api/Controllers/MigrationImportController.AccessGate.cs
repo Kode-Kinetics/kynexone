@@ -6,6 +6,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -91,12 +92,14 @@ public sealed partial class MigrationImportController
             permissions.Where(p => !held.Contains(p)).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(p => p, StringComparer.Ordinal).ToArray();
         static string List(string[] keys) => string.Join(", ", keys.Take(6)) + (keys.Length > 6 ? $" and {keys.Length - 6} more" : string.Empty);
 
-        var packageRoles = new HashSet<string>(StringComparer.Ordinal);
+        // Roles this package itself writes, and whether it leaves each ACTIVE: assigning a role the package creates
+        // (or switches) inactive cannot succeed, so the row is refused here rather than failing half-way at apply.
+        var packageRoles = new Dictionary<string, bool>(StringComparer.Ordinal);
         foreach (var (row, index) in roleRows)
         {
             var name = Val(row, "Name");
             var normalized = AuthService.Normalize(name);
-            packageRoles.Add(normalized);
+            packageRoles[normalized] = Bool(row, "IsActive", true);
             if (!rolesByName.TryGetValue(normalized, out var existing)) continue;
             if (existing.TenantId is null || existing.IsSystem || !existing.IsEditable)
                 refusals.Add(new AccessRefusal("roles", index, name, $"'{existing.Name}' is a system role; an import cannot change it."));
@@ -121,6 +124,14 @@ public sealed partial class MigrationImportController
             .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
 
         var newAdminRows = new List<(int Index, string Email)>();
+        // THE LAST OPERATIONAL ADMIN (the Access screen's EnsureAnotherOperationalAdmin): rows that would demote or
+        // deactivate an operational Admin are collected, and refused if together they would leave none.
+        var now = DateTime.UtcNow;
+        var operationalAdmins = (await OperationalAdminCohortAsync(tenantId, ct))
+            .Where(u => IsOperationalAdmin(u, now))
+            .Select(u => u.NormalizedEmail)
+            .ToHashSet(StringComparer.Ordinal);
+        var removedAdmins = new List<(int Index, string Email, string Normalized)>();
         foreach (var (row, index) in userRows)
         {
             var email = Val(row, "Email");
@@ -136,23 +147,34 @@ public sealed partial class MigrationImportController
                 problems.Add("Only a group-scope importer can give a user group scope.");
 
             var grantsAdmin = false;
-            foreach (var roleName in Val(row, "RoleNames").Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            var roleNames = Val(row, "RoleNames").Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            foreach (var roleName in roleNames)
             {
                 var normalizedRole = AuthService.Normalize(roleName);
-                if (rolesByName.TryGetValue(normalizedRole, out var role) && role.IsActive)
+                if (packageRoles.TryGetValue(normalizedRole, out var activeAfterPackage) && !activeAfterPackage)
+                    problems.Add($"Role '{roleName}' is set inactive by this package's roles section, so it cannot be assigned.");
+                else if (rolesByName.TryGetValue(normalizedRole, out var role) && role.IsActive)
                 {
                     if (Missing(role.Permissions) is { Length: > 0 } missing)
                         problems.Add($"Role '{role.Name}' grants permissions you do not hold ({List(missing)}); an import can never grant more than its importer holds.");
                     grantsAdmin |= normalizedRole == "ADMIN";
                 }
-                else if (!packageRoles.Contains(normalizedRole))
+                else if (!packageRoles.ContainsKey(normalizedRole))
                     problems.Add($"Role '{roleName}' does not exist (or is inactive) in this tenant.");
             }
+            if (operationalAdmins.Contains(normalizedEmail)
+                && (!string.Equals(Val(row, "Status", "Invited"), "Active", StringComparison.Ordinal)
+                    || (roleNames.Length > 0 && !roleNames.Any(r => AuthService.Normalize(r) == "ADMIN"))))
+                removedAdmins.Add((index, email, normalizedEmail));
             if (grantsAdmin && !(target is not null && target.IsActive && target.Roles.Contains("ADMIN")))
                 newAdminRows.Add((index, email));
 
             if (problems.Count > 0) refusals.Add(new AccessRefusal("users", index, email, string.Join(" ", problems.Distinct())));
         }
+
+        if (removedAdmins.Count > 0 && !operationalAdmins.Except(removedAdmins.Select(r => r.Normalized), StringComparer.Ordinal).Any())
+            refusals.AddRange(removedAdmins.Select(r => new AccessRefusal("users", r.Index, r.Email,
+                "Cannot remove or block the last administrator. Add another active admin first.")));
 
         if (newAdminRows.Count > 0 && await AdminSeatsLeftAsync(tenantId, ct) is int left && newAdminRows.Count > left)
             refusals.AddRange(newAdminRows.Select(a => new AccessRefusal("users", a.Index, a.Email,
@@ -196,4 +218,77 @@ public sealed partial class MigrationImportController
             JsonSerializer.Serialize(new { source = "migration_import", batchId = _currentBatchId, details })));
 
     private Guid? _currentBatchId;
+
+    /// <summary>Users this commit gives the Admin role who did not hold it — re-checked against the plan under the lock.</summary>
+    private int _pendingNewAdmins;
+
+    /// <summary>Admins this commit demotes or deactivates — re-checked against the last-admin rule under the lock.</summary>
+    private readonly HashSet<Guid> _pendingAdminRemovals = new();
+
+    /// <summary>The tenant's Admin-role holders as stored (not as this context has modified them), with what the
+    /// operational test needs.</summary>
+    private Task<List<User>> OperationalAdminCohortAsync(Guid tenantId, CancellationToken ct) =>
+        ScopedBypass.TenantWide(_db.Users, tenantId,
+                "Last-administrator rule: the tenant's admin cohort must be counted across every company, exactly as the Access screen's LockAdminCohortAsync counts it. Tenant re-applied; read-only.")
+            .AsNoTracking()
+            .Include(u => u.UserRoles).ThenInclude(ur => ur.Role)
+            .Include(u => u.EmployeeUserAccounts)
+            .Where(u => !u.IsDeleted && u.UserRoles.Any(ur => ur.Role != null && ur.Role.NormalizedName == "ADMIN" && ur.Role.IsActive && !ur.Role.IsDeleted))
+            .ToListAsync(ct);
+
+    /// <summary>
+    /// Save the users section under the Access screen's admin-seat lock (<see cref="AccessManagementService.AdminSeatLockKey"/>),
+    /// re-counting the seats inside it. The gate counted them before the import started; two imports, or an import and
+    /// the Access screen, could otherwise each see the last free seat and both take it.
+    /// </summary>
+    private async Task SaveUsersUnderAdminSeatLockAsync(Guid tenantId, CancellationToken ct)
+    {
+        if ((_pendingNewAdmins == 0 && _pendingAdminRemovals.Count == 0) || !_db.Database.IsNpgsql())
+        {
+            await _db.SaveChangesAsync(ct);
+            return;
+        }
+        var strategy = _db.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
+        {
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            await _db.Database.ExecuteSqlInterpolatedAsync(
+                $"SELECT pg_advisory_xact_lock({AccessManagementService.AdminSeatLockKey(tenantId)})", ct);
+            if (_pendingNewAdmins > 0 && await AdminSeatsLeftAsync(tenantId, ct) is int left && _pendingNewAdmins > left)
+                throw new InvalidOperationException(
+                    $"The plan allows {left} more active administrator(s) and this package adds {_pendingNewAdmins}. Nothing in the users section was saved.");
+            // THE LAST OPERATIONAL ADMIN, re-counted under the SAME lock (as the Access screen's LockAdminCohortAsync
+            // counts it under its own): the gate counted before the import started, and an Admin demoted or blocked
+            // elsewhere since then could make this row remove the last one.
+            if (_pendingAdminRemovals.Count > 0)
+            {
+                var now = DateTime.UtcNow;
+                var remaining = (await OperationalAdminCohortAsync(tenantId, ct))
+                    .Where(u => !_pendingAdminRemovals.Contains(u.Id) && IsOperationalAdmin(u, now))
+                    .ToList();
+                if (remaining.Count == 0)
+                    throw new InvalidOperationException(
+                        "Cannot remove or block the last administrator. Add another active admin first. Nothing in the users section was saved.");
+            }
+            await _db.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+        });
+    }
+
+    /// <summary>The Access screen's operational-admin test (AccessManagementService.IsOperationalAdmin): an Admin who
+    /// can actually sign in and act. Mirrored here because that service is owned elsewhere; keep the two in step.</summary>
+    private static bool IsOperationalAdmin(User user, DateTime atUtc)
+    {
+        if (user.IsDeleted || !user.IsActive || !user.IsEmailConfirmed
+            || !string.Equals(user.Status, "Active", StringComparison.Ordinal)
+            || user.MustChangePassword
+            || string.Equals(user.AccessMode, AccessModes.NoLogin, StringComparison.Ordinal)
+            || (user.IsLocked && (!user.LockoutEnd.HasValue || user.LockoutEnd > atUtc))
+            || (user.LockoutEnd.HasValue && user.LockoutEnd > atUtc))
+            return false;
+        var primary = AuthCurrentEligibility.PrimaryAccess(user);
+        if (string.Equals(primary?.AccessMode, AccessModes.NoLogin, StringComparison.Ordinal) || primary?.RequiresPasswordSetup == true)
+            return false;
+        return user.UserRoles.Any(x => x.Role is { NormalizedName: "ADMIN", IsActive: true, IsDeleted: false });
+    }
 }

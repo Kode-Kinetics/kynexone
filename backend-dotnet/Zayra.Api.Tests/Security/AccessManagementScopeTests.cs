@@ -113,13 +113,14 @@ public class AccessManagementScopeTests
         var service = CreateService(db);
         await EnsureRoleAsync(db, w.TenantId, "Employee");
         await AddActiveRefreshTokenAsync(db, w.UserA);
+        var callerId = await SeedAdminCallerAsync(w.TenantId);
 
         await service.AssignRolesAsync(
             w.TenantId,
             w.UserA,
             new AssignRolesRequest(new[] { "Employee" }),
             EntityScopeContext.GroupLevel,
-            new RequestContext("10.10.10.10", "tests", Guid.NewGuid(), w.TenantId),
+            new RequestContext("10.10.10.10", "tests", callerId, w.TenantId),
             CancellationToken.None);
 
         var token = await db.RefreshTokens.SingleAsync(t => t.UserId == w.UserA);
@@ -134,13 +135,14 @@ public class AccessManagementScopeTests
         await using var db = _fx.CreateDb();
         var service = CreateService(db);
         await AddActiveRefreshTokenAsync(db, w.UserA);
+        var callerId = await SeedAdminCallerAsync(w.TenantId);
 
         await service.SetPermissionOverrideAsync(
             w.TenantId,
             w.UserA,
             new PermissionOverrideRequest("employees.read", "Allow", "security-test", null),
             EntityScopeContext.GroupLevel,
-            new RequestContext("10.20.30.40", "tests", Guid.NewGuid(), w.TenantId),
+            new RequestContext("10.20.30.40", "tests", callerId, w.TenantId),
             CancellationToken.None);
 
         var token = await db.RefreshTokens.SingleAsync(t => t.UserId == w.UserA);
@@ -155,15 +157,17 @@ public class AccessManagementScopeTests
         await using (var seed = _fx.CreateDb())
         {
             await EnsureRoleAsync(seed, w.TenantId, "Admin");
+            // Two seats: the acting Admin holds one (only an Admin may give the Admin role), the race is for the other.
             seed.TenantSubscriptions.Add(new TenantSubscription
             {
                 TenantId = w.TenantId,
                 Plan = "Starter",
                 Status = SubscriptionStatuses.Active,
-                MaxAdminUsers = 1
+                MaxAdminUsers = 2
             });
             await seed.SaveChangesAsync();
         }
+        var callerId = await SeedAdminCallerAsync(w.TenantId);
 
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         async Task<Exception?> Create(string email)
@@ -175,7 +179,7 @@ public class AccessManagementScopeTests
             {
                 await service.CreateUserAsync(w.TenantId,
                     new CreateUserRequest(email, email, "StrongPassword!123", new[] { "Admin" }),
-                    new RequestContext("127.0.0.1", "tests", Guid.NewGuid(), w.TenantId),
+                    new RequestContext("127.0.0.1", "tests", callerId, w.TenantId),
                     CancellationToken.None);
                 return null;
             }
@@ -189,10 +193,10 @@ public class AccessManagementScopeTests
 
         results.Count(x => x is null).Should().Be(1);
         results.Count(x => x is InvalidOperationException ioe
-            && ioe.Message.Contains("at most 1 active administrator", StringComparison.Ordinal)).Should().Be(1);
+            && ioe.Message.Contains("at most 2 active administrator", StringComparison.Ordinal)).Should().Be(1);
         await using var verify = _fx.CreateDb();
         (await verify.Users.CountAsync(x => x.TenantId == w.TenantId && x.IsActive
-            && x.UserRoles.Any(ur => ur.Role!.NormalizedName == "ADMIN"))).Should().Be(1);
+            && x.UserRoles.Any(ur => ur.Role!.NormalizedName == "ADMIN"))).Should().Be(2);
     }
 
     private async Task<World> SeedWorld()
@@ -254,6 +258,25 @@ public class AccessManagementScopeTests
         IsActive = true,
         IsEmailConfirmed = true
     };
+
+    /// <summary>
+    /// An active Admin to act as. The privilege ceiling resolves the caller from the database, so a random
+    /// caller id is refused; the Admin role here carries employees.read so an Allow override of it is in reach.
+    /// </summary>
+    private async Task<Guid> SeedAdminCallerAsync(Guid tenantId)
+    {
+        await using var db = _fx.CreateDb();
+        await EnsureRoleAsync(db, tenantId, "Admin");
+        var admin = await db.Roles.SingleAsync(r => r.TenantId == tenantId && r.NormalizedName == "ADMIN");
+        var employeesRead = await db.Permissions.SingleAsync(p => p.Key == "employees.read");
+        if (!await db.RolePermissions.AnyAsync(rp => rp.RoleId == admin.Id && rp.PermissionId == employeesRead.Id))
+            db.RolePermissions.Add(new RolePermission { RoleId = admin.Id, PermissionId = employeesRead.Id });
+        var caller = User(tenantId, $"caller-{Guid.NewGuid():N}@example.test", "Acting Admin");
+        db.Users.Add(caller);
+        db.UserRoles.Add(new UserRole { UserId = caller.Id, RoleId = admin.Id });
+        await db.SaveChangesAsync();
+        return caller.Id;
+    }
 
     private static async Task EnsureRoleAsync(ZayraDbContext db, Guid tenantId, string roleName)
     {

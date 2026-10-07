@@ -192,4 +192,29 @@ public sealed class OrganizationStructureImportGateTests
                  })
             Assert.Contains(audits, a => a.Action == action && a.EntityId == id.ToString() && a.Metadata!.Contains("organization_structure_import"));
     }
+
+    [Fact]
+    public async Task ABranchMovedToACompanyCreatedInTheSameFile_IsARowErrorAtPreview_NotACommitFailure()
+    {
+        var (tenant, existing) = await SeedAsync();
+        await using (var seed = _fx.CreateDb())
+        {
+            seed.Branches.Add(new Branch { TenantId = tenant, CompanyId = existing, Code = "HQ", NameEn = "Head Office" });
+            await seed.SaveChangesAsync();
+        }
+        var request = new OrganizationStructureImportRequest(
+            CompaniesCsv: CompaniesHeader + "New Co,SA,REG-NEW,SAR\n", BranchesCsv: "CompanyLegalName,Code,NameEn\nNew Co,HQ,Head Office\n",
+            CostCentersCsv: null, DepartmentsCsv: null, GradesCsv: null, GradePayComponentsCsv: null, DesignationsCsv: null);
+
+        await using (var db = _fx.CreateDb())
+        {
+            var preview = Assert.IsType<OkObjectResult>((await Controller(db, tenant).Preview(request, CancellationToken.None)).Result);
+            var result = Assert.IsType<OrganizationStructureImportResult>(preview.Value);
+            Assert.True(result.HasBlockingErrors);
+            Assert.Contains(result.Rows.SelectMany(r => r.Errors), e => e.Contains("cannot be moved to another company"));
+        }
+        await using (var db = _fx.CreateDb())
+            Assert.Contains(Errors(await Controller(db, tenant).Commit(request, CancellationToken.None)), e => e.Contains("cannot be moved"));
+        Assert.Equal(1, await CompanyCount(tenant));
+    }
 }

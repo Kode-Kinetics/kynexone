@@ -57,10 +57,18 @@ public class RawSqlExecutionRatchetTests
         // pg_advisory_xact_lock on its own connection in Infrastructure/Data/TransactionHeldAdvisoryLease.)
         // Employee CSV import: serializes two submissions carrying the same client ImportKey
         // (key = SHA-256 of "EMPIMPRT" ‖ tenantId ‖ importKey), transaction-scoped.
-        ["Controllers/EmployeesController.cs"] = 1,
+        // 1 -> 3: + the import's per-(tenant, file content) pg_advisory_xact_lock (two commits of the same file serialize,
+        // the second sees the first's marker and is refused as a re-import) and the preview's `SET LOCAL lock_timeout`
+        // (transaction-scoped; a preview waits at most 5 s for a lock). Neither writes a row. Exercised by
+        // EmployeeImportPilotSafetyPostgresTests.
+        ["Controllers/EmployeesController.cs"] = 3,
         ["Data/ZayraDbContext.cs"] = 2,
         // Admin-seat pg_advisory_xact_lock (was a session lock + unlock pair, 2 -> 1).
         ["Infrastructure/Auth/AccessManagementService.cs"] = 1,
+        // The SAME admin-seat pg_advisory_xact_lock (AccessManagementService.AdminSeatLockKey(tenant)), taken by the
+        // migration import's users section so an import and the Access screen cannot both take the last seat.
+        // Writes no row. Exercised by MigrationImportSeatLockRaceTests.
+        ["Controllers/MigrationImportController.AccessGate.cs"] = 1,
         ["Infrastructure/Finance/FinanceDecisionSerializer.cs"] = 1,
         // Parameterized advisory lock only; key includes tenant + canonical employee. No row writes.
         // Jawazat creation idempotency and company-scope tests cover the governed ticket producer.

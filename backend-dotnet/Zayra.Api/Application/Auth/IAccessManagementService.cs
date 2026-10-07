@@ -59,6 +59,13 @@ public interface IAccessManagementService
     Task SavePermissionMatrixAsync(Guid tenantId, PermissionMatrixUpdateRequest request, RequestContext context, CancellationToken cancellationToken);
 
     // Effective permissions for a user
+    /// <summary>
+    /// Throws <c>PrivilegeCeilingException</c> unless the caller may change <paramref name="targetUserId"/>'s access
+    /// (not themselves, not an Admin unless the caller is one, not a user holding access the caller lacks). For
+    /// access writes made outside this service (group scope, company grants).
+    /// </summary>
+    Task AssertMayChangeUserAccessAsync(Guid tenantId, Guid targetUserId, RequestContext context, CancellationToken cancellationToken);
+    Task<AccessCeilingDto> GetAccessCeilingAsync(Guid tenantId, RequestContext context, CancellationToken cancellationToken);
     Task<EffectivePermissionsDto?> GetEffectivePermissionsAsync(Guid tenantId, Guid userId, EntityScopeContext entityScope, CancellationToken cancellationToken);
 
     // Permission override delete

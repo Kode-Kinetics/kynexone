@@ -87,9 +87,10 @@ type Loaded = { id: number; label: string; parsed: Parsed };
 export function SaudiBankBeneficiaryEditor({ employeeIds, onChange }: { employeeIds: number[]; onChange?: () => void }) {
   const { locale } = useLocale();
   const c = locale === 'ar' ? AR : EN;
-  const { hasPermission, hasRole } = useAuth();
-  // Mirrors the server's CanViewSensitive(): without it WpsBankDetails comes back as '' (masked).
-  const readable = hasPermission('employees.sensitive') || ['Admin', 'HR Manager', 'Payroll Officer'].some(hasRole);
+  const { hasPermission } = useAuth();
+  // Mirrors the server's CanViewSensitive(): the employees.sensitive permission only, never a role name.
+  // Without it WpsBankDetails comes back as '' (masked).
+  const readable = hasPermission('employees.sensitive');
   const uid = useId();
   const ids = useMemo(() => Array.from(new Set(employeeIds)).sort((a, b) => a - b), [employeeIds.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
 
