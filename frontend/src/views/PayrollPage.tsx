@@ -39,6 +39,7 @@ import { payrollInsightEmptyCopy, payrollInsightState, payrollPeriodState } from
 import { LoadFailedNotice } from '../components/ui/LoadFailedRow';
 
 import { EnumLabel, type EnumName } from '../components/EnumLabel';
+import { RunDeductionsReview } from '../components/deductions/RunDeductionsReview';
 // ── Payroll import/export helpers ───────────────────────────────────────────────
 
 const salaryStructuresImportExport = {
@@ -1451,6 +1452,7 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
                   </table>
                 </div>
               )}
+              <RunDeductionsReview runId={selectedRun.id} />
             </>
           )}
         </div>

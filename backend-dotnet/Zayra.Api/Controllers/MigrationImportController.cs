@@ -11,6 +11,7 @@ using Zayra.Api.Application.Employees;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Attendance;
+using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.CountryPack;
 using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Infrastructure.Data;
@@ -111,6 +112,8 @@ public sealed partial class MigrationImportController : ControllerBase
         var tenantId = RequireTenant();
         var validation = ValidatePackage(request);
         if (validation.Errors.Count > 0) return UnprocessableEntity(validation.Errors);
+        // The access gate answers the preview exactly as it answers the commit (see MigrationImportController.AccessGate).
+        if (await FindAccessRefusalsAsync(tenantId, request, ct) is { Count: > 0 } accessRefusals) return AccessRefused(accessRefusals);
 
         var plan = await BuildPlanAsync(tenantId, request, ct);
         var batch = new MigrationImportBatch
@@ -129,7 +132,7 @@ public sealed partial class MigrationImportController : ControllerBase
             ReconciliationJson = JsonSerializer.Serialize(plan.SectionCounts),
             ErrorJson = JsonSerializer.Serialize(plan.Errors),
             ResultJson = JsonSerializer.Serialize(plan.ToLedger()),
-            PayloadJson = JsonSerializer.Serialize(request),
+            PayloadJson = MigrationPackageAuditCopy.Serialize(PackageChecksum(request), request.Sections),
             CreatedBy = UserId()
         };
         _db.MigrationImportBatches.Add(batch);
@@ -152,6 +155,11 @@ public sealed partial class MigrationImportController : ControllerBase
         var tenantId = RequireTenant();
         var validation = ValidatePackage(request);
         if (validation.Errors.Count > 0) return UnprocessableEntity(validation.Errors);
+
+        // ── ACCESS GATE ─────────────────────────────────────────────────────────────────────────────
+        // Before the lease, before a batch row, before a single section: a package that would change who can
+        // do what beyond this importer's own authority is refused whole, every offending row named.
+        if (await FindAccessRefusalsAsync(tenantId, request, ct) is { Count: > 0 } accessRefusals) return AccessRefused(accessRefusals);
 
         // ── LOCKED-PERIOD REFUSAL ───────────────────────────────────────────────────────────────────
         // Runs BEFORE the lease and before a single row is written. Restating an employee's opening
@@ -213,7 +221,7 @@ public sealed partial class MigrationImportController : ControllerBase
         if (existing is null) _db.MigrationImportBatches.Add(batch);
         batch.Status = "Processing";
         batch.PackageType = "MigrationPackage";
-        batch.PayloadJson = JsonSerializer.Serialize(request);
+        batch.PayloadJson = MigrationPackageAuditCopy.Serialize(checksum, request.Sections); // masked; Resume re-sends the package
         batch.DryRun = request.DryRun;
         batch.ReceivedRows = 0;
         batch.CreatedRows = 0;
@@ -239,6 +247,7 @@ public sealed partial class MigrationImportController : ControllerBase
             return Conflict(new { message = "ExternalBatchId is already associated with a different package checksum." });
         }
 
+        _currentBatchId = batch.Id;
         try
         {
             var totals = new PlanTotals();
@@ -548,8 +557,13 @@ public sealed partial class MigrationImportController : ControllerBase
         var role = await _db.Roles.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.NormalizedName == normalized && !x.IsDeleted, ct);
         var created = role is null;
         role ??= new Role { TenantId = tenantId, Name = name, NormalizedName = normalized };
+        // Last line of defence behind the access gate: a system or non-editable role is never rewritten here.
+        if (!created && (role.IsSystem || !role.IsEditable))
+            throw new InvalidOperationException($"'{role.Name}' is a system role; an import cannot change it.");
         role.Name = name; role.NormalizedName = normalized; role.Description = Val(row, "Description"); role.AuthorityLevel = Int(row, "AuthorityLevel", 99); role.IsActive = Bool(row, "IsActive", true); role.IsEditable = true;
         if (created) _db.Roles.Add(role);
+        AuditAccessChange(created ? "access.role_created" : "access.role_updated", "Role", role.Id, tenantId,
+            new { name = role.Name, role.IsActive, role.AuthorityLevel });
         return created ? "created" : "updated";
     }
 
@@ -572,15 +586,27 @@ public sealed partial class MigrationImportController : ControllerBase
         user ??= new User { TenantId = tenantId, Email = email, NormalizedEmail = normalized, PasswordHash = ImportPlaceholderHash(), MustChangePassword = true, IsEmailConfirmed = false };
         user.Email = email; user.NormalizedEmail = normalized; user.FullName = Require(row, "FullName"); user.PhoneNumber = Val(row, "PhoneNumber"); user.PreferredLanguage = Val(row, "PreferredLanguage", "en"); user.Timezone = Val(row, "Timezone", "UTC"); user.Status = Val(row, "Status", "Invited"); user.IsActive = user.Status == "Active"; user.IsGroupScope = Bool(row, "IsGroupScope", false);
         var names = Val(row, "RoleNames").Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var assigned = new List<string>();
         if (names.Length > 0)
         {
-            var roles = await _db.Roles.Where(x => x.TenantId == tenantId && names.Contains(x.Name) && !x.IsDeleted).ToListAsync(ct);
-            if (roles.Count != names.Length) throw new InvalidOperationException("One or more RoleNames do not exist in this tenant.");
+            // Resolved as the Access screen resolves them (normalised name; this tenant's or a platform role), so the
+            // access gate and the write can never be talking about two different roles.
+            var normalizedNames = names.Select(AuthService.Normalize).Distinct(StringComparer.Ordinal).ToList();
+            var roles = await _db.Roles
+                .Where(x => (x.TenantId == tenantId || x.TenantId == null) && normalizedNames.Contains(x.NormalizedName) && x.IsActive && !x.IsDeleted)
+                .ToListAsync(ct);
+            roles = roles.GroupBy(r => r.NormalizedName).Select(g => g.OrderBy(r => r.TenantId == null).First()).ToList();
+            if (roles.Count != normalizedNames.Count) throw new InvalidOperationException("One or more RoleNames do not exist in this tenant.");
             _db.UserRoles.RemoveRange(user.UserRoles);
             user.UserRoles = roles.Select(r => new UserRole { UserId = user.Id, RoleId = r.Id }).ToList();
             _db.UserRoles.AddRange(user.UserRoles);
+            assigned = roles.Select(r => r.Name).OrderBy(n => n, StringComparer.Ordinal).ToList();
         }
         if (created) _db.Users.Add(user);
+        AuditAccessChange(created ? "access.user_created" : "access.user_updated", "User", user.Id, tenantId,
+            new { email = user.Email, user.Status, user.IsGroupScope, roles = assigned });
+        if (!created && names.Length > 0)
+            AuditAccessChange("access.roles_assigned", "User", user.Id, tenantId, new { roles = assigned });
         return created ? "created" : "updated";
     }
 
@@ -688,8 +714,9 @@ public sealed partial class MigrationImportController : ControllerBase
             && x.FieldName == fieldName && x.EffectiveDate == effectiveDate && x.Reason == reason, ct);
         var created = item is null;
         item ??= new EmployeeHistory { TenantId = tenantId, EmployeeId = employee.Id, EventType = eventType, FieldName = fieldName, EffectiveDate = effectiveDate };
-        item.OldValue = Val(row, "OldValue");
-        item.NewValue = Val(row, "NewValue");
+        // Same fail-safe as every other history writer: an imported IBAN / Iqama / salary change lands masked.
+        item.OldValue = EmployeeSafeSnapshot.SanitizeFieldValue(fieldName, Val(row, "OldValue"));
+        item.NewValue = EmployeeSafeSnapshot.SanitizeFieldValue(fieldName, Val(row, "NewValue"));
         item.Reason = reason;
         item.CreatedByUserId = UserId();
         // EmployeeSafeSnapshot deliberately excludes salary, banking, and government identifiers.

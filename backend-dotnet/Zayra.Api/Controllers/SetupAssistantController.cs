@@ -9,6 +9,7 @@ using Zayra.Api.Application.Setup;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.CountryPack;
+using Zayra.Api.Infrastructure.Entitlements;
 using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Infrastructure.Leave;
 using Zayra.Api.Infrastructure.Payroll;
@@ -177,7 +178,22 @@ public class SetupAssistantController : ControllerBase
             }
         }
 
-        foreach (var component in d.GradePayComponents)
+        // Release A (R1): grade benefits live in one place, Benefits by grade. For a release_a tenant the legacy pay-scale
+        // lines are frozen, so the draft's grade pay lines are not written — and the response says so, rather than
+        // reporting them as applied or dropping them silently. Tenants without the flag are unchanged.
+        var skipped = new Dictionary<string, object>();
+        var gradePayComponents = d.GradePayComponents;
+        if (gradePayComponents.Count > 0 && await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId, ct))
+        {
+            skipped["gradePayComponents"] = new
+            {
+                count = gradePayComponents.Count,
+                reasonCode = "moved_to_benefits_by_grade",
+                reason = "Grade allowances and benefits are set in Benefits by grade for this workspace, so the draft's grade pay lines were not saved. Set them there.",
+            };
+            gradePayComponents = [];
+        }
+        foreach (var component in gradePayComponents)
         {
             if (!gradeByCode.TryGetValue(component.GradeCode.ToUpperInvariant(), out var grade)) continue;
             var exists = await _db.GradePayScaleComponents.AnyAsync(x =>
@@ -590,10 +606,11 @@ public class SetupAssistantController : ControllerBase
                 currencyCode = req.CurrencyCode,
                 legalEntityName = req.LegalEntityName,
                 applied = counts,
-                total = counts.Values.Sum()
+                total = counts.Values.Sum(),
+                skipped,
             }),
             ct);
-        return Ok(new { applied = counts, total = counts.Values.Sum() });
+        return Ok(new { applied = counts, total = counts.Values.Sum(), skipped });
     }
 
     /// <summary>Only the two rules the overtime/attendance engines actually evaluate. Anything

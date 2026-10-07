@@ -250,7 +250,7 @@ public record EmployeeDetailDto
     /// <summary>
     /// Projects a raw Employee entity to this DTO, applying the canonical sensitive-field
     /// gate inline. Does NOT mutate the entity.
-    /// Sensitive field list must stay in sync with <see cref="EmployeeSensitiveMask"/>.
+    /// The sensitive fields cleared here are the ones Security/SensitiveFieldMaskingTests asserts for each role.
     /// </summary>
     public static EmployeeDetailDto Project(
         Employee e,

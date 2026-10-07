@@ -467,7 +467,9 @@ builder.Services.AddDataProtection()
 // recorded (Qiwa:PartnerAgreementReference). The switch alone registers the refusing adapter: no
 // network call, 501 on every Qiwa write, never "Filed with Qiwa". See QiwaLiveAdapterPolicy.
 builder.Services.AddSingleton<QiwaOAuthTokenCache>();
-builder.Services.AddHttpClient("qiwa", c => c.BaseAddress = new Uri("https://api.qiwa.tech"));
+// RemoveAllLoggers: the status lookup puts the employee's national ID / iqama number in the URL path, and
+// IHttpClientFactory's default handler logs every request URI at Information. Failures are logged by the adapter.
+builder.Services.AddHttpClient("qiwa", c => c.BaseAddress = new Uri("https://api.qiwa.tech")).RemoveAllLoggers();
 switch (QiwaLiveAdapterPolicy.Decide(builder.Configuration))
 {
     case QiwaLiveAdapterPolicy.Mode.Live:

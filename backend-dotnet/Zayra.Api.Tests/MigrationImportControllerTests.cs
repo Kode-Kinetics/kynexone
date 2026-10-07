@@ -220,7 +220,9 @@ public sealed class MigrationImportControllerTests
         {
             new Claim("tenant_id", tenantId.ToString()),
             new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
-            new Claim(ClaimTypes.Role, "Admin")
+            new Claim(ClaimTypes.Role, "Admin"),
+            // An Admin's token carries security.manage; the roles/users sections require it (access gate).
+            new Claim("permission", "security.manage")
         };
         controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "test")) } };
         return controller;

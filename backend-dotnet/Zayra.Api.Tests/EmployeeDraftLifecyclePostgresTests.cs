@@ -893,6 +893,8 @@ public sealed class EmployeeDraftLifecyclePostgresTests
                 : JsonSerializer.Serialize(new { v = 2, m = "companies", c = companies })),
         };
         if (canApprove) claims.Add(new Claim("permission", "employees.approve"));
+        // As AuthSeeder grants it (HR Manager holds employees.*): sensitive visibility is the permission, never the role name.
+        if (role is "HR Manager" or "Admin") claims.Add(new Claim("permission", "employees.sensitive"));
         var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test"));
         controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = principal } };
         return controller;

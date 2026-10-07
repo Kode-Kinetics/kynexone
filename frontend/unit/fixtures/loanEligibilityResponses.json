@@ -134,6 +134,7 @@
       "currency": "SAR",
       "limitBreakdowns": []
     },
+    "art92": null,
     "currency": "SAR"
   },
   "GradeMultipleOfBasic": {
@@ -209,6 +210,7 @@
         }
       ]
     },
+    "art92": null,
     "currency": "SAR"
   },
   "GradeNotEligible": {
@@ -269,6 +271,7 @@
       "currency": "SAR",
       "limitBreakdowns": []
     },
+    "art92": null,
     "currency": "SAR"
   },
   "GradeOutstanding": {
@@ -366,6 +369,7 @@
         }
       ]
     },
+    "art92": null,
     "currency": "SAR"
   },
   "GradePerLoan": {
@@ -441,6 +445,7 @@
         }
       ]
     },
+    "art92": null,
     "currency": "SAR"
   },
   "GradeSalaryMissing": {
@@ -501,6 +506,7 @@
       "currency": "SAR",
       "limitBreakdowns": []
     },
+    "art92": null,
     "currency": "SAR"
   },
   "LoanTypeNotOffered": {
@@ -569,6 +575,7 @@
         }
       ]
     },
+    "art92": null,
     "currency": "SAR"
   },
   "PolicyConcurrentLoans": {
@@ -625,6 +632,7 @@
       "currency": null,
       "limitBreakdowns": []
     },
+    "art92": null,
     "currency": "SAR"
   },
   "PolicyInstallmentPercent": {
@@ -688,6 +696,7 @@
       "currency": null,
       "limitBreakdowns": []
     },
+    "art92": null,
     "currency": "SAR"
   },
   "PolicyMaxAmount": {
@@ -751,6 +760,7 @@
       "currency": null,
       "limitBreakdowns": []
     },
+    "art92": null,
     "currency": "SAR"
   },
   "PolicySalaryMultiple": {
@@ -814,6 +824,7 @@
       "currency": null,
       "limitBreakdowns": []
     },
+    "art92": null,
     "currency": "SAR"
   },
   "PolicyTotalOutstanding": {
@@ -877,6 +888,7 @@
       "currency": null,
       "limitBreakdowns": []
     },
+    "art92": null,
     "currency": "SAR"
   },
   "PreviewNoAmount": {
@@ -974,6 +986,7 @@
         }
       ]
     },
+    "art92": null,
     "currency": "SAR"
   },
   "TypesOffered": [

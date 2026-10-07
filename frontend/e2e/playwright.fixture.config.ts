@@ -15,7 +15,7 @@ const PORT = Number(process.env.FIXTURE_PORT ?? 5180);
 
 export default defineConfig({
   testDir: '.',
-  testMatch: /(?:dashboard-glass|user-password-requirements|approvals-self-requested|release-a-package)\.spec\.ts/,
+  testMatch: /(?:dashboard-glass|user-password-requirements|approvals-self-requested|release-a-package|release-a-deductions)\.spec\.ts/,
   fullyParallel: false,
   retries: 0,
   workers: 1,

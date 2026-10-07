@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Entitlements;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -76,6 +77,11 @@ public class BenefitsController : ControllerBase
         if (req.EffectiveTo.HasValue && req.EffectiveTo < req.EffectiveFrom)
             return BadRequest("EffectiveTo cannot be before EffectiveFrom.");
 
+        // Release A (R1): which grade gets which benefit is set in Benefits by grade. For a tenant with release_a on, the
+        // grade eligibility rules are frozen (kept, readable and listed by the matrix import); tenants without the flag
+        // are unchanged.
+        if (await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId.Value, ct)) return MovedToBenefitsByGrade();
+
         var rule = new BenefitEligibilityRule
         {
             TenantId = tenantId.Value,
@@ -91,6 +97,12 @@ public class BenefitsController : ControllerBase
         await _db.SaveChangesAsync(ct);
         return Ok(BenefitEligibilityDto.From(rule));
     }
+
+    private ConflictObjectResult MovedToBenefitsByGrade() => Conflict(new
+    {
+        error = "moved_to_benefits_by_grade",
+        message = "Which grades get a benefit is now set in Benefits → Benefits by grade. Existing eligibility rules are kept and listed there.",
+    });
 
     [HttpGet("plans/{planId:guid}/eligibility")]
     public async Task<IActionResult> ListEligibility(Guid planId, CancellationToken ct)
@@ -142,6 +154,10 @@ public class BenefitsController : ControllerBase
         if (tenantId is null) return Unauthorized();
         var rule = await _db.BenefitEligibilityRules.FirstOrDefaultAsync(x => x.Id == ruleId && x.BenefitPlanId == planId && x.TenantId == tenantId, ct);
         if (rule is null) return NotFound("Eligibility rule not found.");
+        // Release A (R1): which grade gets which benefit is set in Benefits by grade. For a tenant with release_a on, the
+        // grade eligibility rules are frozen (kept, readable and listed by the matrix import); tenants without the flag
+        // are unchanged.
+        if (await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId.Value, ct)) return MovedToBenefitsByGrade();
         rule.IsActive = false;
         await _db.SaveChangesAsync(ct);
         return Ok(BenefitEligibilityDto.From(rule));
