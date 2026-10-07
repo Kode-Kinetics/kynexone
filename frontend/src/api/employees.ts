@@ -624,6 +624,20 @@ export interface EmployeeImportFieldGap {
 /** POST /api/employees/import-preview response (dry-run, persists nothing). */
 export interface EmployeeImportPreview {
   received: number;
+  /**
+   * The commit's own verdict: the server ran the real import of this file and rolled it back. A
+   * `would_refuse` here means Confirm would be refused with exactly this message and these rows.
+   */
+  commitCheck?: {
+    outcome: 'would_import' | 'would_refuse';
+    created?: number;
+    repaired?: number;
+    skipped?: number;
+    status?: number;
+    error?: string | null;
+    message?: string;
+    failedRows?: Array<{ row?: number; employeeCode?: string; problem?: string; column?: string }>;
+  } | null;
   wouldCreate: number;
   /** Existing employees that would only have missing details filled in (never overwritten). */
   wouldRepair?: number;

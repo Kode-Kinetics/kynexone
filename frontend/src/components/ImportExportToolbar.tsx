@@ -3,6 +3,7 @@
 import { useRef, useState } from 'react';
 import { AlertTriangle, ArrowRight, CheckCircle2, Download, FileUp, Upload, Users } from 'lucide-react';
 import { Modal } from './Modal';
+import { useLocale } from '../contexts/LocaleContext';
 
 /**
  * One typed org-skeleton / linkage gap on an imported (Draft) row. `type` is the deep-link key
@@ -170,9 +171,26 @@ export interface ImportFieldGap {
   rowCount: number;
 }
 
+/**
+ * The commit's own verdict on the previewed file: the server ran the real import and rolled it back.
+ * When it says `would_refuse`, that — not the per-row projection — decides whether Confirm is offered.
+ */
+export interface ImportCommitCheck {
+  outcome: 'would_import' | 'would_refuse';
+  created?: number;
+  repaired?: number;
+  skipped?: number;
+  status?: number;
+  error?: string | null;
+  message?: string;
+  failedRows?: Array<{ row?: number; employeeCode?: string; problem?: string; column?: string }>;
+}
+
 /** Dry-run projection returned before commit — persists nothing server-side. */
 export interface ImportPreview {
   received: number;
+  /** Present for importers whose server runs the commit as a dry run (employees). */
+  commitCheck?: ImportCommitCheck | null;
   wouldCreate: number;
   /** Existing employees that would only have missing details filled in. */
   wouldRepair?: number;
@@ -338,6 +356,7 @@ export function ImportExportToolbar({
   onPreview,
   onViewIncomplete,
 }: ImportExportToolbarProps) {
+  const { t } = useLocale();
   const [exporting, setExporting] = useState(false);
   const [templating, setTemplating] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -463,6 +482,8 @@ export function ImportExportToolbar({
     }
   };
 
+  const commitRefused = preview?.commitCheck?.outcome === 'would_refuse';
+
   const cancelPreview = () => {
     setPreview(null);
     setPendingCsv(null);
@@ -583,7 +604,7 @@ export function ImportExportToolbar({
                 <Download className="h-3.5 w-3.5" />
                 Download preview
               </button>
-              <button type="button" className="btn-primary disabled:opacity-60" onClick={confirmImport} disabled={importing || !preview || (preview?.wouldFail ?? 0) > 0}>
+              <button type="button" className="btn-primary disabled:opacity-60" onClick={confirmImport} disabled={importing || !preview || (preview?.wouldFail ?? 0) > 0 || commitRefused}>
                 {importing ? 'Importing…' : `Confirm import`}
               </button>
             </>
@@ -602,12 +623,27 @@ export function ImportExportToolbar({
                 {(preview.wouldFail ?? 0) > 0 && <span className="rounded-md bg-rose-500/10 px-2 py-1 font-semibold text-rose-700 ring-1 ring-rose-500/20 dark:text-rose-300">{preview.wouldFail} to fix before importing</span>}
                 {(preview.wouldNeedApproval ?? 0) > 0 && <span className="rounded-md bg-amber-400/15 px-2 py-1 font-semibold text-amber-800 ring-1 ring-amber-400/25 dark:text-amber-300">{preview.wouldNeedApproval} existing · bank/salary need approval</span>}
               </div>
-              {(preview.wouldFail ?? 0) > 0 && (
+              {commitRefused && preview.commitCheck ? (
+                <div className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300" role="alert" data-testid="import-commit-refusal">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                  <div className="space-y-1">
+                    <p><strong>{t('This file will not be imported.')}</strong> {preview.commitCheck.message}</p>
+                    {(preview.commitCheck.failedRows ?? []).length > 0 && (
+                      <ul className="list-disc ps-4">
+                        {(preview.commitCheck.failedRows ?? []).slice(0, 10).map((f, i) => (
+                          <li key={`${f.row ?? 'x'}-${i}`}>
+                            {t('Row {row}: {problem}', { row: f.row ?? '?', problem: [f.column, f.problem].filter(Boolean).join(' ') })}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <p className="text-rose-700/80 dark:text-rose-300/80">{t('Nothing has been imported. This check ran the import itself and then undid it, so it shows exactly what the import would do.')}</p>
+                  </div>
+                </div>
+              ) : (preview.wouldFail ?? 0) > 0 && (
                 <div className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300" role="alert">
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-                  <span>
-                    <strong>{preview.wouldFail} {preview.wouldFail === 1 ? 'row holds' : 'rows hold'} a value that cannot be saved</strong> (see the rows marked Refused). The import is all-or-nothing, so nothing will be imported until the file is corrected.
-                  </span>
+                  <span>{t('Rows to correct: {count}. See the rows marked Refused. The import is all-or-nothing, so nothing is imported until the file is corrected.', { count: preview.wouldFail ?? 0 })}</span>
                 </div>
               )}
               {(preview.wouldRepair ?? 0) > 0 && (
@@ -615,7 +651,8 @@ export function ImportExportToolbar({
                   Employees that already exist are never overwritten. Only missing non-sensitive details — payroll group, salary-structure reference, currency, a manager, an unknown joining date — are filled in. Their bank, payroll-identity and salary details are never changed by an import: edit the employee (it goes to approval).
                 </p>
               )}
-              {(preview.wouldCreateDraft ?? 0) > 0 ? (
+              {/* A refused file imports nobody, so "N will be imported as inactive" would contradict the banner above. */}
+              {commitRefused ? null : (preview.wouldCreateDraft ?? 0) > 0 ? (
                 <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300" role="status">
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
                   <span>

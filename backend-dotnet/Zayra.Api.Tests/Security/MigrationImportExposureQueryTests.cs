@@ -104,8 +104,10 @@ public sealed class MigrationImportExposureQueryTests
         {
             await using var rewrite = conn.CreateCommand();
             rewrite.CommandText = "UPDATE migration_import_batches SET payload_json = jsonb_build_object("
-                + "'externalBatchId', payload_json::jsonb ->> 'ExternalBatchId', 'dryRun', false, "
-                + "'sections', payload_json::jsonb -> 'Sections')::json WHERE tenant_id = @t";
+                // Since #198 the import already stores the masked copy (lowercase 'sections'); read either shape so this
+                // case still exercises the lowercase form whatever the controller wrote.
+                + "'externalBatchId', coalesce(payload_json::jsonb ->> 'ExternalBatchId', payload_json::jsonb ->> 'externalBatchId'), 'dryRun', false, "
+                + "'sections', coalesce(payload_json::jsonb -> 'Sections', payload_json::jsonb -> 'sections'))::json WHERE tenant_id = @t";
             var p = rewrite.CreateParameter(); p.ParameterName = "t"; p.Value = tenant; rewrite.Parameters.Add(p);
             Assert.Equal(1, await rewrite.ExecuteNonQueryAsync());
         }

@@ -256,6 +256,142 @@ GROUP BY tenant_id;
 The second branch catches previously recognised spellings stored with surrounding spaces (the old
 comparison did not trim). Zero rows means no past payslip was affected.
 
+## Identity-document dates — expiry stored as issue date (read-only detection)
+
+Until c9d43a34 the employee edit form's offline field catalogue bound the **work-permit** expiry input (all six
+GCC profiles) and the **residency** expiry input (KW/OM) to the *issue-date* column, and until 6b0c26ab that
+offline catalogue was what every user got. A permit expiring 2027-03-01 was saved as *issued* 2027-03-01: the
+expiry stayed empty and no renewal alert could fire. Neither `employees.work_permit_issue_date` nor
+`employees.residency_issue_date` has an expiry column beside it, so the tell-tale is an issue date in the
+future, or one equal to the employee's own residence-card expiry. Passport, visa and the compliance mirror do
+have both columns, so for them the check is expiry on or before issue.
+
+**This is detection only. Do not write a data fix from it.** Hand the list to the tenant's HR to confirm each
+document against the physical card; a wrong date corrected by a guess is worse than a flagged one. Run on the
+target database (SELECT only):
+
+```sql
+-- 1. Issue dates that look like expiries (no expiry column exists for these two documents).
+SELECT tenant_id, company_id, id AS employee_id, employee_code, 'work_permit' AS document,
+       work_permit_issue_date AS issue_date, NULL::date AS expiry_date,
+       CASE WHEN work_permit_issue_date > current_date THEN 'issue date in the future'
+            ELSE 'issue date equals iqama/residence expiry' END AS reason
+FROM employees
+WHERE NOT is_deleted AND work_permit_issue_date IS NOT NULL
+  AND (work_permit_issue_date > current_date
+       OR work_permit_issue_date IN (iqama_expiry_date, emirates_id_expiry_date, qid_expiry_date, civil_id_expiry_date))
+UNION ALL
+SELECT tenant_id, company_id, id, employee_code, 'residency',
+       residency_issue_date, NULL::date,
+       CASE WHEN residency_issue_date > current_date THEN 'issue date in the future'
+            ELSE 'issue date equals iqama/residence expiry' END
+FROM employees
+WHERE NOT is_deleted AND residency_issue_date IS NOT NULL
+  AND (residency_issue_date > current_date
+       OR residency_issue_date IN (iqama_expiry_date, emirates_id_expiry_date, qid_expiry_date, civil_id_expiry_date))
+-- 2. Documents that have both columns: expiry equal to, or before, issue.
+UNION ALL
+SELECT tenant_id, company_id, id, employee_code, 'passport', passport_issue_date, passport_expiry_date,
+       CASE WHEN passport_expiry_date = passport_issue_date THEN 'expiry equals issue' ELSE 'expiry before issue' END
+FROM employees
+WHERE NOT is_deleted AND passport_expiry_date <= passport_issue_date
+UNION ALL
+SELECT tenant_id, company_id, id, employee_code, 'visa', visa_issue_date, visa_expiry_date,
+       CASE WHEN visa_expiry_date = visa_issue_date THEN 'expiry equals issue' ELSE 'expiry before issue' END
+FROM employees
+WHERE NOT is_deleted AND visa_expiry_date <= visa_issue_date
+UNION ALL
+SELECT r.tenant_id, e.company_id, r.employee_id, e.employee_code, r.field_key, r.issue_date, r.expiry_date,
+       CASE WHEN r.expiry_date = r.issue_date THEN 'expiry equals issue' ELSE 'expiry before issue' END
+FROM employee_compliance_records r
+JOIN employees e ON e.id = r.employee_id AND e.tenant_id = r.tenant_id
+WHERE NOT r.is_deleted AND NOT e.is_deleted AND r.expiry_date <= r.issue_date
+ORDER BY 1, 2, 4, 5;
+```
+
+Zero rows means nothing to review. Rows from part 1 with reason "issue date in the future" are almost certainly
+expiries; the others need the card in hand.
+
+## GOSI tenant overrides that were saved but never applied (read-only)
+
+GOSI contribution rates and the contributory-wage ceiling/floor are statutory. Payroll reads only the
+platform row (`statutory_rules`, `tenant_id IS NULL`). Before `GOSI_RATE_IS_STATUTORY` refused them,
+four write paths accepted a tenant value for these keys:
+- `/api/statutory-rules`
+- the company statutory-override maker-checker
+- the setup assistant
+- tenant-admin country rules
+
+Nothing ever read those values. **Do not delete these rows** — they are the record of what was attempted.
+The GOSI readiness report and the Saudi compliance dashboard warn about them per tenant. To list them
+(SELECT only):
+
+```sql
+-- Tenant-level GOSI rate/ceiling values payroll has never applied. Same predicate as
+-- GosiStatutoryValues.IsStatutory: gosi.*_rate, or gosi.covered_wage_*.
+WITH gosi AS (
+  SELECT 'statutory_rules' AS source, tenant_id, NULL::uuid AS company_id, id, rule_key, rule_value AS value, NULL AS status
+  FROM statutory_rules WHERE tenant_id IS NOT NULL
+  UNION ALL
+  SELECT 'company_statutory_overrides', tenant_id, company_id, id, rule_key, override_value, status
+  FROM company_statutory_overrides WHERE NOT is_deleted
+  UNION ALL
+  SELECT 'country_payroll_rules', tenant_id, NULL::uuid, id, rule_key, rule_value, NULL
+  FROM country_payroll_rules
+)
+SELECT * FROM gosi
+WHERE lower(rule_key) LIKE 'gosi.%'
+  AND (lower(rule_key) LIKE '%\_rate' OR lower(rule_key) LIKE 'gosi.covered\_wage\_%')
+ORDER BY tenant_id, source, rule_key;
+```
+
+Zero rows means no tenant ever believed it had changed a GOSI rate. For any rows returned, tell the tenant
+that the GOSI-published rate was applied throughout.
+
+## Stored full IBANs — post-deploy diagnostic (read-only)
+
+Before the pilot-sensitive-leaks release, an `INVALID_IBAN` payroll validation finding wrote the whole
+IBAN into `payroll_validation_results.message`, and the migration import wrote legacy history values into
+`employee_histories.old_value` / `new_value` unmasked. New rows carry only the last 4 characters
+(`IBAN ***1234 is invalid: …`). **Existing rows are not rewritten by the release.** A run's findings are
+replaced the next time it is validated or processed; locked runs keep theirs. Count what is left with
+these queries (SELECT only), then decide on a reviewed clean-up:
+
+```sql
+-- Validation findings whose message still holds an IBAN-shaped value (2 letters, 2 digits, 11-30 alphanumerics).
+SELECT tenant_id, code, count(*) AS rows_with_iban
+FROM payroll_validation_results
+WHERE message ~ '\m[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\M'
+GROUP BY tenant_id, code
+ORDER BY tenant_id, code;
+
+-- Employee history values that still hold an IBAN-shaped value.
+SELECT tenant_id, field_name, count(*) AS rows_with_iban
+FROM employee_histories
+WHERE old_value ~ '\m[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\M'
+   OR new_value ~ '\m[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\M'
+GROUP BY tenant_id, field_name
+ORDER BY tenant_id, field_name;
+
+-- Migration batches that still hold the raw package (written before the masked copy, policy "masked-v1").
+-- The second pattern catches 10-digit Saudi national IDs / iqama numbers.
+SELECT tenant_id, package_type, count(*) AS batches_with_raw_identifiers
+FROM migration_import_batches
+WHERE package_type = 'MigrationPackage'
+  AND (payload_json ->> 'policy') IS DISTINCT FROM 'masked-v1'
+  AND (payload_json::text ~ '\m[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\M'
+       OR payload_json::text ~ '(^|[^0-9])[12][0-9]{9}([^0-9]|$)')
+GROUP BY tenant_id, package_type
+ORDER BY tenant_id;
+```
+
+The migration batch's `payload_json` now keeps the checksum, the row count per section and a masked copy of
+each section. Nothing reads it back to run an import: Resume takes the package again from the caller and
+matches it on the checksum, so an old raw payload can be cleared without breaking a resume.
+
+Zero rows means nothing is left to clean up. The pattern is deliberately broad, so review what it finds
+before acting on it. `PayrollIbanMaskingPostgresTests` runs the first and third queries, so keep them in sync.
+
 ## Migration import — who used it to create roles or grant access (read-only exposure check)
 
 Before this fix the migration import (`POST /api/migrations/preview|commit|{id}/resume`) accepted `roles` and

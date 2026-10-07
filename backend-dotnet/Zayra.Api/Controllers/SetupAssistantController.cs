@@ -12,6 +12,7 @@ using Zayra.Api.Application.Organization;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.CountryPack;
 using Zayra.Api.Infrastructure.Organization;
+using Zayra.Api.Infrastructure.Entitlements;
 using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Infrastructure.Leave;
 using Zayra.Api.Infrastructure.Payroll;
@@ -201,7 +202,22 @@ public class SetupAssistantController : ControllerBase
             }
         }
 
-        foreach (var component in d.GradePayComponents)
+        // Release A (R1): grade benefits live in one place, Benefits by grade. For a release_a tenant the legacy pay-scale
+        // lines are frozen, so the draft's grade pay lines are not written — and the response says so, rather than
+        // reporting them as applied or dropping them silently. Tenants without the flag are unchanged.
+        var skipped = new Dictionary<string, object>();
+        var gradePayComponents = d.GradePayComponents;
+        if (gradePayComponents.Count > 0 && await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId, ct))
+        {
+            skipped["gradePayComponents"] = new
+            {
+                count = gradePayComponents.Count,
+                reasonCode = "moved_to_benefits_by_grade",
+                reason = "Grade allowances and benefits are set in Benefits by grade for this workspace, so the draft's grade pay lines were not saved. Set them there.",
+            };
+            gradePayComponents = [];
+        }
+        foreach (var component in gradePayComponents)
         {
             if (!gradeByCode.TryGetValue(component.GradeCode.ToUpperInvariant(), out var grade)) continue;
             var exists = await _db.GradePayScaleComponents.AnyAsync(x =>
@@ -587,11 +603,16 @@ public class SetupAssistantController : ControllerBase
             foreach (var r in d.StatutoryRules)
             {
                 if (!existingRules.Add(r.RuleKey.ToUpper())) continue;
+                // GOSI rates and the contributory-wage ceiling are STATUTORY: payroll reads the platform row
+                // only, so a tenant value here would be saved and never applied. Refused with a code.
+                // See Infrastructure/Payroll/GosiStatutoryValues.cs.
+                if (GosiStatutoryValues.TenantWriteRefusal(r.RuleKey) is { } gosiRefusal)
+                    return UnprocessableEntity(gosiRefusal);
                 // UNIT GATE — the wizard writes statutory rates too, so it is held to the same
                 // rule as the admin surfaces: a rate is a decimal FRACTION (0.09 = 9%).
                 // See Infrastructure/Payroll/StatutoryValueUnits.cs.
                 if (StatutoryValueUnits.Validate(r.RuleKey, r.DataType, r.RuleValue) is { } unitError)
-                    return BadRequest(new { message = unitError });
+                    return BadRequest(StatutoryValueUnits.Refusal(unitError));
                 _db.StatutoryRules.Add(new StatutoryRule
                 {
                     TenantId = tenantId, CountryCode = country, Jurisdiction = $"{country}-default",
@@ -618,6 +639,7 @@ public class SetupAssistantController : ControllerBase
                 applied = counts,
                 total = counts.Values.Sum(),
                 entities = audited.Count,
+                skipped,
             })));
         // The company gate is asked again INSIDE the save's transaction, as the org-structure import does: another
         // legal entity created between the gate above and this save (a second apply, the form) could otherwise take
@@ -656,7 +678,7 @@ public class SetupAssistantController : ControllerBase
         {
             await _db.SaveChangesAsync(ct);
         }
-        return Ok(new { applied = counts, total = counts.Values.Sum() });
+        return Ok(new { applied = counts, total = counts.Values.Sum(), skipped });
     }
 
     private sealed record OrgGateResult(List<string> Problems, Company? Company, bool CreateAsDraft);

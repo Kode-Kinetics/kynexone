@@ -194,13 +194,16 @@ public static class PayComponentEngine
     /// and must never reach a payslip, a WPS file, the EOSB wage or the catalog a run is built from. Their
     /// non-paying types already keep them out of <see cref="Compute"/>; this filter makes that independent of the
     /// type, and applies to the compiled seed set too.</item>
+    /// <item>A row that is not offered (<see cref="PayComponent.IsOffered"/> false — a Release A company skip marker) is
+    /// dropped too. Markers are written only for non-paying benefits, so this is defensive: should one ever sit on a
+    /// paying code, the company falls back to the group row instead of being paid that row's empty value.</item>
     /// </list>
     /// </summary>
     public static IReadOnlyList<PayComponent> ResolveInEffect(
         IEnumerable<PayComponent> scopeRows, Guid tenantId, DateOnly periodStart)
     {
         var rows = scopeRows
-            .Where(c => c.IsActive && !c.IsDeleted && c.IsInEffect(periodStart) && !IsNonPaying(c))
+            .Where(c => c.IsActive && !c.IsDeleted && c.IsOffered && c.IsInEffect(periodStart) && !IsNonPaying(c))
             .ToList();
         // (component, rank): persisted company row 2 > persisted tenant default 1 > compiled seed 0.
         var candidates = rows.Select(c => (C: c, Rank: c.CompanyId != null ? 2 : 1));

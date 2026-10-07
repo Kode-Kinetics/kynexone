@@ -310,7 +310,8 @@ public sealed class QiwaSyncWorker : BackgroundService
         }
 
         log.LastRetriedAtUtc = DateTime.UtcNow;
-        log.ResponsePayloadJson = result.RawResponse;
+        // Status fields only: a live response echoes the employee's record (id_number and the rest) back.
+        log.ResponsePayloadJson = QiwaResponseScrubber.Scrub(result.RawResponse);
 
         if (result.Success)
         {

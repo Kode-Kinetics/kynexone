@@ -37,8 +37,15 @@ namespace Zayra.Api.Tests;
 ///  5. `import-preview` promised a non-applicable identity value would be "ignored, not imported" while the
 ///     commit path wrote it unconditionally.
 /// </summary>
+[Trait("Category", "Integration")]
+[Collection("Integration")]
 public class EmployeeFieldWiringTests
 {
+    // The import preview is the commit run in a rolled-back transaction, so its tests need a real database.
+    private readonly PostgresFixture? _fx;
+    public EmployeeFieldWiringTests(PostgresFixture fx) => _fx = fx;
+    private ZayraDbContext PgDb() => _fx!.CreateDb();
+
     // ── 1 + 2: catalogue <-> edit-key contract ───────────────────────────────
 
     /// <summary>
@@ -415,7 +422,7 @@ public class EmployeeFieldWiringTests
     [Fact]
     public async Task ImportPreview_NonApplicableIdentityValue_DescribesWhatCommitActuallyDoes()
     {
-        await using var db = CreateDb();
+        await using var db = PgDb();
         var (tenantId, _) = await SeedEmployee(db, "SA", "Saudi");
 
         // A Saudi NATIONAL carrying an Iqama (the expat residence permit) — not applicable to them.

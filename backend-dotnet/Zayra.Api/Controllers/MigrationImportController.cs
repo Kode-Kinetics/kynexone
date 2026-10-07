@@ -132,7 +132,7 @@ public sealed partial class MigrationImportController : ControllerBase
             ReconciliationJson = JsonSerializer.Serialize(plan.SectionCounts),
             ErrorJson = JsonSerializer.Serialize(plan.Errors),
             ResultJson = JsonSerializer.Serialize(plan.ToLedger()),
-            PayloadJson = JsonSerializer.Serialize(request),
+            PayloadJson = MigrationPackageAuditCopy.Serialize(PackageChecksum(request), request.Sections),
             CreatedBy = UserId()
         };
         _db.MigrationImportBatches.Add(batch);
@@ -172,7 +172,8 @@ public sealed partial class MigrationImportController : ControllerBase
             return Conflict(new
             {
                 code = "cutover_period_locked",
-                message = "Opening balances cannot be imported into a period that already has a locked payroll run.",
+                message = "This package would change a period that already has a locked payroll run — either by moving the "
+                        + "cutover boundary or by importing opening balances into it. Each refusal below names the run and its code.",
                 refusals = lockedRefusals
             });
 
@@ -220,7 +221,7 @@ public sealed partial class MigrationImportController : ControllerBase
         if (existing is null) _db.MigrationImportBatches.Add(batch);
         batch.Status = "Processing";
         batch.PackageType = "MigrationPackage";
-        batch.PayloadJson = JsonSerializer.Serialize(request);
+        batch.PayloadJson = MigrationPackageAuditCopy.Serialize(checksum, request.Sections); // masked; Resume re-sends the package
         batch.DryRun = request.DryRun;
         batch.ReceivedRows = 0;
         batch.CreatedRows = 0;
@@ -468,7 +469,7 @@ public sealed partial class MigrationImportController : ControllerBase
         {
             case "companyCutover":
                 var cutoverCompany = await ResolveCutoverCompanyAsync(row, tenantId, ct);
-                _ = DateReq(row, "CutoverDate");
+                _ = ReadCutoverDate(row);
                 RequireCutoverStatus(row);
                 return await _db.CompanyCutovers.AnyAsync(x => x.TenantId == tenantId && x.CompanyId == cutoverCompany.Id, ct)
                     ? "updated" : "created";
@@ -520,9 +521,9 @@ public sealed partial class MigrationImportController : ControllerBase
                     ? "updated" : "created";
             case "payrollOpeningBalances":
                 var payrollEmployee = await Employee(row, tenantId, ct);
-                ResolveCutoverFor(payrollEmployee, cutover, mandatory: false);
                 var payrollYear = IntRequired(row, "Year");
                 var balanceType = RequireBalanceType(row);
+                ResolveCutoverForPayrollBalance(payrollEmployee, cutover, balanceType);
                 var componentCode = Require(row, "ComponentCode").Trim();
                 _ = DecRequired(row, "Amount");
                 await GuardPayslipAggregateAgainstStoredAsync(tenantId, payrollEmployee, payrollYear, balanceType, componentCode, ct);
@@ -767,8 +768,9 @@ public sealed partial class MigrationImportController : ControllerBase
             && x.FieldName == fieldName && x.EffectiveDate == effectiveDate && x.Reason == reason, ct);
         var created = item is null;
         item ??= new EmployeeHistory { TenantId = tenantId, EmployeeId = employee.Id, EventType = eventType, FieldName = fieldName, EffectiveDate = effectiveDate };
-        item.OldValue = Val(row, "OldValue");
-        item.NewValue = Val(row, "NewValue");
+        // Same fail-safe as every other history writer: an imported IBAN / Iqama / salary change lands masked.
+        item.OldValue = EmployeeSafeSnapshot.SanitizeFieldValue(fieldName, Val(row, "OldValue"));
+        item.NewValue = EmployeeSafeSnapshot.SanitizeFieldValue(fieldName, Val(row, "NewValue"));
         item.Reason = reason;
         item.CreatedByUserId = UserId();
         // EmployeeSafeSnapshot deliberately excludes salary, banking, and government identifiers.
@@ -780,9 +782,9 @@ public sealed partial class MigrationImportController : ControllerBase
     private async Task<string> UpsertPayrollOpeningBalanceAsync(Dictionary<string, string> row, Guid tenantId, CutoverContext cutover, SectionResult result, CancellationToken ct)
     {
         var employee = await Employee(row, tenantId, ct);
-        var cutoverDate = ResolveCutoverFor(employee, cutover, mandatory: false);
         var year = IntRequired(row, "Year");
         var balanceType = RequireBalanceType(row);
+        var cutoverDate = ResolveCutoverForPayrollBalance(employee, cutover, balanceType);
         var componentCode = Require(row, "ComponentCode").Trim();
         var amount = DecRequired(row, "Amount");
         // MI1 — refuse a payslip-aggregate bucket that is already stored under a DIFFERENT component

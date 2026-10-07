@@ -54,18 +54,18 @@ public static class GosiRuleSeeder
             logger.LogInformation("GOSI: seeded {Count} default contribution rules.", rules.Count);
         }
 
-        // ── TWO STORES, ONE FACT ──────────────────────────────────────────────
-        // gosi_contribution_rules (this seeder, read by the GOSI preview and the readiness report)
-        // and statutory_rules (StatutoryRuleSeeder, read by the payslip and the GOSI filing) both
-        // hold the KSA GOSI rates. They now use one unit — a fraction — but they are still two
-        // rows, and nothing stops one being edited without the other. Compare them on every boot
-        // and say so loudly; the value at stake is what a customer remits to GOSI.
+        // ── ONE RATE SOURCE ───────────────────────────────────────────────────
+        // statutory_rules (StatutoryRuleSeeder) is the ONLY GOSI rate source: the payslip, the GOSI
+        // filing, the preview and the readiness report all compute through KsaDeductionCalculator.
+        // gosi_contribution_rules is retired as a rate source (its write endpoint refuses with
+        // GOSI_RATE_STORE_RETIRED) and is kept, expand-only, for the readiness validator's rule-presence
+        // check. Its seeded values are still compared so the list it shows cannot contradict the payslip.
         foreach (var problem in VerifyStoresAgree())
             logger.LogCritical(
                 "[GOSI-RATE-STORES-DISAGREE] The two GOSI rate stores hold different values for one "
-                + "statutory fact: {Problem} The GOSI preview and the readiness report read "
-                + "gosi_contribution_rules; the payslip and the GOSI filing read statutory_rules. "
-                + "Until they are collapsed into one table, both seeders must be changed together.",
+                + "statutory fact: {Problem} Every GOSI figure is computed from statutory_rules; "
+                + "gosi_contribution_rules is a retired listing that must not contradict it. "
+                + "Change both seeders together until the retired table is contracted.",
                 problem);
 
         // ── GOSI-RATE-AUDIT ───────────────────────────────────────────────────

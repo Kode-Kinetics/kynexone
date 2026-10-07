@@ -117,10 +117,17 @@ public class StatutoryRateStoreTests
                          "salary!.BasicSalary + salary.HousingAllowance",
                          "GosiContributoryWageBasis.CoveredWage(\n                    salary!.BasicSalary, salary.HousingAllowance)",
                          "GosiContributoryWageBasis.CoveredWage(",
+                         "GosiReadinessValidator.AssessAsync(",
                      }),
                      ("Controllers/GosiController.cs", new[]
                      {
                          "salary.BasicSalary + salary.HousingAllowance",
+                         // GosiCalculationService.CalculateAsync takes basic AND housing as separate
+                         // required arguments and builds the covered wage with SalaryBreakdown — the
+                         // payslip's own definition — so basic alone cannot be passed at all.
+                         "salary.BasicSalary, salary.HousingAllowance",
+                         // GosiReadinessValidator.AssessAsync passes basic AND housing to the payslip engine.
+                         "GosiReadinessValidator.AssessAsync(",
                      }),
                  })
         {
