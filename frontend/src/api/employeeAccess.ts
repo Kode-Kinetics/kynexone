@@ -38,6 +38,8 @@ export interface EmployeeAccessDto {
   blockedCode: string | null;
   blockedReason: string | null;
   canIssue: boolean;
+  /** The tenant can email codes: "Email sign-in code" leads, "Print sign-in slip" is second. */
+  emailDelivery?: boolean;
 }
 
 /** One printed (or emailed) welcome code. `code` is absent when it went by email. */
@@ -100,8 +102,9 @@ export const employeeAccessApi = {
    * Give access / Give new code for one employee or many (max 500), or Reset sign-in for exactly one
    * `active` employee (a request with an active employee must carry one id: 400 `reset_is_single`).
    */
-  issueCodes: (employeeIds: number[]) =>
-    client.post<IssueWelcomeCodesResult>('/api/employee-access/codes', { employeeIds }).then((r) => r.data),
+  // Email is the server's default when it can send mail, so only a request for a PRINTABLE code says so.
+  issueCodes: (employeeIds: number[], delivery?: 'email' | 'print') =>
+    client.post<IssueWelcomeCodesResult>('/api/employee-access/codes', delivery === 'print' ? { employeeIds, delivery } : { employeeIds }).then((r) => r.data),
 
   /** The work-email backfill from IT. `dryRun` writes nothing and returns the same buckets. */
   saveWorkEmails: (rows: WorkEmailRow[], dryRun: boolean) =>

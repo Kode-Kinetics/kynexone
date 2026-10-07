@@ -38,7 +38,8 @@ export function EmployeeAccessCard({
   const [access, setAccess] = useState<EmployeeAccessDto | null>(null);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
-  const [confirming, setConfirming] = useState(false);
+  // Which delivery the pending confirmation is for (Give new code can be emailed or printed).
+  const [confirming, setConfirming] = useState<false | 'email' | 'print'>(false);
   const [skipNote, setSkipNote] = useState('');
   const lang = locale === 'ar' ? 'ar' : 'en';
   const when = (iso: string) => dateLine(iso, lang, defaultTimezone);
@@ -58,10 +59,10 @@ export function EmployeeAccessCard({
 
   useEffect(() => { setConfirming(false); setSkipNote(''); void load(); }, [load, refreshKey]);
 
-  const issue = async () => {
+  const issue = async (delivery?: 'email' | 'print') => {
     setConfirming(false);
     setSkipNote('');
-    const result = await onIssue([employeeId], { names: { [employeeId]: employeeName }, quietSkips: true });
+    const result = await onIssue([employeeId], { names: { [employeeId]: employeeName }, quietSkips: true, delivery });
     if (result && result.issued.length === 0 && result.skipped.length > 0) {
       const s = result.skipped[0];
       const key = skipReasonKey(s.reasonCode);
@@ -85,40 +86,59 @@ export function EmployeeAccessCard({
   const copy = ACCESS_STATE_COPY[access.state] ?? ACCESS_STATE_COPY.blocked;
   const detail = detailLine(access, employeeName, t, when);
 
-  // The one button, if this person may press it.
-  let action: { label: string; run: () => void; confirm?: { text: string; confirmLabel: string } } | null = null;
-  if (access.state === 'waiting_for_work_email' && canIssue) action = { label: t('Add work email'), run: onAddWorkEmail };
-  else if (access.canIssue && access.state === 'not_started' && canIssue) action = { label: t('Give access'), run: issue };
-  else if (access.canIssue && access.state === 'code_given' && canIssue) {
-    action = { label: t('Give new code'), run: issue, confirm: { text: t('The old code will stop working. Continue?'), confirmLabel: t('Give new code') } };
+  // The one button (or, when the company can email codes, "Email sign-in code" first and
+  // "Print sign-in slip" second), if this person may press it.
+  const emailing = !!access.emailDelivery;
+  const replacesCode = access.state === 'code_given';
+  let primary: { label: string; delivery?: 'email' | 'print'; run?: () => void } | null = null;
+  let secondary: { label: string; delivery: 'print' } | null = null;
+  let confirmText = '';
+  let confirmLabel = '';
+  if (access.state === 'waiting_for_work_email' && canIssue) primary = { label: t('Add work email'), run: onAddWorkEmail };
+  else if (access.canIssue && (access.state === 'not_started' || replacesCode) && canIssue) {
+    primary = emailing ? { label: t('Email sign-in code'), delivery: 'email' } : { label: replacesCode ? t('Give new code') : t('Give access') };
+    if (emailing) secondary = { label: t('Print sign-in slip'), delivery: 'print' };
+    if (replacesCode) { confirmText = t('The old code will stop working. Continue?'); confirmLabel = t('Give new code'); }
   } else if (access.canIssue && access.state === 'active' && canReset) {
-    action = {
-      label: t('Reset sign-in'), run: issue,
-      confirm: { text: t("Reset {name}'s sign-in? Their current password keeps working until they use the new code. Then print a new slip for them.", { name: employeeName }), confirmLabel: t('Reset and print') },
-    };
+    primary = { label: t('Reset sign-in'), delivery: emailing ? 'print' : undefined };
+    confirmText = t("Reset {name}'s sign-in? Their current password keeps working until they use the new code. Then print a new slip for them.", { name: employeeName });
+    confirmLabel = t('Reset and print');
   }
+
+  const press = (delivery?: 'email' | 'print', run?: () => void) => {
+    if (run) { run(); return; }
+    if (confirmText) { setConfirming(delivery ?? 'print'); return; }
+    void issue(delivery);
+  };
 
   return (
     <Shell title={t('Self-service')} pill={<StatusChip label={t(copy.label)} tone={copy.tone} dot />}>
       {detail && <p className="text-xs text-slate-600 dark:text-slate-300" data-testid="access-detail">{detail}</p>}
       {skipNote && <p role="alert" className="mt-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs font-medium text-amber-900 dark:bg-amber-500/10 dark:text-amber-200">{skipNote}</p>}
-      {action && !confirming && (
-        <button
-          type="button"
-          disabled={issuing}
-          onClick={() => (action!.confirm ? setConfirming(true) : action!.run())}
-          className="btn-primary mt-2.5 h-9 w-full justify-center px-3 text-sm disabled:opacity-60"
-        >
-          <KeyRound className="h-4 w-4" aria-hidden="true" />
-          {issuing ? t('Preparing the slips…') : action.label}
-        </button>
+      {primary && !confirming && (
+        <div className="mt-2.5 flex flex-col gap-1.5">
+          <button
+            type="button"
+            disabled={issuing}
+            onClick={() => press(primary!.delivery, primary!.run)}
+            className="btn-primary h-9 w-full justify-center px-3 text-sm disabled:opacity-60"
+          >
+            <KeyRound className="h-4 w-4" aria-hidden="true" />
+            {issuing ? t('Preparing the slips…') : primary.label}
+          </button>
+          {secondary && (
+            <button type="button" disabled={issuing} onClick={() => press(secondary!.delivery)} className="btn-secondary h-9 w-full justify-center px-3 text-sm disabled:opacity-60">
+              {secondary.label}
+            </button>
+          )}
+        </div>
       )}
-      {action?.confirm && confirming && (
-        <div className="mt-2.5 rounded-lg border border-amber-200 bg-amber-50 p-2.5 dark:border-amber-500/30 dark:bg-amber-500/10" role="alertdialog" aria-label={action.label}>
-          <p className="text-xs text-amber-900 dark:text-amber-200">{action.confirm.text}</p>
+      {confirmText && confirming && (
+        <div className="mt-2.5 rounded-lg border border-amber-200 bg-amber-50 p-2.5 dark:border-amber-500/30 dark:bg-amber-500/10" role="alertdialog" aria-label={primary?.label}>
+          <p className="text-xs text-amber-900 dark:text-amber-200">{confirmText}</p>
           <div className="mt-2 flex justify-end gap-2">
             <button type="button" onClick={() => setConfirming(false)} className="btn-secondary h-8 px-3 text-xs">{t('Cancel')}</button>
-            <button type="button" disabled={issuing} onClick={action.run} className="btn-primary h-8 px-3 text-xs disabled:opacity-60">{action.confirm.confirmLabel}</button>
+            <button type="button" disabled={issuing} onClick={() => void issue(emailing ? confirming || undefined : undefined)} className="btn-primary h-8 px-3 text-xs disabled:opacity-60">{confirmLabel}</button>
           </div>
         </div>
       )}

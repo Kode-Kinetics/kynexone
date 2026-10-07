@@ -40,7 +40,7 @@ const JARGON = /\buser\b|\blinks?\b|\blinked\b|invitation|access mode/i;
 
 interface Captured { method: string; path: string; body: unknown; query: string }
 
-async function openPeople(page: Page, opts: { createReturns422?: boolean } = {}) {
+async function openPeople(page: Page, opts: { createReturns422?: boolean; emailDelivery?: boolean } = {}) {
   const people = PEOPLE.map((p) => ({ ...p }));
   const writes: Captured[] = [];
   const listQueries: string[] = [];
@@ -68,6 +68,7 @@ async function openPeople(page: Page, opts: { createReturns422?: boolean } = {})
     codeExpiresAtUtc: p.state === 'code_given' ? EXPIRES : null, codeIssuedByName: p.issuer ?? null,
     lastCodeExpiredAtUtc: null, lastSignInAtUtc: p.state === 'active' ? '2026-10-01T06:30:00Z' : null,
     stoppedReason: p.stoppedReason ?? null, blockedCode: p.blockedCode ?? null, blockedReason: p.blockedCode ? 'Server English' : null, canIssue: true,
+    emailDelivery: !!opts.emailDelivery,
   });
 
   await page.route('**/api/**', async (route: Route) => {
@@ -81,6 +82,8 @@ async function openPeople(page: Page, opts: { createReturns422?: boolean } = {})
       writes.push({ method: request.method(), path: pathname, body, query: url.search });
       if (pathname === '/api/employee-access/codes') {
         const ids = (body as { employeeIds: number[] }).employeeIds;
+        // With email delivery the code is emailed (no `code`) unless the screen asked for a printable one.
+        const emailIt = !!opts.emailDelivery && (body as { delivery?: string }).delivery !== 'print';
         const issued: unknown[] = [];
         const skipped: unknown[] = [];
         for (const id of ids) {
@@ -92,11 +95,11 @@ async function openPeople(page: Page, opts: { createReturns422?: boolean } = {})
           if (!['not_started', 'code_given', 'active'].includes(p.state)) { skipped.push({ employeeId: id, reasonCode: p.state, reason: 'English server text' }); continue; }
           issued.push({
             employeeId: id, employeeName: p.name, arabicName: p.arabicName || null, employeeCode: p.code, username: p.email,
-            department: p.department, site: p.branch, code: CODES[id], expiresAtUtc: EXPIRES, tenantSlug: 'evostel',
+            department: p.department, site: p.branch, ...(emailIt ? {} : { code: CODES[id] }), expiresAtUtc: EXPIRES, tenantSlug: 'evostel',
           });
           if (p.state === 'not_started' && people.includes(p as Person)) (p as Person).state = 'code_given';
         }
-        return json({ issued, skipped, emailed: false, deliveryMessage: 'English server text' });
+        return json({ issued, skipped, emailed: emailIt, deliveryMessage: 'English server text' });
       }
       if (pathname === '/api/employee-access/work-emails') {
         const { dryRun } = body as { dryRun: boolean };
@@ -407,4 +410,39 @@ test('Add work emails: paste, preview counts, save, then give access and print',
   expect(writes.filter((w) => w.path === '/api/employee-access/codes').map((w) => w.body)).toEqual([{ employeeIds: [45] }]);
   await expectNoCodeStored(page, ['70013355']);
   expect(errors).toEqual([]);
+});
+
+test('when the company can email codes, Email sign-in code leads and Print sign-in slip is second', async ({ page }) => {
+  const { writes } = await openPeople(page, { emailDelivery: true });
+  const card = await openProfile(page, 'Noah Williams');
+  const buttons = card.getByRole('button');
+  await expect(buttons).toHaveText(['Email sign-in code', 'Print sign-in slip']);
+  await card.getByRole('button', { name: 'Email sign-in code' }).click();
+  const summary = page.getByTestId('welcome-codes-summary');
+  await expect(summary).toContainText('The sign-in code was emailed to 1 person.');
+  await expect(page.getByTestId('sign-in-slips')).toHaveCount(0);
+  await page.getByRole('dialog').getByRole('button', { name: 'Close' }).last().click();
+
+  await page.getByTestId('employee-access-card').getByRole('button', { name: 'Print sign-in slip' }).click();
+  // Noah now has a code (the mock moved him on), so Give new code confirms first.
+  await page.getByTestId('employee-access-card').getByRole('button', { name: 'Give new code' }).click();
+  await expect(page.getByTestId('sign-in-slip').getByTestId('slip-code')).toHaveText('4821 7730');
+  expect(writes.filter((w) => w.path === '/api/employee-access/codes').map((w) => w.body)).toEqual([
+    { employeeIds: [42] }, { employeeIds: [42], delivery: 'print' },
+  ]);
+  await expectNoCodeStored(page, ['48217730']);
+});
+
+test('Add Employee with email delivery offers Email sign-in code first', async ({ page }) => {
+  const { writes } = await openPeople(page, { emailDelivery: true });
+  await page.getByRole('button', { name: 'Add Employee' }).first().click();
+  const dialog = page.getByRole('dialog');
+  await dialog.locator('label', { hasText: 'English full name' }).locator('input').fill('Mona Kamal');
+  await dialog.getByTestId('work-email-local-part').fill('mona.kamal');
+  await dialog.getByRole('button', { name: 'Create Employee' }).click();
+  await expect(dialog.getByTestId('employee-added')).toContainText('Mona Kamal has been added.');
+  await expect(dialog.getByRole('button', { name: 'Print sign-in slip' })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Email sign-in code' }).click();
+  await expect(page.getByTestId('welcome-codes-summary')).toContainText('The sign-in code was emailed to 1 person.');
+  expect(writes.filter((w) => w.path === '/api/employee-access/codes').map((w) => w.body)).toEqual([{ employeeIds: [50] }]);
 });

@@ -29,6 +29,8 @@ export interface IssueOptions {
    * profile card), so no summary dialog opens.
    */
   quietSkips?: boolean;
+  /** Only when the tenant can email: 'print' asks for a printable code instead of an email. */
+  delivery?: 'email' | 'print';
 }
 
 /**
@@ -56,7 +58,7 @@ export function useWelcomeCodes(onFinished?: () => void) {
       // The API takes at most 500 per request; a bigger print is sent in chunks and shown as one batch.
       const merged: IssueWelcomeCodesResult = { issued: [], skipped: [], emailed: false };
       for (let i = 0; i < employeeIds.length; i += MAX_CODES_PER_REQUEST) {
-        const part = await employeeAccessApi.issueCodes(employeeIds.slice(i, i + MAX_CODES_PER_REQUEST));
+        const part = await employeeAccessApi.issueCodes(employeeIds.slice(i, i + MAX_CODES_PER_REQUEST), options.delivery);
         merged.issued.push(...part.issued);
         merged.skipped.push(...part.skipped);
         merged.emailed = merged.emailed || part.emailed;

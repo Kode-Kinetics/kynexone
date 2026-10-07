@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { LOCALE_DICTS } from '../src/i18n/translations';
 import {
-  ACCESS_STATE_COPY, BULK_PRINTABLE_STATES, CONFLICT_REASON_KEYS, DEFAULT_CONFLICT_KEY, GENERIC_SKIP_KEY, SKIP_REASON_KEYS,
+  ACCESS_STATE_COPY, BULK_PRINTABLE_STATES, CANONICAL_CONFLICT_CODES, CANONICAL_SKIP_CODES, CONFLICT_REASON_KEYS, DEFAULT_CONFLICT_KEY, GENERIC_SKIP_KEY, SKIP_REASON_KEYS,
   WORK_EMAIL_ERROR_KEYS, appAddress, dateLine, formatWelcomeCode, pairUp, parseWorkEmailRows, skipReasonKey, sortSlips,
   welcomeQrUrl, workEmailErrorCode,
 } from '../src/lib/employeeAccess';
@@ -84,4 +84,13 @@ test('HR-facing words never include the jargon the HR panel ruled out', () => {
     ...Object.values(SKIP_REASON_KEYS), ...Object.values(CONFLICT_REASON_KEYS),
   ];
   for (const key of hrKeys) expect(key, key).not.toMatch(/\buser\b|\blink|invitation|access mode|staged/i);
+});
+
+test('every canonical skip and conflict code has its own sentence', () => {
+  for (const code of CANONICAL_SKIP_CODES) {
+    const key = skipReasonKey(code);
+    expect(key, code).not.toBeNull();
+    expect(key, code).not.toBe(GENERIC_SKIP_KEY);
+  }
+  for (const code of CANONICAL_CONFLICT_CODES) expect(CONFLICT_REASON_KEYS[code], code).toBeTruthy();
 });

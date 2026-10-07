@@ -1158,11 +1158,11 @@ export function EmployeesPage() {
     if (thenOpen && id) void openDetail(id);
   };
 
-  const printCreatedSlip = async () => {
+  const issueCreatedCode = async (delivery?: 'email' | 'print') => {
     if (!createdEmployee) return;
     const { id, name } = createdEmployee;
     finishCreated();
-    await welcome.issue([id], { names: { [id]: name } });
+    await welcome.issue([id], { names: { [id]: name }, delivery });
   };
 
   const closeCreateModal = () => {
@@ -2135,10 +2135,23 @@ export function EmployeesPage() {
         <>
           <button type="button" onClick={() => finishCreated()} className="btn-secondary">{t('Later')}</button>
           {canIssueAccess && (!createdEmployee.access || (BULK_PRINTABLE_STATES.has(createdEmployee.access.state) && createdEmployee.access.canIssue)) && (
-            <button type="button" onClick={() => void printCreatedSlip()} disabled={welcome.busy} className="btn-primary disabled:opacity-60">
-              <Printer className="h-4 w-4" aria-hidden="true" />
-              {t('Print sign-in slip')}
-            </button>
+            createdEmployee.access?.emailDelivery ? (
+              <>
+                <button type="button" onClick={() => void issueCreatedCode('print')} disabled={welcome.busy} className="btn-secondary disabled:opacity-60">
+                  <Printer className="h-4 w-4" aria-hidden="true" />
+                  {t('Print sign-in slip')}
+                </button>
+                <button type="button" onClick={() => void issueCreatedCode('email')} disabled={welcome.busy} className="btn-primary disabled:opacity-60">
+                  <Mail className="h-4 w-4" aria-hidden="true" />
+                  {t('Email sign-in code')}
+                </button>
+              </>
+            ) : (
+              <button type="button" onClick={() => void issueCreatedCode()} disabled={welcome.busy} className="btn-primary disabled:opacity-60">
+                <Printer className="h-4 w-4" aria-hidden="true" />
+                {t('Print sign-in slip')}
+              </button>
+            )
           )}
         </>
       ) : (

@@ -166,7 +166,15 @@ export const SKIP_REASON_KEYS: Record<string, string> = {
   // Reset sign-in is one person at a time, from their profile (never bulk).
   active: "Use Reset sign-in on the person's profile.",
   reset_is_single: "Use Reset sign-in on the person's profile.",
+  reset_requires_permission: "Only an HR manager or an admin can reset someone's sign-in.",
 };
+
+/** The reason codes the API defines (contract); unit/employeeAccess.spec.ts proves each has a sentence. */
+export const CANONICAL_SKIP_CODES = [
+  'cannot_issue_for_self', 'above_ceiling', 'seat_limit', 'reset_is_single', 'reset_requires_permission',
+  'work_email_set_by_caller', 'privileged_login',
+] as const;
+export const CANONICAL_CONFLICT_CODES = ['duplicate_in_file', 'username_differs'] as const;
 
 export const GENERIC_SKIP_KEY = 'This needs a system admin first.';
 
