@@ -253,9 +253,7 @@ public sealed class PasswordResetLinkTests
     public async Task InviteEmployeeLogin_StatesThatNothingWasSent_WhenNoMailTransportExists()
     {
         await using var db = CreateDb();
-        // The inviter is a real user of the workspace: an invitation may carry only roles inside the
-        // inviter's own access (PrivilegeCeiling), and the default Employee role carries none here.
-        var (tenant, inviter) = await SeedActiveUserAsync(db);
+        var (tenant, _) = await SeedActiveUserAsync(db);
         var employee = new Employee
         {
             TenantId = tenant.Id,
@@ -269,7 +267,7 @@ public sealed class PasswordResetLinkTests
         db.Employees.Add(employee);
         await db.SaveChangesAsync();
 
-        var result = await Controller(db, tenant.Id, new FakeEmailService(configured: false), inviter.Id)
+        var result = await Controller(db, tenant.Id, new FakeEmailService(configured: false))
             .InviteEmployeeLogin(
                 new InviteEmployeeLoginRequest(employee.Id, null, AccessModes.FullPortal, null),
                 default);
@@ -288,7 +286,7 @@ public sealed class PasswordResetLinkTests
     public async Task InviteEmployeeLogin_ActuallyEmailsTheInvitation_WhenAMailTransportExists()
     {
         await using var db = CreateDb();
-        var (tenant, inviter) = await SeedActiveUserAsync(db);
+        var (tenant, _) = await SeedActiveUserAsync(db);
         var employee = new Employee
         {
             TenantId = tenant.Id,
@@ -303,7 +301,7 @@ public sealed class PasswordResetLinkTests
         await db.SaveChangesAsync();
         var email = new FakeEmailService(configured: true);
 
-        var result = await Controller(db, tenant.Id, email, inviter.Id).InviteEmployeeLogin(
+        var result = await Controller(db, tenant.Id, email).InviteEmployeeLogin(
             new InviteEmployeeLoginRequest(employee.Id, null, AccessModes.FullPortal, null), default);
 
         var invite = (result.Result.Should().BeOfType<CreatedResult>().Subject.Value)
@@ -358,11 +356,16 @@ public sealed class PasswordResetLinkTests
         db.Tenants.Add(tenant);
         db.SecuritySettings.Add(new SecuritySetting { Id = Guid.NewGuid(), TenantId = tenant.Id });
         db.Users.Add(user);
-        // The administrator acting in these tests: a real, active user of the workspace, because the Access API
-        // resolves its caller (PrivilegeCeiling) before acting on another user's account.
+        // The administrator acting in these tests: a real, active Admin of the workspace, because the Access API
+        // resolves its caller (PrivilegeCeiling) before acting on another user's account, and the default
+        // Employee role an invitation issues is a reserved name only an Admin gives.
+        var adminRole = new Role { Id = Guid.NewGuid(), TenantId = tenant.Id, Name = "Admin", NormalizedName = "ADMIN", Description = "Admin", IsActive = true };
+        var actingAdminId = Guid.NewGuid();
+        db.Roles.Add(adminRole);
+        db.UserRoles.Add(new UserRole { UserId = actingAdminId, RoleId = adminRole.Id });
         db.Users.Add(new User
         {
-            Id = Guid.NewGuid(),
+            Id = actingAdminId,
             TenantId = tenant.Id,
             Tenant = tenant,
             Email = ActingAdminEmail,

@@ -381,8 +381,13 @@ public class EmployeeManagementService : IEmployeeManagementService
             // so a record can never be removed from the product while its login still authenticates.
             // bulkTokenUpdates: true — this whole method runs inside ChangeStatusOnceAsync's explicit
             // transaction, so ExecuteUpdate participates in it rather than committing on its own.
+            // LINKED-LOGIN GATE: the status change always goes on; a login this actor may not switch off (an
+            // Admin's, the last Admin's, or one holding more than the actor) is left active, audited and
+            // notified to the tenant's Admins instead (LinkedLoginDeactivationGate).
+            var gated = await GateLinkedLoginsAsync(_db, tenantId, links, linkedUsers, linkedUserIds, context,
+                $"employee.status_{request.Status}".ToLowerInvariant(), id, changedAtUtc, ct);
             var revoked = await StageCredentialInvalidationAsync(
-                _db, links, linkedUsers, linkedUserIds,
+                _db, gated.Links, gated.Users, gated.UserIds,
                 loginDisabledReason: $"Employee lifecycle status: {request.Status}",
                 effectiveAtUtc: changedAtUtc,
                 actorUserId: context.UserId,
@@ -737,6 +742,45 @@ public class EmployeeManagementService : IEmployeeManagementService
         // Same mask gate as GET {id} — see CreateAsync. A PATCH {id}/status must not be a salary/IBAN
         // read primitive for a caller who cannot read those fields through the read endpoint.
         return await GetAsync(tenantId, id, includeSensitive, context, cancellationToken);
+    }
+
+    /// <summary>The credential graph narrowed to the logins the actor may switch off, and the ones held back.</summary>
+    public sealed record GatedCredentialGraph(
+        IReadOnlyList<EmployeeUserAccount> Links,
+        IReadOnlyList<Zayra.Api.Domain.Entities.User> Users,
+        IReadOnlyList<Guid> UserIds,
+        IReadOnlyList<Zayra.Api.Infrastructure.Auth.LinkedLoginDeactivationGate.HeldLogin> Held);
+
+    /// <summary>
+    /// Runs <see cref="Zayra.Api.Infrastructure.Auth.LinkedLoginDeactivationGate"/> over an employee's credential
+    /// graph before <see cref="StageCredentialInvalidationAsync"/>: returns only the edges of logins the actor may
+    /// switch off, and stages the audit row and Admin notifications for each one held back. Staged only.
+    /// </summary>
+    public static async Task<GatedCredentialGraph> GateLinkedLoginsAsync(
+        ZayraDbContext db,
+        Guid tenantId,
+        IReadOnlyList<EmployeeUserAccount> links,
+        IReadOnlyList<Zayra.Api.Domain.Entities.User> linkedUsers,
+        IReadOnlyList<Guid> linkedUserIds,
+        RequestContext context,
+        string source,
+        int employeeId,
+        DateTime atUtc,
+        CancellationToken ct)
+    {
+        var decision = await Zayra.Api.Infrastructure.Auth.LinkedLoginDeactivationGate.DecideAsync(
+            db, tenantId, context.UserId, linkedUserIds, atUtc, ct);
+        if (decision.Held.Count == 0)
+            return new GatedCredentialGraph(links, linkedUsers, linkedUserIds, decision.Held);
+        var heldIds = decision.Held.Select(x => x.UserId).ToHashSet();
+        await Zayra.Api.Infrastructure.Auth.LinkedLoginDeactivationGate.StageHeldAsync(
+            db, tenantId, context, source, "Employee", employeeId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            decision.Held, atUtc, ct);
+        return new GatedCredentialGraph(
+            links.Where(x => x.UserId is not Guid u || !heldIds.Contains(u)).ToList(),
+            linkedUsers.Where(x => !heldIds.Contains(x.Id)).ToList(),
+            linkedUserIds.Where(x => !heldIds.Contains(x)).ToList(),
+            decision.Held);
     }
 
     /// <summary>Credential edges closed by <see cref="StageCredentialInvalidationAsync"/>.</summary>

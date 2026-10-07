@@ -26,7 +26,8 @@ public sealed class AccessPrivilegeCeilingTests
     private readonly PostgresFixture _fixture;
     public AccessPrivilegeCeilingTests(PostgresFixture fixture) => _fixture = fixture;
 
-    private static readonly string[] AllKeys = ["security.manage", "employees.read", "employees.write", "payroll.approve", "profile.read"];
+    private static readonly string[] AllKeys = ["security.manage", "employees.read", "employees.write", "payroll.approve", "profile.read",
+        "ess.read", "ess.write", "loans.self", "approvals.decide"];
 
     private sealed record World(
         Guid TenantId,
@@ -36,7 +37,9 @@ public sealed class AccessPrivilegeCeilingTests
         Guid StaffId,
         Guid ConsoleRoleId,
         Guid HrRoleId,
-        Guid PayrollRoleId);
+        Guid PayrollRoleId,
+        Guid PayrollLeadRoleId,
+        Guid ReportingRoleId);
 
     // ── The four escalations the security review found ──────────────────────────────────────────────
 
@@ -115,7 +118,7 @@ public sealed class AccessPrivilegeCeilingTests
         await using (var db = _fixture.CreateRetryingDb())
         {
             var refused = await Controller(db, w, w.HrId).AssignRoles(
-                w.StaffId, new AssignRolesRequest(["Employee", "Payroll Manager"]), CancellationToken.None);
+                w.StaffId, new AssignRolesRequest(["Employee", "Payroll Lead"]), CancellationToken.None);
             var body = AssertRefused(refused.Result, PrivilegeCeiling.Codes.RoleAboveCeiling);
             Assert.Contains("payroll.approve", body.GetProperty("missingPermissions").EnumerateArray().Select(x => x.GetString()));
             Assert.False(string.IsNullOrWhiteSpace(body.GetProperty("messageAr").GetString()));
@@ -251,7 +254,7 @@ public sealed class AccessPrivilegeCeilingTests
         await using var db = _fixture.CreateRetryingDb();
 
         var result = await Controller(db, w, w.ConsoleId).CreateUser(
-            new CreateUserRequest($"mint-{Guid.NewGuid():N}@example.test", "Minted", "StrongPassword!123", ["Payroll Manager"]),
+            new CreateUserRequest($"mint-{Guid.NewGuid():N}@example.test", "Minted", "StrongPassword!123", ["Payroll Lead"]),
             CancellationToken.None);
 
         AssertRefused(result.Result, PrivilegeCeiling.Codes.RoleAboveCeiling);
@@ -405,6 +408,173 @@ public sealed class AccessPrivilegeCeilingTests
             new RequestContext("127.0.0.1", "platform", null, w.TenantId), CancellationToken.None);
     }
 
+    // ── Review round: names that carry authority, invite modes, reach-up through roles, baseline, audit ──
+
+    [Fact]
+    public async Task Probe_RoleNameCarriesAuthority_FinanceController()
+    {
+        // PayrollController checks User.IsInRole("Finance Controller"): the NAME is the authority, whatever the
+        // role carries. A Console Admin may neither mint it nor rename a role to it; an Admin may.
+        var w = await SeedAsync();
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var create = await Controller(db, w, w.ConsoleId).CreateRole(
+                new CreateRoleRequest("Finance Controller", null, 50, ["employees.read"]), CancellationToken.None);
+            AssertRefused(create.Result, PrivilegeCeiling.Codes.ReservedRoleName);
+        }
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var rename = await Controller(db, w, w.ConsoleId).UpdateRole(
+                w.ReportingRoleId, new UpdateRoleRequest(" finance controller ", null, null), CancellationToken.None);
+            AssertRefused(rename.Result, PrivilegeCeiling.Codes.ReservedRoleName);
+        }
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var admin = await Controller(db, w, w.AdminId).CreateRole(
+                new CreateRoleRequest("Finance Controller", null, 50, ["employees.read"]), CancellationToken.None);
+            Assert.IsType<CreatedAtActionResult>(admin.Result);
+        }
+        await using var verify = _fixture.CreateRetryingDb();
+        Assert.Equal("Reporting", (await verify.Roles.IgnoreQueryFilters().SingleAsync(x => x.Id == w.ReportingRoleId)).Name);
+    }
+
+    [Fact]
+    public async Task ARoleNameThisTenantRoutesApprovalsTo_IsReservedToo()
+    {
+        var w = await SeedAsync();
+        await using (var seed = _fixture.CreateRetryingDb())
+        {
+            var workflow = new ApprovalWorkflow { TenantId = w.TenantId, Code = $"WF-{Guid.NewGuid():N}"[..12], Name = "Payments", EntityName = "PaymentBatch" };
+            seed.ApprovalWorkflows.Add(workflow);
+            seed.ApprovalWorkflowSteps.Add(new ApprovalWorkflowStep { TenantId = w.TenantId, WorkflowId = workflow.Id, StepOrder = 1, StepName = "Treasury", ApproverRole = "Treasury Desk", IsFinalStep = true });
+            await seed.SaveChangesAsync();
+        }
+        await using var db = _fixture.CreateRetryingDb();
+        var create = await Controller(db, w, w.ConsoleId).CreateRole(new CreateRoleRequest("Treasury Desk", null, 50, null), CancellationToken.None);
+        AssertRefused(create.Result, PrivilegeCeiling.Codes.ReservedRoleName);
+    }
+
+    [Fact]
+    public async Task InvitingWithAnAccessModeThatCarriesPermissionsYouLack_IsRefused()
+    {
+        var w = await SeedAsync();
+        int employeeId;
+        await using (var seed = _fixture.CreateRetryingDb())
+        {
+            var company = new Company { TenantId = w.TenantId, LegalNameEn = "Invite Co", RegistrationNumber = $"R-{Guid.NewGuid():N}", IsActive = true };
+            seed.Companies.Add(company);
+            await seed.SaveChangesAsync();
+            var employee = new Employee
+            {
+                TenantId = w.TenantId, CompanyId = company.Id, EmployeeCode = $"INV-{Guid.NewGuid():N}"[..12], FullName = "Invitee",
+                WorkEmail = $"invitee-{Guid.NewGuid():N}@example.test", Status = "Active", JoiningDate = DateTime.UtcNow,
+            };
+            seed.Employees.Add(employee);
+            await seed.SaveChangesAsync();
+            employeeId = employee.Id;
+        }
+        await using var db = _fixture.CreateRetryingDb();
+
+        // ManagerPortal carries approvals.decide; the Console Admin does not hold it. The role itself is in reach.
+        var result = await Controller(db, w, w.ConsoleId).InviteEmployeeLogin(
+            new InviteEmployeeLoginRequest(employeeId, null, AccessModes.ManagerPortal, ["Reporting"]), CancellationToken.None);
+
+        var body = AssertRefused(result.Result, PrivilegeCeiling.Codes.PermissionAboveCeiling);
+        Assert.Contains("approvals.decide", body.GetProperty("missingPermissions").EnumerateArray().Select(x => x.GetString()));
+    }
+
+    [Fact]
+    public async Task Probe_ReachUp_ViaEditingASharedRole()
+    {
+        // "Reporting" sits inside the Console Admin's ceiling, but the Admin holds it too: editing it would change
+        // an Admin's access. Every role-definition door refuses.
+        var w = await SeedAsync();
+        await using (var seed = _fixture.CreateRetryingDb())
+        {
+            seed.UserRoles.Add(new UserRole { UserId = w.AdminId, RoleId = w.ReportingRoleId });
+            await seed.SaveChangesAsync();
+        }
+
+        async Task<IActionResult> Run(Func<AccessController, Task<IActionResult>> act)
+        {
+            await using var db = _fixture.CreateRetryingDb();
+            return await act(Controller(db, w, w.ConsoleId));
+        }
+
+        AssertRefused(await Run(async c => (await c.SetRolePermissions(w.ReportingRoleId, new BulkRolePermissionsRequest([]), CancellationToken.None)).Result!),
+            PrivilegeCeiling.Codes.RoleHolderAbove);
+        AssertRefused(await Run(c => c.SavePermissionMatrix(new PermissionMatrixUpdateRequest(new Dictionary<string, IReadOnlyCollection<string>>
+        {
+            [w.ReportingRoleId.ToString()] = Array.Empty<string>(),
+        }), CancellationToken.None)), PrivilegeCeiling.Codes.RoleHolderAbove);
+        AssertRefused(await Run(c => c.DeactivateRole(w.ReportingRoleId, CancellationToken.None)), PrivilegeCeiling.Codes.RoleHolderAbove);
+        AssertRefused(await Run(async c => (await c.UpdateRole(w.ReportingRoleId, new UpdateRoleRequest("Reporting (old)", null, null), CancellationToken.None)).Result!),
+            PrivilegeCeiling.Codes.RoleHolderAbove);
+
+        await using var verify = _fixture.CreateRetryingDb();
+        var role = await verify.Roles.IgnoreQueryFilters().SingleAsync(x => x.Id == w.ReportingRoleId);
+        Assert.True(role.IsActive);
+        Assert.Equal("Reporting", role.Name);
+        Assert.Equal(["employees.read"], (await RolePermissionKeysAsync(verify, w.ReportingRoleId)).ToArray());
+    }
+
+    [Fact]
+    public async Task ASecurityOnlyAdmin_CanManageOrdinaryStaff_ButNotAPayrollManager()
+    {
+        // The staff member's Employee role carries ess.read/ess.write/loans.self, which the Console Admin does not
+        // hold; that baseline never makes an ordinary employee "above" anyone.
+        var w = await SeedAsync();
+        var payrollUser = await AddUserAsync(w.TenantId, "Payroll Manager");
+
+        await using (var db = _fixture.CreateRetryingDb())
+            Assert.IsType<NoContentResult>(await Controller(db, w, w.ConsoleId).SuspendUser(w.StaffId, new ReasonRequest("leave of absence"), CancellationToken.None));
+        await using (var db = _fixture.CreateRetryingDb())
+            AssertRefused(await Controller(db, w, w.ConsoleId).SuspendUser(payrollUser, new ReasonRequest("x"), CancellationToken.None),
+                PrivilegeCeiling.Codes.TargetAboveCeiling);
+
+        await using var verify = _fixture.CreateRetryingDb();
+        Assert.False((await verify.Users.IgnoreQueryFilters().SingleAsync(x => x.Id == w.StaffId)).IsActive);
+        Assert.True((await verify.Users.IgnoreQueryFilters().SingleAsync(x => x.Id == payrollUser)).IsActive);
+    }
+
+    [Fact]
+    public async Task MatrixProfileAndOverrideDelete_AreAuditedInTheSameCommit()
+    {
+        var w = await SeedAsync();
+        Guid overrideId;
+        await using (var seed = _fixture.CreateRetryingDb())
+        {
+            var ov = new UserPermissionOverride { TenantId = w.TenantId, UserId = w.StaffId, PermissionKey = "employees.read", Effect = "Allow", IsActive = true };
+            seed.UserPermissionOverrides.Add(ov);
+            await seed.SaveChangesAsync();
+            overrideId = ov.Id;
+        }
+
+        await using (var db = _fixture.CreateRetryingDb())
+            Assert.IsType<NoContentResult>(await Controller(db, w, w.AdminId).SavePermissionMatrix(
+                new PermissionMatrixUpdateRequest(new Dictionary<string, IReadOnlyCollection<string>>
+                {
+                    [w.ReportingRoleId.ToString()] = ["employees.read", "profile.read"],
+                }), CancellationToken.None));
+        await using (var db = _fixture.CreateRetryingDb())
+            Assert.IsType<OkObjectResult>((await Controller(db, w, w.AdminId).UpdateUser(
+                w.StaffId, new UpdateUserRequest("Renamed Staff", null, null, null), CancellationToken.None)).Result);
+        await using (var db = _fixture.CreateRetryingDb())
+            Assert.IsType<NoContentResult>(await Controller(db, w, w.AdminId).DeletePermissionOverride(w.StaffId, overrideId, CancellationToken.None));
+
+        await using var verify = _fixture.CreateRetryingDb();
+        var rows = await verify.AuditLogs.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.TenantId == w.TenantId && x.UserId == w.AdminId).ToListAsync();
+        var matrix = Assert.Single(rows, x => x.Action == "access.permission_matrix_saved");
+        Assert.Contains("\"added\":[\"profile.read\"]", matrix.Metadata);
+        var profile = Assert.Single(rows, x => x.Action == "access.user_updated");
+        Assert.Equal(w.StaffId.ToString(), profile.EntityId);
+        Assert.Contains("Renamed Staff", profile.Metadata);
+        var deleted = Assert.Single(rows, x => x.Action == "access.permission_override_deleted");
+        Assert.Equal(overrideId.ToString(), deleted.EntityId);
+        Assert.Contains("\"previousEffect\":\"Allow\"", deleted.Metadata);
+    }
+
     // ── Audit ───────────────────────────────────────────────────────────────────────────────────────
 
     [Fact]
@@ -463,10 +633,14 @@ public sealed class AccessPrivilegeCeilingTests
         var byName = ceiling.Roles.ToDictionary(x => x.Name);
         Assert.False(byName["Admin"].CanAssign);
         Assert.Equal(PrivilegeCeiling.Codes.AdminOnlyRole, byName["Admin"].AssignRefusalCode);
+        Assert.False(byName["Payroll Lead"].CanAssign);
+        Assert.Equal(PrivilegeCeiling.Codes.RoleAboveCeiling, byName["Payroll Lead"].AssignRefusalCode);
+        Assert.False(string.IsNullOrWhiteSpace(byName["Payroll Lead"].AssignRefusalAr));
+        // Reserved names (checked by name in code) are an Admin's to give, whatever they carry.
         Assert.False(byName["Payroll Manager"].CanAssign);
-        Assert.Equal(PrivilegeCeiling.Codes.RoleAboveCeiling, byName["Payroll Manager"].AssignRefusalCode);
-        Assert.False(string.IsNullOrWhiteSpace(byName["Payroll Manager"].AssignRefusalAr));
-        Assert.True(byName["Employee"].CanAssign);
+        Assert.Equal(PrivilegeCeiling.Codes.AdminOnlyRole, byName["Payroll Manager"].AssignRefusalCode);
+        Assert.False(byName["Employee"].CanAssign);
+        Assert.True(byName["Reporting"].CanAssign);
         Assert.True(byName["Console Admin"].CanAssign);
         Assert.False(byName["Console Admin"].CanEdit);
         Assert.Equal(PrivilegeCeiling.Codes.OwnRole, byName["Console Admin"].EditRefusalCode);
@@ -494,7 +668,7 @@ public sealed class AccessPrivilegeCeilingTests
             new("permission", "security.manage"),
             new(EntityScopeContext.V2ClaimType, JsonSerializer.Serialize(new { v = 2, m = "group", c = Array.Empty<Guid>() })),
         };
-        var service = new AccessManagementService(db, new Pbkdf2PasswordHasher(), new NullAuditService(), new FakeTokenService());
+        var service = new AccessManagementService(db, new Pbkdf2PasswordHasher(), new Zayra.Api.Infrastructure.Audit.AuditService(db), new FakeTokenService());
         return new AccessController(service, db, null!)
         {
             ControllerContext = new ControllerContext
@@ -538,7 +712,11 @@ public sealed class AccessPrivilegeCeilingTests
         var console = AddRole("Console Admin", isSystem: false, isEditable: true, "security.manage", "employees.read", "profile.read");
         var hr = AddRole("HR Manager", isSystem: true, isEditable: true, "security.manage", "employees.read", "employees.write", "profile.read");
         var payroll = AddRole("Payroll Manager", isSystem: true, isEditable: true, "employees.read", "payroll.approve");
-        var employee = AddRole("Employee", isSystem: true, isEditable: true, "profile.read");
+        // The baseline every employee gets: more than a security-only Console Admin holds.
+        var employee = AddRole("Employee", isSystem: true, isEditable: true, "profile.read", "ess.read", "ess.write", "loans.self");
+        // Custom (unreserved) roles: one above the Console Admin, one inside it.
+        var payrollLead = AddRole("Payroll Lead", isSystem: false, isEditable: true, "employees.read", "payroll.approve");
+        var reporting = AddRole("Reporting", isSystem: false, isEditable: true, "employees.read");
         if (maxAdminUsers is int limit)
             db.TenantSubscriptions.Add(new TenantSubscription
             {
@@ -551,7 +729,7 @@ public sealed class AccessPrivilegeCeilingTests
         var hrId = await AddUserAsync(tenantId, "HR Manager");
         var staffId = await AddUserAsync(tenantId, "Employee");
         _ = employee;
-        return new World(tenantId, adminId, consoleId, hrId, staffId, console.Id, hr.Id, payroll.Id);
+        return new World(tenantId, adminId, consoleId, hrId, staffId, console.Id, hr.Id, payroll.Id, payrollLead.Id, reporting.Id);
     }
 
     private async Task<Guid> AddUserAsync(Guid tenantId, string roleName, bool mustChangePassword = false)
