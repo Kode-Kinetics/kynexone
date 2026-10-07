@@ -38,3 +38,6 @@ docker-compose.override.yml
 # Destructive one-off SQL kept locally (e.g. database/DANGER_truncate_all_tenant_data.sql).
 # A hard-coded truncate list must never be committed where anyone can run it.
 database/DANGER_*
+KynexOne-QA-Report
+# Local developer Makefile (Docker helpers), not shared.
+Makefile
