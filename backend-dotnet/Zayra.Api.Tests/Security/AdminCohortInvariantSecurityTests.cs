@@ -26,7 +26,9 @@ public sealed class AdminCohortInvariantSecurityTests
     public async Task BlockingWriter_CannotRemoveOrBlockLastOperationalAdmin(string writer)
     {
         var seed = await SeedAdminsAsync(1);
-        var callerId = Guid.NewGuid();
+        // Role changes resolve their caller (PrivilegeCeiling: only an Admin may take the Admin role away), so the
+        // "roles" writer acts as a second Admin who cannot sign in yet — the target stays the last OPERATIONAL one.
+        var callerId = writer == "roles" ? await AddDormantAdminAsync(seed.TenantId) : Guid.NewGuid();
         await using var db = _fixture.CreateRetryingDb();
         var service = CreateService(db);
 
@@ -214,6 +216,31 @@ public sealed class AdminCohortInvariantSecurityTests
         }
         await db.SaveChangesAsync();
         return new Seed(tenantId, userIds);
+    }
+
+    private async Task<Guid> AddDormantAdminAsync(Guid tenantId)
+    {
+        await using var db = _fixture.CreateRetryingDb();
+        var adminRole = await db.Roles.IgnoreQueryFilters().SingleAsync(x => x.TenantId == tenantId && x.NormalizedName == "ADMIN");
+        var id = Guid.NewGuid();
+        var email = $"dormant-admin-{id:N}@example.test";
+        db.Users.Add(new User
+        {
+            Id = id,
+            TenantId = tenantId,
+            Email = email,
+            NormalizedEmail = AuthService.Normalize(email),
+            FullName = "Dormant Admin",
+            PasswordHash = "test-only-hash",
+            Status = "Active",
+            AccessMode = AccessModes.FullPortal,
+            IsActive = true,
+            IsEmailConfirmed = true,
+            MustChangePassword = true
+        });
+        db.UserRoles.Add(new UserRole { UserId = id, RoleId = adminRole.Id });
+        await db.SaveChangesAsync();
+        return id;
     }
 
     private static RequestContext Context(Guid tenantId, Guid callerId) =>

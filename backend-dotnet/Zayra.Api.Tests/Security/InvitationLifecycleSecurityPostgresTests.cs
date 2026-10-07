@@ -88,7 +88,7 @@ public sealed class InvitationLifecycleSecurityPostgresTests
                     new[] { "Employee" },
                     InvitationHours: 24),
                 EntityScopeContext.GroupLevel,
-                Request with { TenantId = seed.TenantId },
+                Request with { TenantId = seed.TenantId, UserId = seed.InviterId },
                 CancellationToken.None);
         }
 
@@ -160,7 +160,7 @@ public sealed class InvitationLifecycleSecurityPostgresTests
                     new[] { "Employee" },
                     InvitationHours: 24),
                 EntityScopeContext.GroupLevel,
-                Request with { TenantId = seed.TenantId },
+                Request with { TenantId = seed.TenantId, UserId = seed.InviterId },
                 CancellationToken.None);
         }
 
@@ -332,7 +332,7 @@ public sealed class InvitationLifecycleSecurityPostgresTests
                         new[] { "Employee" },
                         InvitationHours: 24),
                     EntityScopeContext.GroupLevel,
-                    Request with { TenantId = seed.TenantId },
+                    Request with { TenantId = seed.TenantId, UserId = seed.InviterId },
                     CancellationToken.None));
         }
         finally
@@ -376,7 +376,7 @@ public sealed class InvitationLifecycleSecurityPostgresTests
                     new[] { "Employee" },
                     InvitationHours: 24),
                 EntityScopeContext.GroupLevel,
-                Request with { TenantId = seed.TenantId },
+                Request with { TenantId = seed.TenantId, UserId = seed.InviterId },
                 CancellationToken.None);
         }
 
@@ -415,7 +415,7 @@ public sealed class InvitationLifecycleSecurityPostgresTests
                 new[] { "Employee" },
                 InvitationHours: 24),
             EntityScopeContext.GroupLevel,
-            Request with { TenantId = seed.TenantId },
+            Request with { TenantId = seed.TenantId, UserId = seed.InviterId },
             CancellationToken.None);
     }
 
@@ -453,7 +453,22 @@ public sealed class InvitationLifecycleSecurityPostgresTests
             Description = "Administrator",
             AuthorityLevel = 1
         };
-        db.AddRange(tenant, company, employeeRole, adminRole);
+        // The inviting administrator is a real, active user of the tenant: an invitation may carry only
+        // roles inside the inviter's own access (PrivilegeCeiling), so the inviter must be resolvable.
+        var inviterEmail = $"inviter-{suffix}@example.test";
+        var inviter = new User
+        {
+            TenantId = tenant.Id,
+            Email = inviterEmail,
+            NormalizedEmail = AuthService.Normalize(inviterEmail),
+            FullName = "Inviting Admin",
+            PasswordHash = "test-only-hash",
+            Status = "Active",
+            AccessMode = AccessModes.FullPortal,
+            IsActive = true,
+            IsEmailConfirmed = true
+        };
+        db.AddRange(tenant, company, employeeRole, adminRole, inviter, new UserRole { UserId = inviter.Id, RoleId = adminRole.Id });
         await db.SaveChangesAsync();
 
         var email = $"invitation-{suffix}@example.test";
@@ -482,7 +497,8 @@ public sealed class InvitationLifecycleSecurityPostgresTests
                 null,
                 Guid.Empty,
                 Guid.Empty,
-                Guid.Empty);
+                Guid.Empty,
+                inviter.Id);
         }
 
         var oldInvitation = $"old-invitation-{Guid.NewGuid():N}-{Guid.NewGuid():N}";
@@ -572,7 +588,8 @@ public sealed class InvitationLifecycleSecurityPostgresTests
             oldInvitation,
             refresh.Id,
             reset.Id,
-            challenge.Id);
+            challenge.Id,
+            inviter.Id);
     }
 
     private async Task<IReadOnlyList<RaceOutcome<T>>> RaceFiveAsync<T>(
@@ -722,7 +739,8 @@ DROP FUNCTION IF EXISTS invitation_lifecycle_fail_issuance_audit();");
         string? OldInvitation,
         Guid RefreshId,
         Guid ResetId,
-        Guid ChallengeId);
+        Guid ChallengeId,
+        Guid InviterId);
 
     private sealed class NoopEmailService : IEmailService
     {

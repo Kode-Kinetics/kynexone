@@ -59,6 +59,7 @@ public interface IAccessManagementService
     Task SavePermissionMatrixAsync(Guid tenantId, PermissionMatrixUpdateRequest request, RequestContext context, CancellationToken cancellationToken);
 
     // Effective permissions for a user
+    Task<AccessCeilingDto> GetAccessCeilingAsync(Guid tenantId, RequestContext context, CancellationToken cancellationToken);
     Task<EffectivePermissionsDto?> GetEffectivePermissionsAsync(Guid tenantId, Guid userId, EntityScopeContext entityScope, CancellationToken cancellationToken);
 
     // Permission override delete

@@ -253,7 +253,9 @@ public sealed class PasswordResetLinkTests
     public async Task InviteEmployeeLogin_StatesThatNothingWasSent_WhenNoMailTransportExists()
     {
         await using var db = CreateDb();
-        var (tenant, _) = await SeedActiveUserAsync(db);
+        // The inviter is a real user of the workspace: an invitation may carry only roles inside the
+        // inviter's own access (PrivilegeCeiling), and the default Employee role carries none here.
+        var (tenant, inviter) = await SeedActiveUserAsync(db);
         var employee = new Employee
         {
             TenantId = tenant.Id,
@@ -267,7 +269,7 @@ public sealed class PasswordResetLinkTests
         db.Employees.Add(employee);
         await db.SaveChangesAsync();
 
-        var result = await Controller(db, tenant.Id, new FakeEmailService(configured: false))
+        var result = await Controller(db, tenant.Id, new FakeEmailService(configured: false), inviter.Id)
             .InviteEmployeeLogin(
                 new InviteEmployeeLoginRequest(employee.Id, null, AccessModes.FullPortal, null),
                 default);
@@ -286,7 +288,7 @@ public sealed class PasswordResetLinkTests
     public async Task InviteEmployeeLogin_ActuallyEmailsTheInvitation_WhenAMailTransportExists()
     {
         await using var db = CreateDb();
-        var (tenant, _) = await SeedActiveUserAsync(db);
+        var (tenant, inviter) = await SeedActiveUserAsync(db);
         var employee = new Employee
         {
             TenantId = tenant.Id,
@@ -301,7 +303,7 @@ public sealed class PasswordResetLinkTests
         await db.SaveChangesAsync();
         var email = new FakeEmailService(configured: true);
 
-        var result = await Controller(db, tenant.Id, email).InviteEmployeeLogin(
+        var result = await Controller(db, tenant.Id, email, inviter.Id).InviteEmployeeLogin(
             new InviteEmployeeLoginRequest(employee.Id, null, AccessModes.FullPortal, null), default);
 
         var invite = (result.Result.Should().BeOfType<CreatedResult>().Subject.Value)
@@ -370,7 +372,7 @@ public sealed class PasswordResetLinkTests
         return (tenant, user);
     }
 
-    private static AccessController Controller(ZayraDbContext db, Guid tenantId, IEmailService email) =>
+    private static AccessController Controller(ZayraDbContext db, Guid tenantId, IEmailService email, Guid? callerId = null) =>
         new(new AccessManagementService(db, new Pbkdf2PasswordHasher(), new AuditService(db), new JwtTokenService(Jwt), Configuration),
             db,
             email)
@@ -382,7 +384,7 @@ public sealed class PasswordResetLinkTests
                     User = new ClaimsPrincipal(new ClaimsIdentity(new[]
                     {
                         new Claim("tenant_id", tenantId.ToString()),
-                        new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+                        new Claim(ClaimTypes.NameIdentifier, (callerId ?? Guid.NewGuid()).ToString()),
                         new Claim(ClaimTypes.Role, "Admin"),
                         // Group-level scope, stated explicitly so the assertion does not depend on
                         // whichever way the strict-mode default happens to be set.

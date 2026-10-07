@@ -45,6 +45,30 @@ export interface RoleItem {
   permissions: string[];
 }
 
+/**
+ * The caller's privilege ceiling (GET /api/access/ceiling): what the server will let THIS caller assign or edit.
+ * The reasons are the server's own sentences (EN and AR), so the screen and the 403 always say the same thing.
+ */
+export interface RoleCeiling {
+  roleId: string;
+  name: string;
+  canAssign: boolean;
+  assignRefusalCode?: string | null;
+  assignRefusalEn?: string | null;
+  assignRefusalAr?: string | null;
+  canEdit: boolean;
+  editRefusalCode?: string | null;
+  editRefusalEn?: string | null;
+  editRefusalAr?: string | null;
+}
+
+export interface AccessCeiling {
+  userId: string;
+  isAdmin: boolean;
+  heldPermissions: string[];
+  roles: RoleCeiling[];
+}
+
 export interface PermissionMatrixRow {
   permissionKey: string;
   module: string;
@@ -241,6 +265,9 @@ export const usersApi = {
 export const rolesApi = {
   list: () =>
     client.get<RoleItem[]>('/api/access/roles').then(r => r.data),
+
+  ceiling: () =>
+    client.get<AccessCeiling>('/api/access/ceiling').then(r => r.data),
 
   permissions: () =>
     client.get<PermissionItem[]>('/api/access/permissions').then(r => r.data),

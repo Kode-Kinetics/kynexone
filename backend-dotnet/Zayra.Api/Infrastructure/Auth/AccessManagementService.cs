@@ -64,7 +64,11 @@ public class AccessManagementService : IAccessManagementService
         var auditId = Guid.NewGuid();
         var createdAtUtc = ToDatabasePrecisionUtc(DateTime.UtcNow);
         var passwordHash = _passwordHasher.Hash(request.Password);
-        var auditMetadata = System.Text.Json.JsonSerializer.Serialize(new { email = canonicalEmail });
+        var auditMetadata = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            email = canonicalEmail,
+            roles = request.Roles.Select(x => x.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.Ordinal).ToList()
+        });
         var isAdminUser = normalizedRoleNames.Contains("ADMIN", StringComparer.Ordinal);
 
         Guid[]? expectedRoleIds = null;
@@ -155,6 +159,18 @@ public class AccessManagementService : IAccessManagementService
                 throw new InvalidOperationException("One or more roles are invalid for this tenant.");
             expectedRoleIds = roles.Select(x => x.Id).OrderBy(x => x).ToArray();
 
+            // PRIVILEGE CEILING: the creator sets this account's password, so every role it is created with must
+            // sit inside the creator's own access — otherwise "create a user" is "mint myself a bigger login".
+            var caller = await LoadCallerCeilingAsync(tenantId, context, ct);
+            var rolePermissions = await _db.RolePermissions.AsNoTracking()
+                .Where(x => expectedRoleIds.Contains(x.RoleId) && x.Permission != null)
+                .Select(x => new { x.RoleId, x.Permission!.Key })
+                .ToListAsync(ct);
+            foreach (var role in roles.OrderBy(x => x.Name, StringComparer.Ordinal))
+                ThrowIfRefused(PrivilegeCeiling.AssignRefusal(caller, new PrivilegeCeiling.RoleFacts(
+                    role.Id, role.Name, role.NormalizedName, role.TenantId, role.IsSystem, role.IsEditable,
+                    rolePermissions.Where(x => x.RoleId == role.Id).Select(x => x.Key).ToList())));
+
             if (isAdminUser) await EnsureAdminCapacityAsync(tenantId, ct);
 
             var user = new User
@@ -233,7 +249,9 @@ public class AccessManagementService : IAccessManagementService
         var auditMetadata = System.Text.Json.JsonSerializer.Serialize(new
         {
             employeeId = request.EmployeeId,
-            accessMode
+            accessMode,
+            roles = (request.Roles is { Count: > 0 } ? request.Roles : DefaultRoles(accessMode))
+                .Select(x => x.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.Ordinal).ToList()
         });
         Guid? issuedUserId = null;
         Guid? issuedLinkId = null;
@@ -469,6 +487,11 @@ public class AccessManagementService : IAccessManagementService
                         StringComparison.OrdinalIgnoreCase))))
                 throw new InvalidOperationException(
                     "Employee invitation cannot grant privileged security administration; use the dedicated privileged-user workflow.");
+            // PRIVILEGE CEILING: with no mail transport the invitation link comes back to the inviter, so an
+            // invitation may carry only roles inside the inviter's own access.
+            var inviter = await LoadCallerCeilingAsync(tenantId, context, ct);
+            foreach (var role in roles.OrderBy(x => x.Name, StringComparer.Ordinal))
+                ThrowIfRefused(PrivilegeCeiling.AssignRefusal(inviter, Facts(role)));
             issuedRoleIds = roles.Select(x => x.Id).OrderBy(x => x).ToArray();
 
             _db.UserRoles.RemoveRange(user.UserRoles);
@@ -635,6 +658,25 @@ public class AccessManagementService : IAccessManagementService
             var user = await LockAccessUserAsync(tenantId, userId, entityScope, ct)
                 ?? throw new InvalidOperationException("User not found.");
             var roles = await LoadRoles(tenantId, request.Roles, ct);
+
+            // ── PRIVILEGE CEILING (PrivilegeCeiling) ──────────────────────────────────────────────
+            // security.manage opens this endpoint; it does not let the caller hand out more than they hold.
+            // The subject never decides (no self-change), nobody reaches up to a user holding more than them,
+            // and every role given OR taken away must sit inside the caller's own effective permissions.
+            var caller = await LoadCallerCeilingAsync(tenantId, context, ct);
+            var previousRoles = user.UserRoles.Where(x => x.Role is { IsDeleted: false }).Select(x => x.Role!).ToList();
+            ThrowIfRefused(PrivilegeCeiling.TargetRefusal(
+                caller,
+                user.Id,
+                previousRoles.Any(x => x.IsActive && x.NormalizedName == PrivilegeCeiling.AdminRoleNormalizedName),
+                AuthService.GetPermissions(user)));
+            var previousRoleIds = previousRoles.Select(x => x.Id).ToHashSet();
+            var nextRoleIds = roles.Select(x => x.Id).ToHashSet();
+            foreach (var changed in roles.Where(x => !previousRoleIds.Contains(x.Id))
+                         .Concat(previousRoles.Where(x => !nextRoleIds.Contains(x.Id)))
+                         .OrderBy(x => x.Name, StringComparer.Ordinal))
+                ThrowIfRefused(PrivilegeCeiling.AssignRefusal(caller, Facts(changed)));
+
             var wasOperationalAdmin = IsOperationalAdmin(user, changedAtUtc);
             var willBeOperationalAdmin = IsOperationalIdentity(user, changedAtUtc)
                 && roles.Any(x => x.NormalizedName == "ADMIN" && x.IsActive && !x.IsDeleted);
@@ -658,7 +700,9 @@ public class AccessManagementService : IAccessManagementService
             await InvalidateAuthorizationSessionsAsync(new[] { user }, changedAtUtc, context, ct);
             var metadata = System.Text.Json.JsonSerializer.Serialize(new
             {
-                roles = roles.Select(x => x.Name).OrderBy(x => x).ToList()
+                roles = roles.Select(x => x.Name).OrderBy(x => x).ToList(),
+                previousRoles = previousRoles.Select(x => x.Name).OrderBy(x => x).ToList(),
+                actorIsAdmin = caller.IsAdmin
             });
             _db.AuditLogs.Add(AuthAuditEntry.Create(
                 auditId,
@@ -832,7 +876,18 @@ public class AccessManagementService : IAccessManagementService
             if (!await _db.Permissions.AnyAsync(x => x.Key == request.PermissionKey, ct))
                 throw new InvalidOperationException("Permission does not exist.");
 
+            // PRIVILEGE CEILING: never on yourself, never on someone above you, and Allow only what you hold.
+            var caller = await LoadCallerCeilingAsync(tenantId, context, ct);
+            ThrowIfRefused(PrivilegeCeiling.TargetRefusal(
+                caller,
+                user.Id,
+                user.UserRoles.Any(x => x.Role is { NormalizedName: PrivilegeCeiling.AdminRoleNormalizedName, IsActive: true, IsDeleted: false }),
+                AuthService.GetPermissions(user)));
+            if (effect == "Allow")
+                ThrowIfRefused(PrivilegeCeiling.GrantRefusal(caller, new[] { request.PermissionKey }));
+
             var ov = user.PermissionOverrides.FirstOrDefault(x => x.PermissionKey == request.PermissionKey);
+            var previousEffect = ov is { IsActive: true } ? ov.Effect : null;
             if (ov is null)
             {
                 ov = new UserPermissionOverride
@@ -858,7 +913,8 @@ public class AccessManagementService : IAccessManagementService
             {
                 userId,
                 permission = request.PermissionKey,
-                effect
+                effect,
+                previousEffect
             });
             _db.AuditLogs.Add(AuthAuditEntry.Create(
                 auditId,
@@ -1909,6 +1965,82 @@ public class AccessManagementService : IAccessManagementService
                                    PermissionMatchesScope(c, parentScope));
     }
 
+    // ── Privilege ceiling ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The caller as <see cref="PrivilegeCeiling"/> sees them: their effective permissions computed exactly as a
+    /// sign-in computes them (<see cref="AuthService.GetPermissions"/>, from the database, not from a token that
+    /// may be minutes old), whether they hold the Admin role, and which roles they hold. Fails CLOSED: a change
+    /// with no caller, or a caller who is not an active user of this tenant, is refused.
+    /// </summary>
+    private async Task<PrivilegeCeiling.Caller> LoadCallerCeilingAsync(Guid tenantId, RequestContext context, CancellationToken cancellationToken)
+    {
+        if (context.UserId is not Guid callerId)
+            throw new PrivilegeCeilingException(PrivilegeCeiling.CallerUnknown());
+        var caller = await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.Users, tenantId,
+                "The caller's own auth graph by primary key: the company filter must not hide a company-scoped caller from their own privilege ceiling.")
+            .AsNoTracking().AsSplitQuery()
+            .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
+            .Include(x => x.PermissionOverrides)
+            .Include(x => x.EmployeeUserAccounts)
+            .SingleOrDefaultAsync(x => x.Id == callerId && x.TenantId == tenantId && !x.IsDeleted && x.IsActive, cancellationToken);
+        if (caller is null)
+            throw new PrivilegeCeilingException(PrivilegeCeiling.CallerUnknown());
+        var activeRoles = caller.UserRoles
+            .Where(x => x.Role is { IsActive: true, IsDeleted: false }
+                && (x.Role.TenantId == tenantId || x.Role.TenantId == null))
+            .Select(x => x.Role!)
+            .ToList();
+        return PrivilegeCeiling.ForCaller(
+            caller.Id,
+            activeRoles.Any(x => x.NormalizedName == PrivilegeCeiling.AdminRoleNormalizedName),
+            AuthService.GetPermissions(caller),
+            activeRoles.Select(x => x.Id));
+    }
+
+    private async Task<PrivilegeCeiling.RoleFacts> RoleFactsAsync(Role role, CancellationToken cancellationToken)
+    {
+        var keys = await _db.RolePermissions.AsNoTracking()
+            .Where(x => x.RoleId == role.Id && x.Permission != null)
+            .Select(x => x.Permission!.Key)
+            .ToListAsync(cancellationToken);
+        return new PrivilegeCeiling.RoleFacts(role.Id, role.Name, role.NormalizedName, role.TenantId, role.IsSystem, role.IsEditable, keys);
+    }
+
+    private static PrivilegeCeiling.RoleFacts Facts(Role role) =>
+        new(role.Id, role.Name, role.NormalizedName, role.TenantId, role.IsSystem, role.IsEditable,
+            role.RolePermissions.Select(x => x.Permission?.Key).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x!).ToList());
+
+    private static void ThrowIfRefused(PrivilegeCeiling.Refusal? refusal)
+    {
+        if (refusal is not null) throw new PrivilegeCeilingException(refusal);
+    }
+
+    /// <summary>The Access screen's view of the ceiling: for each role, can the caller assign it, can they edit it, and why not.</summary>
+    public async Task<AccessCeilingDto> GetAccessCeilingAsync(Guid tenantId, RequestContext context, CancellationToken cancellationToken)
+    {
+        var caller = await LoadCallerCeilingAsync(tenantId, context, cancellationToken);
+        var roles = await _db.Roles.AsNoTracking()
+            .Include(x => x.RolePermissions).ThenInclude(x => x.Permission)
+            .Where(x => (x.TenantId == tenantId || x.TenantId == null) && !x.IsDeleted)
+            .OrderBy(x => x.AuthorityLevel).ThenBy(x => x.Name)
+            .ToListAsync(cancellationToken);
+        return new AccessCeilingDto(
+            caller.UserId,
+            caller.IsAdmin,
+            caller.Held.OrderBy(x => x, StringComparer.Ordinal).ToList(),
+            roles.Select(role =>
+            {
+                var facts = Facts(role);
+                var assign = PrivilegeCeiling.AssignRefusal(caller, facts);
+                var edit = PrivilegeCeiling.EditRefusal(caller, facts, null);
+                return new RoleCeilingDto(
+                    role.Id, role.Name,
+                    assign is null, assign?.Code, assign?.MessageEn, assign?.MessageAr,
+                    edit is null, edit?.Code, edit?.MessageEn, edit?.MessageAr);
+            }).ToList());
+    }
+
     private async Task<IReadOnlyCollection<Role>> LoadRoles(Guid tenantId, IReadOnlyCollection<string> roleNames, CancellationToken cancellationToken)
     {
         var normalizedRoles = roleNames.Select(AuthService.Normalize).Distinct().ToList();
@@ -2135,6 +2267,9 @@ public class AccessManagementService : IAccessManagementService
                 : await _db.Permissions.Where(x => requestedPermissions.Contains(x.Key)).ToListAsync(ct);
             if (permissions.Count != requestedPermissions.Count)
                 throw new InvalidOperationException("One or more permission keys do not exist.");
+            // PRIVILEGE CEILING: a new role may carry only permissions its creator holds.
+            var caller = await LoadCallerCeilingAsync(tenantId, context, ct);
+            ThrowIfRefused(PrivilegeCeiling.GrantRefusal(caller, permissions.Select(x => x.Key)));
 
             var role = new Role
             {
@@ -2164,7 +2299,11 @@ public class AccessManagementService : IAccessManagementService
                 "Role",
                 roleId.ToString(),
                 context with { TenantId = tenant.Id },
-                System.Text.Json.JsonSerializer.Serialize(new { name = role.Name })));
+                System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    name = role.Name,
+                    permissions = permissions.Select(x => x.Key).OrderBy(x => x, StringComparer.Ordinal).ToList()
+                })));
             await _db.SaveChangesAsync(ct);
             return true;
         }
@@ -2194,7 +2333,11 @@ public class AccessManagementService : IAccessManagementService
             var role = await _db.Roles.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == roleId && !x.IsDeleted, ct)
                 ?? throw new InvalidOperationException("Role not found.");
+            // PRIVILEGE CEILING: not an Admin-only role, not a role you hold, not a role above you.
+            var caller = await LoadCallerCeilingAsync(tenantId, context, ct);
+            ThrowIfRefused(PrivilegeCeiling.EditRefusal(caller, await RoleFactsAsync(role, ct), null));
             if (!role.IsEditable) throw new InvalidOperationException("This role is not editable.");
+            var previousName = role.Name;
 
             await _db.RolePermissions.TagWith(RowLockingInterceptor.ForUpdateTag)
                 .Where(x => x.RoleId == roleId)
@@ -2232,7 +2375,7 @@ public class AccessManagementService : IAccessManagementService
                 "Role",
                 roleId.ToString(),
                 context with { TenantId = tenant.Id },
-                System.Text.Json.JsonSerializer.Serialize(new { name = role.Name })));
+                System.Text.Json.JsonSerializer.Serialize(new { name = role.Name, previousName })));
             await _db.SaveChangesAsync(ct);
             return true;
         }
@@ -2262,6 +2405,9 @@ public class AccessManagementService : IAccessManagementService
             var role = await _db.Roles.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == roleId && !x.IsDeleted, ct)
                 ?? throw new InvalidOperationException("Role not found.");
+            // PRIVILEGE CEILING: switching a role back on hands its permissions back to everyone holding it.
+            var caller = await LoadCallerCeilingAsync(tenantId, context, ct);
+            ThrowIfRefused(PrivilegeCeiling.EditRefusal(caller, await RoleFactsAsync(role, ct), null));
             var affectedIds = await _db.UserRoles.Where(x => x.RoleId == roleId)
                 .Select(x => x.UserId).Distinct().OrderBy(x => x).ToListAsync(ct);
             var affectedUsers = await LockUsersAsync(tenantId, affectedIds, ct);
@@ -2301,6 +2447,8 @@ public class AccessManagementService : IAccessManagementService
             var role = await _db.Roles.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == roleId && !x.IsDeleted, ct)
                 ?? throw new InvalidOperationException("Role not found.");
+            var caller = await LoadCallerCeilingAsync(tenantId, context, ct);
+            ThrowIfRefused(PrivilegeCeiling.EditRefusal(caller, await RoleFactsAsync(role, ct), null));
             if (role.IsSystem) throw new InvalidOperationException("System roles cannot be deactivated.");
             var affectedIds = await _db.UserRoles.Where(x => x.RoleId == roleId)
                 .Select(x => x.UserId).Distinct().OrderBy(x => x).ToListAsync(ct);
@@ -2356,6 +2504,12 @@ public class AccessManagementService : IAccessManagementService
             if (permissions.Count != requestedKeys.Count)
                 throw new InvalidOperationException("One or more permission keys do not exist.");
 
+            // PRIVILEGE CEILING: not an Admin-only role, not your own role, and both the role's current and its
+            // new permissions inside your own access.
+            var caller = await LoadCallerCeilingAsync(tenantId, context, ct);
+            var facts = await RoleFactsAsync(role, ct);
+            ThrowIfRefused(PrivilegeCeiling.EditRefusal(caller, facts, permissions.Select(x => x.Key)));
+
             var existing = await _db.RolePermissions.Where(x => x.RoleId == roleId).ToListAsync(ct);
             _db.RolePermissions.RemoveRange(existing);
             foreach (var permission in permissions)
@@ -2375,7 +2529,13 @@ public class AccessManagementService : IAccessManagementService
                 "Role",
                 roleId.ToString(),
                 context with { TenantId = tenant.Id },
-                System.Text.Json.JsonSerializer.Serialize(new { count = permissions.Count })));
+                System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    name = role.Name,
+                    count = permissions.Count,
+                    added = permissions.Select(x => x.Key).Except(facts.Permissions, StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.Ordinal).ToList(),
+                    removed = facts.Permissions.Except(permissions.Select(x => x.Key), StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.Ordinal).ToList()
+                })));
             await _db.SaveChangesAsync(ct);
             return true;
         }
@@ -2421,7 +2581,35 @@ public class AccessManagementService : IAccessManagementService
             .ToListAsync(cancellationToken);
         var allPermissions = await _db.Permissions.ToListAsync(cancellationToken);
         var permMap = allPermissions.ToDictionary(p => p.Key, p => p, StringComparer.OrdinalIgnoreCase);
+        var keyById = allPermissions.ToDictionary(p => p.Id, p => p.Key);
 
+        // PRIVILEGE CEILING, judged for the whole save BEFORE anything is written: every role whose permissions
+        // this save would actually change must be one the caller may edit, and its new permissions must all be
+        // held by the caller. Roles sent back unchanged (the matrix posts every column) are not judged.
+        var caller = await LoadCallerCeilingAsync(tenantId, context, cancellationToken);
+        var changes = new List<object>();
+        var changedRoleIds = new HashSet<Guid>();
+        foreach (var role in roles.OrderBy(x => x.Name, StringComparer.Ordinal))
+        {
+            if (!request.RolePermissions.TryGetValue(role.Id.ToString(), out var requested)) continue;
+            var current = role.RolePermissions.Select(rp => keyById.GetValueOrDefault(rp.PermissionId))
+                .Where(k => k is not null).Select(k => k!).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var next = requested.Where(k => permMap.ContainsKey(k)).Select(k => permMap[k].Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (current.SetEquals(next)) continue;
+            ThrowIfRefused(PrivilegeCeiling.EditRefusal(caller,
+                new PrivilegeCeiling.RoleFacts(role.Id, role.Name, role.NormalizedName, role.TenantId, role.IsSystem, role.IsEditable, current.ToList()),
+                next));
+            changedRoleIds.Add(role.Id);
+            changes.Add(new
+            {
+                roleId = role.Id,
+                name = role.Name,
+                added = next.Except(current, StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.Ordinal).ToList(),
+                removed = current.Except(next, StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.Ordinal).ToList()
+            });
+        }
+
+        roles = roles.Where(r => changedRoleIds.Contains(r.Id)).ToList();
         foreach (var role in roles)
         {
             if (!request.RolePermissions.TryGetValue(role.Id.ToString(), out var permKeys)) continue;
@@ -2434,7 +2622,8 @@ public class AccessManagementService : IAccessManagementService
         }
         await RevokeActiveRefreshTokensForRolesAsync(roles.Select(r => r.Id), context, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
-        await _auditService.WriteAsync("access.permission_matrix_saved", "Tenant", tenantId.ToString(), context, null, cancellationToken);
+        await _auditService.WriteAsync("access.permission_matrix_saved", "Tenant", tenantId.ToString(), context,
+            System.Text.Json.JsonSerializer.Serialize(new { roles = changes }), cancellationToken);
     }
 
     // ── Effective permissions ─────────────────────────────────────────────────
@@ -2460,10 +2649,22 @@ public class AccessManagementService : IAccessManagementService
             return false;
         var ov = await _db.UserPermissionOverrides.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.UserId == userId && x.Id == overrideId, cancellationToken);
         if (ov is null) return false;
+        // PRIVILEGE CEILING: removing a Deny gives the permission back, so it is a grant like any other.
+        var caller = await LoadCallerCeilingAsync(tenantId, context, cancellationToken);
+        var target = await LoadAccessUser(tenantId, userId, entityScope, cancellationToken)
+            ?? throw new InvalidOperationException("User not found.");
+        ThrowIfRefused(PrivilegeCeiling.TargetRefusal(
+            caller,
+            target.Id,
+            target.UserRoles.Any(x => x.Role is { NormalizedName: PrivilegeCeiling.AdminRoleNormalizedName, IsActive: true, IsDeleted: false }),
+            AuthService.GetPermissions(target)));
+        if (ov.IsActive && ov.Effect.Equals("Deny", StringComparison.OrdinalIgnoreCase))
+            ThrowIfRefused(PrivilegeCeiling.GrantRefusal(caller, new[] { ov.PermissionKey }));
         _db.UserPermissionOverrides.Remove(ov);
         await RevokeActiveRefreshTokensAsync(userId, context, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
-        await _auditService.WriteAsync("access.permission_override_deleted", "UserPermissionOverride", overrideId.ToString(), context, null, cancellationToken);
+        await _auditService.WriteAsync("access.permission_override_deleted", "UserPermissionOverride", overrideId.ToString(), context,
+            System.Text.Json.JsonSerializer.Serialize(new { userId, permission = ov.PermissionKey, previousEffect = ov.Effect }), cancellationToken);
         return true;
     }
 

@@ -193,6 +193,28 @@ public record EffectivePermissionsDto(
 
 public record PermissionDto(Guid Id, string Key, string Module, string Description);
 
+/// <summary>
+/// The caller's privilege ceiling, so the Access screen offers only what the server will accept: the caller's own
+/// effective permissions and, per role, whether they may assign it and edit it — with the coded reason when not.
+/// </summary>
+public record AccessCeilingDto(
+    Guid UserId,
+    bool IsAdmin,
+    IReadOnlyCollection<string> HeldPermissions,
+    IReadOnlyCollection<RoleCeilingDto> Roles);
+
+public record RoleCeilingDto(
+    Guid RoleId,
+    string Name,
+    bool CanAssign,
+    string? AssignRefusalCode,
+    string? AssignRefusalEn,
+    string? AssignRefusalAr,
+    bool CanEdit,
+    string? EditRefusalCode,
+    string? EditRefusalEn,
+    string? EditRefusalAr);
+
 public record UserListDto(
     Guid Id,
     string Email,
