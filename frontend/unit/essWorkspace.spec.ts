@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test, expect } from '@playwright/test';
 import { LOCALE_DICTS, translate } from '../src/i18n/translations';
-import { ESS_SECTIONS, activeEssPage, activeEssSection, essPages, visibleEssPages } from '../src/routes/essSections';
+import { ESS_SECTIONS, activeEssPage, activeEssSection, essPageAllowed, essPages, visibleEssPages } from '../src/routes/essSections';
 
 const ARABIC = /[؀-ۿ]/;
 const root = join(__dirname, '..');
@@ -50,4 +50,17 @@ test('every section, tab, page name and hint is translated into Arabic', () => {
       }
     }
   }
+});
+
+test('Exit and re-entry (a Saudi Jawazat visa) is offered only to users with a company in Saudi Arabia', () => {
+  const requests = ESS_SECTIONS.find((s) => s.id === 'requests')!;
+  const on = () => true;
+  const allowed = () => ({ allowed: true });
+  expect(visibleEssPages(requests, on, ['SA']).map((p) => p.path)).toContain('/ess/jawazat');
+  expect(visibleEssPages(requests, on, ['KW', 'BH']).map((p) => p.path)).not.toContain('/ess/jawazat');
+  expect(visibleEssPages(requests, on, []).map((p) => p.path)).not.toContain('/ess/jawazat');
+  expect(essPageAllowed('/ess/jawazat', on, ['OM', 'SA'], allowed)).toBe(true);
+  expect(essPageAllowed('/ess/jawazat', on, ['OM'], allowed)).toBe(false);
+  // A module switched off hides the page whatever the country.
+  expect(essPageAllowed('/ess/benefits', on, ['SA'], () => ({ allowed: false }))).toBe(false);
 });

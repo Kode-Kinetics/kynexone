@@ -1,7 +1,7 @@
 import {
   CalendarDays,
-  Headphones,
   HeartPulse,
+  Inbox,
   LayoutDashboard,
   WalletCards,
   type LucideIcon,
@@ -25,6 +25,8 @@ export interface EssPage {
   /** What the page is for, in the employee's words. */
   hint: string;
   requiredFeatureKey?: string;
+  /** Shown only when one of the user's companies is in one of these countries (ISO 3166 alpha-2). */
+  countries?: string[];
 }
 
 export interface EssSection {
@@ -71,11 +73,12 @@ export const ESS_SECTIONS: EssSection[] = [
   {
     id: 'requests',
     label: 'Requests',
-    icon: Headphones,
+    icon: Inbox,
     pages: [
       { label: 'My HR Requests', tab: 'HR requests', path: '/ess/requests', hint: 'Ask HR for something, follow your requests, and reply to HR on each one.' },
-      { label: 'My Documents', tab: 'HR letters', path: ESS_DOCUMENTS_PATH, hint: 'Ask HR for a salary certificate or another letter, and download it once issued.' },
-      { label: 'Jawazat Requests', tab: 'Exit and re-entry', path: ESS_JAWAZAT_PATH, hint: 'Exit and re-entry requests, internal review and travel notifications.' },
+      { label: 'My letters', tab: 'Letters', path: ESS_DOCUMENTS_PATH, hint: 'Ask HR for a salary certificate or another letter, and download it once issued.' },
+      // A Saudi exit and re-entry visa (Jawazat): meaningless to a company outside the Kingdom.
+      { label: 'Jawazat Requests', tab: 'Exit and re-entry visa', path: ESS_JAWAZAT_PATH, hint: 'Exit and re-entry requests, internal review and travel notifications.', countries: ['SA'] },
     ],
   },
   {
@@ -90,9 +93,22 @@ export const ESS_SECTIONS: EssSection[] = [
 
 export const essPages: EssPage[] = ESS_SECTIONS.flatMap((s) => s.pages);
 
-/** The pages of a section this tenant has switched on. */
-export function visibleEssPages(section: EssSection, isFeatureEnabled: (key: string) => boolean): EssPage[] {
-  return section.pages.filter((p) => !p.requiredFeatureKey || isFeatureEnabled(p.requiredFeatureKey));
+/** The pages of a section this tenant has switched on, for a user whose companies are in `countryCodes`. */
+export function visibleEssPages(section: EssSection, isFeatureEnabled: (key: string) => boolean, countryCodes: string[] = []): EssPage[] {
+  return section.pages.filter((p) =>
+    (!p.requiredFeatureKey || isFeatureEnabled(p.requiredFeatureKey))
+    && (!p.countries || p.countries.some((c) => countryCodes.includes(c))));
+}
+
+/** Whether a page is offered to this user: flag, country and module (`verdictForPath`) all allow it. */
+export function essPageAllowed(
+  path: string,
+  isFeatureEnabled: (key: string) => boolean,
+  countryCodes: string[],
+  verdictForPath: (path: string) => { allowed: boolean },
+): boolean {
+  const section = ESS_SECTIONS.find((s) => s.pages.some((p) => p.path === path));
+  return !!section && visibleEssPages(section, isFeatureEnabled, countryCodes).some((p) => p.path === path) && verdictForPath(path).allowed;
 }
 
 /** The page the pathname is on: an exact match, or the page a deeper path sits under. */

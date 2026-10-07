@@ -13,7 +13,7 @@ import { ESS_SECTIONS, activeEssPage, activeEssSection, visibleEssPages } from '
  * are plain links, so every page keeps its own URL, back button and deep link.
  *
  * <main> remounts on every navigation (AppLayout keys it by pathname), so this reads nothing from
- * the server: the name comes from the login, and the sections from routes/essSections.ts.
+ * the server: the sections come from routes/essSections.ts, the countries from the login.
  */
 export function EssWorkspaceNav() {
   const pathname = usePathname() ?? '';
@@ -24,9 +24,10 @@ export function EssWorkspaceNav() {
   // Without ess.read the page's own gate explains the refusal; a menu to pages it refuses would not.
   if (!hasPermission('ess.read')) return null;
 
+  const countryCodes = (user?.companies ?? []).map((c) => c.countryCode);
   const sections = ESS_SECTIONS
     // As the sidebar does: a page whose module is switched off is not offered (ModuleGate would refuse it).
-    .map((s) => ({ section: s, pages: visibleEssPages(s, isFeatureEnabled).filter((p) => verdictForPath(p.path).allowed) }))
+    .map((s) => ({ section: s, pages: visibleEssPages(s, isFeatureEnabled, countryCodes).filter((p) => verdictForPath(p.path).allowed) }))
     .filter((s) => s.pages.length > 0);
   const current = activeEssSection(pathname);
   const currentPage = activeEssPage(pathname);
@@ -34,14 +35,7 @@ export function EssWorkspaceNav() {
 
   return (
     <div className="wg-card overflow-hidden rounded-2xl" data-testid="ess-workspace-nav">
-      <div className="flex min-w-0 items-center gap-3 px-4 pt-3.5 sm:px-5">
-        <div className="min-w-0">
-          <p className="text-[11px] font-bold uppercase tracking-widest text-sapphire dark:text-cyanAccent">{t('My workspace')}</p>
-          <p className="truncate text-sm font-semibold text-slate-900 dark:text-white"><bdi>{user?.fullName}</bdi></p>
-        </div>
-      </div>
-
-      <nav aria-label={t('Self-service sections')} className="mt-2 overflow-x-auto border-b border-slate-100 px-2 dark:border-white/[0.07] sm:px-3">
+      <nav aria-label={t('Self-service sections')} className="overflow-x-auto border-b border-slate-100 px-2 dark:border-white/[0.07] sm:px-3">
         {/* Phones: the five sections share the width (icon over label), so none hides off the edge. */}
         <ul className="grid auto-cols-fr grid-flow-col gap-1 sm:flex sm:min-w-max">
           {sections.map(({ section, pages }) => {
@@ -51,9 +45,10 @@ export function EssWorkspaceNav() {
               <li key={section.id}>
                 <Link
                   href={pages[0].path}
-                  aria-current={active ? 'page' : undefined}
+                  // 'page' only when this link IS the page; on another tab of its section it marks the section.
+                  aria-current={active ? (pages[0].path === pathname ? 'page' : 'true') : undefined}
                   title={t(pages[0].hint)}
-                  className={`relative flex flex-col items-center gap-1 rounded-t-lg px-1 py-2 text-center text-[11px] font-semibold leading-tight outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sapphire sm:inline-flex sm:flex-row sm:gap-2 sm:px-3 sm:py-2.5 sm:text-sm ${
+                  className={`relative flex flex-col items-center gap-1 rounded-t-lg px-1 pb-2 pt-3 text-center text-[11px] font-semibold leading-tight outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sapphire sm:inline-flex sm:flex-row sm:gap-2 sm:px-3 sm:pb-2.5 sm:pt-3.5 sm:text-sm ${
                     active
                       ? 'text-sapphire dark:text-cyanAccent'
                       : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800 dark:text-slate-400 dark:hover:bg-white/[0.04] dark:hover:text-slate-100'

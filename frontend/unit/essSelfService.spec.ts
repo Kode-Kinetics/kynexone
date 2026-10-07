@@ -21,7 +21,11 @@ test('self-service buttons open the employee pages, never the HR screens', () =>
   // Apply Leave button, Leave Balance tile and the balances card's link; OT quick action; requests.
   expect(ess.match(/href=\{ESS_LEAVE_PATH\}/g)?.length).toBe(3);
   expect(ess).toMatch(/href: ESS_OVERTIME_PATH/);
-  expect(ess.match(/href=\{ESS_REQUESTS_PATH\}/g)?.length).toBe(3); // hero button, the card's link, each recent request
+  expect(ess.match(/href=\{ESS_REQUESTS_PATH\}/g)?.length).toBe(2); // hero button, the card's link
+  // Each recent request and HR's reply open that request; a missing punch starts a correction request.
+  expect(ess).toMatch(/`\$\{ESS_REQUESTS_PATH\}\?open=\$\{encodeURIComponent\(r\.id\)\}`/);
+  expect(ess).toMatch(/`\$\{ESS_REQUESTS_PATH\}\?subject=/);
+  expect(read('src/views/MyRequestsPage.tsx')).toMatch(/q\.get\('open'\)[\s\S]*openThread\(open\)/);
 });
 
 test('each employee page is gated on ess.read and reached from inside Self-Service, not the sidebar', () => {
@@ -77,7 +81,7 @@ test('every string on the employee pages has English and Arabic, with the same p
   for (const k of ['My Leave', 'My Overtime', 'My HR Requests']) keys.add(k);
   // The self-service home page's buttons and quick actions.
   const home = read('src/views/EmployeeSelfServicePage.tsx');
-  for (const k of ['Apply Leave', 'View Payslip', 'Raise a request', 'My Requests', 'Request leave', 'Request overtime', 'Request an HR letter', 'Exit and re-entry']) {
+  for (const k of ['Apply Leave', 'View Payslip', 'Raise a request', 'My Requests', 'Request leave', 'Request overtime', 'Request an HR letter', 'Ask for a correction']) {
     expect(home, k).toContain(`t('${k}')`);
   }
   expect(keys.size).toBeGreaterThan(80);

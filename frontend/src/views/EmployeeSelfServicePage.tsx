@@ -6,11 +6,11 @@ import {
   MessageSquareText, Loader2, CalendarOff, Send, FileText, Clock,
   ChevronRight, Megaphone, CheckCircle2, AlertCircle, Zap, ClipboardList,
   CreditCard, Banknote, Target, Calendar, CalendarClock, BadgeCheck, User,
-  FileSignature, Plane, HeartPulse, MessageCircleReply, type LucideIcon,
+  FileSignature, MessageCircleReply, type LucideIcon,
 } from 'lucide-react';
 import { ESS_PAYSLIPS_PATH } from '../lib/essPayslip';
 import { ESS_LEAVE_PATH, ESS_OVERTIME_PATH, ESS_REQUESTS_PATH, hrRequestStatus, splitMinutes } from '../lib/essSelfService';
-import { ESS_BENEFITS_PATH, ESS_DOCUMENTS_PATH, ESS_JAWAZAT_PATH } from '../routes/essSections';
+import { ESS_DOCUMENTS_PATH } from '../routes/essSections';
 import { essActionsApi, essApi, type EssDashboard, type EssHrRequest, type EssRosterEntry } from '../api/ess';
 import type { LeaveType } from '../api/leave';
 import { useAuth } from '../contexts/AuthContext';
@@ -62,6 +62,14 @@ function tenureLabel(t: T, months: number): string {
     : t('{years} years of service', { years });
 }
 
+/** Leave days as people say them: "15 days", and a decimal only when there is one ("2.5 days"). */
+function useDays(): (n: number) => string {
+  const fx = useFormat();
+  return (n: number) => (Number.isInteger(n) ? fx.number(n) : fx.number(n, { minimumFractionDigits: 1, maximumFractionDigits: 1 }));
+}
+
+const primaryButton =
+  'inline-flex items-center gap-1.5 rounded-xl bg-sapphire px-4 py-2 text-sm font-semibold text-white transition hover:bg-sapphire/90 dark:bg-cyanAccent dark:text-slate-900';
 const secondaryButton =
   'inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 dark:border-white/[0.12] dark:bg-white/[0.04] dark:text-slate-200 dark:hover:bg-white/[0.08]';
 const textLink = 'text-xs font-semibold text-sapphire hover:underline dark:text-cyanAccent';
@@ -148,17 +156,17 @@ function LeaveBar({ name, available, entitled, statutoryDays }: { name: string; 
       </div>
     );
   }
+  const days = useDays();
   const pct = entitled > 0 ? Math.round((available / entitled) * 100) : 0;
   const color = pct >= 60 ? 'bg-emerald-500' : pct >= 30 ? 'bg-amber-500' : 'bg-rose-500';
-  const one = (n: number) => fx.number(n, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
   return (
     <div className="rounded-xl border border-slate-100 p-3 dark:border-white/[0.06]">
       <div className="flex items-baseline justify-between gap-2">
         <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{name}</p>
         <p className="shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400">
           {entitled > 0
-            ? t('{available} of {entitled} days', { available: one(available), entitled: one(entitled) })
-            : t('{available} days', { available: one(available) })}
+            ? t('{available} of {entitled} days', { available: days(available), entitled: days(entitled) })
+            : t('{available} days', { available: days(available) })}
         </p>
       </div>
       <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-white/[0.07]">
@@ -215,8 +223,19 @@ interface AttentionItem {
   action?: { label: string; href: string };
 }
 
-function AttentionPanel({ items }: { items: AttentionItem[] }) {
+function AttentionPanel({ items, incomplete, onRetry }: { items: AttentionItem[]; incomplete: boolean; onRetry: () => void }) {
   const { t } = useLocale();
+  // A failed read is not "all clear": say what could not be checked instead.
+  const unchecked = incomplete && (
+    <p role="alert" className="flex flex-wrap items-center gap-2 px-5 py-3 text-xs text-amber-700 dark:text-amber-300">
+      <AlertCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      {t('Your HR requests could not be loaded, so replies from HR may be missing here.')}
+      <button type="button" onClick={onRetry} className="font-semibold underline">{t('Retry')}</button>
+    </p>
+  );
+  if (items.length === 0 && incomplete) {
+    return <section className="wg-card rounded-2xl" data-testid="ess-attention">{unchecked}</section>;
+  }
   if (items.length === 0) {
     return (
       <p className="wg-card flex items-center gap-2.5 rounded-2xl px-5 py-3.5 text-sm text-slate-600 dark:text-slate-300" data-testid="ess-attention">
@@ -229,22 +248,29 @@ function AttentionPanel({ items }: { items: AttentionItem[] }) {
     <section className="wg-card rounded-2xl" data-testid="ess-attention" aria-labelledby="ess-attention-title">
       <div className="flex items-center justify-between gap-3 px-5 pt-4">
         <h2 id="ess-attention-title" className="text-sm font-semibold text-slate-900 dark:text-white">{t('Needs your attention')}</h2>
-        <span className="rounded-full bg-rose-500/10 px-2 py-0.5 text-[11px] font-bold text-rose-600 dark:text-rose-400">
-          {t('{count} items', { count: items.length })}
+        <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${items.some((i) => i.tone === 'rose')
+          ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400'
+          : 'bg-slate-500/10 text-slate-600 dark:text-slate-300'}`}>
+          {t('{count, plural, one {# item} other {# items}}', { count: items.length })}
         </span>
       </div>
       <ul className="divide-y divide-slate-100 px-5 pb-2 pt-2 dark:divide-white/[0.06]">
-        {items.map((item) => {
+        {items.map((item, index) => {
           const Icon = item.icon;
+          // The first item with a next step carries the page's one filled button.
+          const primary = index === items.findIndex((i) => i.action);
           return (
             <li key={item.id} className="flex flex-wrap items-center gap-3 py-3 sm:flex-nowrap">
               <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${TONE_ICON[item.tone]}`}><Icon className="h-4 w-4" aria-hidden="true" /></span>
-              <div className="min-w-0 flex-1">
+              {/* Phones: the text takes the row and the button drops beneath it, under the text. */}
+              <div className="min-w-0 flex-1 max-sm:basis-[calc(100%-2.75rem)]">
                 <p className="text-sm font-medium text-slate-900 dark:text-white">{item.title}</p>
                 <p className="text-xs text-slate-500 dark:text-slate-400">{item.detail}</p>
               </div>
               {item.action && (
-                <Link href={item.action.href} className="ms-11 shrink-0 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 dark:border-white/[0.1] dark:text-slate-200 dark:hover:bg-white/[0.05] sm:ms-0">
+                <Link href={item.action.href} className={`ms-11 shrink-0 rounded-lg px-3 py-1.5 text-xs font-semibold transition sm:ms-0 ${primary
+                  ? 'bg-sapphire text-white hover:bg-sapphire/90 dark:bg-cyanAccent dark:text-slate-900'
+                  : 'border border-slate-200 text-slate-700 hover:bg-slate-50 dark:border-white/[0.1] dark:text-slate-200 dark:hover:bg-white/[0.05]'}`}>
                   {item.action.label}
                 </Link>
               )}
@@ -252,6 +278,7 @@ function AttentionPanel({ items }: { items: AttentionItem[] }) {
           );
         })}
       </ul>
+      {unchecked}
     </section>
   );
 }
@@ -301,8 +328,8 @@ function AskKodyCard() {
           rows={2}
           className="w-full resize-none rounded-xl border border-slate-200 bg-slate-50/80 px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 outline-none transition focus:border-sapphire/50 focus:ring-2 focus:ring-sapphire/10 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white dark:placeholder-slate-600 dark:focus:border-cyanAccent/40"
         />
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-[11px] text-slate-400 dark:text-slate-500">{t('Press Cmd+Enter to send')}</p>
+        <div className="flex items-center justify-end gap-3 sm:justify-between">
+          <p className="hidden text-[11px] text-slate-400 dark:text-slate-500 sm:block">{t('Press Ctrl+Enter or ⌘+Enter to send')}</p>
           <button
             type="button"
             onClick={() => void askAi()}
@@ -353,6 +380,7 @@ export function EmployeeSelfServicePage() {
   const { t, locale } = useLocale();
   const fx = useFormat();
   const canWrite = useCanWriteEss();
+  const days = useDays();
   const { isFeatureEnabled, verdictForPath } = useFeatureFlags();
   const [dashboard, setDashboard] = useState<EssDashboard | null>(null);
   const [error, setError] = useState('');
@@ -360,12 +388,15 @@ export function EmployeeSelfServicePage() {
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([]);
   // HR requests: the latest few, read here; raised and answered on /ess/requests.
   const [myRequests, setMyRequests] = useState<EssHrRequest[]>([]);
+  // A failed read must not look like "no replies": the attention panel says so instead of "all clear".
+  const [requestsFailed, setRequestsFailed] = useState(false);
 
   const load = async () => {
     setLoading(true); setError('');
     try {
       setDashboard(await essApi.dashboard());
-      try { setMyRequests(await essApi.hrRequests()); } catch { /* non-blocking */ }
+      setRequestsFailed(false);
+      try { setMyRequests(await essApi.hrRequests()); } catch { setRequestsFailed(true); }
       try { setLeaveTypes(await essActionsApi.leaveTypes()); } catch { /* names stay as stored */ }
     } catch (err: unknown) {
       const e = err as { response?: { data?: { message?: string } } };
@@ -404,13 +435,11 @@ export function EmployeeSelfServicePage() {
   const perf = dashboard.performanceSnapshot;
   const loanGroups = dashboard.loanSummaries ?? (dashboard.loansSummary ? [dashboard.loansSummary] : []);
   const nextLeave = dashboard.nextApprovedLeave;
-  const one = (n: number) => fx.number(n, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
   const wholeMoney = (n: number, currency: string) => fx.money(n, currency, { decimals: 0 });
   const otHours = fx.number(dashboard.overtimeHoursThisMonth);
   const recentRequests = myRequests.slice(0, 4);
   const mayOpenLoans = ['loans.self', 'loans.read', 'loans.write'].some((p) => hasPermission(p));
   const overtimeOn = isFeatureEnabled('overtime');
-  const completeness = Math.round(dashboard.profile.profileCompletenessScore);
 
   // Exceptions first: only what the employee can or should act on.
   const attention: AttentionItem[] = [];
@@ -419,21 +448,34 @@ export function EmployeeSelfServicePage() {
       id: 'missing-punch', tone: 'rose', icon: AlertCircle,
       title: t('A punch is missing from today'),
       detail: t('Ask HR to correct it so the day is counted.'),
-      action: canWrite ? { label: t('Raise a request'), href: ESS_REQUESTS_PATH } : undefined,
+      action: canWrite ? {
+        label: t('Ask for a correction'),
+        href: `${ESS_REQUESTS_PATH}?subject=${encodeURIComponent(t('Attendance correction for {date}', { date: fx.date(attendance.workDate) }))}`,
+      } : undefined,
     });
   }
-  for (const r of myRequests.filter((x) => x.responseStatus === 'Responded')) {
+  // "Responded" lasts until HR closes the request, so several replies collapse into one line.
+  const replied = myRequests.filter((x) => x.responseStatus === 'Responded');
+  if (replied.length === 1) {
+    const r = replied[0];
     attention.push({
       id: `reply-${r.id}`, tone: 'blue', icon: MessageCircleReply,
       title: t('HR replied to “{subject}”', { subject: r.subject }),
       detail: t('{category}, raised on {date}', { category: t(r.categoryName), date: fx.date(r.createdAtUtc) }),
-      action: { label: t('Read the reply'), href: ESS_REQUESTS_PATH },
+      action: { label: t('Read the reply'), href: `${ESS_REQUESTS_PATH}?open=${encodeURIComponent(r.id)}` },
+    });
+  } else if (replied.length > 1) {
+    attention.push({
+      id: 'replies', tone: 'blue', icon: MessageCircleReply,
+      title: t('HR replied to {count} of your requests', { count: replied.length }),
+      detail: t('Open each request to read the reply.'),
+      action: { label: t('Read the replies'), href: ESS_REQUESTS_PATH },
     });
   }
   for (const doc of dashboard.documentAlerts) {
     attention.push({
       id: `doc-${doc.id}`, tone: 'amber', icon: FileText,
-      title: t('{document} is expiring', { document: doc.documentType }),
+      title: t('{document} is expiring', { document: t(doc.documentType) }),
       detail: doc.expiryDate ? t('Expires on {date}', { date: fx.date(doc.expiryDate) }) : t('Expiry date not set'),
       action: canWrite ? { label: t('Tell HR'), href: ESS_REQUESTS_PATH } : undefined,
     });
@@ -448,20 +490,20 @@ export function EmployeeSelfServicePage() {
 
   const quickActions = [
     ...(canWrite && overtimeOn ? [{ icon: Zap, tone: 'amber' as Tone, label: t('Request overtime'), sub: t('Hours you worked beyond your shift'), href: ESS_OVERTIME_PATH }] : []),
-    { icon: FileSignature, tone: 'violet' as Tone, label: t('Request an HR letter'), sub: t('Salary certificate, experience letter and more'), href: ESS_DOCUMENTS_PATH },
-    { icon: Plane, tone: 'blue' as Tone, label: t('Exit and re-entry'), sub: t('Travel requests and notifications'), href: ESS_JAWAZAT_PATH },
-    { icon: HeartPulse, tone: 'rose' as Tone, label: t('My Benefits'), sub: t('What your plans cover'), href: ESS_BENEFITS_PATH },
+    // Read-only (ess.read without ess.write) users are not promised a request they cannot make.
+    { icon: FileSignature, tone: 'violet' as Tone, label: canWrite ? t('Request an HR letter') : t('My letters'), sub: t('Salary certificate, experience letter and more'), href: ESS_DOCUMENTS_PATH },
   ].filter((a) => verdictForPath(a.href).allowed);
+  // With something waiting in "Needs your attention", that is the next action; Apply Leave steps back.
+  const attentionLeads = attention.some((a) => a.action);
 
   return (
     <div className="space-y-5">
 
       {/* ═══ Who and today ═══════════════════════════════════════════════════ */}
-      <section className="wg-card relative overflow-hidden rounded-2xl p-5 sm:p-6" data-testid="ess-hero">
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-sapphire via-blue-400 to-cyan-400 opacity-80" aria-hidden="true" />
-        <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+      <section className="wg-card rounded-2xl p-4 sm:p-6" data-testid="ess-hero">
+        <div className="flex flex-col gap-4 sm:gap-5 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex min-w-0 items-start gap-4">
-            <div className="relative shrink-0">
+            <div className="relative hidden shrink-0 sm:block">
               {dashboard.profile.profilePhotoUrl ? (
                 <img
                   src={dashboard.profile.profilePhotoUrl}
@@ -481,38 +523,32 @@ export function EmployeeSelfServicePage() {
             </div>
             <div className="min-w-0">
               <p className="text-[11px] font-bold uppercase tracking-widest text-sapphire dark:text-cyanAccent">{fx.date(new Date(), 'full')}</p>
-              <h1 className="mt-0.5 text-2xl font-extrabold tracking-tight text-slate-900 dark:text-white">{greeting(t, firstName)}</h1>
+              <h1 className="mt-0.5 text-xl font-extrabold sm:text-2xl tracking-tight text-slate-900 dark:text-white">{greeting(t, firstName)}</h1>
               <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
                 <bdi>{dashboard.profile.jobTitle || t('Employee')}</bdi>
                 {dashboard.profile.department ? <> · <bdi>{dashboard.profile.department}</bdi></> : null}
                 {dashboard.profile.employeeCode ? <> · <bdi className="whitespace-nowrap">{dashboard.profile.employeeCode}</bdi></> : null}
               </p>
-              <div className="mt-2.5 flex flex-wrap items-center gap-2">
-                {dashboard.tenureMonths > 0 && (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-2.5 py-0.5 text-[11px] font-semibold text-blue-700 dark:text-blue-300">
-                    <BadgeCheck className="h-3 w-3" aria-hidden="true" /> {tenureLabel(t, dashboard.tenureMonths)}
-                  </span>
-                )}
-                {completeness < 100 && (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2.5 py-0.5 text-[11px] font-semibold text-amber-700 dark:text-amber-300">
-                    {t('Profile {pct}% complete', { pct: completeness })}
-                  </span>
-                )}
-              </div>
+              {dashboard.tenureMonths > 0 && (
+                <span className="mt-2.5 hidden items-center gap-1 rounded-full bg-blue-500/10 px-2.5 py-0.5 text-[11px] font-semibold text-blue-700 dark:text-blue-300 sm:inline-flex">
+                  <BadgeCheck className="h-3 w-3" aria-hidden="true" /> {tenureLabel(t, dashboard.tenureMonths)}
+                </span>
+              )}
             </div>
           </div>
 
-          {/* One primary action; the rest are a click away in the tabs above. */}
+          {/* One filled button on the page: Apply Leave, unless "Needs your attention" holds the next step.
+              On phones only that one shows here; payslips and requests are a tab away. */}
           <div className="flex flex-wrap gap-2 lg:justify-end">
             {canWrite && (
-              <Link href={ESS_LEAVE_PATH} className="inline-flex items-center gap-1.5 rounded-xl bg-sapphire px-4 py-2 text-sm font-semibold text-white transition hover:bg-sapphire/90 dark:bg-cyanAccent dark:text-slate-900">
+              <Link href={ESS_LEAVE_PATH} className={attentionLeads ? secondaryButton : primaryButton}>
                 <CalendarOff className="h-4 w-4" aria-hidden="true" /> {t('Apply Leave')}
               </Link>
             )}
-            <Link href={ESS_PAYSLIPS_PATH} className={secondaryButton}>
+            <Link href={ESS_PAYSLIPS_PATH} className={`${secondaryButton} max-sm:hidden`}>
               <FileText className="h-4 w-4" aria-hidden="true" /> {t('View Payslip')}
             </Link>
-            <Link href={ESS_REQUESTS_PATH} className={secondaryButton}>
+            <Link href={ESS_REQUESTS_PATH} className={`${secondaryButton} max-sm:hidden`}>
               <ClipboardList className="h-4 w-4" aria-hidden="true" /> {canWrite ? t('Raise a request') : t('My Requests')}
             </Link>
           </div>
@@ -520,16 +556,17 @@ export function EmployeeSelfServicePage() {
       </section>
 
       {/* ═══ Exceptions first ════════════════════════════════════════════════ */}
-      <AttentionPanel items={attention} />
+      <AttentionPanel items={attention} incomplete={requestsFailed} onRetry={() => void load()} />
 
       {/* ═══ Four headline numbers, each linked to the records behind it ═══════ */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatTile
           testId="ess-tile-leave"
           icon={CalendarOff} tone="emerald" label={t('Leave Balance')}
-          value={primaryLeave ? t('{days} days', { days: one(primaryLeave.available) }) : undefined}
+          value={primaryLeave ? t('{days} days', { days: days(primaryLeave.available) }) : undefined}
           detail={primaryLeave ? leaveName(primaryLeave.leaveTypeId, primaryLeave.leaveTypeName) : undefined}
-          note={primaryLeave ? t('Out of {days} days entitled', { days: one(primaryLeave.entitled) }) : undefined}
+          note={primaryLeave ? t('Out of {days} days entitled', { days: days(primaryLeave.entitled) }) : undefined}
+          note2={primaryLeave ? t('After approved and pending leave') : undefined}
           empty={primaryLeave ? undefined : t('No leave balances set up yet')}
           href={ESS_LEAVE_PATH} linkLabel={t('Open my leave')}
         />
@@ -538,20 +575,21 @@ export function EmployeeSelfServicePage() {
           icon={Banknote} tone="violet" label={t('Last Payslip')}
           value={ps ? wholeMoney(ps.netSalary, ps.currency) : undefined}
           detail={ps?.period ? t('Net pay for {period}', { period: fx.period(ps.period) }) : undefined}
-          note={ps?.nextPayrollDate ? t('Next payroll: {date}', { date: fx.date(ps.nextPayrollDate) }) : undefined}
+
           empty={ps ? undefined : t('No finalised payslips yet')}
           href={ESS_PAYSLIPS_PATH} linkLabel={t('Open my payslips')}
         />
         <StatTile
           testId="ess-tile-attendance"
           icon={Clock} tone={attendance?.missingPunch ? 'rose' : 'blue'} label={t("Today's Attendance")}
-          value={attendance ? enumLabel(t, 'AttendanceStatus', attendance.status) : undefined}
+          // A day with a punch missing is not "Present" yet: say what is wrong, not the status it would have.
+          value={attendance ? (attendance.missingPunch ? t('Incomplete') : enumLabel(t, 'AttendanceStatus', attendance.status)) : undefined}
           detail={attendance ? t('{time} worked', { time: workedTime(t, attendance.totalWorkedMinutes) }) : undefined}
           note={attendance?.missingPunch
-            ? t('Missing punch. Please ask for a correction.')
+            ? t('A punch is missing')
             : attendance?.lateMinutes ? t('Late by {minutes} min', { minutes: attendance.lateMinutes })
               : attendance ? t('On time') : undefined}
-          note2={dashboard.overtimeHoursThisMonth > 0 ? t('{hours} h overtime this month', { hours: otHours }) : undefined}
+          note2={dashboard.overtimeHoursThisMonth > 0 ? t('{hours} h of approved overtime this month', { hours: otHours }) : undefined}
           empty={attendance ? undefined : t('No attendance record for today')}
         />
         <StatTile
@@ -588,8 +626,10 @@ export function EmployeeSelfServicePage() {
 
           {/* HR requests: raised, followed and answered on the employee's own requests page */}
           <Panel title={t('My HR Requests')} icon={ClipboardList} tone="violet" testId="ess-home-hr-requests"
-            action={<Link href={ESS_REQUESTS_PATH} className={textLink}>{canWrite ? t('Raise a request') : t('Open my requests')}</Link>}>
-            {recentRequests.length === 0 ? (
+            action={<Link href={ESS_REQUESTS_PATH} className={textLink}>{t('Open my requests')}</Link>}>
+            {requestsFailed ? (
+              <p role="alert" className="text-sm text-amber-700 dark:text-amber-300">{t('Your HR requests could not be loaded.')}</p>
+            ) : recentRequests.length === 0 ? (
               <Quiet>{t('You have not raised any requests yet.')}</Quiet>
             ) : (
               <ul className="space-y-2">
@@ -597,7 +637,7 @@ export function EmployeeSelfServicePage() {
                   const s = hrRequestStatus(r.responseStatus);
                   return (
                     <li key={r.id}>
-                      <Link href={ESS_REQUESTS_PATH}
+                      <Link href={`${ESS_REQUESTS_PATH}?open=${encodeURIComponent(r.id)}`}
                         className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-100 px-3.5 py-2.5 text-start transition hover:bg-slate-50 dark:border-white/[0.07] dark:hover:bg-white/[0.03]">
                         <span className="min-w-0">
                           <span className="block truncate text-sm font-medium text-slate-800 dark:text-slate-200">{r.subject}</span>
@@ -633,7 +673,9 @@ export function EmployeeSelfServicePage() {
                   />
                 )}
                 {ps?.nextPayrollDate && (
-                  <UpcomingRow icon={Banknote} tone="violet" label={t('Next payroll')} sub={fx.date(ps.nextPayrollDate)} />
+                  // The server's month-end estimate, not a date HR has set: labelled as such.
+                  <UpcomingRow icon={Banknote} tone="violet" label={t('Expected pay date (estimate)')}
+                    sub={t('{date}: the end of the month, confirmed when HR approves payroll', { date: fx.date(ps.nextPayrollDate) })} />
                 )}
                 {loanGroups.filter((g) => g.nextInstallmentDate).map((g) => (
                   <UpcomingRow

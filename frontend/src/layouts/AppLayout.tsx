@@ -55,6 +55,9 @@ interface PaletteItem {
 export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   const router = useRouter();
   const pathname = usePathname();
+  // <main> remounts (and fades in) on navigation. The Self-Service workspace's tabs are one screen:
+  // keyed as one, its tab row stays put and keeps keyboard focus when a tab is chosen.
+  const mainKey = pathname === '/ess' || pathname?.startsWith('/ess/') ? '/ess' : pathname;
   const { hasPermission, beginMfaEnrollment } = useAuth();
   const startMfaEnrollment = useCallback(async () => {
     await beginMfaEnrollment();
@@ -386,7 +389,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
             className="mx-4 mt-4 sm:mx-6 lg:mx-8"
           />
           {/* Bottom padding below lg clears the fixed bottom nav and the device safe area. */}
-          <main key={pathname} className={`animate-fade-in-up px-4 pt-6 sm:px-6 lg:px-8 ${mayUseAssistant && pathname !== '/ai-assistant' ? 'pb-[calc(9rem+env(safe-area-inset-bottom))] lg:pb-24' : 'pb-[calc(5.5rem+env(safe-area-inset-bottom))] lg:pb-8'}`}>{children}</main>
+          <main key={mainKey} className={`animate-fade-in-up px-4 pt-6 sm:px-6 lg:px-8 ${mayUseAssistant && pathname !== '/ai-assistant' ? 'pb-[calc(9rem+env(safe-area-inset-bottom))] lg:pb-24' : 'pb-[calc(5.5rem+env(safe-area-inset-bottom))] lg:pb-8'}`}>{children}</main>
         </div>
       </div>
 

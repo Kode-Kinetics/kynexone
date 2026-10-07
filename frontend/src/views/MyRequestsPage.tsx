@@ -48,6 +48,18 @@ export function MyRequestsPage() {
 
   useEffect(() => { void load(); }, [load]);
 
+  // A link from the overview can open one request (?open=<id>, "Read the reply") or start a new one
+  // with its subject filled in (?subject=…, "Ask for a correction"). Read once, from the address.
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const subject = q.get('subject');
+    if (subject) setForm((f) => ({ ...f, subject: subject.slice(0, 200) }));
+    const open = q.get('open');
+    if (open) void openThread(open);
+    // openThread only reads state setters; running it again on re-render would reopen a closed thread.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Categories carry one (English) name; a standard one with a dictionary entry ("General HR") reads in Arabic.
   const categoryName = (name: string) => t(name);
   const set = <K extends keyof typeof blankForm>(k: K, v: (typeof blankForm)[K]) => setForm((f) => ({ ...f, [k]: v }));

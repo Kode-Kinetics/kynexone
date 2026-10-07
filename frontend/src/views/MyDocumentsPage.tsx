@@ -8,7 +8,7 @@ import { useFormat } from '@/src/hooks/useFormat';
 import { enumLabel } from '@/src/i18n/enumLabel';
 import { StatusChip } from '@/src/components/StatusChip';
 import {
-  EssCard, EssEmpty, EssField, EssNotice, EssPageHeader, EssReadOnly, essInput, essPrimaryButton, useCanWriteEss,
+  EssCard, EssEmpty, EssField, EssLoadError, EssNotice, EssPageHeader, EssReadOnly, essInput, essPrimaryButton, useCanWriteEss,
 } from '@/src/components/ess/EssParts';
 
 /**
@@ -22,6 +22,9 @@ export function MyDocumentsPage() {
   const canWrite = useCanWriteEss();
   const [types, setTypes] = useState<EssLetterType[] | null>(null);
   const [requests, setRequests] = useState<EssDocumentRequest[] | null>(null);
+  // A failed load is shown as one, never as "nothing requested" or "not set up".
+  const [typesError, setTypesError] = useState<unknown>(null);
+  const [listError, setListError] = useState<unknown>(null);
   const [letterType, setLetterType] = useState('');
   const [language, setLanguage] = useState('bilingual');
   const [purpose, setPurpose] = useState('');
@@ -37,16 +40,22 @@ export function MyDocumentsPage() {
   };
 
   const refresh = async () => {
-    try { setRequests(await essDocumentsApi.list()); } catch { setRequests([]); }
+    setListError(null);
+    try { setRequests(await essDocumentsApi.list()); } catch (e) { setListError(e); }
+  };
+
+  const loadTypes = async () => {
+    setTypesError(null); setTypes(null);
+    try {
+      const list = await essDocumentsApi.types();
+      setTypes(list);
+      if (list.length > 0) setLetterType(list[0].letterType);
+    } catch (e) { setTypesError(e); }
   };
 
   useEffect(() => {
-    let cancelled = false;
-    essDocumentsApi.types()
-      .then((list) => { if (!cancelled) { setTypes(list); if (list.length > 0) setLetterType(list[0].letterType); } })
-      .catch(() => { if (!cancelled) setTypes([]); });
+    void loadTypes();
     void refresh();
-    return () => { cancelled = true; };
   }, []);
 
   const submit = async () => {
@@ -74,12 +83,14 @@ export function MyDocumentsPage() {
 
   return (
     <div className="space-y-4">
-      <EssPageHeader title={t('My Documents')} subtitle={t('Ask HR for a salary certificate or another letter, and download it once issued.')} />
+      <EssPageHeader title={t('My letters')} subtitle={t('Ask HR for a salary certificate or another letter, and download it once issued.')} />
       {notice && <EssNotice tone={notice.tone}>{notice.text}</EssNotice>}
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,22rem)_1fr]">
-        <EssCard title={t('Request a Document')} testId="ess-documents-request">
-          {types === null ? (
+        <EssCard title={t('Request a letter')} testId="ess-documents-request">
+          {typesError ? (
+            <EssLoadError error={typesError} onRetry={() => void loadTypes()} />
+          ) : types === null ? (
             <p className="flex items-center gap-2 text-sm text-slate-400 dark:text-slate-500">
               <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t('Loading…')}
             </p>
@@ -109,17 +120,19 @@ export function MyDocumentsPage() {
               </EssField>
               <button type="button" onClick={submit} disabled={busy || !letterType} className={`${essPrimaryButton} w-full`}>
                 {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                {busy ? t('Requesting…') : t('Request document')}
+                {busy ? t('Requesting…') : t('Request letter')}
               </button>
             </div>
           )}
         </EssCard>
 
-        <EssCard title={t('My Documents')} testId="ess-documents-list">
-          {requests === null ? (
+        <EssCard title={t('Letters I asked for')} testId="ess-documents-list">
+          {listError ? (
+            <EssLoadError error={listError} onRetry={() => void refresh()} />
+          ) : requests === null ? (
             <div className="h-24 animate-pulse rounded-xl bg-slate-100 dark:bg-white/[0.04]" aria-busy="true" />
           ) : requests.length === 0 ? (
-            <EssEmpty text={t('You have not requested any documents yet.')} />
+            <EssEmpty text={t('You have not asked for any letters yet.')} />
           ) : (
             <ul className="divide-y divide-slate-100 dark:divide-white/[0.06]">
               {requests.map((r) => (
@@ -149,7 +162,7 @@ export function MyDocumentsPage() {
               ))}
             </ul>
           )}
-          {requests && requests.some((r) => r.isIssued) && (
+          {!listError && requests && requests.some((r) => r.isIssued) && (
             <p className="mt-3 flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
               <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" /> {t('Issued letters carry HR’s reference number and can be downloaded again at any time.')}
             </p>
