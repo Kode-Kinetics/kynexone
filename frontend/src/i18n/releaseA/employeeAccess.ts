@@ -71,6 +71,7 @@ const en: Record<string, string> = {
 
   // Employees list and Add Employee
   'Print sign-in slips ({n})': 'Print sign-in slips ({n})',
+  'Email sign-in codes ({n})': 'Email sign-in codes ({n})',
   'Add work emails': 'Add work emails',
   'This is also how they sign in to KynexOne.': 'This is also how they sign in to KynexOne.',
   'Use': 'Use',
@@ -181,6 +182,7 @@ const ar: Record<string, string> = {
   'The sign-in codes could not be created': 'تعذّر إصدار رموز التفعيل',
 
   'Print sign-in slips ({n})': 'طباعة أوراق تسجيل الدخول ({n})',
+  'Email sign-in codes ({n})': 'إرسال رموز التفعيل بالبريد الإلكتروني ({n})',
   'Add work emails': 'إضافة البريد الإلكتروني الوظيفي',
   'This is also how they sign in to KynexOne.': 'ويُستخدم أيضاً لتسجيل الدخول إلى KynexOne.',
   'Use': 'استخدام',

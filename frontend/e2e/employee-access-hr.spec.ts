@@ -310,7 +310,8 @@ test('bulk print skips anyone already using KynexOne and says why', async ({ pag
   const slips = page.getByTestId('sign-in-slips');
   await expect(slips.getByTestId('sign-in-slip')).toHaveCount(2);
   // Never an active employee in a bulk request, and nobody the screen already knows cannot get a code.
-  expect(writes.filter((w) => w.path === '/api/employee-access/codes').map((w) => w.body)).toEqual([{ employeeIds: [42, 43] }]);
+  expect(writes.filter((w) => w.path === '/api/employee-access/codes').map((w) => w.body)).toEqual([{ employeeIds: [42, 43], delivery: 'print' }]);
+  await expect(page.getByRole('button', { name: /Email sign-in codes/ })).toHaveCount(0);
   await expect(slips.getByTestId('slips-summary')).toHaveText('Slips ready: 2. Skipped: 2.');
   const skipped = slips.getByTestId('skipped-list');
   await expect(skipped.getByRole('listitem').filter({ hasText: 'Omar Saleh' })).toContainText("Use Reset sign-in on the person's profile.");
@@ -412,7 +413,7 @@ test('Add work emails: paste, preview counts, save, then give access and print',
   await expect(page.getByTestId('sign-in-slip').getByTestId('slip-code')).toHaveText('7001 3355');
   // No Arabic name on file: the Arabic half shows the English name.
   await expect(page.getByTestId('sign-in-slip').locator('[lang="ar"] .kx-name')).toHaveText('Sara Ali');
-  expect(writes.filter((w) => w.path === '/api/employee-access/codes').map((w) => w.body)).toEqual([{ employeeIds: [45] }]);
+  expect(writes.filter((w) => w.path === '/api/employee-access/codes').map((w) => w.body)).toEqual([{ employeeIds: [45], delivery: 'print' }]);
   await expectNoCodeStored(page, ['70013355']);
   expect(errors).toEqual([]);
 });
@@ -455,7 +456,8 @@ test('Add Employee with email delivery offers Email sign-in code first', async (
 test('a mixed result prints what must be printed and says how many were emailed', async ({ page }) => {
   const { writes, errors } = await openPeople(page, { emailDelivery: true });
   for (const name of ['Noah Williams', 'Khalid Noor']) await page.getByRole('checkbox', { name: `Select ${name}` }).check();
-  await page.getByRole('button', { name: 'Print sign-in slips (2)' }).click();
+  await expect(page.getByRole('button', { name: 'Print sign-in slips (2)' })).toBeVisible();
+  await page.getByRole('button', { name: 'Email sign-in codes (2)' }).click();
   const slips = page.getByTestId('sign-in-slips');
   await expect(slips.getByTestId('sign-in-slip')).toHaveCount(1);
   await expect(slips.getByTestId('slip-code')).toHaveText('3141 5926');
@@ -465,4 +467,30 @@ test('a mixed result prints what must be printed and says how many were emailed'
   expect(writes.filter((w) => w.path === '/api/employee-access/codes').map((w) => w.body)).toEqual([{ employeeIds: [42, 48] }]);
   await expectNoCodeStored(page, ['31415926']);
   expect(errors).toEqual([]);
+});
+
+test('bulk Print always prints, even when the company can email', async ({ page }) => {
+  const { writes } = await openPeople(page, { emailDelivery: true });
+  await page.getByRole('checkbox', { name: 'Select Noah Williams' }).check();
+  await expect(page.getByRole('button', { name: 'Email sign-in codes (1)' })).toBeVisible();
+  await page.getByRole('button', { name: 'Print sign-in slips (1)' }).click();
+  const slips = page.getByTestId('sign-in-slips');
+  await expect(slips.getByTestId('slip-code')).toHaveText('4821 7730');
+  await expect(slips.getByTestId('slips-emailed')).toHaveCount(0);
+  await expect(slips.getByText("Email isn't set up, so print the sign-in slips and hand them out.")).toHaveCount(0);
+  expect(writes.filter((w) => w.path === '/api/employee-access/codes').map((w) => w.body)).toEqual([{ employeeIds: [42], delivery: 'print' }]);
+});
+
+test('Add work emails offers Email beside Print when the company can email', async ({ page }) => {
+  const { writes } = await openPeople(page, { emailDelivery: true });
+  await page.getByTestId('access-filter').getByRole('button', { name: 'Waiting for work email' }).click();
+  await page.getByRole('button', { name: 'Add work emails' }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByTestId('work-emails-paste').fill('EMP-0045\tsara.ali@evostel.com');
+  await dialog.getByRole('button', { name: 'Check the list' }).click();
+  await dialog.getByRole('button', { name: 'Save (1)' }).click();
+  await expect(dialog.getByRole('button', { name: 'Print sign-in slips (1)' })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Email sign-in codes (1)' }).click();
+  await expect(page.getByTestId('welcome-codes-summary')).toContainText('Sign-in codes emailed: 1.');
+  expect(writes.filter((w) => w.path === '/api/employee-access/codes').map((w) => w.body)).toEqual([{ employeeIds: [45] }]);
 });

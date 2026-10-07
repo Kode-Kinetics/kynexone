@@ -99,9 +99,9 @@ export function useWelcomeCodes(onFinished?: () => void) {
     if (printable.length > 0) {
       // Why these are printed: the company cannot email at all, or (it can) this person typed their work emails.
       const companyEmails = batch.companyEmails || emailed.length > 0;
-      const note: PrintNote = batch.askedToPrint ? 'none'
-        : companyEmails ? (batch.result.deliveryMessage ? 'enteredByYou' : 'none')
-          : 'noEmail';
+      const note: PrintNote = !companyEmails ? 'noEmail'
+        : batch.askedToPrint ? 'none'
+          : batch.result.deliveryMessage ? 'enteredByYou' : 'none';
       view = <SignInSlips issued={printable} skipped={skipped} names={batch.names} emailedCount={emailed.length} note={note} timeZone={defaultTimezone} onClose={close} />;
     } else {
       view = (
