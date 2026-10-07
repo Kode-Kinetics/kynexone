@@ -665,14 +665,16 @@ export function EmployeesPage() {
   }, [form.salaryBreakdown]);
 
   useEffect(() => {
-    if (!form.gradeId) {
+    // Release A: the grade's allowances live in Benefits by grade (the server fills blank allowances from it), so the
+    // frozen legacy pay scale is not read here.
+    if (!form.gradeId || releaseA) {
       setGradePayScale([]);
       return;
     }
     gradesApi.getPayScale(form.gradeId)
       .then(setGradePayScale)
       .catch(() => setGradePayScale([]));
-  }, [form.gradeId]);
+  }, [form.gradeId, releaseA]);
 
   useEffect(() => {
     if (!formOpen) return;
@@ -2162,6 +2164,7 @@ export function EmployeesPage() {
             <Input label="Effective date" type="date" value={form.salaryBreakdown?.effectiveDate ?? form.joiningDate ?? ''} onChange={(v) => setSalaryField('effectiveDate', v)} />
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300">
               <p className="font-semibold text-slate-800 dark:text-white">Gross package: {(form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode)} {salaryTotal.toLocaleString()}</p>
+              {releaseA && form.gradeId && <p className="mt-1">{t('Leave an allowance blank to fill it from Benefits by grade for this grade on the effective date. If the grade has no value there, you will be asked to enter it.')}</p>}
               {gradePayScale.length > 0 && <p className="mt-1">Grade defaults: {gradePayScale.map((line) => `${line.componentName} ${line.amount || `${line.percentage}%`}`).join(' · ')}</p>}
             </div>
           </Section>

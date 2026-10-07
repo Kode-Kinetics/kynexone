@@ -11,6 +11,7 @@ using Zayra.Api.Controllers;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Documents;
+using Zayra.Api.Infrastructure.Entitlements;
 using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Models;
@@ -148,12 +149,14 @@ public class EmployeeManagementService : IEmployeeManagementService
         // WorkEmailConflictException for a user-supplied duplicate (the one deliberate stop). Audited post-persist.
         var workEmailAudit = await ResolveWorkEmailAsync(employee, request, tenantId, priorWorkEmail: string.Empty, isUpdate: false, cancellationToken);
         await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
+        // Release A: blank cash allowances are filled from Benefits by grade, or refused with the reason — before anything is saved.
+        var salaryBreakdown = await PrefillSalaryFromMatrixAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
         // Reject a bad IBAN BEFORE persisting anything (position/salary already validate pre-save), so a
         // create never leaves a half-saved Draft when the bank details fail the checksum. UpsertPayrollProfile
         // below is the backstop for other callers.
         var createIban = Clean(request.PayrollProfile?.Iban);
         if (!string.IsNullOrWhiteSpace(createIban) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(createIban))
-            throw new InvalidOperationException($"IBAN '{createIban}' is invalid — its country format/length or ISO 13616 mod-97 checksum is incorrect. Enter a correct IBAN before saving.");
+            throw new InvalidOperationException($"{Zayra.Api.Infrastructure.Payroll.IbanValidator.Describe(createIban)}. Enter a correct IBAN before saving.");
         employee.Status = "Draft";
         employee.ProfileCompletenessScore = CalculateCompleteness(employee, request.PayrollProfile, request.ComplianceRecords);
         // ESTABLISHMENT GUARD (path "create"): hard-enforced at the form save even though a Draft
@@ -172,7 +175,7 @@ public class EmployeeManagementService : IEmployeeManagementService
                 await SynchronizePositionIncumbencyAsync(employee, null, context, cancellationToken);
 
                 await UpsertPayrollProfile(employee, request.PayrollProfile, context, cancellationToken);
-                await UpsertEmployeeSalaryStructure(employee, request.SalaryBreakdown, context, cancellationToken);
+                await UpsertEmployeeSalaryStructure(employee, salaryBreakdown, context, cancellationToken);
                 await UpsertComplianceRecords(employee, request.ComplianceRecords ?? [], context, cancellationToken);
                 await AddHistory(employee, "Created", "Employee", string.Empty, employee.EmployeeCode, DateOnly.FromDateTime(DateTime.UtcNow), "Employee created", context, cancellationToken);
                 await _db.SaveChangesAsync(cancellationToken);
@@ -243,11 +246,12 @@ public class EmployeeManagementService : IEmployeeManagementService
         // with another login). Throws before any persist on a user-supplied duplicate / rename collision.
         var workEmailAudit = await ResolveWorkEmailAsync(employee, request, tenantId, priorWorkEmail, isUpdate: true, cancellationToken);
         await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
+        var salaryBreakdown = await PrefillSalaryFromMatrixAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
         employee.UpdatedAtUtc = DateTime.UtcNow;
         employee.UpdatedBy = context.UserId;
         employee.ProfileCompletenessScore = CalculateCompleteness(employee, request.PayrollProfile, request.ComplianceRecords);
         await UpsertPayrollProfile(employee, request.PayrollProfile, context, cancellationToken);
-        await UpsertEmployeeSalaryStructure(employee, request.SalaryBreakdown, context, cancellationToken);
+        await UpsertEmployeeSalaryStructure(employee, salaryBreakdown, context, cancellationToken);
         await UpsertComplianceRecords(employee, request.ComplianceRecords ?? [], context, cancellationToken);
         // ESTABLISHMENT GUARD (path "update"): fires ONLY when the (department, designation) pair
         // actually changed — an unrelated edit (phone number, IBAN, …) can never trip it, and an
@@ -1577,7 +1581,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         // the person entering it fixes it now. Empty is allowed (bank details filled in later).
         var cleanIban = Clean(request.Iban);
         if (!string.IsNullOrWhiteSpace(cleanIban) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(cleanIban))
-            throw new InvalidOperationException($"IBAN '{cleanIban}' is invalid — its country format/length or ISO 13616 mod-97 checksum is incorrect. Enter a correct IBAN before saving.");
+            throw new InvalidOperationException($"{Zayra.Api.Infrastructure.Payroll.IbanValidator.Describe(cleanIban)}. Enter a correct IBAN before saving.");
         profile.Iban = cleanIban;
         profile.AccountNumber = Clean(request.AccountNumber);
         profile.PaymentMethod = Clean(request.PaymentMethod);
@@ -1694,7 +1698,12 @@ public class EmployeeManagementService : IEmployeeManagementService
             ? null
             : await _db.Grades.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == employee.TenantId && x.Id == employee.GradeId && !x.IsDeleted, cancellationToken);
 
-        var components = grade is null
+        var effectiveDate = SalaryEffectiveDate(employee, request);
+        // Release A: one fact in one place. The grade's cash allowances are the matrix (Benefits by grade); the frozen
+        // legacy pay scale is never read for a release_a tenant. The request was already prefilled from the matrix
+        // (PrefillSalaryFromMatrixAsync) and is used as it stands. Tenants without the flag are unchanged.
+        var releaseA = await EntitlementMatrixService.ReleaseAEnabledAsync(_db, employee.TenantId.Value, cancellationToken);
+        var components = grade is null || releaseA
             ? new List<GradePayScaleComponent>()
             : await _db.GradePayScaleComponents
                 .AsNoTracking()
@@ -1702,12 +1711,11 @@ public class EmployeeManagementService : IEmployeeManagementService
                 .OrderBy(x => x.SortOrder)
                 .ToListAsync(cancellationToken);
 
-        var salary = BuildSalaryBreakdown(request, components);
+        var salary = releaseA ? request ?? EmptyBreakdown : BuildSalaryBreakdown(request, components);
         // Nothing to assign: no grade pay scale AND no supplied figures. Unchanged behaviour — this
         // is the ordinary "the salary section of the form was left empty" case, not a dropped value.
         if (GrossSalary(salary) <= 0) return;
 
-        var effectiveDate = request?.EffectiveDate ?? DateOnly.FromDateTime(employee.JoiningDate == default ? DateTime.UtcNow : employee.JoiningDate);
         await _db.EmployeeSalaryStructures
             .Where(x => x.TenantId == employee.TenantId && x.EmployeeId == employee.Id && x.IsActive && x.EffectiveDate == effectiveDate)
             .ExecuteUpdateAsync(x => x.SetProperty(p => p.IsActive, false), cancellationToken);
@@ -1715,7 +1723,13 @@ public class EmployeeManagementService : IEmployeeManagementService
         var structureCode = Clean(request?.SalaryStructureCode);
         if (string.IsNullOrWhiteSpace(structureCode))
             structureCode = grade is null ? DirectSalaryStructureCode : $"GRADE-{grade.Code}";
-        var structure = await _db.SalaryStructures.FirstOrDefaultAsync(x => x.TenantId == employee.TenantId && x.Code == structureCode && !x.IsDeleted, cancellationToken);
+        // The employing company's own structure first, then a group-wide one (CompanyId null): the same rule the import uses,
+        // so company B's new hire is never attached to company A's structure lines.
+        var structure = await _db.SalaryStructures
+            .Where(x => x.TenantId == employee.TenantId && x.Code == structureCode && !x.IsDeleted
+                && (x.CompanyId == employee.CompanyId || x.CompanyId == null))
+            .OrderByDescending(x => x.CompanyId == employee.CompanyId)
+            .FirstOrDefaultAsync(cancellationToken);
         if (structure is null)
         {
             // Currency, most specific first: what the operator typed, then the grade's, then the
@@ -1737,6 +1751,10 @@ public class EmployeeManagementService : IEmployeeManagementService
             };
             _db.SalaryStructures.Add(structure);
 
+            if (releaseA && grade is not null)
+                _db.SalaryComponents.AddRange(EntitlementMatrixService.SalaryComponentsFor(
+                    await EntitlementMatrixService.CashAllowancesAsync(_db, employee.TenantId.Value, grade.Id, employee.CompanyId, effectiveDate, cancellationToken),
+                    employee.TenantId.Value, structure.Id));
             foreach (var component in components)
             {
                 _db.SalaryComponents.Add(new SalaryComponent
@@ -1789,6 +1807,60 @@ public class EmployeeManagementService : IEmployeeManagementService
             .Select(x => x.DefaultCurrency)
             .FirstOrDefaultAsync(cancellationToken);
         return string.IsNullOrWhiteSpace(currency) ? "AED" : currency.Trim().ToUpperInvariant();
+    }
+
+    private static readonly EmployeeSalaryBreakdownRequest EmptyBreakdown = new(null, null, null, null, null, null, null, null, null, null);
+
+    private static DateOnly SalaryEffectiveDate(Employee employee, EmployeeSalaryBreakdownRequest? request) =>
+        request?.EffectiveDate ?? DateOnly.FromDateTime(employee.JoiningDate == default ? DateTime.UtcNow : employee.JoiningDate);
+
+    /// <summary>
+    /// Release A salary prefill. For a release_a tenant whose employee has a grade, a cash allowance left blank (null — not
+    /// 0) on a salary that has figures is filled from Benefits by grade in force on the salary's effective date: the
+    /// amount, or the percentage of the basic salary entered; 0 when the grade gets it in kind or not at all. When the
+    /// grade has no value — or a percentage has no basic to apply to — nothing is guessed: the save is refused and the
+    /// allowance must be entered. No figures at all is the ordinary empty salary section and is left alone. Tenants
+    /// without the flag are returned unchanged (their prefill is the legacy pay scale, in BuildSalaryBreakdown).
+    /// </summary>
+    private async Task<EmployeeSalaryBreakdownRequest?> PrefillSalaryFromMatrixAsync(Employee employee, EmployeeSalaryBreakdownRequest? request,
+        Guid tenantId, CancellationToken cancellationToken)
+    {
+        if (request is null || GrossSalary(request) <= 0 || employee.GradeId is not Guid gradeId) return request;
+        if (!await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId, cancellationToken)) return request;
+        var effectiveDate = SalaryEffectiveDate(employee, request);
+        var allowances = await EntitlementMatrixService.CashAllowancesAsync(_db, tenantId, gradeId, employee.CompanyId, effectiveDate, cancellationToken);
+        var basic = request.BasicSalary ?? 0m;
+        var filled = request;
+        var problems = new List<string>();
+        foreach (var allowance in allowances)
+        {
+            var supplied = allowance.Field switch
+            {
+                "HousingAllowance" => request.HousingAllowance,
+                "TransportAllowance" => request.TransportAllowance,
+                _ => request.OtherAllowance,
+            };
+            if (supplied is not null) continue;
+            var name = EntitlementComponentRules.For(allowance.ComponentCode)?.NameEn ?? allowance.ComponentCode;
+            if (allowance.MonthlyCash(basic) is not decimal cash)
+            {
+                problems.Add(allowance.Missing
+                    ? $"{name}: this grade has no value in Benefits by grade on {effectiveDate:yyyy-MM-dd}"
+                    : $"{name}: it is a percentage of basic salary, and no basic salary was entered");
+                continue;
+            }
+            filled = allowance.Field switch
+            {
+                "HousingAllowance" => filled with { HousingAllowance = cash },
+                "TransportAllowance" => filled with { TransportAllowance = cash },
+                _ => filled with { OtherAllowance = cash },
+            };
+        }
+        if (problems.Count > 0)
+            throw new InvalidOperationException(
+                "Enter these allowances on the salary, or set them for the grade in Benefits by grade first. Nothing was filled in for you: "
+                + string.Join("; ", problems) + ".");
+        return filled;
     }
 
     private static EmployeeSalaryBreakdownRequest BuildSalaryBreakdown(EmployeeSalaryBreakdownRequest? request, IReadOnlyCollection<GradePayScaleComponent> components)

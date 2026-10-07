@@ -345,10 +345,12 @@ public class GlPhase2Tests
     [Fact]
     public async Task StatutoryOverride_Requires_Reason_EffectiveFrom_CompanyId_ReviewBy_And_KnownKey()
     {
+        // A non-GOSI statutory key: GOSI rates are statutory and refused outright (GOSI_RATE_IS_STATUTORY,
+        // PilotPayrollCorrectnessPostgresTests), so the maker-checker mechanics are pinned on a key a company may override.
         var (db, conn) = NewDb();
         await using var _ = conn; await using var __ = db;
         var tid = Guid.NewGuid();
-        db.StatutoryRules.Add(new StatutoryRule { TenantId = null, CountryCode = "SAU", Jurisdiction = "KSA-mainland", RuleKey = "gosi.saudi_employee_rate", RuleValue = "0.09", DataType = "decimal", EffectiveFrom = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc) });
+        db.StatutoryRules.Add(new StatutoryRule { TenantId = null, CountryCode = "SAU", Jurisdiction = "KSA-mainland", RuleKey = "nitaqat.default_target_ratio", RuleValue = "0.09", DataType = "decimal", EffectiveFrom = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc) });
         await db.SaveChangesAsync();
         var company = Guid.NewGuid();
         var ctrl = RatesCtrl(db, tid, new[] { "payroll.rates.statutory_override" });
@@ -356,19 +358,19 @@ public class GlPhase2Tests
         var rev = new DateOnly(2026, 12, 31);
 
         // Missing companyId
-        (await ctrl.CreateStatutoryOverride(new StatutoryOverrideRequest(null, "SAU", "KSA-mainland", "gosi.saudi_employee_rate", "0.08", ef, "reason", rev), CancellationToken.None))
+        (await ctrl.CreateStatutoryOverride(new StatutoryOverrideRequest(null, "SAU", "KSA-mainland", "nitaqat.default_target_ratio", "0.08", ef, "reason", rev), CancellationToken.None))
             .Should().BeOfType<BadRequestObjectResult>();
         // Missing reason
-        (await ctrl.CreateStatutoryOverride(new StatutoryOverrideRequest(company, "SAU", "KSA-mainland", "gosi.saudi_employee_rate", "0.08", ef, "", rev), CancellationToken.None))
+        (await ctrl.CreateStatutoryOverride(new StatutoryOverrideRequest(company, "SAU", "KSA-mainland", "nitaqat.default_target_ratio", "0.08", ef, "", rev), CancellationToken.None))
             .Should().BeOfType<BadRequestObjectResult>();
         // Missing reviewBy
-        (await ctrl.CreateStatutoryOverride(new StatutoryOverrideRequest(company, "SAU", "KSA-mainland", "gosi.saudi_employee_rate", "0.08", ef, "reason", null), CancellationToken.None))
+        (await ctrl.CreateStatutoryOverride(new StatutoryOverrideRequest(company, "SAU", "KSA-mainland", "nitaqat.default_target_ratio", "0.08", ef, "reason", null), CancellationToken.None))
             .Should().BeOfType<BadRequestObjectResult>();
         // Unknown ruleKey
         (await ctrl.CreateStatutoryOverride(new StatutoryOverrideRequest(company, "SAU", "KSA-mainland", "made.up.key", "0.08", ef, "reason", rev), CancellationToken.None))
             .Should().BeOfType<BadRequestObjectResult>();
         // Valid → PendingApproval
-        (await ctrl.CreateStatutoryOverride(new StatutoryOverrideRequest(company, "SAU", "KSA-mainland", "gosi.saudi_employee_rate", "0.08", ef, "regulator letter 123", rev), CancellationToken.None))
+        (await ctrl.CreateStatutoryOverride(new StatutoryOverrideRequest(company, "SAU", "KSA-mainland", "nitaqat.default_target_ratio", "0.08", ef, "regulator letter 123", rev), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
         var row = await db.CompanyStatutoryOverrides.IgnoreQueryFilters().FirstAsync(o => o.TenantId == tid);
         row.Status.Should().Be(RatesController.PendingApproval);
@@ -381,20 +383,20 @@ public class GlPhase2Tests
         var (db, conn) = NewDb();
         await using var _ = conn; await using var __ = db;
         var tid = Guid.NewGuid();
-        db.StatutoryRules.Add(new StatutoryRule { TenantId = null, CountryCode = "SAU", Jurisdiction = "KSA-mainland", RuleKey = "gosi.saudi_employee_rate", RuleValue = "0.09", DataType = "decimal", EffectiveFrom = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc) });
+        db.StatutoryRules.Add(new StatutoryRule { TenantId = null, CountryCode = "SAU", Jurisdiction = "KSA-mainland", RuleKey = "nitaqat.default_target_ratio", RuleValue = "0.09", DataType = "decimal", EffectiveFrom = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc) });
         await db.SaveChangesAsync();
         var company = Guid.NewGuid();
         var maker = Guid.NewGuid();
         var ef = new DateOnly(2026, 1, 1);
 
         var makerCtrl = RatesCtrl(db, tid, new[] { "payroll.rates.statutory_override" }, uid: maker);
-        var created = (OkObjectResult)await makerCtrl.CreateStatutoryOverride(new StatutoryOverrideRequest(company, "SAU", "KSA-mainland", "gosi.saudi_employee_rate", "0.08", ef, "regulator letter", new DateOnly(2026, 12, 31)), CancellationToken.None);
+        var created = (OkObjectResult)await makerCtrl.CreateStatutoryOverride(new StatutoryOverrideRequest(company, "SAU", "KSA-mainland", "nitaqat.default_target_ratio", "0.08", ef, "regulator letter", new DateOnly(2026, 12, 31)), CancellationToken.None);
         var id = (Guid)Prop(created.Value!, "Id")!;
         var reader = new StatutoryRuleReader(db);
         var resolver = new StatutoryRateResolver(db, reader);
 
         // Pending (not Active) → resolution still returns the platform default.
-        (await resolver.ResolveDecimalAsync(tid, company, "SAU", "KSA-mainland", "gosi.saudi_employee_rate", ef)).Should().Be(0.09m);
+        (await resolver.ResolveDecimalAsync(tid, company, "SAU", "KSA-mainland", "nitaqat.default_target_ratio", ef)).Should().Be(0.09m);
 
         // approvals.decide (every line Manager holds it) is not the key: the checker needs the override key.
         var genericApprover = RatesCtrl(db, tid, new[] { "approvals.decide" }, uid: Guid.NewGuid());
@@ -409,14 +411,14 @@ public class GlPhase2Tests
         (await checker.ApproveStatutoryOverride(id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
 
         // Now the company override wins over the platform default.
-        (await resolver.ResolveDecimalAsync(tid, company, "SAU", "KSA-mainland", "gosi.saudi_employee_rate", ef)).Should().Be(0.08m);
+        (await resolver.ResolveDecimalAsync(tid, company, "SAU", "KSA-mainland", "nitaqat.default_target_ratio", ef)).Should().Be(0.08m);
         // A different company still resolves the platform default (per-entity isolation).
-        (await resolver.ResolveDecimalAsync(tid, Guid.NewGuid(), "SAU", "KSA-mainland", "gosi.saudi_employee_rate", ef)).Should().Be(0.09m);
+        (await resolver.ResolveDecimalAsync(tid, Guid.NewGuid(), "SAU", "KSA-mainland", "nitaqat.default_target_ratio", ef)).Should().Be(0.09m);
 
         // Revert (archive) → back to the platform default.
         var reverter = RatesCtrl(db, tid, new[] { "payroll.rates.statutory_override" });
         (await reverter.RevertStatutoryOverride(id, CancellationToken.None)).Should().BeOfType<NoContentResult>();
-        (await resolver.ResolveDecimalAsync(tid, company, "SAU", "KSA-mainland", "gosi.saudi_employee_rate", ef)).Should().Be(0.09m);
+        (await resolver.ResolveDecimalAsync(tid, company, "SAU", "KSA-mainland", "nitaqat.default_target_ratio", ef)).Should().Be(0.09m);
     }
 
     [Fact]
@@ -425,11 +427,11 @@ public class GlPhase2Tests
         var (db, conn) = NewDb();
         await using var _ = conn; await using var __ = db;
         var tid = Guid.NewGuid();
-        db.StatutoryRules.Add(new StatutoryRule { TenantId = null, CountryCode = "SAU", Jurisdiction = "KSA-mainland", RuleKey = "gosi.saudi_employee_rate", RuleValue = "0.09", DataType = "decimal", EffectiveFrom = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc) });
+        db.StatutoryRules.Add(new StatutoryRule { TenantId = null, CountryCode = "SAU", Jurisdiction = "KSA-mainland", RuleKey = "nitaqat.default_target_ratio", RuleValue = "0.09", DataType = "decimal", EffectiveFrom = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc) });
         await db.SaveChangesAsync();
         // payroll.rates.manage alone (no statutory_override) must be forbidden on Surface B.
         var ctrl = RatesCtrl(db, tid, new[] { "payroll.rates.manage" });
-        (await ctrl.CreateStatutoryOverride(new StatutoryOverrideRequest(Guid.NewGuid(), "SAU", "KSA-mainland", "gosi.saudi_employee_rate", "0.08", new DateOnly(2026, 1, 1), "reason", new DateOnly(2026, 12, 31)), CancellationToken.None))
+        (await ctrl.CreateStatutoryOverride(new StatutoryOverrideRequest(Guid.NewGuid(), "SAU", "KSA-mainland", "nitaqat.default_target_ratio", "0.08", new DateOnly(2026, 1, 1), "reason", new DateOnly(2026, 12, 31)), CancellationToken.None))
             .Should().BeOfType<ForbidResult>();
     }
 

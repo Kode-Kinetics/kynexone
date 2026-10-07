@@ -9,7 +9,7 @@ namespace Zayra.Api.Application.Employees;
 /// Produces the ONLY permitted JSON snapshot of an Employee for history/audit rows.
 /// Raw JsonSerializer.Serialize(employee) is forbidden for persistence — it leaks salary,
 /// IBAN, Iqama, passport, national IDs and medical data into EmployeeHistory.SnapshotJson,
-/// bypassing EmployeeSensitiveMask (which only guards API read paths).
+/// bypassing the API read-path mask (EmployeeDetailDto.Project).
 /// Identity/banking numbers keep their last 4 characters, salary becomes a deterministic
 /// change marker, and free-text medical/disciplinary content is redacted entirely.
 /// </summary>
@@ -35,9 +35,12 @@ public static class EmployeeSafeSnapshot
         nameof(Employee.TerminationReason), nameof(Employee.BankName)
     };
 
+    // Exact (normalised) names of this model's sensitive fields. Names from outside the model — the migration
+    // import takes FieldName verbatim from a legacy system ("IBAN Number", "Iqama No") — are caught by
+    // SensitiveFieldClassifier's name and value-shape rules instead.
     private static readonly HashSet<string> SensitiveFieldNames = new(
-        MaskedIdFields.Concat(RedactedFields).Append(nameof(Employee.Salary)),
-        StringComparer.OrdinalIgnoreCase);
+        MaskedIdFields.Concat(RedactedFields).Select(SensitiveFieldClassifier.Normalise),
+        StringComparer.Ordinal);
 
     public static string Serialize(Employee employee)
     {
@@ -68,8 +71,13 @@ public static class EmployeeSafeSnapshot
     public static string SanitizeFieldValue(string fieldName, string value)
     {
         if (string.IsNullOrEmpty(value)) return value;
-        if (fieldName.Equals(nameof(Employee.Salary), StringComparison.OrdinalIgnoreCase))
+        if (SensitiveFieldClassifier.IsSalaryName(fieldName))
             return SensitiveValueMask.HashMarker(value);
-        return SensitiveFieldNames.Contains(fieldName) ? SensitiveValueMask.MaskId(value) : value;
+        if (SensitiveFieldNames.Contains(SensitiveFieldClassifier.Normalise(fieldName))
+            || SensitiveFieldClassifier.IsIdentifierName(fieldName)
+            || SensitiveFieldClassifier.LooksSensitive(value))
+            return SensitiveValueMask.MaskId(value);
+        // Whatever the field is called, an IBAN or national ID inside the text does not survive.
+        return SensitiveFieldClassifier.MaskEmbedded(value);
     }
 }

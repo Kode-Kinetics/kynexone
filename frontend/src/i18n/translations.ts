@@ -16,6 +16,9 @@ type Dict = Record<string, string>;
 
 // ── English (base) ────────────────────────────────────────────────────────────
 const en: Dict = {
+  'Saved, never applied': 'Saved, never applied',
+  'Payroll uses the GOSI-published rate.': 'Payroll uses the GOSI-published rate.',
+  'GOSI-published rate — cannot be overridden': 'GOSI-published rate — cannot be overridden',
   'Say how you checked them, for example "matches the bank letter".': 'Say how you checked them, for example "matches the bank letter".',
   'Bank details confirmed. Payroll will no longer warn about them.': 'Bank details confirmed. Payroll will no longer warn about them.',
   'Imported bank details not yet verified': 'Imported bank details not yet verified',
@@ -1250,6 +1253,9 @@ const en: Dict = {
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
 const ar: Dict = {
+  'Saved, never applied': 'حُفظ ولم يُطبَّق',
+  'Payroll uses the GOSI-published rate.': 'يستخدم مسير الرواتب النسبة المنشورة من المؤسسة العامة للتأمينات الاجتماعية.',
+  'GOSI-published rate — cannot be overridden': 'نسبة منشورة من المؤسسة العامة للتأمينات الاجتماعية — لا يمكن تجاوزها',
   'Say how you checked them, for example "matches the bank letter".': 'اذكر كيف تحققت منها، مثلاً «مطابقة لخطاب البنك».',
   'Bank details confirmed. Payroll will no longer warn about them.': 'تم تأكيد البيانات البنكية. لن يُنبّه الرواتب بشأنها بعد الآن.',
   'Imported bank details not yet verified': 'بيانات بنكية مستوردة لم يتم التحقق منها بعد',

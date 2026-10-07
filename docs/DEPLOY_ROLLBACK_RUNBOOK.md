@@ -312,6 +312,86 @@ ORDER BY 1, 2, 4, 5;
 Zero rows means nothing to review. Rows from part 1 with reason "issue date in the future" are almost certainly
 expiries; the others need the card in hand.
 
+## GOSI tenant overrides that were saved but never applied (read-only)
+
+GOSI contribution rates and the contributory-wage ceiling/floor are statutory. Payroll reads only the
+platform row (`statutory_rules`, `tenant_id IS NULL`). Before `GOSI_RATE_IS_STATUTORY` refused them,
+four write paths accepted a tenant value for these keys:
+- `/api/statutory-rules`
+- the company statutory-override maker-checker
+- the setup assistant
+- tenant-admin country rules
+
+Nothing ever read those values. **Do not delete these rows** — they are the record of what was attempted.
+The GOSI readiness report and the Saudi compliance dashboard warn about them per tenant. To list them
+(SELECT only):
+
+```sql
+-- Tenant-level GOSI rate/ceiling values payroll has never applied. Same predicate as
+-- GosiStatutoryValues.IsStatutory: gosi.*_rate, or gosi.covered_wage_*.
+WITH gosi AS (
+  SELECT 'statutory_rules' AS source, tenant_id, NULL::uuid AS company_id, id, rule_key, rule_value AS value, NULL AS status
+  FROM statutory_rules WHERE tenant_id IS NOT NULL
+  UNION ALL
+  SELECT 'company_statutory_overrides', tenant_id, company_id, id, rule_key, override_value, status
+  FROM company_statutory_overrides WHERE NOT is_deleted
+  UNION ALL
+  SELECT 'country_payroll_rules', tenant_id, NULL::uuid, id, rule_key, rule_value, NULL
+  FROM country_payroll_rules
+)
+SELECT * FROM gosi
+WHERE lower(rule_key) LIKE 'gosi.%'
+  AND (lower(rule_key) LIKE '%\_rate' OR lower(rule_key) LIKE 'gosi.covered\_wage\_%')
+ORDER BY tenant_id, source, rule_key;
+```
+
+Zero rows means no tenant ever believed it had changed a GOSI rate. For any rows returned, tell the tenant
+that the GOSI-published rate was applied throughout.
+
+## Stored full IBANs — post-deploy diagnostic (read-only)
+
+Before the pilot-sensitive-leaks release, an `INVALID_IBAN` payroll validation finding wrote the whole
+IBAN into `payroll_validation_results.message`, and the migration import wrote legacy history values into
+`employee_histories.old_value` / `new_value` unmasked. New rows carry only the last 4 characters
+(`IBAN ***1234 is invalid: …`). **Existing rows are not rewritten by the release.** A run's findings are
+replaced the next time it is validated or processed; locked runs keep theirs. Count what is left with
+these queries (SELECT only), then decide on a reviewed clean-up:
+
+```sql
+-- Validation findings whose message still holds an IBAN-shaped value (2 letters, 2 digits, 11-30 alphanumerics).
+SELECT tenant_id, code, count(*) AS rows_with_iban
+FROM payroll_validation_results
+WHERE message ~ '\m[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\M'
+GROUP BY tenant_id, code
+ORDER BY tenant_id, code;
+
+-- Employee history values that still hold an IBAN-shaped value.
+SELECT tenant_id, field_name, count(*) AS rows_with_iban
+FROM employee_histories
+WHERE old_value ~ '\m[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\M'
+   OR new_value ~ '\m[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\M'
+GROUP BY tenant_id, field_name
+ORDER BY tenant_id, field_name;
+
+-- Migration batches that still hold the raw package (written before the masked copy, policy "masked-v1").
+-- The second pattern catches 10-digit Saudi national IDs / iqama numbers.
+SELECT tenant_id, package_type, count(*) AS batches_with_raw_identifiers
+FROM migration_import_batches
+WHERE package_type = 'MigrationPackage'
+  AND (payload_json ->> 'policy') IS DISTINCT FROM 'masked-v1'
+  AND (payload_json::text ~ '\m[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\M'
+       OR payload_json::text ~ '(^|[^0-9])[12][0-9]{9}([^0-9]|$)')
+GROUP BY tenant_id, package_type
+ORDER BY tenant_id;
+```
+
+The migration batch's `payload_json` now keeps the checksum, the row count per section and a masked copy of
+each section. Nothing reads it back to run an import: Resume takes the package again from the caller and
+matches it on the checksum, so an old raw payload can be cleared without breaking a resume.
+
+Zero rows means nothing is left to clean up. The pattern is deliberately broad, so review what it finds
+before acting on it. `PayrollIbanMaskingPostgresTests` runs the first and third queries, so keep them in sync.
+
 ## Migration import — who used it to create roles or grant access (read-only exposure check)
 
 Before this fix the migration import (`POST /api/migrations/preview|commit|{id}/resume`) accepted `roles` and
@@ -331,13 +411,13 @@ the owner's say-so. SELECT only:
 WITH access_batches AS (
     SELECT b.tenant_id, b.id AS batch_id, b.external_batch_id, b.status, b.created_by,
            b.created_at_utc, b.completed_at_utc,
-           (b.payload_json::jsonb -> 'Sections') ? 'roles' AS had_roles,
-           (b.payload_json::jsonb -> 'Sections') ? 'users' AS had_users,
-           lower(coalesce(b.payload_json::jsonb -> 'Sections' ->> 'roles', '')) AS roles_csv,
-           lower(coalesce(b.payload_json::jsonb -> 'Sections' ->> 'users', '')) AS users_csv
+           (coalesce(b.payload_json::jsonb -> 'Sections', b.payload_json::jsonb -> 'sections')) ? 'roles' AS had_roles,
+           (coalesce(b.payload_json::jsonb -> 'Sections', b.payload_json::jsonb -> 'sections')) ? 'users' AS had_users,
+           lower(coalesce(coalesce(b.payload_json::jsonb -> 'Sections', b.payload_json::jsonb -> 'sections') ->> 'roles', '')) AS roles_csv,
+           lower(coalesce(coalesce(b.payload_json::jsonb -> 'Sections', b.payload_json::jsonb -> 'sections') ->> 'users', '')) AS users_csv
     FROM migration_import_batches b
     WHERE b.package_type = 'MigrationPackage' AND NOT b.dry_run AND b.status <> 'Previewed'
-      AND (b.payload_json::jsonb -> 'Sections') ?| array['roles', 'users'])
+      AND (coalesce(b.payload_json::jsonb -> 'Sections', b.payload_json::jsonb -> 'sections')) ?| array['roles', 'users'])
 SELECT ab.tenant_id, ab.batch_id, ab.external_batch_id, ab.status, ab.completed_at_utc,
        ab.had_roles, ab.had_users, committer.email AS committed_by,
        EXISTS (SELECT 1 FROM user_roles ur
@@ -352,10 +432,10 @@ ORDER BY ab.completed_at_utc DESC NULLS FIRST;
 --    privileged = holds Admin or any role carrying security.manage.
 WITH access_batches AS (
     SELECT b.tenant_id, b.id AS batch_id, b.created_by,
-           lower(coalesce(b.payload_json::jsonb -> 'Sections' ->> 'users', '')) AS users_csv
+           lower(coalesce(coalesce(b.payload_json::jsonb -> 'Sections', b.payload_json::jsonb -> 'sections') ->> 'users', '')) AS users_csv
     FROM migration_import_batches b
     WHERE b.package_type = 'MigrationPackage' AND NOT b.dry_run AND b.status <> 'Previewed'
-      AND (b.payload_json::jsonb -> 'Sections') ? 'users')
+      AND (coalesce(b.payload_json::jsonb -> 'Sections', b.payload_json::jsonb -> 'sections')) ? 'users')
 SELECT ab.tenant_id, ab.batch_id, u.id AS user_id, u.email, u.status, u.is_active, u.is_group_scope,
        u.id = ab.created_by AS committer_changed_own_account,
        string_agg(DISTINCT r.name, ', ') AS roles_now,
@@ -373,10 +453,10 @@ ORDER BY privileged DESC, ab.tenant_id, u.email;
 -- 3. The roles those packages named (first CSV column = Name), as they stand NOW.
 WITH access_batches AS (
     SELECT b.tenant_id, b.id AS batch_id,
-           lower(coalesce(b.payload_json::jsonb -> 'Sections' ->> 'roles', '')) AS roles_csv
+           lower(coalesce(coalesce(b.payload_json::jsonb -> 'Sections', b.payload_json::jsonb -> 'sections') ->> 'roles', '')) AS roles_csv
     FROM migration_import_batches b
     WHERE b.package_type = 'MigrationPackage' AND NOT b.dry_run AND b.status <> 'Previewed'
-      AND (b.payload_json::jsonb -> 'Sections') ? 'roles')
+      AND (coalesce(b.payload_json::jsonb -> 'Sections', b.payload_json::jsonb -> 'sections')) ? 'roles')
 SELECT ab.tenant_id, ab.batch_id, r.id AS role_id, r.name, r.is_system, r.is_active, r.created_at_utc,
        (SELECT count(*) FROM user_roles ur WHERE ur.role_id = r.id) AS members_now,
        (SELECT string_agg(p.permission_key, ', ' ORDER BY p.permission_key) FROM role_permissions rp

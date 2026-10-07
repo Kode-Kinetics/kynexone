@@ -79,6 +79,8 @@ public static class ReleaseABlockReasons
     public const string DeductionSplitUnreconciled = "DEDUCTION_SPLIT_UNRECONCILED";
     public const string DeductionLinesMissing = "DEDUCTION_LINES_MISSING";
     public const string LoanConsentAlreadyUsed = "LOAN_CONSENT_ALREADY_USED";
+    // R1 fix round (review of PR #193)
+    public const string EntitlementSkipPaidCode = "ENTITLEMENT_SKIP_PAID_CODE";
 
     // R4 review (PR #191)
     public const string RenewalContractStillActive = "RENEWAL_CONTRACT_STILL_ACTIVE";
@@ -488,6 +490,13 @@ public static class ReleaseABlockReasons
             "Review the new deadlines and choose the renewal outcome again.",
             "راجع المواعيد الجديدة واختر نتيجة التجديد مرة أخرى.",
             HrManager),
+        new BlockReason(EntitlementSkipPaidCode,
+            "Also paid through payroll", "تُصرف أيضاً عبر الرواتب",
+            "Your pay components include a paid line with the same code as this benefit. Switching the benefit off for a company would not stop that payment, so the switch is refused rather than leave the two disagreeing.",
+            "تتضمن مكونات الرواتب بنداً مدفوعاً بنفس رمز هذه الميزة، وإيقاف الميزة لمنشأة لن يوقف ذلك الدفع، لذلك رُفض الإيقاف حتى لا يتعارض الأمران.",
+            "Ask payroll to retire or rename the paid pay component first, or mark the grades 'Not offered' for this company in Benefits by grade.",
+            "اطلب من الرواتب إيقاف بند الدفع أو تغيير رمزه أولاً، أو حدّد الدرجات «غير مقدَّمة» لهذه المنشأة في المزايا حسب الدرجة.",
+            PayrollManager),
     }.ToDictionary(r => r.Code, StringComparer.Ordinal);
 
     /// <summary>The catalogue entry for a code. Throws for an unknown code: an unexplained refusal is a defect.</summary>

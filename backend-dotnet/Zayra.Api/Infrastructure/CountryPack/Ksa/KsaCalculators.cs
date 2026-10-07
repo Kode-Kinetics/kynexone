@@ -82,14 +82,16 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
             decimal gccErAmt = Math.Round(coveredWage * erRateApplied, 2);
             decimal excessToEmployee = Math.Round(coveredWage * Math.Max(0m, gccEr.Value - saudiErCap), 2);
 
-            lines.Add(new($"GOSI-GCC-{home}-EE", $"GCC Unified Scheme — {home} (Employee)", gccEmpAmt + excessToEmployee, 0m));
-            lines.Add(new($"GOSI-GCC-{home}-ER", $"GCC Unified Scheme — {home} (Employer)", 0m, gccErAmt));
+            lines.Add(new($"GOSI-GCC-{home}-EE", $"GCC Unified Scheme — {home} (Employee)", gccEmpAmt + excessToEmployee, 0m)
+                { Rate = gccEmp.Value + Math.Max(0m, gccEr.Value - saudiErCap), ContributoryWage = coveredWage });
+            lines.Add(new($"GOSI-GCC-{home}-ER", $"GCC Unified Scheme — {home} (Employer)", 0m, gccErAmt)
+                { Rate = erRateApplied, ContributoryWage = coveredWage });
 
             decimal gccOhRate = await _rules.GetDecimalAsync(
                 CountryCodes.Saudi, Jurisdictions.KsaMainland,
                 RuleKeys.GosiExpOhRate, eff, null, ct) ?? 0.02m;
             decimal gccOh = Math.Round(coveredWage * gccOhRate, 2);
-            lines.Add(new("GOSI-OH-ER", "Occupational Hazard (Employer)", 0m, gccOh));
+            lines.Add(new("GOSI-OH-ER", "Occupational Hazard (Employer)", 0m, gccOh) { Rate = gccOhRate, ContributoryWage = coveredWage });
 
             return new(gccEmpAmt + excessToEmployee, gccErAmt + gccOh, lines)
             {
@@ -103,12 +105,10 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
         if (isSaudi)
         {
             // UNIT — every rate below is a decimal FRACTION of the covered wage (0.09 = 9%), which
-            // is why they are multiplied in directly. THE OTHER STORE holding these same three
-            // statutory facts is gosi_contribution_rules (Infrastructure/Seed/GosiRuleSeeder.cs),
-            // read by the GOSI preview and the readiness report through GosiCalculationService.
-            // It held PERCENTS until 2026-09 and now holds fractions too; GosiRuleSeeder.
-            // StatutoryRuleKeyFor maps one store's (branch, payer) to the other's rule key, and
-            // GosiRuleSeeder.VerifyStoresAgree fails the boot log and the suite if they diverge.
+            // is why they are multiplied in directly. This calculator is the ONE GOSI engine: the
+            // GOSI preview and the readiness report call it too (GosiCalculationService.CalculateAsync),
+            // so they read these same statutory_rules rows. gosi_contribution_rules is retired as a
+            // rate source; GosiRuleSeeder.VerifyStoresAgree keeps its listing from contradicting this.
             //
             // F02 — the ANNUITIES pair is looked up by the person's COHORT and the period, through the
             // one typed lookup that owns it. An unknown cohort is never read as a new entrant; a new
@@ -134,11 +134,11 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
 
             decimal ohEr = Math.Round(coveredWage * ohRate, 2);
 
-            lines.Add(new("GOSI-ANN-EE", "GOSI Annuities (Employee)",    annuityEmp, 0m));
-            lines.Add(new("GOSI-ANN-ER", "GOSI Annuities (Employer)",    0m, annuityEr));
-            lines.Add(new("GOSI-SANED-EE", "SANED (Employee)",           sanedEmp, 0m));
-            lines.Add(new("GOSI-SANED-ER", "SANED (Employer)",           0m, sanedEr));
-            lines.Add(new("GOSI-OH-ER", "Occupational Hazard (Employer)", 0m, ohEr));
+            lines.Add(new("GOSI-ANN-EE", "GOSI Annuities (Employee)",    annuityEmp, 0m) { Rate = empAnnuity, ContributoryWage = coveredWage });
+            lines.Add(new("GOSI-ANN-ER", "GOSI Annuities (Employer)",    0m, annuityEr) { Rate = erAnnuity, ContributoryWage = coveredWage });
+            lines.Add(new("GOSI-SANED-EE", "SANED (Employee)",           sanedEmp, 0m) { Rate = sanedRate, ContributoryWage = coveredWage });
+            lines.Add(new("GOSI-SANED-ER", "SANED (Employer)",           0m, sanedEr) { Rate = sanedRate, ContributoryWage = coveredWage });
+            lines.Add(new("GOSI-OH-ER", "Occupational Hazard (Employer)", 0m, ohEr) { Rate = ohRate, ContributoryWage = coveredWage });
 
             empTotal = annuityEmp + sanedEmp;
             erTotal  = annuityEr  + sanedEr + ohEr;
@@ -158,7 +158,7 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
                 RuleKeys.GosiExpOhRate, eff, null, ct) ?? 0.02m;            // VERIFY: 2% employer only
 
             decimal oh = Math.Round(coveredWage * ohRate, 2);
-            lines.Add(new("GOSI-OH-ER", "Occupational Hazard (Employer)", 0m, oh));
+            lines.Add(new("GOSI-OH-ER", "Occupational Hazard (Employer)", 0m, oh) { Rate = ohRate, ContributoryWage = coveredWage });
             erTotal = oh;
 
             return new(empTotal, erTotal, lines)
