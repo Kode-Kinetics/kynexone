@@ -383,7 +383,7 @@ export function LoginPage() {
                     to it. What is left is the only line here that changes what
                     someone does next. */}
                 <div className="lx-card-foot">
-                  <a className="lx-secondary" href="/pricing">Price it for your headcount</a>
+                  <a className="lx-secondary" href="/pricing">Get a proposal for your headcount</a>
                 </div>
               </div>
             </div>
