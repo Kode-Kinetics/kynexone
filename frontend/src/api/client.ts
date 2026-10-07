@@ -108,10 +108,15 @@ client.interceptors.response.use(
     if (err.response?.status === 403) {
       const isFeatureGated = err.response?.data?.error === 'feature_not_enabled';
       if (!isFeatureGated && typeof window !== 'undefined') {
-        // Prefer the server's reason (e.g. a separation-of-duties refusal) over the generic text.
-        const reason = typeof err.response?.data?.message === 'string' && err.response.data.message.trim()
-          ? err.response.data.message
-          : 'You do not have permission to perform this action. Please contact your administrator.';
+        // Prefer the server's reason (e.g. a separation-of-duties refusal) over the generic text, in Arabic
+        // when the page is Arabic and the server sent one (messageAr, e.g. a privilege-ceiling refusal).
+        const arabic = document.documentElement.lang === 'ar';
+        const arReason = typeof err.response?.data?.messageAr === 'string' ? err.response.data.messageAr.trim() : '';
+        const reason = arabic && arReason
+          ? arReason
+          : typeof err.response?.data?.message === 'string' && err.response.data.message.trim()
+            ? err.response.data.message
+            : 'You do not have permission to perform this action. Please contact your administrator.';
         window.dispatchEvent(new CustomEvent('zayra:access-denied', { detail: reason }));
       }
       return Promise.reject(err);

@@ -199,14 +199,32 @@ public sealed partial class AdvisoryLockTransactionPoolingPostgresTests : IClass
     {
         Guid tenantId;
         Guid existingUserId;
+        Guid callerId;
         await using (var seed = _fx.CreateDirectDb())
         {
             tenantId = await PostgresFixture.SeedMinimalTenant(seed);
-            seed.Roles.Add(new Role
+            var adminRole = new Role
             {
                 TenantId = tenantId, Name = "Admin", NormalizedName = "ADMIN", Description = "Admin",
                 IsActive = true, IsEditable = true
-            });
+            };
+            seed.Roles.Add(adminRole);
+            // The acting administrator: the privilege ceiling lets only an Admin give the Admin role.
+            var caller = new User
+            {
+                TenantId = tenantId,
+                Email = $"caller-{Guid.NewGuid():N}@example.test",
+                FullName = "Acting Admin",
+                PasswordHash = "hash",
+                AccessMode = AccessModes.FullPortal,
+                Status = "Active",
+                IsActive = true,
+                IsEmailConfirmed = true
+            };
+            caller.NormalizedEmail = AuthService.Normalize(caller.Email);
+            seed.Users.Add(caller);
+            seed.UserRoles.Add(new UserRole { User = caller, Role = adminRole });
+            callerId = caller.Id;
             var user = new User
             {
                 TenantId = tenantId,
@@ -245,7 +263,7 @@ public sealed partial class AdvisoryLockTransactionPoolingPostgresTests : IClass
         {
             await using var db = _fx.CreatePooledDb(hook);
             var service = new AccessManagementService(db, new Pbkdf2PasswordHasher(), new NullAuditService(), new FakeTokenService());
-            var context = new RequestContext("127.0.0.1", "tests", Guid.NewGuid(), tenantId);
+            var context = new RequestContext("127.0.0.1", "tests", callerId, tenantId);
             if (operation == "create-admin")
             {
                 var email = $"admin-{Guid.NewGuid():N}@example.test";

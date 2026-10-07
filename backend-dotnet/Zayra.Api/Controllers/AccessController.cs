@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Email;
 using Zayra.Api.Models;
@@ -43,6 +44,22 @@ public class AccessController : ControllerBase
         return Ok(await _accessManagement.GetRolesAsync(tenantId.Value, cancellationToken));
     }
 
+    /// <summary>
+    /// The caller's privilege ceiling: their own effective permissions and, per role, whether they may assign it or
+    /// edit it and why not. The Access screen greys out exactly what the server would refuse (PrivilegeCeiling).
+    /// </summary>
+    [HttpGet("ceiling")]
+    public async Task<ActionResult<AccessCeilingDto>> Ceiling(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var tenantId = GetTenantId();
+            if (tenantId is null) return Unauthorized();
+            return Ok(await _accessManagement.GetAccessCeilingAsync(tenantId.Value, GetContext(), cancellationToken));
+        }
+        catch (PrivilegeCeilingException ex) { return Refused(ex); }
+    }
+
     [HttpPost("roles")]
     public async Task<ActionResult<RoleDto>> CreateRole(CreateRoleRequest request, CancellationToken cancellationToken)
     {
@@ -55,6 +72,7 @@ public class AccessController : ControllerBase
             var role = await _accessManagement.CreateRoleAsync(tenantId.Value, request, GetContext(), cancellationToken);
             return CreatedAtAction(nameof(Roles), role);
         }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.role_created", "Role", null); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -70,17 +88,22 @@ public class AccessController : ControllerBase
             var role = await _accessManagement.UpdateRoleAsync(tenantId.Value, roleId, request, GetContext(), cancellationToken);
             return role is null ? NotFound() : Ok(role);
         }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.role_updated", "Role", roleId.ToString()); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
     [HttpPatch("roles/{roleId:guid}/activate")]
     public async Task<IActionResult> ActivateRole(Guid roleId, CancellationToken cancellationToken)
     {
-        var tenantId = GetTenantId();
-        if (tenantId is null) return Unauthorized();
-        var gate = RequireGroupEntityScope();
-        if (gate is not null) return gate;
-        return await _accessManagement.ActivateRoleAsync(tenantId.Value, roleId, GetContext(), cancellationToken) ? NoContent() : NotFound();
+        try
+        {
+            var tenantId = GetTenantId();
+            if (tenantId is null) return Unauthorized();
+            var gate = RequireGroupEntityScope();
+            if (gate is not null) return gate;
+            return await _accessManagement.ActivateRoleAsync(tenantId.Value, roleId, GetContext(), cancellationToken) ? NoContent() : NotFound();
+        }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.role_activated", "Role", roleId.ToString()); }
     }
 
     [HttpPatch("roles/{roleId:guid}/deactivate")]
@@ -94,18 +117,23 @@ public class AccessController : ControllerBase
             if (gate is not null) return gate;
             return await _accessManagement.DeactivateRoleAsync(tenantId.Value, roleId, GetContext(), cancellationToken) ? NoContent() : NotFound();
         }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.role_deactivated", "Role", roleId.ToString()); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
     [HttpPut("roles/{roleId:guid}/permissions")]
     public async Task<ActionResult<RoleDto>> SetRolePermissions(Guid roleId, BulkRolePermissionsRequest request, CancellationToken cancellationToken)
     {
-        var tenantId = GetTenantId();
-        if (tenantId is null) return Unauthorized();
-        var gate = RequireGroupEntityScope();
-        if (gate is not null) return gate;
-        var role = await _accessManagement.SetRolePermissionsAsync(tenantId.Value, roleId, request, GetContext(), cancellationToken);
-        return role is null ? NotFound() : Ok(role);
+        try
+        {
+            var tenantId = GetTenantId();
+            if (tenantId is null) return Unauthorized();
+            var gate = RequireGroupEntityScope();
+            if (gate is not null) return gate;
+            var role = await _accessManagement.SetRolePermissionsAsync(tenantId.Value, roleId, request, GetContext(), cancellationToken);
+            return role is null ? NotFound() : Ok(role);
+        }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.role_permissions_set", "Role", roleId.ToString()); }
     }
 
     [HttpGet("permission-matrix")]
@@ -121,12 +149,16 @@ public class AccessController : ControllerBase
     [HttpPut("permission-matrix")]
     public async Task<IActionResult> SavePermissionMatrix(PermissionMatrixUpdateRequest request, CancellationToken cancellationToken)
     {
-        var tenantId = GetTenantId();
-        if (tenantId is null) return Unauthorized();
-        var gate = RequireGroupEntityScope();
-        if (gate is not null) return gate;
-        await _accessManagement.SavePermissionMatrixAsync(tenantId.Value, request, GetContext(), cancellationToken);
-        return NoContent();
+        try
+        {
+            var tenantId = GetTenantId();
+            if (tenantId is null) return Unauthorized();
+            var gate = RequireGroupEntityScope();
+            if (gate is not null) return gate;
+            await _accessManagement.SavePermissionMatrixAsync(tenantId.Value, request, GetContext(), cancellationToken);
+            return NoContent();
+        }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.permission_matrix_saved", "Tenant", null); }
     }
 
     [HttpGet("users/{userId:guid}/effective-permissions")]
@@ -141,9 +173,14 @@ public class AccessController : ControllerBase
     [HttpDelete("users/{userId:guid}/permission-overrides/{overrideId:guid}")]
     public async Task<IActionResult> DeletePermissionOverride(Guid userId, Guid overrideId, CancellationToken cancellationToken)
     {
-        var tenantId = GetTenantId();
-        if (tenantId is null) return Unauthorized();
-        return await _accessManagement.DeletePermissionOverrideAsync(tenantId.Value, userId, overrideId, this.GetEntityScope(), GetContext(), cancellationToken) ? NoContent() : NotFound();
+        try
+        {
+            var tenantId = GetTenantId();
+            if (tenantId is null) return Unauthorized();
+            return await _accessManagement.DeletePermissionOverrideAsync(tenantId.Value, userId, overrideId, this.GetEntityScope(), GetContext(), cancellationToken) ? NoContent() : NotFound();
+        }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.permission_override_deleted", "User", userId.ToString()); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
     [HttpGet("permissions")]
@@ -201,6 +238,7 @@ public class AccessController : ControllerBase
             var user = await _accessManagement.CreateUserAsync(tenantId.Value, request, GetContext(), cancellationToken);
             return CreatedAtAction(nameof(GetUser), new { userId = user.Id }, user);
         }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.user_created", "User", null); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -211,9 +249,11 @@ public class AccessController : ControllerBase
         {
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
+            if (GetUserId() is null) return Unauthorized();
             var user = await _accessManagement.UpdateUserAsync(tenantId.Value, userId, request, this.GetEntityScope(), GetContext(), cancellationToken);
             return user is null ? NotFound() : Ok(user);
         }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.user_updated", "User", userId.ToString()); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -224,9 +264,11 @@ public class AccessController : ControllerBase
         {
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
+            if (GetUserId() is null) return Unauthorized();
             await _accessManagement.ActivateUserAsync(tenantId.Value, userId, this.GetEntityScope(), GetContext(), cancellationToken);
             return NoContent();
         }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.user_activated", "User", userId.ToString()); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -237,9 +279,11 @@ public class AccessController : ControllerBase
         {
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
+            if (GetUserId() is null) return Unauthorized();
             await _accessManagement.SuspendUserAsync(tenantId.Value, userId, body?.Reason ?? string.Empty, this.GetEntityScope(), GetContext(), cancellationToken);
             return NoContent();
         }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.user_suspended", "User", userId.ToString()); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -250,9 +294,11 @@ public class AccessController : ControllerBase
         {
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
+            if (GetUserId() is null) return Unauthorized();
             await _accessManagement.LockUserAsync(tenantId.Value, userId, body?.Reason ?? string.Empty, this.GetEntityScope(), GetContext(), cancellationToken);
             return NoContent();
         }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.user_locked", "User", userId.ToString()); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -263,9 +309,11 @@ public class AccessController : ControllerBase
         {
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
+            if (GetUserId() is null) return Unauthorized();
             await _accessManagement.UnlockUserAsync(tenantId.Value, userId, this.GetEntityScope(), GetContext(), cancellationToken);
             return NoContent();
         }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.user_unlocked", "User", userId.ToString()); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -311,6 +359,7 @@ public class AccessController : ControllerBase
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
 
+            if (GetUserId() is null) return Unauthorized();
             var link = await _accessManagement.IssuePasswordResetLinkAsync(
                 tenantId.Value, userId, this.GetEntityScope(), GetContext(), cancellationToken);
 
@@ -387,6 +436,7 @@ public class AccessController : ControllerBase
                 message
             });
         }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.password_reset_link_issued", "User", userId.ToString()); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -406,8 +456,10 @@ public class AccessController : ControllerBase
         {
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
+            if (GetUserId() is null) return Unauthorized();
             return await _accessManagement.DeleteUserAsync(tenantId.Value, userId, this.GetEntityScope(), GetContext(), cancellationToken) ? NoContent() : NotFound();
         }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.user_deleted", "User", userId.ToString()); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -420,6 +472,7 @@ public class AccessController : ControllerBase
             if (tenantId is null) return Unauthorized();
             return Ok(await _accessManagement.AssignRolesAsync(tenantId.Value, userId, request, this.GetEntityScope(), GetContext(), cancellationToken));
         }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.roles_assigned", "User", userId.ToString()); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -463,6 +516,7 @@ public class AccessController : ControllerBase
             invite = await AttachInvitationDeliveryAsync(tenantId.Value, invite, cancellationToken);
             return Created($"/api/access/users/{invite.UserId}", invite);
         }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.employee_invited", "Employee", request.EmployeeId.ToString(System.Globalization.CultureInfo.InvariantCulture)); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -540,9 +594,11 @@ public class AccessController : ControllerBase
         {
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
+            if (GetUserId() is null) return Unauthorized();
             var access = await _accessManagement.SetAccessModeAsync(tenantId.Value, userId, request, this.GetEntityScope(), GetContext(), cancellationToken);
             return access is null ? NotFound() : Ok(access);
         }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.mode_changed", "User", userId.ToString()); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -556,6 +612,7 @@ public class AccessController : ControllerBase
             var access = await _accessManagement.SetPermissionOverrideAsync(tenantId.Value, userId, request, this.GetEntityScope(), GetContext(), cancellationToken);
             return access is null ? NotFound() : Ok(access);
         }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.permission_override", "User", userId.ToString()); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -669,16 +726,21 @@ public class AccessController : ControllerBase
             if (tenantId is null) return Unauthorized();
             return Ok(await _accessManagement.AddGrantorAsync(tenantId.Value, request, GetContext(), cancellationToken));
         }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.grantor_added", "User", request.GrantorUserId.ToString()); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
     [HttpDelete("permission-grantors/{recordId:guid}")]
     public async Task<IActionResult> RevokeGrantor(Guid recordId, CancellationToken cancellationToken)
     {
-        var tenantId = GetTenantId();
-        if (tenantId is null) return Unauthorized();
-        var found = await _accessManagement.RevokeGrantorAsync(tenantId.Value, recordId, GetContext(), cancellationToken);
-        return found ? NoContent() : NotFound();
+        try
+        {
+            var tenantId = GetTenantId();
+            if (tenantId is null || GetUserId() is null) return Unauthorized();
+            var found = await _accessManagement.RevokeGrantorAsync(tenantId.Value, recordId, GetContext(), cancellationToken);
+            return found ? NoContent() : NotFound();
+        }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.grantor_revoked", "PermissionGrantorRecord", recordId.ToString()); }
     }
 
     // Not restricted to Admin role — service layer checks grantor authority or Admin claim.
@@ -697,6 +759,7 @@ public class AccessController : ControllerBase
             var access = await _accessManagement.GrantPermissionAsync(tenantId.Value, userId, request, this.GetEntityScope(), GetUserId(), isAdmin, cancellationToken);
             return access is null ? NotFound() : Ok(access);
         }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.permission_granted", "User", userId.ToString()); }
         catch (UnauthorizedAccessException) { return Forbid(); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
@@ -716,6 +779,7 @@ public class AccessController : ControllerBase
             var access = await _accessManagement.GrantPermissionsBulkAsync(tenantId.Value, userId, request, this.GetEntityScope(), GetUserId(), isAdmin, cancellationToken);
             return access is null ? NotFound() : Ok(access);
         }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.permission_bulk_grant", "User", userId.ToString()); }
         catch (UnauthorizedAccessException) { return Forbid(); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
@@ -738,6 +802,46 @@ public class AccessController : ControllerBase
         var gate = RequireGroupEntityScope();
         if (gate is not null) return gate;
         return Ok(await _accessManagement.UpdateSecuritySettingsAsync(tenantId.Value, request, GetContext(), cancellationToken));
+    }
+
+    /// <summary>The coded, bilingual 403 for a PrivilegeCeiling refusal.</summary>
+    private ObjectResult Refused(PrivilegeCeilingException ex) => StatusCode(StatusCodes.Status403Forbidden, new
+    {
+        error = ex.Refusal.Code,
+        code = ex.Refusal.Code,
+        message = ex.Refusal.MessageEn,
+        messageAr = ex.Refusal.MessageAr,
+        role = ex.Refusal.Role,
+        missingPermissions = ex.Refusal.MissingPermissions,
+    });
+
+    /// <summary>
+    /// Answers a refused access change with 403 and records the attempt: an escalation that was stopped is a
+    /// security event in its own right. The refused operation rolled back, so the audit row is written on its own.
+    /// </summary>
+    private async Task<ObjectResult> CeilingRefusedAsync(PrivilegeCeilingException ex, string attemptedAction, string entityName, string? entityId)
+    {
+        var tenantId = GetTenantId();
+        if (tenantId is not null)
+        {
+            _db.ChangeTracker.Clear();
+            _db.AuditLogs.Add(Zayra.Api.Infrastructure.Auth.AuthAuditEntry.Create(
+                Guid.NewGuid(),
+                DateTime.UtcNow,
+                "access.change_refused",
+                entityName,
+                entityId,
+                GetContext() with { TenantId = tenantId },
+                System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    attempted = attemptedAction,
+                    code = ex.Refusal.Code,
+                    role = ex.Refusal.Role,
+                    missingPermissions = ex.Refusal.MissingPermissions,
+                })));
+            await _db.SaveChangesAsync(HttpContext?.RequestAborted ?? CancellationToken.None);
+        }
+        return Refused(ex);
     }
 
     private RequestContext GetContext()
@@ -811,6 +915,9 @@ public class AccessController : ControllerBase
 
         if (request.UserId == actorId)
             return Forbid();
+        // PRIVILEGE CEILING: company access is access; nobody widens the company scope of a user above them.
+        try { await _accessManagement.AssertMayChangeUserAccessAsync(tenantId.Value, request.UserId, GetContext(), cancellationToken); }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.entity_grant_created", "User", request.UserId.ToString()); }
         if (!scope.IsGroupLevel)
         {
             if (grantMode != EntityGrantModes.SelectedCompanies)
@@ -856,6 +963,10 @@ public class AccessController : ControllerBase
         if (gate is not null) return gate;
         var grant = await _db.UserEntityAccesses.FirstOrDefaultAsync(e => e.Id == id && e.TenantId == tenantId, cancellationToken);
         if (grant is null) return NotFound();
+        if (GetUserId() is null) return Unauthorized();
+        // PRIVILEGE CEILING: removing company access of yourself or of a user above you is refused too.
+        try { await _accessManagement.AssertMayChangeUserAccessAsync(tenantId.Value, grant.UserId, GetContext(), cancellationToken); }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.entity_grant_deleted", "User", grant.UserId.ToString()); }
         grant.IsActive = false;
         grant.UpdatedAtUtc = DateTime.UtcNow;
         await RevokeActiveRefreshTokensAsync(grant.UserId, cancellationToken);
@@ -877,6 +988,9 @@ public class AccessController : ControllerBase
 
         var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == userId && u.TenantId == tenantId && !u.IsDeleted, cancellationToken);
         if (user is null) return NotFound();
+        // PRIVILEGE CEILING: group scope is cross-company visibility; not for a user above the caller.
+        try { await _accessManagement.AssertMayChangeUserAccessAsync(tenantId.Value, userId, GetContext(), cancellationToken); }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, request.IsGroupScope ? "access.group_scope_granted" : "access.group_scope_revoked", "User", userId.ToString()); }
 
         var oldValue = user.IsGroupScope;
         user.IsGroupScope = request.IsGroupScope;

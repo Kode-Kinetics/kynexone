@@ -4317,8 +4317,13 @@ public class EmployeesController : ControllerBase
         // without the delete, and the delete cannot commit without the revocation.
         var (credentialLinks, credentialUsers, credentialUserIds) =
             await EmployeeManagementService.LoadCredentialGraphAsync(_db, tenantId, id, employee.UserAccountId, cancellationToken);
+        // LINKED-LOGIN GATE: deleting the record always goes on; an Admin's login (or one above the actor) is left
+        // active, audited and notified to the tenant's Admins instead.
+        var gatedCredentials = await EmployeeManagementService.GateLinkedLoginsAsync(
+            _db, tenantId, credentialLinks, credentialUsers, credentialUserIds, context,
+            "employee.deleted", id, deletedAt, cancellationToken);
         var revokedCredentials = await EmployeeManagementService.StageCredentialInvalidationAsync(
-            _db, credentialLinks, credentialUsers, credentialUserIds,
+            _db, gatedCredentials.Links, gatedCredentials.Users, gatedCredentials.UserIds,
             loginDisabledReason: "Employee record was deleted.",
             effectiveAtUtc: deletedAt,
             actorUserId: context.UserId,
