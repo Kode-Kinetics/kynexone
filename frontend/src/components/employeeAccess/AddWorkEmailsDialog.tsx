@@ -19,12 +19,15 @@ const PASTE_EXAMPLE = 'EMP-0042\tnoah.williams@company.com';
  * as a CSV. Check (dry run) → "Ready · Not found · Wrong email ending · Already used" → Save →
  * "Give access to these employees now?" → the print flow.
  */
-export function AddWorkEmailsDialog({ isOpen, onClose, onSaved, onGiveAccess }: {
+export function AddWorkEmailsDialog({ isOpen, onClose, onSaved, onGiveAccess, checkEmailDelivery }: {
   isOpen: boolean;
   onClose: () => void;
   /** The list changed; refresh it. */
   onSaved: () => void;
-  onGiveAccess: (employeeIds: number[], names: Record<number, string>) => void;
+  /** `print` always prints; `email` lets the server email where it may (the rest still print). */
+  onGiveAccess: (employeeIds: number[], names: Record<number, string>, delivery: 'print' | 'email', companyEmails: boolean) => void;
+  /** Whether the company can email codes, read from one saved employee's access status. */
+  checkEmailDelivery: (employeeId: number) => Promise<boolean>;
 }) {
   const { t, locale } = useLocale();
   const [text, setText] = useState('');
@@ -32,12 +35,13 @@ export function AddWorkEmailsDialog({ isOpen, onClose, onSaved, onGiveAccess }: 
   const [preview, setPreview] = useState<WorkEmailBackfillResult | null>(null);
   const [saved, setSaved] = useState<WorkEmailBackfillResult | null>(null);
   const [busy, setBusy] = useState(false);
+  const [canEmail, setCanEmail] = useState(false);
   const [error, setError] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
   const parsed = parseWorkEmailRows(text);
   const tooMany = parsed.rows.length > MAX_WORK_EMAIL_ROWS;
 
-  const reset = () => { setText(''); setStep('input'); setPreview(null); setSaved(null); setError(''); setBusy(false); };
+  const reset = () => { setText(''); setStep('input'); setPreview(null); setSaved(null); setError(''); setBusy(false); setCanEmail(false); };
   const close = () => { reset(); onClose(); };
 
   const explain = (e: unknown) => {
@@ -66,6 +70,8 @@ export function AddWorkEmailsDialog({ isOpen, onClose, onSaved, onGiveAccess }: 
     try {
       const result = await employeeAccessApi.saveWorkEmails(parsed.rows, false);
       setSaved(result);
+      const first = result.matched[0]?.employeeId;
+      setCanEmail(first ? await checkEmailDelivery(first).catch(() => false) : false);
       setStep('saved');
       onSaved();
     } catch (e) {
@@ -108,20 +114,23 @@ export function AddWorkEmailsDialog({ isOpen, onClose, onSaved, onGiveAccess }: 
     footer = (
       <>
         <button type="button" onClick={close} className="btn-secondary">{t('Not now')}</button>
-        {savedRows.length > 0 && (
+        {savedRows.length > 0 && (['email', 'print'] as const).filter((d) => d === 'print' || canEmail).map((delivery) => (
           <button
+            key={delivery}
             type="button"
-            className="btn-primary"
+            className={delivery === 'print' ? 'btn-primary' : 'btn-secondary'}
             onClick={() => {
               const ids = savedRows.map((r) => r.employeeId);
               const names = Object.fromEntries(savedRows.map((r) => [r.employeeId, r.employeeName]));
               close();
-              onGiveAccess(ids, names);
+              onGiveAccess(ids, names, delivery, canEmail);
             }}
           >
-            {t('Print sign-in slips ({n})', { n: savedRows.length })}
+            {delivery === 'print'
+              ? t('Print sign-in slips ({n})', { n: savedRows.length })
+              : t('Email sign-in codes ({n})', { n: savedRows.length })}
           </button>
-        )}
+        ))}
       </>
     );
   }

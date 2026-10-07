@@ -62,7 +62,7 @@ export function EmployeeAccessCard({
   const issue = async (delivery?: 'email' | 'print') => {
     setConfirming(false);
     setSkipNote('');
-    const result = await onIssue([employeeId], { names: { [employeeId]: employeeName }, quietSkips: true, delivery });
+    const result = await onIssue([employeeId], { names: { [employeeId]: employeeName }, quietSkips: true, delivery, companyEmails: !!access?.emailDelivery });
     if (result && result.issued.length === 0 && result.skipped.length > 0) {
       const s = result.skipped[0];
       const key = skipReasonKey(s.reasonCode);

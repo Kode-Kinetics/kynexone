@@ -56,6 +56,11 @@ export interface IssuedWelcomeCode {
   expiresAtUtc: string;
   /** The company's workspace slug, carried in the QR hash (`w=`) so the welcome page needs no typing. */
   tenantSlug?: string | null;
+  /**
+   * How this one code reaches the employee. Results can be mixed: whoever typed an employee's work
+   * email always gets "print" for that employee, even when the company can email.
+   */
+  delivery?: 'email' | 'print';
 }
 
 export interface SkippedWelcomeCode {
@@ -68,7 +73,9 @@ export interface SkippedWelcomeCode {
 export interface IssueWelcomeCodesResult {
   issued: IssuedWelcomeCode[];
   skipped: SkippedWelcomeCode[];
+  /** True only when EVERY issued code was emailed. Read each item's `delivery` for mixed results. */
   emailed: boolean;
+  /** Present when some codes must be printed by hand; shown through a translated sentence, never raw. */
   deliveryMessage?: string | null;
 }
 

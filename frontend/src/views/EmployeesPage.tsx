@@ -366,7 +366,9 @@ export function EmployeesPage() {
   const [accessRefresh, setAccessRefresh] = useState(0);
   const [workEmailsOpen, setWorkEmailsOpen] = useState(false);
   // Code given → bulk print confirms first (their old codes stop working).
-  const [bulkPrintConfirm, setBulkPrintConfirm] = useState<{ ids: number[]; names: Record<number, string>; preSkipped: SkippedWelcomeCode[] } | null>(null);
+  const [bulkPrintConfirm, setBulkPrintConfirm] = useState<{ ids: number[]; names: Record<number, string>; preSkipped: SkippedWelcomeCode[]; delivery: 'print' | 'email' } | null>(null);
+  // Whether the company can email codes: read from one selected employee's access status (null = not checked yet).
+  const [companyEmails, setCompanyEmails] = useState<boolean | null>(null);
   const [bulkPrintBusy, setBulkPrintBusy] = useState(false);
   // The single "Add work email" box from the profile card.
   const [workEmailFor, setWorkEmailFor] = useState<{ id: number; name: string; englishName: string; arabicName?: string; companyId?: string } | null>(null);
@@ -624,7 +626,27 @@ export function EmployeesPage() {
    * using KynexOne is skipped here (Reset sign-in is one person at a time, from their profile), and
    * the rest the server explains. A selection with unused codes confirms first.
    */
-  const startBulkPrint = async () => {
+  const checkEmailDelivery = useCallback(
+    (employeeId: number) => employeeAccessApi.get(employeeId).then((a) => !!a.emailDelivery),
+    [],
+  );
+
+  // The first time anything is selected, find out whether "Email sign-in codes" can be offered.
+  const firstSelectedId = selectAllMatching ? employees[0]?.id : selectedIds.values().next().value;
+  useEffect(() => {
+    if (!canIssueAccess || companyEmails !== null || firstSelectedId === undefined) return;
+    let cancelled = false;
+    checkEmailDelivery(firstSelectedId)
+      .then((v) => { if (!cancelled) setCompanyEmails(v); })
+      .catch(() => { if (!cancelled) setCompanyEmails(false); });
+    return () => { cancelled = true; };
+  }, [canIssueAccess, companyEmails, firstSelectedId, checkEmailDelivery]);
+
+  /**
+   * "Print sign-in slips (N)" always prints (delivery "print"); "Email sign-in codes (N)" sends no
+   * delivery, so the server emails where it may and the rest still open the print view.
+   */
+  const startBulkPrint = async (delivery: 'print' | 'email' = 'print') => {
     setBulkPrintBusy(true);
     setError('');
     try {
@@ -645,8 +667,8 @@ export function EmployeesPage() {
           preSkipped.push({ employeeId: row.id, reasonCode: state, reason: '' });
         }
       }
-      if (replacesCode) { setBulkPrintConfirm({ ids, names, preSkipped }); return; }
-      await welcome.issue(ids, { names, preSkipped });
+      if (replacesCode) { setBulkPrintConfirm({ ids, names, preSkipped, delivery }); return; }
+      await welcome.issue(ids, { names, preSkipped, delivery, companyEmails: !!companyEmails });
       clearSelection();
     } catch (e: unknown) {
       setError(describeApiError(e, t));
@@ -657,9 +679,9 @@ export function EmployeesPage() {
 
   const confirmBulkPrint = async () => {
     if (!bulkPrintConfirm) return;
-    const { ids, names, preSkipped } = bulkPrintConfirm;
+    const { ids, names, preSkipped, delivery } = bulkPrintConfirm;
     setBulkPrintConfirm(null);
-    await welcome.issue(ids, { names, preSkipped });
+    await welcome.issue(ids, { names, preSkipped, delivery, companyEmails: !!companyEmails });
     clearSelection();
   };
 
@@ -1160,9 +1182,9 @@ export function EmployeesPage() {
 
   const issueCreatedCode = async (delivery?: 'email' | 'print') => {
     if (!createdEmployee) return;
-    const { id, name } = createdEmployee;
+    const { id, name, access } = createdEmployee;
     finishCreated();
-    await welcome.issue([id], { names: { [id]: name }, delivery });
+    await welcome.issue([id], { names: { [id]: name }, delivery, companyEmails: !!access?.emailDelivery });
   };
 
   const closeCreateModal = () => {
@@ -1579,8 +1601,13 @@ export function EmployeesPage() {
               </div>
               <div className="flex flex-wrap items-center gap-1.5">
                 {canIssueAccess && (
-                  <button type="button" onClick={() => void startBulkPrint()} disabled={bulkBusy || bulkPrintBusy || welcome.busy} className="btn-primary h-8 px-2.5 text-xs disabled:opacity-50">
+                  <button type="button" onClick={() => void startBulkPrint('print')} disabled={bulkBusy || bulkPrintBusy || welcome.busy} className="btn-primary h-8 px-2.5 text-xs disabled:opacity-50">
                     <Printer className="h-3.5 w-3.5" aria-hidden="true" /> {t('Print sign-in slips ({n})', { n: selectionCount })}
+                  </button>
+                )}
+                {canIssueAccess && companyEmails && (
+                  <button type="button" onClick={() => void startBulkPrint('email')} disabled={bulkBusy || bulkPrintBusy || welcome.busy} className="btn-secondary h-8 px-2.5 text-xs disabled:opacity-50">
+                    <Mail className="h-3.5 w-3.5" aria-hidden="true" /> {t('Email sign-in codes ({n})', { n: selectionCount })}
                   </button>
                 )}
                 {canBulkActivate && (
@@ -2481,7 +2508,8 @@ export function EmployeesPage() {
         isOpen={workEmailsOpen}
         onClose={() => setWorkEmailsOpen(false)}
         onSaved={() => { setAccessRefresh((n) => n + 1); void load(); }}
-        onGiveAccess={(ids, names) => { void welcome.issue(ids, { names }); }}
+        onGiveAccess={(ids, names, delivery, emails) => { void welcome.issue(ids, { names, delivery, companyEmails: emails }); }}
+        checkEmailDelivery={checkEmailDelivery}
       />
 
       <Modal
@@ -2519,14 +2547,14 @@ export function EmployeesPage() {
 
       <Modal
         isOpen={bulkPrintConfirm !== null}
-        title={t('Print sign-in slips ({n})', { n: bulkPrintConfirm?.ids.length ?? 0 })}
+        title={bulkPrintConfirm?.delivery === 'email' ? t('Email sign-in codes ({n})', { n: bulkPrintConfirm.ids.length }) : t('Print sign-in slips ({n})', { n: bulkPrintConfirm?.ids.length ?? 0 })}
         size="sm"
         onClose={() => setBulkPrintConfirm(null)}
         footer={
           <>
             <button type="button" onClick={() => setBulkPrintConfirm(null)} className="btn-secondary">{t('Cancel')}</button>
             <button type="button" onClick={() => void confirmBulkPrint()} disabled={welcome.busy} className="btn-primary disabled:opacity-60">
-              {t('Print sign-in slips ({n})', { n: bulkPrintConfirm?.ids.length ?? 0 })}
+              {bulkPrintConfirm?.delivery === 'email' ? t('Email sign-in codes ({n})', { n: bulkPrintConfirm.ids.length }) : t('Print sign-in slips ({n})', { n: bulkPrintConfirm?.ids.length ?? 0 })}
             </button>
           </>
         }
