@@ -18,6 +18,8 @@ export function JawazatPanel({ own = false }: { own?: boolean }) {
 }
 
 function JawazatContent({ own }: { own: boolean }) {
+  // Inside the Self-Service workspace this is the page's own heading.
+  const Heading = own ? 'h1' : 'h2';
   const { user } = useAuth();
   const canManage = !own && !!user?.roles.some(role => ['Admin', 'HR Director', 'HR Manager', 'HR Officer'].includes(role));
   const [employee, setEmployee] = useState<EmployeeSelection | null>(null);
@@ -125,7 +127,7 @@ function JawazatContent({ own }: { own: boolean }) {
 
   return <section className="space-y-5 text-slate-800 dark:text-slate-200" aria-label="Jawazat requests">
     <div className="flex flex-wrap items-start justify-between gap-3">
-      <div><h2 className="text-xl font-bold">{own ? 'My Jawazat requests' : 'Jawazat requests'}</h2><p className="mt-1 text-sm text-slate-500">Exit and re-entry requests, internal review and travel notifications.</p></div>
+      <div><Heading className="text-xl font-bold">{own ? 'My Jawazat requests' : 'Jawazat requests'}</Heading><p className="mt-1 text-sm text-slate-500">Exit and re-entry requests, internal review and travel notifications.</p></div>
       {canManage && <Link href="/compliance-profiles" className="text-sm font-semibold text-sapphire dark:text-cyanAccent">Company Jawazat policy</Link>}
     </div>
     <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200">
