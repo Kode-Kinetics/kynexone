@@ -32,7 +32,7 @@
 **Comparison history**
 
 - Initial pass: blocked before comparison because no rendered implementation capture was available.
-- Refinement pass: replaced the code-native orbital approximation with `ios/DesignOptions/login-cinematic-orb.png`, then re-ran TypeScript, ESLint, and the native Xcode build successfully. Visual comparison remains blocked without a rendered capture.
+- Refinement pass: replaced the code-native orbital approximation with `assets/login-cinematic-orb.png`, then re-ran TypeScript, ESLint, and the native Xcode build successfully. Visual comparison remains blocked without a rendered capture.
 - Motion-depth pass: added reduced-motion-aware perspective tilt to the hero and glass card, independent brand drift, a 3D entrance pitch, and a periodic specular sheen. TypeScript and ESLint passed, and the updated app was installed and launched in Xcode Device Hub. Visual comparison remains blocked without a captured simulator frame.
 - Form-motion pass: added staggered field entrances, focus-responsive lift/scale/perspective, loading-state button breathing, and spring-backed success feedback. Reduce Motion disables all nonessential movement. TypeScript and ESLint passed, and the updated app was installed and launched in Xcode Device Hub.
 
