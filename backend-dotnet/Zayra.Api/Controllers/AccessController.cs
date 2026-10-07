@@ -554,6 +554,7 @@ public class AccessController : ControllerBase
         }
         catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.employee_login_linked", "User", request.UserId.ToString()); }
         catch (AccessTargetNotFoundException ex) { return NotFound(new { message = ex.Message }); }
+        catch (LoginInOtherCompanyException ex) { return BadRequest(new { message = ex.Message, code = LoginInOtherCompanyException.Code, company = ex.CompanyName }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 

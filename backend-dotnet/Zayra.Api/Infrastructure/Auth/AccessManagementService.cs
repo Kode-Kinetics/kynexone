@@ -727,6 +727,16 @@ public class AccessManagementService : IAccessManagementService
         if (!await UserWithinLinkScopeAsync(tenantId, user, entityScope, cancellationToken))
             return Status(null, matching, EmployeeLoginNextActions.Blocked, LoginOutsideScopeMessage);
 
+        if (LinkCompanyAccess(user, tenantId, employee.CompanyId) == LinkCompanyDecision.Refuse)
+        {
+            var company = await CompanyDisplayNameAsync(tenantId, employee.CompanyId!.Value, cancellationToken);
+            return Status(null, matching, EmployeeLoginNextActions.Blocked, LoginInOtherCompanyException.MessageFor(company)) with
+            {
+                ReasonCode = LoginInOtherCompanyException.Code,
+                ReasonCompany = company,
+            };
+        }
+
         var caller = await LoadCallerCeilingAsync(tenantId, context, cancellationToken);
         if (user.Id == caller.UserId)
             return Status(null, matching, EmployeeLoginNextActions.Blocked, SelfLinkRefusal().MessageEn);
@@ -838,12 +848,16 @@ public class AccessManagementService : IAccessManagementService
             if (!await AuthTenantGraphIntegrity.IsValidAsync(user, _db, ct))
                 throw new InvalidOperationException(
                     "This login's access records are inconsistent. Contact support to resolve it before linking.");
+            // Linking never widens a login's company scope (owner decision).
+            var companyAccess = LinkCompanyAccess(user, tenantId, employee.CompanyId);
+            if (companyAccess == LinkCompanyDecision.Refuse)
+                throw new LoginInOtherCompanyException(await CompanyDisplayNameAsync(tenantId, employee.CompanyId!.Value, ct));
 
             // The Employee role: what Self-Service needs. Every other role the login holds is kept as it is.
             var rolesAdded = new List<string>();
             if (!user.UserRoles.Any(x => x.Role is { NormalizedName: EmployeeRoleNormalizedName, IsActive: true, IsDeleted: false }))
             {
-                    var employeeRole = await _db.Roles
+                var employeeRole = await _db.Roles
                     .Include(x => x.RolePermissions).ThenInclude(x => x.Permission)
                     .Where(x => (x.TenantId == tenantId || x.TenantId == null)
                         && x.NormalizedName == EmployeeRoleNormalizedName
@@ -858,44 +872,26 @@ public class AccessManagementService : IAccessManagementService
                 rolesAdded.Add(employeeRole.Name);
             }
 
-            // Company access for the employee's own company, so Self-Service can read the record. Group-scope
-            // logins, and logins that already reach the company, are left alone.
+            // Company access for the employee's own company, so Self-Service can read the record: ONLY for a
+            // login with no company access at all (a fresh Create User login). Never widens an existing scope.
             var companyGrantAdded = false;
-            if (employee.CompanyId is Guid companyId
-                && !user.IsGroupScope
-                && !user.EntityAccesses.Any(x => x.TenantId == tenantId && x.IsActive
-                    && (x.GrantMode == EntityGrantModes.AllCurrentAndFutureCompanies
-                        || x.GrantMode == EntityGrantModes.AllCurrentCompanies
-                        || (x.GrantMode == EntityGrantModes.SelectedCompanies && x.CompanyId == companyId))))
+            if (companyAccess == LinkCompanyDecision.GrantEmployeeCompany && employee.CompanyId is Guid companyId)
             {
-                var dormantGrant = user.EntityAccesses.FirstOrDefault(x => x.TenantId == tenantId && !x.IsActive
-                    && x.GrantMode == EntityGrantModes.SelectedCompanies && x.CompanyId == companyId && x.Role == "Employee");
-                if (dormantGrant is not null)
+                _db.UserEntityAccesses.Add(new UserEntityAccess
                 {
-                    dormantGrant.IsActive = true;
-                    dormantGrant.UpdatedAtUtc = linkedAtUtc;
-                    dormantGrant.UpdatedBy = context.UserId;
-                    dormantGrant.GrantedBy = context.UserId;
-                    dormantGrant.GrantedAt = linkedAtUtc;
-                }
-                else
-                {
-                    _db.UserEntityAccesses.Add(new UserEntityAccess
-                    {
-                        Id = newGrantId,
-                        TenantId = tenantId,
-                        User = user,
-                        UserId = user.Id,
-                        CompanyId = companyId,
-                        GrantMode = EntityGrantModes.SelectedCompanies,
-                        Role = "Employee",
-                        IsActive = true,
-                        CreatedAtUtc = linkedAtUtc,
-                        CreatedBy = context.UserId,
-                        GrantedBy = context.UserId,
-                        GrantedAt = linkedAtUtc
-                    });
-                }
+                    Id = newGrantId,
+                    TenantId = tenantId,
+                    User = user,
+                    UserId = user.Id,
+                    CompanyId = companyId,
+                    GrantMode = EntityGrantModes.SelectedCompanies,
+                    Role = "Employee",
+                    IsActive = true,
+                    CreatedAtUtc = linkedAtUtc,
+                    CreatedBy = context.UserId,
+                    GrantedBy = context.UserId,
+                    GrantedAt = linkedAtUtc
+                });
                 companyGrantAdded = true;
             }
 
@@ -957,6 +953,34 @@ public class AccessManagementService : IAccessManagementService
 
         await ExecuteAuthorizationTransactionAsync(auditId, "access.employee_login_linked", LinkOnceAsync, cancellationToken);
         return result ?? throw new InvalidOperationException("The link could not be confirmed. Refresh and check the employee record.");
+    }
+
+    private enum LinkCompanyDecision { NoGrant, GrantEmployeeCompany, Refuse }
+
+    /// <summary>
+    /// Linking never widens a login's company scope. Group-scope, or already reaching the employee's company →
+    /// link with no grant. No active company access at all (a fresh Create User login) → grant exactly the
+    /// employee's company. Company access that does NOT include the employee's company → refuse.
+    /// </summary>
+    private static LinkCompanyDecision LinkCompanyAccess(User user, Guid tenantId, Guid? employeeCompanyId)
+    {
+        if (user.IsGroupScope || employeeCompanyId is not Guid companyId) return LinkCompanyDecision.NoGrant;
+        var active = user.EntityAccesses.Where(x => x.TenantId == tenantId && x.IsActive).ToList();
+        if (active.Count == 0) return LinkCompanyDecision.GrantEmployeeCompany;
+        return active.Any(x => x.GrantMode == EntityGrantModes.AllCurrentAndFutureCompanies
+                || x.GrantMode == EntityGrantModes.AllCurrentCompanies
+                || (x.GrantMode == EntityGrantModes.SelectedCompanies && x.CompanyId == companyId))
+            ? LinkCompanyDecision.NoGrant
+            : LinkCompanyDecision.Refuse;
+    }
+
+    private async Task<string> CompanyDisplayNameAsync(Guid tenantId, Guid companyId, CancellationToken ct)
+    {
+        var company = await ScopedBypass.TenantWide(_db.Companies, tenantId, LinkBypassWhy).AsNoTracking()
+            .Where(x => x.Id == companyId)
+            .Select(x => new { x.TradeName, x.LegalNameEn })
+            .FirstOrDefaultAsync(ct);
+        return string.IsNullOrWhiteSpace(company?.TradeName) ? company?.LegalNameEn ?? "that company" : company.TradeName;
     }
 
     private const string LoginOutsideScopeMessage =
@@ -3600,4 +3624,20 @@ internal static class AccessManagementScopeExtensions
 public sealed class AccessTargetNotFoundException : Exception
 {
     public AccessTargetNotFoundException(string message) : base(message) { }
+}
+
+/// <summary>
+/// The login already works in other companies, and linking must never widen a login's company scope. The Access
+/// API answers it with 400 and the code, so the screen can say it in the reader's language.
+/// </summary>
+public sealed class LoginInOtherCompanyException : InvalidOperationException
+{
+    public const string Code = "login_other_company";
+
+    public LoginInOtherCompanyException(string companyName) : base(MessageFor(companyName)) => CompanyName = companyName;
+
+    public string CompanyName { get; }
+
+    public static string MessageFor(string companyName) =>
+        $"This login works in a different company. Give it access to {companyName} first, or link it from that company.";
 }

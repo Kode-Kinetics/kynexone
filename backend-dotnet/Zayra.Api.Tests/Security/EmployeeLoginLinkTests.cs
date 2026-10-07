@@ -427,6 +427,98 @@ public sealed class EmployeeLoginLinkTests
         await AssertNotLinkedAsync(foreignUser, employeeId);
     }
 
+    // ── Linking never widens a login's company scope ────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ALoginWorkingInCompanyA_LinkedToAnEmployeeInCompanyB_IsRefused_AndWritesNothing()
+    {
+        var w = await SeedAsync();
+        var email = Email("scoped-a");
+        var user = await AddUserAsync(w, email, ["Employee"], groupScope: false, grantCompany: w.CompanyA);
+        var employeeId = await AddEmployeeAsync(w, w.CompanyB, email);
+        var stampBefore = await StampAsync(user);
+
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var status = Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId).EmployeeLoginStatus(employeeId, default)).Result);
+            status.NextAction.Should().Be(EmployeeLoginNextActions.Blocked);
+            status.ReasonCode.Should().Be(LoginInOtherCompanyException.Code);
+            status.ReasonCompany.Should().Be("B");
+            status.Reason.Should().Be("This login works in a different company. Give it access to B first, or link it from that company.");
+        }
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var bad = Assert.IsType<BadRequestObjectResult>((await Controller(db, w, w.AdminId).LinkExistingLogin(
+                new LinkExistingLoginRequest(employeeId, user, "link"), default)).Result);
+            var body = JsonSerializer.SerializeToElement(bad.Value);
+            body.GetProperty("message").GetString().Should().Be("This login works in a different company. Give it access to B first, or link it from that company.");
+            body.GetProperty("code").GetString().Should().Be(LoginInOtherCompanyException.Code);
+            body.GetProperty("company").GetString().Should().Be("B");
+        }
+
+        await AssertNotLinkedAsync(user, employeeId);
+        await using var verify = _fixture.CreateRetryingDb();
+        var grants = await verify.UserEntityAccesses.IgnoreQueryFilters().Where(x => x.UserId == user).ToListAsync();
+        grants.Should().ContainSingle().Which.CompanyId.Should().Be(w.CompanyA, "the login's scope is never widened");
+        (await RoleNamesAsync(user)).Should().Equal("Employee");
+        (await StampAsync(user)).Should().Be(stampBefore, "nothing about the login changed");
+        (await verify.AuditLogs.IgnoreQueryFilters().AnyAsync(x => x.TenantId == w.TenantId && x.Action != "access.change_refused"))
+            .Should().BeFalse("a refused link writes no audit row but a refusal");
+    }
+
+    [Fact]
+    public async Task AFreshLoginWithNoCompanyAccess_GetsExactlyOneGrant_ForTheEmployeesCompany()
+    {
+        var w = await SeedAsync();
+        var email = Email("fresh");
+        var user = await AddUserAsync(w, email, ["Employee"], groupScope: false);
+        var employeeId = await AddEmployeeAsync(w, w.CompanyB, email);
+
+        await using (var db = _fixture.CreateRetryingDb())
+            (await Controller(db, w, w.AdminId).LinkExistingLogin(new LinkExistingLoginRequest(employeeId, user, "link"), default))
+                .Result.Should().BeOfType<OkObjectResult>();
+
+        await using var verify = _fixture.CreateRetryingDb();
+        var grant = (await verify.UserEntityAccesses.IgnoreQueryFilters().Where(x => x.UserId == user).ToListAsync()).Should().ContainSingle().Subject;
+        grant.CompanyId.Should().Be(w.CompanyB);
+        grant.IsActive.Should().BeTrue();
+        grant.GrantMode.Should().Be(EntityGrantModes.SelectedCompanies);
+    }
+
+    [Fact]
+    public async Task AGroupScopeLogin_IsLinkedWithNoGrant()
+    {
+        var w = await SeedAsync();
+        var email = Email("group");
+        var user = await AddUserAsync(w, email, ["Employee"], groupScope: true);
+        var employeeId = await AddEmployeeAsync(w, w.CompanyB, email);
+
+        await using (var db = _fixture.CreateRetryingDb())
+            (await Controller(db, w, w.AdminId).LinkExistingLogin(new LinkExistingLoginRequest(employeeId, user, "link"), default))
+                .Result.Should().BeOfType<OkObjectResult>();
+
+        await using var verify = _fixture.CreateRetryingDb();
+        (await verify.UserEntityAccesses.IgnoreQueryFilters().AnyAsync(x => x.UserId == user)).Should().BeFalse();
+        (await verify.EmployeeUserAccounts.IgnoreQueryFilters().CountAsync(x => x.UserId == user && !x.IsDeleted)).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ALoginAlreadyInTheEmployeesCompany_IsLinkedWithNoNewGrant()
+    {
+        var w = await SeedAsync();
+        var email = Email("same-company");
+        var user = await AddUserAsync(w, email, ["Employee"], groupScope: false, grantCompany: w.CompanyA);
+        var employeeId = await AddEmployeeAsync(w, w.CompanyA, email);
+
+        await using (var db = _fixture.CreateRetryingDb())
+            (await Controller(db, w, w.AdminId).LinkExistingLogin(new LinkExistingLoginRequest(employeeId, user, "link"), default))
+                .Result.Should().BeOfType<OkObjectResult>();
+
+        await using var verify = _fixture.CreateRetryingDb();
+        (await verify.UserEntityAccesses.IgnoreQueryFilters().Where(x => x.UserId == user).ToListAsync())
+            .Should().ContainSingle().Which.Role.Should().Be("HR", "the existing grant is the only one");
+    }
+
     [Fact]
     public async Task AReasonIsRequired()
     {

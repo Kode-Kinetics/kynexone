@@ -42,6 +42,8 @@ export const employeeLogin: ReleaseADict = {
     'Invitation link': 'Invitation link',
     'Copy link': 'Copy link',
     'Link copied': 'Link copied',
+    'This login works in a different company. Give it access to {company} first, or link it from that company.':
+      'This login works in a different company. Give it access to {company} first, or link it from that company.',
   },
   ar: {
     'Link to employee record': 'ربط بسجل موظف',
@@ -80,5 +82,7 @@ export const employeeLogin: ReleaseADict = {
     'Invitation link': 'رابط الدعوة',
     'Copy link': 'نسخ الرابط',
     'Link copied': 'تم نسخ الرابط',
+    'This login works in a different company. Give it access to {company} first, or link it from that company.':
+      'يعمل حساب الدخول هذا في شركة أخرى. امنحه صلاحية الوصول إلى {company} أولاً، أو اربطه من تلك الشركة.',
   },
 };

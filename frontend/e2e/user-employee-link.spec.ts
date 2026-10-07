@@ -28,6 +28,7 @@ const noah = {
 const employees = [
   { id: 42, publicId: 'p-42', employeeCode: 'EMP-0042', fullName: 'Noah Williams', department: 'Sales', status: 'Active' },
   { id: 43, publicId: 'p-43', employeeCode: 'EMP-0043', fullName: 'Layla Haddad', department: 'Finance', status: 'Active' },
+  { id: 44, publicId: 'p-44', employeeCode: 'EMP-0044', fullName: 'Omar Saleh', department: 'Operations', status: 'Active' },
 ];
 
 interface Captured { method: string; path: string; body: unknown }
@@ -84,6 +85,11 @@ async function openUserManagement(page: Page) {
     if (pathname === '/api/access/employee-logins/43') return json({
       employeeId: 43, employeeName: 'Layla Haddad', workEmail: 'layla.haddad@kkdemo.com', linkedLogin: null,
       matchingLogin: null, nextAction: 'invite', reason: null,
+    });
+    if (pathname === '/api/access/employee-logins/44') return json({
+      employeeId: 44, employeeName: 'Omar Saleh', workEmail: 'omar.saleh@kkdemo.com', linkedLogin: null,
+      matchingLogin: { userId: '33333333-3333-3333-3333-333333333333', email: 'omar.saleh@kkdemo.com', status: 'Active', accessMode: 'HRPortal', isActive: true },
+      nextAction: 'blocked', reason: 'English server text', reasonCode: 'login_other_company', reasonCompany: 'Riyadh Branch',
     });
     if (pathname === '/api/access/roles') return json(['Admin', 'HR Manager', 'Employee'].map((name, index) => ({ id: String(index), name, permissions: [] })));
     if (pathname === '/api/access/ceiling') return json({ userId: 'admin-1', isAdmin: true, heldPermissions: ['users.manage', 'roles.manage', 'security.manage'], roles: [] });
@@ -159,5 +165,17 @@ test('an employee with no login is invited, and the link is copyable when no ema
 
   expect(writes).toEqual([{ method: 'POST', path: '/api/access/employee-logins/invite', body: { employeeId: 43, accessMode: 'ESSOnly' } }]);
   await page.screenshot({ path: testInfo.outputPath('employee-invited.png') });
+  expect(errors).toEqual([]);
+});
+
+test('a login that works in another company is explained, and nothing is offered that would widen its access', async ({ page }) => {
+  const { writes, errors } = await openUserManagement(page);
+  await page.getByRole('button', { name: 'Invite employee', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await pickEmployee(page, 'Omar Saleh');
+  await expect(dialog.getByText('This login works in a different company. Give it access to Riyadh Branch first, or link it from that company.')).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Link this login' })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Send self-service invitation' })).toHaveCount(0);
+  expect(writes).toEqual([]);
   expect(errors).toEqual([]);
 });

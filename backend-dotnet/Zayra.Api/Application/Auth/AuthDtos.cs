@@ -80,7 +80,13 @@ public record EmployeeLoginStatusDto(
     LinkedLoginDto? LinkedLogin,
     LinkedLoginDto? MatchingLogin,
     string NextAction,
-    string? Reason);
+    string? Reason)
+{
+    /// <summary>Stable code for a refusal the screen words itself (e.g. <c>login_other_company</c>).</summary>
+    public string? ReasonCode { get; init; }
+    /// <summary>The company a <c>login_other_company</c> refusal names.</summary>
+    public string? ReasonCompany { get; init; }
+}
 
 public static class EmployeeLoginNextActions
 {

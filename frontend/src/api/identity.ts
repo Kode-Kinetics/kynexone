@@ -46,6 +46,10 @@ export interface EmployeeLoginStatus {
   nextAction: EmployeeLoginNextAction;
   /** Plain-language reason, for blocked / needs_work_email. */
   reason: string | null;
+  /** Stable code for a refusal the screen words itself, e.g. 'login_other_company'. */
+  reasonCode?: string | null;
+  /** The company a 'login_other_company' refusal names. */
+  reasonCompany?: string | null;
 }
 
 export interface EmployeeLoginLinkResult {

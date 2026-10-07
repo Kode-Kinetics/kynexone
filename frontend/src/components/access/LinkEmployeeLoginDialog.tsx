@@ -27,6 +27,9 @@ type Outcome =
   | { kind: 'linked'; employeeName: string }
   | { kind: 'invited'; invitation: EmployeeLoginInvitation };
 
+/** The server's refusal codes this dialog words itself, so the reader gets their own language. */
+const LOGIN_OTHER_COMPANY = 'login_other_company';
+
 const btnPrimary = 'rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-60';
 const btnSecondary = 'rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-700';
 
@@ -58,6 +61,16 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
 
   const name = status?.employeeName ?? employee?.fullName ?? '';
 
+  const otherCompany = (company: string) =>
+    t('This login works in a different company. Give it access to {company} first, or link it from that company.', { company });
+
+  /** A refusal from a write: the coded ones in the reader's language, the rest as the server said them. */
+  const writeError = (e: unknown, fallback: string) => {
+    const data = (e as { response?: { data?: { code?: unknown; company?: unknown } } } | null)?.response?.data;
+    if (data?.code === LOGIN_OTHER_COMPANY && typeof data.company === 'string') return otherCompany(data.company);
+    return localizedRefusal(e, locale) ?? fallback;
+  };
+
   const link = async (userId: string) => {
     if (!status) return;
     if (!reason.trim()) { setError(t('Give a reason. It is kept in the audit trail.')); return; }
@@ -67,7 +80,7 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
       setOutcome({ kind: 'linked', employeeName: status.employeeName });
       onChanged();
     } catch (e: unknown) {
-      setError(localizedRefusal(e, locale) ?? t('The login could not be linked.'));
+      setError(writeError(e, t('The login could not be linked.')));
     }
     setSubmitting(false);
   };
@@ -123,7 +136,9 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
         break;
       case 'needs_work_email':
       case 'blocked':
-        explanation = status.reason ?? t('This employee cannot be linked right now.');
+        explanation = status.reasonCode === LOGIN_OTHER_COMPANY && status.reasonCompany
+          ? otherCompany(status.reasonCompany)
+          : status.reason ?? t('This employee cannot be linked right now.');
         break;
     }
   }
