@@ -52,7 +52,7 @@ export interface LoanLimitBreakdown {
   /** Which limit this breakdown describes; the form explains the one matching bindingLimit. */
   limit: LoanBindingLimit;
   /** 'Count' only for PolicyConcurrentLoans (a number of loans, not money). */
-  basis: 'Amount' | 'MultipleOfBasic' | 'MultipleOfGross' | 'Count';
+  basis: 'Amount' | 'MultipleOfBasic' | 'MultipleOfGross' | 'MultipleOfHousing' | 'Count';
   multiple?: number | null;
   salaryBasisAmount?: number | null;
   /** In `unit`: principal, a monthly instalment amount, or a number of loans. */
@@ -70,10 +70,10 @@ export interface LoanLimitBreakdown {
 // ── Grade loan limits (slice L1) ─────────────────────────────────────────────
 
 /** How a grade cell's per-loan figure is expressed. EligibilityOnly = no per-loan cap (or not eligible). */
-export type GradeLimitValueType = 'Amount' | 'MultipleOfBasic' | 'MultipleOfGross' | 'EligibilityOnly';
+export type GradeLimitValueType = 'Amount' | 'MultipleOfBasic' | 'MultipleOfGross' | 'MultipleOfHousing' | 'EligibilityOnly';
 
 /** Grade-limit reason codes the eligibility service can return. Never exceptionable. */
-export type GradeLimitReasonCode = 'GradeNotEligible' | 'GradeLimitPerLoan' | 'GradeLimitOutstanding' | 'GradeMissing' | 'GradeLimitNotConfigured' | 'GradeSalaryMissing' | 'GradeLimitCurrencyAmbiguous';
+export type GradeLimitReasonCode = 'GradeNotEligible' | 'GradeLimitPerLoan' | 'GradeLimitOutstanding' | 'GradeMissing' | 'GradeLimitNotConfigured' | 'GradeSalaryMissing' | 'GradeLimitCurrencyAmbiguous' | 'GradeHousingInKind';
 
 /** One row of GET /api/finance/loans/grade-limits — one per active grade, ordered by level. */
 export interface GradeLoanLimitRow {

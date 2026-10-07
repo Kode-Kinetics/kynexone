@@ -1,0 +1,30 @@
+[
+  {
+    "id": "a93c5fe6-4857-4727-98b9-36662a1e0310",
+    "fullName": "Wife",
+    "relationship": "Spouse",
+    "dateOfBirth": "1990-01-01",
+    "nationalId": ""
+  },
+  {
+    "id": "38c56a37-bb4a-4995-b5ca-a9be90a86082",
+    "fullName": "Son",
+    "relationship": "Child",
+    "dateOfBirth": "2015-01-01",
+    "nationalId": ""
+  },
+  {
+    "id": "dd107495-9c90-4ced-837f-1c8df80d0e55",
+    "fullName": "Daughter",
+    "relationship": "Child",
+    "dateOfBirth": "2018-01-01",
+    "nationalId": ""
+  },
+  {
+    "id": "a248649c-a312-4e0a-8ec8-a7444f234129",
+    "fullName": "Father",
+    "relationship": "Parent",
+    "dateOfBirth": null,
+    "nationalId": ""
+  }
+]

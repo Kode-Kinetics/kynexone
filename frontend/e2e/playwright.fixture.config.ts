@@ -15,7 +15,7 @@ const PORT = Number(process.env.FIXTURE_PORT ?? 5180);
 
 export default defineConfig({
   testDir: '.',
-  testMatch: /(?:dashboard-glass|user-password-requirements|approvals-self-requested|release-a-deductions)\.spec\.ts/,
+  testMatch: /(?:dashboard-glass|user-password-requirements|approvals-self-requested|release-a-package|release-a-deductions)\.spec\.ts/,
   fullyParallel: false,
   retries: 0,
   workers: 1,
@@ -29,7 +29,8 @@ export default defineConfig({
     command: `npx next dev -p ${PORT}`,
     url: `http://localhost:${PORT}/dashboard`,
     cwd: path.resolve(__dirname, '..'),
-    reuseExistingServer: true,
+    // Never reuse whatever already listens on the port: it may be another checkout's dev server (review round 3).
+    reuseExistingServer: false,
     timeout: 180_000,
   },
   projects: [
