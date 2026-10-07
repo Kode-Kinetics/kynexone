@@ -16,6 +16,7 @@ import {
   type AppLanguage,
 } from './languageDirection';
 import { mfaAr, mfaEn } from './mfaStrings';
+import { welcomeAr, welcomeEn } from './welcomeStrings';
 
 export type { AppLanguage };
 
@@ -77,6 +78,7 @@ export const en = {
     firstLogin: 'Welcome! Please set your password to continue.',
   },
   mfa: mfaEn,
+  signin: welcomeEn,
   nav: {
     home: 'Home',
     attendance: 'Attendance',
@@ -334,6 +336,7 @@ const ar: TranslationResources = {
     firstLogin: 'مرحباً! يرجى تعيين كلمة المرور للمتابعة.',
   },
   mfa: mfaAr,
+  signin: welcomeAr,
   nav: {
     home: 'الرئيسية',
     attendance: 'الحضور',

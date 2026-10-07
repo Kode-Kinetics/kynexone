@@ -8,6 +8,7 @@ import { navigationRef } from './routes';
 import { GlassSurface, LiquidBackdrop } from '@/components/ui';
 import { useTheme } from '@/theme/ThemeProvider';
 import { MfaSetupBanner } from '@/features/auth/MfaSetupBanner';
+import { ResetCodeBanner } from '@/features/auth/ResetCodeBanner';
 
 export function RootNavigator() {
   const { isAuthenticated, isInitialized, initialize } = useAuthStore();
@@ -53,6 +54,7 @@ export function RootNavigator() {
     <NavigationContainer ref={navigationRef} theme={navigationTheme}>
       {isAuthenticated ? <MainTabs /> : <AuthStack />}
       {isAuthenticated ? <MfaSetupBanner /> : null}
+      {isAuthenticated ? <ResetCodeBanner /> : null}
     </NavigationContainer>
   );
 }

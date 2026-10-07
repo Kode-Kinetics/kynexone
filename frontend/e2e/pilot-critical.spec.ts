@@ -63,7 +63,7 @@ test.describe('client-pilot critical tenant lane', () => {
     });
 
     stampActor({ email: ADMIN_EMAIL, tenantSlug: TENANT_SLUG, via: 'tenant login form' });
-    await page.goto('/login');
+    await page.goto(`/login?workspace=${TENANT_SLUG}`);
     await page.locator('#li-em, input[type="email"]').first().fill(ADMIN_EMAIL);
     await page.locator('#li-pw, input[type="password"]').first().fill(ADMIN_PASSWORD);
     await page.locator('#li-ws, input[autocomplete="organization"]').first().fill(TENANT_SLUG);
@@ -127,7 +127,7 @@ test.describe('client-pilot critical tenant lane', () => {
     test.setTimeout(90_000);
 
     stampActor({ email: ADMIN_EMAIL, tenantSlug: TENANT_SLUG, via: 'tenant login form' });
-    await page.goto('/login');
+    await page.goto(`/login?workspace=${TENANT_SLUG}`);
     await page.locator('#li-em, input[type="email"]').first().fill(ADMIN_EMAIL);
     await page.locator('#li-pw, input[type="password"]').first().fill(ADMIN_PASSWORD);
     await page.locator('#li-ws, input[autocomplete="organization"]').first().fill(TENANT_SLUG);

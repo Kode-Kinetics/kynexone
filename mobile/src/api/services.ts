@@ -15,11 +15,13 @@ import { FEATURES, FeatureUnavailableError } from '@/config/features';
 import { normalizeAccessMode } from '@/auth/accessPolicy';
 import {
   normalizeEmail,
+  normalizeWorkspace,
+  optionalWorkspace,
   publicInvitationInput,
   publicLoginInput,
   publicResetInput,
-  requireWorkspace,
 } from '@/auth/publicAuthInput';
+import { DEFAULT_MIN_PASSWORD_LENGTH, normalizeWelcomeCode } from '@/auth/welcomeCode';
 import { mapEmployeeProfile } from './profileMapper';
 import { fetchAllPages } from './paging';
 import {
@@ -130,6 +132,8 @@ function toAuthUser(raw: any): AuthUser {
   return {
     id: String(raw.id ?? ''),
     tenantId: String(raw.tenantId ?? ''),
+    tenantSlug: typeof raw.tenantSlug === 'string' ? normalizeWorkspace(raw.tenantSlug) : undefined,
+    pendingResetNotice: raw.pendingResetNotice?.date ? { date: String(raw.pendingResetNotice.date) } : null,
     employeeId: raw.employeeId == null ? '' : String(raw.employeeId),
     username: raw.email ?? '',
     email: raw.email ?? '',
@@ -493,8 +497,11 @@ function authenticatedSession(data: any): AuthenticatedSession {
   if (!data?.accessToken || !data?.user) {
     throw new Error('Unexpected sign-in response from the server.');
   }
+  const user = toAuthUser(data.user);
+  // HR's live reset code may be reported on the reply or on the user; keep it on the user.
+  if (!user.pendingResetNotice && data.pendingResetNotice?.date) user.pendingResetNotice = { date: String(data.pendingResetNotice.date) };
   return {
-    user: toAuthUser(data.user),
+    user,
     tokens: {
       accessToken: data.accessToken,
       refreshToken: data.refreshToken,
@@ -505,15 +512,15 @@ function authenticatedSession(data: any): AuthenticatedSession {
 
 // ---- Auth ----
 export const authApi = {
-  async login(username: string, password: string, tenantId: string): Promise<LoginOutcome> {
+  async login(username: string, password: string, tenantId?: string): Promise<LoginOutcome> {
     const input = publicLoginInput(username, password, tenantId);
     const res = await createPublicAuthClient().post('/auth/login', input);
     const step = classifyLoginResponse(unwrapApiData<unknown>(res.data));
     if (step.kind === 'mfaChallenge') {
-      return { ...step, tenantId: input.tenantSlug, email: input.email };
+      return { ...step, tenantId: input.tenantSlug ?? '', email: input.email };
     }
     if (step.kind === 'mfaEnrollment') {
-      return { ...step, tenantId: input.tenantSlug, email: input.email };
+      return { ...step, tenantId: input.tenantSlug ?? '', email: input.email };
     }
     return { kind: 'authenticated', ...authenticatedSession(step.payload) };
   },
@@ -523,7 +530,7 @@ export const authApi = {
     totpCode: string,
     tenantId: string
   ): Promise<AuthenticatedSession> {
-    requireWorkspace(tenantId);
+    void tenantId; // Not sent: the challenge token identifies the company. May be '' after an email-only sign-in.
     const response = await createPublicAuthClient().post('/auth/mfa/challenge/verify', {
       challengeToken,
       totpCode,
@@ -536,7 +543,7 @@ export const authApi = {
     enrollmentToken: string,
     tenantId: string
   ): Promise<{ provisioningUri: string; tempSecret: string }> {
-    requireWorkspace(tenantId);
+    void tenantId; // Not sent: the challenge token identifies the company. May be '' after an email-only sign-in.
     const response = await createPublicAuthClient().post('/auth/mfa/enrollment/setup', {
       enrollmentToken,
     });
@@ -560,7 +567,7 @@ export const authApi = {
     totpCode: string,
     tenantId: string
   ): Promise<{ recoveryCodes: string[] | null }> {
-    requireWorkspace(tenantId);
+    void tenantId; // Not sent: the challenge token identifies the company. May be '' after an email-only sign-in.
     const response = await createPublicAuthClient().post('/auth/mfa/enrollment/verify-setup', {
       enrollmentToken,
       tempSecret,
@@ -599,13 +606,50 @@ export const authApi = {
     await apiPost('/auth/change-password', { currentPassword: oldPassword, newPassword });
   },
 
-  async forgotPassword(email: string, tenantSlug: string): Promise<void> {
+  /**
+   * Resolves to `{ emailDelivery: false }` when the reply says no email can be sent for this
+   * company (then only HR's welcome code helps); otherwise the reply says nothing either way.
+   */
+  async forgotPassword(email: string, tenantSlug?: string): Promise<{ emailDelivery?: boolean }> {
     const normalizedEmail = normalizeEmail(email);
     if (!normalizedEmail) throw new Error('Work email is required.');
-    await createPublicAuthClient().post('/auth/forgot-password', {
+    const res = await createPublicAuthClient().post('/auth/forgot-password', {
       email: normalizedEmail,
-      tenantSlug: requireWorkspace(tenantSlug),
+      ...optionalWorkspace(tenantSlug),
     });
+    const data = unwrapApiData<Record<string, unknown> | undefined>(res?.data);
+    const noDelivery = data?.emailDeliveryConfigured === false || data?.emailed === false || data?.emailSent === false;
+    return noDelivery ? { emailDelivery: false } : {};
+  },
+
+  /**
+   * First sign-in: exchange HR's welcome code for a password the employee chooses. 200
+   * `{ tenantSlug }` and NO session; the caller signs in next with that company ID. Refusals are
+   * 400 `{ code }` (see auth/welcomeCode.ts welcomeErrorKey) or 429.
+   */
+  async welcomeRedeem(email: string, code: string, newPassword: string, tenantSlug?: string): Promise<{ tenantSlug?: string }> {
+    const normalizedEmail = normalizeEmail(email);
+    if (!normalizedEmail) throw new Error('Work email is required.');
+    const res = await createPublicAuthClient().post('/auth/welcome/redeem', {
+      email: normalizedEmail,
+      code: normalizeWelcomeCode(code),
+      newPassword,
+      ...optionalWorkspace(tenantSlug),
+    });
+    const data = unwrapApiData<{ tenantSlug?: string } | undefined>(res?.data);
+    const slug = normalizeWorkspace(data?.tenantSlug);
+    return slug ? { tenantSlug: slug } : {};
+  },
+
+  /** The company's minimum password length for the live tick; 10 when unknown or unreachable. */
+  async passwordPolicy(tenantSlug?: string): Promise<number> {
+    try {
+      const res = await createPublicAuthClient().get('/auth/password-policy', { params: optionalWorkspace(tenantSlug) });
+      const n = Number(unwrapApiData<{ minLength?: number }>(res.data)?.minLength);
+      return Number.isInteger(n) && n >= 1 && n <= 128 ? n : DEFAULT_MIN_PASSWORD_LENGTH;
+    } catch {
+      return DEFAULT_MIN_PASSWORD_LENGTH;
+    }
   },
 
   async resetPassword(resetToken: string, newPassword: string, tenantSlug: string): Promise<void> {

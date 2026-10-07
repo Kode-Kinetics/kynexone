@@ -45,6 +45,15 @@ const nextConfig: NextConfig = {
         source: '/api/:path*',
         headers: [{ key: 'Cache-Control', value: 'no-store' }],
       },
+      {
+        // First sign-in: the address may carry a welcome code in its fragment until the page
+        // scrubs it. Fragments never travel in a Referer, but nothing about this page needs one.
+        source: '/welcome',
+        headers: [
+          { key: 'Referrer-Policy', value: 'no-referrer' },
+          { key: 'Cache-Control', value: 'no-store' },
+        ],
+      },
     ];
   },
 

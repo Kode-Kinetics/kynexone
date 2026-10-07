@@ -85,7 +85,11 @@ const isFocused = (locator: Locator): Promise<boolean> =>
 
 test.describe('Login contract (must hold before AND after the rebrand)', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/login');
+    // With a workspace link. Since employee self sign-in, plain /login asks only for email and
+    // password; #li-ws appears for a ?workspace= link, a tenant subdomain, or when the API answers
+    // `workspace_required` (fixture spec e2e/employee-sign-in.spec.ts proves those). Every consumer
+    // listed above now opens /login?workspace=<slug>, so this is the shape they all depend on.
+    await page.goto('/login?workspace=contract-probe');
 
     // Wait for the page to SETTLE, not merely to render. React's streaming SSR parks the shell in
     // a hidden staging container and then moves it into the body, so for a few hundred ms the

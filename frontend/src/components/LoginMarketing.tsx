@@ -51,6 +51,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
+import { useLocale } from '../contexts/LocaleContext';
 
 /* ══════════════════════════════════════════════════════════════════════════
    THE RUN SHEET — SIX ROWS OF TWO DIFFERENT KINDS, AND THAT IS THE POINT
@@ -894,7 +895,11 @@ function useDrum(playing: boolean) {
    it.
    ══════════════════════════════════════════════════════════════════════════ */
 export function Brief() {
-  const [ar, setAr] = useState(false);
+  /* Starts in, and follows, the page's language (the card's "English / العربية" switch). Its own
+     switch below still flips the panel alone, for a reader who wants the other language here. */
+  const { locale } = useLocale();
+  const [ar, setAr] = useState(locale === 'ar');
+  useEffect(() => { setAr(locale === 'ar'); }, [locale]);
   const [playing, setPlaying] = useState(true);
   const t = ar ? AR : EN;
   const period = usePeriod(ar);
