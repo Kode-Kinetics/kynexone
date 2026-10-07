@@ -38,7 +38,13 @@ public sealed record IssuedCodeDto(
     string Username,
     string Department, string Site,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Code,
-    DateTime ExpiresAtUtc, string TenantSlug);
+    DateTime ExpiresAtUtc, string TenantSlug,
+    /// <summary>"email" (sent to the username; no code here) or "print" (the code is in this item for the slip).</summary>
+    string Delivery = IssuedCodeDto.PrintDelivery)
+{
+    public const string EmailDelivery = "email";
+    public const string PrintDelivery = "print";
+}
 
 public sealed record SkippedCodeDto(int EmployeeId, string ReasonCode, string Reason);
 
@@ -101,7 +107,6 @@ public sealed class EmployeeAccessService
         Skip.ResetNeedsPermission => "This employee already uses KynexOne. Resetting their sign-in needs the reset permission.",
         Skip.SeatLimit => "Your company's KynexOne plan is full.",
         EmployeeAccessStates.WaitingForWorkEmail => "No work email yet.",
-        WorkEmailSetterRule.SetByCallerCode => "You set this person's work email, so another HR colleague must give access.",
         _ => EmployeeAccessStates.BlockedReason(code),
     };
 
@@ -145,8 +150,7 @@ public sealed class EmployeeAccessService
             _ => false,
         };
         if (allowed && (!AuthCurrentEligibility.IsEmployeeLifecycleEligible(facts.Status)
-                        || (caller.UserId is Guid me && (facts.Login?.UserId == me
-                            || await WorkEmailSetterRule.IsCallerSetterAsync(_db, tenantId, employeeId, me, ct)))))
+                        || (caller.UserId is Guid me && facts.Login?.UserId == me)))
             allowed = false;
 
         return new EmployeeAccessDto(facts.EmployeeId, facts.EmployeeName, facts.EmployeeCode, facts.WorkEmail, state.State,
@@ -157,7 +161,11 @@ public sealed class EmployeeAccessService
 
     // ── POST codes ─────────────────────────────────────────────────────────────────────────────────────
 
-    private sealed record Pending(IssuedCodeDto Item, Guid UserId, string Email, bool ResetOfActive);
+    /// <param name="SetterPrintOnly">The caller set this employee's work email (WorkEmailSetterRule): the code is never
+    /// emailed to an address they chose — it is printed and handed over in person, and they become its handler.</param>
+    private sealed record Pending(IssuedCodeDto Item, Guid UserId, string Email, bool ResetOfActive, bool SetterPrintOnly);
+
+    public const string SetterPrintMessage = "You entered these work emails, so print the slips and hand them over in person.";
 
     public async Task<IssueCodesResponse> IssueCodesAsync(Guid tenantId, IssueCodesRequest request, EntityScopeContext scope,
         RequestContext caller, bool canIssue, bool canReset, CancellationToken ct)
@@ -199,19 +207,21 @@ public sealed class EmployeeAccessService
         var allEmailed = issued.Count > 0;
         foreach (var p in issued)
         {
-            var sent = configured && await TryEmailAsync(tenantId, p, ct);
-            if (sent) { items.Add(p.Item with { Code = null }); anyEmailed = true; continue; }
+            var sent = configured && !p.SetterPrintOnly && await TryEmailAsync(tenantId, p, ct);
+            if (sent) { items.Add(p.Item with { Code = null, Delivery = IssuedCodeDto.EmailDelivery }); anyEmailed = true; continue; }
             allEmailed = false;
             _db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), DateTime.UtcNow, DisclosedAction, "User", p.UserId.ToString(),
                 caller with { TenantId = tenantId },
-                JsonSerializer.Serialize(new { employeeId = p.Item.EmployeeId, expiresAtUtc = p.Item.ExpiresAtUtc, emailDeliveryConfigured = configured, resetOfActiveLogin = p.ResetOfActive })));
-            items.Add(p.Item);
+                JsonSerializer.Serialize(new { employeeId = p.Item.EmployeeId, expiresAtUtc = p.Item.ExpiresAtUtc, emailDeliveryConfigured = configured, resetOfActiveLogin = p.ResetOfActive, workEmailSetByIssuer = p.SetterPrintOnly })));
+            items.Add(p.Item with { Delivery = IssuedCodeDto.PrintDelivery });
         }
         // Saved BEFORE any code leaves the server: no disclosure without its record.
         if (issued.Count > 0) await _db.SaveChangesAsync(ct);
 
         var message = issued.Count == 0
             ? "No codes were issued."
+            : issued.Any(p => p.SetterPrintOnly)
+                ? SetterPrintMessage
             : allEmailed
                 ? "Each employee was emailed their sign-in code at their work email."
                 : anyEmailed
@@ -257,8 +267,9 @@ public sealed class EmployeeAccessService
             // A login already in use (active, or active with a live reset code) is a RESET (F1), whatever the state shows.
             var resetOfActive = facts.Login is { IsActive: true };
             if (resetOfActive ? !canReset : !canIssue) { result = new(Skip.ResetNeedsPermission, null); return; }
-            if (await WorkEmailSetterRule.IsCallerSetterAsync(_db, tenantId, employeeId, callerId, token))
-            { result = new(WorkEmailSetterRule.SetByCallerCode, null); return; }
+            // Work-email setter rule for welcome codes (Integration Owner): it blocks the EMAIL channel only — the code is
+            // issued, but printed and handed over in person; the disclosure makes the issuer its handler (30-day bar).
+            var setterPrintOnly = await WorkEmailSetterRule.IsCallerSetterAsync(_db, tenantId, employeeId, callerId, token);
 
             // A pre-existing employee with no login yet: stage it now (the provisioner is idempotent).
             if (facts.Link is null)
@@ -305,7 +316,7 @@ public sealed class EmployeeAccessService
             await _db.SaveChangesAsync(token);
 
             result = new(null, new Pending(new IssuedCodeDto(employeeId, facts.EmployeeName, facts.ArabicName, facts.EmployeeCode,
-                user.Email, facts.Department, facts.Site, code, expires, tenantSlug), userId, user.Email, resetOfActive));
+                user.Email, facts.Department, facts.Site, code, expires, tenantSlug), userId, user.Email, resetOfActive, setterPrintOnly));
         }
 
         if (_db.Database.IsRelational())
