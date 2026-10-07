@@ -140,13 +140,14 @@ public class ReleaseAContractTests
     [Fact]
     public async Task Stubs_ThrowUntilTheirSliceLands_ExceptTheActivationHooks_WhichNeverBlockActivation()
     {
-        await new EntitlementResolver().Invoking(r => r.ResolveAsync(Guid.NewGuid(), 1, new DateOnly(2026, 10, 6), default))
-            .Should().ThrowAsync<NotImplementedException>();
-        await new EntitlementWriter().Invoking(w => w.FreezeTermAsync(Guid.NewGuid(), Guid.NewGuid(), default))
-            .Should().ThrowAsync<NotImplementedException>();
+        // R2 landed: the resolver and writer are real (Release A R2 tests). Its activation hook must still never block
+        // activation, even when the writer fails.
         var contract = new EmployeeContract { TenantId = Guid.NewGuid() };
-        await new ContractChainStamper().Invoking(h => h.OnActivatedAsync(contract, default)).Should().NotThrowAsync();
-        await new PackageFreezeOnActivation().Invoking(h => h.OnActivatedAsync(contract, default)).Should().NotThrowAsync();
+        // R4 replaced the stamper stub; it still never throws, even with no employee row behind the contract.
+        await using var stamperDb = InMemory();
+        await new ContractChainStamper(stamperDb, NullLogger<ContractChainStamper>.Instance)
+            .Invoking(h => h.OnActivatedAsync(contract, default)).Should().NotThrowAsync();
+        await new PackageFreezeOnActivation(new ThrowingWriter()).Invoking(h => h.OnActivatedAsync(contract, default)).Should().NotThrowAsync();
     }
 
     // ── Value sets the database spells (CHECK literals == C# constants) ──────────────────────────
@@ -185,7 +186,7 @@ public class ReleaseAContractTests
     {
         var codes = typeof(ReleaseABlockReasons).GetFields(BindingFlags.Public | BindingFlags.Static)
             .Where(f => f.IsLiteral && f.FieldType == typeof(string)).Select(f => (string)f.GetRawConstantValue()!).ToList();
-        codes.Should().HaveCount(38);
+        codes.Should().HaveCount(62); // 37 R0 + 14 R2 + 6 R4 + 4 R3 + 1 R1
         ReleaseABlockReasons.All.Keys.Should().BeEquivalentTo(codes);
         var arabic = new Regex(@"\p{IsArabic}");
         foreach (var reason in ReleaseABlockReasons.All.Values)
@@ -498,6 +499,14 @@ public class ReleaseAContractTests
         dto.Errors.Should().ContainSingle(e => e.Contains("open renewal review"));
         hook.Calls.Should().Be(1, "only the newly imported Active contract is activated");
         (await db.EmployeeContracts.AsNoTracking().SingleAsync(c => c.Id == underReview.Id)).EndDate.Should().Be(new DateOnly(2026, 12, 31));
+    }
+
+    private sealed class ThrowingWriter : IEntitlementWriter
+    {
+        public Task<FreezeResult> FreezeTermAsync(Guid tenantId, Guid contractId, CancellationToken ct) => throw new InvalidOperationException("boom");
+        public Task ApplyRenewalAsync(Guid tenantId, RenewalApplyPlan plan, CancellationToken ct) => throw new InvalidOperationException("boom");
+        public Task CarryToProvisionalAsync(Guid tenantId, Guid fromContractId, Guid provisionalContractId, CancellationToken ct) =>
+            throw new InvalidOperationException("boom");
     }
 
     private sealed class RecordingHook : IContractTermLifecycle

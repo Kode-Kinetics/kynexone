@@ -1,5 +1,6 @@
 import client from './client';
 import { fetchAllPages } from '../lib/paging';
+import { requirePage } from '../lib/listResponse';
 import type { PagedResult } from './organization';
 
 export interface OrgChartNodeDto {
@@ -753,7 +754,7 @@ export const employeesApi = {
   ) =>
     client.get<PagedResult<EmployeeListItem>>('/api/employees', {
       params: { page: 1, pageSize: 25, ...params },
-    }).then((r) => r.data),
+    }).then((r) => requirePage<PagedResult<EmployeeListItem>>(r.data, 'employees')),
 
   /** Every matching employee, page by page, for a list that must be complete (e.g. a select). */
   listAll: (params: { search?: string; status?: string; department?: string } = {}) =>

@@ -134,6 +134,9 @@ public partial class LoansController
         if (req.ChangeType == "CollectionMethod")
         {
             if (!IsFinanceActor()) return Forbid();
+            // Art. 92 (Release A): moving a loan onto payroll collection deducts its instalment from the wage.
+            if (await Art92ForChangedInstalmentAsync(loan, loan.InstallmentAmount, req.RepaymentMethod ?? string.Empty, ct) is { } art92Refusal)
+                return art92Refusal;
             if (!req.ConfirmNoPayrollCollection || !ValidReference(req.ReconciliationReference) || req.RepaymentMethod != "BankTransfer")
                 return BadRequest("Confirm reconciled non-payroll history, provide its evidence reference, and choose BankTransfer.");
             var issue = await LegacyCollectionConversionIssueAsync(loan, ct);
@@ -190,6 +193,8 @@ public partial class LoansController
         {
             if (change.ChangeType == "CollectionMethod")
             {
+                if (await Art92ForChangedInstalmentAsync(loan, loan.InstallmentAmount, change.RequestedRepaymentMethod ?? string.Empty, ct) is { } art92Refusal)
+                    return art92Refusal;
                 if (change.RequestedRepaymentMethod != "BankTransfer" || !ValidReference(change.Reference)) return Conflict("Invalid collection conversion evidence.");
                 if (change.OutstandingBalanceAtRequest != loan.OutstandingBalance) return Conflict("Balance changed. Reject this request and reconcile again.");
                 var issue = await LegacyCollectionConversionIssueAsync(loan, ct);

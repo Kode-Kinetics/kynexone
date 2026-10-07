@@ -142,6 +142,34 @@ harmful.
   benefit, a stamped contract chain, a salary basis or Qiwa confirmation, an approval payload, a loan consent, or a
   grade cell using a Release A value type or criterion) — take a Neon branch and fix forward instead. Order: image →
   flag → schema `Down`.
+- **Release A R2 dependants soft delete (`20261008000200_ReleaseAR2DependantsSoftDelete`).** Expand-only: adds
+  `employee_dependents.is_deleted` (default false), `deleted_at_utc` and `deleted_by`. Roll it back before R0's migration.
+  Its `Down()` refuses (`R2_DEPENDANTS_SOFT_DELETED`) while any removed dependant exists, because dropping the column would
+  make every removed dependant covered again. Restore or purge those rows deliberately (with HR sign-off), or fix forward.
+
+- **Release A R0b (`20261007000200_ReleaseAContractChainSource`).** Additive: `employee_contracts.chain_source` (nullable)
+  and four CHECKs added **NOT VALID** (`chain_source`, `chain_pair`, `renewed_from_counts`, `chain_starts_by_term_start`):
+  no table scan at deploy, every new or changed row is checked. **Before the later VALIDATE migration**, run this
+  read-only pre-check on each environment; every count must be 0 (a non-zero row is fixed through chain confirm, never by
+  hand):
+  ```sql
+  SELECT tenant_id,
+         count(*) FILTER (WHERE NOT (chain_source IS NULL OR chain_source IN ('Derived','Recorded')))            AS bad_chain_source,
+         count(*) FILTER (WHERE NOT ((renewal_number IS NULL) = (chain_started_on IS NULL)))                    AS bad_chain_pair,
+         count(*) FILTER (WHERE NOT (renewed_from_contract_id IS NULL OR renewal_number >= 1
+                                     OR provisional_basis IS NOT NULL))                                         AS bad_renewed_from,
+         count(*) FILTER (WHERE NOT (chain_started_on IS NULL OR chain_started_on <= start_date))               AS bad_chain_start
+  FROM employee_contracts GROUP BY tenant_id
+  HAVING count(*) FILTER (WHERE NOT ((renewal_number IS NULL) = (chain_started_on IS NULL))) > 0
+      OR count(*) FILTER (WHERE NOT (renewed_from_contract_id IS NULL OR renewal_number >= 1 OR provisional_basis IS NOT NULL)) > 0
+      OR count(*) FILTER (WHERE NOT (chain_started_on IS NULL OR chain_started_on <= start_date)) > 0
+      OR count(*) FILTER (WHERE NOT (chain_source IS NULL OR chain_source IN ('Derived','Recorded'))) > 0;
+  ```
+  Rollback: `Down()` refuses while any term carries HR-recorded history (`chain_source = 'Recorded'`); otherwise it drops
+  the four CHECKs and the column. Order: image → schema `Down` (R0b before R0).
+  Re-applying R0b after a Down marks every term that still carries a stamped chain (`renewal_number` and
+  `chain_started_on` set, `chain_source` dropped with the column) as `Derived` again — they can only have come from
+  the census, because recorded history blocks the Down.
 
 ### 3. Re-verify before restoring traffic
 - `/health/ready` must read `ready` with `pendingMigrations: 0`.
@@ -227,6 +255,85 @@ GROUP BY tenant_id;
 
 The second branch catches previously recognised spellings stored with surrounding spaces (the old
 comparison did not trim). Zero rows means no past payslip was affected.
+
+## Migration import — who used it to create roles or grant access (read-only exposure check)
+
+Before this fix the migration import (`POST /api/migrations/preview|commit|{id}/resume`) accepted `roles` and
+`users` sections from any caller the controller admits — Admin, HR Manager, and through `employees.bulk_import`
+also HR Officer and HR Director — although the Access screen requires `security.manage`. An HR Manager could
+create roles and give any account, their own included, the Admin role. Those sections wrote **no per-entity
+audit row**; the evidence is the batch ledger (`migration_import_batches.payload_json` keeps the whole package and
+`created_by` the committer) and the `migration.import_completed` audit row.
+
+**Detection only — run it, read it, do not "fix" from it.** Review each hit with the tenant owner; removing a role or
+an account is a decision for the Access screen, with its own audit. Do **not** run it against production without
+the owner's say-so. SELECT only:
+
+```sql
+-- 1. Every committed (non-dry-run) migration package that carried a roles or users section, who committed it,
+--    and whether that person holds security.manage TODAY (the gate's requirement, which was not checked then).
+WITH access_batches AS (
+    SELECT b.tenant_id, b.id AS batch_id, b.external_batch_id, b.status, b.created_by,
+           b.created_at_utc, b.completed_at_utc,
+           (b.payload_json::jsonb -> 'Sections') ? 'roles' AS had_roles,
+           (b.payload_json::jsonb -> 'Sections') ? 'users' AS had_users,
+           lower(coalesce(b.payload_json::jsonb -> 'Sections' ->> 'roles', '')) AS roles_csv,
+           lower(coalesce(b.payload_json::jsonb -> 'Sections' ->> 'users', '')) AS users_csv
+    FROM migration_import_batches b
+    WHERE b.package_type = 'MigrationPackage' AND NOT b.dry_run AND b.status <> 'Previewed'
+      AND (b.payload_json::jsonb -> 'Sections') ?| array['roles', 'users'])
+SELECT ab.tenant_id, ab.batch_id, ab.external_batch_id, ab.status, ab.completed_at_utc,
+       ab.had_roles, ab.had_users, committer.email AS committed_by,
+       EXISTS (SELECT 1 FROM user_roles ur
+               JOIN role_permissions rp ON rp.role_id = ur.role_id
+               JOIN permissions p ON p.id = rp.permission_id
+               WHERE ur.user_id = ab.created_by AND p.permission_key = 'security.manage') AS committer_holds_security_manage_now
+FROM access_batches ab
+LEFT JOIN users committer ON committer.id = ab.created_by
+ORDER BY ab.completed_at_utc DESC NULLS FIRST;
+
+-- 2. The accounts those packages named (first CSV column = Email), with the roles they hold NOW.
+--    privileged = holds Admin or any role carrying security.manage.
+WITH access_batches AS (
+    SELECT b.tenant_id, b.id AS batch_id, b.created_by,
+           lower(coalesce(b.payload_json::jsonb -> 'Sections' ->> 'users', '')) AS users_csv
+    FROM migration_import_batches b
+    WHERE b.package_type = 'MigrationPackage' AND NOT b.dry_run AND b.status <> 'Previewed'
+      AND (b.payload_json::jsonb -> 'Sections') ? 'users')
+SELECT ab.tenant_id, ab.batch_id, u.id AS user_id, u.email, u.status, u.is_active, u.is_group_scope,
+       u.id = ab.created_by AS committer_changed_own_account,
+       string_agg(DISTINCT r.name, ', ') AS roles_now,
+       coalesce(bool_or(r.normalized_name = 'ADMIN' OR p.permission_key = 'security.manage'), false) AS privileged
+FROM access_batches ab
+JOIN users u ON u.tenant_id = ab.tenant_id AND NOT u.is_deleted
+ AND ab.users_csv ~ ('(^|\n)"?' || regexp_replace(lower(u.email), '([.+*?^$()\[\]{}|\\-])', '\\\1', 'g') || '"?,')
+LEFT JOIN user_roles ur ON ur.user_id = u.id
+LEFT JOIN roles r ON r.id = ur.role_id AND NOT r.is_deleted
+LEFT JOIN role_permissions rp ON rp.role_id = r.id
+LEFT JOIN permissions p ON p.id = rp.permission_id
+GROUP BY ab.tenant_id, ab.batch_id, ab.created_by, u.id, u.email, u.status, u.is_active, u.is_group_scope
+ORDER BY privileged DESC, ab.tenant_id, u.email;
+
+-- 3. The roles those packages named (first CSV column = Name), as they stand NOW.
+WITH access_batches AS (
+    SELECT b.tenant_id, b.id AS batch_id,
+           lower(coalesce(b.payload_json::jsonb -> 'Sections' ->> 'roles', '')) AS roles_csv
+    FROM migration_import_batches b
+    WHERE b.package_type = 'MigrationPackage' AND NOT b.dry_run AND b.status <> 'Previewed'
+      AND (b.payload_json::jsonb -> 'Sections') ? 'roles')
+SELECT ab.tenant_id, ab.batch_id, r.id AS role_id, r.name, r.is_system, r.is_active, r.created_at_utc,
+       (SELECT count(*) FROM user_roles ur WHERE ur.role_id = r.id) AS members_now,
+       (SELECT string_agg(p.permission_key, ', ' ORDER BY p.permission_key) FROM role_permissions rp
+          JOIN permissions p ON p.id = rp.permission_id WHERE rp.role_id = r.id) AS permissions_now
+FROM access_batches ab
+JOIN roles r ON (r.tenant_id = ab.tenant_id OR r.tenant_id IS NULL) AND NOT r.is_deleted
+ AND ab.roles_csv ~ ('(^|\n)"?' || regexp_replace(lower(r.name), '([.+*?^$()\[\]{}|\\-])', '\\\1', 'g') || '"?,')
+ORDER BY ab.tenant_id, r.name;
+```
+
+Zero rows from query 1 means the sections were never committed. From this release on, every role and user the
+import writes also gets its own `access.role_created|role_updated|user_created|user_updated|roles_assigned` audit
+row with `"source":"migration_import"` and the batch id in its metadata.
 
 ## Invariants
 - **Schema leads code.** Migrations apply in `migrate-backend` before the deploy hook fires.

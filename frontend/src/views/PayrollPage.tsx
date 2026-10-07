@@ -36,8 +36,10 @@ import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
 import { SaudiBankExportGate } from '../components/payroll/SaudiBankExportGate';
 import { payrollInsightEmptyCopy, payrollInsightState, payrollPeriodState } from '../lib/payrollInsightState';
+import { LoadFailedNotice } from '../components/ui/LoadFailedRow';
 
 import { EnumLabel, type EnumName } from '../components/EnumLabel';
+import { RunDeductionsReview } from '../components/deductions/RunDeductionsReview';
 // ── Payroll import/export helpers ───────────────────────────────────────────────
 
 const salaryStructuresImportExport = {
@@ -1197,9 +1199,14 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
   const [reopening, setReopening] = useState<PayrollRun | null>(null);
   const [voiding, setVoiding] = useState<PayrollRun | null>(null);
 
+  // A failed load is shown as a failure, never as "No runs yet" (which invites creating a duplicate run).
+  const [runsError, setRunsError] = useState<unknown>(null);
   const load = () => {
     setLoading(true);
-    payrollApi.listAllRuns().then(all => { setRuns(all); setTotal(all.length); }).catch(() => {}).finally(() => setLoading(false));
+    payrollApi.listAllRuns()
+      .then(all => { setRuns(all); setTotal(all.length); setRunsError(null); })
+      .catch(e => { setRuns([]); setTotal(0); setRunsError(e); })
+      .finally(() => setLoading(false));
   };
   useEffect(() => {
     load();
@@ -1297,7 +1304,8 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
             <p className="text-sm font-semibold text-slate-900 dark:text-white">Payroll Runs</p>
           </div>
           {loading && <div className="flex justify-center py-10"><div className="h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></div>}
-          {!loading && runs.length === 0 && <p className="py-10 text-center text-sm text-slate-400">No runs yet. Create one above.</p>}
+          {!loading && runsError != null && <LoadFailedNotice error={runsError} onRetry={load} />}
+          {!loading && runsError == null && runs.length === 0 && <p className="py-10 text-center text-sm text-slate-400">No runs yet. Create one above.</p>}
           <div className="divide-y divide-slate-100 dark:divide-white/[0.05]">
             {runs.map(run => (
               <div key={run.id} role="button" tabIndex={0} onClick={() => openSlips(run)}
@@ -1444,6 +1452,7 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
                   </table>
                 </div>
               )}
+              <RunDeductionsReview runId={selectedRun.id} />
             </>
           )}
         </div>
@@ -2028,6 +2037,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
   isFinance: boolean;
   isHROrPayroll: boolean;
 }) {
+  const { hasPermission } = useAuth();
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [runId, setRunId] = useState(selectedRunId ?? '');
   const [approvals, setApprovals] = useState<PayrollApproval[]>([]);
@@ -2142,10 +2152,15 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
     } finally { setSaving(false); }
   };
 
-  const canApproveStep1 = (isHROrPayroll || isAdmin) && selectedRun?.status === 'Processed';
-  const canApproveStep2 = (isFinance || isAdmin) && selectedRun?.status === 'PendingFinanceReview';
-  const canFinanceApproveDirectly = (isFinance || isAdmin) && selectedRun?.status === 'Processed';
-  const canSendBack = (isFinance || isAdmin) && selectedRun?.status === 'PendingFinanceReview';
+  // The role decides WHICH step a user acts on; the API decides WHETHER they may: approve is
+  // `payroll.approve` and send-back is `payroll.lock` (PayrollController). A Payroll Officer is in
+  // the HR/payroll bucket but holds neither, so the buttons only ever returned 403 for them.
+  const mayApprove = hasPermission('payroll.approve');
+  const maySendBack = hasPermission('payroll.lock');
+  const canApproveStep1 = mayApprove && (isHROrPayroll || isAdmin) && selectedRun?.status === 'Processed';
+  const canApproveStep2 = mayApprove && (isFinance || isAdmin) && selectedRun?.status === 'PendingFinanceReview';
+  const canFinanceApproveDirectly = mayApprove && (isFinance || isAdmin) && selectedRun?.status === 'Processed';
+  const canSendBack = maySendBack && (isFinance || isAdmin) && selectedRun?.status === 'PendingFinanceReview';
   const canAct = canApproveStep1 || canApproveStep2 || canFinanceApproveDirectly;
 
   return (
@@ -2325,6 +2340,10 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
 // ── Payslips Tab ────────────────────────────────────────────────────────────────
 
 function PayslipsTab() {
+  // The payslip PDF and the run's ZIP bundle are `payroll.export` on the API (PayrollController
+  // DownloadSlipPdf / DownloadRunPdfBundle); offering them without it only produced a 403.
+  const { hasPermission } = useAuth();
+  const canExport = hasPermission('payroll.export');
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [runId, setRunId] = useState('');
   const [payslips, setPayslips] = useState<Payslip[]>([]);
@@ -2385,7 +2404,7 @@ function PayslipsTab() {
             {generating ? 'Generating…' : 'Generate Payslips'}
           </button>
         )}
-        {payslips.length > 0 && (
+        {payslips.length > 0 && canExport && (
           <button type="button" className={btn.ghost} onClick={downloadBundle} disabled={downloadingBundle}>
             <Download className="h-4 w-4" />
             {downloadingBundle ? 'Preparing ZIP…' : 'Download All (ZIP)'}
@@ -2447,7 +2466,7 @@ function PayslipsTab() {
                   <td className="px-4 py-2 text-xs text-slate-400">{p.publishedAtUtc ? fmtDate(p.publishedAtUtc) : '—'}</td>
                   <td className="px-4 py-2 text-xs text-slate-400">{fmtDate(p.createdAtUtc)}</td>
                   <td className="px-4 py-2">
-                    <button
+                    {canExport ? <button
                       type="button"
                       title="Download payslip PDF"
                       disabled={downloadingId === p.id}
@@ -2459,7 +2478,7 @@ function PayslipsTab() {
                     >
                       <Download className="h-3.5 w-3.5" />
                       {downloadingId === p.id ? 'Downloading…' : 'PDF'}
-                    </button>
+                    </button> : <span className="text-xs text-slate-400">—</span>}
                   </td>
                 </tr>
               ))}

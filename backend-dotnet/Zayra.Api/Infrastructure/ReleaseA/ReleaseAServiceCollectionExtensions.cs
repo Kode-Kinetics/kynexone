@@ -39,6 +39,11 @@ public static class ReleaseAServiceCollectionExtensions
         services.AddScoped<IRenewalDeadlineCalculator, RenewalDeadlineCalculator>();
         services.AddSingleton(RenewalCaseJobHandler.Descriptor);
         services.AddScoped<RenewalCaseJobHandler>();
+        // R4 additions (flagged in the R4 PR for the integration owner): the opener and reminders the job and the
+        // radar API share, and the hourly scheduler that enqueues one job per release_a tenant per day.
+        services.AddScoped<RenewalCaseOpener>();
+        services.AddScoped<RenewalReminderService>();
+        services.AddHostedService<RenewalCaseScheduler>();
 
         // Term activation hooks, in order: R4 stamps the chain, then R2 freezes the package for that term.
         services.AddScoped<IContractTermLifecycle, ContractChainStamper>();

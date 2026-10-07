@@ -188,7 +188,9 @@ public class LoanLifecycleTests
                 "PolicySnapshotJson", "EmploymentSnapshotJson", "MonthlySalary", "CommittedAmount",
                 // Slice L1: the explainable-limit fields. Same sensitivity as MonthlySalary (salary-derived caps),
                 // no personnel identifiers — the grade block carries grade id/code/name and the cell's figures only.
-                "GradeLimit", "Available", "BindingLimit", "Limits" };
+                "GradeLimit", "Available", "BindingLimit", "Limits",
+                // Release A R3: the Art. 92 10% test (instalment, wage, share). Same sensitivity as MonthlySalary.
+                "Art92" };
             Assert.Equal(allowed.OrderBy(x => x), document.RootElement.EnumerateObject().Select(x => x.Name).OrderBy(x => x));
             Assert.True(document.RootElement.GetProperty("Eligible").GetBoolean());
             Assert.Equal(10_000m, document.RootElement.GetProperty("MonthlySalary").GetDecimal());

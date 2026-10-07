@@ -483,6 +483,11 @@ export function EmployeesPage() {
   const canBulkDelete = hasPermission('employees.delete');
   // Same audience as the API's people export: employees.write.
   const canBulkExport = hasPermission('employees.write');
+  // Create and edit are `employees.write`, import is `employees.bulk_import` (EmployeesController).
+  // Payroll, finance, compliance, managers, recruiters and auditors read people but cannot change
+  // them; the buttons used to be shown to them anyway and only ever returned 403.
+  const canWriteEmployees = hasPermission('employees.write');
+  const canImportEmployees = hasPermission('employees.bulk_import');
 
   // Header select-all checkbox drives "select all on THIS page" (tri-state).
   useEffect(() => {
@@ -587,7 +592,11 @@ export function EmployeesPage() {
     if (!employeeId) return;
     const id = Number(employeeId);
     if (Number.isFinite(id) && id > 0 && selectedId !== id) {
-      openDetail(id);
+      // ?tab=package (from the contract register's "Review proposal") opens the employee on that tab.
+      const requestedTab = searchParams?.get('tab');
+      const tabWanted = tabs.some((x) => x.id === requestedTab) ? (requestedTab as DetailTab) : null;
+      void openDetail(id, tabWanted !== null).then(() => { if (tabWanted) setActiveTab(tabWanted); });
+      if (tabWanted) setActiveTab(tabWanted);
     }
   }, [searchParams, selectedId]);
 
@@ -1316,6 +1325,7 @@ export function EmployeesPage() {
                 onExport={hasPermission('employees.write') ? employeesImportExport.export : undefined}
                 onDownloadTemplate={employeesImportExport.template}
                 onImport={async (csv, importKey) => { const r = await employeesApi.import(csv, importKey); await load(); return r; }}
+                canImport={canImportEmployees}
                 onPreview={(csv) => employeesApi.importPreview(csv)}
                 onViewIncomplete={(filter) => {
                   setSearch('');
@@ -1325,7 +1335,7 @@ export function EmployeesPage() {
                   setImportBatchFilter(filter?.importBatchId ?? '');
                 }}
               />
-              <div className="relative group">
+              {canWriteEmployees && <div className="relative group">
                 <button
                   type="button"
                   onClick={() => { if (!atEmployeeLimit) openCreateEmployee(); }}
@@ -1340,7 +1350,7 @@ export function EmployeesPage() {
                     Employee limit reached ({usage.activeEmployees}/{usage.maxEmployees}). Upgrade your plan to add more employees.
                   </div>
                 )}
-              </div>
+              </div>}
             </>
           )}
         </div>
@@ -1487,9 +1497,9 @@ export function EmployeesPage() {
                       <p className="mt-1 text-sm text-slate-400">{(search || status || readinessFilter || importFilterActive) ? 'Adjust or clear the filters to see other records.' : 'Create the first employee to begin onboarding.'}</p>
                       {(search || status || readinessFilter || importFilterActive) ? (
                         <button type="button" className="btn-secondary mt-4" onClick={() => { setSearch(''); setStatus(''); clearImportFilter(); }}>Clear filters</button>
-                      ) : (
+                      ) : canWriteEmployees ? (
                         <button type="button" className="btn-primary mt-4" onClick={openCreateEmployee} disabled={atEmployeeLimit}><Plus className="h-4 w-4" />Add Employee</button>
-                      )}
+                      ) : null}
                     </td></tr>
                   )}
                   {!loading && employees.map((employee) => {
@@ -1574,10 +1584,10 @@ export function EmployeesPage() {
                     <p className="truncate font-bold text-slate-900 dark:text-white">{selectedEmployee.fullName}</p>
                     <p className="text-xs text-slate-500">{selectedEmployee.employeeCode} · {selectedEmployee.status}</p>
                   </div>
-                  <button type="button" onClick={openEdit} className="btn-secondary h-8 shrink-0 px-3 text-xs">
+                  {canWriteEmployees && <button type="button" onClick={openEdit} className="btn-secondary h-8 shrink-0 px-3 text-xs">
                     <Pencil className="h-3.5 w-3.5" />
                     Edit
-                  </button>
+                  </button>}
                   <button type="button" onClick={() => { setSelectedId(null); setDetail(null); }} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10" aria-label="Close employee profile" title="Close profile">
                     <X className="h-4 w-4" />
                   </button>
@@ -1585,7 +1595,7 @@ export function EmployeesPage() {
                 <div className="mt-4 flex gap-1 overflow-x-auto">
                   {visibleTabs.map((tab) => (
                     <button key={tab.id} type="button" onClick={() => setActiveTab(tab.id)} className={`whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-semibold ${activeTab === tab.id ? 'bg-sapphire text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.07]'}`}>
-                      {tab.label}
+                      {t(tab.label)}
                     </button>
                   ))}
                 </div>
