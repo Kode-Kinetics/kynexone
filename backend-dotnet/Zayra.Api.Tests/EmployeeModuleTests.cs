@@ -164,6 +164,38 @@ public class EmployeeModuleTests
     }
 
     [Fact]
+    public async Task CreateAndUpdate_WithInvalidIban_RefuseWithoutRepeatingTheIban()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAndEmployeeRole(db);
+        var service = new Zayra.Api.Infrastructure.Employees.EmployeeManagementService(
+            db, new AuditService(db), new FakeDocumentStorage(), TestNotifications.For(db));
+        var context = new Zayra.Api.Application.Auth.RequestContext("127.0.0.1", "tests", Guid.NewGuid(), tenantId);
+        const string badIban = "SA0480000000608010167519"; // fails mod-97
+        EmployeeCreateRequest Request(string code, string? iban) => new(
+            EmployeeCode: code, ManualEmployeeCode: true, EnglishName: "Iban Entry", ArabicName: null, PreferredName: null,
+            Gender: "Male", DateOfBirth: null, Nationality: "Pakistani", MaritalStatus: null, PersonalEmail: null,
+            WorkEmail: null, MobileNumber: null, ProfilePhotoUrl: null, CompanyId: null, BranchId: null, DepartmentId: null,
+            DesignationId: null, GradeId: null, CostCenterId: null, JobTitle: null, ReportingManagerEmployeeId: null,
+            SecondLevelManagerEmployeeId: null, EmploymentType: "Full-Time", ContractType: "Unlimited",
+            JoiningDate: new DateTime(2026, 7, 14, 0, 0, 0, DateTimeKind.Utc), ConfirmationDate: null, ProbationStartDate: null,
+            ProbationEndDate: null, NoticePeriodDays: null, WorkLocation: null, PayrollGroup: null, ShiftPolicyCode: null,
+            LeavePolicyCode: null, AttendancePolicyCode: null,
+            PayrollProfile: iban is null ? null : new EmployeePayrollProfileRequest(
+                "Test Bank", iban, null, "Bank Transfer", "SAR", null, null, true, true, null, null, null),
+            SalaryBreakdown: null, ComplianceRecords: null);
+
+        var create = async () => await service.CreateAsync(tenantId, Request("EMP-IBAN-C", badIban), context, CancellationToken.None);
+        (await create.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should().Contain("IBAN ***7519 is invalid: wrong checksum").And.NotContain(badIban);
+
+        var created = await service.CreateAsync(tenantId, Request("EMP-IBAN-U", null), context, CancellationToken.None);
+        var update = async () => await service.UpdateAsync(tenantId, created.Id, Request("EMP-IBAN-U", badIban), context, CancellationToken.None);
+        (await update.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should().Contain("IBAN ***7519 is invalid: wrong checksum").And.NotContain(badIban);
+    }
+
+    [Fact]
     public async Task CreateEmployee_WithDepartmentHead_AutoAssignsLineManagerAndReportingLine()
     {
         await using var db = CreateDb();
@@ -453,8 +485,8 @@ public class EmployeeModuleTests
         var json = System.Text.Json.JsonSerializer.Serialize(ok.Value);
         // Row is WillCreate (not Error) because IBAN issue is a warning only
         Assert.Contains("WillCreate", json);
-        Assert.Contains("IBAN", json);
-        Assert.Contains("invalid", json);
+        Assert.Contains("IBAN ***IBAN is invalid", json);
+        Assert.DoesNotContain("INVALID-IBAN", json);
         // No DB records created (preview is dry-run)
         Assert.Equal(0, await db.EmployeePayrollProfiles.CountAsync());
     }
@@ -649,6 +681,9 @@ public class EmployeeModuleTests
         var json = System.Text.Json.JsonSerializer.Serialize(ok.Value);
         Assert.Contains("\"created\":1", json);
         Assert.Contains("mod-97", json);
+        // The warning names the IBAN by its last 4 only: import warnings are shown and kept with the batch.
+        Assert.Contains("IBAN ***9876 is invalid", json);
+        Assert.DoesNotContain("SA4420000009876543219876", json);
         Assert.True(await db.Employees.AnyAsync(e => e.TenantId == tenantId && e.EmployeeCode == "EMP-IBAN-BAD"));
     }
 

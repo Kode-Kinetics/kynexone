@@ -445,7 +445,8 @@ public static class PayrollValidationEngine
                     slip.EmployeeId);
             else if (!IbanValidator.IsValid(iban))
                 Err("INVALID_IBAN",
-                    $"Employee {slip.EmployeeCode} IBAN '{iban}' fails country format/length or ISO 13616 mod-97 validation. " +
+                    // Masked: this message is persisted to payroll_validation_results.message.
+                    $"Employee {slip.EmployeeCode}: {IbanValidator.Describe(iban)}. " +
                     "Correct the IBAN before approving this run.",
                     slip.EmployeeId);
             else if (isKsa && !IbanValidator.IsSaudiIban(iban))

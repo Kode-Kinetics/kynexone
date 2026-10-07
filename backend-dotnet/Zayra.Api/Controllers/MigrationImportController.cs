@@ -132,7 +132,7 @@ public sealed partial class MigrationImportController : ControllerBase
             ReconciliationJson = JsonSerializer.Serialize(plan.SectionCounts),
             ErrorJson = JsonSerializer.Serialize(plan.Errors),
             ResultJson = JsonSerializer.Serialize(plan.ToLedger()),
-            PayloadJson = JsonSerializer.Serialize(request),
+            PayloadJson = MigrationPackageAuditCopy.Serialize(PackageChecksum(request), request.Sections),
             CreatedBy = UserId()
         };
         _db.MigrationImportBatches.Add(batch);
@@ -220,7 +220,7 @@ public sealed partial class MigrationImportController : ControllerBase
         if (existing is null) _db.MigrationImportBatches.Add(batch);
         batch.Status = "Processing";
         batch.PackageType = "MigrationPackage";
-        batch.PayloadJson = JsonSerializer.Serialize(request);
+        batch.PayloadJson = MigrationPackageAuditCopy.Serialize(checksum, request.Sections); // masked; Resume re-sends the package
         batch.DryRun = request.DryRun;
         batch.ReceivedRows = 0;
         batch.CreatedRows = 0;
@@ -713,8 +713,9 @@ public sealed partial class MigrationImportController : ControllerBase
             && x.FieldName == fieldName && x.EffectiveDate == effectiveDate && x.Reason == reason, ct);
         var created = item is null;
         item ??= new EmployeeHistory { TenantId = tenantId, EmployeeId = employee.Id, EventType = eventType, FieldName = fieldName, EffectiveDate = effectiveDate };
-        item.OldValue = Val(row, "OldValue");
-        item.NewValue = Val(row, "NewValue");
+        // Same fail-safe as every other history writer: an imported IBAN / Iqama / salary change lands masked.
+        item.OldValue = EmployeeSafeSnapshot.SanitizeFieldValue(fieldName, Val(row, "OldValue"));
+        item.NewValue = EmployeeSafeSnapshot.SanitizeFieldValue(fieldName, Val(row, "NewValue"));
         item.Reason = reason;
         item.CreatedByUserId = UserId();
         // EmployeeSafeSnapshot deliberately excludes salary, banking, and government identifiers.
