@@ -54,3 +54,11 @@ yarn-error.*
 # Generated native projects (Expo CNG; regenerate with npm run prebuild:clean)
 /ios/
 /android/
+
+# EAS Update code signing (expo-updates codesigning:generate). Every PEM is
+# ignored so private-key.pem can never be committed, wherever it is generated.
+# The single exception is the PUBLIC certificate the app config references
+# (README "Code signing").
+keys/
+*.pem
+!certs/certificate.pem

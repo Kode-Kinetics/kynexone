@@ -1,25 +1,33 @@
-// ============================================================
-// ZAYRA MOBILE — Manager Dashboard Screen
-// ============================================================
-
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
+  ActivityIndicator,
+  Alert,
   RefreshControl,
+  ScrollView,
   StyleSheet,
-  Platform,
+  Text,
+  View,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import * as Location from 'expo-location';
 import { useAuthStore } from '@/auth/authStore';
-import { dashboardApi } from '@/api/services';
-import { COLORS } from '@/config';
+import { attendanceApi, dashboardApi } from '@/api/services';
+import { AttendanceCard } from '@/features/dashboard/EmployeeDashboard';
+import { getDeviceInfo } from '@/utils/device';
 import { formatRiyadhBusinessDate } from '@/utils/businessDate';
 import { navigateTo, type AppRoute } from '@/navigation/routes';
-import type { ManagerDashboard } from '@/types';
+import { useTheme } from '@/theme/ThemeProvider';
+import {
+  EmployeeAvatar,
+  GlassIconButton,
+  GlassSurface,
+  LiquidBackdrop,
+  MotionPressable,
+  ScreenHero,
+  SectionHeader,
+  SwipeDeck,
+} from '@/components/ui';
+import type { GeoLocation, ManagerDashboard, PunchType, TodayAttendance } from '@/types';
 
 interface Props {
   navigation: any;
@@ -27,20 +35,49 @@ interface Props {
 
 export default function ManagerDashboardScreen({ navigation }: Props) {
   const { user } = useAuthStore();
+  const { theme } = useTheme();
   const [dashboard, setDashboard] = useState<ManagerDashboard | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [attendance, setAttendance] = useState<TodayAttendance | undefined>();
+  const [attendanceLoading, setAttendanceLoading] = useState(false);
+  const [punchLoading, setPunchLoading] = useState(false);
+  const [punchFeedback, setPunchFeedback] = useState<PunchType | null>(null);
+  const employeeId = Number(user?.employeeId);
+  const hasEmployeeProfile = Number.isFinite(employeeId) && employeeId > 0;
+
+  const loadPersonalAttendance = useCallback(async () => {
+    if (!hasEmployeeProfile) {
+      setAttendance(undefined);
+      return;
+    }
+    setAttendanceLoading(true);
+    try {
+      setAttendance(await attendanceApi.getTodayAttendance());
+    } catch (error) {
+      console.error('[ManagerDashboard] Personal attendance:', error);
+    } finally {
+      setAttendanceLoading(false);
+    }
+  }, [hasEmployeeProfile]);
 
   const load = useCallback(async () => {
+    setLoadError(null);
     try {
-      const data = await dashboardApi.getManagerDashboard();
-      setDashboard(data);
-    } catch (err) {
-      console.error('[ManagerDashboard]', err);
+      const [managerDashboard] = await Promise.all([
+        dashboardApi.getManagerDashboard(),
+        loadPersonalAttendance(),
+      ]);
+      setDashboard(managerDashboard);
+    } catch (error) {
+      console.error('[ManagerDashboard]', error);
+      setLoadError('We couldn’t load your manager workspace. Check your connection and try again.');
     } finally {
+      setLoading(false);
       setRefreshing(false);
     }
-  }, []);
-
+  }, [loadPersonalAttendance]);
   useEffect(() => {
     void load();
   }, [load]);
@@ -49,295 +86,503 @@ export default function ManagerDashboardScreen({ navigation }: Props) {
     setRefreshing(true);
     void load();
   }, [load]);
-  const firstName = user?.fullName?.split(' ')[0] ?? '';
+
+  const firstName = user?.fullName?.split(' ')[0] ?? 'Manager';
   const go = (route: AppRoute, params?: Record<string, unknown>) =>
     navigateTo(navigation, route, user, params);
   const team = dashboard?.teamSummary;
   const pendingCount = dashboard?.pendingApprovalsCount ?? 0;
 
-  return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={styles.content}
-      refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.blue} />
+  const handlePunch = useCallback(async (punchType: PunchType) => {
+    setPunchLoading(true);
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Location required', 'Allow location access to verify where this attendance event occurred.');
+        return;
       }
-      showsVerticalScrollIndicator={false}
-    >
-      {/* Header */}
-      <LinearGradient colors={['#0B1020', '#0F1E40']} style={styles.header}>
-        <View style={styles.headerRow}>
-          <View>
-            <Text style={styles.greeting}>Manager View</Text>
-            <Text style={styles.name}>{firstName}</Text>
-          </View>
-          <View style={styles.headerActions}>
-            <TouchableOpacity
-              style={styles.headerIcon}
-              onPress={() => go('Notifications')}
-            >
-              <Ionicons name="notifications-outline" size={22} color="#fff" />
-            </TouchableOpacity>
-          </View>
-        </View>
-        <Text style={styles.dateText}>
-          {formatRiyadhBusinessDate()}
-        </Text>
-      </LinearGradient>
+      const location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+      const geoLocation: GeoLocation = {
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+        accuracy: location.coords.accuracy ?? undefined,
+        timestamp: location.timestamp,
+      };
+      await attendanceApi.punch({
+        punchType,
+        timestamp: new Date().toISOString(),
+        location: geoLocation,
+        deviceInfo: await getDeviceInfo(),
+      });
+      await loadPersonalAttendance();
+      setPunchFeedback(punchType);
+    } catch (error: any) {
+      Alert.alert(
+        'Could not record attendance',
+        error?.response?.data?.message ?? error?.message ?? 'Please check your connection and try again.',
+      );
+    } finally {
+      setPunchLoading(false);
+    }
+  }, [loadPersonalAttendance]);
 
-      {/* Pending Approvals banner */}
-      {pendingCount > 0 && (
-        <TouchableOpacity
-          style={styles.approvalBanner}
-          onPress={() => go('Approvals')}
-        >
-          <LinearGradient
-            colors={['#2F6BFF', '#1A4FCC']}
-            style={styles.approvalBannerInner}
-            start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-          >
-            <Ionicons name="checkmark-circle-outline" size={22} color="#fff" />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.approvalBannerTitle}>{pendingCount} Pending Approvals</Text>
-              <Text style={styles.approvalBannerSub}>Tap to review and action</Text>
+
+  return (
+    <View style={[styles.root, { backgroundColor: theme.colors.canvas }]}>
+      <LiquidBackdrop subtle />
+      <ScrollView
+        contentContainerStyle={styles.content}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={theme.colors.primary}
+            colors={[theme.colors.primary]}
+          />
+        }
+        showsVerticalScrollIndicator={false}
+      >
+        <ScreenHero
+          eyebrow="Manager workspace"
+          title={`Lead with clarity, ${firstName}`}
+          subtitle={formatRiyadhBusinessDate()}
+          actions={
+            <View style={styles.heroActions}>
+              <MotionPressable
+                onPress={() => go('Profile')}
+                haptic="selection"
+                accessibilityRole="button"
+                accessibilityLabel="Open employee profile"
+                contentStyle={styles.profileAvatarButton}
+              >
+                <EmployeeAvatar
+                  name={user?.fullName ?? 'Manager'}
+                  photoUrl={user?.profilePhotoUrl}
+                  size={44}
+                  ring
+                />
+              </MotionPressable>
+              <GlassIconButton
+                icon="notifications-outline"
+                label="Notifications"
+                onPress={() => go('Notifications')}
+              />
             </View>
-            <Ionicons name="arrow-forward" size={18} color="#fff" />
-          </LinearGradient>
-        </TouchableOpacity>
-      )}
-
-      {/* Team Summary */}
-      {team && (
+          }
+        />
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Team Today</Text>
-          <View style={styles.teamGrid}>
-            <TeamStatCard
-              label="Total"
-              value={team.total}
-              color={COLORS.blue}
-              icon="people-outline"
-            />
-            <TeamStatCard
-              label="Present"
-              value={team.present}
-              color={COLORS.success}
-              icon="checkmark-circle-outline"
-            />
-            <TeamStatCard
-              label="Absent"
-              value={team.absent}
-              color={COLORS.error}
-              icon="close-circle-outline"
-            />
-            <TeamStatCard
-              label="On Leave"
-              value={team.onLeave}
-              color="#7C3AED"
-              icon="airplane-outline"
-            />
-          </View>
-          {team.lateToday > 0 && (
-            <TouchableOpacity
-              style={styles.lateAlert}
-              onPress={() => go('Team')}
-            >
-              <Ionicons name="warning-outline" size={16} color={COLORS.warning} />
-              <Text style={styles.lateAlertText}>
-                {team.lateToday} employee{team.lateToday !== 1 ? 's' : ''} late today
-              </Text>
-              <Text style={styles.lateAlertLink}>View →</Text>
-            </TouchableOpacity>
+          {hasEmployeeProfile ? (
+            attendanceLoading && !attendance ? (
+              <GlassSurface radius={theme.radius.xl} contentStyle={styles.attendanceLoadingCard}>
+                <ActivityIndicator color={theme.colors.primary} />
+                <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>Loading your attendance…</Text>
+              </GlassSurface>
+            ) : (
+              <AttendanceCard
+                attendance={attendance}
+                canClockIn={!attendance?.currentlyActive}
+                canClockOut={!!attendance?.currentlyActive}
+                punchLoading={punchLoading}
+                onClockIn={() => void handlePunch('CLOCK_IN')}
+                onClockOut={() => void handlePunch('CLOCK_OUT')}
+                onViewHistory={() => go('AttendanceHistory')}
+                feedback={punchFeedback}
+              />
+            )
+          ) : (
+            <GlassSurface radius={theme.radius.xl} contentStyle={styles.employeeLinkCard}>
+              <View style={[styles.employeeLinkIcon, { backgroundColor: `${theme.colors.warning}1E` }]}>
+                <Ionicons name="person-add-outline" size={24} color={theme.colors.warning} />
+              </View>
+              <View style={styles.employeeLinkCopy}>
+                <Text style={[theme.typography.h3, { color: theme.colors.text }]}>Personal attendance needs an employee profile</Text>
+                <Text style={[theme.typography.caption, { color: theme.colors.textSecondary, marginTop: 5 }]}>
+                  This administrator login is not linked to an employee record. Ask HR to link it before using personal attendance.
+                </Text>
+              </View>
+            </GlassSurface>
           )}
         </View>
-      )}
-
-      {/* Approval breakdown */}
-      {dashboard?.pendingByType && Object.keys(dashboard.pendingByType).length > 0 && (
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Approvals by Type</Text>
-            <TouchableOpacity onPress={() => go('Approvals')}>
-              <Text style={styles.seeAll}>View All</Text>
-            </TouchableOpacity>
+        {loading ? (
+          <View style={styles.section}>
+            <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
+              <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>Loading manager workspace…</Text>
+            </GlassSurface>
           </View>
-          {Object.entries(dashboard.pendingByType)
-            .filter(([, count]) => count > 0)
-            .map(([type, count]) => (
-              <ApprovalTypeRow
-                key={type}
-                type={type}
-                count={count as number}
-                onPress={() => go('Approvals', { filterType: type })}
-              />
-            ))}
-        </View>
-      )}
+        ) : loadError ? (
+          <View style={styles.section}>
+            <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
+              <Ionicons name="cloud-offline-outline" size={28} color={theme.colors.danger} />
+              <Text style={[theme.typography.h3, { color: theme.colors.text }]}>Workspace unavailable</Text>
+              <Text style={[theme.typography.caption, { color: theme.colors.textSecondary, textAlign: 'center' }]}>{loadError}</Text>
+              <MotionPressable onPress={() => void load()} contentStyle={[styles.retryButton, { backgroundColor: theme.colors.primary }]}>
+                <Text style={[theme.typography.bodyStrong, { color: '#FFFFFF' }]}>Try again</Text>
+              </MotionPressable>
+            </GlassSurface>
+          </View>
+        ) : null}
+        {!loading && !loadError ? (
+          <View style={styles.deckSection}>
+            <SectionHeader
+              title="Manager command center"
+              subtitle="Swipe between team, approvals and actions"
+            />
+            <SwipeDeck minHeight={344}>
+              <GlassSurface
+                elevated={false}
+                radius={theme.radius.xl}
+                contentStyle={styles.deckPage}
+              >
+                <View style={styles.deckHeading}>
+                  <View style={[styles.deckIcon, { backgroundColor: theme.colors.primary + '18' }]}>
+                    <Ionicons name="people-outline" size={21} color={theme.colors.primary} />
+                  </View>
+                  <View style={styles.deckHeadingCopy}>
+                    <Text style={[theme.typography.h3, { color: theme.colors.text }]}>Team today</Text>
+                    <Text style={[theme.typography.caption, { color: theme.colors.textMuted }]}>
+                      Live workforce snapshot
+                    </Text>
+                  </View>
+                  <MotionPressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Open team"
+                    onPress={() => go('Team')}
+                    haptic="selection"
+                    contentStyle={styles.deckLink}
+                  >
+                    <Text style={[theme.typography.caption, { color: theme.colors.primary, fontWeight: '700' }]}>
+                      Open
+                    </Text>
+                  </MotionPressable>
+                </View>
 
-      {/* Quick actions */}
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Quick Actions</Text>
-        <View style={styles.quickGrid}>
-          <ManagerQuickAction
-            icon="people-outline" label="My Team"
-            onPress={() => go('Team')}
-          />
-          <ManagerQuickAction
-            icon="calendar-outline" label="My Leave"
-            onPress={() => go('ApplyLeave')}
-          />
-          <ManagerQuickAction
-            icon="analytics-outline" label="Attendance"
-            onPress={() => go('Team')}
-          />
-          <ManagerQuickAction
-            icon="sparkles-outline" label="AI Insights"
-            onPress={() => go('AIAssistant')}
-          />
-        </View>
-      </View>
+                {team ? (
+                  <>
+                    <View style={styles.metricGrid}>
+                      <TeamMetric label="Total" value={team.total} icon="people-outline" accent={theme.colors.primary} />
+                      <TeamMetric label="Present" value={team.present} icon="checkmark-circle-outline" accent={theme.colors.success} />
+                      <TeamMetric label="Absent" value={team.absent} icon="close-circle-outline" accent={theme.colors.danger} />
+                      <TeamMetric label="On leave" value={team.onLeave} icon="airplane-outline" accent={theme.colors.violet} />
+                    </View>
+                    {team.lateToday > 0 ? (
+                      <MotionPressable
+                        onPress={() => go('Team')}
+                        haptic="selection"
+                        contentStyle={styles.rounded}
+                        style={styles.lateShell}
+                      >
+                        <View style={[styles.deckAlert, { backgroundColor: theme.colors.surfaceSoft }]}>
+                          <Ionicons name="warning-outline" size={20} color={theme.colors.warning} />
+                          <Text style={[theme.typography.bodyStrong, { color: theme.colors.text, flex: 1 }]}>
+                            {team.lateToday} late today
+                          </Text>
+                          <Ionicons name="chevron-forward" size={18} color={theme.colors.textMuted} />
+                        </View>
+                      </MotionPressable>
+                    ) : null}
+                  </>
+                ) : (
+                  <View style={styles.deckEmpty}>
+                    <Ionicons name="people-outline" size={26} color={theme.colors.textMuted} />
+                    <Text style={[theme.typography.caption, { color: theme.colors.textMuted }]}>
+                      Team data is not available yet.
+                    </Text>
+                  </View>
+                )}
+              </GlassSurface>
 
-      {/* OT alert */}
-      {dashboard?.overtimeAlert && dashboard.overtimeAlert.thisMonth > 0 && (
-        <View style={styles.section}>
-          <TouchableOpacity
-            style={styles.otCard}
-            onPress={() => go('Approvals', { filterType: 'OVERTIME' })}
-          >
-            <View>
-              <Text style={styles.otCardLabel}>Overtime This Month</Text>
-              <Text style={styles.otCardValue}>{dashboard.overtimeAlert.thisMonth}h</Text>
-              <Text style={styles.otCardCompare}>
-                vs {dashboard.overtimeAlert.lastMonth}h last month
-              </Text>
-            </View>
-            <Ionicons name="time-outline" size={32} color={COLORS.warning} />
-          </TouchableOpacity>
-        </View>
-      )}
+              <GlassSurface
+                elevated={false}
+                radius={theme.radius.xl}
+                contentStyle={styles.deckPage}
+              >
+                <View style={styles.deckHeading}>
+                  <View style={[styles.deckIcon, { backgroundColor: theme.colors.warning + '18' }]}>
+                    <Ionicons name="checkmark-done-outline" size={21} color={theme.colors.warning} />
+                  </View>
+                  <View style={styles.deckHeadingCopy}>
+                    <Text style={[theme.typography.h3, { color: theme.colors.text }]}>Approvals</Text>
+                    <Text style={[theme.typography.caption, { color: theme.colors.textMuted }]}>
+                      Decisions that need your attention
+                    </Text>
+                  </View>
+                  <View style={[styles.deckCount, { backgroundColor: theme.colors.warning + '18' }]}>
+                    <Text style={[theme.typography.bodyStrong, { color: theme.colors.warning }]}>{pendingCount}</Text>
+                  </View>
+                </View>
 
-      <View style={{ height: 32 }} />
-    </ScrollView>
-  );
-}
+                {pendingCount > 0 ? (
+                  <MotionPressable
+                    onPress={() => go('Approvals')}
+                    haptic="medium"
+                    contentStyle={styles.rounded}
+                  >
+                    <View style={[styles.deckApprovalHero, { backgroundColor: theme.colors.surfaceSoft }]}>
+                      <View style={[styles.approvalIcon, { backgroundColor: theme.colors.primary + '20' }]}>
+                        <Ionicons name="checkmark-done-outline" size={24} color={theme.colors.primary} />
+                      </View>
+                      <View style={styles.approvalCopy}>
+                        <Text style={[theme.typography.h3, { color: theme.colors.text }]}>
+                          {pendingCount} waiting
+                        </Text>
+                        <Text style={[theme.typography.caption, { color: theme.colors.textMuted }]}>
+                          Tap to review the queue
+                        </Text>
+                      </View>
+                      <Ionicons name="arrow-forward" size={20} color={theme.colors.primary} />
+                    </View>
+                  </MotionPressable>
+                ) : (
+                  <View style={styles.deckClear}>
+                    <Ionicons name="checkmark-circle-outline" size={28} color={theme.colors.success} />
+                    <Text style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>All caught up</Text>
+                  </View>
+                )}
 
-function TeamStatCard({
-  label, value, color, icon,
-}: { label: string; value: number; color: string; icon: string }) {
-  return (
-    <View style={[styles.teamStatCard, { borderTopColor: color }]}>
-      <Ionicons name={icon as any} size={18} color={color} />
-      <Text style={[styles.teamStatValue, { color }]}>{value}</Text>
-      <Text style={styles.teamStatLabel}>{label}</Text>
+                {dashboard?.pendingByType && Object.values(dashboard.pendingByType).some((count) => count > 0) ? (
+                  <View style={[styles.deckApprovalList, { borderTopColor: theme.colors.divider }]}>
+                    {Object.entries(dashboard.pendingByType)
+                      .filter(([, count]) => count > 0)
+                      .slice(0, 3)
+                      .map(([type, count], index, items) => (
+                        <ApprovalTypeRow
+                          key={type}
+                          type={type}
+                          count={count}
+                          isLast={index === items.length - 1}
+                          onPress={() => go('Approvals', { filterType: type })}
+                        />
+                      ))}
+                  </View>
+                ) : null}
+              </GlassSurface>
+
+              <GlassSurface
+                elevated={false}
+                radius={theme.radius.xl}
+                contentStyle={styles.deckPage}
+              >
+                <View style={styles.deckHeading}>
+                  <View style={[styles.deckIcon, { backgroundColor: theme.colors.cyan + '18' }]}>
+                    <Ionicons name="grid-outline" size={21} color={theme.colors.cyan} />
+                  </View>
+                  <View style={styles.deckHeadingCopy}>
+                    <Text style={[theme.typography.h3, { color: theme.colors.text }]}>Manager actions</Text>
+                    <Text style={[theme.typography.caption, { color: theme.colors.textMuted }]}>
+                      Move work forward quickly
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={styles.quickGrid}>
+                  <ManagerAction
+                    icon="people-outline"
+                    title="My team"
+                    subtitle="Attendance & people"
+                    accent={theme.colors.primary}
+                    onPress={() => go('Team')}
+                  />
+                  <ManagerAction
+                    icon="calendar-outline"
+                    title="My leave"
+                    subtitle="Personal requests"
+                    accent={theme.colors.success}
+                    onPress={() => go('ApplyLeave')}
+                  />
+                  <ManagerAction
+                    icon="checkmark-done-outline"
+                    title="Approvals"
+                    subtitle="Review requests"
+                    accent={theme.colors.warning}
+                    onPress={() => go('Approvals')}
+                  />
+                  <ManagerAction
+                    icon="sparkles-outline"
+                    title="AI insights"
+                    subtitle="Workforce signals"
+                    accent={theme.colors.cyan}
+                    onPress={() => go('AIAssistant')}
+                  />
+                </View>
+
+                {dashboard?.overtimeAlert && dashboard.overtimeAlert.thisMonth > 0 ? (
+                  <MotionPressable
+                    onPress={() => go('Approvals', { filterType: 'OVERTIME' })}
+                    haptic="selection"
+                    contentStyle={styles.rounded}
+                    style={styles.deckOvertimeShell}
+                  >
+                    <View style={[styles.deckOvertime, { backgroundColor: theme.colors.surfaceSoft }]}>
+                      <Ionicons name="time-outline" size={20} color={theme.colors.warning} />
+                      <Text style={[theme.typography.bodyStrong, { color: theme.colors.text, flex: 1 }]}>
+                        {dashboard.overtimeAlert.thisMonth}h overtime this month
+                      </Text>
+                      <Ionicons name="chevron-forward" size={18} color={theme.colors.textMuted} />
+                    </View>
+                  </MotionPressable>
+                ) : null}
+              </GlassSurface>
+            </SwipeDeck>
+          </View>
+        ) : null}
+
+        <View style={styles.bottomSpacer} />
+      </ScrollView>
     </View>
   );
 }
 
-function ApprovalTypeRow({
-  type, count, onPress,
-}: { type: string; count: number; onPress: () => void }) {
-  const typeLabels: Record<string, { label: string; icon: string; color: string }> = {
-    LEAVE: { label: 'Leave Requests', icon: 'airplane-outline', color: COLORS.blue },
-    OVERTIME: { label: 'Overtime Requests', icon: 'time-outline', color: '#7C3AED' },
-    ATTENDANCE_CORRECTION: { label: 'Attendance Corrections', icon: 'create-outline', color: COLORS.warning },
-    RECRUITMENT_REQUISITION: { label: 'Recruitment', icon: 'briefcase-outline', color: COLORS.success },
-    HR_REQUEST: { label: 'HR Requests', icon: 'help-circle-outline', color: COLORS.cyan },
-  };
-  const meta = typeLabels[type] ?? { label: type, icon: 'document-outline', color: COLORS.muted };
-
+function TeamMetric({
+  label,
+  value,
+  icon,
+  accent,
+}: {
+  label: string;
+  value: number;
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  accent: string;
+}) {
+  const { theme } = useTheme();
   return (
-    <TouchableOpacity style={styles.approvalTypeRow} onPress={onPress}>
-      <View style={[styles.approvalTypeIcon, { backgroundColor: `${meta.color}15` }]}>
-        <Ionicons name={meta.icon as any} size={18} color={meta.color} />
+    <GlassSurface elevated={false} radius={theme.radius.xl} style={styles.metricCard} contentStyle={styles.metricContent}>
+      <View style={[styles.metricIcon, { backgroundColor: `${accent}19` }]}>
+        <Ionicons name={icon} size={21} color={accent} />
       </View>
-      <Text style={styles.approvalTypeLabel}>{meta.label}</Text>
-      <View style={[styles.approvalTypeBadge, { backgroundColor: `${meta.color}20` }]}>
-        <Text style={[styles.approvalTypeBadgeText, { color: meta.color }]}>{count}</Text>
-      </View>
-      <Ionicons name="chevron-forward" size={14} color={COLORS.muted} />
-    </TouchableOpacity>
+      <Text style={[styles.metricValue, { color: theme.colors.text }]}>{value}</Text>
+      <Text style={[theme.typography.caption, { color: theme.colors.textMuted }]}>{label}</Text>
+    </GlassSurface>
   );
 }
+function ApprovalTypeRow({
+  type,
+  count,
+  isLast,
+  onPress,
+}: {
+  type: string;
+  count: number;
+  isLast: boolean;
+  onPress: () => void;
+}) {
+  const { theme } = useTheme();
+  const map: Record<string, { label: string; icon: any; accent: string }> = {
+    LEAVE: { label: 'Leave requests', icon: 'airplane-outline', accent: theme.colors.primary },
+    OVERTIME: { label: 'Overtime requests', icon: 'time-outline', accent: theme.colors.violet },
+    ATTENDANCE_CORRECTION: { label: 'Attendance corrections', icon: 'create-outline', accent: theme.colors.warning },
+    RECRUITMENT_REQUISITION: { label: 'Recruitment', icon: 'briefcase-outline', accent: theme.colors.success },
+    HR_REQUEST: { label: 'HR requests', icon: 'help-circle-outline', accent: theme.colors.cyan },
+  };
+  const meta = map[type] ?? {
+    label: type.replaceAll('_', ' ').toLowerCase(),
+    icon: 'document-outline',
+    accent: theme.colors.textMuted,
+  };
 
-function ManagerQuickAction({
-  icon, label, onPress,
-}: { icon: string; label: string; onPress: () => void }) {
   return (
-    <TouchableOpacity style={styles.managerQA} onPress={onPress} activeOpacity={0.7}>
-      <Ionicons name={icon as any} size={22} color={COLORS.blue} />
-      <Text style={styles.managerQALabel}>{label}</Text>
-    </TouchableOpacity>
+    <MotionPressable onPress={onPress} haptic="selection" contentStyle={styles.rounded}>
+      <View
+        style={[
+          styles.approvalRow,
+          !isLast && { borderBottomColor: theme.colors.divider, borderBottomWidth: StyleSheet.hairlineWidth },
+        ]}
+      >
+        <View style={[styles.approvalRowIcon, { backgroundColor: `${meta.accent}19` }]}>
+          <Ionicons name={meta.icon} size={20} color={meta.accent} />
+        </View>
+        <Text style={[theme.typography.bodyStrong, { color: theme.colors.text, flex: 1, textTransform: 'capitalize' }]}>
+          {meta.label}
+        </Text>
+        <View style={[styles.countPill, { backgroundColor: `${meta.accent}1F` }]}>
+          <Text style={[theme.typography.caption, { color: meta.accent, fontWeight: '700' }]}>{count}</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={17} color={theme.colors.textMuted} />
+      </View>
+    </MotionPressable>
+  );
+}
+function ManagerAction({
+  icon,
+  title,
+  subtitle,
+  accent,
+  onPress,
+}: {
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  title: string;
+  subtitle: string;
+  accent: string;
+  onPress: () => void;
+}) {
+  const { theme } = useTheme();
+  return (
+    <MotionPressable
+      onPress={onPress}
+      haptic="selection"
+      style={styles.quickShell}
+      contentStyle={styles.rounded}
+      accessibilityRole="button"
+      accessibilityLabel={`${title}. ${subtitle}`}
+    >
+      <GlassSurface elevated={false} radius={theme.radius.xl} style={styles.quickSurface} contentStyle={styles.quickCard}>
+        <View style={[styles.quickIcon, { backgroundColor: `${accent}19` }]}>
+          <Ionicons name={icon} size={23} color={accent} />
+        </View>
+        <Text style={[theme.typography.bodyStrong, { color: theme.colors.text, marginTop: 12 }]}>{title}</Text>
+        <Text style={[theme.typography.micro, { color: theme.colors.textMuted, marginTop: 3 }]}>{subtitle}</Text>
+      </GlassSurface>
+    </MotionPressable>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: COLORS.bg },
-  content: { paddingBottom: 40 },
-  header: {
-    paddingTop: Platform.OS === 'ios' ? 56 : 40,
-    paddingHorizontal: 20,
-    paddingBottom: 24,
-  },
-  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 },
-  headerActions: { flexDirection: 'row', gap: 8 },
-  headerIcon: {
-    width: 40, height: 40, borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    alignItems: 'center', justifyContent: 'center',
-  },
-  greeting: { fontSize: 13, color: 'rgba(255,255,255,0.5)' },
-  name: { fontSize: 22, fontWeight: '700', color: '#fff' },
-  dateText: { fontSize: 12, color: 'rgba(255,255,255,0.4)' },
-  approvalBanner: { marginHorizontal: 16, marginTop: 16, borderRadius: 14, overflow: 'hidden' },
-  approvalBannerInner: { flexDirection: 'row', alignItems: 'center', padding: 16, gap: 12 },
-  approvalBannerTitle: { fontSize: 15, fontWeight: '700', color: '#fff' },
-  approvalBannerSub: { fontSize: 12, color: 'rgba(255,255,255,0.7)', marginTop: 1 },
-  section: { paddingHorizontal: 16, marginTop: 20 },
-  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  sectionTitle: { fontSize: 16, fontWeight: '700', color: COLORS.text, marginBottom: 12 },
-  seeAll: { fontSize: 13, color: COLORS.blue, fontWeight: '600' },
-  teamGrid: { flexDirection: 'row', gap: 10, marginBottom: 10 },
-  teamStatCard: {
-    flex: 1, backgroundColor: COLORS.card, borderRadius: 12,
-    padding: 12, alignItems: 'center', gap: 4,
-    borderTopWidth: 3,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05, shadowRadius: 3, elevation: 2,
-  },
-  teamStatValue: { fontSize: 22, fontWeight: '800' },
-  teamStatLabel: { fontSize: 11, color: COLORS.muted, fontWeight: '500' },
-  lateAlert: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: `${COLORS.warning}10`,
-    borderRadius: 10, padding: 10,
-    borderWidth: 1, borderColor: `${COLORS.warning}25`,
-  },
-  lateAlertText: { flex: 1, fontSize: 13, color: COLORS.text },
-  lateAlertLink: { fontSize: 13, color: COLORS.warning, fontWeight: '600' },
-  approvalTypeRow: {
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: COLORS.card, borderRadius: 12,
-    padding: 14, marginBottom: 8, gap: 12,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04, shadowRadius: 3, elevation: 1,
-  },
-  approvalTypeIcon: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  approvalTypeLabel: { flex: 1, fontSize: 14, fontWeight: '600', color: COLORS.text },
-  approvalTypeBadge: { paddingHorizontal: 10, paddingVertical: 3, borderRadius: 20 },
-  approvalTypeBadgeText: { fontSize: 13, fontWeight: '700' },
-  quickGrid: { flexDirection: 'row', gap: 10 },
-  managerQA: {
-    flex: 1, backgroundColor: COLORS.card, borderRadius: 14, padding: 14,
-    alignItems: 'center', gap: 8,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05, shadowRadius: 3, elevation: 2,
-  },
-  managerQALabel: { fontSize: 12, color: COLORS.text, fontWeight: '600', textAlign: 'center' },
-  otCard: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    backgroundColor: `${COLORS.warning}10`, borderRadius: 14,
-    padding: 16, borderWidth: 1, borderColor: `${COLORS.warning}25`,
-  },
-  otCardLabel: { fontSize: 12, color: COLORS.muted, marginBottom: 4 },
-  otCardValue: { fontSize: 28, fontWeight: '800', color: COLORS.text },
-  otCardCompare: { fontSize: 12, color: COLORS.muted, marginTop: 2 },
+  heroActions: { flexDirection: 'row', gap: 8 },
+  profileAvatarButton: { width: 44, height: 44, borderRadius: 15 },
+  root: { flex: 1 },
+  content: { paddingBottom: 34 },
+  section: { paddingHorizontal: 16, marginTop: 16 },
+  deckSection: { marginTop: 16 },
+  deckPage: { flex: 1, padding: 16 },
+  deckHeading: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 },
+  deckHeadingCopy: { flex: 1, minWidth: 0 },
+  deckIcon: { width: 40, height: 40, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  deckLink: { minHeight: 44, paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center' },
+  deckCount: { minWidth: 38, minHeight: 38, borderRadius: 14, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 9 },
+  deckAlert: { minHeight: 50, borderRadius: 16, flexDirection: 'row', alignItems: 'center', gap: 9, paddingHorizontal: 12 },
+  deckApprovalHero: { minHeight: 76, borderRadius: 18, flexDirection: 'row', alignItems: 'center', gap: 11, padding: 12 },
+  deckApprovalList: { marginTop: 10, borderTopWidth: StyleSheet.hairlineWidth },
+  deckClear: { minHeight: 100, alignItems: 'center', justifyContent: 'center', gap: 7 },
+  deckOvertimeShell: { marginTop: 10 },
+  deckOvertime: { minHeight: 50, borderRadius: 16, flexDirection: 'row', alignItems: 'center', gap: 9, paddingHorizontal: 12 },
+  deckEmpty: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 },
+  attendanceLoadingCard: { minHeight: 156, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 22 },
+  employeeLinkCard: { flexDirection: 'row', alignItems: 'flex-start', gap: 14, padding: 18 },
+  employeeLinkIcon: { width: 48, height: 48, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
+  employeeLinkCopy: { flex: 1 },
+  stateCard: { minHeight: 190, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 24 },
+  retryButton: { minHeight: 44, paddingHorizontal: 20, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  rounded: { flex: 1, borderRadius: 24 },
+  approvalBanner: { flexDirection: 'row', alignItems: 'center', gap: 13, padding: 16 },
+  approvalIcon: { width: 48, height: 48, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
+  approvalCopy: { flex: 1 },
+  metricGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  metricCard: { width: '48%', minHeight: 104 },
+  metricContent: { padding: 12, justifyContent: 'space-between' },
+  metricIcon: { width: 40, height: 40, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  metricValue: { fontSize: 26, lineHeight: 31, fontWeight: '800', letterSpacing: -0.4, marginTop: 4 },
+  lateShell: { marginTop: 10 },
+  lateAlert: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 14 },
+  listCard: { paddingHorizontal: 14 },
+  approvalRow: { minHeight: 68, flexDirection: 'row', alignItems: 'center', gap: 11, paddingVertical: 10 },
+  approvalRowIcon: { width: 42, height: 42, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  countPill: { minWidth: 30, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
+  quickGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  quickShell: { width: '48%', minHeight: 108 },
+  quickSurface: { flex: 1 },
+  quickCard: { flex: 1, padding: 12 },
+  quickIcon: { width: 43, height: 43, borderRadius: 15, alignItems: 'center', justifyContent: 'center' },
+  overtimeCard: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 18 },
+  overtimeValue: { fontSize: 32, lineHeight: 38, fontWeight: '800', letterSpacing: -0.7, marginVertical: 5 },
+  overtimeIcon: { width: 58, height: 58, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
+  bottomSpacer: { height: 14 },
 });

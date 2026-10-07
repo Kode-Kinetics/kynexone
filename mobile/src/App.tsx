@@ -12,6 +12,7 @@ import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { ScreenTour, TOUR_MODE, registerBoundaryReset } from '@/dev/ScreenTour';
 import { useAuthStore } from '@/auth/authStore';
 import { navigateFromRoot } from '@/navigation/routes';
+import { ThemeProvider, useTheme } from '@/theme/ThemeProvider';
 import {
   setupNotificationListeners,
   getLastNotificationResponseAsync,
@@ -21,8 +22,7 @@ import {
 function openFromNotification(data: Record<string, unknown> | undefined) {
   const { route, params } = getNotificationRoute(data);
   const user = useAuthStore.getState().user;
-  if (!user) return; // signed out: the login screen is the right place to land
-  // The navigator may still be mounting on a cold start — retry briefly.
+  if (!user) return;
   let attempts = 0;
   const tryNavigate = () => {
     if (navigateFromRoot(route, user, params)) return;
@@ -31,7 +31,9 @@ function openFromNotification(data: Record<string, unknown> | undefined) {
   tryNavigate();
 }
 
-export default function App() {
+function AppContent() {
+  const { theme } = useTheme();
+
   // After the first screen is up: offer the restart if the saved language and the layout direction
   // disagree. Raised any earlier, Android can drop the alert (config/i18n.ts).
   useEffect(() => {
@@ -44,14 +46,13 @@ export default function App() {
   useEffect(() => {
     let active = true;
     let cleanup: () => void = () => {};
-
     setupNotificationListeners(
       (notification) => {
         console.log('[Notification] Received:', notification.request.content.title);
       },
       (response) => {
         openFromNotification(response.notification.request.content.data as Record<string, unknown>);
-      }
+      },
     )
       .then((listenerCleanup) => {
         if (active) cleanup = listenerCleanup;
@@ -61,7 +62,9 @@ export default function App() {
 
     getLastNotificationResponseAsync()
       .then((response) => {
-        if (response) openFromNotification(response.notification.request.content.data as Record<string, unknown>);
+        if (response) {
+          openFromNotification(response.notification.request.content.data as Record<string, unknown>);
+        }
       })
       .catch(() => undefined);
 
@@ -72,12 +75,21 @@ export default function App() {
   }, []);
 
   return (
-    <SafeAreaProvider>
-      <StatusBar style="light" />
-      <ErrorBoundary ref={TOUR_MODE ? (b) => registerBoundaryReset(() => b?.reset()) : undefined}>
+    <>
+      <StatusBar style={theme.isDark ? 'light' : 'dark'} />
+      <ErrorBoundary ref={TOUR_MODE ? (boundary) => registerBoundaryReset(() => boundary?.reset()) : undefined}>
         <RootNavigator />
         {TOUR_MODE ? <ScreenTour /> : null}
       </ErrorBoundary>
+    </>
+  );
+}
+export default function App() {
+  return (
+    <SafeAreaProvider>
+      <ThemeProvider>
+        <AppContent />
+      </ThemeProvider>
     </SafeAreaProvider>
   );
 }
