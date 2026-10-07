@@ -406,6 +406,9 @@ public sealed partial class MigrationImportController : ControllerBase
         var seenKeys = new HashSet<string>(StringComparer.Ordinal);
         foreach (var (row, index) in parsedRows.Select((r, i) => (r, i + 2)))
         {
+            // Entities already tracked before this row: anything ADDED by a row that then fails is detached, so a
+            // half-built row is never inserted by the section's save.
+            var trackedBefore = _db.ChangeTracker.Entries().Select(e => e.Entity).ToHashSet(ReferenceEqualityComparer.Instance);
             try
             {
                 GuardDuplicate(section, row, seenKeys);
@@ -429,9 +432,16 @@ public sealed partial class MigrationImportController : ControllerBase
                 };
                 if (action == "created") result.Created++; else if (action == "updated") result.Updated++; else result.Skipped++;
             }
-            catch (Exception ex) { result.Skipped++; result.Errors.Add($"{section} row {index}: {ex.Message}"); }
+            catch (Exception ex)
+            {
+                foreach (var added in _db.ChangeTracker.Entries()
+                             .Where(e => e.State == EntityState.Added && !trackedBefore.Contains(e.Entity)).ToList())
+                    added.State = EntityState.Detached;
+                result.Skipped++; result.Errors.Add($"{section} row {index}: {ex.Message}");
+            }
         }
-        await _db.SaveChangesAsync(ct);
+        if (section == "users") await SaveUsersUnderAdminSeatLockAsync(tenantId, ct);
+        else await _db.SaveChangesAsync(ct);
         return result;
     }
 
@@ -551,15 +561,20 @@ public sealed partial class MigrationImportController : ControllerBase
 
     private async Task<string> UpsertRoleAsync(Dictionary<string, string> row, Guid tenantId, CancellationToken ct)
     {
+        // EVERY value is read and checked BEFORE the tracked role is touched: a row that throws must leave nothing
+        // behind for the section's save to persist (see ApplySectionAsync).
         var name = Require(row, "Name").Trim();
         var normalized = name.ToUpperInvariant();
+        var description = Val(row, "Description");
+        var authorityLevel = Int(row, "AuthorityLevel", 99);
+        var isActive = Bool(row, "IsActive", true);
         var role = await _db.Roles.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.NormalizedName == normalized && !x.IsDeleted, ct);
         var created = role is null;
-        role ??= new Role { TenantId = tenantId, Name = name, NormalizedName = normalized };
         // Last line of defence behind the access gate: a system or non-editable role is never rewritten here.
-        if (!created && (role.IsSystem || !role.IsEditable))
+        if (!created && (role!.IsSystem || !role.IsEditable))
             throw new InvalidOperationException($"'{role.Name}' is a system role; an import cannot change it.");
-        role.Name = name; role.NormalizedName = normalized; role.Description = Val(row, "Description"); role.AuthorityLevel = Int(row, "AuthorityLevel", 99); role.IsActive = Bool(row, "IsActive", true); role.IsEditable = true;
+        role ??= new Role { TenantId = tenantId, Name = name, NormalizedName = normalized };
+        role.Name = name; role.NormalizedName = normalized; role.Description = description; role.AuthorityLevel = authorityLevel; role.IsActive = isActive; role.IsEditable = true;
         if (created) _db.Roles.Add(role);
         AuditAccessChange(created ? "access.role_created" : "access.role_updated", "Role", role.Id, tenantId,
             new { name = role.Name, role.IsActive, role.AuthorityLevel });
@@ -579,32 +594,51 @@ public sealed partial class MigrationImportController : ControllerBase
 
     private async Task<string> UpsertUserAsync(Dictionary<string, string> row, Guid tenantId, CancellationToken ct)
     {
+        // VALIDATE AND RESOLVE EVERYTHING FIRST, THEN MUTATE. This used to set the account's fields — Status=Active
+        // and IsActive among them — and only then resolve the roles; a role that did not resolve threw after the
+        // account had been changed, the section's save persisted the change, and the audit row (written after the
+        // roles) never was. A disabled account could be reactivated that way with nothing in the trail.
         var email = Require(row, "Email").Trim(); var normalized = email.ToUpperInvariant();
-        var user = await _db.Users.Include(x => x.UserRoles).FirstOrDefaultAsync(x => x.TenantId == tenantId && x.NormalizedEmail == normalized && !x.IsDeleted, ct);
-        var created = user is null;
-        user ??= new User { TenantId = tenantId, Email = email, NormalizedEmail = normalized, PasswordHash = ImportPlaceholderHash(), MustChangePassword = true, IsEmailConfirmed = false };
-        user.Email = email; user.NormalizedEmail = normalized; user.FullName = Require(row, "FullName"); user.PhoneNumber = Val(row, "PhoneNumber"); user.PreferredLanguage = Val(row, "PreferredLanguage", "en"); user.Timezone = Val(row, "Timezone", "UTC"); user.Status = Val(row, "Status", "Invited"); user.IsActive = user.Status == "Active"; user.IsGroupScope = Bool(row, "IsGroupScope", false);
+        var fullName = Require(row, "FullName");
+        var phone = Val(row, "PhoneNumber");
+        var language = Val(row, "PreferredLanguage", "en");
+        var timezone = Val(row, "Timezone", "UTC");
+        var status = Val(row, "Status", "Invited");
+        var isGroupScope = Bool(row, "IsGroupScope", false);
         var names = Val(row, "RoleNames").Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var assigned = new List<string>();
+        List<Role>? roles = null;
         if (names.Length > 0)
         {
             // Resolved as the Access screen resolves them (normalised name; this tenant's or a platform role), so the
             // access gate and the write can never be talking about two different roles.
             var normalizedNames = names.Select(AuthService.Normalize).Distinct(StringComparer.Ordinal).ToList();
-            var roles = await _db.Roles
+            roles = await _db.Roles
                 .Where(x => (x.TenantId == tenantId || x.TenantId == null) && normalizedNames.Contains(x.NormalizedName) && x.IsActive && !x.IsDeleted)
                 .ToListAsync(ct);
             roles = roles.GroupBy(r => r.NormalizedName).Select(g => g.OrderBy(r => r.TenantId == null).First()).ToList();
-            if (roles.Count != normalizedNames.Count) throw new InvalidOperationException("One or more RoleNames do not exist in this tenant.");
+            if (roles.Count != normalizedNames.Count) throw new InvalidOperationException("One or more RoleNames do not exist (or are inactive) in this tenant.");
+        }
+        var user = await _db.Users.Include(x => x.UserRoles).ThenInclude(x => x.Role)
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.NormalizedEmail == normalized && !x.IsDeleted, ct);
+        var created = user is null;
+        var wasAdmin = !created && user!.IsActive && user.UserRoles.Any(ur => ur.Role is { NormalizedName: "ADMIN" });
+
+        // ── Mutate (nothing below can throw) ──
+        user ??= new User { TenantId = tenantId, Email = email, NormalizedEmail = normalized, PasswordHash = ImportPlaceholderHash(), MustChangePassword = true, IsEmailConfirmed = false };
+        user.Email = email; user.NormalizedEmail = normalized; user.FullName = fullName; user.PhoneNumber = phone; user.PreferredLanguage = language; user.Timezone = timezone; user.Status = status; user.IsActive = status == "Active"; user.IsGroupScope = isGroupScope;
+        var assigned = new List<string>();
+        if (roles is not null)
+        {
             _db.UserRoles.RemoveRange(user.UserRoles);
             user.UserRoles = roles.Select(r => new UserRole { UserId = user.Id, RoleId = r.Id }).ToList();
             _db.UserRoles.AddRange(user.UserRoles);
             assigned = roles.Select(r => r.Name).OrderBy(n => n, StringComparer.Ordinal).ToList();
+            if (user.IsActive && !wasAdmin && roles.Any(r => r.NormalizedName == "ADMIN")) _pendingNewAdmins++;
         }
         if (created) _db.Users.Add(user);
         AuditAccessChange(created ? "access.user_created" : "access.user_updated", "User", user.Id, tenantId,
             new { email = user.Email, user.Status, user.IsGroupScope, roles = assigned });
-        if (!created && names.Length > 0)
+        if (!created && roles is not null)
             AuditAccessChange("access.roles_assigned", "User", user.Id, tenantId, new { roles = assigned });
         return created ? "created" : "updated";
     }

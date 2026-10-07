@@ -266,29 +266,38 @@ an account is a decision for the Access screen, with its own audit. Do **not** r
 the owner's say-so. SELECT only:
 
 ```sql
+-- Matching rule (queries 2 and 3): the email or role name must be a whole CELL of the section, in ANY column —
+-- start of line or after a comma, optional spaces and double quotes around it, then a comma or the end of the line
+-- (LF or CRLF). The CSV header order is free, so anchoring on "first column" misses rows.
+
 -- 1. Every committed (non-dry-run) migration package that carried a roles or users section, who committed it,
---    and whether that person holds security.manage TODAY (the gate's requirement, which was not checked then).
+--    when the import recorded its completion (audit_logs migration.import_completed), and whether the committer
+--    holds security.manage TODAY (the gate's requirement, which was not checked then).
 WITH access_batches AS (
     SELECT b.tenant_id, b.id AS batch_id, b.external_batch_id, b.status, b.created_by,
            b.created_at_utc, b.completed_at_utc,
            (b.payload_json::jsonb -> 'Sections') ? 'roles' AS had_roles,
-           (b.payload_json::jsonb -> 'Sections') ? 'users' AS had_users,
-           lower(coalesce(b.payload_json::jsonb -> 'Sections' ->> 'roles', '')) AS roles_csv,
-           lower(coalesce(b.payload_json::jsonb -> 'Sections' ->> 'users', '')) AS users_csv
+           (b.payload_json::jsonb -> 'Sections') ? 'users' AS had_users
     FROM migration_import_batches b
     WHERE b.package_type = 'MigrationPackage' AND NOT b.dry_run AND b.status <> 'Previewed'
       AND (b.payload_json::jsonb -> 'Sections') ?| array['roles', 'users'])
 SELECT ab.tenant_id, ab.batch_id, ab.external_batch_id, ab.status, ab.completed_at_utc,
        ab.had_roles, ab.had_users, committer.email AS committed_by,
+       done.created_at_utc AS completed_audit_at, done.user_id AS completed_audit_user_id,
        EXISTS (SELECT 1 FROM user_roles ur
                JOIN role_permissions rp ON rp.role_id = ur.role_id
                JOIN permissions p ON p.id = rp.permission_id
                WHERE ur.user_id = ab.created_by AND p.permission_key = 'security.manage') AS committer_holds_security_manage_now
 FROM access_batches ab
 LEFT JOIN users committer ON committer.id = ab.created_by
+LEFT JOIN LATERAL (
+    SELECT a.created_at_utc, a.user_id FROM audit_logs a
+    WHERE a.tenant_id = ab.tenant_id AND a.action = 'migration.import_completed'
+      AND a.entity_name = 'MigrationImportBatch' AND a.entity_id = ab.batch_id::text
+    ORDER BY a.created_at_utc DESC LIMIT 1) done ON TRUE
 ORDER BY ab.completed_at_utc DESC NULLS FIRST;
 
--- 2. The accounts those packages named (first CSV column = Email), with the roles they hold NOW.
+-- 2. The accounts those packages named (an Email cell in any column), with the roles they hold NOW.
 --    privileged = holds Admin or any role carrying security.manage.
 WITH access_batches AS (
     SELECT b.tenant_id, b.id AS batch_id, b.created_by,
@@ -302,7 +311,7 @@ SELECT ab.tenant_id, ab.batch_id, u.id AS user_id, u.email, u.status, u.is_activ
        coalesce(bool_or(r.normalized_name = 'ADMIN' OR p.permission_key = 'security.manage'), false) AS privileged
 FROM access_batches ab
 JOIN users u ON u.tenant_id = ab.tenant_id AND NOT u.is_deleted
- AND ab.users_csv ~ ('(^|\n)"?' || regexp_replace(lower(u.email), '([.+*?^$()\[\]{}|\\-])', '\\\1', 'g') || '"?,')
+ AND ab.users_csv ~ ('(^|[\n,])[ \t]*"?' || regexp_replace(lower(u.email), '([.+*?^$()\[\]{}|\\-])', '\\\1', 'g') || '"?[ \t]*(,|\r?\n|$)')
 LEFT JOIN user_roles ur ON ur.user_id = u.id
 LEFT JOIN roles r ON r.id = ur.role_id AND NOT r.is_deleted
 LEFT JOIN role_permissions rp ON rp.role_id = r.id
@@ -310,7 +319,7 @@ LEFT JOIN permissions p ON p.id = rp.permission_id
 GROUP BY ab.tenant_id, ab.batch_id, ab.created_by, u.id, u.email, u.status, u.is_active, u.is_group_scope
 ORDER BY privileged DESC, ab.tenant_id, u.email;
 
--- 3. The roles those packages named (first CSV column = Name), as they stand NOW.
+-- 3. The roles those packages named (a Name cell in any column), as they stand NOW.
 WITH access_batches AS (
     SELECT b.tenant_id, b.id AS batch_id,
            lower(coalesce(b.payload_json::jsonb -> 'Sections' ->> 'roles', '')) AS roles_csv
@@ -323,7 +332,7 @@ SELECT ab.tenant_id, ab.batch_id, r.id AS role_id, r.name, r.is_system, r.is_act
           JOIN permissions p ON p.id = rp.permission_id WHERE rp.role_id = r.id) AS permissions_now
 FROM access_batches ab
 JOIN roles r ON (r.tenant_id = ab.tenant_id OR r.tenant_id IS NULL) AND NOT r.is_deleted
- AND ab.roles_csv ~ ('(^|\n)"?' || regexp_replace(lower(r.name), '([.+*?^$()\[\]{}|\\-])', '\\\1', 'g') || '"?,')
+ AND ab.roles_csv ~ ('(^|[\n,])[ \t]*"?' || regexp_replace(lower(r.name), '([.+*?^$()\[\]{}|\\-])', '\\\1', 'g') || '"?[ \t]*(,|\r?\n|$)')
 ORDER BY ab.tenant_id, r.name;
 ```
 

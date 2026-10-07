@@ -811,9 +811,14 @@ public class OrganizationStructureImportController : ControllerBase
             var code = Val(row, "Code");
             var errors = new List<string>();
             if (OrganizationSetupService.CountryCodeProblem(Val(row, "CountryCode")) is { } countryProblem) errors.Add(countryProblem);
-            if (branchCompany.TryGetValue(code, out var currentCompany)
-                && savedByName.TryGetValue(Val(row, "CompanyLegalName"), out var rowCompany)
-                && rowCompany != currentCompany)
+            // The row's company may be a saved one or one this same file creates (it has no id yet, so it is by
+            // definition not the branch's current company). Both are moves; both are refused HERE, at preview,
+            // instead of passing validation and failing inside the commit.
+            var rowCompanyName = Val(row, "CompanyLegalName");
+            if (branchCompany.TryGetValue(code, out var currentCompany) && rowCompanyName.Length > 0
+                && (savedByName.TryGetValue(rowCompanyName, out var rowCompany)
+                        ? rowCompany != currentCompany
+                        : seenNames.Contains(rowCompanyName)))
                 errors.Add($"Branch '{code}' belongs to another company and cannot be moved to another company by import.");
             if (errors.Count > 0)
                 rows.Add(new ImportRowResult(i + 2, $"branches:{code}", Val(row, "NameEn"), ImportRowStatus.Error, errors, []));
