@@ -266,8 +266,14 @@ export const rolesApi = {
   list: () =>
     client.get<RoleItem[]>('/api/access/roles').then(r => r.data),
 
+  // A reply that is not a ceiling (an older server, a proxy page, a test double) is treated as "unavailable",
+  // exactly like a failed request — the screen then falls back to the server's own 403s, never crashes.
   ceiling: () =>
-    client.get<AccessCeiling>('/api/access/ceiling').then(r => r.data),
+    client.get<AccessCeiling>('/api/access/ceiling').then(r => {
+      const d = r.data as Partial<AccessCeiling> | null | undefined;
+      if (!d || !Array.isArray(d.roles) || !Array.isArray(d.heldPermissions)) throw new Error('access ceiling unavailable');
+      return d as AccessCeiling;
+    }),
 
   permissions: () =>
     client.get<PermissionItem[]>('/api/access/permissions').then(r => r.data),
