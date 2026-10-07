@@ -66,6 +66,40 @@ public class SensitivePayloadAndTelemetryTests
     public void ValueShape_CatchesIbansAndSaudiIds(string value, bool sensitive) =>
         SensitiveFieldClassifier.LooksSensitive(value).Should().Be(sensitive);
 
+    // ── Free text: each leak shape inside a sentence, only the match masked ─────────────────────
+
+    [Theory]
+    // An iqama written in Arabic-Indic digits (٢٠٩٨٧٦٥٤٣٢ = 2098765432), and in Eastern Arabic (Persian) digits.
+    [InlineData("تم تجديد الإقامة ٢٠٩٨٧٦٥٤٣٢ اليوم", "تم تجديد الإقامة ***5432 اليوم")]
+    [InlineData("renewed iqama ۲۰۹۸۷۶۵۴۳۲ today", "renewed iqama ***5432 today")]
+    // IBANs in lower case, and in groups of 4, inside other text.
+    [InlineData("moved from sa0380000000608010167519 to cash", "moved from ***7519 to cash")]
+    [InlineData("moved from SA03 8000 0000 6080 1016 7519 to cash", "moved from ***7519 to cash")]
+    [InlineData("old: sa03 8000 0000 6080 1016 7519.", "old: ***7519.")]
+    // Passport numbers, only next to the keyword.
+    [InlineData("Passport No: A12345678 renewed", "Passport No: ***5678 renewed")]
+    [InlineData("new passport P9876543 issued in Riyadh", "new passport ***6543 issued in Riyadh")]
+    [InlineData("P9876543 passport replaced", "***6543 passport replaced")]
+    // A 13–24 digit bank account number.
+    [InlineData("paid to account 6080101675191234 by cheque", "paid to account ***1234 by cheque")]
+    [InlineData("acct 1234567890123 closed", "acct ***0123 closed")]
+    public void MaskEmbedded_MasksEachShapeInsideASentence_AndOnlyTheMatch(string text, string expected) =>
+        SensitiveFieldClassifier.MaskEmbedded(text).Should().Be(expected);
+
+    [Theory]
+    [InlineData("Annual review: promoted to Senior Manager, effective 2026-01-01 (ref HIST-0042).")]
+    [InlineData("Passport renewal requested; awaiting appointment.")]
+    [InlineData("Transferred  to   Jeddah branch")] // whitespace is not normalised when nothing is masked
+    [InlineData("SAR 12,500.00 paid on 2026-03-31 for 30 days")]
+    [InlineData("A1234567 is the badge number")] // passport-shaped, but no passport keyword nearby
+    public void MaskEmbedded_LeavesAnOrdinarySentenceExactlyAsItWas(string text) =>
+        SensitiveFieldClassifier.MaskEmbedded(text).Should().Be(text);
+
+    [Fact]
+    public void SanitizeFieldValue_AppliesTheFreeTextShapesToHistoryToo() =>
+        EmployeeSafeSnapshot.SanitizeFieldValue("Reason", "replaced passport P9876543 and iban sa03 8000 0000 6080 1016 7519")
+            .Should().Be("replaced passport ***6543 and iban ***7519");
+
     [Fact]
     public void SanitizeFieldValue_MasksByNormalisedNameAndByValueShape()
     {
