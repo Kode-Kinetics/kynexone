@@ -400,6 +400,35 @@ public class WorkEmailDerivationTests
     }
 
     [Fact]
+    public async Task Create_RefusesAPlusAddressedWorkEmail()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenant(db);
+        var acme = await SeedCompany(db, tenantId, "Acme");
+        var act = () => Svc(db).CreateAsync(tenantId, Req("John Smith", "john+hr@acme.sa", acme.Id), Ctx(tenantId), CancellationToken.None);
+        (await act.Should().ThrowAsync<WorkEmailPlusAddressException>()).Which.Message.Should().Be("Work email can't contain '+'.");
+        (await db.Employees.AnyAsync()).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Import_RefusesTheFile_WhenARowsWorkEmailIsPlusAddressed()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenant(db);
+        await SeedCompany(db, tenantId, "Acme");
+        var ctrl = ImportController(db, tenantId);
+
+        var csv =
+            "EmployeeCode,FullName,CompanyLegalName,JoiningDate,WorkEmail\n" +
+            "E1,John Smith,Acme,2024-01-01,john@acme.sa\n" +
+            "E2,Jane Doe,Acme,2024-01-01,jane+hr@acme.sa\n";
+        var result = await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
+
+        var refused = Assert.IsType<Microsoft.AspNetCore.Mvc.UnprocessableEntityObjectResult>(result);
+        System.Text.Json.JsonSerializer.Serialize(refused.Value).Should().Contain(WorkEmailPlusAddressException.Code).And.Contain("row(s) 3");
+    }
+
+    [Fact]
     public async Task Import_DerivesWorkEmail_WhenBlank_AndSuffixesCollisions()
     {
         await using var db = CreateDb();

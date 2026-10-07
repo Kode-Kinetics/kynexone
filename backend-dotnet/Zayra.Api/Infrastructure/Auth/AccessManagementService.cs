@@ -356,6 +356,9 @@ public class AccessManagementService : IAccessManagementService
                     : AuthLinkBuilder.AcceptInvitation(_appUrl, user.Tenant.Slug, invitationToken));
         }
 
+        // WorkEmailSetterRule: the invitation goes to the work email, so whoever set it never sends one.
+        await WorkEmailSetterRule.ThrowIfCallerIsSetterAsync(_db, tenantId, request.EmployeeId, context.UserId, cancellationToken);
+
         async Task<bool> IssueOnceAsync(CancellationToken ct)
         {
             _db.ChangeTracker.Clear();
@@ -685,8 +688,20 @@ public class AccessManagementService : IAccessManagementService
         if (employee is null || !EmployeeWithinScope(entityScope, employee.CompanyId)) return null;
 
         var workEmail = (employee.WorkEmail ?? string.Empty).Trim();
+        // Who set the work email every credential for this employee is sent to, and when (WorkEmailSetterRule).
+        var setter = await WorkEmailSetterRule.GetAsync(_db, tenantId, employee.Id, cancellationToken);
+        string? setterName = null;
+        if (setter?.ActorUserId is Guid setterId)
+            setterName = await ScopedBypass.TenantWide(_db.Users, tenantId, LinkBypassWhy).AsNoTracking()
+                .Where(x => x.Id == setterId)
+                .Select(x => string.IsNullOrWhiteSpace(x.FullName) ? x.Email : x.FullName)
+                .FirstOrDefaultAsync(cancellationToken);
         EmployeeLoginStatusDto Status(LinkedLoginDto? linked, LinkedLoginDto? matching, string nextAction, string? reason) =>
-            new(employee.Id, employee.FullName, workEmail, linked, matching, nextAction, reason);
+            new EmployeeLoginStatusDto(employee.Id, employee.FullName, workEmail, linked, matching, nextAction, reason) with
+            {
+                WorkEmailSetBy = setter is null ? null : setterName ?? "an administrator",
+                WorkEmailSetAtUtc = setter?.SetAtUtc,
+            };
         EmployeeLoginStatusDto Refused(LinkedLoginDto? matching, EmployeeLinkRefusal refusal) =>
             Status(null, matching, EmployeeLoginNextActions.Blocked, refusal.Message) with
             {
@@ -1253,15 +1268,30 @@ public class AccessManagementService : IAccessManagementService
                 && CredentialDisclosureAdminActions.Contains(x.Action), ct);
         if (handledCentrally || shownALink) return EmployeeLinkRefusals.CredentialHandledByCaller();
 
-        var employeeKey = employeeId.ToString(CultureInfo.InvariantCulture);
-        var lastWorkEmailChange = await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId, TwoPersonWhy).AsNoTracking()
-            .Where(x => x.EntityName == "Employee" && x.EntityId == employeeKey && x.Action == WorkEmailChangedAction)
-            .OrderByDescending(x => x.CreatedAtUtc).ThenByDescending(x => x.Id)
-            .Select(x => new { x.UserId })
-            .FirstOrDefaultAsync(ct);
-        if (lastWorkEmailChange is not null && (lastWorkEmailChange.UserId == caller || lastWorkEmailChange.UserId == user.Id))
-            return EmployeeLinkRefusals.WorkEmailChangedByParty();
+        // WorkEmailSetterRule: whoever set the work email (the identity evidence this link rests on) never binds the
+        // login it now matches; nor may the login itself have set it; nor anyone who has handled its credentials.
+        var setter = await WorkEmailSetterRule.GetAsync(_db, tenantId, employeeId, ct);
+        if (setter is null) return null;
+        if (setter.Includes(caller)) return EmployeeLinkRefusals.WorkEmailSetByCaller();
+        if (setter.Includes(user.Id)) return EmployeeLinkRefusals.WorkEmailChangedByParty();
+        if ((await CredentialHandlersAsync(tenantId, user.Id, ct)).Overlaps(setter.UserIds))
+            return EmployeeLinkRefusals.WorkEmailSetByHandler();
         return null;
+    }
+
+    /// <summary>Every tenant user who has held a credential for the login (central audit actors + admin-audit disclosures).</summary>
+    private async Task<HashSet<Guid>> CredentialHandlersAsync(Guid tenantId, Guid userId, CancellationToken ct)
+    {
+        var userKey = userId.ToString();
+        var central = await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId, TwoPersonWhy).AsNoTracking()
+            .Where(x => x.EntityName == "User" && x.EntityId == userKey && x.UserId != null && CredentialHandlerActions.Contains(x.Action))
+            .Select(x => x.UserId!.Value)
+            .ToListAsync(ct);
+        var disclosed = await ScopedBypass.TenantWide(_db.AdminAuditLogs, tenantId, TwoPersonWhy).AsNoTracking()
+            .Where(x => x.EntityType == "User" && x.EntityId == userKey && x.PerformedBy != null && CredentialDisclosureAdminActions.Contains(x.Action))
+            .Select(x => x.PerformedBy!.Value)
+            .ToListAsync(ct);
+        return central.Concat(disclosed).ToHashSet();
     }
 
     private enum LinkCompanyDecision { NoGrant, GrantEmployeeCompany, Refuse }
@@ -1902,6 +1932,7 @@ public class AccessManagementService : IAccessManagementService
             .ApplyEntityScope(_db, tenantId, entityScope)
             .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, cancellationToken)
             ?? throw new InvalidOperationException("User not found.");
+        await WorkEmailSetterRule.ThrowIfCallerIsSetterForLoginAsync(_db, tenantId, userId, context.UserId, cancellationToken);
         // The endpoint is disabled (AccessController answers 409), but the method must not be a ceiling bypass.
         await EnsureMayManageAccountAsync(tenantId, context,
             await LoadAccessUser(tenantId, userId, entityScope, cancellationToken) ?? throw new InvalidOperationException("User not found."),
@@ -1958,6 +1989,9 @@ public class AccessManagementService : IAccessManagementService
         if (user.Status is "Deactivated" or "Suspended")
             throw new InvalidOperationException(
                 $"This account is {user.Status.ToLowerInvariant()}. Restore access first, then send a reset link.");
+
+        // WorkEmailSetterRule: the reset link goes to the login's address, which a linked employee's work email set.
+        await WorkEmailSetterRule.ThrowIfCallerIsSetterForLoginAsync(_db, tenantId, user.Id, context.UserId, cancellationToken);
 
         // PRIVILEGE CEILING: with no mail transport the link comes back to the caller, so a reset link for a user
         // above you is a takeover of their account.
@@ -3962,7 +3996,9 @@ public static class EmployeeLinkRefusals
     public static EmployeeLinkRefusal NotManageable() => new(NotManageableCode, "A login already uses this work email, but it is outside your access. An administrator who manages it must link it.");
     public static EmployeeLinkRefusal GraphInconsistent() => new(Graph, "This login's access records are inconsistent. Contact support to resolve it before linking.");
     public static EmployeeLinkRefusal CredentialHandledByCaller() => new(CredentialHandled, "You have handled this login's credentials (you created it, set its password, or were shown a reset or invitation link for it), so you cannot link it to an employee record. Another administrator must link it.", 403);
-    public static EmployeeLinkRefusal WorkEmailChangedByParty() => new(WorkEmailParty, "The work email on this employee record was last changed by you or by this login, so the link needs a different administrator.", 403);
+    public static EmployeeLinkRefusal WorkEmailSetByCaller() => new(WorkEmailSetterRule.SetByCallerCode, WorkEmailSetterRule.SetByCallerMessage, 403);
+    public static EmployeeLinkRefusal WorkEmailSetByHandler() => new(WorkEmailSetterRule.SetByHandlerCode, "The work email on this employee record was set by someone who has handled this login's credentials, so the login cannot be linked to it. Have a different administrator confirm and set the work email first.", 403);
+    public static EmployeeLinkRefusal WorkEmailChangedByParty() => new(WorkEmailParty, "The work email on this employee record was set by this login itself, so it cannot be linked on it. Have an administrator confirm and set the work email first.", 403);
     public static EmployeeLinkRefusal EmployeeRoleMissing() => new(RoleMissing, "The Employee role is not available in this workspace. Restore it before linking a login.");
 
     public static string OtherCompanyMessage(string company) =>

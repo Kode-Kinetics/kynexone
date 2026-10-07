@@ -35,6 +35,8 @@ const LOGIN_NEEDS_GROUP_ADMIN = 'login_needs_group_admin';
 const LOGIN_NOT_MANAGEABLE = 'login_not_manageable';
 const LOGIN_CREDENTIAL_HANDLED_BY_CALLER = 'login_credential_handled_by_caller';
 const WORK_EMAIL_CHANGED_BY_PARTY = 'work_email_changed_by_party';
+const WORK_EMAIL_SET_BY_CALLER = 'work_email_set_by_caller';
+const WORK_EMAIL_SET_BY_HANDLER = 'work_email_set_by_handler';
 /** The lifecycle states that can hold a login (AuthCurrentEligibility). */
 const LINKABLE_STATUSES = ['Active', 'Invited'] as const;
 
@@ -139,7 +141,9 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
     if (code === LOGIN_NEEDS_GROUP_ADMIN) return t('Only a group-level administrator can link a login that has no company access yet.');
     if (code === LOGIN_NOT_MANAGEABLE) return t('A login already uses this work email, but it is outside your access. An administrator who manages it must link it.');
     if (code === LOGIN_CREDENTIAL_HANDLED_BY_CALLER) return t("You have handled this login's credentials (you created it, set its password, or were shown a reset or invitation link for it), so you cannot link it to an employee record. Another administrator must link it.");
-    if (code === WORK_EMAIL_CHANGED_BY_PARTY) return t('The work email on this employee record was last changed by you or by this login, so the link needs a different administrator.');
+    if (code === WORK_EMAIL_CHANGED_BY_PARTY) return t('The work email on this employee record was set by this login itself, so it cannot be linked on it. Have an administrator confirm and set the work email first.');
+    if (code === WORK_EMAIL_SET_BY_CALLER) return t("You set this employee's work email, so you cannot also issue or link a credential for their login. Another administrator must do it.");
+    if (code === WORK_EMAIL_SET_BY_HANDLER) return t("The work email on this employee record was set by someone who has handled this login's credentials, so the login cannot be linked to it. Have a different administrator confirm and set the work email first.");
     return null;
   };
 
@@ -171,7 +175,7 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
       setOutcome({ kind: 'invited', invitation });
       onChanged();
     } catch (e: unknown) {
-      setError(localizedRefusal(e, locale) ?? t('The invitation could not be sent.'));
+      setError(writeError(e, t('The invitation could not be sent.')));
     }
     setSubmitting(false);
   };
@@ -301,6 +305,11 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
               <dd className="break-all text-slate-800 dark:text-slate-200">{status.linkedLogin?.email ?? t('No linked login')}</dd>
             </dl>
             {explanation && <p className="text-sm text-slate-700 dark:text-slate-300">{explanation}</p>}
+            {action && status.workEmailSetBy && status.workEmailSetAtUtc && (
+              <p data-testid="work-email-set-by" className="text-xs text-slate-500 dark:text-slate-400">
+                {t('Work email set by {name} on {date}.', { name: status.workEmailSetBy, date: status.workEmailSetAtUtc.slice(0, 10) })}
+              </p>
+            )}
             {resetNotice && (
               <p data-testid="link-will-reset-credential" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
                 {resetNotice}

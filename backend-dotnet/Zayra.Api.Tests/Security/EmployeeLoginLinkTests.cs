@@ -1104,18 +1104,19 @@ public sealed class EmployeeLoginLinkTests
             await db.SaveChangesAsync();
         }
 
+        var expectedCode = changedBy == "caller" ? WorkEmailSetterRule.SetByCallerCode : EmployeeLinkRefusals.WorkEmailParty;
         await using (var db = _fixture.CreateRetryingDb())
         {
             var status = Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId).EmployeeLoginStatus(employeeId, default)).Result);
             status.NextAction.Should().Be(EmployeeLoginNextActions.Blocked);
-            status.ReasonCode.Should().Be(EmployeeLinkRefusals.WorkEmailParty);
+            status.ReasonCode.Should().Be(expectedCode);
             var refused = Assert.IsType<ObjectResult>((await Controller(db, w, w.AdminId).LinkExistingLogin(
                 new LinkExistingLoginRequest(employeeId, login, "link"), default)).Result);
             refused.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
-            JsonSerializer.SerializeToElement(refused.Value).GetProperty("code").GetString().Should().Be(EmployeeLinkRefusals.WorkEmailParty);
+            JsonSerializer.SerializeToElement(refused.Value).GetProperty("code").GetString().Should().Be(expectedCode);
         }
         await AssertNotLinkedAsync(login, employeeId);
-        await AssertRefusalAuditedAsync(w, employeeId, EmployeeLinkRefusals.WorkEmailParty);
+        await AssertRefusalAuditedAsync(w, employeeId, expectedCode);
 
         // Only the LAST change counts: the peer changed it earlier, which is not a bar to them...
         await using (var db = _fixture.CreateRetryingDb())
@@ -1127,6 +1128,131 @@ public sealed class EmployeeLoginLinkTests
                 // ...but a login that repointed its own employee's work email is never linked, by anyone.
                 status.ReasonCode.Should().Be(EmployeeLinkRefusals.WorkEmailParty);
         }
+    }
+
+    // ── WorkEmailSetterRule: whoever set the work email never issues or binds a credential for it ─────────
+
+    [Fact]
+    public async Task TheWorkEmailSetter_CannotInviteOrResendAnInvitation_ButAnotherAdministratorCan()
+    {
+        var w = await SeedAsync();
+        var peer = await AddUserAsync(w, Email("peer"), ["Admin"], groupScope: true);
+        var employeeId = await AddEmployeeAsync(w, w.CompanyA, Email("invitee"));
+        await AddWorkEmailSetterAsync(w, employeeId, w.AdminId);
+
+        await using (var db = _fixture.CreateRetryingDb())
+            AssertSetterRefused((await Controller(db, w, w.AdminId).InviteEmployeeLogin(
+                new InviteEmployeeLoginRequest(employeeId, null, AccessModes.EssOnly, null), default)).Result);
+        await using (var db = _fixture.CreateRetryingDb())
+            Assert.IsType<CreatedResult>((await Controller(db, w, peer).InviteEmployeeLogin(
+                new InviteEmployeeLoginRequest(employeeId, null, AccessModes.EssOnly, null), default)).Result);
+        // A resend is an invitation too.
+        await using (var db = _fixture.CreateRetryingDb())
+            AssertSetterRefused((await Controller(db, w, w.AdminId).InviteEmployeeLogin(
+                new InviteEmployeeLoginRequest(employeeId, null, AccessModes.EssOnly, null), default)).Result);
+    }
+
+    [Fact]
+    public async Task TheWorkEmailSetter_CannotIssueAResetLinkForTheLinkedLogin()
+    {
+        var w = await SeedAsync();
+        var peer = await AddUserAsync(w, Email("peer"), ["Admin"], groupScope: true);
+        var email = Email("linked");
+        var login = await AddUserAsync(w, email, ["Employee"], groupScope: false, grantCompany: w.CompanyA);
+        var employeeId = await AddEmployeeAsync(w, w.CompanyA, email);
+        await AddLinkAsync(w, employeeId, login);
+        await AddWorkEmailSetterAsync(w, employeeId, w.AdminId);
+
+        await using (var db = _fixture.CreateRetryingDb())
+            AssertSetterRefused(await Controller(db, w, w.AdminId).IssuePasswordResetLink(login, default));
+        await using (var db = _fixture.CreateRetryingDb())
+            Assert.IsType<OkObjectResult>(await Controller(db, w, peer).IssuePasswordResetLink(login, default));
+    }
+
+    /// <summary>For a hire made from a draft, the drafter who typed the address is a setter as well as the approver.</summary>
+    [Fact]
+    public async Task ADraftsDrafter_IsAWorkEmailSetterToo()
+    {
+        var w = await SeedAsync();
+        var drafter = await AddUserAsync(w, Email("drafter"), ["Admin"], groupScope: true);
+        var approver = await AddUserAsync(w, Email("approver"), ["Admin"], groupScope: true);
+        var employeeId = await AddEmployeeAsync(w, w.CompanyA, Email("drafted"));
+        await AddWorkEmailSetterAsync(w, employeeId, approver, draftedBy: drafter);
+
+        foreach (var setter in new[] { drafter, approver })
+        {
+            await using var db = _fixture.CreateRetryingDb();
+            AssertSetterRefused((await Controller(db, w, setter).InviteEmployeeLogin(
+                new InviteEmployeeLoginRequest(employeeId, null, AccessModes.EssOnly, null), default)).Result);
+        }
+        await using (var db = _fixture.CreateRetryingDb())
+            Assert.IsType<CreatedResult>((await Controller(db, w, w.AdminId).InviteEmployeeLogin(
+                new InviteEmployeeLoginRequest(employeeId, null, AccessModes.EssOnly, null), default)).Result);
+    }
+
+    [Fact]
+    public async Task ALoginIsNeverLinkedOnAWorkEmailSetByOneOfItsCredentialHandlers()
+    {
+        var w = await SeedAsync();
+        var creator = await AddUserAsync(w, Email("creator"), ["Admin"], groupScope: true);
+        var email = Email("steered");
+        Guid login;
+        await using (var db = _fixture.CreateRetryingDb())
+            login = Assert.IsType<AuthUserDto>(Assert.IsType<CreatedAtActionResult>((await Controller(db, w, creator)
+                .CreateUser(new CreateUserRequest(email, "Steered", Password, ["Reporting"]), default)).Result).Value).Id;
+        var employeeId = await AddEmployeeAsync(w, w.CompanyA, email);
+        await AddWorkEmailSetterAsync(w, employeeId, creator);
+
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var status = Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId).EmployeeLoginStatus(employeeId, default)).Result);
+            status.ReasonCode.Should().Be(WorkEmailSetterRule.SetByHandlerCode);
+            var refused = Assert.IsType<ObjectResult>((await Controller(db, w, w.AdminId).LinkExistingLogin(
+                new LinkExistingLoginRequest(employeeId, login, "link"), default)).Result);
+            refused.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
+            JsonSerializer.SerializeToElement(refused.Value).GetProperty("code").GetString().Should().Be(WorkEmailSetterRule.SetByHandlerCode);
+        }
+        await AssertNotLinkedAsync(login, employeeId);
+    }
+
+    [Fact]
+    public async Task TheStatus_NamesWhoSetTheWorkEmail_AndWhen()
+    {
+        var w = await SeedAsync();
+        var hr = await AddUserAsync(w, Email("hr"), ["Admin"], groupScope: true);
+        var email = Email("named");
+        await AddUserAsync(w, email, ["Reporting"], groupScope: false);
+        var employeeId = await AddEmployeeAsync(w, w.CompanyA, email);
+        var at = await AddWorkEmailSetterAsync(w, employeeId, hr);
+
+        await using var db = _fixture.CreateRetryingDb();
+        var status = Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId).EmployeeLoginStatus(employeeId, default)).Result);
+        status.NextAction.Should().Be(EmployeeLoginNextActions.LinkExisting);
+        status.WorkEmailSetBy.Should().Be("Noah Williams"); // AddUserAsync's fixture name
+        status.WorkEmailSetAtUtc.Should().BeCloseTo(at, TimeSpan.FromSeconds(1));
+    }
+
+    private static void AssertSetterRefused(IActionResult? result)
+    {
+        var refused = Assert.IsType<ObjectResult>(result);
+        refused.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
+        var body = JsonSerializer.SerializeToElement(refused.Value);
+        body.GetProperty("code").GetString().Should().Be(WorkEmailSetterRule.SetByCallerCode);
+        body.GetProperty("messageAr").GetString().Should().NotBeNullOrWhiteSpace();
+    }
+
+    private async Task<DateTime> AddWorkEmailSetterAsync(World w, int employeeId, Guid actor, Guid? draftedBy = null)
+    {
+        await using var db = _fixture.CreateRetryingDb();
+        var at = DateTime.UtcNow;
+        db.AuditLogs.Add(new AuditLog
+        {
+            TenantId = w.TenantId, UserId = actor, Action = AccessManagementService.WorkEmailChangedAction,
+            EntityName = "Employee", EntityId = employeeId.ToString(), CreatedAtUtc = at,
+            Metadata = JsonSerializer.Serialize(new { oldWorkEmail = (string?)null, newWorkEmail = "x", source = draftedBy is null ? "edit" : "draft_approval", draftedBy }),
+        });
+        await db.SaveChangesAsync();
+        return at;
     }
 
     /// <summary>Status and write agree: blocked with the coded refusal, a 403 on the write, nothing linked, the refusal audited.</summary>

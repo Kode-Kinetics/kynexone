@@ -89,6 +89,9 @@ public record EmployeeLoginStatusDto(
     /// <summary>For <c>link_existing</c>: someone other than the person has held a credential for this login, so the
     /// link will make its password unusable and invite the person to set their own.</summary>
     public bool WillResetCredential { get; init; }
+    /// <summary>Who last set the employee's work email — the address every credential is sent to — and when. Null when not recorded.</summary>
+    public string? WorkEmailSetBy { get; init; }
+    public DateTime? WorkEmailSetAtUtc { get; init; }
 }
 
 public static class EmployeeLoginNextActions

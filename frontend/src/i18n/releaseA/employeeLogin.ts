@@ -63,8 +63,14 @@ export const employeeLogin: ReleaseADict = {
       'This login works in a different company. Give it access to {company} first, or link it from that company.',
     "You have handled this login's credentials (you created it, set its password, or were shown a reset or invitation link for it), so you cannot link it to an employee record. Another administrator must link it.":
       "You have handled this login's credentials (you created it, set its password, or were shown a reset or invitation link for it), so you cannot link it to an employee record. Another administrator must link it.",
-    'The work email on this employee record was last changed by you or by this login, so the link needs a different administrator.':
-      'The work email on this employee record was last changed by you or by this login, so the link needs a different administrator.',
+    "The work email on this employee record was set by this login itself, so it cannot be linked on it. Have an administrator confirm and set the work email first.":
+      "The work email on this employee record was set by this login itself, so it cannot be linked on it. Have an administrator confirm and set the work email first.",
+    "You set this employee's work email, so you cannot also issue or link a credential for their login. Another administrator must do it.":
+      "You set this employee's work email, so you cannot also issue or link a credential for their login. Another administrator must do it.",
+    "The work email on this employee record was set by someone who has handled this login's credentials, so the login cannot be linked to it. Have a different administrator confirm and set the work email first.":
+      "The work email on this employee record was set by someone who has handled this login's credentials, so the login cannot be linked to it. Have a different administrator confirm and set the work email first.",
+    "Work email set by {name} on {date}.":
+      "Work email set by {name} on {date}.",
     "Linked. {name} must set a new password from the invitation.":
       "Linked. {name} must set a new password from the invitation.",
     "Someone other than {name} had handled this login's password, so the old password no longer works.":
@@ -130,8 +136,14 @@ export const employeeLogin: ReleaseADict = {
       'يعمل حساب الدخول هذا في شركة أخرى. امنحه صلاحية الوصول إلى {company} أولاً، أو اربطه من تلك الشركة.',
     "You have handled this login's credentials (you created it, set its password, or were shown a reset or invitation link for it), so you cannot link it to an employee record. Another administrator must link it.":
       'لقد تعاملت مع بيانات اعتماد حساب الدخول هذا (أنشأته، أو عيّنت كلمة مروره، أو عُرض عليك رابط إعادة تعيين أو دعوة له)، لذا لا يمكنك ربطه بسجل موظف. يجب أن يربطه مسؤول آخر.',
-    'The work email on this employee record was last changed by you or by this login, so the link needs a different administrator.':
-      'آخر من غيّر البريد الإلكتروني للعمل في سجل هذا الموظف هو أنت أو صاحب حساب الدخول هذا، لذا يجب أن يربطه مسؤول آخر.',
+    "The work email on this employee record was set by this login itself, so it cannot be linked on it. Have an administrator confirm and set the work email first.":
+      "البريد الإلكتروني للعمل في سجل هذا الموظف عيّنه صاحب حساب الدخول نفسه، لذا لا يمكن الربط بناءً عليه. اطلب من مسؤول تأكيد البريد الإلكتروني للعمل وتعيينه أولاً.",
+    "You set this employee's work email, so you cannot also issue or link a credential for their login. Another administrator must do it.":
+      "أنت من عيّن البريد الإلكتروني للعمل لهذا الموظف، لذا لا يمكنك أيضاً إصدار بيانات اعتماد لحساب دخوله أو ربطه. يجب أن يقوم بذلك مسؤول آخر.",
+    "The work email on this employee record was set by someone who has handled this login's credentials, so the login cannot be linked to it. Have a different administrator confirm and set the work email first.":
+      "البريد الإلكتروني للعمل في سجل هذا الموظف عيّنه شخص تعامل مع بيانات اعتماد حساب الدخول هذا، لذا لا يمكن ربط الحساب به. اطلب من مسؤول آخر تأكيد البريد الإلكتروني للعمل وتعيينه أولاً.",
+    "Work email set by {name} on {date}.":
+      "عيّن {name} البريد الإلكتروني للعمل بتاريخ {date}.",
     "Linked. {name} must set a new password from the invitation.":
       "تم الربط. يجب على {name} تعيين كلمة مرور جديدة من خلال الدعوة.",
     "Someone other than {name} had handled this login's password, so the old password no longer works.":

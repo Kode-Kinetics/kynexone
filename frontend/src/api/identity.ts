@@ -52,6 +52,9 @@ export interface EmployeeLoginStatus {
   reasonSubject?: string | null;
   /** link_existing only: linking will reset the login's password (someone other than the person has handled it). */
   willResetCredential?: boolean;
+  /** Who last set the employee's work email (every credential is sent there), and when (UTC ISO). */
+  workEmailSetBy?: string | null;
+  workEmailSetAtUtc?: string | null;
 }
 
 export interface EmployeeLoginLinkResult {
