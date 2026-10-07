@@ -575,9 +575,15 @@ public class OpeningBalanceCutoverTests
         using var doc = JsonDocument.Parse(json);
         doc.RootElement.GetProperty("code").GetString().Should().Be("cutover_period_locked");
 
+        // Two independent reasons, each coded: the package DECLARES a cutover whose boundary a locked run
+        // already sits on, and it carries balances INTO that locked period. The balance refusal is the
+        // one this test pins; the cutover-change refusal is pinned in PilotPayrollCorrectnessPostgresTests.
         var refusals = doc.RootElement.GetProperty("refusals").EnumerateArray().ToList();
-        refusals.Should().ContainSingle();
-        var refusal = refusals[0];
+        refusals.Select(r => r.GetProperty("code").GetString()).Should().BeEquivalentTo(new[]
+        {
+            CutoverStatuses.BalanceIntoLockedPeriodCode, CutoverStatuses.ChangeAfterLockedRunCode,
+        });
+        var refusal = refusals.Single(r => r.GetProperty("code").GetString() == CutoverStatuses.BalanceIntoLockedPeriodCode);
         refusal.GetProperty("period").GetString().Should().Be("2026-09");
         refusal.GetProperty("payrollRunId").GetGuid().Should().Be(september.Id);
         refusal.GetProperty("companyName").GetString().Should().Be("Cutover KSA Co");
@@ -733,7 +739,7 @@ public class OpeningBalanceCutoverTests
 
         var dto = (MigrationReconciliationDto)((OkObjectResult)res.Result!).Value!;
         dto.Errors.Should().ContainSingle().Which.Should()
-            .Contain("EMP-002").And.Contain("No Active cutover is declared");
+            .Contain("EMP-002").And.Contain("No Active or Closed cutover is declared");
         (await db.EmployeeLoans.CountAsync(l => l.TenantId == tid)).Should().Be(1,
             "wave one imports; wave two waits for its own cutover row");
     }

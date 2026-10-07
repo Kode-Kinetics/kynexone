@@ -197,10 +197,18 @@ public class RatesController : ControllerBase
             var drifted = active is not null
                 && !string.Equals(active.PlatformDefaultAtCreation,
                     platformDefault?.ToString(CultureInfo.InvariantCulture) ?? "", StringComparison.Ordinal);
+            // GOSI rates and the ceiling are statutory: payroll applies the platform row whatever a
+            // company saved, so the resolved value IS the platform default and an override is flagged.
+            var gosiStatutory = GosiStatutoryValues.IsStatutory(key);
             result.Add(new
             {
                 ruleKey = key,
-                resolvedValue = resolved,
+                resolvedValue = gosiStatutory ? platformDefault : resolved,
+                statutoryLocked = gosiStatutory,
+                neverApplied = gosiStatutory && active is not null,
+                notice = gosiStatutory && active is not null
+                    ? "Saved, never applied — payroll uses the GOSI-published rate."
+                    : null,
                 platformDefault,
                 isOverride = active is not null,
                 overrideId = active?.Id,

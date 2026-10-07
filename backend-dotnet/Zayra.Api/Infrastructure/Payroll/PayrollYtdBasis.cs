@@ -15,8 +15,9 @@ namespace Zayra.Api.Infrastructure.Payroll;
 /// importer refuses balances once a run on or after the cutover month is locked, and refuses two rows
 /// under one aggregate (MI1), but nothing on the payroll side knew where the carried figures ended.</para>
 ///
-/// <para><b>The partition (one period, one source).</b> With an Active cutover for the run's legal
-/// entity, months are split at the cutover MONTH — the same boundary the importer's locked-period
+/// <para><b>The partition (one period, one source).</b> With a governing cutover (any status but
+/// Planned — <see cref="CutoverStatuses.Governs"/>) for the run's legal entity, and for an employee who
+/// HAS carried YTD balances, months are split at the cutover MONTH — the same boundary the importer's locked-period
 /// refusal uses:</para>
 /// <list type="bullet">
 /// <item>A run for a month ON OR AFTER the cutover month counts the opening balances plus locked
@@ -82,7 +83,7 @@ public static class PayrollYtdBasis
         IReadOnlyCollection<int> employeeIds, CancellationToken ct)
     {
         var cutover = await db.CompanyCutovers.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.CompanyId == companyId && x.Status == CutoverStatuses.Active)
+            .Where(x => x.TenantId == tenantId && x.CompanyId == companyId && x.Status != CutoverStatuses.Planned)
             .OrderByDescending(x => x.CutoverDate)
             .Select(x => (DateOnly?)x.CutoverDate)
             .FirstOrDefaultAsync(ct);
@@ -105,13 +106,17 @@ public static class PayrollYtdBasis
             .ToListAsync(ct);
 
         var countsOpening = CountsOpeningBalances(run.Year, run.Month, cutover);
-        var priorSlips = candidates
-            .Where(c => CountsPriorSlip(run.Year, run.Month, c.Year, c.Month, cutover))
-            .Select(c => c.Slip)
-            .ToList();
-
         var employeesWithCarriedYtd = balances.Where(IsPayslipYtdBalance).Select(b => b.EmployeeId).ToHashSet();
         var employeesWithPriorSlips = candidates.Select(c => c.Slip.EmployeeId).ToHashSet();
+
+        // PER EMPLOYEE. A pre-cutover payslip is left out only for an employee whose carried YTD stands in
+        // for it. Someone hired during the parallel run is not in the legacy file at all: their pre-cutover
+        // payslips are the ONLY record of those months and must count.
+        var priorSlips = candidates
+            .Where(c => !employeesWithCarriedYtd.Contains(c.Slip.EmployeeId)
+                     || CountsPriorSlip(run.Year, run.Month, c.Year, c.Month, cutover))
+            .Select(c => c.Slip)
+            .ToList();
 
         var unresolved = cutover is null
             ? employeesWithCarriedYtd.Where(employeesWithPriorSlips.Contains).ToHashSet()

@@ -36,7 +36,7 @@ public sealed partial class MigrationImportController
         Guid tenantId, MigrationPackageRequest request, Guid batchId, CancellationToken ct)
     {
         var map = await _db.CompanyCutovers.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.CompanyId != null && x.Status == CutoverStatuses.Active)
+            .Where(x => x.TenantId == tenantId && x.CompanyId != null && x.Status != CutoverStatuses.Planned)
             .ToDictionaryAsync(x => x.CompanyId!.Value, x => x.CutoverDate, ct);
 
         // Cutovers declared in this very package. A malformed row here is NOT thrown from: the
@@ -54,9 +54,11 @@ public sealed partial class MigrationImportController
                 try
                 {
                     var company = await ResolveCutoverCompanyAsync(row, tenantId, ct);
-                    if (!string.Equals(Val(row, "Status", CutoverStatuses.Active).Trim(), CutoverStatuses.Active, StringComparison.OrdinalIgnoreCase))
+                    // Anything but Planned governs (CutoverStatuses.Governs): a Closed cutover still
+                    // states where the carried figures end.
+                    if (!CutoverStatuses.Governs(Val(row, "Status", CutoverStatuses.Active)))
                         continue;
-                    map[company.Id] = DateReq(row, "CutoverDate");
+                    map[company.Id] = ReadCutoverDate(row);
                 }
                 catch { /* reported by the section itself */ }
             }
@@ -90,7 +92,7 @@ public sealed partial class MigrationImportController
                 $"Employee '{employee.EmployeeCode}' has no legal entity, so no cutover date governs it. Assign the employee to a company before importing opening balances.");
         if (!cutover.CutoverByCompany.TryGetValue(employee.CompanyId.Value, out var date))
             throw new InvalidOperationException(
-                $"No Active cutover is declared for the legal entity that owns employee '{employee.EmployeeCode}'. Import a companyCutover row for it first — an opening balance is meaningless without the date it is 'as at'.");
+                $"No Active or Closed cutover is declared for the legal entity that owns employee '{employee.EmployeeCode}'. Import a companyCutover row for it first — an opening balance is meaningless without the date it is 'as at'.");
         return date;
     }
 
@@ -118,6 +120,15 @@ public sealed partial class MigrationImportController
             throw new InvalidOperationException(
                 $"More than one legal entity matches {(registration.Length > 0 ? $"registration number '{registration}'" : $"legal name '{legalName}'")}. Use the registration number, which is unique per entity.");
         return matches[0];
+    }
+
+    /// <summary>The row's CutoverDate, refused unless it is the 1st of a month (CUTOVER_NOT_FIRST_OF_MONTH).</summary>
+    private static DateOnly ReadCutoverDate(Dictionary<string, string> row)
+    {
+        var date = DateReq(row, "CutoverDate");
+        if (CutoverStatuses.FirstOfMonthRefusal(date) is { } refusal)
+            throw new InvalidOperationException(refusal);
+        return date;
     }
 
     private static void RequireCutoverStatus(Dictionary<string, string> row)
@@ -273,26 +284,70 @@ public sealed partial class MigrationImportController
     // ── Locked-period refusal ───────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Refuse an opening-balance import into a legal entity that has already LOCKED a payroll run in
-    /// the cutover month or later.
+    /// The package-level refusals, computed BEFORE anything is written. Two rules:
     ///
-    /// <para>The rule is "on or after the cutover month", not "any locked run ever", and the distinction
-    /// matters. Locked runs BEFORE the cutover are normal on a re-migration or a wave — they belong to
-    /// a period this product legitimately owned. A locked run in or after the cutover month means the
-    /// product has already computed, paid and journalled a period whose opening position the import is
-    /// now trying to restate. That payslip is in an employee's hands and that journal is in the GL.</para>
+    /// <para><b>1. A cutover change may not move a boundary a locked run already used.</b> A companyCutover
+    /// row that changes the date, or changes whether the cutover governs (Planned ↔ Active/Closed), is
+    /// refused when a Locked run exists in or after the EARLIER of the old and new cutover months: that
+    /// run's year-to-date was partitioned at the old boundary, and every later payslip would be
+    /// partitioned at a different one. Active → Closed does not change the boundary and is allowed — a
+    /// finished migration is closed precisely after months have been locked. This rule runs even when the
+    /// package carries ONLY the cutover row.</para>
+    ///
+    /// <para><b>2. Opening balances may not restate a locked period.</b> A package carrying balances is
+    /// refused for a legal entity that has LOCKED a run in the cutover month or later. Locked runs BEFORE
+    /// the cutover are normal on a re-migration or a wave — they belong to a period this product
+    /// legitimately owned; a locked run on or after it is a payslip in an employee's hands and a journal
+    /// in the GL.</para>
     /// </summary>
     private async Task<List<LockedPeriodRefusal>> FindLockedPeriodRefusalsAsync(
         Guid tenantId, MigrationPackageRequest request, CancellationToken ct)
     {
         var refusals = new List<LockedPeriodRefusal>();
+
+        // ── 1. Cutover changes — whatever else the package carries ─────────────────────────────────
+        var changes = new List<(Guid CompanyId, DateOnly Boundary, string What)>();
+        if (request.Sections.TryGetValue("companyCutover", out var cutoverCsv)
+            && TryParseSection("companyCutover", cutoverCsv, out var cutoverRows, out _))
+        {
+            foreach (var row in cutoverRows)
+            {
+                Company company; DateOnly newDate;
+                try
+                {
+                    company = await ResolveCutoverCompanyAsync(row, tenantId, ct);
+                    newDate = DateReq(row, "CutoverDate");
+                }
+                catch { continue; /* the section reports its own malformed rows */ }
+
+                var newGoverns = CutoverStatuses.Governs(Val(row, "Status", CutoverStatuses.Active));
+                var existing = await _db.CompanyCutovers.AsNoTracking()
+                    .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.CompanyId == company.Id, ct);
+                var oldGoverns = existing is not null && CutoverStatuses.Governs(existing.Status);
+
+                var boundaryChanges = oldGoverns != newGoverns
+                    || (oldGoverns && newGoverns && existing!.CutoverDate != newDate);
+                if (!boundaryChanges) continue;
+
+                var months = new List<DateOnly>();
+                if (oldGoverns) months.Add(new DateOnly(existing!.CutoverDate.Year, existing.CutoverDate.Month, 1));
+                if (newGoverns) months.Add(new DateOnly(newDate.Year, newDate.Month, 1));
+                var what = existing is null
+                    ? $"declare a {newDate:yyyy-MM-dd} cutover"
+                    : $"change the cutover from {existing.CutoverDate:yyyy-MM-dd} ({existing.Status}) to {newDate:yyyy-MM-dd} ({Val(row, "Status", CutoverStatuses.Active).Trim()})";
+                changes.Add((company.Id, months.Min(), what));
+            }
+        }
+
+        // ── 2. Balances against the governing cutovers ──────────────────────────────────────────────
         var carriesBalances = OpeningBalanceSections.Any(s => request.Sections.ContainsKey(s));
-        if (!carriesBalances) return refusals;
+        var cutover = carriesBalances
+            ? await LoadCutoverContextAsync(tenantId, request, Guid.Empty, ct)
+            : new CutoverContext(tenantId, Guid.Empty, new Dictionary<Guid, DateOnly>());
 
-        var cutover = await LoadCutoverContextAsync(tenantId, request, Guid.Empty, ct);
-        if (cutover.CutoverByCompany.Count == 0) return refusals;
+        var companyIds = changes.Select(c => c.CompanyId).Concat(cutover.CutoverByCompany.Keys).Distinct().ToList();
+        if (companyIds.Count == 0) return refusals;
 
-        var companyIds = cutover.CutoverByCompany.Keys.ToList();
         var lockedRuns = await _db.PayrollRuns.AsNoTracking()
             .Where(r => r.TenantId == tenantId && r.Status == "Locked"
                      && r.CompanyId != null && companyIds.Contains(r.CompanyId.Value))
@@ -304,34 +359,66 @@ public sealed partial class MigrationImportController
             .Where(c => c.TenantId == tenantId && companyIds.Contains(c.Id))
             .ToDictionaryAsync(c => c.Id, c => c.LegalNameEn, ct);
 
-        foreach (var run in lockedRuns)
+        foreach (var change in changes)
         {
-            var cutoverDate = cutover.CutoverByCompany[run.CompanyId!.Value];
-            var runStart = new DateOnly(run.Year, run.Month, 1);
-            var cutoverMonth = new DateOnly(cutoverDate.Year, cutoverDate.Month, 1);
-            if (runStart < cutoverMonth) continue;
+            foreach (var run in lockedRuns.Where(r => r.CompanyId == change.CompanyId))
+            {
+                if (new DateOnly(run.Year, run.Month, 1) < change.Boundary) continue;
+                refusals.Add(new LockedPeriodRefusal(
+                    Code: CutoverStatuses.ChangeAfterLockedRunCode,
+                    CompanyId: change.CompanyId,
+                    CompanyName: companyNames.GetValueOrDefault(change.CompanyId, "(unnamed entity)"),
+                    PayrollRunId: run.Id,
+                    Period: $"{run.Year}-{run.Month:D2}",
+                    RunType: run.RunType,
+                    CutoverDate: change.Boundary,
+                    Reason: $"This package would {change.What}, but payroll run {run.Id} for {run.Year}-{run.Month:D2} is Locked "
+                          + "and its year-to-date was split at the current cutover. Moving the boundary now would split later "
+                          + "payslips differently from the ones already paid. Void the locked run(s) from that month on first, "
+                          + "or keep the cutover as it is. Closing a cutover (Active to Closed) is always allowed.",
+                    ReasonAr: "لا يمكن تغيير تاريخ الانتقال أو حالته بعد إقفال مسير رواتب في شهر الانتقال أو بعده، لأن أرصدة "
+                            + "السنة حتى تاريخه احتُسبت على أساس التاريخ الحالي. ألغِ المسيرات المقفلة أولاً أو أبقِ تاريخ الانتقال كما هو."));
+            }
+        }
 
-            refusals.Add(new LockedPeriodRefusal(
-                CompanyId: run.CompanyId!.Value,
-                CompanyName: companyNames.GetValueOrDefault(run.CompanyId!.Value, "(unnamed entity)"),
-                PayrollRunId: run.Id,
-                Period: $"{run.Year}-{run.Month:D2}",
-                RunType: run.RunType,
-                CutoverDate: cutoverDate,
-                Reason: $"Payroll run {run.Id} for {run.Year}-{run.Month:D2} is Locked, and that period is on or after the {cutoverDate:yyyy-MM-dd} cutover for this legal entity. "
-                      + "Void the run (which produces a Replacement) or move the cutover date before re-importing — opening balances may not restate a period that has already been paid and journalled."));
+        if (carriesBalances)
+        {
+            foreach (var run in lockedRuns)
+            {
+                if (!cutover.CutoverByCompany.TryGetValue(run.CompanyId!.Value, out var cutoverDate)) continue;
+                var runStart = new DateOnly(run.Year, run.Month, 1);
+                var cutoverMonth = new DateOnly(cutoverDate.Year, cutoverDate.Month, 1);
+                if (runStart < cutoverMonth) continue;
+
+                refusals.Add(new LockedPeriodRefusal(
+                    Code: CutoverStatuses.BalanceIntoLockedPeriodCode,
+                    CompanyId: run.CompanyId!.Value,
+                    CompanyName: companyNames.GetValueOrDefault(run.CompanyId!.Value, "(unnamed entity)"),
+                    PayrollRunId: run.Id,
+                    Period: $"{run.Year}-{run.Month:D2}",
+                    RunType: run.RunType,
+                    CutoverDate: cutoverDate,
+                    Reason: $"Payroll run {run.Id} for {run.Year}-{run.Month:D2} is Locked, and that period is on or after the {cutoverDate:yyyy-MM-dd} cutover for this legal entity. "
+                          + "Opening balances may not restate a period that has already been paid and journalled. Void the locked run(s) "
+                          + "from the cutover month on (each produces a Replacement) before re-importing; the cutover date itself cannot "
+                          + "be moved once a run on or after it is locked.",
+                    ReasonAr: "لا يمكن استيراد أرصدة افتتاحية لفترة يوجد بها مسير رواتب مقفل في شهر الانتقال أو بعده. "
+                            + "ألغِ المسيرات المقفلة من شهر الانتقال فصاعداً قبل إعادة الاستيراد؛ ولا يمكن نقل تاريخ الانتقال بعد إقفال مسير."));
+            }
         }
         return refusals;
     }
 
     private sealed record LockedPeriodRefusal(
+        string Code,
         Guid CompanyId,
         string CompanyName,
         Guid PayrollRunId,
         string Period,
         string RunType,
         DateOnly CutoverDate,
-        string Reason);
+        string Reason,
+        string ReasonAr);
 
     // ── Provenance ──────────────────────────────────────────────────────────────────────────────────
 
@@ -384,7 +471,7 @@ public sealed partial class MigrationImportController
         var item = await _db.CompanyCutovers.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.CompanyId == company.Id, ct);
         var created = item is null;
         item ??= new CompanyCutover { TenantId = tenantId, CompanyId = company.Id, CreatedBy = UserId() };
-        item.CutoverDate = DateReq(row, "CutoverDate");
+        item.CutoverDate = ReadCutoverDate(row);
         item.SourceSystem = Val(row, "SourceSystem");
         item.Status = CutoverStatuses.All.First(s => string.Equals(s, Val(row, "Status", CutoverStatuses.Active).Trim(), StringComparison.OrdinalIgnoreCase));
         item.Notes = Val(row, "Notes");

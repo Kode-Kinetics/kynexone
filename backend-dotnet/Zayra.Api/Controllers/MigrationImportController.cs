@@ -164,7 +164,8 @@ public sealed partial class MigrationImportController : ControllerBase
             return Conflict(new
             {
                 code = "cutover_period_locked",
-                message = "Opening balances cannot be imported into a period that already has a locked payroll run.",
+                message = "This package would change a period that already has a locked payroll run — either by moving the "
+                        + "cutover boundary or by importing opening balances into it. Each refusal below names the run and its code.",
                 refusals = lockedRefusals
             });
 
@@ -432,7 +433,7 @@ public sealed partial class MigrationImportController : ControllerBase
         {
             case "companyCutover":
                 var cutoverCompany = await ResolveCutoverCompanyAsync(row, tenantId, ct);
-                _ = DateReq(row, "CutoverDate");
+                _ = ReadCutoverDate(row);
                 RequireCutoverStatus(row);
                 return await _db.CompanyCutovers.AnyAsync(x => x.TenantId == tenantId && x.CompanyId == cutoverCompany.Id, ct)
                     ? "updated" : "created";

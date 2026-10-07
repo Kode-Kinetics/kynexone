@@ -41,6 +41,9 @@ public static class PayrollValidationEngine
     /// <summary>F02 — a Saudi national's slip was computed with no known GOSI cohort (Warning).</summary>
     public const string GosiCohortNotRecorded = "GOSI_COHORT_NOT_RECORDED";
 
+    /// <summary>Error — a GCC national whose home-state scheme rates are not configured; no contribution was computed.</summary>
+    public const string GosiGccSchemeNotConfigured = "GOSI_GCC_SCHEME_NOT_CONFIGURED";
+
     /// <summary>F02 — a Saudi national is a post-3-July-2024 new entrant and that schedule is not modelled
     /// (Error; published as non-overridable in <see cref="PayrollValidationOverridePolicy"/>).</summary>
     public const string GosiNewEntrantScheduleNotModelled = "GOSI_NEW_ENTRANT_SCHEDULE_NOT_MODELLED";
@@ -300,7 +303,7 @@ public static class PayrollValidationEngine
                     // it now names the two rows that make it go away.
                     var gccHome = GosiCalculationService.DeriveGccHomeState(emp.Nationality);
                     if (!hasGosiEe && periodGosiEe <= 0m && paysRecurring && gccHome is not null)
-                        Err("GOSI_GCC_SCHEME_NOT_CONFIGURED",
+                        Err(GosiGccSchemeNotConfigured,
                             $"Employee {slip.EmployeeCode} is a {gccHome} national working in Saudi Arabia, and no " +
                             "contribution was calculated for them. Under the GCC Unified Insurance Extension Scheme " +
                             $"they are insured under {gccHome}'s own scheme, at {gccHome}'s rates, collected by GOSI — " +
@@ -629,7 +632,7 @@ public static class PayrollValidationEngine
         foreach (var empId in ctx.YtdUnresolvedOverlapEmployeeIds)
             Err(PayrollYtdBasis.UnresolvedOverlapCode,
                 $"Employee {CodeFor(empId)} has carried year-to-date opening balances for {ctx.Run.Year} AND payslips " +
-                $"locked in this product earlier in {ctx.Run.Year}, but no Active cutover date is declared for this legal " +
+                $"locked in this product earlier in {ctx.Run.Year}, but no cutover date (Active or Closed) is declared for this legal " +
                 "entity, so nothing says which months the carried figures already include. Summing both may count the " +
                 "same months twice on the payslip's year-to-date. Declare the cutover (migration import, companyCutover " +
                 "section) and re-process.",

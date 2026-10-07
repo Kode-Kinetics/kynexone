@@ -3089,19 +3089,7 @@ public class PayrollController : ControllerBase
 
         // GOSI staleness check: look up the most-recent system-default GOSI effective date
         // for this company's country pack so validation engine can warn if rates are stale.
-        DateOnly? gosiRatesEffectiveFrom = null;
-        if (string.Equals(company?.CountryCode, "SAU", StringComparison.OrdinalIgnoreCase)
-         || string.Equals(company?.CountryCode, "SA",  StringComparison.OrdinalIgnoreCase))
-        {
-            // IgnoreQueryFilters is intentional: GosiContributionRules platform defaults use TenantId == Guid.Empty
-            // which is excluded by the per-tenant global query filter. This query reads system-wide default
-            // rates (not tenant data), so bypassing the tenant filter is correct and safe here.
-            var latestGosiRule = await _db.GosiContributionRules.IgnoreQueryFilters()
-                .Where(r => r.TenantId == Guid.Empty && r.CountryCode == "SA")
-                .OrderByDescending(r => r.EffectiveFrom)
-                .FirstOrDefaultAsync(cancellationToken);
-            gosiRatesEffectiveFrom = latestGosiRule?.EffectiveFrom;
-        }
+        DateOnly? gosiRatesEffectiveFrom = await GosiRatesEffectiveFromAsync(company?.CountryCode, cancellationToken);
 
         var validationCtx = new PayrollValidationContext(
             run, slips, employees, salaryAssignments, valProfiles, valDeductions, valEarnings, company)
@@ -4004,6 +3992,8 @@ public class PayrollController : ControllerBase
                 tenantId, slips.Select(s => s.EmployeeId).ToList(), cancellationToken),
             OvertimeHoursByEmployee        = valOtHoursByEmp,
             AttendanceProcessedEmployeeIds = valAttendanceEmpIds,
+            // Same source as Process, so /validate (which replaces the findings wholesale) keeps the warning.
+            GosiRatesEffectiveFrom         = await GosiRatesEffectiveFromAsync(company.CountryCode, cancellationToken),
             EmployeesAlreadyPaidRecurringThisPeriod = valAlreadyPaidEmpIds,
             // Mid-year cutover — re-derived with the SAME loader Process used; /validate replaces the
             // stored results wholesale, so omitting it would silently drop Rule 14b.
@@ -11302,6 +11292,31 @@ public class PayrollController : ControllerBase
     private string GetUserName() => User.FindFirstValue(ClaimTypes.Name) ?? User.FindFirstValue("name") ?? "system";
     private bool HasPermission(string permission) =>
         User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
+    /// <summary>
+    /// The effective date of the newest platform GOSI rate row — what the staleness warning
+    /// (WARN_GOSI_RATES_REQUIRE_SIGNOFF) ages. Read from statutory_rules, the store the payslip computes
+    /// from, not from the retired gosi_contribution_rules. Null outside KSA.
+    /// </summary>
+    private async Task<DateOnly?> GosiRatesEffectiveFromAsync(string? countryCode, CancellationToken ct)
+    {
+        if (!string.Equals(countryCode, "SAU", StringComparison.OrdinalIgnoreCase)
+         && !string.Equals(countryCode, "SA", StringComparison.OrdinalIgnoreCase)) return null;
+        var keys = new[]
+        {
+            Zayra.Api.Infrastructure.CountryPack.Ksa.RuleKeys.GosiSaudiEmployeeRate, Zayra.Api.Infrastructure.CountryPack.Ksa.RuleKeys.GosiSaudiEmployerRate,
+            Zayra.Api.Infrastructure.CountryPack.Ksa.RuleKeys.GosiSanedRate, Zayra.Api.Infrastructure.CountryPack.Ksa.RuleKeys.GosiExpOhRate,
+        };
+        // IgnoreQueryFilters is intentional: platform statutory rules carry TenantId == null and are read
+        // here as system-wide reference data (never tenant data); the WHERE re-applies the platform scope.
+        var latest = await _db.StatutoryRules.IgnoreQueryFilters().AsNoTracking()
+            .Where(r => r.TenantId == null && r.CountryCode == CountryCodes.Saudi
+                     && r.Jurisdiction == Jurisdictions.KsaMainland && keys.Contains(r.RuleKey))
+            .OrderByDescending(r => r.EffectiveFrom)
+            .Select(r => (DateTime?)r.EffectiveFrom)
+            .FirstOrDefaultAsync(ct);
+        return latest is DateTime d ? DateOnly.FromDateTime(d) : null;
+    }
+
     private static decimal SumOpeningBalance(IEnumerable<PayrollOpeningBalance>? balances, params string[] balanceTypes)
     {
         if (balances is null) return 0m;

@@ -31,7 +31,8 @@ public class GosiController : ControllerBase
     // ── Contribution Rules ────────────────────────────────────────────────────
 
     /// <summary>
-    /// Lists all active GOSI contribution rules for the tenant (including system defaults).
+    /// RETIRED listing of gosi_contribution_rules (tenant rows + system defaults). Every row is marked
+    /// retired / not applied to payroll and names the statutory rule payroll actually reads.
     /// </summary>
     [HttpGet("contribution-rules")]
     public async Task<IActionResult> GetContributionRules(CancellationToken ct)
@@ -50,8 +51,16 @@ public class GosiController : ControllerBase
             .ThenByDescending(r => r.EffectiveFrom)
             .ToListAsync(ct);
 
+        // RETIRED as a rate source: nothing computes GOSI from these rows. Each row says so and names the
+        // statutory rule that holds the rate payroll applies; the response is also marked deprecated.
+        Response.Headers["Deprecation"] = "true";
+        Response.Headers["X-Retired-Code"] = GosiRateStoreRetiredCode;
         return Ok(rules.Select(r => new
         {
+            retired          = true,
+            appliedToPayroll = false,
+            retiredCode      = GosiRateStoreRetiredCode,
+            statutoryRuleKey = GosiRuleSeeder.StatutoryRuleKeyFor.TryGetValue((r.Branch, r.Payer), out var key) ? key : null,
             r.Id,
             r.TenantId,
             isDefault       = r.TenantId == Guid.Empty,
@@ -153,22 +162,13 @@ public class GosiController : ControllerBase
             .Where(s => s.TenantId == tenantId && s.IsActive)
             .ToListAsync(ct);
 
-        var rules = await LoadRulesAsync(tenantId, ct);
+        // Readiness is the payroll run's own verdict — the payslip engine's result judged with the run's
+        // codes, on the salary the run would use (effective by the period END). See GosiReadinessValidator.
         var periodDate = DateOnly.FromDateTime(DateTime.UtcNow);
-
-        var reports = employees.Select(e =>
-        {
-            var salary = salaries
-                .Where(s => s.EmployeeId == e.Id && s.EffectiveDate <= periodDate)
-                .OrderByDescending(s => s.EffectiveDate)
-                .FirstOrDefault();
-
-            var applicable = GosiCalculationService.SelectActiveRules(
-                GosiCalculationService.DeriveClassification(e.Nationality),
-                rules, periodDate, tenantId);
-
-            return GosiReadinessValidator.Validate(e, salary?.BasicSalary, applicable);
-        }).ToList();
+        var reports = new List<GosiReadinessReport>(employees.Count);
+        foreach (var e in employees)
+            reports.Add((await GosiReadinessValidator.AssessAsync(
+                _rules, e, GosiReadinessValidator.SalaryForPeriod(salaries, e.Id, periodDate), periodDate, ct)).Readiness);
 
         return Ok(new
         {
@@ -202,33 +202,18 @@ public class GosiController : ControllerBase
             .FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == employeeId, ct);
         if (employee is null) return NotFound();
 
-        var salary = await _db.EmployeeSalaryStructures.AsNoTracking()
-            .Where(s => s.TenantId == tenantId && s.EmployeeId == employeeId && s.IsActive && s.EffectiveDate <= DateOnly.FromDateTime(DateTime.UtcNow))
-            .OrderByDescending(s => s.EffectiveDate)
-            .FirstOrDefaultAsync(ct);
-
-        var rules      = await LoadRulesAsync(tenantId, ct);
+        // The salary the RUN would use for this month: active and effective by the period END (not
+        // today), so a raise dated later this month is previewed exactly as payroll will pay it.
         var periodDate = DateOnly.FromDateTime(DateTime.UtcNow);
-        var applicable = GosiCalculationService.SelectActiveRules(
-            GosiCalculationService.DeriveClassification(employee.Nationality),
-            rules, periodDate, tenantId);
+        var salaries = await _db.EmployeeSalaryStructures.AsNoTracking()
+            .Where(s => s.TenantId == tenantId && s.EmployeeId == employeeId && s.IsActive)
+            .ToListAsync(ct);
+        var salary = GosiReadinessValidator.SalaryForPeriod(salaries, employeeId, periodDate);
 
-        var report = GosiReadinessValidator.Validate(employee, salary?.BasicSalary, applicable);
-
-        GosiContributionResult? preview = null;
-        if (report.IsReady && salary?.BasicSalary > 0)
-        {
-            // S1/A2(b) — the contributory wage is basic + housing, matching the payroll run's pack.
-            // The MONTHLY ceiling comes from the same statutory rule the pack reads, so this preview
-            // and the payslip cannot disagree. Previously unbounded here: SAR 5,850 previewed against
-            // SAR 4,387.50 deducted on a SAR 60,000 covered wage.
-            //
-            // ONE ENGINE, ONE STORE: the preview is computed by the payslip's own calculator on the
-            // payslip's own statutory rules, cohort included, so it cannot drift from the run.
-            preview = await GosiCalculationService.CalculateAsync(
-                _rules, employee.Nationality, salary.BasicSalary, salary.HousingAllowance,
-                periodDate, employee.GosiFirstRegisteredOn, ct);
-        }
+        // ONE ENGINE, ONE STORE, ONE VERDICT: the preview is the payslip engine's own result (cohort,
+        // ceiling and GCC home scheme included) and readiness is judged from it with the run's codes.
+        var (report, calc) = await GosiReadinessValidator.AssessAsync(_rules, employee, salary, periodDate, ct);
+        var preview = report.IsReady ? calc : null;
 
         return Ok(new
         {
@@ -238,10 +223,15 @@ public class GosiController : ControllerBase
             report.IsReady,
             blockingIssues = report.BlockingIssues.Select(i => new { i.Code, i.Message, i.IsBlocking }),
             warnings       = report.Warnings.Select(i => new { i.Code, i.Message }),
+            // The cohort and the engine's plain-language basis, so a blocked new entrant reads WHY.
+            cohort = report.Cohort,
+            basis  = report.Basis,
             contributionPreview = preview is null ? null : new
             {
                 preview.EmployeeTotal,
                 preview.EmployerTotal,
+                preview.Cohort,
+                preview.Basis,
                 lines = preview.Lines.Select(l => new
                 {
                     l.Branch,
@@ -470,16 +460,6 @@ public class GosiController : ControllerBase
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
-
-    // IgnoreQueryFilters is intentional: same reasoning as GetContributionRules.
-    // Platform defaults (TenantId==Guid.Empty) are excluded by the global filter, so we bypass
-    // it and re-apply explicit scope: own tenant rows + Guid.Empty defaults only.
-    private async Task<IReadOnlyList<GosiContributionRule>> LoadRulesAsync(Guid tenantId, CancellationToken ct) =>
-        await _db.GosiContributionRules
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(r => (r.TenantId == Guid.Empty || r.TenantId == tenantId) && r.IsActive)
-            .ToListAsync(ct);
 
     private Guid GetTenantId() => Guid.Parse(User.FindFirstValue("tenant_id")!);
     private Guid? GetUserId()  => Guid.TryParse(

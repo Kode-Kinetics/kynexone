@@ -313,6 +313,23 @@ public class PilotPayrollCorrectnessPostgresTests
         warning.Message.Should().Contain("saved but never applied").And.Contain("GOSI-published rate")
             .And.Contain(RuleKeys.GosiSaudiEmployeeRate).And.Contain(KsaGosiWageBounds.CeilingRuleKey).And.Contain(RuleKeys.GosiSanedRate);
 
+        // The Rates screen shows the GOSI-published value as resolved and flags the override as never applied.
+        var rates = WithUser(new RatesController(db, reader, new StatutoryRateResolver(db, reader)), tenantId);
+        var listed = (await rates.ListStatutory(company.Id, CountryCodes.Saudi, Jurisdictions.KsaMainland, CancellationToken.None))
+            .Should().BeOfType<OkObjectResult>().Subject.Value!;
+        var ceilingRow = ((System.Collections.IEnumerable)listed).Cast<object>()
+            .Single(r => Prop<string>(r, "ruleKey") == KsaGosiWageBounds.CeilingRuleKey);
+        Prop<bool>(ceilingRow, "neverApplied").Should().BeTrue();
+        Prop<bool>(ceilingRow, "statutoryLocked").Should().BeTrue();
+        ceilingRow.GetType().GetProperty("resolvedValue")!.GetValue(ceilingRow).Should().Be(45_000m,
+            "payroll resolves the GOSI-published ceiling, not the 5,000 the company saved");
+
+        // The retired GOSI rule listing says so on every row.
+        var gosiCtrl = WithUser(new GosiController(db, TestReconciliation.For(db), reader), tenantId);
+        var retiredList = (await gosiCtrl.GetContributionRules(CancellationToken.None)).Should().BeOfType<OkObjectResult>().Subject.Value!;
+        ((System.Collections.IEnumerable)retiredList).Cast<object>().Should().NotBeEmpty()
+            .And.OnlyContain(r => Prop<bool>(r, "retired") && !Prop<bool>(r, "appliedToPayroll"));
+
         // The rows are kept…
         (await db.StatutoryRules.IgnoreQueryFilters().AnyAsync(r => r.TenantId == tenantId && r.RuleKey == RuleKeys.GosiSaudiEmployeeRate))
             .Should().BeTrue("existing override rows are an audit record and are not deleted");
@@ -467,6 +484,244 @@ public class PilotPayrollCorrectnessPostgresTests
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    //  3b. Cutover lifecycle — the boundary a locked run used cannot move
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// A finished migration is CLOSED after months have been locked. Closing does not move the boundary,
+    /// so it is accepted, and a Closed cutover keeps governing: November's YTD is still the carried
+    /// 100,000 plus September, October and November, with no unresolved-overlap block.
+    /// </summary>
+    [Fact]
+    public async Task Cutover_ClosingAfterMonthTwo_IsAllowed_AndKeepsGoverningTheYtd()
+    {
+        await using var db = _fx.CreateDb();
+        var (tenantId, company) = await SeedTenantAndCompany(db);
+        var employee = await SeedEmployee(db, tenantId, company, "Saudi", 10_000m, 2_500m,
+            joining: new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        var rules = KsaRules();
+
+        Ok(await Migration(db, tenantId).Commit(CutoverPackage(company, "2026-09-01", "Active", "wave1"), CancellationToken.None))
+            .Errors.Should().BeEmpty();
+        AddOpeningYtd(db, tenantId, company, employee, gross: 100_000m, deductions: 9_750m, net: 90_250m);
+        await db.SaveChangesAsync();
+
+        var sep = await ProcessAndLock(db, tenantId, company, rules, 2026, 9);
+        var oct = await ProcessAndLock(db, tenantId, company, rules, 2026, 10);
+
+        Ok(await Migration(db, tenantId).Commit(CutoverPackage(company, "2026-09-01", "Closed", "close"), CancellationToken.None))
+            .Errors.Should().BeEmpty("closing does not move the boundary a locked run used");
+        (await db.CompanyCutovers.AsNoTracking().SingleAsync(c => c.CompanyId == company.Id)).Status.Should().Be(CutoverStatuses.Closed);
+
+        var nov = await NewRun(db, tenantId, company, 2026, 11);
+        (await Payroll(db, tenantId, rules).Process(nov.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        var novSlip = await Slip(db, nov.Id, employee.Id);
+        novSlip.YtdGross.Should().Be(100_000m + (await Slip(db, sep.Id, employee.Id)).GrossSalary
+                                     + (await Slip(db, oct.Id, employee.Id)).GrossSalary + novSlip.GrossSalary,
+            "a Closed cutover still says where the carried figures end");
+        (await Findings(db, nov.Id)).Should().NotContain(f => f.Code == PayrollYtdBasis.UnresolvedOverlapCode);
+    }
+
+    /// <summary>
+    /// Moving the cutover — or turning it back to Planned — after a run in or after the boundary is
+    /// locked is refused with a coded EN/AR reason, by a package that carries ONLY the cutover row.
+    /// </summary>
+    [Theory]
+    [InlineData("2026-10-01", "Active")]
+    [InlineData("2026-08-01", "Active")]
+    [InlineData("2026-09-01", "Planned")]
+    public async Task Cutover_MovedAfterALockedRun_IsRefused_EvenInACutoverOnlyPackage(string newDate, string newStatus)
+    {
+        await using var db = _fx.CreateDb();
+        var (tenantId, company) = await SeedTenantAndCompany(db);
+        await SeedEmployee(db, tenantId, company, "Saudi", 10_000m, 2_500m, joining: new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        db.CompanyCutovers.Add(new CompanyCutover
+        {
+            TenantId = tenantId, CompanyId = company.Id, CutoverDate = new DateOnly(2026, 9, 1),
+            SourceSystem = "SAP", Status = CutoverStatuses.Active,
+        });
+        await db.SaveChangesAsync();
+        await ProcessAndLock(db, tenantId, company, KsaRules(), 2026, 9);
+
+        var result = await Migration(db, tenantId).Commit(CutoverPackage(company, newDate, newStatus, "move"), CancellationToken.None);
+
+        var conflict = result.Result.Should().BeOfType<ConflictObjectResult>().Subject;
+        var json = System.Text.Json.JsonSerializer.Serialize(conflict.Value);
+        json.Should().Contain(CutoverStatuses.ChangeAfterLockedRunCode).And.Contain("2026-09")
+            .And.Contain("ReasonAr", "the reason is given in Arabic too");
+        var stored = await db.CompanyCutovers.AsNoTracking().SingleAsync(c => c.CompanyId == company.Id);
+        stored.CutoverDate.Should().Be(new DateOnly(2026, 9, 1));
+        stored.Status.Should().Be(CutoverStatuses.Active);
+    }
+
+    /// <summary>A cutover must be the 1st of a month; the refusal is coded and names the month.</summary>
+    [Fact]
+    public async Task Cutover_MidMonth_IsRefusedNamingTheMonth()
+    {
+        await using var db = _fx.CreateDb();
+        var (tenantId, company) = await SeedTenantAndCompany(db);
+
+        var dto = Ok(await Migration(db, tenantId).Commit(CutoverPackage(company, "2026-09-15", "Active", "mid"), CancellationToken.None));
+
+        var error = dto.Errors.Should().ContainSingle().Subject;
+        error.Should().Contain(CutoverStatuses.NotFirstOfMonthCode).And.Contain("September 2026")
+            .And.Contain("2026-09-01").And.Contain("2026-10-01");
+        (await db.CompanyCutovers.AnyAsync(c => c.CompanyId == company.Id)).Should().BeFalse();
+    }
+
+    /// <summary>
+    /// Per employee: someone hired during the parallel run is not in the legacy file. Their August
+    /// payslip is the only record of August and must count; only the employee whose carried balance
+    /// contains August has it excluded.
+    /// </summary>
+    [Fact]
+    public async Task Ytd_ParallelRunHire_WithNoCarriedBalance_KeepsTheirPreCutoverPayslip()
+    {
+        await using var db = _fx.CreateDb();
+        var (tenantId, company) = await SeedTenantAndCompany(db);
+        var migrated = await SeedEmployee(db, tenantId, company, "Saudi", 10_000m, 2_500m,
+            joining: new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        var newHire = await SeedEmployee(db, tenantId, company, "Saudi", 8_000m, 2_000m,
+            joining: new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc));
+        var rules = KsaRules();
+
+        var august = await ProcessAndLock(db, tenantId, company, rules, 2026, 8);
+        db.CompanyCutovers.Add(new CompanyCutover
+        {
+            TenantId = tenantId, CompanyId = company.Id, CutoverDate = new DateOnly(2026, 9, 1),
+            SourceSystem = "SAP", Status = CutoverStatuses.Active,
+        });
+        AddOpeningYtd(db, tenantId, company, migrated, gross: 100_000m, deductions: 9_750m, net: 90_250m);
+        await db.SaveChangesAsync();
+
+        var september = await NewRun(db, tenantId, company, 2026, 9);
+        (await Payroll(db, tenantId, rules).Process(september.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+
+        var migratedSep = await Slip(db, september.Id, migrated.Id);
+        migratedSep.YtdGross.Should().Be(100_000m + migratedSep.GrossSalary);
+
+        var hireAug = await Slip(db, august.Id, newHire.Id);
+        var hireSep = await Slip(db, september.Id, newHire.Id);
+        hireSep.YtdGross.Should().Be(hireAug.GrossSalary + hireSep.GrossSalary,
+            "the new hire has no carried balance, so their August payslip is the only record of August");
+
+        var findings = await Findings(db, september.Id);
+        findings.Should().Contain(f => f.Code == PayrollYtdBasis.PreCutoverExcludedCode && f.EmployeeId == migrated.Id);
+        findings.Should().NotContain(f => f.Code == PayrollYtdBasis.PreCutoverExcludedCode && f.EmployeeId == newHire.Id);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  1c. GOSI readiness is the run's own verdict
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// For each cohort the run treats specially, readiness shows the SAME code at the SAME severity the
+    /// run raises: a new entrant and a GCC national with no home-scheme rates are Not ready (the run
+    /// blocks them); a Saudi with no first-registration date is Ready with the cohort warning. The
+    /// report and the preview both carry the cohort and the engine's basis.
+    /// </summary>
+    [Fact]
+    public async Task Readiness_EachCohort_MatchesTheRunsVerdictAndCode()
+    {
+        await using var db = _fx.CreateDb();
+        await StatutoryRuleSeeder.SeedAsync(db, NullLogger.Instance);
+        var reader = new StatutoryRuleReader(db);
+        var (tenantId, company) = await SeedTenantAndCompany(db);
+        var joining = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var newEntrant = await SeedEmployee(db, tenantId, company, "Saudi", 10_000m, 2_500m, joining, gosiFirstRegistered: new DateOnly(2025, 1, 1));
+        var unknown = await SeedEmployee(db, tenantId, company, "Saudi", 10_000m, 2_500m, joining, noGosiFirstRegistered: true);
+        var bahraini = await SeedEmployee(db, tenantId, company, "Bahraini", 10_000m, 2_500m, joining);
+        var existing = await SeedEmployee(db, tenantId, company, "Saudi", 10_000m, 2_500m, joining);
+
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var run = await NewRun(db, tenantId, company, today.Year, today.Month);
+        (await Payroll(db, tenantId, reader).Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        var runFindings = await Findings(db, run.Id);
+
+        var report = await new GosiReadinessReportService(db, reader).BuildAsync(tenantId, CancellationToken.None);
+        GosiEmployeeReadinessRow Row(Employee e) => report.Employees.Single(r => r.EmployeeId == e.Id);
+
+        foreach (var (emp, code) in new[]
+                 {
+                     (newEntrant, PayrollValidationEngine.GosiNewEntrantScheduleNotModelled),
+                     (bahraini, PayrollValidationEngine.GosiGccSchemeNotConfigured),
+                 })
+        {
+            runFindings.Should().Contain(f => f.EmployeeId == emp.Id && f.Code == code && f.Severity == "Error",
+                $"the run blocks {emp.Nationality} with {code}");
+            Row(emp).IsReady.Should().BeFalse($"readiness must not say Ready for someone the run blocks ({code})");
+            Row(emp).BlockingIssues.Should().Contain(i => i.Code == code);
+        }
+
+        runFindings.Should().Contain(f => f.EmployeeId == unknown.Id && f.Code == PayrollValidationEngine.GosiCohortNotRecorded && f.Severity == "Warning");
+        Row(unknown).IsReady.Should().BeTrue("the run only warns when the cohort is not recorded");
+        Row(unknown).Warnings.Should().Contain(w => w.Code == PayrollValidationEngine.GosiCohortNotRecorded);
+        Row(unknown).Cohort.Should().Be(GosiCohorts.Unknown);
+        Row(unknown).Basis.Should().Contain("unverified");
+
+        Row(existing).IsReady.Should().BeTrue();
+        Row(existing).Cohort.Should().Be(GosiCohorts.PreJuly2024);
+        Row(existing).Basis.Should().Contain("existing subscriber");
+        Row(newEntrant).Cohort.Should().Be(GosiCohorts.NewEntrant);
+
+        // The preview carries the cohort and the basis too.
+        var gosi = new GosiController(db, new GosiReconciliationService(db, new _PilotKsaResolver(reader)), reader)
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = Principal(tenantId) } },
+        };
+        var body = (await gosi.GetEmployeeReadiness(unknown.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>().Subject.Value!;
+        Prop<string>(body, "cohort").Should().Be(GosiCohorts.Unknown);
+        Prop<string>(body, "basis").Should().Contain("unverified");
+        var blockedBody = (await gosi.GetEmployeeReadiness(newEntrant.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>().Subject.Value!;
+        Prop<bool>(blockedBody, "IsReady").Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The preview prices the salary the RUN will use: effective by the period END, so a raise dated
+    /// later this month is previewed as payroll will pay it, not at today's figure.
+    /// </summary>
+    [Fact]
+    public async Task Preview_UsesTheSalaryAsOfThePeriodEnd_LikeTheRun()
+    {
+        await using var db = _fx.CreateDb();
+        await StatutoryRuleSeeder.SeedAsync(db, NullLogger.Instance);
+        var reader = new StatutoryRuleReader(db);
+        var (tenantId, company) = await SeedTenantAndCompany(db);
+        var employee = await SeedEmployee(db, tenantId, company, "Saudi", 10_000m, 2_500m,
+            joining: new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        var periodEnd = GosiReadinessValidator.PeriodEnd(DateOnly.FromDateTime(DateTime.UtcNow));
+        db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
+        {
+            TenantId = tenantId, EmployeeId = employee.Id, SalaryStructureId = Guid.NewGuid(),
+            BasicSalary = 20_000m, HousingAllowance = 5_000m, Currency = "SAR", EffectiveDate = periodEnd, IsActive = true,
+        });
+        await db.SaveChangesAsync();
+
+        var gosi = new GosiController(db, new GosiReconciliationService(db, new _PilotKsaResolver(reader)), reader)
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = Principal(tenantId) } },
+        };
+        var body = (await gosi.GetEmployeeReadiness(employee.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>().Subject.Value!;
+        var preview = body.GetType().GetProperty("contributionPreview")!.GetValue(body)!;
+        Prop<decimal>(preview, "EmployeeTotal").Should().Be(2_437.50m,
+            "9.75% of the 25,000 covered wage in force at the period end, not of today's 12,500");
+    }
+
+    private static MigrationImportController Migration(ZayraDbContext db, Guid tenantId) =>
+        WithUser(new MigrationImportController(db, new Zayra.Api.Infrastructure.Auth.Pbkdf2PasswordHasher(),
+            new Zayra.Api.Infrastructure.Audit.AuditService(db)), tenantId);
+
+    private static MigrationPackageRequest CutoverPackage(Company company, string date, string status, string id) =>
+        new($"cutover-{id}-{Guid.NewGuid():N}", new Dictionary<string, string>
+        {
+            ["companyCutover"] = "CompanyRegistrationNumber,CompanyLegalName,CutoverDate,SourceSystem,Status,Notes\n"
+                               + $"{company.RegistrationNumber},,{date},SAP,{status},test\n",
+        }, false);
+
+    private static MigrationReconciliationDto Ok(ActionResult<MigrationReconciliationDto> result) =>
+        (MigrationReconciliationDto)result.Result.Should().BeOfType<OkObjectResult>().Subject.Value!;
+
+    // ═══════════════════════════════════════════════════════════════════════════
     //  4. EOSB — carried prior service
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -536,7 +791,8 @@ public class PilotPayrollCorrectnessPostgresTests
     }
 
     private static async Task<Employee> SeedEmployee(
-        ZayraDbContext db, Guid tenantId, Company company, string nationality, decimal basic, decimal housing, DateTime joining)
+        ZayraDbContext db, Guid tenantId, Company company, string nationality, decimal basic, decimal housing, DateTime joining,
+        DateOnly? gosiFirstRegistered = null, bool noGosiFirstRegistered = false)
     {
         var employee = new Employee
         {
@@ -551,7 +807,7 @@ public class PilotPayrollCorrectnessPostgresTests
             CountryCode = CountryCodes.Saudi,
             Salary = basic,
             GosiReference = "GOSI-123456",
-            GosiFirstRegisteredOn = new DateOnly(2015, 1, 1),
+            GosiFirstRegisteredOn = noGosiFirstRegistered ? null : gosiFirstRegistered ?? new DateOnly(2015, 1, 1),
         };
         db.Employees.Add(employee);
         await db.SaveChangesAsync();

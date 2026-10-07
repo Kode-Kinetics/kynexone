@@ -170,7 +170,8 @@ public static class GosiCalculationService
             EmployerTotal:  result.TotalEmployerContribution,
             Lines:          lines)
         {
-            Basis = result.Basis,
+            Basis  = result.Basis,
+            Cohort = result.SocialInsuranceCohort,
         };
     }
 
@@ -326,6 +327,9 @@ public record GosiContributionResult(
 {
     /// <summary>The payslip engine's plain-language basis (cohort, rates, period), when computed by it.</summary>
     public string? Basis { get; init; }
+
+    /// <summary>The GOSI cohort the payslip engine computed on (<see cref="GosiCohorts"/>), or null when none applies.</summary>
+    public string? Cohort { get; init; }
 }
 
 public record GosiContributionLine(
